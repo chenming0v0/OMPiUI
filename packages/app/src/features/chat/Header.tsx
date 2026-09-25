@@ -156,7 +156,7 @@ export function Header({
 
   useEffect(() => {
     const docTitle = currentSessionTitle || listedTitle
-    document.title = docTitle ? `${docTitle} - Pi` : 'Pi'
+    document.title = docTitle ? `${docTitle} - OMPiUI` : 'OMPiUI'
     return () => {
       document.title = 'Pi'
     }
