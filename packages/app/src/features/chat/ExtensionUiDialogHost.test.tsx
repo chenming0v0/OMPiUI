@@ -1,0 +1,216 @@
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { extensionUiStore } from '../../pi/extensionUiStore'
+import { ExtensionUiDialogHost } from './ExtensionUiDialogHost'
+
+const { respondPiExtensionUi } = vi.hoisted(() => ({ respondPiExtensionUi: vi.fn() }))
+
+vi.mock('../../pi/controllers/index.js', () => ({ respondPiExtensionUi }))
+vi.mock('../../hooks', () => ({
+  usePresence: () => ({ shouldRender: true, ref: () => undefined }),
+}))
+vi.mock('../chat/chatViewport', () => ({
+  useChatViewport: () => ({ presentation: { isCompact: false } }),
+}))
+
+function selectRequest(overrides?: Partial<import('@piui/protocol').ExtensionUiDialogRequest>) {
+  return {
+    requestId: 'request-1',
+    sessionId: 'session-1',
+    kind: 'select',
+    title: 'Choose mode',
+    options: ['plan', 'build'],
+    createdAt: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  } as import('@piui/protocol').ExtensionUiDialogRequest
+}
+
+describe('ExtensionUiDialogHost', () => {
+  beforeEach(() => {
+    extensionUiStore.reset()
+    respondPiExtensionUi.mockReset()
+    respondPiExtensionUi.mockResolvedValue(undefined)
+  })
+
+  it('renders a select request and submits the chosen option', async () => {
+    extensionUiStore.requestOpened(selectRequest())
+    render(<ExtensionUiDialogHost sessionId="session-1" />)
+
+    fireEvent.click(screen.getByText('build'))
+    fireEvent.click(screen.getByRole('button', { name: /submit|提交/i }))
+
+    await waitFor(() => expect(respondPiExtensionUi).toHaveBeenCalledWith(
+      'session-1',
+      'request-1',
+      expect.objectContaining({ value: 'build', responseId: expect.any(String) }),
+    ))
+  })
+
+  it('submits confirmed=true for a confirm request', async () => {
+    extensionUiStore.requestOpened(selectRequest({
+      requestId: 'request-confirm',
+      kind: 'confirm',
+      title: 'Delete file?',
+      message: 'This cannot be undone',
+      options: undefined,
+    } as never))
+    render(<ExtensionUiDialogHost sessionId="session-1" />)
+
+    expect(screen.getByText('This cannot be undone')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /confirm|确认/i }))
+
+    await waitFor(() => expect(respondPiExtensionUi).toHaveBeenCalledWith(
+      'session-1',
+      'request-confirm',
+      expect.objectContaining({ confirmed: true }),
+    ))
+  })
+
+  it('submits input values and keeps the title compact', async () => {
+    extensionUiStore.requestOpened(selectRequest({
+      requestId: 'request-input',
+      kind: 'input',
+      title: 'A very long extension title that should stay on one line',
+      options: undefined,
+      placeholder: 'Environment name',
+    } as never))
+    render(<ExtensionUiDialogHost sessionId="session-1" />)
+
+    const input = screen.getByPlaceholderText('Environment name')
+    fireEvent.change(input, { target: { value: 'preview-windows' } })
+    fireEvent.click(screen.getByRole('button', { name: /submit|提交/i }))
+
+    await waitFor(() => expect(respondPiExtensionUi).toHaveBeenCalledWith(
+      'session-1',
+      'request-input',
+      expect.objectContaining({ value: 'preview-windows' }),
+    ))
+  })
+
+  it('submits multi-line editor content', async () => {
+    extensionUiStore.requestOpened(selectRequest({
+      requestId: 'request-editor',
+      kind: 'editor',
+      title: 'Edit release notes',
+      options: undefined,
+      prefill: 'line one\nline two',
+    } as never))
+    render(<ExtensionUiDialogHost sessionId="session-1" />)
+
+    const editor = screen.getByRole('textbox')
+    expect(editor).toHaveValue('line one\nline two')
+    fireEvent.change(editor, { target: { value: 'updated\ncontent' } })
+    fireEvent.click(screen.getByRole('button', { name: /submit|提交/i }))
+
+    await waitFor(() => expect(respondPiExtensionUi).toHaveBeenCalledWith(
+      'session-1',
+      'request-editor',
+      expect.objectContaining({ value: 'updated\ncontent' }),
+    ))
+  })
+
+  it('shows only the current session pending requests', () => {
+    extensionUiStore.requestOpened(selectRequest({ sessionId: 'other-session' }))
+    render(<ExtensionUiDialogHost sessionId="session-1" />)
+
+    expect(screen.queryByText('Choose mode')).toBeNull()
+  })
+
+  it('shows queue count when multiple requests are pending', () => {
+    extensionUiStore.requestOpened(selectRequest())
+    extensionUiStore.requestOpened(selectRequest({
+      requestId: 'request-2',
+      title: 'Second question',
+      createdAt: '2026-01-01T00:01:00.000Z',
+    }))
+    render(<ExtensionUiDialogHost sessionId="session-1" />)
+
+    expect(screen.getByText('Choose mode')).toBeInTheDocument()
+    expect(screen.getByText('1/2')).toBeInTheDocument()
+  })
+
+  it('switches to the next queued request via the pager', () => {
+    extensionUiStore.requestOpened(selectRequest())
+    extensionUiStore.requestOpened(selectRequest({
+      requestId: 'request-2',
+      title: 'Second question',
+      createdAt: '2026-01-01T00:01:00.000Z',
+    }))
+    render(<ExtensionUiDialogHost sessionId="session-1" />)
+
+    // 切换到下一个：只是换显示，两个请求都还在队列里
+    fireEvent.click(screen.getByTitle(/next|下一个/i))
+    expect(screen.getByText('Second question')).toBeInTheDocument()
+    expect(screen.getByText('2/2')).toBeInTheDocument()
+    expect(respondPiExtensionUi).not.toHaveBeenCalled()
+
+    // 切回上一个
+    fireEvent.click(screen.getByTitle(/previous|上一个/i))
+    expect(screen.getByText('Choose mode')).toBeInTheDocument()
+  })
+
+  it('processing the current request advances to the next one', async () => {
+    extensionUiStore.requestOpened(selectRequest())
+    extensionUiStore.requestOpened(selectRequest({
+      requestId: 'request-2',
+      title: 'Second question',
+      createdAt: '2026-01-01T00:01:00.000Z',
+    }))
+    render(<ExtensionUiDialogHost sessionId="session-1" />)
+
+    // 处理第一个（提交选择），队列前移后自动显示下一个
+    fireEvent.click(screen.getByRole('button', { name: /submit|提交/i }))
+    await waitFor(() => expect(respondPiExtensionUi).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByText('Second question')).toBeInTheDocument())
+    // 队列只剩一个时不再显示分页器
+    expect(screen.queryByText(/^\d+\/\d+$/)).toBeNull()
+  })
+
+  it('expands long select options inline and keeps them selectable', async () => {
+    // jsdom 无布局：mock scrollWidth 使所有选项文本"水平溢出"，触发展开入口
+    const originalScrollWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollWidth')
+    Object.defineProperty(HTMLElement.prototype, 'scrollWidth', {
+      configurable: true,
+      get: () => 200,
+    })
+    try {
+      const longOption = 'b'.repeat(500)
+      extensionUiStore.requestOpened(selectRequest({ options: ['a'.repeat(500), longOption] }))
+      render(<ExtensionUiDialogHost sessionId="session-1" />)
+
+      // 溢出选项都有展开按钮；展开前完整文本只存在于摘要节点
+      const expandButtons = screen.getAllByTitle(/展开详情|Expand details/i)
+      expect(expandButtons.length).toBe(2)
+      expect(screen.getAllByText(longOption)).toHaveLength(1)
+
+      // 展开：完整文本内联出现（摘要 + 展开区 = 2 处），按钮变为收起
+      fireEvent.click(expandButtons[1]!)
+      expect(screen.getAllByText(longOption)).toHaveLength(2)
+      expect(screen.getAllByTitle(/收起详情|Collapse details/i)).toHaveLength(1)
+
+      // 展开状态下点击选项仍正常选中并提交
+      fireEvent.click(screen.getByTitle(longOption))
+      fireEvent.click(screen.getByRole('button', { name: /submit|提交/i }))
+      await waitFor(() => expect(respondPiExtensionUi).toHaveBeenCalledWith(
+        'session-1',
+        'request-1',
+        expect.objectContaining({ value: longOption }),
+      ))
+    } finally {
+      if (originalScrollWidth) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollWidth', originalScrollWidth)
+      } else {
+        delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollWidth
+      }
+    }
+  })
+
+  it('clears the settled request from the store after submit', async () => {
+    extensionUiStore.requestOpened(selectRequest())
+    render(<ExtensionUiDialogHost sessionId="session-1" />)
+
+    fireEvent.click(screen.getByRole('button', { name: /submit|提交/i }))
+    await waitFor(() => expect(respondPiExtensionUi).toHaveBeenCalled())
+    await waitFor(() => expect(screen.queryByText('Choose mode')).toBeNull())
+  })
+})

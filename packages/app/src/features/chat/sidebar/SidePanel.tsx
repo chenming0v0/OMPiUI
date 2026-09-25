@@ -1,0 +1,1364 @@
+import { useCallback, useMemo, useState, useEffect, useRef, useSyncExternalStore } from 'react'
+import { useTranslation } from 'react-i18next'
+import { SessionList } from '../../sessions'
+import { FolderRecentList } from './FolderRecentList'
+import { getProjectGroupIdentity } from './projectGrouping'
+import { ConfirmDialog } from '../../../components/ui/ConfirmDialog'
+import { ActiveSessionItem } from './ActiveSessionItem'
+import { NotificationItem } from './NotificationItem'
+import { SidebarFooter } from './SidebarFooter'
+import { getParentPath } from './sidebarUtils'
+import {
+  SidebarIcon,
+  FolderIcon,
+  GlobeIcon,
+  PlusIcon,
+  NewChatIcon,
+  TrashIcon,
+  SearchIcon,
+  CloseIcon,
+  ChevronDownIcon,
+  ListFilterIcon,
+  FolderMinusIcon,
+  CheckIcon,
+  SpinnerIcon,
+} from '../../../components/Icons'
+import { useDirectory, useKeybindingLabel, useGitWorkspaceCatalog, useVcsInfo } from '../../../hooks'
+import { useSessionContext } from '../../../contexts/useSessionContext'
+import { useLayoutStore } from '../../../store'
+import { useBusySessions, useBusyCount } from '../../../store/activeSessionStore'
+import { notificationStore, useNotifications, useUnreadNotificationCount } from '../../../store/notificationStore'
+import { pinnedSessionsStore } from '../../../store/pinnedSessionsStore'
+import type { NotificationEntry } from '../../../store/notificationStore'
+import {
+  subscribeToConnectionState,
+  type ConnectionInfo,
+} from '../../../api'
+import type { UiSession } from '../../../types/session'
+import { getDirectoryName, isSameDirectory, normalizeToForwardSlash } from '../../../utils'
+import { uiErrorHandler } from '../../../utils'
+import { renamePiSession } from '../../../pi/controllers/index.js'
+import { usePiCapabilities } from '../../../pi/capabilities'
+
+// 侧边栏设计模式：
+// - 按钮结构统一，不因 expanded/collapsed 改变 DOM
+// - 按钮内容使用 -translate-x-2 让图标在收起时居中
+// - 文字用 opacity 过渡，不改变布局
+// - 收起宽度 49px，展开宽度 288px
+
+interface SidePanelProps {
+  onNewSession: () => void
+  onSelectSession: (session: UiSession) => void
+  onCloseMobile?: () => void
+  selectedSessionId: string | null
+  onAddProject: () => void
+  isMobile?: boolean
+  isExpanded?: boolean
+  onToggleSidebar: () => void
+  contextLimit?: number
+  onOpenSettings?: () => void
+}
+
+interface ProjectItem {
+  id: string
+  path: string
+  name: string
+  canReorder?: boolean
+  memberDirectories?: string[]
+  reorderPath?: string
+  workspaceDirectories?: string[]
+  sectionKind?: 'project' | 'workspace'
+}
+
+function getSelectionRange(visibleIds: string[], anchorId: string, targetId: string) {
+  const startIndex = visibleIds.indexOf(anchorId)
+  const endIndex = visibleIds.indexOf(targetId)
+
+  if (startIndex === -1 || endIndex === -1) return null
+
+  const from = Math.min(startIndex, endIndex)
+  const to = Math.max(startIndex, endIndex)
+  return visibleIds.slice(from, to + 1)
+}
+
+function findProjectGroupForDirectory(projects: ProjectItem[], directory: string) {
+  return projects.find(project => {
+    if (isSameDirectory(project.id, directory) || isSameDirectory(project.path, directory)) {
+      return true
+    }
+
+    if (project.workspaceDirectories?.some(workspace => isSameDirectory(workspace, directory))) {
+      return true
+    }
+
+    if (project.memberDirectories?.some(memberDirectory => isSameDirectory(memberDirectory, directory))) {
+      return true
+    }
+
+    return false
+  })
+}
+
+export function SidePanel({
+  onNewSession,
+  onSelectSession,
+  onCloseMobile,
+  selectedSessionId,
+  onAddProject,
+  isMobile = false,
+  isExpanded = true,
+  onToggleSidebar,
+  contextLimit = 200000,
+  onOpenSettings,
+}: SidePanelProps) {
+  const { t } = useTranslation(['chat', 'common'])
+  const canDeleteSessions = usePiCapabilities().sessionDelete
+  const {
+    currentDirectory,
+    savedDirectories,
+    setCurrentDirectory,
+    removeDirectory,
+    addDirectory,
+    reorderDirectories,
+    recentProjects,
+  } = useDirectory()
+  const catalogDirectories = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          savedDirectories
+            .map(directory => normalizeToForwardSlash(directory.path))
+            .concat(currentDirectory ? [normalizeToForwardSlash(currentDirectory)] : []),
+        ),
+      ),
+    [savedDirectories, currentDirectory],
+  )
+  const { catalog: gitWorkspaceCatalog, isLoading: isGitWorkspaceCatalogLoading } =
+    useGitWorkspaceCatalog(catalogDirectories)
+  const { vcsInfo: currentDirectoryVcsInfo, isLoading: isCurrentDirectoryVcsLoading } = useVcsInfo(currentDirectory)
+  const { sidebarFolderRecents } = useLayoutStore()
+  const [globalFolderIndex, setGlobalFolderIndex] = useState<number>(() => {
+    const saved = localStorage.getItem('piui-sidebar-global-folder-index')
+    const parsed = saved ? Number.parseInt(saved, 10) : 0
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
+  })
+  const normalizedCurrentDirectory = useMemo(
+    () => (currentDirectory ? normalizeToForwardSlash(currentDirectory) : undefined),
+    [currentDirectory],
+  )
+  const [connectionState, setConnectionState] = useState<ConnectionInfo | null>(null)
+  const [projectDeleteConfirm, setProjectDeleteConfirm] = useState<{ isOpen: boolean; projectId: string | null }>({
+    isOpen: false,
+    projectId: null,
+  })
+  const [projectsExpanded, setProjectsExpanded] = useState(false)
+  const [sidebarTab, setSidebarTab] = useState<'recents' | 'active'>('recents')
+  const [expandedRecentProjectIds, setExpandedRecentProjectIds] = useState<string[]>([])
+
+  // ---- 编辑模式状态 ----
+  const [isEditMode, setIsEditMode] = useState(false)
+  const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set())
+  const [selectedProjectIds, setSelectedProjectIds] = useState<Set<string>>(new Set())
+  const sessionSelectionAnchorIdRef = useRef<string | null>(null)
+  const projectSelectionAnchorIdRef = useRef<string | null>(null)
+  const recentsSelectionRootRef = useRef<HTMLDivElement>(null)
+  const projectToggleRef = useRef<HTMLButtonElement>(null)
+  const projectsDropdownRef = useRef<HTMLDivElement>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  const pendingOpenProjectsRef = useRef(false)
+  const pendingFocusSearchRef = useRef(false)
+  // 批量删除确认弹窗
+  const [batchDeleteSessionConfirm, setBatchDeleteSessionConfirm] = useState(false)
+  const [batchRemoveProjectConfirm, setBatchRemoveProjectConfirm] = useState(false)
+  const [isBatchDeleting, setIsBatchDeleting] = useState(false)
+
+  const getVisibleSelectionIds = useCallback((kind: 'session' | 'project') => {
+    const root = recentsSelectionRootRef.current
+    if (!root) return []
+
+    return Array.from(root.querySelectorAll<HTMLElement>(`[data-selection-kind="${kind}"]`))
+      .filter(element => element.getClientRects().length > 0)
+      .map(element => element.dataset.selectionId)
+      .filter((id): id is string => Boolean(id))
+  }, [])
+
+  const toggleSessionSelection = useCallback(
+    (sessionId: string, options?: { shiftKey?: boolean }) => {
+      const anchorId = sessionSelectionAnchorIdRef.current
+      const visibleIds = getVisibleSelectionIds('session')
+
+      setSelectedSessionIds(prev => {
+        if (options?.shiftKey && anchorId) {
+          const range = getSelectionRange(visibleIds, anchorId, sessionId)
+          if (range) {
+            const next = new Set(prev)
+            // 目标已选中 → 整段取消；未选中 → 整段选中
+            const shouldSelect = !prev.has(sessionId)
+            for (const id of range) {
+              if (shouldSelect) next.add(id)
+              else next.delete(id)
+            }
+            return next
+          }
+        }
+
+        const next = new Set(prev)
+        if (next.has(sessionId)) next.delete(sessionId)
+        else next.add(sessionId)
+        return next
+      })
+      // Shift 范围操作后仍保留锚点，方便连续扩选/缩选
+      if (!(options?.shiftKey && anchorId)) {
+        sessionSelectionAnchorIdRef.current = sessionId
+      }
+    },
+    [getVisibleSelectionIds],
+  )
+
+  const toggleProjectSelection = useCallback(
+    (projectId: string, options?: { shiftKey?: boolean }) => {
+      const anchorId = projectSelectionAnchorIdRef.current
+      const visibleIds = getVisibleSelectionIds('project')
+
+      setSelectedProjectIds(prev => {
+        if (options?.shiftKey && anchorId) {
+          const range = getSelectionRange(visibleIds, anchorId, projectId)
+          if (range) {
+            const next = new Set(prev)
+            const shouldSelect = !prev.has(projectId)
+            for (const id of range) {
+              if (shouldSelect) next.add(id)
+              else next.delete(id)
+            }
+            return next
+          }
+        }
+
+        const next = new Set(prev)
+        if (next.has(projectId)) next.delete(projectId)
+        else next.add(projectId)
+        return next
+      })
+      if (!(options?.shiftKey && anchorId)) {
+        projectSelectionAnchorIdRef.current = projectId
+      }
+    },
+    [getVisibleSelectionIds],
+  )
+
+  const exitEditMode = useCallback(() => {
+    setIsEditMode(false)
+    setSelectedSessionIds(new Set())
+    setSelectedProjectIds(new Set())
+    sessionSelectionAnchorIdRef.current = null
+    projectSelectionAnchorIdRef.current = null
+  }, [])
+
+  const enterEditMode = useCallback(() => {
+    setIsEditMode(true)
+    sessionSelectionAnchorIdRef.current = null
+    projectSelectionAnchorIdRef.current = null
+  }, [])
+
+  const showLabels = isExpanded || isMobile
+  const newChatShortcut = useKeybindingLabel('newSession')
+
+  useEffect(() => {
+    if (showLabels && projectsExpanded) return
+    const activeElement = document.activeElement as Node | null
+    if (activeElement && projectsDropdownRef.current?.contains(activeElement)) {
+      projectToggleRef.current?.focus()
+    }
+  }, [projectsExpanded, showLabels])
+
+  // 收起态点项目/搜索：展开后再执行打开列表或聚焦输入
+  useEffect(() => {
+    if (!showLabels) return
+
+    if (pendingOpenProjectsRef.current) {
+      pendingOpenProjectsRef.current = false
+      setProjectsExpanded(true)
+    }
+
+    if (pendingFocusSearchRef.current) {
+      pendingFocusSearchRef.current = false
+      const frameId = requestAnimationFrame(() => {
+        searchInputRef.current?.focus()
+      })
+      return () => cancelAnimationFrame(frameId)
+    }
+  }, [showLabels])
+
+  // Active sessions
+  const busySessions = useBusySessions()
+  const busyCount = useBusyCount()
+  // Notification history
+  const notifications = useNotifications()
+  const unreadNotificationCount = useUnreadNotificationCount()
+  const attentionCount = busyCount + unreadNotificationCount
+
+  useEffect(() => {
+    return subscribeToConnectionState(setConnectionState)
+  }, [])
+
+  const { sessions, isLoading, isLoadingMore, hasMore, search, setSearch, loadMore, deleteSession, refresh } =
+    useSessionContext()
+
+  const pinnedEntries = useSyncExternalStore(
+    pinnedSessionsStore.subscribe,
+    pinnedSessionsStore.getSnapshot,
+    pinnedSessionsStore.getSnapshot,
+  )
+  const sessionLookup = useMemo(() => new Map(sessions.map(session => [session.id, session])), [sessions])
+
+  // 列表显示按当前工作区过滤；数据本身是全局的（活跃 tab / 标题解析都需全局）
+  const visibleSessions = useMemo(
+    () =>
+      currentDirectory
+        ? sessions.filter(session => isSameDirectory(session.directory, currentDirectory))
+        : sessions,
+    [sessions, currentDirectory],
+  )
+  const visibleLookup = useMemo(() => new Map(visibleSessions.map(session => [session.id, session])), [visibleSessions])
+
+  const orderedSessions = useMemo(() => {
+    const pinnedSet = new Set(pinnedEntries.map(e => e.sessionId))
+    const pinned = pinnedEntries
+      .map(entry => visibleLookup.get(entry.sessionId))
+      .filter((session): session is UiSession => Boolean(session))
+    const rest = visibleSessions.filter(s => !pinnedSet.has(s.id))
+    return [...pinned, ...rest]
+  }, [pinnedEntries, visibleLookup, visibleSessions])
+  const pinnedDividerAfterIds = useMemo(() => {
+    const lastPinned = pinnedEntries
+      .map(entry => visibleLookup.get(entry.sessionId))
+      .filter((session): session is UiSession => Boolean(session))
+      .at(-1)
+    if (!lastPinned) return undefined
+    const pinnedSet = new Set(pinnedEntries.map(e => e.sessionId))
+    return visibleSessions.some(s => !pinnedSet.has(s.id)) ? new Set([lastPinned.id]) : undefined
+  }, [pinnedEntries, visibleLookup, visibleSessions])
+  const resolvedPinnedSessions = useMemo(
+    () =>
+      pinnedEntries
+        .map(entry => visibleLookup.get(entry.sessionId))
+        .filter((session): session is UiSession => Boolean(session)),
+    [pinnedEntries, visibleLookup],
+  )
+  // 当前 lookup 里没有的置顶：灰色展示，始终可取消
+  const unavailablePinnedEntries = useMemo(
+    () => pinnedEntries.filter(entry => !visibleLookup.has(entry.sessionId)),
+    [pinnedEntries, visibleLookup],
+  )
+
+  const buildProjectGroups = useCallback(
+    (directories: typeof savedDirectories, reorderablePaths?: Set<string>): ProjectItem[] => {
+      const savedNameByPath = new Map(
+        directories.map(directory => [normalizeToForwardSlash(directory.path), directory.name]),
+      )
+      const groups = new Map<string, ProjectItem>()
+
+      for (const directory of directories) {
+        const normalizedDirectory = normalizeToForwardSlash(directory.path)
+        const canReorder = reorderablePaths?.has(normalizedDirectory) ?? true
+        const meta = gitWorkspaceCatalog.get(normalizedDirectory)
+        const { projectId, workspaceDirectories } = getProjectGroupIdentity(normalizedDirectory, meta)
+        const existing = groups.get(projectId)
+
+        if (existing) {
+          groups.set(projectId, {
+            ...existing,
+            canReorder: existing.canReorder || canReorder,
+            memberDirectories: canReorder
+              ? [...(existing.memberDirectories ?? []), directory.path]
+              : existing.memberDirectories,
+            reorderPath: existing.reorderPath ?? (canReorder ? directory.path : undefined),
+          })
+          continue
+        }
+
+        groups.set(projectId, {
+          id: projectId,
+          path: projectId,
+          name: savedNameByPath.get(projectId) ?? getDirectoryName(projectId),
+          canReorder,
+          memberDirectories: canReorder ? [directory.path] : [],
+          reorderPath: canReorder ? directory.path : undefined,
+          workspaceDirectories,
+        })
+      }
+
+      return Array.from(groups.values()).map(project => {
+        if (!project.workspaceDirectories?.length) return project
+
+        const savedWorkspaceDirectories = (project.memberDirectories ?? [])
+          .map(directory => normalizeToForwardSlash(directory))
+          .filter(directory => project.workspaceDirectories?.some(workspace => isSameDirectory(workspace, directory)))
+
+        const remainingWorkspaceDirectories = project.workspaceDirectories.filter(
+          workspace => !savedWorkspaceDirectories.some(directory => isSameDirectory(directory, workspace)),
+        )
+
+        return {
+          ...project,
+          workspaceDirectories: [...savedWorkspaceDirectories, ...remainingWorkspaceDirectories],
+        }
+      })
+    },
+    [gitWorkspaceCatalog],
+  )
+
+  const folderProjectGroups = useMemo<ProjectItem[]>(() => {
+    const reorderablePaths = new Set(savedDirectories.map(directory => normalizeToForwardSlash(directory.path)))
+    const directories = [...savedDirectories]
+    const discovered = [...sessions]
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .map(session => session.directory)
+    for (const directory of discovered) {
+      if (directories.some(entry => isSameDirectory(entry.path, directory))) continue
+      directories.push({
+        path: directory,
+        name: getDirectoryName(directory),
+        addedAt: sessions.find(session => isSameDirectory(session.directory, directory))?.updatedAt ?? 0,
+      })
+    }
+    return buildProjectGroups(directories, reorderablePaths)
+  }, [buildProjectGroups, savedDirectories, sessions])
+
+  const selectorProjectGroups = useMemo<ProjectItem[]>(() => {
+    const sortedDirectories = [...savedDirectories].sort((a, b) => {
+      const aTime = recentProjects[a.path] || a.addedAt
+      const bTime = recentProjects[b.path] || b.addedAt
+      return bTime - aTime
+    })
+
+    return buildProjectGroups(sortedDirectories)
+  }, [buildProjectGroups, recentProjects, savedDirectories])
+
+  const globalProject = useMemo<ProjectItem>(
+    () => ({
+      id: 'global',
+      path: t('sidebar.allProjects'),
+      name: t('sidebar.global'),
+    }),
+    [t],
+  )
+
+  const projects = useMemo<ProjectItem[]>(() => {
+    return [globalProject, ...selectorProjectGroups]
+  }, [globalProject, selectorProjectGroups])
+
+  const currentProject = useMemo<ProjectItem>(() => {
+    if (!currentDirectory) return globalProject
+
+    const groupedProject = findProjectGroupForDirectory(folderProjectGroups, normalizedCurrentDirectory!)
+    if (groupedProject) return groupedProject
+
+    const meta = gitWorkspaceCatalog.get(normalizedCurrentDirectory!)
+    const { projectId, workspaceDirectories } = getProjectGroupIdentity(normalizedCurrentDirectory!, meta)
+    const found = findProjectGroupForDirectory(folderProjectGroups, projectId)
+    if (found) return found
+
+    return {
+      id: projectId,
+      path: projectId,
+      name: getDirectoryName(projectId),
+      canReorder: false,
+      memberDirectories: [],
+      workspaceDirectories,
+    }
+  }, [currentDirectory, folderProjectGroups, gitWorkspaceCatalog, globalProject, normalizedCurrentDirectory])
+
+  const currentProjectLabel = useMemo(() => {
+    const baseLabel = currentProject?.name || t('sidebar.global')
+    if (!currentDirectory || currentProject?.id === 'global') return baseLabel
+
+    const branchLabel = currentDirectoryVcsInfo?.branch ?? (isCurrentDirectoryVcsLoading ? '...' : undefined)
+    return branchLabel ? `${baseLabel} · ${branchLabel}` : baseLabel
+  }, [
+    currentDirectory,
+    currentDirectoryVcsInfo?.branch,
+    currentProject?.id,
+    currentProject?.name,
+    isCurrentDirectoryVcsLoading,
+    t,
+  ])
+
+  const globalFolderProject = useMemo<ProjectItem>(
+    () => ({ id: 'global', path: '', name: t('sidebar.global'), canReorder: true }),
+    [t],
+  )
+
+  const folderProjects = useMemo<ProjectItem[]>(() => {
+    const list = [...folderProjectGroups]
+
+    if (currentDirectory && !list.some(project => isSameDirectory(project.path, currentProject.path))) {
+      list.push({ ...currentProject, canReorder: false })
+    }
+
+    const insertAt = Math.min(Math.max(globalFolderIndex, 0), list.length)
+    return [...list.slice(0, insertAt), globalFolderProject, ...list.slice(insertAt)]
+  }, [folderProjectGroups, currentDirectory, currentProject, globalFolderProject, globalFolderIndex])
+  const canShowFolderRecents = sidebarFolderRecents && !search && folderProjects.length > 0
+
+  const workspaceDirectoriesByProjectId = useMemo(() => {
+    const map = new Map<string, string[]>()
+    for (const project of folderProjects) {
+      if (project.workspaceDirectories && project.workspaceDirectories.length > 1) {
+        map.set(project.id, project.workspaceDirectories)
+      }
+    }
+    return map
+  }, [folderProjects])
+
+  const currentProjectWorkspaceDirectories = useMemo(
+    () => currentProject.workspaceDirectories ?? [],
+    [currentProject.workspaceDirectories],
+  )
+  const shouldRenderWorkspaceTreeOnly =
+    !search && currentProjectWorkspaceDirectories.length > 1 && currentProject.id !== 'global'
+  const shouldWaitForWorkspaceResolution =
+    !sidebarFolderRecents &&
+    !search &&
+    !!currentDirectory &&
+    isGitWorkspaceCatalogLoading &&
+    currentProjectWorkspaceDirectories.length <= 1 &&
+    !!normalizedCurrentDirectory &&
+    !gitWorkspaceCatalog.has(normalizedCurrentDirectory)
+
+  const currentProjectTreeProjects = useMemo<ProjectItem[]>(() => {
+    if (!shouldRenderWorkspaceTreeOnly || currentProject.id === 'global') return []
+
+    const draggableWorkspaceSet = new Set(
+      (currentProject.memberDirectories ?? []).map(directory => normalizeToForwardSlash(directory)),
+    )
+
+    return currentProjectWorkspaceDirectories.map(workspaceDirectory => {
+      const isSavedWorkspace = draggableWorkspaceSet.has(normalizeToForwardSlash(workspaceDirectory))
+
+      return {
+        id: workspaceDirectory,
+        path: workspaceDirectory,
+        name: getDirectoryName(workspaceDirectory),
+        canReorder: isSavedWorkspace,
+        memberDirectories: isSavedWorkspace ? [workspaceDirectory] : [],
+        reorderPath: isSavedWorkspace ? workspaceDirectory : undefined,
+        sectionKind: 'workspace' as const,
+      }
+    })
+  }, [currentProject, currentProjectWorkspaceDirectories, shouldRenderWorkspaceTreeOnly])
+
+  const allDisplayedProjects = useMemo(() => {
+    return [...folderProjects, ...currentProjectTreeProjects]
+  }, [folderProjects, currentProjectTreeProjects])
+
+  const handleSelectFolderProject = useCallback(
+    (project: ProjectItem) => {
+      if (!project.path) {
+        if (!currentDirectory) return
+        setCurrentDirectory(undefined)
+        return
+      }
+      if (currentDirectory && isSameDirectory(currentDirectory, project.path)) return
+      setCurrentDirectory(project.path)
+    },
+    [currentDirectory, setCurrentDirectory],
+  )
+
+  const getProjectDirectoriesToRemove = useCallback(
+    (projectId: string) => {
+      const project = allDisplayedProjects.find(item => isSameDirectory(item.id, projectId))
+      return project?.memberDirectories?.length ? project.memberDirectories : [projectId]
+    },
+    [allDisplayedProjects],
+  )
+
+  const handleSelectProject = useCallback(
+    (projectId: string) => {
+      if (projectId === 'global') {
+        setCurrentDirectory(undefined)
+      } else {
+        setCurrentDirectory(projectId)
+      }
+      setProjectsExpanded(false)
+    },
+    [setCurrentDirectory],
+  )
+
+  const handleRemoveProject = useCallback(
+    (projectId: string) => {
+      getProjectDirectoriesToRemove(projectId).forEach(directory => removeDirectory(directory))
+    },
+    [getProjectDirectoriesToRemove, removeDirectory],
+  )
+
+  const handleReorderProjectGroup = useCallback(
+    (draggedId: string, targetId: string) => {
+      const draggedIdx = folderProjects.findIndex(project => project.id === draggedId)
+      const targetIdx = folderProjects.findIndex(project => project.id === targetId)
+      if (draggedIdx === -1 || targetIdx === -1 || draggedIdx === targetIdx) return
+
+      const draggedIsGlobal = folderProjects[draggedIdx].id === 'global'
+      const targetIsGlobal = folderProjects[targetIdx].id === 'global'
+
+      if (draggedIsGlobal) {
+        // 全局移到 target 位置：globalFolderIndex 直接等于 targetIdx
+        if (targetIdx !== globalFolderIndex) {
+          setGlobalFolderIndex(targetIdx)
+          localStorage.setItem('piui-sidebar-global-folder-index', String(targetIdx))
+        }
+        return
+      }
+
+      if (targetIsGlobal) {
+        // 普通目录拖到全局位置 = 交换：全局到普通目录原位，普通目录移到全局旁
+        const adjacentIdx = draggedIdx < targetIdx ? targetIdx - 1 : targetIdx + 1
+        if (draggedIdx !== adjacentIdx) {
+          const draggedReorderPath = folderProjects[draggedIdx].reorderPath
+          const adjacentReorderPath = folderProjects[adjacentIdx].reorderPath
+          if (draggedReorderPath && adjacentReorderPath) {
+            reorderDirectories(draggedReorderPath, adjacentReorderPath)
+          }
+        }
+        if (draggedIdx !== globalFolderIndex) {
+          setGlobalFolderIndex(draggedIdx)
+          localStorage.setItem('piui-sidebar-global-folder-index', String(draggedIdx))
+        }
+        return
+      }
+
+      const draggedReorderPath = folderProjects[draggedIdx].reorderPath
+      const targetReorderPath = folderProjects[targetIdx].reorderPath
+      if (!draggedReorderPath || !targetReorderPath) return
+      reorderDirectories(draggedReorderPath, targetReorderPath)
+    },
+    [folderProjects, reorderDirectories, globalFolderIndex],
+  )
+
+  const handleSelect = useCallback(
+    (session: UiSession) => {
+      // Global 模式下，点击 session 自动切换到该 session 的工作目录并添加到项目列表
+      if (!currentDirectory && session.directory) {
+        addDirectory(session.directory)
+      }
+      onSelectSession(session)
+      if (window.innerWidth < 768 && onCloseMobile) {
+        onCloseMobile()
+      }
+    },
+    [currentDirectory, addDirectory, onSelectSession, onCloseMobile],
+  )
+
+  // Active tab：活跃 session 的 id/directory 由 activeSessionStore 全局元信息提供
+  //（SessionContext 全局同步），App 只需这两个字段即可切过去；顺便把目录加进项目列表。
+  const handleSelectActive = useCallback(
+    (session: { id: string; directory?: string }) => {
+      if (session.directory) {
+        addDirectory(session.directory)
+      }
+      const selectable: UiSession = {
+        id: session.id,
+        directory: session.directory ?? '',
+        title: '',
+        createdAt: 0,
+        updatedAt: 0,
+      }
+      onSelectSession(selectable)
+      if (window.innerWidth < 768 && onCloseMobile) {
+        onCloseMobile()
+      }
+    },
+    [addDirectory, onSelectSession, onCloseMobile],
+  )
+
+  const handleRename = useCallback(
+    async (sessionId: string, newTitle: string) => {
+      try {
+        await renamePiSession(sessionId, newTitle)
+        pinnedSessionsStore.update(sessionId, { title: newTitle })
+        refresh()
+      } catch (e) {
+        uiErrorHandler('rename session', e)
+      }
+    },
+    [refresh],
+  )
+
+  const handleDeleteSession = useCallback(
+    async (sessionId: string) => {
+      await deleteSession(sessionId)
+
+      if (selectedSessionId === sessionId) {
+        onNewSession()
+      }
+    },
+    [deleteSession, onNewSession, selectedSessionId],
+  )
+
+  const handleRenameFolderSession = useCallback(
+    async (session: UiSession, newTitle: string) => {
+      try {
+        await renamePiSession(session.id, newTitle)
+        pinnedSessionsStore.update(session.id, { title: newTitle })
+        if (!currentDirectory || isSameDirectory(currentDirectory, session.directory)) {
+          await refresh()
+        }
+      } catch (e) {
+        uiErrorHandler('rename session', e)
+      }
+    },
+    [currentDirectory, refresh],
+  )
+
+  const handleDeleteFolderSession = useCallback(
+    async (session: UiSession) => {
+      await deleteSession(session.id)
+
+      if (selectedSessionId === session.id) {
+        onNewSession()
+      }
+    },
+    [deleteSession, onNewSession, selectedSessionId],
+  )
+
+  // ---- 批量删除 session ----
+  const handleBatchDeleteSessions = useCallback(async () => {
+    if (!canDeleteSessions || selectedSessionIds.size === 0) return
+    setIsBatchDeleting(true)
+
+    const needSwitchSession = selectedSessionId && selectedSessionIds.has(selectedSessionId)
+
+    // 文件夹模式下可能跨目录，需要按 session 逐个调用
+    // 普通模式下也用 sessionLookup 获取目录信息
+    const ids = Array.from(selectedSessionIds)
+    await Promise.allSettled(
+      ids.map(async id => {
+        try {
+          await deleteSession(id)
+        } catch (e) {
+          uiErrorHandler('batch delete session', e)
+        }
+      }),
+    )
+
+    await refresh()
+    setSelectedSessionIds(new Set())
+    sessionSelectionAnchorIdRef.current = null
+    setBatchDeleteSessionConfirm(false)
+    setIsBatchDeleting(false)
+
+    if (needSwitchSession) {
+      onNewSession()
+    }
+  }, [canDeleteSessions, selectedSessionIds, selectedSessionId, deleteSession, refresh, onNewSession])
+
+  // ---- 批量移除项目 ----
+  const handleBatchRemoveProjects = useCallback(() => {
+    if (selectedProjectIds.size === 0) return
+    for (const projectId of selectedProjectIds) {
+      getProjectDirectoriesToRemove(projectId).forEach(directory => removeDirectory(directory))
+    }
+    setSelectedProjectIds(new Set())
+    projectSelectionAnchorIdRef.current = null
+    setBatchRemoveProjectConfirm(false)
+  }, [getProjectDirectoriesToRemove, selectedProjectIds, removeDirectory])
+
+  const commonFolderRecentListProps = {
+    currentDirectory,
+    selectedSessionId,
+    expandedProjectIds: expandedRecentProjectIds,
+    onExpandedProjectIdsChange: setExpandedRecentProjectIds,
+    onSelectProject: handleSelectFolderProject,
+    onSelectSession: handleSelectActive,
+    onRenameSession: handleRenameFolderSession,
+    onDeleteSession: handleDeleteFolderSession,
+    isEditMode,
+    selectedSessionIds,
+    selectedProjectIds,
+    onToggleSessionSelection: toggleSessionSelection,
+    onToggleProjectSelection: toggleProjectSelection,
+  }
+
+  useEffect(() => {
+    let frameId: number | null = null
+
+    if (!isExpanded) {
+      frameId = requestAnimationFrame(() => {
+        setProjectsExpanded(false)
+      })
+    }
+
+    return () => {
+      if (frameId !== null) cancelAnimationFrame(frameId)
+    }
+  }, [isExpanded])
+
+  // 统一的结构，通过 CSS 控制显示/隐藏
+  return (
+    <div className="flex flex-col h-full overflow-hidden">
+      {/* ===== Header ===== */}
+      <div className="mobile-safe-topbar-14 shrink-0 flex items-center">
+        {/* Logo 区域 - 展开时显示 */}
+        <div
+          className="overflow-hidden transition-[width,padding,opacity] duration-300 ease-out"
+          style={{
+            width: showLabels ? 'auto' : 0,
+            paddingLeft: showLabels ? 16 : 0,
+            opacity: showLabels ? 1 : 0,
+          }}
+        >
+          <a href="/" className="flex items-center whitespace-nowrap" aria-label="Pi">
+            {/* 官方 Pi 标志：16px 固定尺寸，中心点与下方导航按钮图标(X=24px)垂直对齐 */}
+            <svg viewBox="0 0 470 470" fill="currentColor" aria-hidden="true" className="h-4 w-auto text-text-100">
+              <path fillRule="evenodd" clipRule="evenodd" d="M0 0H352.07V234.71H234.71V352.07H117.36V469.43H0V0ZM117.36 117.36V234.71H234.71V117.36H117.36Z" />
+              <path d="M352.07 234.71H469.43V469.43H352.07V234.71Z" />
+            </svg>
+          </a>
+        </div>
+
+        {!isMobile && (
+          <div
+            className="flex-1 flex items-center transition-all duration-300 ease-out"
+            style={{ justifyContent: showLabels ? 'flex-end' : 'center', paddingRight: showLabels ? 8 : 0 }}
+          >
+            <button
+              onClick={onToggleSidebar}
+              aria-label={isExpanded ? t('sidebar.collapseSidebar') : t('sidebar.expandSidebar')}
+              className="h-8 w-8 flex items-center justify-center rounded-lg text-text-300 hover:text-text-100 hover:bg-bg-200 active:scale-[0.98] transition-all duration-200"
+            >
+              <SidebarIcon size={16} />
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* ===== Navigation - 图标位置固定；间距与 Header 面板按钮对齐 ===== */}
+      <div className="flex flex-col gap-0.5 mx-2 -mt-2.5">
+        {/* New Chat - 图标始终在 padding-left: 6px 位置，收起时刚好居中 */}
+        <button
+          type="button"
+          onClick={onNewSession}
+          aria-label={t('sidebar.newChat')}
+          className="h-8 flex items-center rounded-lg text-text-300 hover:text-text-100 hover:bg-bg-200 active:scale-[0.98] transition-all duration-300 group overflow-hidden"
+          style={{
+            width: showLabels ? '100%' : 32,
+            paddingLeft: 6,
+            paddingRight: 6,
+          }}
+          title={t('sidebar.newChat')}
+        >
+          <span className="size-5 flex items-center justify-center shrink-0">
+            <NewChatIcon size={16} />
+          </span>
+          <span
+            className="ml-2 text-[length:var(--fs-base)] whitespace-nowrap transition-opacity duration-300"
+            style={{ opacity: showLabels ? 1 : 0 }}
+          >
+            {t('sidebar.newChat')}
+          </span>
+          <span
+            className="ml-auto text-[length:var(--fs-xxs)] text-text-500 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap"
+            style={{ opacity: showLabels ? undefined : 0 }}
+          >
+            {newChatShortcut}
+          </span>
+        </button>
+
+        {/* Project Selector - 收起时仅图标，点击展开侧栏并打开列表 */}
+        <button
+          ref={projectToggleRef}
+          type="button"
+          onClick={() => {
+            if (!showLabels) {
+              pendingOpenProjectsRef.current = true
+              onToggleSidebar()
+              return
+            }
+            setProjectsExpanded(!projectsExpanded)
+          }}
+          aria-expanded={showLabels ? projectsExpanded : false}
+          aria-label={currentProjectLabel}
+          className={`h-8 flex items-center rounded-lg active:scale-[0.98] transition-all duration-300 overflow-hidden ${
+            projectsExpanded && showLabels
+              ? 'bg-bg-200 text-text-100'
+              : 'text-text-300 hover:text-text-100 hover:bg-bg-200'
+          }`}
+          style={{
+            width: showLabels ? '100%' : 32,
+            paddingLeft: 6,
+            paddingRight: 6,
+          }}
+          title={currentProjectLabel}
+        >
+          <span className="size-5 flex items-center justify-center shrink-0">
+            {currentProject?.id === 'global' ? (
+              <GlobeIcon size={16} className="text-accent-main-100" />
+            ) : (
+              <FolderIcon size={16} />
+            )}
+          </span>
+          <div
+            className="ml-2 min-w-0 flex-1 text-left text-[length:var(--fs-base)] transition-opacity duration-300"
+            style={{ opacity: showLabels ? 1 : 0 }}
+          >
+            <div
+              className="block overflow-hidden whitespace-nowrap text-left"
+              style={{
+                WebkitMaskImage: 'linear-gradient(to right, black 82%, transparent 100%)',
+                maskImage: 'linear-gradient(to right, black 82%, transparent 100%)',
+              }}
+            >
+              {currentProjectLabel}
+            </div>
+          </div>
+          <ChevronDownIcon
+            size={14}
+            className={`ml-auto text-text-400 transition-all duration-200 shrink-0 ${
+              projectsExpanded && showLabels ? '' : '-rotate-90'
+            }`}
+            style={{ opacity: showLabels ? 1 : 0 }}
+          />
+        </button>
+
+        {/* Projects Dropdown */}
+        <div
+          ref={projectsDropdownRef}
+          className="overflow-hidden transition-[max-height,opacity,margin] duration-300 ease-out"
+          style={{
+            maxHeight: showLabels && projectsExpanded ? 304 : 0,
+            opacity: showLabels && projectsExpanded ? 1 : 0,
+            marginTop: showLabels && projectsExpanded ? 4 : 0,
+            visibility: showLabels && projectsExpanded ? 'visible' : 'hidden',
+            pointerEvents: showLabels && projectsExpanded ? 'auto' : 'none',
+          }}
+          aria-hidden={!showLabels || !projectsExpanded}
+        >
+          <div className="rounded-lg border border-border-200/60 glass-alt shadow-sm overflow-hidden">
+            <div className="max-h-48 overflow-y-auto custom-scrollbar p-1">
+              {projects.map(project => {
+                const isGlobal = project.id === 'global'
+                const isActive = currentProject?.id === project.id
+                const itemLabel =
+                  isActive && !isGlobal
+                    ? currentProjectLabel
+                    : project.name || (isGlobal ? t('sidebar.global') : project.path)
+                return (
+                  <div
+                    key={project.id}
+                    onClick={() => handleSelectProject(project.id)}
+                    className={`group w-full flex items-center gap-2 px-2 py-1.5 rounded-md transition-colors ${
+                      isActive ? 'bg-bg-200/60 text-text-100' : 'text-text-300 hover:text-text-100 hover:bg-bg-200/50'
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={e => {
+                        e.stopPropagation()
+                        handleSelectProject(project.id)
+                      }}
+                      aria-current={isActive ? 'true' : undefined}
+                      className="min-w-0 flex flex-1 items-center gap-2 text-left bg-transparent border-none p-0"
+                      title={project.path}
+                    >
+                      <span className="w-5 h-5 flex items-center justify-center shrink-0">
+                        {isGlobal ? <GlobeIcon size={14} className="text-accent-main-100" /> : <FolderIcon size={14} />}
+                      </span>
+                      <div className="flex-1 min-w-0 text-left">
+                        <div className="text-left text-[length:var(--fs-sm)]">
+                          <div
+                            className="overflow-hidden whitespace-nowrap text-left"
+                            style={{
+                              WebkitMaskImage: 'linear-gradient(to right, black 82%, transparent 100%)',
+                              maskImage: 'linear-gradient(to right, black 82%, transparent 100%)',
+                            }}
+                          >
+                            {itemLabel}
+                          </div>
+                        </div>
+                        <div
+                          className={`text-[length:var(--fs-xxs)] text-text-400 truncate opacity-70 ${isGlobal ? '' : 'font-mono'}`}
+                        >
+                          {isGlobal
+                            ? t('sidebar.globalProjectHint')
+                            : project.path
+                              ? getParentPath(project.path)
+                              : ''}
+                        </div>
+                      </div>
+                    </button>
+                    {!isGlobal && (
+                      <button
+                        type="button"
+                        onClick={e => {
+                          e.stopPropagation()
+                          setProjectDeleteConfirm({ isOpen: true, projectId: project.id })
+                        }}
+                        aria-label={t('sidebar.removeProject')}
+                        className="p-1 rounded text-text-400 hover:text-danger-100 hover:bg-danger-100/10 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 md:focus-visible:opacity-100 transition-all"
+                        title={t('common:remove')}
+                      >
+                        <TrashIcon size={12} />
+                      </button>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+            <div className="relative p-1 pt-1.5">
+              <div className="pointer-events-none absolute inset-x-3 top-0 h-px bg-border-200/30" />
+              <button
+                type="button"
+                onClick={onAddProject}
+                className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[length:var(--fs-sm)] text-text-300 hover:text-text-100 hover:bg-bg-200/50 transition-colors"
+              >
+                <PlusIcon size={14} />
+                {t('sidebar.addProject')}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Search — 与上方导航同列 gap-0.5；收起时图标，展开时输入框 */}
+        {showLabels ? (
+          <div className="relative w-full">
+            <span className="pointer-events-none absolute left-[6px] top-1/2 -translate-y-1/2 size-5 flex items-center justify-center text-text-300">
+              <SearchIcon size={16} />
+            </span>
+            <input
+              ref={searchInputRef}
+              type="text"
+              name="sidebar-chat-search"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder={t('sidebar.searchChats')}
+              aria-label={t('sidebar.searchChats')}
+              autoComplete="off"
+              spellCheck={false}
+              className="h-8 w-full appearance-none rounded-lg border-0 bg-transparent pl-[34px] pr-[26px] text-[length:var(--fs-base)] text-text-100 shadow-none outline-none ring-0 placeholder:text-text-300 transition-shadow focus-visible:ring-1 focus-visible:ring-accent-main-100/30"
+            />
+            {search && (
+              <button
+                type="button"
+                onClick={() => setSearch('')}
+                className="absolute right-[6px] top-1/2 flex size-[14px] -translate-y-1/2 items-center justify-center text-text-400 hover:text-text-100"
+                aria-label={t('sidebar.clearSearch')}
+              >
+                <CloseIcon size={14} />
+              </button>
+            )}
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => {
+              pendingFocusSearchRef.current = true
+              onToggleSidebar()
+            }}
+            aria-label={t('sidebar.searchChats')}
+            className="h-8 flex items-center rounded-lg text-text-300 hover:text-text-100 hover:bg-bg-200 active:scale-[0.98] transition-all duration-300 overflow-hidden"
+            style={{ width: 32, paddingLeft: 6, paddingRight: 6 }}
+            title={t('sidebar.searchChats')}
+          >
+            <span className="size-5 flex items-center justify-center shrink-0">
+              <SearchIcon size={16} />
+            </span>
+          </button>
+        )}
+      </div>
+
+      {/* ===== Main Content ===== */}
+      <div
+        className="flex-1 flex flex-col min-h-0 overflow-hidden transition-opacity duration-300 ease-out"
+        style={{
+          opacity: showLabels ? 1 : 0,
+          visibility: showLabels ? 'visible' : 'hidden',
+        }}
+      >
+        {/* Tab Bar: Recents / Active */}
+        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+          <div className="flex items-center mx-2 gap-1 shrink-0">
+            {isEditMode && sidebarTab === 'recents' ? (
+              <>
+                {/* 与 tab 同字号字重，左侧文案变成状态提示 */}
+                <span className="pl-[6px] pr-2 py-1.5 text-[length:var(--fs-xxs)] font-semibold uppercase tracking-wider text-text-100 min-w-0 truncate">
+                  {selectedSessionIds.size === 0 && selectedProjectIds.size === 0
+                    ? t('sidebar.selectItems')
+                    : selectedSessionIds.size > 0 && selectedProjectIds.size > 0
+                      ? t('sidebar.selectedMixed', {
+                          sessions: selectedSessionIds.size,
+                          projects: selectedProjectIds.size,
+                        })
+                      : selectedSessionIds.size > 0
+                        ? t('sidebar.selectedSessions', { count: selectedSessionIds.size })
+                        : t('sidebar.selectedProjects', { count: selectedProjectIds.size })}
+                </span>
+                <div className="ml-auto flex items-center gap-1.5">
+                  {canDeleteSessions && selectedSessionIds.size > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setBatchDeleteSessionConfirm(true)}
+                      className="p-1.5 rounded-md text-text-500 hover:text-danger-100 hover:bg-danger-100/10 active:bg-danger-100/15 transition-colors duration-150"
+                      title={t('sidebar.deleteSessionsWithCount', { count: selectedSessionIds.size })}
+                      aria-label={t('sidebar.deleteSessionsWithCount', { count: selectedSessionIds.size })}
+                    >
+                      <TrashIcon size={14} />
+                    </button>
+                  )}
+                  {selectedProjectIds.size > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setBatchRemoveProjectConfirm(true)}
+                      className="p-1.5 rounded-md text-text-500 hover:text-warning-100 hover:bg-warning-100/10 active:bg-warning-100/15 transition-colors duration-150"
+                      title={t('sidebar.removeProjectsWithCount', { count: selectedProjectIds.size })}
+                      aria-label={t('sidebar.removeProjectsWithCount', { count: selectedProjectIds.size })}
+                    >
+                      <FolderMinusIcon size={14} />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={exitEditMode}
+                    aria-label={t('sidebar.doneManaging')}
+                    aria-pressed
+                    className="p-1.5 rounded-md text-text-500 hover:text-text-100 hover:bg-bg-300 active:bg-bg-300 transition-colors duration-150"
+                    title={t('sidebar.doneManaging')}
+                  >
+                    <CheckIcon size={14} />
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSidebarTab('recents')
+                    if (sidebarTab !== 'recents') exitEditMode()
+                  }}
+                  className={`pl-[6px] pr-2 py-1.5 text-[length:var(--fs-xxs)] font-semibold uppercase tracking-wider transition-colors duration-150 ${
+                    sidebarTab === 'recents' ? 'text-text-100' : 'text-text-500 hover:text-text-300'
+                  }`}
+                >
+                  {t('sidebar.recents')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSidebarTab('active')
+                    exitEditMode()
+                  }}
+                  className={`pl-[6px] pr-2 py-1.5 text-[length:var(--fs-xxs)] font-semibold uppercase tracking-wider transition-colors duration-150 flex items-center gap-1 ${
+                    sidebarTab === 'active' ? 'text-text-100' : 'text-text-500 hover:text-text-300'
+                  }`}
+                >
+                  <span className="inline-flex h-4 items-center leading-none">{t('sidebar.active')}</span>
+                  {attentionCount > 0 && (
+                    <span
+                      className={`inline-flex h-[15px] min-w-[15px] shrink-0 items-center justify-center self-center rounded-full px-1 text-[length:var(--fs-xxs)] font-medium leading-none transition-colors ${
+                        attentionCount > busyCount
+                          ? 'bg-accent-main-100/10 text-accent-main-100'
+                          : 'bg-success-100/10 text-success-100'
+                      }`}
+                    >
+                      {attentionCount}
+                    </span>
+                  )}
+                </button>
+                {sidebarTab === 'recents' && (
+                  <button
+                    type="button"
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={enterEditMode}
+                    aria-label={t('sidebar.manageSessions')}
+                    className="ml-auto p-1 rounded-md text-text-500 hover:text-text-300 hover:bg-bg-200/50 transition-colors duration-150"
+                    title={t('sidebar.manageSessions')}
+                  >
+                    <ListFilterIcon size={14} />
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+
+          {/* Recents Tab */}
+          {sidebarTab === 'recents' && (
+            <div
+              ref={recentsSelectionRootRef}
+              className={`flex-1 overflow-hidden ${isEditMode ? 'select-none' : ''}`}
+            >
+              {canShowFolderRecents ? (
+                <FolderRecentList
+                  projects={folderProjects}
+                  {...commonFolderRecentListProps}
+                  onReorderProject={handleReorderProjectGroup}
+                  workspaceDirectoriesByProjectId={workspaceDirectoriesByProjectId}
+                  pinnedSessions={resolvedPinnedSessions}
+                  unavailablePinnedEntries={unavailablePinnedEntries}
+                />
+              ) : shouldRenderWorkspaceTreeOnly ? (
+                <FolderRecentList
+                  projects={currentProjectTreeProjects}
+                  {...commonFolderRecentListProps}
+                  onReorderProject={reorderDirectories}
+                  pinnedSessions={resolvedPinnedSessions}
+                  unavailablePinnedEntries={unavailablePinnedEntries}
+                />
+              ) : shouldWaitForWorkspaceResolution ? (
+                <div className="flex h-full items-center justify-center text-text-400/70">
+                  <SpinnerIcon size={14} className="animate-spin" />
+                </div>
+              ) : (
+                <SessionList
+                  sessions={orderedSessions}
+                  selectedId={selectedSessionId}
+                  isLoading={isLoading}
+                  isLoadingMore={isLoadingMore}
+                  hasMore={hasMore}
+                  search={search}
+                  onSearchChange={setSearch}
+                  onSelect={handleSelect}
+                  onDelete={handleDeleteSession}
+                  onRename={handleRename}
+                  onLoadMore={loadMore}
+                  onNewChat={onNewSession}
+                  showHeader={false}
+                  grouped={false}
+                  density="compact"
+                  showDirectory
+                  pinnedDividerAfterIds={pinnedDividerAfterIds}
+                  unavailablePinnedEntries={unavailablePinnedEntries}
+                  availablePinnedCount={resolvedPinnedSessions.length}
+                  isEditMode={isEditMode}
+                  selectedSessionIds={selectedSessionIds}
+                  onToggleSessionSelection={toggleSessionSelection}
+                />
+              )}
+            </div>
+          )}
+
+          {/* Active Sessions Tab */}
+          {sidebarTab === 'active' && (
+            <div className="flex-1 overflow-y-auto custom-scrollbar px-2 pb-3">
+              {busySessions.length === 0 && notifications.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-12 text-text-400 opacity-60">
+                  <p className="text-[length:var(--fs-sm)]">{t('sidebar.noActiveSessions')}</p>
+                </div>
+              ) : (
+                <div className="mt-1 space-y-0.5">
+                  {busySessions.map(entry => (
+                    <ActiveSessionItem
+                      key={entry.sessionId}
+                      entry={entry}
+                      isSelected={entry.sessionId === selectedSessionId}
+                      onSelect={handleSelectActive}
+                    />
+                  ))}
+
+                  {/* Divider + actions between busy and notifications */}
+                  {notifications.length > 0 && (
+                    <div
+                      className={`flex items-center justify-between gap-2 ${busySessions.length > 0 ? 'mt-2 pt-2 border-t border-border-200/30' : ''}`}
+                    >
+                      <span className="text-[length:var(--fs-xxs)] font-medium text-text-400 uppercase tracking-wider pl-[6px]">
+                        {t('sidebar.notifications')}
+                      </span>
+                      <div className="flex items-center gap-0.5">
+                        {notifications.some((n: NotificationEntry) => !n.read) && (
+                          <button
+                            className="text-[length:var(--fs-xxs)] text-text-400 hover:text-text-200 px-1.5 py-0.5 rounded-md hover:bg-bg-200 transition-all duration-150 active:scale-95"
+                            onClick={() => notificationStore.markAllRead()}
+                          >
+                            {t('sidebar.readAll')}
+                          </button>
+                        )}
+                        <button
+                          className="text-[length:var(--fs-xxs)] text-text-400 hover:text-text-200 px-1.5 py-0.5 rounded-md hover:bg-bg-200 transition-all duration-150 active:scale-95"
+                          onClick={() => notificationStore.clearAll()}
+                        >
+                          {t('common:clear')}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Notification history */}
+                  {notifications.map((entry: NotificationEntry) => {
+                    const resolvedSession = sessionLookup.get(entry.sessionId)
+                    return (
+                      <NotificationItem
+                        key={entry.id}
+                        entry={entry}
+                        resolvedSession={resolvedSession}
+                        onSelect={handleSelectActive}
+                      />
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Spacer for collapsed */}
+      {!showLabels && <div className="flex-1" />}
+
+      {/* ===== Footer ===== */}
+      <SidebarFooter
+        showLabels={showLabels}
+        connectionState={connectionState?.state || 'disconnected'}
+        contextLimit={contextLimit}
+        onOpenSettings={onOpenSettings}
+      />
+
+      {/* Confirm Dialog */}
+      <ConfirmDialog
+        isOpen={projectDeleteConfirm.isOpen}
+        onClose={() => setProjectDeleteConfirm({ isOpen: false, projectId: null })}
+        onConfirm={() => {
+          if (projectDeleteConfirm.projectId) {
+            handleRemoveProject(projectDeleteConfirm.projectId)
+          }
+          setProjectDeleteConfirm({ isOpen: false, projectId: null })
+        }}
+        title={t('sidebar.removeProject')}
+        description={t('sidebar.removeProjectConfirm')}
+        confirmText={t('common:remove')}
+        variant="danger"
+      />
+
+      {/* 批量删除会话确认弹窗 */}
+      <ConfirmDialog
+        isOpen={batchDeleteSessionConfirm}
+        onClose={() => setBatchDeleteSessionConfirm(false)}
+        onConfirm={handleBatchDeleteSessions}
+        title={t('sidebar.batchDeleteSessions', { count: selectedSessionIds.size })}
+        description={
+          <>
+            {t('sidebar.batchDeleteSessionsConfirm', { count: selectedSessionIds.size })}
+            {selectedSessionId && selectedSessionIds.has(selectedSessionId) && (
+              <div className="mt-2 text-[length:var(--fs-sm)] text-warning-100">
+                {t('sidebar.batchDeleteIncludesCurrent')}
+              </div>
+            )}
+          </>
+        }
+        confirmText={t('common:delete')}
+        variant="danger"
+        isLoading={isBatchDeleting}
+      />
+
+      {/* 批量移除项目确认弹窗 */}
+      <ConfirmDialog
+        isOpen={batchRemoveProjectConfirm}
+        onClose={() => setBatchRemoveProjectConfirm(false)}
+        onConfirm={handleBatchRemoveProjects}
+        title={t('sidebar.batchRemoveProjects', { count: selectedProjectIds.size })}
+        description={t('sidebar.batchRemoveProjectsConfirm', { count: selectedProjectIds.size })}
+        confirmText={t('common:remove')}
+        variant="warning"
+      />
+    </div>
+  )
+}

@@ -1,0 +1,166 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { Button } from '../../components/ui/Button'
+import { Dialog } from '../../components/ui/Dialog'
+import {
+  clearProviderAuthEvent,
+  dismissProviderAuthFlow,
+  receiveProviderAuthEvent,
+  registerProviderAuthFlow,
+  useManagementEvents,
+  type ProviderAuthFlowState,
+} from '../../pi/managementEventStore'
+import type { ProviderAuthPrompt } from '@piui/protocol'
+import {
+  cancelProviderAuth,
+  listActiveProviderFlows,
+  respondProviderAuth,
+} from '../../pi/transport/index.js'
+
+export function ProviderAuthDialogHost() {
+  const { flows } = useManagementEvents()
+  // 刷新/重连恢复：进行中的 auth 流程在 worker 侧继续存活（SDK login 仍
+  // 阻塞等待应答，5 分钟超时兜底），这里拉一次快照重建 dialog UI。
+  const restoredRef = useRef(false)
+  useEffect(() => {
+    if (restoredRef.current) return
+    restoredRef.current = true
+    void listActiveProviderFlows()
+      .then(snapshot => {
+        if (!Array.isArray(snapshot)) return
+        for (const raw of snapshot) {
+          if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue
+          const flow = raw as { flowId?: unknown; providerId?: unknown; prompts?: unknown }
+          if (typeof flow.flowId !== 'string' || typeof flow.providerId !== 'string') continue
+          registerProviderAuthFlow(flow.flowId, flow.providerId)
+          const prompts = Array.isArray(flow.prompts) ? flow.prompts : []
+          for (const prompt of prompts) {
+            if (!prompt || typeof prompt !== 'object' || typeof prompt.promptId !== 'string') continue
+            receiveProviderAuthEvent({
+              type: 'prompt',
+              flowId: flow.flowId,
+              promptId: prompt.promptId,
+              providerId: flow.providerId,
+              prompt: prompt as ProviderAuthPrompt,
+            })
+          }
+        }
+      })
+      .catch(() => undefined)
+  }, [])
+  const flow = useMemo(() => Object.values(flows).find(item => item.event), [flows])
+  if (!flow) return null
+  return <ProviderAuthDialog key={`${flow.flowId}:${flow.event?.type}`} flow={flow} />
+}
+
+function ProviderAuthDialog({ flow }: { flow: ProviderAuthFlowState }) {
+  const { t } = useTranslation(['settings', 'common'])
+  const event = flow.event
+  const prompt = event?.type === 'prompt' ? (event.prompt as ProviderAuthPrompt) : undefined
+  const [value, setValue] = useState(prompt?.type === 'select' ? prompt.options?.[0]?.id ?? '' : '')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  if (!event) return null
+  const terminal = event.type === 'completed' || event.type === 'failed' || event.type === 'cancelled'
+
+  const close = async () => {
+    if (terminal) {
+      dismissProviderAuthFlow(flow.flowId)
+      return
+    }
+    setSubmitting(true)
+    try {
+      await cancelProviderAuth(flow.flowId)
+      dismissProviderAuthFlow(flow.flowId)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+      setSubmitting(false)
+    }
+  }
+
+  const submit = async () => {
+    if (event.type !== 'prompt') return
+    setSubmitting(true)
+    setError(null)
+    try {
+      await respondProviderAuth(flow.flowId, event.promptId, value)
+      clearProviderAuthEvent(flow.flowId)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog isOpen onClose={() => void close()} title={t('pi.authTitle')} width={500} showCloseButton={!submitting}>
+      <div className="space-y-4">
+        <p className="text-[length:var(--fs-xs)] text-text-400">{t('pi.authProvider', { id: flow.providerId })}{flow.sessionId ? ` · ${t('pi.sessionScope')}` : ` · ${t('pi.globalScopeLabel')}`}</p>
+        {event.type === 'prompt' ? (
+          <>
+            <p className="whitespace-pre-wrap text-[length:var(--fs-sm)] text-text-200">{prompt!.message}</p>
+            {prompt!.type === 'select' ? (
+              <div className="space-y-2">
+                {prompt!.options?.map(option => (
+                  <label key={option.id} className="flex cursor-pointer gap-2 rounded-md border border-border-100 p-2 text-[length:var(--fs-sm)] text-text-200">
+                    <input type="radio" name="provider-auth-option" value={option.id} checked={value === option.id} onChange={() => setValue(option.id)} className="accent-accent-main-100" />
+                    <span><span className="block text-text-100">{option.label}</span>{option.description ? <span className="block text-[length:var(--fs-xs)] text-text-400">{option.description}</span> : null}</span>
+                  </label>
+                ))}
+              </div>
+            ) : (
+              <input
+                autoFocus
+                type={prompt!.type === 'secret' ? 'password' : 'text'}
+                value={value}
+                placeholder={prompt!.placeholder}
+                onChange={input => setValue(input.target.value)}
+                onKeyDown={key => { if (key.key === 'Enter' && value) void submit() }}
+                className="h-9 w-full rounded-md border border-border-200 bg-bg-100 px-3 text-[length:var(--fs-sm)] text-text-100 outline-none focus:border-accent-main-100"
+              />
+            )}
+          </>
+        ) : event.type === 'notification' ? (
+          <div className="space-y-2"><pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-bg-200/50 p-3 text-[length:var(--fs-xs)] text-text-200">{formatNotification(event.event)}</pre>{extractUrls(event.event).map(url => <a key={url} href={url} target="_blank" rel="noreferrer" className="block break-all text-[length:var(--fs-xs)] text-accent-main-100 underline">{t('pi.openAuthUrl')}</a>)}</div>
+        ) : event.type === 'failed' ? (
+          <p className="text-[length:var(--fs-sm)] text-danger-100">{event.message}</p>
+        ) : (
+          <p className="text-[length:var(--fs-sm)] text-text-200">{event.type === 'completed' ? t('pi.authCompleted') : t('pi.authCancelled')}</p>
+        )}
+        {flow.notifications.length > 0 && event.type !== 'notification' ? (
+          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-bg-200/40 p-2 text-[length:var(--fs-xs)] text-text-400">{flow.notifications.map(formatNotification).join('\n')}</pre>
+        ) : null}
+        {error ? <p role="alert" className="text-[length:var(--fs-sm)] text-danger-100">{error}</p> : null}
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" disabled={submitting} onClick={() => void close()}>{terminal ? t('common:close') : t('common:cancel')}</Button>
+          {event.type === 'prompt' ? <Button isLoading={submitting} disabled={!value} onClick={() => void submit()}>{t('pi.continue')}</Button> : null}
+          {event.type === 'notification' ? <Button disabled={submitting} onClick={() => clearProviderAuthEvent(flow.flowId)}>{t('pi.keepWaiting')}</Button> : null}
+        </div>
+      </div>
+    </Dialog>
+  )
+}
+
+function formatNotification(value: unknown): string {
+  if (typeof value === 'string') return value
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+function extractUrls(value: unknown): string[] {
+  const urls = new Set<string>()
+  const visit = (candidate: unknown) => {
+    if (typeof candidate === 'string') {
+      for (const match of candidate.matchAll(/https?:\/\/[^\s"'<>]+/g)) urls.add(match[0])
+      return
+    }
+    if (Array.isArray(candidate)) candidate.forEach(visit)
+    else if (candidate && typeof candidate === 'object') Object.values(candidate).forEach(visit)
+  }
+  visit(value)
+  return [...urls]
+}

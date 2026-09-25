@@ -1,0 +1,633 @@
+// ============================================
+// useFileExplorer - 文件浏览器 Hook
+// 管理文件树状态、展开/折叠、文件预览
+// ============================================
+
+import { useState, useCallback, useEffect, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
+import {
+  getFileContent,
+  getFileStatus,
+  invalidateWorkspaceFileCaches,
+  listDirectory,
+  saveFile,
+  simplifyGitStatus,
+  toAbsoluteEntryPath,
+} from '../pi/files'
+import { getHostGitDiff } from '../pi/transport/index.js'
+import type { FileNodeDto, FileReadResponse } from '@piui/protocol'
+import { useSessionChangeScope } from '../store/changeScopeStore'
+import { useAutoRefresh } from './useAutoRefresh'
+import { resolveWorkspacePath } from '../pi/workspaces'
+import { piEventStream } from '../pi/eventStream.js'
+import { useServerStore } from './useServerStore'
+
+export interface FileTreeNode extends FileNodeDto {
+  /** workspace root + relative path, for drag/context actions */
+  absolute: string
+  children?: FileTreeNode[]
+  isLoading?: boolean
+  isLoaded?: boolean
+  /** last child load attempt failed; skip in auto-expand effect to avoid a retry loop */
+  loadFailed?: boolean
+}
+
+/** Explorer file status derived from native git.status / git.diff items. */
+export interface ExplorerFileStatus {
+  path: string
+  status: 'added' | 'modified' | 'deleted'
+  added?: number
+  removed?: number
+}
+
+export interface UseFileExplorerOptions {
+  directory?: string
+  autoLoad?: boolean
+  sessionId?: string
+  /** 唯一标识，用于注册 SSE 消费者，避免多实例冲突 */
+  consumerId?: string
+}
+
+export interface UseFileExplorerResult {
+  // 文件树状态
+  tree: FileTreeNode[]
+  isLoading: boolean
+  error: string | null
+
+  // 展开状态
+  expandedPaths: Set<string>
+  toggleExpand: (path: string) => void
+  expandPath: (path: string) => void
+  collapsePath: (path: string) => void
+
+  // 文件预览
+  previewContent: FileReadResponse | null
+  previewLoading: boolean
+  previewError: string | null
+  loadPreview: (path: string) => Promise<void>
+  clearPreview: () => void
+  savePreview: (path: string, text: string, etag?: string, force?: boolean) => Promise<FileReadResponse>
+
+  // 文件状态
+  fileStatus: Map<string, ExplorerFileStatus>
+
+  // 操作
+  refresh: () => Promise<void>
+  softRefresh: () => Promise<void>
+  loadChildren: (parentPath: string) => Promise<void>
+}
+
+export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileExplorerResult {
+  const { directory, autoLoad = true, sessionId, consumerId = 'file-explorer' } = options
+  const { t } = useTranslation(['components'])
+  const { activeServer } = useServerStore()
+  const changeMode = useSessionChangeScope(sessionId ?? null)
+  const directoryRef = useRef(directory)
+  useEffect(() => {
+    directoryRef.current = directory
+  }, [directory])
+  const canonicalWorkspaceRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    canonicalWorkspaceRef.current = null
+    if (directory) {
+      void resolveWorkspacePath(directory).then(workspacePath => {
+        if (!cancelled) canonicalWorkspaceRef.current = workspacePath
+      }).catch(() => undefined)
+    }
+    return () => { cancelled = true }
+  }, [directory])
+
+  useEffect(() => {
+    if (!directory) return
+    let cancelled = false
+    let workspacePath: string | null = null
+    void resolveWorkspacePath(directory).then(resolved => {
+      if (cancelled || !resolved) return
+      workspacePath = resolved
+      piEventStream.connectWorkspace(resolved)
+    }).catch(() => undefined)
+    return () => {
+      cancelled = true
+      if (workspacePath) piEventStream.disconnectWorkspace(workspacePath)
+    }
+  }, [activeServer?.id, activeServer?.token, activeServer?.url, directory])
+
+  // 文件树状态
+  const [tree, setTree] = useState<FileTreeNode[]>([])
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // 展开状态
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set())
+  const expandedPathsByDirectoryRef = useRef<Map<string, Set<string>>>(new Map())
+
+  // 预览状态
+  const [previewContent, setPreviewContent] = useState<FileReadResponse | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewError, setPreviewError] = useState<string | null>(null)
+  const previewCacheRef = useRef<Map<string, FileReadResponse>>(new Map())
+  const previewLoadIdRef = useRef(0)
+  const previewPathRef = useRef<string | null>(null)
+
+  // 文件状态（git）
+  const [fileStatus, setFileStatus] = useState<Map<string, ExplorerFileStatus>>(new Map())
+
+  // 用于防止过时请求
+  const loadIdRef = useRef(0)
+  const loadedDirectoryRef = useRef<string | undefined>(undefined)
+  const childLoadIdsRef = useRef<Map<string, number>>(new Map())
+  const statusLoadIdRef = useRef(0)
+
+  // 加载根目录
+  const loadRoot = useCallback(async () => {
+    if (!directory) return
+    if (loadedDirectoryRef.current !== directory) {
+      loadedDirectoryRef.current = directory
+      setTree([])
+      setFileStatus(new Map())
+      previewCacheRef.current.clear()
+      setPreviewContent(null)
+    }
+
+    const loadId = ++loadIdRef.current
+    setIsLoading(true)
+    setError(null)
+
+    try {
+      const nodes = await listDirectory('', directory)
+
+      // 检查请求是否过时
+      if (loadId !== loadIdRef.current) return
+
+      // 排序：目录在前，文件在后，按名称排序
+      const sorted = sortNodes(nodes)
+      setTree(sorted.map(n => ({ ...n, absolute: toAbsoluteEntryPath(directory, n.path) })))
+    } catch (e) {
+      if (loadId === loadIdRef.current) {
+        setError(e instanceof Error ? e.message : t('fileExplorer.failedToLoadFiles'))
+      }
+    } finally {
+      if (loadId === loadIdRef.current) {
+        setIsLoading(false)
+      }
+    }
+  }, [directory, t])
+
+  const loadStatuses = useCallback(async () => {
+    if (!directory) {
+      setFileStatus(new Map())
+      return
+    }
+
+    const loadId = ++statusLoadIdRef.current
+    const statusMap = new Map<string, ExplorerFileStatus>()
+
+    try {
+      if (!sessionId) {
+        const status = await getFileStatus(directory)
+        if (loadId !== statusLoadIdRef.current) return
+
+        status.forEach(item => {
+          const normalized = normalizePath(item.path)
+          if (normalized.startsWith('../')) return
+          statusMap.set(normalized, { path: normalized, status: simplifyGitStatus(item.status) })
+        })
+      } else {
+        const workspacePath = await resolveWorkspacePath(directory)
+        const diffs = workspacePath
+          ? (await getHostGitDiff(workspacePath, changeMode === 'branch' ? 'branch' : 'git')).files
+          : []
+
+        if (loadId !== statusLoadIdRef.current) return
+
+        diffs.forEach(diff => {
+          const normalized = normalizePath(diff.file)
+          statusMap.set(normalized, {
+            path: normalized,
+            added: diff.additions,
+            removed: diff.deletions,
+            status: simplifyGitStatus(diff.status),
+          })
+        })
+      }
+
+      computeDirectoryStatus(statusMap)
+      setFileStatus(statusMap)
+    } catch {
+      if (loadId !== statusLoadIdRef.current) return
+      setFileStatus(new Map())
+    }
+  }, [changeMode, directory, sessionId])
+
+  // 加载子目录
+  const loadChildren = useCallback(
+    async (parentPath: string) => {
+      if (!directory) return
+
+      const loadKey = `${directory}\0${parentPath}`
+      const loadId = (childLoadIdsRef.current.get(loadKey) ?? 0) + 1
+      childLoadIdsRef.current.set(loadKey, loadId)
+
+      const isCurrentLoad = () => directoryRef.current === directory && childLoadIdsRef.current.get(loadKey) === loadId
+
+      // 更新树，标记为加载中
+      setTree(prev =>
+        updateTreeNode(prev, parentPath, node => ({
+          ...node,
+          isLoading: true,
+          loadFailed: false,
+        })),
+      )
+
+      try {
+        const nodes = await listDirectory(parentPath, directory)
+        if (!isCurrentLoad()) return
+
+        const sorted = sortNodes(nodes)
+
+        setTree(prev =>
+          updateTreeNode(prev, parentPath, node => ({
+            ...node,
+            children: sorted.map(n => ({ ...n, absolute: toAbsoluteEntryPath(directory, n.path) })),
+            isLoading: false,
+            isLoaded: true,
+            loadFailed: false,
+          })),
+        )
+      } catch {
+        if (!isCurrentLoad()) return
+
+        setTree(prev =>
+          updateTreeNode(prev, parentPath, node => ({
+            ...node,
+            isLoading: false,
+            isLoaded: false,
+            loadFailed: true,
+          })),
+        )
+      }
+    },
+    [directory],
+  )
+
+  const updateExpandedPaths = useCallback(
+    (updater: (prev: Set<string>) => Set<string>) => {
+      setExpandedPaths(prev => {
+        const next = updater(prev)
+        if (directory) {
+          expandedPathsByDirectoryRef.current.set(directory, new Set(next))
+        }
+        return next
+      })
+    },
+    [directory],
+  )
+
+  // 切换展开/折叠
+  const toggleExpand = useCallback(
+    (path: string) => {
+      updateExpandedPaths(prev => {
+        const next = new Set(prev)
+        if (next.has(path)) {
+          next.delete(path)
+        } else {
+          next.add(path)
+          // 如果该目录尚未加载，触发加载
+          const node = findTreeNode(tree, path)
+          if (node && node.type === 'directory' && !node.isLoaded && !node.isLoading) {
+            loadChildren(path)
+          }
+        }
+        return next
+      })
+    },
+    [tree, loadChildren, updateExpandedPaths],
+  )
+
+  const expandPath = useCallback(
+    (path: string) => {
+      updateExpandedPaths(prev => {
+        const next = new Set(prev)
+        next.add(path)
+        return next
+      })
+      const node = findTreeNode(tree, path)
+      if (node && node.type === 'directory' && !node.isLoaded && !node.isLoading) {
+        loadChildren(path)
+      }
+    },
+    [tree, loadChildren, updateExpandedPaths],
+  )
+
+  const collapsePath = useCallback((path: string) => {
+    updateExpandedPaths(prev => {
+      const next = new Set(prev)
+      next.delete(path)
+      return next
+    })
+  }, [updateExpandedPaths])
+
+  // 加载文件预览
+  const loadPreview = useCallback(
+    async (path: string) => {
+      if (!directory) return
+
+      const loadId = ++previewLoadIdRef.current
+      previewPathRef.current = path
+
+      setPreviewLoading(true)
+      setPreviewError(null)
+
+      const cached = previewCacheRef.current.get(path)
+      if (cached) {
+        if (loadId === previewLoadIdRef.current) {
+          setPreviewContent(cached)
+          setPreviewLoading(false)
+        }
+        return
+      }
+
+      try {
+        const content = await getFileContent(path, directory)
+        if (loadId !== previewLoadIdRef.current) return
+        previewCacheRef.current.set(path, content)
+        setPreviewContent(content)
+      } catch (e) {
+        if (loadId !== previewLoadIdRef.current) return
+        setPreviewError(e instanceof Error ? e.message : t('fileExplorer.failedToLoadFile'))
+        setPreviewContent(null)
+      } finally {
+        if (loadId === previewLoadIdRef.current) {
+          setPreviewLoading(false)
+        }
+      }
+    },
+    [directory, t],
+  )
+
+  const clearPreview = useCallback(() => {
+    previewLoadIdRef.current += 1
+    setPreviewContent(null)
+    setPreviewError(null)
+    setPreviewLoading(false)
+    previewPathRef.current = null
+  }, [])
+
+  const savePreview = useCallback(async (path: string, text: string, etag?: string, force = false) => {
+    if (!directory) throw new Error('No workspace is available')
+    const current = previewCacheRef.current.get(path) ?? previewContent
+    if (!current || current.type !== 'text') throw new Error('Only text files can be edited')
+    const saved = await saveFile(path, {
+      ...current,
+      content: text,
+      etag: force ? undefined : etag ?? current.etag,
+    }, directory)
+    previewCacheRef.current.set(path, saved)
+    if (previewPathRef.current === path) setPreviewContent(saved)
+    return saved
+  }, [directory, previewContent])
+
+  // 刷新
+  const refresh = useCallback(async () => {
+    if (directory) {
+      expandedPathsByDirectoryRef.current.delete(directory)
+    }
+    setExpandedPaths(new Set())
+    previewCacheRef.current.clear()
+    setPreviewContent(null)
+    await Promise.all([loadRoot(), loadStatuses()])
+  }, [directory, loadRoot, loadStatuses])
+
+  // 软刷新：重新加载根目录和状态，但保留展开路径和预览
+  const softRefresh = useCallback(async () => {
+    await Promise.all([loadRoot(), loadStatuses()])
+  }, [loadRoot, loadStatuses])
+
+  // 自动刷新：session idle / 窗口聚焦 / SSE 重连
+  useAutoRefresh(consumerId, sessionId ?? null, softRefresh, !!directory)
+
+  useEffect(() => {
+    if (!directory) return
+    const filesChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        workspacePath: string
+        changes: Array<{ path: string; type: 'file' | 'directory' }>
+        rescan: boolean
+      }>).detail
+      if (!detail) return
+      if (!canonicalWorkspaceRef.current || detail.workspacePath !== canonicalWorkspaceRef.current) return
+      invalidateWorkspaceFileCaches(directory)
+      previewCacheRef.current.clear()
+      if (detail.rescan || detail.changes.length === 0) {
+        void softRefresh()
+        const previewPath = previewPathRef.current
+        if (previewPath) void loadPreview(previewPath)
+        return
+      }
+      const parents = new Set(detail.changes.map(change => {
+        const separator = change.path.lastIndexOf('/')
+        return separator < 0 ? '' : change.path.slice(0, separator)
+      }))
+      if (parents.has('')) void loadRoot()
+      for (const parent of parents) {
+        if (!parent) continue
+        if (expandedPaths.has(parent)) void loadChildren(parent)
+        else {
+          setTree(prev => updateTreeNode(prev, parent, node => ({ ...node, isLoaded: false })))
+        }
+      }
+      const previewPath = previewPathRef.current
+      if (previewPath && detail.changes.some(change => change.path === previewPath)) void loadPreview(previewPath)
+    }
+    const gitChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ workspacePath: string }>).detail
+      if (!canonicalWorkspaceRef.current || detail?.workspacePath !== canonicalWorkspaceRef.current) return
+      void loadStatuses()
+    }
+    window.addEventListener('piui:workspace-files-changed', filesChanged)
+    window.addEventListener('piui:workspace-git-updated', gitChanged)
+    return () => {
+      window.removeEventListener('piui:workspace-files-changed', filesChanged)
+      window.removeEventListener('piui:workspace-git-updated', gitChanged)
+    }
+  }, [directory, expandedPaths, loadChildren, loadPreview, loadRoot, loadStatuses, softRefresh])
+
+  // 初始加载
+  // 初始加载文件树/状态：请求-响应模式，loading 与请求同步设置
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    if (autoLoad && directory) {
+      loadRoot()
+    }
+  }, [autoLoad, directory, loadRoot])
+
+  useEffect(() => {
+    if (autoLoad && directory) {
+      loadStatuses()
+    }
+  }, [autoLoad, directory, loadStatuses])
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  // 目录变化时恢复保存的展开路径：读缓存 ref 后同步重置（含目录级联），
+  // 渲染期调整会触发 ref 读取违规，保留 effect 同步
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    if (!directory) {
+      setExpandedPaths(new Set())
+      return
+    }
+
+    const storedPaths = expandedPathsByDirectoryRef.current.get(directory)
+    setExpandedPaths(storedPaths ? new Set(storedPaths) : new Set())
+  }, [directory])
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  useEffect(() => {
+    if (!directory || tree.length === 0 || expandedPaths.size === 0) return
+
+    const pendingPaths = collectPendingExpandedDirectoryPaths(tree, expandedPaths)
+    if (pendingPaths.length === 0) return
+
+    pendingPaths.forEach(path => {
+      void loadChildren(path)
+    })
+  }, [directory, expandedPaths, loadChildren, tree])
+
+  // 目录/会话变化时重置预览状态（含缓存 ref 清理，无法用渲染期调整表达）
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    previewCacheRef.current.clear()
+    previewLoadIdRef.current += 1
+    setPreviewContent(null)
+    setPreviewError(null)
+    setPreviewLoading(false)
+  }, [directory, sessionId])
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  return {
+    tree,
+    isLoading,
+    error,
+    expandedPaths,
+    toggleExpand,
+    expandPath,
+    collapsePath,
+    previewContent,
+    previewLoading,
+    previewError,
+    loadPreview,
+    clearPreview,
+    savePreview,
+    fileStatus,
+    refresh,
+    softRefresh,
+    loadChildren,
+  }
+}
+
+// ============================================
+// Helper Functions
+// ============================================
+
+function sortNodes(nodes: FileNodeDto[]): FileNodeDto[] {
+  return [...nodes].sort((a, b) => {
+    // 目录在前
+    if (a.type !== b.type) {
+      return a.type === 'directory' ? -1 : 1
+    }
+    // 按名称排序（忽略大小写）
+    return a.name.toLowerCase().localeCompare(b.name.toLowerCase())
+  })
+}
+
+function findTreeNode(tree: FileTreeNode[], path: string): FileTreeNode | null {
+  for (const node of tree) {
+    if (node.path === path) return node
+    if (node.children) {
+      const found = findTreeNode(node.children, path)
+      if (found) return found
+    }
+  }
+  return null
+}
+
+function updateTreeNode(
+  tree: FileTreeNode[],
+  path: string,
+  updater: (node: FileTreeNode) => FileTreeNode,
+): FileTreeNode[] {
+  return tree.map(node => {
+    if (node.path === path) {
+      return updater(node)
+    }
+    if (node.children) {
+      return {
+        ...node,
+        children: updateTreeNode(node.children, path, updater),
+      }
+    }
+    return node
+  })
+}
+
+function collectPendingExpandedDirectoryPaths(tree: FileTreeNode[], expandedPaths: Set<string>): string[] {
+  const pending: string[] = []
+
+  const visit = (nodes: FileTreeNode[]) => {
+    for (const node of nodes) {
+      if (node.type !== 'directory') continue
+
+      if (expandedPaths.has(node.path)) {
+        if (!node.isLoaded && !node.isLoading && !node.loadFailed) {
+          pending.push(node.path)
+          continue
+        }
+      }
+
+      if (node.children) {
+        visit(node.children)
+      }
+    }
+  }
+
+  visit(tree)
+  return pending
+}
+
+// Helper: 规范化路径 — 统一分隔符为 /，去掉前导 ./
+function normalizePath(p: string): string {
+  let result = p.replace(/\\/g, '/')
+  if (result.startsWith('./')) result = result.slice(2)
+  return result
+}
+
+// Helper: 从 diff 推断文件状态（优先 status 字段，回退统计推断，最后 before/after 推断）
+// Helper: 计算目录的累积状态（基于子文件状态）
+function computeDirectoryStatus(statusMap: Map<string, ExplorerFileStatus>): void {
+  // 收集所有需要设置状态的目录路径
+  const dirStatuses = new Map<string, 'added' | 'modified' | 'deleted'>()
+
+  for (const [filePath, item] of statusMap) {
+    const parts = filePath.split('/')
+    // 构建所有父目录路径
+    for (let i = 1; i < parts.length; i++) {
+      const dirPath = parts.slice(0, i).join('/')
+      const existingStatus = dirStatuses.get(dirPath)
+      const newStatus = item.status as 'added' | 'modified' | 'deleted'
+
+      // 优先级: added > modified > deleted
+      if (!existingStatus || newStatus === 'added' || (newStatus === 'modified' && existingStatus === 'deleted')) {
+        dirStatuses.set(dirPath, newStatus)
+      }
+    }
+  }
+
+  // 将目录状态添加到 statusMap
+  for (const [dirPath, status] of dirStatuses) {
+    if (!statusMap.has(dirPath)) {
+      statusMap.set(dirPath, { path: dirPath, added: 0, removed: 0, status })
+    }
+  }
+}

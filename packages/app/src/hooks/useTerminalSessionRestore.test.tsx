@@ -1,0 +1,152 @@
+import { renderHook, waitFor } from '@testing-library/react'
+import { StrictMode } from 'react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { useTerminalSessionRestore } from './useTerminalSessionRestore'
+import { layoutStore } from '../store/layoutStore'
+
+const { activeServerSnapshot, listHostTerminalsMock, onServerChangeMock, resolveWorkspacePathMock, serverChangeCallback, serverHealthSnapshot, serverSnapshot, uiErrorHandlerMock } = vi.hoisted(() => ({
+  activeServerSnapshot: { id: 'test', url: '', token: '' },
+  listHostTerminalsMock: vi.fn(),
+  onServerChangeMock: vi.fn<(callback: () => void) => () => void>(() => () => {}),
+  resolveWorkspacePathMock: vi.fn<(directory?: string) => Promise<string | null>>(),
+  serverChangeCallback: { current: undefined as (() => void) | undefined },
+  serverHealthSnapshot: new Map(),
+  serverSnapshot: [] as never[],
+  uiErrorHandlerMock: vi.fn(),
+}))
+
+vi.mock('../pi/transport/index.js', () => ({
+  listHostTerminals: listHostTerminalsMock,
+}))
+
+vi.mock('../store/serverStore', () => ({
+  serverStore: {
+    onServerChange: onServerChangeMock,
+    subscribe: vi.fn(() => () => {}),
+    getServers: vi.fn(() => serverSnapshot),
+    getActiveServer: vi.fn(() => activeServerSnapshot),
+    getAllHealth: vi.fn(() => serverHealthSnapshot),
+  },
+}))
+
+vi.mock('../pi/workspaces', () => ({
+  resolveWorkspacePath: resolveWorkspacePathMock,
+}))
+
+vi.mock('../utils', async importOriginal => {
+  const actual = await importOriginal<typeof import('../utils')>()
+  return { ...actual, uiErrorHandler: uiErrorHandlerMock }
+})
+
+describe('useTerminalSessionRestore', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    resolveWorkspacePathMock.mockImplementation(async (directory?: string) => directory ?? 'C:/startup')
+    serverChangeCallback.current = undefined
+    onServerChangeMock.mockImplementation((callback: () => void) => {
+      serverChangeCallback.current = callback
+      return () => {}
+    })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('fetches terminal sessions for the workspace and syncs them into the store', async () => {
+    const sessions = [{ id: 't-1', title: 'bash', shell: 'bash', cwd: 'C:/p', status: 'running', cursor: 3 }]
+    listHostTerminalsMock.mockResolvedValue({ terminals: sessions })
+
+    const { result } = renderHook(() => useTerminalSessionRestore('C:/p'))
+
+    expect(result.current.isRestoring).toBe(true)
+    expect(result.current.normalizedDirectory).toBe('C:/p')
+
+    await waitFor(() => expect(result.current.isRestoring).toBe(false))
+    expect(listHostTerminalsMock).toHaveBeenCalledWith('C:/p')
+    const tabs = layoutStore.getState().panelTabs.filter(tab => tab.type === 'terminal')
+    expect(tabs.map(tab => tab.id)).toEqual(['t-1'])
+  })
+
+  it('re-syncs when the workspace changes', async () => {
+    listHostTerminalsMock.mockResolvedValue({ terminals: [] })
+    const { rerender } = renderHook(({ directory }) => useTerminalSessionRestore(directory), {
+      initialProps: { directory: 'C:/one' },
+    })
+
+    await waitFor(() => expect(listHostTerminalsMock).toHaveBeenCalledWith('C:/one'))
+
+    listHostTerminalsMock.mockResolvedValue({ terminals: [] })
+    rerender({ directory: 'C:/two' })
+
+    await waitFor(() => expect(listHostTerminalsMock).toHaveBeenCalledWith('C:/two'))
+    expect(layoutStore.getState().panelTabs.filter(tab => tab.type === 'terminal')).toEqual([])
+  })
+
+  it('uses the startup workspace when no project is selected', async () => {
+    listHostTerminalsMock.mockResolvedValue({ terminals: [] })
+    const { result } = renderHook(() => useTerminalSessionRestore(undefined))
+
+    await waitFor(() => expect(result.current.isRestoring).toBe(false))
+    expect(resolveWorkspacePathMock).toHaveBeenCalledWith(undefined)
+    expect(result.current.workspacePath).toBe('C:/startup')
+    expect(listHostTerminalsMock).toHaveBeenCalledWith('C:/startup')
+    expect(layoutStore.getState().panelTabs.filter(tab => tab.type === 'terminal')).toEqual([])
+  })
+
+  it('clears terminal sessions when the startup workspace is unavailable', async () => {
+    resolveWorkspacePathMock.mockResolvedValue(null)
+    const { result } = renderHook(() => useTerminalSessionRestore(undefined))
+
+    await waitFor(() => expect(result.current.isRestoring).toBe(false))
+    expect(layoutStore.getState().panelTabs.filter(tab => tab.type === 'terminal')).toEqual([])
+  })
+
+  it('keeps previous directory synced when fetching fails', async () => {
+    listHostTerminalsMock.mockResolvedValue({ terminals: [] })
+    const { result } = renderHook(() => useTerminalSessionRestore('C:/p'))
+
+    await waitFor(() => expect(listHostTerminalsMock).toHaveBeenCalledWith('C:/p'))
+    expect(layoutStore.getState().panelTabs.filter(tab => tab.type === 'terminal')).toEqual([])
+
+    // 恢复失败会静默退避重试（500+1000+2000+4000+8000ms），终败才上报
+    vi.useFakeTimers()
+    try {
+      listHostTerminalsMock.mockRejectedValue(new Error('boom'))
+      serverChangeCallback.current?.()
+      await vi.advanceTimersByTimeAsync(20_000)
+      expect(uiErrorHandlerMock).toHaveBeenCalled()
+      expect(result.current.isRestoring).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ignores a pending restore after unmount', async () => {
+    let resolveRequest: ((value: { terminals: [] }) => void) | undefined
+    listHostTerminalsMock.mockReturnValue(
+      new Promise(resolve => {
+        resolveRequest = resolve
+      })
+    )
+    const syncSpy = vi.spyOn(layoutStore, 'syncTerminalSessions')
+
+    const { unmount } = renderHook(() => useTerminalSessionRestore('C:/p'))
+    unmount()
+    resolveRequest?.({ terminals: [] })
+    await Promise.resolve()
+
+    expect(syncSpy).not.toHaveBeenCalled()
+    syncSpy.mockRestore()
+  })
+
+  it('finishes restoring when effects are replayed by StrictMode', async () => {
+    listHostTerminalsMock.mockResolvedValue({ terminals: [] })
+    const { result } = renderHook(() => useTerminalSessionRestore('C:/p'), {
+      wrapper: ({ children }) => <StrictMode>{children}</StrictMode>,
+    })
+
+    await waitFor(() => expect(result.current.isRestoring).toBe(false))
+    expect(listHostTerminalsMock).toHaveBeenCalledWith('C:/p')
+  })
+})

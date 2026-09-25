@@ -1,0 +1,167 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { getCurrentProject } from '../api'
+import { subscribeToConnectionState } from '../api/events'
+import { serverStore } from '../store/serverStore'
+import { normalizeToForwardSlash } from '../utils'
+
+export interface GitWorkspaceMeta {
+  isGit: boolean
+  rootDirectory: string
+  // root workspace 放第一位，后面才是 sandbox worktree
+  workspaces: string[]
+}
+
+export type GitWorkspaceCatalog = Map<string, GitWorkspaceMeta>
+
+type RefreshListener = () => void
+
+const refreshListeners = new Set<RefreshListener>()
+
+export function requestGitWorkspaceCatalogRefresh() {
+  refreshListeners.forEach(listener => listener())
+}
+
+export function useGitWorkspaceCatalog(directories: string[]) {
+  const [catalog, setCatalog] = useState<GitWorkspaceCatalog>(new Map())
+  const [isLoading, setIsLoading] = useState(false)
+  const mountedRef = useRef(true)
+  const versionRef = useRef(0)
+  const catalogRef = useRef<GitWorkspaceCatalog>(new Map())
+
+  const setCatalogState = useCallback((nextCatalog: GitWorkspaceCatalog) => {
+    catalogRef.current = nextCatalog
+    setCatalog(nextCatalog)
+  }, [])
+
+  const refresh = useCallback(async () => {
+    const version = ++versionRef.current
+    const normalizedDirectorySet = new Set(
+      directories.filter(Boolean).map(directory => normalizeToForwardSlash(directory)),
+    )
+    const normalizedDirectories = Array.from(normalizedDirectorySet)
+
+    if (normalizedDirectories.length === 0) {
+      setIsLoading(false)
+      setCatalogState(new Map())
+      return
+    }
+
+    setIsLoading(true)
+    const previousCatalog = catalogRef.current
+
+    try {
+      const projectResults = await Promise.allSettled(
+        normalizedDirectories.map(async directory => ({
+          directory,
+          project: await getCurrentProject(directory),
+        })),
+      )
+
+      if (!mountedRef.current || version !== versionRef.current) return
+
+      const rootDirectories = new Set<string>()
+      const directoryToRoot = new Map<string, string>()
+      const nextCatalog: GitWorkspaceCatalog = new Map()
+      const previousWorkspacesByRoot = new Map<string, string[]>()
+
+      for (const [directory, meta] of previousCatalog) {
+        if (meta.isGit) {
+          previousWorkspacesByRoot.set(meta.rootDirectory, meta.workspaces)
+        }
+
+        if (normalizedDirectorySet.has(directory)) {
+          nextCatalog.set(directory, meta)
+        }
+      }
+
+      for (let index = 0; index < projectResults.length; index++) {
+        const result = projectResults[index]
+        const directory = normalizedDirectories[index]
+
+        if (result.status !== 'fulfilled') {
+          const previousMeta = previousCatalog.get(directory)
+          if (previousMeta?.isGit) {
+            rootDirectories.add(previousMeta.rootDirectory)
+            directoryToRoot.set(directory, previousMeta.rootDirectory)
+          }
+          continue
+        }
+
+        const { project } = result.value
+
+        if (project.gitRoot && project.path) {
+          const rootDirectory = normalizeToForwardSlash(project.path)
+          rootDirectories.add(rootDirectory)
+          directoryToRoot.set(directory, rootDirectory)
+        } else {
+          nextCatalog.set(directory, {
+            isGit: false,
+            rootDirectory: directory,
+            workspaces: [directory],
+          })
+        }
+      }
+
+      // pi has no worktree list command — each directory is its own workspace
+      const rootToWorkspaces = new Map<string, string[]>()
+      for (const rootDirectory of rootDirectories) {
+        rootToWorkspaces.set(rootDirectory, previousWorkspacesByRoot.get(rootDirectory) ?? [rootDirectory])
+      }
+
+      for (const [directory, rootDirectory] of directoryToRoot) {
+        nextCatalog.set(directory, {
+          isGit: true,
+          rootDirectory,
+          workspaces: rootToWorkspaces.get(rootDirectory) ?? [rootDirectory],
+        })
+      }
+
+      setCatalogState(nextCatalog)
+    } finally {
+      if (mountedRef.current && version === versionRef.current) {
+        setIsLoading(false)
+      }
+    }
+  }, [directories, setCatalogState])
+
+  // 工作区目录变化时刷新：请求-响应模式，loading 与请求同步设置
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    mountedRef.current = true
+    void refresh()
+    return () => {
+      mountedRef.current = false
+    }
+  }, [refresh])
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  useEffect(() => {
+    let previousState: string | null = null
+    return subscribeToConnectionState(info => {
+      const wasConnected = previousState === 'connected'
+      previousState = info.state
+      // 断线重连（非主动切换 server）后刷新工作区
+      if (!wasConnected && info.state === 'connected' && info.reconnectReason !== 'server-switch') {
+        void refresh()
+      }
+    })
+  }, [refresh])
+
+  useEffect(() => {
+    const listener = () => void refresh()
+    refreshListeners.add(listener)
+    return () => {
+      refreshListeners.delete(listener)
+    }
+  }, [refresh])
+
+  useEffect(() => {
+    return serverStore.onServerChange(() => void refresh())
+  }, [refresh])
+
+  return {
+    catalog,
+    isLoading,
+    refresh,
+  }
+}

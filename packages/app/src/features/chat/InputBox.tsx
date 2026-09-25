@@ -1,0 +1,1861 @@
+import { useState, useRef, useEffect, useCallback, useMemo, useSyncExternalStore, useLayoutEffect, memo, forwardRef, useImperativeHandle } from 'react'
+import { useTranslation } from 'react-i18next'
+import { AttachmentPreview, type Attachment } from '../attachment'
+import {
+  MentionMenu,
+  detectMentionTrigger,
+  getFileName,
+  normalizePath,
+  toFileUrl,
+  type MentionMenuHandle,
+  type MentionItem,
+} from '../mention'
+import { SlashCommandMenu, type Command, type SlashCommandMenuHandle } from '../slash-command'
+import { InputToolbar } from './input/InputToolbar'
+import type { ModelSelectorHandle } from './ModelSelector'
+import { InputFooter } from './input/InputFooter'
+import { FloatingActions, CollapsedCapsule } from './input/InputActions'
+import { useMobileCollapse } from './input/useMobileCollapse'
+import { useAttachmentRail } from './input/useAttachmentRail'
+import { useInputHistory } from './input/useInputHistory'
+import {
+  TEXT_STYLE,
+  bytesToDataUrl,
+  detectSlashTrigger,
+  ensureFileMime,
+  getMimeFromPath,
+  isFileSupported,
+  readFileAsDataUrl,
+} from './input/inputUtils'
+import { keybindingStore, matchesKeybinding } from '../../store/keybindingStore'
+import { themeStore } from '../../store/themeStore'
+import { useChatViewportSelect } from './chatViewport'
+import type { Model, Api } from '@earendil-works/pi-ai'
+import type { FileCapabilities } from '../../types/ui'
+
+type ModelInfo = Model<Api>
+import { usePiCapabilities } from '../../pi/capabilities'
+import { getPiCommandCompletions } from '../../pi/transport/index.js'
+import { apiErrorHandler } from '../../utils'
+import { scrollItemIntoView } from '../../utils/scrollUtils'
+import {
+  getDroppedPathsInfo,
+  isTauriDropPointInsideElement,
+  subscribeTauriDragDrop,
+  type DroppedPathInfo,
+  type TauriDragDropEvent,
+} from '../../lib/tauriDragDrop'
+import {
+  getInternalDragSnapshot,
+  isPointInsideElement as isInternalPointInsideElement,
+  subscribeInternalDrag,
+  subscribeInternalDrop,
+} from '../../lib/internalDragCore'
+
+// ============================================
+// Types
+// ============================================
+
+interface HistoryEntry {
+  text: string
+  attachments: Attachment[]
+}
+
+interface DraggedFileInfo {
+  type: 'file' | 'folder'
+  path: string
+  absolute: string
+  name: string
+}
+
+/** 构建 @ 提及文本，对齐 pi TUI：路径含空格时加引号。 */
+function buildMentionText(path: string): string {
+  if (path.includes(' ')) return `@"${path}"`
+  return `@${path}`
+}
+
+/** 参数补全条目（pi TUI getArgumentCompletions 返回的 AutocompleteItem 序列化形态） */
+interface ArgCompletionItem {
+  value: string
+  label: string
+  description?: string
+}
+
+/** 当前补全上下文：命令名 + 参数起点（补全替换 [argStart, cursor) 区间） */
+interface ArgCompletionContext {
+  commandName: string
+  argStart: number
+}
+
+const TEXTAREA_MIN_HEIGHT = 24
+const TEXTAREA_VERTICAL_CHROME = 24
+const INPUT_TOOLBAR_FALLBACK_HEIGHT = 36
+const INPUT_FOOTER_FALLBACK_HEIGHT = 32
+const COMPOSER_MIN_HEIGHT = 144
+const COMPOSER_DESKTOP_MAX_HEIGHT = 420
+const COMPOSER_COMPACT_MAX_HEIGHT = 320
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max)
+}
+
+function getComposerPaneHeight(anchor: HTMLElement | null): number {
+  const paneRoot = anchor?.closest<HTMLElement>('[data-chat-pane-root]')
+  const paneHeight = paneRoot?.getBoundingClientRect().height
+  if (paneHeight && paneHeight > 0) return paneHeight
+  return window.innerHeight || 800
+}
+
+function getComposerMaxHeight(paneHeight: number, isCompact: boolean): number {
+  const ratio = isCompact ? 0.44 : 0.4
+  const hardMax = isCompact ? COMPOSER_COMPACT_MAX_HEIGHT : COMPOSER_DESKTOP_MAX_HEIGHT
+  const availableMax = Math.max(COMPOSER_MIN_HEIGHT, paneHeight - 96)
+  return clamp(Math.floor(paneHeight * ratio), COMPOSER_MIN_HEIGHT, Math.min(hardMax, availableMax))
+}
+
+function getMentionPathForDroppedPath(absolutePath: string, rootPath: string): string {
+  const normalizedPath = normalizePath(absolutePath)
+  const normalizedRoot = normalizePath(rootPath).replace(/\/+$/, '')
+  if (!normalizedRoot) return normalizedPath
+
+  const caseInsensitive = /^[a-zA-Z]:/.test(normalizedPath) || /^[a-zA-Z]:/.test(normalizedRoot)
+  const comparablePath = caseInsensitive ? normalizedPath.toLowerCase() : normalizedPath
+  const comparableRoot = caseInsensitive ? normalizedRoot.toLowerCase() : normalizedRoot
+
+  if (comparablePath === comparableRoot) {
+    return getFileName(normalizedPath)
+  }
+
+  if (comparablePath.startsWith(`${comparableRoot}/`)) {
+    return normalizedPath.slice(normalizedRoot.length + 1)
+  }
+
+  return normalizedPath
+}
+
+export interface CollapsedDialogInfo {
+  label: string
+  queueLength: number
+  onExpand: () => void
+}
+
+export interface InputBoxProps {
+  paneId: string
+  onSend: (
+    text: string,
+    attachments: Attachment[],
+    options?: { agent?: string; variant?: string; delivery?: 'steer' | 'followUp' },
+  ) => Promise<boolean> | boolean
+  onAbort?: () => void
+  onCommand?: (command: string) => Promise<boolean> | boolean // 斜杠命令回调，接收完整命令字符串如 "/help"
+  onCycleModel?: (direction: 'forward' | 'backward') => void
+  onCycleThinkingLevel?: () => void
+  onOpenModelSelector?: () => void
+  onTextChange?: (text: string) => void // 输入框文本变化（扩展 editor 状态同步）
+  onNewChat?: () => void // 新建对话回调
+  disabled?: boolean
+  isStreaming?: boolean
+  /** 兜底：session 在活跃列表中时即使 isStreaming 为 false 也显示停止按钮 */
+  sessionActive?: boolean
+  /** 上下文压缩进行中：发送按钮变为停止按钮（取消压缩） */
+  isCompacting?: boolean
+  variants?: string[]
+  selectedVariant?: string
+  onVariantChange?: (variant: string | undefined) => void
+  supportsImages?: boolean // 保留向后兼容（deprecated，优先用 fileCapabilities）
+  fileCapabilities?: FileCapabilities
+  // Model（移动端 InputToolbar 用）
+  models?: ModelInfo[]
+  selectedModelKey?: string | null
+  onModelChange?: (modelKey: string, model: ModelInfo) => void
+  modelsLoading?: boolean
+  modelSelectorRef?: React.RefObject<ModelSelectorHandle | null>
+  rootPath?: string
+  sessionId?: string | null
+  // Undo/Redo
+  revertedText?: string
+  revertedAttachments?: Attachment[]
+  restoreMode?: 'replace' | 'append'
+  canRedo?: boolean
+  revertSteps?: number
+  onRedo?: () => void
+  onRedoAll?: () => void
+  onClearRevert?: () => void
+  // Animation
+  registerInputBox?: (element: HTMLElement | null) => void
+  isAtBottom?: boolean
+  showScrollToBottom?: boolean
+  onScrollToBottom?: () => void
+  // Collapsed dialog capsules
+  collapsedPermission?: CollapsedDialogInfo
+  collapsedQuestion?: CollapsedDialogInfo
+}
+
+// ============================================
+// InputBox Component
+// ============================================
+
+export interface InputBoxHandle {
+  /** Replace the composer text (extension editor set/paste commands) */
+  setEditorText: (text: string) => void
+}
+
+const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function InputBoxComponent({
+  paneId,
+  onSend,
+  onAbort,
+  onCommand,
+  onCycleModel,
+  onCycleThinkingLevel,
+  onOpenModelSelector,
+  onNewChat,
+  disabled,
+  isStreaming,
+  sessionActive,
+  isCompacting = false,
+  variants = [],
+  selectedVariant,
+  onVariantChange,
+  supportsImages = false,
+  fileCapabilities: fileCapabilitiesProp,
+  models = [],
+  selectedModelKey = null,
+  onModelChange,
+  modelsLoading = false,
+  modelSelectorRef,
+  rootPath = '',
+  sessionId,
+  revertedText,
+  revertedAttachments,
+  restoreMode = 'replace',
+  canRedo = false,
+  revertSteps = 0,
+  onRedo,
+  onRedoAll,
+  onClearRevert,
+  registerInputBox,
+  isAtBottom = true,
+  showScrollToBottom = false,
+  onScrollToBottom,
+  collapsedPermission,
+  collapsedQuestion,
+  /** Composer text change callback (extension editor state sync) */
+  onTextChange,
+}: InputBoxProps, ref: React.Ref<InputBoxHandle>) {
+  const { t } = useTranslation('chat')
+  // 合并文件能力：优先用 fileCapabilities，回退到 supportsImages
+  const fileCaps: FileCapabilities = useMemo(
+    () =>
+      fileCapabilitiesProp ?? {
+        image: supportsImages,
+        pdf: false,
+        audio: false,
+        video: false,
+      },
+    [fileCapabilitiesProp, supportsImages],
+  )
+  const { externalFileDropMode } = useSyncExternalStore(themeStore.subscribe, themeStore.getSnapshot)
+
+  // 是否有任何文件附件能力
+  const supportsAnyFile = fileCaps.image || fileCaps.pdf || fileCaps.audio || fileCaps.video
+
+  // 文本状态
+  const [text, setText] = useState('')
+
+  // 扩展 editor 命令接口（set/paste 已由 store 合并为全量文本）
+  useImperativeHandle(ref, () => ({
+    setEditorText: (next: string) => setText(next),
+  }), [])
+
+  // 文本变化同步（扩展 editor 状态回传）
+  useEffect(() => {
+    onTextChange?.(text)
+  }, [text, onTextChange])
+  // 附件状态（图片、文件、文件夹、agent）
+  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [deliveryMode, setDeliveryMode] = useState<'steer' | 'followUp'>('followUp')
+  const piCapabilities = usePiCapabilities()
+  const effectiveDeliveryMode = deliveryMode === 'steer' && piCapabilities.promptSteer
+    ? 'steer'
+    : piCapabilities.promptFollowUp
+      ? 'followUp'
+      : piCapabilities.promptSteer
+        ? 'steer'
+        : undefined
+
+  // @ Mention 状态
+  const [mentionOpen, setMentionOpen] = useState(false)
+  const [mentionQuery, setMentionQuery] = useState('')
+  const [mentionStartIndex, setMentionStartIndex] = useState(-1)
+
+  // / Slash Command 状态
+  const [slashOpen, setSlashOpen] = useState(false)
+  const [slashQuery, setSlashQuery] = useState('')
+  const [slashStartIndex, setSlashStartIndex] = useState(-1)
+
+  // 命令参数 Tab 补全状态（pi TUI getArgumentCompletions parity）
+  const [argCompletionOpen, setArgCompletionOpen] = useState(false)
+  const [argCompletionItems, setArgCompletionItems] = useState<ArgCompletionItem[]>([])
+  const [argCompletionIndex, setArgCompletionIndex] = useState(0)
+  const [argCompletionLoading, setArgCompletionLoading] = useState(false)
+  const argCompletionReqRef = useRef(0)
+  const argCompletionCtxRef = useRef<ArgCompletionContext | null>(null)
+  const argCompletionTimerRef = useRef<number | null>(null)
+  const argCompletionOpenRef = useRef(false)
+  useEffect(() => {
+    argCompletionOpenRef.current = argCompletionOpen
+  }, [argCompletionOpen])
+  useEffect(() => {
+    const timerRef = argCompletionTimerRef
+    return () => {
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current)
+    }
+  }, [])
+
+  // 拖拽状态
+  const [isDragging, setIsDragging] = useState(false)
+  const [isInternalFileDragging, setIsInternalFileDragging] = useState(false)
+  const dragCounterRef = useRef(0)
+  const lastTauriDropAtRef = useRef(0)
+
+  const { isCompact, enableCollapsedDock } = useChatViewportSelect(
+    value => ({ isCompact: value.presentation.isCompact, enableCollapsedDock: value.interaction.enableCollapsedInputDock }),
+    (a, b) => a.isCompact === b.isCompact && a.enableCollapsedDock === b.enableCollapsedDock,
+  )
+
+  // Refs
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const inputContainerRef = useRef<HTMLDivElement>(null)
+  const attachmentRailRef = useRef<HTMLDivElement>(null)
+  const attachmentSectionRef = useRef<HTMLDivElement>(null)
+  const toolbarRef = useRef<HTMLDivElement>(null)
+  const mentionMenuRef = useRef<MentionMenuHandle>(null)
+  const slashMenuRef = useRef<SlashCommandMenuHandle>(null)
+  const argCompletionMenuRef = useRef<HTMLDivElement>(null)
+  const argCompletionListRef = useRef<HTMLDivElement>(null)
+  const prevRevertedTextRef = useRef<string | undefined>(undefined)
+  const latestDraftRef = useRef<HistoryEntry>({ text: '', attachments: [] })
+  const appendedRestoreRef = useRef<string | undefined>(undefined)
+  const contentWrapRef = useRef<HTMLDivElement>(null)
+  const footerRef = useRef<HTMLDivElement>(null)
+  const isComposingRef = useRef(false)
+  const compositionEndTimerRef = useRef<number | null>(null)
+  const [composerMaxHeight, setComposerMaxHeight] = useState(280)
+  const [inputContainerMaxHeight, setInputContainerMaxHeight] = useState(240)
+  const [textareaMaxHeight, setTextareaMaxHeight] = useState(180)
+
+  // 附件横向轨道
+  const {
+    overflowing: attachmentsOverflowing,
+    showLeftFade: showAttachmentLeftFade,
+    showRightFade: showAttachmentRightFade,
+    handleScroll: syncAttachmentRailState,
+    handleWheel: handleAttachmentRailWheel,
+  } = useAttachmentRail({ attachmentCount: attachments.length, railRef: attachmentRailRef })
+
+  // ============================================
+  // 历史消息导航（类终端体验，逻辑在 useInputHistory hook 中）
+  // ============================================
+  const { handleHistoryKeyDown, handleHistoryChange, resetHistoryIndex } = useInputHistory({ textareaRef })
+
+  // ============================================
+  // Mobile Input Dock: 滚动收起/展开（逻辑在 useMobileCollapse hook 中）
+  // ============================================
+  const hasContent = text.trim().length > 0 || attachments.length > 0
+  const { isCollapsed, expandedHeight, handleExpandInput, handleFocus, handleBlur, handleContainerPointerDown } =
+    useMobileCollapse({
+      enabled: enableCollapsedDock,
+      hasContent,
+      isAtBottom,
+      textareaRef,
+      inputContainerRef,
+      contentWrapRef,
+      footerRef,
+      registerInputBox,
+      collapsedPermission,
+      collapsedQuestion,
+    })
+
+  // 处理 revert 恢复
+  useEffect(() => {
+    latestDraftRef.current = { text, attachments }
+  }, [text, attachments])
+
+  useEffect(() => {
+    let frameId: number | null = null
+
+    if (revertedText !== undefined) {
+      frameId = requestAnimationFrame(() => {
+        if (restoreMode === 'append' && appendedRestoreRef.current === revertedText) return
+        const current = latestDraftRef.current
+        const nextText = restoreMode === 'append' && current.text.trim()
+          ? `${current.text}\n\n${revertedText}`
+          : revertedText
+        const nextAttachments = restoreMode === 'append'
+          ? [...current.attachments, ...(revertedAttachments || [])]
+          : (revertedAttachments || [])
+        setText(nextText)
+        setAttachments(nextAttachments)
+        appendedRestoreRef.current = restoreMode === 'append' ? revertedText : undefined
+        // 聚焦并移动光标到末尾
+        if (textareaRef.current) {
+          textareaRef.current.focus()
+          textareaRef.current.setSelectionRange(nextText.length, nextText.length)
+        }
+      })
+    } else if (prevRevertedTextRef.current !== undefined && revertedText === undefined && !isSubmitting) {
+      appendedRestoreRef.current = undefined
+      frameId = requestAnimationFrame(() => {
+        // 只有用户未改动恢复文本时才清空（撤销恢复后的正常收尾）；
+        // 若用户已在恢复文本基础上继续输入/删除，说明正在写新内容，
+        // 清空会把正在编辑的内容抹掉，此时保留现状。
+        const current = latestDraftRef.current
+        if (current.text !== prevRevertedTextRef.current) return
+        setText('')
+        setAttachments([])
+      })
+    }
+
+    prevRevertedTextRef.current = revertedText
+
+    return () => {
+      if (frameId !== null) {
+        cancelAnimationFrame(frameId)
+      }
+    }
+  }, [revertedText, revertedAttachments, restoreMode, isSubmitting])
+
+  useEffect(
+    () => () => {
+      if (compositionEndTimerRef.current !== null) {
+        clearTimeout(compositionEndTimerRef.current)
+      }
+    },
+    [],
+  )
+
+  const updateComposerHeightBudget = useCallback(() => {
+    const paneHeight = getComposerPaneHeight(inputContainerRef.current ?? contentWrapRef.current)
+    const nextComposerMaxHeight = getComposerMaxHeight(paneHeight, isCompact)
+    const attachmentHeight = attachments.length > 0 ? (attachmentSectionRef.current?.offsetHeight ?? 0) : 0
+    const toolbarHeight = toolbarRef.current?.offsetHeight || INPUT_TOOLBAR_FALLBACK_HEIGHT
+    const footerHeight = isCollapsed ? 0 : footerRef.current?.offsetHeight || INPUT_FOOTER_FALLBACK_HEIGHT
+    const inputContainerChrome = attachmentHeight + toolbarHeight + TEXTAREA_VERTICAL_CHROME
+    const nextInputContainerMaxHeight = Math.max(
+      TEXTAREA_MIN_HEIGHT + TEXTAREA_VERTICAL_CHROME + toolbarHeight,
+      nextComposerMaxHeight - footerHeight,
+    )
+    const nextTextareaMaxHeight = Math.max(
+      TEXTAREA_MIN_HEIGHT,
+      nextInputContainerMaxHeight - inputContainerChrome,
+    )
+
+    setComposerMaxHeight(prev => (Math.abs(prev - nextComposerMaxHeight) < 1 ? prev : nextComposerMaxHeight))
+    setInputContainerMaxHeight(prev =>
+      Math.abs(prev - nextInputContainerMaxHeight) < 1 ? prev : nextInputContainerMaxHeight,
+    )
+    setTextareaMaxHeight(prev => (Math.abs(prev - nextTextareaMaxHeight) < 1 ? prev : nextTextareaMaxHeight))
+  }, [attachments.length, isCollapsed, isCompact])
+
+  useLayoutEffect(() => {
+    updateComposerHeightBudget()
+  }, [updateComposerHeightBudget, text])
+
+  useEffect(() => {
+    updateComposerHeightBudget()
+
+    const observed = [
+      inputContainerRef.current?.closest<HTMLElement>('[data-chat-pane-root]'),
+      inputContainerRef.current,
+      attachmentSectionRef.current,
+      toolbarRef.current,
+      footerRef.current,
+    ].filter((element): element is HTMLElement => !!element)
+
+    // 同帧多次 RO/resize 合并为一次高度预算计算，避免布局连环读
+    let budgetRaf: number | null = null
+    const scheduleBudgetUpdate = () => {
+      if (budgetRaf !== null) return
+      budgetRaf = requestAnimationFrame(() => {
+        budgetRaf = null
+        updateComposerHeightBudget()
+      })
+    }
+
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(scheduleBudgetUpdate) : null
+    observed.forEach(element => observer?.observe(element))
+    window.addEventListener('resize', scheduleBudgetUpdate)
+    return () => {
+      observer?.disconnect()
+      window.removeEventListener('resize', scheduleBudgetUpdate)
+      if (budgetRaf !== null) cancelAnimationFrame(budgetRaf)
+    }
+  }, [updateComposerHeightBudget])
+
+  // 自动调整 textarea 高度
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current
+    if (!textarea) return
+
+    // 只有真正空字符串时才重置高度；保留仅空格/空行时的换行高度
+    if (text.length === 0) {
+      textarea.style.height = `${TEXTAREA_MIN_HEIGHT}px`
+      return
+    }
+
+    textarea.style.height = 'auto'
+    const scrollHeight = textarea.scrollHeight
+    textarea.style.height = Math.max(TEXTAREA_MIN_HEIGHT, Math.min(scrollHeight, textareaMaxHeight)) + 'px'
+  }, [text, textareaMaxHeight])
+
+  // 计算
+  const inputDisabled = !!disabled
+  const canSend = (text.trim().length > 0 || attachments.length > 0) && !inputDisabled
+
+  // ============================================
+  // Handlers
+  // ============================================
+
+  const resetDraft = useCallback(() => {
+    latestDraftRef.current = { text: '', attachments: [] }
+    setText('')
+    setAttachments([])
+    resetHistoryIndex()
+  }, [resetHistoryIndex])
+
+  const restoreDraft = useCallback(
+    (draft: HistoryEntry) => {
+      latestDraftRef.current = draft
+      setText(draft.text)
+      setAttachments(draft.attachments)
+      resetHistoryIndex()
+
+      requestAnimationFrame(() => {
+        if (!textareaRef.current) return
+        const cursorPos = draft.text.length
+        textareaRef.current.focus()
+        textareaRef.current.setSelectionRange(cursorPos, cursorPos)
+      })
+    },
+    [resetHistoryIndex],
+  )
+
+  const submitCommandOptimistically = useCallback(
+    (commandStr: string) => {
+      if (!onCommand) return
+
+      const draftSnapshot: HistoryEntry = {
+        text,
+        attachments: [...attachments],
+      }
+
+      resetDraft()
+      requestAnimationFrame(() => {
+        if (!textareaRef.current) return
+        textareaRef.current.focus()
+        textareaRef.current.setSelectionRange(0, 0)
+      })
+
+      void (async () => {
+        let result: boolean | void
+        try {
+          result = await onCommand(commandStr)
+        } catch {
+          result = false
+        }
+
+        if (result !== false) {
+          onClearRevert?.()
+          return
+        }
+
+        const currentDraft = latestDraftRef.current
+        if (currentDraft.text.length === 0 && currentDraft.attachments.length === 0) {
+          restoreDraft(draftSnapshot)
+        }
+      })()
+    },
+    [attachments, onClearRevert, onCommand, resetDraft, restoreDraft, text],
+  )
+
+  const runSubmit = useCallback(
+    async (submit: () => Promise<boolean | void> | boolean | void, onSuccess?: () => void, onFailure?: () => void) => {
+      if (isSubmitting) return false
+
+      setIsSubmitting(true)
+      try {
+        const result = await submit()
+        if (result === false) {
+          onFailure?.()
+          return false
+        }
+
+        onSuccess?.()
+        return true
+      } finally {
+        setIsSubmitting(false)
+      }
+    },
+    [isSubmitting],
+  )
+
+  const handleSend = useCallback(() => {
+    if (!canSend || isSubmitting) return
+
+    // 检测 command attachment
+    const commandAttachment = attachments.find(a => a.type === 'command')
+    if (commandAttachment && commandAttachment.commandName) {
+      if (!onCommand) return
+
+      // 提取命令后的参数文本
+      const textRange = commandAttachment.textRange
+      const afterCommand = textRange ? text.slice(textRange.end).trim() : ''
+      const commandStr = `/${commandAttachment.commandName}${afterCommand ? ' ' + afterCommand : ''}`
+      submitCommandOptimistically(commandStr)
+      return
+    }
+
+    // 从 attachments 中找 agent mention
+    void runSubmit(
+      () =>
+        onSend(text, attachments, {
+          variant: selectedVariant,
+          ...(isStreaming && effectiveDeliveryMode ? { delivery: effectiveDeliveryMode } : {}),
+        }),
+      () => {
+        resetDraft()
+        onClearRevert?.()
+      },
+    )
+  }, [
+    attachments,
+    canSend,
+    isSubmitting,
+    onCommand,
+    onClearRevert,
+    onSend,
+    resetDraft,
+    runSubmit,
+    selectedVariant,
+    isStreaming,
+    effectiveDeliveryMode,
+    submitCommandOptimistically,
+    text,
+  ])
+
+  // 更新 @ 查询文本（用于进入/退出文件夹）
+  const updateMentionQuery = useCallback(
+    (newQuery: string) => {
+      if (!textareaRef.current) return
+
+      const beforeAt = text.slice(0, mentionStartIndex)
+      const afterQuery = text.slice(mentionStartIndex + 1 + mentionQuery.length)
+      const newText = beforeAt + '@' + newQuery + afterQuery
+
+      setText(newText)
+      setMentionQuery(newQuery)
+
+      // 移动光标到 @ 查询末尾
+      requestAnimationFrame(() => {
+        if (!textareaRef.current) return
+        const pos = mentionStartIndex + 1 + newQuery.length
+        textareaRef.current.setSelectionRange(pos, pos)
+        textareaRef.current.focus()
+      })
+    },
+    [text, mentionStartIndex, mentionQuery],
+  )
+
+  // ============================================
+  // 命令参数 Tab 补全（pi TUI getArgumentCompletions parity）
+  // ============================================
+
+  const closeArgCompletions = useCallback(() => {
+    if (argCompletionTimerRef.current !== null) {
+      window.clearTimeout(argCompletionTimerRef.current)
+      argCompletionTimerRef.current = null
+    }
+    setArgCompletionOpen(false)
+    setArgCompletionItems([])
+    setArgCompletionLoading(false)
+    argCompletionCtxRef.current = null
+    argCompletionReqRef.current += 1
+  }, [])
+
+  /**
+   * 解析当前输入里的命令参数上下文：
+   * 1. 优先用 command attachment（斜杠菜单选过）：光标在命令文本之后即命中
+   * 2. 否则识别行首手输的 `/name args`（slashOpen 为 false 说明命令名已完整）
+   * 返回 { commandName, argStart }，补全会替换 [argStart, cursor) 区间。
+   */
+  const resolveArgCompletionContext = useCallback(
+    (currentText: string, cursorPos: number): ArgCompletionContext | null => {
+      const commandAttachment = attachments.find(a => a.type === 'command' && a.commandName && a.textRange)
+      if (commandAttachment && commandAttachment.textRange) {
+        // 参数起点跳过命令与参数之间的分隔空白（/name <prefix>）
+        let argStart = commandAttachment.textRange.end
+        while (argStart < currentText.length && /[ \n]/.test(currentText[argStart]!)) argStart += 1
+        if (cursorPos >= argStart) {
+          return { commandName: commandAttachment.commandName!, argStart }
+        }
+      }
+      // 行首手输命令：/name 后跟空格/换行且光标在参数区
+      if (currentText.startsWith('/')) {
+        const rest = currentText.slice(1)
+        const spaceIndex = rest.search(/[ \n]/)
+        if (spaceIndex > 0 && cursorPos > spaceIndex + 1) {
+          return { commandName: rest.slice(0, spaceIndex), argStart: spaceIndex + 2 }
+        }
+      }
+      return null
+    },
+    [attachments],
+  )
+
+  /** 请求并打开参数补全菜单（prefix 为空时列出全部候选，与 TUI 一致） */
+  const requestArgCompletions = useCallback(
+    async (ctx: ArgCompletionContext, prefix: string) => {
+      if (!sessionId) {
+        closeArgCompletions()
+        return
+      }
+      const requestId = ++argCompletionReqRef.current
+      argCompletionCtxRef.current = ctx
+      if (argCompletionTimerRef.current !== null) {
+        window.clearTimeout(argCompletionTimerRef.current)
+        argCompletionTimerRef.current = null
+      }
+      // 已打开的菜单刷新时不闪 loading（首次打开才显示）
+      if (!argCompletionOpenRef.current) setArgCompletionLoading(true)
+      try {
+        const result = (await getPiCommandCompletions(sessionId, ctx.commandName, prefix)) as
+          | ArgCompletionItem[]
+          | null
+          | undefined
+        if (requestId !== argCompletionReqRef.current) return
+        const items = Array.isArray(result) ? result : []
+        if (items.length === 0) {
+          closeArgCompletions()
+          return
+        }
+        setArgCompletionItems(items)
+        setArgCompletionIndex(0)
+        setArgCompletionOpen(true)
+      } catch (error) {
+        if (requestId !== argCompletionReqRef.current) return
+        apiErrorHandler('command completions', error)
+        closeArgCompletions()
+      } finally {
+        if (requestId === argCompletionReqRef.current) {
+          setArgCompletionLoading(false)
+        }
+      }
+    },
+    [closeArgCompletions, sessionId],
+  )
+
+  /** 应用选中的补全：替换 [argStart, cursor) 为 value，光标移到 value 末尾 */
+  const applyArgCompletion = useCallback(
+    (item: ArgCompletionItem) => {
+      if (!textareaRef.current) return
+      const ctx = argCompletionCtxRef.current
+      if (!ctx) return
+      const cursorPos = textareaRef.current.selectionStart ?? text.length
+      // 参数区起点前不是空白时（用户删掉了 /command 后的空格）补一个空格，
+      // 否则补全值会直接黏在命令名后面（/permissionworkspace-write）
+      const needsSpace = ctx.argStart > 0 && !/[ \n]/.test(text[ctx.argStart - 1] ?? '')
+      const sep = needsSpace ? ' ' : ''
+      const newText = text.slice(0, ctx.argStart) + sep + item.value + text.slice(cursorPos)
+      setText(newText)
+      closeArgCompletions()
+      requestAnimationFrame(() => {
+        if (!textareaRef.current) return
+        const newCursorPos = ctx.argStart + sep.length + item.value.length
+        textareaRef.current.setSelectionRange(newCursorPos, newCursorPos)
+        textareaRef.current.focus()
+      })
+    },
+    [closeArgCompletions, text],
+  )
+
+  /**
+   * 防抖调度：参数区文本变化后 120ms 合并请求（选中命令自动弹出 + 输入实时筛选）。
+   * 不在参数区时关闭菜单。
+   */
+  const scheduleArgCompletion = useCallback(
+    (currentText: string, cursorPos: number) => {
+      const ctx = resolveArgCompletionContext(currentText, cursorPos)
+      if (!ctx) {
+        closeArgCompletions()
+        return
+      }
+      if (argCompletionTimerRef.current !== null) {
+        window.clearTimeout(argCompletionTimerRef.current)
+      }
+      argCompletionTimerRef.current = window.setTimeout(() => {
+        argCompletionTimerRef.current = null
+        // 回调时用 DOM 最新值重解析，避免防抖窗口内文本再变导致 ctx 过期
+        const textarea = textareaRef.current
+        if (!textarea) return
+        const latestCursor = textarea.selectionStart ?? textarea.value.length
+        const latestCtx = resolveArgCompletionContext(textarea.value, latestCursor)
+        if (!latestCtx) return
+        const latestPrefix = textarea.value.slice(latestCtx.argStart, latestCursor)
+        void requestArgCompletions(latestCtx, latestPrefix)
+      }, 120)
+    },
+    [closeArgCompletions, requestArgCompletions, resolveArgCompletionContext],
+  )
+
+  /** Tab 键：打开/循环参数补全。返回 true 表示已处理。 */
+  const handleArgCompletionTab = useCallback((): boolean => {
+    if (!textareaRef.current) return false
+    if (argCompletionOpen) {
+      setArgCompletionIndex(prev => (prev + 1) % Math.max(argCompletionItems.length, 1))
+      return true
+    }
+    if (slashOpen) return false // 命令名菜单优先，交给 slash 分支
+    const cursorPos = textareaRef.current.selectionStart ?? text.length
+    const ctx = resolveArgCompletionContext(text, cursorPos)
+    if (!ctx) return false
+    const prefix = text.slice(ctx.argStart, cursorPos)
+    void requestArgCompletions(ctx, prefix)
+    return true
+  }, [
+    argCompletionOpen,
+    argCompletionItems.length,
+    requestArgCompletions,
+    resolveArgCompletionContext,
+    slashOpen,
+    text,
+  ])
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      const nativeEvent = e.nativeEvent
+      const isImeComposing = isComposingRef.current || nativeEvent.isComposing || nativeEvent.keyCode === 229
+
+      if (isImeComposing && (e.key === 'Enter' || e.key === 'Tab')) return
+
+      // Slash Command 菜单打开时，拦截导航键
+      if (slashOpen && slashMenuRef.current) {
+        switch (e.key) {
+          case 'ArrowUp':
+            e.preventDefault()
+            slashMenuRef.current.moveUp()
+            return
+          case 'ArrowDown':
+            e.preventDefault()
+            slashMenuRef.current.moveDown()
+            return
+          case 'Enter':
+          case 'Tab':
+            e.preventDefault()
+            slashMenuRef.current.selectCurrent()
+            return
+          case 'Escape':
+            e.preventDefault()
+            setSlashOpen(false)
+            return
+        }
+      }
+
+      // Mention 菜单打开时，拦截导航键
+      if (mentionOpen && mentionMenuRef.current) {
+        switch (e.key) {
+          case 'ArrowUp':
+            e.preventDefault()
+            mentionMenuRef.current.moveUp()
+            return
+          case 'ArrowDown':
+            e.preventDefault()
+            mentionMenuRef.current.moveDown()
+            return
+          case 'ArrowRight': {
+            // 进入文件夹
+            const selected = mentionMenuRef.current.getSelectedItem()
+            if (selected?.type === 'folder') {
+              e.preventDefault()
+              const basePath = (selected.relativePath || selected.displayName).replace(/\/+$/, '')
+              const folderPath = basePath + '/'
+              updateMentionQuery(folderPath)
+            }
+            return
+          }
+          case 'ArrowLeft': {
+            // 返回上一级
+            if (mentionQuery.includes('/')) {
+              e.preventDefault()
+              const parts = mentionQuery.replace(/\/$/, '').split('/')
+              // 记住当前目录名，返回后定位到它
+              const folderName = parts[parts.length - 1]
+              if (folderName) {
+                mentionMenuRef.current.setRestoreFolder(folderName)
+              }
+              parts.pop()
+              const parentPath = parts.length > 0 ? parts.join('/') + '/' : ''
+              updateMentionQuery(parentPath)
+            }
+            return
+          }
+          case 'Enter':
+          case 'Tab':
+            e.preventDefault()
+            mentionMenuRef.current.selectCurrent()
+            return
+          case 'Escape':
+            e.preventDefault()
+            setMentionOpen(false)
+            return
+        }
+      }
+
+      // 命令参数补全菜单打开时，拦截导航键（优先级高于普通 Tab 行为）
+      if (argCompletionOpen) {
+        switch (e.key) {
+          case 'ArrowUp':
+            e.preventDefault()
+            setArgCompletionIndex(prev => (prev <= 0 ? argCompletionItems.length - 1 : prev - 1))
+            return
+          case 'ArrowDown':
+            e.preventDefault()
+            setArgCompletionIndex(prev => (prev >= argCompletionItems.length - 1 ? 0 : prev + 1))
+            return
+          case 'Enter':
+          case 'Tab':
+            e.preventDefault()
+            if (argCompletionItems[argCompletionIndex]) {
+              applyArgCompletion(argCompletionItems[argCompletionIndex]!)
+            }
+            return
+          case 'Escape':
+            e.preventDefault()
+            closeArgCompletions()
+            return
+        }
+      }
+
+      // Pi TUI model/thinking shortcuts. The visible model selector remains
+      // the source of truth; these keys only trigger its native callbacks.
+      if (e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'p') {
+        e.preventDefault()
+        onCycleModel?.(e.shiftKey ? 'backward' : 'forward')
+        return
+      }
+      if (e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'l') {
+        e.preventDefault()
+        onOpenModelSelector?.()
+        return
+      }
+      if (e.shiftKey && e.key === 'Tab') {
+        e.preventDefault()
+        onCycleThinkingLevel?.()
+        return
+      }
+
+      // Tab 键：mention 菜单关闭时，先试命令参数补全，否则不做任何事（阻止跳到工具栏）
+      if (e.key === 'Tab') {
+        e.preventDefault()
+        if (handleArgCompletionTab()) return
+        return
+      }
+
+      // 历史消息导航（类终端体验）
+      const historyResult = handleHistoryKeyDown(e, text, attachments)
+      if (historyResult) {
+        setText(historyResult.text)
+        setAttachments(historyResult.attachments)
+        requestAnimationFrame(() => {
+          if (!textareaRef.current) return
+          const cursorPos = historyResult.cursor === 'start' ? 0 : historyResult.text.length
+          textareaRef.current.focus()
+          textareaRef.current.setSelectionRange(cursorPos, cursorPos)
+        })
+        return
+      }
+
+      // 发送消息（读取 keybinding 配置）
+      const sendKey = keybindingStore.getKey('sendMessage')
+      if (sendKey && !isImeComposing && matchesKeybinding(nativeEvent, sendKey)) {
+        e.preventDefault()
+        handleSend()
+      }
+    },
+    [mentionOpen, slashOpen, mentionQuery, updateMentionQuery, handleSend, text, attachments, handleHistoryKeyDown, onCycleModel, onCycleThinkingLevel, onOpenModelSelector, argCompletionOpen, argCompletionItems, argCompletionIndex, applyArgCompletion, closeArgCompletions, handleArgCompletionTab],
+  )
+
+  const handleChange = useCallback(
+    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      const newText = e.target.value
+      setText(newText)
+
+      // 命令参数区：选中命令后自动弹出补全，继续输入实时筛选（防抖合并；
+      // IME 组合中不打扰，compositionend 后由下一次 change 接管）
+      if (isComposingRef.current) {
+        closeArgCompletions()
+      } else {
+        scheduleArgCompletion(newText, e.target.selectionStart || 0)
+      }
+
+      // 移动端 IME 兜底：全选删除时 compositionend 可能不触发（已知的
+      // 移动端输入法行为），isComposingRef 会永久卡在 true——之后回车
+      // 发送永远被 isImeComposing 拦截。文本被清空说明 composition 已
+      // 被中断，强制复位。
+      if (isComposingRef.current && newText.length === 0) {
+        isComposingRef.current = false
+        if (compositionEndTimerRef.current !== null) {
+          clearTimeout(compositionEndTimerRef.current)
+          compositionEndTimerRef.current = null
+        }
+      }
+
+      // 用户修改了内容，检查是否应退出历史模式
+      handleHistoryChange(newText)
+
+      // 同步检测 mention 是否被破坏/删除
+      // 比对 attachments 的 textRange：如果文本中对应位置不再匹配，删除该 attachment
+      setAttachments(prev => {
+        const surviving = prev.filter(a => {
+          if (!a.textRange) return true // 图片等无 textRange 的保留
+          const { start, end, value } = a.textRange
+          const actual = newText.slice(start, end)
+          return actual === value
+        })
+        // 只在数量变化时更新（避免不必要的 re-render）
+        return surviving.length === prev.length ? prev : surviving
+      })
+
+      // 检测 @ 触发
+      const cursorPos = e.target.selectionStart || 0
+      const trigger = detectMentionTrigger(newText, cursorPos, '@')
+
+      if (trigger) {
+        setMentionQuery(trigger.query)
+        setMentionStartIndex(trigger.startIndex)
+        setMentionOpen(true)
+        setSlashOpen(false) // 关闭斜杠菜单
+      } else {
+        setMentionOpen(false)
+
+        // 检测 / 触发（只在行首或空白后）
+        const slashTrigger = detectSlashTrigger(newText, cursorPos)
+        if (slashTrigger) {
+          // 命令名已通过 slash 菜单确定（存在匹配的 command attachment）：
+          // 不再重新进入命令选择。否则删掉参数区空格后（如 "/permission"）
+          // 回车会被 slash 菜单抢走，重新插入命令并复制一个命令附件；
+          // 此时参数补全（attachment 路径）仍然有效，回车应直接应用补全。
+          const hasMatchingCommandAttachment = attachments.some(
+            a => a.type === 'command' && a.commandName && a.textRange &&
+              newText.startsWith(`/${a.commandName}`),
+          )
+          if (!hasMatchingCommandAttachment) {
+            setSlashQuery(slashTrigger.query)
+            setSlashStartIndex(slashTrigger.startIndex)
+            setSlashOpen(true)
+          } else {
+            setSlashOpen(false)
+          }
+        } else {
+          setSlashOpen(false)
+        }
+      }
+    },
+    [scheduleArgCompletion, closeArgCompletions, handleHistoryChange, attachments],
+  )
+
+  const handleCompositionStart = useCallback(() => {
+    if (compositionEndTimerRef.current !== null) {
+      clearTimeout(compositionEndTimerRef.current)
+      compositionEndTimerRef.current = null
+    }
+    isComposingRef.current = true
+  }, [])
+
+  const handleCompositionEnd = useCallback(() => {
+    if (compositionEndTimerRef.current !== null) {
+      clearTimeout(compositionEndTimerRef.current)
+    }
+
+    compositionEndTimerRef.current = window.setTimeout(() => {
+      isComposingRef.current = false
+      compositionEndTimerRef.current = null
+      // IME 组合期间的 change 全部被跳过（isComposing 时 closeArgCompletions），
+      // 组合结束（确认/删除/切英文）后补发一次参数补全调度：否则手输命令时
+      // 参数区的补全要等下一次输入/删除才会出现。组合结束光标可能已在参数区，
+      // resolveArgCompletionContext 不命中时自然关闭，无副作用。
+      const textarea = textareaRef.current
+      if (!textarea) return
+      const cursorPos = textarea.selectionStart ?? textarea.value.length
+      scheduleArgCompletion(textarea.value, cursorPos)
+    }, 0)
+  }, [scheduleArgCompletion])
+
+  // @ Mention 选择处理
+  const handleMentionSelect = useCallback(
+    (item: MentionItem & { _enterFolder?: boolean }) => {
+      if (!textareaRef.current) return
+
+      // 如果是进入文件夹
+      if (item._enterFolder && item.type === 'folder') {
+        const basePath = (item.relativePath || item.displayName).replace(/\/+$/, '')
+        const folderPath = basePath + '/'
+        updateMentionQuery(folderPath)
+        return
+      }
+
+      // 构建 @ 文本
+      const mentionText = buildMentionText(item.relativePath || item.displayName)
+
+      // 计算新文本
+      const beforeAt = text.slice(0, mentionStartIndex)
+      const afterQuery = text.slice(mentionStartIndex + 1 + mentionQuery.length)
+      const newText = beforeAt + mentionText + ' ' + afterQuery
+
+      // 创建附件
+      const attachment: Attachment = {
+        id: crypto.randomUUID(),
+        type: item.type,
+        displayName: item.displayName,
+        relativePath: item.relativePath,
+        url: item.value,
+        mime: 'text/plain',
+        textRange: {
+          value: mentionText,
+          start: mentionStartIndex,
+          end: mentionStartIndex + mentionText.length,
+        },
+      }
+
+      setText(newText)
+      setAttachments(prev => [...prev, attachment])
+      setMentionOpen(false)
+
+      // 移动光标到 mention 后
+      requestAnimationFrame(() => {
+        if (!textareaRef.current) return
+        const newCursorPos = mentionStartIndex + mentionText.length + 1
+        textareaRef.current.setSelectionRange(newCursorPos, newCursorPos)
+        textareaRef.current.focus()
+      })
+    },
+    [text, mentionStartIndex, mentionQuery, updateMentionQuery],
+  )
+
+  const handleMentionClose = useCallback(() => {
+    setMentionOpen(false)
+    textareaRef.current?.focus()
+  }, [])
+
+  // / Slash Command 选择处理 - 类似 @ mention
+  const handleSlashSelect = useCallback(
+    (command: Command) => {
+      if (command.source === 'frontend') {
+        if (!onCommand) return
+
+        setSlashOpen(false)
+        submitCommandOptimistically(`/${command.name}`)
+        requestAnimationFrame(() => textareaRef.current?.focus())
+        return
+      }
+
+      if (!textareaRef.current) return
+
+      // 构建 /command 文本
+      const commandText = `/${command.name}`
+
+      // 计算新文本：替换 /query 为 /command
+      const beforeSlash = text.slice(0, slashStartIndex)
+      const afterQuery = text.slice(slashStartIndex + 1 + slashQuery.length)
+      const newText = beforeSlash + commandText + ' ' + afterQuery
+
+      // 创建 command attachment
+      const attachment: Attachment = {
+        id: crypto.randomUUID(),
+        type: 'command',
+        displayName: command.name,
+        commandName: command.name,
+        textRange: {
+          value: commandText,
+          start: slashStartIndex,
+          end: slashStartIndex + commandText.length,
+        },
+      }
+
+      setText(newText)
+      // 幂等：同一命令重复选择时替换旧附件（textRange 可能随文本变化），
+      // 避免输入框里累积多个相同的命令附件
+      setAttachments(prev => {
+        const existingIndex = prev.findIndex(
+          a => a.type === 'command' && a.commandName === command.name,
+        )
+        if (existingIndex >= 0) {
+          const next = [...prev]
+          next[existingIndex] = attachment
+          return next
+        }
+        return [...prev, attachment]
+      })
+      setSlashOpen(false)
+
+      // 自动弹出参数补全：选中带参命令后光标已在参数区，直接列出候选
+      // （无候选的命令会自动关闭菜单，不发多余 UI）
+      const argStart = slashStartIndex + commandText.length + 1
+      void requestArgCompletions({ commandName: command.name, argStart }, '')
+
+      // 移动光标到命令后
+      requestAnimationFrame(() => {
+        if (!textareaRef.current) return
+        const newCursorPos = slashStartIndex + commandText.length + 1
+        textareaRef.current.setSelectionRange(newCursorPos, newCursorPos)
+        textareaRef.current.focus()
+      })
+    },
+    [text, slashStartIndex, slashQuery, onCommand, requestArgCompletions, submitCommandOptimistically],
+  )
+
+  const handleSlashClose = useCallback(() => {
+    setSlashOpen(false)
+    textareaRef.current?.focus()
+  }, [])
+
+
+  // 通用文件上传 — 根据模型能力判断是否接受
+  const handleFilesSelected = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0 || !supportsAnyFile || isSubmitting) return
+
+      const nextAttachments: Attachment[] = []
+
+      for (const rawFile of files) {
+        const file = ensureFileMime(rawFile)
+
+        // 按 MIME 类型检查模型能力
+        if (!isFileSupported(file.type, fileCaps)) continue
+
+        try {
+          const dataUrl = await readFileAsDataUrl(file)
+
+          nextAttachments.push({
+            id: crypto.randomUUID(),
+            type: 'file',
+            displayName: file.name,
+            url: dataUrl,
+            mime: file.type,
+          })
+        } catch (err) {
+          console.warn('[InputBox] Failed to process file:', err)
+        }
+      }
+
+      if (nextAttachments.length > 0) {
+        setAttachments(prev => [...prev, ...nextAttachments])
+      }
+    },
+    [supportsAnyFile, fileCaps, isSubmitting],
+  )
+
+  // 删除附件
+  const handleRemoveAttachment = useCallback(
+    (id: string) => {
+      if (isSubmitting) return
+
+      const attachment = attachments.find(a => a.id === id)
+      if (!attachment) return
+
+      // 如果有 textRange，从文本中删除 @mention
+      if (attachment.textRange) {
+        const { value } = attachment.textRange
+        // 删除 @mention 和后面的空格
+        const newText = text.replace(value + ' ', '').replace(value, '')
+        setText(newText)
+      }
+
+      setAttachments(prev => prev.filter(a => a.id !== id))
+    },
+    [attachments, isSubmitting, text],
+  )
+
+  // 粘贴处理 — 根据模型能力过滤可粘贴的文件类型
+  const handlePaste = useCallback(
+    (e: React.ClipboardEvent) => {
+      if (supportsAnyFile) {
+        const items = e.clipboardData?.items
+        const files: File[] = []
+
+        if (items) {
+          for (let i = 0; i < items.length; i++) {
+            if (items[i].kind === 'file') {
+              const file = items[i].getAsFile()
+              if (file && isFileSupported(ensureFileMime(file).type, fileCaps)) files.push(file)
+            }
+          }
+        }
+
+        if (files.length > 0) {
+          e.preventDefault()
+          void handleFilesSelected(files)
+          return
+        }
+      }
+
+      // 文本粘贴：让 textarea 默认处理（天然支持换行和 undo）
+    },
+    [supportsAnyFile, fileCaps, handleFilesSelected],
+  )
+
+  // 拖拽文件到输入框
+  const handleDragEnter = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      dragCounterRef.current++
+      if (supportsAnyFile && e.dataTransfer.types.includes('Files')) {
+        setIsDragging(true)
+      }
+    },
+    [supportsAnyFile],
+  )
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+  }, [])
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    dragCounterRef.current--
+    if (dragCounterRef.current === 0) {
+      setIsDragging(false)
+    }
+  }, [])
+
+  // 将拖入的文件信息插入为 @mention 附件
+  const insertDraggedFiles = useCallback(
+    (fileInfos: DraggedFileInfo[]) => {
+      if (fileInfos.length === 0) return
+
+      const currentText = textareaRef.current?.value ?? text
+      const cursorPos = textareaRef.current?.selectionStart ?? currentText.length
+      const beforeCursor = currentText.slice(0, cursorPos)
+      const afterCursor = currentText.slice(cursorPos)
+      const needSpaceBefore = beforeCursor.length > 0 && !beforeCursor.endsWith(' ') && !beforeCursor.endsWith('\n')
+      const prefix = needSpaceBefore ? ' ' : ''
+      const mentions = fileInfos.map(fileInfo => {
+        const relativePath = normalizePath(fileInfo.path)
+        return {
+          fileInfo,
+          relativePath,
+          mentionText: buildMentionText(relativePath),
+        }
+      })
+      const insertedText = `${prefix}${mentions.map(item => item.mentionText).join(' ')} `
+      const newText = beforeCursor + insertedText + afterCursor
+      let mentionStart = cursorPos + prefix.length
+
+      const nextAttachments: Attachment[] = mentions.map(({ fileInfo, relativePath, mentionText }) => {
+        const start = mentionStart
+        mentionStart += mentionText.length + 1
+
+        return {
+          id: crypto.randomUUID(),
+          type: fileInfo.type,
+          displayName: fileInfo.name,
+          relativePath,
+          url: toFileUrl(fileInfo.absolute),
+          mime: fileInfo.type === 'file' ? 'text/plain' : undefined,
+          textRange: {
+            value: mentionText,
+            start,
+            end: start + mentionText.length,
+          },
+        }
+      })
+
+      setText(newText)
+      setAttachments(prev => [...prev, ...nextAttachments])
+
+      requestAnimationFrame(() => {
+        if (!textareaRef.current) return
+        const newCursorPos = cursorPos + insertedText.length
+        textareaRef.current.setSelectionRange(newCursorPos, newCursorPos)
+        textareaRef.current.focus()
+      })
+    },
+    [text],
+  )
+
+  const insertDraggedFile = useCallback((fileInfo: DraggedFileInfo) => insertDraggedFiles([fileInfo]), [insertDraggedFiles])
+
+  // 命令参数补全菜单：点击外部关闭
+  useEffect(() => {
+    if (!argCompletionOpen) return
+    const handleClickOutside = (e: PointerEvent) => {
+      if (argCompletionMenuRef.current && !argCompletionMenuRef.current.contains(e.target as Node)) {
+        closeArgCompletions()
+      }
+    }
+    document.addEventListener('pointerdown', handleClickOutside)
+    return () => document.removeEventListener('pointerdown', handleClickOutside)
+  }, [argCompletionOpen, closeArgCompletions])
+
+  // 选中项变化时滚动到可见区域（键盘 ↑↓ 选择与 slash 菜单一致，
+  // 避免选中项被滚动容器裁切、只能鼠标滚轮才能看到）
+  useLayoutEffect(() => {
+    if (!argCompletionOpen || !argCompletionListRef.current) return
+    const selectedEl = argCompletionListRef.current.children[argCompletionIndex] as HTMLElement | undefined
+    if (selectedEl) {
+      scrollItemIntoView(argCompletionListRef.current, selectedEl)
+    }
+  }, [argCompletionOpen, argCompletionIndex, argCompletionItems])
+
+  useEffect(() => {
+    const updateInternalFileDragState = () => {
+      const active = getInternalDragSnapshot().active
+      if (!active || active.payload.kind !== 'file-mention') {
+        setIsInternalFileDragging(false)
+        return
+      }
+      setIsInternalFileDragging(isInternalPointInsideElement(active.current, inputContainerRef.current))
+    }
+
+    updateInternalFileDragState()
+    return subscribeInternalDrag(updateInternalFileDragState)
+  }, [])
+
+  useEffect(() => {
+    return subscribeInternalDrop(event => {
+      if (event.payload.kind !== 'file-mention') return
+      if (!isInternalPointInsideElement(event.point, inputContainerRef.current)) return
+      insertDraggedFile(event.payload.file)
+    })
+  }, [insertDraggedFile])
+
+  const buildDraggedFileInfo = useCallback(
+    (fileInfo: DroppedPathInfo): DraggedFileInfo => ({
+      type: fileInfo.type,
+      path: getMentionPathForDroppedPath(fileInfo.path, rootPath),
+      absolute: fileInfo.path,
+      name: fileInfo.name || getFileName(fileInfo.path),
+    }),
+    [rootPath],
+  )
+
+  const createUploadAttachmentFromDroppedPath = useCallback(
+    async (fileInfo: DroppedPathInfo): Promise<Attachment | null> => {
+      if (fileInfo.type !== 'file') return null
+
+      const mime = getMimeFromPath(fileInfo.path)
+      if (!isFileSupported(mime, fileCaps)) return null
+
+      try {
+        const { readFile } = await import('@tauri-apps/plugin-fs')
+        const bytes = await readFile(fileInfo.path)
+        return {
+          id: crypto.randomUUID(),
+          type: 'file',
+          displayName: fileInfo.name || getFileName(fileInfo.path),
+          url: bytesToDataUrl(bytes, mime),
+          mime,
+        }
+      } catch (err) {
+        console.warn('[InputBox] Failed to read dropped file for upload:', err)
+        return null
+      }
+    },
+    [fileCaps],
+  )
+
+  const handleTauriExternalDrop = useCallback(
+    async (paths: string[]) => {
+      if (paths.length === 0 || isSubmitting) return
+
+      try {
+        const droppedPaths = await getDroppedPathsInfo(paths)
+        const uploadAttachments: Attachment[] = []
+        const mentionFiles: DraggedFileInfo[] = []
+
+        for (const droppedPath of droppedPaths) {
+          if (externalFileDropMode === 'mention') {
+            mentionFiles.push(buildDraggedFileInfo(droppedPath))
+            continue
+          }
+
+          const uploadAttachment = await createUploadAttachmentFromDroppedPath(droppedPath)
+          if (uploadAttachment) {
+            uploadAttachments.push(uploadAttachment)
+          } else {
+            mentionFiles.push(buildDraggedFileInfo(droppedPath))
+          }
+        }
+
+        if (uploadAttachments.length > 0) {
+          setAttachments(prev => [...prev, ...uploadAttachments])
+        }
+
+        insertDraggedFiles(mentionFiles)
+      } catch (err) {
+        console.warn('[InputBox] Failed to process Tauri dropped paths:', err)
+      }
+    },
+    [buildDraggedFileInfo, createUploadAttachmentFromDroppedPath, externalFileDropMode, insertDraggedFiles, isSubmitting],
+  )
+
+  const handleTauriDragDropEvent = useCallback(
+    (event: TauriDragDropEvent) => {
+      if (event.type === 'leave') {
+        dragCounterRef.current = 0
+        setIsDragging(false)
+        return
+      }
+
+      const insideInput = isTauriDropPointInsideElement(event.position, inputContainerRef.current)
+
+      if (event.type === 'enter' || event.type === 'over') {
+        setIsDragging(insideInput)
+        return
+      }
+
+      dragCounterRef.current = 0
+      setIsDragging(false)
+      if (insideInput) {
+        lastTauriDropAtRef.current = Date.now()
+        void handleTauriExternalDrop(event.paths)
+      }
+    },
+    [handleTauriExternalDrop],
+  )
+
+  useEffect(() => subscribeTauriDragDrop(handleTauriDragDropEvent), [handleTauriDragDropEvent])
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      dragCounterRef.current = 0
+      setIsDragging(false)
+
+      // 原生文件拖拽（从操作系统拖入）
+      if (e.dataTransfer.files.length > 0) {
+        if (Date.now() - lastTauriDropAtRef.current < 750) return
+        void handleFilesSelected(Array.from(e.dataTransfer.files))
+      }
+    },
+    [handleFilesSelected],
+  )
+
+  // 滚动同步（备用，overlay 内部也监听了 scroll）
+  const handleScroll = useCallback(() => {
+    // overlay 通过 useEffect 自动同步，这里留空
+  }, [])
+
+  // ============================================
+  // Render
+  // ============================================
+
+  // 计算已选择的 items (用于过滤菜单)
+  const excludeValues = useMemo(() => {
+    const set = new Set<string>()
+    attachments.forEach(a => {
+      if (a.url) set.add(a.url)
+      if (a.agentName) set.add(a.agentName)
+    })
+    return set
+  }, [attachments])
+
+  // 底部 padding 计算：
+  // 核心约束：收起/展开态的总底部缓冲必须相等，否则折叠时 inputBoxHeight 变化
+  // → bottomPadding 变化 → virtualizer paddingEnd 变化（virtual-core 不补偿 paddingEnd）
+  // → dist 平移 → isCollapsed 翻转回 → 振荡闪烁。
+  //
+  // 展开态总缓冲 = Footer(h-8=2rem) + padding = 2rem + max(0, env-2rem) = max(2rem, env)
+  // 收起态总缓冲 = 0(无 Footer) + padding → padding 必须 = max(2rem, env)
+  //
+  // - env ≥ 2rem（iPhone home indicator）：收起 = env，胶囊贴 safe-area 顶，无多截
+  // - env < 2rem（PC / 部分 Android）：收起 = 2rem，胶囊与展开态 Footer 位置对齐
+  //
+  // 但 2rem(32px) 对胶囊来说视觉上离底部太远，下方用 translateY 把收起态内容
+  // 整体下移补偿——transform 不影响布局高度，inputBoxHeight 不变，不破坏上述约束。
+  const bottomDockPadding = isCollapsed
+    ? 'max(2rem, var(--safe-area-inset-bottom, 0px))'
+    : 'max(0px, calc(var(--safe-area-inset-bottom, 0px) - 2rem))'
+  // 收起态视觉下移：把 2rem 撑出的多余缓冲吃掉，只留 0.75rem(12px) 呼吸空间
+  const collapsedVisualOffset = isCollapsed
+    ? 'translateY(calc(2rem - 0.75rem))'
+    : 'none'
+
+  return (
+    <div className="w-full">
+      <div
+        className={`mx-auto max-w-3xl transition-[max-width] duration-300 ease-in-out ${isCompact ? 'px-2' : 'px-4'} ${
+          isCollapsed ? 'pointer-events-none' : 'pointer-events-auto'
+        }`}
+        style={{ paddingBottom: bottomDockPadding }}
+      >
+        <div
+          ref={contentWrapRef}
+          onPointerDown={handleContainerPointerDown}
+          className={`relative flex flex-col gap-2 ${isCollapsed ? 'justify-end' : ''}`}
+          style={
+            isCollapsed && expandedHeight > 0
+              ? { minHeight: expandedHeight, maxHeight: composerMaxHeight, transform: collapsedVisualOffset }
+              : { maxHeight: composerMaxHeight }
+          }
+        >
+          {/* FloatingActions — 
+              展开态：absolute 定位在内容区上方，不占文档流，避免显隐变化影响高度导致滚动抖动
+              收起态：正常文档流，紧贴胶囊上方
+              始终同一 DOM 节点，切换时 FloatingActions 不 remount，避免入场动画闪烁 */}
+          <div
+            data-floating-actions
+            className={
+              isCollapsed
+                ? 'flex justify-center pb-2'
+                : 'absolute bottom-full left-0 right-0 flex justify-center pb-2 pointer-events-none'
+            }
+          >
+            <div className={isCollapsed ? undefined : 'pointer-events-auto'}>
+              <FloatingActions
+                showScrollToBottom={showScrollToBottom}
+                isCollapsed={isCollapsed}
+                canRedo={canRedo}
+                revertSteps={revertSteps}
+                onRedo={onRedo}
+                onRedoAll={onRedoAll}
+                onScrollToBottom={onScrollToBottom}
+                collapsedPermission={collapsedPermission}
+                collapsedQuestion={collapsedQuestion}
+              />
+            </div>
+          </div>
+
+          {/* Collapsed Capsule - 移动端收起状态 */}
+          {isCollapsed && (
+            <CollapsedCapsule
+              onExpand={handleExpandInput}
+              showScrollToBottom={showScrollToBottom}
+              onScrollToBottom={onScrollToBottom}
+            />
+          )}
+
+          {/* Wrapper — 菜单在 glass 容器外，避免嵌套 backdrop-filter 导致模糊失效。
+              收起态只做视觉隐藏，不能卸载输入区，否则移动端虚拟键盘会随焦点元素销毁而关闭。 */}
+          <div
+            className={`z-30 transition-[opacity,transform] duration-200 ease-out ${
+              isCollapsed
+                ? 'pointer-events-none absolute inset-x-0 bottom-0 opacity-0 scale-95'
+                : 'relative opacity-100 scale-100'
+            }`}
+          >
+            {/* @ Mention Menu */}
+            <MentionMenu
+              ref={mentionMenuRef}
+              isOpen={mentionOpen}
+              query={mentionQuery}
+              rootPath={rootPath}
+              excludeValues={excludeValues}
+              onSelect={handleMentionSelect}
+              onNavigate={updateMentionQuery}
+              onClose={handleMentionClose}
+            />
+
+            {/* / Slash Command Menu */}
+            <SlashCommandMenu
+              ref={slashMenuRef}
+              isOpen={slashOpen}
+              query={slashQuery}
+              sessionId={sessionId}
+              onSelect={handleSlashSelect}
+              onClose={handleSlashClose}
+            />
+
+            {/* 命令参数 Tab 补全菜单（pi TUI getArgumentCompletions parity） */}
+            {argCompletionOpen && (
+              <div
+                ref={argCompletionMenuRef}
+                data-dropdown-open
+                className="absolute z-50 w-full md:max-w-[360px] flex flex-col glass border border-border-200/60 rounded-xl shadow-lg overflow-hidden"
+                style={{ bottom: '100%', left: 0, marginBottom: '8px', maxHeight: 'min(280px, calc(100dvh - 10rem))' }}
+              >
+                <div ref={argCompletionListRef} className="flex-1 overflow-y-auto custom-scrollbar p-1.5">
+                  {argCompletionLoading && argCompletionItems.length === 0 && (
+                    <div className="px-2 py-4 text-center text-[length:var(--fs-base)] text-text-400">{t('common:loading')}</div>
+                  )}
+                  {!argCompletionLoading && argCompletionItems.length === 0 && (
+                    <div className="px-2 py-4 text-center text-[length:var(--fs-base)] text-text-400">{t('slashCommand.noMatchingCommands')}</div>
+                  )}
+                  {argCompletionItems.map((item, index) => (
+                    <button
+                      key={item.value}
+                      title={[item.label, item.description].filter(Boolean).join(' ')}
+                      className={`w-full px-2.5 py-2 md:py-1.5 flex items-center gap-3 text-left rounded-lg transition-colors ${index === argCompletionIndex ? 'bg-accent-main-100/10 text-text-100' : 'text-text-200 hover:bg-bg-100/40'}`}
+                      onClick={() => applyArgCompletion(item)}
+                      onPointerEnter={() => setArgCompletionIndex(index)}
+                    >
+                      <span className={`font-mono text-[length:var(--fs-base)] flex-shrink-0 truncate leading-5 ${index === argCompletionIndex ? 'text-accent-main-100' : 'text-text-300'}`}>
+                        {item.label}
+                      </span>
+                      {item.description && (
+                        <div className="flex-1 min-w-0 text-[length:var(--fs-sm)] text-text-400 truncate">{item.description}</div>
+                      )}
+                    </button>
+                  ))}
+                </div>
+                <div className="hidden md:flex px-3 py-1.5 text-[length:var(--fs-xs)] text-text-500/70 gap-3">
+                  <span>{t('common:upDownSelect')}</span>
+                  <span>{t('common:enterRun')}</span>
+                  <span>{t('common:escCancel')}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Input Container */}
+            <div
+              ref={inputContainerRef}
+              data-input-box
+              data-pane-id={paneId}
+              onPointerDown={handleContainerPointerDown}
+              onDragEnter={handleDragEnter}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              className={`glass rounded-2xl relative overflow-hidden focus-within:outline-none shadow-lg ${
+                isDragging || isInternalFileDragging
+                  ? 'border border-accent-main-100 ring-2 ring-accent-main-100/30'
+                  : isStreaming
+                    ? 'border border-accent-main-100/50 animate-border-pulse'
+                    : 'border border-border-200/60'
+              }`}
+              style={{ maxHeight: inputContainerMaxHeight }}
+            >
+              {/* Drop overlay */}
+              {(isDragging || isInternalFileDragging) && (
+                <div className="absolute inset-0 z-50 rounded-2xl bg-accent-main-100/5 backdrop-blur-[1px] flex items-center justify-center pointer-events-none">
+                  <span className="text-[length:var(--fs-base)] text-accent-main-100 font-medium">{t('inputBox.dropFilesHere')}</span>
+                </div>
+              )}
+
+              <div className="relative">
+                <div className="overflow-hidden">
+                  {/* Attachments Preview - 显示在输入框上方 */}
+                  <div
+                    ref={attachmentSectionRef}
+                    className={`grid transition-[grid-template-rows,opacity] duration-300 ease-out ${
+                      attachments.length > 0 ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
+                    }`}
+                  >
+                    <div className="overflow-hidden">
+                      <div className="px-4 pt-3 pb-1">
+                        <div className="relative">
+                          <div
+                            ref={attachmentRailRef}
+                            onScroll={syncAttachmentRailState}
+                            onWheel={handleAttachmentRailWheel}
+                            className="overflow-x-auto overflow-y-hidden overscroll-x-contain no-scrollbar touch-pan-x"
+                            style={{ WebkitOverflowScrolling: 'touch' }}
+                          >
+                            <AttachmentPreview
+                              attachments={attachments}
+                              onRemove={handleRemoveAttachment}
+                              variant="rail"
+                              className={isSubmitting ? 'pr-4 pointer-events-none opacity-70' : 'pr-4'}
+                            />
+                          </div>
+
+                          {attachmentsOverflowing && showAttachmentLeftFade && (
+                            <div className="pointer-events-none absolute inset-y-0 left-0 w-8 bg-gradient-to-r from-bg-000/50 to-transparent" />
+                          )}
+
+                          {attachmentsOverflowing && showAttachmentRightFade && (
+                            <div className="pointer-events-none absolute inset-y-0 right-0 w-10 bg-gradient-to-l from-bg-000/50 to-transparent" />
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Text Input - 简单的 textarea，直接显示文本 */}
+                  <div className="pt-4 pb-2">
+                    <textarea
+                      ref={textareaRef}
+                      value={text}
+                      onChange={handleChange}
+                      onKeyDown={handleKeyDown}
+                      onCompositionStart={handleCompositionStart}
+                      onCompositionEnd={handleCompositionEnd}
+                      onPaste={handlePaste}
+                      onScroll={handleScroll}
+                      onFocus={handleFocus}
+                      onBlur={handleBlur}
+                      disabled={inputDisabled}
+                      placeholder={isCompact ? t('inputBox.replyToAgentMobile') : t('inputBox.replyToAgent')}
+                      className={`w-full resize-none focus:outline-none focus:ring-0 bg-transparent text-text-100 placeholder:text-text-400 custom-scrollbar ${isCompact ? 'px-3' : 'px-4'}`}
+                      style={{
+                        ...TEXT_STYLE,
+                        minHeight: '24px',
+                        maxHeight: textareaMaxHeight,
+                      }}
+                      rows={1}
+                    />
+                  </div>
+
+                  {/* Bottom Bar -> InputToolbar */}
+                  <div ref={toolbarRef}>
+                    <InputToolbar
+
+
+
+                      variants={variants}
+                      selectedVariant={selectedVariant}
+                      onVariantChange={onVariantChange}
+                      fileCapabilities={fileCaps}
+                      onFilesSelected={handleFilesSelected}
+                      isStreaming={isStreaming}
+                      sessionActive={sessionActive}
+                      isCompacting={isCompacting}
+                      isSending={isSubmitting}
+                      onAbort={onAbort}
+                      deliveryMode={deliveryMode}
+                      onDeliveryModeChange={setDeliveryMode}
+                      canSteer={piCapabilities.promptSteer}
+                      canFollowUp={piCapabilities.promptFollowUp}
+                      canSend={canSend || false}
+                      onSend={handleSend}
+                      models={models}
+                      selectedModelKey={selectedModelKey}
+                      onModelChange={onModelChange}
+                      modelsLoading={modelsLoading}
+                      inputContainerRef={inputContainerRef}
+                      modelSelectorRef={modelSelectorRef}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Footer: 常驻 DOM，收起用 hidden。避免 isCollapsed 抖一下时卸载整行（自动放行/免责声明闪烁） */}
+        <div
+          ref={footerRef}
+          onPointerDown={handleContainerPointerDown}
+          className={`h-8 flex items-center justify-center ${isCollapsed ? 'hidden' : ''}`}
+          aria-hidden={isCollapsed || undefined}
+        >
+          <InputFooter
+            sessionId={sessionId}
+            onNewChat={onNewChat}
+            inputContainerRef={inputContainerRef}
+          />
+        </div>
+      </div>
+    </div>
+  )
+})
+
+// ============================================
+// Export with memo for performance optimization
+// ============================================
+
+export const InputBox = memo(InputBoxComponent)

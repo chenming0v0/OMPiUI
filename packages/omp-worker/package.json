@@ -1,0 +1,33 @@
+{
+  "name": "@piui/pi-worker",
+  "version": "0.7.0",
+  "private": true,
+  "type": "module",
+  "description": "OMPiUI worker — drives OMP (`oh-my-pi`) agent sessions over the official `omp --mode rpc` protocol",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./entry": {
+      "types": "./dist/entry.d.ts",
+      "import": "./dist/entry.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test src/**/*.test.ts"
+  },
+  "dependencies": {
+    "@piui/protocol": "0.6.21"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}
