@@ -237,7 +237,7 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
         const body: HealthResponse = {
           ok: true,
           protocolVersion: PROTOCOL_VERSION,
-          service: "piui-server",
+          service: "ompiui-server",
           piSdkVersion: handshake?.piSdkVersion ?? PI_PARITY_SDK_VERSION,
           piSdkVerified: handshake?.piSdkVerified,
           piSdkFallback: handshake?.piSdkFallback ?? null,

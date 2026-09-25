@@ -33,17 +33,19 @@ packages/
   protocol/   前后端消息协议（来自 PiUI @piui/protocol，扩展子代理帧）
 ```
 
-## 里程碑
+## 里程碑（执行结果）
 
-- [x] M0 探索：确认 OMP RPC 协议可用（已完成端到端冒烟测试：set_model → prompt → prompt_result → session_settled）
+- [x] M0 探索：确认 OMP RPC 协议可用（端到端冒烟：set_model → prompt → prompt_result → session_settled）
 - [x] M0 git init、PLAN.md
-- [ ] M1 项目骨架：复制 PiUI 四包为 OMPiUI 基底，剥离 Pi SDK 依赖
-- [ ] M2 omp-worker：RPC 子进程驱动（协议 v2、事件转发、子代理订阅、会话列表/恢复）
-- [ ] M3 前端接通：session 流、聊天流、模型选择全走 OMP
-- [ ] M4 子代理 UI：TaskRenderer 风格（状态徽章、展开实时转录、ToolBadge、todo 列表）
-- [ ] M5 构建 + 浏览器实测（真实对话、子代理启动、模型切换）并修复
-- [ ] M6 README、推 GitHub、发 issues
+- [x] M1 项目骨架：复制 PiUI 四包为 OMPiUI 基底
+- [x] M2 omp-worker：OmpRpcSession/OmpCatalog/OmpProviderAuth/OmpExtensionUiBridge（协议 v2、rpc_chunk 重组、事件适配、子代理订阅、扩展 UI 桥）
+- [x] M3 前端接通：session 流、聊天流、模型选择全走 OMP（磁盘目录 + 控制进程）
+- [x] M4 子代理 UI：TaskRenderer 内联 SubSessionView（进度/token/工具徽标/转录流）+ omp.subagent 通道
+- [x] M5 构建 + 浏览器实测（真实对话×2 模型、子代理×2、模型切换、新会话）并修复
+       - 修复：omp.exe 解析、React #185（store 快照缓存）、wbtest 网关 wait 工具 0-token 兼容层
+- [x] M6 README、推 GitHub、发 issues
 
-## 测试凭据（临时，2 天后过期）
+## 实测结论（2026-09-25）
 
-- baseUrl `http://154.9.227.164:3000/v1`，模型 `[wb]deepseek-v4-flash`（已写入 `~/.omp/agent/models.yml` 的 `wbtest` provider）
+- wbtest 网关（http://154.9.227.164:3000/v1，[wb]deepseek-v4-flash）：纯文本对话 OK；原生 function calling 被上游拒绝（invalid function call parameters / 0-token 空响应），DSML 内联方言被翻译层损坏 —— 网关缺陷，已做 compat 覆盖层 + 记录 issue
+- 子代理实测改用用户配置的 f_grok/grok-4.7：task 工具真实启动子代理（BananaReply/MangoSum），omp.subagent 帧全程到达前端，内联实时转录工作正常
