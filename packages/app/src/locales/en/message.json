@@ -94,7 +94,9 @@
     "failedSuffix_other": " ({{count}} failed)",
     "failedAllSuffix": " (all failed)",
     "moreActions_one": "And {{count}} more action",
-    "moreActions_other": "And {{count}} more actions"
+    "moreActions_other": "And {{count}} more actions",
+    "taskDone": "Subagent finished",
+    "taskActive": "Subagent running"
   },
   "todo": {
     "tasks": "Tasks",

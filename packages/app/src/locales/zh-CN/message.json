@@ -70,7 +70,9 @@
     "otherFailed": "{{count}} 个工具调用失败",
     "failedSuffix": "（{{count}} 次失败）",
     "failedAllSuffix": "（全部失败）",
-    "moreActions": "等 {{count}} 项操作"
+    "moreActions": "等 {{count}} 项操作",
+    "taskDone": "子代理已完成",
+    "taskActive": "子代理运行中"
   },
   "todo": {
     "tasks": "任务",

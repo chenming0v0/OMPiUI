@@ -1,7 +1,22 @@
 import { spawn, type ChildProcess } from "node:child_process"
+import { existsSync } from "node:fs"
+import { homedir } from "node:os"
+import { join } from "node:path"
 import { EventEmitter } from "node:events"
 import type { JsonObject, JsonValue } from "@piui/protocol"
 import { isJsonObject } from "@piui/protocol"
+
+/**
+ * 可选的 OMP 兼容配置覆盖：`~/.ompiui/omp-compat.yml` 存在时以 `--config`
+ * 附加到每个 OMPiUI 拉起的 `omp --mode rpc` 进程（只影响 OMPiUI 会话，
+ * 不碰用户 CLI）。用于绕过个别网关的怪癖，例如某些 Anthropic 翻译层
+ * 会在看到 OMP 的 `wait` 工具时返回 0-token 空响应（`async.enabled: false`
+ * 可让 wait 工具退场）。
+ */
+export function ompCompatConfigArgs(): string[] {
+  const path = join(homedir(), ".ompiui", "omp-compat.yml")
+  return existsSync(path) ? ["--config", path] : []
+}
 
 /**
  * OMP RPC 客户端：把 `omp --mode rpc` 的 stdio JSONL 协议包成一个 Node 友好的
@@ -69,8 +84,10 @@ export class OmpRpcClient extends EventEmitter {
   constructor(readonly options: OmpRpcClientOptions) {
     super()
     this.setMaxListeners(100)
-    const bin = options.bin?.trim() || (process.platform === "win32" ? "omp.cmd" : "omp")
-    const args = ["--mode", "rpc", ...(options.args ?? [])]
+    // omp 是外部 CLI，参数全部是固定 flag（无用户输入），shell 解析在这里安全；
+    // Windows 上 shell:true 让 cmd 按 PATHEXT 自行解析 omp.exe
+    const bin = options.bin?.trim() || "omp"
+    const args = ["--mode", "rpc", ...ompCompatConfigArgs(), ...(options.args ?? [])]
     // omp 是外部 CLI，参数全部是固定 flag（无用户输入），shell 解析在这里安全
     this.proc = spawn(bin, args, {
       cwd: options.cwd,

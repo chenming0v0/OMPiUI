@@ -170,16 +170,23 @@ class OmpSubagentStore {
   private bySession = new Map<string, string[]>()
   private revision = 0
   private listeners = new Set<() => void>()
+  /** useSyncExternalStore 要求 getSnapshot 返回稳定引用：按 revision 缓存 */
+  private cachedSnapshot: OmpSubagentSnapshot = { runs: [], revision: 0 }
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
   }
 
-  getSnapshot = (): OmpSubagentSnapshot => ({
-    runs: [...this.runs.values()].sort((a, b) => a.index - b.index),
-    revision: this.revision,
-  })
+  getSnapshot = (): OmpSubagentSnapshot => {
+    if (this.cachedSnapshot.revision !== this.revision) {
+      this.cachedSnapshot = {
+        runs: [...this.runs.values()].sort((a, b) => a.index - b.index),
+        revision: this.revision,
+      }
+    }
+    return this.cachedSnapshot
+  }
 
   /** TaskRenderer 按 task 工具调用的 call.id 查内联转录 */
   getByToolCall = (toolCallId: string | undefined): OmpSubagentRun | undefined => {
