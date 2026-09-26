@@ -69,6 +69,88 @@ describe('UpdateStore', () => {
 
     expect(store.getSnapshot().dismissedVersion).toBe('0.5.2')
     expect(shouldShowUpdateToast(store.getSnapshot())).toBe(false)
-    expect(localStorage.getItem('piui:update-check')).toContain('0.5.2')
+    expect(localStorage.getItem('ompiui:update-check')).toContain('0.5.2')
+  })
+
+  it('ignores a cached PiUI release', () => {
+    localStorage.setItem(
+      'piui:update-check',
+      JSON.stringify({
+        latestRelease: {
+          version: '0.6.21',
+          tagName: 'v0.6.21',
+          url: 'https://github.com/lehhair/PiUI/releases/tag/v0.6.21',
+          publishedAt: '2026-08-23T13:29:50Z',
+          name: 'v0.6.21',
+        },
+        lastCheckedAt: 1,
+        dismissedVersion: null,
+      }),
+    )
+
+    const store = new UpdateStore('0.1.0')
+
+    expect(store.getSnapshot().latestRelease).toBeNull()
+    expect(hasUpdateAvailable(store.getSnapshot())).toBe(false)
+    expect(localStorage.getItem('piui:update-check')).toBeNull()
+  })
+
+  it('drops a persisted release from another repository', () => {
+    localStorage.setItem(
+      'ompiui:update-check',
+      JSON.stringify({
+        latestRelease: {
+          version: '0.6.21',
+          tagName: 'v0.6.21',
+          url: 'https://github.com/lehhair/PiUI/releases/tag/v0.6.21',
+          publishedAt: '2026-08-23T13:29:50Z',
+          name: null,
+        },
+        lastCheckedAt: 1,
+        dismissedVersion: null,
+      }),
+    )
+
+    const store = new UpdateStore('0.1.0')
+
+    expect(store.getSnapshot().latestRelease).toBeNull()
+    expect(hasUpdateAvailable(store.getSnapshot())).toBe(false)
+  })
+
+  it('clears the cached release when OMPiUI has not published one', async () => {
+    localStorage.setItem(
+      'ompiui:update-check',
+      JSON.stringify({
+        latestRelease: {
+          version: '0.2.0',
+          tagName: 'v0.2.0',
+          url: 'https://github.com/chenming0v0/OMPiUI/releases/tag/v0.2.0',
+          publishedAt: '2026-09-01T00:00:00Z',
+          name: 'v0.2.0',
+        },
+        lastCheckedAt: 1,
+        dismissedVersion: null,
+      }),
+    )
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+        json: async () => ({}),
+      }),
+    )
+
+    const store = new UpdateStore('0.1.0')
+    expect(hasUpdateAvailable(store.getSnapshot())).toBe(true)
+
+    await store.checkForUpdates({ force: true })
+
+    expect(store.getSnapshot().latestRelease).toBeNull()
+    expect(store.getSnapshot().error).toBeNull()
+    expect(hasUpdateAvailable(store.getSnapshot())).toBe(false)
+    expect(fetch).toHaveBeenCalledWith(RELEASES_API_URL, {
+      headers: { Accept: 'application/vnd.github+json' },
+    })
   })
 })

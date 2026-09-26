@@ -33,7 +33,9 @@ export interface UpdateSettingsBackup {
 
 type Subscriber = () => void
 
-const STORAGE_KEY = 'piui:update-check'
+const STORAGE_KEY = 'ompiui:update-check'
+const LEGACY_STORAGE_KEY = 'piui:update-check'
+const OWN_RELEASE_URL_PREFIX = 'https://github.com/chenming0v0/OMPiUI/'
 const CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000
 export const RELEASES_API_URL = 'https://api.github.com/repos/chenming0v0/OMPiUI/releases/latest'
 export const RELEASES_PAGE_URL = 'https://github.com/chenming0v0/OMPiUI/releases/latest'
@@ -74,16 +76,28 @@ export function shouldShowUpdateToast(state: UpdateState): boolean {
   return true
 }
 
+function isOwnRelease(value: unknown): value is UpdateRelease {
+  if (!isPlainObject(value)) return false
+  return (
+    typeof value.version === 'string' &&
+    typeof value.tagName === 'string' &&
+    typeof value.url === 'string' &&
+    value.url.startsWith(OWN_RELEASE_URL_PREFIX)
+  )
+}
+
 function loadPersistedState(): PersistedUpdateState {
   try {
+    localStorage.removeItem(LEGACY_STORAGE_KEY)
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) {
       return { latestRelease: null, lastCheckedAt: null, dismissedVersion: null }
     }
 
     const parsed = JSON.parse(raw) as PersistedUpdateState
+    const latestRelease = parsed?.latestRelease
     return {
-      latestRelease: parsed?.latestRelease ?? null,
+      latestRelease: isOwnRelease(latestRelease) ? latestRelease : null,
       lastCheckedAt: typeof parsed?.lastCheckedAt === 'number' ? parsed.lastCheckedAt : null,
       dismissedVersion: typeof parsed?.dismissedVersion === 'string' ? parsed.dismissedVersion : null,
     }
@@ -205,8 +219,14 @@ export class UpdateStore {
           headers: { Accept: 'application/vnd.github+json' },
         })
         if (response.status === 404) {
-          // 仓库还没有发布过 release——不是错误，静默记为已检查
-          this.setState({ ...this.state, checking: false, lastCheckedAt: now, error: null })
+          // 仓库还没有发布过 release——不是错误，清掉缓存里的旧版本
+          this.setState({
+            ...this.state,
+            latestRelease: null,
+            checking: false,
+            lastCheckedAt: now,
+            error: null,
+          })
           return
         }
         if (!response.ok) {
@@ -264,10 +284,7 @@ export function exportUpdateSettingsBackup(): UpdateSettingsBackup {
 export function importUpdateSettingsBackup(raw: unknown): void {
   const parsed = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : undefined
   const payload: PersistedUpdateState = {
-    latestRelease:
-      parsed?.latestRelease && typeof parsed.latestRelease === 'object'
-        ? (parsed.latestRelease as UpdateRelease)
-        : null,
+    latestRelease: isOwnRelease(parsed?.latestRelease) ? parsed.latestRelease : null,
     lastCheckedAt: typeof parsed?.lastCheckedAt === 'number' ? parsed.lastCheckedAt : null,
     dismissedVersion: typeof parsed?.dismissedVersion === 'string' ? parsed.dismissedVersion : null,
   }

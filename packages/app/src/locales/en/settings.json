@@ -308,7 +308,7 @@
   },
   "about": {
     "versionCardTitle": "Version",
-    "versionCardDesc": "Check whether a newer PiUI release is available and jump to the download page.",
+    "versionCardDesc": "Check whether a newer OMPiUI release is available and jump to the download page.",
     "backupCardTitle": "Backup & Restore",
     "backupCardDesc": "Export your local settings to a JSON backup, or restore them later on another device.",
     "backupWarning": "Backups include local server credentials, service environment variables, and other sensitive settings stored in this browser/app profile. Keep the file private.",
@@ -318,6 +318,7 @@
     "statusIdle": "Check for updates to see whether a newer version is available.",
     "statusChecking": "Checking GitHub releases...",
     "statusUpToDate": "You are already on the latest version.",
+    "statusNoRelease": "No OMPiUI release has been published yet.",
     "statusUpdateAvailable": "A newer version is available: {{version}}",
     "statusError": "Failed to check for updates: {{error}}",
     "publishedAt": "Published: {{date}}",

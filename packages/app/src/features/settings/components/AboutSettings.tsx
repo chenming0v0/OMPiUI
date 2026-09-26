@@ -96,6 +96,8 @@ export function AboutSettings() {
     statusText = t('about.statusUpdateAvailable', { version: latestVersion })
   } else if (latestRelease) {
     statusText = t('about.statusUpToDate')
+  } else if (updateState.lastCheckedAt) {
+    statusText = t('about.statusNoRelease')
   }
 
   return (
