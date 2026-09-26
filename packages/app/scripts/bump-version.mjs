@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * bump-version.mjs - One-command version bump for PiUI (monorepo)
+ * bump-version.mjs - One-command version bump for OMPiUI (monorepo)
  *
  * Usage:
  *   node packages/app/scripts/bump-version.mjs <version>
@@ -136,7 +136,7 @@ const packageJsonFiles = [
   'package.json',
   'packages/app/package.json',
   'packages/server/package.json',
-  'packages/pi-worker/package.json',
+  'packages/omp-worker/package.json',
   'packages/protocol/package.json',
 ]
 for (const relative of packageJsonFiles) {
@@ -274,10 +274,16 @@ console.log(`  CHANGELOG.md          added entry for ${tagName}`)
 // 6. Print next steps
 // ---------------------------------------------------------------------------
 console.log(`
-Done! Next steps:
+Done. Version files are updated locally. Do not tag from a feature branch.
 
   git add -A
   git commit -m "chore: release ${version}"
-  git tag ${tagName}
-  git push && git push origin ${tagName}
+  git push origin HEAD:dev
+
+Open or update the pull request from dev into main, and merge it there.
+After origin/main contains this commit:
+
+  git fetch origin main
+  git tag ${tagName} origin/main
+  git push origin ${tagName}
 `)

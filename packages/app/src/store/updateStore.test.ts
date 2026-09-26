@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { UpdateStore, compareVersions, hasUpdateAvailable, shouldShowUpdateToast } from './updateStore'
+import { RELEASES_API_URL, UpdateStore, compareVersions, hasUpdateAvailable, shouldShowUpdateToast } from './updateStore'
 
 describe('updateStore helpers', () => {
   it('compares versions with optional v prefix', () => {
@@ -49,9 +49,9 @@ describe('UpdateStore', () => {
         ok: true,
         json: async () => ({
           tag_name: 'v0.5.2',
-          html_url: 'https://github.com/lehhair/PiUI/releases/tag/v0.5.2',
+          html_url: 'https://github.com/chenming0v0/OMPiUI/releases/tag/v0.5.2',
           published_at: '2026-04-15T00:00:00Z',
-          name: 'PiUI v0.5.2',
+          name: 'OMPiUI v0.5.2',
         }),
       }),
     )
@@ -60,6 +60,9 @@ describe('UpdateStore', () => {
     await store.checkForUpdates({ force: true })
 
     expect(store.getSnapshot().latestRelease?.version).toBe('0.5.2')
+    expect(fetch).toHaveBeenCalledWith(RELEASES_API_URL, {
+      headers: { Accept: 'application/vnd.github+json' },
+    })
     expect(hasUpdateAvailable(store.getSnapshot())).toBe(true)
 
     store.dismissCurrentVersion()

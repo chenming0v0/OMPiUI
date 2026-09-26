@@ -1,0 +1,288 @@
+name: Desktop And Mobile Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Target tag (e.g. v0.1.0). Empty = use latest v* tag."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release-${{ github.ref }}-${{ github.event.inputs.tag }}
+  cancel-in-progress: true
+
+jobs:
+  portable:
+    name: portable ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: windows-x64, os: windows-latest, target: bun-windows-x64 }
+          - { name: linux-x64, os: ubuntu-latest, target: bun-linux-x64 }
+          - { name: macos-arm64, os: macos-latest, target: bun-darwin-arm64 }
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: drop windows-only patch
+        if: runner.os != 'Windows'
+        run: rm -f patches/@lydell+node-pty-win32-x64+*.patch
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: package desktop bundle
+        run: node scripts/package-desktop.mjs --skip-build --target ${{ matrix.target }}
+
+      - name: archive bundle
+        shell: bash
+        run: |
+          cd dist-desktop
+          if [ "${{ matrix.name }}" = "windows-x64" ]; then
+            7z a -tzip "../ompiui-${{ matrix.name }}.zip" .
+          else
+            tar -czf "../ompiui-${{ matrix.name }}.tar.gz" .
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ompiui-${{ matrix.name }}
+          path: |
+            ompiui-${{ matrix.name }}.zip
+            ompiui-${{ matrix.name }}.tar.gz
+          if-no-files-found: ignore
+
+  desktop:
+    name: desktop ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: windows-x64, os: windows-latest, target: bun-windows-x64 }
+          - { name: macos-arm64, os: macos-latest, target: bun-darwin-arm64 }
+          - { name: linux-x64, os: ubuntu-24.04, target: bun-linux-x64 }
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './packages/app/src-tauri -> target'
+          key: desktop-${{ matrix.name }}
+
+      - name: Drop Windows-only patch on Unix
+        if: runner.os != 'Windows'
+        run: rm -f patches/@lydell+node-pty-win32-x64+*.patch
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Build bundled OMPiUI server
+        run: node scripts/package-desktop.mjs --skip-build --target ${{ matrix.target }}
+
+      - name: Prepare Tauri resources
+        run: node scripts/prepare-tauri-resources.mjs
+
+      - name: Build Tauri desktop bundle
+        run: npm run tauri:build -w @ompiui/app
+
+      - name: Collect desktop artifacts
+        shell: bash
+        run: |
+          mkdir -p release-artifacts
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            find packages/app/src-tauri/target/release/bundle/nsis -name '*.exe' -exec cp {} release-artifacts/ \;
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            find packages/app/src-tauri/target/release/bundle/dmg -name '*.dmg' -exec cp {} release-artifacts/ \;
+          else
+            find packages/app/src-tauri/target/release/bundle/deb -name '*.deb' -exec cp {} release-artifacts/ \;
+            if [ -d packages/app/src-tauri/target/release/bundle/appimage ]; then
+              find packages/app/src-tauri/target/release/bundle/appimage -name '*.AppImage' -exec cp {} release-artifacts/ \;
+            fi
+          fi
+          ls -la release-artifacts
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ompiui-desktop-${{ matrix.name }}
+          path: release-artifacts/*
+          if-no-files-found: error
+
+  android:
+    name: android ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: arm64, target: aarch64, rust-target: aarch64-linux-android }
+          - { name: armv7, target: armv7, rust-target: armv7-linux-androideabi }
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Drop Windows-only patch
+        run: rm -f patches/@lydell+node-pty-win32-x64+*.patch
+
+      - name: Install Android NDK
+        run: sdkmanager "ndk;29.0.14206865"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './packages/app/src-tauri -> target'
+          key: android-${{ matrix.name }}
+
+      - name: Gradle cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            packages/app/src-tauri/gen/android/.gradle
+          key: gradle-${{ matrix.name }}-${{ hashFiles('packages/app/src-tauri/gen/android/**/*.gradle*', 'packages/app/src-tauri/gen/android/**/gradle-wrapper.properties') }}
+          restore-keys: gradle-
+
+      - run: npm ci
+      - run: npm run build
+      - run: node scripts/prepare-tauri-mobile-resources.mjs
+
+      - name: Build Android APK
+        working-directory: packages/app
+        run: npx tauri android build --apk --target ${{ matrix.target }}
+
+      - name: Sign Android APK
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -e
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/ompiui.keystore"
+          UNSIGNED=$(find packages/app/src-tauri/gen/android/app/build/outputs/apk -name '*unsigned*.apk' -type f | head -1)
+          if [ -z "$UNSIGNED" ]; then
+            echo "no unsigned APK found" >&2
+            find packages/app/src-tauri/gen/android/app/build/outputs/apk -type f >&2
+            exit 1
+          fi
+          BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          mkdir -p release-artifacts
+          ALIGNED="$RUNNER_TEMP/ompiui-aligned.apk"
+          "$BUILD_TOOLS/zipalign" -f -p 4 "$UNSIGNED" "$ALIGNED"
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks "$RUNNER_TEMP/ompiui.keystore" \
+            --ks-pass "pass:$ANDROID_KEYSTORE_PASSWORD" \
+            --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --out "release-artifacts/ompiui-android-${{ matrix.name }}.apk" \
+            "$ALIGNED"
+          "$BUILD_TOOLS/apksigner" verify --print-certs "release-artifacts/ompiui-android-${{ matrix.name }}.apk"
+          rm -f "$RUNNER_TEMP/ompiui.keystore"
+          ls -la release-artifacts
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ompiui-android-${{ matrix.name }}
+          path: release-artifacts/*.apk
+          if-no-files-found: error
+
+  publish:
+    name: publish release assets
+    needs: [portable, desktop, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG=$(git tag --list 'v*' --sort=-v:refname | head -1)
+          fi
+          if [ -z "$TAG" ]; then
+            echo "no release tag found" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: ompiui-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Extract changelog for tag
+        id: changelog
+        shell: bash
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          BODY=$(sed -n "/^## \[${TAG}\]/,/^## \[/{ /^## \[${TAG}\]/d; /^## \[/d; p; }" CHANGELOG.md 2>/dev/null || true)
+          BODY=$(echo "$BODY" | sed -e '/./,$!d' -e :a -e '/^\n*$/{$d;N;ba;}')
+          if [ -z "$BODY" ]; then
+            BODY="No changelog entry found for ${TAG}."
+          fi
+          echo "$BODY" > /tmp/release-body.md
+          printf '\n---\n\n**Portable:** Windows (.zip), Linux (.tar.gz), macOS (.tar.gz)\n**Desktop:** Windows (.exe), macOS (.dmg), Linux (.deb, .AppImage)\n**Mobile:** Android (.apk) — arm64, armeabi-v7a\n' >> /tmp/release-body.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: 'OMPiUI ${{ steps.tag.outputs.tag }}'
+          body_path: /tmp/release-body.md
+          files: release-assets/**
+          draft: false
+          prerelease: ${{ contains(steps.tag.outputs.tag, 'canary') || contains(steps.tag.outputs.tag, 'alpha') || contains(steps.tag.outputs.tag, 'beta') }}

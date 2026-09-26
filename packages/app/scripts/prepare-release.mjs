@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * prepare-release.mjs - Validate before version bumping (PiUI monorepo)
+ * prepare-release.mjs - Validate before version bumping (OMPiUI monorepo)
  *
  * Usage:
  *   node packages/app/scripts/prepare-release.mjs <version>
@@ -85,9 +85,14 @@ run(`node packages/app/scripts/bump-version.mjs ${version}`, `Preparing release 
 console.log(`
 Release preparation finished for ${tagName}.
 
-Next steps:
+Next steps, on dev:
   git add -A
   git commit -m "chore: release ${version}"
-  git tag ${tagName}
-  git push && git push origin ${tagName}
+  git push origin HEAD:dev
+
+Open or update the pull request from dev into main, and merge it there.
+After origin/main contains this commit:
+  git fetch origin main
+  git tag ${tagName} origin/main
+  git push origin ${tagName}
 `)
