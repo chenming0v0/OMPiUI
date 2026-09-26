@@ -1,7 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
-  <circle cx="256" cy="256" r="256" fill="#1e1d1c"/>
-  <g transform="translate(128 128) scale(0.545)" fill="#fafaf9">
-    <path fill-rule="evenodd" clip-rule="evenodd" d="M0 0H352.07V234.71H234.71V352.07H117.36V469.43H0V0ZM117.36 117.36V234.71H234.71V117.36H117.36Z"/>
-    <path d="M352.07 234.71H469.43V469.43H352.07V234.71Z"/>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- OMPiUI favicon：与侧边栏 logo (SidePanel.tsx) 完全一致 -->
+  <defs>
+    <linearGradient id="ompiui-logo-gradient" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ed4abf" />
+      <stop offset=".5" stop-color="#9b4dff" />
+      <stop offset="1" stop-color="#5ad8e6" />
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="12" fill="#0f0a14" />
+  <path fill="url(#ompiui-logo-gradient)" d="M14 16h36v8H40v32h-8V24h-6v22h-8V24h-4z" />
 </svg>
