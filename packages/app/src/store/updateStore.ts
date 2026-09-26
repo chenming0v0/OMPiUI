@@ -35,8 +35,8 @@ type Subscriber = () => void
 
 const STORAGE_KEY = 'piui:update-check'
 const CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000
-export const RELEASES_API_URL = 'https://api.github.com/repos/lehhair/PiUI/releases/latest'
-export const RELEASES_PAGE_URL = 'https://github.com/lehhair/PiUI/releases/latest'
+export const RELEASES_API_URL = 'https://api.github.com/repos/chenming0v0/OMPiUI/releases/latest'
+export const RELEASES_PAGE_URL = 'https://github.com/chenming0v0/OMPiUI/releases/latest'
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
