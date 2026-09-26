@@ -11,3 +11,5 @@ temp/
 scratch/
 .vite/
 target/
+server-stdout.log
+server-stderr.log
