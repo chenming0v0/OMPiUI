@@ -10,12 +10,17 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { piEventStream } from './eventStream'
 import { piBranchStore, piSessionStateStore, piCommandStore } from './state/index.js'
+import { ompSubagentStore } from './ompSubagentStore'
 import type { PiBranchPage } from './domain/index.js'
 
 // 触达私有方法做白盒测试（事件驱动路径需要 WS，单测直接调 handler）
 type Handler = (payload: unknown) => void
 const handle = (payload: unknown) =>
   (piEventStream as unknown as { handleSessionsUpdated: Handler }).handleSessionsUpdated(payload)
+
+type EnvelopeHandler = (envelope: unknown) => void
+const handleEvent = (envelope: unknown) =>
+  (piEventStream as unknown as { handleEvent: EnvelopeHandler }).handleEvent(envelope as never)
 
 function fakeBranchPage(sessionId: string): PiBranchPage {
   return {
@@ -97,5 +102,46 @@ describe('handleSessionsUpdated replacement semantics', () => {
       targetSessionId: 'session-b',
     })
     expect(changedCount).toBe(1)
+  })
+})
+
+describe('omp.subagent routing across streams', () => {
+  afterEach(() => {
+    ompSubagentStore.clearAll()
+  })
+
+  function subagentEnvelope(stream: { kind: 'session' | 'server'; id: string }, payload: unknown) {
+    return {
+      protocolVersion: 2,
+      stream,
+      cursor: { epoch: 'test-epoch', sequence: 1 },
+      eventId: 'event-1',
+      timestamp: '2026-01-01T00:00:00.000Z',
+      channel: 'omp.subagent',
+      payload,
+    }
+  }
+
+  it('server-stream mirror frames land in the store via payload sessionId', () => {
+    handleEvent(subagentEnvelope(
+      { kind: 'server', id: 'server' },
+      { kind: 'lifecycle', payload: { id: 'mirror-run-1', detached: true, status: 'started', agent: 'task', index: 0 }, sessionId: 'session-bg' },
+    ))
+
+    const run = ompSubagentStore.getSnapshot().runs.find(item => item.id === 'mirror-run-1')
+    expect(run).toBeDefined()
+    expect(run?.sessionId).toBe('session-bg')
+    expect(run?.detached).toBe(true)
+  })
+
+  it('session-stream frames keep using the envelope stream id', () => {
+    handleEvent(subagentEnvelope(
+      { kind: 'session', id: 'session-open' },
+      { kind: 'lifecycle', payload: { id: 'mirror-run-2', detached: true, status: 'started', agent: 'task', index: 1 } },
+    ))
+
+    const run = ompSubagentStore.getSnapshot().runs.find(item => item.id === 'mirror-run-2')
+    expect(run).toBeDefined()
+    expect(run?.sessionId).toBe('session-open')
   })
 })

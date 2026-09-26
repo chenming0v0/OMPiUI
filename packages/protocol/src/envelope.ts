@@ -112,7 +112,7 @@ export type EventServerMessage =
   | {
       type: "hello"
       protocolVersion: typeof PROTOCOL_VERSION
-      service: "piui-server"
+      service: "ompiui-server"
       subprotocol: typeof EVENT_WS_SUBPROTOCOL
     }
   | { channel: "event"; event: EventEnvelope }

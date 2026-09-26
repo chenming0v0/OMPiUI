@@ -6,6 +6,7 @@ import { piSessionInfoStore, piBranchStore, piSessionStateStore, piModelsStore }
 import { mergeLatestBranchPage } from '../branchMerge.js'
 import { serverStore } from '../../store/serverStore'
 import { ompSubagentStore } from '../ompSubagentStore'
+import { trackPiSession } from '../piSessionIndex'
 import type { PiBranchPage } from '../domain/index.js'
 
 /**
@@ -52,6 +53,24 @@ export async function loadPiSessionsForCwd(cwd: string, signal?: AbortSignal): P
  */
 export async function deletePiSession(cwd: string, sessionFile: string, signal?: AbortSignal): Promise<void> {
   await transport.deletePiSession(cwd, sessionFile, signal)
+}
+
+/**
+ * 打开 OMP 子代理会话（按文件直开，不依赖顶层会话扫描），返回运行时
+ * session id 供导航。失败返回 null（按钮静默降级，不打断聊天流）。
+ */
+export async function openSubagentSession(
+  directory: string,
+  sessionFile: string,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  try {
+    const result = await openPiSession(directory, sessionFile, signal)
+    trackPiSession(result.sessionId, result.cwd ?? directory)
+    return result.sessionId
+  } catch {
+    return null
+  }
 }
 
 /**

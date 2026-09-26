@@ -45,6 +45,13 @@ export function ompAgentDir(): string {
   return path.join(homedir(), ".omp", "agent")
 }
 
+/** OMP 子代理会话目录：<parent>.jsonl 去后缀的同名目录 */
+function childSessionDir(parentSessionFile: string): string | null {
+  const target = resolveUserPath(parentSessionFile)
+  if (!target.endsWith(".jsonl")) return null
+  return target.slice(0, -".jsonl".length)
+}
+
 function sessionsRoot(): string {
   return path.join(ompAgentDir(), "sessions")
 }
@@ -299,8 +306,78 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
   async previewSessionById(sessionId: string, params: { cursor?: string; limit?: number; maxBytes?: number } = {}): Promise<JsonValue> {
     const summaries = await this.summarizeAll()
     const match = summaries.find(item => item.id === sessionId)
-    if (!match) throw Object.assign(new Error(`session not found: ${sessionId}`), { code: "SESSION_NOT_FOUND" })
-    return this.previewSummary(match, params)
+    if (match) return this.previewSummary(match, params)
+    // 顶层扫描没有（OMP 子代理会话嵌套在 <父会话名>/ 目录里）→ 深度查找兜底，
+    // 让子会话在重载/深链后也能按 id 预览
+    const found = await this.findSessionById(sessionId)
+    if (found && typeof found.sessionFile === "string" && typeof found.cwd === "string") {
+      return this.previewSession(found.cwd, found.sessionFile, params)
+    }
+    throw Object.assign(new Error(`session not found: ${sessionId}`), { code: "SESSION_NOT_FOUND" })
+  }
+
+  /**
+   * 列出父会话文件旁的 OMP 子代理会话（<parent>.jsonl 同名目录下的 *.jsonl，
+   * 与 OMP 子代理落盘布局一致）。顶层列表刻意不扫这一层，避免刷屏主列表。
+   */
+  async listChildSessions(parentSessionFile: string): Promise<JsonValue> {
+    const dir = childSessionDir(parentSessionFile)
+    if (!dir || !existsSync(dir)) return []
+    let names: string[] = []
+    try {
+      names = readdirSync(dir).filter(name => name.endsWith(".jsonl"))
+    } catch {
+      return []
+    }
+    const results = await Promise.all(names.map(name => summarizeSessionFile(path.join(dir, name))))
+    return results
+      .filter((item): item is SessionFileSummary => item !== null)
+      .sort((a, b) => b.modified - a.modified)
+      .map(toSessionInfo)
+  }
+
+  /**
+   * 按 session id 解析会话文件：先查顶层扫描，再扫子代理嵌套目录（读文件头
+   * 匹配 id）。深度查找每次全量读头，仅在显式打开/重载子会话时触发。
+   */
+  async findSessionById(sessionId: string): Promise<JsonObject | null> {
+    const top = await this.summarizeAll()
+    const hit = top.find(item => item.id === sessionId)
+    if (hit) return { id: hit.id, cwd: hit.cwd, sessionFile: hit.path }
+    const root = sessionsRoot()
+    if (!existsSync(root)) return null
+    let projects: string[] = []
+    try {
+      projects = readdirSync(root)
+    } catch {
+      return null
+    }
+    for (const project of projects) {
+      const projectPath = path.join(root, project)
+      let entries
+      try {
+        entries = readdirSync(projectPath, { withFileTypes: true })
+      } catch {
+        continue
+      }
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue
+        const childDir = path.join(projectPath, entry.name)
+        let names: string[] = []
+        try {
+          names = readdirSync(childDir).filter(name => name.endsWith(".jsonl"))
+        } catch {
+          continue
+        }
+        for (const name of names) {
+          const summary = await summarizeSessionFile(path.join(childDir, name))
+          if (summary && summary.id === sessionId) {
+            return { id: summary.id, cwd: summary.cwd, sessionFile: summary.path }
+          }
+        }
+      }
+    }
+    return null
   }
 
   async deleteSession(cwd: string, sessionFile: string): Promise<void> {

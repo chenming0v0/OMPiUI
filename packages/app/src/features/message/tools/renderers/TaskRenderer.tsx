@@ -4,8 +4,11 @@ import { ContentBlock } from '../../../../components'
 import { ChevronRightIcon, ExternalLinkIcon, StopIcon } from '../../../../components/Icons'
 import { useDisclosureScrollLock } from '../../../../hooks'
 import { useSessionNavigation } from '../../../../contexts/SessionNavigationContext'
-import { abortPiOperation } from '../../../../pi/controllers/index.js'
+import { abortPiOperation, openSubagentSession } from '../../../../pi/controllers/index.js'
+import { getOmpSubagentMessages } from '../../../../pi/transport/index.js'
+import { activeSessionStore } from '../../../../store/activeSessionStore'
 import { ompSubagentStore, type OmpSubagentRun, type OmpSubagentTranscriptItem } from '../../../../pi/ompSubagentStore'
+import { formatCompactDuration, formatCompactTokens } from '../../../../pi/ompSubagentFormat'
 import { useUiDisclosureState } from '../../../../utils/uiDisclosureState'
 import type { ToolRendererProps } from '../types'
 import { MessageExpandPanel, useMessageExpandRender } from '../../messageExpand'
@@ -47,6 +50,24 @@ export const TaskRenderer = memo(function TaskRenderer({ execution, partKey, onF
     ? execution.result.details as Record<string, unknown>
     : undefined
   const targetSessionId = metadata?.sessionId as string | undefined
+
+  // OMP 子代理实时状态：转录回填与"打开子会话"都从这里取 sessionFile
+  const subagentRun = useOmpSubagentRun(execution.call?.id)
+  const { navigateToSession, currentDirectory } = useSessionNavigation()
+
+  const handleOpenSubagent = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation()
+    const sessionFile = subagentRun?.sessionFile
+    if (!sessionFile) {
+      // pi 驱动路径：task 结果带子会话 id，直接导航
+      if (targetSessionId) navigateToSession(targetSessionId, currentDirectory || undefined)
+      return
+    }
+    const directory = activeSessionStore.getSessionMeta(subagentRun.sessionId)?.directory ?? currentDirectory ?? ''
+    void openSubagentSession(directory, sessionFile).then(id => {
+      if (id) navigateToSession(id, directory || undefined)
+    })
+  }, [subagentRun, targetSessionId, currentDirectory, navigateToSession])
 
   const resultOutput = execution.result
     ? execution.result.content
@@ -100,6 +121,7 @@ export const TaskRenderer = memo(function TaskRenderer({ execution, partKey, onF
           headerRef={headerRef}
           onToggle={() => withScrollLock(() => setExpanded(!expanded))}
           sessionId={targetSessionId}
+          onOpenSession={subagentRun?.sessionFile || targetSessionId ? handleOpenSubagent : undefined}
           onStop={isRunning ? handleStop : undefined}
         />
 
@@ -160,6 +182,8 @@ interface TaskHeaderProps {
   onToggle: () => void
   headerRef?: RefCallback<HTMLElement>
   sessionId?: string
+  /** 打开子会话（OMP 按 sessionFile 直开；pi 驱动按 sessionId 导航） */
+  onOpenSession?: (e: React.MouseEvent) => void
   onStop?: (e: React.MouseEvent) => void
 }
 
@@ -171,6 +195,7 @@ export const TaskHeader = memo(function TaskHeader({
   onToggle,
   headerRef,
   sessionId,
+  onOpenSession,
   onStop,
 }: TaskHeaderProps) {
   const { t } = useTranslation('message')
@@ -214,10 +239,10 @@ export const TaskHeader = memo(function TaskHeader({
         </span>
       </button>
 
-      {sessionId ? (
+      {sessionId || onOpenSession ? (
         <button
           type="button"
-          onClick={handleOpenSession}
+          onClick={onOpenSession ?? handleOpenSession}
           className={`${agentBadgeClass} border-none transition-opacity hover:opacity-80`}
           title={t('task.openSession')}
         >
@@ -253,10 +278,10 @@ export const TaskHeader = memo(function TaskHeader({
       )}
 
       {/* Open session */}
-      {sessionId && (
+      {(sessionId || onOpenSession) && (
         <button
           type="button"
-          onClick={handleOpenSession}
+          onClick={onOpenSession ?? handleOpenSession}
           aria-label={t('task.openSession')}
           className="flex-shrink-0 p-1 text-text-500 hover:text-accent-main-100 transition-all bg-transparent border-none"
           title={t('task.openSession')}
@@ -290,9 +315,40 @@ function useOmpSubagentRun(toolCallId: string | undefined): OmpSubagentRun | und
   return ompSubagentStore.getByToolCall(toolCallId)
 }
 
+// 跨 pane 去重的回填飞行中标记（run.id → 正在拉取）
+const subagentHistoryInFlight = new Set<string>()
+
+/**
+ * 磁盘转录回填：导航离开/页面刷新期间错过的 subagent_event 帧从子会话
+ * 文件补回来（get_subagent_messages）。转录非空（实时帧已在推进）或已
+ * 回填过则跳过。
+ */
+function useSubagentHistoryBackfill(run: OmpSubagentRun | undefined): void {
+  useEffect(() => {
+    if (!run || run.historyLoaded || !run.sessionFile) return
+    if (subagentHistoryInFlight.has(run.id)) return
+    subagentHistoryInFlight.add(run.id)
+    const { sessionId, id, sessionFile } = run
+    getOmpSubagentMessages(sessionId, { sessionFile })
+      .then(result => {
+        const record = result && typeof result === 'object' && !Array.isArray(result)
+          ? result as Record<string, unknown>
+          : undefined
+        const messages = Array.isArray(record?.messages) ? record!.messages as unknown[] : []
+        ompSubagentStore.applyHistory(sessionId, id, messages)
+      })
+      .catch(() => {
+        // 标记已回填，避免错误后每个 store bump 都重试
+        ompSubagentStore.applyHistory(sessionId, id, [])
+      })
+      .finally(() => subagentHistoryInFlight.delete(id))
+  }, [run])
+}
+
 const SubSessionView = memo(function SubSessionView({ toolCallId, isParentRunning }: SubSessionViewProps) {
   const { t } = useTranslation('message')
   const run = useOmpSubagentRun(toolCallId)
+  useSubagentHistoryBackfill(run)
   const scrollRef = useRef<HTMLDivElement>(null)
   const transcript = run?.transcript ?? []
   const lastItem = transcript.at(-1)
@@ -396,18 +452,6 @@ function SubTranscriptItemView({ item, isLast }: { item: OmpSubagentTranscriptIt
 function truncateTail(text: string, max: number): string {
   if (text.length <= max) return text
   return `…${text.slice(-max)}`
-}
-
-function formatCompactTokens(tokens: number): string {
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
-  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}k`
-  return String(tokens)
-}
-
-function formatCompactDuration(ms: number): string {
-  const seconds = Math.floor(ms / 1000)
-  if (seconds < 60) return `${seconds}s`
-  return `${Math.floor(seconds / 60)}m${seconds % 60}s`
 }
 
 // ============================================

@@ -147,6 +147,14 @@ export class MockCatalog implements CatalogProvider, PackagesGateway {
     return this.store.list().filter(info => info.cwd === cwd || !cwd)
   }
 
+  async listChildSessions(): Promise<JsonValue> {
+    return []
+  }
+
+  async findSessionById(): Promise<JsonObject | null> {
+    return null
+  }
+
   async listAllSessions(): Promise<JsonValue> {
     return this.store.list()
   }
@@ -443,6 +451,10 @@ export class MockPiSession implements SessionRuntime {
 
   getAttachment(): JsonObject {
     throw Object.assign(new Error("mock sessions have no attachments"), { code: "NOT_FOUND" })
+  }
+
+  getSubagentMessages(): JsonValue {
+    return { sessionFile: null, fromByte: 0, nextByte: 0, reset: false, entries: [], messages: [] }
   }
 
   getState(): JsonObject {

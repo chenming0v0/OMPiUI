@@ -87,7 +87,7 @@ export type HostCapability = {
 export type HostRegistrySnapshot = {
   protocolVersion: number
   revision: number
-  service: "piui-server"
+  service: "ompiui-server"
   commands: HostCapability[]
 }
 

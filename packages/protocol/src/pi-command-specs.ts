@@ -111,6 +111,7 @@ export const PI_COMMAND_SPECS = [
   { name: "extensionUi.tuiResize", scope: "session", description: "Resize the extension TUI mirror", paramsSchema: objectSchema({ cols: { type: "integer", minimum: 1, maximum: 1000 }, rows: { type: "integer", minimum: 1, maximum: 1000 } }, ["cols", "rows"]), queue: "immediate" },
   { name: "extensionUi.tuiRedraw", scope: "session", description: "Request a full redraw of the extension TUI mirror", queue: "immediate" },
   { name: "state.get", scope: "session", description: "Read current Pi session state", queue: "immediate", idempotent: true },
+  { name: "subagent.messages", scope: "session", description: "Read OMP subagent transcript messages from disk (incremental via fromByte)", paramsSchema: objectSchema({ subagentId: STRING, sessionFile: STRING, fromByte: { type: "integer", minimum: 0 } }, []), queue: "immediate", idempotent: true },
   { name: "entries.get", scope: "session", description: "Read a page of Pi session entries", paramsSchema: pageParams(), queue: "immediate", idempotent: true },
   { name: "branch.get", scope: "session", description: "Read a page of the active Pi branch", paramsSchema: pageParams(), queue: "immediate", idempotent: true },
   { name: "tree.get", scope: "session", description: "Read the Pi session tree", queue: "immediate", idempotent: true },
@@ -123,6 +124,8 @@ export const PI_COMMAND_SPECS = [
   { name: "session.listAll", scope: "global", description: "List all Pi sessions", queue: "immediate", idempotent: true },
   { name: "session.create", scope: "global", description: "Create a Pi session without opening an agent runtime", paramsSchema: CWD_PARAMS, queue: "serialized" },
   { name: "session.preview", scope: "global", description: "Read a Pi session without opening an agent runtime", paramsSchema: SESSION_PREVIEW_PARAMS, queue: "immediate", idempotent: true },
+  { name: "session.children", scope: "global", description: "List OMP subagent (child) session files nested under a parent session file", paramsSchema: objectSchema({ sessionFile: STRING }, ["sessionFile"]), queue: "immediate", idempotent: true },
+  { name: "session.findById", scope: "global", description: "Resolve a session id to its file, including OMP subagent (child) sessions", paramsSchema: objectSchema({ sessionId: STRING }, ["sessionId"]), queue: "immediate", idempotent: true },
   { name: "session.delete", scope: "global", description: "Delete a Pi session file", paramsSchema: objectSchema({ cwd: STRING, sessionFile: STRING }, ["cwd", "sessionFile"]), queue: "serialized" },
   { name: "models.list", scope: "global", description: "List Pi models", queue: "immediate", idempotent: true },
   { name: "settings.get", scope: "global", description: "Read Pi settings for a workspace", paramsSchema: CWD_PARAMS, queue: "immediate", idempotent: true },
@@ -208,6 +211,7 @@ export const RUNTIME_TARGETS = {
   "prompts.list": "listPrompts",
   "agentsFiles.list": "listAgentsFiles",
   "attachment.get": "getAttachment",
+  "subagent.messages": "getSubagentMessages",
 } as const
 
 export type RuntimeTarget = (typeof RUNTIME_TARGETS)[keyof typeof RUNTIME_TARGETS]
@@ -235,11 +239,14 @@ export type PiCommandParams = CoreCommandParams & {
   "prompts.list": Record<string, never>
   "agentsFiles.list": Record<string, never>
   "attachment.get": { entryId: string; blockIndex: number }
+  "subagent.messages": { subagentId?: string; sessionFile?: string; fromByte?: number }
   "commands.completions": { name: string; prefix: string }
   "session.list": { cwd: string }
   "session.listAll": Record<string, never>
   "session.create": { cwd: string }
   "session.preview": { sessionId: string } & PiPageParams
+  "session.children": { sessionFile: string }
+  "session.findById": { sessionId: string }
   "session.delete": { cwd: string; sessionFile: string }
   "models.list": Record<string, never>
   "settings.get": { cwd: string }

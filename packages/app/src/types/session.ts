@@ -13,6 +13,8 @@ export interface UiSession {
   parentSessionPath?: string
   forkParentId?: string
   forkParentTitle?: string
+  /** OMP 子代理会话（嵌套在父会话目录下，通过 session.children 列出） */
+  isChildSession?: boolean
 }
 
 export interface PiSessionSummary {

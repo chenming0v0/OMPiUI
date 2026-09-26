@@ -179,6 +179,12 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
   },
 
   "state.get": async (ctx) => ctx.requireRuntime().getState(),
+  "subagent.messages": async (ctx, p) =>
+    ctx.requireRuntime().getSubagentMessages({
+      subagentId: P.optString(p, "subagentId") || undefined,
+      sessionFile: P.optString(p, "sessionFile") || undefined,
+      fromByte: P.optNumber(p, "fromByte") ?? undefined,
+    }),
   "entries.get": async (ctx, p) =>
     ctx.requireRuntime().getEntriesPage(
       P.optString(p, "cursor"),
@@ -206,6 +212,8 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
     P.reqString(p, "sessionId"),
     { cursor: P.optString(p, "cursor"), limit: P.optNumber(p, "limit"), maxBytes: P.optNumber(p, "maxBytes") },
   ),
+  "session.children": async (ctx, p) => ctx.catalog.listChildSessions(P.reqString(p, "sessionFile")),
+  "session.findById": async (ctx, p) => ctx.catalog.findSessionById(P.reqString(p, "sessionId")),
   "session.delete": async (ctx, p) => {
     await ctx.catalog.deleteSession(P.reqString(p, "cwd"), P.reqString(p, "sessionFile"))
   },

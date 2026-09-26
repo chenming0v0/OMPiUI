@@ -179,7 +179,8 @@ function subscribeRuntimeEvents(current: SessionRuntime): Array<() => void> {
       event,
     })))
     unsubs.push(current.onCrash(error => {
-      console.error(`[ompiui-worker] omp rpc process crashed for session ${current.getSessionId()}: ${error.message}`)
+      const stderr = current.stderrTail
+      console.error(`[ompiui-worker] omp rpc process crashed for session ${current.getSessionId()}: ${error.message}${stderr ? `\n[ompiui-worker] omp stderr: ${stderr.slice(-1500)}` : ""}`)
     }))
   }
   return unsubs

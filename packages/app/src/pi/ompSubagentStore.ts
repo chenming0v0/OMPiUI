@@ -52,6 +52,8 @@ export type OmpSubagentRun = {
   progress?: OmpSubagentProgress
   /** 子代理会话事件转出的轻量转录（subagent_event 帧） */
   transcript: OmpSubagentTranscriptItem[]
+  /** 已尝试过磁盘转录回填（get_subagent_messages），避免重复拉取 */
+  historyLoaded?: boolean
   startedAt: number
   endedAt?: number
 }
@@ -62,6 +64,8 @@ export type OmpSubagentTranscriptItem = {
   toolName?: string
   isError?: boolean
   timestamp: number
+  /** 内部标记：该气泡对应的消息仍在流式推进（下一帧更新它的文本而非新增一行） */
+  streaming?: boolean
 }
 
 export type OmpSubagentSnapshot = {
@@ -71,6 +75,43 @@ export type OmpSubagentSnapshot = {
 
 const MAX_TRANSCRIPT_ITEMS = 200
 const MAX_OUTPUT_CHARS_PER_ITEM = 4000
+
+// HUD 里被用户清掉的 run（终态）：localStorage 持久化，防止刷新后
+// state.get 快照把已清除的条目带回来（OpenCodeUI pinned 列表的同款语义）
+const DISMISSED_STORAGE_KEY = 'piui-omp-subagent-hud-dismissed'
+const MAX_DISMISSED_IDS = 200
+
+function loadDismissedIds(): string[] {
+  try {
+    const raw = localStorage.getItem(DISMISSED_STORAGE_KEY)
+    const parsed: unknown = raw ? JSON.parse(raw) : null
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((id): id is string => typeof id === 'string').slice(-MAX_DISMISSED_IDS)
+  } catch {
+    return []
+  }
+}
+
+function saveDismissedIds(ids: Set<string>): void {
+  try {
+    localStorage.setItem(DISMISSED_STORAGE_KEY, JSON.stringify([...ids].slice(-MAX_DISMISSED_IDS)))
+  } catch {
+    // 持久化失败只影响刷新后的记忆，不影响本次会话
+  }
+}
+
+/**
+ * 全局 HUD 列表（detached 后台子代理）：运行中在前（按启动时间），
+ * 已结束的按结束时间倒序排在下面。
+ */
+export function selectHudRuns(snapshot: OmpSubagentSnapshot): OmpSubagentRun[] {
+  const detached = snapshot.runs.filter(run => run.detached)
+  const running = detached.filter(run => run.status === 'running' || run.status === 'pending')
+  const finished = detached.filter(run => run.status !== 'running' && run.status !== 'pending')
+  running.sort((a, b) => a.startedAt - b.startedAt)
+  finished.sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
+  return [...running, ...finished]
+}
 
 function asRecord(value: unknown): JsonObject | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : undefined
@@ -128,37 +169,102 @@ function normalizeProgress(raw: unknown): OmpSubagentProgress | undefined {
   }
 }
 
-/** 子代理 session 事件 → 轻量转录行（贴近 OpenCodeUI SubSessionView 的显示粒度） */
+/** 提取消息文本块（assistant 消息常带 thinking 块，只取 text） */
+function extractMessageText(message: JsonObject): string {
+  const content = message.content
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content.map(block => {
+    const record = asRecord(block)
+    return record?.type === 'text' && typeof record.text === 'string' ? record.text : ''
+  }).filter(Boolean).join('\n')
+}
+
+function appendTranscriptItem(
+  into: OmpSubagentTranscriptItem[],
+  item: Omit<OmpSubagentTranscriptItem, 'timestamp'>,
+): OmpSubagentTranscriptItem[] {
+  const next = [...into, { ...item, timestamp: Date.now() }]
+  return next.length > MAX_TRANSCRIPT_ITEMS ? next.slice(next.length - MAX_TRANSCRIPT_ITEMS) : next
+}
+
+/**
+ * 子代理 session 事件 → 轻量转录行（贴近 OpenCodeUI SubSessionView 的显示粒度）。
+ *
+ * OMP 的消息事件语义（对真实 RPC 帧抓包确认）：message_start / message_update /
+ * message_end 每一帧都带顶层 message —— assistant 的 update 帧携带的是累计
+ * 快照，不是增量。因此不能"见 message 就追加一行"：否则 user 消息会在
+ * start + end 各渲染一条、assistant 流式文本在首个 text update 和 end 各渲染
+ * 一条，同一条消息变成重复气泡（ping 测试里"两条一样的 prompt + 两条 pong"）。
+ * 规则：assistant 用 streaming 标记的"打开气泡"推进，user 只在 end 落定成行。
+ */
 function appendTranscriptEvent(event: JsonObject, into: OmpSubagentTranscriptItem[]): OmpSubagentTranscriptItem[] {
   const type = str(event.type)
   const message = asRecord(event.message)
   if ((type === 'message_start' || type === 'message_update' || type === 'message_end') && message) {
     const role = str(message.role)
-    const content = message.content
-    const text = typeof content === 'string'
-      ? content
-      : Array.isArray(content)
-        ? content.map(block => {
-          const record = asRecord(block)
-          return record?.type === 'text' && typeof record.text === 'string' ? record.text : ''
-        }).filter(Boolean).join('\n')
-        : ''
-    if (!text || (role !== 'user' && role !== 'assistant')) return into
+    if (role !== 'user' && role !== 'assistant') return into
+    const text = extractMessageText(message).slice(0, MAX_OUTPUT_CHARS_PER_ITEM)
     const last = into.at(-1)
-    // 流式增量：合并进最后一行（message_end 落定则新起一行）
-    if (role === 'assistant' && last?.kind === 'assistant' && type !== 'message_end') {
-      const updated = [...into.slice(0, -1), { ...last, text: text.slice(0, MAX_OUTPUT_CHARS_PER_ITEM) }]
-      return updated
+
+    if (role === 'assistant' && type !== 'message_end') {
+      // 流式推进：合并进当前打开的气泡；没有打开的气泡则新开一个
+      if (!text) return into
+      if (last?.kind === 'assistant' && last.streaming) {
+        return [...into.slice(0, -1), { ...last, text }]
+      }
+      return appendTranscriptItem(into, { kind: 'assistant', text, streaming: true })
     }
-    const next = [...into, { kind: role, text: text.slice(0, MAX_OUTPUT_CHARS_PER_ITEM), timestamp: Date.now() } as OmpSubagentTranscriptItem]
-    return next.length > MAX_TRANSCRIPT_ITEMS ? next.slice(next.length - MAX_TRANSCRIPT_ITEMS) : next
+
+    if (type === 'message_end') {
+      if (role === 'assistant') {
+        // 收口当前打开的气泡；空落定（纯 thinking + 工具调用）不留空行
+        if (last?.kind === 'assistant' && last.streaming) {
+          if (!text) return last.text ? [...into.slice(0, -1), { ...last, streaming: false }] : [...into.slice(0, -1)]
+          return [...into.slice(0, -1), { ...last, text, streaming: false }]
+        }
+        if (!text) return into
+        return appendTranscriptItem(into, { kind: 'assistant', text })
+      }
+      // user：只在 end 落定（start 的全文与 end 相同，追加会重复）
+      if (last?.kind === 'user' && last.text === text) return into
+      if (!text) return into
+      return appendTranscriptItem(into, { kind: 'user', text })
+    }
+
+    // user 的 start/update：忽略（等 end 落定）
+    return into
   }
   if (type === 'tool_execution_end') {
     const toolName = str(event.toolName) ?? 'tool'
-    const next = [...into, { kind: 'tool', text: '', toolName, isError: event.isError === true, timestamp: Date.now() } as OmpSubagentTranscriptItem]
-    return next.length > MAX_TRANSCRIPT_ITEMS ? next.slice(next.length - MAX_TRANSCRIPT_ITEMS) : next
+    return appendTranscriptItem(into, { kind: 'tool', text: '', toolName, isError: event.isError === true })
   }
   return into
+}
+
+/**
+ * 子代理会话磁盘消息（get_subagent_messages 的 messages）→ 轻量转录行。
+ * 与实时流同粒度：user / assistant 文本一行，toolResult 一枚工具徽标，
+ * developer/system-reminder 与纯工具调用轮次不留空行。
+ */
+export function transcriptItemsFromMessages(messages: unknown[]): OmpSubagentTranscriptItem[] {
+  const items: OmpSubagentTranscriptItem[] = []
+  for (const raw of messages) {
+    const message = asRecord(raw)
+    if (!message) continue
+    const role = str(message.role)
+    if (role === 'user' || role === 'assistant') {
+      const text = extractMessageText(message).slice(0, MAX_OUTPUT_CHARS_PER_ITEM)
+      if (!text) continue
+      items.push({ kind: role, text, timestamp: Date.now() })
+      continue
+    }
+    if (role === 'toolResult') {
+      const toolName = str(message.toolName) ?? 'tool'
+      items.push({ kind: 'tool', text: '', toolName, isError: message.isError === true, timestamp: Date.now() })
+    }
+  }
+  return items
 }
 
 class OmpSubagentStore {
@@ -168,6 +274,8 @@ class OmpSubagentStore {
   private byToolCall = new Map<string, string>()
   /** sessionId → run.id[]（会话级面板用） */
   private bySession = new Map<string, string[]>()
+  /** 用户从 HUD 清掉的终态 run：后续帧与快照恢复一律忽略 */
+  private dismissed = new Set<string>(loadDismissedIds())
   private revision = 0
   private listeners = new Set<() => void>()
   /** useSyncExternalStore 要求 getSnapshot 返回稳定引用：按 revision 缓存 */
@@ -219,12 +327,29 @@ class OmpSubagentStore {
     this.bump()
   }
 
+  /** 从 HUD 清除一个 run（通常已是终态）：删除并记录，后续帧不再恢复 */
+  dismiss(runId: string): void {
+    const run = this.runs.get(runId)
+    if (run?.parentToolCallId) this.byToolCall.delete(run.parentToolCallId)
+    const sessionIds = this.bySession.get(run?.sessionId ?? '')
+    if (sessionIds && run) {
+      const next = sessionIds.filter(id => id !== runId)
+      if (next.length > 0) this.bySession.set(run.sessionId, next)
+      else this.bySession.delete(run.sessionId)
+    }
+    this.runs.delete(runId)
+    this.dismissed.add(runId)
+    saveDismissedIds(this.dismissed)
+    this.bump()
+  }
+
   private bump(): void {
     this.revision += 1
     for (const listener of this.listeners) listener()
   }
 
   private upsert(sessionId: string, runId: string, fn: (run: OmpSubagentRun) => OmpSubagentRun): void {
+    if (this.dismissed.has(runId)) return
     const existing = this.runs.get(runId)
     const base: OmpSubagentRun = existing ?? {
       id: runId,
@@ -294,6 +419,21 @@ class OmpSubagentStore {
     this.upsert(sessionId, id, run => ({
       ...run,
       transcript: appendTranscriptEvent(event, run.transcript),
+    }))
+  }
+
+  /**
+   * 磁盘转录回填（get_subagent_messages）：导航离开/页面刷新期间错过的
+   * subagent_event 帧从子会话文件补回来。只在当前转录为空时生效——
+   * 非空说明实时帧已在推进（回填响应晚到的竞态），保持现状即可。
+   */
+  applyHistory(sessionId: string, runId: string, messages: unknown[]): void {
+    // 回填只作用于已存在的 run（回填不负责凭空创建）
+    if (!this.runs.has(runId)) return
+    this.upsert(sessionId, runId, run => ({
+      ...run,
+      historyLoaded: true,
+      transcript: run.transcript.length > 0 ? run.transcript : transcriptItemsFromMessages(messages),
     }))
   }
 

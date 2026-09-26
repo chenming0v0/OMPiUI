@@ -41,6 +41,7 @@ export const CORE_COMMAND_TYPES = [
   "reload",
   "respondExtensionUi",
   "setExtensionEditorState",
+  "subagent.messages",
 ] as const
 
 export type CoreCommandType = (typeof CORE_COMMAND_TYPES)[number]
@@ -203,6 +204,20 @@ export type ExtensionTuiResizeParams = {
   rows: number
 }
 
+export type SubagentMessagesParams = {
+  subagentId?: string
+  sessionFile?: string
+  fromByte?: number
+}
+
+export type SessionChildrenParams = {
+  sessionFile: string
+}
+
+export type SessionFindByIdParams = {
+  sessionId: string
+}
+
 export type CoreCommandParams = {
   prompt: PromptParams
   steer: SteerParams
@@ -246,4 +261,5 @@ export type CoreCommandParams = {
   "extensionUi.tuiInput": ExtensionTuiInputParams
   "extensionUi.tuiResize": ExtensionTuiResizeParams
   "extensionUi.tuiRedraw": Record<string, never>
+  "subagent.messages": SubagentMessagesParams
 }

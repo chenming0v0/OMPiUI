@@ -18,7 +18,7 @@ export * from "./terminal.js"
 export type HealthResponse = {
   ok: true
   protocolVersion: typeof import("./version.js").PROTOCOL_VERSION
-  service: "piui-server"
+  service: "ompiui-server"
   piSdkVersion: string
   piSdkVerified?: boolean
   piSdkFallback?: { source: string; message: string } | null

@@ -145,7 +145,14 @@
     "batchDeleteSessionsConfirm": "确定要删除 {{count}} 个会话？此操作无法撤销。",
     "batchDeleteIncludesCurrent": "包含当前打开的会话，删除后将切换到新会话。",
     "batchRemoveProjects": "移除 {{count}} 个项目",
-    "batchRemoveProjectsConfirm": "确定从列表中移除 {{count}} 个项目？这只会从侧边栏中移除，不会删除任何会话，也不会删除磁盘上的文件。"
+    "batchRemoveProjectsConfirm": "确定从列表中移除 {{count}} 个项目？这只会从侧边栏中移除，不会删除任何会话，也不会删除磁盘上的文件。",
+    "subagentHud": "后台子代理",
+    "subagentHudExpand": "展开后台子代理列表",
+    "subagentHudCollapse": "折叠后台子代理列表",
+    "subagentHudClearFinished": "清除已结束的子代理（{{count}}）",
+    "subagentHudOpenSession": "打开所在会话",
+    "subagentHudStop": "停止此子代理",
+    "subagentHudDismiss": "从列表中移除"
   },
   "activeSession": {
     "awaitingPermission": "等待权限",

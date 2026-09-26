@@ -396,6 +396,23 @@ export function getPiSessionState(sessionId: string, signal?: AbortSignal): Prom
   return postPiSessionCommand(sessionId, 'state.get', undefined, signal)
 }
 
+/**
+ * 读取 OMP 子代理会话转录（磁盘回填/增量续读）。session 命令跑在父会话
+ * runtime 上：父会话 attach 后才可用。
+ */
+export function getOmpSubagentMessages(
+  sessionId: string,
+  params: { subagentId?: string; sessionFile?: string; fromByte?: number } | undefined,
+  signal?: AbortSignal,
+): Promise<JsonValue> {
+  return postPiSessionCommand(sessionId, 'subagent.messages', params, signal)
+}
+
+/** 列出父会话文件旁嵌套的 OMP 子代理会话（OpenCodeUI children 语义） */
+export function listPiChildSessions(parentSessionFile: string, signal?: AbortSignal): Promise<JsonValue> {
+  return postPiGlobalCommand<JsonValue>('session.children', { sessionFile: parentSessionFile }, signal)
+}
+
 export function getPiBranchPage(sessionId: string, params: PiBranchGetParams, signal?: AbortSignal): Promise<PiBranchPage> {
   return postPiSessionCommand(sessionId, 'branch.get', params, signal)
 }

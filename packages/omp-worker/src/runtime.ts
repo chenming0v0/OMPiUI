@@ -27,6 +27,7 @@ export interface SessionRuntime {
   getBranchPage(cursor: string | undefined, limit: number, maxBytes: number): JsonObject | Promise<JsonObject>
   getTree(): JsonValue | Promise<JsonValue>
   getAttachment(entryId: string, blockIndex: number): JsonObject | Promise<JsonObject>
+  getSubagentMessages(params: { subagentId?: string; sessionFile?: string; fromByte?: number }): JsonValue | Promise<JsonValue>
   getRegistry(): RegistrySnapshot | Promise<RegistrySnapshot>
   listSkills(): JsonValue | Promise<JsonValue>
   listPrompts(): JsonValue | Promise<JsonValue>
@@ -111,6 +112,8 @@ export interface SessionRuntime {
 export interface CatalogProvider {
   listSessions(cwd: string): Promise<JsonValue>
   listAllSessions(): Promise<JsonValue>
+  listChildSessions(parentSessionFile: string): Promise<JsonValue>
+  findSessionById(sessionId: string): Promise<JsonObject | null>
   createSession(cwd: string): Promise<JsonValue>
   previewSession(cwd: string, sessionFile: string, params?: { cursor?: string; limit?: number; maxBytes?: number }): Promise<JsonValue>
   previewSessionById(sessionId: string, params?: { cursor?: string; limit?: number; maxBytes?: number }): Promise<JsonValue>

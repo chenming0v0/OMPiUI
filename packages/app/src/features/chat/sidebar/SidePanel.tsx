@@ -7,6 +7,8 @@ import { ConfirmDialog } from '../../../components/ui/ConfirmDialog'
 import { ActiveSessionItem } from './ActiveSessionItem'
 import { NotificationItem } from './NotificationItem'
 import { SidebarFooter } from './SidebarFooter'
+import { SubagentHud } from './SubagentHud'
+import { useChildSessions } from './childSessions'
 import { getParentPath } from './sidebarUtils'
 import {
   SidebarIcon,
@@ -310,6 +312,13 @@ export function SidePanel({
     pinnedSessionsStore.getSnapshot,
   )
   const sessionLookup = useMemo(() => new Map(sessions.map(session => [session.id, session])), [sessions])
+  // 选中会话的 OMP 子代理会话（session.children；OpenCodeUI children 语义）
+  const childSessions = useChildSessions(selectedSessionId, sessionLookup)
+  // SessionChildrenSlot 的数据接口：父会话 id → 子会话列表（仅选中会话拉取）
+  const childrenByParent = useMemo(
+    () => (selectedSessionId && childSessions.length > 0 ? new Map([[selectedSessionId, childSessions]]) : undefined),
+    [selectedSessionId, childSessions],
+  )
 
   // 列表显示按当前工作区过滤；数据本身是全局的（活跃 tab / 标题解析都需全局）
   const visibleSessions = useMemo(
@@ -1081,6 +1090,10 @@ export function SidePanel({
           visibility: showLabels ? 'visible' : 'hidden',
         }}
       >
+        {/* Pinned HUD：detached 后台子代理全局列表（OpenCodeUI pinned 语义，
+            不随 tab/项目过滤变化；无后台子代理时不渲染） */}
+        <SubagentHud selectedSessionId={selectedSessionId} onSelectSession={handleSelectActive} onCloseMobile={onCloseMobile} />
+
         {/* Tab Bar: Recents / Active */}
         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
           <div className="flex items-center mx-2 gap-1 shrink-0">
@@ -1202,6 +1215,7 @@ export function SidePanel({
                   workspaceDirectoriesByProjectId={workspaceDirectoriesByProjectId}
                   pinnedSessions={resolvedPinnedSessions}
                   unavailablePinnedEntries={unavailablePinnedEntries}
+                  inlineChildSessions={childrenByParent}
                 />
               ) : shouldRenderWorkspaceTreeOnly ? (
                 <FolderRecentList
@@ -1210,6 +1224,7 @@ export function SidePanel({
                   onReorderProject={reorderDirectories}
                   pinnedSessions={resolvedPinnedSessions}
                   unavailablePinnedEntries={unavailablePinnedEntries}
+                  inlineChildSessions={childrenByParent}
                 />
               ) : shouldWaitForWorkspaceResolution ? (
                 <div className="flex h-full items-center justify-center text-text-400/70">
@@ -1218,6 +1233,7 @@ export function SidePanel({
               ) : (
                 <SessionList
                   sessions={orderedSessions}
+                  inlineChildSessions={childrenByParent}
                   selectedId={selectedSessionId}
                   isLoading={isLoading}
                   isLoadingMore={isLoadingMore}

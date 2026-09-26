@@ -330,6 +330,17 @@ export class SessionHost {
       // Fall back to the legacy default directory scan below.
     }
 
+    // 顶层列表没有（OMP 子代理会话嵌套在父会话目录里）→ 深度解析兜底，
+    // 保证子会话重载/深链后仍能按 id attach
+    try {
+      const found = await this.catalogCommand("session.findById", { sessionId }, { retry: true, idempotent: true })
+      if (isJsonObject(found) && typeof found.sessionFile === "string" && typeof found.cwd === "string") {
+        return { cwd: found.cwd, sessionFile: found.sessionFile }
+      }
+    } catch {
+      // Fall through to the legacy scan.
+    }
+
     // Scan the Pi sessions directory directly for `<ts>_<sessionId>.jsonl` —
     // more reliable than the catalog list, and reads cwd from the file header.
     try {

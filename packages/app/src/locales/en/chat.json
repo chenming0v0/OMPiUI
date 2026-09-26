@@ -145,7 +145,14 @@
     "batchDeleteSessionsConfirm": "Are you sure you want to delete {{count}} session(s)? This action cannot be undone.",
     "batchDeleteIncludesCurrent": "The currently open session is included. It will switch to a new session after deletion.",
     "batchRemoveProjects": "Remove {{count}} Project(s)",
-    "batchRemoveProjectsConfirm": "Remove {{count}} project(s) from the list? This only removes them from the sidebar — no sessions will be deleted and no files on disk will be affected."
+    "batchRemoveProjectsConfirm": "Remove {{count}} project(s) from the list? This only removes them from the sidebar — no sessions will be deleted and no files on disk will be affected.",
+    "subagentHud": "Background agents",
+    "subagentHudExpand": "Expand background agents",
+    "subagentHudCollapse": "Collapse background agents",
+    "subagentHudClearFinished": "Clear finished agents ({{count}})",
+    "subagentHudOpenSession": "Open parent session",
+    "subagentHudStop": "Stop this agent",
+    "subagentHudDismiss": "Remove from list"
   },
   "activeSession": {
     "awaitingPermission": "Awaiting Permission",

@@ -54,7 +54,7 @@ test("one server provides the web app and authenticated API on the same port", a
       headers: { authorization: "Bearer test-token" },
     })
     assert.equal(health.status, 200)
-    assert.equal((await health.json() as { service?: string }).service, "piui-server")
+    assert.equal((await health.json() as { service?: string }).service, "ompiui-server")
   } finally {
     await running.stop()
   }

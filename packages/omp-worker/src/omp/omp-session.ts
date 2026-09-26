@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { copyFileSync } from "node:fs"
+import { copyFileSync, existsSync } from "node:fs"
 import path from "node:path"
 import type {
   ImageInput,
@@ -131,6 +131,10 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   private async start(): Promise<void> {
+    // 会话 cwd 可能已被清理（如 OMP 的子代理探针临时目录）：快速失败，给出可读错误
+    if (!existsSync(this.cwd)) {
+      throw Object.assign(new Error(`Session workspace no longer exists: ${this.cwd}`), { code: "SESSION_CWD_GONE" })
+    }
     this.client = new OmpRpcClient({
       cwd: this.cwd,
       bin: this.ompOptions.bin,
@@ -1120,6 +1124,11 @@ export class OmpRpcSession implements SessionRuntime {
 
   getCwd(): string {
     return this.cwd
+  }
+
+  /** 崩溃诊断用：omp 子进程 stderr 末尾 */
+  get stderrTail(): string {
+    return this.client?.stderrTail ?? ""
   }
 
   getSessionId(): string {
