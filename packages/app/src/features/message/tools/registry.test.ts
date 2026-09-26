@@ -77,4 +77,59 @@ describe('defaultExtractData', () => {
     expect(extracted.truncated).toBe(true)
     expect(extracted.fullOutputPath).toBe('/tmp/pi-bash-abc.log')
   })
+
+  it('maps OMP glob/grep string file lists to file entries', () => {
+    const execution: PiToolExecution = {
+      call: {
+        type: 'toolCall',
+        id: 'call-3',
+        name: 'glob',
+        arguments: { pattern: '**/*.tsx' },
+      },
+      result: {
+        role: 'toolResult',
+        toolCallId: 'call-3',
+        toolName: 'glob',
+        content: [{ type: 'text', text: 'src/App.tsx\nsrc/main.tsx' }],
+        isError: false,
+        timestamp: 0,
+        details: {
+          files: ['src/App.tsx', 'src/main.tsx'],
+          fileCount: 2,
+          cwd: 'C:/work/demo',
+        },
+      },
+    }
+
+    const extracted = defaultExtractData(execution)
+
+    expect(extracted.files).toEqual([{ filePath: 'src/App.tsx' }, { filePath: 'src/main.tsx' }])
+    expect(extracted.cwd).toBe('C:/work/demo')
+  })
+
+  it('uses resolvedPath from OMP read details as filePath', () => {
+    const execution: PiToolExecution = {
+      call: {
+        type: 'toolCall',
+        id: 'call-4',
+        name: 'read',
+        arguments: { path: 'app.ts' },
+      },
+      result: {
+        role: 'toolResult',
+        toolCallId: 'call-4',
+        toolName: 'read',
+        content: [{ type: 'text', text: 'file contents' }],
+        isError: false,
+        timestamp: 0,
+        details: {
+          resolvedPath: 'C:/work/demo/app.ts',
+        },
+      },
+    }
+
+    const extracted = defaultExtractData(execution)
+
+    expect(extracted.filePath).toBe('C:/work/demo/app.ts')
+  })
 })

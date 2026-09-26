@@ -268,6 +268,9 @@ export class OmpRpcSession implements SessionRuntime {
       }
       // OMP 的终态信号 → Pi 的 agent_settled（前端 idle/刷新依赖）
       case "session_settled": {
+        // 终态时 omp 不再单独发 isStreaming=false 的状态帧：必须在事件侧复位，
+        // 否则 activity 一直 busy，前端停止按钮要等下一次 state.get 轮询才解除
+        this.currentStreaming = false
         this.scheduleEntrySync()
         this.emitPiEvent({ type: "agent_settled" })
         this.emitActivityIfChanged()

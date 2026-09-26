@@ -551,7 +551,7 @@ class ServerStore {
           return commitHealth(health)
         }
 
-        if (!isRecord(data) || data.ok !== true || data.service !== 'piui-server' || data.protocolVersion !== PROTOCOL_VERSION) {
+        if (!isRecord(data) || data.ok !== true || data.service !== 'ompiui-server' || data.protocolVersion !== PROTOCOL_VERSION) {
           const health: ServerHealth = {
             status: 'error',
             latency,

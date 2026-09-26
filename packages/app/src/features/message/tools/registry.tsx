@@ -110,6 +110,10 @@ export function defaultExtractData(execution: PiToolExecution): ExtractedToolDat
   if (metadata && typeof metadata.filepath === 'string') {
     result.filePath = metadata.filepath
   }
+  if (!result.filePath && metadata && typeof metadata.resolvedPath === 'string') {
+    // OMP read/glob 工具 details 里的解析路径
+    result.filePath = metadata.resolvedPath
+  }
 
   // Pi 原生截断字段：输出超限时 truncated=true 且给出完整日志路径（bash/read 等通用）
   result.truncated = metadata?.truncated === true
@@ -132,15 +136,20 @@ export function defaultExtractData(execution: PiToolExecution): ExtractedToolDat
   // Diff / Files (from metadata)
   if (metadata) {
     if (Array.isArray(metadata.files) && metadata.files.length > 0) {
-      result.files = (metadata.files as MetadataFileEntry[]).map(file => ({
-        filePath: file.filePath || file.file || 'unknown',
-        diff: file.diff,
-        patch: file.patch,
-        before: file.before,
-        after: file.after,
-        additions: file.additions,
-        deletions: file.deletions,
-      }))
+      // OMP glob/grep 的 details.files 是 string[]（cwd 相对路径）；pi edit 的是对象数组
+      result.files = (metadata.files as (MetadataFileEntry | string)[]).map(file =>
+        typeof file === 'string'
+          ? { filePath: file }
+          : {
+              filePath: file.filePath || file.file || 'unknown',
+              diff: file.diff,
+              patch: file.patch,
+              before: file.before,
+              after: file.after,
+              additions: file.additions,
+              deletions: file.deletions,
+            },
+      )
     } else if (typeof metadata.patch === 'string') {
       // 标准 unified diff（edit 工具 details.patch），extractContentFromUnifiedDiff 可正确解析
       result.diff = metadata.patch
