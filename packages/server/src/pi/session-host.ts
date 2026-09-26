@@ -4,9 +4,9 @@ import { existsSync } from "node:fs"
 import { readdir } from "node:fs/promises"
 import { open } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
-import type { CommandEnvelope, CommandRecord, JsonObject, JsonValue, PiCapability, PiRegistrySnapshot, RegistrySnapshot, SessionActivityStatus, SessionsActivitySnapshot } from "@piui/protocol"
-import { isJsonObject, PI_PARITY_SDK_VERSION, PROTOCOL_VERSION, validateParams } from "@piui/protocol"
-import { createRegistryDescribeCapability, getCommandCapability, getDriverMode, listCommandCapabilities, type WorkerEvent } from "@piui/pi-worker"
+import type { CommandEnvelope, CommandRecord, JsonObject, JsonValue, PiCapability, PiRegistrySnapshot, RegistrySnapshot, SessionActivityStatus, SessionsActivitySnapshot } from "@ompiui/protocol"
+import { isJsonObject, PI_PARITY_SDK_VERSION, PROTOCOL_VERSION, validateParams } from "@ompiui/protocol"
+import { createRegistryDescribeCapability, getCommandCapability, getDriverMode, listCommandCapabilities, type WorkerEvent } from "@ompiui/pi-worker"
 import type { EventHub } from "../event-hub.ts"
 import type { RuntimeSupervisor } from "./supervisor.ts"
 import { SessionExecutor, type SubmittedCommand } from "./session-executor.ts"
@@ -354,7 +354,7 @@ export class SessionHost {
 
   async piRegistry(signal?: AbortSignal): Promise<PiRegistrySnapshot> {
     // worker 未就绪（冷启动 SDK 加载中）时立即返回静态快照：命令能力表是
-    // 编译期静态的（@piui/protocol 的 PI_COMMAND_SPECS），不需要 worker。
+    // 编译期静态的（@ompiui/protocol 的 PI_COMMAND_SPECS），不需要 worker。
     // 否则前端 bootstrap 会被 worker 的数秒 SDK 加载卡住，触发退避重试。
     // sdkVersion 用 parity 常量兜底；worker 就绪后走真实 describeRegistry。
     const ready = await this.supervisor.peekCatalogHandshake().catch(() => undefined)
@@ -570,6 +570,16 @@ export class SessionHost {
     }
     if (event.channel === "omp.subagent") {
       this.hub.publish({ kind: "session", id: session.sessionId }, "omp.subagent", event.event)
+      // 注册帧（lifecycle/progress）镜像到 server 流：detached 后台子代理的
+      // 父会话可能没有任何 pane 打开（客户端也就没订阅该 session 流），
+      // 全局 HUD 靠这条镜像维持列表。event/转录帧体量大，仍只在会话流内。
+      if (isJsonObject(event.event) && (event.event.kind === "lifecycle" || event.event.kind === "progress")) {
+        this.hub.publish({ kind: "server", id: "server" }, "omp.subagent", {
+          kind: event.event.kind,
+          payload: event.event.payload ?? null,
+          sessionId: session.sessionId,
+        })
+      }
       return
     }
     if (event.channel === "registry.updated") {

@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { JsonObject, JsonValue, ToolDescriptor } from '@piui/protocol'
+import type { JsonObject, JsonValue, ToolDescriptor } from '@ompiui/protocol'
 import type { SessionEntry } from '../pi/domain'
 import {
   CheckIcon,

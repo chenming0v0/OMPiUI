@@ -4,7 +4,7 @@
 
 import { API_BASE_URL } from '../constants'
 import { getHttpFetch, isTauri } from '../utils/tauri'
-import { PROTOCOL_VERSION } from '@piui/protocol'
+import { PROTOCOL_VERSION } from '@ompiui/protocol'
 
 /**
  * 服务器配置

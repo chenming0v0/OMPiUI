@@ -1,4 +1,4 @@
-import type { JsonObject } from "@piui/protocol"
+import type { JsonObject } from "@ompiui/protocol"
 
 export interface SchedulerCommand {
   type: string

@@ -3,8 +3,8 @@ import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { EventEmitter } from "node:events"
-import type { JsonObject, JsonValue } from "@piui/protocol"
-import { isJsonObject } from "@piui/protocol"
+import type { JsonObject, JsonValue } from "@ompiui/protocol"
+import { isJsonObject } from "@ompiui/protocol"
 
 /**
  * 可选的 OMP 兼容配置覆盖：`~/.ompiui/omp-compat.yml` 存在时以 `--config`

@@ -10,9 +10,9 @@ import {
   type EventStreamRef,
   isJsonObject,
   type CommandRecord,
-} from '@piui/protocol'
+} from '@ompiui/protocol'
 import type { AgentMessage, AgentSessionEvent, PiLiveMessage } from './domain/index.js'
-import type { ProviderAuthEvent, SessionsActivitySnapshot, SessionActivityStatus } from '@piui/protocol'
+import type { ProviderAuthEvent, SessionsActivitySnapshot, SessionActivityStatus } from '@ompiui/protocol'
 import { getApiBase, getPiAuthToken } from './httpClient.js'
 import { openPiSocket, PI_SOCKET_CLOSED, PI_SOCKET_CLOSING, PI_SOCKET_OPEN, type PiSocket } from './piSocket'
 import { piBranchStore, piCommandStore, piSessionStateStore } from './state/index.js'
@@ -52,12 +52,12 @@ type PiEventPayload = {
 }
 
 type PiExtensionUiEvent =
-  | { type: 'requested'; request: import('@piui/protocol').ExtensionUiDialogRequest }
+  | { type: 'requested'; request: import('@ompiui/protocol').ExtensionUiDialogRequest }
   | { type: 'settled'; requestId: string; sessionId: string }
-  | { type: 'state'; sessionId: string; patch: import('@piui/protocol').ExtensionUiStatePatch }
+  | { type: 'state'; sessionId: string; patch: import('@ompiui/protocol').ExtensionUiStatePatch }
   | { type: 'notify'; sessionId: string; message: string; notifyType?: 'info' | 'warning' | 'error' }
-  | { type: 'editor'; sessionId: string; command: import('@piui/protocol').ExtensionUiEditorCommand }
-  | { type: 'tuiAttach'; sessionId: string; attach: import('@piui/protocol').ExtensionTuiAttach }
+  | { type: 'editor'; sessionId: string; command: import('@ompiui/protocol').ExtensionUiEditorCommand }
+  | { type: 'tuiAttach'; sessionId: string; attach: import('@ompiui/protocol').ExtensionTuiAttach }
   | { type: 'tuiDetach'; sessionId: string; key: string }
   | { type: 'tuiFrame'; sessionId: string; data: string }
 
@@ -353,9 +353,17 @@ class PiEventStream {
       case 'extension.ui':
         if (sessionId) this.handleExtensionUiEvent(sessionId, envelope.payload as unknown as PiExtensionUiEvent)
         break
-      case 'omp.subagent':
-        if (sessionId) this.handleOmpSubagentEvent(sessionId, envelope.payload)
+      case 'omp.subagent': {
+        // 会话流上 sessionId 取 envelope；server 流上的注册帧镜像由 payload
+        // 携带 sessionId（detached 后台子代理的父会话可能没有 pane 订阅）
+        const mirrorPayload = envelope.payload as { sessionId?: unknown } | undefined
+        const mirrorSessionId = isJsonObject(mirrorPayload) && typeof mirrorPayload.sessionId === 'string'
+          ? mirrorPayload.sessionId
+          : null
+        const runSessionId = sessionId ?? mirrorSessionId
+        if (runSessionId) this.handleOmpSubagentEvent(runSessionId, envelope.payload)
         break
+      }
       case 'provider.auth':
         this.handleProviderAuthEvent(envelope.payload as unknown as ProviderAuthEvent)
         break

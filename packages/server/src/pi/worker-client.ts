@@ -1,7 +1,7 @@
 import { fork, spawn, type ChildProcess } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { logToFile } from "../logger.ts"
-import type { JsonObject, JsonValue, Problem } from "@piui/protocol"
+import type { JsonObject, JsonValue, Problem } from "@ompiui/protocol"
 import {
   PI_WORKER_HEARTBEAT_INTERVAL_MS,
   PI_WORKER_PROTOCOL_VERSION,
@@ -9,7 +9,7 @@ import {
   type WorkerHello,
   type WorkerHostCall,
   type WorkerMessage,
-} from "@piui/pi-worker"
+} from "@ompiui/pi-worker"
 
 export interface WorkerClientOptions {
   env?: NodeJS.ProcessEnv

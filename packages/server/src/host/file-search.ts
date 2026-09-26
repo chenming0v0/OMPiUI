@@ -5,7 +5,7 @@ import type {
   FileSearchStats,
   FileTextSearchResponse,
   WorkspaceTextSearchMatch,
-} from "@piui/protocol"
+} from "@ompiui/protocol"
 import type { WorkspaceRecord } from "./workspace-store.ts"
 import { resolveWorkspacePath } from "./path-safety.ts"
 

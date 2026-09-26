@@ -9,7 +9,7 @@ import {
   type HealthResponse,
   type JsonObject,
   type ShareInfo,
-} from "@piui/protocol"
+} from "@ompiui/protocol"
 import { EventHub } from "./event-hub.ts"
 import { RuntimeSupervisor } from "./pi/supervisor.ts"
 import { SessionHost } from "./pi/session-host.ts"

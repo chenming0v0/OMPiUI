@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import type { CommandRecord } from '@piui/protocol'
+import type { CommandRecord } from '@ompiui/protocol'
 import { piCommandStore } from './piCommandStore.js'
 
 function command(overrides: Partial<CommandRecord> = {}): CommandRecord {

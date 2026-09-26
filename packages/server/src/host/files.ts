@@ -19,7 +19,7 @@ import type {
   FileNodeDto,
   FileOperationResponse,
   FileReadResponse,
-} from "@piui/protocol"
+} from "@ompiui/protocol"
 import { PathSafetyError, resolveWorkspacePath } from "./path-safety.ts"
 import { workspacePathKey, type WorkspaceRecord } from "./workspace-store.ts"
 import { acquireWorkspaceMutationLock } from "./workspace-lock.ts"

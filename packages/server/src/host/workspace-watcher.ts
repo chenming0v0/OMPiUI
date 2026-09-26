@@ -1,7 +1,7 @@
 import path from "node:path"
 import chokidar, { type FSWatcher } from "chokidar"
 import { lstat, readFile, readdir } from "node:fs/promises"
-import type { JsonObject } from "@piui/protocol"
+import type { JsonObject } from "@ompiui/protocol"
 
 type WorkspaceFileChange = { path: string; kind: "created" | "changed" | "deleted"; type: "file" | "directory" }
 import type { EventHub } from "../event-hub.ts"

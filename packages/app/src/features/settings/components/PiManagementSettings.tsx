@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { JsonObject } from '@piui/protocol'
+import type { JsonObject } from '@ompiui/protocol'
 import type { PiProjectTrust, PiSettingsSnapshot } from '../../../pi/domain'
 import type { HostWorkspace } from '../../../pi/workspaces'
 import { Button } from '../../../components/ui/Button'

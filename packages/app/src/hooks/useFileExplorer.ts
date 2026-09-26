@@ -15,7 +15,7 @@ import {
   toAbsoluteEntryPath,
 } from '../pi/files'
 import { getHostGitDiff } from '../pi/transport/index.js'
-import type { FileNodeDto, FileReadResponse } from '@piui/protocol'
+import type { FileNodeDto, FileReadResponse } from '@ompiui/protocol'
 import { useSessionChangeScope } from '../store/changeScopeStore'
 import { useAutoRefresh } from './useAutoRefresh'
 import { resolveWorkspacePath } from '../pi/workspaces'

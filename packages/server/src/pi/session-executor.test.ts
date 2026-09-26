@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import type { CommandEnvelope } from "@piui/protocol"
+import type { CommandEnvelope } from "@ompiui/protocol"
 import { SessionExecutor } from "./session-executor.ts"
 
 function envelope(id: string, sessionId: string | undefined, type: string, params?: CommandEnvelope["params"]): CommandEnvelope {

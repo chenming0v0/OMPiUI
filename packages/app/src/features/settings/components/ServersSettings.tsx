@@ -20,7 +20,7 @@ import { settingsFieldClass, SettingsSection } from './SettingsUI'
 import type { ServerConfig, ServerHealth } from '../../../store/serverStore'
 import { parseConnectLink } from '../../../store/serverStore'
 import { fetchHostShare } from '../../../pi/transport'
-import type { ShareInfo } from '@piui/protocol'
+import type { ShareInfo } from '@ompiui/protocol'
 
 const IPV4_PATTERN = /^(?:\d{1,3}\.){3}\d{1,3}$/
 /** 显示名长度上限，避免列表项把右侧操作按钮挤穿 */

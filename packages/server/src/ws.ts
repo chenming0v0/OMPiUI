@@ -11,7 +11,7 @@ import {
   TERMINAL_STREAM_PROTOCOL_VERSION,
   type TerminalStreamClientFrame,
   type TerminalStreamServerFrame,
-} from "@piui/protocol"
+} from "@ompiui/protocol"
 import type { EventHub } from "./event-hub.ts"
 import { requestHasAllowedOrigin, requestHasValidToken, timingSafeTokenEquals } from "./host/security.ts"
 import { resolveAuthToken } from "./host/auth-token.ts"
@@ -107,7 +107,7 @@ function attachConnection(ws: WebSocket, eventHub: EventHub, onSubscribe?: (send
   send(ws, {
     type: "hello",
     protocolVersion: PROTOCOL_VERSION,
-    service: "piui-server",
+    service: "ompiui-server",
     subprotocol: EVENT_WS_SUBPROTOCOL,
   })
 

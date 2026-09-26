@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
-import type { JsonObject, JsonValue } from "@piui/protocol"
-import { isJsonObject } from "@piui/protocol"
-import type { ProviderAuthEvent, ProviderAuthPrompt } from "@piui/protocol"
+import type { JsonObject, JsonValue } from "@ompiui/protocol"
+import { isJsonObject } from "@ompiui/protocol"
+import type { ProviderAuthEvent, ProviderAuthPrompt } from "@ompiui/protocol"
 import type { ProviderAuthGateway } from "../command-table.js"
 import { OmpRpcClient, unwrapResponse } from "./rpc-client.js"
 

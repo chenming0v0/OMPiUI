@@ -1,4 +1,4 @@
-import type { CommandRecord } from '@piui/protocol'
+import type { CommandRecord } from '@ompiui/protocol'
 
 class PiCommandStore {
   private byId = new Map<string, CommandRecord>()

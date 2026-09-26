@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import type { JsonObject, ProviderAuthEvent } from '@piui/protocol'
+import type { JsonObject, ProviderAuthEvent } from '@ompiui/protocol'
 
 /** packages.progress payload (worker-side emission is not wired yet). */
 export type PackageProgress = JsonObject & { commandId: string }

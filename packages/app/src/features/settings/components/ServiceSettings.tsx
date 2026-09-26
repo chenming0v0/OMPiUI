@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { TerminalShell } from '@piui/protocol'
+import type { TerminalShell } from '@ompiui/protocol'
 import { Button } from '../../../components/ui/Button'
 import { RetryIcon, SpinnerIcon, StopIcon, TrashIcon, WifiIcon, WifiOffIcon } from '../../../components/Icons'
 import { isTauri, isTauriMobile } from '../../../utils/tauri'

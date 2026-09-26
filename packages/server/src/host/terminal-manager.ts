@@ -62,7 +62,7 @@ import type {
   TerminalShell,
   TerminalInfo,
   TerminalUpdateParams,
-} from "@piui/protocol"
+} from "@ompiui/protocol"
 import { resolveWorkspacePath } from "./path-safety.ts"
 import { workspacePathKey } from "./workspace-store.ts"
 

@@ -4,6 +4,6 @@ import { fileURLToPath } from "node:url"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 
-for (const packageName of ["app", "pi-worker", "protocol", "server"]) {
+for (const packageName of ["app", "omp-worker", "protocol", "server"]) {
   rmSync(path.join(root, "packages", packageName, "dist"), { recursive: true, force: true })
 }

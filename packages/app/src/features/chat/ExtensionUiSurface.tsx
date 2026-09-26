@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { ExtensionUiState } from '@piui/protocol'
+import type { ExtensionUiState } from '@ompiui/protocol'
 import { extensionUiStore } from '../../pi/extensionUiStore'
 
 export function ExtensionUiSurface({ sessionId, placement }: { sessionId: string | null; placement: 'aboveEditor' | 'belowEditor' }) {

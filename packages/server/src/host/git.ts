@@ -10,7 +10,7 @@ import type {
   GitInfoResponse,
   GitStatusItem,
   GitStatusResponse,
-} from "@piui/protocol"
+} from "@ompiui/protocol"
 import { normalizeRelativePath } from "./path-safety.ts"
 
 const TIMEOUT_MS = 15_000

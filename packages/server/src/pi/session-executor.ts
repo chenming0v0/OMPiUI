@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import type { CommandEnvelope, CommandRecord, CommandStatus, JsonValue } from "@piui/protocol"
+import type { CommandEnvelope, CommandRecord, CommandStatus, JsonValue } from "@ompiui/protocol"
 
 const MAX_RETAINED_COMMANDS = 512
 

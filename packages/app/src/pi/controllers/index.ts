@@ -1,10 +1,11 @@
-import type { CommandRecord, ExtensionUiDialogResponse, JsonObject, JsonValue, RegistrySnapshot, CommandDescriptor, ToolDescriptor } from '@piui/protocol'
-import type { SessionInfo } from '@earendil-works/pi-coding-agent'
-import type { Model, Api } from '@earendil-works/pi-ai'
+import type { CommandRecord, ExtensionUiDialogResponse, JsonObject, JsonValue, RegistrySnapshot, CommandDescriptor, ToolDescriptor } from '@ompiui/protocol'
+import type { SessionInfo } from '../vendor/pi-coding-agent'
+import type { Model, Api } from '../vendor/pi-ai'
 import * as transport from '../transport/index.js'
 import { piSessionInfoStore, piBranchStore, piSessionStateStore, piModelsStore } from '../state/index.js'
 import { mergeLatestBranchPage } from '../branchMerge.js'
 import { serverStore } from '../../store/serverStore'
+import { ompSubagentStore } from '../ompSubagentStore'
 import type { PiBranchPage } from '../domain/index.js'
 
 /**
@@ -258,6 +259,12 @@ export async function refreshPiSessionState(sessionId: string, signal?: AbortSig
   const state = await transport.getPiSessionState(sessionId, signal)
   if (serverStore.getActiveServerGeneration() !== serverGeneration) return
   piSessionStateStore.setState(sessionId, state as JsonObject)
+  // worker 的子代理注册表快照并入全局 store：页面刷新 / 重连后 HUD 与
+  // TaskRenderer 内联视图据此恢复（运行中的随后由 progress 帧继续推进）
+  if (state && typeof state === 'object' && !Array.isArray(state)
+    && Array.isArray((state as JsonObject).subagents)) {
+    ompSubagentStore.applySnapshot(sessionId, (state as JsonObject).subagents as unknown[])
+  }
 }
 
 /**

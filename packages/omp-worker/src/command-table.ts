@@ -1,4 +1,4 @@
-import { PI_COMMAND_SPECS, piSpecToCapability, type JsonObject, type JsonValue, type PiCapability, type PiCapabilityScope, type RegistrySnapshot } from "@piui/protocol"
+import { PI_COMMAND_SPECS, piSpecToCapability, type JsonObject, type JsonValue, type PiCapability, type PiCapabilityScope, type RegistrySnapshot } from "@ompiui/protocol"
 import type { CatalogProvider, SessionRuntime } from "./runtime.js"
 import * as P from "./params.js"
 
@@ -336,7 +336,7 @@ type RegisteredPiCapability = {
 }
 
 /**
- * 元数据（名字/scope/queue/schema/flags）的唯一来源是 @piui/protocol 的
+ * 元数据（名字/scope/queue/schema/flags）的唯一来源是 @ompiui/protocol 的
  * PI_COMMAND_SPECS；这里只绑定 handler。声明缺 handler 或 handler 没注册，
  * 都在 worker 启动时直接炸出来，不允许静默漂移。
  */

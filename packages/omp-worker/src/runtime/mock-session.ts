@@ -3,8 +3,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rea
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { realpath } from "node:fs/promises"
-import type { ImageInput, JsonObject, JsonValue, RegistrySnapshot } from "@piui/protocol"
-import { isJsonObject } from "@piui/protocol"
+import type { ImageInput, JsonObject, JsonValue, RegistrySnapshot } from "@ompiui/protocol"
+import { isJsonObject } from "@ompiui/protocol"
 import type { CatalogProvider, PiEventMeta, SessionRuntime, Unsubscribe } from "../runtime.js"
 import type { PackagesGateway } from "../command-table.js"
 import {

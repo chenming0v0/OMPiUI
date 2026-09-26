@@ -1,5 +1,5 @@
 import { getFileContent } from '../pi/files'
-import type { FileReadResponse } from '@piui/protocol'
+import type { FileReadResponse } from '@ompiui/protocol'
 import { buildDataUrl, buildTextDataUrl, decodeBase64Text, isBinaryContent } from '../utils/mimeUtils'
 
 const ABSOLUTE_RESOURCE_PATTERN = /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i

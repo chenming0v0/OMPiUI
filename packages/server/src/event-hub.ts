@@ -9,7 +9,7 @@ import {
   type EventResyncReason,
   type EventStreamRef,
   type JsonValue,
-} from "@piui/protocol"
+} from "@ompiui/protocol"
 
 type Listener = (event: EventEnvelope) => void
 const MAX_STREAMS = 4096

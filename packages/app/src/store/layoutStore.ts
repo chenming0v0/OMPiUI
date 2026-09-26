@@ -2,7 +2,7 @@
 // LayoutStore - 全局 UI 布局状态
 // ============================================
 
-import type { TerminalInfo } from '@piui/protocol'
+import type { TerminalInfo } from '@ompiui/protocol'
 
 // 面板位置
 export type PanelPosition = 'bottom' | 'right'

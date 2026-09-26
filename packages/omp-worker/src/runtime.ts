@@ -1,4 +1,4 @@
-import type { ImageInput, JsonObject, JsonValue, RegistrySnapshot, SessionActivityStatus } from "@piui/protocol"
+import type { ImageInput, JsonObject, JsonValue, RegistrySnapshot, SessionActivityStatus } from "@ompiui/protocol"
 
 export interface PiEventMeta {
   epoch: string

@@ -10,7 +10,7 @@ import {
   useManagementEvents,
   type ProviderAuthFlowState,
 } from '../../pi/managementEventStore'
-import type { ProviderAuthPrompt } from '@piui/protocol'
+import type { ProviderAuthPrompt } from '@ompiui/protocol'
 import {
   cancelProviderAuth,
   listActiveProviderFlows,

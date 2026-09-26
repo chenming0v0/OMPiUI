@@ -7,8 +7,8 @@ import type {
   JsonValue,
   RegistrySnapshot,
   SessionActivityStatus,
-} from "@piui/protocol"
-import { isJsonObject } from "@piui/protocol"
+} from "@ompiui/protocol"
+import { isJsonObject } from "@ompiui/protocol"
 import { entriesPageFromEntries, sessionHeadFromParts, type BranchCheckpoint, type EntriesPage, type LiveMessage, type SessionHead } from "../runtime/pagination.js"
 import type { PiEventMeta, SessionRuntime, Unsubscribe } from "../runtime.js"
 import { normalizeCwd, resolveUserPath } from "./omp-catalog.js"

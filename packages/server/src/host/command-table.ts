@@ -1,4 +1,4 @@
-import { HOST_COMMAND_SPECS, PROTOCOL_VERSION, hostSpecToCapability, requireJsonValue, validateParams, type HostCapability, type HostRegistrySnapshot, type JsonObject, type JsonValue } from "@piui/protocol"
+import { HOST_COMMAND_SPECS, PROTOCOL_VERSION, hostSpecToCapability, requireJsonValue, validateParams, type HostCapability, type HostRegistrySnapshot, type JsonObject, type JsonValue } from "@ompiui/protocol"
 import path from "node:path"
 import type { SessionHost } from "../pi/session-host.ts"
 import {
@@ -39,7 +39,7 @@ export class HostRuntime {
     return {
       protocolVersion: PROTOCOL_VERSION,
       revision: this.revision,
-      service: "piui-server",
+      service: "ompiui-server",
       commands: HOST_CAPABILITIES.map(item => ({ ...item.capability })),
     }
   }
@@ -162,7 +162,7 @@ function fileEncoding(params: JsonObject): "utf-8" | "base64" | undefined {
 }
 
 /**
- * 元数据（名字/domain/queue/schema/flags）的唯一来源是 @piui/protocol 的
+ * 元数据（名字/domain/queue/schema/flags）的唯一来源是 @ompiui/protocol 的
  * HOST_COMMAND_SPECS；这里只绑定 handler。声明缺 handler 或 handler 没注册，
  * 都在 server 启动时直接炸出来，不允许静默漂移。
  */

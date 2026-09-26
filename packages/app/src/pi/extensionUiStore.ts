@@ -4,7 +4,7 @@ import type {
   ExtensionUiSnapshot,
   ExtensionUiState,
   ExtensionUiStatePatch,
-} from "@piui/protocol"
+} from "@ompiui/protocol"
 
 interface ExtensionUiStoreSnapshot {
   sessions: Readonly<Record<string, ExtensionUiSnapshot>>

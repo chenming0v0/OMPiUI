@@ -4,7 +4,7 @@ import type {
   GitFileStatus,
   GitStatusItem,
   WorkspaceTextSearchMatch,
-} from '@piui/protocol'
+} from '@ompiui/protocol'
 import {
   createHostFileEntry,
   deleteHostFileEntry,

@@ -1,5 +1,5 @@
-import { PROTOCOL_VERSION } from "@piui/protocol"
-import { getDriverMode } from "@piui/pi-worker"
+import { PROTOCOL_VERSION } from "@ompiui/protocol"
+import { getDriverMode } from "@ompiui/pi-worker"
 import { existsSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"

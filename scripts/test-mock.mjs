@@ -14,13 +14,13 @@ if (!npmCli) {
 const COMMAND_TIMEOUT_MS = Number(process.env.PIUI_TEST_COMMAND_TIMEOUT_MS) || 600_000
 
 const commands = [
-  ["run", "build", "-w", "@piui/protocol"],
-  ["run", "build", "-w", "@piui/pi-worker"],
-  ["run", "build", "-w", "@piui/server"],
-  ["run", "test", "-w", "@piui/protocol"],
-  ["run", "test", "-w", "@piui/pi-worker"],
-  ["run", "test", "-w", "@piui/server"],
-  ["run", "test:run", "-w", "@piui/app"],
+  ["run", "build", "-w", "@ompiui/protocol"],
+  ["run", "build", "-w", "@ompiui/pi-worker"],
+  ["run", "build", "-w", "@ompiui/server"],
+  ["run", "test", "-w", "@ompiui/protocol"],
+  ["run", "test", "-w", "@ompiui/pi-worker"],
+  ["run", "test", "-w", "@ompiui/server"],
+  ["run", "test:run", "-w", "@ompiui/app"],
 ]
 
 for (const args of commands) {

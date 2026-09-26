@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import type { ExtensionUiDialogRequest, JsonObject } from '@piui/protocol'
+import type { ExtensionUiDialogRequest, JsonObject } from '@ompiui/protocol'
 import { extensionUiStore } from '../extensionUiStore.js'
 import { extensionTuiStore } from '../extensionTuiStore.js'
 import { activeSessionStore } from '../../store/activeSessionStore.js'

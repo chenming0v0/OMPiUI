@@ -4,7 +4,7 @@
 // ============================================
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import type { GitInfoResponse } from '@piui/protocol'
+import type { GitInfoResponse } from '@ompiui/protocol'
 import { getHostGitInfo } from '../pi/transport/index.js'
 import { resolveWorkspacePath } from '../pi/workspaces'
 

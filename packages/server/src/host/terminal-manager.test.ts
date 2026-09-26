@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
-import type { TerminalInfo } from "@piui/protocol"
+import type { TerminalInfo } from "@ompiui/protocol"
 import { extractTerminalTitle, TerminalManager } from "./terminal-manager.ts"
 
 test("TerminalManager creates, streams, replays, and removes a terminal", async () => {

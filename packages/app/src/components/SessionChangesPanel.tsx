@@ -13,7 +13,7 @@ import { DiffViewer, useDiffViewerData, type ViewMode } from './DiffViewer'
 import { ViewModeSwitch } from './FullscreenViewer'
 import { getHostGitDiff, getHostGitFileDiff, getHostGitInfo } from '../pi/transport/index.js'
 import { resolveWorkspacePath } from '../pi/workspaces'
-import type { GitDiffItem, GitInfoResponse } from '@piui/protocol'
+import type { GitDiffItem, GitInfoResponse } from '@ompiui/protocol'
 
 /** List row: git.diff item, optionally enriched with the lazy git.fileDiff patch. */
 type ChangeDiff = GitDiffItem & { patch?: string }

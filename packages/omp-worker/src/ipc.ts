@@ -1,4 +1,4 @@
-import type { EventCursor, JsonObject, JsonValue, Problem } from "@piui/protocol"
+import type { EventCursor, JsonObject, JsonValue, Problem } from "@ompiui/protocol"
 
 export const PI_WORKER_PROTOCOL_VERSION = 3 as const
 export const PI_WORKER_HEARTBEAT_INTERVAL_MS = 5_000

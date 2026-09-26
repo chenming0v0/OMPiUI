@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { HOST_COMMAND_SPECS } from "@piui/protocol"
+import { HOST_COMMAND_SPECS } from "@ompiui/protocol"
 import { HOST_CAPABILITIES, HostRuntime } from "./command-table.ts"
 
 test("host capabilities bind exactly the declared command specs", () => {

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
-import type { JsonObject } from "@piui/protocol"
-import { isJsonObject } from "@piui/protocol"
-import type { ExtensionUiDialogRequest, ExtensionUiDialogResponse, ExtensionUiSettlementReason, ExtensionUiStatePatch } from "@piui/protocol"
+import type { JsonObject } from "@ompiui/protocol"
+import { isJsonObject } from "@ompiui/protocol"
+import type { ExtensionUiDialogRequest, ExtensionUiDialogResponse, ExtensionUiSettlementReason, ExtensionUiStatePatch } from "@ompiui/protocol"
 
 /**
  * OMP 扩展 UI 桥：把 `omp --mode rpc` 的 extension_ui_request 帧映射成

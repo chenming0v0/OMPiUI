@@ -9,7 +9,7 @@ import { dirname, join } from "node:path"
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const env = { ...process.env, PIUI_DRIVER: "omp" }
 
-const child = spawn("npm", ["run", "dev", "-w", "@piui/server"], {
+const child = spawn("npm", ["run", "dev", "-w", "@ompiui/server"], {
   cwd: root,
   env,
   stdio: "inherit",

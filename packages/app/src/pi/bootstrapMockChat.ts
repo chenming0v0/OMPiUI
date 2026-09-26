@@ -15,7 +15,7 @@ import { refreshPiNativeStatus } from "./nativeStatus"
 import { piEventStream } from "./eventStream"
 import { abortInFlightPiRequests } from "./httpClient"
 import { activeSessionStore } from "../store/activeSessionStore"
-import { PROTOCOL_VERSION } from "@piui/protocol"
+import { PROTOCOL_VERSION } from "@ompiui/protocol"
 
 export interface PiBackendBootstrapResult {
   available: boolean
@@ -44,7 +44,7 @@ async function initializePiBackendOnce(): Promise<PiBackendBootstrapResult> {
     if (native.status !== "online" && native.status !== "degraded") {
       throw new Error(native.error ?? "PiUI backend unavailable")
     }
-    if (native.health?.service !== "piui-server" || native.health.protocolVersion !== PROTOCOL_VERSION) {
+    if (native.health?.service !== "ompiui-server" || native.health.protocolVersion !== PROTOCOL_VERSION) {
       throw new Error("unexpected backend")
     }
 

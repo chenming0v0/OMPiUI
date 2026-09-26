@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { createAppServer, type AppServer } from "./http.ts"
-import { PI_PARITY_SDK_VERSION } from "@piui/protocol"
+import { PI_PARITY_SDK_VERSION } from "@ompiui/protocol"
 
 // 测试进程的 session 租约目录放进独立临时目录，跑完即删，
 // 不污染默认的 piui-session-leases 命名空间。
@@ -61,7 +61,7 @@ describe("http api", () => {
     const accepted = await request(port, "GET", "/api/v1/host/health", { token: "test-token" })
     assert.equal(accepted.status, 200)
     assert.equal(accepted.json.ok, true)
-    assert.equal(accepted.json.service, "piui-server")
+    assert.equal(accepted.json.service, "ompiui-server")
   })
 
   it("serves workspaces, files and git through the host surface", async () => {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, memo } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { SessionInfo } from '@earendil-works/pi-coding-agent'
-import type { JsonObject, JsonValue } from '@piui/protocol'
+import type { SessionInfo } from '../../../pi/vendor/pi-coding-agent'
+import type { JsonObject, JsonValue } from '@ompiui/protocol'
 import { Button } from '../../../components/ui/Button'
 import {
   abortPiBashExecution,

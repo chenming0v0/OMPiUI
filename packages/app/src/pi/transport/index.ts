@@ -33,8 +33,8 @@ import type {
   TerminalShell,
   TerminalInfo,
   TerminalUpdateParams,
-} from '@piui/protocol'
-import type { SessionInfo, SessionTreeNode, Skill, PromptTemplate } from '@earendil-works/pi-coding-agent'
+} from '@ompiui/protocol'
+import type { SessionInfo, SessionTreeNode, Skill, PromptTemplate } from '../vendor/pi-coding-agent'
 import type { PiBranchPage, PiConfiguredPackage, PiModelRuntimeSnapshot, PiPackageUpdate, PiProjectTrust, PiProviderAuthInfo, PiSettingsSnapshot, ResolvedPaths } from '../domain/index.js'
 import { getApiBase, getPiAuthToken, piFetch } from '../httpClient.js'
 import { piCommandStore } from '../state/index.js'

@@ -45,7 +45,7 @@ import {
 } from '../utils/mimeUtils'
 import { downloadFileContent } from '../utils/downloadUtils'
 import { createDirectory, createFile, deleteEntry, moveEntry, searchText, searchFiles } from '../pi/files'
-import type { FileReadResponse, WorkspaceTextSearchMatch } from '@piui/protocol'
+import type { FileReadResponse, WorkspaceTextSearchMatch } from '@ompiui/protocol'
 import { startInternalDrag } from '../lib/internalDragCore'
 import { toAbsolutePath } from '../features/mention'
 import { getDesktopPlatform, isTauri, isTauriMobile } from '../utils/tauri'

@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import { PROTOCOL_VERSION, type HealthResponse, type PiRegistrySnapshot } from '@piui/protocol'
+import { PROTOCOL_VERSION, type HealthResponse, type PiRegistrySnapshot } from '@ompiui/protocol'
 import { fetchHostHealth, fetchPiRegistry } from './transport/index.js'
 
 const CORE_PI_COMMANDS = [
@@ -75,7 +75,7 @@ export { subscribe as subscribePiNativeStatus }
 /**
  * Test helper: inject a fake registry into the native status snapshot.
  */
-export function piNativeStatusForTest(registry: Partial<import('@piui/protocol').PiRegistrySnapshot> | undefined): void {
+export function piNativeStatusForTest(registry: Partial<import('@ompiui/protocol').PiRegistrySnapshot> | undefined): void {
   setStatus({
     status: registry ? 'online' : 'offline',
     registry: registry
@@ -87,7 +87,7 @@ export function piNativeStatusForTest(registry: Partial<import('@piui/protocol')
           globalCommands: [],
           sessionCommands: [],
           ...registry,
-        } as import('@piui/protocol').PiRegistrySnapshot
+        } as import('@ompiui/protocol').PiRegistrySnapshot
       : undefined,
     missingCoreCommands: [],
     checkedAt: Date.now(),

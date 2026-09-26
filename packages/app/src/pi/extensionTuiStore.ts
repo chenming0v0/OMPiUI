@@ -1,4 +1,4 @@
-import type { ExtensionTuiAttach } from '@piui/protocol'
+import type { ExtensionTuiAttach } from '@ompiui/protocol'
 
 /**
  * Offscreen extension TUI mirror state: which panels (component widgets,

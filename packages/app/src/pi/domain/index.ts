@@ -1,8 +1,8 @@
 /**
- * Pi domain types - Direct re-export from official SDK.
+ * Pi domain types - re-exported from the vendored SDK type modules
+ * (src/pi/vendor/*, structural copies of the @earendil-works declarations).
  *
  * These types are the single source of truth for Pi data structures.
- * They automatically stay in sync when the SDK is upgraded.
  * Never manually duplicate or transform these types.
  */
 
@@ -22,14 +22,14 @@ export type {
   SessionHeader,
   SessionTreeNode,
   SessionContext,
-} from '@earendil-works/pi-coding-agent'
+} from '../vendor/pi-coding-agent'
 
 // Agent messages and content blocks
 export type {
   AgentMessage,
   AgentEvent,
   ThinkingLevel,
-} from '@earendil-works/pi-agent-core'
+} from '../vendor/pi-agent-core'
 export type {
   UserMessage,
   AssistantMessage,
@@ -41,21 +41,18 @@ export type {
   Usage,
   StopReason,
   Model,
-} from '@earendil-works/pi-ai'
+} from '../vendor/pi-ai'
 
 // Agent session runtime
 export type {
   AgentSessionEvent,
-  AgentSessionConfig,
   SessionStats,
   PromptOptions,
   ModelCycleResult,
-} from '@earendil-works/pi-coding-agent'
+} from '../vendor/pi-coding-agent'
 
 // Custom messages (bashExecution, custom, branchSummary, compactionSummary)
-// The coding agent merges these into AgentMessage via declaration merging
-// (see SDK core/messages.d.ts). Extract them from the union — zero hand-written
-// structure, SDK upgrades propagate automatically.
+// are part of the vendored AgentMessage union — extract them by role.
 export type BashExecutionMessage = Extract<AgentMessage, { role: 'bashExecution' }>
 export type CustomMessage = Extract<AgentMessage, { role: 'custom' }>
 export type BranchSummaryMessage = Extract<AgentMessage, { role: 'branchSummary' }>
@@ -68,7 +65,7 @@ export type {
   ExtensionDescriptor,
   PiCapability,
   PiRegistrySnapshot,
-} from '@piui/protocol'
+} from '@ompiui/protocol'
 
 // Protocol primitives
 export type {
@@ -83,14 +80,14 @@ export type {
   EventStreamRef,
   Problem,
   ErrorCode,
-} from '@piui/protocol'
+} from '@ompiui/protocol'
 
 // ============================================================
 // PiUI-specific derived view models (not domain types)
 // ============================================================
 
-import type { SessionEntry } from '@earendil-works/pi-coding-agent'
-import type { AgentMessage } from '@earendil-works/pi-agent-core'
+import type { SessionEntry } from '../vendor/pi-coding-agent'
+import type { AgentMessage } from '../vendor/pi-agent-core'
 import type {
   UserMessage,
   AssistantMessage,
@@ -99,9 +96,9 @@ import type {
   ThinkingContent,
   ImageContent,
   ToolCall,
-} from '@earendil-works/pi-ai'
-import type { ThinkingLevel } from '@earendil-works/pi-agent-core'
-import type { JsonObject, JsonValue, EntriesPage, BranchCheckpoint, LiveMessage } from '@piui/protocol'
+} from '../vendor/pi-ai'
+import type { ThinkingLevel } from '../vendor/pi-agent-core'
+import type { JsonObject, JsonValue, EntriesPage, BranchCheckpoint, LiveMessage } from '@ompiui/protocol'
 
 /**
  * Pi Session row for sidebar display.
@@ -312,7 +309,7 @@ export type PiModelRuntimeSnapshot = {
 // SDK package shapes (core/package-manager). ResolvedPaths/ResolvedResource
 // are publicly exported; ConfiguredPackage/PackageUpdate are not, so they
 // are mirrored here from the SDK declarations.
-export type { ResolvedPaths, ResolvedResource } from '@earendil-works/pi-coding-agent'
+export type { ResolvedPaths, ResolvedResource } from '../vendor/pi-coding-agent'
 
 export type PiConfiguredPackage = {
   source: string

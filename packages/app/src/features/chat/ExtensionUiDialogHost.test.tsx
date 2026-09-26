@@ -13,7 +13,7 @@ vi.mock('../chat/chatViewport', () => ({
   useChatViewport: () => ({ presentation: { isCompact: false } }),
 }))
 
-function selectRequest(overrides?: Partial<import('@piui/protocol').ExtensionUiDialogRequest>) {
+function selectRequest(overrides?: Partial<import('@ompiui/protocol').ExtensionUiDialogRequest>) {
   return {
     requestId: 'request-1',
     sessionId: 'session-1',
@@ -22,7 +22,7 @@ function selectRequest(overrides?: Partial<import('@piui/protocol').ExtensionUiD
     options: ['plan', 'build'],
     createdAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
-  } as import('@piui/protocol').ExtensionUiDialogRequest
+  } as import('@ompiui/protocol').ExtensionUiDialogRequest
 }
 
 describe('ExtensionUiDialogHost', () => {

@@ -1,5 +1,5 @@
-import type { ImageInput, JsonObject, JsonValue } from "@piui/protocol"
-import { isJsonObject } from "@piui/protocol"
+import type { ImageInput, JsonObject, JsonValue } from "@ompiui/protocol"
+import { isJsonObject } from "@ompiui/protocol"
 
 function invalid(message: string): Error {
   return Object.assign(new Error(message), { code: "INVALID_REQUEST" })

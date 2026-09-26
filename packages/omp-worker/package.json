@@ -1,5 +1,5 @@
 {
-  "name": "@piui/pi-worker",
+  "name": "@ompiui/pi-worker",
   "version": "0.7.0",
   "private": true,
   "type": "module",
@@ -20,7 +20,7 @@
     "test": "node --import tsx --test src/**/*.test.ts"
   },
   "dependencies": {
-    "@piui/protocol": "0.6.21"
+    "@ompiui/protocol": "0.6.21"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",

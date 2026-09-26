@@ -1,4 +1,4 @@
-import type { JsonObject } from '@piui/protocol'
+import type { JsonObject } from '@ompiui/protocol'
 
 /**
  * OMP 子代理实时状态（来源：`omp --mode rpc` 的 subagent_lifecycle /

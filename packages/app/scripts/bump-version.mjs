@@ -96,7 +96,7 @@ function getReleaseBaseTag() {
 }
 
 // PiUI 自身 workspace 包名（互依赖引用也随版本一起升）
-const PIUI_PACKAGE_NAMES = ['@piui/app', '@piui/server', '@piui/pi-worker', '@piui/protocol']
+const PIUI_PACKAGE_NAMES = ['@ompiui/app', '@ompiui/server', '@ompiui/pi-worker', '@ompiui/protocol']
 
 function bumpPackageJson(relativePath, oldVersion) {
   const fullPath = resolve(repoRoot, relativePath)
@@ -106,7 +106,7 @@ function bumpPackageJson(relativePath, oldVersion) {
     console.log(`  ${relativePath}        ${pkg.version} -> ${version} (drifted)`)
   }
   pkg.version = version
-  // 同步该包对其他 @piui workspace 包的依赖引用：npm workspace 解析时
+  // 同步该包对其他 @ompiui workspace 包的依赖引用：npm workspace 解析时
   // 依赖声明版本必须与目标包的实际版本一致，否则会去 registry 找旧版本
   // 导致 npm ci 404（CI 发布失败）。
   for (const section of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
@@ -198,7 +198,7 @@ if (existsSync(npmLockPath)) {
       entry.version = version
       lockChanged = true
     }
-    // 对其他 @piui workspace 包的依赖引用
+    // 对其他 @ompiui workspace 包的依赖引用
     for (const section of ['dependencies', 'devDependencies', 'optionalDependencies']) {
       const deps = entry[section]
       if (!deps || typeof deps !== 'object') continue

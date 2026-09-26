@@ -4,7 +4,7 @@
 // 浏览器环境使用 <a download>，Tauri 环境使用原生保存对话框
 // ============================================
 
-import type { FileReadResponse } from '@piui/protocol'
+import type { FileReadResponse } from '@ompiui/protocol'
 import { isBinaryContent } from './mimeUtils'
 import { isTauri } from './tauri'
 

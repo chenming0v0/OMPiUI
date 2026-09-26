@@ -1,4 +1,4 @@
-import { RUNTIME_TARGETS, assertSessionCommandsTargeted } from "@piui/protocol"
+import { RUNTIME_TARGETS, assertSessionCommandsTargeted } from "@ompiui/protocol"
 import { OmpRpcSession } from "./omp/omp-session.js"
 import { MockPiSession } from "./runtime/mock-session.js"
 

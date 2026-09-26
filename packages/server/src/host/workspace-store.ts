@@ -1,6 +1,6 @@
 import { existsSync, realpathSync, statSync } from "node:fs"
 import path from "node:path"
-import type { WorkspaceDto } from "@piui/protocol"
+import type { WorkspaceDto } from "@ompiui/protocol"
 
 export interface WorkspaceRecord {
   displayName: string

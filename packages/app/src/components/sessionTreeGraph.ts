@@ -1,6 +1,6 @@
 import dagre from '@dagrejs/dagre'
 import type { Edge, Node } from '@xyflow/react'
-import type { JsonObject, JsonValue } from '@piui/protocol'
+import type { JsonObject, JsonValue } from '@ompiui/protocol'
 
 // Tree entries arrive as SDK SessionEntry/SessionTreeNode; the graph renders
 // any entry shape (including future unknown types) so it reads fields

@@ -1,6 +1,6 @@
 import { useCallback, useSyncExternalStore } from 'react'
 
-import type { GitDiffMode } from '@piui/protocol'
+import type { GitDiffMode } from '@ompiui/protocol'
 
 export type ChangeScopeMode = GitDiffMode
 

@@ -1,4 +1,4 @@
-import type { ExtensionUiDialogRequest, ExtensionUiStatePatch, JsonObject } from '@piui/protocol'
+import type { ExtensionUiDialogRequest, ExtensionUiStatePatch, JsonObject } from '@ompiui/protocol'
 import { extensionUiStore } from '../extensionUiStore'
 import { extensionTuiStore } from '../extensionTuiStore'
 import { activeSessionStore } from '../../store/activeSessionStore'

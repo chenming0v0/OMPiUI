@@ -42,8 +42,8 @@ function wireWorkerStderrFileLog(): void {
 }
 wireWorkerStderrFileLog()
 
-import type { JsonObject, JsonValue, PiRegistrySnapshot } from "@piui/protocol"
-import { isJsonObject, problemFromError, PROTOCOL_VERSION, validateParams } from "@piui/protocol"
+import type { JsonObject, JsonValue, PiRegistrySnapshot } from "@ompiui/protocol"
+import { isJsonObject, problemFromError, PROTOCOL_VERSION, validateParams } from "@ompiui/protocol"
 import { OmpRpcSession, type OmpSessionOptions } from "./omp/omp-session.js"
 import { OmpCatalog } from "./omp/omp-catalog.js"
 import { OmpProviderAuth } from "./omp/omp-auth.js"

@@ -1,6 +1,6 @@
 import { LOCAL_SERVER_ID, serverStore } from '../store/serverStore'
 import { getHttpFetch, isTauri } from '../utils/tauri'
-import { PROTOCOL_VERSION } from '@piui/protocol'
+import { PROTOCOL_VERSION } from '@ompiui/protocol'
 
 const DEFAULT_BASE = 'http://127.0.0.1:8787'
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000

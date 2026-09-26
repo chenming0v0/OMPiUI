@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { ExtensionUiDialogRequest, ExtensionUiDialogResponse } from '@piui/protocol'
+import type { ExtensionUiDialogRequest, ExtensionUiDialogResponse } from '@ompiui/protocol'
 import { QuestionIcon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon } from '../../components/Icons'
 import { CodePreview } from '../../components/CodePreview'
 import { extensionUiStore } from '../../pi/extensionUiStore'

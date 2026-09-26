@@ -9,7 +9,7 @@ import { WebSocket } from "ws"
 import { mkdtempSync, rmSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { EVENT_WS_SUBPROTOCOL, eventStreamKey, type EventEnvelope } from "@piui/protocol"
+import { EVENT_WS_SUBPROTOCOL, eventStreamKey, type EventEnvelope } from "@ompiui/protocol"
 import { createAppServer, type AppServer } from "./http.ts"
 import { attachEventWebSocket, closeEventWebSocket } from "./ws.ts"
 import type { WebSocketServer } from "ws"
@@ -72,7 +72,7 @@ describe("event websocket", () => {
 
     const health = await request(port, "GET", "/api/v1/host/health")
     assert.equal(health.status, 200)
-    assert.equal(health.json.service, "piui-server")
+    assert.equal(health.json.service, "ompiui-server")
 
     const ws = new WebSocket(`ws://127.0.0.1:${port}/api/v1/events`, EVENT_WS_SUBPROTOCOL)
     const envelopes: EventEnvelope[] = []

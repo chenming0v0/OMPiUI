@@ -5,7 +5,7 @@ import { rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { EventHub } from "../event-hub.ts"
-import { getDriverMode } from "@piui/pi-worker"
+import { getDriverMode } from "@ompiui/pi-worker"
 import type { WorkerSession } from "./worker-client.ts"
 import type { RuntimeSupervisor } from "./supervisor.ts"
 import { SessionHost } from "./session-host.ts"
@@ -418,4 +418,53 @@ test("SessionHost piRegistry uses the worker snapshot once the handshake is read
   } finally {
     host.dispose()
   }
+})
+
+test("SessionHost mirrors detached subagent registry frames to the server stream", async () => {
+  let emitEvent!: (event: { channel: string; event?: unknown }) => void
+  const worker = {
+    command: async () => ({}),
+    getSessionId: () => "session-1",
+    getSessionFile: () => undefined,
+    getCwd: () => ".",
+    updateSessionIdentity: () => {},
+    onEvent: (listener: (event: { channel: string; event?: unknown }) => void) => {
+      emitEvent = listener
+      return () => {}
+    },
+    onCrash: () => () => {},
+    onClose: () => () => {},
+    dispose: async () => {},
+  } as unknown as WorkerSession
+  const supervisor = {
+    onEvent: () => () => {},
+    open: async () => worker,
+  } as unknown as RuntimeSupervisor
+  const hub = new EventHub()
+  const host = new SessionHost(supervisor, hub)
+
+  const sessionStream: unknown[] = []
+  const serverStream: unknown[] = []
+  const off = hub.subscribe(event => {
+    if (event.channel !== "omp.subagent") return
+    if (event.stream.kind === "session") sessionStream.push(event.payload)
+    if (event.stream.kind === "server") serverStream.push(event.payload)
+  })
+
+  await host.openSession(".", undefined)
+
+  // lifecycle/progress 注册帧 → 会话流 + server 流镜像（带 sessionId）
+  const lifecycleEvent = { kind: "lifecycle", payload: { id: "sa-1", detached: true, status: "started", agent: "task", index: 0 } }
+  emitEvent({ channel: "omp.subagent", event: lifecycleEvent })
+  assert.equal(sessionStream.length, 1)
+  assert.equal(serverStream.length, 1)
+  assert.deepEqual(serverStream[0], { ...lifecycleEvent, sessionId: "session-1" })
+
+  // 转录帧体量大：只进会话流，不镜像
+  emitEvent({ channel: "omp.subagent", event: { kind: "event", payload: { id: "sa-1", event: { type: "message_end" } } } })
+  assert.equal(sessionStream.length, 2)
+  assert.equal(serverStream.length, 1)
+
+  off()
+  await host.dispose()
 })
