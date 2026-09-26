@@ -2,7 +2,16 @@
 
 **OMP 的第三方 Web/桌面客户端** — PiUI 的视觉外壳 + OMP 的官方 RPC 运行时。
 
-OMPiUI 把 [oh-my-pi (OMP)](https://github.com/can1357/oh-my-pi) 的完整 agent 能力（60+ provider、31 个内置工具、子代理系统、MCP/LSP、扩展）装进一个浏览器可用的图形界面。UI 资产来自 [PiUI](https://github.com/)（Pi 原生 coding agent 的 Web/桌面客户端），agent 执行完全由 OMP 承担。
+OMPiUI 把 [oh-my-pi (OMP)](https://github.com/can1357/oh-my-pi) 的完整 agent 能力（60+ provider、31 个内置工具、子代理系统、MCP/LSP、扩展）装进一个浏览器可用的图形界面。界面资产来自 [lehhair](https://github.com/lehhair) 的开源客户端，agent 执行完全由 OMP 承担。
+
+## 致谢
+
+UI 来自 [lehhair](https://github.com/lehhair) 的这两个项目，非常感谢 lehhair 的开发：
+
+- [PiUI](https://github.com/lehhair/PiUI) — Web/桌面视觉外壳：会话列表、聊天流、markdown/代码高亮、设置中心等
+- [OpenCodeUI](https://github.com/lehhair/OpenCodeUI) — 子代理等界面设计，例如 SubSessionView
+
+OMPiUI 不是这两个项目的官方客户端。
 
 ```
 ┌──────────────┐  HTTP+WS   ┌──────────────┐  spawn    ┌─────────────────┐
