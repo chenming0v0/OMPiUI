@@ -1,5 +1,5 @@
 import { useRef, useMemo, useCallback, useEffect } from 'react'
-import type { TextContent } from '@earendil-works/pi-ai'
+import type { TextContent } from '../../../pi/vendor/pi-ai'
 import { useFocusedSessionId, usePiBranchData } from '../../../pi/hooks/index.js'
 import type { Attachment } from '../../attachment'
 

@@ -7,7 +7,7 @@ import {
   assistantHasProcessContent,
   splitProcessRenderItems,
 } from './MessageRenderer'
-import type { SessionMessageEntry } from '@earendil-works/pi-coding-agent'
+import type { SessionMessageEntry } from '../../pi/vendor/pi-coding-agent'
 import type { PiAssistantMessageItem, PiUserMessageItem } from '../../pi/domain/index.js'
 
 let mockRenderUserMarkdown = false

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Model, Api } from '@earendil-works/pi-ai'
+import type { Model, Api } from '../pi/vendor/pi-ai'
 
 function model(provider: string, id: string): Model<Api> {
   return {

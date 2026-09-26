@@ -25,7 +25,7 @@ import type {
   PiToolExecution,
   PiUserMessageItem,
 } from '../../pi/domain/index.js'
-import type { ImageContent } from '@earendil-works/pi-ai'
+import type { ImageContent } from '../../pi/vendor/pi-ai'
 import { AttachmentItem } from '../attachment/index.js'
 import type { Attachment } from '../attachment/index.js'
 

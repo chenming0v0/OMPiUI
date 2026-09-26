@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import type { ToolResultMessage } from '@earendil-works/pi-ai'
+import type { ToolResultMessage } from '../../../pi/vendor/pi-ai'
 import i18n from '../../../i18n'
 import type { PiToolExecution } from '../../../pi/domain/index.js'
 import type { ToolConfig, ToolRegistry, ExtractedToolData, DiagnosticInfo } from './types'

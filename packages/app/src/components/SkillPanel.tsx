@@ -14,7 +14,7 @@ import {
   ChevronRightIcon,
   SearchIcon,
 } from './Icons'
-import type { Skill } from '@earendil-works/pi-coding-agent'
+import type { Skill } from '../pi/vendor/pi-coding-agent'
 import { getPiSkills } from '../pi/transport/index.js'
 import { apiErrorHandler } from '../utils'
 

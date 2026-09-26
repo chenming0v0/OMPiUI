@@ -30,7 +30,7 @@ import {
 import { keybindingStore, matchesKeybinding } from '../../store/keybindingStore'
 import { themeStore } from '../../store/themeStore'
 import { useChatViewportSelect } from './chatViewport'
-import type { Model, Api } from '@earendil-works/pi-ai'
+import type { Model, Api } from '../../pi/vendor/pi-ai'
 import type { FileCapabilities } from '../../types/ui'
 
 type ModelInfo = Model<Api>

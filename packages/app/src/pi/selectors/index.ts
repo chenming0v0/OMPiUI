@@ -1,6 +1,6 @@
-import type { ThinkingLevel } from '@earendil-works/pi-agent-core'
-import type { AssistantMessage } from '@earendil-works/pi-ai'
-import type { SessionEntry } from '@earendil-works/pi-coding-agent'
+import type { ThinkingLevel } from '../vendor/pi-agent-core'
+import type { AssistantMessage } from '../vendor/pi-ai'
+import type { SessionEntry } from '../vendor/pi-coding-agent'
 import type {
   PiBranchPage,
   PiSessionRow,

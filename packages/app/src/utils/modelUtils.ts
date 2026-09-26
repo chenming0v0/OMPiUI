@@ -4,7 +4,7 @@
  * - 使用频率记录和排序
  */
 
-import type { Model, Api } from '@earendil-works/pi-ai'
+import type { Model, Api } from '../pi/vendor/pi-ai'
 import { serverStorage } from './perServerStorage'
 
 export type AnyModel = Model<Api>

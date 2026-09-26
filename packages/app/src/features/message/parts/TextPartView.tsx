@@ -1,6 +1,6 @@
 import { memo } from 'react'
 import { MarkdownRenderer } from '../../../components'
-import type { TextContent } from '@earendil-works/pi-ai'
+import type { TextContent } from '../../../pi/vendor/pi-ai'
 
 interface TextPartViewProps {
   part: TextContent

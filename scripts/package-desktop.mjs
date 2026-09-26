@@ -7,7 +7,7 @@
  * 用法：node scripts/package-desktop.mjs [--skip-build] [--target bun-windows-x64]
  */
 import { execFileSync } from "node:child_process"
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, mkdirSync, rmSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -30,38 +30,12 @@ rmSync(join(outDir, "runtime"), { recursive: true, force: true })
 rmSync(join(outDir, "piui-server.exe"), { force: true })
 rmSync(join(outDir, "piui-server"), { force: true })
 
-// ---- 1. 读取 Pi SDK 版本并准备公开 CLI 资源 ----
-const piPackageDir = join(repoRoot, "node_modules", "@earendil-works", "pi-coding-agent")
-const piPkg = JSON.parse(readFileSync(join(piPackageDir, "package.json"), "utf8"))
-console.info(`[package] preparing Pi CLI resources ${piPkg.version}`)
-// 同步 bundled SDK 版本常量：worker 用它做 parity 校验（sdk.VERSION 在
-// Bun 打包后会失真，见 sdk-host.ts 注释）。
-const bundledVersionPath = join(repoRoot, "packages", "pi-worker", "src", "bundled-sdk-version.ts")
-writeFileSync(
-  bundledVersionPath,
-  `// The desktop packager replaces this constant with the active SDK version.\nexport const BUNDLED_PI_SDK_VERSION = ${JSON.stringify(piPkg.version)}\n`,
-)
-cpSync(join(piPackageDir, "package.json"), join(outDir, "package.json"))
-for (const [source, destination] of [
-  [join(piPackageDir, "dist", "modes", "interactive", "theme"), join(outDir, "theme")],
-  [join(piPackageDir, "dist", "modes", "interactive", "assets"), join(outDir, "assets")],
-  [join(piPackageDir, "dist", "core", "export-html"), join(outDir, "export-html")],
-  [join(piPackageDir, "README.md"), join(outDir, "README.md")],
-  [join(piPackageDir, "CHANGELOG.md"), join(outDir, "CHANGELOG.md")],
-  [join(piPackageDir, "docs"), join(outDir, "docs")],
-  [join(piPackageDir, "examples"), join(outDir, "examples")],
-]) {
-  cpSync(source, destination, { recursive: true })
-}
-const photonWasm = join(repoRoot, "node_modules", "@silvia-odwyer", "photon-node", "photon_rs_bg.wasm")
-if (existsSync(photonWasm)) cpSync(photonWasm, join(outDir, "photon_rs_bg.wasm"))
-
-// ---- 2. Web 客户端 ----
+// ---- 1. Web 客户端 ----
 console.info("[package] copying web client")
 rmSync(join(outDir, "web"), { recursive: true, force: true })
 cpSync(join(repoRoot, "packages", "app", "dist"), join(outDir, "web"), { recursive: true })
 
-// ---- 2.5 Bun PTY 原生库 ----
+// ---- 2. Bun PTY 原生库 ----
 console.info("[package] copying bun-pty")
 const nativeOut = join(outDir, "node_modules")
 rmSync(nativeOut, { recursive: true, force: true })
@@ -100,9 +74,6 @@ run("bun", [
 const requiredFiles = [
   outfile,
   join(outDir, "web", "index.html"),
-  join(outDir, "package.json"),
-  join(outDir, "theme"),
-  join(outDir, "export-html"),
   join(outDir, "node_modules", "bun-pty", "src", "index.ts"),
   join(outDir, "node_modules", "bun-pty", "rust-pty", "target", "release", nativeLibrary),
 ]
@@ -112,7 +83,7 @@ for (const file of requiredFiles) {
 
 console.info(`
 [package] done → ${outDir}
-  pi-worker    Web/API 服务、Pi worker 和原生 CLI
+  pi-worker    Web/API 服务、OMP worker 和原生 CLI
   web/         Web 客户端，server 同端口托管
 局域网/手机访问：pi-worker.exe web --host 0.0.0.0
 `)

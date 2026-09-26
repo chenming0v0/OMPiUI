@@ -19,13 +19,6 @@ rmSync(target, { recursive: true, force: true })
 mkdirSync(target, { recursive: true })
 cpSync(server, join(target, serverName))
 cpSync(join(source, "node_modules"), join(target, "node_modules"), { recursive: true })
-for (const name of ["web", "theme", "assets", "export-html", "docs", "examples"]) {
-  const path = join(source, name)
-  if (existsSync(path)) cpSync(path, join(target, name), { recursive: true })
-}
-for (const name of ["package.json", "README.md", "CHANGELOG.md", "photon_rs_bg.wasm"]) {
-  const path = join(source, name)
-  if (existsSync(path)) cpSync(path, join(target, name))
-}
+cpSync(join(source, "web"), join(target, "web"), { recursive: true })
 
 console.info(`[tauri] resources prepared at ${target}`)

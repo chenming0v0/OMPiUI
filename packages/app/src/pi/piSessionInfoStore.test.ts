@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import type { SessionInfo } from '@earendil-works/pi-coding-agent'
+import type { SessionInfo } from './vendor/pi-coding-agent'
 import { piSessionInfoStore } from './piSessionInfoStore'
 
 const session = (id: string, cwd: string): SessionInfo => ({

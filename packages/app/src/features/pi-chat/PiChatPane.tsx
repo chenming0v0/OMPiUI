@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 import i18n from '../../i18n'
-import type { Model, Api } from '@earendil-works/pi-ai'
+import type { Model, Api } from '../../pi/vendor/pi-ai'
 import { ChatArea, Header, InputBox, type ChatAreaHandle, type InputBoxHandle } from '../chat/index.js'
 import type { ModelSelectorHandle } from '../chat/ModelSelector.js'
 import { PaneHeader } from '../chat/PaneHeader.js'

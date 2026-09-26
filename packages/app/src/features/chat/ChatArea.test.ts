@@ -18,8 +18,8 @@ import {
 import { getStreamingHotIndexes, getTimelineRowYClass, mergeVirtualRangeIndexes } from './chatAreaUtils'
 import { buildVisibleTimelineEntries, getVisibleTimelineForkTargetId, clearVisibleTimelineMergeCache } from './chatAreaVisibility'
 import type { Message, MessageError, Part } from '../../types/message'
-import type { SessionMessageEntry } from '@earendil-works/pi-coding-agent'
-import type { ToolCall, ToolResultMessage } from '@earendil-works/pi-ai'
+import type { SessionMessageEntry } from '../../pi/vendor/pi-coding-agent'
+import type { ToolCall, ToolResultMessage } from '../../pi/vendor/pi-ai'
 import type { PiAssistantMessageItem, PiUserMessageItem } from '../../pi/domain/index.js'
 
 function createUserMessage(id: string, created: number): Message {

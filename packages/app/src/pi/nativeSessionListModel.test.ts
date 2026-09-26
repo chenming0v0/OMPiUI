@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { SessionInfo } from '@earendil-works/pi-coding-agent'
+import type { SessionInfo } from './vendor/pi-coding-agent'
 import { filterPiSessionList, linkPiSessionForks, piSessionInfoToUiSession } from './nativeSessionListModel'
 
 describe('Pi session list model', () => {

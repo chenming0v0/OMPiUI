@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach } from 'vitest'
 import { selectPiTimelineItemsCached, clearPiTimelineItemCache } from './timelineCache'
 import type { PiBranchPage, PiTimelineItem } from '../domain/index.js'
-import type { SessionMessageEntry } from '@earendil-works/pi-coding-agent'
+import type { SessionMessageEntry } from '../vendor/pi-coding-agent'
 
 function rawEntry(id: string, timestamp = 1, role: 'user' | 'assistant' = 'user'): SessionMessageEntry {
   return {

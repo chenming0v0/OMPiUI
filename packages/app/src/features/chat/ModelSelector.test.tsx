@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { useRef } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { ModelSelector } from './ModelSelector'
-import type { Model, Api } from '@earendil-works/pi-ai'
+import type { Model, Api } from '../../pi/vendor/pi-ai'
 
 type ModelInfo = Model<Api>
 

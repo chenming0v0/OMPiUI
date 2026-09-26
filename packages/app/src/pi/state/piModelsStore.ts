@@ -1,4 +1,4 @@
-import type { Model, Api } from '@earendil-works/pi-ai'
+import type { Model, Api } from '../vendor/pi-ai'
 
 /**
  * Available Pi models store (from models.list).

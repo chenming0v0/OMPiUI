@@ -1,4 +1,4 @@
-import type { SessionInfo } from '@earendil-works/pi-coding-agent'
+import type { SessionInfo } from './vendor/pi-coding-agent'
 
 class PiSessionInfoStore {
   private all: SessionInfo[] = []

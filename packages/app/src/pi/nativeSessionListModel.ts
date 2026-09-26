@@ -1,5 +1,5 @@
 import type { UiSession } from '../types/session'
-import type { SessionInfo } from '@earendil-works/pi-coding-agent'
+import type { SessionInfo } from './vendor/pi-coding-agent'
 
 export function piSessionInfoToUiSession(item: SessionInfo): UiSession | null {
   if (!item.id || !item.cwd || !item.path) return null

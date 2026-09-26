@@ -4,7 +4,7 @@ import { useContext } from 'react'
 import { SessionProvider } from './SessionContext'
 import { SessionContext } from './SessionContext.shared'
 import { activeSessionStore } from '../store/activeSessionStore'
-import type { SessionInfo } from '@earendil-works/pi-coding-agent'
+import type { SessionInfo } from '../pi/vendor/pi-coding-agent'
 
 const mocks = vi.hoisted(() => ({
   loadPiSessions: vi.fn<(signal?: AbortSignal) => Promise<SessionInfo[]>>(),

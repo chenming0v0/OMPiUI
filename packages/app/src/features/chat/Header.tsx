@@ -18,7 +18,7 @@ import { renamePiSession, loadPiSessions } from '../../pi/controllers/index.js'
 import { usePiSessionTitle } from '../../pi/hooks/index.js'
 import { uiErrorHandler } from '../../utils'
 import { useChatViewport } from './chatViewport'
-import type { Model, Api } from '@earendil-works/pi-ai'
+import type { Model, Api } from '../../pi/vendor/pi-ai'
 
 type ModelInfo = Model<Api>
 

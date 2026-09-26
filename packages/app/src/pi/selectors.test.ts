@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { SessionEntry } from '@earendil-works/pi-coding-agent'
+import type { SessionEntry } from './vendor/pi-coding-agent'
 import type { PiBranchPage, PiBashExecutionGroupItem, PiTimelineItem } from './domain/index.js'
 import { selectPiTimelineItems } from './selectors/index.js'
 
