@@ -136,20 +136,22 @@ export function defaultExtractData(execution: PiToolExecution): ExtractedToolDat
   // Diff / Files (from metadata)
   if (metadata) {
     if (Array.isArray(metadata.files) && metadata.files.length > 0) {
-      // OMP glob/grep 的 details.files 是 string[]（cwd 相对路径）；pi edit 的是对象数组
-      result.files = (metadata.files as (MetadataFileEntry | string)[]).map(file =>
-        typeof file === 'string'
-          ? { filePath: file }
-          : {
-              filePath: file.filePath || file.file || 'unknown',
-              diff: file.diff,
-              patch: file.patch,
-              before: file.before,
-              after: file.after,
-              additions: file.additions,
-              deletions: file.deletions,
-            },
-      )
+      // 仅对象条目（edit 系列，带 diff/before/after）走多文件卡片渲染。
+      // OMP glob/grep/ast_edit 的 details.files 是 string[]（cwd 相对路径、无 diff），
+      // 保持 files 为空，让分组路径列表走普通文本输出（与上游 PiUI 一致）；
+      // 否则每个匹配会变成一张空卡片，目录路径还会因尾部斜杠丢失文件名。
+      const fileEntries = metadata.files as unknown[]
+      if (fileEntries.every(entry => typeof entry === 'object' && entry !== null)) {
+        result.files = (fileEntries as MetadataFileEntry[]).map(file => ({
+          filePath: file.filePath || file.file || 'unknown',
+          diff: file.diff,
+          patch: file.patch,
+          before: file.before,
+          after: file.after,
+          additions: file.additions,
+          deletions: file.deletions,
+        }))
+      }
     } else if (typeof metadata.patch === 'string') {
       // 标准 unified diff（edit 工具 details.patch），extractContentFromUnifiedDiff 可正确解析
       result.diff = metadata.patch

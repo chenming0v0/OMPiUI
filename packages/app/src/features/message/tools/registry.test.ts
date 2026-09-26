@@ -78,7 +78,7 @@ describe('defaultExtractData', () => {
     expect(extracted.fullOutputPath).toBe('/tmp/pi-bash-abc.log')
   })
 
-  it('maps OMP glob/grep string file lists to file entries', () => {
+  it('keeps OMP glob/grep string file lists as text output instead of per-file cards', () => {
     const execution: PiToolExecution = {
       call: {
         type: 'toolCall',
@@ -103,7 +103,8 @@ describe('defaultExtractData', () => {
 
     const extracted = defaultExtractData(execution)
 
-    expect(extracted.files).toEqual([{ filePath: 'src/App.tsx' }, { filePath: 'src/main.tsx' }])
+    expect(extracted.files).toBeUndefined()
+    expect(extracted.output).toBe('src/App.tsx\nsrc/main.tsx')
     expect(extracted.cwd).toBe('C:/work/demo')
   })
 
