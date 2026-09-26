@@ -1,0 +1,27 @@
+name: Branch policy
+
+on:
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  main-source:
+    name: main-source
+    runs-on: ubuntu-latest
+    steps:
+      - name: main only accepts dev
+        env:
+          BASE: ${{ github.base_ref }}
+          HEAD: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ "$BASE" != "main" ]; then
+            echo "ok: $HEAD -> $BASE"
+            exit 0
+          fi
+          if [ "$HEAD" != "dev" ] || [ "$HEAD_REPO" != "$REPO" ]; then
+            echo "main only accepts pull requests from this repo's dev branch (got ${HEAD_REPO}:${HEAD})." >&2
+            exit 1
+          fi
+          echo "ok: dev -> main"

@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [dev, main]
+    tags: ["v*"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: validate ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: ubuntu, os: ubuntu-latest }
+          - { name: windows, os: windows-latest }
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      # win32 专属补丁在非 Windows 上会让 patch-package 直接报错（包不存在）
+      - name: drop windows-only patch
+        if: runner.os != 'Windows'
+        run: rm -f patches/@lydell+node-pty-win32-x64+*.patch
+
+      - run: npm ci
+
+      - run: npm run validate
+
+  tauri-check:
+    name: tauri check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './packages/app/src-tauri -> target'
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Drop Windows-only patch
+        run: rm -f patches/@lydell+node-pty-win32-x64+*.patch
+
+      - run: npm ci
+
+      - name: Prepare empty tauri resources dir
+        run: mkdir -p packages/app/src-tauri/resources
+
+      - name: Cargo check
+        working-directory: packages/app/src-tauri
+        run: cargo check
+
+      - name: Cargo test
+        working-directory: packages/app/src-tauri
+        run: cargo test --lib

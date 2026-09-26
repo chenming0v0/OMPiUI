@@ -71,6 +71,24 @@ PiUI 原本在 worker 进程内直接 import Pi SDK（`@earendil-works/pi-*`，�
 
 app 侧对该 SDK 只有过 type-only 引用；这些类型已按 SDK 0.84.2 的声明结构内联到 `packages/app/src/pi/vendor/*`，依赖随之从 app 的 package.json 移除，桌面打包不再需要安装 Pi SDK。
 
+## 分支和版本
+
+跟 [PiUI](https://github.com/lehhair/PiUI) 一样：`dev` 收功能 PR，`main` 只收来自 `dev` 的合并，打 `v*` tag 才发布。
+
+- 功能分支开 PR 到 `dev`。`dev` 也允许维护者直接推送。
+- `main` 禁止直接推送。PR 的来源必须是本仓库的 `dev`，由 Actions 检查 `main-source` 卡住其他来源。
+- 版本号从 **0.1.0** 起，根包和 workspace（`app` / `server` / `omp-worker` / `protocol`）以及 Tauri 使用同一个号。`packages/app/CHANGELOG.md` 是上游 PiUI 历史，不参与发版。
+- 升版本：`npm run release:prepare -- 0.1.1`（或 `npm run release:bump -- 0.1.1`）。提交推到 `dev`，PR 合并进 `main` 之后再打 tag：
+
+```bash
+git fetch origin main
+git tag v0.1.1 origin/main
+git push origin v0.1.1
+```
+
+tag 推上去会跑 Desktop And Mobile Release，把 portable、桌面安装包和 Android APK 传到 [Releases](https://github.com/chenming0v0/OMPiUI/releases)。Android 签名需要仓库 secrets：`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`。应用内检查更新读的是这个仓库的 `releases/latest`，不是 PiUI。
+
+
 ## License
 
 GPL-3.0-only（继承 PiUI）。
