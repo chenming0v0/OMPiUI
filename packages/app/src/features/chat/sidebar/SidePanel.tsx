@@ -808,10 +808,17 @@ export function SidePanel({
           }}
         >
           <a href="/" className="flex items-center whitespace-nowrap" aria-label="OMPiUI">
-            {/* 官方 Pi 标志：16px 固定尺寸，中心点与下方导航按钮图标(X=24px)垂直对齐 */}
-            <svg viewBox="0 0 470 470" fill="currentColor" aria-hidden="true" className="h-4 w-auto text-text-100">
-              <path fillRule="evenodd" clipRule="evenodd" d="M0 0H352.07V234.71H234.71V352.07H117.36V469.43H0V0ZM117.36 117.36V234.71H234.71V117.36H117.36Z" />
-              <path d="M352.07 234.71H469.43V469.43H352.07V234.71Z" />
+            {/* OMPiUI 标志：16px 固定尺寸，中心点与下方导航按钮图标(X=24px)垂直对齐 */}
+            <svg viewBox="0 0 64 64" aria-hidden="true" className="h-4 w-auto">
+              <defs>
+                <linearGradient id="ompiui-logo-gradient" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0" stopColor="#ed4abf" />
+                  <stop offset=".5" stopColor="#9b4dff" />
+                  <stop offset="1" stopColor="#5ad8e6" />
+                </linearGradient>
+              </defs>
+              <rect width="64" height="64" rx="12" fill="#0f0a14" />
+              <path fill="url(#ompiui-logo-gradient)" d="M14 16h36v8H40v32h-8V24h-6v22h-8V24h-4z" />
             </svg>
           </a>
         </div>
