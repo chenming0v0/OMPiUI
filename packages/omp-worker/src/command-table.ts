@@ -224,6 +224,14 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
   "settings.get": async (ctx, p) => ctx.catalog.getSettings(P.reqString(p, "cwd")),
   "settings.patch": async (ctx, p) =>
     ctx.catalog.patchSettings(P.reqString(p, "cwd"), P.optObject(p, "patch") ?? {}),
+  "modelRoles.get": async (ctx) => ctx.catalog.getModelRoles(),
+  "modelRoles.set": async (ctx, p) => {
+    const roles = P.optObject(p, "roles")
+    if (!roles) {
+      throw Object.assign(new Error("params.roles must be an object"), { code: "INVALID_REQUEST" })
+    }
+    return ctx.catalog.setModelRoles(roles)
+  },
   "trust.get": async (ctx, p) => ctx.catalog.getProjectTrust(P.reqString(p, "cwd")),
   "trust.set": async (ctx, p) => {
     const decision = p.decision

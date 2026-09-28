@@ -261,6 +261,14 @@ export class MockCatalog implements CatalogProvider, PackagesGateway {
     return this.getSettings(cwd)
   }
 
+  getModelRoles(): JsonValue {
+    return {}
+  }
+
+  async setModelRoles(roles: JsonObject): Promise<JsonValue> {
+    return roles
+  }
+
   getProjectTrust(cwd: string): JsonValue {
     return { workspacePath: cwd, required: false, decision: null, defaultDecision: "always", trusted: true }
   }

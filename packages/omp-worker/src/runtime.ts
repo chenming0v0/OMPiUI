@@ -121,6 +121,8 @@ export interface CatalogProvider {
   listModels(): Promise<JsonValue>
   getSettings(cwd: string): JsonValue | Promise<JsonValue>
   patchSettings(cwd: string, patch: JsonObject): Promise<JsonValue>
+  getModelRoles(): JsonValue | Promise<JsonValue>
+  setModelRoles(roles: JsonObject): JsonValue | Promise<JsonValue>
   getProjectTrust(cwd: string): JsonValue | Promise<JsonValue>
   setProjectTrust(cwd: string, decision: boolean | null): JsonValue | Promise<JsonValue>
 }

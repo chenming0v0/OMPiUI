@@ -597,6 +597,19 @@ export function PiChatPane({
     [sessionId, homeModelKey],
   )
 
+  // 设置页「模型快捷配置」改了首选模型：无会话时立即同步 composer 展示
+  // （思考强度经下方 homeVariant 渲染守卫跟随 homeModelKey 一起刷新）
+  useEffect(() => {
+    const onPreferredModelChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ modelKey?: string | null }>).detail
+      const key = detail && 'modelKey' in detail ? detail.modelKey ?? null : getPreferredModelKey()
+      setHomeModelKey(key)
+      if (!sessionId) setHomeVariant(key ? getModelVariantPref(key) : undefined)
+    }
+    window.addEventListener('piui:preferred-model-changed', onPreferredModelChanged)
+    return () => window.removeEventListener('piui:preferred-model-changed', onPreferredModelChanged)
+  }, [sessionId])
+
   const handleModelChange = useCallback(
     (_modelKey: string, model: Model<Api>) => {
       recordModelUsage(model)

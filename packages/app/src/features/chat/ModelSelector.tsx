@@ -44,6 +44,8 @@ interface ModelSelectorProps {
   constrainToRef?: React.RefObject<HTMLElement | null>
   /** 触发按钮的展示风格 */
   trigger?: 'header' | 'toolbar'
+  /** 未选择模型时触发按钮显示的文案（缺省用 chat 命名空间的通用文案） */
+  placeholder?: string
 }
 
 // ============================================
@@ -352,6 +354,7 @@ export const ModelSelector = memo(
       position = 'bottom',
       constrainToRef,
       trigger = 'header',
+      placeholder,
     },
     ref,
   ) {
@@ -436,8 +439,8 @@ export const ModelSelector = memo(
 
     const displayName =
       trigger === 'header'
-        ? selectedModel?.name || t('modelSelector.selectModel')
-        : selectedModel?.name || (isLoading ? '...' : t('modelSelector.model'))
+        ? selectedModel?.name || placeholder || t('modelSelector.selectModel')
+        : selectedModel?.name || placeholder || (isLoading ? '...' : t('modelSelector.model'))
 
     // ---- Open / Close ----
 

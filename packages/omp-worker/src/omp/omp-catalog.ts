@@ -1,3 +1,4 @@
+import { spawn, spawnSync } from "node:child_process"
 import { existsSync, promises as fs, readFileSync, readdirSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
@@ -420,6 +421,81 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     // OMP 的配置源是 ~/.omp/agent/config.yml + models.yml（YAML），
     // web 端设置先回显成功；行为层设置请用 OMP CLI / 手动编辑配置
     return this.getSettings(cwd)
+  }
+
+  private ompBinCache: string | undefined
+
+  /**
+   * 解析 omp 可执行文件的绝对路径。win32 上 spawn 不走 shell 时解析不到
+   * PATH 里的 .cmd/.exe，需要 where.exe 先定位；解析不到回落 "omp"（带 shell）。
+   */
+  private async resolveOmpBin(): Promise<string> {
+    if (this.ompBinCache !== undefined) return this.ompBinCache
+    try {
+      const probe = process.platform === "win32"
+        ? spawnSync("where.exe", ["omp"], { encoding: "utf8" })
+        : spawnSync("which", ["omp"], { encoding: "utf8" })
+      const lines = probe.status === 0 ? probe.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean) : []
+      // 优先 .exe（可脱离 shell 直接拉起），.cmd/.bat 兜底
+      this.ompBinCache = lines.find(line => /\.exe$/i.test(line)) ?? lines[0] ?? "omp"
+    } catch {
+      this.ompBinCache = "omp"
+    }
+    return this.ompBinCache
+  }
+
+  /**
+   * 跑 `omp config ...` 子命令读写全局配置（RPC 协议没有 config 面，
+   * OMP CLI 走 Settings registry，写 ~/.omp/agent/config.yml；
+   * 运行中的 `omp --mode rpc` 进程监听该文件并在 ~200ms 内重载）。
+   */
+  private async runOmpConfigCli(cliArgs: string[], timeoutMs = 60_000): Promise<string> {
+    const bin = await this.resolveOmpBin()
+    const useShell = process.platform === "win32" && bin === "omp"
+    return await new Promise<string>((resolve, reject) => {
+      const child = spawn(bin, cliArgs, {
+        stdio: ["ignore", "pipe", "pipe"],
+        ...(useShell ? { shell: true } : {}),
+      })
+      let stdout = ""
+      let stderr = ""
+      const timer = setTimeout(() => {
+        child.kill()
+        reject(new Error(`omp config timed out after ${timeoutMs}ms`))
+      }, timeoutMs)
+      child.stdout?.setEncoding("utf8")
+      child.stderr?.setEncoding("utf8")
+      child.stdout?.on("data", chunk => { stdout += chunk })
+      child.stderr?.on("data", chunk => { stderr += chunk })
+      child.on("error", error => {
+        clearTimeout(timer)
+        reject(error)
+      })
+      child.on("exit", code => {
+        clearTimeout(timer)
+        if (code === 0) resolve(stdout)
+        else reject(new Error(`omp config exited with ${code}: ${stderr.trim().slice(0, 400) || "no stderr"}`))
+      })
+    })
+  }
+
+  async getModelRoles(): Promise<JsonValue> {
+    const stdout = await this.runOmpConfigCli(["config", "get", "modelRoles", "--json"])
+    try {
+      const parsed = JSON.parse(stdout) as { value?: JsonValue }
+      return isJsonObject(parsed.value) ? parsed.value : {}
+    } catch {
+      throw new Error("omp config get modelRoles returned invalid JSON")
+    }
+  }
+
+  async setModelRoles(roles: JsonObject): Promise<JsonValue> {
+    const record: Record<string, string> = {}
+    for (const [role, value] of Object.entries(roles)) {
+      if (typeof value === "string" && value.trim()) record[role] = value.trim()
+    }
+    await this.runOmpConfigCli(["config", "set", "modelRoles", JSON.stringify(record)])
+    return record
   }
 
   getProjectTrust(cwd: string): JsonValue {

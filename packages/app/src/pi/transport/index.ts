@@ -310,6 +310,14 @@ export function inspectModelRuntime(signal?: AbortSignal): Promise<PiModelRuntim
   return postPiGlobalCommand('modelRuntime.inspect', undefined, signal)
 }
 
+export function getPiModelRoles(signal?: AbortSignal): Promise<Record<string, string>> {
+  return postPiGlobalCommand<Record<string, string>>('modelRoles.get', undefined, signal)
+}
+
+export function setPiModelRoles(roles: Record<string, string>, signal?: AbortSignal): Promise<Record<string, string>> {
+  return postPiGlobalCommand<Record<string, string>>('modelRoles.set', { roles }, signal)
+}
+
 export function setProviderApiKey(providerId: string, apiKey: string, signal?: AbortSignal): Promise<JsonValue> {
   return postPiGlobalCommand('modelRuntime.setApiKey', { providerId, apiKey }, signal)
 }

@@ -143,6 +143,8 @@ export const PI_COMMAND_SPECS = [
   { name: "modelRuntime.removeApiKey", scope: "global", description: "Remove a runtime provider API key", paramsSchema: objectSchema({ providerId: STRING }, ["providerId"]), queue: "serialized" },
   { name: "modelRuntime.reload", scope: "global", description: "Reload model runtime config", queue: "serialized" },
   { name: "modelRuntime.refresh", scope: "global", description: "Refresh model runtime state", paramsSchema: objectSchema({ options: objectSchema({}, [], true) }), queue: "serialized" },
+  { name: "modelRoles.get", scope: "global", description: "Read OMP model role assignments (modelRoles config)", queue: "immediate", idempotent: true },
+  { name: "modelRoles.set", scope: "global", description: "Write OMP model role assignments (whole record)", paramsSchema: objectSchema({ roles: objectSchema({}, [], true) }, ["roles"]), queue: "serialized" },
   { name: "packages.list", scope: "global", description: "List configured Pi packages", paramsSchema: CWD_PARAMS, queue: "immediate", idempotent: true },
   { name: "packages.manage", scope: "global", description: "Install, remove, or update Pi packages", paramsSchema: objectSchema({ cwd: STRING, commandId: STRING, action: { enum: ["install", "remove", "update"] }, source: STRING, local: BOOLEAN, persist: BOOLEAN }, ["cwd", "commandId"]), queue: "serialized" },
   { name: "packages.resolve", scope: "global", description: "Resolve Pi packages for a workspace", paramsSchema: objectSchema({ cwd: STRING, missingAction: { enum: ["install", "skip", "error"] } }, ["cwd"]), queue: "serialized" },
@@ -264,6 +266,8 @@ export type PiCommandParams = CoreCommandParams & {
   "modelRuntime.removeApiKey": { providerId: string }
   "modelRuntime.reload": Record<string, never>
   "modelRuntime.refresh": { options?: JsonObject }
+  "modelRoles.get": Record<string, never>
+  "modelRoles.set": { roles: Record<string, string> }
   "packages.list": { cwd: string }
   "packages.manage": { cwd: string; commandId: string; action?: "install" | "remove" | "update"; source?: string; local?: boolean; persist?: boolean }
   "packages.resolve": { cwd: string; missingAction?: "install" | "skip" | "error" }

@@ -13,6 +13,7 @@ import { modelVisibilityStore, useHiddenModelKeys } from '../../../store'
 import { groupModelsByProvider, getModelKey } from '../../../utils/modelUtils'
 import type { AnyModel } from '../../../utils/modelUtils'
 import { SettingsSection } from './SettingsUI'
+import { ModelQuickConfig } from './ModelQuickConfig'
 
 function formatContext(limit: number): string {
   if (!limit) return ''
@@ -189,7 +190,9 @@ export function ModelsSettings() {
   )
 
   return (
-    <SettingsSection title={t('models.visibility')} description={t('models.visibilityDesc')}>
+    <div>
+      <ModelQuickConfig />
+      <SettingsSection title={t('models.visibility')} description={t('models.visibilityDesc')}>
       <div className="relative group">
         <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 text-text-400 w-3.5 h-3.5 group-focus-within:text-accent-main-100 transition-colors pointer-events-none" />
         <input
@@ -350,6 +353,7 @@ export function ModelsSettings() {
       )}
 
       <p className="text-[length:var(--fs-xs)] text-text-400">{t('models.keepOneEnabled')}</p>
-    </SettingsSection>
+      </SettingsSection>
+    </div>
   )
 }
