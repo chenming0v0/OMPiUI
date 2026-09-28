@@ -78,10 +78,19 @@ export class OmpProviderAuth implements ProviderAuthGateway {
     const response = await client.request({ type: "get_login_providers" }, 30_000)
     const data = unwrapResponse<JsonValue>(response)
     const providers = isJsonObject(data) && Array.isArray(data.providers) ? data.providers : Array.isArray(data) ? data : []
+    // 前端契约（PiProviderAuthInfo）要求 methods/configured；OMP 的 login 是
+    // 统一交互流程，映射成单个可用的登录方法，原始字段放进 status。
     return providers.filter(isJsonObject).map(provider => ({
       id: provider.id ?? provider.providerId ?? "",
       name: provider.name ?? provider.id ?? "",
       ...provider,
+      methods: [{
+        type: "oauth",
+        name: "登录",
+        loginAvailable: Boolean(provider.available),
+      }],
+      configured: Boolean(provider.authenticated),
+      status: { authenticated: Boolean(provider.authenticated), available: Boolean(provider.available) },
     }))
   }
 
@@ -136,12 +145,18 @@ export class OmpProviderAuth implements ProviderAuthGateway {
   }
 
   async inspect(): Promise<JsonValue> {
+    // 返回体必须满足前端的 PiModelRuntimeSnapshot 契约（providers/models/
+    // availableModels 为必填数组），缺字段会让设置页渲染时直接崩掉。
+    let models: JsonValue = []
     try {
-      await this.listModels()
+      models = await this.listModels()
     } catch {
       /* models listing best effort */
     }
     return {
+      providers: [],
+      models,
+      availableModels: Array.isArray(models) ? models : [],
       registeredProviderIds: [],
       registeredProviderConfigs: {},
       note: "OMP provider 配置来自 ~/.omp/agent/models.yml（web 端只读）",

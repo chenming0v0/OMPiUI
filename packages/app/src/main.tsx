@@ -5,6 +5,7 @@ import './index.css'
 import './i18n'
 import { initOverlayScrollbars } from './lib/overlayScrollbar'
 import App from './App.tsx'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { DirectoryProvider, FullscreenProvider, SessionProvider } from './contexts'
 import { themeStore } from './store/themeStore'
 import { applyUrlTokenParam } from './store/serverStore'
@@ -93,13 +94,16 @@ function bootstrap() {
   root.render(
     <StrictMode>
       <Suspense fallback={null}>
-        <DirectoryProvider>
-          <SessionProvider>
-            <FullscreenProvider>
-              <App />
-            </FullscreenProvider>
-          </SessionProvider>
-        </DirectoryProvider>
+        {/* 根级兜底：任何渲染崩溃都落在错误页而不是白屏 */}
+        <ErrorBoundary>
+          <DirectoryProvider>
+            <SessionProvider>
+              <FullscreenProvider>
+                <App />
+              </FullscreenProvider>
+            </SessionProvider>
+          </DirectoryProvider>
+        </ErrorBoundary>
       </Suspense>
     </StrictMode>,
   )

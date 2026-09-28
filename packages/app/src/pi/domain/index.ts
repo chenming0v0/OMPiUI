@@ -295,12 +295,12 @@ export type PiProviderAuthInfo = {
 
 /** Native model runtime inspection (worker modelRuntime.inspect). */
 export type PiModelRuntimeSnapshot = {
-  providers: PiProviderAuthInfo[]
-  models: JsonValue
-  availableModels: JsonValue[]
+  providers?: PiProviderAuthInfo[]
+  models?: JsonValue
+  availableModels?: JsonValue[]
   availableSnapshot?: JsonValue
   credentials?: JsonValue
-  registeredProviderIds: string[]
+  registeredProviderIds?: string[]
   registeredProviderConfigs?: JsonObject
   authChecks?: JsonObject
   error?: string | null

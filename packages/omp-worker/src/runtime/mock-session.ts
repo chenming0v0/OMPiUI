@@ -278,11 +278,11 @@ export class MockCatalog implements CatalogProvider, PackagesGateway {
   }
 
   async resolve(): Promise<JsonValue> {
-    return { resolved: [], missing: [] }
+    return { extensions: [], skills: [], prompts: [], themes: [] }
   }
 
   async resolveSources(): Promise<JsonValue> {
-    return { resolved: [], missing: [] }
+    return { extensions: [], skills: [], prompts: [], themes: [] }
   }
 
   async changeSource(): Promise<JsonValue> {
