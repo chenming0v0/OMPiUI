@@ -4,7 +4,7 @@ import {
   findBiasedVisibleIndex,
   resolveVisibleSectionIds,
 } from './outlineIndexModel'
-import type { PiUserMessageItem } from '../pi/domain/index.js'
+import type { PiUserMessageItem } from '../omp/domain/index.js'
 
 function user(entryId: string, renderKey?: string): PiUserMessageItem {
   return {

@@ -18,7 +18,7 @@ import {
 const MOCK_SDK_VERSION = "mock"
 
 function mockHome(): string {
-  return process.env.PIUI_MOCK_DIR?.trim() || path.join(tmpdir(), "piui-mock")
+  return process.env.OMPIUI_MOCK_DIR?.trim() || path.join(tmpdir(), "ompiui-mock")
 }
 
 function sessionsDir(): string {
@@ -261,6 +261,14 @@ export class MockCatalog implements CatalogProvider, PackagesGateway {
     return this.getSettings(cwd)
   }
 
+  getModelRoles(): JsonValue {
+    return {}
+  }
+
+  async setModelRoles(roles: JsonObject): Promise<JsonValue> {
+    return roles
+  }
+
   getProjectTrust(cwd: string): JsonValue {
     return { workspacePath: cwd, required: false, decision: null, defaultDecision: "always", trusted: true }
   }
@@ -278,11 +286,11 @@ export class MockCatalog implements CatalogProvider, PackagesGateway {
   }
 
   async resolve(): Promise<JsonValue> {
-    return { resolved: [], missing: [] }
+    return { extensions: [], skills: [], prompts: [], themes: [] }
   }
 
   async resolveSources(): Promise<JsonValue> {
-    return { resolved: [], missing: [] }
+    return { extensions: [], skills: [], prompts: [], themes: [] }
   }
 
   async changeSource(): Promise<JsonValue> {

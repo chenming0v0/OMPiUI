@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import i18n from '../i18n'
-import { useFocusedSessionId } from '../pi/hooks/index.js'
+import { useFocusedSessionId } from '../omp/hooks/index.js'
 import { activeSessionStore } from '../store/activeSessionStore'
 import { notificationStore } from '../store/notificationStore'
 import { notificationEventSettingsStore } from '../store/notificationEventSettingsStore'

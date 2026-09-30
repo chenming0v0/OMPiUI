@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { JsonObject, JsonValue, ToolDescriptor } from '@ompiui/protocol'
-import type { SessionEntry } from '../pi/domain'
+import type { SessionEntry } from '../omp/domain'
 import {
   CheckIcon,
   CloseIcon,
@@ -14,8 +14,8 @@ import {
 } from './Icons'
 import { IconButton } from './ui/IconButton'
 import { SegmentedControl, SettingField, SettingRow, SettingsDisclosure, SettingsSection, Toggle } from '../features/settings/components/SettingsUI'
-import { usePiCapabilities } from '../pi/capabilities'
-import { stashForkText } from '../pi/pendingForkText'
+import { usePiCapabilities } from '../omp/capabilities'
+import { stashForkText } from '../omp/pendingForkText'
 import {
   abortPiBranchSummary,
   abortPiCompaction,
@@ -33,13 +33,13 @@ import {
   setPiEntryLabel,
   setPiFollowUpMode,
   setPiSteeringMode,
-} from '../pi/controllers/index.js'
-import { getPiTree, type PiForkResult } from '../pi/transport/index.js'
-import { commitRedoPlan } from '../pi/redoPlanStore'
-import { clearSessionEditorDraft, setSessionEditorDraft } from '../pi/sessionEditorDraftStore'
-import { usePiSessionRuntimeState } from '../pi/hooks/index.js'
-import { selectPiTimelineItems } from '../pi/selectors/index.js'
-import type { PiBranchPage } from '../pi/domain'
+} from '../omp/controllers/index.js'
+import { getPiTree, type PiForkResult } from '../omp/transport/index.js'
+import { commitRedoPlan } from '../omp/redoPlanStore'
+import { clearSessionEditorDraft, setSessionEditorDraft } from '../omp/sessionEditorDraftStore'
+import { usePiSessionRuntimeState } from '../omp/hooks/index.js'
+import { selectPiTimelineItems } from '../omp/selectors/index.js'
+import type { PiBranchPage } from '../omp/domain'
 import { SessionTreeCanvas } from './SessionTreeCanvas'
 import { useVerticalSplitResize } from '../hooks/useVerticalSplitResize'
 import { MessageRenderer } from '../features/message/MessageRenderer'
@@ -261,7 +261,7 @@ export const SessionTreePanel = memo(function SessionTreePanel({
   const applyReplacement = useCallback(
     (result: PiForkResult) => {
       if (result.cancelled || !result.targetSessionId) return
-      window.dispatchEvent(new CustomEvent('piui:sessions-changed'))
+      window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
       onNavigateSession?.({
         id: result.targetSessionId,
         directory: result.targetCwd ?? undefined,

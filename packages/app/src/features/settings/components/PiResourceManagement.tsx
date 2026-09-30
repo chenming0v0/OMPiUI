@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { PromptTemplate, Skill } from '../../../pi/vendor/pi-coding-agent'
+import type { PromptTemplate, Skill } from '../../../omp/vendor/pi-coding-agent'
 import type { RegistrySnapshot } from '@ompiui/protocol'
 import { Button } from '../../../components/ui/Button'
 import { JsonView } from '../../../components/JsonView'
-import { extensionUiStore } from '../../../pi/extensionUiStore'
-import { useManagementEvents } from '../../../pi/managementEventStore'
-import { getPiAgentsFiles, getPiPrompts, getPiSkills } from '../../../pi/transport/index.js'
-import { loadPiSessionRegistry, reloadPiSessionResources } from '../../../pi/controllers/index.js'
+import { extensionUiStore } from '../../../omp/extensionUiStore'
+import { useManagementEvents } from '../../../omp/managementEventStore'
+import { getPiAgentsFiles, getPiPrompts, getPiSkills } from '../../../omp/transport/index.js'
+import { loadPiSessionRegistry, reloadPiSessionResources } from '../../../omp/controllers/index.js'
 import { SettingsSection, SettingsDisclosure, settingsFieldClass } from './SettingsUI'
 
 /**
@@ -50,10 +50,10 @@ export function PiResourceManagement({ sessionId, workspacePath }: { sessionId: 
       const updatedSessionId = (event as CustomEvent<{ sessionId?: string }>).detail?.sessionId
       if (updatedSessionId === sessionId) void load()
     }
-    window.addEventListener('piui:registry-updated', onRegistryUpdated)
+    window.addEventListener('ompiui:registry-updated', onRegistryUpdated)
     return () => {
       window.clearTimeout(timer)
-      window.removeEventListener('piui:registry-updated', onRegistryUpdated)
+      window.removeEventListener('ompiui:registry-updated', onRegistryUpdated)
     }
   }, [load, resourceRevision, sessionId])
 

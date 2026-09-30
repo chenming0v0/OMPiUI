@@ -11,8 +11,8 @@ import {
   type ShareInfo,
 } from "@ompiui/protocol"
 import { EventHub } from "./event-hub.ts"
-import { RuntimeSupervisor } from "./pi/supervisor.ts"
-import { SessionHost } from "./pi/session-host.ts"
+import { RuntimeSupervisor } from "./omp/supervisor.ts"
+import { SessionHost } from "./omp/session-host.ts"
 import { WorkspaceStore } from "./host/workspace-store.ts"
 import { WorkspaceWatcher } from "./host/workspace-watcher.ts"
 import { MAX_JSON_BODY_BYTES, requestHasAllowedOrigin, requestHasValidToken } from "./host/security.ts"
@@ -252,7 +252,7 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
         if (options.onShutdown) {
           setImmediate(() => {
             Promise.resolve(options.onShutdown!()).catch(error => {
-              console.error("[piui-server] graceful shutdown hook failed", error)
+              console.error("[ompiui-server] graceful shutdown hook failed", error)
               process.kill(process.pid, "SIGTERM")
             })
           })
@@ -270,7 +270,7 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
         const lan = shareHost !== "127.0.0.1" && shareHost !== "::1" && shareHost !== "localhost"
         const urlHost = shareHost === "0.0.0.0" || shareHost === "::" ? (firstLanAddress() ?? shareHost) : shareHost
         const url = `http://${urlHost}:${options.share.port}`
-        const link = `piui://connect?url=${encodeURIComponent(url)}&token=${encodeURIComponent(authToken)}`
+        const link = `ompiui://connect?url=${encodeURIComponent(url)}&token=${encodeURIComponent(authToken)}`
         const body: ShareInfo = { url, token: authToken, link, lan }
         return sendJson(res, 200, body)
       }

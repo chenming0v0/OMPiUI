@@ -8,15 +8,15 @@ describe('settingsBackup', () => {
   })
 
   it('exports settings as module snapshots', async () => {
-    localStorage.setItem('piui-theme-preset', 'claude')
-    localStorage.setItem('piui-theme-mode', 'dark')
-    localStorage.setItem('piui-sidebar-expanded', 'false')
-    localStorage.setItem('piui-right-panel-width', '512')
-    localStorage.setItem('piui-notifications-enabled', 'true')
-    localStorage.setItem('piui:toast-enabled', 'false')
-    localStorage.setItem('piui-srv:local:last-directory', '/workspace/project')
-    localStorage.setItem('piui-srv:local:auto-approve-enabled', 'true')
-    localStorage.setItem('piui-service-env-vars', JSON.stringify([{ key: 'PIUI_USE_SYSTEM_PI', value: '1' }]))
+    localStorage.setItem('ompiui-theme-preset', 'claude')
+    localStorage.setItem('ompiui-theme-mode', 'dark')
+    localStorage.setItem('ompiui-sidebar-expanded', 'false')
+    localStorage.setItem('ompiui-right-panel-width', '512')
+    localStorage.setItem('ompiui-notifications-enabled', 'true')
+    localStorage.setItem('ompiui:toast-enabled', 'false')
+    localStorage.setItem('ompiui-srv:local:last-directory', '/workspace/project')
+    localStorage.setItem('ompiui-srv:local:auto-approve-enabled', 'true')
+    localStorage.setItem('ompiui-service-env-vars', JSON.stringify([{ key: 'OMPIUI_USE_SYSTEM_PI', value: '1' }]))
 
     const { exportSettingsBackup } = await import('./settingsBackup')
     const { data } = await exportSettingsBackup()
@@ -32,22 +32,22 @@ describe('settingsBackup', () => {
       true,
     )
     expect(
-      (backup.modules.perServerStorage as { entries: Record<string, string> }).entries['piui-srv:local:last-directory'],
+      (backup.modules.perServerStorage as { entries: Record<string, string> }).entries['ompiui-srv:local:last-directory'],
     ).toBe('/workspace/project')
-    expect((backup.modules.service as { envVars: Array<{ key: string }> }).envVars[0]?.key).toBe('PIUI_USE_SYSTEM_PI')
+    expect((backup.modules.service as { envVars: Array<{ key: string }> }).envVars[0]?.key).toBe('OMPIUI_USE_SYSTEM_PI')
   })
 
   it('restores settings from module snapshots', async () => {
-    localStorage.setItem('piui-theme-preset', 'claude')
-    localStorage.setItem('piui-theme-mode', 'dark')
-    localStorage.setItem('piui-sidebar-expanded', 'false')
-    localStorage.setItem('piui-right-panel-width', '512')
-    localStorage.setItem('piui-notifications-enabled', 'true')
-    localStorage.setItem('piui:toast-enabled', 'false')
-    localStorage.setItem('piui-srv:local:last-directory', '/workspace/project')
-    localStorage.setItem('piui-srv:local:auto-approve-enabled', 'true')
+    localStorage.setItem('ompiui-theme-preset', 'claude')
+    localStorage.setItem('ompiui-theme-mode', 'dark')
+    localStorage.setItem('ompiui-sidebar-expanded', 'false')
+    localStorage.setItem('ompiui-right-panel-width', '512')
+    localStorage.setItem('ompiui-notifications-enabled', 'true')
+    localStorage.setItem('ompiui:toast-enabled', 'false')
+    localStorage.setItem('ompiui-srv:local:last-directory', '/workspace/project')
+    localStorage.setItem('ompiui-srv:local:auto-approve-enabled', 'true')
     localStorage.setItem(
-      'piui-service-env-vars',
+      'ompiui-service-env-vars',
       JSON.stringify([{ key: 'HTTPS_PROXY', value: 'http://127.0.0.1:7890' }]),
     )
 
@@ -62,18 +62,18 @@ describe('settingsBackup', () => {
 
     await importSettingsBackup(file)
 
-    expect(localStorage.getItem('piui-theme-preset')).toBe('claude')
-    expect(localStorage.getItem('piui-theme-mode')).toBe('dark')
-    expect(localStorage.getItem('piui-sidebar-expanded')).toBe('false')
-    expect(localStorage.getItem('piui-right-panel-width')).toBe('512')
-    expect(localStorage.getItem('piui-notifications-enabled')).toBe('true')
-    expect(localStorage.getItem('piui-srv:local:last-directory')).toBe('/workspace/project')
-    expect(localStorage.getItem('piui-srv:local:auto-approve-enabled')).toBe('true')
-    expect(localStorage.getItem('piui:toast-enabled')).toBe('false')
-    expect(localStorage.getItem('piui-service-env-vars')).toBe(
+    expect(localStorage.getItem('ompiui-theme-preset')).toBe('claude')
+    expect(localStorage.getItem('ompiui-theme-mode')).toBe('dark')
+    expect(localStorage.getItem('ompiui-sidebar-expanded')).toBe('false')
+    expect(localStorage.getItem('ompiui-right-panel-width')).toBe('512')
+    expect(localStorage.getItem('ompiui-notifications-enabled')).toBe('true')
+    expect(localStorage.getItem('ompiui-srv:local:last-directory')).toBe('/workspace/project')
+    expect(localStorage.getItem('ompiui-srv:local:auto-approve-enabled')).toBe('true')
+    expect(localStorage.getItem('ompiui:toast-enabled')).toBe('false')
+    expect(localStorage.getItem('ompiui-service-env-vars')).toBe(
       JSON.stringify([{ key: 'HTTPS_PROXY', value: 'http://127.0.0.1:7890' }]),
     )
-    expect(sessionStorage.getItem('piui-active-server')).toBe('local')
+    expect(sessionStorage.getItem('ompiui-active-server')).toBe('local')
   })
 
 })

@@ -6,8 +6,8 @@ import {
   registerProviderAuthFlow,
   trackManagementProviders,
   useManagementEvents,
-} from '../../../pi/managementEventStore'
-import type { PiModelRuntimeSnapshot, PiProviderAuthInfo } from '../../../pi/domain'
+} from '../../../omp/managementEventStore'
+import type { PiModelRuntimeSnapshot, PiProviderAuthInfo } from '../../../omp/domain'
 import {
   inspectModelRuntime,
   listPiProviders,
@@ -17,8 +17,8 @@ import {
   removeProviderApiKey,
   setProviderApiKey,
   startProviderAuth,
-} from '../../../pi/transport/index.js'
-import { loadPiModels } from '../../../pi/controllers/index.js'
+} from '../../../omp/transport/index.js'
+import { loadPiModels } from '../../../omp/controllers/index.js'
 import { SettingsSection, SettingsDisclosure, settingsFieldClass } from './SettingsUI'
 
 export function PiProviderManagement() {
@@ -105,9 +105,9 @@ export function PiProviderManagement() {
       <p className="text-[length:var(--fs-xs)] text-text-400">
         {runtime
           ? t('pi.runtimeSummary', {
-              providers: runtime.providers.length,
-              models: runtime.availableModels.length,
-              registered: runtime.registeredProviderIds.length,
+              providers: runtime.providers?.length ?? 0,
+              models: runtime.availableModels?.length ?? 0,
+              registered: runtime.registeredProviderIds?.length ?? 0,
             })
           : t('pi.loadingRuntime')}
       </p>
@@ -136,7 +136,7 @@ export function PiProviderManagement() {
             <div className="flex items-center gap-2">
               <span className="min-w-0 flex-1 truncate text-[length:var(--fs-sm)] text-text-200">{provider.name}</span>
               <span className={`text-[length:var(--fs-xs)] ${provider.configured ? 'text-success-100' : 'text-text-500'}`}>{provider.configured ? t('pi.configured') : t('pi.notConfigured')}</span>
-              {provider.methods.filter(method => method.loginAvailable).map(method => (
+              {(provider.methods ?? []).filter(method => method.loginAvailable).map(method => (
                 <Button key={method.type} size="sm" variant="secondary" disabled={busy !== null} isLoading={busy === `auth:${provider.id}:${method.type}`} onClick={() => void beginAuth(provider, method.type)}>{method.name || method.type}</Button>
               ))}
             </div>

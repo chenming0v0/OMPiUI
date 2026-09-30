@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { extensionUiStore } from '../../pi/extensionUiStore'
+import { extensionUiStore } from '../../omp/extensionUiStore'
 import { ExtensionUiSurface } from './ExtensionUiSurface'
 
 describe('ExtensionUiSurface', () => {

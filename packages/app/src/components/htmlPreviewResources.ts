@@ -1,4 +1,4 @@
-import { getFileContent } from '../pi/files'
+import { getFileContent } from '../omp/files'
 import type { FileReadResponse } from '@ompiui/protocol'
 import { buildDataUrl, buildTextDataUrl, decodeBase64Text, isBinaryContent } from '../utils/mimeUtils'
 
@@ -213,8 +213,8 @@ export async function resolveHtmlPreviewResources(
       const isModule = script.getAttribute('type')?.trim().toLowerCase() === 'module'
       if (isModule && hasUnresolvedModuleImports(source)) {
         script.removeAttribute('src')
-        script.setAttribute('type', 'application/x-piui-unresolved-module')
-        script.setAttribute('data-piui-unresolved-src', path)
+        script.setAttribute('type', 'application/x-ompiui-unresolved-module')
+        script.setAttribute('data-ompiui-unresolved-src', path)
         script.textContent = source.replace(/<\/script/gi, '<\\/script')
         return
       }
@@ -232,7 +232,7 @@ export async function resolveHtmlPreviewResources(
       const content = await load(path, 'style')
       if (!content) return
       const style = parsed.createElement('style')
-      style.setAttribute('data-piui-resolved-css', '')
+      style.setAttribute('data-ompiui-resolved-css', '')
       if (link.media) style.media = link.media
       style.textContent = (await replaceCssUrls(fileContentToText(content), path, directory, load)).replace(/<\/style/gi, '<\\/style')
       link.replaceWith(style)
@@ -240,7 +240,7 @@ export async function resolveHtmlPreviewResources(
   )
 
   await Promise.all(
-    Array.from(parsed.querySelectorAll<HTMLStyleElement>('style:not([data-piui-resolved-css])')).map(async style => {
+    Array.from(parsed.querySelectorAll<HTMLStyleElement>('style:not([data-ompiui-resolved-css])')).map(async style => {
       style.textContent = await replaceCssUrls(style.textContent ?? '', htmlPath, directory, load)
     }),
   )

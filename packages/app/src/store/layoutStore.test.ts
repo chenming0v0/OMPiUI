@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { LayoutStore } from './layoutStore'
 
-const STORAGE_KEY_PANEL_LAYOUT = 'piui-panel-layout'
-const STORAGE_KEY_TERMINAL_LAYOUT = 'piui-terminal-layout'
+const STORAGE_KEY_PANEL_LAYOUT = 'ompiui-panel-layout'
+const STORAGE_KEY_TERMINAL_LAYOUT = 'ompiui-terminal-layout'
 
 describe('LayoutStore panel layout', () => {
   beforeEach(() => {

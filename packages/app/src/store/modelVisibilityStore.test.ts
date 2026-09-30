@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Model, Api } from '../pi/vendor/pi-ai'
+import type { Model, Api } from '../omp/vendor/pi-ai'
 
 function model(provider: string, id: string): Model<Api> {
   return {
@@ -17,7 +17,7 @@ function model(provider: string, id: string): Model<Api> {
 }
 
 function readHiddenKeys(): string[] {
-  const key = Object.keys(localStorage).find(k => k.endsWith(':piui-hidden-model-keys'))
+  const key = Object.keys(localStorage).find(k => k.endsWith(':ompiui-hidden-model-keys'))
   if (!key) return []
   const raw = localStorage.getItem(key)
   if (!raw) return []

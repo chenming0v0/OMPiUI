@@ -1,0 +1,396 @@
+/**
+ * Pi domain types - re-exported from the vendored SDK type modules
+ * (src/pi/vendor/*, structural copies of the @earendil-works declarations).
+ *
+ * These types are the single source of truth for Pi data structures.
+ * Never manually duplicate or transform these types.
+ */
+
+// Session entries and metadata
+export type {
+  SessionEntry,
+  SessionEntryBase,
+  SessionMessageEntry,
+  ThinkingLevelChangeEntry,
+  ModelChangeEntry,
+  CompactionEntry,
+  BranchSummaryEntry,
+  CustomEntry,
+  CustomMessageEntry,
+  SessionInfoEntry,
+  SessionInfo,
+  SessionHeader,
+  SessionTreeNode,
+  SessionContext,
+} from '../vendor/pi-coding-agent'
+
+// Agent messages and content blocks
+export type {
+  AgentMessage,
+  AgentEvent,
+  ThinkingLevel,
+} from '../vendor/pi-agent-core'
+export type {
+  UserMessage,
+  AssistantMessage,
+  ToolResultMessage,
+  TextContent,
+  ThinkingContent,
+  ImageContent,
+  ToolCall,
+  Usage,
+  StopReason,
+  Model,
+} from '../vendor/pi-ai'
+
+// Agent session runtime
+export type {
+  AgentSessionEvent,
+  SessionStats,
+  PromptOptions,
+  ModelCycleResult,
+} from '../vendor/pi-coding-agent'
+
+// Custom messages (bashExecution, custom, branchSummary, compactionSummary)
+// are part of the vendored AgentMessage union — extract them by role.
+export type BashExecutionMessage = Extract<AgentMessage, { role: 'bashExecution' }>
+export type CustomMessage = Extract<AgentMessage, { role: 'custom' }>
+export type BranchSummaryMessage = Extract<AgentMessage, { role: 'branchSummary' }>
+export type CompactionSummaryMessage = Extract<AgentMessage, { role: 'compactionSummary' }>
+
+// Registry
+export type {
+  ToolDescriptor,
+  CommandDescriptor,
+  ExtensionDescriptor,
+  PiCapability,
+  PiRegistrySnapshot,
+} from '@ompiui/protocol'
+
+// Protocol primitives
+export type {
+  JsonValue,
+  JsonObject,
+  CommandEnvelope,
+  CommandRecord,
+  CommandStatus,
+  EventEnvelope,
+  EventCursor,
+  EventChannel,
+  EventStreamRef,
+  Problem,
+  ErrorCode,
+} from '@ompiui/protocol'
+
+// ============================================================
+// OMPiUI-specific derived view models (not domain types)
+// ============================================================
+
+import type { SessionEntry } from '../vendor/pi-coding-agent'
+import type { AgentMessage } from '../vendor/pi-agent-core'
+import type {
+  UserMessage,
+  AssistantMessage,
+  ToolResultMessage,
+  TextContent,
+  ThinkingContent,
+  ImageContent,
+  ToolCall,
+} from '../vendor/pi-ai'
+import type { ThinkingLevel } from '../vendor/pi-agent-core'
+import type { JsonObject, JsonValue, EntriesPage, BranchCheckpoint, LiveMessage } from '@ompiui/protocol'
+
+/**
+ * Pi Session row for sidebar display.
+ * Derived from SessionInfo for UI consumption.
+ */
+export type PiSessionRow = {
+  id: string
+  sessionFile: string
+  cwd: string
+  title: string
+  preview?: string
+  createdAt: number
+  modifiedAt: number
+  messageCount: number
+  parentSessionPath?: string
+  forkParent?: {
+    id: string
+    title: string
+  }
+}
+
+/**
+ * Pi timeline item for chat rendering.
+ * Each item preserves its raw entry and provides type-safe rendering data.
+ * Tool results are paired back into their owning assistant item so the
+ * message keeps its embedded tool calls (matching chat UI structure).
+ */
+export type PiTimelineItem = (
+  | PiUserMessageItem
+  | PiAssistantMessageItem
+  | PiBashExecutionItem
+  | PiBashExecutionGroupItem
+  | PiCompactionItem
+  | PiBranchSummaryItem
+  | PiCustomMessageItem
+  | PiUnknownItem
+) & {
+  /** Stable React identity while a live message becomes a persisted entry. */
+  renderKey?: string
+}
+
+export type PiUserMessageItem = {
+  kind: 'user_message'
+  entryId: string
+  timestamp: number
+  rawEntry: SessionEntry
+  message: UserMessage
+  blocks: (TextContent | ImageContent)[]
+  renderKey?: string
+}
+
+export type PiAssistantMessageItem = {
+  kind: 'assistant_message'
+  entryId: string
+  timestamp: number
+  rawEntry: SessionEntry
+  message: AssistantMessage
+  blocks: (TextContent | ThinkingContent | ToolCall)[]
+  /** Tool results paired by toolCallId; empty while a call has no result yet */
+  toolResults: Record<string, ToolResultMessage>
+  /** True for the live streaming message (not yet persisted as an entry) */
+  isStreaming?: boolean
+  renderKey?: string
+}
+
+export type PiBashExecutionItem = {
+  kind: 'bash_execution'
+  entryId: string
+  timestamp: number
+  rawEntry: SessionEntry
+  message: BashExecutionMessage
+}
+
+/**
+ * 相邻 bash 执行（用户 `!cmd` / `/bash cmd` 发起的）合并为一个工具组，
+ * 与 AI 连续调用工具时的 ToolGroup 渲染一致（steps header + timeline）。
+ * entryId 取组内第一个 bash 的 entryId（稳定渲染 key）。
+ */
+export type PiBashExecutionGroupItem = {
+  kind: 'bash_execution_group'
+  entryId: string
+  timestamp: number
+  items: PiBashExecutionItem[]
+}
+
+/**
+ * One tool execution: the call plus its result (absent while pending).
+ * The neutral contract for the tool rendering chain.
+ */
+export type PiToolExecution = {
+  call: ToolCall
+  result?: ToolResultMessage
+}
+
+export type PiCompactionItem = {
+  kind: 'compaction'
+  entryId: string
+  timestamp: number
+  rawEntry: SessionEntry
+  summary: string
+  tokensBefore: number
+  firstKeptEntryId: string
+  details?: unknown
+}
+
+export type PiBranchSummaryItem = {
+  kind: 'branch_summary'
+  entryId: string
+  timestamp: number
+  rawEntry: SessionEntry
+  summary: string
+  fromId: string
+  details?: unknown
+}
+
+export type PiCustomMessageItem = {
+  kind: 'custom_message'
+  entryId: string
+  timestamp: number
+  rawEntry: SessionEntry
+  customType: string
+  content: string | (TextContent | ImageContent)[]
+  display: boolean
+  details?: unknown
+}
+
+export type PiUnknownItem = {
+  kind: 'unknown'
+  entryId: string
+  timestamp: number
+  rawEntry: SessionEntry
+  entryType: string
+}
+
+/**
+ * Pi session runtime state (from state.get command).
+ * Raw state from backend, kept as JsonObject for forward compatibility.
+ */
+export type PiSessionRuntimeState = JsonObject
+
+/**
+ * Native settings snapshot (worker settings.get). Shape is defined by the
+ * worker's catalog: raw scopes plus the resolved effective values.
+ */
+export type PiSettingsSnapshot = {
+  workspacePath: string
+  projectTrusted: boolean
+  global: JsonObject
+  project: JsonObject
+  effective: {
+    defaultProvider?: string
+    defaultModel?: string
+    defaultThinkingLevel?: ThinkingLevel
+    transport?: 'auto' | 'sse' | 'websocket' | 'websocket-cached'
+    steeringMode?: 'all' | 'one-at-a-time'
+    followUpMode?: 'all' | 'one-at-a-time'
+    theme?: string
+    compaction?: { enabled?: boolean; reserveTokens?: number; keepRecentTokens?: number }
+    retry?: { enabled?: boolean; maxRetries?: number; baseDelayMs?: number }
+    shellPath?: string
+    httpProxy?: string
+    enableSkillCommands?: boolean
+    showImages?: boolean
+    defaultProjectTrust?: 'ask' | 'always' | 'never'
+    [key: string]: JsonValue | undefined
+  }
+  errors: Array<{ scope: string; message: string }>
+}
+
+/** Native project trust state (worker trust.get / trust.set). */
+export type PiProjectTrust = {
+  workspacePath: string
+  required: boolean
+  decision: boolean | null
+  inheritedFrom?: string
+  defaultDecision: 'ask' | 'always' | 'never'
+  trusted: boolean
+}
+
+/** Native provider auth info (worker providers.list). */
+export type PiProviderAuthMethod = {
+  type: 'api_key' | 'oauth'
+  name?: string
+  loginAvailable: boolean
+}
+
+export type PiProviderAuthInfo = {
+  id: string
+  name: string
+  methods: PiProviderAuthMethod[]
+  configured: boolean
+  status?: JsonValue
+}
+
+/** Native model runtime inspection (worker modelRuntime.inspect). */
+export type PiModelRuntimeSnapshot = {
+  providers?: PiProviderAuthInfo[]
+  models?: JsonValue
+  availableModels?: JsonValue[]
+  availableSnapshot?: JsonValue
+  credentials?: JsonValue
+  registeredProviderIds?: string[]
+  registeredProviderConfigs?: JsonObject
+  authChecks?: JsonObject
+  error?: string | null
+}
+
+// SDK package shapes (core/package-manager). ResolvedPaths/ResolvedResource
+// are publicly exported; ConfiguredPackage/PackageUpdate are not, so they
+// are mirrored here from the SDK declarations.
+export type { ResolvedPaths, ResolvedResource } from '../vendor/pi-coding-agent'
+
+export type PiConfiguredPackage = {
+  source: string
+  scope: 'user' | 'project'
+  filtered: boolean
+  installedPath?: string
+}
+
+export type PiPackageUpdate = {
+  source: string
+  displayName: string
+  type: 'npm' | 'git'
+  scope: 'user' | 'project'
+}
+
+/**
+ * Pi branch page (from branch.get command).
+ * Structure comes from protocol EntriesPage; items and liveMessage are
+ * narrowed to SDK types since the backend guarantees their shapes.
+ */
+export type PiLiveMessage = Omit<LiveMessage, 'message'> & { message: AgentMessage }
+export type PiBranchCheckpoint = Omit<BranchCheckpoint, 'liveMessage'> & { liveMessage?: PiLiveMessage }
+export type PiBranchPage = Omit<EntriesPage, 'items' | 'checkpoint'> & {
+  items: SessionEntry[]
+  checkpoint?: PiBranchCheckpoint
+  client?: {
+    stableEntryIds?: Record<string, string>
+  }
+}
+
+/**
+ * Pi session data store shape.
+ * Contains all raw data for one active session.
+ */
+export type PiActiveSessionData = {
+  sessionId: string
+  state: PiSessionRuntimeState
+  branch: PiBranchPage
+  entries: SessionEntry[]
+  status: 'loading' | 'loaded' | 'error'
+  error?: Error
+}
+
+/**
+ * Pi composer mode derived from session state.
+ */
+export type PiComposerMode =
+  | { type: 'idle' }
+  | { type: 'streaming'; steeringMode: 'all' | 'one-at-a-time' }
+  | { type: 'streaming'; followUpMode: 'all' | 'one-at-a-time' }
+
+/**
+ * Pi command lifecycle for UI tracking.
+ */
+export type PiCommandLifecycle = {
+  id: string
+  name: string
+  status: 'accepted' | 'running' | 'completed' | 'failed' | 'cancelled' | 'unknown_after_crash'
+  submittedAt: string
+  completedAt?: string
+  result?: unknown
+  error?: unknown
+}
+
+/**
+ * Pi event cursor for WS subscription.
+ */
+export type PiEventCursor = {
+  epoch: string
+  sequence: number
+}
+
+/**
+ * Pi registry state for capability tracking.
+ */
+export type PiRegistryState = {
+  revision: number
+  sdkVersion: string
+  driver: 'mock' | 'pi'
+  globalCommands: string[]
+  sessionCommands: string[]
+  loadState: 'idle' | 'loading' | 'loaded' | 'error'
+  error?: Error
+}

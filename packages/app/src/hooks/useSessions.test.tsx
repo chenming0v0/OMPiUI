@@ -24,14 +24,14 @@ const {
   deletePiSessionMock: vi.fn<AnyFn>(),
 }))
 
-vi.mock('../pi/controllers/index.js', () => ({
+vi.mock('../omp/controllers/index.js', () => ({
   loadPiSessions: (...args: unknown[]) => loadPiSessionsMock(...args),
   loadPiSessionsForCwd: (...args: unknown[]) => loadPiSessionsForCwdMock(...args),
   openPiSession: (...args: unknown[]) => openPiSessionMock(...args),
   deletePiSession: (...args: unknown[]) => deletePiSessionMock(...args),
 }))
 
-vi.mock('../pi/piSessionIndex', () => ({
+vi.mock('../omp/ompSessionIndex', () => ({
   trackPiSession: vi.fn(),
 }))
 
@@ -125,7 +125,7 @@ describe('useSessions', () => {
 
     loadPiSessionsForCwdMock.mockResolvedValue([makeSession('session-1')])
     await act(async () => {
-      window.dispatchEvent(new CustomEvent('piui:sessions-changed'))
+      window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -166,7 +166,7 @@ describe('useSessions', () => {
     })
 
     await act(async () => {
-      window.dispatchEvent(new CustomEvent('piui:sessions-changed'))
+      window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
       await Promise.resolve()
     })
 
@@ -232,7 +232,7 @@ describe('useSessions', () => {
     expect(loadPiSessionsForCwdMock).toHaveBeenCalledTimes(1)
 
     await act(async () => {
-      window.dispatchEvent(new CustomEvent('piui:sessions-changed'))
+      window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
       await Promise.resolve()
     })
 

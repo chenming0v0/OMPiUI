@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * 打包桌面/便携形态：
- *   dist-desktop/pi-worker.exe     Bun 编译的统一 server/worker/CLI 文件
+ *   dist-desktop/omp-worker.exe     Bun 编译的统一 server/worker/CLI 文件
  *   dist-desktop/web/…             Web 客户端构建产物
  *
  * 用法：node scripts/package-desktop.mjs [--skip-build] [--target bun-windows-x64]
@@ -60,7 +60,7 @@ if (!existsSync(nativeLibraryPath)) throw new Error(`bun-pty native library is m
 cpSync(nativeLibraryPath, join(bunPtyOut, "rust-pty", "target", "release", nativeLibrary))
 
 // ---- 3. bun compile ----
-const outfile = join(outDir, target.includes("windows") ? "pi-worker.exe" : "pi-worker")
+const outfile = join(outDir, target.includes("windows") ? "omp-worker.exe" : "omp-worker")
 run("bun", [
   "build", join("packages", "server", "dist", "bundle-entry.js"),
   "--compile",
@@ -83,7 +83,7 @@ for (const file of requiredFiles) {
 
 console.info(`
 [package] done → ${outDir}
-  pi-worker    Web/API 服务、OMP worker 和原生 CLI
+  omp-worker    Web/API 服务、OMP worker 和原生 CLI
   web/         Web 客户端，server 同端口托管
-局域网/手机访问：pi-worker.exe web --host 0.0.0.0
+局域网/手机访问：omp-worker.exe web --host 0.0.0.0
 `)

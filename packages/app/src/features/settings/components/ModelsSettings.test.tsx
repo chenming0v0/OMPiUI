@@ -10,8 +10,14 @@ const { usePiModelsMock, useHiddenModelKeysMock, setVisibleMock, setManyVisibleM
   setManyVisibleMock: vi.fn(),
 }))
 
-vi.mock('../../../pi/hooks/index.js', () => ({
+vi.mock('../../../omp/hooks/index.js', () => ({
   usePiModels: usePiModelsMock,
+}))
+
+// 快捷配置区有自己的测试（ModelQuickConfig.test.tsx）；这里 mock 掉，
+// 因为下方的 modelUtils mock 只覆盖可见性需要的导出
+vi.mock('./ModelQuickConfig', () => ({
+  ModelQuickConfig: () => <div data-testid="model-quick-config-stub" />,
 }))
 
 vi.mock('../../../store', () => ({
@@ -48,10 +54,7 @@ function makeModel(id: string, name: string): AnyModel {
   } as AnyModel
 }
 
-const MODELS: AnyModel[] = [
-  makeModel('gpt-4.1', 'GPT-4.1'),
-  makeModel('gpt-4o-mini', 'GPT-4o Mini'),
-]
+const MODELS: AnyModel[] = [makeModel('gpt-4.1', 'GPT-4.1'), makeModel('gpt-4o-mini', 'GPT-4o Mini')]
 
 describe('ModelsSettings', () => {
   beforeEach(() => {

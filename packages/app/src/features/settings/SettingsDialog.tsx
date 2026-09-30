@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Dialog } from '../../components/ui/Dialog'
+import { ErrorBoundary } from '../../components/ErrorBoundary'
 import {
   SunIcon,
   GlobeIcon,
@@ -28,7 +29,7 @@ import { PiManagementSettings } from './components/PiManagementSettings'
 import { ServiceSettings } from './components/ServiceSettings'
 import { SettingsSearch } from './SettingsSearch'
 import { SETTINGS_SEARCH_DEFINITIONS, type SettingsSearchItem } from './settingsSearchCatalog'
-import { usePiCapabilities } from '../../pi/capabilities'
+import { usePiCapabilities } from '../../omp/capabilities'
 import { isTauriMobile } from '../../utils/tauri'
 
 // ============================================
@@ -387,7 +388,10 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
             ref={scrollRef}
             className="flex-1 min-h-0 py-3 px-4 overflow-y-auto custom-scrollbar overscroll-contain"
           >
-            <TabContent tab={tab} />
+            {/* key 按 tab 重挂载：单个面板崩溃只降级当前页，不拖垮整个应用 */}
+            <ErrorBoundary key={tab}>
+              <TabContent tab={tab} />
+            </ErrorBoundary>
           </div>
         </div>
       </Dialog>
@@ -481,7 +485,10 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
           ref={scrollRef}
           className="flex-1 min-w-0 min-h-0 overflow-y-auto custom-scrollbar px-7 pb-8 pt-10 xl:px-8"
         >
-          <TabContent tab={tab} />
+          {/* key 按 tab 重挂载：单个面板崩溃只降级当前页，不拖垮整个应用 */}
+          <ErrorBoundary key={tab}>
+            <TabContent tab={tab} />
+          </ErrorBoundary>
         </div>
       </div>
     </Dialog>

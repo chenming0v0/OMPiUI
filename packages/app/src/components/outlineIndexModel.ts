@@ -1,4 +1,4 @@
-import type { PiTimelineItem } from '../pi/domain/index.js'
+import type { PiTimelineItem } from '../omp/domain/index.js'
 
 const FULL_TITLE_MAX = 80
 

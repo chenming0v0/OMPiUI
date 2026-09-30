@@ -8,7 +8,7 @@ import { join, resolve } from "node:path"
 // 和 server 相同的日志目录，崩溃后可回溯（server 侧的 handleExit 日志在
 // server 进程里写，worker 进程内的 uncaughtException 等在这里写）。
 function wireWorkerStderrFileLog(): void {
-  if (process.env.PIUI_FILE_LOG === "0") return
+  if (process.env.OMPIUI_FILE_LOG === "0") return
   let logDir: string | undefined
   const day = () => new Date().toISOString().slice(0, 10)
   let file: string | undefined
@@ -18,7 +18,7 @@ function wireWorkerStderrFileLog(): void {
       if (!file || currentDay !== day()) {
         currentDay = day()
         if (!logDir) {
-          const env = process.env.PIUI_DATA_DIR?.trim()
+          const env = process.env.OMPIUI_DATA_DIR?.trim()
           logDir = env
             ? resolve(env)
             : process.platform === "win32" && process.env.APPDATA
@@ -48,6 +48,7 @@ import { OmpRpcSession, type OmpSessionOptions } from "./omp/omp-session.js"
 import { OmpCatalog } from "./omp/omp-catalog.js"
 import { OmpProviderAuth } from "./omp/omp-auth.js"
 import { OMP_SDK_VERSION } from "./omp/constants.js"
+import { detectOmpVersionSync, detectedOmpVersion } from "./omp/omp-version.js"
 import { MockPiSession, MockCatalog } from "./runtime/mock-session.js"
 import { COMMAND_HANDLERS, createRegistryDescribeCapability, listCommandCapabilities, resolveExtensionTarget, type CommandContext } from "./command-table.js"
 import { assertRuntimeTargetBindings } from "./runtime-contract.js"
@@ -102,6 +103,10 @@ function sendWithCallback(message: WorkerMessage, callback: () => void): void {
 
 const ompBin = process.env.OMPI_OMP_BIN?.trim() || undefined
 const ompSessionOptions: OmpSessionOptions = { bin: ompBin }
+
+// omp driver 下启动时同步探测一次真实版本（issue #5）：hello/registry 带
+// 实际版本而不是标定值。探测失败只影响展示；会话打开另有异步探测 + 门禁。
+if (driver === "omp") detectOmpVersionSync(ompBin)
 
 const catalog = driver === "omp" ? new OmpCatalog() : new MockCatalog()
 const providerAuth = new OmpProviderAuth(async () => {
@@ -366,7 +371,7 @@ function describeRegistry(): PiRegistrySnapshot {
   return {
     protocolVersion: PROTOCOL_VERSION,
     revision: registryRevision,
-    sdkVersion: OMP_SDK_VERSION,
+    sdkVersion: detectedOmpVersion(OMP_SDK_VERSION, ompBin),
     driver,
     globalCommands: [createRegistryDescribeCapability(), ...listCommandCapabilities("global")],
     sessionCommands: listCommandCapabilities("session"),
@@ -552,7 +557,7 @@ if (ompBin) {
 send({
   kind: "hello",
   workerProtocolVersion: PI_WORKER_PROTOCOL_VERSION,
-  piSdkVersion: OMP_SDK_VERSION,
+  piSdkVersion: detectedOmpVersion(OMP_SDK_VERSION, ompBin),
   piSdkVerified: true,
   generation: workerGeneration,
   processId: process.pid,

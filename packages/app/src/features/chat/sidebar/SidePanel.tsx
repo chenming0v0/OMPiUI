@@ -39,8 +39,8 @@ import {
 import type { UiSession } from '../../../types/session'
 import { getDirectoryName, isSameDirectory, normalizeToForwardSlash } from '../../../utils'
 import { uiErrorHandler } from '../../../utils'
-import { renamePiSession } from '../../../pi/controllers/index.js'
-import { usePiCapabilities } from '../../../pi/capabilities'
+import { renamePiSession } from '../../../omp/controllers/index.js'
+import { usePiCapabilities } from '../../../omp/capabilities'
 
 // 侧边栏设计模式：
 // - 按钮结构统一，不因 expanded/collapsed 改变 DOM
@@ -140,7 +140,7 @@ export function SidePanel({
   const { vcsInfo: currentDirectoryVcsInfo, isLoading: isCurrentDirectoryVcsLoading } = useVcsInfo(currentDirectory)
   const { sidebarFolderRecents } = useLayoutStore()
   const [globalFolderIndex, setGlobalFolderIndex] = useState<number>(() => {
-    const saved = localStorage.getItem('piui-sidebar-global-folder-index')
+    const saved = localStorage.getItem('ompiui-sidebar-global-folder-index')
     const parsed = saved ? Number.parseInt(saved, 10) : 0
     return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
   })
@@ -614,7 +614,7 @@ export function SidePanel({
         // 全局移到 target 位置：globalFolderIndex 直接等于 targetIdx
         if (targetIdx !== globalFolderIndex) {
           setGlobalFolderIndex(targetIdx)
-          localStorage.setItem('piui-sidebar-global-folder-index', String(targetIdx))
+          localStorage.setItem('ompiui-sidebar-global-folder-index', String(targetIdx))
         }
         return
       }
@@ -631,7 +631,7 @@ export function SidePanel({
         }
         if (draggedIdx !== globalFolderIndex) {
           setGlobalFolderIndex(draggedIdx)
-          localStorage.setItem('piui-sidebar-global-folder-index', String(draggedIdx))
+          localStorage.setItem('ompiui-sidebar-global-folder-index', String(draggedIdx))
         }
         return
       }

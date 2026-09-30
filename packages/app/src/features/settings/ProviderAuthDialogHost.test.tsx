@@ -5,10 +5,10 @@ import {
   receiveProviderAuthEvent,
   registerProviderAuthFlow,
   resetManagementEvents,
-} from '../../pi/managementEventStore'
+} from '../../omp/managementEventStore'
 
 const mocks = vi.hoisted(() => ({ respond: vi.fn(), cancel: vi.fn(), listFlows: vi.fn() }))
-vi.mock('../../pi/transport/index.js', () => ({
+vi.mock('../../omp/transport/index.js', () => ({
   respondProviderAuth: mocks.respond,
   cancelProviderAuth: mocks.cancel,
   listActiveProviderFlows: mocks.listFlows,

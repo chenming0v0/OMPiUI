@@ -11,7 +11,7 @@ if (!existsSync(source)) {
   throw new Error("dist-desktop does not exist; run npm run package:desktop first")
 }
 
-const serverName = process.platform === "win32" ? "pi-worker.exe" : "pi-worker"
+const serverName = process.platform === "win32" ? "omp-worker.exe" : "omp-worker"
 const server = join(source, serverName)
 if (!existsSync(server)) throw new Error(`desktop server binary not found: ${server}`)
 

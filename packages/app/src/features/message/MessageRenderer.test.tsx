@@ -7,8 +7,8 @@ import {
   assistantHasProcessContent,
   splitProcessRenderItems,
 } from './MessageRenderer'
-import type { SessionMessageEntry } from '../../pi/vendor/pi-coding-agent'
-import type { PiAssistantMessageItem, PiUserMessageItem } from '../../pi/domain/index.js'
+import type { SessionMessageEntry } from '../../omp/vendor/pi-coding-agent'
+import type { PiAssistantMessageItem, PiUserMessageItem } from '../../omp/domain/index.js'
 
 let mockRenderUserMarkdown = false
 let mockCollapseUserMessages = false

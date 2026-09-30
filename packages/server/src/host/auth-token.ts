@@ -4,16 +4,44 @@ import { homedir } from "node:os"
 import path from "node:path"
 
 /**
- * PiUI's own state lives here, separate from `~/.pi/agent`, which belongs to
- * Pi and is shared with the CLI.
+ * OMPiUI's own state lives here, separate from `~/.omp/agent`, which belongs
+ * to OMP and is shared with the CLI.
+ *
+ * The PiUI-era default was `~/.piui`; secrets there are migrated once by
+ * readMigratedSecret and the old directory is never written again.
  */
-export function piuiDataDir(): string {
-  const override = process.env.PIUI_DATA_DIR?.trim()
-  return override ? path.resolve(override) : path.join(homedir(), ".piui")
+export function ompiuiDataDir(): string {
+  const override = process.env.OMPIUI_DATA_DIR?.trim()
+  return override ? path.resolve(override) : path.join(homedir(), ".ompiui")
 }
 
 export function authTokenPath(): string {
-  return path.join(piuiDataDir(), "auth-token")
+  return path.join(ompiuiDataDir(), "auth-token")
+}
+
+/**
+ * Read a persisted secret, migrating it from the pre-rename `~/.piui`
+ * location on first access: the legacy value is copied to the new path
+ * (exclusive create) so tokens stay stable for existing clients and later
+ * reads skip the legacy lookup entirely. A OMPIUI_DATA_DIR override means the
+ * caller owns an explicit location with no legacy state to inherit.
+ */
+function readMigratedSecret(name: string): string | undefined {
+  const file = path.join(ompiuiDataDir(), name)
+  const existing = readTokenFile(file)
+  if (existing) return existing
+  if (process.env.OMPIUI_DATA_DIR?.trim()) return undefined
+
+  const legacy = readTokenFile(path.join(homedir(), ".piui", name))
+  if (!legacy) return undefined
+  try {
+    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+    // Exclusive create, so two servers starting together cannot both migrate.
+    writeFileSync(file, `${legacy}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" })
+  } catch {
+    /* EEXIST means the concurrent migration won; fall through to re-read. */
+  }
+  return readTokenFile(file) ?? legacy
 }
 
 /**
@@ -26,14 +54,14 @@ export function authTokenPath(): string {
  * that already read it. Delete the file to rotate.
  */
 export function resolveAuthToken(): string {
-  const fromEnv = process.env.PIUI_AUTH_TOKEN?.trim()
+  const fromEnv = process.env.OMPIUI_AUTH_TOKEN?.trim()
   if (fromEnv) return fromEnv
 
-  const file = authTokenPath()
-  const existing = readTokenFile(file)
-  if (existing) return existing
+  const migrated = readMigratedSecret("auth-token")
+  if (migrated) return migrated
 
   const token = randomBytes(32).toString("base64url")
+  const file = authTokenPath()
   mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
   try {
     // Exclusive create, so two servers starting together cannot each believe
@@ -57,7 +85,7 @@ function readTokenFile(file: string): string | undefined {
 }
 
 export function cursorSecretPath(): string {
-  return path.join(piuiDataDir(), "cursor-secret")
+  return path.join(ompiuiDataDir(), "cursor-secret")
 }
 
 /**
@@ -67,14 +95,14 @@ export function cursorSecretPath(): string {
  * 光标跨 worker 重启仍然有效。删除文件即可轮换。
  */
 export function resolveCursorSecret(): string {
-  const fromEnv = process.env.PIUI_CURSOR_SECRET?.trim()
+  const fromEnv = process.env.OMPIUI_CURSOR_SECRET?.trim()
   if (fromEnv) return fromEnv
 
-  const file = cursorSecretPath()
-  const existing = readTokenFile(file)
-  if (existing) return existing
+  const migrated = readMigratedSecret("cursor-secret")
+  if (migrated) return migrated
 
   const secret = randomBytes(32).toString("base64url")
+  const file = cursorSecretPath()
   mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
   try {
     // Exclusive create, so two servers starting together cannot each believe
@@ -90,6 +118,6 @@ export function resolveCursorSecret(): string {
 /** 确保光标密钥已注入环境——必须在任何 worker spawn 之前调用。 */
 export function ensureCursorSecretEnv(): string {
   const secret = resolveCursorSecret()
-  process.env.PIUI_CURSOR_SECRET = secret
+  process.env.OMPIUI_CURSOR_SECRET = secret
   return secret
 }

@@ -30,21 +30,32 @@ function katexWoff2Only() {
 }
 
 /**
- * The dev server proxies to the PiUI backend, which requires a local token.
+ * The dev server proxies to the OMPiUI backend, which requires a local token.
  * Reading it here keeps the secret in Node: the browser never receives it, so
  * page scripts cannot exfiltrate it. Re-read per request so restarting the
  * backend does not require restarting Vite.
  */
 function readBackendToken(): string | undefined {
-  const configured = process.env.PIUI_AUTH_TOKEN?.trim()
+  const configured = process.env.OMPIUI_AUTH_TOKEN?.trim()
   if (configured) return configured
-  const dataDir = process.env.PIUI_DATA_DIR?.trim()
-  const file = join(dataDir ? resolve(dataDir) : join(homedir(), '.piui'), 'auth-token')
-  try {
-    return readFileSync(file, 'utf-8').trim() || undefined
-  } catch {
-    return undefined
+  const dataDir = process.env.OMPIUI_DATA_DIR?.trim()
+  if (dataDir) {
+    try {
+      return readFileSync(join(resolve(dataDir), 'auth-token'), 'utf-8').trim() || undefined
+    } catch {
+      return undefined
+    }
   }
+  // '.piui' 是 PiUI 时代的旧目录，只读兜底一次（server 启动时会把旧 token
+  // 迁移进 .ompiui，之后第一行就命中了）
+  for (const dir of ['.ompiui', '.piui']) {
+    try {
+      return readFileSync(join(homedir(), dir, 'auth-token'), 'utf-8').trim() || undefined
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  return undefined
 }
 
 // https://vite.dev/config/

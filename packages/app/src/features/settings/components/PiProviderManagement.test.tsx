@@ -8,13 +8,13 @@ const { loadPiModelsMock, refreshRuntimeMock, reloadRuntimeMock } = vi.hoisted((
   reloadRuntimeMock: vi.fn(),
 }))
 
-vi.mock('../../../pi/controllers/index.js', () => ({ loadPiModels: () => loadPiModelsMock() }))
-vi.mock('../../../pi/managementEventStore', () => ({
+vi.mock('../../../omp/controllers/index.js', () => ({ loadPiModels: () => loadPiModelsMock() }))
+vi.mock('../../../omp/managementEventStore', () => ({
   registerProviderAuthFlow: vi.fn(),
   trackManagementProviders: vi.fn(),
   useManagementEvents: () => ({ providerRevision: 0 }),
 }))
-vi.mock('../../../pi/transport/index.js', () => ({
+vi.mock('../../../omp/transport/index.js', () => ({
   inspectModelRuntime: vi.fn(async () => ({
     providers: [],
     availableModels: [],

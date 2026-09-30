@@ -11,7 +11,7 @@ import { SessionChildrenSlot } from '../chat/sidebar/SessionChildrenSlot'
 import type { UiSession } from '../../types/session'
 import { startInternalDrag } from '../../lib/internalDragCore'
 import { pinnedSessionsStore, type PinnedSessionEntry } from '../../store/pinnedSessionsStore'
-import { usePiCapabilities } from '../../pi/capabilities'
+import { usePiCapabilities } from '../../omp/capabilities'
 
 interface SessionListProps {
   sessions: UiSession[]

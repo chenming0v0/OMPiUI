@@ -180,11 +180,11 @@ describe("Git workspace API", () => {
 })
 
 function repository(): string {
-  const root = mkdtempSync(path.join(tmpdir(), "piui-git-"))
+  const root = mkdtempSync(path.join(tmpdir(), "ompiui-git-"))
   roots.push(root)
   git(root, "init", "-b", "main")
   git(root, "config", "user.name", "PiUI Test")
-  git(root, "config", "user.email", "piui@example.invalid")
+  git(root, "config", "user.email", "ompiui@example.invalid")
   writeFileSync(path.join(root, "tracked.txt"), "base\n")
   git(root, "add", "tracked.txt")
   git(root, "commit", "-m", "initial")

@@ -18,7 +18,7 @@
 
 import { memo, useMemo, useRef, useEffect, useLayoutEffect, useCallback } from 'react'
 import type { CSSProperties } from 'react'
-import type { PiTimelineItem } from '../pi/domain/index.js'
+import type { PiTimelineItem } from '../omp/domain/index.js'
 import { useChatViewport } from '../features/chat/chatViewport'
 import {
   buildOutlineSourceEntries,
@@ -590,8 +590,8 @@ const TouchFisheye = memo(function TouchFisheye({ entries, onSelect, visual, own
 
   const vibrate = useCallback(() => {
     try {
-      const bridge = (window as unknown as { __piui_android?: { vibrate?: (ms: number) => void } })
-        .__piui_android
+      const bridge = (window as unknown as { __ompiui_android?: { vibrate?: (ms: number) => void } })
+        .__ompiui_android
       if (bridge?.vibrate) {
         bridge.vibrate(8)
         return

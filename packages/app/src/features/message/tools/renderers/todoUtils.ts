@@ -1,4 +1,4 @@
-import type { PiToolExecution } from '../../../../pi/domain/index.js'
+import type { PiToolExecution } from '../../../../omp/domain/index.js'
 
 interface TodoItem {
   id: string

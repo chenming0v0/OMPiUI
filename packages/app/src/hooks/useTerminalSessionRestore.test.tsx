@@ -15,7 +15,7 @@ const { activeServerSnapshot, listHostTerminalsMock, onServerChangeMock, resolve
   uiErrorHandlerMock: vi.fn(),
 }))
 
-vi.mock('../pi/transport/index.js', () => ({
+vi.mock('../omp/transport/index.js', () => ({
   listHostTerminals: listHostTerminalsMock,
 }))
 
@@ -29,7 +29,7 @@ vi.mock('../store/serverStore', () => ({
   },
 }))
 
-vi.mock('../pi/workspaces', () => ({
+vi.mock('../omp/workspaces', () => ({
   resolveWorkspacePath: resolveWorkspacePathMock,
 }))
 

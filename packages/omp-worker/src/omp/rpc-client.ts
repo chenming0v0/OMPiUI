@@ -64,6 +64,7 @@ export class OmpRpcClient extends EventEmitter {
   private buffer = ""
   private nextId = 0
   private readonly pending = new Map<string, {
+    commandType: string
     resolve: (response: OmpRpcResponse) => void
     reject: (error: Error) => void
     timer: NodeJS.Timeout
@@ -224,6 +225,16 @@ export class OmpRpcClient extends EventEmitter {
           return
         }
       }
+      // 老版本（< 18.2.11）对未知命令的 error response 不带 id：按 command
+      // 名对上 in-flight 请求立刻 reject，而不是干等到超时（issue #5）。
+      // 带 id 但 pending 已消失的迟到帧不参与配对，避免误杀新请求。
+      if (!id && response.success === false) {
+        const pending = this.takePendingByCommand(response.command)
+        if (pending) {
+          pending.reject(new OmpRpcError(response.error ?? `omp RPC command failed: ${response.command}`, response.code))
+          return
+        }
+      }
       // 无 id 的 response（如 parse 错误）：作为帧抛出
       this.emit("frame", frame)
       return
@@ -269,6 +280,7 @@ export class OmpRpcClient extends EventEmitter {
 
   request<T extends JsonValue = JsonValue>(command: JsonObject, timeoutMs = 60_000): Promise<OmpRpcResponse & { data?: T }> {
     const id = `req_${++this.nextId}`
+    const commandType = typeof command.type === "string" ? command.type : ""
     const full: JsonObject = { id, ...command }
     return new Promise((resolve, reject) => {
       if (this.exited) {
@@ -281,6 +293,7 @@ export class OmpRpcClient extends EventEmitter {
       }, timeoutMs)
       timer.unref()
       this.pending.set(id, {
+        commandType,
         resolve: resolve as (response: OmpRpcResponse) => void,
         reject,
         timer,
@@ -330,6 +343,18 @@ export class OmpRpcClient extends EventEmitter {
     } catch {
       /* best effort */
     }
+  }
+
+  /** 按命令名取最早的 in-flight 请求（老版本无 id 错误响应的配对用） */
+  private takePendingByCommand(command: string): { reject: (error: Error) => void; timer: NodeJS.Timeout } | undefined {
+    if (!command) return undefined
+    for (const [id, pending] of this.pending) {
+      if (pending.commandType !== command) continue
+      this.pending.delete(id)
+      clearTimeout(pending.timer)
+      return pending
+    }
+    return undefined
   }
 
   private failAllPending(): void {

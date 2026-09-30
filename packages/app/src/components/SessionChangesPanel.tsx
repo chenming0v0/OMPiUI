@@ -11,8 +11,8 @@ import { RetryIcon, ChevronRightIcon, MaximizeIcon, GitBranchIcon, GitDiffIcon }
 import { getMaterialIconUrl } from '../utils/materialIcons'
 import { DiffViewer, useDiffViewerData, type ViewMode } from './DiffViewer'
 import { ViewModeSwitch } from './FullscreenViewer'
-import { getHostGitDiff, getHostGitFileDiff, getHostGitInfo } from '../pi/transport/index.js'
-import { resolveWorkspacePath } from '../pi/workspaces'
+import { getHostGitDiff, getHostGitFileDiff, getHostGitInfo } from '../omp/transport/index.js'
+import { resolveWorkspacePath } from '../omp/workspaces'
 import type { GitDiffItem, GitInfoResponse } from '@ompiui/protocol'
 
 /** List row: git.diff item, optionally enriched with the lazy git.fileDiff patch. */
@@ -386,7 +386,7 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
 
       try {
         const workspacePath = await resolveWorkspacePath(directory)
-        if (!workspacePath) throw new Error('No PiUI workspace is available')
+        if (!workspacePath) throw new Error('No OMPiUI workspace is available')
         const data = (await getHostGitDiff(workspacePath, mode, controller.signal)).files
 
         if (requestId !== diffRequestIdRef.current[mode]) return
@@ -530,9 +530,9 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
       }
       scheduleGitRefresh()
     }
-    window.addEventListener('piui:workspace-git-updated', onGitChanged)
+    window.addEventListener('ompiui:workspace-git-updated', onGitChanged)
     return () => {
-      window.removeEventListener('piui:workspace-git-updated', onGitChanged)
+      window.removeEventListener('ompiui:workspace-git-updated', onGitChanged)
       if (gitRefreshTimerRef.current) {
         clearTimeout(gitRefreshTimerRef.current)
         gitRefreshTimerRef.current = null
@@ -642,7 +642,7 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
     const listRequestId = diffRequestIdRef.current[changeMode]
     void (async () => {
       const workspacePath = await resolveWorkspacePath(directory)
-      if (!workspacePath) throw new Error('No PiUI workspace is available')
+      if (!workspacePath) throw new Error('No OMPiUI workspace is available')
       return getHostGitFileDiff(workspacePath, selectedFile, changeMode, controller.signal)
     })()
       .then(loaded => {

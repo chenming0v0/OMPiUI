@@ -14,7 +14,7 @@ export interface Command {
 
 /**
  * Pi TUI 内置斜杠命令全集（与 pi-coding-agent 的 BUILTIN_SLASH_COMMANDS 对齐）。
- * PiUI 前端本地处理这些命令（见 PiChatPane.handleCommand），所以无论会话
+ * OMPiUI 前端本地处理这些命令（见 PiChatPane.handleCommand），所以无论会话
  * registry 是否返回（打包后的 Bun exe 内联了 SDK，registry 的 commands 可能
  * 为空），斜杠菜单都必须展示它们——否则输入 / 时菜单为空。
  * 'frontend' 选中即立即执行（无参数命令）；'builtin' 走附件插入路径，方便
@@ -45,7 +45,7 @@ export function getFrontendCommands(): Command[] {
     { name: 'export', description: 'Export session (HTML default, or specify path: .html/.jsonl)', argumentHint: '<path>', source: 'builtin' },
     { name: 'import', description: 'Import and resume a session from a JSONL file', argumentHint: '<path>', source: 'builtin' },
     { name: 'scoped-models', description: 'Enable/disable models for Ctrl+P cycling', argumentHint: '<patterns>', source: 'builtin' },
-    // PiUI 扩展：one-shot bash 通过斜杠命令路径执行，不再保留 TUI 的 `!` 前缀
+    // OMPiUI 扩展：one-shot bash 通过斜杠命令路径执行，不再保留 TUI 的 `!` 前缀
     // 快捷方式，避免误触与 Markdown 图片语法冲突。
     { name: 'bash', description: 'Run a one-shot bash command', argumentHint: '<command>', source: 'builtin' },
   ]

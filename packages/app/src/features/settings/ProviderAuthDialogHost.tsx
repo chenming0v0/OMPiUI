@@ -9,13 +9,13 @@ import {
   registerProviderAuthFlow,
   useManagementEvents,
   type ProviderAuthFlowState,
-} from '../../pi/managementEventStore'
+} from '../../omp/managementEventStore'
 import type { ProviderAuthPrompt } from '@ompiui/protocol'
 import {
   cancelProviderAuth,
   listActiveProviderFlows,
   respondProviderAuth,
-} from '../../pi/transport/index.js'
+} from '../../omp/transport/index.js'
 
 export function ProviderAuthDialogHost() {
   const { flows } = useManagementEvents()

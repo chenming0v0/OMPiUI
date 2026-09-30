@@ -24,8 +24,8 @@ import type {
   PiTimelineItem,
   PiToolExecution,
   PiUserMessageItem,
-} from '../../pi/domain/index.js'
-import type { ImageContent } from '../../pi/vendor/pi-ai'
+} from '../../omp/domain/index.js'
+import type { ImageContent } from '../../omp/vendor/pi-ai'
 import { AttachmentItem } from '../attachment/index.js'
 import type { Attachment } from '../attachment/index.js'
 
@@ -637,7 +637,7 @@ const AssistantMessageView = memo(function AssistantMessageView({
 }) {
   // 渲染耗时埋点：渲染函数体内不能调用 performance.now()（React 纯度规则）。
   // 改为在 layout effect 中记录两次渲染提交之间的间隔作为耗时代理指标，
-  // 对诊断流式渲染节奏等价；仅 ?piuiPerf=1 时产生实际开销。
+  // 对诊断流式渲染节奏等价；仅 ?ompiuiPerf=1 时产生实际开销。
   const perfPrevCommitRef = useRef<number | null>(null)
   useLayoutEffect(() => {
     if (!isPerfEnabled()) return

@@ -5,7 +5,7 @@ import { AlertCircleIcon } from '../../../../components/Icons'
 import { detectLanguage } from '../../../../utils/languageUtils'
 import { getMaterialIconUrl } from '../../../../utils/materialIcons'
 import { themeStore } from '../../../../store/themeStore'
-import { useLiveToolOutput } from '../../../../pi/liveToolOutput'
+import { useLiveToolOutput } from '../../../../omp/liveToolOutput'
 import type { ToolRendererProps, ExtractedToolData } from '../types'
 import { AuthenticatedImage } from '../../../attachment'
 

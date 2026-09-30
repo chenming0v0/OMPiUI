@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
 
-const env = { ...process.env, PIUI_DRIVER: "mock" }
+const env = { ...process.env, OMPIUI_DRIVER: "mock" }
 const npmCli = process.env.npm_execpath
 
 if (!npmCli) {
@@ -10,15 +10,15 @@ if (!npmCli) {
 // CI 上 worker spawn 偶发挂起会拖死整个 validate；每个子命令设硬超时，
 // 超时 kill 并明确报出卡住的命令，避免 job 挂到 runner 上限。
 // 默认 600s：慢 runner（如 windows 或共享实例）上 vitest 偶发超过 300s，
-// 阈值翻倍后只有真挂死才会触发；仍可用 PIUI_TEST_COMMAND_TIMEOUT_MS 覆盖。
-const COMMAND_TIMEOUT_MS = Number(process.env.PIUI_TEST_COMMAND_TIMEOUT_MS) || 600_000
+// 阈值翻倍后只有真挂死才会触发；仍可用 OMPIUI_TEST_COMMAND_TIMEOUT_MS 覆盖。
+const COMMAND_TIMEOUT_MS = Number(process.env.OMPIUI_TEST_COMMAND_TIMEOUT_MS) || 600_000
 
 const commands = [
   ["run", "build", "-w", "@ompiui/protocol"],
-  ["run", "build", "-w", "@ompiui/pi-worker"],
+  ["run", "build", "-w", "@ompiui/omp-worker"],
   ["run", "build", "-w", "@ompiui/server"],
   ["run", "test", "-w", "@ompiui/protocol"],
-  ["run", "test", "-w", "@ompiui/pi-worker"],
+  ["run", "test", "-w", "@ompiui/omp-worker"],
   ["run", "test", "-w", "@ompiui/server"],
   ["run", "test:run", "-w", "@ompiui/app"],
 ]

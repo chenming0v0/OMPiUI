@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
-import { listPiChildSessions } from '../../../pi/transport/index.js'
+import { listPiChildSessions } from '../../../omp/transport/index.js'
 import { serverStore } from '../../../store/serverStore'
 import type { UiSession } from '../../../types/session'
 
 /**
  * 拉取选中会话的 OMP 子代理会话列表。仅在父会话文件路径已知时请求；
- * 会话列表刷新（piui:sessions-changed）后重取，让运行中刚落盘的子会话出现。
+ * 会话列表刷新（omompiui:sessions-changed）后重取，让运行中刚落盘的子会话出现。
  */
 export function useChildSessions(
   selectedSessionId: string | null | undefined,
@@ -53,10 +53,10 @@ export function useChildSessions(
     }
     load()
     // 会话列表刷新（子会话落盘/重命名）后重取，让刚出现的子会话及时显示
-    window.addEventListener('piui:sessions-changed', load)
+    window.addEventListener('omompiui:sessions-changed', load)
     return () => {
       cancelled = true
-      window.removeEventListener('piui:sessions-changed', load)
+      window.removeEventListener('omompiui:sessions-changed', load)
     }
   }, [parentPath])
 

@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import type { UiSession } from '../../../types/session'
 import { useInputCapabilities } from '../../../hooks/useInputCapabilities'
 import { SessionListItem } from '../../sessions'
-import { flattenSessionHierarchy } from '../../../pi/sessionHierarchy'
+import { flattenSessionHierarchy } from '../../../omp/sessionHierarchy'
 
 interface SessionChildrenSlotProps {
   parentSession: UiSession

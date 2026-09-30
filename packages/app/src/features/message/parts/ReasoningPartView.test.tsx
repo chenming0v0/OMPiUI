@@ -1,7 +1,7 @@
 import { act, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ReasoningPartView } from './ReasoningPartView'
-import type { ThinkingContent } from '../../../pi/vendor/pi-ai'
+import type { ThinkingContent } from '../../../omp/vendor/pi-ai'
 
 let mockReasoningDisplayMode: 'italic' | 'markdown' | 'capsule' = 'italic'
 

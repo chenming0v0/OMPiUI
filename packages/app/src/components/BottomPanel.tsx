@@ -3,12 +3,12 @@ import { useTranslation } from 'react-i18next'
 import { PanelContainer } from './PanelContainer'
 import { layoutStore, useLayoutStore, type PanelTab } from '../store/layoutStore'
 import { notificationStore } from '../store/notificationStore'
-import { useFocusedSessionId } from '../pi/hooks/index.js'
+import { useFocusedSessionId } from '../omp/hooks/index.js'
 import { ResizablePanel } from './ui/ResizablePanel'
 import { useChatViewport } from '../features/chat/chatViewport'
-import { createHostTerminal, listHostTerminals, removeHostTerminal, updateHostTerminal } from '../pi/transport/index.js'
+import { createHostTerminal, listHostTerminals, removeHostTerminal, updateHostTerminal } from '../omp/transport/index.js'
 import { useTerminalSessionRestore } from '../hooks/useTerminalSessionRestore'
-import { resolveWorkspacePath } from '../pi/workspaces'
+import { resolveWorkspacePath } from '../omp/workspaces'
 import { serverStorage, uiErrorHandler } from '../utils'
 import { TerminalIcon } from './Icons'
 
@@ -68,7 +68,7 @@ export const BottomPanel = memo(function BottomPanel({ directory, onNavigateSess
     try {
       const workspacePath = await resolveWorkspacePath(normalizedDirectory)
       if (!workspacePath) throw new Error('no workspace available')
-      const shell = serverStorage.get('piui-terminal-shell') || undefined
+      const shell = serverStorage.get('ompiui-terminal-shell') || undefined
       const terminal = await createHostTerminal(workspacePath, { shell })
       layoutStore.addTerminalTab({
         id: terminal.id,
@@ -90,8 +90,8 @@ export const BottomPanel = memo(function BottomPanel({ directory, onNavigateSess
 
   useEffect(() => {
     const handler = () => void handleNewTerminal()
-    window.addEventListener('piui:new-terminal', handler)
-    return () => window.removeEventListener('piui:new-terminal', handler)
+    window.addEventListener('ompiui:new-terminal', handler)
+    return () => window.removeEventListener('ompiui:new-terminal', handler)
   }, [handleNewTerminal])
 
   const handleCloseTerminal = useCallback(

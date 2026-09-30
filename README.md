@@ -2,7 +2,16 @@
 
 **OMP 的第三方 Web/桌面客户端** — PiUI 的视觉外壳 + OMP 的官方 RPC 运行时。
 
-OMPiUI 把 [oh-my-pi (OMP)](https://github.com/can1357/oh-my-pi) 的完整 agent 能力（60+ provider、31 个内置工具、子代理系统、MCP/LSP、扩展）装进一个浏览器可用的图形界面。UI 资产来自 [PiUI](https://github.com/)（Pi 原生 coding agent 的 Web/桌面客户端），agent 执行完全由 OMP 承担。
+OMPiUI 把 [oh-my-pi (OMP)](https://github.com/can1357/oh-my-pi) 的完整 agent 能力（60+ provider、31 个内置工具、子代理系统、MCP/LSP、扩展）装进一个浏览器可用的图形界面。界面资产来自 [lehhair](https://github.com/lehhair) 的开源客户端，agent 执行完全由 OMP 承担。
+
+## 致谢
+
+UI 来自 [lehhair](https://github.com/lehhair) 的这两个项目，非常感谢 lehhair 的开发：
+
+- [PiUI](https://github.com/lehhair/PiUI) — Web/桌面视觉外壳：会话列表、聊天流、markdown/代码高亮、设置中心等
+- [OpenCodeUI](https://github.com/lehhair/OpenCodeUI) — 子代理等界面设计，例如 SubSessionView
+
+OMPiUI 不是这两个项目的官方客户端。
 
 ```
 ┌──────────────┐  HTTP+WS   ┌──────────────┐  spawn    ┌─────────────────┐
@@ -36,19 +45,19 @@ OMPiUI 把 [oh-my-pi (OMP)](https://github.com/can1357/oh-my-pi) 的完整 agent
 
 ## 运行
 
-要求：Node ≥ 22.19、npm、[OMP CLI](https://omp.sh)（`bun install -g @oh-my-pi/pi-coding-agent`）。
+要求：Node ≥ 22.19、npm、[OMP CLI](https://omp.sh) **≥ 18.2.11**（`bun install -g @oh-my-pi/pi-coding-agent`）。更老的 omp 缺少 `get_entries` 等 RPC 命令，打开会话时会直接报错提示升级。
 
 ```bash
 npm install
 npm run build          # protocol → omp-worker → server → app
-npm run dev:server:omp # PIUI_DRIVER=omp 启动 server（tsx watch）
+npm run dev:server:omp # OMPIUI_DRIVER=omp 启动 server（tsx watch）
 npm run dev:app        # Vite 前端（HMR）
 ```
 
 生产模式（单进程托管静态文件）：
 
 ```bash
-PIUI_DRIVER=omp node --import tsx packages/server/src/bundle-entry.ts web --host 127.0.0.1 --port 8787
+OMPIUI_DRIVER=omp node --import tsx packages/server/src/bundle-entry.ts web --host 127.0.0.1 --port 8787
 # 浏览器打开控制台打印的 http://127.0.0.1:8787/?token=...
 ```
 
@@ -69,25 +78,7 @@ launch:
 
 PiUI 原本在 worker 进程内直接 import Pi SDK（`@earendil-works/pi-*`，锁 0.84.2）。OMP 18.x 的进程内 API 已与 Pi 大幅分化且要求 Bun 运行时；而 `omp --mode rpc` 是 OMP 官方文档钦定的跨进程嵌入面（稳定 JSONL 协议、协议版本协商、>1MiB 分帧、子代理/扩展 UI/host-tool 子协议全都在 RPC 面上）。基于 RPC 的包装让 OMPiUI 的 server 保持纯 Node、不受 OMP 内部重构影响，也正是"把 OMP 包装成 SDK"的那一层。
 
-app 侧对该 SDK 只有过 type-only 引用；这些类型已按 SDK 0.84.2 的声明结构内联到 `packages/app/src/pi/vendor/*`，依赖随之从 app 的 package.json 移除，桌面打包不再需要安装 Pi SDK。
-
-## 分支和版本
-
-跟 [PiUI](https://github.com/lehhair/PiUI) 一样：`dev` 收功能 PR，`main` 只收来自 `dev` 的合并，打 `v*` tag 才发布。
-
-- 功能分支开 PR 到 `dev`。`dev` 也允许维护者直接推送。
-- `main` 禁止直接推送。PR 的来源必须是本仓库的 `dev`，由 Actions 检查 `main-source` 卡住其他来源。
-- 版本号从 **0.1.0** 起，根包和 workspace（`app` / `server` / `omp-worker` / `protocol`）以及 Tauri 使用同一个号。`packages/app/CHANGELOG.md` 是上游 PiUI 历史，不参与发版。
-- 升版本：`npm run release:prepare -- 0.1.1`（或 `npm run release:bump -- 0.1.1`）。提交推到 `dev`，PR 合并进 `main` 之后再打 tag：
-
-```bash
-git fetch origin main
-git tag v0.1.1 origin/main
-git push origin v0.1.1
-```
-
-tag 推上去会跑 Desktop And Mobile Release，把 portable、桌面安装包和 Android APK 传到 [Releases](https://github.com/chenming0v0/OMPiUI/releases)。Android 签名需要仓库 secrets：`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`。应用内检查更新读的是这个仓库的 `releases/latest`，不是 PiUI。
-
+app 侧对该 SDK 只有过 type-only 引用；这些类型已按 SDK 0.84.2 的声明结构内联到 `packages/app/src/omp/vendor/*`，依赖随之从 app 的 package.json 移除，桌面打包不再需要安装 Pi SDK。
 
 ## License
 

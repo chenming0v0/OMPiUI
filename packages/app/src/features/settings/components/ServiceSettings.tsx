@@ -12,14 +12,14 @@ import {
   stopDesktopService,
   type DesktopServiceStatus,
 } from '../../../services/desktopService'
-import { listHostShells } from '../../../pi/transport/index.js'
+import { listHostShells } from '../../../omp/transport/index.js'
 import { serverStorage } from '../../../utils'
 import { useServerStore } from '../../../hooks'
 import { settingsFieldClass, SettingField, SettingRow, SettingsSection, SettingsSelect, Toggle } from './SettingsUI'
 
-const TERMINAL_SHELL_STORAGE_KEY = 'piui-terminal-shell'
-const LISTEN_HOST_KEY = 'PIUI_HOST'
-const LISTEN_PORT_KEY = 'PIUI_PORT'
+const TERMINAL_SHELL_STORAGE_KEY = 'ompiui-terminal-shell'
+const LISTEN_HOST_KEY = 'OMPIUI_HOST'
+const LISTEN_PORT_KEY = 'OMPIUI_PORT'
 
 export function ServiceSettings() {
   const { t } = useTranslation(['settings', 'common'])

@@ -11,7 +11,7 @@ export interface SchedulerCommand {
  *
  * pi 原生 RPC 不排队：每条命令到达即执行，并发约束由 SDK 自己负责——
  * - 流式中 prompt 不带 streamingBehavior → SDK 抛错（客户端用 steer/followUp）
- * - steer/followUp 空闲时 → 消息进队列等下一次 prompt（PiUI 另有 idle 校验）
+ * - steer/followUp 空闲时 → 消息进队列等下一次 prompt（OMPiUI 另有 idle 校验）
  * - navigateTree 流式中 → SDK 抛 "Wait for the current response to finish..."
  * - compact 会先 abort 当前回合再压缩
  * - bash 流式中执行 → 结果进 pending 队列，agent_end 时冲刷

@@ -2,9 +2,9 @@ import { memo, useCallback, useMemo, useState, useSyncExternalStore } from 'reac
 import { useTranslation } from 'react-i18next'
 import { AgentIcon, ChevronDownIcon, CloseIcon, StopIcon } from '../../../components/Icons'
 import { useSessionNavigation } from '../../../contexts/SessionNavigationContext'
-import { abortPiOperation, openSubagentSession } from '../../../pi/controllers/index.js'
-import { ompSubagentStore, selectHudRuns, type OmpSubagentRun } from '../../../pi/ompSubagentStore'
-import { formatCompactDuration, formatCompactTokens } from '../../../pi/ompSubagentFormat'
+import { abortPiOperation, openSubagentSession } from '../../../omp/controllers/index.js'
+import { ompSubagentStore, selectHudRuns, type OmpSubagentRun } from '../../../omp/ompSubagentStore'
+import { formatCompactDuration, formatCompactTokens } from '../../../omp/ompSubagentFormat'
 import { activeSessionStore } from '../../../store/activeSessionStore'
 
 // ============================================
@@ -18,7 +18,7 @@ import { activeSessionStore } from '../../../store/activeSessionStore'
 // - 终态条目可单条清除或一键清空；清除记录持久化到 localStorage
 // ============================================
 
-const COLLAPSED_STORAGE_KEY = 'piui-subagent-hud-collapsed'
+const COLLAPSED_STORAGE_KEY = 'ompiui-subagent-hud-collapsed'
 
 interface SubagentHudProps {
   selectedSessionId: string | null

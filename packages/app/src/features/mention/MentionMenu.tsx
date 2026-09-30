@@ -14,7 +14,7 @@ import {
   useMemo,
 } from 'react'
 import { useTranslation } from 'react-i18next'
-import { searchFiles, listDirectory } from '../../pi/files'
+import { searchFiles, listDirectory } from '../../omp/files'
 import { fileErrorHandler } from '../../utils'
 import { scrollItemIntoView } from '../../utils/scrollUtils'
 import type { MentionType, MentionItem } from './types'

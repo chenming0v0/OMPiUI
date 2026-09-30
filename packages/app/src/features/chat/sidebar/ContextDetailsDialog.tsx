@@ -3,9 +3,9 @@ import { useTranslation } from 'react-i18next'
 import { Dialog } from '../../../components/ui'
 import { CodeBlock } from '../../../components/CodeBlock'
 import { ChevronDownIcon, ChevronUpIcon, CpuIcon, DollarSignIcon } from '../../../components/Icons'
-import type { AssistantMessage } from '../../../pi/vendor/pi-ai'
-import type { SessionEntry } from '../../../pi/domain'
-import { useFocusedSessionId, usePiBranchData } from '../../../pi/hooks/index.js'
+import type { AssistantMessage } from '../../../omp/vendor/pi-ai'
+import type { SessionEntry } from '../../../omp/domain'
+import { useFocusedSessionId, usePiBranchData } from '../../../omp/hooks/index.js'
 import { useSessionStats, formatTokens, formatCost } from '../../../hooks'
 
 interface ContextDetailsDialogProps {

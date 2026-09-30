@@ -1,6 +1,6 @@
 import { activeSessionStore } from '../store/activeSessionStore'
-import { piBranchStore, piSessionStateStore } from '../pi/state/index.js'
-import { piEventStream } from '../pi/eventStream'
+import { piBranchStore, piSessionStateStore } from '../omp/state/index.js'
+import { piEventStream } from '../omp/eventStream'
 
 export function clearSessionRuntimeState(sessionId: string) {
   piEventStream.disconnect(sessionId)

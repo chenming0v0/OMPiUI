@@ -1,6 +1,6 @@
 {
   "name": "ompiui",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "OMPiUI — third-party web/desktop client for the OMP (oh-my-pi) coding agent. PiUI visual shell + OMP RPC runtime.",
@@ -13,12 +13,12 @@
     "clean": "node scripts/clean.mjs",
     "dev": "node scripts/dev.mjs",
     "dev:server": "npm run dev -w @ompiui/server",
-    "dev:server:pi": "node scripts/dev-server-pi.mjs",
+    "dev:server:pi": "node scripts/dev-server-omp.mjs",
     "dev:host": "npm run dev -w @ompiui/server",
     "dev:app": "npm run dev -w @ompiui/app",
-    "build": "npm run build -w @ompiui/protocol && npm run build -w @ompiui/pi-worker && npm run build -w @ompiui/server && npm run build -w @ompiui/app",
+    "build": "npm run build -w @ompiui/protocol && npm run build -w @ompiui/omp-worker && npm run build -w @ompiui/server && npm run build -w @ompiui/app",
     "test": "node scripts/test-mock.mjs",
-    "typecheck": "npm run build -w @ompiui/protocol && npm run build -w @ompiui/pi-worker && npm run typecheck -w @ompiui/server && npm run typecheck -w @ompiui/app",
+    "typecheck": "npm run build -w @ompiui/protocol && npm run build -w @ompiui/omp-worker && npm run typecheck -w @ompiui/server && npm run typecheck -w @ompiui/app",
     "lint": "npm run lint -w @ompiui/app",
     "format": "npm run format -w @ompiui/app",
     "format:check": "npm run format:check -w @ompiui/app",
@@ -39,8 +39,8 @@
     "tauri:ios:build": "npm run tauri:ios:build -w @ompiui/app",
     "release:prepare": "npm run release:prepare -w @ompiui/app",
     "release:bump": "node packages/app/scripts/bump-version.mjs",
-    "dev:server:omp": "node scripts/dev-server-pi.mjs",
-    "worker": "npm run pi-worker -w @ompiui/server --"
+    "dev:server:omp": "node scripts/dev-server-omp.mjs",
+    "worker": "npm run omp-worker -w @ompiui/server --"
   },
   "engines": {
     "node": ">=22.19.0"

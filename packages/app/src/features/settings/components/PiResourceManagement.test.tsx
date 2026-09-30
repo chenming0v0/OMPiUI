@@ -15,26 +15,26 @@ const { registryMock, skillsMock, promptsMock, agentsFilesMock, reloadMock } = v
   reloadMock: vi.fn(),
 }))
 
-vi.mock('../../../pi/controllers/index.js', () => ({
+vi.mock('../../../omp/controllers/index.js', () => ({
   loadPiSessionRegistry: () => registryMock(),
   reloadPiSessionResources: (...args: unknown[]) => reloadMock(...args),
 }))
 
-vi.mock('../../../pi/transport/index.js', () => ({
+vi.mock('../../../omp/transport/index.js', () => ({
   getPiSkills: () => skillsMock(),
   getPiPrompts: () => promptsMock(),
   getPiAgentsFiles: () => agentsFilesMock(),
 }))
 
 const emptyExtensionUi = { sessions: {} }
-vi.mock('../../../pi/extensionUiStore', () => ({
+vi.mock('../../../omp/extensionUiStore', () => ({
   extensionUiStore: {
     subscribe: () => () => {},
     getSnapshot: () => emptyExtensionUi,
   },
 }))
 
-vi.mock('../../../pi/managementEventStore', () => ({
+vi.mock('../../../omp/managementEventStore', () => ({
   useManagementEvents: () => ({ resourceRevisions: {} }),
 }))
 

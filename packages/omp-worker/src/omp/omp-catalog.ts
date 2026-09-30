@@ -1,3 +1,4 @@
+import { spawn, spawnSync } from "node:child_process"
 import { existsSync, promises as fs, readFileSync, readdirSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
@@ -8,6 +9,7 @@ import type { CatalogProvider } from "../runtime.js"
 import type { PackagesGateway } from "../command-table.js"
 import { entriesPageFromEntries, sessionHeadFromParts } from "../runtime/pagination.js"
 import { OmpRpcClient, unwrapResponse } from "./rpc-client.js"
+import { detectOmpVersion } from "./omp-version.js"
 import { OMP_SDK_VERSION } from "./constants.js"
 
 /**
@@ -235,10 +237,10 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     const target = resolveUserPath(sessionFile)
     const summary = await summarizeSessionFile(target)
     if (!summary) throw Object.assign(new Error("session file not found"), { code: "SESSION_NOT_FOUND" })
-    return this.previewSummary(summary, params)
+    return this.previewSummary(summary, params, await detectOmpVersion() ?? OMP_SDK_VERSION)
   }
 
-  private previewSummary(summary: SessionFileSummary, params: { cursor?: string; limit?: number; maxBytes?: number }): JsonValue {
+  private previewSummary(summary: SessionFileSummary, params: { cursor?: string; limit?: number; maxBytes?: number }, sdkVersion: string = OMP_SDK_VERSION): JsonValue {
     // 读取文件并解析条目（磁盘预览不走 RPC 进程）
     const entries: JsonObject[] = []
     const raw = existsSync(summary.path) ? readLinesSync(summary.path) : []
@@ -257,7 +259,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     const branch = activeBranchFromEntries(entries)
     const header: JsonObject = { version: 3, id: summary.id, cwd: summary.cwd, name: summary.name }
     const head = sessionHeadFromParts({
-      sdkVersion: OMP_SDK_VERSION,
+      sdkVersion,
       revision: 0,
       sessionFormatVersion: 3,
       header,
@@ -306,7 +308,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
   async previewSessionById(sessionId: string, params: { cursor?: string; limit?: number; maxBytes?: number } = {}): Promise<JsonValue> {
     const summaries = await this.summarizeAll()
     const match = summaries.find(item => item.id === sessionId)
-    if (match) return this.previewSummary(match, params)
+    if (match) return this.previewSummary(match, params, await detectOmpVersion() ?? OMP_SDK_VERSION)
     // 顶层扫描没有（OMP 子代理会话嵌套在 <父会话名>/ 目录里）→ 深度查找兜底，
     // 让子会话在重载/深链后也能按 id 预览
     const found = await this.findSessionById(sessionId)
@@ -422,6 +424,81 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     return this.getSettings(cwd)
   }
 
+  private ompBinCache: string | undefined
+
+  /**
+   * 解析 omp 可执行文件的绝对路径。win32 上 spawn 不走 shell 时解析不到
+   * PATH 里的 .cmd/.exe，需要 where.exe 先定位；解析不到回落 "omp"（带 shell）。
+   */
+  private async resolveOmpBin(): Promise<string> {
+    if (this.ompBinCache !== undefined) return this.ompBinCache
+    try {
+      const probe = process.platform === "win32"
+        ? spawnSync("where.exe", ["omp"], { encoding: "utf8" })
+        : spawnSync("which", ["omp"], { encoding: "utf8" })
+      const lines = probe.status === 0 ? probe.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean) : []
+      // 优先 .exe（可脱离 shell 直接拉起），.cmd/.bat 兜底
+      this.ompBinCache = lines.find(line => /\.exe$/i.test(line)) ?? lines[0] ?? "omp"
+    } catch {
+      this.ompBinCache = "omp"
+    }
+    return this.ompBinCache
+  }
+
+  /**
+   * 跑 `omp config ...` 子命令读写全局配置（RPC 协议没有 config 面，
+   * OMP CLI 走 Settings registry，写 ~/.omp/agent/config.yml；
+   * 运行中的 `omp --mode rpc` 进程监听该文件并在 ~200ms 内重载）。
+   */
+  private async runOmpConfigCli(cliArgs: string[], timeoutMs = 60_000): Promise<string> {
+    const bin = await this.resolveOmpBin()
+    const useShell = process.platform === "win32" && bin === "omp"
+    return await new Promise<string>((resolve, reject) => {
+      const child = spawn(bin, cliArgs, {
+        stdio: ["ignore", "pipe", "pipe"],
+        ...(useShell ? { shell: true } : {}),
+      })
+      let stdout = ""
+      let stderr = ""
+      const timer = setTimeout(() => {
+        child.kill()
+        reject(new Error(`omp config timed out after ${timeoutMs}ms`))
+      }, timeoutMs)
+      child.stdout?.setEncoding("utf8")
+      child.stderr?.setEncoding("utf8")
+      child.stdout?.on("data", chunk => { stdout += chunk })
+      child.stderr?.on("data", chunk => { stderr += chunk })
+      child.on("error", error => {
+        clearTimeout(timer)
+        reject(error)
+      })
+      child.on("exit", code => {
+        clearTimeout(timer)
+        if (code === 0) resolve(stdout)
+        else reject(new Error(`omp config exited with ${code}: ${stderr.trim().slice(0, 400) || "no stderr"}`))
+      })
+    })
+  }
+
+  async getModelRoles(): Promise<JsonValue> {
+    const stdout = await this.runOmpConfigCli(["config", "get", "modelRoles", "--json"])
+    try {
+      const parsed = JSON.parse(stdout) as { value?: JsonValue }
+      return isJsonObject(parsed.value) ? parsed.value : {}
+    } catch {
+      throw new Error("omp config get modelRoles returned invalid JSON")
+    }
+  }
+
+  async setModelRoles(roles: JsonObject): Promise<JsonValue> {
+    const record: Record<string, string> = {}
+    for (const [role, value] of Object.entries(roles)) {
+      if (typeof value === "string" && value.trim()) record[role] = value.trim()
+    }
+    await this.runOmpConfigCli(["config", "set", "modelRoles", JSON.stringify(record)])
+    return record
+  }
+
   getProjectTrust(cwd: string): JsonValue {
     return { workspacePath: cwd, required: false, decision: null, defaultDecision: "always", trusted: true }
   }
@@ -439,11 +516,11 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
   }
 
   async resolve(): Promise<JsonValue> {
-    return { resolved: [], missing: [] }
+    return { extensions: [], skills: [], prompts: [], themes: [] }
   }
 
   async resolveSources(): Promise<JsonValue> {
-    return { resolved: [], missing: [] }
+    return { extensions: [], skills: [], prompts: [], themes: [] }
   }
 
   async changeSource(): Promise<JsonValue> {
@@ -455,7 +532,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
   }
 
   async checkUpdates(): Promise<JsonValue> {
-    return { updates: [] }
+    return []
   }
 
   async dispose(): Promise<void> {

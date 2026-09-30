@@ -3,13 +3,13 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { InputBox } from './InputBox'
 import type { Command } from '../slash-command'
-import type { PiBranchPage } from '../../pi/domain'
+import type { PiBranchPage } from '../../omp/domain'
 
 let slashCommands: Command[] = []
 let historyTexts: string[] = []
 const completionsMock = vi.fn()
 
-vi.mock('../../pi/transport/index.js', () => ({
+vi.mock('../../omp/transport/index.js', () => ({
   getPiCommandCompletions: (...args: unknown[]) => completionsMock(...args),
 }))
 
@@ -106,7 +106,7 @@ vi.mock('../../hooks', () => ({
   usePresence: (show: boolean) => ({ shouldRender: show, ref: { current: null } }),
 }))
 
-vi.mock('../../pi/hooks/index.js', () => ({
+vi.mock('../../omp/hooks/index.js', () => ({
   useFocusedSessionId: () => 'session-1',
   usePiBranchData: () => historyBranch(),
 }))

@@ -141,7 +141,7 @@ async function writeFileContentLocked(
   await mkdir(parent, { recursive: true })
   const parentRelative = path.posix.dirname(resolved.relative)
   resolveWorkspacePath(ws.canonicalRoot, parentRelative === "." ? "" : parentRelative)
-  const temporary = path.join(parent, `.${path.basename(resolved.absolute)}.piui-${randomUUID()}.tmp`)
+  const temporary = path.join(parent, `.${path.basename(resolved.absolute)}.ompiui-${randomUUID()}.tmp`)
   try {
     await writeFile(temporary, buffer, { flag: "wx", mode: existingMode })
     const latest = resolveWorkspacePath(ws.canonicalRoot, relativePath)
@@ -231,7 +231,7 @@ async function moveWorkspaceEntryLocked(
   const sourceLexicalPath = lexicalPath(ws, source.relative)
   if (process.platform === "win32" && sourceLexicalPath.toLowerCase() === targetPath.toLowerCase() &&
     sourceLexicalPath !== targetPath) {
-    const intermediate = `${sourceLexicalPath}.piui-case-${randomUUID()}`
+    const intermediate = `${sourceLexicalPath}.ompiui-case-${randomUUID()}`
     await rename(sourceLexicalPath, intermediate)
     try {
       await rename(intermediate, targetPath)
@@ -245,7 +245,7 @@ async function moveWorkspaceEntryLocked(
   let backupPath: string | undefined
   if (target.exists) {
     if (!overwrite) throw conflict("target already exists")
-    backupPath = `${targetPath}.piui-backup-${randomUUID()}`
+    backupPath = `${targetPath}.ompiui-backup-${randomUUID()}`
     await rename(targetPath, backupPath)
   }
   await mkdir(path.dirname(targetPath), { recursive: true })

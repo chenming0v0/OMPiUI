@@ -1,7 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { FolderIcon, ArrowUpIcon, SpinnerIcon, PlusIcon } from '../../components/Icons'
-import { listDirectory, toAbsoluteEntryPath } from '../../pi/files'
+import { listDirectory, toAbsoluteEntryPath } from '../../omp/files'
 import { fileErrorHandler } from '../../utils'
 import { scrollItemIntoView } from '../../utils/scrollUtils'
 import { Dialog } from '../../components/ui/Dialog'

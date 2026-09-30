@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, VecDeque},
     env, fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Child,
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
@@ -188,15 +188,15 @@ impl ServiceConfig {
 }
 
 fn read_token(env_vars: &BTreeMap<String, String>) -> Result<String, String> {
-    if let Some(token) = env_vars.get("PIUI_AUTH_TOKEN") {
+    if let Some(token) = env_vars.get("OMPIUI_AUTH_TOKEN") {
         let token = token.trim();
         return if token.is_empty() {
-            Err("PIUI_AUTH_TOKEN is empty".to_string())
+            Err("OMPIUI_AUTH_TOKEN is empty".to_string())
         } else {
             Ok(token.to_string())
         };
     }
-    if let Ok(token) = env::var("PIUI_AUTH_TOKEN") {
+    if let Ok(token) = env::var("OMPIUI_AUTH_TOKEN") {
         let token = token.trim();
         if !token.is_empty() {
             return Ok(token.to_string());
@@ -208,27 +208,41 @@ fn read_token(env_vars: &BTreeMap<String, String>) -> Result<String, String> {
         env::var_os("HOME").map(PathBuf::from)
     }
     .ok_or_else(|| "home directory is unavailable".to_string())?;
-    let data_dir = env_vars
-        .get("PIUI_DATA_DIR")
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("PIUI_DATA_DIR").map(PathBuf::from))
-        .unwrap_or_else(|| home.join(".piui"));
+    let (data_dir, explicit_data_dir) = env_vars
+        .get("OMPIUI_DATA_DIR")
+        .map(|value| (PathBuf::from(value), true))
+        .or_else(|| env::var_os("OMPIUI_DATA_DIR").map(|value| (PathBuf::from(value), true)))
+        .unwrap_or_else(|| (home.join(".ompiui"), false));
     let path = data_dir.join("auth-token");
-    fs::read_to_string(&path)
-        .map(|token| token.trim().to_string())
-        .map_err(|error| {
-            format!(
-                "failed to read PiUI auth token at {}: {error}",
-                path.display()
-            )
-        })
-        .and_then(|token| {
-            if token.is_empty() {
-                Err(format!("PiUI auth token at {} is empty", path.display()))
+    let read_token_at = |path: &Path| {
+        fs::read_to_string(path)
+            .map(|token| token.trim().to_string())
+            .map_err(|error| {
+                format!(
+                    "failed to read OMPiUI auth token at {}: {error}",
+                    path.display()
+                )
+            })
+            .and_then(|token| {
+                if token.is_empty() {
+                    Err(format!("OMPiUI auth token at {} is empty", path.display()))
+                } else {
+                    Ok(token)
+                }
+            })
+    };
+    match read_token_at(&path) {
+        Ok(token) => Ok(token),
+        Err(error) => {
+            // PiUI 时代的默认目录（~/.piui）：只读兜底一次，绝不写入——
+            // server 首次启动会把旧 token 迁移进 ~/.ompiui，之后读不到这里。
+            if explicit_data_dir {
+                Err(error)
             } else {
-                Ok(token)
+                read_token_at(&home.join(".piui").join("auth-token"))
             }
-        })
+        }
+    }
 }
 
 fn recent_output(state: &ServiceState) -> String {
@@ -317,11 +331,11 @@ async fn stop_own_child_only(state: &ServiceState) {
 
 fn configured_service_url(env_vars: &BTreeMap<String, String>) -> String {
     let port = env_vars
-        .get("PIUI_PORT")
+        .get("OMPIUI_PORT")
         .and_then(|value| value.parse::<u16>().ok())
         .unwrap_or(8787);
     let host = env_vars
-        .get("PIUI_HOST")
+        .get("OMPIUI_HOST")
         .map(String::as_str)
         .filter(|value| !value.is_empty() && *value != "0.0.0.0" && *value != "::")
         .unwrap_or("127.0.0.1");
@@ -339,7 +353,7 @@ async fn prepare_server_async(app: &AppHandle) -> Result<process::PreparedServer
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || prepare_server(&app))
         .await
-        .map_err(|error| format!("failed to prepare PiUI runtime: {error}"))?
+        .map_err(|error| format!("failed to prepare OMPiUI runtime: {error}"))?
 }
 
 /// 残留服务收养的宽限探测：进程可能刚从上次启动冷启动（SDK worker 孵化
@@ -397,13 +411,13 @@ async fn adopt_persisted_service(
         HealthFailure::Unreachable => {
             if state.is_starting.load(Ordering::SeqCst) {
                 log::info!(
-                    "retained PiUI service process {} at {} is still starting; leaving it alone",
+                    "retained OMPiUI service process {} at {} is still starting; leaving it alone",
                     marker.pid, marker.url
                 );
                 return Ok(false);
             }
             log::warn!(
-                "killing retained PiUI service process {} at {}: health stayed unreachable",
+                "killing retained OMPiUI service process {} at {}: health stayed unreachable",
                 marker.pid, marker.url
             );
             // 优雅优先：先请求 HTTP 关闭，等进程退出，超时才强杀。
@@ -423,7 +437,7 @@ async fn adopt_persisted_service(
             Ok(false)
         }
         HealthFailure::Rejected(reason) => Err(format!(
-            "A retained PiUI service at {} rejected its health check ({reason}); check its token and environment before starting another service",
+            "A retained OMPiUI service at {} rejected its health check ({reason}); check its token and environment before starting another service",
             marker.url
         )),
     }
@@ -483,11 +497,11 @@ async fn try_reuse_existing_service(
             if is_service_running(&url, config.initial_token.as_deref()).await {
                 // 子进程活着但端口被别的进程服务（极端抢占）：只杀自己的
                 // 子进程，绝不往别人的 URL 发关闭。
-                log::warn!("PiUI service child {pid} is alive but {url} is served by another process; dropping ownership and killing only our child");
+                log::warn!("OMPiUI service child {pid} is alive but {url} is served by another process; dropping ownership and killing only our child");
                 stop_own_child_only(state).await;
             } else {
-                log::warn!("killing hung PiUI service process {pid} at {url}: health unreachable");
-                stop_piui_service_process(app, state).await;
+                log::warn!("killing hung OMPiUI service process {pid} at {url}: health unreachable");
+                stop_ompiui_service_process(app, state).await;
             }
         } else {
             marker::clear(app);
@@ -513,7 +527,7 @@ async fn try_reuse_existing_service(
 }
 
 #[tauri::command]
-pub async fn start_piui_service(
+pub async fn start_ompiui_service(
     app: AppHandle,
     state: State<'_, ServiceState>,
     env_vars: BTreeMap<String, String>,
@@ -573,9 +587,9 @@ async fn start_service_after_prepare(
         .lock()
         .map_err(|error| error.to_string())? = config.initial_token.clone();
     if let Err(error) = marker::persist(app, pid, &config.url) {
-        stop_piui_service_process(app, state).await;
+        stop_ompiui_service_process(app, state).await;
         state.is_starting.store(false, Ordering::SeqCst);
-        return Err(format!("failed to persist PiUI service ownership: {error}"));
+        return Err(format!("failed to persist OMPiUI service ownership: {error}"));
     }
 
     // 状态已经写入，可以释放锁让其他命令并行执行。
@@ -594,7 +608,7 @@ async fn start_service_after_prepare(
         };
         if let Some(status) = exited {
             error_message = Some(format!(
-                "PiUI server exited during startup with status {status}.{}",
+                "OMPiUI server exited during startup with status {status}.{}",
                 recent_output(state)
             ));
             break;
@@ -617,7 +631,7 @@ async fn start_service_after_prepare(
                 // 端口健康但进程不是我们的：外部/手动启动的 server 占着端口。
                 // 绝不认领——认领意味着退出时会按 URL 把它误杀。
                 error_message = Some(format!(
-                    "Port for the PiUI service is already served by another process (pid {:?}); not claiming it. Start the app after stopping that service, or change the port.",
+                    "Port for the OMPiUI service is already served by another process (pid {:?}); not claiming it. Start the app after stopping that service, or change the port.",
                     health.process_id
                 ));
                 break;
@@ -632,16 +646,16 @@ async fn start_service_after_prepare(
     // 启动失败：重新持锁做最终清理。
     let _lifecycle = state.lifecycle.lock().await;
     state.is_starting.store(false, Ordering::SeqCst);
-    stop_piui_service_process(app, state).await;
+    stop_ompiui_service_process(app, state).await;
     Err(error_message.unwrap_or_else(|| format!(
-        "PiUI server started but health check did not pass.{}",
+        "OMPiUI server started but health check did not pass.{}",
         recent_output(state)
     )))
 }
 
 /// 优雅停止托管的服务进程：先请求 HTTP 优雅关闭并等进程退出，
 /// 超时（进程仍活着）才退回 taskkill /F 强杀兜底。
-async fn stop_piui_service_process(app: &AppHandle, state: &ServiceState) {
+async fn stop_ompiui_service_process(app: &AppHandle, state: &ServiceState) {
     let pid = state.child_pid.swap(0, Ordering::SeqCst);
     state.started_by_us.store(false, Ordering::SeqCst);
     marker::clear(app);
@@ -684,7 +698,7 @@ async fn stop_piui_service_process(app: &AppHandle, state: &ServiceState) {
         }
         // 3. 兜底：优雅关闭失败/超时才强杀进程树（只杀我们自己的 pid）
         if is_process_alive(pid) {
-            log::warn!("graceful shutdown of PiUI service {pid} did not complete; force killing");
+            log::warn!("graceful shutdown of OMPiUI service {pid} did not complete; force killing");
             kill_process_tree(pid);
         }
     }
@@ -719,7 +733,7 @@ fn clear_service_ownership(state: &ServiceState) {
 }
 
 #[tauri::command]
-pub async fn stop_piui_service(
+pub async fn stop_ompiui_service(
     app: AppHandle,
     state: State<'_, ServiceState>,
 ) -> Result<(), String> {
@@ -731,13 +745,13 @@ pub async fn stop_piui_service(
             lifecycle = Some(state.lifecycle.lock().await);
             continue;
         }
-        stop_piui_service_process(&app, &state).await;
+        stop_ompiui_service_process(&app, &state).await;
         return Ok(());
     }
 }
 
 #[tauri::command]
-pub async fn restart_piui_service(
+pub async fn restart_ompiui_service(
     app: AppHandle,
     state: State<'_, ServiceState>,
     env_vars: BTreeMap<String, String>,
@@ -753,7 +767,7 @@ pub async fn restart_piui_service(
             lifecycle = Some(state.lifecycle.lock().await);
             continue;
         }
-        stop_piui_service_process(&app, &state).await;
+        stop_ompiui_service_process(&app, &state).await;
         match try_reuse_existing_service(&app, &state, &config).await? {
             ReuseOutcome::Ready(result) => return Ok(result),
             ReuseOutcome::NeedSpawn => {
@@ -773,7 +787,7 @@ pub async fn restart_piui_service(
 }
 
 #[tauri::command]
-pub async fn get_piui_service_status(
+pub async fn get_ompiui_service_status(
     app: AppHandle,
     state: State<'_, ServiceState>,
     env_vars: BTreeMap<String, String>,
@@ -837,7 +851,7 @@ pub async fn confirm_close_app(
                 lifecycle = Some(state.lifecycle.lock().await);
                 continue;
             }
-            stop_piui_service_process(window.app_handle(), &state).await;
+            stop_ompiui_service_process(window.app_handle(), &state).await;
             break;
         }
     }
@@ -852,9 +866,9 @@ mod tests {
     #[test]
     fn service_config_uses_connectable_url_and_explicit_token() {
         let config = ServiceConfig::new(BTreeMap::from([
-            ("PIUI_HOST".to_string(), "0.0.0.0".to_string()),
-            ("PIUI_PORT".to_string(), "9123".to_string()),
-            ("PIUI_AUTH_TOKEN".to_string(), "test-token".to_string()),
+            ("OMPIUI_HOST".to_string(), "0.0.0.0".to_string()),
+            ("OMPIUI_PORT".to_string(), "9123".to_string()),
+            ("OMPIUI_AUTH_TOKEN".to_string(), "test-token".to_string()),
         ]));
 
         assert_eq!(config.url, "http://127.0.0.1:9123");
@@ -866,25 +880,25 @@ mod tests {
         let environment = service_environment(
             None,
             &BTreeMap::from([
-                ("PIUI_PORT".to_string(), "9000".to_string()),
-                ("PIUI_USE_SYSTEM_PI".to_string(), "1".to_string()),
+                ("OMPIUI_PORT".to_string(), "9000".to_string()),
+                ("OMPIUI_USE_SYSTEM_PI".to_string(), "1".to_string()),
             ]),
         );
 
         assert_eq!(
-            environment.get("PIUI_HOST").map(String::as_str),
+            environment.get("OMPIUI_HOST").map(String::as_str),
             Some("127.0.0.1")
         );
         assert_eq!(
-            environment.get("PIUI_PORT").map(String::as_str),
+            environment.get("OMPIUI_PORT").map(String::as_str),
             Some("9000")
         );
         assert_eq!(
-            environment.get("PIUI_DRIVER").map(String::as_str),
+            environment.get("OMPIUI_DRIVER").map(String::as_str),
             Some("pi")
         );
         assert_eq!(
-            environment.get("PIUI_USE_SYSTEM_PI").map(String::as_str),
+            environment.get("OMPIUI_USE_SYSTEM_PI").map(String::as_str),
             Some("1")
         );
     }

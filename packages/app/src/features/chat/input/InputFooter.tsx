@@ -3,8 +3,8 @@ import { useTranslation } from 'react-i18next'
 import type { RefObject } from 'react'
 import { CheckIcon, ClockIcon, CircleIcon, CloseIcon } from '../../../components/Icons'
 import { CircularProgress } from '../../../components/CircularProgress'
-import { usePiSessionTodos } from '../../../pi/hooks/index.js'
-import type { PiTodoItem as TodoItem } from '../../../pi/hooks/index.js'
+import { usePiSessionTodos } from '../../../omp/hooks/index.js'
+import type { PiTodoItem as TodoItem } from '../../../omp/hooks/index.js'
 
 // ============================================
 // InputFooter - disclaimer + todo progress

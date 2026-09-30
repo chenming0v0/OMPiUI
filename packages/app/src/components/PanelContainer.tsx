@@ -22,7 +22,7 @@ import { layoutStore, useLayoutStore, type PanelTab, type PanelPosition, type Pa
 import { getInternalDragSnapshot, startInternalDrag, subscribeInternalDrag, subscribeInternalDrop } from '../lib/internalDragCore'
 import { useDragEdgeAutoScroll } from '../hooks/useDragEdgeAutoScroll'
 import { IconButton } from './ui/IconButton'
-import { usePiCapabilities } from '../pi/capabilities'
+import { usePiCapabilities } from '../omp/capabilities'
 import { useTheme } from '../hooks'
 import { uiErrorHandler } from '../utils/errorHandling'
 

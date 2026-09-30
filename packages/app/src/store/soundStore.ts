@@ -56,8 +56,8 @@ type Subscriber = () => void
 // Constants
 // ============================================
 
-const STORAGE_KEY = 'piui:sound-settings'
-const IDB_NAME = 'piui-sounds'
+const STORAGE_KEY = 'ompiui:sound-settings'
+const IDB_NAME = 'ompiui-sounds'
 const IDB_STORE = 'custom-audio'
 const IDB_VERSION = 1
 

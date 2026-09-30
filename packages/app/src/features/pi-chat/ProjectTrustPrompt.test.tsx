@@ -3,14 +3,14 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import { fireEvent } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProjectTrustPrompt } from './ProjectTrustPrompt'
-import type { PiProjectTrust } from '../../pi/domain'
+import type { PiProjectTrust } from '../../omp/domain'
 
 const { getProjectTrustMock, setProjectTrustMock } = vi.hoisted(() => ({
   getProjectTrustMock: vi.fn(),
   setProjectTrustMock: vi.fn(),
 }))
 
-vi.mock('../../pi/transport/index.js', () => ({
+vi.mock('../../omp/transport/index.js', () => ({
   getProjectTrust: (...args: unknown[]) => getProjectTrustMock(...args),
   setProjectTrust: (...args: unknown[]) => setProjectTrustMock(...args),
 }))

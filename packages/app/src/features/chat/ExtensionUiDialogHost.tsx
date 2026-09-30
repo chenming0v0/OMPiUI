@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import type { ExtensionUiDialogRequest } from '@ompiui/protocol'
-import { extensionUiStore } from '../../pi/extensionUiStore'
+import { extensionUiStore } from '../../omp/extensionUiStore'
 import { usePresence } from '../../hooks'
 import { useChatViewport } from '../chat/chatViewport'
 import { ExtensionUiDialogCard } from './ExtensionUiDialogCard'

@@ -4,15 +4,15 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, test } from "node:test"
-import { parseWebArgs, resolveServerConfig, startPiUiServer } from "./start.ts"
+import { parseWebArgs, resolveServerConfig, startOmpiUiServer } from "./start.ts"
 
 const roots: string[] = []
-const previousDriver = process.env.PIUI_DRIVER
+const previousDriver = process.env.OMPIUI_DRIVER
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
-  if (previousDriver === undefined) delete process.env.PIUI_DRIVER
-  else process.env.PIUI_DRIVER = previousDriver
+  if (previousDriver === undefined) delete process.env.OMPIUI_DRIVER
+  else process.env.OMPIUI_DRIVER = previousDriver
 })
 
 test("server config validates ports and parses web flags", () => {
@@ -20,7 +20,7 @@ test("server config validates ports and parses web flags", () => {
   assert.equal(config.host, "127.0.0.1")
   assert.equal(config.port, 8787)
   assert.equal(config.webRoot, null)
-  assert.throws(() => resolveServerConfig({ PIUI_PORT: "invalid" }, { webRoot: null }), /PIUI_PORT/)
+  assert.throws(() => resolveServerConfig({ OMPIUI_PORT: "invalid" }, { webRoot: null }), /OMPIUI_PORT/)
   assert.deepEqual(parseWebArgs(["--host", "0.0.0.0", "--port=9000", "--api-only"]), {
     help: false,
     host: "0.0.0.0",
@@ -31,12 +31,12 @@ test("server config validates ports and parses web flags", () => {
 })
 
 test("one server provides the web app and authenticated API on the same port", async () => {
-  process.env.PIUI_DRIVER = "mock"
-  const webRoot = mkdtempSync(join(tmpdir(), "piui-start-web-"))
+  process.env.OMPIUI_DRIVER = "mock"
+  const webRoot = mkdtempSync(join(tmpdir(), "ompiui-start-web-"))
   roots.push(webRoot)
-  writeFileSync(join(webRoot, "index.html"), "<html>piui</html>")
+  writeFileSync(join(webRoot, "index.html"), "<html>ompiui</html>")
   const port = await availablePort()
-  const running = await startPiUiServer(
+  const running = await startOmpiUiServer(
     // 测试环境的 undici keep-alive 连接 + Windows 机器上的 dispose 轻松超过
     // 生产默认的 500ms 关闭窗口；这里用宽松预算，避免 hardStop 的
     // process.exit(1) 把测试进程带走。
@@ -46,7 +46,7 @@ test("one server provides the web app and authenticated API on the same port", a
   try {
     const page = await fetch(`http://127.0.0.1:${port}/`)
     assert.equal(page.status, 200)
-    assert.match(await page.text(), /piui/)
+    assert.match(await page.text(), /ompiui/)
 
     const unauthorized = await fetch(`http://127.0.0.1:${port}/api/v1/host/health`)
     assert.equal(unauthorized.status, 401)

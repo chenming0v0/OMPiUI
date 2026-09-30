@@ -245,8 +245,8 @@
     "reload": "重新加载"
   },
   "closeService": {
-    "title": "关闭 PiUI",
-    "description": "PiUI 启动的后端服务正在运行，要同时停止它吗？",
+    "title": "关闭 OMPiUI",
+    "description": "OMPiUI 启动的后端服务正在运行，要同时停止它吗？",
     "closeAndStop": "关闭并停止后端",
     "closeKeepRunning": "关闭但保留后端"
   },

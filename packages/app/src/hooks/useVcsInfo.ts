@@ -5,8 +5,8 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import type { GitInfoResponse } from '@ompiui/protocol'
-import { getHostGitInfo } from '../pi/transport/index.js'
-import { resolveWorkspacePath } from '../pi/workspaces'
+import { getHostGitInfo } from '../omp/transport/index.js'
+import { resolveWorkspacePath } from '../omp/workspaces'
 
 const POLL_INTERVAL = 15000 // 15s 轮询
 

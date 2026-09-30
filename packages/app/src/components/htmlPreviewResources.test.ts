@@ -3,7 +3,7 @@ import { resolveHtmlPreviewResources, resolveHtmlResourcePath } from './htmlPrev
 
 const getFileContent = vi.hoisted(() => vi.fn())
 
-vi.mock('../pi/files', () => ({ getFileContent }))
+vi.mock('../omp/files', () => ({ getFileContent }))
 
 describe('htmlPreviewResources', () => {
   beforeEach(() => {
@@ -92,8 +92,8 @@ describe('htmlPreviewResources', () => {
     expect(scripts[1].getAttribute('src')).toMatch(/^data:text\/javascript/)
     expect(scripts[1].hasAttribute('async')).toBe(true)
     expect(scripts[2].hasAttribute('src')).toBe(false)
-    expect(scripts[2].getAttribute('type')).toBe('application/x-piui-unresolved-module')
-    expect(scripts[2].getAttribute('data-piui-unresolved-src')).toBe('pages/module.js')
+    expect(scripts[2].getAttribute('type')).toBe('application/x-ompiui-unresolved-module')
+    expect(scripts[2].getAttribute('data-ompiui-unresolved-src')).toBe('pages/module.js')
   })
 
   it('does not resolve an external stylesheet a second time against the HTML directory', async () => {

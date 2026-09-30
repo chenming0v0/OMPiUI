@@ -232,43 +232,43 @@ function storageRemove(key: string): void {
   }
 }
 
-const STORAGE_KEY_PRESET = 'piui-theme-preset'
-const STORAGE_KEY_COLOR_MODE = 'piui-theme-mode'
-const STORAGE_KEY_CUSTOM_CSS = 'piui-theme-custom-css'
-const STORAGE_KEY_CUSTOM_CSS_SNIPPETS = 'piui-theme-custom-css-snippets'
-const STORAGE_KEY_ACTIVE_CUSTOM_CSS_SNIPPET_ID = 'piui-theme-active-custom-css-snippet-id'
-const STORAGE_KEY_COLLAPSE_USER_MESSAGES = 'piui-collapse-user-messages'
-const STORAGE_KEY_RENDER_USER_MARKDOWN = 'piui-render-user-markdown'
-const STORAGE_KEY_STEP_FINISH_DISPLAY = 'piui-step-finish-display'
-const STORAGE_KEY_COMPLETED_AT_FORMAT = 'piui-completed-at-format'
-const STORAGE_KEY_REASONING_DISPLAY_MODE = 'piui-reasoning-display-mode'
-const STORAGE_KEY_WIDE_MODE = 'piui-chat-wide-mode'
-const STORAGE_KEY_DIFF_STYLE = 'piui-diff-style'
-const STORAGE_KEY_DESCRIPTIVE_TOOL_STEPS = 'piui-descriptive-tool-steps'
-const STORAGE_KEY_CODE_WORD_WRAP = 'piui-code-word-wrap'
-const STORAGE_KEY_FONT_SCALE = 'piui-font-scale'
-const STORAGE_KEY_CODE_FONT_SCALE = 'piui-code-font-scale'
-const STORAGE_KEY_TOOL_CARD_STYLE = 'piui-tool-card-style'
-const STORAGE_KEY_IMMERSIVE_MODE = 'piui-immersive-mode'
-const STORAGE_KEY_GLASS_EFFECT = 'piui-glass-effect'
-const STORAGE_KEY_QUEUE_FOLLOWUP_MESSAGES = 'piui-queue-followup-messages'
-const STORAGE_KEY_EXTERNAL_FILE_DROP_MODE = 'piui-external-file-drop-mode'
-const STORAGE_KEY_OUTLINE_CURRENT_HIGHLIGHT = 'piui-outline-current-highlight'
-const STORAGE_KEY_AUTO_EXPAND_EXTENSIONS = 'piui-auto-expand-extensions-on-command'
-const STORAGE_KEY_ACTIONS_ON_LATEST_ASSISTANT_ONLY = 'piui-actions-on-latest-assistant-only'
-const STORAGE_KEY_DESKTOP_COLLAPSED_INPUT_DOCK = 'piui-desktop-collapsed-input-dock'
-const STORAGE_KEY_MANUAL_TERMINAL_TITLES = 'piui-manual-terminal-titles'
-const STORAGE_KEY_PROCESS_COLLAPSE_ENABLED = 'piui-process-collapse-enabled'
-const STORAGE_KEY_CODE_BLOCK_THEME_LIGHT = 'piui-code-block-theme-light'
-const STORAGE_KEY_CODE_BLOCK_THEME_DARK = 'piui-code-block-theme-dark'
+const STORAGE_KEY_PRESET = 'ompiui-theme-preset'
+const STORAGE_KEY_COLOR_MODE = 'ompiui-theme-mode'
+const STORAGE_KEY_CUSTOM_CSS = 'ompiui-theme-custom-css'
+const STORAGE_KEY_CUSTOM_CSS_SNIPPETS = 'ompiui-theme-custom-css-snippets'
+const STORAGE_KEY_ACTIVE_CUSTOM_CSS_SNIPPET_ID = 'ompiui-theme-active-custom-css-snippet-id'
+const STORAGE_KEY_COLLAPSE_USER_MESSAGES = 'ompiui-collapse-user-messages'
+const STORAGE_KEY_RENDER_USER_MARKDOWN = 'ompiui-render-user-markdown'
+const STORAGE_KEY_STEP_FINISH_DISPLAY = 'ompiui-step-finish-display'
+const STORAGE_KEY_COMPLETED_AT_FORMAT = 'ompiui-completed-at-format'
+const STORAGE_KEY_REASONING_DISPLAY_MODE = 'ompiui-reasoning-display-mode'
+const STORAGE_KEY_WIDE_MODE = 'ompiui-chat-wide-mode'
+const STORAGE_KEY_DIFF_STYLE = 'ompiui-diff-style'
+const STORAGE_KEY_DESCRIPTIVE_TOOL_STEPS = 'ompiui-descriptive-tool-steps'
+const STORAGE_KEY_CODE_WORD_WRAP = 'ompiui-code-word-wrap'
+const STORAGE_KEY_FONT_SCALE = 'ompiui-font-scale'
+const STORAGE_KEY_CODE_FONT_SCALE = 'ompiui-code-font-scale'
+const STORAGE_KEY_TOOL_CARD_STYLE = 'ompiui-tool-card-style'
+const STORAGE_KEY_IMMERSIVE_MODE = 'ompiui-immersive-mode'
+const STORAGE_KEY_GLASS_EFFECT = 'ompiui-glass-effect'
+const STORAGE_KEY_QUEUE_FOLLOWUP_MESSAGES = 'ompiui-queue-followup-messages'
+const STORAGE_KEY_EXTERNAL_FILE_DROP_MODE = 'ompiui-external-file-drop-mode'
+const STORAGE_KEY_OUTLINE_CURRENT_HIGHLIGHT = 'ompiui-outline-current-highlight'
+const STORAGE_KEY_AUTO_EXPAND_EXTENSIONS = 'ompiui-auto-expand-extensions-on-command'
+const STORAGE_KEY_ACTIONS_ON_LATEST_ASSISTANT_ONLY = 'ompiui-actions-on-latest-assistant-only'
+const STORAGE_KEY_DESKTOP_COLLAPSED_INPUT_DOCK = 'ompiui-desktop-collapsed-input-dock'
+const STORAGE_KEY_MANUAL_TERMINAL_TITLES = 'ompiui-manual-terminal-titles'
+const STORAGE_KEY_PROCESS_COLLAPSE_ENABLED = 'ompiui-process-collapse-enabled'
+const STORAGE_KEY_CODE_BLOCK_THEME_LIGHT = 'ompiui-code-block-theme-light'
+const STORAGE_KEY_CODE_BLOCK_THEME_DARK = 'ompiui-code-block-theme-dark'
 
 // ============================================
 // DOM Style Element IDs
 // ============================================
 
-const STYLE_ID_THEME = 'piui-theme-vars'
-const STYLE_ID_FONT_SCALE = 'piui-font-scale'
-const STYLE_ID_CUSTOM = 'piui-custom-css'
+const STYLE_ID_THEME = 'ompiui-theme-vars'
+const STYLE_ID_FONT_SCALE = 'ompiui-font-scale'
+const STYLE_ID_CUSTOM = 'ompiui-custom-css'
 
 function parseCustomCSSSnippets(raw: string | null): CustomCSSSnippet[] {
   if (!raw) return []
@@ -904,8 +904,8 @@ class ThemeStore {
       if (meta) meta.setAttribute('content', hex)
 
       const androidBridge = (
-        window as unknown as { __piui_android?: { setSystemBars?: (mode: string, bg: string) => void } }
-      ).__piui_android
+        window as unknown as { __ompiui_android?: { setSystemBars?: (mode: string, bg: string) => void } }
+      ).__ompiui_android
       if (androidBridge?.setSystemBars) {
         androidBridge.setSystemBars(resolvedMode, hex)
       }

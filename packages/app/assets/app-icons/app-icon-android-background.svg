@@ -1,3 +1,4 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
-  <rect width="512" height="512" fill="#1e1d1c"/>
+  <!-- Android 自适应图标背景：铺满画布，圆角由系统遮罩负责 -->
+  <rect width="512" height="512" fill="#0f0a14" />
 </svg>

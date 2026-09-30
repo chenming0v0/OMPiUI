@@ -18,9 +18,9 @@ import {
 import { getStreamingHotIndexes, getTimelineRowYClass, mergeVirtualRangeIndexes } from './chatAreaUtils'
 import { buildVisibleTimelineEntries, getVisibleTimelineForkTargetId, clearVisibleTimelineMergeCache } from './chatAreaVisibility'
 import type { Message, MessageError, Part } from '../../types/message'
-import type { SessionMessageEntry } from '../../pi/vendor/pi-coding-agent'
-import type { ToolCall, ToolResultMessage } from '../../pi/vendor/pi-ai'
-import type { PiAssistantMessageItem, PiUserMessageItem } from '../../pi/domain/index.js'
+import type { SessionMessageEntry } from '../../omp/vendor/pi-coding-agent'
+import type { ToolCall, ToolResultMessage } from '../../omp/vendor/pi-ai'
+import type { PiAssistantMessageItem, PiUserMessageItem } from '../../omp/domain/index.js'
 
 function createUserMessage(id: string, created: number): Message {
   return {

@@ -92,15 +92,15 @@ interface LayoutState {
 
 type Subscriber = () => void
 
-const STORAGE_KEY_WAKE_LOCK = 'piui-wake-lock'
-const STORAGE_KEY_SIDEBAR = 'piui-sidebar-expanded'
-const STORAGE_KEY_SIDEBAR_FOLDER_RECENTS = 'piui-sidebar-folder-recents'
-const STORAGE_KEY_SIDEBAR_SHOW_CHILD_SESSIONS = 'piui-sidebar-show-child-sessions'
-const STORAGE_KEY_PANEL_LAYOUT = 'piui-panel-layout'
-const STORAGE_KEY_TERMINAL_LAYOUT = 'piui-terminal-layout'
-const STORAGE_KEY_RIGHT_PANEL_WIDTH = 'piui-right-panel-width'
-const STORAGE_KEY_BOTTOM_PANEL_HEIGHT = 'piui-bottom-panel-height'
-const STORAGE_KEY_VIEWPORT_SIDEBAR_WIDTH = 'piui-sidebar-width'
+const STORAGE_KEY_WAKE_LOCK = 'ompiui-wake-lock'
+const STORAGE_KEY_SIDEBAR = 'ompiui-sidebar-expanded'
+const STORAGE_KEY_SIDEBAR_FOLDER_RECENTS = 'ompiui-sidebar-folder-recents'
+const STORAGE_KEY_SIDEBAR_SHOW_CHILD_SESSIONS = 'ompiui-sidebar-show-child-sessions'
+const STORAGE_KEY_PANEL_LAYOUT = 'ompiui-panel-layout'
+const STORAGE_KEY_TERMINAL_LAYOUT = 'ompiui-terminal-layout'
+const STORAGE_KEY_RIGHT_PANEL_WIDTH = 'ompiui-right-panel-width'
+const STORAGE_KEY_BOTTOM_PANEL_HEIGHT = 'ompiui-bottom-panel-height'
+const STORAGE_KEY_VIEWPORT_SIDEBAR_WIDTH = 'ompiui-sidebar-width'
 
 // 隐私模式 / 禁用存储下 localStorage 访问会抛 SecurityError，统一静默兜底。
 function storageGet(key: string): string | null {
@@ -385,9 +385,9 @@ export class LayoutStore {
         this.state.wakeLock = savedWakeLock === 'true'
       }
 
-      const savedTerminalCopyOnSelect = storageGet('piui-terminal-copy-on-select')
+      const savedTerminalCopyOnSelect = storageGet('ompiui-terminal-copy-on-select')
       if (savedTerminalCopyOnSelect !== null) this.state.terminalCopyOnSelect = savedTerminalCopyOnSelect === 'true'
-      const savedTerminalRightClickPaste = storageGet('piui-terminal-right-click-paste')
+      const savedTerminalRightClickPaste = storageGet('ompiui-terminal-right-click-paste')
       if (savedTerminalRightClickPaste !== null) this.state.terminalRightClickPaste = savedTerminalRightClickPaste === 'true'
 
       // 右侧面板宽度
@@ -538,14 +538,14 @@ export class LayoutStore {
   setTerminalCopyOnSelect(enabled: boolean) {
     if (this.state.terminalCopyOnSelect === enabled) return
     this.state.terminalCopyOnSelect = enabled
-    storageSet('piui-terminal-copy-on-select', String(enabled))
+    storageSet('ompiui-terminal-copy-on-select', String(enabled))
     this.notify()
   }
 
   setTerminalRightClickPaste(enabled: boolean) {
     if (this.state.terminalRightClickPaste === enabled) return
     this.state.terminalRightClickPaste = enabled
-    storageSet('piui-terminal-right-click-paste', String(enabled))
+    storageSet('ompiui-terminal-right-click-paste', String(enabled))
     this.notify()
   }
 
@@ -1124,7 +1124,7 @@ export class LayoutStore {
   setBottomPanelHeight(height: number) {
     this.state.bottomPanelHeight = height
     try {
-      storageSet('piui-bottom-panel-height', height.toString())
+      storageSet('ompiui-bottom-panel-height', height.toString())
     } catch {
       // ignore
     }

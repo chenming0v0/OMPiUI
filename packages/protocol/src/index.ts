@@ -34,7 +34,7 @@ export type ShareInfo = {
   url: string
   /** Bearer token they must present. */
   token: string
-  /** piui://connect link carrying both, pasteable in the add-server form. */
+  /** ompiui://connect link carrying both, pasteable in the add-server form. */
   link: string
   /** True when the server is reachable beyond this machine. */
   lan: boolean

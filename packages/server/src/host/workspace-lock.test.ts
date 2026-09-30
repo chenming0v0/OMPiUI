@@ -8,18 +8,18 @@ import test from "node:test"
 import { acquireWorkspaceMutationLock } from "./workspace-lock.ts"
 
 test("workspace mutation lock coordinates independent Node processes", async () => {
-  const namespace = mkdtempSync(path.join(tmpdir(), "piui-workspace-lock-"))
-  const workspace = mkdtempSync(path.join(tmpdir(), "piui-workspace-root-"))
+  const namespace = mkdtempSync(path.join(tmpdir(), "ompiui-workspace-lock-"))
+  const workspace = mkdtempSync(path.join(tmpdir(), "ompiui-workspace-root-"))
   const childScript = [
     'import { acquireWorkspaceMutationLock } from "./src/host/workspace-lock.ts"',
-    'const lock = await acquireWorkspaceMutationLock(process.env.PIUI_TEST_ROOT, { namespace: process.env.PIUI_TEST_NAMESPACE })',
+    'const lock = await acquireWorkspaceMutationLock(process.env.OMPIUI_TEST_ROOT, { namespace: process.env.OMPIUI_TEST_NAMESPACE })',
     'process.stdout.write("ready\\n")',
     'await new Promise(resolve => setTimeout(resolve, 400))',
     'lock.release()',
   ].join(";")
   const child = spawn(process.execPath, ["--import", "tsx", "-e", childScript], {
     cwd: path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../.."),
-    env: { ...process.env, PIUI_TEST_ROOT: workspace, PIUI_TEST_NAMESPACE: namespace },
+    env: { ...process.env, OMPIUI_TEST_ROOT: workspace, OMPIUI_TEST_NAMESPACE: namespace },
     stdio: ["ignore", "pipe", "pipe"],
   })
   let output = ""

@@ -1,11 +1,11 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { extensionUiStore } from '../../pi/extensionUiStore'
+import { extensionUiStore } from '../../omp/extensionUiStore'
 import { ExtensionUiDialogHost } from './ExtensionUiDialogHost'
 
 const { respondPiExtensionUi } = vi.hoisted(() => ({ respondPiExtensionUi: vi.fn() }))
 
-vi.mock('../../pi/controllers/index.js', () => ({ respondPiExtensionUi }))
+vi.mock('../../omp/controllers/index.js', () => ({ respondPiExtensionUi }))
 vi.mock('../../hooks', () => ({
   usePresence: () => ({ shouldRender: true, ref: () => undefined }),
 }))

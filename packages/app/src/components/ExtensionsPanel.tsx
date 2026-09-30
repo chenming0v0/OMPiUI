@@ -1,8 +1,8 @@
 import { useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
-import { extensionUiStore } from '../pi/extensionUiStore'
-import { extensionTuiStore } from '../pi/extensionTuiStore'
-import { commandFeedbackStore, type CommandFeedbackEntry, type CommandFeedbackStatus } from '../pi/commandFeedbackStore'
+import { extensionUiStore } from '../omp/extensionUiStore'
+import { extensionTuiStore } from '../omp/extensionTuiStore'
+import { commandFeedbackStore, type CommandFeedbackEntry, type CommandFeedbackStatus } from '../omp/commandFeedbackStore'
 import { ExtensionUiDialogCard } from '../features/chat/ExtensionUiDialogCard'
 import { ExtensionTuiView } from './ExtensionTuiView'
 

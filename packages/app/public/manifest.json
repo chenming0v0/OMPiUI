@@ -1,15 +1,15 @@
 {
-  "name": "Pi",
-  "short_name": "Pi",
+  "name": "OMPiUI",
+  "short_name": "OMPiUI",
   "description": "AI Coding Assistant",
   "start_url": "/",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#1a1a1a",
+  "background_color": "#0f0a14",
   "theme_color": "#262524",
   "icons": [
     {
-      "src": "/pi.svg",
+      "src": "/ompiui.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any maskable"

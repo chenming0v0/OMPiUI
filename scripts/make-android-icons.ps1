@@ -1,25 +1,25 @@
 # One-shot Android launcher icon regenerator (Windows / System.Drawing).
 # Rebuilds the full mipmap set for the Tauri Android project from
 # packages/app/src-tauri/icons/icon.png — the desktop icon (dark rounded rect
-# + light Pi mark at 61% of the canvas).
+# + gradient TT mark at ~56% of the canvas).
 #
 # Usage: powershell -File scripts/make-android-icons.ps1
 #
 # Why this exists (mirrors dsh-app/scripts/make-android-icons.ps1):
 # tauri icon's own Android output is not controllable — its legacy
-# ic_launcher.png renders the mark at ~53% of the canvas while the desktop
-# icon shows it at 61%, so the launcher icon looks smaller than the desktop.
+# ic_launcher.png renders the mark smaller than the desktop icon does,
+# so the launcher icon looks off next to the desktop one.
 # This script regenerates:
-#   - ic_launcher.png            — the desktop icon resized as-is (mark 61%,
-#                                 rounded rect + transparent corners kept)
+#   - ic_launcher.png            — the desktop icon resized as-is (rounded
+#                                 rect + transparent corners kept)
 #   - ic_launcher_round.png      — same, circle-masked
-#   - ic_launcher_foreground.png — the Pi mark alone (alpha>=250 bright
-#                                 pixels, so the rounded-rect AA edge and the
-#                                 dark tile are excluded) at 40% of the
-#                                 canvas, centered: after the launcher mask
-#                                 crops the outer ~1/3, the mark reads at
-#                                 ~65% of the visible icon, matching the
-#                                 desktop look.
+#   - ic_launcher_foreground.png — the TT mark alone (alpha>=250 pixels that
+#                                 are not the dark tile color, so the
+#                                 rounded-rect AA edge and the tile are
+#                                 excluded) at 40% of the canvas, centered:
+#                                 after the launcher mask crops the outer
+#                                 ~1/3, the mark reads at ~65% of the
+#                                 visible icon, matching the desktop look.
 #
 # GDI+ (System.Drawing) is used: same interp as dsh, no chroma-keying.
 
@@ -29,7 +29,7 @@ Add-Type -AssemblyName System.Drawing
 $ROOT = Split-Path -Parent $PSScriptRoot
 $iconPath = Join-Path $ROOT 'packages\app\src-tauri\icons\icon.png'
 
-# ---- extract the Pi mark: opaque (alpha>=250) bright pixels ----
+# ---- extract the gradient TT mark: opaque pixels that are not the dark tile ----
 $src = [System.Drawing.Bitmap]::FromFile($iconPath)
 $w = $src.Width
 $h = $src.Height
@@ -38,14 +38,16 @@ $keep = [System.Collections.Generic.List[object]]::new()
 for ($y = 0; $y -lt $h; $y++) {
   for ($x = 0; $x -lt $w; $x++) {
     $p = $src.GetPixel($x, $y)
-    if ($p.A -ge 250 -and $p.R -ge 240 -and $p.G -ge 240 -and $p.B -ge 240) {
+    # tile is #0f0a14; the gradient mark (#ed4abf -> #9b4dff -> #5ad8e6) always
+    # has at least one channel far above that, AA tile-edge pixels included
+    if ($p.A -ge 250 -and [math]::Max($p.R, [math]::Max($p.G, $p.B)) -ge 80) {
       $keep.Add(@($x, $y))
       if ($x -lt $minX) { $minX = $x }; if ($x -gt $maxX) { $maxX = $x }
       if ($y -lt $minY) { $minY = $y }; if ($y -gt $maxY) { $maxY = $y }
     }
   }
 }
-if ($maxX -lt 0) { throw 'no Pi mark found in icon.png' }
+if ($maxX -lt 0) { throw 'no TT mark found in icon.png' }
 $mw = $maxX - $minX + 1
 $mh = $maxY - $minY + 1
 $crop = New-Object System.Drawing.Bitmap($mw, $mh, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)

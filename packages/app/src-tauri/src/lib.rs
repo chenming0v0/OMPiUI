@@ -15,8 +15,8 @@ use dir_state::OpenDirectoryState;
 
 #[cfg(desktop)]
 use service::{
-    confirm_close_app, get_piui_service_status, restart_piui_service, start_piui_service,
-    stop_piui_service, ServiceState,
+    confirm_close_app, get_ompiui_service_status, restart_ompiui_service, start_ompiui_service,
+    stop_ompiui_service, ServiceState,
 };
 
 // ============================================
@@ -146,7 +146,7 @@ fn restore_window_state(window: &tauri::WebviewWindow) {
     }
 }
 
-/// 从命令行参数中提取目录路径（右键菜单 "Open with PiUI" 传 %V）
+/// 从命令行参数中提取目录路径（右键菜单 "Open with OMPiUI" 传 %V）
 #[cfg(desktop)]
 fn extract_directory_from_args(args: &[String]) -> Option<String> {
     for arg in args.iter().skip(1) {
@@ -256,7 +256,7 @@ fn open_new_window_inner(app: &tauri::AppHandle, directory: Option<String>) -> R
         label,
         WebviewUrl::App("index.html".into()),
     ))
-    .title(directory.as_deref().unwrap_or("PiUI"))
+    .title(directory.as_deref().unwrap_or("OMPiUI"))
     .inner_size(1200.0, 800.0)
     .visible(false)
     .build()
@@ -376,7 +376,7 @@ pub fn run() {
             finish_desktop_window_setup(&main_window);
             restore_window_state(&main_window);
 
-            // 冷启动时从 CLI 参数提取目录（右键 "Open with PiUI" / 拖到图标），
+            // 冷启动时从 CLI 参数提取目录（右键 "Open with OMPiUI" / 拖到图标），
             // 存入 pending，前端首帧后 get_cli_directory 一次性消费。
             let args: Vec<String> = std::env::args().collect();
             if let Some(dir) = extract_directory_from_args(&args) {
@@ -391,10 +391,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            start_piui_service,
-            stop_piui_service,
-            restart_piui_service,
-            get_piui_service_status,
+            start_ompiui_service,
+            stop_ompiui_service,
+            restart_ompiui_service,
+            get_ompiui_service_status,
             confirm_close_app,
             desktop_window_ready,
             open_new_window,
@@ -419,7 +419,7 @@ pub fn run() {
 
     let app = builder
         .build(tauri::generate_context!())
-        .expect("error while building PiUI desktop client");
+        .expect("error while building OMPiUI desktop client");
 
     app.run(|app_handle, event| {
         // macOS: 处理 Finder "Open with" / 拖文件夹到 Dock 图标

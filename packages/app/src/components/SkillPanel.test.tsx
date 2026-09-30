@@ -4,7 +4,7 @@ import { SkillPanel } from './SkillPanel'
 
 const getSkillsMock = vi.fn()
 
-vi.mock('../pi/transport/index.js', () => ({
+vi.mock('../omp/transport/index.js', () => ({
   getPiSkills: (...args: unknown[]) => getSkillsMock(...args),
 }))
 

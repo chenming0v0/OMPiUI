@@ -7,7 +7,7 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SubagentHud } from './SubagentHud'
-import { ompSubagentStore } from '../../../pi/ompSubagentStore'
+import { ompSubagentStore } from '../../../omp/ompSubagentStore'
 
 const abortPiOperationMock = vi.hoisted(() => vi.fn((..._args: unknown[]) => Promise.resolve()))
 
@@ -17,7 +17,7 @@ vi.mock('react-i18next', () => ({
   ) }),
 }))
 
-vi.mock('../../../pi/controllers/index.js', () => ({
+vi.mock('../../../omp/controllers/index.js', () => ({
   abortPiOperation: (...args: unknown[]) => abortPiOperationMock(...(args as [string])),
 }))
 

@@ -11,13 +11,13 @@ const { getHostGitInfo, getHostGitDiff, getHostGitFileDiff } = vi.hoisted(() => 
   getHostGitFileDiff: vi.fn(),
 }))
 
-vi.mock('../pi/transport/index.js', () => ({
+vi.mock('../omp/transport/index.js', () => ({
   getHostGitInfo,
   getHostGitDiff,
   getHostGitFileDiff,
 }))
 
-vi.mock('../pi/workspaces', () => ({ resolveWorkspacePath: async (directory?: string) => directory ?? null }))
+vi.mock('../omp/workspaces', () => ({ resolveWorkspacePath: async (directory?: string) => directory ?? null }))
 
 vi.mock('./DiffViewer', () => ({
   DiffViewer: () => <div data-testid="diff-viewer">diff viewer</div>,

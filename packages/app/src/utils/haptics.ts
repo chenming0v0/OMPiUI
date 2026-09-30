@@ -2,7 +2,7 @@
 
 export function hapticTap(ms = 8): void {
   try {
-    const b = (window as unknown as { __piui_android?: { vibrate?: (n: number) => void } }).__piui_android?.vibrate
+    const b = (window as unknown as { __ompiui_android?: { vibrate?: (n: number) => void } }).__ompiui_android?.vibrate
     if (b) return b(ms)
     navigator.vibrate?.(ms)
   } catch { /* ignore */ }

@@ -9,7 +9,7 @@ import { useState, useRef, useEffect, useMemo, useCallback, memo, forwardRef, us
 import { useTranslation } from 'react-i18next'
 import { ChevronDownIcon, SearchIcon, ThinkingIcon, EyeIcon, CheckIcon, PinIcon } from '../../components/Icons'
 import { DropdownMenu } from '../../components/ui'
-import type { Model, Api } from '../../pi/vendor/pi-ai'
+import type { Model, Api } from '../../omp/vendor/pi-ai'
 
 type ModelInfo = Model<Api>
 import { useInputCapabilities } from '../../hooks/useInputCapabilities'
@@ -44,6 +44,10 @@ interface ModelSelectorProps {
   constrainToRef?: React.RefObject<HTMLElement | null>
   /** 触发按钮的展示风格 */
   trigger?: 'header' | 'toolbar'
+  /** 未选择模型时触发按钮显示的文案（缺省用 chat 命名空间的通用文案） */
+  placeholder?: string
+  /** 弹出层 z-index，默认 100；在 Dialog 等高 z-index 容器内使用时需要调高 */
+  zIndex?: number
 }
 
 // ============================================
@@ -352,6 +356,8 @@ export const ModelSelector = memo(
       position = 'bottom',
       constrainToRef,
       trigger = 'header',
+      placeholder,
+      zIndex,
     },
     ref,
   ) {
@@ -436,8 +442,8 @@ export const ModelSelector = memo(
 
     const displayName =
       trigger === 'header'
-        ? selectedModel?.name || t('modelSelector.selectModel')
-        : selectedModel?.name || (isLoading ? '...' : t('modelSelector.model'))
+        ? selectedModel?.name || placeholder || t('modelSelector.selectModel')
+        : selectedModel?.name || placeholder || (isLoading ? '...' : t('modelSelector.model'))
 
     // ---- Open / Close ----
 
@@ -857,6 +863,7 @@ export const ModelSelector = memo(
           maxWidth="min(460px, calc(100vw - 24px))"
           mobileFullWidth
           constrainToRef={constrainToRef}
+          zIndex={zIndex}
           className={`!p-0 overflow-hidden flex flex-col ${dropdownMaxH}`}
         >
           <ModelListPanel

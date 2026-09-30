@@ -1,7 +1,7 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { ExtensionUiState } from '@ompiui/protocol'
-import { extensionUiStore } from '../../pi/extensionUiStore'
+import { extensionUiStore } from '../../omp/extensionUiStore'
 
 export function ExtensionUiSurface({ sessionId, placement }: { sessionId: string | null; placement: 'aboveEditor' | 'belowEditor' }) {
   const { t } = useTranslation('chat')

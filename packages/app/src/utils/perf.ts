@@ -1,15 +1,15 @@
 /**
  * 流渲染性能埋点（开发诊断用）
  *
- * 通过 URL 参数 `?piuiPerf=1` 启用。启用后对关键渲染路径打
+ * 通过 URL 参数 `?ompiuiPerf=1` 启用。启用后对关键渲染路径打
  * performance.mark，可在 DevTools Performance 面板或
- * window.__piuiPerfReport() 中查看每一环耗时。
+ * window.__ompiuiPerfReport() 中查看每一环耗时。
  *
  * 生产构建下完全无开销（空函数）。
  */
 
 const enabled = typeof window !== 'undefined'
-  && new URLSearchParams(window.location.search).has('piuiPerf')
+  && new URLSearchParams(window.location.search).has('ompiuiPerf')
 
 // 各 mark 的上次时间（O(1) 间隔计算；performance.getEntriesByName 会随
 // mark 数量线性增长，长流式会话里每 token 一次会拖慢被测路径本身）
@@ -45,18 +45,18 @@ function agg(measures: { duration: number }[]): Agg {
 /** 输出完整报告：打印每个埋点环节的耗时统计 */
 export function perfReport(): void {
   if (!enabled) {
-    console.warn('[perf] 未启用：请以 ?piuiPerf=1 打开页面')
+    console.warn('[perf] 未启用：请以 ?ompiuiPerf=1 打开页面')
     return
   }
 
   const groups: Array<[string, string, string]> = [
-    ['事件→数据层', 'piui:event-message-update', 'piui:event-message-update'],
-    ['timeline 构建', 'piui:build-timeline', 'piui:build-timeline:end'],
-    ['markdown 解析', 'piui:render-markdown', 'piui:render-markdown:end'],
-    ['行测量', 'piui:measure-row', 'piui:measure-row:end'],
+    ['事件→数据层', 'ompiui:event-message-update', 'ompiui:event-message-update'],
+    ['timeline 构建', 'ompiui:build-timeline', 'ompiui:build-timeline:end'],
+    ['markdown 解析', 'ompiui:render-markdown', 'ompiui:render-markdown:end'],
+    ['行测量', 'ompiui:measure-row', 'ompiui:measure-row:end'],
   ]
 
-  const lines = ['', '═══ PiUI 流渲染埋点报告 ═══']
+  const lines = ['', '═══ OMPiUI 流渲染埋点报告 ═══']
   for (const [label, startName, endName] of groups) {
     const starts = performance.getEntriesByName(startName) as PerformanceMark[]
     const ends = performance.getEntriesByName(endName) as PerformanceMark[]
@@ -96,8 +96,8 @@ export function perfReport(): void {
   }
 
   // 事件→行测量完成总耗时（近一次）
-  const lastEvent = performance.getEntriesByName('piui:event-message-update').at(-1) as PerformanceMark | undefined
-  const lastRow = performance.getEntriesByName('piui:measure-row:end').at(-1) as PerformanceMark | undefined
+  const lastEvent = performance.getEntriesByName('ompiui:event-message-update').at(-1) as PerformanceMark | undefined
+  const lastRow = performance.getEntriesByName('ompiui:measure-row:end').at(-1) as PerformanceMark | undefined
   if (lastEvent && lastRow && lastRow.startTime >= lastEvent.startTime) {
     lines.push(`  事件→行测量完成(近一次): ${(lastRow.startTime - lastEvent.startTime).toFixed(2)}ms`)
   }
@@ -105,19 +105,19 @@ export function perfReport(): void {
   console.log(lines.join('\n'))
 }
 
-// ─── 组件渲染耗时统计（?piuiPerf=1 时收集） ───
+// ─── 组件渲染耗时统计（?ompiuiPerf=1 时收集） ───
 
 const renderStats = new Map<string, { count: number; totalMs: number; maxMs: number }>()
 
 /** 暴露到 window，方便 console 直接调用 */
 if (enabled && typeof window !== 'undefined') {
-  ;(window as unknown as { __piuiPerfReport: () => void }).__piuiPerfReport = perfReport
-  ;(window as unknown as { __piuiPerfReset: () => void }).__piuiPerfReset = () => {
+  ;(window as unknown as { __ompiuiPerfReport: () => void }).__ompiuiPerfReport = perfReport
+  ;(window as unknown as { __ompiuiPerfReset: () => void }).__ompiuiPerfReset = () => {
     performance.clearMarks()
     performance.clearMeasures()
     lastMarkAt.clear()
     renderStats.clear()
-    console.log('[perf] 已清空埋点与渲染统计——发一条消息后重新调用 window.__piuiPerfReport()')
+    console.log('[perf] 已清空埋点与渲染统计——发一条消息后重新调用 window.__ompiuiPerfReport()')
   }
 }
 

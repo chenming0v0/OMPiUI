@@ -1,6 +1,6 @@
 import { HOST_COMMAND_SPECS, PROTOCOL_VERSION, hostSpecToCapability, requireJsonValue, validateParams, type HostCapability, type HostRegistrySnapshot, type JsonObject, type JsonValue } from "@ompiui/protocol"
 import path from "node:path"
-import type { SessionHost } from "../pi/session-host.ts"
+import type { SessionHost } from "../omp/session-host.ts"
 import {
   createWorkspaceEntry,
   deleteWorkspaceEntry,

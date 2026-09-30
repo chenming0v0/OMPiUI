@@ -14,7 +14,7 @@ fn marker_path(app: &AppHandle) -> Result<PathBuf, String> {
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?
-        .join("piui-service.json"))
+        .join("ompiui-service.json"))
 }
 
 pub(super) fn read(app: &AppHandle) -> Result<Option<ServiceMarker>, String> {

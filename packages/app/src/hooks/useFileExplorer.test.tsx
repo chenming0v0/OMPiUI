@@ -13,10 +13,10 @@ const { listDirectory, getFileContent, getFileStatus, getHostGitDiff, invalidate
   resolveWorkspacePath: vi.fn(async (directory?: string) => directory ?? null),
 }))
 
-vi.mock('../pi/workspaces', () => ({ resolveWorkspacePath }))
-vi.mock('../pi/transport/index.js', () => ({ getHostGitDiff }))
+vi.mock('../omp/workspaces', () => ({ resolveWorkspacePath }))
+vi.mock('../omp/transport/index.js', () => ({ getHostGitDiff }))
 
-vi.mock('../pi/files', () => ({
+vi.mock('../omp/files', () => ({
   listDirectory,
   getFileContent,
   getFileStatus,
@@ -193,7 +193,7 @@ describe('useFileExplorer change scope', () => {
     await act(() => result.current.loadPreview('src/a.ts'))
     expect(result.current.previewContent?.content).toBe('before')
 
-    act(() => window.dispatchEvent(new CustomEvent('piui:workspace-files-changed', {
+    act(() => window.dispatchEvent(new CustomEvent('ompiui:workspace-files-changed', {
       detail: {
         workspacePath: '/repo', revision: 1,
         changes: [{ path: 'src/a.ts', kind: 'changed', type: 'file' }], rescan: false,

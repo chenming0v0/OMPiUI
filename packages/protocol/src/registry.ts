@@ -37,7 +37,7 @@ export type RegistrySnapshot = {
 
 export type PiCapabilityScope = "global" | "session"
 
-export type PiCapabilitySource = "pi-sdk" | "pi-extension" | "piui-adapter"
+export type PiCapabilitySource = "pi-sdk" | "pi-extension" | "ompiui-adapter"
 
 export type PiCapabilityQueue = "immediate" | "serialized"
 

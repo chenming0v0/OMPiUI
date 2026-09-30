@@ -248,8 +248,8 @@
     "reload": "Reload"
   },
   "closeService": {
-    "title": "Close PiUI",
-    "description": "The backend service started by PiUI is still running. Stop it too?",
+    "title": "Close OMPiUI",
+    "description": "The backend service started by OMPiUI is still running. Stop it too?",
     "closeAndStop": "Close and stop backend",
     "closeKeepRunning": "Close and keep backend running"
   },

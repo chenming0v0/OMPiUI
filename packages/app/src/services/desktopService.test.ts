@@ -5,7 +5,7 @@ const { invokeMock, applyLocalServerConfigMock, serviceStoreMock } = vi.hoisted(
   invokeMock: vi.fn(),
   applyLocalServerConfigMock: vi.fn(),
   serviceStoreMock: {
-    envVarsRecord: { PIUI_USE_SYSTEM_PI: '1' },
+    envVarsRecord: { OMPIUI_USE_SYSTEM_PI: '1' },
     setRunning: vi.fn(),
     setStartedByUs: vi.fn(),
     setStarting: vi.fn(),
@@ -21,7 +21,7 @@ const runningStatus = {
   startedByUs: true,
   pid: 42,
   url: 'http://127.0.0.1:8787',
-  environment: { PIUI_USE_SYSTEM_PI: '1' },
+  environment: { OMPIUI_USE_SYSTEM_PI: '1' },
 }
 
 describe('desktopService', () => {
@@ -46,11 +46,11 @@ describe('desktopService', () => {
     const outcome = await startDesktopService()
 
     expect(outcome.status).toEqual(runningStatus)
-    expect(invokeMock).toHaveBeenNthCalledWith(1, 'start_piui_service', {
-      envVars: { PIUI_USE_SYSTEM_PI: '1' },
+    expect(invokeMock).toHaveBeenNthCalledWith(1, 'start_ompiui_service', {
+      envVars: { OMPIUI_USE_SYSTEM_PI: '1' },
     })
-    expect(invokeMock).toHaveBeenNthCalledWith(2, 'get_piui_service_status', {
-      envVars: { PIUI_USE_SYSTEM_PI: '1' },
+    expect(invokeMock).toHaveBeenNthCalledWith(2, 'get_ompiui_service_status', {
+      envVars: { OMPIUI_USE_SYSTEM_PI: '1' },
     })
     expect(applyLocalServerConfigMock).toHaveBeenCalledWith('http://127.0.0.1:8787', 'token')
   })
@@ -59,8 +59,8 @@ describe('desktopService', () => {
     invokeMock.mockResolvedValueOnce({ started: true, startedByUs: true, url: null, token: null })
 
     await expect(restartDesktopService()).rejects.toThrow(/usable URL and auth token/)
-    expect(invokeMock).toHaveBeenCalledWith('restart_piui_service', {
-      envVars: { PIUI_USE_SYSTEM_PI: '1' },
+    expect(invokeMock).toHaveBeenCalledWith('restart_ompiui_service', {
+      envVars: { OMPIUI_USE_SYSTEM_PI: '1' },
     })
     expect(applyLocalServerConfigMock).not.toHaveBeenCalled()
   })
@@ -70,9 +70,9 @@ describe('desktopService', () => {
     invokeMock.mockResolvedValueOnce(undefined).mockResolvedValueOnce(stoppedStatus)
 
     await expect(stopDesktopService()).resolves.toEqual(stoppedStatus)
-    expect(invokeMock).toHaveBeenNthCalledWith(1, 'stop_piui_service')
-    expect(invokeMock).toHaveBeenNthCalledWith(2, 'get_piui_service_status', {
-      envVars: { PIUI_USE_SYSTEM_PI: '1' },
+    expect(invokeMock).toHaveBeenNthCalledWith(1, 'stop_ompiui_service')
+    expect(invokeMock).toHaveBeenNthCalledWith(2, 'get_ompiui_service_status', {
+      envVars: { OMPIUI_USE_SYSTEM_PI: '1' },
     })
   })
 })
