@@ -20,6 +20,7 @@ test("server config validates ports and parses web flags", () => {
   assert.equal(config.host, "127.0.0.1")
   assert.equal(config.port, 8787)
   assert.equal(config.webRoot, null)
+  assert.equal(config.publicBaseUrl, null)
   assert.throws(() => resolveServerConfig({ OMPIUI_PORT: "invalid" }, { webRoot: null }), /OMPIUI_PORT/)
   assert.deepEqual(parseWebArgs(["--host", "0.0.0.0", "--port=9000", "--api-only"]), {
     help: false,
@@ -27,7 +28,31 @@ test("server config validates ports and parses web flags", () => {
     port: 9000,
     webRoot: null,
   })
+  assert.equal(parseWebArgs(["--public-base-url", "https://panel.example.com"]).publicBaseUrl, "https://panel.example.com")
   assert.throws(() => parseWebArgs(["--unknown"]), /unknown|requires/)
+})
+
+test("public base URL is normalized; invalid values are ignored", () => {
+  // 结尾斜杠与首尾空白规范化
+  const config = resolveServerConfig({ OMPIUI_PUBLIC_BASE_URL: " https://panel.example.com/ " }, { webRoot: null })
+  assert.equal(config.publicBaseUrl, "https://panel.example.com")
+  // 子路径反代保留路径
+  const nested = resolveServerConfig({ OMPIUI_PUBLIC_BASE_URL: "https://omp.example.com/panel/" }, { webRoot: null })
+  assert.equal(nested.publicBaseUrl, "https://omp.example.com/panel")
+  // 显式 override（含禁用）优先于环境变量
+  assert.equal(
+    resolveServerConfig({ OMPIUI_PUBLIC_BASE_URL: "https://panel.example.com" }, { webRoot: null, publicBaseUrl: null }).publicBaseUrl,
+    null,
+  )
+  assert.equal(
+    resolveServerConfig({}, { webRoot: null, publicBaseUrl: "http://localhost:9999" }).publicBaseUrl,
+    "http://localhost:9999",
+  )
+  // 非法输入不炸启动：告警 + 视为未设置
+  for (const invalid of ["not a url", "ftp://panel.example.com", "javascript:alert(1)"]) {
+    assert.equal(resolveServerConfig({ OMPIUI_PUBLIC_BASE_URL: invalid }, { webRoot: null }).publicBaseUrl, null)
+  }
+  assert.equal(resolveServerConfig({}, { webRoot: null }).publicBaseUrl, null)
 })
 
 test("one server provides the web app and authenticated API on the same port", async () => {

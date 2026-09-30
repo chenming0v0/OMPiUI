@@ -7,7 +7,7 @@ import type { Server as HttpServer } from "node:http"
 import { authTokenPath, ensureCursorSecretEnv, resolveAuthToken } from "./host/auth-token.ts"
 import { enableFileLogging, logToFile } from "./logger.ts"
 import { RuntimeSupervisor } from "./omp/supervisor.ts"
-import { createAppServer, firstLanAddress } from "./http.ts"
+import { createAppServer, firstLanAddress, normalizePublicBaseUrl } from "./http.ts"
 import { shutdownAppServer } from "./shutdown.ts"
 import { attachEventWebSocket } from "./ws.ts"
 
@@ -18,6 +18,12 @@ export interface ServerConfig {
   driver: ReturnType<typeof getDriverMode>
   webRoot: string | null
   authToken?: string
+  /**
+   * 对外展示的公网基址（OMPIUI_PUBLIC_BASE_URL / --public-base-url），已
+   * 规范化（无结尾斜杠）。设置后分享链接、启动日志和 Origin 白名单都以它
+   * 为准；仍需运营者自行部署反向代理/隧道把它指到本服务，并建议 HTTPS。
+   */
+  publicBaseUrl: string | null
 }
 
 export interface ServerConfigOverrides {
@@ -26,6 +32,7 @@ export interface ServerConfigOverrides {
   webRoot?: string | null
   authToken?: string
   shutdownTimeoutMs?: number
+  publicBaseUrl?: string | null
   /**
    * 是否以 self-spawn 方式孵化 worker（bun 打包的单文件 exe 无法 fork，
    * worker = 同一个 exe 加 --omp-worker 再拉一个自己）。由 bundle-entry
@@ -64,6 +71,16 @@ export function resolveServerConfig(
     ? requestedShutdownTimeout
     : DEFAULT_SHUTDOWN_TIMEOUT_MS
   const explicitWebRoot = overrides.webRoot === undefined ? env.OMPIUI_WEB_ROOT?.trim() : overrides.webRoot
+  const rawPublicBaseUrl = overrides.publicBaseUrl !== undefined
+    ? overrides.publicBaseUrl
+    : env.OMPIUI_PUBLIC_BASE_URL?.trim() || null
+  const publicBaseUrl = normalizePublicBaseUrl(rawPublicBaseUrl)
+  if (rawPublicBaseUrl && !publicBaseUrl) {
+    console.warn(
+      `[ompiui-server] ignoring invalid public base URL: ${String(rawPublicBaseUrl).trim()} ` +
+        "(expected an http(s) URL, e.g. https://panel.example.com)",
+    )
+  }
 
   return {
     host,
@@ -72,6 +89,7 @@ export function resolveServerConfig(
     driver: getDriverMode(env),
     webRoot: explicitWebRoot === null ? null : explicitWebRoot || resolveWebRoot() || null,
     authToken: overrides.authToken,
+    publicBaseUrl,
   }
 }
 
@@ -93,6 +111,7 @@ export function parseWebArgs(args: string[]): WebCliOptions {
     if (name === "--host") options.host = value
     else if (name === "--port") options.port = parsePort(value)
     else if (name === "--web-root") options.webRoot = value
+    else if (name === "--public-base-url") options.publicBaseUrl = value
     else throw new Error(`unknown web option: ${arg}`)
   }
   return options
@@ -106,6 +125,9 @@ Options:
   --port <port>       Listen port (default: 8787)
   --web-root <path>   Serve a specific web build directory
   --api-only          Disable SPA hosting while keeping the same service
+  --public-base-url <url>  Public entry URL (e.g. https://panel.example.com)
+                      used for share links and logs; a reverse proxy or
+                      tunnel must forward it to this server (HTTPS advised)
   -h, --help          Show this help`)
 }
 
@@ -127,7 +149,7 @@ export async function startOmpiUiServer(
   let shutdownHook: (() => Promise<void>) | undefined
   const app = createAppServer({
     authToken,
-    share: { host: config.host, port: config.port },
+    share: { host: config.host, port: config.port, publicBaseUrl: config.publicBaseUrl },
     staticRoot: config.webRoot ?? undefined,
     onShutdown: () => shutdownHook?.(),
     supervisor: new RuntimeSupervisor({
@@ -137,6 +159,7 @@ export async function startOmpiUiServer(
   const eventServer = attachEventWebSocket(app.server, {
     eventHub: app.eventHub,
     authToken,
+    allowedOrigin: config.publicBaseUrl,
     terminalManager: app.terminals,
     onSubscribe: send => {
       const snapshot = app.sessionHost.getActivitySnapshot()
@@ -202,8 +225,14 @@ export async function startOmpiUiServer(
       : `[ompiui-server] auth token at ${authTokenPath()}`,
   )
   const lanHost = config.host === "0.0.0.0" || config.host === "::" ? firstLanAddress() ?? config.host : config.host
-  if (config.webRoot) console.info(`[ompiui-server] web client: http://${lanHost}:${config.port}/?token=${encodeURIComponent(authToken)}`)
-  if (config.host !== "127.0.0.1" && config.host !== "::1" && config.host !== "localhost") {
+  if (config.webRoot) console.info(`[ompiui-server] web client: ${config.publicBaseUrl ?? `http://${lanHost}:${config.port}`}/?token=${encodeURIComponent(authToken)}`)
+  if (config.publicBaseUrl) {
+    console.info(
+      `[ompiui-server] public sharing via ${config.publicBaseUrl} — a reverse proxy/tunnel must forward it to ` +
+        `http://${config.host}:${config.port} (HTTPS strongly recommended); ` +
+        "anyone holding the link can read the workspace, open terminals, run commands and drive the agent",
+    )
+  } else if (config.host !== "127.0.0.1" && config.host !== "::1" && config.host !== "localhost") {
     console.info(`[ompiui-server] LAN sharing enabled at http://${lanHost}:${config.port}`)
   }
 
