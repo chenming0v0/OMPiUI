@@ -10,6 +10,7 @@ import type {
 } from "@ompiui/protocol"
 import { isJsonObject } from "@ompiui/protocol"
 import { entriesPageFromEntries, sessionHeadFromParts, type BranchCheckpoint, type EntriesPage, type LiveMessage, type SessionHead } from "../runtime/pagination.js"
+import { buildSessionTreeFromEntries } from "../runtime/session-tree.js"
 import type { PiEventMeta, SessionRuntime, Unsubscribe } from "../runtime.js"
 import { normalizeCwd, resolveUserPath } from "./omp-catalog.js"
 import { OmpExtensionUiBridge } from "./omp-extension-ui.js"
@@ -612,12 +613,9 @@ export class OmpRpcSession implements SessionRuntime {
 
   async getTree(): Promise<JsonValue> {
     await this.ensureSynced()
-    return this.entries.map(entry => ({
-      id: entry.id,
-      parentId: entry.parentId,
-      type: entry.type ?? "unknown",
-      timestamp: entry.timestamp,
-    }))
+    // SDK getTree() 语义：整棵树（含所有分支）的嵌套 { entry, children }，
+    // 前端 sessionTreeGraph 按该形状消费（issue #10）
+    return buildSessionTreeFromEntries(this.entries.map(entry => toJsonObject(entry)))
   }
 
   async getAttachment(entryId: string, blockIndex: number): Promise<JsonObject> {
