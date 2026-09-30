@@ -165,6 +165,16 @@ jobs:
           java-version: 17
 
       - uses: android-actions/setup-android@v3
+        with:
+          # action 自带的许可接受步骤会在计算 updates 时被 runner 镜像里遗留的
+          # 过时 tools 包卡死（"Failed to find package 'tools'"，退出码 1），
+          # 关掉后由下一步手动接受
+          accept-android-sdk-licenses: false
+
+      - name: Accept Android SDK licenses
+        run: |
+          rm -rf "$ANDROID_HOME/tools"
+          yes | sdkmanager --licenses > /dev/null
 
       - name: Drop Windows-only patch
         run: rm -f patches/@lydell+node-pty-win32-x64+*.patch
