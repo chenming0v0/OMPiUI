@@ -1,6 +1,11 @@
 node_modules/
 dist/
 build/
+# 打包用的应用图标必须入库，不被上面通用的 build/ 规则误伤
+!packages/app/assets/build/
+packages/app/assets/build/*
+!packages/app/assets/build/pi.ico
+!packages/app/assets/build/pi-256.png
 *.log
 .DS_Store
 Thumbs.db
