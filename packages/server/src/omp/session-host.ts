@@ -608,6 +608,11 @@ export class SessionHost {
       this.hub.publish({ kind: "provider", id: providerId }, "provider.auth", event.event)
       return
     }
+    if (event.channel === "models.updated") {
+      // models.yml 变更是全局的：发在 server 流上，前端模型选择器和管理页都订阅它
+      this.hub.publish({ kind: "server", id: "server" }, "models.updated", event.event)
+      return
+    }
     if (event.channel === "packages.progress") {
       this.hub.publish({ kind: "server", id: "server" }, "packages.progress", event.event)
       return

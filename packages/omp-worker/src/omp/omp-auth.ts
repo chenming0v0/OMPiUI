@@ -17,6 +17,7 @@ export class OmpProviderAuth implements ProviderAuthGateway {
   private readonly listeners = new Set<(event: ProviderAuthEvent) => void>()
   private readonly flows = new Map<string, { providerId: string; client: OmpRpcClient }>()
   private boundClient: OmpRpcClient | undefined
+  private invalidatePending = false
 
   constructor(private readonly acquire: () => Promise<OmpRpcClient>) {}
 
@@ -111,14 +112,14 @@ export class OmpProviderAuth implements ProviderAuthGateway {
     this.flows.set(flowId, { providerId, client })
     // login 是异步流程：立即返回 flowId，结果经 provider.auth 事件通知
     void client.request({ type: "login", providerId }, 300_000).then(response => {
-      this.flows.delete(flowId)
+      this.finishFlow(flowId)
       if (response.success) {
         this.emit({ type: "completed", flowId, providerId })
       } else {
         this.emit({ type: "failed", flowId, providerId, message: response.error ?? "login failed" })
       }
     }).catch(error => {
-      this.flows.delete(flowId)
+      this.finishFlow(flowId)
       this.emit({ type: "failed", flowId, providerId, message: error instanceof Error ? error.message : String(error) })
     })
     return { flowId, providerId }
@@ -134,8 +135,35 @@ export class OmpProviderAuth implements ProviderAuthGateway {
   cancel(flowId: string): void {
     const flow = this.flows.get(flowId)
     if (!flow) return
-    this.flows.delete(flowId)
+    this.finishFlow(flowId)
     this.emit({ type: "cancelled", flowId, providerId: flow.providerId })
+  }
+
+  /**
+   * models.yml 变更后由 watcher 调用：丢弃缓存的 bound client 并关掉旧
+   * 进程（长驻 omp 只在启动时读 models.yml），下一次命令拉起新进程重读。
+   * 有进行中的登录流时推迟到流结束——登录请求挂在当前进程上，立即作废
+   * 会误伤 OAuth。
+   */
+  async invalidate(): Promise<void> {
+    if (this.flows.size > 0) {
+      this.invalidatePending = true
+      return
+    }
+    await this.invalidateNow()
+  }
+
+  private async invalidateNow(): Promise<void> {
+    this.invalidatePending = false
+    const client = this.boundClient
+    this.boundClient = undefined
+    if (client) await client.close().catch(() => undefined)
+  }
+
+  /** 登录流结束的公共出口：流计数清零时放行挂起的作废请求 */
+  private finishFlow(flowId: string): void {
+    this.flows.delete(flowId)
+    if (this.invalidatePending && this.flows.size === 0) void this.invalidateNow()
   }
 
   async logout(_providerId: string): Promise<void> {
@@ -174,6 +202,10 @@ export class OmpProviderAuth implements ProviderAuthGateway {
   }
 
   async reloadConfig(): Promise<void> {
+    // 长驻进程不会因 models.yml 改动而重读（config.yml 才有进程内热加载）：
+    // 只是对同一进程再发一次 get_available_models 拿到的还是旧列表。先作废
+    // bound client，ensureBound 拉起新进程，这次查询才能看到新增模型。
+    await this.invalidate()
     const client = await this.ensureBound()
     await client.request({ type: "get_available_models" }, 60_000).catch(() => undefined)
   }
