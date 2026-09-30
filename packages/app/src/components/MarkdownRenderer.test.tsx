@@ -654,7 +654,7 @@ $$`
     render(<MarkdownRenderer content={`<a href="${filePath}">file.ts</a>`} />)
 
     const link = screen.getByRole('link', { name: 'file.ts' })
-    expect(link).toHaveAttribute('href', `#piui-local-file:${encodeURIComponent(filePath)}`)
+    expect(link).toHaveAttribute('href', `#ompiui-local-file:${encodeURIComponent(filePath)}`)
     expect(link).toHaveAttribute('title', filePath)
   })
 
@@ -934,7 +934,7 @@ $$`
     expect(frame.getAttribute('srcdoc')).toContain('Content-Security-Policy')
     expect(frame.getAttribute('srcdoc')).toContain('name="viewport" content="width=device-width, initial-scale=1"')
     expect(frame.getAttribute('srcdoc')).toContain('overflow:hidden')
-    expect(frame.getAttribute('srcdoc')).toContain('piui-html-resize')
+    expect(frame.getAttribute('srcdoc')).toContain('omompiui-html-resize')
     expect(frame).not.toHaveAttribute('scrolling')
     expect(frame.parentElement?.parentElement?.className).toContain('overflow-x-auto')
     expect(frame.parentElement?.parentElement?.className).toContain('code-scrollbar')
@@ -977,7 +977,7 @@ $$`
 
     window.dispatchEvent(
       new MessageEvent('message', {
-        data: { type: 'piui-html-resize', id: resizeId, height: 180, width: 1200 },
+        data: { type: 'omompiui-html-resize', id: resizeId, height: 180, width: 1200 },
         source: frame.contentWindow,
       }),
     )
@@ -999,7 +999,7 @@ $$`
     Object.defineProperty(scrollport, 'clientWidth', { configurable: true, value: 360 })
     window.dispatchEvent(
       new MessageEvent('message', {
-        data: { type: 'piui-html-resize', id: resizeId, height: 180, width: 1200 },
+        data: { type: 'omompiui-html-resize', id: resizeId, height: 180, width: 1200 },
         source: frame.contentWindow,
       }),
     )
@@ -1010,7 +1010,7 @@ $$`
     Object.defineProperty(scrollport, 'clientWidth', { configurable: true, value: 1300 })
     window.dispatchEvent(
       new MessageEvent('message', {
-        data: { type: 'piui-html-resize', id: resizeId, height: 180, width: 1200 },
+        data: { type: 'omompiui-html-resize', id: resizeId, height: 180, width: 1200 },
         source: frame.contentWindow,
       }),
     )
@@ -1030,7 +1030,7 @@ $$`
 
     window.dispatchEvent(
       new MessageEvent('message', {
-        data: { type: 'piui-html-resize', id: resizeId, height: 480, width: 320 },
+        data: { type: 'omompiui-html-resize', id: resizeId, height: 480, width: 320 },
         source: frame.contentWindow,
       }),
     )
@@ -1040,7 +1040,7 @@ $$`
 
     window.dispatchEvent(
       new MessageEvent('message', {
-        data: { type: 'piui-html-resize', id: resizeId, height: 160, width: 320 },
+        data: { type: 'omompiui-html-resize', id: resizeId, height: 160, width: 320 },
         source: frame.contentWindow,
       }),
     )
@@ -1073,7 +1073,7 @@ $$`
 
     window.dispatchEvent(
       new MessageEvent('message', {
-        data: { type: 'piui-html-interaction', id: resizeId },
+        data: { type: 'omompiui-html-interaction', id: resizeId },
         source: (frame as HTMLIFrameElement).contentWindow,
       }),
     )
@@ -1099,7 +1099,7 @@ $$`
 
     await waitFor(() => {
       expect(screen.getByTitle('HTML preview')).toHaveStyle({ colorScheme: 'dark' })
-      expect(postMessage).toHaveBeenCalledWith({ type: 'piui-html-theme', theme: 'dark' }, '*')
+      expect(postMessage).toHaveBeenCalledWith({ type: 'omompiui-html-theme', theme: 'dark' }, '*')
     })
     expect(screen.getByTitle('HTML preview')).toBe(lightFrame)
     expect(lightFrame.getAttribute('srcdoc')).toBe(initialSrcDoc)
@@ -1115,15 +1115,15 @@ $$`
 
     const frame = screen.getByTitle('HTML preview')
     expect(frame).toHaveAttribute('sandbox', 'allow-scripts')
-    expect(frame.getAttribute('srcdoc')).toContain('piui-html-stream')
+    expect(frame.getAttribute('srcdoc')).toContain('omompiui-html-stream')
     expect(frame.getAttribute('srcdoc')).toContain('name="viewport" content="width=device-width, initial-scale=1"')
     expect(frame.getAttribute('srcdoc')).toContain('overflow:hidden')
-    expect(frame.getAttribute('srcdoc')).toContain('piui-html-measure')
-    expect(frame.getAttribute('srcdoc')).toContain('piui-html-resize')
+    expect(frame.getAttribute('srcdoc')).toContain('omompiui-html-measure')
+    expect(frame.getAttribute('srcdoc')).toContain('omompiui-html-resize')
     expect(frame).not.toHaveAttribute('scrolling')
     expect(frame.parentElement?.parentElement?.className).toContain('overflow-x-auto')
     expect(frame.getAttribute('srcdoc')).toContain('scriptQueue')
-    expect(frame.getAttribute('srcdoc')).toContain('data-piui-script-executed')
+    expect(frame.getAttribute('srcdoc')).toContain('data-ompiui-script-executed')
     expect(frame.getAttribute('srcdoc')).not.toContain('window.bad')
     expect(screen.queryByTestId('code-block')).not.toBeInTheDocument()
   })
@@ -1197,7 +1197,7 @@ $$`
 
   it('keeps React code and table renderers when reference definitions are present', () => {
     const content = [
-      '[PiUI][docs]',
+      '[OMPiUI][docs]',
       '',
       '```ts',
       'const x = 1',
@@ -1212,7 +1212,7 @@ $$`
 
     render(<MarkdownRenderer content={content} />)
 
-    expect(screen.getByRole('link', { name: 'PiUI' })).toHaveAttribute('href', 'https://example.com/docs')
+    expect(screen.getByRole('link', { name: 'OMPiUI' })).toHaveAttribute('href', 'https://example.com/docs')
     expect(screen.getByTestId('code-block')).toHaveTextContent('ts:const x = 1')
     expect(screen.getByRole('table')).toBeInTheDocument()
     expect(screen.getByTestId('copy-button')).toBeInTheDocument()
@@ -1484,7 +1484,7 @@ $$`
     render(<MarkdownRenderer content={`[conversation.ts](${filePath})`} />)
 
     const link = screen.getByRole('link', { name: 'conversation.ts' })
-    expect(link).toHaveAttribute('href', `#piui-local-file:${encodeURIComponent(filePath)}`)
+    expect(link).toHaveAttribute('href', `#ompiui-local-file:${encodeURIComponent(filePath)}`)
     expect(link).toHaveAttribute('title', filePath)
     expect(screen.queryByText(/\[blocked\]/)).not.toBeInTheDocument()
   })
@@ -1494,7 +1494,7 @@ $$`
     render(<MarkdownRenderer content={`[script.js](${filePath})`} />)
 
     const link = screen.getByRole('link', { name: 'script.js' })
-    expect(link).toHaveAttribute('href', `#piui-local-file:${encodeURIComponent(filePath)}`)
+    expect(link).toHaveAttribute('href', `#ompiui-local-file:${encodeURIComponent(filePath)}`)
     expect(link).toHaveAttribute('title', filePath)
     expect(screen.queryByText(/\[blocked\]/)).not.toBeInTheDocument()
   })

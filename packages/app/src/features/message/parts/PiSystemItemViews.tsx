@@ -9,7 +9,7 @@ import type {
   PiTimelineItem,
   PiToolExecution,
   PiUnknownItem,
-} from '../../../pi/domain/index.js'
+} from '../../../omp/domain/index.js'
 import { MarkdownRenderer } from '../../../components/MarkdownRenderer'
 import { ChevronDownIcon } from '../../../components/Icons'
 import { useUiDisclosureState } from '../../../utils/uiDisclosureState'

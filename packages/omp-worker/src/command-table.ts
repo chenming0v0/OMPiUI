@@ -305,7 +305,7 @@ export function isReplacementCommand(type: string): boolean {
 
 /**
  * 扩展命令/工具的按名路由：唯一事实源是 Pi 运行时自己的注册表
- * （loader.getExtensions 的结果），PiUI 不做第二份镜像。静态表未命中的
+ * （loader.getExtensions 的结果），OMPiUI 不做第二份镜像。静态表未命中的
  * 命令先在这里查，注册过就原生分发（invokeCommand / invokeTool）。
  */
 export function resolveExtensionTarget(registry: RegistrySnapshot, type: string): "command" | "tool" | undefined {
@@ -332,7 +332,7 @@ export function createRegistryDescribeCapability(): PiCapability {
   return {
     name: "registry.describe",
     scope: "global",
-    source: "piui-adapter",
+    source: "ompiui-adapter",
     description: "Describe registered Pi capabilities exposed by this worker",
     paramsSchema: { type: "object", additionalProperties: false, properties: {} },
     queue: "immediate",

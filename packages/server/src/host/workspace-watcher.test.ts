@@ -16,7 +16,7 @@ afterEach(() => {
 
 describe("WorkspaceWatcher", () => {
   it("publishes batched file and Git invalidation events", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "piui-watch-"))
+    const root = mkdtempSync(path.join(tmpdir(), "ompiui-watch-"))
     roots.push(root)
     mkdirSync(path.join(root, ".git"))
     mkdirSync(path.join(root, ".git", "refs", "heads"), { recursive: true })
@@ -59,12 +59,12 @@ describe("WorkspaceWatcher", () => {
   })
 
   it("observes Git metadata stored outside a linked worktree", async () => {
-    const main = mkdtempSync(path.join(tmpdir(), "piui-watch-main-"))
+    const main = mkdtempSync(path.join(tmpdir(), "ompiui-watch-main-"))
     const worktree = `${main}-linked`
     roots.push(main, worktree)
     git(main, "init", "-b", "main")
     git(main, "config", "user.name", "PiUI Test")
-    git(main, "config", "user.email", "piui@example.invalid")
+    git(main, "config", "user.email", "ompiui@example.invalid")
     writeFileSync(path.join(main, "tracked.txt"), "base\n")
     git(main, "add", "tracked.txt")
     git(main, "commit", "-m", "initial")
@@ -92,7 +92,7 @@ describe("WorkspaceWatcher", () => {
   })
 
   it("skips the recursive watcher when the tree exceeds the directory cap", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "piui-watch-big-"))
+    const root = mkdtempSync(path.join(tmpdir(), "ompiui-watch-big-"))
     roots.push(root)
     const cap = 10
     for (let index = 0; index < cap + 5; index++) mkdirSync(path.join(root, `d${index}`), { recursive: true })
@@ -111,7 +111,7 @@ describe("WorkspaceWatcher", () => {
   })
 
   it("still watches trees within the directory cap", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "piui-watch-ok-"))
+    const root = mkdtempSync(path.join(tmpdir(), "ompiui-watch-ok-"))
     roots.push(root)
     mkdirSync(path.join(root, "src", "nested"), { recursive: true })
     mkdirSync(path.join(root, "node_modules", "pkg"), { recursive: true })
@@ -128,7 +128,7 @@ describe("WorkspaceWatcher", () => {
   })
 
   it("counts watchable directories with the same skip rules as the watcher", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "piui-watch-count-"))
+    const root = mkdtempSync(path.join(tmpdir(), "ompiui-watch-count-"))
     roots.push(root)
     mkdirSync(path.join(root, "src", "nested"), { recursive: true })
     mkdirSync(path.join(root, "node_modules", "pkg"), { recursive: true })

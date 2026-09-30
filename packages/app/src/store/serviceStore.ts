@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react'
 
-const STORAGE_KEY_AUTO_START = 'piui-auto-start-service'
-const STORAGE_KEY_ENV_VARS = 'piui-service-env-vars'
+const STORAGE_KEY_AUTO_START = 'ompiui-auto-start-service'
+const STORAGE_KEY_ENV_VARS = 'ompiui-service-env-vars'
 
 export interface EnvVar {
   key: string
@@ -14,12 +14,12 @@ export interface ServiceSettingsBackup {
 }
 
 export const SERVICE_ENV_EXAMPLES: EnvVar[] = [
-  { key: 'PIUI_SDK_PATH', value: '/path/to/pi-coding-agent' },
+  { key: 'OMPIUI_SDK_PATH', value: '/path/to/pi-coding-agent' },
   { key: 'PI_CODING_AGENT_DIR', value: '~/.pi/agent' },
   { key: 'PI_CODING_AGENT_SESSION_DIR', value: '~/.pi/agent/sessions' },
   { key: 'HTTPS_PROXY', value: 'http://127.0.0.1:7890' },
-  { key: 'PIUI_HOST', value: '0.0.0.0' },
-  { key: 'PIUI_PORT', value: '8787' },
+  { key: 'OMPIUI_HOST', value: '0.0.0.0' },
+  { key: 'OMPIUI_PORT', value: '8787' },
 ]
 
 interface ServiceStoreSnapshot {
@@ -50,8 +50,19 @@ class ServiceStore {
     try {
       const raw = localStorage.getItem(STORAGE_KEY_ENV_VARS)
       const parsed = raw ? JSON.parse(raw) : []
+      // 改名前存量条目里的 PIUI_ 前缀跟随环境变量更名（PIUI_EMBEDDED 是与
+      // omp CLI 的既有约定，不在此列）；重名时保留先出现的
       this._envVars = Array.isArray(parsed)
-        ? parsed.filter(item => item && typeof item.key === 'string' && typeof item.value === 'string')
+        ? parsed
+            .filter(item => item && typeof item.key === 'string' && typeof item.value === 'string')
+            .map(item => ({
+              key:
+                item.key === 'PIUI_EMBEDDED' || !item.key.startsWith('PIUI_')
+                  ? item.key
+                  : `OMPIUI_${item.key.slice('PIUI_'.length)}`,
+              value: item.value,
+            }))
+            .filter((item, index, all) => all.findIndex(other => other.key === item.key) === index)
         : []
     } catch {
       this._envVars = []
@@ -69,7 +80,7 @@ class ServiceStore {
 
   get useSystemPiSdk() {
     return this._envVars.some(
-      item => item.key.trim().toUpperCase() === 'PIUI_USE_SYSTEM_PI' && item.value.trim() === '1',
+      item => item.key.trim().toUpperCase() === 'OMPIUI_USE_SYSTEM_PI' && item.value.trim() === '1',
     )
   }
 
@@ -100,8 +111,8 @@ class ServiceStore {
   }
 
   setUseSystemPiSdk(value: boolean) {
-    const envVars = this._envVars.filter(item => item.key.trim().toUpperCase() !== 'PIUI_USE_SYSTEM_PI')
-    if (value) envVars.push({ key: 'PIUI_USE_SYSTEM_PI', value: '1' })
+    const envVars = this._envVars.filter(item => item.key.trim().toUpperCase() !== 'OMPIUI_USE_SYSTEM_PI')
+    if (value) envVars.push({ key: 'OMPIUI_USE_SYSTEM_PI', value: '1' })
     this.setEnvVars(envVars)
   }
 

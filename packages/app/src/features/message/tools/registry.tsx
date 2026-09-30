@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
-import type { ToolResultMessage } from '../../../pi/vendor/pi-ai'
+import type { ToolResultMessage } from '../../../omp/vendor/pi-ai'
 import i18n from '../../../i18n'
-import type { PiToolExecution } from '../../../pi/domain/index.js'
+import type { PiToolExecution } from '../../../omp/domain/index.js'
 import type { ToolConfig, ToolRegistry, ExtractedToolData, DiagnosticInfo } from './types'
 import { BashRenderer, QuestionRenderer } from './renderers'
 import {

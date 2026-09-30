@@ -1,8 +1,8 @@
 [package]
-name = "piui"
+name = "ompiui"
 version = "0.1.0"
-description = "PiUI desktop client"
-authors = ["PiUI contributors"]
+description = "OMPiUI desktop client"
+authors = ["OMPiUI contributors"]
 license = "GPL-3.0-only"
 repository = ""
 edition = "2021"
@@ -10,7 +10,7 @@ rust-version = "1.85.0"
 
 [lib]
 crate-type = ["cdylib", "rlib", "staticlib"]
-name = "piui_lib"
+name = "ompiui_lib"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

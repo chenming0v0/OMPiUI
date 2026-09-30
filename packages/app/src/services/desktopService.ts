@@ -54,17 +54,17 @@ async function withOperation<T>(operation: () => Promise<T>): Promise<T> {
 
 export async function refreshDesktopServiceStatus(): Promise<DesktopServiceStatus> {
   const invoke = await getInvoke()
-  return applyStatus(await invoke<DesktopServiceStatus>('get_piui_service_status', environmentArgs()))
+  return applyStatus(await invoke<DesktopServiceStatus>('get_ompiui_service_status', environmentArgs()))
 }
 
 async function startOrRestartDesktopService(
-  command: 'start_piui_service' | 'restart_piui_service',
+  command: 'start_ompiui_service' | 'restart_ompiui_service',
 ): Promise<DesktopServiceStartOutcome> {
   return withOperation(async () => {
     const invoke = await getInvoke()
     const result = await invoke<DesktopServiceStartResult>(command, environmentArgs())
     if (!result.url || !result.token) {
-      throw new Error('PiUI server did not return a usable URL and auth token')
+      throw new Error('OMPiUI server did not return a usable URL and auth token')
     }
     applyLocalServerConfig(result.url, result.token)
     serviceStore.setRunning(true)
@@ -74,17 +74,17 @@ async function startOrRestartDesktopService(
 }
 
 export function startDesktopService(): Promise<DesktopServiceStartOutcome> {
-  return startOrRestartDesktopService('start_piui_service')
+  return startOrRestartDesktopService('start_ompiui_service')
 }
 
 export function restartDesktopService(): Promise<DesktopServiceStartOutcome> {
-  return startOrRestartDesktopService('restart_piui_service')
+  return startOrRestartDesktopService('restart_ompiui_service')
 }
 
 export function stopDesktopService(): Promise<DesktopServiceStatus> {
   return withOperation(async () => {
     const invoke = await getInvoke()
-    await invoke('stop_piui_service')
+    await invoke('stop_ompiui_service')
     serviceStore.setRunning(false)
     serviceStore.setStartedByUs(false)
     return refreshDesktopServiceStatus()

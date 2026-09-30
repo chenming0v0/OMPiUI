@@ -1,19 +1,19 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { JsonObject } from '@ompiui/protocol'
-import type { PiProjectTrust, PiSettingsSnapshot } from '../../../pi/domain'
-import type { HostWorkspace } from '../../../pi/workspaces'
+import type { PiProjectTrust, PiSettingsSnapshot } from '../../../omp/domain'
+import type { HostWorkspace } from '../../../omp/workspaces'
 import { Button } from '../../../components/ui/Button'
 import { JsonView } from '../../../components/JsonView'
 import { useCurrentDirectory } from '../../../hooks'
-import { useFocusedSessionId } from '../../../pi/hooks/index.js'
+import { useFocusedSessionId } from '../../../omp/hooks/index.js'
 import {
   getPiSettings,
   getProjectTrust,
   patchPiSettings,
   setProjectTrust,
-} from '../../../pi/transport/index.js'
-import { listHostWorkspaces, resolveWorkspacePath } from '../../../pi/workspaces'
+} from '../../../omp/transport/index.js'
+import { listHostWorkspaces, resolveWorkspacePath } from '../../../omp/workspaces'
 import {
   Toggle,
   SettingRow,

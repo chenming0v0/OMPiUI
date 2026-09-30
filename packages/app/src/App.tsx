@@ -31,14 +31,14 @@ import {
 } from './features/chat/chatViewport'
 import { isSameDirectory, collectActiveDirectories } from './utils'
 import { initNotificationSound } from './utils/notificationSoundBridge'
-import { usePiCapabilities } from './pi/capabilities'
+import { usePiCapabilities } from './omp/capabilities'
 import type { SettingsTab } from './features/settings/SettingsDialog'
 import { isTauri, isTauriMobile } from './utils/tauri'
 import { InternalDragLayer } from './components/InternalDragLayer'
 import { CloseServiceDialog } from './components/CloseServiceDialog'
 import { ProviderAuthDialogHost } from './features/settings/ProviderAuthDialogHost'
-import { trackPiSession } from './pi/piSessionIndex'
-import { piEventStream } from './pi/eventStream.js'
+import { trackPiSession } from './omp/ompSessionIndex'
+import { piEventStream } from './omp/eventStream.js'
 import { useSessionContext } from './contexts/useSessionContext'
 import { useCloseServiceDialog } from './hooks/useCloseServiceDialog'
 
@@ -145,8 +145,8 @@ function App() {
         navigateRouteToSession(detail.targetSessionId, detail.targetCwd ?? routeDirectory)
       }
     }
-    window.addEventListener('piui:session-replaced', handler)
-    return () => window.removeEventListener('piui:session-replaced', handler)
+    window.addEventListener('ompiui:session-replaced', handler)
+    return () => window.removeEventListener('ompiui:session-replaced', handler)
   }, [routeSessionId, routeDirectory, navigateRouteToSession])
 
   // URL -> focused pane session
@@ -588,7 +588,7 @@ function App() {
          layoutStore.toggleBottomPanel()
        },
        newTerminal: () => {
-         window.dispatchEvent(new Event('piui:new-terminal'))
+         window.dispatchEvent(new Event('ompiui:new-terminal'))
        },
       selectModel: () => focusedController?.openModelSelector(),
       toggleAgent: () => focusedController?.toggleAgent(),
@@ -751,7 +751,7 @@ function App() {
         description: t('commands:newTerminalDesc'),
         category: t('commands:categories.terminal'),
         shortcut: getShortcut('newTerminal'),
-        action: () => window.dispatchEvent(new Event('piui:new-terminal')),
+        action: () => window.dispatchEvent(new Event('ompiui:new-terminal')),
       },
       {
         id: 'selectModel',

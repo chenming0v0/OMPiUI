@@ -3,7 +3,7 @@ import { after, describe, it } from "node:test"
 
 // Parallel test files each spawn SDK workers; the default handshake budget
 // is too tight when several spawn at once on a loaded machine.
-process.env.PIUI_WORKER_HANDSHAKE_TIMEOUT_MS ??= "60000"
+process.env.OMPIUI_WORKER_HANDSHAKE_TIMEOUT_MS ??= "60000"
 
 import { WebSocket } from "ws"
 import { mkdtempSync, rmSync, existsSync } from "node:fs"
@@ -15,9 +15,9 @@ import { attachEventWebSocket, closeEventWebSocket } from "./ws.ts"
 import type { WebSocketServer } from "ws"
 
 // 测试进程的 session 租约目录放进独立临时目录，跑完即删，
-// 不污染默认的 piui-session-leases 命名空间。
-const leaseHome = mkdtempSync(path.join(tmpdir(), "piui-ws-leases-"))
-process.env.PIUI_SESSION_LEASE_DIR = leaseHome
+// 不污染默认的 ompiui-session-leases 命名空间。
+const leaseHome = mkdtempSync(path.join(tmpdir(), "ompiui-ws-leases-"))
+process.env.OMPIUI_SESSION_LEASE_DIR = leaseHome
 after(() => {
   rmSync(leaseHome, { recursive: true, force: true })
 })
@@ -58,9 +58,9 @@ describe("event websocket", () => {
   })
 
   it("streams native Pi events for a mock session end to end", async () => {
-    const mockHome = mkdtempSync(path.join(tmpdir(), "piui-ws-mock-"))
-    process.env.PIUI_MOCK_DIR = mockHome
-    process.env.PIUI_DRIVER = "mock"
+    const mockHome = mkdtempSync(path.join(tmpdir(), "ompiui-ws-mock-"))
+    process.env.OMPIUI_MOCK_DIR = mockHome
+    process.env.OMPIUI_DRIVER = "mock"
     const app = createAppServer({ authToken: null })
     const wss: WebSocketServer = attachEventWebSocket(app.server, { eventHub: app.eventHub, authToken: null })
     const port = await listen(app)
@@ -237,7 +237,7 @@ describe("event websocket", () => {
   })
 
   it("streams terminal replay, input, and exit frames through a one-time ticket", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "piui-ws-terminal-"))
+    const root = mkdtempSync(path.join(tmpdir(), "ompiui-ws-terminal-"))
     const app = createAppServer({ authToken: null })
     const wss: WebSocketServer = attachEventWebSocket(app.server, {
       eventHub: app.eventHub,
@@ -272,8 +272,8 @@ describe("event websocket", () => {
     )
     ws.on("message", data => frames.push(JSON.parse(String(data))))
     await waitFor(() => frames.some(frame => frame.type === "ready"))
-    ws.send(JSON.stringify({ type: "input", data: process.platform === "win32" ? "echo piui-ws\r\n" : "printf piui-ws\\n" }))
-    await waitFor(() => frames.some(frame => frame.type === "output" && frame.data.includes("piui-ws")))
+    ws.send(JSON.stringify({ type: "input", data: process.platform === "win32" ? "echo ompiui-ws\r\n" : "printf ompiui-ws\\n" }))
+    await waitFor(() => frames.some(frame => frame.type === "output" && frame.data.includes("ompiui-ws")))
     ws.send(JSON.stringify({ type: "input", data: process.platform === "win32" ? "exit\r\n" : "exit\n" }))
     await waitFor(() => frames.some(frame => frame.type === "exit"))
     assert.equal(frames[0]?.type, "hello")
@@ -282,7 +282,7 @@ describe("event websocket", () => {
   })
 
   it("cleans up terminals when a workspace is closed and reopened", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "piui-ws-terminal-close-"))
+    const root = mkdtempSync(path.join(tmpdir(), "ompiui-ws-terminal-close-"))
     const app = createAppServer({ authToken: null })
     const wss: WebSocketServer = attachEventWebSocket(app.server, {
       eventHub: app.eventHub,
@@ -321,7 +321,7 @@ describe("event websocket", () => {
   })
 
   it("reconnects to an exited terminal for replay and closes server-side", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "piui-ws-terminal-reexit-"))
+    const root = mkdtempSync(path.join(tmpdir(), "ompiui-ws-terminal-reexit-"))
     const app = createAppServer({ authToken: null })
     const wss: WebSocketServer = attachEventWebSocket(app.server, {
       eventHub: app.eventHub,

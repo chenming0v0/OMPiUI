@@ -15,7 +15,7 @@ export interface NotificationEventSettingsBackup {
 
 type Subscriber = () => void
 
-const STORAGE_KEY = 'piui:notification-event-settings'
+const STORAGE_KEY = 'ompiui:notification-event-settings'
 
 function createDefaultSettings(): NotificationEventSettings {
   return {

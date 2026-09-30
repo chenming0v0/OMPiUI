@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { Model, Api } from '../../../pi/vendor/pi-ai'
+import type { Model, Api } from '../../../omp/vendor/pi-ai'
 import { Button } from '../../../components/ui/Button'
 import { ModelSelector } from '../../chat/ModelSelector'
-import { useFocusedSessionId, usePiModels } from '../../../pi/hooks/index.js'
-import { refreshPiSessionState, setPiModel, setPiThinkingLevel } from '../../../pi/controllers/index.js'
-import { getPiModelRoles, setPiModelRoles } from '../../../pi/transport/index.js'
+import { useFocusedSessionId, usePiModels } from '../../../omp/hooks/index.js'
+import { refreshPiSessionState, setPiModel, setPiThinkingLevel } from '../../../omp/controllers/index.js'
+import { getPiModelRoles, setPiModelRoles } from '../../../omp/transport/index.js'
 import {
   getModelKey,
   getModelVariantPref,
@@ -20,7 +20,7 @@ const PI_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 
 const THINKING_LEVEL_SET: ReadonlySet<string> = new Set(PI_THINKING_LEVELS)
 
 /** 首选模型变化事件：聊天页监听后立即同步无会话时的 composer 展示。 */
-export const PREFERRED_MODEL_CHANGED_EVENT = 'piui:preferred-model-changed'
+export const PREFERRED_MODEL_CHANGED_EVENT = 'ompiui:preferred-model-changed'
 
 function emitPreferredModelChanged(modelKey: string | null) {
   window.dispatchEvent(new CustomEvent(PREFERRED_MODEL_CHANGED_EVENT, { detail: { modelKey } }))
@@ -62,7 +62,7 @@ const KIND_ROLE_DEFS: ModelRoleDef[] = [
 
 /** modelRoles 的值：provider/modelId[:thinking]，也允许 @role 等选择器（不在 UI 直接编辑） */
 function parseRoleValue(value: string | undefined): { provider: string; modelId: string; level: string } | null {
-  if (!value || value.startsWith('@') || value === '*' || value.startsWith('pi/')) return null
+  if (!value || value.startsWith('@') || value === '*' || value.startsWith('omp/')) return null
   const slash = value.indexOf('/')
   if (slash <= 0) return null
   const provider = value.slice(0, slash)
@@ -88,7 +88,7 @@ function formatRoleValue(provider: string, modelId: string, level: string): stri
 /**
  * 模型快捷配置 — 设置页里的默认模型 / 思考强度 / 功能角色 / 应用到当前会话。
  *
- * 默认模型落在 client 偏好存储（piui-preferred-model-key、piui-model-variant-prefs），
+ * 默认模型落在 client 偏好存储（ompiui-preferred-model-key、ompiui-model-variant-prefs），
  * 新会话首条消息发送前由 PiChatPane 应用；功能角色写入 OMP 的 modelRoles
  * 配置（经 worker 调 omp config CLI），改动由 OMP 文件监听自动重载。
  */

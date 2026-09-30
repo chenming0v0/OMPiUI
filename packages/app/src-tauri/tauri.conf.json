@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "PiUI",
+  "productName": "OMPiUI",
   "version": "0.1.0",
-  "identifier": "com.piui.app",
+  "identifier": "com.ompiui.app",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
@@ -15,7 +15,7 @@
       {
         "label": "main",
         "create": false,
-        "title": "PiUI",
+        "title": "OMPiUI",
         "visible": false,
         "width": 1280,
         "height": 820,

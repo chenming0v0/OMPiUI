@@ -11,14 +11,14 @@ import {
 } from '../../components/Icons'
 import { IconButton } from '../../components/ui'
 import { ModelSelector, type ModelSelectorHandle } from './ModelSelector'
-import { usePiCapabilities } from '../../pi/capabilities'
+import { usePiCapabilities } from '../../omp/capabilities'
 import { useLayoutStore, layoutStore } from '../../store/layoutStore'
 import { useSessionContext } from '../../contexts/useSessionContext'
-import { renamePiSession, loadPiSessions } from '../../pi/controllers/index.js'
-import { usePiSessionTitle } from '../../pi/hooks/index.js'
+import { renamePiSession, loadPiSessions } from '../../omp/controllers/index.js'
+import { usePiSessionTitle } from '../../omp/hooks/index.js'
 import { uiErrorHandler } from '../../utils'
 import { useChatViewport } from './chatViewport'
-import type { Model, Api } from '../../pi/vendor/pi-ai'
+import type { Model, Api } from '../../omp/vendor/pi-ai'
 
 type ModelInfo = Model<Api>
 

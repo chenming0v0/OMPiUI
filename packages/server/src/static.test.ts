@@ -7,7 +7,7 @@ import { PassThrough } from "node:stream"
 import { createStaticServer, resolveStaticPath } from "./static.ts"
 
 function withWebRoot(fn: (root: string) => void): void {
-  const root = mkdtempSync(join(tmpdir(), "piui-static-"))
+  const root = mkdtempSync(join(tmpdir(), "ompiui-static-"))
   try {
     writeFileSync(join(root, "index.html"), "<html>app</html>")
     mkdirSync(join(root, "assets"), { recursive: true })
@@ -36,7 +36,7 @@ test("resolveStaticPath keeps requests inside the root", () => {
 })
 
 test("createStaticServer is undefined without an index.html", () => {
-  const root = mkdtempSync(join(tmpdir(), "piui-static-empty-"))
+  const root = mkdtempSync(join(tmpdir(), "ompiui-static-empty-"))
   try {
     assert.equal(createStaticServer(root), undefined)
   } finally {
@@ -53,7 +53,7 @@ test("unknown client routes fall back to index.html", async () => {
 })
 
 test("fingerprinted assets get immutable caching, missing files return false", async () => {
-  const root = mkdtempSync(join(tmpdir(), "piui-static-"))
+  const root = mkdtempSync(join(tmpdir(), "ompiui-static-"))
   try {
     writeFileSync(join(root, "index.html"), "<html>app</html>")
     mkdirSync(join(root, "assets"), { recursive: true })
@@ -70,8 +70,8 @@ test("fingerprinted assets get immutable caching, missing files return false", a
 })
 
 test("static hosting rejects directory links that leave the web root", () => {
-  const root = mkdtempSync(join(tmpdir(), "piui-static-root-"))
-  const outside = mkdtempSync(join(tmpdir(), "piui-static-outside-"))
+  const root = mkdtempSync(join(tmpdir(), "ompiui-static-root-"))
+  const outside = mkdtempSync(join(tmpdir(), "ompiui-static-outside-"))
   try {
     writeFileSync(join(root, "index.html"), "<html>app</html>")
     writeFileSync(join(outside, "secret.txt"), "secret")
@@ -85,7 +85,7 @@ test("static hosting rejects directory links that leave the web root", () => {
 })
 
 async function withWebRootAsync(fn: (root: string) => Promise<void>): Promise<void> {
-  const root = mkdtempSync(join(tmpdir(), "piui-static-"))
+  const root = mkdtempSync(join(tmpdir(), "ompiui-static-"))
   try {
     writeFileSync(join(root, "index.html"), "<html>app</html>")
     mkdirSync(join(root, "assets"), { recursive: true })

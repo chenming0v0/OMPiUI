@@ -155,7 +155,7 @@ export const PI_COMMAND_SPECS = [
 ] as const satisfies readonly PiCommandSpec[]
 
 /**
- * 会话命令 → SessionRuntime 方法的绑定清单（PiUI 驱动层对 Pi 的能力接缝）。
+ * 会话命令 → SessionRuntime 方法的绑定清单（OMPiUI 驱动层对 Pi 的能力接缝）。
  * 这是"不手写第二份镜像"的关键：每条会话命令声明它驱动哪个驱动方法，
  * worker 启动时校验 RealPiSession 与 MockPiSession 都实现了它——加了命令
  * 忘实现（或反过来）会启动即炸，不允许静默漂移。

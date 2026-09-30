@@ -49,7 +49,7 @@ const MERMAID_SCALE_STEP = 0.15
 const MERMAID_CONTROL_BUTTON_BASE_CLASS =
   'inline-flex h-8 w-8 items-center justify-center rounded-md bg-bg-300/70 backdrop-blur-md transition-colors duration-150 hover:bg-bg-300/85 disabled:opacity-40 disabled:cursor-not-allowed'
 const MERMAID_CONTROL_BUTTON_CLASS = `${MERMAID_CONTROL_BUTTON_BASE_CLASS} text-text-400 hover:text-text-200`
-const LOCAL_FILE_LINK_PREFIX = '#piui-local-file:'
+const LOCAL_FILE_LINK_PREFIX = '#ompiui-local-file:'
 
 type DiagramPointer = { x: number; y: number }
 
@@ -785,7 +785,7 @@ function decodeLocalFileHrefInline(href?: string): string | null {
 }
 
 function createStreamingHtmlDocument(resizeId: string, theme: 'light' | 'dark'): string {
-  const themeHead = `<style id="piui-html-theme">${buildHtmlSandboxThemeCss(theme, 'hidden')}</style>`
+  const themeHead = `<style id="omompiui-html-theme">${buildHtmlSandboxThemeCss(theme, 'hidden')}</style>`
   const themeCss = JSON.stringify({
     light: buildHtmlSandboxThemeCss('light', 'hidden'),
     dark: buildHtmlSandboxThemeCss('dark', 'hidden'),
@@ -796,15 +796,15 @@ function createStreamingHtmlDocument(resizeId: string, theme: 'light' | 'dark'):
   (() => {
     const id = ${JSON.stringify(resizeId)};
     const themeCss = ${themeCss};
-    const measure = () => dispatchEvent(new Event('piui-html-measure'));
+    const measure = () => dispatchEvent(new Event('omompiui-html-measure'));
     let scheduledScripts = 0;
     let scriptQueue = Promise.resolve();
     const applyTheme = theme => {
       document.documentElement.style.colorScheme = theme;
       document.documentElement.dataset.theme = theme;
-      const style = document.getElementById('piui-html-theme');
+      const style = document.getElementById('omompiui-html-theme');
       if (style) style.textContent = themeCss[theme] || themeCss.light;
-      dispatchEvent(new CustomEvent('piui-theme-change', { detail: { theme } }));
+      dispatchEvent(new CustomEvent('omompiui-theme-change', { detail: { theme } }));
       dispatchEvent(new Event('resize'));
       measure();
     };
@@ -819,8 +819,8 @@ function createStreamingHtmlDocument(resizeId: string, theme: 'light' | 'dark'):
           attributes: Array.from(node.attributes).map(attr => [attr.name, attr.value]),
           text: node.textContent || ''
         });
-        node.setAttribute('data-piui-script-index', String(index));
-        node.setAttribute('type', 'application/x-piui-pending');
+        node.setAttribute('data-ompiui-script-index', String(index));
+        node.setAttribute('type', 'application/x-ompiui-pending');
       });
       doc.querySelectorAll('*').forEach(node => Array.from(node.attributes).forEach(attr => {
         if (/^(href|src|action|formaction)$/i.test(attr.name) && /^\\s*javascript:/i.test(attr.value)) node.removeAttribute(attr.name);
@@ -835,7 +835,7 @@ function createStreamingHtmlDocument(resizeId: string, theme: 'light' | 'dark'):
       const nextId = next.getAttribute('id');
       if (currentId || nextId) return currentId === nextId;
       if (current.nodeName === 'SCRIPT') {
-        return current.getAttribute('data-piui-script-index') === next.getAttribute('data-piui-script-index');
+        return current.getAttribute('data-ompiui-script-index') === next.getAttribute('data-ompiui-script-index');
       }
       return true;
     };
@@ -850,7 +850,7 @@ function createStreamingHtmlDocument(resizeId: string, theme: 'light' | 'dark'):
       }
       const currentElement = current;
       const nextElement = next;
-      if (currentElement.nodeName === 'SCRIPT' && currentElement.hasAttribute('data-piui-script-executed')) return;
+      if (currentElement.nodeName === 'SCRIPT' && currentElement.hasAttribute('data-ompiui-script-executed')) return;
       Array.from(currentElement.attributes).forEach(attr => {
         if (!nextElement.hasAttribute(attr.name)) currentElement.removeAttribute(attr.name);
       });
@@ -882,7 +882,7 @@ function createStreamingHtmlDocument(resizeId: string, theme: 'light' | 'dark'):
       while (currentElement.childNodes.length > nextChildren.length) currentElement.lastChild?.remove();
     };
     const patchHead = next => {
-      const currentNodes = Array.from(document.head.querySelectorAll('[data-piui-stream-head]'));
+      const currentNodes = Array.from(document.head.querySelectorAll('[data-ompiui-stream-head]'));
       const nextNodes = Array.from(next.head.querySelectorAll('style,link[rel="stylesheet"],script'));
       for (let index = 0; index < Math.max(currentNodes.length, nextNodes.length); index += 1) {
         const current = currentNodes[index];
@@ -890,7 +890,7 @@ function createStreamingHtmlDocument(resizeId: string, theme: 'light' | 'dark'):
         if (!candidate) current?.remove();
         else if (!current) {
           const added = clone(candidate);
-          added.setAttribute('data-piui-stream-head', '');
+          added.setAttribute('data-ompiui-stream-head', '');
           document.head.append(added);
         } else patch(current, candidate);
       }
@@ -900,16 +900,16 @@ function createStreamingHtmlDocument(resizeId: string, theme: 'light' | 'dark'):
         const descriptor = descriptors[index];
         scheduledScripts = index + 1;
         scriptQueue = scriptQueue.then(() => new Promise(resolve => {
-          const pending = document.querySelector('script[data-piui-script-index="' + index + '"]');
-          if (!pending || pending.hasAttribute('data-piui-script-executed')) {
+          const pending = document.querySelector('script[data-ompiui-script-index="' + index + '"]');
+          if (!pending || pending.hasAttribute('data-ompiui-script-executed')) {
             resolve();
             return;
           }
           const script = document.createElement('script');
           descriptor.attributes.forEach(([name, value]) => script.setAttribute(name, value));
-          script.setAttribute('data-piui-script-index', String(index));
-          script.setAttribute('data-piui-script-executed', '');
-          if (pending.hasAttribute('data-piui-stream-head')) script.setAttribute('data-piui-stream-head', '');
+          script.setAttribute('data-ompiui-script-index', String(index));
+          script.setAttribute('data-ompiui-script-executed', '');
+          if (pending.hasAttribute('data-ompiui-stream-head')) script.setAttribute('data-ompiui-stream-head', '');
           script.textContent = descriptor.text;
           const waitsForLoad = script.hasAttribute('src') || script.getAttribute('type') === 'module';
           if (script.hasAttribute('src') && !script.hasAttribute('async') && !script.hasAttribute('defer')) script.async = false;
@@ -925,11 +925,11 @@ function createStreamingHtmlDocument(resizeId: string, theme: 'light' | 'dark'):
     };
     addEventListener('message', event => {
       const data = event.data;
-      if (data?.type === 'piui-html-theme') {
+      if (data?.type === 'omompiui-html-theme') {
         applyTheme(data.theme);
         return;
       }
-      if (data?.type !== 'piui-html-stream' || data.id !== id || typeof data.html !== 'string') return;
+      if (data?.type !== 'omompiui-html-stream' || data.id !== id || typeof data.html !== 'string') return;
       const next = new DOMParser().parseFromString(data.html, 'text/html');
       const scriptCount = data.complete === true ? Number.MAX_SAFE_INTEGER : Math.max(0, Number(data.scriptCount) || 0);
       const descriptors = clean(next, scriptCount);
@@ -1034,7 +1034,7 @@ function MarkdownHtmlArtifact({
       ? Array.from(code.matchAll(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi)).length
       : Number.MAX_SAFE_INTEGER
     streamFrameRef.current?.contentWindow?.postMessage(
-      { type: 'piui-html-stream', id: resizeId, html: code, complete: !isIncomplete, scriptCount },
+      { type: 'omompiui-html-stream', id: resizeId, html: code, complete: !isIncomplete, scriptCount },
       '*',
     )
   }, [code, isIncomplete, resizeId, usesStreamBridge])
@@ -1044,7 +1044,7 @@ function MarkdownHtmlArtifact({
   }, [sendStreamingHtml])
 
   const sendTheme = useCallback(() => {
-    const message = { type: 'piui-html-theme', theme }
+    const message = { type: 'omompiui-html-theme', theme }
     streamFrameRef.current?.contentWindow?.postMessage(message, '*')
     canonicalFrameRef.current?.contentWindow?.postMessage(message, '*')
   }, [theme])
@@ -1082,11 +1082,11 @@ function MarkdownHtmlArtifact({
   useEffect(() => {
     const handleFrameMessage = (event: MessageEvent) => {
       const data = event.data
-      if (data?.type !== 'piui-html-interaction' && data?.type !== 'piui-html-resize') return
+      if (data?.type !== 'omompiui-html-interaction' && data?.type !== 'omompiui-html-resize') return
       const fromStream = event.source === streamFrameRef.current?.contentWindow && data.id === resizeId
       const fromCanonical = event.source === canonicalFrameRef.current?.contentWindow && data.id === canonicalResizeId
       if (!fromStream && !fromCanonical) return
-      if (data.type === 'piui-html-interaction') {
+      if (data.type === 'omompiui-html-interaction') {
         setTouchControlsVisible(true)
         return
       }
@@ -1494,10 +1494,10 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   // 流出（对齐 reference：直接渲染 + 增量解析保证性能，浏览器按帧自然显示）。
   const renderedContent = content
   const streamBlocks = useMemo(() => {
-    perfMark('piui:render-markdown')
+    perfMark('ompiui:render-markdown')
     const projection = projectMarkdownStream(markdownProjectionCache.get(projectionKey), renderedContent, isStreaming)
     markdownProjectionCache.set(projectionKey, projection)
-    perfMark('piui:render-markdown:end')
+    perfMark('ompiui:render-markdown:end')
     return projection.blocks
   }, [projectionKey, renderedContent, isStreaming])
 

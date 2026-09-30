@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import i18n from '../i18n'
 import type { UiSession } from '../types/session'
-import { createPiSession, loadPiSessions, deletePiSession } from '../pi/controllers/index.js'
-import { filterPiSessionList, linkPiSessionForks, piSessionInfoToUiSession } from '../pi/nativeSessionListModel'
-import { trackPiSession } from '../pi/piSessionIndex'
+import { createPiSession, loadPiSessions, deletePiSession } from '../omp/controllers/index.js'
+import { filterPiSessionList, linkPiSessionForks, piSessionInfoToUiSession } from '../omp/nativeSessionListModel'
+import { trackPiSession } from '../omp/ompSessionIndex'
 import { pinnedSessionsStore } from '../store/pinnedSessionsStore'
 import { paneLayoutStore } from '../store/paneLayoutStore'
 import { activeSessionStore } from '../store/activeSessionStore'
 import { useDirectory } from './useDirectory'
-import { resolveWorkspacePath } from '../pi/workspaces.js'
+import { resolveWorkspacePath } from '../omp/workspaces.js'
 import { sessionErrorHandler } from '../utils'
 import { clearSessionRuntimeState } from '../utils/sessionLifecycle'
 import { SessionContext, type SessionContextValue } from './SessionContext.shared'
@@ -24,7 +24,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const retryTimerRef = useRef<number | null>(null)
   const fetchSessionsRef = useRef<(retryAttempt?: number) => Promise<void>>(() => Promise.resolve())
   // ── 事件刷新合并 ──
-  // piui:sessions-changed 在会话生命周期/事件流重连时可能高频触发，每个订阅者
+  // ompiui:sessions-changed 在会话生命周期/事件流重连时可能高频触发，每个订阅者
   // 各自全量拉取会形成请求风暴（侧边栏抽搐）。防抖窗口内合并为一次；
   // 请求进行中再来变更则在完成后补刷一次（尾合并，避免丢最后一次变化）。
   const fetchTimerRef = useRef<number | null>(null)
@@ -115,9 +115,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [search])
 
   useEffect(() => {
-    window.addEventListener('piui:sessions-changed', scheduleFetch)
+    window.addEventListener('omompiui:sessions-changed', scheduleFetch)
     return () => {
-      window.removeEventListener('piui:sessions-changed', scheduleFetch)
+      window.removeEventListener('omompiui:sessions-changed', scheduleFetch)
       if (fetchTimerRef.current !== null) {
         clearTimeout(fetchTimerRef.current)
         fetchTimerRef.current = null
@@ -135,7 +135,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     // 落盘广播丢失（消息发送失败、worker 崩了）时，靠延迟对账把幽灵
     // 条目清出列表
     window.setTimeout(() => {
-      window.dispatchEvent(new CustomEvent('piui:sessions-changed'))
+      window.dispatchEvent(new CustomEvent('omompiui:sessions-changed'))
     }, 15_000)
   }, [])
 
@@ -169,7 +169,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setSessions(filterPiSessionList(allSessionsRef.current, search))
     // 广播删除：其他列表消费者（useSessions 等独立实例）不共享本 context
     // 的状态，需要事件触发重拉，否则删除后它们的列表一直显示旧数据。
-    window.dispatchEvent(new CustomEvent('piui:sessions-changed'))
+    window.dispatchEvent(new CustomEvent('omompiui:sessions-changed'))
   }, [search])
 
   const value = useMemo<SessionContextValue>(() => ({

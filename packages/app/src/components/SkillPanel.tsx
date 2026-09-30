@@ -14,8 +14,8 @@ import {
   ChevronRightIcon,
   SearchIcon,
 } from './Icons'
-import type { Skill } from '../pi/vendor/pi-coding-agent'
-import { getPiSkills } from '../pi/transport/index.js'
+import type { Skill } from '../omp/vendor/pi-coding-agent'
+import { getPiSkills } from '../omp/transport/index.js'
 import { apiErrorHandler } from '../utils'
 
 // ============================================

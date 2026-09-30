@@ -1,12 +1,12 @@
 import { PROTOCOL_VERSION } from "@ompiui/protocol"
-import { getDriverMode } from "@ompiui/pi-worker"
+import { getDriverMode } from "@ompiui/omp-worker"
 import { existsSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Server as HttpServer } from "node:http"
 import { authTokenPath, ensureCursorSecretEnv, resolveAuthToken } from "./host/auth-token.ts"
 import { enableFileLogging, logToFile } from "./logger.ts"
-import { RuntimeSupervisor } from "./pi/supervisor.ts"
+import { RuntimeSupervisor } from "./omp/supervisor.ts"
 import { createAppServer, firstLanAddress } from "./http.ts"
 import { shutdownAppServer } from "./shutdown.ts"
 import { attachEventWebSocket } from "./ws.ts"
@@ -28,13 +28,13 @@ export interface ServerConfigOverrides {
   shutdownTimeoutMs?: number
   /**
    * 是否以 self-spawn 方式孵化 worker（bun 打包的单文件 exe 无法 fork，
-   * worker = 同一个 exe 加 --pi-worker 再拉一个自己）。由 bundle-entry
-   * 显式传入，不再用 PIUI_WORKER_SELF 环境变量传递（避免泄漏到子进程）。
+   * worker = 同一个 exe 加 --omp-worker 再拉一个自己）。由 bundle-entry
+   * 显式传入，不再用 OMPIUI_WORKER_SELF 环境变量传递（避免泄漏到子进程）。
    */
   selfSpawnWorker?: boolean
 }
 
-export interface RunningPiUiServer {
+export interface RunningOmpiUiServer {
   server: HttpServer
   config: ServerConfig
   stop(signal?: NodeJS.Signals): Promise<void>
@@ -56,14 +56,14 @@ export function resolveServerConfig(
   overrides: ServerConfigOverrides = {},
 ): ServerConfig {
   const port = overrides.port === undefined
-    ? parsePort(env.PIUI_PORT ?? String(DEFAULT_PORT))
+    ? parsePort(env.OMPIUI_PORT ?? String(DEFAULT_PORT))
     : parsePort(String(overrides.port))
-  const host = overrides.host ?? (env.PIUI_HOST?.trim() || DEFAULT_HOST)
-  const requestedShutdownTimeout = overrides.shutdownTimeoutMs ?? Number(env.PIUI_SHUTDOWN_TIMEOUT_MS ?? DEFAULT_SHUTDOWN_TIMEOUT_MS)
+  const host = overrides.host ?? (env.OMPIUI_HOST?.trim() || DEFAULT_HOST)
+  const requestedShutdownTimeout = overrides.shutdownTimeoutMs ?? Number(env.OMPIUI_SHUTDOWN_TIMEOUT_MS ?? DEFAULT_SHUTDOWN_TIMEOUT_MS)
   const shutdownTimeoutMs = Number.isFinite(requestedShutdownTimeout) && requestedShutdownTimeout > 0
     ? requestedShutdownTimeout
     : DEFAULT_SHUTDOWN_TIMEOUT_MS
-  const explicitWebRoot = overrides.webRoot === undefined ? env.PIUI_WEB_ROOT?.trim() : overrides.webRoot
+  const explicitWebRoot = overrides.webRoot === undefined ? env.OMPIUI_WEB_ROOT?.trim() : overrides.webRoot
 
   return {
     host,
@@ -99,7 +99,7 @@ export function parseWebArgs(args: string[]): WebCliOptions {
 }
 
 export function printWebHelp(): void {
-  console.info(`Usage: pi-worker web [options]
+  console.info(`Usage: omp-worker web [options]
 
 Options:
   --host <host>       Listen address (default: 127.0.0.1)
@@ -109,10 +109,10 @@ Options:
   -h, --help          Show this help`)
 }
 
-export async function startPiUiServer(
+export async function startOmpiUiServer(
   overrides: ServerConfigOverrides = {},
   options: { installSignalHandlers?: boolean } = {},
-): Promise<RunningPiUiServer> {
+): Promise<RunningOmpiUiServer> {
   // 文件日志必须在任何 console 输出之前启用（含 resolveServerConfig 的
   // 警告），且要在 worker spawn 之前——worker 的 stderr 是 inherit 到
   // server 的，启用后它的输出也会落盘。
@@ -167,11 +167,11 @@ export async function startPiUiServer(
     await new Promise<void>((resolveListen, rejectListen) => {
       const onError = (error: NodeJS.ErrnoException) => {
         if (listening) {
-          console.error("[piui-server] server error", error)
+          console.error("[ompiui-server] server error", error)
           return
         }
         if (error.code === "EADDRINUSE") {
-          rejectListen(new Error(`${config.host}:${config.port} is already in use; use --port or PIUI_PORT`))
+          rejectListen(new Error(`${config.host}:${config.port} is already in use; use --port or OMPIUI_PORT`))
         } else {
           rejectListen(error)
         }
@@ -187,54 +187,54 @@ export async function startPiUiServer(
     await shutdownAppServer(app.server, eventServer, { timeoutMs: config.shutdownTimeoutMs, cleanup: () => app.dispose() }).catch(() => undefined)
     throw error
   }
-  app.server.on("error", error => console.error("[piui-server] server error", error))
+  app.server.on("error", error => console.error("[ompiui-server] server error", error))
 
-  console.info(`[piui-server] listening http://${config.host}:${config.port}`)
-  logToFile(`[piui-server] listening http://${config.host}:${config.port} (pid=${process.pid})`)
-  console.info(`[piui-server] events ws://${config.host}:${config.port}/api/v1/events`)
-  console.info(`[piui-server] terminal stream ws://${config.host}:${config.port}/api/v1/host/terminals/:terminalId/stream`)
-  console.info(`[piui-server] driver=${config.driver}${config.driver === "omp" ? " (OMP agent runtime)" : " (no LLM)"}`)
+  console.info(`[ompiui-server] listening http://${config.host}:${config.port}`)
+  logToFile(`[ompiui-server] listening http://${config.host}:${config.port} (pid=${process.pid})`)
+  console.info(`[ompiui-server] events ws://${config.host}:${config.port}/api/v1/events`)
+  console.info(`[ompiui-server] terminal stream ws://${config.host}:${config.port}/api/v1/host/terminals/:terminalId/stream`)
+  console.info(`[ompiui-server] driver=${config.driver}${config.driver === "omp" ? " (OMP agent runtime)" : " (no LLM)"}`)
   console.info(
     config.authToken
-      ? "[piui-server] auth token configured by launcher"
-      : process.env.PIUI_AUTH_TOKEN
-      ? "[piui-server] auth token from PIUI_AUTH_TOKEN"
-      : `[piui-server] auth token at ${authTokenPath()}`,
+      ? "[ompiui-server] auth token configured by launcher"
+      : process.env.OMPIUI_AUTH_TOKEN
+      ? "[ompiui-server] auth token from OMPIUI_AUTH_TOKEN"
+      : `[ompiui-server] auth token at ${authTokenPath()}`,
   )
   const lanHost = config.host === "0.0.0.0" || config.host === "::" ? firstLanAddress() ?? config.host : config.host
-  if (config.webRoot) console.info(`[piui-server] web client: http://${lanHost}:${config.port}/?token=${encodeURIComponent(authToken)}`)
+  if (config.webRoot) console.info(`[ompiui-server] web client: http://${lanHost}:${config.port}/?token=${encodeURIComponent(authToken)}`)
   if (config.host !== "127.0.0.1" && config.host !== "::1" && config.host !== "localhost") {
-    console.info(`[piui-server] LAN sharing enabled at http://${lanHost}:${config.port}`)
+    console.info(`[ompiui-server] LAN sharing enabled at http://${lanHost}:${config.port}`)
   }
 
   let stopped = false
   const stop = async (signal?: NodeJS.Signals): Promise<void> => {
     if (stopped) return
     stopped = true
-    if (signal) console.info(`[piui-server] received ${signal}, shutting down`)
+    if (signal) console.info(`[ompiui-server] received ${signal}, shutting down`)
     await shutdownAppServer(app.server, eventServer, {
       timeoutMs: config.shutdownTimeoutMs,
-      onTimeout: () => console.error(`[piui-server] shutdown exceeded ${config.shutdownTimeoutMs}ms; closing active HTTP connections`),
+      onTimeout: () => console.error(`[ompiui-server] shutdown exceeded ${config.shutdownTimeoutMs}ms; closing active HTTP connections`),
       cleanup: () => app.dispose(),
     })
   }
   shutdownHook = stop
 
   if (options.installSignalHandlers !== false) {
-    process.once("SIGINT", () => { void stop("SIGINT").catch(error => { console.error("[piui-server] shutdown failed", error); process.exitCode = 1 }) })
-    process.once("SIGTERM", () => { void stop("SIGTERM").catch(error => { console.error("[piui-server] shutdown failed", error); process.exitCode = 1 }) })
+    process.once("SIGINT", () => { void stop("SIGINT").catch(error => { console.error("[ompiui-server] shutdown failed", error); process.exitCode = 1 }) })
+    process.once("SIGTERM", () => { void stop("SIGTERM").catch(error => { console.error("[ompiui-server] shutdown failed", error); process.exitCode = 1 }) })
 
     // 未捕获异常 = 进程级错误，必须退出（Node 事件循环状态已不可信），
     // 但不能直接崩——否则监听 socket 和活动连接僵死，Windows 上留下孤儿
     // TCP 实体占住端口（与 taskkill /F 同一类问题）。先走 stop() 优雅
     // 关闭再退出，日志里带堆栈便于定位死因。
     process.once("uncaughtException", error => {
-      console.error("[piui-server] uncaught exception; shutting down gracefully:", error)
+      console.error("[ompiui-server] uncaught exception; shutting down gracefully:", error)
       stop().finally(() => process.exit(1))
     })
     // 单个请求/事件的异步疏忽不应杀死整个服务：记录并继续。
     process.on("unhandledRejection", reason => {
-      console.error(`[piui-server] unhandled rejection: ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}`)
+      console.error(`[ompiui-server] unhandled rejection: ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}`)
     })
   }
 
@@ -244,7 +244,7 @@ export async function startPiUiServer(
 function parsePort(value: string): number {
   const port = Number(value)
   if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw new Error(`PIUI_PORT must be an integer from 1 to 65535, received: ${value}`)
+    throw new Error(`OMPIUI_PORT must be an integer from 1 to 65535, received: ${value}`)
   }
   return port
 }

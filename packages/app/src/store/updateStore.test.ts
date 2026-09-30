@@ -72,14 +72,14 @@ describe('UpdateStore', () => {
     expect(localStorage.getItem('ompiui:update-check')).toContain('0.5.2')
   })
 
-  it('ignores a cached PiUI release', () => {
+  it('ignores a cached OMPiUI release', () => {
     localStorage.setItem(
       'piui:update-check',
       JSON.stringify({
         latestRelease: {
           version: '0.6.21',
           tagName: 'v0.6.21',
-          url: 'https://github.com/lehhair/PiUI/releases/tag/v0.6.21',
+          url: 'https://github.com/lehhair/OMPiUI/releases/tag/v0.6.21',
           publishedAt: '2026-08-23T13:29:50Z',
           name: 'v0.6.21',
         },
@@ -102,7 +102,7 @@ describe('UpdateStore', () => {
         latestRelease: {
           version: '0.6.21',
           tagName: 'v0.6.21',
-          url: 'https://github.com/lehhair/PiUI/releases/tag/v0.6.21',
+          url: 'https://github.com/lehhair/OMPiUI/releases/tag/v0.6.21',
           publishedAt: '2026-08-23T13:29:50Z',
           name: null,
         },

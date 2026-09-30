@@ -1,8 +1,8 @@
 // ============================================
-// PiUI host surface types — 原生形状，无 OCUI 兼容层
+// OMPiUI host surface types — 原生形状，无 OCUI 兼容层
 // ============================================
 
-/** 当前/已保存的工作区（由 PiUI server 的 workspace 语义构建） */
+/** 当前/已保存的工作区（由 OMPiUI server 的 workspace 语义构建） */
 export interface HostProject {
   id: string
   name: string

@@ -14,10 +14,10 @@ export interface PinnedSessionEntry {
   title: string
 }
 
-// 新：srv:{serverId}:piui-pinned-sessions（serverStorage）
+// 新：srv:{serverId}:ompiui-pinned-sessions（serverStorage）
 // 旧：localStorage 全局 opencode-pinned-sessions——legacy 键名故意保留（迁移要读
 // 基线数据），一次性迁到当前 active server。
-const STORAGE_KEY = 'piui-pinned-sessions'
+const STORAGE_KEY = 'ompiui-pinned-sessions'
 
 function parseEntries(raw: unknown): PinnedSessionEntry[] {
   if (!Array.isArray(raw)) return []

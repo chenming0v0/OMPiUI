@@ -8,7 +8,7 @@ import {
   EyeOffIcon,
   SearchIcon,
 } from '../../../components/Icons'
-import { usePiModels } from '../../../pi/hooks/index.js'
+import { usePiModels } from '../../../omp/hooks/index.js'
 import { modelVisibilityStore, useHiddenModelKeys } from '../../../store'
 import { groupModelsByProvider, getModelKey } from '../../../utils/modelUtils'
 import type { AnyModel } from '../../../utils/modelUtils'

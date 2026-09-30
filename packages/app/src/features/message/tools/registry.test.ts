@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { PiToolExecution } from '../../../pi/domain/index.js'
+import type { PiToolExecution } from '../../../omp/domain/index.js'
 import { defaultExtractData, extractToolData } from './registry'
 
 describe('defaultExtractData', () => {

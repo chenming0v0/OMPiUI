@@ -59,7 +59,7 @@ export const HOST_COMMAND_SPECS = [
   {
     name: "terminals.shells",
     domain: "terminals",
-    description: "List available shells on the PiUI server host",
+    description: "List available shells on the OMPiUI server host",
     idempotent: true,
   },
   {
@@ -106,7 +106,7 @@ export const HOST_COMMAND_SPECS = [
   {
     name: "workspaces.list",
     domain: "workspaces",
-    description: "List workspaces known to this PiUI server",
+    description: "List workspaces known to this OMPiUI server",
     idempotent: true,
   },
   {

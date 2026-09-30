@@ -13,13 +13,13 @@ import {
   saveFile,
   simplifyGitStatus,
   toAbsoluteEntryPath,
-} from '../pi/files'
-import { getHostGitDiff } from '../pi/transport/index.js'
+} from '../omp/files'
+import { getHostGitDiff } from '../omp/transport/index.js'
 import type { FileNodeDto, FileReadResponse } from '@ompiui/protocol'
 import { useSessionChangeScope } from '../store/changeScopeStore'
 import { useAutoRefresh } from './useAutoRefresh'
-import { resolveWorkspacePath } from '../pi/workspaces'
-import { piEventStream } from '../pi/eventStream.js'
+import { resolveWorkspacePath } from '../omp/workspaces'
+import { piEventStream } from '../omp/eventStream.js'
 import { useServerStore } from './useServerStore'
 
 export interface FileTreeNode extends FileNodeDto {
@@ -446,11 +446,11 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
       if (!canonicalWorkspaceRef.current || detail?.workspacePath !== canonicalWorkspaceRef.current) return
       void loadStatuses()
     }
-    window.addEventListener('piui:workspace-files-changed', filesChanged)
-    window.addEventListener('piui:workspace-git-updated', gitChanged)
+    window.addEventListener('ompiui:workspace-files-changed', filesChanged)
+    window.addEventListener('ompiui:workspace-git-updated', gitChanged)
     return () => {
-      window.removeEventListener('piui:workspace-files-changed', filesChanged)
-      window.removeEventListener('piui:workspace-git-updated', gitChanged)
+      window.removeEventListener('ompiui:workspace-files-changed', filesChanged)
+      window.removeEventListener('ompiui:workspace-git-updated', gitChanged)
     }
   }, [directory, expandedPaths, loadChildren, loadPreview, loadRoot, loadStatuses, softRefresh])
 

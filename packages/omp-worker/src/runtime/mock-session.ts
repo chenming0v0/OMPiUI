@@ -18,7 +18,7 @@ import {
 const MOCK_SDK_VERSION = "mock"
 
 function mockHome(): string {
-  return process.env.PIUI_MOCK_DIR?.trim() || path.join(tmpdir(), "piui-mock")
+  return process.env.OMPIUI_MOCK_DIR?.trim() || path.join(tmpdir(), "ompiui-mock")
 }
 
 function sessionsDir(): string {

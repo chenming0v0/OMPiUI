@@ -205,8 +205,8 @@ export function useNotification() {
 
     const notificationOptions: NotificationOptions = {
       body,
-      icon: '/pi.svg',
-      tag: data?.sessionId || 'piui',
+      icon: '/ompiui.svg',
+      tag: data?.sessionId || 'ompiui',
       data,
     }
 

@@ -19,7 +19,7 @@ import { clearSessionRuntimeState } from '../../../utils/sessionLifecycle'
 import { settingsFieldClass, SettingsSection } from './SettingsUI'
 import type { ServerConfig, ServerHealth } from '../../../store/serverStore'
 import { parseConnectLink } from '../../../store/serverStore'
-import { fetchHostShare } from '../../../pi/transport'
+import { fetchHostShare } from '../../../omp/transport'
 import type { ShareInfo } from '@ompiui/protocol'
 
 const IPV4_PATTERN = /^(?:\d{1,3}\.){3}\d{1,3}$/
@@ -248,7 +248,7 @@ function SharePanel({ server }: { server: ServerConfig }) {
       setShare({
         url,
         token: server.token,
-        link: `piui://connect?url=${encodeURIComponent(url)}&token=${encodeURIComponent(server.token)}`,
+        link: `ompiui://connect?url=${encodeURIComponent(url)}&token=${encodeURIComponent(server.token)}`,
         lan: true,
       })
     }

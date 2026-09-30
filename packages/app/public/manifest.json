@@ -9,7 +9,7 @@
   "theme_color": "#262524",
   "icons": [
     {
-      "src": "/pi.svg",
+      "src": "/ompiui.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any maskable"

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, memo } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { SessionInfo } from '../../../pi/vendor/pi-coding-agent'
+import type { SessionInfo } from '../../../omp/vendor/pi-coding-agent'
 import type { JsonObject, JsonValue } from '@ompiui/protocol'
 import { Button } from '../../../components/ui/Button'
 import {
@@ -18,8 +18,8 @@ import {
   sendPiUserMessage,
   setPiScopedModels,
   waitForPiIdle,
-} from '../../../pi/controllers/index.js'
-import { usePiSessionRuntimeState } from '../../../pi/hooks/index.js'
+} from '../../../omp/controllers/index.js'
+import { usePiSessionRuntimeState } from '../../../omp/hooks/index.js'
 import { Toggle, SettingsSection, SettingsSubgroup, SettingsSelect, SettingsDisclosure, settingsFieldClass, settingsFieldAreaClass } from './SettingsUI'
 
 function record(value: JsonValue | undefined): JsonObject {
@@ -98,7 +98,7 @@ export function PiSessionManagement({ sessionId, workspacePath }: { sessionId: s
   const enterSession = (targetId: string, directory?: string) => {
     const dir = directory ?? workspacePath
     window.location.hash = `#/session/${encodeURIComponent(targetId)}?dir=${encodeURIComponent(dir)}`
-    window.dispatchEvent(new CustomEvent('piui:sessions-changed'))
+    window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
   }
 
   const parseJson = () => {

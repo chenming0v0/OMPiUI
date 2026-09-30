@@ -5,9 +5,9 @@ import { notificationStore } from '../store/notificationStore'
 import { PanelContainer } from './PanelContainer'
 import { ResizablePanel } from './ui/ResizablePanel'
 import { useChatViewport } from '../features/chat/chatViewport'
-import { createHostTerminal, listHostTerminals, removeHostTerminal, updateHostTerminal } from '../pi/transport/index.js'
+import { createHostTerminal, listHostTerminals, removeHostTerminal, updateHostTerminal } from '../omp/transport/index.js'
 import { useTerminalSessionRestore } from '../hooks/useTerminalSessionRestore'
-import { resolveWorkspacePath } from '../pi/workspaces'
+import { resolveWorkspacePath } from '../omp/workspaces'
 import { uiErrorHandler } from '../utils'
 
 const SessionChangesPanel = lazy(() =>

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { buildSessionTreeGraph, findNewestDescendantEntries, sessionTreeEntryPreview, type NativeTreeNode } from './sessionTreeGraph'
-import { selectPiTimelineItems } from '../pi/selectors/index.js'
-import type { PiBranchPage } from '../pi/domain'
+import { selectPiTimelineItems } from '../omp/selectors/index.js'
+import type { PiBranchPage } from '../omp/domain'
 
 const label = (type: string) => type
 

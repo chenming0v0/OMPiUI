@@ -75,7 +75,7 @@ export type ExtensionUiMethodCapability = {
 }
 
 /**
- * Extension TUI mirror — the PiUI-hosted offscreen render of pi-tui
+ * Extension TUI mirror — the OMPiUI-hosted offscreen render of pi-tui
  * components (component widgets, custom(), footer, header). The worker
  * renders the component to a virtual terminal and streams ANSI frames to
  * the app; the app sends raw key input back.

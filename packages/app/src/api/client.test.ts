@@ -6,38 +6,38 @@ const mocks = vi.hoisted(() => ({
   getHostGitInfo: vi.fn(),
 }))
 
-vi.mock('../pi/transport/index.js', () => ({
+vi.mock('../omp/transport/index.js', () => ({
   getHostGitInfo: mocks.getHostGitInfo,
 }))
-vi.mock('../pi/workspaces', () => ({
+vi.mock('../omp/workspaces', () => ({
   resolveWorkspacePath: mocks.resolveWorkspacePath,
 }))
 
 describe('Pi project adapter', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mocks.resolveWorkspacePath.mockResolvedValue('C:/work/PiUI')
+    mocks.resolveWorkspacePath.mockResolvedValue('C:/work/OMPiUI')
   })
 
   it('maps the current workspace and Git state to a project', async () => {
     mocks.getHostGitInfo.mockResolvedValue({ root: true, branch: 'main', ahead: 0, behind: 0 })
 
-    await expect(getCurrentProject('C:/work/PiUI')).resolves.toEqual({
-      id: 'C:/work/PiUI',
-      path: 'C:/work/PiUI',
-      name: 'PiUI',
-      gitRoot: 'C:/work/PiUI',
+    await expect(getCurrentProject('C:/work/OMPiUI')).resolves.toEqual({
+      id: 'C:/work/OMPiUI',
+      path: 'C:/work/OMPiUI',
+      name: 'OMPiUI',
+      gitRoot: 'C:/work/OMPiUI',
     })
-    expect(mocks.getHostGitInfo).toHaveBeenCalledWith('C:/work/PiUI')
+    expect(mocks.getHostGitInfo).toHaveBeenCalledWith('C:/work/OMPiUI')
   })
 
   it('omits gitRoot outside a repository and tolerates git failures', async () => {
     mocks.getHostGitInfo.mockRejectedValue(new Error('not a repo'))
 
-    await expect(getCurrentProject('C:/work/PiUI')).resolves.toEqual({
-      id: 'C:/work/PiUI',
-      path: 'C:/work/PiUI',
-      name: 'PiUI',
+    await expect(getCurrentProject('C:/work/OMPiUI')).resolves.toEqual({
+      id: 'C:/work/OMPiUI',
+      path: 'C:/work/OMPiUI',
+      name: 'OMPiUI',
       gitRoot: undefined,
     })
   })
@@ -45,13 +45,13 @@ describe('Pi project adapter', () => {
   it('lists the selected directory as the only project', async () => {
     mocks.getHostGitInfo.mockResolvedValue({ root: false })
 
-    await expect(getProjects('C:/work/PiUI')).resolves.toHaveLength(1)
+    await expect(getProjects('C:/work/OMPiUI')).resolves.toHaveLength(1)
     await expect(getProjects()).resolves.toEqual([])
   })
 
   it('fails when no workspace is available', async () => {
     mocks.resolveWorkspacePath.mockResolvedValue(null)
 
-    await expect(getCurrentProject()).rejects.toThrow('No PiUI workspace is available')
+    await expect(getCurrentProject()).rejects.toThrow('No OMPiUI workspace is available')
   })
 })

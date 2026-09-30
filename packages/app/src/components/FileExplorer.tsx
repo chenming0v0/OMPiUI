@@ -44,7 +44,7 @@ import {
   type PreviewCategory,
 } from '../utils/mimeUtils'
 import { downloadFileContent } from '../utils/downloadUtils'
-import { createDirectory, createFile, deleteEntry, moveEntry, searchText, searchFiles } from '../pi/files'
+import { createDirectory, createFile, deleteEntry, moveEntry, searchText, searchFiles } from '../omp/files'
 import type { FileReadResponse, WorkspaceTextSearchMatch } from '@ompiui/protocol'
 import { startInternalDrag } from '../lib/internalDragCore'
 import { toAbsolutePath } from '../features/mention'

@@ -20,11 +20,11 @@ import {
 import { IconButton } from '../../components/ui'
 import { paneLayoutStore } from '../../store/paneLayoutStore'
 import { layoutStore, useLayoutStore } from '../../store/layoutStore'
-import { usePiSessionTitle } from '../../pi/hooks/index.js'
-import { renamePiSession, loadPiSessions } from '../../pi/controllers/index.js'
+import { usePiSessionTitle } from '../../omp/hooks/index.js'
+import { renamePiSession, loadPiSessions } from '../../omp/controllers/index.js'
 import { uiErrorHandler } from '../../utils'
 import { useChatViewport, canUseSplitPane } from './chatViewport'
-import { usePiCapabilities } from '../../pi/capabilities'
+import { usePiCapabilities } from '../../omp/capabilities'
 import {
   getInternalDragSnapshot,
   isPointInsideElement,

@@ -1,3 +1,5 @@
+// 必须排在所有 store/App 相关 import 之前：改名迁移要在任何 localStorage 读取前完成
+import './utils/migrateLegacyStorage'
 import { StrictMode, Suspense } from 'react'
 import { createRoot } from 'react-dom/client'
 import 'katex/dist/katex.min.css'
@@ -109,11 +111,11 @@ function bootstrap() {
   )
 }
 
-async function startNativePiuiService(): Promise<void> {
+async function startNativeOmpiUiService(): Promise<void> {
   if (!isNativeTauri || isTauriMobile() || !serviceStore.autoStart) return
   const { startDesktopService } = await import('./services/desktopService')
   const { result } = await startDesktopService()
-  console.info(`[PiUI] local server ${result.started ? 'started by app' : 'already running'} at ${result.url}`)
+  console.info(`[OMPiUI] local server ${result.started ? 'started by app' : 'already running'} at ${result.url}`)
 }
 
 async function startApp() {
@@ -122,20 +124,20 @@ async function startApp() {
   // service starts and server changes trigger an immediate reconnect.
   bootstrap()
 
-  const { initializePiBackend, installPiBackendServerSwitch } = await import('./pi/bootstrapMockChat')
+  const { initializePiBackend, installPiBackendServerSwitch } = await import('./omp/bootstrapMockChat')
   installPiBackendServerSwitch()
 
   if (isNativeTauri && !isTauriMobile()) {
-    void startNativePiuiService().catch(error => {
-      console.error('[PiUI] auto-start local server failed:', error)
+    void startNativeOmpiUiService().catch(error => {
+      console.error('[OMPiUI] auto-start local server failed:', error)
     })
   }
 
   const backend = await initializePiBackend()
   if (isNativeTauri) {
-    console.info('[PiUI] native shell — PiUI server lifecycle is managed by Tauri')
+    console.info('[OMPiUI] native shell — OMPiUI server lifecycle is managed by Tauri')
   } else if (!backend.available) {
-    console.info('[PiUI] browser shell — PiUI server unavailable')
+    console.info('[OMPiUI] browser shell — OMPiUI server unavailable')
   }
 }
 

@@ -1,5 +1,5 @@
 import path from "node:path"
-import { acquireDirectoryLock, type DirectoryLock } from "../pi/directory-lock.ts"
+import { acquireDirectoryLock, type DirectoryLock } from "../omp/directory-lock.ts"
 import { ompiuiDataDir } from "./auth-token.ts"
 
 export async function acquireWorkspaceMutationLock(

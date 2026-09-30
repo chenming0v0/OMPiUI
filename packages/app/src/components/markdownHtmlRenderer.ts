@@ -7,7 +7,7 @@ import { inferImageDimensions } from './imageDimensions'
 import { MATH_DELIMITERS, getFootnoteId, isEscapedAt, scanTextSegments } from './markdownSegments'
 import type { MarkdownSegment } from './markdownSegments'
 
-const LOCAL_FILE_LINK_PREFIX = '#piui-local-file:'
+const LOCAL_FILE_LINK_PREFIX = '#ompiui-local-file:'
 
 function escapeHtml(value: string): string {
   return value

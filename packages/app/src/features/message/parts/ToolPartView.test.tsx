@@ -1,7 +1,7 @@
 import { act, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ToolPartView } from './ToolPartView'
-import type { PiToolExecution } from '../../../pi/domain/index.js'
+import type { PiToolExecution } from '../../../omp/domain/index.js'
 
 const { getActiveCalibratedNowMock } = vi.hoisted(() => ({
   getActiveCalibratedNowMock: vi.fn<() => number | undefined>(() => undefined),

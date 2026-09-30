@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { serverStore } from '../store/serverStore'
 import { layoutStore } from '../store/layoutStore'
-import { listHostTerminals } from '../pi/transport/index.js'
-import { resolveWorkspacePath } from '../pi/workspaces'
-import { piEventStream } from '../pi/eventStream'
+import { listHostTerminals } from '../omp/transport/index.js'
+import { resolveWorkspacePath } from '../omp/workspaces'
+import { piEventStream } from '../omp/eventStream'
 import { useServerStore } from './useServerStore'
-import { usePiBackendState } from '../pi/serverMode'
+import { usePiBackendState } from '../omp/serverMode'
 import { normalizeToForwardSlash, uiErrorHandler } from '../utils'
 
 /** 恢复失败时的退避重试间隔：桌面壳冷启动/服务重启窗口内后端可能还不可达 */
@@ -109,7 +109,7 @@ export function useTerminalSessionRestore(directory?: string) {
       if (!workspacePath || normalizeToForwardSlash(workspacePath) !== normalizeToForwardSlash(workspacePathRef.current ?? '')) return
       void restoreSessions(++restoreRequestIdRef.current)
     }
-    window.addEventListener('piui:terminals-changed', onTerminalsChanged)
+    window.addEventListener('ompiui:terminals-changed', onTerminalsChanged)
     const unsubscribe = serverStore.onServerChange(() => {
       void restoreSessions(++restoreRequestIdRef.current)
     })
@@ -117,7 +117,7 @@ export function useTerminalSessionRestore(directory?: string) {
       restoreRequestIdRef.current += 1
       restoreTriggerRef.current = undefined
       if (retryTimer !== undefined) clearTimeout(retryTimer)
-      window.removeEventListener('piui:terminals-changed', onTerminalsChanged)
+      window.removeEventListener('ompiui:terminals-changed', onTerminalsChanged)
       unsubscribe()
     }
   }, [normalizedDirectory])

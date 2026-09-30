@@ -1,5 +1,5 @@
 {
-  "name": "@ompiui/pi-worker",
+  "name": "@ompiui/omp-worker",
   "version": "0.1.0",
   "private": true,
   "type": "module",

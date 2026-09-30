@@ -30,7 +30,7 @@ import { SpinnerIcon, ArrowDownIcon, ArrowUpIcon, PencilIcon, TrashIcon } from '
 import { CopyButton } from '../../components/ui'
 import { useInputCapabilities } from '../../hooks/useInputCapabilities'
 import type { MessageError } from '../../types/message'
-import type { PiTimelineItem } from '../../pi/domain/index.js'
+import type { PiTimelineItem } from '../../omp/domain/index.js'
 import { RetryStatusInline, type RetryStatusInlineData } from './RetryStatusInline'
 import { buildVisibleTimelineEntries, getVisibleTimelineForkTargetId } from './chatAreaVisibility'
 import { AT_BOTTOM_THRESHOLD_PX } from '../../constants'
@@ -329,9 +329,9 @@ const VirtualRow = memo(function VirtualRow({
 
   const setRef = useCallback((el: HTMLDivElement | null) => {
     rowRef.current = el
-    perfMark('piui:measure-row')
+    perfMark('ompiui:measure-row')
     measureElement(el)
-    perfMark('piui:measure-row:end')
+    perfMark('ompiui:measure-row:end')
   }, [measureElement])
 
   useLayoutEffect(() => {
@@ -515,7 +515,7 @@ export const ChatArea = memo(
         items?: ProcessTimelineItem[]
       }>({ processCollapseEnabled })
       const timeline = useMemo<ProcessTimelineItem[]>(() => {
-        perfMark('piui:build-timeline')
+        perfMark('ompiui:build-timeline')
         const next = !processCollapseEnabled
           ? visibleItems.map(item => ({
               kind: 'message' as const,
@@ -535,7 +535,7 @@ export const ChatArea = memo(
             : undefined
         const reused = reuseProcessTimelineItems(previous, next)
         previousTimelineRef.current = { processCollapseEnabled, items: reused }
-        perfMark('piui:build-timeline:end')
+        perfMark('ompiui:build-timeline:end')
         return reused
         // emptyShellGate.version：额外延迟到期后强制重算，挂上 Working 壳
         // eslint-disable-next-line react-hooks/exhaustive-deps

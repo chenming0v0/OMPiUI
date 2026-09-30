@@ -95,8 +95,8 @@ function getReleaseBaseTag() {
   return lastStableTag
 }
 
-// PiUI 自身 workspace 包名（互依赖引用也随版本一起升）
-const PIUI_PACKAGE_NAMES = ['@ompiui/app', '@ompiui/server', '@ompiui/pi-worker', '@ompiui/protocol']
+// OMPiUI 自身 workspace 包名（互依赖引用也随版本一起升）
+const WORKSPACE_PACKAGE_NAMES = ['@ompiui/app', '@ompiui/server', '@ompiui/omp-worker', '@ompiui/protocol']
 
 function bumpPackageJson(relativePath, oldVersion) {
   const fullPath = resolve(repoRoot, relativePath)
@@ -113,7 +113,7 @@ function bumpPackageJson(relativePath, oldVersion) {
     const deps = pkg[section]
     if (!deps || typeof deps !== 'object') continue
     let changed = false
-    for (const name of PIUI_PACKAGE_NAMES) {
+    for (const name of WORKSPACE_PACKAGE_NAMES) {
       if (typeof deps[name] === 'string' && deps[name] !== version) {
         deps[name] = version
         changed = true
@@ -194,7 +194,7 @@ if (existsSync(npmLockPath)) {
   for (const [pathKey, entry] of Object.entries(packageEntries)) {
     if (!entry || typeof entry !== 'object') continue
     // workspace 包自身的 version
-    if (entry.name && PIUI_PACKAGE_NAMES.includes(entry.name) && entry.version !== version) {
+    if (entry.name && WORKSPACE_PACKAGE_NAMES.includes(entry.name) && entry.version !== version) {
       entry.version = version
       lockChanged = true
     }
@@ -202,7 +202,7 @@ if (existsSync(npmLockPath)) {
     for (const section of ['dependencies', 'devDependencies', 'optionalDependencies']) {
       const deps = entry[section]
       if (!deps || typeof deps !== 'object') continue
-      for (const name of PIUI_PACKAGE_NAMES) {
+      for (const name of WORKSPACE_PACKAGE_NAMES) {
         if (typeof deps[name] === 'string' && deps[name] !== version) {
           deps[name] = version
           lockChanged = true

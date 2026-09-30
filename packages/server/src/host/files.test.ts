@@ -139,7 +139,7 @@ describe("workspace files", () => {
 function fixture(): { root: string; workspace: WorkspaceRecord } {
   // canonicalRoot 必须与生产注册一样经过 realpath——CI Windows 的 %TEMP%
   // 是 8.3 短路径（RUNNER~1），不规范化会误判 WORKSPACE_REPLACED
-  const root = realpathSync.native(mkdtempSync(path.join(tmpdir(), "piui-files-")))
+  const root = realpathSync.native(mkdtempSync(path.join(tmpdir(), "ompiui-files-")))
   roots.push(root)
   const identity = statSync(root)
   return {

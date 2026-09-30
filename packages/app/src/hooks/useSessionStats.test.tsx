@@ -1,6 +1,6 @@
 import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { piSessionStateStore } from '../pi/state/index.js'
+import { piSessionStateStore } from '../omp/state/index.js'
 import { useSessionStats } from './useSessionStats'
 
 vi.mock('../store/paneLayoutStore', () => ({

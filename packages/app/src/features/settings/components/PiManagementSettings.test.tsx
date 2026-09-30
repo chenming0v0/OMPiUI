@@ -28,7 +28,7 @@ const settings = {
 
 vi.mock('../../../hooks', () => ({ useCurrentDirectory: () => '/workspace' }))
 vi.mock('../../../store/messageStoreHooks', () => ({ useCurrentSessionId: () => 'session' }))
-vi.mock('../../../pi/transport/index.js', () => ({
+vi.mock('../../../omp/transport/index.js', () => ({
   getPiSettings: vi.fn(async () => settings),
   getProjectTrust: vi.fn(async () => ({
     trusted: false,
@@ -39,7 +39,7 @@ vi.mock('../../../pi/transport/index.js', () => ({
   patchPiSettings: (...args: unknown[]) => patchSettingsMock(...args),
   setProjectTrust: vi.fn(),
 }))
-vi.mock('../../../pi/workspaces', () => ({
+vi.mock('../../../omp/workspaces', () => ({
   listHostWorkspaces: vi.fn(async () => []),
   resolveWorkspacePath: vi.fn(async () => '/workspace'),
 }))

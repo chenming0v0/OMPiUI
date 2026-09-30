@@ -1,6 +1,6 @@
 import { useRef, useMemo, useCallback, useEffect } from 'react'
-import type { TextContent } from '../../../pi/vendor/pi-ai'
-import { useFocusedSessionId, usePiBranchData } from '../../../pi/hooks/index.js'
+import type { TextContent } from '../../../omp/vendor/pi-ai'
+import { useFocusedSessionId, usePiBranchData } from '../../../omp/hooks/index.js'
 import type { Attachment } from '../../attachment'
 
 // ============================================

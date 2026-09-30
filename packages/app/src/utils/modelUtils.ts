@@ -4,7 +4,7 @@
  * - 使用频率记录和排序
  */
 
-import type { Model, Api } from '../pi/vendor/pi-ai'
+import type { Model, Api } from '../omp/vendor/pi-ai'
 import { serverStorage } from './perServerStorage'
 
 export type AnyModel = Model<Api>
@@ -46,10 +46,10 @@ export function findModelByKey(models: readonly AnyModel[], key: string): AnyMod
 // 使用频率存储
 // ============================================
 
-const STORAGE_KEY = 'piui-model-usage-stats'
-const VARIANT_STORAGE_KEY = 'piui-model-variant-prefs'
-const PINNED_STORAGE_KEY = 'piui-model-pinned'
-const SESSION_SELECTION_STORAGE_KEY = 'piui-session-model-selection'
+const STORAGE_KEY = 'ompiui-model-usage-stats'
+const VARIANT_STORAGE_KEY = 'ompiui-model-variant-prefs'
+const PINNED_STORAGE_KEY = 'ompiui-model-pinned'
+const SESSION_SELECTION_STORAGE_KEY = 'ompiui-session-model-selection'
 
 interface ModelUsageStats {
   [modelKey: string]: {
@@ -106,7 +106,7 @@ export function recordModelUsage(model: AnyModel): void {
 // 首选模型（无会话时 composer 的选择）
 // ============================================
 
-const PREFERRED_MODEL_KEY = 'piui-preferred-model-key'
+const PREFERRED_MODEL_KEY = 'ompiui-preferred-model-key'
 
 /** Last model picked in the composer; applied to sessions created later. */
 export function getPreferredModelKey(): string | null {

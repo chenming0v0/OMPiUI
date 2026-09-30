@@ -56,7 +56,7 @@ function childScript(mode: "sign" | "verify"): string {
 }
 
 function runChild(mode: "sign" | "verify", env: Record<string, string>): string {
-  const root = mkdtempSync(path.join(tmpdir(), "piui-cursor-"))
+  const root = mkdtempSync(path.join(tmpdir(), "ompiui-cursor-"))
   roots.push(root)
   const script = path.join(root, `${mode}.ts`)
   writeFileSync(script, childScript(mode))
@@ -69,21 +69,21 @@ function runChild(mode: "sign" | "verify", env: Record<string, string>): string 
 
 /**
  * 光标跨进程有效性：旧 bug 是每 worker 进程一个随机 HMAC 密钥，worker 重启
- * 后客户端旧光标全部 400。修复后服务端把持久化密钥经 PIUI_CURSOR_SECRET
+ * 后客户端旧光标全部 400。修复后服务端把持久化密钥经 OMPIUI_CURSOR_SECRET
  * 注入 worker 环境——"重启后的新 worker"（新进程、同密钥）必须能验证旧进程
  * 签发的光标；不共享密钥时则必须失败（旧行为）。
  */
 describe("pagination cursor survives worker restarts", () => {
-  it("validates a cursor signed by another process when sharing PIUI_CURSOR_SECRET", () => {
+  it("validates a cursor signed by another process when sharing OMPIUI_CURSOR_SECRET", () => {
     const sharedSecret = Buffer.alloc(32, 7).toString("base64url")
-    const cursor = runChild("sign", { PIUI_CURSOR_SECRET: sharedSecret })
-    const result = runChild("verify", { PIUI_CURSOR_SECRET: sharedSecret, CURSOR: cursor })
+    const cursor = runChild("sign", { OMPIUI_CURSOR_SECRET: sharedSecret })
+    const result = runChild("verify", { OMPIUI_CURSOR_SECRET: sharedSecret, CURSOR: cursor })
     assert.equal(result, "ok:a")
   })
 
   it("rejects a cursor signed by another process without a shared secret", () => {
-    const cursor = runChild("sign", { PIUI_CURSOR_SECRET: "" })
-    const result = runChild("verify", { PIUI_CURSOR_SECRET: "", CURSOR: cursor })
+    const cursor = runChild("sign", { OMPIUI_CURSOR_SECRET: "" })
+    const result = runChild("verify", { OMPIUI_CURSOR_SECRET: "", CURSOR: cursor })
     assert.equal(result, "fail:INVALID_REQUEST")
   })
 })

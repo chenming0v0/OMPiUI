@@ -1,9 +1,9 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MentionMenu } from './MentionMenu'
-import { listDirectory, searchFiles } from '../../pi/files'
+import { listDirectory, searchFiles } from '../../omp/files'
 
-vi.mock('../../pi/files', () => ({
+vi.mock('../../omp/files', () => ({
   listDirectory: vi.fn().mockResolvedValue([
     { name: 'src', type: 'directory' },
     { name: 'README.md', type: 'file' },

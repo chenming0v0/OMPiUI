@@ -24,13 +24,13 @@ pub(super) fn service_environment(
     custom: &BTreeMap<String, String>,
 ) -> BTreeMap<String, String> {
     let mut environment = BTreeMap::from([
-        ("PIUI_HOST".to_string(), "127.0.0.1".to_string()),
-        ("PIUI_PORT".to_string(), DEFAULT_PORT.to_string()),
-        ("PIUI_DRIVER".to_string(), "pi".to_string()),
+        ("OMPIUI_HOST".to_string(), "127.0.0.1".to_string()),
+        ("OMPIUI_PORT".to_string(), DEFAULT_PORT.to_string()),
+        ("OMPIUI_DRIVER".to_string(), "omp".to_string()),
     ]);
     if let Some(path) = native_modules {
         environment.insert(
-            "PIUI_NATIVE_MODULES".to_string(),
+            "OMPIUI_NATIVE_MODULES".to_string(),
             path.display().to_string(),
         );
     }
@@ -58,7 +58,7 @@ pub(super) fn resource_root(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn server_binary(resource: &Path) -> Result<PathBuf, String> {
-    if let Ok(path) = env::var("PIUI_SERVER_BIN") {
+    if let Ok(path) = env::var("OMPIUI_SERVER_BIN") {
         let path = PathBuf::from(path);
         if path.is_file() {
             return Ok(path);
@@ -72,7 +72,7 @@ fn server_binary(resource: &Path) -> Result<PathBuf, String> {
     });
     binary.is_file().then_some(binary).ok_or_else(|| {
         format!(
-            "PiUI server binary was not bundled in {}",
+            "OMPiUI server binary was not bundled in {}",
             resource.display()
         )
     })
@@ -133,7 +133,7 @@ pub(super) fn spawn_server(
 
     let mut child = command
         .spawn()
-        .map_err(|error| format!("failed to start PiUI server: {error}"))?;
+        .map_err(|error| format!("failed to start OMPiUI server: {error}"))?;
     if let Some(stdout) = child.stdout.take() {
         spawn_output_reader(stdout, output.clone());
     }

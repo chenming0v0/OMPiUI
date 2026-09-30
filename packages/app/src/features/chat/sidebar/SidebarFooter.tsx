@@ -12,7 +12,7 @@ import {
 } from '../../../components/Icons'
 import { CircularProgress } from '../../../components/CircularProgress'
 import { formatTokens, formatCost, useTheme, useSessionStats } from '../../../hooks'
-import { useFocusedSessionHasEntries } from '../../../pi/hooks/index.js'
+import { useFocusedSessionHasEntries } from '../../../omp/hooks/index.js'
 
 // 状态指示器 - 圆环 + 右下角状态点
 function StatusIndicator({

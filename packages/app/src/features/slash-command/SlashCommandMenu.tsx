@@ -5,7 +5,7 @@
 
 import { useState, useEffect, useLayoutEffect, useRef, useImperativeHandle, forwardRef, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import { loadPiSlashCommands } from '../../pi/controllers/index.js'
+import { loadPiSlashCommands } from '../../omp/controllers/index.js'
 import { apiErrorHandler } from '../../utils'
 import { scrollItemIntoView } from '../../utils/scrollUtils'
 import { getFrontendCommands, type Command } from './builtinCommands'

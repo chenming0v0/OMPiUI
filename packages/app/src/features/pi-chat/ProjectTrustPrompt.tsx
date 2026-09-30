@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '../../components/ui/Button'
 import { Dialog } from '../../components/ui/Dialog'
-import { getProjectTrust, setProjectTrust } from '../../pi/transport/index.js'
-import type { PiProjectTrust } from '../../pi/domain'
+import { getProjectTrust, setProjectTrust } from '../../omp/transport/index.js'
+import type { PiProjectTrust } from '../../omp/domain'
 
 // hook 与组件同文件导出：信任确认逻辑与弹窗组件内聚，fast refresh 会降级为整页刷新，可接受。
 /* eslint-disable react-refresh/only-export-components */

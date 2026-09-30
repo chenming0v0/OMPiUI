@@ -6,8 +6,8 @@ import {
   registerProviderAuthFlow,
   trackManagementProviders,
   useManagementEvents,
-} from '../../../pi/managementEventStore'
-import type { PiModelRuntimeSnapshot, PiProviderAuthInfo } from '../../../pi/domain'
+} from '../../../omp/managementEventStore'
+import type { PiModelRuntimeSnapshot, PiProviderAuthInfo } from '../../../omp/domain'
 import {
   inspectModelRuntime,
   listPiProviders,
@@ -17,8 +17,8 @@ import {
   removeProviderApiKey,
   setProviderApiKey,
   startProviderAuth,
-} from '../../../pi/transport/index.js'
-import { loadPiModels } from '../../../pi/controllers/index.js'
+} from '../../../omp/transport/index.js'
+import { loadPiModels } from '../../../omp/controllers/index.js'
 import { SettingsSection, SettingsDisclosure, settingsFieldClass } from './SettingsUI'
 
 export function PiProviderManagement() {

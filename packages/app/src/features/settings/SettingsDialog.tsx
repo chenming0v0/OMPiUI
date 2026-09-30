@@ -29,7 +29,7 @@ import { PiManagementSettings } from './components/PiManagementSettings'
 import { ServiceSettings } from './components/ServiceSettings'
 import { SettingsSearch } from './SettingsSearch'
 import { SETTINGS_SEARCH_DEFINITIONS, type SettingsSearchItem } from './settingsSearchCatalog'
-import { usePiCapabilities } from '../../pi/capabilities'
+import { usePiCapabilities } from '../../omp/capabilities'
 import { isTauriMobile } from '../../utils/tauri'
 
 // ============================================

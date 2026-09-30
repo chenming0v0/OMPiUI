@@ -1,10 +1,10 @@
 // ============================================
-// PiUI API barrel and project adapter
+// OMPiUI API barrel and project adapter
 // ============================================
 
 import type { HostProject } from './types'
-import { getHostGitInfo } from '../pi/transport/index.js'
-import { resolveWorkspacePath } from '../pi/workspaces'
+import { getHostGitInfo } from '../omp/transport/index.js'
+import { resolveWorkspacePath } from '../omp/workspaces'
 
 // Re-export all types
 export * from './types'
@@ -20,11 +20,11 @@ export * from './events'
 // ============================================
 
 /**
- * 获取当前工作区（PiUI 原生形状：path/gitRoot，无 OCUI worktree 概念）
+ * 获取当前工作区（OMPiUI 原生形状：path/gitRoot，无 OCUI worktree 概念）
  */
 export async function getCurrentProject(directory?: string): Promise<HostProject> {
   const workspacePath = await resolveWorkspacePath(directory)
-  if (!workspacePath) throw new Error('No PiUI workspace is available')
+  if (!workspacePath) throw new Error('No OMPiUI workspace is available')
   const git = await getHostGitInfo(workspacePath).catch(() => null)
   const path = workspacePath.replace(/\\/g, '/').replace(/\/+$/, '')
   const name = path.split('/').pop() || path

@@ -18,7 +18,7 @@ describe("protocol foundation", () => {
   it("pins versions", () => {
     assert.equal(PROTOCOL_VERSION, 1)
     assert.equal(PI_PARITY_SDK_VERSION, "18.3.1")
-    assert.equal(EVENT_WS_SUBPROTOCOL, "piui.events.v1")
+    assert.equal(EVENT_WS_SUBPROTOCOL, "ompiui.events.v1")
   })
 
   it("round-trips event stream keys", () => {

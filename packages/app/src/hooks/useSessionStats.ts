@@ -1,7 +1,7 @@
 import { useCallback, useRef, useSyncExternalStore } from 'react'
 import type { JsonObject, JsonValue } from '@ompiui/protocol'
 import { paneLayoutStore } from '../store/paneLayoutStore'
-import { piSessionStateStore } from '../pi/state/index.js'
+import { piSessionStateStore } from '../omp/state/index.js'
 import { isSameSessionStats } from './sessionStatsCompute'
 import type { SessionStats } from './sessionStatsTypes'
 

@@ -1,15 +1,15 @@
 /**
  * 服务端文件日志：把关键日志主动追加写入磁盘文件。
  *
- * 为什么必须主动写而不是捕获 console：桌面壳（Tauri）启动 pi-worker.exe
+ * 为什么必须主动写而不是捕获 console：桌面壳（Tauri）启动 omp-worker.exe
  * 时 stdout/stderr 是 piped 到内存环形缓冲（只有最近 24 行），进程退出后
  * 全部丢失。而 monkey-patch process.stdout.write 在 bun 下无效——bun 的
  * console.log 直接写底层 fd，不走 JS 层方法（实测 captured=0）。所以这里
  * 提供显式的 logToFile()，由关键日志点（worker 崩溃、启动、shutdown）直接
  * 调用；node 模式下仍附加 console 捕获以覆盖未被显式记录的零散输出。
  *
- * 文件位置：<piui 数据目录>/logs/piui-server-YYYY-MM-DD.log
- * 按天轮转，保留最近 N 天（PIUI_LOG_KEEP_DAYS，默认 7）。
+ * 文件位置：<ompiui 数据目录>/logs/ompiui-server-YYYY-MM-DD.log
+ * 按天轮转，保留最近 N 天（OMPIUI_LOG_KEEP_DAYS，默认 7）。
  */
 
 import { appendFileSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs"
@@ -22,9 +22,9 @@ let currentDay = ""
 let enabled = false
 
 function dataRoot(): string {
-  const env = process.env.PIUI_DATA_DIR?.trim()
+  const env = process.env.OMPIUI_DATA_DIR?.trim()
   if (env) return resolve(env)
-  if (process.platform === "win32" && process.env.APPDATA) return join(process.env.APPDATA, "com.ompiui.desktop")
+  if (process.platform === "win32" && process.env.APPDATA) return join(process.env.APPDATA, "com.ompiui.app")
   return join(homedir(), ".ompiui")
 }
 
@@ -37,7 +37,7 @@ function ensureLogFile(): string | undefined {
       logDir = join(dataRoot(), "logs")
       mkdirSync(logDir, { recursive: true })
     }
-    logFile = join(logDir, `piui-server-${day}.log`)
+    logFile = join(logDir, `ompiui-server-${day}.log`)
     return logFile
   } catch {
     return undefined
@@ -70,7 +70,7 @@ export function logError(message: string): void {
 function cleanupOldLogs(): void {
   try {
     if (!logDir) return
-    const keepDays = Number(process.env.PIUI_LOG_KEEP_DAYS ?? 7)
+    const keepDays = Number(process.env.OMPIUI_LOG_KEEP_DAYS ?? 7)
     const cutoff = Date.now() - (Number.isFinite(keepDays) && keepDays > 0 ? keepDays : 7) * 24 * 60 * 60 * 1000
     for (const name of readdirSync(logDir)) {
       const full = join(logDir, name)
@@ -89,7 +89,7 @@ function cleanupOldLogs(): void {
  * 启用文件日志（幂等）。node 模式下额外 patch console 的 stdout/stderr 以
  * 捕获零散输出；bun 下 console 不走 JS 方法，依赖各日志点显式 logToFile。
  */
-export function enableFileLogging(enable = process.env.PIUI_FILE_LOG !== "0"): () => void {
+export function enableFileLogging(enable = process.env.OMPIUI_FILE_LOG !== "0"): () => void {
   if (enabled) return () => undefined
   if (!enable) return () => undefined
   enabled = true

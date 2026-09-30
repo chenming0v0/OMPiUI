@@ -3,7 +3,7 @@ import { after, describe, it } from "node:test"
 
 // Parallel test files each spawn SDK workers; the default handshake budget
 // is too tight when several spawn at once on a loaded machine.
-process.env.PIUI_WORKER_HANDSHAKE_TIMEOUT_MS ??= "60000"
+process.env.OMPIUI_WORKER_HANDSHAKE_TIMEOUT_MS ??= "60000"
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -12,9 +12,9 @@ import { createAppServer, type AppServer } from "./http.ts"
 import { PI_PARITY_SDK_VERSION } from "@ompiui/protocol"
 
 // 测试进程的 session 租约目录放进独立临时目录，跑完即删，
-// 不污染默认的 piui-session-leases 命名空间。
-const leaseHome = mkdtempSync(path.join(tmpdir(), "piui-http-leases-"))
-process.env.PIUI_SESSION_LEASE_DIR = leaseHome
+// 不污染默认的 ompiui-session-leases 命名空间。
+const leaseHome = mkdtempSync(path.join(tmpdir(), "ompiui-http-leases-"))
+process.env.OMPIUI_SESSION_LEASE_DIR = leaseHome
 after(() => {
   rmSync(leaseHome, { recursive: true, force: true })
 })
@@ -65,8 +65,8 @@ describe("http api", () => {
   })
 
   it("serves workspaces, files and git through the host surface", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "piui-http-host-"))
-    writeFileSync(path.join(root, "hello.txt"), "hello piui", "utf8")
+    const root = mkdtempSync(path.join(tmpdir(), "ompiui-http-host-"))
+    writeFileSync(path.join(root, "hello.txt"), "hello ompiui", "utf8")
     mkdirSync(path.join(root, "src"))
     writeFileSync(path.join(root, "src", "index.ts"), "export const answer = 42\n", "utf8")
     const app = createAppServer({ authToken: null })
@@ -96,7 +96,7 @@ describe("http api", () => {
 
     const read = await request(port, "POST", "/api/v1/host/commands/files.read", { body: { workspacePath, path: "hello.txt" } })
     assert.equal(read.status, 200)
-    assert.equal(read.json.data.content, "hello piui")
+    assert.equal(read.json.data.content, "hello ompiui")
     const etag = read.json.data.etag as string
     assert.ok(etag)
 
@@ -146,7 +146,7 @@ describe("http api", () => {
   })
 
   it("re-registers a real workspace when the in-memory registry is empty", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "piui-http-reopen-"))
+    const root = mkdtempSync(path.join(tmpdir(), "ompiui-http-reopen-"))
     writeFileSync(path.join(root, "after-restart.txt"), "ready", "utf8")
     const app = createAppServer({ authToken: null })
     const port = await listen(app)
@@ -171,9 +171,9 @@ describe("http api", () => {
   })
 
   it("serves catalog commands and reports unknown commands", async () => {
-    const mockHome = mkdtempSync(path.join(tmpdir(), "piui-http-catalog-"))
-    process.env.PIUI_MOCK_DIR = mockHome
-    process.env.PIUI_DRIVER = "mock"
+    const mockHome = mkdtempSync(path.join(tmpdir(), "ompiui-http-catalog-"))
+    process.env.OMPIUI_MOCK_DIR = mockHome
+    process.env.OMPIUI_DRIVER = "mock"
     const app = createAppServer({ authToken: null })
     const port = await listen(app)
     cleanups.push(async () => {
@@ -270,7 +270,7 @@ describe("http api", () => {
       peekCatalogHandshake: async () => hello,
       getCatalogHandshake: async () => hello,
       dispose: async () => {},
-    } as unknown as import("./pi/supervisor.ts").RuntimeSupervisor
+    } as unknown as import("./omp/supervisor.ts").RuntimeSupervisor
     const app = createAppServer({ authToken: "test-token", supervisor })
     const port = await listen(app)
     cleanups.push(() => app.dispose())
@@ -289,7 +289,7 @@ describe("http api", () => {
       peekCatalogHandshake: async () => { throw new Error("worker crashed") },
       getCatalogHandshake: async () => { throw new Error("worker crashed") },
       dispose: async () => {},
-    } as unknown as import("./pi/supervisor.ts").RuntimeSupervisor
+    } as unknown as import("./omp/supervisor.ts").RuntimeSupervisor
     const app = createAppServer({ authToken: "test-token", supervisor })
     const port = await listen(app)
     cleanups.push(() => app.dispose())
@@ -302,9 +302,9 @@ describe("http api", () => {
   })
 
   it("routes extension commands and tools natively through the runtime registry (mock driver)", async () => {
-    const mockHome = mkdtempSync(path.join(tmpdir(), "piui-http-ext-"))
-    process.env.PIUI_MOCK_DIR = mockHome
-    process.env.PIUI_DRIVER = "mock"
+    const mockHome = mkdtempSync(path.join(tmpdir(), "ompiui-http-ext-"))
+    process.env.OMPIUI_MOCK_DIR = mockHome
+    process.env.OMPIUI_DRIVER = "mock"
     const app = createAppServer({ authToken: null })
     const port = await listen(app)
     cleanups.push(async () => {

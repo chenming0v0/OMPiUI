@@ -10,7 +10,7 @@ const { usePiModelsMock, useHiddenModelKeysMock, setVisibleMock, setManyVisibleM
   setManyVisibleMock: vi.fn(),
 }))
 
-vi.mock('../../../pi/hooks/index.js', () => ({
+vi.mock('../../../omp/hooks/index.js', () => ({
   usePiModels: usePiModelsMock,
 }))
 

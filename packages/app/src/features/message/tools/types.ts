@@ -1,5 +1,5 @@
 import type { ReactNode, ComponentType } from 'react'
-import type { PiToolExecution } from '../../../pi/domain/index.js'
+import type { PiToolExecution } from '../../../omp/domain/index.js'
 
 // ============================================
 // Tool Registry Types

@@ -8,12 +8,12 @@ import { useEffect, useRef } from 'react'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { extensionTuiStore } from '../pi/extensionTuiStore'
+import { extensionTuiStore } from '../omp/extensionTuiStore'
 import {
   sendExtensionTuiInput,
   sendExtensionTuiRedraw,
   sendExtensionTuiResize,
-} from '../pi/transport/index.js'
+} from '../omp/transport/index.js'
 
 const TUI_FONT_FALLBACK =
   "'Fira Code', 'Noto Sans Mono CJK SC', 'JetBrains Mono', 'Cascadia Code', ui-monospace, 'SF Mono', Menlo, Consolas, monospace"

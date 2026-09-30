@@ -7,7 +7,7 @@ import type { TerminalInfo } from "@ompiui/protocol"
 import { extractTerminalTitle, TerminalManager } from "./terminal-manager.ts"
 
 test("TerminalManager creates, streams, replays, and removes a terminal", async () => {
-  const root = mkdtempSync(path.join(tmpdir(), "piui-terminal-"))
+  const root = mkdtempSync(path.join(tmpdir(), "omompiui-terminal-"))
   const manager = new TerminalManager()
   try {
     const created = await manager.create(root, { title: "Pi terminal", rows: 24, cols: 80 })
@@ -18,13 +18,13 @@ test("TerminalManager creates, streams, replays, and removes a terminal", async 
     const titles: string[] = []
     const attachment = manager.attach(root, created.id, undefined, data => output.push(data), () => {}, title => titles.push(title))
     attachment.activate()
-    manager.write(root, created.id, process.platform === "win32" ? "echo piui-terminal\r\n" : "printf piui-terminal\\n")
-    await waitFor(() => output.join("").includes("piui-terminal"))
+    manager.write(root, created.id, process.platform === "win32" ? "echo ompiui-terminal\r\n" : "printf ompiui-terminal\\n")
+    await waitFor(() => output.join("").includes("ompiui-terminal"))
 
     const replayed = manager.attach(root, created.id, 0, () => {}, () => {})
-    assert.match(replayed.replay, /piui-terminal/)
+    assert.match(replayed.replay, /ompiui-terminal/)
     replayed.detach()
-    assert.match(output.join(""), /piui-terminal/)
+    assert.match(output.join(""), /ompiui-terminal/)
 
     manager.update(root, created.id, { title: "Renamed terminal" })
     assert.deepEqual(titles, ["Renamed terminal"])
@@ -55,8 +55,8 @@ test("extractTerminalTitle reads OSC 0 and OSC 2 titles", () => {
 })
 
 test("closeWorkspace kills owned terminals and consumes their tickets", async () => {
-  const root = mkdtempSync(path.join(tmpdir(), "piui-terminal-close-"))
-  const other = mkdtempSync(path.join(tmpdir(), "piui-terminal-close-other-"))
+  const root = mkdtempSync(path.join(tmpdir(), "omompiui-terminal-close-"))
+  const other = mkdtempSync(path.join(tmpdir(), "omompiui-terminal-close-other-"))
   const manager = new TerminalManager()
   try {
     const first = await manager.create(root, { title: "close-me" })
@@ -79,7 +79,7 @@ test("closeWorkspace kills owned terminals and consumes their tickets", async ()
 })
 
 test("closing an already-closed workspace is a no-op", async () => {
-  const root = mkdtempSync(path.join(tmpdir(), "piui-terminal-close-idem-"))
+  const root = mkdtempSync(path.join(tmpdir(), "omompiui-terminal-close-idem-"))
   const manager = new TerminalManager()
   try {
     await manager.create(root, { title: "still-running" })
@@ -93,7 +93,7 @@ test("closing an already-closed workspace is a no-op", async () => {
 })
 
 test("removing a terminal invalidates its connect ticket", async () => {
-  const root = mkdtempSync(path.join(tmpdir(), "piui-terminal-ticket-"))
+  const root = mkdtempSync(path.join(tmpdir(), "omompiui-terminal-ticket-"))
   const manager = new TerminalManager()
   try {
     const created = await manager.create(root, { title: "ticketed" })
@@ -107,7 +107,7 @@ test("removing a terminal invalidates its connect ticket", async () => {
 })
 
 test("attach rejects a future cursor", async () => {
-  const root = mkdtempSync(path.join(tmpdir(), "piui-terminal-future-"))
+  const root = mkdtempSync(path.join(tmpdir(), "omompiui-terminal-future-"))
   const manager = new TerminalManager()
   try {
     const created = await manager.create(root, { title: "future" })
@@ -123,7 +123,7 @@ test("attach rejects a future cursor", async () => {
 })
 
 test("exited terminals replay buffered output and report the exit code", async () => {
-  const root = mkdtempSync(path.join(tmpdir(), "piui-terminal-exited-replay-"))
+  const root = mkdtempSync(path.join(tmpdir(), "omompiui-terminal-exited-replay-"))
   const manager = new TerminalManager()
   try {
     const created = await manager.create(root, { title: "replay" })
@@ -150,7 +150,7 @@ test("exited terminals replay buffered output and report the exit code", async (
 })
 
 test("enforces the terminal limit under concurrent creates", async () => {
-  const root = mkdtempSync(path.join(tmpdir(), "piui-terminal-limit-"))
+  const root = mkdtempSync(path.join(tmpdir(), "omompiui-terminal-limit-"))
   const manager = new TerminalManager()
   try {
     const results = await Promise.allSettled(Array.from({ length: 40 }, () => manager.create(root, { title: "limit" })))

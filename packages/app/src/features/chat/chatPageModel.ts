@@ -1,5 +1,5 @@
 import type { Message } from '../../types/message'
-import type { PiAssistantMessageItem, PiTimelineItem } from '../../pi/domain/index.js'
+import type { PiAssistantMessageItem, PiTimelineItem } from '../../omp/domain/index.js'
 
 export const PAGE_MESSAGE_COUNT = 20
 export const PAGE_EXTREME_RENDER_WEIGHT = 700

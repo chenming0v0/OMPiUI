@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { UiSession } from '../../types/session'
 import { pinnedSessionsStore } from '../../store/pinnedSessionsStore'
 import { SessionListItem } from './SessionList'
-import { piNativeStatusForTest } from '../../pi/nativeStatus'
+import { piNativeStatusForTest } from '../../omp/nativeStatus'
 
 const { useSessionActiveEntryMock, useHasUnreadCompletedNotificationMock, markSessionNotificationsReadMock } = vi.hoisted(() => ({
   useSessionActiveEntryMock: vi.fn(),

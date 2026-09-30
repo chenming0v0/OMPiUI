@@ -1,0 +1,113 @@
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+
+export default function (pi: ExtensionAPI) {
+  pi.on("session_start", async (_event, ctx) => {
+    ctx.ui.setTitle("OMPiUI panel test")
+    ctx.ui.setStatus("test:status", "extension loaded")
+    ctx.ui.setStatus("test:time", new Date().toLocaleTimeString())
+    ctx.ui.setWidget("demo-widget", [
+      "static line",
+      "todo item A",
+      "completed item B",
+    ])
+    ctx.ui.setWorkingMessage("test extension working")
+    // 注意：不要在异步延迟里继续使用 ctx —— session replacement/reload 后
+    // ctx 会失效（assertActive 抛错），未捕获异常会崩掉整个 worker 进程。
+  })
+
+  pi.registerCommand("ui-test-dialog", {
+    description: "Test extension select, confirm, and input dialogs",
+    handler: async (_args, ctx) => {
+      const choice = await ctx.ui.select("Choose one", ["A", "B", "C"])
+      if (!choice) return
+      const ok = await ctx.ui.confirm("Confirm", `You chose ${choice}. Continue?`)
+      if (!ok) return
+      const text = await ctx.ui.input("Enter text", "placeholder")
+      ctx.ui.setStatus("test:dialog", `choice=${choice} text=${text ?? "(empty)"}`)
+      ctx.ui.setWidget("demo-widget", [`dialog result: ${choice} / ${text ?? "(empty)"}`])
+    },
+  })
+
+  pi.registerCommand("ui-test-select-long", {
+    description: "Test a long extension select dialog",
+    handler: async (_args, ctx) => {
+      const choice = await ctx.ui.select("Choose a deployment target", [
+        "Production · North America · blue cluster",
+        "Production · Europe · green cluster",
+        "Staging · Integration · shared services",
+        "Preview · Feature branch · temporary environment",
+        "Local · Windows development workspace",
+      ])
+      ctx.ui.setStatus("test:select", choice ?? "cancelled")
+    },
+  })
+
+  pi.registerCommand("ui-test-confirm-long", {
+    description: "Test a long extension confirm dialog",
+    handler: async (_args, ctx) => {
+      const confirmed = await ctx.ui.confirm(
+        "Apply workspace changes?",
+        "This will update the generated files, remove stale artifacts, and restart the local service. The current session history will remain unchanged.",
+      )
+      ctx.ui.setStatus("test:confirm", confirmed ? "confirmed" : "cancelled")
+    },
+  })
+
+  pi.registerCommand("ui-test-input", {
+    description: "Test an extension single-line input",
+    handler: async (_args, ctx) => {
+      const value = await ctx.ui.input("Name this environment", "e.g. preview-windows-node22")
+      ctx.ui.setStatus("test:input", value ?? "cancelled")
+    },
+  })
+
+  pi.registerCommand("ui-test-editor", {
+    description: "Test an extension multi-line editor",
+    handler: async (_args, ctx) => {
+      const value = await ctx.ui.editor(
+        "Edit release notes",
+        "## Changes\n\n- Review the generated files\n- Confirm the deployment target\n- Add any rollback notes",
+      )
+      ctx.ui.setStatus("test:editor", value === undefined ? "cancelled" : `lines=${value.split("\n").length}`)
+    },
+  })
+
+  pi.registerCommand("ui-test-dialog-queue", {
+    description: "Queue several extension dialogs",
+    handler: async (_args, ctx) => {
+      await Promise.all([
+        ctx.ui.confirm("First confirmation", "The first dialog in the queue."),
+        ctx.ui.input("Second input", "The second dialog in the queue"),
+        ctx.ui.select("Third selection", ["One", "Two", "Three"]),
+      ])
+      ctx.ui.setStatus("test:queue", "completed")
+    },
+  })
+
+  pi.registerCommand("ui-test-tui", {
+    description: "Mount a component widget and a custom() panel (extension TUI mirror)",
+    handler: async (_args, ctx) => {
+      const { Box, Container, Text } = await import("@earendil-works/pi-tui")
+      ctx.ui.setWidget("tui-panel", (tui, theme) => {
+        const container = new Container()
+        container.addChild(new Text(theme.fg("accent", "TUI component widget"), 1, 0))
+        container.addChild(new Text(theme.fg("text", "  interactive panel rendered offscreen"), 1, 0))
+        container.addChild(new Text(theme.fg("muted", "  keystrokes route back to the worker"), 1, 0))
+        return container
+      }, { placement: "aboveEditor" })
+
+      const choice = await ctx.ui.custom<"a" | "b">((tui, theme, keybindings, done) => {
+        const box = new Box(1, 1)
+        box.addChild(new Text(theme.fg("text", "custom() panel — press 1 or 2")))
+        box.addChild(new Text(theme.fg("muted", "1) alpha   2) beta")))
+        tui.addInputListener(data => {
+          if (data === "1") { done("a"); return { consume: true } }
+          if (data === "2") { done("b"); return { consume: true } }
+          return undefined
+        })
+        return box
+      })
+      ctx.ui.setStatus("test:tui", `custom=${choice ?? "cancelled"}`)
+    },
+  })
+}

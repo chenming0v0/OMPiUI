@@ -100,7 +100,7 @@ export class WorkspaceWatcher {
     if (directories > this.maxWatchDirectories) {
       this.watched.delete(key)
       console.warn(
-        `[piui-server] skipping recursive watch for ${workspace.canonicalRoot}: ` +
+        `[ompiui-server] skipping recursive watch for ${workspace.canonicalRoot}: ` +
           `${directories} directories exceeds the cap of ${this.maxWatchDirectories}`,
       )
       return
@@ -141,7 +141,7 @@ export class WorkspaceWatcher {
     })
     state.watcher.on("error", error => {
       const message = error instanceof Error ? error.message : String(error)
-      console.error(`[piui-server] workspace watcher failed for ${workspace.canonicalRoot}: ${message}`)
+      console.error(`[ompiui-server] workspace watcher failed for ${workspace.canonicalRoot}: ${message}`)
       state.rescan = true
       this.schedule(workspace, state)
     })
@@ -184,7 +184,7 @@ export class WorkspaceWatcher {
       })
       watcher.on("error", error => {
         const message = error instanceof Error ? error.message : String(error)
-        console.error(`[piui-server] linked worktree watcher failed for ${workspace.canonicalRoot}: ${message}`)
+        console.error(`[ompiui-server] linked worktree watcher failed for ${workspace.canonicalRoot}: ${message}`)
         state.gitDirty = true
         this.schedule(workspace, state)
       })
@@ -249,8 +249,8 @@ export class WorkspaceWatcher {
 function shouldIgnore(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate).replace(/\\/g, "/")
   if (!relative) return false
-  if (/(?:^|\/)\.[^/]+\.piui-[^/]+\.tmp$/.test(relative) ||
-    /(?:^|\/)[^/]+\.piui-backup-[^/]+$/.test(relative)) return true
+  if (/(?:^|\/)\.[^/]+\.(?:ompiui|piui)-[^/]+\.tmp$/.test(relative) ||
+    /(?:^|\/)[^/]+\.(?:ompiui|piui)-backup-[^/]+$/.test(relative)) return true
   const segments = relative.split("/")
   if (segments.some(segment => SKIP_SEGMENTS.has(segment))) return true
   if (segments[0] !== ".git") return false

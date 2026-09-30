@@ -14,7 +14,7 @@ export interface ServerConfig {
   name: string // 显示名称
   url: string // 服务器 URL (不含尾部斜杠)
   isDefault?: boolean // 是否为默认服务器
-  token?: string // Bearer token (PiUI 服务器分享链接使用)
+  token?: string // Bearer token (OMPiUI 服务器分享链接使用)
 }
 
 /**
@@ -105,13 +105,15 @@ function formatExceptionDiagnostics(url: string, err: unknown): string {
     .join('\n\n') + cause
 }
 
-const STORAGE_KEY = 'piui-servers'
-const ACTIVE_SERVER_KEY = 'piui-active-server'
+const STORAGE_KEY = 'ompiui-servers'
+const ACTIVE_SERVER_KEY = 'ompiui-active-server'
+const LEGACY_STORAGE_KEY = 'piui-servers'
+const LEGACY_ACTIVE_SERVER_KEY = 'piui-active-server'
 export const LOCAL_SERVER_ID = 'local'
 
 /**
  * Server Store
- * 管理多个 PiUI server 配置
+ * 管理多个 OMPiUI server 配置
  */
 class ServerStore {
   private servers: ServerConfig[] = []
@@ -145,8 +147,8 @@ class ServerStore {
 
   private loadFromStorage(): void {
     try {
-      // 加载服务器列表
-      const stored = localStorage.getItem(STORAGE_KEY)
+      // 加载服务器列表；改名前的 piui-servers 只读迁移一次
+      const stored = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY)
       if (stored) {
         this.servers = JSON.parse(stored)
       }
@@ -166,7 +168,9 @@ class ServerStore {
       // 加载当前选中的服务器
       // 优先从 sessionStorage 读取（per-window 隔离，刷新保持）
       // 回退到 localStorage（新窗口首次打开时继承上次默认）
-      const activeId = sessionStorage.getItem(ACTIVE_SERVER_KEY) ?? localStorage.getItem(ACTIVE_SERVER_KEY)
+      const activeId = sessionStorage.getItem(ACTIVE_SERVER_KEY)
+        ?? localStorage.getItem(ACTIVE_SERVER_KEY)
+        ?? localStorage.getItem(LEGACY_ACTIVE_SERVER_KEY)
       if (activeId && this.servers.some(s => s.id === activeId)) {
         this.activeServerId = activeId
       } else {
@@ -530,8 +534,8 @@ class ServerStore {
             latency,
             lastCheck: Date.now(),
             error: contentType.includes('text/html')
-              ? 'Server returned HTML instead of PiUI health JSON. Check the URL path.'
-              : 'Server did not return PiUI health JSON',
+              ? 'Server returned HTML instead of OMPiUI health JSON. Check the URL path.'
+              : 'Server did not return OMPiUI health JSON',
             details,
           }
           return commitHealth(health)
@@ -545,7 +549,7 @@ class ServerStore {
             status: 'error',
             latency,
             lastCheck: Date.now(),
-            error: 'Invalid PiUI health JSON',
+            error: 'Invalid OMPiUI health JSON',
             details,
           }
           return commitHealth(health)
@@ -556,7 +560,7 @@ class ServerStore {
             status: 'error',
             latency,
             lastCheck: Date.now(),
-            error: 'Not a compatible PiUI server',
+            error: 'Not a compatible OMPiUI server',
             details,
           }
           return commitHealth(health)
@@ -677,11 +681,13 @@ export function importServerSettingsBackup(raw: unknown): void {
 }
 
 /**
- * 解析分享链接 `piui://connect?url=...&token=...`，不是分享链接时返回 null。
+ * 解析分享链接 `ompiui://connect?url=...&token=...`（兼容改名前的
+ * `piui://connect`），不是分享链接时返回 null。
  */
 export function parseConnectLink(input: string): { url: string; token: string } | null {
   const trimmed = input.trim()
-  if (!trimmed.toLowerCase().startsWith('piui://connect')) return null
+  const lowered = trimmed.toLowerCase()
+  if (!lowered.startsWith('ompiui://connect') && !lowered.startsWith('piui://connect')) return null
   try {
     const parsed = new URL(trimmed)
     const url = parsed.searchParams.get('url')

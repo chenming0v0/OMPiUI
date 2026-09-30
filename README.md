@@ -50,14 +50,14 @@ OMPiUI 不是这两个项目的官方客户端。
 ```bash
 npm install
 npm run build          # protocol → omp-worker → server → app
-npm run dev:server:omp # PIUI_DRIVER=omp 启动 server（tsx watch）
+npm run dev:server:omp # OMPIUI_DRIVER=omp 启动 server（tsx watch）
 npm run dev:app        # Vite 前端（HMR）
 ```
 
 生产模式（单进程托管静态文件）：
 
 ```bash
-PIUI_DRIVER=omp node --import tsx packages/server/src/bundle-entry.ts web --host 127.0.0.1 --port 8787
+OMPIUI_DRIVER=omp node --import tsx packages/server/src/bundle-entry.ts web --host 127.0.0.1 --port 8787
 # 浏览器打开控制台打印的 http://127.0.0.1:8787/?token=...
 ```
 
@@ -78,7 +78,7 @@ launch:
 
 PiUI 原本在 worker 进程内直接 import Pi SDK（`@earendil-works/pi-*`，锁 0.84.2）。OMP 18.x 的进程内 API 已与 Pi 大幅分化且要求 Bun 运行时；而 `omp --mode rpc` 是 OMP 官方文档钦定的跨进程嵌入面（稳定 JSONL 协议、协议版本协商、>1MiB 分帧、子代理/扩展 UI/host-tool 子协议全都在 RPC 面上）。基于 RPC 的包装让 OMPiUI 的 server 保持纯 Node、不受 OMP 内部重构影响，也正是"把 OMP 包装成 SDK"的那一层。
 
-app 侧对该 SDK 只有过 type-only 引用；这些类型已按 SDK 0.84.2 的声明结构内联到 `packages/app/src/pi/vendor/*`，依赖随之从 app 的 package.json 移除，桌面打包不再需要安装 Pi SDK。
+app 侧对该 SDK 只有过 type-only 引用；这些类型已按 SDK 0.84.2 的声明结构内联到 `packages/app/src/omp/vendor/*`，依赖随之从 app 的 package.json 移除，桌面打包不再需要安装 Pi SDK。
 
 ## License
 

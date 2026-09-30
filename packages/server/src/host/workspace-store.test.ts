@@ -23,7 +23,7 @@ describe("workspace identity", () => {
   })
 
   it("identifies a workspace by its canonical path", () => {
-    const root = mkdtempSync(path.join(tmpdir(), "piui-ws-id-"))
+    const root = mkdtempSync(path.join(tmpdir(), "ompiui-ws-id-"))
     roots.push(root)
 
     // A fresh store stands in for a restarted server. Nothing is persisted, yet
@@ -35,7 +35,7 @@ describe("workspace identity", () => {
   })
 
   it("resolves paths that differ only in form onto one workspace", () => {
-    const root = mkdtempSync(path.join(tmpdir(), "piui-ws-form-"))
+    const root = mkdtempSync(path.join(tmpdir(), "ompiui-ws-form-"))
     roots.push(root)
     const store = new WorkspaceStore()
     const direct = store.resolve(root)
@@ -45,7 +45,7 @@ describe("workspace identity", () => {
   })
 
   it("keeps metadata when the same path is resolved again", () => {
-    const root = mkdtempSync(path.join(tmpdir(), "piui-ws-dup-"))
+    const root = mkdtempSync(path.join(tmpdir(), "ompiui-ws-dup-"))
     roots.push(root)
     const store = new WorkspaceStore()
     const first = store.resolve(root, "Custom name")
@@ -56,7 +56,7 @@ describe("workspace identity", () => {
   })
 
   it("rejects a path that is not an existing directory", () => {
-    const root = mkdtempSync(path.join(tmpdir(), "piui-ws-bad-"))
+    const root = mkdtempSync(path.join(tmpdir(), "ompiui-ws-bad-"))
     roots.push(root)
     const file = path.join(root, "not-a-dir.txt")
     writeFileSync(file, "x")
@@ -66,7 +66,7 @@ describe("workspace identity", () => {
   })
 
   it("finds a known workspace without touching the filesystem", () => {
-    const root = mkdtempSync(path.join(tmpdir(), "piui-ws-find-"))
+    const root = mkdtempSync(path.join(tmpdir(), "ompiui-ws-find-"))
     roots.push(root)
     const store = new WorkspaceStore()
     assert.equal(store.find(root), undefined)
@@ -75,7 +75,7 @@ describe("workspace identity", () => {
   })
 
   it("keeps an explicitly closed workspace closed until it is opened again", () => {
-    const root = mkdtempSync(path.join(tmpdir(), "piui-ws-closed-"))
+    const root = mkdtempSync(path.join(tmpdir(), "ompiui-ws-closed-"))
     roots.push(root)
     const store = new WorkspaceStore()
     store.resolve(root)
@@ -90,7 +90,7 @@ describe("workspace identity", () => {
   })
 
   it("rejects a known root replaced by a symlink", () => {
-    const parent = mkdtempSync(path.join(tmpdir(), "piui-ws-replaced-"))
+    const parent = mkdtempSync(path.join(tmpdir(), "ompiui-ws-replaced-"))
     const root = path.join(parent, "root")
     const outside = path.join(parent, "outside")
     mkdirSync(root)
@@ -104,7 +104,7 @@ describe("workspace identity", () => {
   })
 
   it("rejects an operation using a known root after replacement", () => {
-    const parent = mkdtempSync(path.join(tmpdir(), "piui-ws-operation-replaced-"))
+    const parent = mkdtempSync(path.join(tmpdir(), "ompiui-ws-operation-replaced-"))
     const root = path.join(parent, "root")
     const outside = path.join(parent, "outside")
     mkdirSync(root)

@@ -3,8 +3,8 @@ import { useTranslation } from 'react-i18next'
 import type { ExtensionUiDialogRequest, ExtensionUiDialogResponse } from '@ompiui/protocol'
 import { QuestionIcon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon } from '../../components/Icons'
 import { CodePreview } from '../../components/CodePreview'
-import { extensionUiStore } from '../../pi/extensionUiStore'
-import { respondPiExtensionUi } from '../../pi/controllers/index.js'
+import { extensionUiStore } from '../../omp/extensionUiStore'
+import { respondPiExtensionUi } from '../../omp/controllers/index.js'
 
 /**
  * Interactive card for one pending extension UI dialog

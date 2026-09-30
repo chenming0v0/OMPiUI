@@ -7,7 +7,7 @@ import { searchFilesByName, searchWorkspaceText } from "./file-search.ts"
 import type { WorkspaceRecord } from "./workspace-store.ts"
 
 describe("searchFilesByName", () => {
-  const root = mkdtempSync(path.join(tmpdir(), "piui-search-"))
+  const root = mkdtempSync(path.join(tmpdir(), "ompiui-search-"))
   mkdirSync(path.join(root, "src"))
   writeFileSync(path.join(root, "src", "hello.ts"), "export {}\n")
   writeFileSync(path.join(root, "src", "message.ts"), "const first = 'PiUI'\nconst second = 'piui client'\n")

@@ -2,10 +2,10 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import type { SessionListParams, UiSession } from '../types/session'
 import { pinnedSessionsStore } from '../store/pinnedSessionsStore'
 import { autoDetectPathStyle, isSameDirectory } from '../utils'
-import { createPiSession, loadPiSessions, loadPiSessionsForCwd, deletePiSession } from '../pi/controllers/index.js'
-import { filterPiSessionList, linkPiSessionForks, piSessionInfoToUiSession } from '../pi/nativeSessionListModel'
-import { trackPiSession } from '../pi/piSessionIndex'
-import { resolveWorkspacePath } from '../pi/workspaces.js'
+import { createPiSession, loadPiSessions, loadPiSessionsForCwd, deletePiSession } from '../omp/controllers/index.js'
+import { filterPiSessionList, linkPiSessionForks, piSessionInfoToUiSession } from '../omp/nativeSessionListModel'
+import { trackPiSession } from '../omp/ompSessionIndex'
+import { resolveWorkspacePath } from '../omp/workspaces.js'
 
 interface UseSessionsOptions {
   /** 每页数量 */
@@ -204,8 +204,8 @@ export function useSessions(options: UseSessionsOptions = {}): UseSessionsResult
       }
       void fetchSessionsRef.current({ search: searchRef.current || undefined, silent: true })
     }
-    window.addEventListener('piui:sessions-changed', refreshFromEvent)
-    return () => window.removeEventListener('piui:sessions-changed', refreshFromEvent)
+    window.addEventListener('ompiui:sessions-changed', refreshFromEvent)
+    return () => window.removeEventListener('ompiui:sessions-changed', refreshFromEvent)
   }, [enabled, matchesDirectory, pageSize])
 
   // 加载更多：递增 limit 重新拉取完整列表（与 SessionContext 一致）
@@ -255,7 +255,7 @@ export function useSessions(options: UseSessionsOptions = {}): UseSessionsResult
         })
       }
 
-      window.dispatchEvent(new CustomEvent('piui:sessions-changed'))
+      window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
 
       return newSession
     },
@@ -270,7 +270,7 @@ export function useSessions(options: UseSessionsOptions = {}): UseSessionsResult
       await deletePiSession(session.directory, session.path)
       pinnedSessionsStore.unpin(sessionId)
       setSessions(prev => prev.filter(s => s.id !== sessionId))
-      window.dispatchEvent(new CustomEvent('piui:sessions-changed'))
+      window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
     },
     [sessions],
   )

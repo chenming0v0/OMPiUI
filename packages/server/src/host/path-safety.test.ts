@@ -39,7 +39,7 @@ describe("normalizeRelativePath", () => {
 })
 
 describe("resolveWorkspacePath", () => {
-  const root = mkdtempSync(path.join(tmpdir(), "piui-ws-"))
+  const root = mkdtempSync(path.join(tmpdir(), "ompiui-ws-"))
   mkdirSync(path.join(root, "src"))
   writeFileSync(path.join(root, "src", "main.ts"), "export {}\n")
   writeFileSync(path.join(root, "readme.md"), "# hi\n")
@@ -61,7 +61,7 @@ describe("resolveWorkspacePath", () => {
   })
 
   it("blocks symlink escape when possible", () => {
-    const outside = mkdtempSync(path.join(tmpdir(), "piui-out-"))
+    const outside = mkdtempSync(path.join(tmpdir(), "ompiui-out-"))
     writeFileSync(path.join(outside, "secret.txt"), "x")
     const link = path.join(root, "leak")
     try {

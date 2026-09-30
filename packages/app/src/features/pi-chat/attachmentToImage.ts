@@ -1,4 +1,4 @@
-import type { PiImageInput } from '../../pi/transport/index.js'
+import type { PiImageInput } from '../../omp/transport/index.js'
 import type { Attachment } from '../attachment'
 
 /**

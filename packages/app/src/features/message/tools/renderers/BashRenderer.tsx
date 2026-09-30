@@ -16,7 +16,7 @@ import { useSyntaxHighlight } from '../../../../hooks/useSyntaxHighlight'
 import { useResponsiveMaxHeight } from '../../../../hooks/useResponsiveMaxHeight'
 import { parseAnsi, type AnsiSegment } from '../../../../utils/ansiUtils'
 import { copyTextToClipboard, clipboardErrorHandler } from '../../../../utils'
-import { useLiveToolOutput } from '../../../../pi/liveToolOutput'
+import { useLiveToolOutput } from '../../../../omp/liveToolOutput'
 import type { ToolRendererProps } from '../types'
 
 // ============================================

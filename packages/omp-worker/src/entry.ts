@@ -8,7 +8,7 @@ import { join, resolve } from "node:path"
 // 和 server 相同的日志目录，崩溃后可回溯（server 侧的 handleExit 日志在
 // server 进程里写，worker 进程内的 uncaughtException 等在这里写）。
 function wireWorkerStderrFileLog(): void {
-  if (process.env.PIUI_FILE_LOG === "0") return
+  if (process.env.OMPIUI_FILE_LOG === "0") return
   let logDir: string | undefined
   const day = () => new Date().toISOString().slice(0, 10)
   let file: string | undefined
@@ -18,7 +18,7 @@ function wireWorkerStderrFileLog(): void {
       if (!file || currentDay !== day()) {
         currentDay = day()
         if (!logDir) {
-          const env = process.env.PIUI_DATA_DIR?.trim()
+          const env = process.env.OMPIUI_DATA_DIR?.trim()
           logDir = env
             ? resolve(env)
             : process.platform === "win32" && process.env.APPDATA

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '../../../components/ui/Button'
-import type { PiConfiguredPackage, PiPackageUpdate, ResolvedPaths } from '../../../pi/domain'
+import type { PiConfiguredPackage, PiPackageUpdate, ResolvedPaths } from '../../../omp/domain'
 import {
   changePiPackageSource,
   checkPiPackageUpdates,
@@ -10,7 +10,7 @@ import {
   managePiPackage,
   resolvePiExtensionSources,
   resolvePiPackages,
-} from '../../../pi/transport/index.js'
+} from '../../../omp/transport/index.js'
 import { Toggle, SettingsSection, SettingsSelect, SettingsDisclosure, settingsFieldClass } from './SettingsUI'
 
 export function PiPackageManagement({ workspacePath }: { workspacePath: string }) {

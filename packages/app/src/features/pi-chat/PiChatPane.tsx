@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 import i18n from '../../i18n'
-import type { Model, Api } from '../../pi/vendor/pi-ai'
+import type { Model, Api } from '../../omp/vendor/pi-ai'
 import { ChatArea, Header, InputBox, type ChatAreaHandle, type InputBoxHandle } from '../chat/index.js'
 import type { ModelSelectorHandle } from '../chat/ModelSelector.js'
 import { PaneHeader } from '../chat/PaneHeader.js'
@@ -14,9 +14,9 @@ import { ExtensionUiDialogHost } from '../chat/ExtensionUiDialogHost.js'
 import { ProjectTrustPrompt } from './ProjectTrustPrompt'
 import { OutlineIndex } from '../../components/OutlineIndex'
 import { buildOutlineSourceEntries } from '../../components/outlineIndexModel'
-import { selectPiTimelineItemsCached } from '../../pi/selectors/timelineCache.js'
-import { piEventStream } from '../../pi/eventStream.js'
-import { bashPendingStore } from '../../pi/bashPendingStore'
+import { selectPiTimelineItemsCached } from '../../omp/selectors/timelineCache.js'
+import { piEventStream } from '../../omp/eventStream.js'
+import { bashPendingStore } from '../../omp/bashPendingStore'
 import {
   abortPiOperation,
   abortPiCompaction,
@@ -48,31 +48,31 @@ import {
   setPiModel,
   setPiThinkingLevel,
   clearPiQueue,
-} from '../../pi/controllers/index.js'
-import { invokePiCommand } from '../../pi/transport/index.js'
+} from '../../omp/controllers/index.js'
+import { invokePiCommand } from '../../omp/transport/index.js'
 import { layoutStore } from '../../store/layoutStore'
 import { themeStore } from '../../store/themeStore'
 import { useSessionActiveEntry } from '../../store/activeSessionStore'
-import type { PiImageInput } from '../../pi/transport/index.js'
+import type { PiImageInput } from '../../omp/transport/index.js'
 import { attachmentToImage } from './attachmentToImage'
-import { piBranchStore } from '../../pi/state/index.js'
-import { captureRedoCheckpoints, commitRedoPlan, redoPlanStore, type RedoPlan } from '../../pi/redoPlanStore'
-import { extensionUiStore, getEditorTextSource } from '../../pi/extensionUiStore'
+import { piBranchStore } from '../../omp/state/index.js'
+import { captureRedoCheckpoints, commitRedoPlan, redoPlanStore, type RedoPlan } from '../../omp/redoPlanStore'
+import { extensionUiStore, getEditorTextSource } from '../../omp/extensionUiStore'
 import { paneControllerStore } from '../../store/paneControllerStore'
-import { commandFeedbackStore, type CommandFeedbackStatus } from '../../pi/commandFeedbackStore'
-import { trackPiSession } from '../../pi/piSessionIndex'
-import { resolveWorkspacePath } from '../../pi/workspaces.js'
-import { stashForkText, subscribeForkSeed, takeForkText } from '../../pi/pendingForkText'
-import { clearSessionEditorDraft, configureSessionEditorDraftSync, setSessionEditorDraft, useSessionEditorDraft } from '../../pi/sessionEditorDraftStore'
+import { commandFeedbackStore, type CommandFeedbackStatus } from '../../omp/commandFeedbackStore'
+import { trackPiSession } from '../../omp/ompSessionIndex'
+import { resolveWorkspacePath } from '../../omp/workspaces.js'
+import { stashForkText, subscribeForkSeed, takeForkText } from '../../omp/pendingForkText'
+import { clearSessionEditorDraft, configureSessionEditorDraftSync, setSessionEditorDraft, useSessionEditorDraft } from '../../omp/sessionEditorDraftStore'
 import { isSessionBusyError, isSessionNotFoundError, uiErrorHandler } from '../../utils'
-import { usePiBranchData, usePiBranchError, usePiModels, usePiSessionRuntimeState } from '../../pi/hooks/index.js'
+import { usePiBranchData, usePiBranchError, usePiModels, usePiSessionRuntimeState } from '../../omp/hooks/index.js'
 import { useDirectory } from '../../contexts/useDirectory'
 import { useSessionContext } from '../../contexts/useSessionContext'
 import { SessionNavigationContext, type SessionNavigationContextValue } from '../../contexts/SessionNavigationContext'
 import { paneLayoutStore } from '../../store/paneLayoutStore'
 import { notificationStore } from '../../store/notificationStore'
 import { useServerStore } from '../../hooks/useServerStore'
-import { useManagementEvents } from '../../pi/managementEventStore'
+import { useManagementEvents } from '../../omp/managementEventStore'
 import { getInternalDragSnapshot, subscribeInternalDrag, subscribeInternalDrop } from '../../lib/internalDragCore'
 import { copyTextToClipboard } from '../../utils/clipboard'
 import {
@@ -606,8 +606,8 @@ export function PiChatPane({
       setHomeModelKey(key)
       if (!sessionId) setHomeVariant(key ? getModelVariantPref(key) : undefined)
     }
-    window.addEventListener('piui:preferred-model-changed', onPreferredModelChanged)
-    return () => window.removeEventListener('piui:preferred-model-changed', onPreferredModelChanged)
+    window.addEventListener('ompiui:preferred-model-changed', onPreferredModelChanged)
+    return () => window.removeEventListener('ompiui:preferred-model-changed', onPreferredModelChanged)
   }, [sessionId])
 
   const handleModelChange = useCallback(
@@ -957,7 +957,7 @@ export function PiChatPane({
         })
         onEnterSessionRef.current?.(targetSessionId, directory)
         // 刷新其他列表消费者（文件夹分组等）；挂起合并保证新会话不被冲掉
-        window.dispatchEvent(new CustomEvent('piui:sessions-changed'))
+        window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
         // Apply the composer's preferred model and thinking level BEFORE the
         // first prompt — afterwards they'd queue behind the active turn and
         // the first turn would run with defaults.

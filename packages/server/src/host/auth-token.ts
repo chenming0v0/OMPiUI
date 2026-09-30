@@ -11,7 +11,7 @@ import path from "node:path"
  * readMigratedSecret and the old directory is never written again.
  */
 export function ompiuiDataDir(): string {
-  const override = process.env.PIUI_DATA_DIR?.trim()
+  const override = process.env.OMPIUI_DATA_DIR?.trim()
   return override ? path.resolve(override) : path.join(homedir(), ".ompiui")
 }
 
@@ -23,14 +23,14 @@ export function authTokenPath(): string {
  * Read a persisted secret, migrating it from the pre-rename `~/.piui`
  * location on first access: the legacy value is copied to the new path
  * (exclusive create) so tokens stay stable for existing clients and later
- * reads skip the legacy lookup entirely. A PIUI_DATA_DIR override means the
+ * reads skip the legacy lookup entirely. A OMPIUI_DATA_DIR override means the
  * caller owns an explicit location with no legacy state to inherit.
  */
 function readMigratedSecret(name: string): string | undefined {
   const file = path.join(ompiuiDataDir(), name)
   const existing = readTokenFile(file)
   if (existing) return existing
-  if (process.env.PIUI_DATA_DIR?.trim()) return undefined
+  if (process.env.OMPIUI_DATA_DIR?.trim()) return undefined
 
   const legacy = readTokenFile(path.join(homedir(), ".piui", name))
   if (!legacy) return undefined
@@ -54,7 +54,7 @@ function readMigratedSecret(name: string): string | undefined {
  * that already read it. Delete the file to rotate.
  */
 export function resolveAuthToken(): string {
-  const fromEnv = process.env.PIUI_AUTH_TOKEN?.trim()
+  const fromEnv = process.env.OMPIUI_AUTH_TOKEN?.trim()
   if (fromEnv) return fromEnv
 
   const migrated = readMigratedSecret("auth-token")
@@ -95,7 +95,7 @@ export function cursorSecretPath(): string {
  * 光标跨 worker 重启仍然有效。删除文件即可轮换。
  */
 export function resolveCursorSecret(): string {
-  const fromEnv = process.env.PIUI_CURSOR_SECRET?.trim()
+  const fromEnv = process.env.OMPIUI_CURSOR_SECRET?.trim()
   if (fromEnv) return fromEnv
 
   const migrated = readMigratedSecret("cursor-secret")
@@ -118,6 +118,6 @@ export function resolveCursorSecret(): string {
 /** 确保光标密钥已注入环境——必须在任何 worker spawn 之前调用。 */
 export function ensureCursorSecretEnv(): string {
   const secret = resolveCursorSecret()
-  process.env.PIUI_CURSOR_SECRET = secret
+  process.env.OMPIUI_CURSOR_SECRET = secret
   return secret
 }

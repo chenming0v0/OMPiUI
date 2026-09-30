@@ -13,7 +13,7 @@ const { setScopedModelsMock, loadSessionsMock, exportPiSessionMock } = vi.hoiste
   exportPiSessionMock: vi.fn(),
 }))
 
-vi.mock('../../../pi/controllers/index.js', () => ({
+vi.mock('../../../omp/controllers/index.js', () => ({
   abortPiBashExecution: vi.fn(),
   appendPiCustomEntry: vi.fn(),
   cyclePiModel: vi.fn(),
@@ -30,7 +30,7 @@ vi.mock('../../../pi/controllers/index.js', () => ({
   waitForPiIdle: vi.fn(),
 }))
 
-vi.mock('../../../pi/hooks/index.js', () => ({
+vi.mock('../../../omp/hooks/index.js', () => ({
   usePiSessionRuntimeState: () => ({
     scopedModels: ['anthropic:claude-sonnet-4', 'openai:gpt-5'],
     model: { provider: 'anthropic', modelId: 'claude-sonnet-4' },

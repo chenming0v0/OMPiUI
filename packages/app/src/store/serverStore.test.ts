@@ -142,7 +142,7 @@ describe('serverStore health check', () => {
 
   it('checks the local default server same-origin even with a legacy stored url', async () => {
     localStorage.setItem(
-      'piui-servers',
+      'ompiui-servers',
       JSON.stringify([{ id: 'local', name: 'Local', url: '/api', isDefault: true }]),
     )
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: 1 }))
@@ -162,7 +162,7 @@ describe('serverStore health check', () => {
     expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe('/api/v1/host/health')
   })
 
-  it('marks a valid PiUI health response as online', async () => {
+  it('marks a valid OMPiUI health response as online', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: 1, piSdkVersion: '0.81.1' }))
     const { serverStore } = await import('./serverStore')
 
@@ -174,7 +174,7 @@ describe('serverStore health check', () => {
 
   it('rejects HTML responses even when the status is 200', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
-      new Response('<!doctype html><title>PiUI</title>', {
+      new Response('<!doctype html><title>OMPiUI</title>', {
         status: 200,
         headers: { 'content-type': 'text/html' },
       }),
@@ -187,14 +187,14 @@ describe('serverStore health check', () => {
     expect(health.error).toMatch(/HTML/)
   })
 
-  it('rejects JSON that is not a PiUI health response', async () => {
+  it('rejects JSON that is not a OMPiUI health response', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ ok: true }))
     const { serverStore } = await import('./serverStore')
 
     const health = await serverStore.checkHealth('local')
 
     expect(health.status).toBe('error')
-    expect(health.error).toBe('Not a compatible PiUI server')
+    expect(health.error).toBe('Not a compatible OMPiUI server')
   })
 
   it('reports unauthorized credentials separately', async () => {
@@ -221,7 +221,7 @@ describe('serverStore health check', () => {
     expect(serverStore.getHealth('local')?.status).toBe('online')
 
     staleResponse.resolve(
-      new Response('<!doctype html><title>PiUI</title>', {
+      new Response('<!doctype html><title>OMPiUI</title>', {
         status: 200,
         headers: { 'content-type': 'text/html' },
       }),
@@ -237,6 +237,15 @@ describe('parseConnectLink', () => {
   it('parses a share link into url and token', async () => {
     const { parseConnectLink } = await import('./serverStore')
 
+    expect(parseConnectLink('ompiui://connect?url=http%3A%2F%2F192.168.1.5%3A8787&token=abc123')).toEqual({
+      url: 'http://192.168.1.5:8787',
+      token: 'abc123',
+    })
+  })
+
+  it('still parses legacy piui://connect share links', async () => {
+    const { parseConnectLink } = await import('./serverStore')
+
     expect(parseConnectLink('piui://connect?url=http%3A%2F%2F192.168.1.5%3A8787&token=abc123')).toEqual({
       url: 'http://192.168.1.5:8787',
       token: 'abc123',
@@ -247,7 +256,7 @@ describe('parseConnectLink', () => {
     const { parseConnectLink } = await import('./serverStore')
 
     expect(parseConnectLink('http://192.168.1.5:8787')).toBeNull()
-    expect(parseConnectLink('piui://connect?url=http%3A%2F%2F192.168.1.5%3A8787')).toBeNull()
-    expect(parseConnectLink('piui://connect?token=abc')).toBeNull()
+    expect(parseConnectLink('ompiui://connect?url=http%3A%2F%2F192.168.1.5%3A8787')).toBeNull()
+    expect(parseConnectLink('ompiui://connect?token=abc')).toBeNull()
   })
 })

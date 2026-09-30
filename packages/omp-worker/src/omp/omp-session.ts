@@ -30,7 +30,7 @@ import { OmpRpcClient, OmpRpcError, unwrapResponse, type OmpRpcFrame } from "./r
  *   branch 页 = 从 leafId 沿 parentId 回溯的活跃路径。
  * - 子代理：set_subagent_subscription events 订阅 subagent_* 帧，
  *   经 onSubagentFrame 抛给 worker 转发到 omp.subagent 通道。
- * - 扩展 UI：extension_ui_request 帧桥接到 PiUI 的 ExtensionUiDialogHost。
+ * - 扩展 UI：extension_ui_request 帧桥接到 OMPiUI 的 ExtensionUiDialogHost。
  */
 export interface OmpSessionOptions {
   bin?: string

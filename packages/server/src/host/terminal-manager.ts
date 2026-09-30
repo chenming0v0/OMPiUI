@@ -29,12 +29,12 @@ const isBunRuntime = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined
  *   node-pty 的 ConPTY 走 Windows 命名管道 + net.Socket，Bun 兼容层会在
  *   写入时同步抛 ERR_SOCKET_CLOSED 并带走整个进程。
  * - Node（开发/测试）→ @lydell/node-pty。
- * 编译形态下两者都从 PIUI_NATIVE_MODULES 按绝对路径加载——Bun 编译产物的
+ * 编译形态下两者都从 OMPIUI_NATIVE_MODULES 按绝对路径加载——Bun 编译产物的
  * require 不会为磁盘上的外部模块做 node_modules 上溯解析。
  */
 function loadPty(): PtyModule {
   if (ptyModule) return ptyModule
-  const nativeRoot = process.env.PIUI_NATIVE_MODULES?.trim()
+  const nativeRoot = process.env.OMPIUI_NATIVE_MODULES?.trim()
   if (isBunRuntime) {
     if (nativeRoot && process.platform === "win32") {
       // 显式指定 DLL 路径，跳过包内的探测逻辑
@@ -173,7 +173,7 @@ export class TerminalManager {
       ...process.env,
       TERM: "xterm-256color",
       COLORTERM: "truecolor",
-      PIUI_TERMINAL: "1",
+      OMPIUI_TERMINAL: "1",
     }
 
     let child: PtyProcess

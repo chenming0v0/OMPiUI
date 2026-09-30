@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
   loadPiSlashCommands: vi.fn(),
 }))
 
-vi.mock('../../pi/controllers/index.js', () => ({
+vi.mock('../../omp/controllers/index.js', () => ({
   loadPiSlashCommands: mocks.loadPiSlashCommands,
 }))
 

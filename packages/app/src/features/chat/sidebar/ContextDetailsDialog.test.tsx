@@ -24,7 +24,7 @@ vi.mock('../../../hooks', async () => {
   }
 })
 
-vi.mock('../../../pi/hooks/index.js', () => ({
+vi.mock('../../../omp/hooks/index.js', () => ({
   useFocusedSessionId: () => 'session-1',
   usePiBranchData: () => ({
     items: [

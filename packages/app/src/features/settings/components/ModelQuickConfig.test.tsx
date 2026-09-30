@@ -22,12 +22,12 @@ const {
   },
 }))
 
-vi.mock('../../../pi/hooks/index.js', () => ({
+vi.mock('../../../omp/hooks/index.js', () => ({
   usePiModels: usePiModelsMock,
   useFocusedSessionId: useFocusedSessionIdMock,
 }))
 
-vi.mock('../../../pi/controllers/index.js', () => ({
+vi.mock('../../../omp/controllers/index.js', () => ({
   setPiModel: setPiModelMock,
   setPiThinkingLevel: setPiThinkingLevelMock,
   refreshPiSessionState: refreshPiSessionStateMock,
@@ -38,7 +38,7 @@ const { getPiModelRolesMock, setPiModelRolesMock } = vi.hoisted(() => ({
   setPiModelRolesMock: vi.fn(),
 }))
 
-vi.mock('../../../pi/transport/index.js', () => ({
+vi.mock('../../../omp/transport/index.js', () => ({
   getPiModelRoles: getPiModelRolesMock,
   setPiModelRoles: setPiModelRolesMock,
 }))

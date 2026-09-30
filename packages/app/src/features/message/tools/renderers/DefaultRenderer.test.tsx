@@ -2,9 +2,9 @@
 import { act, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DefaultRenderer } from './DefaultRenderer'
-import { liveToolOutputStore } from '../../../../pi/liveToolOutput'
+import { liveToolOutputStore } from '../../../../omp/liveToolOutput'
 import type { ExtractedToolData } from '../types'
-import type { PiToolExecution } from '../../../../pi/domain/index.js'
+import type { PiToolExecution } from '../../../../omp/domain/index.js'
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),

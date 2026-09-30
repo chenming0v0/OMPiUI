@@ -30,15 +30,15 @@ function katexWoff2Only() {
 }
 
 /**
- * The dev server proxies to the PiUI backend, which requires a local token.
+ * The dev server proxies to the OMPiUI backend, which requires a local token.
  * Reading it here keeps the secret in Node: the browser never receives it, so
  * page scripts cannot exfiltrate it. Re-read per request so restarting the
  * backend does not require restarting Vite.
  */
 function readBackendToken(): string | undefined {
-  const configured = process.env.PIUI_AUTH_TOKEN?.trim()
+  const configured = process.env.OMPIUI_AUTH_TOKEN?.trim()
   if (configured) return configured
-  const dataDir = process.env.PIUI_DATA_DIR?.trim()
+  const dataDir = process.env.OMPIUI_DATA_DIR?.trim()
   if (dataDir) {
     try {
       return readFileSync(join(resolve(dataDir), 'auth-token'), 'utf-8').trim() || undefined

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { piFetch } from '../../pi/httpClient'
+import { piFetch } from '../../omp/httpClient'
 
 // hook 与组件同文件导出：保持文件内私有实现内聚，fast refresh 会降级为整页刷新，可接受。
 /* eslint-disable react-refresh/only-export-components */

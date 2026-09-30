@@ -5,7 +5,7 @@ import type { ExtensionUiDialogRequest, ExtensionUiDialogResponse, ExtensionUiSe
 
 /**
  * OMP 扩展 UI 桥：把 `omp --mode rpc` 的 extension_ui_request 帧映射成
- * PiUI 的 extension.ui 协议事件（requested/settled/state/notify/editor），
+ * OMPiUI 的 extension.ui 协议事件（requested/settled/state/notify/editor），
  * 应答帧按 OMP 约定写回 stdin。
  *
  * OMP 帧方法（docs/rpc.md）：select / confirm / input / editor / cancel /
@@ -125,7 +125,7 @@ export class OmpExtensionUiBridge {
     this.emit({ type: "requested", request })
   }
 
-  /** PiUI 应答 → OMP extension_ui_response 帧；返回是否命中未决请求 */
+  /** OMPiUI 应答 → OMP extension_ui_response 帧；返回是否命中未决请求 */
   respond(requestId: string, response: JsonObject): boolean {
     const pending = this.pending.get(requestId)
     if (!pending) return false
