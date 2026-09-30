@@ -48,6 +48,7 @@ export type EventChannel =
   | "command.updated"
   | "extension.ui"
   | "provider.auth"
+  | "models.updated"
   | "packages.progress"
   | "registry.updated"
   | "workspace.files"

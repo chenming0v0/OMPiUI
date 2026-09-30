@@ -47,6 +47,7 @@ import { isJsonObject, problemFromError, PROTOCOL_VERSION, validateParams } from
 import { OmpRpcSession, type OmpSessionOptions } from "./omp/omp-session.js"
 import { OmpCatalog } from "./omp/omp-catalog.js"
 import { OmpProviderAuth } from "./omp/omp-auth.js"
+import { OmpModelsWatcher } from "./omp/models-watcher.js"
 import { OMP_SDK_VERSION } from "./omp/constants.js"
 import { detectOmpVersionSync, detectedOmpVersion } from "./omp/omp-version.js"
 import { MockPiSession, MockCatalog } from "./runtime/mock-session.js"
@@ -113,6 +114,21 @@ const providerAuth = new OmpProviderAuth(async () => {
   if (catalog instanceof OmpCatalog) return catalog.control.acquire()
   throw Object.assign(new Error("mock driver has no provider auth channel"), { code: "CAPABILITY_DISABLED" })
 })
+
+// models.yml 变更（手动加模型 / omp CLI 登录写入）：长驻控制进程不会重读
+// 该文件，作废 bound client 让下一次 models.list 拉起新的 omp；同时广播
+// models.updated 让前端重拉模型列表，模型选择器不靠整页刷新。
+const modelsWatcher = driver === "omp" ? new OmpModelsWatcher() : undefined
+modelsWatcher?.onChange(() => {
+  void providerAuth.invalidate()
+  send({
+    kind: "event",
+    generation: workerGeneration,
+    channel: "models.updated",
+    event: { source: "models.yml" },
+  })
+})
+modelsWatcher?.start()
 
 function callHost(call: WorkerHostCall): Promise<void> {
   const id = randomUUID()
@@ -398,6 +414,7 @@ async function cleanupWorker(): Promise<void> {
     ])
   }))
   if (catalog instanceof OmpCatalog) await catalog.dispose().catch(() => undefined)
+  modelsWatcher?.dispose()
 }
 
 const unsubscribeProviderAuth = providerAuth.onEvent(event => send({

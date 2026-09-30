@@ -37,6 +37,7 @@ import {
 } from './managementEventStore'
 import type { SessionStatus } from '../types/session'
 import {
+  loadPiModels,
   loadPiSessionData,
   refreshPiBranch,
   refreshPiSessionState,
@@ -367,6 +368,14 @@ class PiEventStream {
       case 'provider.auth':
         this.handleProviderAuthEvent(envelope.payload as unknown as ProviderAuthEvent)
         break
+      case 'models.updated': {
+        // models.yml 变更（手动加模型 / omp CLI 登录写入）：provider 配置与
+        // 凭据同源，bump providerRevision 让管理页重拉；模型选择器的列表
+        // store 直接刷新（有 flight 去重），不依赖某个组件恰好挂载
+        receiveProviderAuthUpdated()
+        void loadPiModels().catch(() => undefined)
+        break
+      }
       case 'packages.progress':
         receivePackageProgress(envelope.payload as unknown as PackageProgress)
         break
