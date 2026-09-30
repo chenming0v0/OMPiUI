@@ -166,10 +166,11 @@ jobs:
 
       - uses: android-actions/setup-android@v3
         with:
-          # action 自带的许可接受步骤会在计算 updates 时被 runner 镜像里遗留的
-          # 过时 tools 包卡死（"Failed to find package 'tools'"，退出码 1），
-          # 关掉后由下一步手动接受
+          # 默认 packages 列表含已废弃的 tools 包（sdkmanager 报
+          # "Failed to find package 'tools'" 并退出 1），只保留 platform-tools；
+          # 许可接受也由下一步手动完成
           accept-android-sdk-licenses: false
+          packages: platform-tools
 
       - name: Accept Android SDK licenses
         run: |
