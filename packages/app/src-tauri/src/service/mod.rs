@@ -895,7 +895,7 @@ mod tests {
         );
         assert_eq!(
             environment.get("OMPIUI_DRIVER").map(String::as_str),
-            Some("pi")
+            Some("omp")
         );
         assert_eq!(
             environment.get("OMPIUI_USE_SYSTEM_PI").map(String::as_str),
