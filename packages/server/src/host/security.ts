@@ -15,7 +15,7 @@ function isTauriOrigin(origin: string): boolean {
   return origin === "tauri://localhost" || origin === "http://tauri.localhost" || origin === "https://tauri.localhost"
 }
 
-export function requestHasAllowedOrigin(req: IncomingMessage): boolean {
+export function requestHasAllowedOrigin(req: IncomingMessage, allowedOrigin?: string | null): boolean {
   const origin = req.headers.origin
   if (typeof origin !== "string") return true
   if (isAllowedLocalOrigin(origin)) return true
@@ -24,7 +24,17 @@ export function requestHasAllowedOrigin(req: IncomingMessage): boolean {
   const host = req.headers.host
   if (typeof host === "string") {
     try {
-      return new URL(origin).host === host
+      if (new URL(origin).host === host) return true
+    } catch {
+      return false
+    }
+  }
+  // 配置了公网基址时放行它的 Origin：反向代理若把 Host 重写成上游地址
+  // （localhost:8787），浏览器页面的 Origin（https://panel.example.com）和
+  // Host 不再相等，同源分支放不了行——这里以运营者显式配置的基址为准。
+  if (allowedOrigin) {
+    try {
+      return new URL(origin).origin === new URL(allowedOrigin).origin
     } catch {
       return false
     }

@@ -4,6 +4,8 @@ OMPiUI 自己的版本从 0.1.0 起算。`packages/app/CHANGELOG.md` 是上游 P
 
 ## [Unreleased]
 
+- feat: public sharing for the web panel (#8) — a configurable public base URL (`OMPIUI_PUBLIC_BASE_URL` env / `--public-base-url` flag / 设置 → 服务 → 网络监听 input) becomes the source of truth for share links, the startup log and the Origin allowlist once set, instead of guessing the first non-loopback IPv4 which is unreachable from the public internet; the share panel now shows a browser-openable URL (with an open-in-tab action) next to the `ompiui://connect` deep link, picks its hint by exposure mode (loopback / LAN / public), and the public path documents the reverse-proxy/tunnel requirement with HTTPS advice plus an explicit warning that anyone holding the link can read the workspace, open terminals, run commands and drive the agent. The Origin check accepts the configured public origin even when the proxy rewrites the Host header; invalid public base URLs are ignored with a warning at startup
+
 - fix: the web model list now picks up `~/.omp/agent/models.yml` edits without a restart (#11) — the worker watches the file (directory watch + content-hash dedupe, so atomic editor saves are caught) and on change recycles the provider-auth bound client, because the long-lived `omp --mode rpc` control process only reads models.yml at startup and `modelRuntime.refresh`/`reload` were just re-querying the same stale process; the worker also broadcasts a new `models.updated` event over the server stream, and the web app responds by refetching the model selector list and bumping the provider revision for the settings page. Settings 刷新/重新加载 now recycle the process too, and an in-flight OAuth login flow defers the recycle so it is not killed mid-flow
 
 ## [0.1.1] - 2026-09-30

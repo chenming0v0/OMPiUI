@@ -38,4 +38,10 @@ export type ShareInfo = {
   link: string
   /** True when the server is reachable beyond this machine. */
   lan: boolean
+  /**
+   * True when `url` comes from the configured public base URL
+   * (OMPIUI_PUBLIC_BASE_URL / --public-base-url) instead of a LAN address —
+   * implies the operator fronted the server with a reverse proxy or tunnel.
+   */
+  public?: boolean
 }

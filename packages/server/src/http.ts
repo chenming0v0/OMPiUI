@@ -133,6 +133,23 @@ export function firstLanAddress(): string | undefined {
   return undefined
 }
 
+/**
+ * 公网基址规范化（OMPIUI_PUBLIC_BASE_URL / --public-base-url）：trim、去结尾
+ * 斜杠、丢弃 query/hash，只接受 http(s)。非法或为空返回 null——调用方凭
+ * 原始输入非空但结果为空来识别「配置了但无效」，决定告警。
+ */
+export function normalizePublicBaseUrl(input: string | null | undefined): string | null {
+  const trimmed = input?.trim().replace(/\/+$/, "")
+  if (!trimmed) return null
+  try {
+    const parsed = new URL(trimmed)
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null
+    return parsed.origin + (parsed.pathname === "/" ? "" : parsed.pathname)
+  } catch {
+    return null
+  }
+}
+
 function commandParams(body: JsonObject): JsonObject | undefined {
   if (body.params && typeof body.params === "object" && !Array.isArray(body.params)) {
     return body.params as JsonObject
@@ -150,8 +167,13 @@ export interface CreateAppServerOptions {
   sessionHost?: SessionHost
   eventHub?: EventHub
   authToken?: string | null
-  /** Bind address, used to build the share link other clients connect with. */
-  share?: { host: string; port: number }
+  /**
+   * Bind address, used to build the share link other clients connect with.
+   * `publicBaseUrl`（OMPIUI_PUBLIC_BASE_URL / --public-base-url）存在时优先
+   * 于绑定的局域网地址：分享链接、启动日志和 Origin 白名单都以运营者显式
+   * 声明的对外入口为准（反向代理 / 隧道后的地址，如 https://panel.example.com）。
+   */
+  share?: { host: string; port: number; publicBaseUrl?: string | null }
   /** Web client build directory; when it exists the server hosts the SPA. */
   staticRoot?: string
   /**
@@ -186,6 +208,8 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
   const host = new HostRuntime({ store, watcher, sessions, terminals })
   const authToken = options.authToken === undefined ? resolveAuthToken() : options.authToken
   const staticServer = options.staticRoot ? createStaticServer(options.staticRoot) : undefined
+  // 配置了公网基址时，其 Origin 一并放行（反向代理改写 Host 的场景）
+  const allowedOrigin = normalizePublicBaseUrl(options.share?.publicBaseUrl)
   let disposal: Promise<void> | undefined
 
   const closeHttpServer = (): Promise<void> => {
@@ -212,7 +236,7 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
         return sendProblem(res, 404, Object.assign(new Error("not found"), { code: "NOT_FOUND" }))
       }
 
-      if (!requestHasAllowedOrigin(req)) {
+      if (!requestHasAllowedOrigin(req, allowedOrigin)) {
         return sendProblem(res, 403, Object.assign(new Error("origin not allowed"), { code: "FORBIDDEN" }))
       }
       if (typeof req.headers.origin === "string") {
@@ -268,10 +292,23 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
         }
         const shareHost = options.share.host
         const lan = shareHost !== "127.0.0.1" && shareHost !== "::1" && shareHost !== "localhost"
-        const urlHost = shareHost === "0.0.0.0" || shareHost === "::" ? (firstLanAddress() ?? shareHost) : shareHost
-        const url = `http://${urlHost}:${options.share.port}`
+        // 公网基址优先：绑 0.0.0.0 时第一块局域网 IPv4 在公网不可达，
+        // 运营者显式声明的对外入口（反代/隧道）才是能打开的地址
+        const publicBase = normalizePublicBaseUrl(options.share.publicBaseUrl)
+        const urlHost = publicBase
+          ? undefined
+          : shareHost === "0.0.0.0" || shareHost === "::"
+            ? (firstLanAddress() ?? shareHost)
+            : shareHost
+        const url = publicBase ?? `http://${urlHost}:${options.share.port}`
         const link = `ompiui://connect?url=${encodeURIComponent(url)}&token=${encodeURIComponent(authToken)}`
-        const body: ShareInfo = { url, token: authToken, link, lan }
+        const body: ShareInfo = {
+          url,
+          token: authToken,
+          link,
+          lan: lan || Boolean(publicBase),
+          ...(publicBase ? { public: true } : {}),
+        }
         return sendJson(res, 200, body)
       }
 

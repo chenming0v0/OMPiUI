@@ -27,6 +27,11 @@ const TERMINAL_PATH = /^\/api\/v1\/host\/terminals\/([^/]+)\/stream$/
 export interface EventWebSocketOptions {
   eventHub: EventHub
   authToken?: string | null
+  /**
+   * 额外放行的 Origin（公网基址的 origin）：反向代理把 Host 重写成上游地址
+   * 时，浏览器页面的 Origin 与 Host 不相等，同源分支放不了行。
+   */
+  allowedOrigin?: string | null
   /** Called after a client (re)subscribes — push per-connection snapshots */
   onSubscribe?: (send: (message: EventServerMessage) => void) => void
   terminalManager?: TerminalManager
@@ -52,7 +57,7 @@ export function attachEventWebSocket(server: HttpServer, options: EventWebSocket
       (authToken !== null && wsToken !== null && timingSafeTokenEquals(wsToken, authToken))
     const terminalMatch = TERMINAL_PATH.exec(url.pathname)
     const isEventPath = url.pathname === "/api/v1/events"
-    if ((!isEventPath && !terminalMatch) || !requestHasAllowedOrigin(req) || !hasToken) {
+    if ((!isEventPath && !terminalMatch) || !requestHasAllowedOrigin(req, options.allowedOrigin) || !hasToken) {
       socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
       socket.destroy()
       return

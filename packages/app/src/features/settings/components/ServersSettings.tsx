@@ -13,6 +13,7 @@ import {
   ShareIcon,
   CopyIcon,
   CheckIcon,
+  ExternalLinkIcon,
 } from '../../../components/Icons'
 import { useServerStore, useRouter } from '../../../hooks'
 import { clearSessionRuntimeState } from '../../../utils/sessionLifecycle'
@@ -227,7 +228,8 @@ function SharePanel({ server }: { server: ServerConfig }) {
   const { t } = useTranslation(['settings', 'common'])
   const [share, setShare] = useState<ShareInfo | null>(null)
   const [error, setError] = useState('')
-  const [copied, setCopied] = useState(false)
+  const [copiedLink, setCopiedLink] = useState(false)
+  const [copiedUrl, setCopiedUrl] = useState(false)
 
   // 拉取分享信息：请求-响应模式，同步状态需与请求一起设置
   /* eslint-disable react-hooks/set-state-in-effect */
@@ -257,16 +259,23 @@ function SharePanel({ server }: { server: ServerConfig }) {
     }
   }, [server])
 
-  const copyLink = async () => {
-    if (!share) return
+  const copy = async (value: string, mark: (value: boolean) => void) => {
     try {
-      await navigator.clipboard.writeText(share.link)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
+      await navigator.clipboard.writeText(value)
+      mark(true)
+      setTimeout(() => mark(false), 2000)
     } catch {
       // 剪贴板不可用时用户还可以手动选中复制
     }
   }
+
+  // 提示按暴露模式分流：公网入口（反代/隧道）→ HTTPS 与权限警示；
+  // 局域网 → 谨慎分享；仅本机 → 指路服务设置
+  const hint = share?.public
+    ? t('servers.sharePublicHint')
+    : share?.lan
+      ? t('servers.shareLanHint')
+      : t('servers.shareLoopbackHint')
 
   return (
     <div className="mt-1.5 p-3 rounded-lg border border-border-200 bg-bg-100 space-y-2">
@@ -275,27 +284,59 @@ function SharePanel({ server }: { server: ServerConfig }) {
       {!share && !error && <p className="text-[length:var(--fs-xs)] text-text-400">{t('servers.checking')}</p>}
       {share && (
         <>
-          <div className="flex items-center gap-1.5">
-            <input
-              type="text"
-              readOnly
-              value={share.link}
-              onFocus={e => e.target.select()}
-              className={`${settingsFieldClass} font-mono flex-1`}
-            />
-            <button
-              type="button"
-              onClick={() => void copyLink()}
-              className="shrink-0 p-2 rounded-md text-text-400 hover:text-text-200 hover:bg-bg-200/70 transition-colors"
-              title={copied ? t('servers.shareCopied') : t('servers.shareCopy')}
-              aria-label={copied ? t('servers.shareCopied') : t('servers.shareCopy')}
-            >
-              {copied ? <CheckIcon size={13} className="text-success-100" /> : <CopyIcon size={13} />}
-            </button>
+          <div>
+            <div className="text-[length:var(--fs-xs)] text-text-400 mb-1">{t('servers.shareBrowserUrl')}</div>
+            <div className="flex items-center gap-1.5">
+              <input
+                type="text"
+                readOnly
+                value={share.url}
+                onFocus={e => e.target.select()}
+                className={`${settingsFieldClass} font-mono flex-1`}
+              />
+              <a
+                href={share.url}
+                target="_blank"
+                rel="noreferrer"
+                className="shrink-0 p-2 rounded-md text-text-400 hover:text-text-200 hover:bg-bg-200/70 transition-colors"
+                title={t('servers.shareOpenUrl')}
+                aria-label={t('servers.shareOpenUrl')}
+              >
+                <ExternalLinkIcon size={13} />
+              </a>
+              <button
+                type="button"
+                onClick={() => void copy(share.url, setCopiedUrl)}
+                className="shrink-0 p-2 rounded-md text-text-400 hover:text-text-200 hover:bg-bg-200/70 transition-colors"
+                title={copiedUrl ? t('servers.shareCopied') : t('servers.shareCopy')}
+                aria-label={copiedUrl ? t('servers.shareCopied') : t('servers.shareCopy')}
+              >
+                {copiedUrl ? <CheckIcon size={13} className="text-success-100" /> : <CopyIcon size={13} />}
+              </button>
+            </div>
           </div>
-          <p className="text-[length:var(--fs-xs)] text-text-400 leading-relaxed">
-            {share.lan ? t('servers.shareLanHint') : t('servers.shareLoopbackHint')}
-          </p>
+          <div>
+            <div className="text-[length:var(--fs-xs)] text-text-400 mb-1">{t('servers.shareConnectLink')}</div>
+            <div className="flex items-center gap-1.5">
+              <input
+                type="text"
+                readOnly
+                value={share.link}
+                onFocus={e => e.target.select()}
+                className={`${settingsFieldClass} font-mono flex-1`}
+              />
+              <button
+                type="button"
+                onClick={() => void copy(share.link, setCopiedLink)}
+                className="shrink-0 p-2 rounded-md text-text-400 hover:text-text-200 hover:bg-bg-200/70 transition-colors"
+                title={copiedLink ? t('servers.shareCopied') : t('servers.shareCopy')}
+                aria-label={copiedLink ? t('servers.shareCopied') : t('servers.shareCopy')}
+              >
+                {copiedLink ? <CheckIcon size={13} className="text-success-100" /> : <CopyIcon size={13} />}
+              </button>
+            </div>
+          </div>
+          <p className="text-[length:var(--fs-xs)] text-text-400 leading-relaxed">{hint}</p>
         </>
       )}
     </div>
