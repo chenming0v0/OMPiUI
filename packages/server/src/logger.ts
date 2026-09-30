@@ -24,8 +24,8 @@ let enabled = false
 function dataRoot(): string {
   const env = process.env.PIUI_DATA_DIR?.trim()
   if (env) return resolve(env)
-  if (process.platform === "win32" && process.env.APPDATA) return join(process.env.APPDATA, "com.piui.desktop")
-  return join(homedir(), ".piui")
+  if (process.platform === "win32" && process.env.APPDATA) return join(process.env.APPDATA, "com.ompiui.desktop")
+  return join(homedir(), ".ompiui")
 }
 
 function ensureLogFile(): string | undefined {

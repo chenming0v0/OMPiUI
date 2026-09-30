@@ -18,12 +18,18 @@ if (isWeb && !process.env.PIUI_NATIVE_MODULES) {
   if (!nativeDir) {
     const home = process.platform === "win32" ? process.env.APPDATA : process.env.HOME
     if (home) {
-      const appDataNative = process.platform === "win32"
-        ? join(home, "com.piui.desktop", "node_modules")
-        : process.platform === "darwin"
-          ? join(home, "Library", "Application Support", "com.piui.desktop", "node_modules")
-          : join(process.env.XDG_CONFIG_HOME?.trim() || join(home, ".config"), "com.piui.desktop", "node_modules")
-      if (existsSync(appDataNative)) nativeDir = appDataNative
+      // 末位的 com.piui.desktop 是 PiUI 时代的旧目录，只读兼容一次
+      for (const id of ["com.ompiui.desktop", "com.piui.desktop"]) {
+        const appDataNative = process.platform === "win32"
+          ? join(home, id, "node_modules")
+          : process.platform === "darwin"
+            ? join(home, "Library", "Application Support", id, "node_modules")
+            : join(process.env.XDG_CONFIG_HOME?.trim() || join(home, ".config"), id, "node_modules")
+        if (existsSync(appDataNative)) {
+          nativeDir = appDataNative
+          break
+        }
+      }
     }
   }
   if (nativeDir) process.env.PIUI_NATIVE_MODULES = nativeDir

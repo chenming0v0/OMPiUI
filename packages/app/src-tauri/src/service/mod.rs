@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, VecDeque},
     env, fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Child,
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
@@ -208,27 +208,41 @@ fn read_token(env_vars: &BTreeMap<String, String>) -> Result<String, String> {
         env::var_os("HOME").map(PathBuf::from)
     }
     .ok_or_else(|| "home directory is unavailable".to_string())?;
-    let data_dir = env_vars
+    let (data_dir, explicit_data_dir) = env_vars
         .get("PIUI_DATA_DIR")
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("PIUI_DATA_DIR").map(PathBuf::from))
-        .unwrap_or_else(|| home.join(".piui"));
+        .map(|value| (PathBuf::from(value), true))
+        .or_else(|| env::var_os("PIUI_DATA_DIR").map(|value| (PathBuf::from(value), true)))
+        .unwrap_or_else(|| (home.join(".ompiui"), false));
     let path = data_dir.join("auth-token");
-    fs::read_to_string(&path)
-        .map(|token| token.trim().to_string())
-        .map_err(|error| {
-            format!(
-                "failed to read PiUI auth token at {}: {error}",
-                path.display()
-            )
-        })
-        .and_then(|token| {
-            if token.is_empty() {
-                Err(format!("PiUI auth token at {} is empty", path.display()))
+    let read_token_at = |path: &Path| {
+        fs::read_to_string(path)
+            .map(|token| token.trim().to_string())
+            .map_err(|error| {
+                format!(
+                    "failed to read PiUI auth token at {}: {error}",
+                    path.display()
+                )
+            })
+            .and_then(|token| {
+                if token.is_empty() {
+                    Err(format!("PiUI auth token at {} is empty", path.display()))
+                } else {
+                    Ok(token)
+                }
+            })
+    };
+    match read_token_at(&path) {
+        Ok(token) => Ok(token),
+        Err(error) => {
+            // PiUI 时代的默认目录（~/.piui）：只读兜底一次，绝不写入——
+            // server 首次启动会把旧 token 迁移进 ~/.ompiui，之后读不到这里。
+            if explicit_data_dir {
+                Err(error)
             } else {
-                Ok(token)
+                read_token_at(&home.join(".piui").join("auth-token"))
             }
-        })
+        }
+    }
 }
 
 fn recent_output(state: &ServiceState) -> String {
