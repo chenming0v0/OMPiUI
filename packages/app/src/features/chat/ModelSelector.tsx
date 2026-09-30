@@ -46,6 +46,8 @@ interface ModelSelectorProps {
   trigger?: 'header' | 'toolbar'
   /** 未选择模型时触发按钮显示的文案（缺省用 chat 命名空间的通用文案） */
   placeholder?: string
+  /** 弹出层 z-index，默认 100；在 Dialog 等高 z-index 容器内使用时需要调高 */
+  zIndex?: number
 }
 
 // ============================================
@@ -355,6 +357,7 @@ export const ModelSelector = memo(
       constrainToRef,
       trigger = 'header',
       placeholder,
+      zIndex,
     },
     ref,
   ) {
@@ -860,6 +863,7 @@ export const ModelSelector = memo(
           maxWidth="min(460px, calc(100vw - 24px))"
           mobileFullWidth
           constrainToRef={constrainToRef}
+          zIndex={zIndex}
           className={`!p-0 overflow-hidden flex flex-col ${dropdownMaxH}`}
         >
           <ModelListPanel

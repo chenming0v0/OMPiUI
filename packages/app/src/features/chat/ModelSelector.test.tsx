@@ -22,8 +22,8 @@ function sdkModel(id: string, name: string, reasoning = true): ModelInfo {
 }
 
 vi.mock('../../components/ui', () => ({
-  DropdownMenu: ({ isOpen, children }: { isOpen: boolean; children: React.ReactNode }) =>
-    isOpen ? <div>{children}</div> : null,
+  DropdownMenu: ({ isOpen, zIndex, children }: { isOpen: boolean; zIndex?: number; children: React.ReactNode }) =>
+    isOpen ? <div data-testid="dropdown-portal" data-zindex={zIndex}>{children}</div> : null,
 }))
 
 vi.mock('../../hooks/useInputCapabilities', () => ({
@@ -166,5 +166,21 @@ describe('ModelSelector', () => {
 
     expect(screen.queryByText('GPT-4o Mini')).not.toBeInTheDocument()
     expect(screen.getAllByText('GPT-4.1').length).toBeGreaterThan(0)
+  })
+
+  it('forwards the requested zIndex to the dropdown layer', () => {
+    render(<ModelSelector models={MODELS} selectedModelKey={'openai:gpt-4.1'} onSelect={vi.fn()} zIndex={400} />)
+
+    fireEvent.click(screen.getByTitle('GPT-4.1'))
+
+    expect(screen.getByTestId('dropdown-portal')).toHaveAttribute('data-zindex', '400')
+  })
+
+  it('keeps the default dropdown layer when no zIndex is given', () => {
+    render(<ModelSelector models={MODELS} selectedModelKey={'openai:gpt-4.1'} onSelect={vi.fn()} />)
+
+    fireEvent.click(screen.getByTitle('GPT-4.1'))
+
+    expect(screen.getByTestId('dropdown-portal')).not.toHaveAttribute('data-zindex')
   })
 })

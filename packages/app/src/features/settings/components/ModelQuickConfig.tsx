@@ -167,6 +167,7 @@ export function ModelQuickConfig() {
             isLoading={isLoading}
             trigger="toolbar"
             placeholder={t('models.defaultModelPlaceholder')}
+            zIndex={400}
           />
         </div>
       </SettingRow>
@@ -319,6 +320,7 @@ function ModelRolesConfig({ models, isLoading }: { models: readonly Model<Api>[]
               isLoading={isLoading || busyRole === def.id}
               trigger="toolbar"
               placeholder={t('models.roleAuto')}
+              zIndex={400}
             />
           </div>
           {parsed && selectedModel ? (
