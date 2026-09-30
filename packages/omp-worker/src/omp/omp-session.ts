@@ -14,6 +14,7 @@ import type { PiEventMeta, SessionRuntime, Unsubscribe } from "../runtime.js"
 import { normalizeCwd, resolveUserPath } from "./omp-catalog.js"
 import { OmpExtensionUiBridge } from "./omp-extension-ui.js"
 import { OMP_SDK_VERSION } from "./constants.js"
+import { detectOmpVersion, isOmpVersionSupported, ompTooOldError } from "./omp-version.js"
 import { OmpRpcClient, OmpRpcError, unwrapResponse, type OmpRpcFrame } from "./rpc-client.js"
 
 /**
@@ -68,8 +69,10 @@ function adaptEntry(entry: JsonObject): JsonObject {
     const modelId = slash > 0 ? entry.model.slice(slash + 1) : entry.model
     return { ...entry, provider, modelId }
   }
-  // OMP 的 title/model_usage 条目是元数据噪声，Pi 前端会渲染成 unknown 行 —— 丢弃
-  if (entry.type === "title" || entry.type === "model_usage") {
+  // OMP 的 title/model_usage/session 条目是元数据噪声（session 头常见于子代理
+  // jsonl 开头，get_entries 会原样返回），Pi 前端会渲染成 unknown 行 —— 丢弃。
+  // 保留 id/parentId 占位（omp.dropped），分支回溯的父子链不断。
+  if (entry.type === "title" || entry.type === "model_usage" || entry.type === "session" || entry.type === "session_init") {
     return { type: "omp.dropped", id: String(entry.id ?? ""), parentId: (entry.parentId as string) ?? null, timestamp: String(entry.timestamp ?? ""), droppedType: entry.type as string }
   }
   return entry
@@ -83,6 +86,8 @@ export class OmpRpcSession implements SessionRuntime {
   private client!: OmpRpcClient
   private readonly extensionUi = new OmpExtensionUiBridge()
   private ompOptions: OmpSessionOptions = {}
+  /** 探测到的真实 omp 版本；探测失败时为 null（展示回退 OMP_SDK_VERSION） */
+  private ompVersion: string | null = null
 
   private sessionId = ""
   private sessionFile: string | undefined
@@ -135,6 +140,9 @@ export class OmpRpcSession implements SessionRuntime {
     if (!existsSync(this.cwd)) {
       throw Object.assign(new Error(`Session workspace no longer exists: ${this.cwd}`), { code: "SESSION_CWD_GONE" })
     }
+    // 版本探测与 RPC 进程拉起并行，不增加启动延迟；探测通常已被 worker
+    // 启动时的同步探测填充缓存，直接命中
+    const versionProbe = detectOmpVersion(this.ompOptions.bin)
     this.client = new OmpRpcClient({
       cwd: this.cwd,
       bin: this.ompOptions.bin,
@@ -148,19 +156,32 @@ export class OmpRpcSession implements SessionRuntime {
       for (const listener of this.closeListeners) listener()
     })
 
-    // ready 帧由协议保证是第一个 stdout 帧；协商 v2 以支持 >1MiB 分帧
-    await this.client.waitForReady(30_000)
-    await this.client.request({ type: "negotiate_protocol", protocolVersion: 2 })
-    // 子代理帧：lifecycle + progress + 完整事件
-    await this.client.request({ type: "set_subagent_subscription", level: "events" })
-    if (this.sessionFile) {
-      // 绑定到指定会话文件（等价 CLI --resume <file> 的 RPC 形式）
-      await this.client.request({ type: "switch_session", sessionPath: this.sessionFile }, 120_000)
+    try {
+      // ready 帧由协议保证是第一个 stdout 帧；协商 v2 以支持 >1MiB 分帧
+      await this.client.waitForReady(30_000)
+      // 版本门禁：< 18.2.11 缺 get_entries 等命令且错误响应不带 id，只能烧
+      // 超时（打开会话卡 ~150s）——立刻失败并提示升级（issue #5）
+      const detected = await versionProbe
+      if (detected && !isOmpVersionSupported(detected)) {
+        throw ompTooOldError(detected)
+      }
+      this.ompVersion = detected
+      await this.client.request({ type: "negotiate_protocol", protocolVersion: 2 })
+      // 子代理帧：lifecycle + progress + 完整事件
+      await this.client.request({ type: "set_subagent_subscription", level: "events" })
+      if (this.sessionFile) {
+        // 绑定到指定会话文件（等价 CLI --resume <file> 的 RPC 形式）
+        await this.client.request({ type: "switch_session", sessionPath: this.sessionFile }, 120_000)
+      }
+      await this.refreshIdentity()
+      await Promise.all([this.refreshModels(), this.refreshThinkingLevels(), this.refreshAvailableCommands()])
+      await this.syncEntriesNow()
+      this.extensionUi.bind(this.sessionId, response => this.client.writeExtensionUiResponse(response))
+    } catch (error) {
+      // 启动中途失败：杀掉子进程，避免留下孤儿 omp 进程
+      this.client.kill()
+      throw error
     }
-    await this.refreshIdentity()
-    await Promise.all([this.refreshModels(), this.refreshThinkingLevels(), this.refreshAvailableCommands()])
-    await this.syncEntriesNow()
-    this.extensionUi.bind(this.sessionId, response => this.client.writeExtensionUiResponse(response))
   }
 
   private async refreshIdentity(): Promise<void> {
@@ -561,7 +582,7 @@ export class OmpRpcSession implements SessionRuntime {
       name: this.sessionName,
     }
     return sessionHeadFromParts({
-      sdkVersion: OMP_SDK_VERSION,
+      sdkVersion: this.ompVersion ?? OMP_SDK_VERSION,
       revision: this.nativeRevision,
       sessionFormatVersion: 3,
       header,
@@ -753,7 +774,7 @@ export class OmpRpcSession implements SessionRuntime {
       }))
       : []
     return {
-      sdkVersion: OMP_SDK_VERSION,
+      sdkVersion: this.ompVersion ?? OMP_SDK_VERSION,
       tools,
       activeTools: tools.map(tool => tool.name),
       commands,

@@ -45,7 +45,7 @@ OMPiUI 不是这两个项目的官方客户端。
 
 ## 运行
 
-要求：Node ≥ 22.19、npm、[OMP CLI](https://omp.sh)（`bun install -g @oh-my-pi/pi-coding-agent`）。
+要求：Node ≥ 22.19、npm、[OMP CLI](https://omp.sh) **≥ 18.2.11**（`bun install -g @oh-my-pi/pi-coding-agent`）。更老的 omp 缺少 `get_entries` 等 RPC 命令，打开会话时会直接报错提示升级。
 
 ```bash
 npm install

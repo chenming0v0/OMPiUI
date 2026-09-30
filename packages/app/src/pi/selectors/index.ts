@@ -164,14 +164,20 @@ export function buildPiHistoryItems(branch: PiBranchPage): PiTimelineItem[] {
       entry.type === 'model_change' ||
       entry.type === 'label' ||
       entry.type === 'custom' ||
-      entry.type === 'session_info'
+      entry.type === 'session_info' ||
+      // omp.dropped isn't part of the Pi union: every SessionEntry variant is
+      // already matched above, so entry is narrowed to never here — cast first
+      (entry as { type?: string }).type === 'omp.dropped'
     ) {
       // Not consumed in the conversation flow: model and thinking level
       // live in the header model selector / composer level selector
       // (repeated model_change entries are just noise here), labels are
       // markers on their target entries, plain custom entries are
       // extension state for reload reconstruction, session_info is
-      // metadata (name lives in the header/session list).
+      // metadata (name lives in the header/session list). omp.dropped is
+      // the OMP worker's placeholder for metadata it strips from the
+      // timeline (title / model_usage / session headers) — it only exists
+      // to keep the parent chain intact for branch walking.
       continue
     } else {
       // Unknown entry type (future SDK additions) — keep visible, never drop

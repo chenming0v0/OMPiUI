@@ -9,6 +9,7 @@ import type { CatalogProvider } from "../runtime.js"
 import type { PackagesGateway } from "../command-table.js"
 import { entriesPageFromEntries, sessionHeadFromParts } from "../runtime/pagination.js"
 import { OmpRpcClient, unwrapResponse } from "./rpc-client.js"
+import { detectOmpVersion } from "./omp-version.js"
 import { OMP_SDK_VERSION } from "./constants.js"
 
 /**
@@ -236,10 +237,10 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     const target = resolveUserPath(sessionFile)
     const summary = await summarizeSessionFile(target)
     if (!summary) throw Object.assign(new Error("session file not found"), { code: "SESSION_NOT_FOUND" })
-    return this.previewSummary(summary, params)
+    return this.previewSummary(summary, params, await detectOmpVersion() ?? OMP_SDK_VERSION)
   }
 
-  private previewSummary(summary: SessionFileSummary, params: { cursor?: string; limit?: number; maxBytes?: number }): JsonValue {
+  private previewSummary(summary: SessionFileSummary, params: { cursor?: string; limit?: number; maxBytes?: number }, sdkVersion: string = OMP_SDK_VERSION): JsonValue {
     // 读取文件并解析条目（磁盘预览不走 RPC 进程）
     const entries: JsonObject[] = []
     const raw = existsSync(summary.path) ? readLinesSync(summary.path) : []
@@ -258,7 +259,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     const branch = activeBranchFromEntries(entries)
     const header: JsonObject = { version: 3, id: summary.id, cwd: summary.cwd, name: summary.name }
     const head = sessionHeadFromParts({
-      sdkVersion: OMP_SDK_VERSION,
+      sdkVersion,
       revision: 0,
       sessionFormatVersion: 3,
       header,
@@ -307,7 +308,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
   async previewSessionById(sessionId: string, params: { cursor?: string; limit?: number; maxBytes?: number } = {}): Promise<JsonValue> {
     const summaries = await this.summarizeAll()
     const match = summaries.find(item => item.id === sessionId)
-    if (match) return this.previewSummary(match, params)
+    if (match) return this.previewSummary(match, params, await detectOmpVersion() ?? OMP_SDK_VERSION)
     // 顶层扫描没有（OMP 子代理会话嵌套在 <父会话名>/ 目录里）→ 深度查找兜底，
     // 让子会话在重载/深链后也能按 id 预览
     const found = await this.findSessionById(sessionId)
