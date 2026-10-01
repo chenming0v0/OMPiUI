@@ -3,22 +3,32 @@ import { listPiChildSessions } from '../../../omp/transport/index.js'
 import { serverStore } from '../../../store/serverStore'
 import type { UiSession } from '../../../types/session'
 
+export interface ChildSessionsResult {
+  /** 已加载子会话列表归属的父会话 id；未加载时为 null */
+  parentId: string | null
+  sessions: UiSession[]
+}
+
 /**
  * 拉取选中会话的 OMP 子代理会话列表。仅在父会话文件路径已知时请求；
  * 会话列表刷新（omompiui:sessions-changed）后重取，让运行中刚落盘的子会话出现。
+ *
+ * 结果是粘性的：选中子会话本身时（它不在主列表里，解析不出父路径），
+ * 保留上一次的列表，让子会话行保持在侧边栏可见、可高亮。
  */
 export function useChildSessions(
   selectedSessionId: string | null | undefined,
   sessionByid: Map<string, UiSession> | undefined,
-): UiSession[] {
-  const [loaded, setLoaded] = useState<{ parent: string; list: UiSession[] } | null>(null)
-  const parentPath = useMemo(
-    () => (selectedSessionId ? sessionByid?.get(selectedSessionId)?.path ?? null : null),
+): ChildSessionsResult {
+  const [loaded, setLoaded] = useState<{ parentId: string; parentPath: string; list: UiSession[] } | null>(null)
+  const parentSession = useMemo(
+    () => (selectedSessionId ? sessionByid?.get(selectedSessionId) ?? null : null),
     [selectedSessionId, sessionByid],
   )
+  const parentPath = parentSession?.path ?? null
 
   useEffect(() => {
-    if (!parentPath) return
+    if (!parentPath || !parentSession) return
     let cancelled = false
     const generation = serverStore.getActiveServerGeneration()
     const load = () => {
@@ -47,7 +57,7 @@ export function useChildSessions(
               isChildSession: true,
             }
           }).filter((session): session is UiSession => session !== null)
-          setLoaded({ parent: parentPath, list })
+          setLoaded({ parentId: parentSession.id, parentPath, list })
         })
         .catch(() => undefined)
     }
@@ -58,10 +68,15 @@ export function useChildSessions(
       cancelled = true
       window.removeEventListener('omompiui:sessions-changed', load)
     }
-  }, [parentPath])
+  }, [parentPath, parentSession])
 
-  // parentPath 变化但新数据未到时，直接显示空（派生清空，避免陈旧列表闪现）
-  return loaded && loaded.parent === parentPath ? loaded.list : EMPTY_CHILDREN
+  // parentPath 变化但新数据未到时显示空（派生清空，避免陈旧列表闪现）；
+  // parentPath 为 null（选中了子会话）时保留已加载列表
+  if (!loaded) return EMPTY_RESULT
+  if (parentPath === null || loaded.parentPath === parentPath) {
+    return { parentId: loaded.parentId, sessions: loaded.list }
+  }
+  return EMPTY_RESULT
 }
 
-const EMPTY_CHILDREN: UiSession[] = []
+const EMPTY_RESULT: ChildSessionsResult = { parentId: null, sessions: [] }

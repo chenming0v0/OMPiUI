@@ -10,8 +10,9 @@ import type {
 } from "@ompiui/protocol"
 import { isJsonObject } from "@ompiui/protocol"
 import { entriesPageFromEntries, sessionHeadFromParts, type BranchCheckpoint, type EntriesPage, type LiveMessage, type SessionHead } from "../runtime/pagination.js"
+import { buildSessionTreeFromEntries } from "../runtime/session-tree.js"
 import type { PiEventMeta, SessionRuntime, Unsubscribe } from "../runtime.js"
-import { normalizeCwd, resolveUserPath } from "./omp-catalog.js"
+import { normalizeCwd, readChildSessionMessages, resolveUserPath } from "./omp-catalog.js"
 import { OmpExtensionUiBridge } from "./omp-extension-ui.js"
 import { OMP_SDK_VERSION } from "./constants.js"
 import { detectOmpVersion, isOmpVersionSupported, ompTooOldError } from "./omp-version.js"
@@ -612,12 +613,9 @@ export class OmpRpcSession implements SessionRuntime {
 
   async getTree(): Promise<JsonValue> {
     await this.ensureSynced()
-    return this.entries.map(entry => ({
-      id: entry.id,
-      parentId: entry.parentId,
-      type: entry.type ?? "unknown",
-      timestamp: entry.timestamp,
-    }))
+    // SDK getTree() 语义：整棵树（含所有分支）的嵌套 { entry, children }，
+    // 前端 sessionTreeGraph 按该形状消费（issue #10）
+    return buildSessionTreeFromEntries(this.entries.map(entry => toJsonObject(entry)))
   }
 
   async getAttachment(entryId: string, blockIndex: number): Promise<JsonObject> {
@@ -1132,8 +1130,27 @@ export class OmpRpcSession implements SessionRuntime {
     if (params.subagentId) command.subagentId = params.subagentId
     if (params.sessionFile) command.sessionFile = params.sessionFile
     if (typeof params.fromByte === "number") command.fromByte = params.fromByte
-    const response = await this.client.request(command, 60_000)
-    return unwrapResponse<JsonValue>(response) ?? {}
+    try {
+      const response = await this.client.request(command, 60_000)
+      return unwrapResponse<JsonValue>(response) ?? {}
+    } catch (error) {
+      // OMP 的子代理注册表是进程内的：worker/omp 重启后旧 run 的
+      // sessionFile 一律 "Unknown subagent session file"。转录落盘在
+      // 子会话 jsonl 里——读磁盘兜底（返回形状与 RPC 一致），重开
+      // 会话/换实例后内联转录仍能回填。
+      if (params.sessionFile) {
+        const messages = await readChildSessionMessages(params.sessionFile)
+        return {
+          sessionFile: params.sessionFile,
+          fromByte: 0,
+          nextByte: 0,
+          reset: false,
+          entries: [],
+          messages,
+        }
+      }
+      throw error
+    }
   }
 
   onCrash(listener: (error: Error) => void): Unsubscribe {

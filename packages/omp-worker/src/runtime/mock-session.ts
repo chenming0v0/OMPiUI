@@ -14,6 +14,7 @@ import {
   type LiveMessage,
   type SessionHead,
 } from "./pagination.js"
+import { buildSessionTreeFromEntries } from "./session-tree.js"
 
 const MOCK_SDK_VERSION = "mock"
 
@@ -450,11 +451,7 @@ export class MockPiSession implements SessionRuntime {
   }
 
   getTree(): JsonValue {
-    return this.entries.map(entry => ({
-      id: entry.id ?? null,
-      parentId: entry.parentId ?? null,
-      label: entry.label ?? null,
-    }))
+    return buildSessionTreeFromEntries(this.entries)
   }
 
   getAttachment(): JsonObject {

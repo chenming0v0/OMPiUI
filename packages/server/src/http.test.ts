@@ -64,6 +64,36 @@ describe("http api", () => {
     assert.equal(accepted.json.service, "ompiui-server")
   })
 
+  it("share prefers the configured public base URL over the LAN address", async () => {
+    const app = createAppServer({
+      authToken: "test-token",
+      share: { host: "0.0.0.0", port: 8787, publicBaseUrl: "https://panel.example.com/" },
+    })
+    const port = await listen(app)
+    cleanups.push(() => app.dispose())
+
+    const share = await request(port, "GET", "/api/v1/host/share", { token: "test-token" })
+    assert.equal(share.status, 200)
+    assert.equal(share.json.url, "https://panel.example.com")
+    assert.equal(share.json.public, true)
+    assert.equal(share.json.lan, true)
+    assert.equal(
+      share.json.link,
+      `ompiui://connect?url=${encodeURIComponent("https://panel.example.com")}&token=${encodeURIComponent("test-token")}`,
+    )
+  })
+
+  it("share falls back to a LAN address without a public base URL", async () => {
+    const app = createAppServer({ authToken: "test-token", share: { host: "0.0.0.0", port: 8787 } })
+    const port = await listen(app)
+    cleanups.push(() => app.dispose())
+
+    const share = await request(port, "GET", "/api/v1/host/share", { token: "test-token" })
+    assert.equal(share.status, 200)
+    assert.ok(share.json.url.startsWith("http://"), `expected a plain LAN URL, got ${share.json.url}`)
+    assert.equal(share.json.public, undefined)
+  })
+
   it("serves workspaces, files and git through the host surface", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "ompiui-http-host-"))
     writeFileSync(path.join(root, "hello.txt"), "hello ompiui", "utf8")

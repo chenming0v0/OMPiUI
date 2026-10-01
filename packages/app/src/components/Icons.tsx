@@ -90,6 +90,7 @@ import {
   Columns2,
   Rows2,
   GripVertical,
+  EllipsisVertical,
   AppWindow,
   ZoomIn,
   ZoomOut,
@@ -223,4 +224,5 @@ export const ShieldIcon = wrap(Shield)
 export const SplitHorizontalIcon = wrap(Columns2)
 export const SplitVerticalIcon = wrap(Rows2)
 export const GripVerticalIcon = wrap(GripVertical)
+export const MoreVerticalIcon = wrap(EllipsisVertical)
 export const AppWindowIcon = wrap(AppWindow)

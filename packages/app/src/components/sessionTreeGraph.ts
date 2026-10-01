@@ -44,6 +44,16 @@ function asRecord(value: JsonValue | undefined): NativeEntry {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
 }
 
+// 喂进来的树按 SDK SessionTreeNode 形状断言，但不做运行期信任：
+// entry/children 任一缺失都退化为空，不让图模块崩在属性访问上（issue #10）
+function nodeEntry(node: NativeTreeNode): NativeEntry {
+  return asRecord(node?.entry)
+}
+
+function nodeChildren(node: NativeTreeNode): NativeTreeNode[] {
+  return Array.isArray(node?.children) ? node.children : []
+}
+
 function textFromNative(value: JsonValue | undefined): string {
   if (typeof value === 'string') return value
   if (!Array.isArray(value)) return ''
@@ -89,8 +99,8 @@ export function findSessionTreeNode(tree: NativeTreeNode[], entryId: string | nu
   const stack = [...tree]
   while (stack.length > 0) {
     const node = stack.pop()!
-    if (node.entry.id === entryId) return node
-    stack.push(...node.children)
+    if (nodeEntry(node).id === entryId) return node
+    stack.push(...nodeChildren(node))
   }
   return undefined
 }
@@ -102,10 +112,11 @@ export function findSessionTreeNode(tree: NativeTreeNode[], entryId: string | nu
 export function findSessionTreePath(tree: NativeTreeNode[], entryId: string): string[] | null {
   const path: string[] = []
   const visit = (node: NativeTreeNode): boolean => {
-    const id = typeof node.entry.id === 'string' ? node.entry.id : ''
+    const rawId = nodeEntry(node).id
+    const id = typeof rawId === 'string' ? rawId : ''
     path.push(id)
     if (id === entryId) return true
-    for (const child of node.children) {
+    for (const child of nodeChildren(node)) {
       if (visit(child)) return true
     }
     path.pop()
@@ -136,12 +147,12 @@ function entryTime(entry: NativeEntry): number {
 export function findNewestDescendantEntries(node: NativeTreeNode): NativeEntry[] {
   const entries: NativeEntry[] = []
   let current = node
-  while (current.children.length > 0) {
-    let next = current.children[0]
-    for (const child of current.children) {
-      if (entryTime(child.entry) > entryTime(next.entry)) next = child
+  while (nodeChildren(current).length > 0) {
+    let next = nodeChildren(current)[0]!
+    for (const child of nodeChildren(current)) {
+      if (entryTime(nodeEntry(child)) > entryTime(nodeEntry(next))) next = child
     }
-    entries.push(next.entry)
+    entries.push(nodeEntry(next))
     current = next
   }
   return entries
@@ -163,7 +174,9 @@ export function isTreeVisibleEntry(entry: NativeEntry, currentLeafId: string | n
       return true
     }
     return type !== 'label' && type !== 'custom' && type !== 'model_change' &&
-      type !== 'thinking_level_change' && type !== 'session_info' && type !== 'active_tools_change'
+      type !== 'thinking_level_change' && type !== 'session_info' && type !== 'active_tools_change' &&
+      // omp.dropped 是 OMP worker 的元数据占位（时间线 selectors 同样跳过）
+      type !== 'omp.dropped'
   }
   if (type === 'message') {
     const message = asRecord(entry.message)
@@ -177,7 +190,8 @@ export function isTreeVisibleEntry(entry: NativeEntry, currentLeafId: string | n
     return true
   }
   return type !== 'label' && type !== 'custom' && type !== 'model_change' &&
-    type !== 'thinking_level_change' && type !== 'session_info' && type !== 'active_tools_change'
+    type !== 'thinking_level_change' && type !== 'session_info' && type !== 'active_tools_change' &&
+    type !== 'omp.dropped'
 }
 
 export function buildSessionTreeGraph(
@@ -196,10 +210,11 @@ export function buildSessionTreeGraph(
   const orderedIds: string[] = []
 
   const indexRawTree = (node: NativeTreeNode, parentId: string | null) => {
-    const entryId = typeof node.entry.id === 'string' ? node.entry.id : ''
+    const rawId = nodeEntry(node).id
+    const entryId = typeof rawId === 'string' ? rawId : ''
     if (!entryId || rawParentById.has(entryId)) return
     rawParentById.set(entryId, parentId)
-    for (const child of node.children) indexRawTree(child, entryId)
+    for (const child of nodeChildren(node)) indexRawTree(child, entryId)
   }
   for (const root of tree) indexRawTree(root, null)
 
@@ -219,15 +234,17 @@ export function buildSessionTreeGraph(
   }
 
   const visit = (node: NativeTreeNode, visibleParentId: string | null, pendingDetails: NativeEntry[]) => {
-    const entryId = typeof node.entry.id === 'string' ? node.entry.id : ''
+    const entry = nodeEntry(node)
+    const rawId = entry.id
+    const entryId = typeof rawId === 'string' ? rawId : ''
     if (!entryId) return
     let nextVisibleParentId = visibleParentId
     let nextPendingDetails = pendingDetails
-    if (isTreeVisibleEntry(node.entry, visualLeafId) && !nodeById.has(entryId)) {
+    if (isTreeVisibleEntry(entry, visualLeafId) && !nodeById.has(entryId)) {
       nodeById.set(entryId, node)
       parentById.set(entryId, visibleParentId)
       orderedIds.push(entryId)
-      const type = typeof node.entry.type === 'string' ? node.entry.type : 'unknown'
+      const type = typeof entry.type === 'string' ? entry.type : 'unknown'
       const compact = type !== 'message' && type !== 'custom_message' && type !== 'branch_summary'
       graph.setNode(entryId, { width: NODE_WIDTH, height: compact ? EVENT_HEIGHT : MESSAGE_HEIGHT })
       if (visibleParentId) {
@@ -235,14 +252,14 @@ export function buildSessionTreeGraph(
         childCountById.set(visibleParentId, (childCountById.get(visibleParentId) ?? 0) + 1)
       }
       nextVisibleParentId = entryId
-      const role = asRecord(node.entry.message).role
-      const details = role === 'assistant' ? [...pendingDetails, node.entry] : [node.entry]
+      const role = asRecord(entry.message).role
+      const details = role === 'assistant' ? [...pendingDetails, entry] : [entry]
       detailEntriesById.set(entryId, details)
-      nextPendingDetails = role === 'assistant' && toolCallIds(node.entry).length > 0 ? [node.entry] : []
+      nextPendingDetails = role === 'assistant' && toolCallIds(entry).length > 0 ? [entry] : []
     } else {
-      const message = asRecord(node.entry.message)
-      if (node.entry.type === 'message' && (message.role === 'assistant' || message.role === 'toolResult')) {
-        nextPendingDetails = [...pendingDetails, node.entry]
+      const message = asRecord(entry.message)
+      if (entry.type === 'message' && (message.role === 'assistant' || message.role === 'toolResult')) {
+        nextPendingDetails = [...pendingDetails, entry]
       }
     }
     if (entryId === leafId && nextVisibleParentId && nextPendingDetails.length > 0) {
@@ -254,7 +271,7 @@ export function buildSessionTreeGraph(
       ])
       nextPendingDetails = []
     }
-    for (const child of node.children) visit(child, nextVisibleParentId, nextPendingDetails)
+    for (const child of nodeChildren(node)) visit(child, nextVisibleParentId, nextPendingDetails)
   }
   for (const root of tree) visit(root, null, [])
 
@@ -269,12 +286,13 @@ export function buildSessionTreeGraph(
 
   const nodes: SessionGraphNode[] = orderedIds.map(entryId => {
     const source = nodeById.get(entryId)!
+    const sourceEntry = nodeEntry(source)
     const layout = graph.node(entryId)
-    const type = typeof source.entry.type === 'string' ? source.entry.type : 'unknown'
-    const message = asRecord(source.entry.message)
+    const type = typeof sourceEntry.type === 'string' ? sourceEntry.type : 'unknown'
+    const message = asRecord(sourceEntry.message)
     const role = type === 'message' && typeof message.role === 'string' ? message.role : undefined
     const compact = type !== 'message' && type !== 'custom_message' && type !== 'branch_summary'
-    const details = detailEntriesById.get(entryId) ?? [source.entry]
+    const details = detailEntriesById.get(entryId) ?? [sourceEntry]
     const calls = details.flatMap(toolCallIds)
     const hasToolError = details.some(detail => {
       const detailMessage = asRecord(detail.message)
@@ -289,7 +307,7 @@ export function buildSessionTreeGraph(
         type,
         role,
         label: source.label,
-        preview: sessionTreeEntryPreview(source.entry, typeLabel),
+        preview: sessionTreeEntryPreview(sourceEntry, typeLabel),
         activePath: activePath.has(entryId),
         currentLeaf: entryId === visualLeafId,
         branchCount: childCountById.get(entryId) ?? 0,

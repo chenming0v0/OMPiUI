@@ -20,6 +20,7 @@ import { settingsFieldClass, SettingField, SettingRow, SettingsSection, Settings
 const TERMINAL_SHELL_STORAGE_KEY = 'ompiui-terminal-shell'
 const LISTEN_HOST_KEY = 'OMPIUI_HOST'
 const LISTEN_PORT_KEY = 'OMPIUI_PORT'
+const PUBLIC_BASE_URL_KEY = 'OMPIUI_PUBLIC_BASE_URL'
 
 export function ServiceSettings() {
   const { t } = useTranslation(['settings', 'common'])
@@ -135,6 +136,8 @@ export function ServiceSettings() {
 
   const listenHost = serviceStore.envVars.find(item => item.key.trim().toUpperCase() === LISTEN_HOST_KEY)?.value.trim() || '127.0.0.1'
   const listenPort = serviceStore.envVars.find(item => item.key.trim().toUpperCase() === LISTEN_PORT_KEY)?.value.trim() || '8787'
+  // 公网基址不 trim 展示：输入框直接回显原值，服务端启动时统一规范化
+  const publicBaseUrl = serviceStore.envVars.find(item => item.key.trim().toUpperCase() === PUBLIC_BASE_URL_KEY)?.value || ''
   const listenSettings = (
     <SettingsSection title={t('service.listenTitle')} description={t('service.listenDesc')}>
       <SettingField label={t('service.listenHost')} description={t('service.listenHostDesc')}>
@@ -165,6 +168,26 @@ export function ServiceSettings() {
           }}
         />
       </SettingField>
+      <SettingField label={t('service.publicBaseUrl')} description={t('service.publicBaseUrlDesc')}>
+        <input
+          type="text"
+          value={publicBaseUrl}
+          placeholder="https://panel.example.com"
+          aria-label={t('service.publicBaseUrl')}
+          spellCheck={false}
+          className={`${settingsFieldClass} font-mono`}
+          onChange={event => {
+            const value = event.target.value
+            if (value.trim()) serviceStore.upsertEnvVar(PUBLIC_BASE_URL_KEY, value)
+            else serviceStore.setEnvVars(serviceStore.envVars.filter(item => item.key.trim().toUpperCase() !== PUBLIC_BASE_URL_KEY))
+          }}
+        />
+      </SettingField>
+      {publicBaseUrl.trim() && (
+        <div className="text-[length:var(--fs-xs)] leading-relaxed text-warning-100/80">
+          {t('service.publicBaseUrlWarning')}
+        </div>
+      )}
       <div className="text-[length:var(--fs-xs)] leading-relaxed text-warning-100/80">
         {t('service.listenRestartHint')}
       </div>

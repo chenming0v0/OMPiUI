@@ -20,6 +20,7 @@ export const SERVICE_ENV_EXAMPLES: EnvVar[] = [
   { key: 'HTTPS_PROXY', value: 'http://127.0.0.1:7890' },
   { key: 'OMPIUI_HOST', value: '0.0.0.0' },
   { key: 'OMPIUI_PORT', value: '8787' },
+  { key: 'OMPIUI_PUBLIC_BASE_URL', value: 'https://panel.example.com' },
 ]
 
 interface ServiceStoreSnapshot {

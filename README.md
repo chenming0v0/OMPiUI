@@ -63,6 +63,22 @@ OMPIUI_DRIVER=omp node --import tsx packages/server/src/bundle-entry.ts web --ho
 
 OMPiUI 读取 OMP 的原生配置（`~/.omp/agent/models.yml`、`config.yml`），不维护第二套 provider 凭据。
 
+### 远程访问与公网分享
+
+默认只监听本机（`127.0.0.1`）。局域网分享用 `--host 0.0.0.0`（或 `OMPIUI_HOST=0.0.0.0`），设置页的分享面板会给出浏览器可直接打开的地址和 `ompiui://connect` 深链。
+
+**公网访问**：局域网地址在公网不可达，需要反向代理或隧道把一个对外入口指到本服务。配置入口地址后，分享链接、启动日志和 Origin 校验都以它为准，不再猜测第一块网卡：
+
+```bash
+OMPIUI_PUBLIC_BASE_URL=https://panel.example.com OMPIUI_DRIVER=omp \
+  node --import tsx packages/server/src/bundle-entry.ts web --host 127.0.0.1 --port 8787
+# 桌面端也可以在 设置 → 服务 → 网络监听 里填写「公网基址」
+```
+
+- **务必走 HTTPS**：入口 token 首屏经 `?token=` 进入（进入后立即从地址栏抹掉，之后只走 `Authorization` 头），明文 HTTP 会把 token 暴露给路径上的所有节点。
+- 反向代理建议保留原始 `Host` 头（nginx `proxy_set_header Host $host`）；如果代理重写了 `Host`，Origin 校验也会放行 `OMPIUI_PUBLIC_BASE_URL` 的域名。
+- **拿到链接 = 拿到这台机器**：可以读写工作区、开终端、运行命令、驱动 agent。请使用强访问令牌，只在可信通道分享，不用时及时轮换。
+
 ### 网关兼容开关
 
 个别 OpenAI 兼容网关（Anthropic 翻译层）对 OMP 的 `wait` 工具 schema 会返回 0-token 空响应。OMPiUI 拉起的每个 OMP 进程都会附加 `~/.ompiui/omp-compat.yml`（存在时），可以在**不影响 OMP CLI** 的前提下做覆盖，例如：

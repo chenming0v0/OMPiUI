@@ -313,11 +313,11 @@ export function SidePanel({
   )
   const sessionLookup = useMemo(() => new Map(sessions.map(session => [session.id, session])), [sessions])
   // 选中会话的 OMP 子代理会话（session.children；OpenCodeUI children 语义）
-  const childSessions = useChildSessions(selectedSessionId, sessionLookup)
+  const { parentId: childSessionsParentId, sessions: childSessions } = useChildSessions(selectedSessionId, sessionLookup)
   // SessionChildrenSlot 的数据接口：父会话 id → 子会话列表（仅选中会话拉取）
   const childrenByParent = useMemo(
-    () => (selectedSessionId && childSessions.length > 0 ? new Map([[selectedSessionId, childSessions]]) : undefined),
-    [selectedSessionId, childSessions],
+    () => (childSessionsParentId && childSessions.length > 0 ? new Map([[childSessionsParentId, childSessions]]) : undefined),
+    [childSessionsParentId, childSessions],
   )
 
   // 列表显示按当前工作区过滤；数据本身是全局的（活跃 tab / 标题解析都需全局）
@@ -779,6 +779,9 @@ export function SidePanel({
     onExpandedProjectIdsChange: setExpandedRecentProjectIds,
     onSelectProject: handleSelectFolderProject,
     onSelectSession: handleSelectActive,
+    // 子会话（OMP 子代理）点击即打开：与普通会话同一条选择链路，
+    // pane 端 preview 按 id 深度解析子会话文件
+    onSelectChildSession: handleSelectActive,
     onRenameSession: handleRenameFolderSession,
     onDeleteSession: handleDeleteFolderSession,
     isEditMode,
@@ -1234,6 +1237,7 @@ export function SidePanel({
                 <SessionList
                   sessions={orderedSessions}
                   inlineChildSessions={childrenByParent}
+                  onSelectChildSession={handleSelectActive}
                   selectedId={selectedSessionId}
                   isLoading={isLoading}
                   isLoadingMore={isLoadingMore}
