@@ -1,4 +1,4 @@
-import { memo, useState, useCallback, useEffect, useRef, useSyncExternalStore, type RefCallback } from 'react'
+import { memo, useState, useCallback, useEffect, useMemo, useRef, useSyncExternalStore, type RefCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ContentBlock } from '../../../../components'
 import { ChevronRightIcon, ExternalLinkIcon, StopIcon } from '../../../../components/Icons'
@@ -6,9 +6,16 @@ import { useDisclosureScrollLock } from '../../../../hooks'
 import { useSessionNavigation } from '../../../../contexts/SessionNavigationContext'
 import { abortPiOperation, openSubagentSession } from '../../../../omp/controllers/index.js'
 import { getOmpSubagentMessages } from '../../../../omp/transport/index.js'
+import { piSessionStateStore } from '../../../../omp/state/index.js'
 import { activeSessionStore } from '../../../../store/activeSessionStore'
-import { ompSubagentStore, type OmpSubagentRun, type OmpSubagentTranscriptItem } from '../../../../omp/ompSubagentStore'
+import {
+  ompSubagentStore,
+  transcriptItemsFromMessages,
+  type OmpSubagentRun,
+  type OmpSubagentTranscriptItem,
+} from '../../../../omp/ompSubagentStore'
 import { formatCompactDuration, formatCompactTokens } from '../../../../omp/ompSubagentFormat'
+import { buildPersistedSubagentRun, deriveChildSessionFile, extractFirstPersistedResult } from './persistedSubagentRun'
 import { useUiDisclosureState } from '../../../../utils/uiDisclosureState'
 import type { ToolRendererProps } from '../types'
 import { MessageExpandPanel, useMessageExpandRender } from '../../messageExpand'
@@ -52,8 +59,12 @@ export const TaskRenderer = memo(function TaskRenderer({ execution, partKey, onF
   const targetSessionId = metadata?.sessionId as string | undefined
 
   // OMP 子代理实时状态：转录回填与"打开子会话"都从这里取 sessionFile
-  const subagentRun = useOmpSubagentRun(execution.call?.id)
-  const { navigateToSession, currentDirectory } = useSessionNavigation()
+  const liveRun = useOmpSubagentRun(execution.call?.id)
+  const { navigateToSession, currentDirectory, currentSessionId } = useSessionNavigation()
+  // 注册表为空（worker/页面重启，OMP 的注册表还是进程内的）时从持久化的
+  // task 结果 details 重建 completed run，转录从子会话文件读回（落盘可见）
+  const persistedRun = usePersistedSubagentRun(execution.call?.id, metadata, Boolean(liveRun), currentSessionId)
+  const subagentRun = liveRun ?? persistedRun
 
   const handleOpenSubagent = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
@@ -136,8 +147,8 @@ export const TaskRenderer = memo(function TaskRenderer({ execution, partKey, onF
                 </div>
               )}
 
-              {/* OMP 子代理实时转录（parentToolCallId = execution.call.id） */}
-              <SubSessionView toolCallId={execution.call?.id} isParentRunning={isRunning} />
+              {/* OMP 子代理转录（实时帧优先；注册表为空时落盘回退） */}
+              <SubSessionView run={subagentRun} />
 
               {/* 完成时的输出 */}
               {isCompleted && resultOutput !== undefined && resultOutput !== '' && (
@@ -303,8 +314,8 @@ export const TaskHeader = memo(function TaskHeader({
 // ============================================
 
 interface SubSessionViewProps {
-  toolCallId?: string
-  isParentRunning: boolean
+  /** 实时 run（ompSubagentStore）或落盘重建的 run；两者皆缺时显示等待占位 */
+  run?: OmpSubagentRun
 }
 
 const SUBVIEW_MAX_HEIGHT = 240
@@ -313,6 +324,57 @@ function useOmpSubagentRun(toolCallId: string | undefined): OmpSubagentRun | und
   const snapshot = useSyncExternalStore(ompSubagentStore.subscribe, ompSubagentStore.getSnapshot)
   void snapshot.revision
   return ompSubagentStore.getByToolCall(toolCallId)
+}
+
+// ============================================
+// 落盘回退 hook：run 重建的纯逻辑在 persistedSubagentRun.ts，
+// 这里负责拉取子会话文件的磁盘转录（subagent.messages 的 worker 端兜底）。
+// ============================================
+
+/**
+ * 从持久化结果重建子代理 run 并拉取磁盘转录。仅在实时注册表没有对应
+ * run 时生效（有 run 说明实时路径在工作，回退让位）。
+ */
+function usePersistedSubagentRun(
+  callId: string | undefined,
+  details: Record<string, unknown> | undefined,
+  hasLiveRun: boolean,
+  parentSessionId: string | null | undefined,
+): OmpSubagentRun | undefined {
+  const result = extractFirstPersistedResult(details)
+
+  const baseRun = useMemo(() => {
+    if (hasLiveRun || !callId || !result || !parentSessionId) return undefined
+    const state = piSessionStateStore.getState(parentSessionId)
+    const parentSessionFile = state && typeof state.sessionFile === 'string' ? state.sessionFile : undefined
+    const sessionFile = deriveChildSessionFile(result, parentSessionFile)
+    return buildPersistedSubagentRun(callId, result, sessionFile)
+  }, [callId, hasLiveRun, parentSessionId, result])
+
+  // 转录按 run.id 缓存：依赖变化重建 baseRun 时旧转录不会串台
+  const [loaded, setLoaded] = useState<{ key: string; items: OmpSubagentTranscriptItem[] }>({ key: '', items: [] })
+
+  useEffect(() => {
+    const sessionFile = baseRun?.sessionFile
+    if (!baseRun || !parentSessionId || !sessionFile) return
+    let cancelled = false
+    getOmpSubagentMessages(parentSessionId, { sessionFile })
+      .then(record => {
+        if (cancelled) return
+        const data = record && typeof record === 'object' && !Array.isArray(record)
+          ? record as Record<string, unknown>
+          : undefined
+        const messages = Array.isArray(data?.messages) ? data.messages as unknown[] : []
+        setLoaded({ key: baseRun.id, items: transcriptItemsFromMessages(messages) })
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [baseRun, parentSessionId])
+
+  if (!baseRun) return undefined
+  return { ...baseRun, transcript: loaded.key === baseRun.id ? loaded.items : [] }
 }
 
 // 跨 pane 去重的回填飞行中标记（run.id → 正在拉取）
@@ -345,9 +407,8 @@ function useSubagentHistoryBackfill(run: OmpSubagentRun | undefined): void {
   }, [run])
 }
 
-const SubSessionView = memo(function SubSessionView({ toolCallId, isParentRunning }: SubSessionViewProps) {
+const SubSessionView = memo(function SubSessionView({ run }: SubSessionViewProps) {
   const { t } = useTranslation('message')
-  const run = useOmpSubagentRun(toolCallId)
   useSubagentHistoryBackfill(run)
   const scrollRef = useRef<HTMLDivElement>(null)
   const transcript = run?.transcript ?? []
@@ -365,7 +426,7 @@ const SubSessionView = memo(function SubSessionView({ toolCallId, isParentRunnin
     return (
       <div className="rounded-md bg-bg-100/50 border border-border-200/30 overflow-hidden">
         <div className="px-3 py-2 text-[length:var(--fs-sm)] text-text-500 italic">
-          {isParentRunning ? t('task.waitingForResponse') : t('task.waitingForResponse')}
+          {t('task.waitingForResponse')}
         </div>
       </div>
     )

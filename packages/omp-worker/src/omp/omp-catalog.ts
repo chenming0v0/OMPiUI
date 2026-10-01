@@ -58,6 +58,41 @@ function sessionsRoot(): string {
   return path.join(ompAgentDir(), "sessions")
 }
 
+/** 磁盘预览丢弃的元数据条目（与 OmpRpcSession.adaptEntry 的丢弃清单一致） */
+const DROPPED_META_ENTRY_TYPES = new Set(["title", "model_usage", "session", "session_init"])
+
+/**
+ * 会话 JSONL 行 → 预览条目。元数据行（title/session/session_init/
+ * model_usage）换成 omp.dropped 占位：直接透传会让前端渲染成 unknown 行，
+ * 整行丢弃又会断掉活跃分支回溯的 parentId 链。
+ */
+export function previewEntriesFromLines(raw: string[], fallbackIdPrefix: string): JsonObject[] {
+  const entries: JsonObject[] = []
+  for (const line of raw) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    try {
+      const parsed = JSON.parse(trimmed) as unknown
+      if (!isJsonObject(parsed)) continue
+      const type = typeof parsed.type === "string" ? parsed.type : ""
+      if (DROPPED_META_ENTRY_TYPES.has(type)) {
+        entries.push({
+          type: "omp.dropped",
+          id: typeof parsed.id === "string" ? parsed.id : `${fallbackIdPrefix}:${entries.length}`,
+          parentId: typeof parsed.parentId === "string" ? parsed.parentId : null,
+          timestamp: typeof parsed.timestamp === "string" ? parsed.timestamp : "",
+          droppedType: type,
+        })
+        continue
+      }
+      entries.push({ ...parsed, id: typeof parsed.id === "string" ? parsed.id : `${fallbackIdPrefix}:${entries.length}` })
+    } catch {
+      /* skip malformed line */
+    }
+  }
+  return entries
+}
+
 interface SessionFileSummary {
   id: string
   cwd: string
@@ -242,20 +277,8 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
 
   private previewSummary(summary: SessionFileSummary, params: { cursor?: string; limit?: number; maxBytes?: number }, sdkVersion: string = OMP_SDK_VERSION): JsonValue {
     // 读取文件并解析条目（磁盘预览不走 RPC 进程）
-    const entries: JsonObject[] = []
     const raw = existsSync(summary.path) ? readLinesSync(summary.path) : []
-    for (const line of raw) {
-      const trimmed = line.trim()
-      if (!trimmed) continue
-      try {
-        const parsed = JSON.parse(trimmed) as unknown
-        if (isJsonObject(parsed) && parsed.type !== "title" && parsed.type !== "session") {
-          entries.push({ ...parsed, id: typeof parsed.id === "string" ? parsed.id : `${summary.id}:${entries.length}` })
-        }
-      } catch {
-        /* skip malformed line */
-      }
-    }
+    const entries = previewEntriesFromLines(raw, summary.id)
     const branch = activeBranchFromEntries(entries)
     const header: JsonObject = { version: 3, id: summary.id, cwd: summary.cwd, name: summary.name }
     const head = sessionHeadFromParts({
@@ -560,6 +583,49 @@ function readLinesSync(filePath: string): string[] {
   } catch {
     return []
   }
+}
+
+function notFoundError(message: string): Error {
+  return Object.assign(new Error(message), { code: "NOT_FOUND" })
+}
+
+/**
+ * 读子代理会话文件的消息条目（磁盘转录回填）。
+ *
+ * OMP 的子代理注册表是进程内的（RpcSubagentRegistry），终态 run 还会被
+ * 删除——新拉起的 `omp --mode rpc` 进程对历史子会话文件一律报
+ * "Unknown subagent session file"。转录本来就落盘在子会话 jsonl 里，
+ * 直接读文件即可。安全约束：目标必须是 OMP sessions 根内的 .jsonl
+ * （realpath 归一后校验，与 deleteSession 同款防穿越）。
+ */
+export async function readChildSessionMessages(sessionFile: string): Promise<JsonObject[]> {
+  const target = resolveUserPath(sessionFile)
+  if (!target.endsWith(".jsonl")) throw notFoundError("session file not found")
+  const root = path.resolve(sessionsRoot())
+  let realRoot = root
+  try {
+    realRoot = await fs.realpath(root)
+  } catch {
+    /* sessions 根不存在时按原路径校验（后续 startsWith 必然失败） */
+  }
+  let realTarget: string
+  try {
+    realTarget = await fs.realpath(target)
+  } catch {
+    throw notFoundError("session file not found")
+  }
+  const rootKey = process.platform === "win32" ? realRoot.toLowerCase() : realRoot
+  const targetKey = process.platform === "win32" ? realTarget.toLowerCase() : realTarget
+  if (targetKey !== rootKey && !targetKey.startsWith(rootKey + path.sep)) {
+    throw Object.assign(
+      new Error("session file is outside the OMP session directory"),
+      { code: "PATH_OUTSIDE_WORKSPACE" },
+    )
+  }
+  const entries = previewEntriesFromLines(readLinesSync(realTarget), "")
+  return entries
+    .filter(entry => entry.type === "message" && isJsonObject(entry.message))
+    .map(entry => entry.message as JsonObject)
 }
 
 function activeBranchFromEntries(entries: JsonObject[]): JsonObject[] {
