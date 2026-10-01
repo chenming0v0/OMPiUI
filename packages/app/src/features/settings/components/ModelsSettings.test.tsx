@@ -14,10 +14,10 @@ vi.mock('../../../omp/hooks/index.js', () => ({
   usePiModels: usePiModelsMock,
 }))
 
-// 快捷配置区有自己的测试（ModelQuickConfig.test.tsx）；这里 mock 掉，
+// 角色区有自己的测试（ModelRolesSettings.test.tsx）；这里 mock 掉，
 // 因为下方的 modelUtils mock 只覆盖可见性需要的导出
-vi.mock('./ModelQuickConfig', () => ({
-  ModelQuickConfig: () => <div data-testid="model-quick-config-stub" />,
+vi.mock('./ModelRolesSettings', () => ({
+  ModelRolesSettings: () => <div data-testid="model-roles-settings-stub" />,
 }))
 
 vi.mock('../../../store', () => ({
