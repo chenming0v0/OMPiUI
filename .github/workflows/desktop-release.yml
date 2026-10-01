@@ -141,8 +141,32 @@ jobs:
           path: release-artifacts/*
           if-no-files-found: error
 
+  # 签名 secrets 未配置时跳过 Android（AGENTS.md：ANDROID_KEYSTORE_BASE64 /
+  # ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS）。没有密钥就无法签名，
+  # 未签名 APK 无法安装——与其让整个 release 卡死（v0.1.1 就这样没发出来），
+  # 不如先发桌面端，Android 等 secrets 配好随下个 tag 出。
+  android-secrets-check:
+    name: android signing secrets gate
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.gate.outputs.enabled }}
+    steps:
+      - id: gate
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        shell: bash
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "::warning::ANDROID_KEYSTORE_BASE64 is not configured — skipping the Android APK. Set ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS repo secrets to enable signed Android releases."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
   android:
     name: android ${{ matrix.name }}
+    needs: android-secrets-check
+    if: needs.android-secrets-check.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -249,6 +273,11 @@ jobs:
   publish:
     name: publish release assets
     needs: [portable, desktop, android]
+    if: >-
+      always() &&
+      needs.portable.result == 'success' &&
+      needs.desktop.result == 'success' &&
+      (needs.android.result == 'success' || needs.android.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -287,7 +316,13 @@ jobs:
             BODY="No changelog entry found for ${TAG}."
           fi
           echo "$BODY" > /tmp/release-body.md
-          printf '\n---\n\n**Portable:** Windows (.zip), Linux (.tar.gz), macOS (.tar.gz)\n**Desktop:** Windows (.exe), macOS (.dmg), Linux (.deb, .AppImage)\n**Mobile:** Android (.apk) — arm64, armeabi-v7a\n' >> /tmp/release-body.md
+          {
+            printf '\n---\n\n**Portable:** Windows (.zip), Linux (.tar.gz), macOS (.tar.gz)\n'
+            printf '**Desktop:** Windows (.exe), macOS (.dmg), Linux (.deb, .AppImage)\n'
+            if compgen -G "release-assets/*android*.apk" > /dev/null; then
+              printf '**Mobile:** Android (.apk) — arm64, armeabi-v7a\n'
+            fi
+          } >> /tmp/release-body.md
 
       - uses: softprops/action-gh-release@v2
         with:
