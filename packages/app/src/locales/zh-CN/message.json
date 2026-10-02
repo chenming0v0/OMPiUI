@@ -72,7 +72,10 @@
     "failedAllSuffix": "（全部失败）",
     "moreActions": "等 {{count}} 项操作",
     "taskDone": "子代理已完成",
-    "taskActive": "子代理运行中"
+    "taskActive": "子代理运行中",
+    "yieldDone": "提交了最终结果",
+    "yieldActive": "正在提交结果",
+    "yieldFailed": "{{count}} 次结果提交失败"
   },
   "todo": {
     "tasks": "任务",
@@ -86,6 +89,35 @@
     "openSession": "打开会话",
     "waitingForResponse": "等待响应...",
     "taskFailed": "任务失败"
+  },
+  "yield": {
+    "completed": "任务完成",
+    "submitting": "提交结果",
+    "failed": "提交失败",
+    "result": "最终结果",
+    "fields": {
+      "summary": "摘要",
+      "files": "涉及文件",
+      "architecture": "架构",
+      "report": "报告",
+      "result": "结果",
+      "error": "错误",
+      "description": "说明",
+      "message": "消息",
+      "name": "名称",
+      "path": "路径",
+      "status": "状态",
+      "data": "数据",
+      "details": "详情",
+      "notes": "备注",
+      "conclusion": "结论",
+      "output": "输出",
+      "content": "内容",
+      "changes": "变更",
+      "tests": "测试",
+      "todos": "待办事项",
+      "nextsteps": "后续步骤"
+    }
   },
   "system": {
     "retryAttempt": "重试第 {{attempt}} 次",

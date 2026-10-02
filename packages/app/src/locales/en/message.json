@@ -96,7 +96,12 @@
     "moreActions_one": "And {{count}} more action",
     "moreActions_other": "And {{count}} more actions",
     "taskDone": "Subagent finished",
-    "taskActive": "Subagent running"
+    "taskActive": "Subagent running",
+    "yieldDone_one": "Submitted the final result",
+    "yieldDone_other": "Submitted {{count}} results",
+    "yieldActive": "Submitting result",
+    "yieldFailed_one": "{{count}} result submission failed",
+    "yieldFailed_other": "{{count}} result submissions failed"
   },
   "todo": {
     "tasks": "Tasks",
@@ -110,6 +115,35 @@
     "openSession": "Open session",
     "waitingForResponse": "Waiting for response...",
     "taskFailed": "Task failed"
+  },
+  "yield": {
+    "completed": "Task completed",
+    "submitting": "Submitting result",
+    "failed": "Submission failed",
+    "result": "Final result",
+    "fields": {
+      "summary": "Summary",
+      "files": "Files",
+      "architecture": "Architecture",
+      "report": "Report",
+      "result": "Result",
+      "error": "Error",
+      "description": "Description",
+      "message": "Message",
+      "name": "Name",
+      "path": "Path",
+      "status": "Status",
+      "data": "Data",
+      "details": "Details",
+      "notes": "Notes",
+      "conclusion": "Conclusion",
+      "output": "Output",
+      "content": "Content",
+      "changes": "Changes",
+      "tests": "Tests",
+      "todos": "Todos",
+      "nextsteps": "Next steps"
+    }
   },
   "system": {
     "retryAttempt": "Retry attempt {{attempt}}",

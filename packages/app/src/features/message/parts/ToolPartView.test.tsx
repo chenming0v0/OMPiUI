@@ -48,6 +48,7 @@ vi.mock('../tools', () => ({
   getToolIcon: () => <span data-testid="tool-icon">icon</span>,
   extractToolData: () => ({}),
   getToolConfig: () => undefined,
+  isYieldTool: (name: string) => name.toLowerCase() === 'yield',
   DefaultRenderer: () => null,
   TodoRenderer: () => null,
   TaskRenderer: () => null,

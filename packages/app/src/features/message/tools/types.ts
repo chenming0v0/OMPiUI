@@ -38,6 +38,17 @@ export interface ExtractedToolData {
 
   // LSP 诊断
   diagnostics?: DiagnosticInfo[]
+
+  // Yield（子代理提交最终结果）
+  yieldResult?: YieldResultData
+}
+
+export interface YieldResultData {
+  status: 'success' | 'error'
+  /** 子代理提交的结果负载：对象或字符串 */
+  data?: unknown
+  /** 提交失败时的错误信息 */
+  error?: string
 }
 
 export interface DiagnosticInfo {
