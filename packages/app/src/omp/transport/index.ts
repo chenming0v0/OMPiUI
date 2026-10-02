@@ -564,6 +564,16 @@ export function invokePiCommand(sessionId: string, name: string, args = '', sign
   return postPiSessionCommand(sessionId, 'invokeCommand', { name, args }, signal)
 }
 
+/** Manage the OMPiUI session goal (worker-side registry driving the goal bar). */
+export function manageSessionGoal(
+  sessionId: string,
+  op: 'set' | 'pause' | 'resume' | 'drop',
+  objective?: string,
+  signal?: AbortSignal,
+): Promise<JsonValue> {
+  return postPiSessionCommand(sessionId, 'goal', { op, objective }, signal)
+}
+
 /**
  * Resolve argument completions for a registered Pi slash command — pi TUI
  * `getArgumentCompletions(prefix)` parity. Resolves with

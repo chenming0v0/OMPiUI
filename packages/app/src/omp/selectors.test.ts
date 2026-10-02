@@ -88,6 +88,58 @@ describe('selectPiTimelineItems bash grouping', () => {
   })
 })
 
+describe('selectPiTimelineItems OMP extended entries', () => {
+  it('maps mode_change to a mode_change item with its mode payload', () => {
+    const modeChange = {
+      type: 'mode_change',
+      id: 'm1',
+      parentId: null,
+      timestamp: '2026-01-01T00:00:00Z',
+      mode: 'goal',
+      data: { goal: { id: 'g1', status: 'active' } },
+    } as unknown as SessionEntry
+    const items = selectPiTimelineItems(page([modeChange, userEntry('u1', 'hi')]))
+    expect(items.map(item => item.kind)).toEqual(['mode_change', 'user_message'])
+    const item = items[0] as Extract<PiTimelineItem, { kind: 'mode_change' }>
+    expect(item.entryId).toBe('m1')
+    expect(item.mode).toBe('goal')
+    expect(item.data).toEqual({ goal: { id: 'g1', status: 'active' } })
+  })
+
+  it('does not merge bash groups across mode_change entries', () => {
+    const modeChange = {
+      type: 'mode_change',
+      id: 'm1',
+      parentId: null,
+      timestamp: '2026-01-01T00:00:00Z',
+      mode: 'none',
+    } as unknown as SessionEntry
+    const items = selectPiTimelineItems(page([bashEntry('b1', 'ls'), modeChange, bashEntry('b2', 'pwd')]))
+    const groups = items.filter(item => item.kind === 'bash_execution_group') as PiBashExecutionGroupItem[]
+    expect(groups).toHaveLength(2)
+  })
+
+  it('skips OMP bookkeeping entries instead of surfacing them as unknown', () => {
+    const bookkeeping = (id: string, type: string) => ({
+      type,
+      id,
+      parentId: null,
+      timestamp: '2026-01-01T00:00:00Z',
+    }) as unknown as SessionEntry
+    const items = selectPiTimelineItems(page([
+      bookkeeping('s1', 'service_tier_change'),
+      bookkeeping('s2', 'ttsr_injection'),
+      bookkeeping('s3', 'credential_pin'),
+      bookkeeping('s4', 'reset_boundary'),
+      bookkeeping('s5', 'omp.dropped'),
+      bookkeeping('s6', 'title_change'),
+      userEntry('u1', 'hi'),
+    ]))
+    expect(items).toHaveLength(1)
+    expect(items[0]!.kind).toBe('user_message')
+  })
+})
+
 describe('selectPiTimelineItems live/persisted key handover', () => {
   const assistantEntry = (id: string, text: string) => ({
     type: 'message',

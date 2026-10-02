@@ -1003,8 +1003,10 @@ export const ChatArea = memo(
         const scrollTop = root.scrollTop
         const rows = virtualizer.getVirtualItems()
         // 视口顶部对应的行：start <= scrollTop 的最后一行（内容坐标）
+        // rows 可能含 undefined 空洞项（virtual-core measurementsCache 缺口），跳过
         let targetIndex = 0
         for (const row of rows) {
+          if (!row) continue
           if (row.start <= scrollTop) targetIndex = row.index
           else break
         }
@@ -1139,6 +1141,9 @@ export const ChatArea = memo(
 
             <div ref={setVirtualContent} style={{ position: 'relative', width: '100%' }}>
               {virtualItems.map(virtualItem => {
+                // virtual-core 的 measurementsCache 允许空洞（见上方 overrides），
+                // getVirtualItems() 偶发产出 undefined 项——缺守卫会炸掉整个聊天区
+                if (!virtualItem) return null
                 const timelineItem = timeline[virtualItem.index]
                 if (!timelineItem) return null
                 return (

@@ -324,6 +324,7 @@ export class MockPiSession implements SessionRuntime {
   private thinkingLevel = "off"
   private activeTools = ["mock-tool"]
   private dynamicToolRegistered = false
+  private goal: { id: string; objective: string; status: string; tokensUsed: number; timeUsedSeconds: number; createdAt: number; updatedAt: number } | null = null
   private autoCompaction = true
   private autoRetry = true
   private eventEpoch = randomUUID()
@@ -508,6 +509,7 @@ export class MockPiSession implements SessionRuntime {
       contextUsage: { tokens: 0, contextWindow: 200000, percent: 0 },
       retry: { phase: "idle", autoEnabled: this.autoRetry },
       compaction: { autoEnabled: this.autoCompaction, operation: { type: "none" } },
+      goal: this.goal,
       head: this.getHead(),
     }
   }
@@ -878,6 +880,35 @@ export class MockPiSession implements SessionRuntime {
     if (name !== "mock-command") throw Object.assign(new Error(`command not found: ${name}`), { code: "NOT_FOUND" })
     this.dynamicToolRegistered = true
     return undefined
+  }
+
+  // mock 无续跑循环：只维护目标注册表本身，前端状态栏可联调
+  async manageGoal(params: { op: "set" | "pause" | "resume" | "drop"; objective?: string }): Promise<JsonObject> {
+    const now = Date.now()
+    if (params.op === "set") {
+      const objective = (params.objective ?? "").trim()
+      if (!objective) {
+        throw Object.assign(new Error("params.objective is required for op=set"), { code: "INVALID_REQUEST" })
+      }
+      this.goal = {
+        id: randomUUID(),
+        objective,
+        status: "active",
+        tokensUsed: 0,
+        timeUsedSeconds: 0,
+        createdAt: now,
+        updatedAt: now,
+      }
+    } else if (this.goal) {
+      if (params.op === "pause" && this.goal.status === "active") this.goal.status = "paused"
+      if (params.op === "resume" && (this.goal.status === "paused" || this.goal.status === "budget-limited")) {
+        this.goal.status = "active"
+      }
+      if (params.op === "drop") this.goal = null
+      else if (this.goal) this.goal.updatedAt = now
+    }
+    this.emitEvent({ type: "goal_updated", goal: this.goal ?? null })
+    return { goal: this.goal ?? null }
   }
 
   async getCommandCompletions(name: string, prefix: string): Promise<JsonValue | undefined> {

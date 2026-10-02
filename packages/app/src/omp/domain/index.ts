@@ -134,6 +134,7 @@ export type PiTimelineItem = (
   | PiCompactionItem
   | PiBranchSummaryItem
   | PiCustomMessageItem
+  | PiModeChangeItem
   | PiUnknownItem
 ) & {
   /** Stable React identity while a live message becomes a persisted entry. */
@@ -223,6 +224,20 @@ export type PiCustomMessageItem = {
   content: string | (TextContent | ImageContent)[]
   display: boolean
   details?: unknown
+}
+
+/**
+ * OMP `mode_change` 条目（agent 模式切换标记，如 goal / plan；mode "none"
+ * 表示退出模式）。vendored Pi union 没有该变体——OMP 18.x 在 Pi 基础上
+ * 扩展的条目类型，运行时透传到前端，这里按结构读取。
+ */
+export type PiModeChangeItem = {
+  kind: 'mode_change'
+  entryId: string
+  timestamp: number
+  rawEntry: SessionEntry
+  mode: string
+  data?: unknown
 }
 
 export type PiUnknownItem = {

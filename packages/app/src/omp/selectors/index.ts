@@ -11,6 +11,7 @@ import type {
   PiCompactionItem,
   PiBranchSummaryItem,
   PiCustomMessageItem,
+  PiModeChangeItem,
   PiUnknownItem,
 } from '../domain/index.js'
 import { piSessionInfoStore } from '../state/index.js'
@@ -159,12 +160,36 @@ export function buildPiHistoryItems(branch: PiBranchPage): PiTimelineItem[] {
         details: entry.details,
       } as PiCustomMessageItem)
       lastBashGroup = undefined
+    } else if ((entry as { type?: string }).type === 'mode_change') {
+      // OMP 扩展条目（vendored Pi union 没有该变体，按结构读取）：agent
+      // 模式切换标记（goal / plan 等，"none" 表示退出）——渲染为模式分隔条
+      const modeChange = entry as unknown as { id: string; mode?: unknown; data?: unknown }
+      items.push({
+        kind: 'mode_change',
+        entryId: modeChange.id,
+        timestamp,
+        rawEntry: entry,
+        mode: typeof modeChange.mode === 'string' ? modeChange.mode : '',
+        data: modeChange.data,
+      } as PiModeChangeItem)
+      lastBashGroup = undefined
     } else if (
       entry.type === 'thinking_level_change' ||
       entry.type === 'model_change' ||
       entry.type === 'label' ||
       entry.type === 'custom' ||
       entry.type === 'session_info' ||
+      // OMP 18.x 扩展的记账/元数据条目（同样不在 vendored Pi union 里）：
+      // service_tier_change 是服务层级元数据；ttsr_injection / credential_pin
+      // 是会话内部簿记；reset_boundary 随重置出现、旧历史已被裁剪；
+      // title_change 是自动标题写入（标题住在侧栏）—— worker 通常已把
+      // title_change 丢弃为 omp.dropped，这里兜底。均无会话流展示价值，
+      // 与 model_change 一致静默跳过。
+      (entry as { type?: string }).type === 'service_tier_change' ||
+      (entry as { type?: string }).type === 'ttsr_injection' ||
+      (entry as { type?: string }).type === 'credential_pin' ||
+      (entry as { type?: string }).type === 'reset_boundary' ||
+      (entry as { type?: string }).type === 'title_change' ||
       // omp.dropped isn't part of the Pi union: every SessionEntry variant is
       // already matched above, so entry is narrowed to never here — cast first
       (entry as { type?: string }).type === 'omp.dropped'

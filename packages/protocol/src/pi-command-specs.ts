@@ -96,6 +96,7 @@ export const PI_COMMAND_SPECS = [
   { name: "setActiveTools", scope: "session", description: "Set active Pi tools", paramsSchema: objectSchema({ toolNames: STRING_ARRAY }), queue: "serialized" },
   { name: "invokeTool", scope: "session", source: "pi-extension", description: "Invoke a registered Pi tool by name", paramsSchema: objectSchema({ name: STRING, arguments: objectSchema({}, [], true) }, ["name"]), queue: "serialized" },
   { name: "invokeCommand", scope: "session", source: "pi-extension", description: "Invoke a registered Pi slash command by name", paramsSchema: objectSchema({ name: STRING, args: STRING }, ["name"]), queue: "serialized" },
+  { name: "goal", scope: "session", description: "Manage the OMPiUI session goal (worker-side registry: set/pause/resume/drop + continuation loop)", paramsSchema: objectSchema({ op: { enum: ["set", "pause", "resume", "drop"] }, objective: STRING }, ["op"]), queue: "serialized" },
   { name: "commands.completions", scope: "session", description: "Resolve argument completions for a registered slash command (pi TUI getArgumentCompletions parity)", paramsSchema: objectSchema({ name: STRING, prefix: STRING }, ["name"]), queue: "immediate", idempotent: true },
   { name: "navigateTree", scope: "session", description: "Navigate the Pi session tree", paramsSchema: objectSchema({ entryId: STRING, summarize: BOOLEAN, customInstructions: STRING, replaceInstructions: BOOLEAN, label: STRING }, ["entryId"]), queue: "serialized", replacement: true, cancellable: true },
   { name: "setLabel", scope: "session", description: "Set an entry label", paramsSchema: objectSchema({ entryId: STRING, label: STRING }, ["entryId"]), queue: "serialized" },
@@ -190,6 +191,7 @@ export const RUNTIME_TARGETS = {
   setActiveTools: "setActiveTools",
   invokeTool: "invokeTool",
   invokeCommand: "invokeCommand",
+  goal: "manageGoal",
   "commands.completions": "getCommandCompletions",
   navigateTree: "navigateTree",
   setLabel: "setLabel",
@@ -243,6 +245,7 @@ export type PiCommandParams = CoreCommandParams & {
   "attachment.get": { entryId: string; blockIndex: number }
   "subagent.messages": { subagentId?: string; sessionFile?: string; fromByte?: number }
   "commands.completions": { name: string; prefix: string }
+  goal: { op: "set" | "pause" | "resume" | "drop"; objective?: string }
   "session.list": { cwd: string }
   "session.listAll": Record<string, never>
   "session.create": { cwd: string }

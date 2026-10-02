@@ -59,12 +59,12 @@ function sessionsRoot(): string {
 }
 
 /** 磁盘预览丢弃的元数据条目（与 OmpRpcSession.adaptEntry 的丢弃清单一致） */
-const DROPPED_META_ENTRY_TYPES = new Set(["title", "model_usage", "session", "session_init"])
+const DROPPED_META_ENTRY_TYPES = new Set(["title", "title_change", "model_usage", "session", "session_init"])
 
 /**
- * 会话 JSONL 行 → 预览条目。元数据行（title/session/session_init/
- * model_usage）换成 omp.dropped 占位：直接透传会让前端渲染成 unknown 行，
- * 整行丢弃又会断掉活跃分支回溯的 parentId 链。
+ * 会话 JSONL 行 → 预览条目。元数据行（title/title_change/session/
+ * session_init/model_usage）换成 omp.dropped 占位：直接透传会让前端渲染
+ * 成 unknown 行，整行丢弃又会断掉活跃分支回溯的 parentId 链。
  */
 export function previewEntriesFromLines(raw: string[], fallbackIdPrefix: string): JsonObject[] {
   const entries: JsonObject[] = []

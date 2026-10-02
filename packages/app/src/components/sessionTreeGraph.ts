@@ -70,6 +70,24 @@ function normalizePreview(value: string): string {
   return normalized.length > 180 ? `${normalized.slice(0, 177)}…` : normalized
 }
 
+/**
+ * 树图不作为节点展示的条目类型：元数据/簿记类（时间线 selectors 同样
+ * 跳过或按需渲染）。omp.dropped 是 OMP worker 的元数据占位。
+ */
+const TREE_INVISIBLE_TYPES: ReadonlySet<string> = new Set([
+  'label',
+  'custom',
+  'model_change',
+  'thinking_level_change',
+  'session_info',
+  'active_tools_change',
+  'service_tier_change',
+  'ttsr_injection',
+  'credential_pin',
+  'reset_boundary',
+  'omp.dropped',
+])
+
 export function sessionTreeEntryPreview(entry: NativeEntry, typeLabel: (type: string) => string): string {
   const type = typeof entry.type === 'string' ? entry.type : 'unknown'
   if (type === 'message') {
@@ -173,10 +191,7 @@ export function isTreeVisibleEntry(entry: NativeEntry, currentLeafId: string | n
       }
       return true
     }
-    return type !== 'label' && type !== 'custom' && type !== 'model_change' &&
-      type !== 'thinking_level_change' && type !== 'session_info' && type !== 'active_tools_change' &&
-      // omp.dropped 是 OMP worker 的元数据占位（时间线 selectors 同样跳过）
-      type !== 'omp.dropped'
+    return !TREE_INVISIBLE_TYPES.has(type)
   }
   if (type === 'message') {
     const message = asRecord(entry.message)
@@ -189,9 +204,7 @@ export function isTreeVisibleEntry(entry: NativeEntry, currentLeafId: string | n
     }
     return true
   }
-  return type !== 'label' && type !== 'custom' && type !== 'model_change' &&
-    type !== 'thinking_level_change' && type !== 'session_info' && type !== 'active_tools_change' &&
-    type !== 'omp.dropped'
+  return !TREE_INVISIBLE_TYPES.has(type)
 }
 
 export function buildSessionTreeGraph(

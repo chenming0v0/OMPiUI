@@ -119,6 +119,12 @@
     "filesChanged": "{{count}} file changed",
     "filesChanged_other": "{{count}} files changed",
     "branchSummary": "Branch summary",
+    "modeChange": {
+      "goal": "Switched to goal mode",
+      "plan": "Switched to plan mode",
+      "exit": "Exited mode",
+      "generic": "Switched to {{mode}} mode"
+    },
     "unsupportedEntry": "Unsupported entry: {{type}}"
   },
   "stepFinish": {

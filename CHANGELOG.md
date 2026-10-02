@@ -2,6 +2,12 @@
 
 OMPiUI 自己的版本从 0.1.0 起算。`packages/app/CHANGELOG.md` 是上游 PiUI 历史，不参与本仓库发版。
 
+## [Unreleased]
+
+- feat: session goal bar（会话目标栏）— 输入框上方常驻目标状态入口：无目标时显示"设定目标"，点击弹出编辑器（桌面为锚在输入框上方的浮层卡片，移动端为底部弹层 sheet + 文本域），保存即设定；有目标时显示状态（进行中/已暂停/预算受限/已完成）+ 目标内容 + 已用时长，并提供暂停/恢复、编辑、放弃三个操作。因为 OMP 的 `--mode rpc` 不注册 goal 隐藏工具、也没有 goal RPC 命令（实测 18.3.x，`/goal` 走 prompt 只会变成普通消息发给模型），目标注册表由 OMPiUI worker 自己维护：新增 `goal` 会话命令（set/pause/resume/drop，确定性变更、不经过模型），worker 在 active 目标下每次会话 settle 后自动发送一条续跑 prompt（上限 50 轮，模型以行尾 `GOAL_COMPLETE` 标记完成），abort 自动暂停目标（对齐 OMP goal 模式语义）；状态经 `state.get` 的 `goal` 字段 + 合成 `goal_updated` 事件到达前端，前端目标栏经 piSessionStateStore 订阅渲染。目标只随 worker 进程存活（RPC 无自定义条目可持久化），worker 重启后等下一次目标操作恢复
+- fix: chat virtualizer 偶发崩溃（"Cannot read properties of undefined (reading 'index'/'start')"）— virtual-core 3.17 的 `getVirtualItems()` 在 measurementsCache 有空洞时会产出 undefined 项（ChatArea 的 overrides 用到 `measurementsCache: (VirtualItem | undefined)[]`），渲染 map 与 Outline 视口行扫描现在跳过空洞项，不再让整个聊天区撞上错误边界
+- fix: OMP 会话时间线不再显示"未支持的条目：mode_change" — OMP 18.x 在 Pi 条目联合之外扩展的 agent 模式切换标记（goal/plan，`mode: "none"` 表示退出；目标栏设定目标时会写入该条目）现渲染为一条模式分隔条（如"已切换到目标模式"）；同时把同批扩展的记账/元数据条目（`title_change` 自动标题、`service_tier_change`/`ttsr_injection`/`credential_pin`/`reset_boundary`）与 `model_change` 等元数据一致处理：`title_change` 在 worker 两条路径（RPC adaptEntry + 磁盘预览）丢弃为 `omp.dropped` 占位，其余在时间线静默跳过、session 树过滤并补齐展示名，时间线与树都不再出现"未支持的条目"
+
 ## [v0.2.0] - 2026-10-01
 
 - feat: OMP subagent (child) sessions now nest under their parent session in the sidebar — selecting a session lists its `session.children` (OMP writes subagent transcripts to `<parent>.jsonl/<agentId>.jsonl`), child rows render indented like OpenCodeUI children, clicking opens the child session (resolved by id through the catalog deep scan), the rows stay put while a child session itself is selected, and the list refetches when the sessions-changed event fires so freshly landed child sessions appear on their own. Disk session preview also replaces `session_init`/`title`/`session`/`model_usage` metadata entries with `omp.dropped` placeholders like the RPC path already did, so opening a child session no longer shows an "Unsupported entry: session_init" divider at the top of its timeline

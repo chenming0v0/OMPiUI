@@ -95,6 +95,12 @@
     "filesChanged": "{{count}} 个文件变更",
     "filesChanged_other": "{{count}} 个文件变更",
     "branchSummary": "分支摘要",
+    "modeChange": {
+      "goal": "已切换到目标模式",
+      "plan": "已切换到计划模式",
+      "exit": "已退出模式",
+      "generic": "已切换模式：{{mode}}"
+    },
     "unsupportedEntry": "未支持的条目：{{type}}"
   },
   "stepFinish": {

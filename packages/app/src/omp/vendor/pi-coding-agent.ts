@@ -374,3 +374,22 @@ export type AgentSessionEvent =
       id?: string
       delta: string
     }
+  | {
+      type: 'goal_updated'
+      goal: SessionGoalSnapshot | null
+    }
+
+/**
+ * OMP goal 运行时快照（goal_updated 事件帧 / state.goal 的 goal 字段）。
+ * 数据来自 RPC JSON，字段以外来数据对待，UI 侧需防御式解析。
+ */
+export interface SessionGoalSnapshot {
+  id: string
+  objective: string
+  status: 'active' | 'paused' | 'budget-limited' | 'complete' | 'dropped' | (string & {})
+  tokenBudget?: number
+  tokensUsed: number
+  timeUsedSeconds: number
+  createdAt: number
+  updatedAt: number
+}

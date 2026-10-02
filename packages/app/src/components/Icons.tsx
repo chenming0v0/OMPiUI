@@ -85,6 +85,8 @@ import {
   Volume2,
   VolumeX,
   Play,
+  Pause,
+  Target,
   Upload,
   Shield,
   Columns2,
@@ -219,6 +221,8 @@ export const FastForwardIcon = wrap(FastForward)
 export const VolumeIcon = wrap(Volume2)
 export const VolumeOffIcon = wrap(VolumeX)
 export const PlayIcon = wrap(Play)
+export const PauseIcon = wrap(Pause)
+export const TargetIcon = wrap(Target)
 export const UploadIcon = wrap(Upload)
 export const ShieldIcon = wrap(Shield)
 export const SplitHorizontalIcon = wrap(Columns2)

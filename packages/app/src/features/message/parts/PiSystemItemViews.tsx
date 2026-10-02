@@ -6,6 +6,7 @@ import type {
   PiBranchSummaryItem,
   PiCompactionItem,
   PiCustomMessageItem,
+  PiModeChangeItem,
   PiTimelineItem,
   PiToolExecution,
   PiUnknownItem,
@@ -40,6 +41,8 @@ export const PiSystemItemView = memo(function PiSystemItemView({ item }: { item:
       return <BranchSummaryItemView item={item} />
     case 'custom_message':
       return item.display ? <CustomMessageItemView item={item} /> : null
+    case 'mode_change':
+      return <ModeChangeItemView item={item} />
     case 'unknown':
       return <UnknownItemView item={item} />
     default:
@@ -184,4 +187,27 @@ function CustomMessageItemView({ item }: { item: PiCustomMessageItem }) {
 function UnknownItemView({ item }: { item: PiUnknownItem }) {
   const { t } = useTranslation('message')
   return <DividerRow partKey={item.entryId} label={t('system.unsupportedEntry', { type: item.entryType })} />
+}
+
+// ============================================
+// Mode change (OMP mode_change entry)
+// ============================================
+
+/** 已知模式的展示名；未收录的模式回退到 generic 词条（原样显示 mode 值） */
+const MODE_CHANGE_LABEL_KEYS: Record<string, string> = {
+  goal: 'system.modeChange.goal',
+  plan: 'system.modeChange.plan',
+}
+
+/**
+ * OMP 的 agent 模式切换标记（如 goal / plan），mode "none" 表示退出模式。
+ * 渲染为普通分隔条：切换动作本身没有详情可展开，数据里的模式状态
+ * （如 goal 快照）已由目标栏等专属 UI 呈现。
+ */
+function ModeChangeItemView({ item }: { item: PiModeChangeItem }) {
+  const { t } = useTranslation('message')
+  const label = item.mode === 'none'
+    ? t('system.modeChange.exit')
+    : t(MODE_CHANGE_LABEL_KEYS[item.mode] ?? 'system.modeChange.generic', { mode: item.mode })
+  return <DividerRow partKey={item.entryId} label={label} />
 }
