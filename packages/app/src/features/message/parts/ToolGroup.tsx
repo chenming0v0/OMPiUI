@@ -255,6 +255,7 @@ type ToolSummaryCategory =
   | 'list'
   | 'network'
   | 'task'
+  | 'yield'
   | 'todo'
   | 'question'
   | 'skill'
@@ -374,6 +375,7 @@ function getToolSummaryCategory(toolName: string): ToolSummaryCategory {
 
   if (lower.includes('todo')) return 'todo'
   if (lower === 'task') return 'task'
+  if (lower === 'yield') return 'yield'
   if (lower.includes('question') || lower.includes('ask')) return 'question'
   if (lower.includes('skill')) return 'skill'
   if (

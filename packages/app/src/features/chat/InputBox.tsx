@@ -15,6 +15,7 @@ import { InputToolbar } from './input/InputToolbar'
 import type { ModelSelectorHandle } from './ModelSelector'
 import { InputFooter } from './input/InputFooter'
 import { FloatingActions, CollapsedCapsule } from './input/InputActions'
+import { GoalBar } from './input/GoalBar'
 import { useMobileCollapse } from './input/useMobileCollapse'
 import { useAttachmentRail } from './input/useAttachmentRail'
 import { useInputHistory } from './input/useInputHistory'
@@ -1709,6 +1710,10 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
                 </div>
               </div>
             )}
+
+            {/* Goal Bar — 会话目标状态栏（worker 侧 goal 命令；无目标时是"设定目标"
+                入口，有目标时显示状态+目标+时长和暂停/编辑/放弃操作，点击展开编辑器） */}
+            <GoalBar sessionId={sessionId} isCompact={isCompact} />
 
             {/* Input Container */}
             <div

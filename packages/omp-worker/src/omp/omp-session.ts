@@ -44,6 +44,11 @@ interface EntryRecord {
   [key: string]: JsonValue | undefined
 }
 
+// goal 续跑循环的护栏：单个目标最多自动续跑轮数 / settle 后等 entries 落地的宽限
+const GOAL_MAX_CONTINUATIONS = 50
+const GOAL_SETTLE_GRACE_MS = 1_000
+const GOAL_COMPLETE_MARKER = "GOAL_COMPLETE"
+
 function toJson(value: unknown): JsonValue | undefined {
   if (value === undefined) return undefined
   return JSON.parse(JSON.stringify(value, (_key, item) => {
@@ -70,10 +75,12 @@ function adaptEntry(entry: JsonObject): JsonObject {
     const modelId = slash > 0 ? entry.model.slice(slash + 1) : entry.model
     return { ...entry, provider, modelId }
   }
-  // OMP 的 title/model_usage/session 条目是元数据噪声（session 头常见于子代理
-  // jsonl 开头，get_entries 会原样返回），Pi 前端会渲染成 unknown 行 —— 丢弃。
-  // 保留 id/parentId 占位（omp.dropped），分支回溯的父子链不断。
-  if (entry.type === "title" || entry.type === "model_usage" || entry.type === "session" || entry.type === "session_init") {
+  // OMP 的 title/title_change/model_usage/session 条目是元数据噪声
+  // （title_change 是 18.x 的自动标题写入，标题住在侧栏/session 列表；
+  // session 头常见于子代理 jsonl 开头，get_entries 会原样返回），
+  // Pi 前端会渲染成 unknown 行 —— 丢弃。保留 id/parentId 占位
+  // （omp.dropped），分支回溯的父子链不断。
+  if (entry.type === "title" || entry.type === "title_change" || entry.type === "model_usage" || entry.type === "session" || entry.type === "session_init") {
     return { type: "omp.dropped", id: String(entry.id ?? ""), parentId: (entry.parentId as string) ?? null, timestamp: String(entry.timestamp ?? ""), droppedType: entry.type as string }
   }
   return entry
@@ -119,6 +126,13 @@ export class OmpRpcSession implements SessionRuntime {
 
   private retryShadow: JsonObject = { phase: "idle" }
   private compactionShadow: JsonObject = { autoEnabled: true, operation: { type: "none" } }
+  // OMPiUI 轻量 goal 运行时的注册表：RPC 模式的 OMP 不注册 goal 隐藏工具、
+  // 也没有 goal RPC 命令（实测 18.3.x），目标状态只能住 worker 这里。
+  // 未来 OMP 若在 RPC 透出真实 goal_updated，trackShadowState 的透传仍以
+  // 事件帧为准覆写本状态。经 state.get 的 goal 字段 + goal 命令到达前端。
+  private goal: JsonValue = null
+  private goalContinuations = 0
+  private goalTurnStartedAt: number | null = null
   private lastActivity = { streaming: false, retrying: false, compacting: false }
 
   private modelsCache: JsonObject[] = []
@@ -270,6 +284,8 @@ export class OmpRpcSession implements SessionRuntime {
       case "bash_execution_update":
       case "session_info_changed":
       case "queue_update": {
+        if (type === "agent_start") this.onGoalTurnStart()
+        if (type === "agent_end") this.onGoalTurnEnd()
         this.trackShadowState(frame)
         this.emitPiEvent(frame)
         if (type === "agent_end" || type === "turn_end") this.scheduleEntrySync()
@@ -296,6 +312,7 @@ export class OmpRpcSession implements SessionRuntime {
         this.scheduleEntrySync()
         this.emitPiEvent({ type: "agent_settled" })
         this.emitActivityIfChanged()
+        this.onGoalSettled()
         return
       }
       case "prompt_result": {
@@ -431,6 +448,10 @@ export class OmpRpcSession implements SessionRuntime {
           attempt: Number(frame.attempt) || 0,
           finalError: toJson(frame.finalError) ?? null,
         }
+        break
+      }
+      case "goal_updated": {
+        this.goal = toJson(frame.goal) ?? null
         break
       }
       default:
@@ -689,6 +710,8 @@ export class OmpRpcSession implements SessionRuntime {
       // OMP 扩展：子代理注册表快照 + todo 阶段（前端子代理面板重连恢复用）
       subagents: this.getSubagentsSnapshot(),
       todoPhases: Array.isArray(native.todoPhases) ? native.todoPhases : [],
+      // goal 运行时快照（前端目标栏用；worker 侧注册表，见 manageGoal）
+      goal: this.goal,
     }
   }
 
@@ -825,8 +848,139 @@ export class OmpRpcSession implements SessionRuntime {
     return this.prompt(text, images)
   }
 
+  // ---------------------------------------------------------------- goal
+
+  /**
+   * OMPiUI 轻量 goal 运行时（`goal` 命令的落点）。RPC 模式的 OMP 不暴露
+   * goal 工具/命令，目标注册表住在这里：active 目标在会话 settle 后自动
+   * 发一条续跑 prompt（有上限），模型以 GOAL_COMPLETE 行尾标记完成；abort
+   * 自动暂停。状态经 state.get 的 goal 字段 + 合成 goal_updated 事件到达
+   * 前端目标栏。goal 只随 worker 进程存活（RPC 无自定义条目可持久化）。
+   */
+  async manageGoal(params: { op: "set" | "pause" | "resume" | "drop"; objective?: string }): Promise<JsonObject> {
+    const now = Date.now()
+    if (params.op === "set") {
+      const objective = (params.objective ?? "").trim()
+      if (!objective) {
+        throw Object.assign(new Error("params.objective is required for op=set"), { code: "INVALID_REQUEST" })
+      }
+      this.goal = {
+        id: randomUUID(),
+        objective,
+        status: "active",
+        tokensUsed: 0,
+        timeUsedSeconds: 0,
+        createdAt: now,
+        updatedAt: now,
+      }
+      this.goalContinuations = 0
+    } else if (isJsonObject(this.goal)) {
+      const goal = { ...this.goal }
+      if (params.op === "pause") {
+        if (goal.status === "active") goal.status = "paused"
+      } else if (params.op === "resume") {
+        if (goal.status === "paused" || goal.status === "budget-limited") goal.status = "active"
+        this.goalContinuations = 0
+      } else {
+        this.goal = null
+      }
+      if (isJsonObject(this.goal)) {
+        goal.updatedAt = now
+        this.goal = goal
+      }
+    }
+    this.emitGoalUpdated()
+    if (params.op === "set" || params.op === "resume") this.pumpGoalContinuation()
+    return { goal: this.goal }
+  }
+
+  private emitGoalUpdated(): void {
+    this.emitPiEvent({ type: "goal_updated", goal: this.goal })
+  }
+
+  private goalStatus(): string | null {
+    return isJsonObject(this.goal) && typeof this.goal.status === "string" ? this.goal.status : null
+  }
+
+  private setGoalStatus(status: string): void {
+    if (!isJsonObject(this.goal)) return
+    this.goal = { ...this.goal, status, updatedAt: Date.now() }
+    this.emitGoalUpdated()
+  }
+
+  private onGoalTurnStart(): void {
+    if (this.goalStatus() !== "active" || this.goalTurnStartedAt !== null) return
+    this.goalTurnStartedAt = Date.now()
+  }
+
+  private onGoalTurnEnd(): void {
+    if (this.goalTurnStartedAt === null) return
+    const elapsedSeconds = (Date.now() - this.goalTurnStartedAt) / 1000
+    this.goalTurnStartedAt = null
+    if (!isJsonObject(this.goal)) return
+    const previous = typeof this.goal.timeUsedSeconds === "number" ? this.goal.timeUsedSeconds : 0
+    this.goal = {
+      ...this.goal,
+      timeUsedSeconds: previous + Math.max(0, Math.round(elapsedSeconds)),
+    }
+  }
+
+  private onGoalSettled(): void {
+    this.onGoalTurnEnd()
+    if (this.goalStatus() !== "active") return
+    // entries 落盘是异步的：等同步落地后判定完成标记，避免把已完成的目标再续跑一轮
+    setTimeout(() => {
+      if (this.closed || this.currentStreaming || this.goalStatus() !== "active") return
+      if (this.lastAssistantTextEndsWith(GOAL_COMPLETE_MARKER)) {
+        this.setGoalStatus("complete")
+        return
+      }
+      this.pumpGoalContinuation()
+    }, GOAL_SETTLE_GRACE_MS)
+  }
+
+  private pauseGoalForAbort(): void {
+    if (this.goalStatus() !== "active") return
+    this.setGoalStatus("paused")
+  }
+
+  private pumpGoalContinuation(): void {
+    if (!isJsonObject(this.goal) || typeof this.goal.objective !== "string") return
+    if (this.goal.status !== "active" || this.currentStreaming || this.closed) return
+    this.goalContinuations += 1
+    if (this.goalContinuations > GOAL_MAX_CONTINUATIONS) {
+      this.setGoalStatus("budget-limited")
+      return
+    }
+    const objective = this.goal.objective
+    const message =
+      `[goal continuation ${this.goalContinuations}/${GOAL_MAX_CONTINUATIONS}] Session goal: "${objective}". ` +
+      `Continue working toward it. If it is already fully achieved, end your reply with the exact marker ${GOAL_COMPLETE_MARKER} and do nothing else.`
+    void this.prompt(message, undefined, { streamingBehavior: "followUp" }).catch(() => undefined)
+  }
+
+  private lastAssistantTextEndsWith(marker: string): boolean {
+    for (let i = this.entries.length - 1; i >= 0; i -= 1) {
+      const entry = this.entries[i]
+      if (!entry || entry.type !== "message") continue
+      const message = entry.message
+      if (!isJsonObject(message) || message.role !== "assistant") return false
+      const content = message.content
+      if (!Array.isArray(content)) return false
+      const text = content
+        .filter(block => isJsonObject(block) && block.type === "text" && typeof block.text === "string")
+        .map(block => String((block as JsonObject).text))
+        .join("\n")
+        .trimEnd()
+      return text.endsWith(marker)
+    }
+    return false
+  }
+
   async abort(): Promise<JsonValue | undefined> {
     const response = await this.client.request({ type: "abort" }, 30_000)
+    // 与 OMP goal 模式语义对齐：用户中断 → 活跃目标自动暂停
+    this.pauseGoalForAbort()
     return toJson(unwrapResponse(response)) ?? undefined
   }
 

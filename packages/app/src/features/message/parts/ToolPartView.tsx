@@ -13,6 +13,7 @@ import {
   getToolIcon,
   extractToolData,
   getToolConfig,
+  isYieldTool,
   DefaultRenderer,
   TodoRenderer,
   TaskRenderer,
@@ -67,6 +68,15 @@ export const ToolPartView = memo(function ToolPartView({
 
   const isActive = status === 'pending'
   const isError = status === 'error'
+  // Yield 完成工具：行名直接展示任务状态（提交中/完成/失败），不显示工具名
+  const isYield = isYieldTool(toolName)
+  const displayName = isYield
+    ? isActive
+      ? t('yield.submitting')
+      : isError
+        ? t('yield.failed')
+        : t('yield.completed')
+    : formatToolName(toolName)
   const now = useNow(250, isActive)
   const startTime = startedAt
   const calibratedNow = isActive ? serverStore.getActiveCalibratedNow() : undefined
@@ -132,7 +142,7 @@ export const ToolPartView = memo(function ToolPartView({
       relative flex items-center justify-center transition-colors duration-200
       ${isActive ? 'text-text-300' : ''}
       ${isError ? 'text-danger-100' : ''}
-      ${status === 'completed' ? 'text-text-400 group-hover:text-text-300' : ''}
+      ${status === 'completed' ? (isYield ? 'text-success-100 group-hover:text-success-100' : 'text-text-400 group-hover:text-text-300') : ''}
     `}
     >
       {getToolIcon(toolName)}
@@ -184,10 +194,12 @@ export const ToolPartView = memo(function ToolPartView({
                   ? 'reasoning-shimmer-text'
                   : isError
                     ? 'text-danger-100'
-                    : 'text-text-200 group-hover/header:text-text-100'
+                    : isYield
+                      ? 'text-success-100 group-hover/header:text-success-100'
+                      : 'text-text-200 group-hover/header:text-text-100'
               }`}
             >
-              {formatToolName(toolName)}
+              {displayName}
             </span>
 
             {title && (
@@ -248,10 +260,12 @@ export const ToolPartView = memo(function ToolPartView({
                     ? 'reasoning-shimmer-text'
                     : isError
                       ? 'text-danger-100'
-                      : 'text-text-200 group-hover/header:text-text-100'
+                      : isYield
+                        ? 'text-success-100 group-hover/header:text-success-100'
+                        : 'text-text-200 group-hover/header:text-text-100'
                 }`}
               >
-                {formatToolName(toolName)}
+                {displayName}
               </span>
               {title && (
                 <span
@@ -331,10 +345,12 @@ export const ToolPartView = memo(function ToolPartView({
                   ? 'reasoning-shimmer-text'
                   : isError
                     ? 'text-danger-100'
-                    : 'text-text-200 group-hover/header:text-text-100'
+                    : isYield
+                      ? 'text-success-100 group-hover/header:text-success-100'
+                      : 'text-text-200 group-hover/header:text-text-100'
               }`}
             >
-              {formatToolName(toolName)}
+              {displayName}
             </span>
 
             {title && (
@@ -496,6 +512,25 @@ function extractToolTitle(toolName: string, execution: PiToolExecution): string 
         return typeof args.path === 'string' ? `${args.pattern} · ${args.path}` : args.pattern
       }
       return undefined
+    case 'yield': {
+      // 结果预览：优先取 summary 类可读字段，其次结果负载本身；失败态不显示
+      if (execution.result?.isError) return undefined
+      const details = execution.result?.details
+      const detailData = details && typeof details === 'object' && !Array.isArray(details)
+        ? (details as Record<string, unknown>).data
+        : undefined
+      const value = detailData ?? args.data
+      if (value === undefined || value === null) return undefined
+      const preview = typeof value === 'string'
+        ? value
+        : typeof value === 'object' && value !== null && !Array.isArray(value)
+          ? ['summary', 'result', 'message', 'report', 'description']
+              .map(key => (value as Record<string, unknown>)[key])
+              .find(item => typeof item === 'string' && item.trim())
+          : undefined
+      const text = typeof preview === 'string' && preview.trim() ? preview : JSON.stringify(value)
+      return text.length > 100 ? `${text.slice(0, 97)}…` : text
+    }
     default:
       return typeof args.description === 'string' ? args.description : undefined
   }

@@ -53,6 +53,19 @@
     "replyToAgentMobile": "回复 Agent...",
     "replyToAgent": "回复 Agent（输入 @ 提及，/ 执行命令）"
   },
+  "goalBar": {
+    "setGoal": "设定目标",
+    "editGoal": "编辑目标",
+    "active": "进行中的目标",
+    "paused": "已暂停的目标",
+    "budgetLimited": "预算受限的目标",
+    "complete": "已完成的目标",
+    "objectivePlaceholder": "描述本次会话要达成的目标…",
+    "pause": "暂停目标",
+    "resume": "恢复目标",
+    "drop": "放弃目标",
+    "saveHint": "Ctrl+Enter 保存"
+  },
   "modelSelector": {
     "selectModel": "选择模型",
     "searchModels": "搜索模型...",

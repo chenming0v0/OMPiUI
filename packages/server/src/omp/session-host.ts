@@ -87,7 +87,23 @@ export class SessionHost {
       // 无需 warm/prewarm（旧架构里预热一个 300MB 的独立进程）。
       return this.openSessionOnce(cwd, sessionFile, signal)
     }
-    return this.runtimes.openFlight(sessionFile, openSignal => this.openSessionOnce(cwd, sessionFile, openSignal), signal)
+    // 会话文件被租约独占：另一实例正在 attach、或上一次 close/detach 的
+    // 释放还没落盘时，acquire 会瞬间 SESSION_BUSY。与 ensureAttached 同
+    // 策略在 flight 内退避重试，「打开子会话」这类点击不因毫秒级锁竞争
+    // 直接 409。
+    return this.runtimes.openFlight(sessionFile, async openSignal => {
+      let lastError: unknown
+      for (let attempt = 0; attempt <= ATTACH_BUSY_RETRIES; attempt += 1) {
+        try {
+          return await this.openSessionOnce(cwd, sessionFile, openSignal)
+        } catch (error) {
+          lastError = error
+          if (!isSessionBusyError(error) || attempt === ATTACH_BUSY_RETRIES) throw error
+          await waitForRetry(ATTACH_BUSY_DELAY_MS, openSignal)
+        }
+      }
+      throw lastError
+    }, signal)
   }
 
   private async switchAttachedSession(

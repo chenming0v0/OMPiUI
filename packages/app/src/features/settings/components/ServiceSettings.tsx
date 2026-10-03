@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { TerminalShell } from '@ompiui/protocol'
+import type { TerminalShell, TunnelStatus } from '@ompiui/protocol'
 import { Button } from '../../../components/ui/Button'
 import { RetryIcon, SpinnerIcon, StopIcon, TrashIcon, WifiIcon, WifiOffIcon } from '../../../components/Icons'
 import { isTauri, isTauriMobile } from '../../../utils/tauri'
@@ -12,15 +12,19 @@ import {
   stopDesktopService,
   type DesktopServiceStatus,
 } from '../../../services/desktopService'
-import { listHostShells } from '../../../omp/transport/index.js'
+import { fetchHostTunnel, listHostShells } from '../../../omp/transport/index.js'
 import { serverStorage } from '../../../utils'
 import { useServerStore } from '../../../hooks'
 import { settingsFieldClass, SettingField, SettingRow, SettingsSection, SettingsSelect, Toggle } from './SettingsUI'
+import { RemoteAccessSettings } from './RemoteAccessSettings'
 
 const TERMINAL_SHELL_STORAGE_KEY = 'ompiui-terminal-shell'
 const LISTEN_HOST_KEY = 'OMPIUI_HOST'
 const LISTEN_PORT_KEY = 'OMPIUI_PORT'
 const PUBLIC_BASE_URL_KEY = 'OMPIUI_PUBLIC_BASE_URL'
+const TUNNEL_URL_KEY = 'OMPIUI_TUNNEL_URL'
+const TUNNEL_KEY_KEY = 'OMPIUI_TUNNEL_KEY'
+const TUNNEL_ID_KEY = 'OMPIUI_TUNNEL_ID'
 
 export function ServiceSettings() {
   const { t } = useTranslation(['settings', 'common'])
@@ -31,6 +35,7 @@ export function ServiceSettings() {
   const [shells, setShells] = useState<TerminalShell[]>([])
   const [selectedShell, setSelectedShell] = useState('')
   const [shellsLoading, setShellsLoading] = useState(false)
+  const [tunnelStatus, setTunnelStatus] = useState<TunnelStatus | null>(null)
   const [busy, setBusy] = useState<'refresh' | 'stop' | 'start' | 'restart' | null>(null)
   const [error, setError] = useState('')
 
@@ -194,13 +199,105 @@ export function ServiceSettings() {
     </SettingsSection>
   )
 
+  const tunnelUrl = serviceStore.envVars.find(item => item.key.trim().toUpperCase() === TUNNEL_URL_KEY)?.value || ''
+  const tunnelKey = serviceStore.envVars.find(item => item.key.trim().toUpperCase() === TUNNEL_KEY_KEY)?.value || ''
+  const tunnelId = serviceStore.envVars.find(item => item.key.trim().toUpperCase() === TUNNEL_ID_KEY)?.value || ''
+  const setTunnelEnv = (key: string, value: string) => {
+    if (value.trim()) serviceStore.upsertEnvVar(key, value)
+    else serviceStore.setEnvVars(serviceStore.envVars.filter(item => item.key.trim().toUpperCase() !== key))
+  }
+
+  // 隧道运行状态轮询：隧道在服务端后台自动重连，状态只存在那里
+  useEffect(() => {
+    let cancelled = false
+    const load = () => {
+      void fetchHostTunnel()
+        .then(next => {
+          if (!cancelled) setTunnelStatus(next)
+        })
+        .catch(() => {
+          if (!cancelled) setTunnelStatus(null)
+        })
+    }
+    load()
+    const timer = window.setInterval(load, 5000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [activeServerGeneration, running])
+
+  const tunnelSettings = (
+    <SettingsSection title={t('service.tunnelTitle')} description={t('service.tunnelDesc')}>
+      <SettingField label={t('service.tunnelUrl')} description={t('service.tunnelUrlDesc')}>
+        <input
+          type="text"
+          value={tunnelUrl}
+          placeholder="wss://relay.example.com"
+          aria-label={t('service.tunnelUrl')}
+          spellCheck={false}
+          className={`${settingsFieldClass} font-mono`}
+          onChange={event => setTunnelEnv(TUNNEL_URL_KEY, event.target.value)}
+        />
+      </SettingField>
+      <SettingField label={t('service.tunnelKey')} description={t('service.tunnelKeyDesc')}>
+        <input
+          type="password"
+          value={tunnelKey}
+          aria-label={t('service.tunnelKey')}
+          autoComplete="off"
+          spellCheck={false}
+          className={`${settingsFieldClass} font-mono`}
+          onChange={event => setTunnelEnv(TUNNEL_KEY_KEY, event.target.value)}
+        />
+      </SettingField>
+      <SettingField label={t('service.tunnelId')} description={t('service.tunnelIdDesc')}>
+        <input
+          type="text"
+          value={tunnelId}
+          placeholder="ompiui"
+          aria-label={t('service.tunnelId')}
+          spellCheck={false}
+          className={`${settingsFieldClass} font-mono`}
+          onChange={event => setTunnelEnv(TUNNEL_ID_KEY, event.target.value)}
+        />
+      </SettingField>
+      {tunnelStatus && tunnelStatus.enabled && (
+        <SettingField label={t('service.tunnelStatus')}>
+          <div className="min-w-0 break-all text-[length:var(--fs-xs)] leading-relaxed">
+            {tunnelStatus.state === 'connected' && (
+              <div className="font-mono">
+                <span className="text-text-300">{t('service.tunnelStatusConnected')} </span>
+                <span className="text-text-500">{tunnelStatus.publicUrl}</span>
+              </div>
+            )}
+            {tunnelStatus.state === 'connecting' && <div className="text-text-500">{t('service.tunnelStatusConnecting')}</div>}
+            {tunnelStatus.state === 'reconnecting' && (
+              <>
+                <div className="text-warning-100/80">{t('service.tunnelStatusReconnecting', { n: tunnelStatus.reconnectAttempts })}</div>
+                {tunnelStatus.lastError && <div className="text-text-500">{tunnelStatus.lastError}</div>}
+              </>
+            )}
+            {tunnelStatus.state === 'error' && (
+              <div className="text-danger-100">{t('service.tunnelStatusError', { error: tunnelStatus.lastError ?? '' })}</div>
+            )}
+          </div>
+        </SettingField>
+      )}
+      <div className="text-[length:var(--fs-xs)] leading-relaxed text-warning-100/80">{t('service.tunnelWarning')}</div>
+      <div className="text-[length:var(--fs-xs)] leading-relaxed text-text-500">{t('service.tunnelRestartHint')}</div>
+    </SettingsSection>
+  )
+
   if (!desktop) {
     return (
       <>
+        <RemoteAccessSettings />
         <SettingsSection title={t('service.title')} description={t('service.desktopOnly')}>
           <div className="text-[length:var(--fs-xs)] leading-relaxed text-text-300">{t('service.webModeDesc')}</div>
         </SettingsSection>
         {listenSettings}
+        {tunnelSettings}
         <SettingsSection title={t('service.terminalTitle')} description={t('service.terminalTitleDesc')}>
           {terminalShell}
         </SettingsSection>
@@ -213,7 +310,9 @@ export function ServiceSettings() {
 
   return (
     <>
+      <RemoteAccessSettings />
       {listenSettings}
+      {tunnelSettings}
       <SettingsSection
         title={t('service.title')}
         description={t('service.description')}

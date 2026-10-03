@@ -36,6 +36,10 @@ export async function watchHostWorkspace(workspacePath: string, signal?: AbortSi
 }
 
 const workspaceResolutionPromises = new Map<string, Promise<string | null>>()
+// 已确认不存在的目录（WORKSPACE_NOT_FOUND）：本代服务内不再重复请求
+// workspaces.open，避免各个面板挂载时反复打出注定 404 的请求。key 含
+// 服务代数，服务重启后代数变化，缓存自然失效。
+const missingWorkspacePaths = new Set<string>()
 let defaultWorkspacePromise: Promise<string | null> | null = null
 
 async function ensureDefaultWorkspacePath(): Promise<string | null> {
@@ -67,6 +71,7 @@ export async function resolveWorkspacePath(directory?: string): Promise<string |
   if (directory && (/^[a-zA-Z]:[\\/]/.test(directory) || directory.startsWith('/'))) {
     const normalized = directory.replace(/\\/g, '/').replace(/\/+$/, '')
     const key = `${serverStore.getActiveServerId()}:${serverStore.getActiveServerGeneration()}:${normalized}`
+    if (missingWorkspacePaths.has(key)) return null
     let pending = workspaceResolutionPromises.get(key)
     if (!pending) {
       pending = openHostWorkspace(directory)
@@ -78,6 +83,7 @@ export async function resolveWorkspacePath(directory?: string): Promise<string |
           workspaceResolutionPromises.delete(key)
           // Saved directory no longer exists on disk — treat as absent
           if (error && typeof error === 'object' && 'code' in error && error.code === 'WORKSPACE_NOT_FOUND') {
+            missingWorkspacePaths.add(key)
             return null
           }
           throw error
@@ -91,5 +97,6 @@ export async function resolveWorkspacePath(directory?: string): Promise<string |
 
 export function resetWorkspaceResolutionCache(): void {
   workspaceResolutionPromises.clear()
+  missingWorkspacePaths.clear()
   defaultWorkspacePromise = null
 }

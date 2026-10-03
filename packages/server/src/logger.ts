@@ -21,7 +21,7 @@ let logFile: string | undefined
 let currentDay = ""
 let enabled = false
 
-function dataRoot(): string {
+export function dataRoot(): string {
   const env = process.env.OMPIUI_DATA_DIR?.trim()
   if (env) return resolve(env)
   if (process.platform === "win32" && process.env.APPDATA) return join(process.env.APPDATA, "com.ompiui.app")

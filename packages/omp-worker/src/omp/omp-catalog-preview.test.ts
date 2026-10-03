@@ -2,9 +2,17 @@ import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 import { previewEntriesFromLines } from "./omp-catalog.js"
 
-/** 子代理 jsonl 的典型头部：title/session 头 + session_init + 消息 */
+/** 子代理 jsonl 的典型头部：title/title_change/session 头 + session_init + 消息 */
 const childSessionLines = [
   JSON.stringify({ type: "title", v: 1, title: "" }),
+  JSON.stringify({
+    type: "title_change",
+    id: "e-title",
+    parentId: null,
+    timestamp: "t0",
+    title: "自动生成的标题",
+    source: "auto",
+  }),
   JSON.stringify({
     type: "session",
     version: 3,
@@ -38,9 +46,11 @@ describe("previewEntriesFromLines", () => {
     const types = entries.map(entry => entry.type)
     assert.ok(!types.includes("session_init"), "session_init must not leak to the preview timeline")
     assert.ok(!types.includes("title") && !types.includes("session"))
+    assert.ok(!types.includes("title_change"), "title_change must not leak to the preview timeline")
     const dropped = entries.filter(entry => entry.type === "omp.dropped")
-    assert.equal(dropped.length, 3)
+    assert.equal(dropped.length, 4)
     assert.ok(dropped.some(entry => entry.droppedType === "session_init"))
+    assert.ok(dropped.some(entry => entry.droppedType === "title_change"))
   })
 
   it("keeps the parentId chain intact for branch walking", () => {
@@ -64,6 +74,6 @@ describe("previewEntriesFromLines", () => {
     const message = entries.find(entry => entry.type === "message")
     assert.ok(message)
     assert.equal(message.id, "e-msg")
-    assert.equal(entries.length, 5)
+    assert.equal(entries.length, 6)
   })
 })

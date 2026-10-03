@@ -16,6 +16,7 @@ import {
   ListChecks,
   Loader,
   CircleHelp,
+  CircleCheckBig,
 } from 'lucide-react'
 
 interface IconProps {
@@ -43,3 +44,4 @@ export const ChecklistIcon = wrapTool(ListChecks)
 export const TaskIcon = wrapTool(Loader)
 
 export const QuestionIcon = wrapTool(CircleHelp)
+export const CheckCircleIcon = wrapTool(CircleCheckBig)

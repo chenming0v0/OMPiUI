@@ -79,6 +79,8 @@ OMPIUI_PUBLIC_BASE_URL=https://panel.example.com OMPIUI_DRIVER=omp \
 - 反向代理建议保留原始 `Host` 头（nginx `proxy_set_header Host $host`）；如果代理重写了 `Host`，Origin 校验也会放行 `OMPIUI_PUBLIC_BASE_URL` 的域名。
 - **拿到链接 = 拿到这台机器**：可以读写工作区、开终端、运行命令、驱动 agent。请使用强访问令牌，只在可信通道分享，不用时及时轮换。
 
+**自建中转（推荐）**：不想自己开公网端口/配置反代时，可以在任意一台有公网 IP 的 VPS 上运行 `omp-relay`（本仓库 `packages/relay`）。OMPiUI 服务主动拨号到中转（NAT/防火墙后也能用），手机和外部浏览器直接打开中转的公网地址即可，随时开关。部署与配置见 [docs/tunnel.md](docs/tunnel.md)。个人零配置的替代方案仍是 Tailscale（两端加入同一 Tailnet 后直接访问局域网地址）。
+
 ### 网关兼容开关
 
 个别 OpenAI 兼容网关（Anthropic 翻译层）对 OMP 的 `wait` 工具 schema 会返回 0-token 空响应。OMPiUI 拉起的每个 OMP 进程都会附加 `~/.ompiui/omp-compat.yml`（存在时），可以在**不影响 OMP CLI** 的前提下做覆盖，例如：

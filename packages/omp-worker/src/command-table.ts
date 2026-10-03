@@ -124,6 +124,14 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
     ctx.requireRuntime().invokeTool(P.reqString(p, "name"), P.optObject(p, "arguments")),
   invokeCommand: async (ctx, p) =>
     ctx.requireRuntime().invokeCommand(P.reqString(p, "name"), P.optString(p, "args")),
+  goal: async (ctx, p) => {
+    const op = P.optEnum(p, "op", ["set", "pause", "resume", "drop"] as const)
+    if (!op) {
+      throw Object.assign(new Error("params.op must be one of set|pause|resume|drop"), { code: "INVALID_REQUEST" })
+    }
+    await ctx.requireRuntime().manageGoal({ op, objective: P.optString(p, "objective") })
+    return { ok: true }
+  },
   "commands.completions": async (ctx, p) =>
     ctx.requireRuntime().getCommandCompletions(P.reqString(p, "name"), P.optString(p, "prefix") ?? ""),
 

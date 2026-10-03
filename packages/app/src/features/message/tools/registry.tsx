@@ -2,8 +2,8 @@ import type { ReactNode } from 'react'
 import type { ToolResultMessage } from '../../../omp/vendor/pi-ai'
 import i18n from '../../../i18n'
 import type { PiToolExecution } from '../../../omp/domain/index.js'
-import type { ToolConfig, ToolRegistry, ExtractedToolData, DiagnosticInfo } from './types'
-import { BashRenderer, QuestionRenderer } from './renderers'
+import type { ToolConfig, ToolRegistry, ExtractedToolData, DiagnosticInfo, YieldResultData } from './types'
+import { BashRenderer, QuestionRenderer, YieldRenderer } from './renderers'
 import {
   FileReadIcon,
   FileWriteIcon,
@@ -14,6 +14,7 @@ import {
   ChecklistIcon,
   QuestionIcon,
   TaskIcon,
+  CheckCircleIcon,
   WrenchIcon,
 } from './icons'
 import { detectLanguage } from '../../../utils/languageUtils'
@@ -284,6 +285,44 @@ export function defaultExtractData(execution: PiToolExecution): ExtractedToolDat
 // Tool-Specific Data Extractors
 // ============================================
 
+/**
+ * Yield（子代理完成工具）：入参是提交的结果（{data} / {error} / {type:'result'}
+ * 用最近一轮助手文本作结果），结果 details 带最终状态 {status, data | error}。
+ * 通用 Input/Output 块对它没意义，提取出结构化结果交给 YieldRenderer。
+ */
+export function yieldExtractData(execution: PiToolExecution): ExtractedToolData {
+  const base = defaultExtractData(execution)
+  const args = execution.call.arguments as Record<string, unknown> | undefined
+  const metadata = execution.result?.details && typeof execution.result.details === 'object' && !Array.isArray(execution.result.details)
+    ? execution.result.details as Record<string, unknown>
+    : undefined
+
+  const isError = execution.result?.isError === true
+  const data = metadata?.data ?? args?.data
+  // defaultExtractData 对 isError 结果不设 output，错误文本在 base.error
+  const error = typeof metadata?.error === 'string'
+    ? metadata.error
+    : typeof args?.error === 'string'
+      ? args.error
+      : isError
+        ? base.error
+        : undefined
+
+  const yieldResult: YieldResultData = { status: isError ? 'error' : 'success' }
+  if (data !== undefined) yieldResult.data = data
+  if (error) yieldResult.error = error
+  base.yieldResult = yieldResult
+
+  // 结果负载已由专属渲染器呈现，通用块只留噪音
+  delete base.input
+  delete base.output
+  delete base.error
+  delete base.inputLang
+  delete base.outputLang
+
+  return base
+}
+
 function bashExtractData(execution: PiToolExecution): ExtractedToolData {
   const base = defaultExtractData(execution)
   const inputObj = execution.call.arguments as Record<string, unknown> | undefined
@@ -361,6 +400,8 @@ export const toolRegistry: ToolRegistry = [
   // Bash 工具专用渲染器（终端风格：$ 命令、ANSI 输出、退出码、全屏）。
   // 外壳（ToolPartView compact/timeline、工具组 steps）与助手工具完全一致。
   { match: exact('bash'), icon: <TerminalIcon />, extractData: bashExtractData, renderer: BashRenderer },
+  // Yield（子代理提交最终结果）：完成态专用样式
+  { match: exact('yield'), icon: <CheckCircleIcon />, extractData: yieldExtractData, renderer: YieldRenderer },
   { match: exact('read'), icon: <FileReadIcon />, extractData: readExtractData },
   { match: exact('write'), icon: <FileWriteIcon />, extractData: writeExtractData },
   { match: exact('edit'), icon: <FileWriteIcon />, extractData: editExtractData },
@@ -441,6 +482,11 @@ export const toolRegistry: ToolRegistry = [
  */
 export function getToolConfig(toolName: string): ToolConfig | undefined {
   return toolRegistry.find(config => config.match(toolName))
+}
+
+/** Yield 是子代理提交最终结果的完成工具，行内展示走完成态专用样式 */
+export function isYieldTool(toolName: string): boolean {
+  return toolName.toLowerCase() === 'yield'
 }
 
 /**

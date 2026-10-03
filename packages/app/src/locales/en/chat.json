@@ -53,6 +53,19 @@
     "replyToAgentMobile": "Reply to Agent...",
     "replyToAgent": "Reply to Agent (type @ to mention, / for commands)"
   },
+  "goalBar": {
+    "setGoal": "Set goal",
+    "editGoal": "Edit goal",
+    "active": "Active goal",
+    "paused": "Paused goal",
+    "budgetLimited": "Budget-limited goal",
+    "complete": "Completed goal",
+    "objectivePlaceholder": "Describe what this session should achieve…",
+    "pause": "Pause goal",
+    "resume": "Resume goal",
+    "drop": "Drop goal",
+    "saveHint": "Ctrl+Enter to save"
+  },
   "modelSelector": {
     "selectModel": "Select model",
     "searchModels": "Search models...",

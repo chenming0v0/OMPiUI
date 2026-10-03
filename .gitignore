@@ -18,3 +18,4 @@ scratch/
 target/
 server-stdout.log
 server-stderr.log
+.zcode/

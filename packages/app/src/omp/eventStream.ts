@@ -606,6 +606,7 @@ class PiEventStream {
       case 'summarization_retry_scheduled':
       case 'summarization_retry_attempt_start':
       case 'summarization_retry_finished':
+      case 'goal_updated':
         this.scheduleStateRefresh(sessionId)
         break
     }

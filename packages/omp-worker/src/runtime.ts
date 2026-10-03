@@ -70,6 +70,9 @@ export interface SessionRuntime {
   invokeCommand(name: string, args?: string): Promise<JsonValue | undefined>
   getCommandCompletions(name: string, prefix: string): Promise<JsonValue | undefined>
 
+  /** OMPiUI 轻量 goal 运行时（`goal` 命令落点）：set/pause/resume/drop + 续跑循环 */
+  manageGoal(params: { op: "set" | "pause" | "resume" | "drop"; objective?: string }): Promise<JsonObject>
+
   navigateTree(
     entryId: string,
     options?: {

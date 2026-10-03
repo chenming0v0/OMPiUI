@@ -133,6 +133,35 @@ test("SessionHost retries a busy self-heal attach", async () => {
   host.dispose()
 })
 
+test("SessionHost retries a busy session.open attach", async () => {
+  let opens = 0
+  const worker = {
+    command: async () => ({}),
+    getSessionId: () => "session-1",
+    getSessionFile: () => "session-1.jsonl",
+    getCwd: () => ".",
+    updateSessionIdentity: () => {},
+    onEvent: () => () => {},
+    onCrash: () => () => {},
+    onClose: () => () => {},
+    dispose: async () => {},
+  } as unknown as WorkerSession
+  const supervisor = {
+    onEvent: () => () => {},
+    open: async () => {
+      opens += 1
+      if (opens === 1) throw Object.assign(new Error("lock is busy"), { code: "SESSION_BUSY" })
+      return worker
+    },
+  } as unknown as RuntimeSupervisor
+  const host = new SessionHost(supervisor, new EventHub())
+
+  const opened = await host.openSession(".", "session-1.jsonl")
+  assert.equal(opened.sessionId, "session-1")
+  assert.equal(opens, 2)
+  host.dispose()
+})
+
 test("SessionHost reuses an idle runtime for a session switch", async () => {
   let opens = 0
   const worker = {
