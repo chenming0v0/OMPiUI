@@ -16,9 +16,9 @@
     "dev:server:pi": "node scripts/dev-server-omp.mjs",
     "dev:host": "npm run dev -w @ompiui/server",
     "dev:app": "npm run dev -w @ompiui/app",
-    "build": "npm run build -w @ompiui/protocol && npm run build -w @ompiui/omp-worker && npm run build -w @ompiui/server && npm run build -w @ompiui/app",
+    "build": "npm run build -w @ompiui/protocol && npm run build -w @ompiui/omp-worker && npm run build -w @ompiui/relay && npm run build -w @ompiui/server && npm run build -w @ompiui/app",
     "test": "node scripts/test-mock.mjs",
-    "typecheck": "npm run build -w @ompiui/protocol && npm run build -w @ompiui/omp-worker && npm run typecheck -w @ompiui/server && npm run typecheck -w @ompiui/app",
+    "typecheck": "npm run build -w @ompiui/protocol && npm run build -w @ompiui/omp-worker && npm run build -w @ompiui/relay && npm run typecheck -w @ompiui/server && npm run typecheck -w @ompiui/app",
     "lint": "npm run lint -w @ompiui/app",
     "format": "npm run format -w @ompiui/app",
     "format:check": "npm run format:check -w @ompiui/app",
@@ -40,6 +40,8 @@
     "release:prepare": "npm run release:prepare -w @ompiui/app",
     "release:bump": "node packages/app/scripts/bump-version.mjs",
     "dev:server:omp": "node scripts/dev-server-omp.mjs",
+    "relay": "npm run relay -w @ompiui/relay --",
+    "relay:init": "npm run relay -w @ompiui/relay -- init",
     "worker": "npm run omp-worker -w @ompiui/server --"
   },
   "engines": {
