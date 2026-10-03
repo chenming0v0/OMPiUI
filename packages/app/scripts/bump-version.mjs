@@ -96,7 +96,7 @@ function getReleaseBaseTag() {
 }
 
 // OMPiUI 自身 workspace 包名（互依赖引用也随版本一起升）
-const WORKSPACE_PACKAGE_NAMES = ['@ompiui/app', '@ompiui/server', '@ompiui/omp-worker', '@ompiui/protocol']
+const WORKSPACE_PACKAGE_NAMES = ['@ompiui/app', '@ompiui/server', '@ompiui/omp-worker', '@ompiui/protocol', '@ompiui/relay']
 
 function bumpPackageJson(relativePath, oldVersion) {
   const fullPath = resolve(repoRoot, relativePath)
@@ -138,6 +138,7 @@ const packageJsonFiles = [
   'packages/server/package.json',
   'packages/omp-worker/package.json',
   'packages/protocol/package.json',
+  'packages/relay/package.json',
 ]
 for (const relative of packageJsonFiles) {
   bumpPackageJson(relative, oldVersion)
