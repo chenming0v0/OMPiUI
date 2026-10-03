@@ -119,6 +119,14 @@ async function startNativeOmpiUiService(): Promise<void> {
 }
 
 async function startApp() {
+  // 手机远程扫码入口：先兑换一次性配对码（失败也不阻塞启动），再渲染，
+  // 避免先闪一次未授权状态。兑换成功后地址栏参数已被抹掉。
+  const pairParam = new URLSearchParams(window.location.search).get('pair')
+  if (pairParam) {
+    const { applyPairParam } = await import('./store/serverStore')
+    await applyPairParam(pairParam, window.location.origin).catch(() => false)
+  }
+
   // Match the desktop shell behavior: render immediately, then bring the
   // managed service up in the background. Backend bootstrap retries while the
   // service starts and server changes trigger an immediate reconnect.

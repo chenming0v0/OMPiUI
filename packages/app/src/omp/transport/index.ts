@@ -38,7 +38,7 @@ import type { SessionInfo, SessionTreeNode, Skill, PromptTemplate } from '../ven
 import type { PiBranchPage, PiConfiguredPackage, PiModelRuntimeSnapshot, PiPackageUpdate, PiProjectTrust, PiProviderAuthInfo, PiSettingsSnapshot, ResolvedPaths } from '../domain/index.js'
 import { getApiBase, getPiAuthToken, piFetch } from '../httpClient.js'
 import { piCommandStore } from '../state/index.js'
-import type { TunnelStatus } from '@ompiui/protocol'
+import type { LanInterfaceInfo, PairInviteInfo, PairRedeemResult, TunnelStatus } from '@ompiui/protocol'
 
 // Response types
 export type PiCommandResponse<T = JsonValue | undefined> = {
@@ -99,6 +99,48 @@ export async function fetchHostShare(signal?: AbortSignal): Promise<ShareInfo> {
 // 自建中转隧道的运行状态（GET /api/v1/host/tunnel）
 export async function fetchHostTunnel(signal?: AbortSignal): Promise<TunnelStatus> {
   return readJson<TunnelStatus>(`${getApiBase()}/api/v1/host/tunnel`, { signal })
+}
+
+// 手机远程：可达网卡列表（含 Tailscale 接口）
+export async function fetchHostNetwork(signal?: AbortSignal): Promise<{ interfaces: LanInterfaceInfo[] }> {
+  return readJson<{ interfaces: LanInterfaceInfo[] }>(`${getApiBase()}/api/v1/host/network`, { signal })
+}
+
+// 手机远程：一次性配对邀请（GET 触发生成；「换一个」就再请求一次）
+export async function mintPairInvite(signal?: AbortSignal): Promise<PairInviteInfo> {
+  return readJson<PairInviteInfo>(`${getApiBase()}/api/v1/host/pair/invite`, { signal })
+}
+
+export async function fetchPairInvite(id: string, signal?: AbortSignal): Promise<PairInviteInfo> {
+  return readJson<PairInviteInfo>(`${getApiBase()}/api/v1/host/pair/invite/${encodeURIComponent(id)}`, { signal })
+}
+
+/** 无鉴权：手机扫码后兑换访问令牌（服务端一次性 + 频控）。 */
+export async function redeemPairCode(pair: string, origin: string, signal?: AbortSignal): Promise<PairRedeemResult> {
+  const response = await fetch(`${origin}/api/v1/host/pair/redeem`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ pair }),
+    signal,
+  })
+  if (!response.ok) {
+    const message = await response.text().catch(() => '')
+    throw Object.assign(new Error(`pair redeem failed: ${response.status}${message ? ` ${message}` : ''}`), { status: response.status })
+  }
+  return await response.json() as PairRedeemResult
+}
+
+// 内置 Tailscale：状态 / 安装 / 发起登录
+export async function fetchTailscale(signal?: AbortSignal): Promise<import('@ompiui/protocol').TailscaleInfo> {
+  return readJson<import('@ompiui/protocol').TailscaleInfo>(`${getApiBase()}/api/v1/host/tailscale`, { signal })
+}
+
+export async function startTailscaleInstall(): Promise<void> {
+  await readJson<{ ok: boolean }>(`${getApiBase()}/api/v1/host/tailscale/install`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+}
+
+export async function startTailscaleLogin(): Promise<void> {
+  await readJson<{ ok: boolean }>(`${getApiBase()}/api/v1/host/tailscale/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
 }
 
 export async function fetchPiRegistry(signal?: AbortSignal): Promise<PiRegistrySnapshot> {

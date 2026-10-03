@@ -16,6 +16,7 @@ import { fetchHostTunnel, listHostShells } from '../../../omp/transport/index.js
 import { serverStorage } from '../../../utils'
 import { useServerStore } from '../../../hooks'
 import { settingsFieldClass, SettingField, SettingRow, SettingsSection, SettingsSelect, Toggle } from './SettingsUI'
+import { RemoteAccessSettings } from './RemoteAccessSettings'
 
 const TERMINAL_SHELL_STORAGE_KEY = 'ompiui-terminal-shell'
 const LISTEN_HOST_KEY = 'OMPIUI_HOST'
@@ -291,6 +292,7 @@ export function ServiceSettings() {
   if (!desktop) {
     return (
       <>
+        <RemoteAccessSettings />
         <SettingsSection title={t('service.title')} description={t('service.desktopOnly')}>
           <div className="text-[length:var(--fs-xs)] leading-relaxed text-text-300">{t('service.webModeDesc')}</div>
         </SettingsSection>
@@ -308,6 +310,7 @@ export function ServiceSettings() {
 
   return (
     <>
+      <RemoteAccessSettings />
       {listenSettings}
       {tunnelSettings}
       <SettingsSection

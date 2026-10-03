@@ -713,6 +713,32 @@ export function applyUrlTokenParam(search: string, origin: string): boolean {
   return true
 }
 
+/**
+ * 手机远程扫码配对的入口：URL 上的 ?pair=<id>.<secret> 向同源服务端兑换
+ * 一次性访问令牌（服务端单次有效 + 频控），成功后与 ?token= 一样落地并
+ * 清掉地址栏参数。异步——调用方应等它完成后再渲染，避免闪一次未授权态。
+ */
+export async function applyPairParam(pair: string, origin: string): Promise<boolean> {
+  try {
+    const response = await fetch(`${origin.replace(/\/+$/, '')}/api/v1/host/pair/redeem`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pair }),
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (!response.ok) return false
+    const body = (await response.json()) as { url?: string; token?: string }
+    if (!body.token) return false
+    const url = (body.url ?? origin).replace(/\/+$/, '')
+    serverStore.updateServer(LOCAL_SERVER_ID, { url, token: body.token })
+    serverStore.setActiveServer(LOCAL_SERVER_ID)
+    window.history.replaceState(null, '', window.location.pathname)
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** Tauri 桌面壳启动本地 server 后，把 Rust 读到的 token 接入现有 server store。 */
 export function applyLocalServerConfig(url: string, token: string): boolean {
   if (!url || !token) return false
