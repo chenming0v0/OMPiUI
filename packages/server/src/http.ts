@@ -8,6 +8,8 @@ import {
   problemFromError,
   type HealthResponse,
   type JsonObject,
+  type PairInviteInfo,
+  type PairRedeemResult,
   type ShareInfo,
   type TunnelStatus,
 } from "@ompiui/protocol"
@@ -21,6 +23,9 @@ import { resolveAuthToken } from "./host/auth-token.ts"
 import { PathSafetyError } from "./host/path-safety.ts"
 import { defaultWorkspaceRoot, HostRuntime } from "./host/command-table.ts"
 import { TerminalManager } from "./host/terminal-manager.ts"
+import { PairingStore, type PairRedeemFailure } from "./host/pairing.ts"
+import { listLanInterfaces } from "./host/network.ts"
+import type { TailscaleManager } from "./host/tailscale.ts"
 import { createStaticServer } from "./static.ts"
 
 const CORS_HEADERS: Record<string, string> = {
@@ -183,6 +188,10 @@ export interface CreateAppServerOptions {
   getPublicBaseUrl?: () => string | null
   /** 自建中转隧道运行状态 getter（GET /api/v1/host/tunnel）。 */
   getTunnelStatus?: () => TunnelStatus | null
+  /** 手机远程一次性配对（invite/redeem）；缺省时配对接口不可用。 */
+  pairing?: PairingStore
+  /** 内置 Tailscale 客户端管理；缺省时 tailscale 接口不可用。 */
+  tailscale?: TailscaleManager
   /** Web client build directory; when it exists the server hosts the SPA. */
   staticRoot?: string
   /**
@@ -264,6 +273,42 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
         res.end()
         return
       }
+
+      // 手机远程的一次性兑换：必须无鉴权（手机此刻还没有 token），且排在
+      // token 校验之前。Origin 校验已在上面完成（CSRF 防线），失败有频控。
+      if (method === "POST" && p === "/api/v1/host/pair/redeem" && options.pairing) {
+        if (!authToken) {
+          return sendProblem(res, 501, Object.assign(new Error("sharing is unavailable"), { code: "CAPABILITY_DISABLED" }))
+        }
+        const body = await readBody(req, scope.signal, MAX_JSON_BODY_BYTES)
+        const clientKey = req.socket.remoteAddress ?? "unknown"
+        const outcome = options.pairing.redeem(
+          {
+            pair: typeof body.pair === "string" ? body.pair : undefined,
+            code: typeof body.code === "string" ? body.code : undefined,
+          },
+          clientKey,
+        )
+        if (!outcome.ok) {
+          const [code, message]: [string, string] = outcome.reason === "USED"
+            ? ["PAIR_USED", "this pairing code has already been used"]
+            : outcome.reason === "RATE_LIMITED"
+              ? ["PAIR_RATE_LIMITED", "too many failed attempts; try again later"]
+              : ["PAIR_INVALID", "invalid, expired or already used pairing code"]
+          return sendProblem(res, pairErrorStatus(outcome.reason), Object.assign(new Error(message), { code }))
+        }
+        // 兑换方后续就该用它已经打开的这个源（Host 是真实可达地址）
+        const host = req.headers.host ?? "127.0.0.1"
+        const proto = String(req.headers["x-forwarded-proto"] ?? "http")
+        const url = `${proto}://${host}`
+        const redeemBody: PairRedeemResult = {
+          url,
+          token: authToken,
+          link: `ompiui://connect?url=${encodeURIComponent(url)}&token=${encodeURIComponent(authToken)}`,
+        }
+        return sendJson(res, 200, redeemBody)
+      }
+
       if (!requestHasValidToken(req, authToken)) {
         return sendProblem(res, 401, Object.assign(new Error("missing or invalid authorization token"), { code: "UNAUTHORIZED" }))
       }
@@ -351,6 +396,52 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
         return sendJson(res, 200, body)
       }
 
+      if (method === "GET" && p === "/api/v1/host/network") {
+        return sendJson(res, 200, { interfaces: listLanInterfaces() })
+      }
+
+      if (method === "GET" && p === "/api/v1/host/pair/invite" && options.pairing) {
+        const invite = options.pairing.mint()
+        return sendJson(res, 200, pairInviteInfo(invite))
+      }
+
+      const pairInviteMatch = p.match(/^\/api\/v1\/host\/pair\/invite\/([^/]+)$/)
+      if (pairInviteMatch && method === "GET" && options.pairing) {
+        const invite = options.pairing.find(safeDecode(pairInviteMatch[1]!))
+        if (!invite) {
+          return sendProblem(res, 404, Object.assign(new Error("pairing invite not found or expired"), { code: "NOT_FOUND" }))
+        }
+        return sendJson(res, 200, pairInviteInfo(invite))
+      }
+
+      if (method === "GET" && p === "/api/v1/host/tailscale") {
+        const body = options.tailscale ? await options.tailscale.detailStatus() : null
+        if (!body) {
+          return sendProblem(res, 501, Object.assign(new Error("tailscale management is unavailable"), { code: "CAPABILITY_DISABLED" }))
+        }
+        return sendJson(res, 200, body)
+      }
+
+      if (method === "POST" && p === "/api/v1/host/tailscale/install") {
+        if (!options.tailscale) {
+          return sendProblem(res, 501, Object.assign(new Error("tailscale management is unavailable"), { code: "CAPABILITY_DISABLED" }))
+        }
+        // 异步执行：前端轮询 GET /api/v1/host/tailscale 看进度
+        void options.tailscale.install()
+        return sendJson(res, 202, { ok: true })
+      }
+
+      if (method === "POST" && p === "/api/v1/host/tailscale/login") {
+        if (!options.tailscale) {
+          return sendProblem(res, 501, Object.assign(new Error("tailscale management is unavailable"), { code: "CAPABILITY_DISABLED" }))
+        }
+        const result = await options.tailscale.startLogin()
+        if (!result.ok) {
+          return sendProblem(res, 409, Object.assign(new Error(result.error ?? "无法发起 Tailscale 登录"), { code: "TAILSCALE_LOGIN_FAILED" }))
+        }
+        return sendJson(res, 200, { ok: true })
+      }
+
       if (method === "GET" && p === "/api/v1/host/registry") {
         return sendJson(res, 200, host.registry())
       }
@@ -430,12 +521,46 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
 function allowedMethodsForPath(pathname: string): string | undefined {
   if (pathname === "/api/v1/host/health" || pathname === "/api/v1/host/share" ||
     pathname === "/api/v1/host/tunnel" ||
+    pathname === "/api/v1/host/network" ||
+    pathname === "/api/v1/host/pair/invite" ||
+    /^\/api\/v1\/host\/pair\/invite\/[^/]+$/.test(pathname) ||
+    pathname === "/api/v1/host/tailscale" ||
     pathname === "/api/v1/host/registry" || pathname === "/api/v1/pi/registry") return "GET"
-  if (pathname === "/api/v1/host/shutdown") return "POST"
+  if (pathname === "/api/v1/host/shutdown" ||
+    pathname === "/api/v1/host/pair/redeem" ||
+    pathname === "/api/v1/host/tailscale/install" ||
+    pathname === "/api/v1/host/tailscale/login") return "POST"
   if (/^\/api\/v1\/pi\/commands\/[^/]+$/.test(pathname) ||
     /^\/api\/v1\/pi\/sessions\/[^/]+\/commands\/[^/]+$/.test(pathname)) return "POST"
   if (/^\/api\/v1\/host\/commands\/[^/]+$/.test(pathname)) return "GET, POST"
   return undefined
+}
+
+function pairInviteInfo(invite: {
+  id: string
+  secret: string
+  code: string
+  expiresAt: number
+  redeemed: boolean
+}): PairInviteInfo {
+  return {
+    id: invite.id,
+    code: invite.code,
+    pair: `${invite.id}.${invite.secret}`,
+    expiresAt: invite.expiresAt,
+    redeemed: invite.redeemed,
+  }
+}
+
+function pairErrorStatus(reason: PairRedeemFailure): number {
+  switch (reason) {
+    case "USED":
+      return 409
+    case "RATE_LIMITED":
+      return 429
+    default:
+      return 400
+  }
 }
 
 export function statusForError(error: unknown): number {

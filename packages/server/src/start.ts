@@ -6,7 +6,9 @@ import { fileURLToPath } from "node:url"
 import type { Server as HttpServer } from "node:http"
 import type { TunnelStatus } from "@ompiui/protocol"
 import { authTokenPath, ensureCursorSecretEnv, resolveAuthToken } from "./host/auth-token.ts"
-import { enableFileLogging, logToFile } from "./logger.ts"
+import { enableFileLogging, logToFile, dataRoot } from "./logger.ts"
+import { PairingStore } from "./host/pairing.ts"
+import { TailscaleManager } from "./host/tailscale.ts"
 import { RuntimeSupervisor } from "./omp/supervisor.ts"
 import { TunnelClient } from "./tunnel/tunnel-client.ts"
 import { createAppServer, firstLanAddress, normalizePublicBaseUrl } from "./http.ts"
@@ -215,11 +217,16 @@ export async function startOmpiUiServer(
       reconnectAttempts: 0,
     }
   }
+  // 手机远程：一次性配对 + 内置 Tailscale（与 server 同生命周期）
+  const pairing = new PairingStore()
+  const tailscale = new TailscaleManager({ dataDir: dataRoot(), log: line => { console.info(line); logToFile(line) } })
   const app = createAppServer({
     authToken,
     share: { host: config.host, port: config.port, publicBaseUrl: config.publicBaseUrl },
     getPublicBaseUrl: () => getTunnelStatus()?.publicUrl ?? null,
     getTunnelStatus,
+    pairing,
+    tailscale,
     staticRoot: config.webRoot ?? undefined,
     onShutdown: () => shutdownHook?.(),
     supervisor: new RuntimeSupervisor({
@@ -334,6 +341,7 @@ export async function startOmpiUiServer(
     if (signal) console.info(`[ompiui-server] received ${signal}, shutting down`)
     // 先断隧道：中转不再往这边送新请求，然后才排空/关闭 HTTP 服务
     tunnelClient?.stop()
+    tailscale.dispose()
     await shutdownAppServer(app.server, eventServer, {
       timeoutMs: config.shutdownTimeoutMs,
       onTimeout: () => console.error(`[ompiui-server] shutdown exceeded ${config.shutdownTimeoutMs}ms; closing active HTTP connections`),
