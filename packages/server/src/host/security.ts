@@ -15,7 +15,18 @@ function isTauriOrigin(origin: string): boolean {
   return origin === "tauri://localhost" || origin === "http://tauri.localhost" || origin === "https://tauri.localhost"
 }
 
-export function requestHasAllowedOrigin(req: IncomingMessage, allowedOrigin?: string | null): boolean {
+/**
+ * 额外放行的 Origin 集合：可以是单个基址、一组基址，或返回基址数组的
+ * getter（自建中转隧道连上后才会知道公网入口，必须动态取）。
+ */
+export type AllowedOrigins =
+  | string
+  | null
+  | undefined
+  | readonly (string | null | undefined)[]
+  | (() => string | null | undefined | readonly (string | null | undefined)[])
+
+export function requestHasAllowedOrigin(req: IncomingMessage, allowedOrigins?: AllowedOrigins): boolean {
   const origin = req.headers.origin
   if (typeof origin !== "string") return true
   if (isAllowedLocalOrigin(origin)) return true
@@ -29,14 +40,22 @@ export function requestHasAllowedOrigin(req: IncomingMessage, allowedOrigin?: st
       return false
     }
   }
-  // 配置了公网基址时放行它的 Origin：反向代理若把 Host 重写成上游地址
-  // （localhost:8787），浏览器页面的 Origin（https://panel.example.com）和
-  // Host 不再相等，同源分支放不了行——这里以运营者显式配置的基址为准。
-  if (allowedOrigin) {
+  // 配置了公网入口时放行它的 Origin：反向代理/隧道若把 Host 重写成上游
+  // 地址（localhost:8787），浏览器页面的 Origin（https://panel.example.com）
+  // 和 Host 不再相等，同源分支放不了行——以运营者声明的公网入口为准。
+  const candidates = typeof allowedOrigins === "function" ? allowedOrigins() : allowedOrigins
+  const list = candidates === undefined || candidates === null
+    ? []
+    : Array.isArray(candidates)
+      ? candidates
+      : [candidates]
+  for (const candidate of list) {
+    if (!candidate) continue
     try {
-      return new URL(origin).origin === new URL(allowedOrigin).origin
+      if (new URL(origin).origin === new URL(candidate).origin) return true
     } catch {
-      return false
+      // 单个非法配置只跳过自身，不牵连其它条目
+      continue
     }
   }
   return false

@@ -9,6 +9,7 @@ import {
   type HealthResponse,
   type JsonObject,
   type ShareInfo,
+  type TunnelStatus,
 } from "@ompiui/protocol"
 import { EventHub } from "./event-hub.ts"
 import { RuntimeSupervisor } from "./omp/supervisor.ts"
@@ -174,6 +175,14 @@ export interface CreateAppServerOptions {
    * 声明的对外入口为准（反向代理 / 隧道后的地址，如 https://panel.example.com）。
    */
   share?: { host: string; port: number; publicBaseUrl?: string | null }
+  /**
+   * 自建中转隧道连上后上报的公网入口 getter。优先级低于 share.publicBaseUrl
+   * （显式配置的公网基址永远赢）：用于 Origin 白名单、share 链接和启动日志
+   * ——隧道是动态上线/掉线的，只能在运行时取。
+   */
+  getPublicBaseUrl?: () => string | null
+  /** 自建中转隧道运行状态 getter（GET /api/v1/host/tunnel）。 */
+  getTunnelStatus?: () => TunnelStatus | null
   /** Web client build directory; when it exists the server hosts the SPA. */
   staticRoot?: string
   /**
@@ -208,8 +217,15 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
   const host = new HostRuntime({ store, watcher, sessions, terminals })
   const authToken = options.authToken === undefined ? resolveAuthToken() : options.authToken
   const staticServer = options.staticRoot ? createStaticServer(options.staticRoot) : undefined
-  // 配置了公网基址时，其 Origin 一并放行（反向代理改写 Host 的场景）
-  const allowedOrigin = normalizePublicBaseUrl(options.share?.publicBaseUrl)
+  // 生效的公网入口：显式公网基址优先，其次自建中转隧道上报的地址（两者都
+  // 可能缺席）。Origin 白名单、share 链接都以它为准。
+  const effectivePublicBaseUrl = (): string | null => {
+    const explicit = normalizePublicBaseUrl(options.share?.publicBaseUrl)
+    if (explicit) return explicit
+    return normalizePublicBaseUrl(options.getPublicBaseUrl?.())
+  }
+  // 配置了公网入口时，其 Origin 一并放行（反向代理/隧道改写 Host 的场景）
+  const allowedOrigin = effectivePublicBaseUrl
   let disposal: Promise<void> | undefined
 
   const closeHttpServer = (): Promise<void> => {
@@ -292,9 +308,9 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
         }
         const shareHost = options.share.host
         const lan = shareHost !== "127.0.0.1" && shareHost !== "::1" && shareHost !== "localhost"
-        // 公网基址优先：绑 0.0.0.0 时第一块局域网 IPv4 在公网不可达，
-        // 运营者显式声明的对外入口（反代/隧道）才是能打开的地址
-        const publicBase = normalizePublicBaseUrl(options.share.publicBaseUrl)
+        // 公网入口优先：显式公网基址 > 自建中转隧道上报的地址；绑 0.0.0.0 时
+        // 第一块局域网 IPv4 在公网不可达，对外声明的入口才是能打开的地址
+        const publicBase = effectivePublicBaseUrl()
         const urlHost = publicBase
           ? undefined
           : shareHost === "0.0.0.0" || shareHost === "::"
@@ -302,12 +318,35 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
             : shareHost
         const url = publicBase ?? `http://${urlHost}:${options.share.port}`
         const link = `ompiui://connect?url=${encodeURIComponent(url)}&token=${encodeURIComponent(authToken)}`
+        const tunnelStatus = options.getTunnelStatus?.() ?? null
+        const tunnel = tunnelStatus?.enabled
+          ? {
+              connected: tunnelStatus.state === "connected",
+              ...(tunnelStatus.publicUrl ? { publicUrl: tunnelStatus.publicUrl } : {}),
+              ...(tunnelStatus.relayUrl ? { relayUrl: tunnelStatus.relayUrl } : {}),
+            }
+          : undefined
         const body: ShareInfo = {
           url,
           token: authToken,
           link,
           lan: lan || Boolean(publicBase),
           ...(publicBase ? { public: true } : {}),
+          ...(tunnel ? { tunnel } : {}),
+        }
+        return sendJson(res, 200, body)
+      }
+
+      if (method === "GET" && p === "/api/v1/host/tunnel") {
+        const status = options.getTunnelStatus?.()
+        const body: TunnelStatus = status ?? {
+          enabled: false,
+          state: "disabled",
+          relayUrl: null,
+          tunnelId: null,
+          publicUrl: null,
+          lastError: null,
+          reconnectAttempts: 0,
         }
         return sendJson(res, 200, body)
       }
@@ -390,6 +429,7 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
 
 function allowedMethodsForPath(pathname: string): string | undefined {
   if (pathname === "/api/v1/host/health" || pathname === "/api/v1/host/share" ||
+    pathname === "/api/v1/host/tunnel" ||
     pathname === "/api/v1/host/registry" || pathname === "/api/v1/pi/registry") return "GET"
   if (pathname === "/api/v1/host/shutdown") return "POST"
   if (/^\/api\/v1\/pi\/commands\/[^/]+$/.test(pathname) ||

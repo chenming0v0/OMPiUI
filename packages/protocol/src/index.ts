@@ -44,4 +44,32 @@ export type ShareInfo = {
    * implies the operator fronted the server with a reverse proxy or tunnel.
    */
   public?: boolean
+  /** Present when the self-hosted relay tunnel is configured. */
+  tunnel?: {
+    /** The tunnel control channel is currently connected to the relay. */
+    connected: boolean
+    /** Public entry URL reported by the relay; present once connected. */
+    publicUrl?: string
+    /** The configured relay control URL (wss://…). */
+    relayUrl?: string
+  }
+}
+
+/**
+ * Runtime status of the embedded relay tunnel client (self-hosted relay /
+ * 反向隧道). Served by GET /api/v1/host/tunnel to authenticated callers.
+ */
+export type TunnelStatus = {
+  /** True when a relay URL + key are configured (regardless of connection). */
+  enabled: boolean
+  state: "disabled" | "connecting" | "connected" | "reconnecting" | "error"
+  /** Relay control URL the client dials out to. */
+  relayUrl: string | null
+  /** Tunnel id registered at the relay. */
+  tunnelId: string | null
+  /** Public entry URL reported by the relay once connected. */
+  publicUrl: string | null
+  lastError: string | null
+  /** Consecutive failed dials since the last successful connection. */
+  reconnectAttempts: number
 }
