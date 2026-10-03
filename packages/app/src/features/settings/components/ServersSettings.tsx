@@ -337,6 +337,11 @@ function SharePanel({ server }: { server: ServerConfig }) {
             </div>
           </div>
           <p className="text-[length:var(--fs-xs)] text-text-400 leading-relaxed">{hint}</p>
+          {share.tunnel && (
+            <p className="text-[length:var(--fs-xs)] leading-relaxed text-text-500">
+              {share.tunnel.connected ? t('servers.shareTunnelHint') : t('servers.shareTunnelOffline')}
+            </p>
+          )}
         </>
       )}
     </div>

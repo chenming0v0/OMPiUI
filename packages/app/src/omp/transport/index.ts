@@ -38,6 +38,7 @@ import type { SessionInfo, SessionTreeNode, Skill, PromptTemplate } from '../ven
 import type { PiBranchPage, PiConfiguredPackage, PiModelRuntimeSnapshot, PiPackageUpdate, PiProjectTrust, PiProviderAuthInfo, PiSettingsSnapshot, ResolvedPaths } from '../domain/index.js'
 import { getApiBase, getPiAuthToken, piFetch } from '../httpClient.js'
 import { piCommandStore } from '../state/index.js'
+import type { TunnelStatus } from '@ompiui/protocol'
 
 // Response types
 export type PiCommandResponse<T = JsonValue | undefined> = {
@@ -93,6 +94,11 @@ export async function fetchHostHealth(signal?: AbortSignal): Promise<HealthRespo
 
 export async function fetchHostShare(signal?: AbortSignal): Promise<ShareInfo> {
   return readJson<ShareInfo>(`${getApiBase()}/api/v1/host/share`, { signal })
+}
+
+// 自建中转隧道的运行状态（GET /api/v1/host/tunnel）
+export async function fetchHostTunnel(signal?: AbortSignal): Promise<TunnelStatus> {
+  return readJson<TunnelStatus>(`${getApiBase()}/api/v1/host/tunnel`, { signal })
 }
 
 export async function fetchPiRegistry(signal?: AbortSignal): Promise<PiRegistrySnapshot> {
