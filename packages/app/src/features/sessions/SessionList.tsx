@@ -439,7 +439,7 @@ export function SessionListItem({
   const sessionTitleDetails = [
     session.title,
     session.isNamed && session.firstMessage ? session.firstMessage : undefined,
-    session.parentSessionPath ? `Forked from ${session.forkParentTitle || 'another session'}` : undefined,
+    session.parentSessionPath && !session.isChildSession ? `Forked from ${session.forkParentTitle || 'another session'}` : undefined,
     session.directory,
     typeof session.messageCount === 'number' ? `${session.messageCount} messages` : undefined,
   ].filter(Boolean).join('\n')
@@ -628,7 +628,7 @@ export function SessionListItem({
   if (isMinimal) {
     const statusIndicatorTitle = activeStatus?.label ||
       (hasUnreadCompletedNotification ? t('chat:notification.completed') : undefined) ||
-      (session.parentSessionPath ? `Forked from ${session.forkParentTitle || 'another session'}` : undefined)
+      (session.parentSessionPath && !session.isChildSession ? `Forked from ${session.forkParentTitle || 'another session'}` : undefined)
 
     return (
       <div
@@ -664,7 +664,7 @@ export function SessionListItem({
             </>
           ) : hasUnreadCompletedNotification ? (
             <span className="absolute w-1.5 h-1.5 rounded-full bg-accent-main-100" />
-          ) : session.parentSessionPath ? (
+          ) : session.parentSessionPath && !session.isChildSession ? (
             <GitBranchIcon size={10} className="text-text-500" aria-hidden="true" />
           ) : null}
         </span>
@@ -829,7 +829,7 @@ export function SessionListItem({
             {session.updatedAt > 0 && (
               <span className="shrink-0 opacity-60">{formatRelativeTime(session.updatedAt)}</span>
             )}
-            {session.parentSessionPath && (
+            {session.parentSessionPath && !session.isChildSession && (
               <>
                 <span className="opacity-30 shrink-0">·</span>
                 <span
