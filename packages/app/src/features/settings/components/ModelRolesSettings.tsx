@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { Model, Api } from '../../../omp/vendor/pi-ai'
+import { Button } from '../../../components/ui/Button'
 import { DropdownMenu } from '../../../components/ui/DropdownMenu'
 import { MenuItem } from '../../../components/ui/MenuItem'
 import { ModelSelector } from '../../chat/ModelSelector'
@@ -77,7 +78,18 @@ function roleCandidates(def: ModelRoleDef, models: readonly Model<Api>[]): Model
   return accepted.length > 0 ? accepted : [...models]
 }
 
-/** 角色行只给控件画边框，不再为每个角色嵌套卡片。 */
+function cloneRoles(roles: Record<string, string>): Record<string, string> {
+  return { ...roles }
+}
+
+function sameRoles(left: Record<string, string>, right: Record<string, string>): boolean {
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)])
+  for (const key of keys) {
+    if ((left[key] ?? '') !== (right[key] ?? '')) return false
+  }
+  return true
+}
+
 const roleFieldBoxClass =
   'rounded-md border border-border-200 bg-bg-200 transition-colors hover:border-border-300 focus-within:border-accent-main-100 focus-within:ring-1 focus-within:ring-accent-main-100/30'
 
@@ -86,27 +98,30 @@ const roleFieldBoxClass =
 // ============================================
 
 /**
- * 功能角色模型 — 设置页里独立的一块。
+ * Agent 模型配置 — 设置页里独立的一块。
  * 写入 OMP 的 modelRoles 配置（经 worker 调 omp config CLI），
  * 改动由 OMP 文件监听自动重载，对之后的会话生效。
  * 非 OMP 驱动（没有该命令）时整块隐藏。
  */
 export function ModelRolesSettings() {
   const { t } = useTranslation('settings')
+  const { t: tc } = useTranslation('common')
   const { models, isLoading } = usePiModels()
-  const [roles, setRoles] = useState<Record<string, string> | null>(null)
+  const [saved, setSaved] = useState<Record<string, string> | null>(null)
+  const [draft, setDraft] = useState<Record<string, string> | null>(null)
   const [unavailable, setUnavailable] = useState(false)
-  const [busyRole, setBusyRole] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
     getPiModelRoles()
       .then(record => {
-        if (!cancelled) setRoles(record)
+        if (cancelled) return
+        setSaved(record)
+        setDraft(cloneRoles(record))
       })
       .catch(() => {
-        // 非 OMP 驱动（没有该命令）时静默隐藏角色区
         if (!cancelled) setUnavailable(true)
       })
     return () => {
@@ -114,56 +129,59 @@ export function ModelRolesSettings() {
     }
   }, [])
 
-  const saveRoles = useCallback(async (roleId: string, next: Record<string, string>) => {
-    setBusyRole(roleId)
+  const handleRoleModel = useCallback((def: ModelRoleDef, model: Model<Api> | null) => {
+    setDraft(current => {
+      if (!current) return current
+      const next = cloneRoles(current)
+      const parsed = parseRoleValue(current[def.id])
+      const level = parsed?.level ?? ''
+      if (model) next[def.id] = formatRoleValue(model.provider, model.id, level)
+      else delete next[def.id]
+      return next
+    })
+  }, [])
+
+  const handleRoleLevel = useCallback((def: ModelRoleDef, level: string) => {
+    setDraft(current => {
+      if (!current) return current
+      const parsed = parseRoleValue(current[def.id])
+      if (!parsed) return current
+      return { ...current, [def.id]: formatRoleValue(parsed.provider, parsed.modelId, level) }
+    })
+  }, [])
+
+  const handleCancel = useCallback(() => {
+    if (!saved) return
+    setDraft(cloneRoles(saved))
+    setError(null)
+  }, [saved])
+
+  const handleSave = useCallback(async () => {
+    if (!draft) return
+    setSaving(true)
     setError(null)
     try {
-      const saved = await setPiModelRoles(next)
-      setRoles(saved)
+      const next = await setPiModelRoles(draft)
+      setSaved(next)
+      setDraft(cloneRoles(next))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
-      setBusyRole(null)
+      setSaving(false)
     }
-  }, [])
+  }, [draft])
 
-  const handleRoleModel = useCallback(
-    (def: ModelRoleDef, model: Model<Api> | null) => {
-      if (!roles) return
-      const next = { ...roles }
-      const current = parseRoleValue(roles[def.id])
-      const level = current?.level ?? ''
-      if (model) next[def.id] = formatRoleValue(model.provider, model.id, level)
-      else delete next[def.id]
-      setRoles(next)
-      void saveRoles(def.id, next)
-    },
-    [roles, saveRoles],
-  )
+  if (unavailable || !saved || !draft) return null
 
-  const handleRoleLevel = useCallback(
-    (def: ModelRoleDef, level: string) => {
-      if (!roles) return
-      const current = parseRoleValue(roles[def.id])
-      if (!current) return
-      const next = { ...roles, [def.id]: formatRoleValue(current.provider, current.modelId, level) }
-      setRoles(next)
-      void saveRoles(def.id, next)
-    },
-    [roles, saveRoles],
-  )
-
-  if (unavailable) return null
-  if (!roles) return null
-
+  const dirty = !sameRoles(saved, draft)
   const renderRoleRow = (def: ModelRoleDef) => (
     <RoleRow
       key={def.id}
       def={def}
-      value={roles[def.id] ?? ''}
+      value={draft[def.id] ?? ''}
       models={models}
       isLoading={isLoading}
-      busy={busyRole === def.id}
+      disabled={saving}
       onModel={handleRoleModel}
       onLevel={handleRoleLevel}
       onClear={roleDef => handleRoleModel(roleDef, null)}
@@ -175,6 +193,14 @@ export function ModelRolesSettings() {
       {error ? <p role="alert" className="text-[length:var(--fs-xs)] text-danger-100">{error}</p> : null}
       <RoleGroup label={t('models.rolesChatGroup')}>{CHAT_ROLE_DEFS.map(renderRoleRow)}</RoleGroup>
       <RoleGroup label={t('models.rolesKindGroup')}>{KIND_ROLE_DEFS.map(renderRoleRow)}</RoleGroup>
+      <div className="model-roles-footer">
+        <Button type="button" variant="secondary" size="sm" disabled={saving || !dirty} onClick={handleCancel}>
+          {tc('cancel')}
+        </Button>
+        <Button type="button" variant="primary" size="sm" isLoading={saving} disabled={!dirty} onClick={() => void handleSave()}>
+          {tc('save')}
+        </Button>
+      </div>
     </SettingsSection>
   )
 }
@@ -182,21 +208,22 @@ export function ModelRolesSettings() {
 function RoleGroup({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="model-role-group">
-      <p className="mb-4 text-[length:var(--fs-xxs)] font-medium tracking-wide text-text-300">{label}</p>
-      <div className="space-y-5">{children}</div>
+      <p className="mb-3 text-[length:var(--fs-xxs)] font-medium tracking-wide text-text-300">{label}</p>
+      <div className="space-y-3">{children}</div>
     </div>
   )
 }
 
 /**
- * 角色名与主模型对齐；思考强度作为缩进的第二行，菜单保留清除/复制。
+ * 角色名右对齐；主模型一行，思考强度作为第二行。菜单保留清除/复制。
+ * OMP 没有备用模型字段，不伪造第二套模型选择器。
  */
 function RoleRow({
   def,
   value,
   models,
   isLoading,
-  busy,
+  disabled,
   onModel,
   onLevel,
   onClear,
@@ -205,7 +232,7 @@ function RoleRow({
   value: string
   models: readonly Model<Api>[]
   isLoading: boolean
-  busy: boolean
+  disabled: boolean
   onModel: (def: ModelRoleDef, model: Model<Api> | null) => void
   onLevel: (def: ModelRoleDef, level: string) => void
   onClear: (def: ModelRoleDef) => void
@@ -214,7 +241,6 @@ function RoleRow({
   const [menuOpen, setMenuOpen] = useState(false)
   const kebabRef = useRef<HTMLButtonElement>(null)
 
-  // 点击外部 / Esc 关闭 kebab 菜单
   useEffect(() => {
     if (!menuOpen) return
     const onPointerDown = (event: MouseEvent) => {
@@ -263,14 +289,14 @@ function RoleRow({
   return (
     <div data-setting-label={t(`models.${def.nameKey}`)} className="model-role-row">
       <div className="model-role-label flex min-w-0 items-center gap-1.5">
-        <span className="text-[length:var(--fs-base)] font-medium text-text-100">{t(`models.${def.nameKey}`)}</span>
+        <span className="text-[length:var(--fs-sm)] font-medium text-text-100">{t(`models.${def.nameKey}`)}</span>
         <span className="shrink-0 cursor-help text-text-300" title={`${t(`models.${def.descKey}`)}\nOMP: ${def.tag} (${def.id})`}>
           <QuestionIcon size={13} />
         </span>
       </div>
 
       <div className="model-role-controls min-w-0">
-        <div className="flex min-w-0 items-center gap-2.5">
+        <div className="flex min-w-0 items-center gap-2">
           {value && !parsed ? (
             <div className={`min-w-0 flex-1 ${roleFieldBoxClass}`}>
               <div className="flex h-8 items-center px-2.5">
@@ -283,7 +309,8 @@ function RoleRow({
                 models={roleCandidates(def, models)}
                 selectedModelKey={currentKey}
                 onSelect={(_key, model) => onModel(def, model)}
-                isLoading={isLoading || busy}
+                isLoading={isLoading}
+                disabled={disabled}
                 trigger="toolbar"
                 placeholder={t('models.roleAuto')}
                 zIndex={400}
@@ -298,9 +325,9 @@ function RoleRow({
               aria-label={t('models.roleOptions')}
               aria-haspopup="menu"
               aria-expanded={menuOpen}
-              disabled={busy}
+              disabled={disabled}
               onClick={() => setMenuOpen(open => !open)}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border-200 text-text-300 transition-colors hover:border-border-300 hover:bg-bg-200 hover:text-text-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent-main-100 focus-visible:outline-offset-1 disabled:pointer-events-none disabled:opacity-40"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-text-300 transition-colors hover:bg-bg-200 hover:text-text-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent-main-100 focus-visible:outline-offset-1 disabled:pointer-events-none disabled:opacity-40"
             >
               <MoreVerticalIcon size={14} />
             </button>
@@ -309,7 +336,7 @@ function RoleRow({
                 <MenuItem
                   label={t('models.roleClear')}
                   description={t('models.roleClearDesc')}
-                  disabled={!value || busy}
+                  disabled={!value || disabled}
                   onClick={() => {
                     setMenuOpen(false)
                     onClear(def)
@@ -321,7 +348,7 @@ function RoleRow({
           </div>
         </div>
 
-        <div className="model-role-secondary mt-2 flex min-w-0 items-center gap-3 border-l border-dashed border-border-200 pl-2.5">
+        <div className="model-role-secondary mt-1.5 flex min-w-0 items-center gap-3">
           <span className="shrink-0 text-[length:var(--fs-xs)] text-text-300">{t('models.defaultThinking')}</span>
           <div className="min-w-0 flex-1">
             <SettingsSelect
@@ -329,7 +356,7 @@ function RoleRow({
               value={parsed?.level ?? ''}
               onChange={level => onLevel(def, level)}
               options={levelOptions}
-              disabled={busy || !parsed || !selectedModel}
+              disabled={disabled || !parsed || !selectedModel}
               className={settingsFieldClass}
             />
           </div>

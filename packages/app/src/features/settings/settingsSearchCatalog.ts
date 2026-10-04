@@ -29,7 +29,7 @@ const definitions = (tab: SettingsTab, labelKeys: string[]): SettingsSearchDefin
 export const SETTINGS_SEARCH_DEFINITIONS: SettingsSearchDefinition[] = [
   ...definitions('servers', ['servers.connections']),
   ...definitions('service', ['service.title', 'service.useSystemPiSdk', 'service.envVars', 'service.environment']),
-  ...definitions('models', ['models.visibility']),
+  ...definitions('models', ['models.rolesTitle', 'models.visibility']),
   ...definitions('agent', [
     'agent.behavior',
     'agent.toolInteraction',

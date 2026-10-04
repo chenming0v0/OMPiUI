@@ -343,7 +343,7 @@ export function PiChatPane({
     return () => configureSessionEditorDraftSync(undefined)
   }, [])
 
-  const isStreaming = Boolean(state?.isStreaming)
+  const isStreaming = Boolean(state?.isStreaming) || (sessionActive && !compacting)
   const queue = state?.queue as { steering?: string[]; followUp?: string[] } | undefined
 
   // 稳定队列引用：ChatArea 是 memo 组件，`?? []` 每次渲染新建数组会让它
@@ -980,11 +980,16 @@ export function PiChatPane({
       // 发送失败必须让用户看见——静默丢掉一条消息比报错糟糕得多
       clearSessionEditorDraft(sid)
       setForkSeedText(undefined)
-      void sendPiUserMessage(sid, text, images.length ? images : undefined, deliverAs).catch(error => {
-        uiErrorHandler('send message', error)
-        void refreshPiBranch(sid).catch(() => undefined)
-        void refreshPiSessionState(sid).catch(() => undefined)
-      })
+      void sendPiUserMessage(sid, text, images.length ? images : undefined, deliverAs)
+        .then(() => {
+          void refreshPiSessionState(sid).catch(() => undefined)
+        })
+        .catch(error => {
+          uiErrorHandler('send message', error)
+          setSessionEditorDraft(sid, text)
+          void refreshPiBranch(sid).catch(() => undefined)
+          void refreshPiSessionState(sid).catch(() => undefined)
+        })
       scheduleDelayedRefresh(sid)
       return true
     },
@@ -1394,7 +1399,8 @@ export function PiChatPane({
       void sendPiPrompt(sid, trimmed, {
         streamingBehavior: isStreaming ? 'followUp' : undefined,
       }).catch(error => {
-        console.error('Failed to execute command:', error)
+        uiErrorHandler('send command', error)
+        setSessionEditorDraft(sid, trimmed)
       })
       scheduleDelayedRefresh(sid)
       return true

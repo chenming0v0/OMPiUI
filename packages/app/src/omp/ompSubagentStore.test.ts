@@ -58,6 +58,37 @@ describe('ompSubagentStore HUD', () => {
     // 非 detached 的快照条目只进 store（内联视图用），不进 HUD
     expect(selectHudRuns(ompSubagentStore.getSnapshot()).some(run => run.id === 'snap-2')).toBe(false)
   })
+
+  it('keeps concurrent runs for one task and never regresses a terminal run', () => {
+    ompSubagentStore.applyLifecycle('session-task', {
+      id: 'child-a', parentToolCallId: 'task-call', detached: false, status: 'started', index: 0,
+    })
+    ompSubagentStore.applyLifecycle('session-task', {
+      id: 'child-b', parentToolCallId: 'task-call', detached: false, status: 'started', index: 1,
+    })
+
+    expect(ompSubagentStore.getRunsForToolCall('task-call', 'session-task').map(run => run.id)).toEqual(['child-a', 'child-b'])
+
+    ompSubagentStore.applyLifecycle('session-task', {
+      id: 'child-a', parentToolCallId: 'task-call', status: 'completed', index: 0,
+    })
+    // 迟到的 started/部分 lifecycle 帧不能让已完成子代理重新闪回运行中。
+    ompSubagentStore.applyLifecycle('session-task', {
+      id: 'child-a', parentToolCallId: 'task-call', status: 'started', index: 0,
+    })
+    ompSubagentStore.applyProgress('session-task', {
+      id: 'child-a', progress: { status: 'running', tokens: 50 },
+    })
+    ompSubagentStore.applySnapshot('session-task', [
+      { id: 'child-a', status: 'running' },
+      { id: 'child-b', status: 'pending' },
+    ])
+
+    expect(ompSubagentStore.getRunsForToolCall('task-call', 'session-task').map(run => [run.id, run.status, run.detached])).toEqual([
+      ['child-a', 'completed', false],
+      ['child-b', 'running', false],
+    ])
+  })
 })
 
 /**

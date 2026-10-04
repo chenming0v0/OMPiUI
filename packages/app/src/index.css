@@ -217,23 +217,23 @@ body,
 }
 
 .model-roles-section .settings-section-content {
-  gap: 24px;
+  gap: 16px;
 }
 
 .model-role-group + .model-role-group {
-  padding-top: 18px;
+  padding-top: 14px;
   border-top: 1px solid hsl(var(--border-200) / 0.6);
 }
 
 .model-role-row {
   display: grid;
-  grid-template-columns: 132px minmax(0, 1fr);
+  grid-template-columns: 108px minmax(0, 1fr);
   align-items: start;
-  gap: 12px;
+  gap: 10px;
 }
 
 .model-role-label {
-  min-height: 34px;
+  min-height: 32px;
   justify-content: flex-end;
   text-align: right;
 }
@@ -264,8 +264,17 @@ body,
 }
 
 .model-role-secondary > span {
-  width: 96px;
+  width: 72px;
   white-space: nowrap;
+}
+
+.model-roles-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid hsl(var(--border-200) / 0.7);
 }
 
 @media (max-width: 640px) {

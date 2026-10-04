@@ -138,6 +138,18 @@ function normalizeStatus(value: unknown): OmpSubagentStatus {
   }
 }
 
+function isTerminalStatus(status: OmpSubagentStatus): boolean {
+  return status === 'completed' || status === 'failed' || status === 'aborted'
+}
+
+/** 事件可能从 session/server 两条流乱序到达；终态不能被旧的 running/pending 覆盖。 */
+function mergeStatus(current: OmpSubagentStatus, incoming: OmpSubagentStatus): OmpSubagentStatus {
+  if (isTerminalStatus(current) && !isTerminalStatus(incoming)) return current
+  if (isTerminalStatus(current) && isTerminalStatus(incoming) && current !== incoming) return current
+  if (current === 'running' && incoming === 'pending') return current
+  return incoming
+}
+
 function normalizeProgress(raw: unknown): OmpSubagentProgress | undefined {
   const record = asRecord(raw)
   if (!record) return undefined
@@ -455,8 +467,8 @@ class OmpSubagentStore {
     const id = str(payload.id)
     if (!id) return
     this.upsert(sessionId, id, run => {
-      const status = normalizeStatus(payload.status)
-      const terminal = status === 'completed' || status === 'failed' || status === 'aborted'
+      const incomingStatus = payload.status === undefined ? run.status : normalizeStatus(payload.status)
+      const status = mergeStatus(run.status, incomingStatus)
       return {
         ...run,
         parentToolCallId: str(payload.parentToolCallId) ?? run.parentToolCallId,
@@ -465,8 +477,8 @@ class OmpSubagentStore {
         status,
         sessionFile: str(payload.sessionFile) ?? run.sessionFile,
         index: typeof payload.index === 'number' ? payload.index : run.index,
-        detached: payload.detached === true,
-        endedAt: terminal ? Date.now() : run.endedAt,
+        detached: typeof payload.detached === 'boolean' ? payload.detached : run.detached,
+        endedAt: isTerminalStatus(status) && !run.endedAt ? Date.now() : run.endedAt,
       }
     })
   }
@@ -479,7 +491,9 @@ class OmpSubagentStore {
     }
     if (!id) return
     this.upsert(sessionId, id, run => {
-      const progress = normalizeProgress(payload.progress)
+      const progress = normalizeProgress(payload.progress) ?? run.progress
+      const incomingStatus = progress?.status && progress.status !== 'pending' ? progress.status : run.status
+      const status = mergeStatus(run.status, incomingStatus)
       return {
         ...run,
         task: str(payload.task) ?? run.task,
@@ -488,7 +502,8 @@ class OmpSubagentStore {
         sessionFile: str(payload.sessionFile) ?? run.sessionFile,
         agent: str(payload.agent) ?? run.agent,
         progress,
-        status: progress?.status && progress.status !== 'pending' ? progress.status : run.status,
+        status,
+        endedAt: isTerminalStatus(status) && !run.endedAt ? Date.now() : run.endedAt,
       }
     })
   }
@@ -524,18 +539,23 @@ class OmpSubagentStore {
       const record = asRecord(raw)
       const id = str(record?.id)
       if (!record || !id) continue
-      this.upsert(sessionId, id, run => ({
-        ...run,
-        parentToolCallId: str(record.parentToolCallId) ?? run.parentToolCallId,
-        agent: str(record.agent) ?? run.agent,
-        description: subagentDisplayTitle(str(record.description)) ?? run.description,
-        task: str(record.task) ?? run.task,
-        status: normalizeStatus(record.status ?? run.status),
-        sessionFile: str(record.sessionFile) ?? run.sessionFile,
-        index: typeof record.index === 'number' ? record.index : run.index,
-        detached: record.detached === true || run.detached,
-        progress: normalizeProgress(record.progress) ?? run.progress,
-      }))
+      this.upsert(sessionId, id, run => {
+        const incomingStatus = record.status === undefined ? run.status : normalizeStatus(record.status)
+        const status = mergeStatus(run.status, incomingStatus)
+        return {
+          ...run,
+          parentToolCallId: str(record.parentToolCallId) ?? run.parentToolCallId,
+          agent: str(record.agent) ?? run.agent,
+          description: subagentDisplayTitle(str(record.description)) ?? run.description,
+          task: str(record.task) ?? run.task,
+          status,
+          sessionFile: str(record.sessionFile) ?? run.sessionFile,
+          index: typeof record.index === 'number' ? record.index : run.index,
+          detached: typeof record.detached === 'boolean' ? record.detached : run.detached,
+          progress: normalizeProgress(record.progress) ?? run.progress,
+          endedAt: isTerminalStatus(status) && !run.endedAt ? Date.now() : run.endedAt,
+        }
+      })
     }
   }
 }

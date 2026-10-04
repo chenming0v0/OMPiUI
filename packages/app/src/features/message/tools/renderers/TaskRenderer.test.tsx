@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionNavigationContext } from '../../../../contexts/SessionNavigationContext'
 import { piSessionStateStore } from '../../../../omp/state/index.js'
@@ -255,6 +255,29 @@ describe('persisted subagent fallback', () => {
     expect(screen.getByRole('button', { name: 'scout' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'reviewer' })).not.toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: 'task.openSession' })).toHaveLength(1)
+  })
+
+  it('preserves both child transcript nodes while their progress frames alternate', () => {
+    for (const [id, index] of [['child-a', 0], ['child-b', 1]] as const) {
+      ompSubagentStore.applyLifecycle('parent-session', {
+        id, index, parentToolCallId: 'call-task-1', status: 'started',
+      })
+      ompSubagentStore.applyEvent('parent-session', {
+        id, event: { type: 'message_end', message: { role: 'assistant', content: `output from ${id}` } },
+      })
+    }
+    renderTask({ call: completedTaskExecution().call })
+    const childA = screen.getByText('output from child-a')
+    const childB = screen.getByText('output from child-b')
+    for (const id of ['child-a', 'child-b', 'child-a']) {
+      act(() => {
+        ompSubagentStore.applyProgress('parent-session', {
+          id, parentToolCallId: 'call-task-1', progress: { status: 'running', tokens: 42 },
+        })
+      })
+      expect(screen.getByText('output from child-a')).toBe(childA)
+      expect(screen.getByText('output from child-b')).toBe(childB)
+    }
   })
 
   it('does not put the wrapping assignment prompt in the task title', () => {
