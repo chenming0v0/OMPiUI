@@ -51,7 +51,7 @@ describe('useChildSessions', () => {
     expect(result.current.sessions[0]).toMatchObject({
       id: 'child-1',
       directory: 'C:/proj',
-      title: 'Complete assignment thoroughly',
+      title: 'ProjectScout',
       path: 'C:/proj/sessions/abc/ProjectScout.jsonl',
       parentSessionPath: PARENT_PATH,
       isChildSession: true,
@@ -97,5 +97,62 @@ describe('useChildSessions', () => {
     rerender({ selectedId: 'parent-2' })
     expect(result.current.parentId).toBeNull()
     expect(result.current.sessions).toHaveLength(0)
+  })
+
+  it('refreshes the loaded list when ompiui:sessions-changed fires and keeps the child selected', async () => {
+    listPiChildSessionsMock.mockResolvedValue([
+      { id: 'child-1', cwd: 'C:/proj', name: 'scout', path: 'C:/proj/sessions/abc/scout.jsonl' },
+    ])
+    const lookup = new Map([['parent-1', makeParent()]])
+    const { result, rerender } = renderHook(
+      ({ selectedId }: { selectedId: string | null }) => useChildSessions(selectedId, lookup),
+      { initialProps: { selectedId: 'parent-1' as string | null } },
+    )
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
+
+    listPiChildSessionsMock.mockResolvedValue([
+      { id: 'child-1', cwd: 'C:/proj', name: 'Project scout', path: 'C:/proj/sessions/abc/scout.jsonl' },
+      { id: 'child-2', cwd: 'C:/proj', name: 'Docs', path: 'C:/proj/sessions/abc/docs.jsonl' },
+    ])
+    window.dispatchEvent(new CustomEvent('omompiui:sessions-changed'))
+    expect(listPiChildSessionsMock).toHaveBeenCalledTimes(1)
+
+    window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
+    await waitFor(() => expect(result.current.sessions).toHaveLength(2), { timeout: 1500 })
+    expect(result.current.sessions.map(session => session.title)).toEqual(['Project scout', 'Docs'])
+
+    rerender({ selectedId: 'child-1' })
+    expect(result.current.parentId).toBe('parent-1')
+    expect(result.current.sessions).toHaveLength(2)
+  })
+
+  it('uses an explicit name before the first user message', async () => {
+    listPiChildSessionsMock.mockResolvedValue([
+      {
+        id: 'child-1',
+        cwd: 'C:/proj',
+        name: 'Read the catalog',
+        firstMessage: 'Complete assignment thoroughly: # Target',
+        path: 'C:/proj/sessions/abc/catalog.jsonl',
+      },
+    ])
+    const lookup = new Map([['parent-1', makeParent()]])
+    const { result } = renderHook(() => useChildSessions('parent-1', lookup))
+    await waitFor(() => expect(result.current.sessions[0]?.title).toBe('Read the catalog'))
+  })
+
+  it('falls back to the child file stem instead of the wrapping assignment prompt', async () => {
+    listPiChildSessionsMock.mockResolvedValue([
+      {
+        id: 'child-1',
+        cwd: 'C:/proj',
+        name: '',
+        firstMessage: 'Complete assignment thoroughly: # Target',
+        path: 'C:/proj/sessions/abc/ReadmeScout.jsonl',
+      },
+    ])
+    const lookup = new Map([['parent-1', makeParent()]])
+    const { result } = renderHook(() => useChildSessions('parent-1', lookup))
+    await waitFor(() => expect(result.current.sessions[0]?.title).toBe('ReadmeScout'))
   })
 })

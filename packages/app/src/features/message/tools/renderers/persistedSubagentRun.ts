@@ -1,3 +1,4 @@
+import { subagentDisplayTitle } from '../../../../omp/ompSubagentFormat'
 import type { OmpSubagentRun, OmpSubagentStatus } from '../../../../omp/ompSubagentStore'
 
 /**
@@ -77,7 +78,7 @@ export function buildPersistedSubagentRun(
     sessionId: parentSessionId,
     parentToolCallId: callId,
     agent: typeof result.agent === 'string' && result.agent ? result.agent : 'task',
-    description: typeof result.description === 'string' ? result.description : undefined,
+    description: subagentDisplayTitle(result.description),
     task: typeof result.task === 'string' ? result.task : typeof result.assignment === 'string' ? result.assignment : '',
     status,
     sessionFile,

@@ -98,6 +98,19 @@ export function previewEntriesFromLines(raw: string[], fallbackIdPrefix: string)
   return entries
 }
 
+/** OMP 给每个子代理注入的包装提示词，不能当会话标题。 */
+const WRAPPING_ASSIGNMENT = /^complete assignment thoroughly\b/i
+
+function firstUsefulTitle(...candidates: Array<unknown>): string | undefined {
+  for (const value of candidates) {
+    if (typeof value !== "string") continue
+    const line = value.split("\n").map(part => part.trim()).find(Boolean)
+    if (!line || WRAPPING_ASSIGNMENT.test(line)) continue
+    return line
+  }
+  return undefined
+}
+
 interface SessionFileSummary {
   id: string
   cwd: string
@@ -140,11 +153,17 @@ async function summarizeSessionFile(filePath: string, childTitles?: Map<string, 
       id = typeof entry.id === "string" ? entry.id : ""
       cwd = typeof entry.cwd === "string" ? entry.cwd : ""
       created = typeof entry.timestamp === "string" ? entry.timestamp : null
-      if (!name && typeof entry.name === "string") name = entry.name
+      if (!name) name = firstUsefulTitle(entry.name) ?? name
     } else if (type === "title" || type === "title_change") {
-      if (typeof entry.title === "string" && entry.title.trim()) name = entry.title.trim()
+      // title 是固定宽度首行槽；OMP 18.x 的自动/手动标题写在后续 title_change。
+      // 空槽和包装提示词都不能盖掉已有标题；后写入的用户改名覆盖先前的。
+      const titled = firstUsefulTitle(entry.title)
+      if (titled) name = titled
     } else if (type === "session_init") {
       isSubagent = typeof entry.agent === "string" && Boolean(entry.agent)
+      if (!name) {
+        name = firstUsefulTitle(childTitles?.get(path.basename(filePath, ".jsonl")), entry.agent) ?? name
+      }
     } else if (type === "message") {
       messageCount += 1
       if (!firstMessage && isJsonObject(entry.message) && entry.message.role === "user") {
@@ -159,7 +178,7 @@ async function summarizeSessionFile(filePath: string, childTitles?: Map<string, 
   }
   if (!name && (isSubagent || childTitles)) {
     const taskName = path.basename(filePath, ".jsonl")
-    name = childTitles?.get(taskName) ?? taskName
+    name = firstUsefulTitle(childTitles?.get(taskName), taskName) ?? taskName
   }
   if (!id || !cwd) return null
   let modified = 0
@@ -214,14 +233,14 @@ function readSubagentTitles(parentSessionFile: string): Map<string, string> {
         if (!Array.isArray(block.arguments.tasks)) continue
         for (const task of block.arguments.tasks) {
           if (!isJsonObject(task) || typeof task.name !== "string" || !task.name) continue
-          titles.set(task.name, typeof task.description === "string" && task.description ? task.description : task.name)
+          titles.set(task.name, firstUsefulTitle(task.description, task.name) ?? task.name)
         }
       }
     } else if (message.role === "toolResult" && message.toolName === "task" && isJsonObject(message.details)) {
       if (!Array.isArray(message.details.results)) continue
       for (const result of message.details.results) {
         if (!isJsonObject(result) || typeof result.id !== "string" || !result.id) continue
-        titles.set(result.id, typeof result.description === "string" && result.description ? result.description : result.id)
+        titles.set(result.id, firstUsefulTitle(result.description, result.id) ?? result.id)
       }
     }
   }
