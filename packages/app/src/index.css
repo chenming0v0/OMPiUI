@@ -166,6 +166,157 @@ body,
   }
 }
 
+/* Settings: one panel per group, outlined fields, no nested role cards. */
+.settings-shell,
+:root[data-glass] .settings-shell {
+  background: hsl(var(--bg-100));
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.settings-section {
+  min-width: 0;
+  border: 1px solid hsl(var(--border-200));
+  border-radius: 16px;
+  background: hsl(var(--bg-000) / 0.35);
+}
+
+.settings-section-header,
+.settings-section-disclosure > button {
+  padding: 16px 18px;
+  border-bottom: 1px solid hsl(var(--border-200) / 0.7);
+}
+
+.settings-section-disclosure > button {
+  width: 100%;
+  align-items: flex-start;
+  gap: 10px;
+  border-radius: 15px 15px 0 0;
+}
+
+.settings-section-disclosure > button > svg {
+  margin-top: 3px;
+}
+
+.settings-section-disclosure > button > span {
+  min-width: 0;
+  flex: 1;
+}
+
+.settings-section-disclosure > button[aria-expanded='false'] {
+  border-bottom-color: transparent;
+  border-radius: 15px;
+}
+
+.settings-section-disclosure .settings-disclosure-body {
+  padding-top: 0;
+}
+
+.settings-section-content {
+  padding: 16px 18px;
+}
+
+.model-roles-section .settings-section-content {
+  gap: 16px;
+}
+
+.model-role-group + .model-role-group {
+  padding-top: 14px;
+  border-top: 1px solid hsl(var(--border-200) / 0.6);
+}
+
+.model-role-row {
+  display: grid;
+  grid-template-columns: 108px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.model-role-label {
+  min-height: 30px;
+  justify-content: flex-end;
+  text-align: right;
+}
+
+.model-role-controls {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.role-model-field > div > button {
+  height: 30px;
+  border-radius: 5px;
+  padding: 0 32px 0 10px;
+  text-align: left;
+  outline: none;
+}
+
+.role-model-field > div > button:hover {
+  background: transparent;
+}
+
+.role-model-field > div > button:active {
+  transform: none;
+}
+
+.role-model-field > div > button > span {
+  color: hsl(var(--text-100));
+}
+
+.role-model-field > div > button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+button.role-variant-select {
+  width: 5.75rem;
+  flex-shrink: 0;
+  height: 30px;
+  padding: 0 22px 0 8px;
+  border-radius: 5px;
+  font-size: var(--fs-xs);
+  background: hsl(var(--bg-300) / 0.7);
+}
+
+button.role-variant-select > span {
+  min-width: 0;
+}
+
+button.role-variant-select svg {
+  width: 12px;
+  height: 12px;
+}
+
+.model-roles-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid hsl(var(--border-200) / 0.7);
+}
+
+@media (max-width: 640px) {
+  .settings-section-header,
+  .settings-section-disclosure > button,
+  .settings-section-content {
+    padding: 14px;
+  }
+
+  .model-role-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .model-role-label {
+    min-height: 24px;
+    justify-content: flex-start;
+    text-align: left;
+  }
+}
+
 .toast-safe-top {
   top: calc(var(--app-safe-top, 0px) + 0.75rem);
 }

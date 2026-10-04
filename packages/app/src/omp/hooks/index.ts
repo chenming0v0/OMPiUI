@@ -2,6 +2,7 @@ import { useSyncExternalStore } from 'react'
 import { useMemo } from 'react'
 import { piSessionInfoStore, piBranchStore, piSessionStateStore, piModelsStore } from '../state/index.js'
 import { paneLayoutStore } from '../../store/paneLayoutStore'
+import { readTodoItems, type TodoItem } from '../domain/todo'
 
 /**
  * React bindings for Pi stores.
@@ -28,43 +29,33 @@ export function useFocusedSessionHasEntries(): boolean {
   )
 }
 
-export type PiTodoItem = {
-  id: string
-  content: string
-  status: 'pending' | 'in_progress' | 'completed' | 'cancelled'
-  priority: 'high' | 'medium' | 'low'
-}
-
-function extractTodosFromExecution(callArguments: unknown, resultDetails: unknown): PiTodoItem[] {
-  const input = callArguments && typeof callArguments === 'object' ? (callArguments as Record<string, unknown>) : undefined
-  const details = resultDetails && typeof resultDetails === 'object' && !Array.isArray(resultDetails)
-    ? (resultDetails as Record<string, unknown>)
-    : undefined
-  return (details?.todos as PiTodoItem[]) || (input?.todos as PiTodoItem[]) || []
-}
-
 /**
- * Latest todoWrite todos in the branch (native: the todo list lives in the
- * most recent todo tool call/result, not in a side store).
+ * Latest committed todo snapshot in the branch. Native OMP stores named phases;
+ * historical TodoWrite entries store a flat todos array.
  */
-export function usePiSessionTodos(sessionId: string | null): PiTodoItem[] {
+export function usePiSessionTodos(sessionId: string | null): TodoItem[] {
   const branch = usePiBranchData(sessionId)
   return useMemo(() => {
     const items = branch?.items ?? []
-    let latest: PiTodoItem[] = []
+    let latest: TodoItem[] = []
     for (const entry of items) {
+      if (entry.type === 'custom' && entry.customType === 'user_todo_edit') {
+        latest = readTodoItems(entry.data) ?? latest
+        continue
+      }
       if (entry.type !== 'message') continue
       const message = entry.message
       if (message.role === 'assistant') {
         for (const block of message.content) {
-          if (block.type === 'toolCall' && block.name.toLowerCase().includes('todo')) {
-            const todos = extractTodosFromExecution(block.arguments, undefined)
-            if (todos.length > 0) latest = todos
+          if (block.type === 'toolCall' && block.name.toLowerCase().includes('todo') && Array.isArray(block.arguments.todos)) {
+            const todos = readTodoItems(block.arguments)
+            if (todos !== undefined) latest = todos
           }
         }
       } else if (message.role === 'toolResult' && message.toolName.toLowerCase().includes('todo')) {
-        const todos = extractTodosFromExecution(undefined, message.details)
-        if (todos.length > 0) latest = todos
+        if (message.isError || message.details?.op === 'view') continue
+        const todos = readTodoItems(message.details)
+        if (todos !== undefined) latest = todos
       }
     }
     return latest

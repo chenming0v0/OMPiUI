@@ -4,7 +4,7 @@ import type { RefObject } from 'react'
 import { CheckIcon, ClockIcon, CircleIcon, CloseIcon } from '../../../components/Icons'
 import { CircularProgress } from '../../../components/CircularProgress'
 import { usePiSessionTodos } from '../../../omp/hooks/index.js'
-import type { PiTodoItem as TodoItem } from '../../../omp/hooks/index.js'
+import type { TodoItem } from '../../../omp/domain/todo'
 
 // ============================================
 // InputFooter - disclaimer + todo progress
@@ -27,7 +27,7 @@ export const InputFooter = memo(function InputFooter({
   const todos = usePiSessionTodos(sessionId ?? null)
   const stats = useMemo(() => ({
     total: todos.length,
-    completed: todos.filter(todo => todo.status === 'completed').length,
+    completed: todos.filter(todo => todo.status === 'completed' || todo.status === 'abandoned').length,
     inProgress: todos.filter(todo => todo.status === 'in_progress').length,
   }), [todos])
   const currentTask = useMemo(
@@ -335,7 +335,7 @@ function MiniProgress({ size, progress, done }: { size: number; progress: number
 const TodoRow = memo(function TodoRow({ todo }: { todo: TodoItem }) {
   const isCompleted = todo.status === 'completed'
   const isInProgress = todo.status === 'in_progress'
-  const isCancelled = todo.status === 'cancelled'
+  const isCancelled = todo.status === 'cancelled' || todo.status === 'abandoned'
 
   return (
     <div
@@ -348,8 +348,12 @@ const TodoRow = memo(function TodoRow({ todo }: { todo: TodoItem }) {
         {isInProgress && <ClockIcon size={13} className="text-accent-main-100" />}
         {isCancelled && <CloseIcon size={13} className="text-text-500" />}
         {todo.status === 'pending' && <CircleIcon size={13} className="text-text-500" />}
+        {todo.status === 'blocked' && <ClockIcon size={13} className="text-warning-100" />}
       </span>
-      <span className={`flex-1 ${isCompleted ? 'line-through' : ''}`}>{todo.content}</span>
+      <span className={`min-w-0 flex-1 break-words ${isCompleted ? 'line-through' : ''}`}>
+        {todo.content}
+        {todo.status === 'blocked' && todo.blocker && <span className="block text-warning-100">{todo.blocker}</span>}
+      </span>
       {todo.priority === 'high' && !isCompleted && (
         <span className="shrink-0 rounded bg-warning-100/10 px-1 text-[length:var(--fs-xxs)] text-warning-100">!</span>
       )}

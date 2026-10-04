@@ -156,6 +156,10 @@ export class MockCatalog implements CatalogProvider, PackagesGateway {
     return null
   }
 
+  async findSessionByFile(): Promise<JsonObject | null> {
+    return null
+  }
+
   async listAllSessions(): Promise<JsonValue> {
     return this.store.list()
   }
@@ -675,6 +679,7 @@ export class MockPiSession implements SessionRuntime {
   async sendUserMessage(text: string, images?: ImageInput[], deliverAs?: "steer" | "followUp"): Promise<void> {
     if (deliverAs === "steer") return this.steer(text)
     if (deliverAs === "followUp") return this.followUp(text)
+    if (this.streaming) return this.followUp(text)
     return this.prompt(text)
   }
 

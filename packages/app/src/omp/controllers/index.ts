@@ -1,4 +1,5 @@
 import type { CommandRecord, ExtensionUiDialogResponse, JsonObject, JsonValue, RegistrySnapshot, CommandDescriptor, ToolDescriptor } from '@ompiui/protocol'
+import { isJsonObject } from '@ompiui/protocol'
 import type { SessionInfo } from '../vendor/pi-coding-agent'
 import type { Model, Api } from '../vendor/pi-ai'
 import * as transport from '../transport/index.js'
@@ -56,21 +57,44 @@ export async function deletePiSession(cwd: string, sessionFile: string, signal?:
 }
 
 /**
- * 打开 OMP 子代理会话（按文件直开，不依赖顶层会话扫描），返回运行时
- * session id 供导航。失败返回 null（按钮静默降级，不打断聊天流）。
+ * 子会话文件 → {运行时 session id, 目录} 的解析缓存。子会话 id 是磁盘身份，
+ * 映射不可变；解析走 session.findByFile（只读这一份 jsonl），再加并发合流
+ * 和永久缓存，避免长会话里每次展开都把 worker 打满。
  */
-export async function openSubagentSession(
+const subagentSessionLookups = new Map<string, Promise<{ id: string; directory: string }>>()
+
+/** 查看子会话只解析磁盘身份，不启动 Agent runtime，也不争用运行锁。 */
+export function openSubagentSession(
   directory: string,
   sessionFile: string,
   signal?: AbortSignal,
-): Promise<string | null> {
-  try {
-    const result = await openPiSession(directory, sessionFile, signal)
-    trackPiSession(result.sessionId, result.cwd ?? directory)
-    return result.sessionId
-  } catch {
-    return null
+): Promise<{ id: string; directory: string }> {
+  const normalizedFile = sessionFile.replace(/\\/g, '/')
+  const windowsPath = /^[a-z]:\//i.test(normalizedFile) || normalizedFile.startsWith('//')
+  const cacheKey = windowsPath ? normalizedFile.toLowerCase() : normalizedFile
+  const cached = subagentSessionLookups.get(cacheKey)
+  if (cached) return cached
+  const lookup = resolveSubagentSession(directory, normalizedFile, signal).catch(error => {
+    // 失败不缓存：子会话文件可能稍后才落盘，下次调用重试
+    subagentSessionLookups.delete(cacheKey)
+    throw error
+  })
+  subagentSessionLookups.set(cacheKey, lookup)
+  return lookup
+}
+
+async function resolveSubagentSession(
+  directory: string,
+  normalizedFile: string,
+  signal?: AbortSignal,
+): Promise<{ id: string; directory: string }> {
+  const found = await transport.findPiSessionByFile(normalizedFile, signal)
+  if (isJsonObject(found) && typeof found.id === 'string') {
+    const cwd = typeof found.cwd === 'string' && found.cwd ? found.cwd : directory
+    trackPiSession(found.id, cwd)
+    return { id: found.id, directory: cwd }
   }
+  throw new Error(`Subagent session not found: ${normalizedFile}`)
 }
 
 /**

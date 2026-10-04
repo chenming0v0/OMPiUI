@@ -1,4 +1,5 @@
 import type { JsonObject } from '@ompiui/protocol'
+import { subagentDisplayTitle } from './ompSubagentFormat'
 
 /**
  * OMP 子代理实时状态（来源：`omp --mode rpc` 的 subagent_lifecycle /
@@ -137,6 +138,18 @@ function normalizeStatus(value: unknown): OmpSubagentStatus {
   }
 }
 
+function isTerminalStatus(status: OmpSubagentStatus): boolean {
+  return status === 'completed' || status === 'failed' || status === 'aborted'
+}
+
+/** 事件可能从 session/server 两条流乱序到达；终态不能被旧的 running/pending 覆盖。 */
+function mergeStatus(current: OmpSubagentStatus, incoming: OmpSubagentStatus): OmpSubagentStatus {
+  if (isTerminalStatus(current) && !isTerminalStatus(incoming)) return current
+  if (isTerminalStatus(current) && isTerminalStatus(incoming) && current !== incoming) return current
+  if (current === 'running' && incoming === 'pending') return current
+  return incoming
+}
+
 function normalizeProgress(raw: unknown): OmpSubagentProgress | undefined {
   const record = asRecord(raw)
   if (!record) return undefined
@@ -267,19 +280,27 @@ export function transcriptItemsFromMessages(messages: unknown[]): OmpSubagentTra
   return items
 }
 
+const EMPTY_RUNS: OmpSubagentRun[] = []
+
 class OmpSubagentStore {
   /** run.id → run；全局扁平（run.id 在单个 omp 进程内唯一，跨进程冲突时后写者胜） */
   private runs = new Map<string, OmpSubagentRun>()
-  /** parentToolCallId → run.id（TaskRenderer 内联查找索引） */
-  private byToolCall = new Map<string, string>()
   /** sessionId → run.id[]（会话级面板用） */
   private bySession = new Map<string, string[]>()
+  /** parentToolCallId → run.id[]（TaskRenderer 分片索引；不扫整表） */
+  private byToolCall = new Map<string, string[]>()
   /** 用户从 HUD 清掉的终态 run：后续帧与快照恢复一律忽略 */
   private dismissed = new Set<string>(loadDismissedIds())
   private revision = 0
   private listeners = new Set<() => void>()
   /** useSyncExternalStore 要求 getSnapshot 返回稳定引用：按 revision 缓存 */
   private cachedSnapshot: OmpSubagentSnapshot = { runs: [], revision: 0 }
+  /** 查询键（toolCallId+parentSessionId）→ 版本号：只有该键涉及的 run 变化才递增 */
+  private keyVersions = new Map<string, number>()
+  /** 查询键 → 按版本缓存的分片（TaskRenderer 的 useSyncExternalStore 快照） */
+  private keyCache = new Map<string, { version: number; runs: OmpSubagentRun[] }>()
+  /** 通知合并：同一帧内的高频子代理帧只触发一轮 listener（rAF 对齐绘制） */
+  private notifyScheduled = false
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener)
@@ -296,16 +317,32 @@ class OmpSubagentStore {
     return this.cachedSnapshot
   }
 
-  /** TaskRenderer 按 task 工具调用的 call.id 查内联转录 */
-  getByToolCall = (toolCallId: string | undefined): OmpSubagentRun | undefined => {
-    if (!toolCallId) return undefined
-    const id = this.byToolCall.get(toolCallId)
-    return id ? this.runs.get(id) : undefined
-  }
-
   runsForSession(sessionId: string): OmpSubagentRun[] {
     const ids = this.bySession.get(sessionId) ?? []
     return ids.map(id => this.runs.get(id)).filter((run): run is OmpSubagentRun => Boolean(run))
+  }
+
+  /**
+   * 按 task 工具调用 call.id 查内联转录分片（TaskRenderer 的订阅快照）。
+   * 引用稳定性按查询键维护：别的 run 刷帧不会让本键的分片换引用，
+   * 否则长会话里每个 TaskRenderer 都跟着每一个子代理帧重渲染（卡死根因）。
+   */
+  getRunsForToolCall = (toolCallId: string | undefined, parentSessionId: string | null | undefined): OmpSubagentRun[] => {
+    if (!toolCallId) return EMPTY_RUNS
+    const key = `${parentSessionId ?? ''}\u0000${toolCallId}`
+    const version = this.keyVersions.get(key) ?? 0
+    const cached = this.keyCache.get(key)
+    if (cached && cached.version === version) return cached.runs
+    const ids = this.byToolCall.get(toolCallId) ?? []
+    const runs = ids
+      .map(id => this.runs.get(id))
+      .filter((run): run is OmpSubagentRun => {
+        if (!run) return false
+        return !parentSessionId || run.sessionId === parentSessionId
+      })
+      .sort((a, b) => a.index - b.index)
+    this.keyCache.set(key, { version, runs })
+    return runs
   }
 
   clearSession(sessionId: string): void {
@@ -313,7 +350,10 @@ class OmpSubagentStore {
     if (!ids) return
     for (const id of ids) {
       const run = this.runs.get(id)
-      if (run?.parentToolCallId) this.byToolCall.delete(run.parentToolCallId)
+      if (run) {
+        this.touchKey(run)
+        this.unlinkToolCall(run)
+      }
       this.runs.delete(id)
     }
     this.bySession.delete(sessionId)
@@ -322,15 +362,20 @@ class OmpSubagentStore {
 
   clearAll(): void {
     this.runs.clear()
-    this.byToolCall.clear()
     this.bySession.clear()
+    this.byToolCall.clear()
+    this.keyCache.clear()
+    this.keyVersions.clear()
     this.bump()
   }
 
   /** 从 HUD 清除一个 run（通常已是终态）：删除并记录，后续帧不再恢复 */
   dismiss(runId: string): void {
     const run = this.runs.get(runId)
-    if (run?.parentToolCallId) this.byToolCall.delete(run.parentToolCallId)
+    if (run) {
+      this.touchKey(run)
+      this.unlinkToolCall(run)
+    }
     const sessionIds = this.bySession.get(run?.sessionId ?? '')
     if (sessionIds && run) {
       const next = sessionIds.filter(id => id !== runId)
@@ -343,9 +388,53 @@ class OmpSubagentStore {
     this.bump()
   }
 
+  private unlinkToolCall(run: OmpSubagentRun): void {
+    const callId = run.parentToolCallId
+    if (!callId) return
+    const ids = this.byToolCall.get(callId)
+    if (!ids) return
+    const next = ids.filter(id => id !== run.id)
+    if (next.length > 0) this.byToolCall.set(callId, next)
+    else this.byToolCall.delete(callId)
+  }
+
+  private linkToolCall(run: OmpSubagentRun): void {
+    const callId = run.parentToolCallId
+    if (!callId) return
+    const ids = this.byToolCall.get(callId) ?? []
+    if (!ids.includes(run.id)) this.byToolCall.set(callId, [...ids, run.id])
+  }
+
+  /** run 的查找键（旧值 + 新值）全部标脏：受影响的 TaskRenderer 分片换引用 */
+  private touchKey(...runs: (OmpSubagentRun | undefined)[]): void {
+    const keys = new Set<string>()
+    for (const run of runs) {
+      if (!run) continue
+      const callId = run.parentToolCallId
+      if (!callId) continue
+      keys.add(`${run.sessionId}\u0000${callId}`)
+      // parentSessionId 为空的订阅（分屏/导航态切换）匹配任意会话
+      keys.add(`\u0000${callId}`)
+    }
+    for (const key of keys) this.keyVersions.set(key, (this.keyVersions.get(key) ?? 0) + 1)
+  }
+
   private bump(): void {
     this.revision += 1
-    for (const listener of this.listeners) listener()
+    this.scheduleNotify()
+  }
+
+  private scheduleNotify(): void {
+    if (this.notifyScheduled) return
+    this.notifyScheduled = true
+    const flush = () => {
+      this.notifyScheduled = false
+      for (const listener of this.listeners) listener()
+    }
+    // 子代理流式帧的到达率远高于绘制率；合并到下一帧前只通知一轮。
+    // revision 在 bump 时已同步递增，任何 getSnapshot 读到的都是最新数据。
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => flush())
+    else setTimeout(flush, 16)
   }
 
   private upsert(sessionId: string, runId: string, fn: (run: OmpSubagentRun) => OmpSubagentRun): void {
@@ -364,7 +453,11 @@ class OmpSubagentStore {
     }
     const next = fn({ ...base, transcript: [...base.transcript] })
     this.runs.set(runId, next)
-    if (next.parentToolCallId) this.byToolCall.set(next.parentToolCallId, runId)
+    if (existing && existing.parentToolCallId && existing.parentToolCallId !== next.parentToolCallId) {
+      this.unlinkToolCall(existing)
+    }
+    this.linkToolCall(next)
+    if (existing !== next) this.touchKey(existing, next)
     const sessionIds = this.bySession.get(next.sessionId) ?? []
     if (!sessionIds.includes(runId)) this.bySession.set(next.sessionId, [...sessionIds, runId])
     this.bump()
@@ -374,18 +467,18 @@ class OmpSubagentStore {
     const id = str(payload.id)
     if (!id) return
     this.upsert(sessionId, id, run => {
-      const status = normalizeStatus(payload.status)
-      const terminal = status === 'completed' || status === 'failed' || status === 'aborted'
+      const incomingStatus = payload.status === undefined ? run.status : normalizeStatus(payload.status)
+      const status = mergeStatus(run.status, incomingStatus)
       return {
         ...run,
         parentToolCallId: str(payload.parentToolCallId) ?? run.parentToolCallId,
         agent: str(payload.agent) ?? run.agent,
-        description: str(payload.description) ?? run.description,
+        description: subagentDisplayTitle(str(payload.description)) ?? run.description,
         status,
         sessionFile: str(payload.sessionFile) ?? run.sessionFile,
         index: typeof payload.index === 'number' ? payload.index : run.index,
-        detached: payload.detached === true,
-        endedAt: terminal ? Date.now() : run.endedAt,
+        detached: typeof payload.detached === 'boolean' ? payload.detached : run.detached,
+        endedAt: isTerminalStatus(status) && !run.endedAt ? Date.now() : run.endedAt,
       }
     })
   }
@@ -394,20 +487,23 @@ class OmpSubagentStore {
     // progress 帧没有 id 时按 index 归位
     let id = str(payload.id)
     if (!id && typeof payload.index === 'number') {
-      id = this.getSnapshot().runs.find(run => run.index === payload.index && run.sessionId === sessionId)?.id
+      id = this.runsForSession(sessionId).find(run => run.index === payload.index)?.id
     }
     if (!id) return
     this.upsert(sessionId, id, run => {
-      const progress = normalizeProgress(payload.progress)
+      const progress = normalizeProgress(payload.progress) ?? run.progress
+      const incomingStatus = progress?.status && progress.status !== 'pending' ? progress.status : run.status
+      const status = mergeStatus(run.status, incomingStatus)
       return {
         ...run,
         task: str(payload.task) ?? run.task,
-        description: str(payload.assignment) ?? run.description,
+        description: subagentDisplayTitle(str(payload.description), str(payload.assignment)) ?? run.description,
         parentToolCallId: str(payload.parentToolCallId) ?? run.parentToolCallId,
         sessionFile: str(payload.sessionFile) ?? run.sessionFile,
         agent: str(payload.agent) ?? run.agent,
         progress,
-        status: progress?.status && progress.status !== 'pending' ? progress.status : run.status,
+        status,
+        endedAt: isTerminalStatus(status) && !run.endedAt ? Date.now() : run.endedAt,
       }
     })
   }
@@ -443,18 +539,23 @@ class OmpSubagentStore {
       const record = asRecord(raw)
       const id = str(record?.id)
       if (!record || !id) continue
-      this.upsert(sessionId, id, run => ({
-        ...run,
-        parentToolCallId: str(record.parentToolCallId) ?? run.parentToolCallId,
-        agent: str(record.agent) ?? run.agent,
-        description: str(record.description) ?? run.description,
-        task: str(record.task) ?? run.task,
-        status: normalizeStatus(record.status ?? run.status),
-        sessionFile: str(record.sessionFile) ?? run.sessionFile,
-        index: typeof record.index === 'number' ? record.index : run.index,
-        detached: record.detached === true || run.detached,
-        progress: normalizeProgress(record.progress) ?? run.progress,
-      }))
+      this.upsert(sessionId, id, run => {
+        const incomingStatus = record.status === undefined ? run.status : normalizeStatus(record.status)
+        const status = mergeStatus(run.status, incomingStatus)
+        return {
+          ...run,
+          parentToolCallId: str(record.parentToolCallId) ?? run.parentToolCallId,
+          agent: str(record.agent) ?? run.agent,
+          description: subagentDisplayTitle(str(record.description)) ?? run.description,
+          task: str(record.task) ?? run.task,
+          status,
+          sessionFile: str(record.sessionFile) ?? run.sessionFile,
+          index: typeof record.index === 'number' ? record.index : run.index,
+          detached: typeof record.detached === 'boolean' ? record.detached : run.detached,
+          progress: normalizeProgress(record.progress) ?? run.progress,
+          endedAt: isTerminalStatus(status) && !run.endedAt ? Date.now() : run.endedAt,
+        }
+      })
     }
   }
 }

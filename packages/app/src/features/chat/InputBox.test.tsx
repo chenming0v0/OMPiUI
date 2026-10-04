@@ -13,6 +13,13 @@ vi.mock('../../omp/transport/index.js', () => ({
   getPiCommandCompletions: (...args: unknown[]) => completionsMock(...args),
 }))
 
+vi.mock('../../omp/capabilities', () => ({
+  usePiCapabilities: () => ({
+    promptSteer: true,
+    promptFollowUp: true,
+  }),
+}))
+
 function historyBranch(): PiBranchPage {
   return {
     items: historyTexts.map((text, index) => ({
@@ -497,6 +504,24 @@ describe('InputBox slash command selection', () => {
 
     await waitFor(() => {
       expect(onSend).toHaveBeenCalledWith('这是一个 test', [], { agent: undefined, variant: undefined })
+    })
+  })
+
+  it('queues a follow-up while the session is streaming', async () => {
+    const onSend = vi.fn().mockResolvedValue(true)
+
+    render(<InputBox paneId="pane-test" onSend={onSend} isStreaming />)
+
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
+    fireEvent.change(textarea, { target: { value: 'queued while busy' } })
+    fireEvent.click(screen.getByRole('button', { name: 'send' }))
+
+    await waitFor(() => {
+      expect(onSend).toHaveBeenCalledWith('queued while busy', [], {
+        agent: undefined,
+        variant: undefined,
+        delivery: 'followUp',
+      })
     })
   })
 

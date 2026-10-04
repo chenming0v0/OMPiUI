@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionNavigationContext } from '../../../../contexts/SessionNavigationContext'
 import { piSessionStateStore } from '../../../../omp/state/index.js'
+import { ompSubagentStore } from '../../../../omp/ompSubagentStore'
 import type { JsonObject } from '@ompiui/protocol'
 import type { PiToolExecution } from '../../../../omp/domain/index.js'
 import type { ExtractedToolData } from '../types'
@@ -16,6 +17,11 @@ vi.mock('react-i18next', () => ({
 const getOmpSubagentMessagesMock = vi.hoisted(() => vi.fn())
 vi.mock('../../../../omp/transport/index.js', () => ({
   getOmpSubagentMessages: getOmpSubagentMessagesMock,
+}))
+const openSubagentSessionMock = vi.hoisted(() => vi.fn())
+vi.mock('../../../../omp/controllers/index.js', () => ({
+  openSubagentSession: openSubagentSessionMock,
+  abortPiOperation: vi.fn(),
 }))
 
 vi.mock('../../../../utils/uiDisclosureState', () => ({
@@ -92,6 +98,19 @@ describe('TaskHeader', () => {
     expect(screen.getByText('explore').tagName).toBe('SPAN')
     expect(onToggle).not.toHaveBeenCalled()
   })
+
+  it('keeps navigation independent from disclosure when onOpenSession is provided', () => {
+    const onOpenSession = vi.fn()
+    const onToggle = vi.fn()
+    render(<TaskHeader agentType="scout" description="Read the project" status="completed" expanded={false} onToggle={onToggle} onOpenSession={onOpenSession} />)
+    fireEvent.click(screen.getByRole('button', { name: 'task.openSession' }))
+    fireEvent.click(screen.getByRole('button', { name: 'scout' }))
+    expect(onOpenSession).toHaveBeenCalledTimes(2)
+    expect(onToggle).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Read the project' }))
+    expect(onToggle).toHaveBeenCalledOnce()
+    expect(onOpenSession).toHaveBeenCalledTimes(2)
+  })
 })
 
 // ============================================
@@ -130,10 +149,10 @@ function completedTaskExecution(): PiToolExecution {
   }
 }
 
-function renderTask(execution: PiToolExecution) {
+function renderTask(execution: PiToolExecution, navigateToSession = vi.fn()) {
   return render(
     <SessionNavigationContext.Provider
-      value={{ navigateToSession: vi.fn(), currentSessionId: 'parent-session', currentDirectory: 'C:\\proj' }}
+      value={{ navigateToSession, currentSessionId: 'parent-session', currentDirectory: 'C:\\proj' }}
     >
       <TaskRenderer execution={execution} partKey="p1" data={noopData} onFullscreenChange={vi.fn()} />
     </SessionNavigationContext.Provider>,
@@ -144,6 +163,8 @@ describe('persisted subagent fallback', () => {
   beforeEach(() => {
     getOmpSubagentMessagesMock.mockReset()
     piSessionStateStore.clearAll()
+    ompSubagentStore.clearAll()
+    openSubagentSessionMock.mockReset()
   })
 
   it('derives the child session file from outputPath / parent session file', () => {
@@ -155,7 +176,7 @@ describe('persisted subagent fallback', () => {
   })
 
   it('builds a completed read-only run from the persisted result', () => {
-    const run = buildPersistedSubagentRun('call-1', { id: 'ReadmeScout', agent: 'scout', exitCode: 0 }, 'C:/x.jsonl')
+    const run = buildPersistedSubagentRun('call-1', { id: 'ReadmeScout', agent: 'scout', exitCode: 0 }, 'C:/x.jsonl', 'parent-session')
     expect(run).toMatchObject({
       parentToolCallId: 'call-1',
       agent: 'scout',
@@ -163,10 +184,11 @@ describe('persisted subagent fallback', () => {
       sessionFile: 'C:/x.jsonl',
       historyLoaded: true,
       detached: false,
+      sessionId: 'parent-session',
     })
-    const aborted = buildPersistedSubagentRun('call-1', { id: 'a', aborted: true }, undefined)
+    const aborted = buildPersistedSubagentRun('call-1', { id: 'a', aborted: true }, undefined, 'parent-session')
     expect(aborted?.status).toBe('aborted')
-    expect(buildPersistedSubagentRun('call-1', {}, undefined)).toBeUndefined()
+    expect(buildPersistedSubagentRun('call-1', {}, undefined, 'parent-session')).toBeUndefined()
   })
 
   it('shows the disk transcript instead of the waiting placeholder after reopen', async () => {
@@ -187,14 +209,112 @@ describe('persisted subagent fallback', () => {
       expect(screen.queryByText('task.waitingForResponse')).not.toBeInTheDocument()
     })
     expect(await screen.findByText('OMPiUI 摘要文本')).toBeInTheDocument()
-    // sessionFile 从 outputPath 同目录推导
     expect(getOmpSubagentMessagesMock).toHaveBeenCalledWith(
       'parent-session',
       { sessionFile: 'C:\\sessions\\proj\\2026-parent/ReadmeScout.jsonl' },
     )
-    // 状态行显示 agent 名（completed 绿点由样式类承载）；header 徽章也用同名
-    expect(screen.getAllByText('scout').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByRole('button', { name: 'scout' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'ReadmeScout · Summarize the project from README.md' })).toBeInTheDocument()
   })
+
+  it('maps out-of-order persisted siblings to their own names, transcripts and destinations', async () => {
+    const execution = completedTaskExecution()
+    execution.call.arguments = { tasks: [
+      { name: 'ReadmeScout', agent: 'scout', task: 'Read README' },
+      { name: 'SecurityReview', agent: 'reviewer', task: 'Review security' },
+    ] }
+    execution.result!.details = { results: [
+      { index: 1, id: 'SecurityReview', agent: 'reviewer', outputPath: 'C:/sessions/parent/SecurityReview.md', exitCode: 0 },
+      { index: 0, id: 'ReadmeScout', agent: 'scout', outputPath: 'C:/sessions/parent/ReadmeScout.md', exitCode: 0 },
+    ] }
+    getOmpSubagentMessagesMock.mockImplementation((_parent, { sessionFile }) => Promise.resolve({ messages: [
+      { role: 'assistant', content: [{ type: 'text', text: sessionFile.includes('ReadmeScout') ? 'README findings' : 'Security findings' }] },
+    ] }))
+    openSubagentSessionMock.mockImplementation((_directory, file) => Promise.resolve({
+      id: file.includes('ReadmeScout') ? 'child-readme' : 'child-security',
+      directory: 'C:\\proj',
+    }))
+    const navigate = vi.fn()
+    renderTask(execution, navigate)
+    expect(screen.getByRole('button', { name: 'ReadmeScout' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'SecurityReview' })).toBeInTheDocument()
+    expect(await screen.findByText('README findings')).toBeInTheDocument()
+    expect(await screen.findByText('Security findings')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'scout' }))
+    await waitFor(() => expect(navigate).toHaveBeenLastCalledWith('child-readme', 'C:\\proj'))
+    fireEvent.click(screen.getAllByRole('button', { name: 'task.openSession' })[1])
+    await waitFor(() => expect(navigate).toHaveBeenLastCalledWith('child-security', 'C:\\proj'))
+  })
+
+  it('never assigns the only live run to its not-yet-started sibling', () => {
+    ompSubagentStore.applyLifecycle('parent-session', { id: 'first', parentToolCallId: 'batch-live', index: 0, agent: 'scout', status: 'started', sessionFile: 'C:/sessions/parent/first.jsonl' })
+    getOmpSubagentMessagesMock.mockResolvedValue({ messages: [] })
+    renderTask({ call: { type: 'toolCall', id: 'batch-live', name: 'task', arguments: { tasks: [
+      { name: 'First', agent: 'scout', task: 'Read first' }, { name: 'Second', agent: 'reviewer', task: 'Review second' },
+    ] } } })
+    expect(screen.getByRole('button', { name: 'scout' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'reviewer' })).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'task.openSession' })).toHaveLength(1)
+  })
+
+  it('preserves both child transcript nodes while their progress frames alternate', () => {
+    for (const [id, index] of [['child-a', 0], ['child-b', 1]] as const) {
+      ompSubagentStore.applyLifecycle('parent-session', {
+        id, index, parentToolCallId: 'call-task-1', status: 'started',
+      })
+      ompSubagentStore.applyEvent('parent-session', {
+        id, event: { type: 'message_end', message: { role: 'assistant', content: `output from ${id}` } },
+      })
+    }
+    renderTask({ call: completedTaskExecution().call })
+    const childA = screen.getByText('output from child-a')
+    const childB = screen.getByText('output from child-b')
+    for (const id of ['child-a', 'child-b', 'child-a']) {
+      act(() => {
+        ompSubagentStore.applyProgress('parent-session', {
+          id, parentToolCallId: 'call-task-1', progress: { status: 'running', tokens: 42 },
+        })
+      })
+      expect(screen.getByText('output from child-a')).toBe(childA)
+      expect(screen.getByText('output from child-b')).toBe(childB)
+    }
+  })
+
+  it('does not put the wrapping assignment prompt in the task title', () => {
+    getOmpSubagentMessagesMock.mockResolvedValue({ messages: [] })
+    ompSubagentStore.applyLifecycle('parent-session', {
+      id: 'ReadmeScout',
+      parentToolCallId: 'call-wrap',
+      index: 0,
+      agent: 'scout',
+      status: 'started',
+      sessionFile: 'C:/sessions/parent/ReadmeScout.jsonl',
+      description: 'Complete assignment thoroughly:\n\n# Target',
+    })
+    renderTask({
+      call: {
+        type: 'toolCall',
+        id: 'call-wrap',
+        name: 'task',
+        arguments: {
+          tasks: [{ name: 'ReadmeScout', agent: 'scout', task: 'Complete assignment thoroughly:\n\n# Target' }],
+        },
+      },
+    })
+    expect(screen.getByRole('button', { name: 'ReadmeScout' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Complete assignment thoroughly/ })).not.toBeInTheDocument()
+  })
+
+  it('shows an opening failure instead of a silent no-op', async () => {
+    getOmpSubagentMessagesMock.mockResolvedValue({ messages: [] })
+    openSubagentSessionMock.mockRejectedValue(new Error('Child transcript is missing'))
+    const navigate = vi.fn()
+    renderTask(completedTaskExecution(), navigate)
+    fireEvent.click(screen.getByRole('button', { name: 'task.openSession' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Child transcript is missing')
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
 
   it('keeps the waiting placeholder when nothing is persisted', () => {
     renderTask({

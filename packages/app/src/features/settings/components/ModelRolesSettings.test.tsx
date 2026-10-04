@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import i18n from '../../../i18n'
 import { ModelRolesSettings } from './ModelRolesSettings'
 import type { AnyModel } from '../../../utils/modelUtils'
 
@@ -58,7 +59,8 @@ function makeModel(id: string, reasoning = true): AnyModel {
 const MODELS = [makeModel('gpt-4.1'), makeModel('gpt-4o-mini', false)]
 
 describe('ModelRolesSettings', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18n.changeLanguage('en')
     usePiModelsMock.mockReturnValue({ models: MODELS, isLoading: false })
     getPiModelRolesMock.mockReset().mockResolvedValue({})
     setPiModelRolesMock.mockReset().mockImplementation(async (roles: Record<string, string>) => roles)
@@ -69,19 +71,21 @@ describe('ModelRolesSettings', () => {
     render(<ModelRolesSettings />)
 
     await waitFor(() => {
-      expect(screen.queryByText('Model roles')).not.toBeInTheDocument()
+      expect(screen.queryByText('Agent model configuration')).not.toBeInTheDocument()
     })
   })
 
-  it('writes a role assignment with thinking suffix when a role model is picked', async () => {
+  it('keeps edits local until Save, then writes the role assignment', async () => {
     getPiModelRolesMock.mockResolvedValue({ smol: 'openai/gpt-4o-mini:low' })
     render(<ModelRolesSettings />)
 
-    // 选择器按角色行顺序排列：第一个 stub 是 DEFAULT 角色行
     await waitFor(() => {
       expect(screen.getAllByTestId('model-selector-stub').length).toBeGreaterThan(0)
     })
     fireEvent.click(screen.getAllByTestId('model-selector-stub')[0]) // DEFAULT 角色行
+    expect(setPiModelRolesMock).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() => {
       expect(setPiModelRolesMock).toHaveBeenCalledWith({
@@ -91,22 +95,69 @@ describe('ModelRolesSettings', () => {
     })
   })
 
-  it('clears a role assignment from the row kebab menu', async () => {
+  it('reverts draft edits when Cancel is clicked', async () => {
+    getPiModelRolesMock.mockResolvedValue({ default: 'openai/gpt-4o-mini' })
+    render(<ModelRolesSettings />)
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4o-mini')
+    })
+    fireEvent.click(screen.getAllByTestId('model-selector-stub')[0])
+    expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4.1')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4o-mini')
+    })
+    expect(setPiModelRolesMock).not.toHaveBeenCalled()
+  })
+
+  it('clears a role assignment from the row kebab menu after Save', async () => {
     getPiModelRolesMock.mockResolvedValue({ default: 'openai/gpt-4.1:xhigh' })
     render(<ModelRolesSettings />)
 
     await waitFor(() => {
       expect(screen.getAllByRole('button', { name: 'Role options' }).length).toBeGreaterThan(0)
     })
-    // 第一张角色卡片是 DEFAULT，点开它的 kebab 菜单再清除
     fireEvent.click(screen.getAllByRole('button', { name: 'Role options' })[0])
 
     const clearItem = await screen.findByText('Clear')
     fireEvent.click(clearItem)
+    expect(setPiModelRolesMock).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() => {
       expect(setPiModelRolesMock).toHaveBeenCalledWith({})
     })
+  })
+
+  it('places thinking next to the model and uses a variant placeholder when unset', async () => {
+    getPiModelRolesMock.mockResolvedValue({ default: 'openai/gpt-4.1' })
+    render(<ModelRolesSettings />)
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4.1')
+    })
+
+    const row = screen.getAllByTestId('model-selector-stub')[0].closest('.model-role-row')
+    expect(row).not.toBeNull()
+    expect(row?.querySelector('.model-role-secondary')).toBeNull()
+    expect(row?.querySelector('.role-variant-select')).toHaveTextContent('variant')
+    expect(screen.queryByText('Thinking level')).not.toBeInTheDocument()
+  })
+
+  it('opens a click help popover with the role description', async () => {
+    getPiModelRolesMock.mockResolvedValue({ default: 'openai/gpt-4.1' })
+    render(<ModelRolesSettings />)
+
+    const help = await screen.findByRole('button', {
+      name: 'Main model for regular chat; also the fallback when other roles are unassigned.',
+    })
+    expect(screen.queryByText('Main model for regular chat; also the fallback when other roles are unassigned.')).not.toBeInTheDocument()
+    fireEvent.click(help)
+    expect(await screen.findByText('Main model for regular chat; also the fallback when other roles are unassigned.')).toBeInTheDocument()
   })
 
   it('keeps the thinking suffix when changing a role model without touching levels', async () => {
@@ -118,6 +169,7 @@ describe('ModelRolesSettings', () => {
     })
     // slow 是第三个 chat 角色（default, smol, slow）
     fireEvent.click(screen.getAllByTestId('model-selector-stub')[2])
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() => {
       expect(setPiModelRolesMock).toHaveBeenCalledWith({ slow: 'openai/gpt-4.1:high' })

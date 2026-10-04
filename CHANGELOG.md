@@ -2,6 +2,27 @@
 
 OMPiUI 自己的版本从 0.1.0 起算。`packages/app/CHANGELOG.md` 是上游 PiUI 历史，不参与本仓库发版。
 
+## [Unreleased]
+
+## [v0.3.1] - 2026-10-04
+
+- ui: 设置页改为有边界的分组面板和独立导航；模型可见性支持折叠。Agent 模型配置改为 Slim 式表单：右对齐角色名、主模型与思考强度同一行、底部取消/保存，不再逐项立即写入。
+- fix: 折叠设置内容不再接受键盘焦点；搜索定位会自动展开目标设置面板。
+- feat: 后台任务完成消息渲染为结构化卡片，保留原始输出。
+- fix: 嵌套子代理会话不再显示成 fork。
+- fix: 多个子代理同时推进时 UI 卡死——TaskRenderer 改为按 toolCallId 分片订阅、store 通知合到下一帧；历史转录按需拉取，打开子会话改为直查单文件。
+- fix: 子代理跳转失败时不再静默；侧栏和任务卡标题优先用任务名，丢掉 OMP 注入的包装提示词。
+- fix: 同一 task 下并发子代理不再互相覆盖；迟到的 lifecycle/progress 帧不能把已完成状态闪回运行中。
+- fix: 工作中发送的消息进入 follow-up 队列，不再因 isStreaming 滞后被当成新 prompt 丢掉。
+- ui: put Agent model thinking beside the primary selector (ebeb694)
+- fix: lock concurrent subagent status, queue busy follow-ups, restyle Agent models (6b73a09)
+- fix: make subagent jump failures visible and stop using wrapping prompts as names (8b484d9)
+- fix: stop the UI freeze when many subagents stream at once (7be9ccb)
+- feat: render native async-result custom messages as job cards (069b057)
+- fix: stop labeling nested subagent sessions as forks (a153d32)
+- ui: restyle settings into bounded panels with independent navigation (0ab82f4)
+- fix: render OMP native phases[].tasks[] todo snapshots (045d3b9)
+
 ## [v0.3.0] - 2026-10-03
 
 - chore: ignore the local .zcode workspace directory (691904c)
@@ -57,6 +78,8 @@ OMPiUI 自己的版本从 0.1.0 起算。`packages/app/CHANGELOG.md` 是上游 P
 - chore: init repo with gitignore (91c4087)
 
 ## [Unreleased]
+
+- fix: Todo 工具适配 OMP 原生 `phases[].tasks[]` 快照，按 OpenCodeUI 的任务卡片显示阶段分组、进度、状态图标和阻塞原因，不再回退为 Input/Output；输入框 Todo 入口共用数据适配，空快照可清除旧任务，失败操作保留错误提示，历史 TodoWrite 清单仍可显示。
 
 - feat: 自建中转（内网穿透）—— 新包 `@ompiui/relay`（bin `omp-relay`）实现 Pebrel 式反向隧道中转：电脑端主动拨号到自己的 VPS（NAT/防火墙后可用，无需公网 IP/端口转发），公网访客走普通 HTTP(S) 入口，每个请求被翻译成控制连接上的一条虚拟连接（open → body 流 → head/响应体/end），WS upgrade（事件流/终端流）101 头保真后两侧 socket 纯字节拼接。安全语义沿用 Pebrel：接入密钥只存 SHA-256 摘要（timing-safe 比较）、重复接入拒绝（先到先得）、30s 心跳、断线指数退避、无存储转发（离线 502 `TUNNEL_OFFLINE`）；限流 100 msg/s、每隧道 64 并发、帧 ≤64KiB，背压按 bufferedAmount 高水位暂停源流。路由支持 `host` 绑定与 `<id>.<domain>` 子域名，未配置任何显式路由时单隧道兜底（配了就不兜底，未匹配 Host 拒绝）；`omp-relay init` 一条命令生成配置 + 43 字符密钥并打印可直接粘贴的 `OMPIUI_TUNNEL_*`，支持内置 TLS 或 Caddy 反代。19 个单测 + 全链路集成测试
 - feat: server 内嵌隧道客户端与动态公网入口 —— 配置 `OMPIUI_TUNNEL_URL/KEY/ID`（或 `--tunnel-*`）后 server 主动拨号到中转并保活（500ms×2ⁿ 上限 15s + 抖动重连），公网请求被重放到本机 `127.0.0.1:port`；有效公网入口 = 显式 `OMPIUI_PUBLIC_BASE_URL` ?? 中转上报地址，Origin 白名单（HTTP + WS 两处）改为动态取值自动纳入隧道公网 origin，share 链接/启动日志同步切换；新增 `GET /api/v1/host/tunnel` 状态端点，`ShareInfo` 附带 tunnel 信息。集成测试覆盖 HTTP/WS 透传、干净停止与中转重启后重连

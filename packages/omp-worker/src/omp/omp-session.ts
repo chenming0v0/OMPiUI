@@ -845,6 +845,7 @@ export class OmpRpcSession implements SessionRuntime {
   async sendUserMessage(text: string, images?: ImageInput[], deliverAs?: "steer" | "followUp"): Promise<void> {
     if (deliverAs === "steer") return this.steer(text, images)
     if (deliverAs === "followUp") return this.followUp(text, images)
+    if (this.currentStreaming) return this.followUp(text, images)
     return this.prompt(text, images)
   }
 

@@ -127,6 +127,7 @@ export const PI_COMMAND_SPECS = [
   { name: "session.preview", scope: "global", description: "Read a Pi session without opening an agent runtime", paramsSchema: SESSION_PREVIEW_PARAMS, queue: "immediate", idempotent: true },
   { name: "session.children", scope: "global", description: "List OMP subagent (child) session files nested under a parent session file", paramsSchema: objectSchema({ sessionFile: STRING }, ["sessionFile"]), queue: "immediate", idempotent: true },
   { name: "session.findById", scope: "global", description: "Resolve a session id to its file, including OMP subagent (child) sessions", paramsSchema: objectSchema({ sessionId: STRING }, ["sessionId"]), queue: "immediate", idempotent: true },
+  { name: "session.findByFile", scope: "global", description: "Resolve an OMP session jsonl path to its disk identity without listing siblings", paramsSchema: objectSchema({ sessionFile: STRING }, ["sessionFile"]), queue: "immediate", idempotent: true },
   { name: "session.delete", scope: "global", description: "Delete a Pi session file", paramsSchema: objectSchema({ cwd: STRING, sessionFile: STRING }, ["cwd", "sessionFile"]), queue: "serialized" },
   { name: "models.list", scope: "global", description: "List Pi models", queue: "immediate", idempotent: true },
   { name: "settings.get", scope: "global", description: "Read Pi settings for a workspace", paramsSchema: CWD_PARAMS, queue: "immediate", idempotent: true },
@@ -252,6 +253,7 @@ export type PiCommandParams = CoreCommandParams & {
   "session.preview": { sessionId: string } & PiPageParams
   "session.children": { sessionFile: string }
   "session.findById": { sessionId: string }
+  "session.findByFile": { sessionFile: string }
   "session.delete": { cwd: string; sessionFile: string }
   "models.list": Record<string, never>
   "settings.get": { cwd: string }

@@ -117,6 +117,7 @@ export interface CatalogProvider {
   listAllSessions(): Promise<JsonValue>
   listChildSessions(parentSessionFile: string): Promise<JsonValue>
   findSessionById(sessionId: string): Promise<JsonObject | null>
+  findSessionByFile(sessionFile: string): Promise<JsonObject | null>
   createSession(cwd: string): Promise<JsonValue>
   previewSession(cwd: string, sessionFile: string, params?: { cursor?: string; limit?: number; maxBytes?: number }): Promise<JsonValue>
   previewSessionById(sessionId: string, params?: { cursor?: string; limit?: number; maxBytes?: number }): Promise<JsonValue>

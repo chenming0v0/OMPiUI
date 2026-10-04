@@ -192,7 +192,7 @@ export function ModelsSettings() {
   return (
     <div>
       <ModelRolesSettings />
-      <SettingsSection title={t('models.visibility')} description={t('models.visibilityDesc')}>
+      <SettingsSection title={t('models.visibility')} description={t('models.visibilityDesc')} collapsible className="model-visibility-section">
       <div className="relative group">
         <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 text-text-400 w-3.5 h-3.5 group-focus-within:text-accent-main-100 transition-colors pointer-events-none" />
         <input
@@ -205,7 +205,7 @@ export function ModelsSettings() {
           autoCorrect="off"
           autoComplete="off"
           autoCapitalize="off"
-          className="w-full h-9 bg-bg-200/70 hover:bg-bg-200 border border-border-200/50 rounded-lg pl-9 pr-9 text-[length:var(--fs-sm)] text-text-100 placeholder:text-text-400/70 focus:outline-none transition-colors"
+          className="w-full h-8 bg-bg-200 border border-border-200 rounded-md pl-9 pr-9 text-[length:var(--fs-sm)] text-text-100 placeholder:text-text-400 focus:outline-none focus-visible:border-accent-main-100 focus-visible:ring-1 focus-visible:ring-accent-main-100/30 transition-colors"
         />
         {query && (
           <button
@@ -226,7 +226,7 @@ export function ModelsSettings() {
           {query ? t('models.noResults') : t('models.empty')}
         </div>
       ) : (
-        <div>
+        <div className="divide-y divide-border-200/50">
           {groups.map((group, groupIndex) => {
             const providerModels = models.filter(model => model.provider === group.providerId)
             const providerVisibleCount = providerModels.filter(
@@ -250,7 +250,7 @@ export function ModelsSettings() {
                     title={group.providerName}
                     className="h-7 flex-1 min-w-0 flex items-center gap-1.5 rounded-md text-left outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent-main-100"
                   >
-                    <span className="min-w-0 text-[length:var(--fs-xxs)] font-semibold text-text-400/70 uppercase tracking-wider truncate">
+                    <span className="min-w-0 text-[length:var(--fs-xs)] font-semibold text-text-300 truncate">
                       {group.providerName}
                     </span>
                     <span className="text-[length:var(--fs-xs)] text-text-500 shrink-0 tabular-nums">
@@ -293,8 +293,8 @@ export function ModelsSettings() {
                             if (disabled && !e.shiftKey && !isModClick(e)) return
                             handleModelActivate(model, e)
                           }}
-                          className={`group w-full flex items-start justify-between gap-3 px-2.5 py-2 rounded-lg transition-colors select-none
-                            ${disabled ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-bg-200/40'}`}
+                          className={`group w-full flex items-start justify-between gap-3 px-2.5 py-2 rounded-md transition-colors select-none
+                            ${disabled ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-bg-200/60'}`}
                         >
                           <button
                             type="button"

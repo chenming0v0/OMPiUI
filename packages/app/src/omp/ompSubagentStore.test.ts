@@ -58,6 +58,37 @@ describe('ompSubagentStore HUD', () => {
     // 非 detached 的快照条目只进 store（内联视图用），不进 HUD
     expect(selectHudRuns(ompSubagentStore.getSnapshot()).some(run => run.id === 'snap-2')).toBe(false)
   })
+
+  it('keeps concurrent runs for one task and never regresses a terminal run', () => {
+    ompSubagentStore.applyLifecycle('session-task', {
+      id: 'child-a', parentToolCallId: 'task-call', detached: false, status: 'started', index: 0,
+    })
+    ompSubagentStore.applyLifecycle('session-task', {
+      id: 'child-b', parentToolCallId: 'task-call', detached: false, status: 'started', index: 1,
+    })
+
+    expect(ompSubagentStore.getRunsForToolCall('task-call', 'session-task').map(run => run.id)).toEqual(['child-a', 'child-b'])
+
+    ompSubagentStore.applyLifecycle('session-task', {
+      id: 'child-a', parentToolCallId: 'task-call', status: 'completed', index: 0,
+    })
+    // 迟到的 started/部分 lifecycle 帧不能让已完成子代理重新闪回运行中。
+    ompSubagentStore.applyLifecycle('session-task', {
+      id: 'child-a', parentToolCallId: 'task-call', status: 'started', index: 0,
+    })
+    ompSubagentStore.applyProgress('session-task', {
+      id: 'child-a', progress: { status: 'running', tokens: 50 },
+    })
+    ompSubagentStore.applySnapshot('session-task', [
+      { id: 'child-a', status: 'running' },
+      { id: 'child-b', status: 'pending' },
+    ])
+
+    expect(ompSubagentStore.getRunsForToolCall('task-call', 'session-task').map(run => [run.id, run.status, run.detached])).toEqual([
+      ['child-a', 'completed', false],
+      ['child-b', 'running', false],
+    ])
+  })
 })
 
 /**
@@ -185,5 +216,101 @@ describe('ompSubagentStore disk backfill', () => {
     // 未知 run：不凭空创建
     ompSubagentStore.applyHistory('session-h', 'hist-ghost', [{ role: 'user', content: 'x' }])
     expect(ompSubagentStore.getSnapshot().runs.some(item => item.id === 'hist-ghost')).toBe(false)
+  })
+})
+
+/**
+ * 内联转录分片（getRunsForToolCall）的订阅语义：TaskRenderer 按 call.id
+ * 订阅自己的分片，引用稳定性是防卡死的关键——别的 run 刷帧绝不能让
+ * 本键分片换引用，否则长会话里每个 task 行都跟着每个子代理帧重渲染。
+ */
+describe('ompSubagentStore toolCall slices', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    ompSubagentStore.clearAll()
+  })
+
+  it('filters by call id and parent session', () => {
+    ompSubagentStore.applyLifecycle('session-a', { id: 'run-1', detached: false, status: 'started', agent: 'task', parentToolCallId: 'call-1', index: 0 })
+    ompSubagentStore.applyLifecycle('session-b', { id: 'run-2', detached: false, status: 'started', agent: 'task', parentToolCallId: 'call-1', index: 1 })
+    ompSubagentStore.applyLifecycle('session-a', { id: 'run-3', detached: false, status: 'started', agent: 'task', parentToolCallId: 'call-2', index: 2 })
+
+    expect(ompSubagentStore.getRunsForToolCall('call-1', 'session-a').map(run => run.id)).toEqual(['run-1'])
+    expect(ompSubagentStore.getRunsForToolCall('call-1', undefined).map(run => run.id)).toEqual(['run-1', 'run-2'])
+    expect(ompSubagentStore.getRunsForToolCall('call-2', 'session-a').map(run => run.id)).toEqual(['run-3'])
+    expect(ompSubagentStore.getRunsForToolCall(undefined, 'session-a')).toEqual([])
+  })
+
+  it('keeps the slice reference stable while unrelated runs stream', () => {
+    ompSubagentStore.applyLifecycle('session-a', { id: 'run-1', detached: false, status: 'started', agent: 'task', parentToolCallId: 'call-1', index: 0 })
+    ompSubagentStore.applyLifecycle('session-a', { id: 'run-2', detached: false, status: 'started', agent: 'task', parentToolCallId: 'call-2', index: 1 })
+    const first = ompSubagentStore.getRunsForToolCall('call-1', 'session-a')
+
+    // 别的 run 连刷 20 帧：call-1 的分片保持同一引用
+    for (let i = 0; i < 20; i++) {
+      ompSubagentStore.applyEvent('session-a', { id: 'run-2', event: { type: 'tool_execution_end', toolName: 'read' } })
+    }
+    expect(ompSubagentStore.getRunsForToolCall('call-1', 'session-a')).toBe(first)
+
+    // 本 run 刷帧：分片换引用，内容同步更新
+    ompSubagentStore.applyEvent('session-a', { id: 'run-1', event: { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } } })
+    const after = ompSubagentStore.getRunsForToolCall('call-1', 'session-a')
+    expect(after).not.toBe(first)
+    expect(after[0]?.transcript.map(item => item.text)).toEqual(['hi'])
+  })
+
+  it('invalidates slices on dismiss and clearSession', () => {
+    ompSubagentStore.applyLifecycle('session-a', { id: 'run-1', detached: false, status: 'started', agent: 'task', parentToolCallId: 'call-1', index: 0 })
+    const first = ompSubagentStore.getRunsForToolCall('call-1', 'session-a')
+    expect(first.map(run => run.id)).toEqual(['run-1'])
+
+    ompSubagentStore.dismiss('run-1')
+    const afterDismiss = ompSubagentStore.getRunsForToolCall('call-1', 'session-a')
+    expect(afterDismiss).toEqual([])
+    expect(afterDismiss).not.toBe(first)
+
+    ompSubagentStore.applyLifecycle('session-a', { id: 'run-4', detached: false, status: 'started', agent: 'task', parentToolCallId: 'call-1', index: 3 })
+    expect(ompSubagentStore.getRunsForToolCall('call-1', 'session-a').map(run => run.id)).toEqual(['run-4'])
+
+    ompSubagentStore.clearSession('session-a')
+    expect(ompSubagentStore.getRunsForToolCall('call-1', 'session-a')).toEqual([])
+  })
+
+  it('coalesces high-frequency frames into one listener notification per frame', async () => {
+    let notifications = 0
+    const unsubscribe = ompSubagentStore.subscribe(() => { notifications += 1 })
+    // 排掉 beforeEach clearAll 留下的 rAF，避免计数漂
+    await new Promise<void>(resolve => { requestAnimationFrame(() => resolve()) })
+    notifications = 0
+    ompSubagentStore.applyLifecycle('session-a', { id: 'coalesce-1', detached: false, status: 'started', agent: 'task', index: 0 })
+    for (let i = 0; i < 50; i++) {
+      ompSubagentStore.applyEvent('session-a', { id: 'coalesce-1', event: { type: 'message_update', message: { role: 'assistant', content: [{ type: 'text', text: `chunk ${i}` }] } } })
+    }
+    // 数据同步可见（revision 在 bump 时已推进），listener 通知合并到下一帧
+    const run = ompSubagentStore.getSnapshot().runs.find(item => item.id === 'coalesce-1')
+    expect(run?.transcript.length).toBeGreaterThan(0)
+    expect(notifications).toBe(0)
+    await new Promise<void>(resolve => { requestAnimationFrame(() => resolve()) })
+    expect(notifications).toBe(1)
+    unsubscribe()
+  })
+
+  it('does not use the wrapping assignment prompt as the HUD title', () => {
+    ompSubagentStore.applyLifecycle('session-s', {
+      id: 'scout-run',
+      parentToolCallId: 'call-batch',
+      index: 0,
+      agent: 'scout',
+      status: 'started',
+      description: 'Complete assignment thoroughly:\n\n# Target',
+    })
+    ompSubagentStore.applyProgress('session-s', {
+      id: 'scout-run',
+      assignment: 'Complete assignment thoroughly:\n\n# Target',
+      task: 'Complete assignment thoroughly:\n\n# Target',
+    })
+    const run = ompSubagentStore.getRunsForToolCall('call-batch', 'session-s')[0]
+    expect(run?.description).toBeUndefined()
+    expect(run?.task).toMatch(/^Complete assignment thoroughly/)
   })
 })

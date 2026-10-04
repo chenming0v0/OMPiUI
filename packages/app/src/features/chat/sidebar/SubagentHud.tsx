@@ -4,7 +4,7 @@ import { AgentIcon, ChevronDownIcon, CloseIcon, StopIcon } from '../../../compon
 import { useSessionNavigation } from '../../../contexts/SessionNavigationContext'
 import { abortPiOperation, openSubagentSession } from '../../../omp/controllers/index.js'
 import { ompSubagentStore, selectHudRuns, type OmpSubagentRun } from '../../../omp/ompSubagentStore'
-import { formatCompactDuration, formatCompactTokens } from '../../../omp/ompSubagentFormat'
+import { formatCompactDuration, formatCompactTokens, subagentDisplayTitle } from '../../../omp/ompSubagentFormat'
 import { activeSessionStore } from '../../../store/activeSessionStore'
 
 // ============================================
@@ -14,7 +14,7 @@ import { activeSessionStore } from '../../../store/activeSessionStore'
 // 常驻钉在侧栏内容区顶部（recents/active 两个 tab 都可见）。
 // 数据源是 ompSubagentStore 的 detached run：
 // - 运行中的条目即使父会话没有打开 pane 也会经 server 流镜像推进
-// - 点击行跳到父会话（TaskRenderer 内联视图承接转录）
+// - 点击行打开子会话磁盘预览，不启动子代理运行时
 // - 终态条目可单条清除或一键清空；清除记录持久化到 localStorage
 // ============================================
 
@@ -43,6 +43,7 @@ export const SubagentHud = memo(function SubagentHud({ selectedSessionId, onSele
     ompSubagentStore.getSnapshot,
   )
   const [collapsed, setCollapsed] = useState(loadCollapsed)
+  const [openError, setOpenError] = useState<string | null>(null)
 
   const runs = useMemo(() => selectHudRuns(snapshot), [snapshot])
   const runningCount = useMemo(
@@ -69,9 +70,12 @@ export const SubagentHud = memo(function SubagentHud({ selectedSessionId, onSele
     (run: OmpSubagentRun) => {
       const directory = activeSessionStore.getSessionMeta(run.sessionId)?.directory ?? currentDirectory ?? ''
       if (run.sessionFile) {
-        void openSubagentSession(directory, run.sessionFile).then(id => {
-          if (id) navigateToSession(id, directory || undefined)
+        setOpenError(null)
+        void openSubagentSession(directory, run.sessionFile).then(target => {
+          navigateToSession(target.id, target.directory || undefined)
           if (window.innerWidth < 768) onCloseMobile?.()
+        }).catch((error: unknown) => {
+          setOpenError(error instanceof Error ? error.message : String(error))
         })
         return
       }
@@ -139,6 +143,7 @@ export const SubagentHud = memo(function SubagentHud({ selectedSessionId, onSele
             </button>
           )}
         </div>
+        {openError && <p role="alert" className="px-2 pb-2 text-[length:var(--fs-xs)] text-danger-100 break-words">{openError}</p>}
 
         {!collapsed && (
           <div className="px-1 pb-1 space-y-0.5">
@@ -172,7 +177,7 @@ const SubagentHudRow = memo(function SubagentHudRow({ run, isSelected, onSelect,
   const terminal = isTerminal(run)
   const isFailed = run.status === 'failed' || run.status === 'aborted'
   const progress = run.progress
-  const description = run.description || run.task || run.agent
+  const description = subagentDisplayTitle(run.description, run.task, run.agent) ?? run.agent
   const durationMs = terminal
     ? (run.endedAt ?? 0) - run.startedAt || progress?.durationMs
     : progress?.durationMs

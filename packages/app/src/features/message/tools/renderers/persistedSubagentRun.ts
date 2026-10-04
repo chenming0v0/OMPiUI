@@ -1,3 +1,4 @@
+import { subagentDisplayTitle } from '../../../../omp/ompSubagentFormat'
 import type { OmpSubagentRun, OmpSubagentStatus } from '../../../../omp/ompSubagentStore'
 
 /**
@@ -23,6 +24,8 @@ export interface PersistedSubagentResult {
   tokens?: number
   durationMs?: number
   outputPath?: string
+  sessionFile?: string
+  output?: string
 }
 
 function dirnameOf(value: string): string {
@@ -36,6 +39,7 @@ export function deriveChildSessionFile(
   result: PersistedSubagentResult,
   parentSessionFile?: string,
 ): string | undefined {
+  if (typeof result.sessionFile === 'string' && result.sessionFile.trim()) return result.sessionFile
   const id = typeof result.id === 'string' ? result.id : undefined
   if (!id) return undefined
   if (typeof result.outputPath === 'string' && result.outputPath.trim()) {
@@ -47,19 +51,21 @@ export function deriveChildSessionFile(
   return undefined
 }
 
-export function extractFirstPersistedResult(
+export function extractPersistedResults(
   details: Record<string, unknown> | undefined,
-): PersistedSubagentResult | undefined {
+): PersistedSubagentResult[] {
   const results = details?.results
-  if (!Array.isArray(results)) return undefined
-  const first = results.find(item => item && typeof item === 'object' && !Array.isArray(item))
-  return first ? first as unknown as PersistedSubagentResult : undefined
+  if (!Array.isArray(results)) return []
+  return results.filter((item): item is PersistedSubagentResult =>
+    Boolean(item && typeof item === 'object' && !Array.isArray(item) && typeof item.id === 'string'),
+  )
 }
 
 export function buildPersistedSubagentRun(
   callId: string,
   result: PersistedSubagentResult,
   sessionFile: string | undefined,
+  parentSessionId: string,
 ): OmpSubagentRun | undefined {
   if (typeof result.id !== 'string' || !result.id) return undefined
   const status: OmpSubagentStatus = result.aborted === true
@@ -68,11 +74,11 @@ export function buildPersistedSubagentRun(
       ? 'completed'
       : 'failed'
   return {
-    id: `persisted:${callId}:${result.index ?? 0}`,
-    sessionId: 'persisted',
+    id: `persisted:${callId}:${result.id}`,
+    sessionId: parentSessionId,
     parentToolCallId: callId,
     agent: typeof result.agent === 'string' && result.agent ? result.agent : 'task',
-    description: typeof result.description === 'string' ? result.description : undefined,
+    description: subagentDisplayTitle(result.description),
     task: typeof result.task === 'string' ? result.task : typeof result.assignment === 'string' ? result.assignment : '',
     status,
     sessionFile,

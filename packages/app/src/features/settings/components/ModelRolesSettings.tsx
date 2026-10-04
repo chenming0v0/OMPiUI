@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { Model, Api } from '../../../omp/vendor/pi-ai'
+import { Button } from '../../../components/ui/Button'
 import { DropdownMenu } from '../../../components/ui/DropdownMenu'
 import { MenuItem } from '../../../components/ui/MenuItem'
 import { ModelSelector } from '../../chat/ModelSelector'
-import { MoreVerticalIcon, QuestionIcon } from '../../../components/Icons'
+import { ChevronDownIcon, MoreVerticalIcon, QuestionIcon } from '../../../components/Icons'
 import { usePiModels } from '../../../omp/hooks/index.js'
 import { getPiModelRoles, setPiModelRoles } from '../../../omp/transport/index.js'
-import { SettingsSelect, SettingsSection, settingsFieldClass } from './SettingsUI'
+import { SettingsSelect, SettingsSection } from './SettingsUI'
 
 const PI_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 const THINKING_LEVEL_SET: ReadonlySet<string> = new Set(PI_THINKING_LEVELS)
@@ -77,36 +78,50 @@ function roleCandidates(def: ModelRoleDef, models: readonly Model<Api>[]): Model
   return accepted.length > 0 ? accepted : [...models]
 }
 
-/** 角色卡片内的字段外观：与快捷配置区的模型选择器同款底色，保证整页一致 */
+function cloneRoles(roles: Record<string, string>): Record<string, string> {
+  return { ...roles }
+}
+
+function sameRoles(left: Record<string, string>, right: Record<string, string>): boolean {
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)])
+  for (const key of keys) {
+    if ((left[key] ?? '') !== (right[key] ?? '')) return false
+  }
+  return true
+}
+
 const roleFieldBoxClass =
-  'rounded-lg border border-border-200 bg-bg-200/70 hover:bg-bg-200 transition-colors overflow-hidden'
+  'rounded-md border border-border-200 bg-bg-200 transition-colors hover:border-border-300 focus-within:border-accent-main-100 focus-within:ring-1 focus-within:ring-accent-main-100/30'
 
 // ============================================
-// OMP 功能角色配置 — 独立 section，卡片式角色行
+// OMP 功能角色配置
 // ============================================
 
 /**
- * 功能角色模型 — 设置页里独立的一块。
+ * Agent 模型配置 — 设置页里独立的一块。
  * 写入 OMP 的 modelRoles 配置（经 worker 调 omp config CLI），
  * 改动由 OMP 文件监听自动重载，对之后的会话生效。
  * 非 OMP 驱动（没有该命令）时整块隐藏。
  */
 export function ModelRolesSettings() {
   const { t } = useTranslation('settings')
+  const { t: tc } = useTranslation('common')
   const { models, isLoading } = usePiModels()
-  const [roles, setRoles] = useState<Record<string, string> | null>(null)
+  const [saved, setSaved] = useState<Record<string, string> | null>(null)
+  const [draft, setDraft] = useState<Record<string, string> | null>(null)
   const [unavailable, setUnavailable] = useState(false)
-  const [busyRole, setBusyRole] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
     getPiModelRoles()
       .then(record => {
-        if (!cancelled) setRoles(record)
+        if (cancelled) return
+        setSaved(record)
+        setDraft(cloneRoles(record))
       })
       .catch(() => {
-        // 非 OMP 驱动（没有该命令）时静默隐藏角色区
         if (!cancelled) setUnavailable(true)
       })
     return () => {
@@ -114,56 +129,59 @@ export function ModelRolesSettings() {
     }
   }, [])
 
-  const saveRoles = useCallback(async (roleId: string, next: Record<string, string>) => {
-    setBusyRole(roleId)
+  const handleRoleModel = useCallback((def: ModelRoleDef, model: Model<Api> | null) => {
+    setDraft(current => {
+      if (!current) return current
+      const next = cloneRoles(current)
+      const parsed = parseRoleValue(current[def.id])
+      const level = parsed?.level ?? ''
+      if (model) next[def.id] = formatRoleValue(model.provider, model.id, level)
+      else delete next[def.id]
+      return next
+    })
+  }, [])
+
+  const handleRoleLevel = useCallback((def: ModelRoleDef, level: string) => {
+    setDraft(current => {
+      if (!current) return current
+      const parsed = parseRoleValue(current[def.id])
+      if (!parsed) return current
+      return { ...current, [def.id]: formatRoleValue(parsed.provider, parsed.modelId, level) }
+    })
+  }, [])
+
+  const handleCancel = useCallback(() => {
+    if (!saved) return
+    setDraft(cloneRoles(saved))
+    setError(null)
+  }, [saved])
+
+  const handleSave = useCallback(async () => {
+    if (!draft) return
+    setSaving(true)
     setError(null)
     try {
-      const saved = await setPiModelRoles(next)
-      setRoles(saved)
+      const next = await setPiModelRoles(draft)
+      setSaved(next)
+      setDraft(cloneRoles(next))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
-      setBusyRole(null)
+      setSaving(false)
     }
-  }, [])
+  }, [draft])
 
-  const handleRoleModel = useCallback(
-    (def: ModelRoleDef, model: Model<Api> | null) => {
-      if (!roles) return
-      const next = { ...roles }
-      const current = parseRoleValue(roles[def.id])
-      const level = current?.level ?? ''
-      if (model) next[def.id] = formatRoleValue(model.provider, model.id, level)
-      else delete next[def.id]
-      setRoles(next)
-      void saveRoles(def.id, next)
-    },
-    [roles, saveRoles],
-  )
+  if (unavailable || !saved || !draft) return null
 
-  const handleRoleLevel = useCallback(
-    (def: ModelRoleDef, level: string) => {
-      if (!roles) return
-      const current = parseRoleValue(roles[def.id])
-      if (!current) return
-      const next = { ...roles, [def.id]: formatRoleValue(current.provider, current.modelId, level) }
-      setRoles(next)
-      void saveRoles(def.id, next)
-    },
-    [roles, saveRoles],
-  )
-
-  if (unavailable) return null
-  if (!roles) return null
-
+  const dirty = !sameRoles(saved, draft)
   const renderRoleRow = (def: ModelRoleDef) => (
     <RoleRow
       key={def.id}
       def={def}
-      value={roles[def.id] ?? ''}
+      value={draft[def.id] ?? ''}
       models={models}
       isLoading={isLoading}
-      busy={busyRole === def.id}
+      disabled={saving}
       onModel={handleRoleModel}
       onLevel={handleRoleLevel}
       onClear={roleDef => handleRoleModel(roleDef, null)}
@@ -171,33 +189,41 @@ export function ModelRolesSettings() {
   )
 
   return (
-    <SettingsSection title={t('models.rolesTitle')} description={t('models.rolesDesc')}>
+    <SettingsSection title={t('models.rolesTitle')} description={t('models.rolesDesc')} collapsible className="model-roles-section">
       {error ? <p role="alert" className="text-[length:var(--fs-xs)] text-danger-100">{error}</p> : null}
       <RoleGroup label={t('models.rolesChatGroup')}>{CHAT_ROLE_DEFS.map(renderRoleRow)}</RoleGroup>
       <RoleGroup label={t('models.rolesKindGroup')}>{KIND_ROLE_DEFS.map(renderRoleRow)}</RoleGroup>
+      <div className="model-roles-footer">
+        <Button type="button" variant="secondary" size="sm" disabled={saving || !dirty} onClick={handleCancel}>
+          {tc('cancel')}
+        </Button>
+        <Button type="button" variant="primary" size="sm" isLoading={saving} disabled={!dirty} onClick={() => void handleSave()}>
+          {tc('save')}
+        </Button>
+      </div>
     </SettingsSection>
   )
 }
 
 function RoleGroup({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div>
-      <p className="pb-1.5 text-[length:var(--fs-xxs)] font-semibold uppercase tracking-wider text-text-400/75">{label}</p>
-      <div className="space-y-1.5">{children}</div>
+    <div className="model-role-group">
+      <p className="mb-3 text-[length:var(--fs-xxs)] font-medium tracking-wide text-text-300">{label}</p>
+      <div className="space-y-3">{children}</div>
     </div>
   )
 }
 
 /**
- * 角色卡片行 — 左侧角色名（+ 说明提示与配置键），右侧模型选择器、
- * 思考强度与 kebab 菜单（清除 / 复制原始值）。
+ * 角色名右对齐；主行 = 模型 + 思考强度 + kebab。菜单保留清除/复制。
+ * OMP 没有备用模型字段，不伪造第二套模型选择器。
  */
 function RoleRow({
   def,
   value,
   models,
   isLoading,
-  busy,
+  disabled,
   onModel,
   onLevel,
   onClear,
@@ -206,24 +232,31 @@ function RoleRow({
   value: string
   models: readonly Model<Api>[]
   isLoading: boolean
-  busy: boolean
+  disabled: boolean
   onModel: (def: ModelRoleDef, model: Model<Api> | null) => void
   onLevel: (def: ModelRoleDef, level: string) => void
   onClear: (def: ModelRoleDef) => void
 }) {
   const { t } = useTranslation('settings')
   const [menuOpen, setMenuOpen] = useState(false)
+  const [helpOpen, setHelpOpen] = useState(false)
   const kebabRef = useRef<HTMLButtonElement>(null)
+  const helpRef = useRef<HTMLButtonElement>(null)
 
-  // 点击外部 / Esc 关闭 kebab 菜单
   useEffect(() => {
-    if (!menuOpen) return
+    if (!menuOpen && !helpOpen) return
     const onPointerDown = (event: MouseEvent) => {
-      if (kebabRef.current?.contains(event.target as Node)) return
+      const target = event.target as Node
+      if (kebabRef.current?.contains(target) || helpRef.current?.contains(target)) return
+      if (target instanceof Element && target.closest('.model-role-popover')) return
       setMenuOpen(false)
+      setHelpOpen(false)
     }
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMenuOpen(false)
+      if (event.key === 'Escape') {
+        setMenuOpen(false)
+        setHelpOpen(false)
+      }
     }
     document.addEventListener('mousedown', onPointerDown)
     document.addEventListener('keydown', onKeyDown)
@@ -231,7 +264,7 @@ function RoleRow({
       document.removeEventListener('mousedown', onPointerDown)
       document.removeEventListener('keydown', onKeyDown)
     }
-  }, [menuOpen])
+  }, [menuOpen, helpOpen])
 
   const parsed = parseRoleValue(value)
   const currentKey = parsed ? `${parsed.provider}:${parsed.modelId}` : null
@@ -261,84 +294,96 @@ function RoleRow({
     setMenuOpen(false)
   }
 
-  return (
-    <div className="rounded-lg border border-border-200 bg-bg-100 px-3 py-2.5">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
-        {/* 角色名 + 说明提示 + 配置键 */}
-        <div className="min-w-0 sm:w-28 sm:shrink-0">
-          <div className="flex min-w-0 items-center gap-1">
-            <span className="truncate text-[length:var(--fs-sm)] font-medium text-text-100">{t(`models.${def.nameKey}`)}</span>
-            <span className="shrink-0 cursor-help text-text-400/70" title={t(`models.${def.descKey}`)}>
-              <QuestionIcon size={12} />
-            </span>
-          </div>
-          <div className="truncate font-mono text-[length:var(--fs-xxs)] tracking-wide text-text-500" title={def.id}>
-            {def.id}
-          </div>
-        </div>
+  const roleName = t(`models.${def.nameKey}`)
+  const roleDesc = t(`models.${def.descKey}`)
 
-        {/* 模型选择器 + 思考强度 + kebab */}
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          {value && !parsed ? (
-            // @role 等选择器值不在 UI 直接编辑：只读展示，可通过菜单清除
-            <div className={`min-w-0 flex-1 ${roleFieldBoxClass}`}>
-              <div className="flex h-8 items-center px-2.5">
-                <span className="truncate font-mono text-[length:var(--fs-sm)] text-text-200" title={value}>
-                  {value}
-                </span>
-              </div>
+  return (
+    <div data-setting-label={roleName} className="model-role-row">
+      <div className="model-role-label flex min-w-0 items-center gap-1">
+        <span className="text-[length:var(--fs-sm)] font-medium text-text-100">{roleName}</span>
+        <button
+          ref={helpRef}
+          type="button"
+          aria-label={roleDesc}
+          aria-expanded={helpOpen}
+          aria-haspopup="dialog"
+          onClick={() => {
+            setMenuOpen(false)
+            setHelpOpen(open => !open)
+          }}
+          className="inline-flex shrink-0 items-center justify-center rounded text-text-300 transition-colors hover:text-text-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent-main-100"
+        >
+          <QuestionIcon size={13} />
+        </button>
+        <DropdownMenu triggerRef={helpRef} isOpen={helpOpen} position="top" align="right" zIndex={400} minWidth="220px" maxWidth="280px" className="model-role-popover">
+          <p className="px-2.5 py-2 text-[length:var(--fs-xs)] leading-relaxed text-text-200">{roleDesc}</p>
+        </DropdownMenu>
+      </div>
+
+      <div className="model-role-controls">
+        {value && !parsed ? (
+          <div className={`min-w-0 flex-1 ${roleFieldBoxClass}`}>
+            <div className="flex h-[30px] items-center px-2.5">
+              <span className="truncate font-mono text-[length:var(--fs-sm)] text-text-200" title={value}>{value}</span>
             </div>
-          ) : (
-            <div className={`min-w-0 flex-1 ${roleFieldBoxClass}`}>
-              <ModelSelector
-                models={roleCandidates(def, models)}
-                selectedModelKey={currentKey}
-                onSelect={(_key, model) => onModel(def, model)}
-                isLoading={isLoading || busy}
-                trigger="toolbar"
-                placeholder={t('models.roleAuto')}
-                zIndex={400}
-              />
-            </div>
-          )}
-          <div className="w-[118px] shrink-0">
-            <SettingsSelect
-              ariaLabel={`${t(`models.${def.nameKey}`)} ${t('models.defaultThinking')}`}
-              value={parsed?.level ?? ''}
-              onChange={level => onLevel(def, level)}
-              options={levelOptions}
-              disabled={busy || !parsed || !selectedModel}
-              className={`${settingsFieldClass} ${roleFieldBoxClass}`}
+          </div>
+        ) : (
+          <div className={`role-model-field relative min-w-0 flex-1 ${roleFieldBoxClass}`}>
+            <ModelSelector
+              models={roleCandidates(def, models)}
+              selectedModelKey={currentKey}
+              onSelect={(_key, model) => onModel(def, model)}
+              isLoading={isLoading}
+              disabled={disabled}
+              trigger="toolbar"
+              placeholder={t('models.roleAuto')}
+              zIndex={400}
             />
+            <ChevronDownIcon size={14} aria-hidden="true" className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-300" />
           </div>
-          <div className="shrink-0">
-            <button
-              ref={kebabRef}
-              type="button"
-              aria-label={t('models.roleOptions')}
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
-              disabled={busy}
-              onClick={() => setMenuOpen(open => !open)}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-text-400 transition-colors hover:bg-bg-200/60 hover:text-text-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent-main-100 focus-visible:outline-offset-1 disabled:pointer-events-none disabled:opacity-40"
-            >
-              <MoreVerticalIcon size={14} />
-            </button>
-            <DropdownMenu triggerRef={kebabRef} isOpen={menuOpen} position="bottom" align="right" zIndex={400} minWidth="180px">
-              <div role="menu" aria-label={t('models.roleOptions')} className="p-1">
-                <MenuItem
-                  label={t('models.roleClear')}
-                  description={t('models.roleClearDesc')}
-                  disabled={!value || busy}
-                  onClick={() => {
-                    setMenuOpen(false)
-                    onClear(def)
-                  }}
-                />
-                <MenuItem label={t('models.rolesCopyValue')} disabled={!value} onClick={() => void copyRawValue()} />
-              </div>
-            </DropdownMenu>
-          </div>
+        )}
+        <SettingsSelect
+          ariaLabel={`${roleName} ${t('models.roleVariant')}`}
+          value={parsed?.level ?? ''}
+          onChange={level => onLevel(def, level)}
+          options={levelOptions}
+          disabled={disabled || !parsed || !selectedModel}
+          placeholder={t('models.roleVariant')}
+          matchTriggerWidth={false}
+          menuMinWidth="7.5rem"
+          zIndex={400}
+          className="role-variant-select"
+        />
+        <div className="model-role-kebab shrink-0">
+          <button
+            ref={kebabRef}
+            type="button"
+            aria-label={t('models.roleOptions')}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            disabled={disabled}
+            onClick={() => {
+              setHelpOpen(false)
+              setMenuOpen(open => !open)
+            }}
+            className="inline-flex h-[30px] w-[30px] items-center justify-center rounded-md text-text-300 transition-colors hover:bg-bg-200 hover:text-text-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent-main-100 focus-visible:outline-offset-1 disabled:pointer-events-none disabled:opacity-40"
+          >
+            <MoreVerticalIcon size={14} />
+          </button>
+          <DropdownMenu triggerRef={kebabRef} isOpen={menuOpen} position="bottom" align="right" zIndex={400} minWidth="180px" className="model-role-popover">
+            <div role="menu" aria-label={t('models.roleOptions')} className="p-1">
+              <MenuItem
+                label={t('models.roleClear')}
+                description={t('models.roleClearDesc')}
+                disabled={!value || disabled}
+                onClick={() => {
+                  setMenuOpen(false)
+                  onClear(def)
+                }}
+              />
+              <MenuItem label={t('models.rolesCopyValue')} disabled={!value} onClick={() => void copyRawValue()} />
+            </div>
+          </DropdownMenu>
         </div>
       </div>
     </div>

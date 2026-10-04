@@ -469,6 +469,11 @@ export function listPiChildSessions(parentSessionFile: string, signal?: AbortSig
   return postPiGlobalCommand<JsonValue>('session.children', { sessionFile: parentSessionFile }, signal)
 }
 
+/** 按会话文件直查磁盘身份（不扫兄弟子会话、不读父会话） */
+export function findPiSessionByFile(sessionFile: string, signal?: AbortSignal): Promise<JsonValue> {
+  return postPiGlobalCommand<JsonValue>('session.findByFile', { sessionFile }, signal)
+}
+
 export function getPiBranchPage(sessionId: string, params: PiBranchGetParams, signal?: AbortSignal): Promise<PiBranchPage> {
   return postPiSessionCommand(sessionId, 'branch.get', params, signal)
 }
