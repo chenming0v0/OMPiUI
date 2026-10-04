@@ -32,6 +32,15 @@ function seedStore() {
   })
 }
 
+/** store 的 listener 通知合并到下一帧（rAF）；memo 组件不会因同 props rerender 而刷新 */
+async function flushStoreNotify() {
+  await act(async () => {
+    await new Promise<void>(resolve => {
+      requestAnimationFrame(() => resolve())
+    })
+  })
+}
+
 describe('SubagentHud', () => {
   beforeEach(() => {
     abortPiOperationMock.mockClear()
@@ -44,10 +53,11 @@ describe('SubagentHud', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
-  it('lists running and finished detached agents with their actions', () => {
+  it('lists running and finished detached agents with their actions', async () => {
     seedStore()
     const onSelect = vi.fn()
     render(<SubagentHud selectedSessionId={null} onSelectSession={onSelect} />)
+    await flushStoreNotify()
 
     expect(screen.getByText('sidebar.subagentHud')).toBeInTheDocument()
     // 运行中行：agent 徽标 + 描述 + stop
@@ -59,10 +69,11 @@ describe('SubagentHud', () => {
     expect(within(doneRow).getByRole('button', { name: 'sidebar.subagentHudDismiss' })).toBeInTheDocument()
   })
 
-  it('clicking a row navigates to the parent session; stop aborts it', () => {
+  it('clicking a row navigates to the parent session; stop aborts it', async () => {
     seedStore()
     const onSelect = vi.fn()
     render(<SubagentHud selectedSessionId={null} onSelectSession={onSelect} />)
+    await flushStoreNotify()
 
     fireEvent.click(screen.getByText('Search the code'))
     expect(onSelect).toHaveBeenCalledWith({ id: 'session-running', directory: undefined })
@@ -71,14 +82,15 @@ describe('SubagentHud', () => {
     expect(abortPiOperationMock).toHaveBeenCalledWith('session-running')
   })
 
-  it('dismiss removes the finished row; clear-finished empties terminal rows', () => {
+  it('dismiss removes the finished row; clear-finished empties terminal rows', async () => {
     seedStore()
     const onSelect = vi.fn()
-    const { rerender } = render(<SubagentHud selectedSessionId={null} onSelectSession={onSelect} />)
+    render(<SubagentHud selectedSessionId={null} onSelectSession={onSelect} />)
+    await flushStoreNotify()
 
     const doneRow = screen.getByText('Finished work').closest('div')!.parentElement!
     fireEvent.click(within(doneRow).getByRole('button', { name: 'sidebar.subagentHudDismiss' }))
-    rerender(<SubagentHud selectedSessionId={null} onSelectSession={onSelect} />)
+    await flushStoreNotify()
     expect(screen.queryByText('Finished work')).not.toBeInTheDocument()
 
     // 剩余运行中行没有清除入口；再补一个终态后用头部按钮一键清除
@@ -88,16 +100,18 @@ describe('SubagentHud', () => {
         description: 'Failed work', index: 2,
       })
     })
-    rerender(<SubagentHud selectedSessionId={null} onSelectSession={onSelect} />)
+    await flushStoreNotify()
     expect(screen.getByRole('button', { name: 'sidebar.subagentHudClearFinished:1' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'sidebar.subagentHudClearFinished:1' }))
+    await flushStoreNotify()
     expect(screen.queryByText('Failed work')).not.toBeInTheDocument()
     expect(screen.getByText('Search the code')).toBeInTheDocument()
   })
 
-  it('collapses to the header with the running count', () => {
+  it('collapses to the header with the running count', async () => {
     seedStore()
     render(<SubagentHud selectedSessionId={null} onSelectSession={vi.fn()} />)
+    await flushStoreNotify()
 
     fireEvent.click(screen.getByRole('button', { name: 'sidebar.subagentHudCollapse' }))
     expect(screen.queryByText('Search the code')).not.toBeInTheDocument()

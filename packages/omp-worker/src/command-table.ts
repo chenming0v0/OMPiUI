@@ -222,6 +222,7 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
   ),
   "session.children": async (ctx, p) => ctx.catalog.listChildSessions(P.reqString(p, "sessionFile")),
   "session.findById": async (ctx, p) => ctx.catalog.findSessionById(P.reqString(p, "sessionId")),
+  "session.findByFile": async (ctx, p) => ctx.catalog.findSessionByFile(P.reqString(p, "sessionFile")),
   "session.delete": async (ctx, p) => {
     await ctx.catalog.deleteSession(P.reqString(p, "cwd"), P.reqString(p, "sessionFile"))
   },

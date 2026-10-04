@@ -43,6 +43,7 @@ export const SubagentHud = memo(function SubagentHud({ selectedSessionId, onSele
     ompSubagentStore.getSnapshot,
   )
   const [collapsed, setCollapsed] = useState(loadCollapsed)
+  const [openError, setOpenError] = useState<string | null>(null)
 
   const runs = useMemo(() => selectHudRuns(snapshot), [snapshot])
   const runningCount = useMemo(
@@ -69,9 +70,12 @@ export const SubagentHud = memo(function SubagentHud({ selectedSessionId, onSele
     (run: OmpSubagentRun) => {
       const directory = activeSessionStore.getSessionMeta(run.sessionId)?.directory ?? currentDirectory ?? ''
       if (run.sessionFile) {
-        void openSubagentSession(directory, run.sessionFile).then(id => {
-          if (id) navigateToSession(id, directory || undefined)
+        setOpenError(null)
+        void openSubagentSession(directory, run.sessionFile).then(target => {
+          navigateToSession(target.id, target.directory || undefined)
           if (window.innerWidth < 768) onCloseMobile?.()
+        }).catch((error: unknown) => {
+          setOpenError(error instanceof Error ? error.message : String(error))
         })
         return
       }
@@ -139,6 +143,7 @@ export const SubagentHud = memo(function SubagentHud({ selectedSessionId, onSele
             </button>
           )}
         </div>
+        {openError && <p role="alert" className="px-2 pb-2 text-[length:var(--fs-xs)] text-danger-100">{openError}</p>}
 
         {!collapsed && (
           <div className="px-1 pb-1 space-y-0.5">

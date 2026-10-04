@@ -156,6 +156,10 @@ export class MockCatalog implements CatalogProvider, PackagesGateway {
     return null
   }
 
+  async findSessionByFile(): Promise<JsonObject | null> {
+    return null
+  }
+
   async listAllSessions(): Promise<JsonValue> {
     return this.store.list()
   }

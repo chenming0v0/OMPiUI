@@ -62,11 +62,18 @@ export function useChildSessions(
         .catch(() => undefined)
     }
     load()
-    // 会话列表刷新（子会话落盘/重命名）后重取，让刚出现的子会话及时显示
-    window.addEventListener('omompiui:sessions-changed', load)
+    // 会话列表刷新（子会话落盘/重命名）后重取；合帧防抖，避免
+    // sessions.updated 风暴把 worker 的同步父文件解析打满
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const onChanged = () => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(load, 400)
+    }
+    window.addEventListener('omompiui:sessions-changed', onChanged)
     return () => {
       cancelled = true
-      window.removeEventListener('omompiui:sessions-changed', load)
+      if (timer) clearTimeout(timer)
+      window.removeEventListener('omompiui:sessions-changed', onChanged)
     }
   }, [parentPath, parentSession])
 

@@ -155,7 +155,7 @@ describe('persisted subagent fallback', () => {
   })
 
   it('builds a completed read-only run from the persisted result', () => {
-    const run = buildPersistedSubagentRun('call-1', { id: 'ReadmeScout', agent: 'scout', exitCode: 0 }, 'C:/x.jsonl')
+    const run = buildPersistedSubagentRun('call-1', { id: 'ReadmeScout', agent: 'scout', exitCode: 0 }, 'C:/x.jsonl', 'parent-session')
     expect(run).toMatchObject({
       parentToolCallId: 'call-1',
       agent: 'scout',
@@ -163,10 +163,11 @@ describe('persisted subagent fallback', () => {
       sessionFile: 'C:/x.jsonl',
       historyLoaded: true,
       detached: false,
+      sessionId: 'parent-session',
     })
-    const aborted = buildPersistedSubagentRun('call-1', { id: 'a', aborted: true }, undefined)
+    const aborted = buildPersistedSubagentRun('call-1', { id: 'a', aborted: true }, undefined, 'parent-session')
     expect(aborted?.status).toBe('aborted')
-    expect(buildPersistedSubagentRun('call-1', {}, undefined)).toBeUndefined()
+    expect(buildPersistedSubagentRun('call-1', {}, undefined, 'parent-session')).toBeUndefined()
   })
 
   it('shows the disk transcript instead of the waiting placeholder after reopen', async () => {

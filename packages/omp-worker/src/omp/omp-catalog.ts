@@ -61,6 +61,11 @@ function sessionsRoot(): string {
 /** 磁盘预览丢弃的元数据条目（与 OmpRpcSession.adaptEntry 的丢弃清单一致） */
 const DROPPED_META_ENTRY_TYPES = new Set(["title", "title_change", "model_usage", "session", "session_init"])
 
+/** 父会话标题缓存：mtime 不变就不重读整文件（listChildSessions 的卡死帮凶） */
+const subagentTitleCache = new Map<string, { mtime: number; titles: Map<string, string> }>()
+/** 子会话摘要缓存：文件没变就复用（历史子会话挂载时不再次 JSON.parse） */
+const sessionSummaryCache = new Map<string, { mtime: number; titlesStamp: string; summary: SessionFileSummary | null }>()
+
 /**
  * 会话 JSONL 行 → 预览条目。元数据行（title/title_change/session/
  * session_init/model_usage）换成 omp.dropped 占位：直接透传会让前端渲染
@@ -104,7 +109,7 @@ interface SessionFileSummary {
   messageCount: number
 }
 
-async function summarizeSessionFile(filePath: string): Promise<SessionFileSummary | null> {
+async function summarizeSessionFile(filePath: string, childTitles?: Map<string, string>): Promise<SessionFileSummary | null> {
   let content: string
   try {
     content = await fs.readFile(filePath, "utf8")
@@ -118,6 +123,7 @@ async function summarizeSessionFile(filePath: string): Promise<SessionFileSummar
   let name: string | null = null
   let firstMessage: string | null = null
   let messageCount = 0
+  let isSubagent = false
   for (const line of lines) {
     const trimmed = line.trim()
     if (!trimmed) continue
@@ -135,8 +141,10 @@ async function summarizeSessionFile(filePath: string): Promise<SessionFileSummar
       cwd = typeof entry.cwd === "string" ? entry.cwd : ""
       created = typeof entry.timestamp === "string" ? entry.timestamp : null
       if (!name && typeof entry.name === "string") name = entry.name
-    } else if (type === "title") {
-      if (typeof entry.title === "string" && entry.title) name = entry.title
+    } else if (type === "title" || type === "title_change") {
+      if (typeof entry.title === "string" && entry.title.trim()) name = entry.title.trim()
+    } else if (type === "session_init") {
+      isSubagent = typeof entry.agent === "string" && Boolean(entry.agent)
     } else if (type === "message") {
       messageCount += 1
       if (!firstMessage && isJsonObject(entry.message) && entry.message.role === "user") {
@@ -149,6 +157,10 @@ async function summarizeSessionFile(filePath: string): Promise<SessionFileSummar
       }
     }
   }
+  if (!name && (isSubagent || childTitles)) {
+    const taskName = path.basename(filePath, ".jsonl")
+    name = childTitles?.get(taskName) ?? taskName
+  }
   if (!id || !cwd) return null
   let modified = 0
   try {
@@ -157,6 +169,64 @@ async function summarizeSessionFile(filePath: string): Promise<SessionFileSummar
     /* keep 0 */
   }
   return { id, cwd, path: filePath, name, firstMessage, created, modified, messageCount }
+}
+
+async function summarizeSessionFileCached(filePath: string, childTitles?: Map<string, string>): Promise<SessionFileSummary | null> {
+  let mtime = 0
+  try {
+    mtime = statSync(filePath).mtimeMs
+  } catch {
+    sessionSummaryCache.delete(filePath)
+    return null
+  }
+  // titlesStamp：父会话标题映射变了才重算 name（子会话文件本身没变）
+  const titlesStamp = childTitles ? [...childTitles.entries()].map(([id, title]) => `${id}=${title}`).join("|") : ""
+  const cached = sessionSummaryCache.get(filePath)
+  if (cached && cached.mtime === mtime && cached.titlesStamp === titlesStamp) return cached.summary
+  const summary = await summarizeSessionFile(filePath, childTitles)
+  sessionSummaryCache.set(filePath, { mtime, titlesStamp, summary })
+  return summary
+}
+
+/** 子会话的包装提示词不是标题；从父 task 的具名任务和结果摘要取名。 */
+function readSubagentTitles(parentSessionFile: string): Map<string, string> {
+  let mtime = 0
+  try {
+    mtime = statSync(parentSessionFile).mtimeMs
+  } catch {
+    return new Map()
+  }
+  const cached = subagentTitleCache.get(parentSessionFile)
+  if (cached && cached.mtime === mtime) return cached.titles
+  const titles = new Map<string, string>()
+  for (const line of readLinesSync(parentSessionFile)) {
+    let entry: unknown
+    try {
+      entry = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (!isJsonObject(entry) || entry.type !== "message" || !isJsonObject(entry.message)) continue
+    const message = entry.message
+    if (message.role === "assistant" && Array.isArray(message.content)) {
+      for (const block of message.content) {
+        if (!isJsonObject(block) || block.type !== "toolCall" || block.name !== "task" || !isJsonObject(block.arguments)) continue
+        if (!Array.isArray(block.arguments.tasks)) continue
+        for (const task of block.arguments.tasks) {
+          if (!isJsonObject(task) || typeof task.name !== "string" || !task.name) continue
+          titles.set(task.name, typeof task.description === "string" && task.description ? task.description : task.name)
+        }
+      }
+    } else if (message.role === "toolResult" && message.toolName === "task" && isJsonObject(message.details)) {
+      if (!Array.isArray(message.details.results)) continue
+      for (const result of message.details.results) {
+        if (!isJsonObject(result) || typeof result.id !== "string" || !result.id) continue
+        titles.set(result.id, typeof result.description === "string" && result.description ? result.description : result.id)
+      }
+    }
+  }
+  subagentTitleCache.set(parentSessionFile, { mtime, titles })
+  return titles
 }
 
 function listSessionFiles(): string[] {
@@ -255,7 +325,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
       return this.summarizeCache.items
     }
     const files = listSessionFiles()
-    const results = await Promise.all(files.map(file => summarizeSessionFile(file)))
+    const results = await Promise.all(files.map(file => summarizeSessionFileCached(file)))
     const items = results.filter((item): item is SessionFileSummary => item !== null)
     items.sort((a, b) => b.modified - a.modified)
     this.summarizeCache = { at: Date.now(), items }
@@ -270,7 +340,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
 
   async previewSession(cwd: string, sessionFile: string, params: { cursor?: string; limit?: number; maxBytes?: number } = {}): Promise<JsonValue> {
     const target = resolveUserPath(sessionFile)
-    const summary = await summarizeSessionFile(target)
+    const summary = await summarizeSessionFileCached(target)
     if (!summary) throw Object.assign(new Error("session file not found"), { code: "SESSION_NOT_FOUND" })
     return this.previewSummary(summary, params, await detectOmpVersion() ?? OMP_SDK_VERSION)
   }
@@ -354,11 +424,24 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     } catch {
       return []
     }
-    const results = await Promise.all(names.map(name => summarizeSessionFile(path.join(dir, name))))
+    const titles = readSubagentTitles(resolveUserPath(parentSessionFile))
+    const results = await Promise.all(names.map(name => summarizeSessionFileCached(path.join(dir, name), titles)))
     return results
       .filter((item): item is SessionFileSummary => item !== null)
       .sort((a, b) => b.modified - a.modified)
       .map(toSessionInfo)
+  }
+
+  /**
+   * 按会话文件直查磁盘身份：只读这一份 jsonl，不扫兄弟子会话、也不读父会话。
+   * 打开子会话 / 回填转录走这条路径，避免 listChildSessions 把 worker 打满。
+   */
+  async findSessionByFile(sessionFile: string): Promise<JsonObject | null> {
+    const target = resolveUserPath(sessionFile)
+    if (!target.endsWith(".jsonl")) return null
+    const summary = await summarizeSessionFileCached(target)
+    if (!summary) return null
+    return { id: summary.id, cwd: summary.cwd, sessionFile: summary.path, name: summary.name }
   }
 
   /**
@@ -395,7 +478,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
           continue
         }
         for (const name of names) {
-          const summary = await summarizeSessionFile(path.join(childDir, name))
+          const summary = await summarizeSessionFileCached(path.join(childDir, name))
           if (summary && summary.id === sessionId) {
             return { id: summary.id, cwd: summary.cwd, sessionFile: summary.path }
           }
@@ -418,6 +501,8 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     }
     await fs.unlink(target)
     this.summarizeCache = null
+    sessionSummaryCache.delete(target)
+    subagentTitleCache.delete(target)
   }
 
   async listModels(): Promise<JsonValue> {
