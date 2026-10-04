@@ -173,6 +173,10 @@ function BranchSummaryItemView({ item }: { item: PiBranchSummaryItem }) {
   return <DividerRow partKey={item.entryId} label={t('system.branchSummary')} detail={item.summary} />
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+}
+
 function CustomMessageItemView({ item }: { item: PiCustomMessageItem }) {
   const text = typeof item.content === 'string'
     ? item.content
@@ -181,6 +185,29 @@ function CustomMessageItemView({ item }: { item: PiCustomMessageItem }) {
         .map(block => block.text)
         .join('\n')
   if (!text.trim()) return null
+  if (item.customType === 'async-result' || item.customType === 'Background job') {
+    const details = asRecord(item.details) ?? {}
+    const job = asRecord(Array.isArray(details.jobs) ? details.jobs[0] : details) ?? {}
+    const title = `Background job ${typeof job.jobId === 'string' ? job.jobId : 'unknown'} has completed`
+    const status = typeof job.status === 'string' ? job.status : 'completed'
+    const label = typeof job.label === 'string' ? job.label : typeof job.type === 'string' ? job.type : 'unknown'
+    const durationMs = typeof job.durationMs === 'number' ? job.durationMs : undefined
+    const meta = asRecord(job.meta) ?? {}
+    const schema = asRecord(job.schema) ?? {}
+    return (
+      <div className="px-3 py-2 rounded-md border border-border-300 bg-bg-100/50">
+        <div className="text-[length:var(--fs-sm)] text-text-300 mb-1">{title}</div>
+        <div className="text-[length:var(--fs-sm)] space-y-1">
+          {label && <div>Label: {label}</div>}
+          {durationMs != null && <div>Duration: {Math.round(durationMs / 1000)}s</div>}
+          {Object.keys(meta).length > 0 && <div>Meta: {JSON.stringify(meta)}</div>}
+          {Object.keys(schema).length > 0 && <div>Schema: {JSON.stringify(schema)}</div>}
+          <div>Status: {status}</div>
+        </div>
+        <pre className="mt-2 text-[length:var(--fs-sm)] font-mono whitespace-pre-wrap break-words max-h-[240px] overflow-auto bg-bg-200/50 p-2 rounded">{text}</pre>
+      </div>
+    )
+  }
   return <MarkdownRenderer content={text} />
 }
 
