@@ -4,6 +4,8 @@ OMPiUI 自己的版本从 0.1.0 起算。`packages/app/CHANGELOG.md` 是上游 P
 
 ## [Unreleased]
 
+## [v0.3.1] - 2026-10-04
+
 - ui: 设置页改为有边界的分组面板和独立导航；模型可见性支持折叠。Agent 模型配置改为 Slim 式表单：右对齐角色名、主模型与思考强度同一行、底部取消/保存，不再逐项立即写入。
 - fix: 折叠设置内容不再接受键盘焦点；搜索定位会自动展开目标设置面板。
 - feat: 后台任务完成消息渲染为结构化卡片，保留原始输出。
@@ -12,6 +14,14 @@ OMPiUI 自己的版本从 0.1.0 起算。`packages/app/CHANGELOG.md` 是上游 P
 - fix: 子代理跳转失败时不再静默；侧栏和任务卡标题优先用任务名，丢掉 OMP 注入的包装提示词。
 - fix: 同一 task 下并发子代理不再互相覆盖；迟到的 lifecycle/progress 帧不能把已完成状态闪回运行中。
 - fix: 工作中发送的消息进入 follow-up 队列，不再因 isStreaming 滞后被当成新 prompt 丢掉。
+- ui: put Agent model thinking beside the primary selector (ebeb694)
+- fix: lock concurrent subagent status, queue busy follow-ups, restyle Agent models (6b73a09)
+- fix: make subagent jump failures visible and stop using wrapping prompts as names (8b484d9)
+- fix: stop the UI freeze when many subagents stream at once (7be9ccb)
+- feat: render native async-result custom messages as job cards (069b057)
+- fix: stop labeling nested subagent sessions as forks (a153d32)
+- ui: restyle settings into bounded panels with independent navigation (0ab82f4)
+- fix: render OMP native phases[].tasks[] todo snapshots (045d3b9)
 
 ## [v0.3.0] - 2026-10-03
 
