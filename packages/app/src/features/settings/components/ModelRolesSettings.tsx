@@ -4,7 +4,7 @@ import type { Model, Api } from '../../../omp/vendor/pi-ai'
 import { DropdownMenu } from '../../../components/ui/DropdownMenu'
 import { MenuItem } from '../../../components/ui/MenuItem'
 import { ModelSelector } from '../../chat/ModelSelector'
-import { MoreVerticalIcon, QuestionIcon } from '../../../components/Icons'
+import { ChevronDownIcon, MoreVerticalIcon, QuestionIcon } from '../../../components/Icons'
 import { usePiModels } from '../../../omp/hooks/index.js'
 import { getPiModelRoles, setPiModelRoles } from '../../../omp/transport/index.js'
 import { SettingsSelect, SettingsSection, settingsFieldClass } from './SettingsUI'
@@ -77,12 +77,12 @@ function roleCandidates(def: ModelRoleDef, models: readonly Model<Api>[]): Model
   return accepted.length > 0 ? accepted : [...models]
 }
 
-/** 角色卡片内的字段外观：与快捷配置区的模型选择器同款底色，保证整页一致 */
+/** 角色行只给控件画边框，不再为每个角色嵌套卡片。 */
 const roleFieldBoxClass =
-  'rounded-lg border border-border-200 bg-bg-200/70 hover:bg-bg-200 transition-colors overflow-hidden'
+  'rounded-md border border-border-200 bg-bg-200 transition-colors hover:border-border-300 focus-within:border-accent-main-100 focus-within:ring-1 focus-within:ring-accent-main-100/30'
 
 // ============================================
-// OMP 功能角色配置 — 独立 section，卡片式角色行
+// OMP 功能角色配置
 // ============================================
 
 /**
@@ -171,7 +171,7 @@ export function ModelRolesSettings() {
   )
 
   return (
-    <SettingsSection title={t('models.rolesTitle')} description={t('models.rolesDesc')}>
+    <SettingsSection title={t('models.rolesTitle')} description={t('models.rolesDesc')} collapsible className="model-roles-section">
       {error ? <p role="alert" className="text-[length:var(--fs-xs)] text-danger-100">{error}</p> : null}
       <RoleGroup label={t('models.rolesChatGroup')}>{CHAT_ROLE_DEFS.map(renderRoleRow)}</RoleGroup>
       <RoleGroup label={t('models.rolesKindGroup')}>{KIND_ROLE_DEFS.map(renderRoleRow)}</RoleGroup>
@@ -181,16 +181,15 @@ export function ModelRolesSettings() {
 
 function RoleGroup({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div>
-      <p className="pb-1.5 text-[length:var(--fs-xxs)] font-semibold uppercase tracking-wider text-text-400/75">{label}</p>
-      <div className="space-y-1.5">{children}</div>
+    <div className="model-role-group">
+      <p className="mb-4 text-[length:var(--fs-xxs)] font-medium tracking-wide text-text-300">{label}</p>
+      <div className="space-y-5">{children}</div>
     </div>
   )
 }
 
 /**
- * 角色卡片行 — 左侧角色名（+ 说明提示与配置键），右侧模型选择器、
- * 思考强度与 kebab 菜单（清除 / 复制原始值）。
+ * 角色名与主模型对齐；思考强度作为缩进的第二行，菜单保留清除/复制。
  */
 function RoleRow({
   def,
@@ -262,34 +261,24 @@ function RoleRow({
   }
 
   return (
-    <div className="rounded-lg border border-border-200 bg-bg-100 px-3 py-2.5">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
-        {/* 角色名 + 说明提示 + 配置键 */}
-        <div className="min-w-0 sm:w-28 sm:shrink-0">
-          <div className="flex min-w-0 items-center gap-1">
-            <span className="truncate text-[length:var(--fs-sm)] font-medium text-text-100">{t(`models.${def.nameKey}`)}</span>
-            <span className="shrink-0 cursor-help text-text-400/70" title={t(`models.${def.descKey}`)}>
-              <QuestionIcon size={12} />
-            </span>
-          </div>
-          <div className="truncate font-mono text-[length:var(--fs-xxs)] tracking-wide text-text-500" title={def.id}>
-            {def.id}
-          </div>
-        </div>
+    <div data-setting-label={t(`models.${def.nameKey}`)} className="model-role-row">
+      <div className="model-role-label flex min-w-0 items-center gap-1.5">
+        <span className="text-[length:var(--fs-base)] font-medium text-text-100">{t(`models.${def.nameKey}`)}</span>
+        <span className="shrink-0 cursor-help text-text-300" title={`${t(`models.${def.descKey}`)}\nOMP: ${def.tag} (${def.id})`}>
+          <QuestionIcon size={13} />
+        </span>
+      </div>
 
-        {/* 模型选择器 + 思考强度 + kebab */}
-        <div className="flex min-w-0 flex-1 items-center gap-2">
+      <div className="model-role-controls min-w-0">
+        <div className="flex min-w-0 items-center gap-2.5">
           {value && !parsed ? (
-            // @role 等选择器值不在 UI 直接编辑：只读展示，可通过菜单清除
             <div className={`min-w-0 flex-1 ${roleFieldBoxClass}`}>
               <div className="flex h-8 items-center px-2.5">
-                <span className="truncate font-mono text-[length:var(--fs-sm)] text-text-200" title={value}>
-                  {value}
-                </span>
+                <span className="truncate font-mono text-[length:var(--fs-sm)] text-text-200" title={value}>{value}</span>
               </div>
             </div>
           ) : (
-            <div className={`min-w-0 flex-1 ${roleFieldBoxClass}`}>
+            <div className={`role-model-field relative min-w-0 flex-1 ${roleFieldBoxClass}`}>
               <ModelSelector
                 models={roleCandidates(def, models)}
                 selectedModelKey={currentKey}
@@ -299,18 +288,9 @@ function RoleRow({
                 placeholder={t('models.roleAuto')}
                 zIndex={400}
               />
+              <ChevronDownIcon size={14} aria-hidden="true" className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-300" />
             </div>
           )}
-          <div className="w-[118px] shrink-0">
-            <SettingsSelect
-              ariaLabel={`${t(`models.${def.nameKey}`)} ${t('models.defaultThinking')}`}
-              value={parsed?.level ?? ''}
-              onChange={level => onLevel(def, level)}
-              options={levelOptions}
-              disabled={busy || !parsed || !selectedModel}
-              className={`${settingsFieldClass} ${roleFieldBoxClass}`}
-            />
-          </div>
           <div className="shrink-0">
             <button
               ref={kebabRef}
@@ -320,7 +300,7 @@ function RoleRow({
               aria-expanded={menuOpen}
               disabled={busy}
               onClick={() => setMenuOpen(open => !open)}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-text-400 transition-colors hover:bg-bg-200/60 hover:text-text-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent-main-100 focus-visible:outline-offset-1 disabled:pointer-events-none disabled:opacity-40"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border-200 text-text-300 transition-colors hover:border-border-300 hover:bg-bg-200 hover:text-text-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent-main-100 focus-visible:outline-offset-1 disabled:pointer-events-none disabled:opacity-40"
             >
               <MoreVerticalIcon size={14} />
             </button>
@@ -338,6 +318,20 @@ function RoleRow({
                 <MenuItem label={t('models.rolesCopyValue')} disabled={!value} onClick={() => void copyRawValue()} />
               </div>
             </DropdownMenu>
+          </div>
+        </div>
+
+        <div className="model-role-secondary mt-2 flex min-w-0 items-center gap-3 border-l border-dashed border-border-200 pl-2.5">
+          <span className="shrink-0 text-[length:var(--fs-xs)] text-text-300">{t('models.defaultThinking')}</span>
+          <div className="min-w-0 flex-1">
+            <SettingsSelect
+              ariaLabel={`${t(`models.${def.nameKey}`)} ${t('models.defaultThinking')}`}
+              value={parsed?.level ?? ''}
+              onChange={level => onLevel(def, level)}
+              options={levelOptions}
+              disabled={busy || !parsed || !selectedModel}
+              className={settingsFieldClass}
+            />
           </div>
         </div>
       </div>

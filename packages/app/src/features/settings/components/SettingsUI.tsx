@@ -7,10 +7,10 @@ import { ChevronDownIcon } from '../../../components/Icons'
 const SettingLabelContext = createContext<string | undefined>(undefined)
 
 export const settingsFieldClass =
-  'min-w-0 w-full h-8 px-2.5 text-[length:var(--fs-sm)] rounded-md bg-transparent text-text-100 placeholder:text-text-400 outline-none border border-border-200 transition-colors hover:border-border-300 focus-visible:border-accent-main-100 focus-visible:ring-1 focus-visible:ring-accent-main-100/30'
+  'min-w-0 w-full h-8 px-2.5 text-[length:var(--fs-sm)] rounded-md bg-bg-200 text-text-100 placeholder:text-text-400 outline-none border border-border-200 transition-colors hover:border-border-300 focus-visible:border-accent-main-100 focus-visible:ring-1 focus-visible:ring-accent-main-100/30'
 
 export const settingsFieldAreaClass =
-  'min-w-0 w-full px-2.5 py-2 text-[length:var(--fs-sm)] rounded-md bg-transparent text-text-100 placeholder:text-text-400 outline-none border border-border-200 transition-colors hover:border-border-300 focus-visible:border-accent-main-100 focus-visible:ring-1 focus-visible:ring-accent-main-100/30 resize-y leading-relaxed custom-scrollbar'
+  'min-w-0 w-full px-2.5 py-2 text-[length:var(--fs-sm)] rounded-md bg-bg-200 text-text-100 placeholder:text-text-400 outline-none border border-border-200 transition-colors hover:border-border-300 focus-visible:border-accent-main-100 focus-visible:ring-1 focus-visible:ring-accent-main-100/30 resize-y leading-relaxed custom-scrollbar'
 
 /**
  * Settings select — 设计系统下拉框（非原生 <select>）。
@@ -176,10 +176,11 @@ export function SettingsDisclosure({
       </button>
       <div
         id={panelId}
+        inert={!isOpen}
         className={`grid transition-[grid-template-rows] duration-200 ease-out ${isOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}
       >
         <div className="overflow-hidden">
-          {hasOpened ? <div className="pt-2">{children}</div> : null}
+          {hasOpened ? <div className="settings-disclosure-body pt-2">{children}</div> : null}
         </div>
       </div>
     </div>
@@ -190,11 +191,9 @@ export function SettingsDisclosure({
 // Shared Settings UI Primitives
 //
 // 设计原则：
-// - SettingsSection 是唯一的分组容器（标题 + 描述 + 内容）
-// - section 之间靠间距区分，不画底部分割线
-// - 不再有大框套小框：内部只用 SettingRow / SegmentedControl / 子分组
-// - 需要视觉聚合时用 SettingsSubgroup（淡背景圆角，无边框）
-// - 行级内容卡片（服务器项、声音事件项等）自带边框，作为列表项使用
+// - SettingsSection 是唯一的面板容器（标题 + 描述 + 内容），可选折叠
+// - 面板内的普通设置行不再重复画卡片
+// - SettingsSubgroup 用于内部子分组
 // ============================================
 
 /**
@@ -390,9 +389,7 @@ export function SettingField({
 }
 
 /**
- * Settings section — 唯一的分组容器。
- * 标题行（标题 + 可选描述 + 可选 actions）+ 内容。
- * 无横线分隔，section 之间靠间距区分，更通透。
+ * Settings section — 有边界的设置面板，可选折叠，折叠不丢字段状态。
  */
 export interface SettingsSectionProps {
   title: string
@@ -400,24 +397,38 @@ export interface SettingsSectionProps {
   actions?: React.ReactNode
   children: React.ReactNode
   className?: string
+  collapsible?: boolean
 }
 
-export function SettingsSection({ title, description, actions, children, className }: SettingsSectionProps) {
+export function SettingsSection({ title, description, actions, children, className, collapsible = false }: SettingsSectionProps) {
+  const heading = (
+    <div className="min-w-0 flex-1 text-left">
+      <h2 className="text-[length:var(--fs-base)] font-semibold text-text-100 leading-snug">{title}</h2>
+      {description && (
+        <p className="mt-1.5 text-[length:var(--fs-xs)] font-normal text-text-300 leading-relaxed">
+          {description}
+        </p>
+      )}
+    </div>
+  )
+  const content = <div className="settings-section-content flex flex-col gap-3">{children}</div>
+
   return (
-    <section data-setting-label={title} className={`flex flex-col gap-3.5 mb-8 last:mb-0 ${className || ''}`}>
-      <div>
-        {/* 标题与 actions 同一行垂直居中，描述单独在下一行，避免按钮和标题错位 */}
-        <div className="flex items-center justify-between gap-3 min-h-[28px]">
-          <h2 className="min-w-0 text-[length:var(--fs-md)] font-semibold text-text-100 leading-snug">{title}</h2>
-          {actions && <div className="shrink-0 flex items-center gap-1.5">{actions}</div>}
-        </div>
-        {description && (
-          <p className="text-[length:var(--fs-xs)] text-text-300 mt-1 leading-relaxed max-w-[52ch]">
-            {description}
-          </p>
-        )}
-      </div>
-      <div className="flex flex-col gap-3">{children}</div>
+    <section data-setting-label={title} className={`settings-section mb-4 last:mb-0 ${className || ''}`}>
+      {collapsible ? (
+        <SettingsDisclosure title={heading} defaultOpen className="settings-section-disclosure">
+          {actions && <div className="flex justify-end gap-1.5 px-4 pt-3">{actions}</div>}
+          {content}
+        </SettingsDisclosure>
+      ) : (
+        <>
+          <div className="settings-section-header flex items-start justify-between gap-3">
+            {heading}
+            {actions && <div className="shrink-0 flex items-center gap-1.5">{actions}</div>}
+          </div>
+          {content}
+        </>
+      )}
     </section>
   )
 }

@@ -2,6 +2,11 @@
 
 OMPiUI 自己的版本从 0.1.0 起算。`packages/app/CHANGELOG.md` 是上游 PiUI 历史，不参与本仓库发版。
 
+## [Unreleased]
+
+- ui: 设置页改为有边界的分组面板和独立导航；模型角色配置、模型可见性支持折叠。角色名与主模型对齐，思考强度放在缩进的第二行，保留原有 OMP 指派、清除和保存行为；兼容深浅主题与手机纵向布局。
+- fix: 折叠设置内容不再接受键盘焦点；搜索定位会自动展开目标设置面板。
+
 ## [v0.3.0] - 2026-10-03
 
 - chore: ignore the local .zcode workspace directory (691904c)

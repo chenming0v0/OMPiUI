@@ -281,6 +281,8 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
           if (!target) return
 
           scrollRef.current?.querySelector('.settings-search-highlight')?.classList.remove('settings-search-highlight')
+          const disclosure = target.querySelector<HTMLButtonElement>('.settings-section-disclosure > button[aria-expanded="false"]')
+          disclosure?.click()
           target.scrollIntoView({ block: 'center', behavior: 'smooth' })
           target.classList.add('settings-search-highlight')
           const focusTarget = Array.from(
@@ -342,13 +344,18 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
         title=""
         ariaLabel={t('title')}
         width="100%"
-        className="h-full"
+        className="settings-shell h-full"
         showCloseButton={false}
         rawContent
       >
         <div className="flex min-h-0 flex-1 flex-col">
-          {/* Sticky Tabs — 无标题、无线条，与桌面端设计语言一致 */}
-          <div className="shrink-0 pt-2">
+          <div className="shrink-0 border-b border-border-200/60 pt-2">
+            <div className="flex items-center justify-between px-4 pb-3">
+              <h1 className="text-[length:var(--fs-lg)] font-semibold text-text-100">{t('title')}</h1>
+              <button type="button" onClick={onClose} aria-label={t('closeSettings')} className="flex h-8 w-8 items-center justify-center rounded-md text-text-300 hover:bg-bg-200 hover:text-text-100">
+                <CloseIcon size={16} />
+              </button>
+            </div>
             <div className="px-3 pb-2">{search}</div>
             <div
               role="tablist"
@@ -369,8 +376,8 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[length:var(--fs-md)] font-medium transition-colors whitespace-nowrap shrink-0
                     ${
                       vt.id === tab
-                        ? 'bg-bg-100/80 text-text-100'
-                        : 'text-text-400 active:bg-bg-100/40'
+                        ? 'bg-bg-200 text-text-100'
+                        : 'text-text-300 active:bg-bg-200/50'
                     }`}
                 >
                   {vt.icon}
@@ -386,7 +393,7 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
             role="tabpanel"
             aria-labelledby={`settings-tab-${tab}`}
             ref={scrollRef}
-            className="flex-1 min-h-0 py-3 px-4 overflow-y-auto custom-scrollbar overscroll-contain"
+            className="flex-1 min-h-0 p-3 overflow-y-auto custom-scrollbar overscroll-contain"
           >
             {/* key 按 tab 重挂载：单个面板崩溃只降级当前页，不拖垮整个应用 */}
             <ErrorBoundary key={tab}>
@@ -407,26 +414,27 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
       ariaLabel={t('title')}
       width="min(97vw, 1040px)"
       showCloseButton={false}
+      className="settings-shell"
       rawContent
     >
       <div className="relative flex h-[min(90vh,820px)]">
-        {/* 关闭按钮 — 绝对定位右上角，悬浮于内容之上，不占布局 */}
         <button
           type="button"
           onClick={onClose}
-          className="absolute right-3 top-3 z-10 hidden md:flex items-center justify-center w-7 h-7 rounded-md text-text-400/60 hover:text-text-200 hover:bg-bg-200/70 transition-colors"
+          className="absolute right-3 top-3 z-10 flex items-center justify-center w-8 h-8 rounded-md text-text-300 hover:text-text-100 hover:bg-bg-200 transition-colors"
           aria-label={t('closeSettings')}
           title={t('closeSettings')}
         >
           <CloseIcon size={16} />
         </button>
 
-        {/* Left Nav — 与内容共享同一表面，仅靠留白和 active 胶囊区分 */}
+        {/* 导航与表单区分开，模型配置沿用统一面板。 */}
         <nav
           aria-label={t('title')}
-          className="w-[204px] xl:w-[228px] shrink-0 pt-10 pr-3 pl-6 xl:pl-7 pb-3 flex flex-col min-h-0"
+          className="w-[204px] xl:w-[220px] shrink-0 border-r border-border-200/60 bg-bg-200/25 p-4 flex flex-col min-h-0"
         >
-          <div className="mb-3 shrink-0">{search}</div>
+          <h1 className="mb-5 px-2 pt-1 text-[length:var(--fs-lg)] font-semibold text-text-100">{t('title')}</h1>
+          <div className="mb-5 shrink-0">{search}</div>
           <div
             role="tablist"
             aria-orientation="vertical"
@@ -452,8 +460,8 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
                         aria-controls={`settings-panel-${vt.id}`}
                         onClick={() => switchTab(vt.id)}
                         tabIndex={active ? 0 : -1}
-                        className={`w-full min-h-8 flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-[length:var(--fs-md)] font-medium transition-colors ${
-                          active ? 'bg-bg-200/70 text-text-100' : 'text-text-300 hover:bg-bg-200/40 hover:text-text-100'
+                        className={`w-full min-h-9 flex items-center gap-2.5 px-2.5 py-2 rounded-md text-[length:var(--fs-md)] font-medium transition-colors ${
+                          active ? 'bg-bg-200 text-text-100' : 'text-text-300 hover:bg-bg-200/50 hover:text-text-100'
                         }`}
                       >
                         <span className={active ? 'text-accent-main-100' : 'text-text-400'}>{vt.icon}</span>
@@ -477,13 +485,13 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
           </div>
         </nav>
 
-        {/* Right Content — 与 nav 同一表面，仅靠左侧留白分隔 */}
+        {/* 右侧独立滚动；外层不再依赖大片留白区分设置组。 */}
         <div
           id={activePanelId}
           role="tabpanel"
           aria-labelledby={`settings-tab-${tab}`}
           ref={scrollRef}
-          className="flex-1 min-w-0 min-h-0 overflow-y-auto custom-scrollbar px-7 pb-8 pt-10 xl:px-8"
+          className="flex-1 min-w-0 min-h-0 overflow-y-auto custom-scrollbar px-5 pb-5 pt-14"
         >
           {/* key 按 tab 重挂载：单个面板崩溃只降级当前页，不拖垮整个应用 */}
           <ErrorBoundary key={tab}>
