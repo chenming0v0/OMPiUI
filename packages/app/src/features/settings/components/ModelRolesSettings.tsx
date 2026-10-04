@@ -8,7 +8,7 @@ import { ModelSelector } from '../../chat/ModelSelector'
 import { ChevronDownIcon, MoreVerticalIcon, QuestionIcon } from '../../../components/Icons'
 import { usePiModels } from '../../../omp/hooks/index.js'
 import { getPiModelRoles, setPiModelRoles } from '../../../omp/transport/index.js'
-import { SettingsSelect, SettingsSection, settingsFieldClass } from './SettingsUI'
+import { SettingsSelect, SettingsSection } from './SettingsUI'
 
 const PI_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 const THINKING_LEVEL_SET: ReadonlySet<string> = new Set(PI_THINKING_LEVELS)
@@ -215,7 +215,7 @@ function RoleGroup({ label, children }: { label: string; children: React.ReactNo
 }
 
 /**
- * 角色名右对齐；主模型一行，思考强度作为第二行。菜单保留清除/复制。
+ * 角色名右对齐；主行 = 模型 + 思考强度 + kebab。菜单保留清除/复制。
  * OMP 没有备用模型字段，不伪造第二套模型选择器。
  */
 function RoleRow({
@@ -239,16 +239,24 @@ function RoleRow({
 }) {
   const { t } = useTranslation('settings')
   const [menuOpen, setMenuOpen] = useState(false)
+  const [helpOpen, setHelpOpen] = useState(false)
   const kebabRef = useRef<HTMLButtonElement>(null)
+  const helpRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
-    if (!menuOpen) return
+    if (!menuOpen && !helpOpen) return
     const onPointerDown = (event: MouseEvent) => {
-      if (kebabRef.current?.contains(event.target as Node)) return
+      const target = event.target as Node
+      if (kebabRef.current?.contains(target) || helpRef.current?.contains(target)) return
+      if (target instanceof Element && target.closest('.model-role-popover')) return
       setMenuOpen(false)
+      setHelpOpen(false)
     }
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMenuOpen(false)
+      if (event.key === 'Escape') {
+        setMenuOpen(false)
+        setHelpOpen(false)
+      }
     }
     document.addEventListener('mousedown', onPointerDown)
     document.addEventListener('keydown', onKeyDown)
@@ -256,7 +264,7 @@ function RoleRow({
       document.removeEventListener('mousedown', onPointerDown)
       document.removeEventListener('keydown', onKeyDown)
     }
-  }, [menuOpen])
+  }, [menuOpen, helpOpen])
 
   const parsed = parseRoleValue(value)
   const currentKey = parsed ? `${parsed.provider}:${parsed.modelId}` : null
@@ -286,80 +294,96 @@ function RoleRow({
     setMenuOpen(false)
   }
 
+  const roleName = t(`models.${def.nameKey}`)
+  const roleDesc = t(`models.${def.descKey}`)
+
   return (
-    <div data-setting-label={t(`models.${def.nameKey}`)} className="model-role-row">
-      <div className="model-role-label flex min-w-0 items-center gap-1.5">
-        <span className="text-[length:var(--fs-sm)] font-medium text-text-100">{t(`models.${def.nameKey}`)}</span>
-        <span className="shrink-0 cursor-help text-text-300" title={`${t(`models.${def.descKey}`)}\nOMP: ${def.tag} (${def.id})`}>
+    <div data-setting-label={roleName} className="model-role-row">
+      <div className="model-role-label flex min-w-0 items-center gap-1">
+        <span className="text-[length:var(--fs-sm)] font-medium text-text-100">{roleName}</span>
+        <button
+          ref={helpRef}
+          type="button"
+          aria-label={roleDesc}
+          aria-expanded={helpOpen}
+          aria-haspopup="dialog"
+          onClick={() => {
+            setMenuOpen(false)
+            setHelpOpen(open => !open)
+          }}
+          className="inline-flex shrink-0 items-center justify-center rounded text-text-300 transition-colors hover:text-text-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent-main-100"
+        >
           <QuestionIcon size={13} />
-        </span>
+        </button>
+        <DropdownMenu triggerRef={helpRef} isOpen={helpOpen} position="top" align="right" zIndex={400} minWidth="220px" maxWidth="280px" className="model-role-popover">
+          <p className="px-2.5 py-2 text-[length:var(--fs-xs)] leading-relaxed text-text-200">{roleDesc}</p>
+        </DropdownMenu>
       </div>
 
-      <div className="model-role-controls min-w-0">
-        <div className="flex min-w-0 items-center gap-2">
-          {value && !parsed ? (
-            <div className={`min-w-0 flex-1 ${roleFieldBoxClass}`}>
-              <div className="flex h-8 items-center px-2.5">
-                <span className="truncate font-mono text-[length:var(--fs-sm)] text-text-200" title={value}>{value}</span>
-              </div>
+      <div className="model-role-controls">
+        {value && !parsed ? (
+          <div className={`min-w-0 flex-1 ${roleFieldBoxClass}`}>
+            <div className="flex h-[30px] items-center px-2.5">
+              <span className="truncate font-mono text-[length:var(--fs-sm)] text-text-200" title={value}>{value}</span>
             </div>
-          ) : (
-            <div className={`role-model-field relative min-w-0 flex-1 ${roleFieldBoxClass}`}>
-              <ModelSelector
-                models={roleCandidates(def, models)}
-                selectedModelKey={currentKey}
-                onSelect={(_key, model) => onModel(def, model)}
-                isLoading={isLoading}
-                disabled={disabled}
-                trigger="toolbar"
-                placeholder={t('models.roleAuto')}
-                zIndex={400}
-              />
-              <ChevronDownIcon size={14} aria-hidden="true" className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-300" />
-            </div>
-          )}
-          <div className="shrink-0">
-            <button
-              ref={kebabRef}
-              type="button"
-              aria-label={t('models.roleOptions')}
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
+          </div>
+        ) : (
+          <div className={`role-model-field relative min-w-0 flex-1 ${roleFieldBoxClass}`}>
+            <ModelSelector
+              models={roleCandidates(def, models)}
+              selectedModelKey={currentKey}
+              onSelect={(_key, model) => onModel(def, model)}
+              isLoading={isLoading}
               disabled={disabled}
-              onClick={() => setMenuOpen(open => !open)}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-text-300 transition-colors hover:bg-bg-200 hover:text-text-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent-main-100 focus-visible:outline-offset-1 disabled:pointer-events-none disabled:opacity-40"
-            >
-              <MoreVerticalIcon size={14} />
-            </button>
-            <DropdownMenu triggerRef={kebabRef} isOpen={menuOpen} position="bottom" align="right" zIndex={400} minWidth="180px">
-              <div role="menu" aria-label={t('models.roleOptions')} className="p-1">
-                <MenuItem
-                  label={t('models.roleClear')}
-                  description={t('models.roleClearDesc')}
-                  disabled={!value || disabled}
-                  onClick={() => {
-                    setMenuOpen(false)
-                    onClear(def)
-                  }}
-                />
-                <MenuItem label={t('models.rolesCopyValue')} disabled={!value} onClick={() => void copyRawValue()} />
-              </div>
-            </DropdownMenu>
-          </div>
-        </div>
-
-        <div className="model-role-secondary mt-1.5 flex min-w-0 items-center gap-3">
-          <span className="shrink-0 text-[length:var(--fs-xs)] text-text-300">{t('models.defaultThinking')}</span>
-          <div className="min-w-0 flex-1">
-            <SettingsSelect
-              ariaLabel={`${t(`models.${def.nameKey}`)} ${t('models.defaultThinking')}`}
-              value={parsed?.level ?? ''}
-              onChange={level => onLevel(def, level)}
-              options={levelOptions}
-              disabled={disabled || !parsed || !selectedModel}
-              className={settingsFieldClass}
+              trigger="toolbar"
+              placeholder={t('models.roleAuto')}
+              zIndex={400}
             />
+            <ChevronDownIcon size={14} aria-hidden="true" className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-300" />
           </div>
+        )}
+        <SettingsSelect
+          ariaLabel={`${roleName} ${t('models.roleVariant')}`}
+          value={parsed?.level ?? ''}
+          onChange={level => onLevel(def, level)}
+          options={levelOptions}
+          disabled={disabled || !parsed || !selectedModel}
+          placeholder={t('models.roleVariant')}
+          matchTriggerWidth={false}
+          menuMinWidth="7.5rem"
+          zIndex={400}
+          className="role-variant-select"
+        />
+        <div className="model-role-kebab shrink-0">
+          <button
+            ref={kebabRef}
+            type="button"
+            aria-label={t('models.roleOptions')}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            disabled={disabled}
+            onClick={() => {
+              setHelpOpen(false)
+              setMenuOpen(open => !open)
+            }}
+            className="inline-flex h-[30px] w-[30px] items-center justify-center rounded-md text-text-300 transition-colors hover:bg-bg-200 hover:text-text-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent-main-100 focus-visible:outline-offset-1 disabled:pointer-events-none disabled:opacity-40"
+          >
+            <MoreVerticalIcon size={14} />
+          </button>
+          <DropdownMenu triggerRef={kebabRef} isOpen={menuOpen} position="bottom" align="right" zIndex={400} minWidth="180px" className="model-role-popover">
+            <div role="menu" aria-label={t('models.roleOptions')} className="p-1">
+              <MenuItem
+                label={t('models.roleClear')}
+                description={t('models.roleClearDesc')}
+                disabled={!value || disabled}
+                onClick={() => {
+                  setMenuOpen(false)
+                  onClear(def)
+                }}
+              />
+              <MenuItem label={t('models.rolesCopyValue')} disabled={!value} onClick={() => void copyRawValue()} />
+            </div>
+          </DropdownMenu>
         </div>
       </div>
     </div>

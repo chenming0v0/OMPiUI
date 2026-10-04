@@ -29,6 +29,10 @@ export function SettingsSelect<T extends string>({
   ariaLabel,
   disabled,
   className,
+  placeholder,
+  matchTriggerWidth = true,
+  menuMinWidth,
+  zIndex = 400,
 }: {
   value: T | undefined
   options: SettingsSelectOption<T>[]
@@ -36,6 +40,12 @@ export function SettingsSelect<T extends string>({
   ariaLabel?: string
   disabled?: boolean
   className?: string
+  /** 空值时 trigger 文案；不传则回落到空选项 label */
+  placeholder?: string
+  /** 弹出层是否与 trigger 同宽，默认 true */
+  matchTriggerWidth?: boolean
+  menuMinWidth?: number | string
+  zIndex?: number
 }) {
   const [isOpen, setIsOpen] = useState(false)
   const [menuWidth, setMenuWidth] = useState<number | undefined>(undefined)
@@ -44,6 +54,10 @@ export function SettingsSelect<T extends string>({
   const listboxId = useId()
 
   const selected = options.find(option => option.value === value)
+  const empty = value === undefined || value === ''
+  const displayLabel = empty
+    ? (placeholder ?? selected?.label ?? '')
+    : (selected?.label ?? value ?? '')
 
   // 点击外部关闭
   useEffect(() => {
@@ -89,10 +103,18 @@ export function SettingsSelect<T extends string>({
         }}
         className={`${settingsFieldClass} flex items-center justify-between gap-2 text-left ${disabled ? 'opacity-55 cursor-not-allowed' : ''} ${className ?? ''}`}
       >
-        <span className={`truncate ${selected ? '' : 'text-text-400'}`}>{selected?.label ?? value ?? ''}</span>
+        <span className={`truncate ${empty || !selected ? 'text-text-400' : ''}`}>{displayLabel}</span>
         <ChevronDownIcon size={14} className={`shrink-0 text-text-400 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
       </button>
-      <DropdownMenu triggerRef={triggerRef} isOpen={isOpen} position="bottom" align="left" width={menuWidth} zIndex={400}>
+      <DropdownMenu
+        triggerRef={triggerRef}
+        isOpen={isOpen}
+        position="bottom"
+        align="left"
+        width={matchTriggerWidth ? menuWidth : undefined}
+        {...(menuMinWidth !== undefined ? { minWidth: menuMinWidth } : {})}
+        zIndex={zIndex}
+      >
         <div
           id={listboxId}
           ref={menuRef}

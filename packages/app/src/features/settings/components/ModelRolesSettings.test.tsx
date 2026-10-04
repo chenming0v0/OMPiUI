@@ -133,6 +133,33 @@ describe('ModelRolesSettings', () => {
     })
   })
 
+  it('places thinking next to the model and uses a variant placeholder when unset', async () => {
+    getPiModelRolesMock.mockResolvedValue({ default: 'openai/gpt-4.1' })
+    render(<ModelRolesSettings />)
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4.1')
+    })
+
+    const row = screen.getAllByTestId('model-selector-stub')[0].closest('.model-role-row')
+    expect(row).not.toBeNull()
+    expect(row?.querySelector('.model-role-secondary')).toBeNull()
+    expect(row?.querySelector('.role-variant-select')).toHaveTextContent('variant')
+    expect(screen.queryByText('Thinking level')).not.toBeInTheDocument()
+  })
+
+  it('opens a click help popover with the role description', async () => {
+    getPiModelRolesMock.mockResolvedValue({ default: 'openai/gpt-4.1' })
+    render(<ModelRolesSettings />)
+
+    const help = await screen.findByRole('button', {
+      name: 'Main model for regular chat; also the fallback when other roles are unassigned.',
+    })
+    expect(screen.queryByText('Main model for regular chat; also the fallback when other roles are unassigned.')).not.toBeInTheDocument()
+    fireEvent.click(help)
+    expect(await screen.findByText('Main model for regular chat; also the fallback when other roles are unassigned.')).toBeInTheDocument()
+  })
+
   it('keeps the thinking suffix when changing a role model without touching levels', async () => {
     getPiModelRolesMock.mockResolvedValue({ slow: 'openai/gpt-4o-mini:high' })
     render(<ModelRolesSettings />)

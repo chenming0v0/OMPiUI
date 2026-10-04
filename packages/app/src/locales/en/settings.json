@@ -251,6 +251,7 @@
     "roleOptions": "Role options",
     "rolesCopyValue": "Copy raw value",
     "roleLevelNone": "Default",
+    "roleVariant": "variant",
     "roleDefault": "Default",
     "roleDefaultDesc": "Main model for regular chat; also the fallback when other roles are unassigned.",
     "roleSmol": "Fast",

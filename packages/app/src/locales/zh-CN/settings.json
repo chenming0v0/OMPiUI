@@ -251,6 +251,7 @@
     "roleOptions": "角色选项",
     "rolesCopyValue": "复制原始值",
     "roleLevelNone": "默认",
+    "roleVariant": "强度",
     "roleDefault": "默认",
     "roleDefaultDesc": "常规对话的主模型，其他角色未指派时也由它兜底。",
     "roleSmol": "快速",
