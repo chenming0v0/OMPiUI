@@ -79,7 +79,15 @@
   },
   "todo": {
     "tasks": "任务",
-    "completedCount": "{{completed}}/{{total}}"
+    "completedCount": "{{completed}}/{{total}}",
+    "status": {
+      "pending": "待开始",
+      "in_progress": "进行中",
+      "completed": "已完成",
+      "cancelled": "已取消",
+      "abandoned": "已放弃",
+      "blocked": "等待中"
+    }
   },
   "task": {
     "subtask": "Subtask",

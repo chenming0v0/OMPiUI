@@ -105,7 +105,15 @@
   },
   "todo": {
     "tasks": "Tasks",
-    "completedCount": "{{completed}}/{{total}}"
+    "completedCount": "{{completed}}/{{total}}",
+    "status": {
+      "pending": "Pending",
+      "in_progress": "In progress",
+      "completed": "Completed",
+      "cancelled": "Cancelled",
+      "abandoned": "Abandoned",
+      "blocked": "Blocked"
+    }
   },
   "task": {
     "subtask": "Subtask",

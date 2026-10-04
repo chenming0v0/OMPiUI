@@ -1,18 +1,11 @@
 import type { PiToolExecution } from '../../../../omp/domain/index.js'
-
-interface TodoItem {
-  id: string
-  content: string
-  status: 'pending' | 'in_progress' | 'completed' | 'cancelled'
-  priority: 'high' | 'medium' | 'low'
-}
+import { readTodoItems, type TodoItem } from '../../../../omp/domain/todo'
 
 export function extractTodos(execution: PiToolExecution): TodoItem[] {
-  const inputObj = execution.call.arguments as Record<string, unknown> | undefined
-  const details = execution.result?.details as Record<string, unknown> | undefined
-  return (details?.todos as TodoItem[]) || (inputObj?.todos as TodoItem[]) || []
+  return readTodoItems(execution.result?.details) ?? readTodoItems(execution.call.arguments) ?? []
 }
 
 export function hasTodos(execution: PiToolExecution): boolean {
-  return extractTodos(execution).length > 0
+  if (execution.result?.isError) return false
+  return readTodoItems(execution.result?.details) !== undefined || readTodoItems(execution.call.arguments) !== undefined
 }
