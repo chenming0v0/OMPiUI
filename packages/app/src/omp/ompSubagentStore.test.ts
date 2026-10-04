@@ -263,4 +263,23 @@ describe('ompSubagentStore toolCall slices', () => {
     expect(notifications).toBe(1)
     unsubscribe()
   })
+
+  it('does not use the wrapping assignment prompt as the HUD title', () => {
+    ompSubagentStore.applyLifecycle('session-s', {
+      id: 'scout-run',
+      parentToolCallId: 'call-batch',
+      index: 0,
+      agent: 'scout',
+      status: 'started',
+      description: 'Complete assignment thoroughly:\n\n# Target',
+    })
+    ompSubagentStore.applyProgress('session-s', {
+      id: 'scout-run',
+      assignment: 'Complete assignment thoroughly:\n\n# Target',
+      task: 'Complete assignment thoroughly:\n\n# Target',
+    })
+    const run = ompSubagentStore.getRunsForToolCall('call-batch', 'session-s')[0]
+    expect(run?.description).toBeUndefined()
+    expect(run?.task).toMatch(/^Complete assignment thoroughly/)
+  })
 })

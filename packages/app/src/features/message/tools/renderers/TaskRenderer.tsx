@@ -15,7 +15,7 @@ import {
   type OmpSubagentRun,
   type OmpSubagentTranscriptItem,
 } from '../../../../omp/ompSubagentStore'
-import { formatCompactDuration, formatCompactTokens } from '../../../../omp/ompSubagentFormat'
+import { formatCompactDuration, formatCompactTokens, subagentDisplayTitle } from '../../../../omp/ompSubagentFormat'
 import { buildPersistedSubagentRun, deriveChildSessionFile, extractPersistedResults, type PersistedSubagentResult } from './persistedSubagentRun'
 import { useUiDisclosureState } from '../../../../utils/uiDisclosureState'
 import type { ToolRendererProps } from '../types'
@@ -111,9 +111,19 @@ function SubagentTask({ slot, execution, partKey, intent, targetSessionId, showA
   const subagentRun = liveRun ?? persistedRun
   const isError = subagentRun ? subagentRun.status === 'failed' || subagentRun.status === 'aborted' : Boolean(execution.result?.isError)
   const isCompleted = !isRunning && !isError
-  const name = typeof slot.input.name === 'string' ? slot.input.name : slot.result?.id
-  const detail = slot.result?.description || subagentRun?.description || (typeof slot.input.description === 'string' ? slot.input.description : intent) || t('task.subtask')
-  const description = name && name !== detail ? `${name} · ${detail}` : name || detail
+  const name = subagentDisplayTitle(
+    typeof slot.input.name === 'string' ? slot.input.name : undefined,
+    slot.result?.id,
+  )
+  const detail = subagentDisplayTitle(
+    slot.result?.description,
+    subagentRun?.description,
+    typeof slot.input.description === 'string' ? slot.input.description : undefined,
+    intent,
+  )
+  const description = name && detail && name !== detail
+    ? `${name} · ${detail}`
+    : name || detail || t('task.subtask')
   const prompt = typeof slot.input.prompt === 'string' ? slot.input.prompt
     : typeof slot.input.task === 'string' ? slot.input.task
       : slot.result?.assignment || subagentRun?.task || ''
@@ -172,7 +182,7 @@ function SubagentTask({ slot, execution, partKey, intent, targetSessionId, showA
         opening={opening}
         onStop={isRunning && targetSessionId ? handleStop : undefined}
       />
-      {openError && <p role="alert" className="pt-1 text-[length:var(--fs-xs)] text-danger-100">{openError}</p>}
+      {openError && <p role="alert" className="pt-1 text-[length:var(--fs-xs)] text-danger-100 break-words">{openError}</p>}
       <MessageExpandPanel open={effectiveExpanded} innerClassName="overflow-hidden">
         {shouldRenderBody && (
           <div className="pt-2 space-y-3">

@@ -1,4 +1,5 @@
 import type { JsonObject } from '@ompiui/protocol'
+import { subagentDisplayTitle } from './ompSubagentFormat'
 
 /**
  * OMP 子代理实时状态（来源：`omp --mode rpc` 的 subagent_lifecycle /
@@ -460,7 +461,7 @@ class OmpSubagentStore {
         ...run,
         parentToolCallId: str(payload.parentToolCallId) ?? run.parentToolCallId,
         agent: str(payload.agent) ?? run.agent,
-        description: str(payload.description) ?? run.description,
+        description: subagentDisplayTitle(str(payload.description)) ?? run.description,
         status,
         sessionFile: str(payload.sessionFile) ?? run.sessionFile,
         index: typeof payload.index === 'number' ? payload.index : run.index,
@@ -482,7 +483,7 @@ class OmpSubagentStore {
       return {
         ...run,
         task: str(payload.task) ?? run.task,
-        description: str(payload.assignment) ?? run.description,
+        description: subagentDisplayTitle(str(payload.description), str(payload.assignment)) ?? run.description,
         parentToolCallId: str(payload.parentToolCallId) ?? run.parentToolCallId,
         sessionFile: str(payload.sessionFile) ?? run.sessionFile,
         agent: str(payload.agent) ?? run.agent,
@@ -527,7 +528,7 @@ class OmpSubagentStore {
         ...run,
         parentToolCallId: str(record.parentToolCallId) ?? run.parentToolCallId,
         agent: str(record.agent) ?? run.agent,
-        description: str(record.description) ?? run.description,
+        description: subagentDisplayTitle(str(record.description)) ?? run.description,
         task: str(record.task) ?? run.task,
         status: normalizeStatus(record.status ?? run.status),
         sessionFile: str(record.sessionFile) ?? run.sessionFile,

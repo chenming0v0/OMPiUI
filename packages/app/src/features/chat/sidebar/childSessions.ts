@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { subagentDisplayTitle } from '../../../omp/ompSubagentFormat'
 import { listPiChildSessions } from '../../../omp/transport/index.js'
 import { serverStore } from '../../../store/serverStore'
 import type { UiSession } from '../../../types/session'
@@ -43,11 +44,10 @@ export function useChildSessions(
             return {
               id: record.id,
               directory: typeof record.cwd === 'string' ? record.cwd : '',
-              title: typeof record.name === 'string' && record.name
-                ? record.name
-                : typeof record.firstMessage === 'string' && record.firstMessage
-                  ? record.firstMessage.slice(0, 60)
-                  : 'task',
+              title: subagentDisplayTitle(
+                typeof record.name === 'string' ? record.name : undefined,
+                record.path.replace(/\\/g, '/').split('/').at(-1)?.replace(/\.jsonl$/i, ''),
+              ) || 'task',
               firstMessage: typeof record.firstMessage === 'string' ? record.firstMessage : undefined,
               messageCount: typeof record.messageCount === 'number' ? record.messageCount : undefined,
               createdAt: typeof record.created === 'string' ? Date.parse(record.created) || 0 : 0,
@@ -70,10 +70,12 @@ export function useChildSessions(
       timer = setTimeout(load, 400)
     }
     window.addEventListener('omompiui:sessions-changed', onChanged)
+    window.addEventListener('ompiui:sessions-changed', onChanged)
     return () => {
       cancelled = true
       if (timer) clearTimeout(timer)
       window.removeEventListener('omompiui:sessions-changed', onChanged)
+      window.removeEventListener('ompiui:sessions-changed', onChanged)
     }
   }, [parentPath, parentSession])
 
