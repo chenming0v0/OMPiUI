@@ -58,6 +58,8 @@ OMPiUI 自己的版本从 0.1.0 起算。`packages/app/CHANGELOG.md` 是上游 P
 
 ## [Unreleased]
 
+- fix: Todo 工具适配 OMP 原生 `phases[].tasks[]` 快照，按 OpenCodeUI 的任务卡片显示阶段分组、进度、状态图标和阻塞原因，不再回退为 Input/Output；输入框 Todo 入口共用数据适配，空快照可清除旧任务，失败操作保留错误提示，历史 TodoWrite 清单仍可显示。
+
 - feat: 自建中转（内网穿透）—— 新包 `@ompiui/relay`（bin `omp-relay`）实现 Pebrel 式反向隧道中转：电脑端主动拨号到自己的 VPS（NAT/防火墙后可用，无需公网 IP/端口转发），公网访客走普通 HTTP(S) 入口，每个请求被翻译成控制连接上的一条虚拟连接（open → body 流 → head/响应体/end），WS upgrade（事件流/终端流）101 头保真后两侧 socket 纯字节拼接。安全语义沿用 Pebrel：接入密钥只存 SHA-256 摘要（timing-safe 比较）、重复接入拒绝（先到先得）、30s 心跳、断线指数退避、无存储转发（离线 502 `TUNNEL_OFFLINE`）；限流 100 msg/s、每隧道 64 并发、帧 ≤64KiB，背压按 bufferedAmount 高水位暂停源流。路由支持 `host` 绑定与 `<id>.<domain>` 子域名，未配置任何显式路由时单隧道兜底（配了就不兜底，未匹配 Host 拒绝）；`omp-relay init` 一条命令生成配置 + 43 字符密钥并打印可直接粘贴的 `OMPIUI_TUNNEL_*`，支持内置 TLS 或 Caddy 反代。19 个单测 + 全链路集成测试
 - feat: server 内嵌隧道客户端与动态公网入口 —— 配置 `OMPIUI_TUNNEL_URL/KEY/ID`（或 `--tunnel-*`）后 server 主动拨号到中转并保活（500ms×2ⁿ 上限 15s + 抖动重连），公网请求被重放到本机 `127.0.0.1:port`；有效公网入口 = 显式 `OMPIUI_PUBLIC_BASE_URL` ?? 中转上报地址，Origin 白名单（HTTP + WS 两处）改为动态取值自动纳入隧道公网 origin，share 链接/启动日志同步切换；新增 `GET /api/v1/host/tunnel` 状态端点，`ShareInfo` 附带 tunnel 信息。集成测试覆盖 HTTP/WS 透传、干净停止与中转重启后重连
 - feat: 内网穿透设置区与部署文档 —— 设置 → 服务新增「内网穿透（自建中转）」区（中转地址/接入密钥/隧道 ID 走 `OMPIUI_TUNNEL_*` 环境变量持久化、重启生效提示、状态轮询、信任模型警示），分享面板显示隧道公网入口；`docs/tunnel.md` 覆盖 VPS 部署（裸 Node/Docker、Caddy 自动 HTTPS 与内置 TLS 两条路径）、`init → 粘贴配置 → 重启 → 手机打开分享链接` 全流程与安全模型（中转可信级同反代，token 仍必需），README 增补指引
