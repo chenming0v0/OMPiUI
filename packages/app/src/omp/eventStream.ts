@@ -11,7 +11,7 @@ import {
   isJsonObject,
   type CommandRecord,
 } from '@ompiui/protocol'
-import type { AgentMessage, AgentSessionEvent, PiLiveMessage } from './domain/index.js'
+import type { AgentMessage, AgentSessionEvent, PiBranchPage, PiLiveMessage } from './domain/index.js'
 import type { ProviderAuthEvent, SessionsActivitySnapshot, SessionActivityStatus } from '@ompiui/protocol'
 import { getApiBase, getPiAuthToken } from './httpClient.js'
 import { openPiSocket, PI_SOCKET_CLOSED, PI_SOCKET_CLOSING, PI_SOCKET_OPEN, type PiSocket } from './ompSocket'
@@ -98,6 +98,7 @@ class PiEventStream {
   private refCounts = new Map<string, number>()
   private workspaceRefCounts = new Map<string, number>()
   private cursors = new Map<string, EventCursor>()
+  private pendingLiveMessages = new Map<string, PiLiveMessage>()
   private pingTimer: ReturnType<typeof setInterval> | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private branchRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -118,6 +119,7 @@ class PiEventStream {
     if (count <= 1) {
       this.refCounts.delete(sessionId)
       this.cursors.delete(eventStreamKey({ kind: 'session', id: sessionId }))
+      this.pendingLiveMessages.delete(sessionId)
       this.clearRefreshTimers(sessionId)
       liveToolOutputStore.clearSession(sessionId)
     } else {
@@ -173,6 +175,7 @@ class PiEventStream {
     this.refCounts.clear()
     this.workspaceRefCounts.clear()
     this.cursors.clear()
+    this.pendingLiveMessages.clear()
     piCommandStore.clearAll()
     this.closeSocket()
   }
@@ -433,6 +436,7 @@ class PiEventStream {
       // data; panes re-subscribe and reload under the new id when they
       // follow ompiui:session-replaced (their connect effect owns ref counts).
       this.cursors.delete(eventStreamKey({ kind: 'session', id: payload.sourceSessionId }))
+      this.pendingLiveMessages.delete(payload.sourceSessionId)
       this.branchRefreshTimers.delete(payload.sourceSessionId)
       this.stateRefreshTimers.delete(payload.sourceSessionId)
       piBranchStore.clear(payload.sourceSessionId)
@@ -581,6 +585,7 @@ class PiEventStream {
       }
       case 'agent_end':
       case 'agent_settled':
+        this.pendingLiveMessages.delete(sessionId)
         this.scheduleBranchRefresh(sessionId)
         this.scheduleStateRefresh(sessionId)
         notifySessionIdle(sessionId)
@@ -614,14 +619,25 @@ class PiEventStream {
 
   private updateLiveMessage(sessionId: string, message: AgentMessage, meta: PiEventPayload['meta']): void {
     perfMark('ompiui:event-message-update')
-    const data = piBranchStore.getData(sessionId)
-    if (!data) return
     const liveMessage: PiLiveMessage = {
       id: meta.liveMessage?.id ?? `live-${meta.sequence}`,
       revision: meta.liveMessage?.revision ?? meta.sequence,
       phase: 'streaming',
       message,
     }
+    const data = piBranchStore.getData(sessionId)
+    if (!data) {
+      // On a page refresh the socket can replay frames before session.preview
+      // hydrates the keyed branch store. Keep the newest frame and hydrate it
+      // through the same branch refresh instead of dropping the live turn.
+      this.pendingLiveMessages.set(sessionId, liveMessage)
+      this.scheduleBranchRefresh(sessionId)
+      return
+    }
+    this.applyLiveMessage(sessionId, data, liveMessage)
+  }
+
+  private applyLiveMessage(sessionId: string, data: PiBranchPage, liveMessage: PiLiveMessage): void {
     // checkpoint 可能不存在（fresh 会话本地构造的 page / preview 未带
     // checkpoint）：此时仍要保留 liveMessage，否则流式内容被丢弃，要等
     // message_end 后 branch refresh 才整体出现。position 用 head 兜底。
@@ -631,13 +647,25 @@ class PiEventStream {
     piBranchStore.setData(sessionId, { ...data, checkpoint })
   }
 
+  private flushPendingLiveMessage(sessionId: string): void {
+    const liveMessage = this.pendingLiveMessages.get(sessionId)
+    const data = piBranchStore.getData(sessionId)
+    if (!liveMessage || !data) return
+    this.pendingLiveMessages.delete(sessionId)
+    this.applyLiveMessage(sessionId, data, liveMessage)
+  }
   private handleResync(key: string, cursor?: EventCursor): void {
     const stream = parseEventStreamKey(key)
     if (!stream) return
     if (cursor) this.cursors.set(key, cursor)
     if (stream.kind === 'session') {
-      void loadPiSessionData(stream.id).catch(() => undefined)
-      // resync 时同样主动拉一次运行时 state（branch 与 state 一起恢复）
+      // A full-page refresh has no cursor, so the server asks for resync
+      // instead of replaying history. session.preview reads disk only and
+      // cannot contain the in-memory live turn; fetch branch.get after it so
+      // the attached runtime contributes its live checkpoint.
+      void loadPiSessionData(stream.id)
+        .catch(() => undefined)
+        .then(() => refreshPiBranch(stream.id).catch(() => undefined))
       this.scheduleStateRefresh(stream.id)
     } else if (stream.kind === 'server') {
       window.dispatchEvent(new CustomEvent('omompiui:sessions-changed'))
@@ -657,7 +685,9 @@ class PiEventStream {
     if (this.branchRefreshTimers.has(sessionId)) return
     const timer = setTimeout(() => {
       this.branchRefreshTimers.delete(sessionId)
-      void refreshPiBranch(sessionId).catch(() => undefined)
+      void refreshPiBranch(sessionId)
+        .then(() => this.flushPendingLiveMessage(sessionId))
+        .catch(() => undefined)
     }, REFRESH_DEBOUNCE_MS)
     this.branchRefreshTimers.set(sessionId, timer)
   }

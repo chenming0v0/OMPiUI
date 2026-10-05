@@ -145,3 +145,31 @@ describe('omp.subagent routing across streams', () => {
     expect(run?.sessionId).toBe('session-open')
   })
 })
+
+describe('refresh replay hydration', () => {
+  afterEach(() => {
+    piBranchStore.clear('session-refresh')
+    ;(piEventStream as unknown as { pendingLiveMessages: Map<string, unknown> }).pendingLiveMessages.clear()
+  })
+
+  it('keeps a live assistant frame received before branch hydration', () => {
+    const update = (piEventStream as unknown as {
+      updateLiveMessage: (sessionId: string, message: unknown, meta: unknown) => void
+    }).updateLiveMessage.bind(piEventStream)
+    const flush = (piEventStream as unknown as { flushPendingLiveMessage: (sessionId: string) => void }).flushPendingLiveMessage.bind(piEventStream)
+
+    update('session-refresh', { role: 'assistant', content: [{ type: 'text', text: 'still working' }] }, {
+      epoch: 'event-epoch',
+      sequence: 7,
+    })
+    expect(piBranchStore.getData('session-refresh')).toBeNull()
+
+    piBranchStore.setData('session-refresh', fakeBranchPage('session-refresh'))
+    flush('session-refresh')
+
+    expect(piBranchStore.getData('session-refresh')?.checkpoint?.liveMessage?.message).toMatchObject({
+      role: 'assistant',
+      content: [{ type: 'text', text: 'still working' }],
+    })
+  })
+})
