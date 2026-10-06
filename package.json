@@ -1,6 +1,6 @@
 {
   "name": "ompiui",
-  "version": "0.3.1",
+  "version": "0.4.1",
   "private": true,
   "type": "module",
   "description": "OMPiUI — third-party web/desktop client for the OMP (oh-my-pi) coding agent. PiUI visual shell + OMP RPC runtime.",
@@ -39,7 +39,7 @@
     "tauri:ios:init": "npm run tauri:ios:init -w @ompiui/app",
     "tauri:ios:dev": "npm run tauri:ios:dev -w @ompiui/app",
     "tauri:ios:build": "npm run tauri:ios:build -w @ompiui/app",
-    "release:prepare": "npm run release:prepare -w @ompiui/app",
+    "release:prepare": "npm run release:prepare -w @ompiui/app --",
     "release:bump": "node packages/app/scripts/bump-version.mjs",
     "dev:server:omp": "node scripts/dev-server-omp.mjs",
     "relay": "npm run relay -w @ompiui/relay --",

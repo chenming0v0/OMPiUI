@@ -96,7 +96,7 @@ function getReleaseBaseTag() {
 }
 
 // OMPiUI 自身 workspace 包名（互依赖引用也随版本一起升）
-const WORKSPACE_PACKAGE_NAMES = ['@ompiui/app', '@ompiui/server', '@ompiui/omp-worker', '@ompiui/protocol', '@ompiui/relay']
+const WORKSPACE_PACKAGE_NAMES = ['@ompiui/app', '@ompiui/server', '@ompiui/omp-worker', '@ompiui/protocol', '@ompiui/relay', '@ompiui/admin']
 
 function bumpPackageJson(relativePath, oldVersion) {
   const fullPath = resolve(repoRoot, relativePath)
@@ -139,6 +139,7 @@ const packageJsonFiles = [
   'packages/omp-worker/package.json',
   'packages/protocol/package.json',
   'packages/relay/package.json',
+  'packages/admin/package.json',
 ]
 for (const relative of packageJsonFiles) {
   bumpPackageJson(relative, oldVersion)
@@ -194,8 +195,8 @@ if (existsSync(npmLockPath)) {
   const packageEntries = npmLock.packages ?? {}
   for (const [pathKey, entry] of Object.entries(packageEntries)) {
     if (!entry || typeof entry !== 'object') continue
-    // workspace 包自身的 version
-    if (entry.name && WORKSPACE_PACKAGE_NAMES.includes(entry.name) && entry.version !== version) {
+    // 根包和 workspace 自身的版本都必须同步。
+    if ((pathKey === '' || (entry.name && WORKSPACE_PACKAGE_NAMES.includes(entry.name))) && entry.version !== version) {
       entry.version = version
       lockChanged = true
     }
