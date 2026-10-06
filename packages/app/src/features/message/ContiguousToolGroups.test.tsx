@@ -73,9 +73,9 @@ describe('contiguous assistant tool groups', () => {
   it('renders one settled six-tool group including a failed Eval, then starts a new reasoning segment', () => {
     const entries = buildVisibleTimelineEntries(fixture())
     render(<>{entries.map(({ item }) => <MessageRenderer key={item.entryId} item={item} processContentScope="inline" />)}</>)
-    expect(screen.getAllByRole('button', { name: '6/6' })).toHaveLength(1)
-    expect(screen.getByRole('button', { name: '2/2' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '4/4' })).toBeNull()
+    expect(screen.getAllByRole('button', { name: /^6\/6/ })).toHaveLength(1)
+    expect(screen.getByRole('button', { name: /^2\/2/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^4\/4/ })).toBeNull()
     expect(screen.getByText('Updating progress tracking')).toBeInTheDocument()
     expect(screen.getByText('Evaluating tool functionality')).toBeInTheDocument()
   })
@@ -101,12 +101,12 @@ describe('contiguous assistant tool groups', () => {
     const pending = { ...sources[2], toolResults: {}, isStreaming: true }
     const live = buildVisibleTimelineEntries([sources[0], sources[1], pending])[0]
     const { rerender } = render(<MessageRenderer item={live.item} processContentScope="inline" />)
-    expect(screen.getByRole('button', { name: '5/6' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^5\/6/ })).toBeInTheDocument()
     expect((live.item as PiAssistantMessageItem).isStreaming).toBe(true)
     const settled = buildVisibleTimelineEntries(sources)[0]
     expect(settled.item.entryId).toBe(live.item.entryId)
     rerender(<MessageRenderer item={settled.item} processContentScope="inline" />)
-    expect(screen.getByRole('button', { name: '6/6' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^6\/6/ })).toBeInTheDocument()
   })
 
   it.each(['text', 'thinking'] as const)('does not merge across visible %s', type => {
@@ -125,9 +125,9 @@ describe('contiguous assistant tool groups', () => {
       { type: 'thinking', thinking: 'New reasoning' }, call('next', 'read'), call('last', 'edit')], 200)
     const entries = buildVisibleTimelineEntries([first, second])
     render(<MessageRenderer item={entries[0].item} processContentScope="inline" />)
-    expect(screen.getAllByRole('button', { name: '2/2' })).toHaveLength(2)
+    expect(screen.getAllByRole('button', { name: /^2\/2/ })).toHaveLength(2)
     expect(screen.getByText('New reasoning')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '4/4' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^4\/4/ })).toBeNull()
   })
 
   it('never joins tools across a user boundary, even an empty user entry', () => {
