@@ -103,11 +103,18 @@ class PiEventStream {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private branchRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private stateRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private diskRefreshTimers = new Map<string, number>()
 
   /** Subscribe a session stream (reference counted). */
   connect(sessionId: string): void {
     this.refCounts.set(sessionId, (this.refCounts.get(sessionId) ?? 0) + 1)
     if (this.refCounts.get(sessionId) === 1) {
+      let refreshing = false
+      this.diskRefreshTimers.set(sessionId, window.setInterval(() => {
+        if (refreshing || piSessionStateStore.getState(sessionId)?.readOnly !== true) return
+        refreshing = true
+        void refreshPiBranch(sessionId).catch(() => undefined).finally(() => { refreshing = false })
+      }, 1_500))
       this.ensureSocket()
       if (this.ws?.readyState === PI_SOCKET_OPEN) this.sendSubscribe()
     }
@@ -190,6 +197,9 @@ class PiEventStream {
   }
 
   private clearRefreshTimers(sessionId: string): void {
+    const diskTimer = this.diskRefreshTimers.get(sessionId)
+    clearInterval(diskTimer)
+    this.diskRefreshTimers.delete(sessionId)
     const branchTimer = this.branchRefreshTimers.get(sessionId)
     if (branchTimer) {
       clearTimeout(branchTimer)
@@ -659,10 +669,8 @@ class PiEventStream {
     if (!stream) return
     if (cursor) this.cursors.set(key, cursor)
     if (stream.kind === 'session') {
-      // A full-page refresh has no cursor, so the server asks for resync
-      // instead of replaying history. session.preview reads disk only and
-      // cannot contain the in-memory live turn; fetch branch.get after it so
-      // the attached runtime contributes its live checkpoint.
+      // Preview includes the checkpoint for an attached runtime. External
+      // histories stay disk-only; neither refresh is allowed to spawn a writer.
       void loadPiSessionData(stream.id)
         .catch(() => undefined)
         .then(() => refreshPiBranch(stream.id).catch(() => undefined))

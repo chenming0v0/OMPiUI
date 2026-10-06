@@ -49,7 +49,7 @@ import {
   setPiThinkingLevel,
   clearPiQueue,
 } from '../../omp/controllers/index.js'
-import { invokePiCommand } from '../../omp/transport/index.js'
+import { invokePiCommand, manageSessionGoal, waitHostCommand } from '../../omp/transport/index.js'
 import { layoutStore } from '../../store/layoutStore'
 import { themeStore } from '../../store/themeStore'
 import { useSessionActiveEntry } from '../../store/activeSessionStore'
@@ -996,6 +996,54 @@ export function PiChatPane({
     [sessionId, isStreaming, models, scheduleDelayedRefresh],
   )
 
+  const handleSetGoal = useCallback(
+    async (objective: string): Promise<boolean> => {
+      let targetSessionId = sessionId
+      try {
+        if (!targetSessionId) {
+          // Goal 可以作为新会话的第一步：先创建会话，再让 worker 立刻进入目标续跑。
+          const directory = currentDirectoryRef.current || (await resolveWorkspacePath())
+          if (!directory) return false
+          const opened = await openPiSession(directory)
+          if (!opened.sessionId) return false
+          const sessionDir = opened.cwd ?? directory
+          targetSessionId = opened.sessionId
+          trackPiSession(targetSessionId, sessionDir)
+          registerSessionRef.current({
+            id: targetSessionId,
+            directory: sessionDir,
+            title: objective.slice(0, 60),
+            firstMessage: objective.slice(0, 200),
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            path: opened.sessionFile ?? undefined,
+          })
+          onEnterSessionRef.current?.(targetSessionId, sessionDir)
+          window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
+
+          const preferred = getPreferredModelKey()
+          const preferredModel = preferred ? models.find(m => `${m.provider}:${m.id}` === preferred) : undefined
+          if (preferredModel) {
+            await setPiModel(targetSessionId, preferredModel.provider, preferredModel.id).catch(() => undefined)
+          }
+          const preferredVariant = preferred ? getModelVariantPref(preferred) : undefined
+          if (preferredVariant) {
+            await setPiThinkingLevel(targetSessionId, preferredVariant).catch(() => undefined)
+          }
+        }
+
+        const submitted = await manageSessionGoal(targetSessionId, 'set', objective)
+        await waitHostCommand(submitted.id)
+        void refreshPiSessionState(targetSessionId).catch(() => undefined)
+        return true
+      } catch (error) {
+        uiErrorHandler('set goal', error)
+        return false
+      }
+    },
+    [models, sessionId],
+  )
+
   // Slash command dispatch, mirroring pi TUI: frontend built-ins are handled
   // locally; everything else goes through the native prompt path, where the
   // SDK executes extension commands and expands skills/prompt templates.
@@ -1690,6 +1738,7 @@ export function PiChatPane({
               ? void (compacting ? abortPiCompaction(sessionId) : abortPiOperation(sessionId)).catch(() => undefined)
               : undefined)}
             onNewChat={onNewChat}
+            onSetGoal={handleSetGoal}
             isStreaming={isStreaming}
             sessionActive={sessionActive}
             isCompacting={compacting}

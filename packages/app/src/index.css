@@ -1252,6 +1252,12 @@ body {
   pointer-events: none;
 }
 
+[data-input-shell]:has([data-input-box][data-todo-swap='hidden']) {
+  opacity: 0;
+  transform: translateY(18px) scale(0.985);
+  pointer-events: none;
+}
+
 /* todo panel 展开时同步隐藏 FloatingActions（undo/redo/permission 等） */
 :has([data-input-box][data-todo-swap='hidden']) > [data-floating-actions] {
   opacity: 0;

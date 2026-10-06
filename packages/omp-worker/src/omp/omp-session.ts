@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { copyFileSync, existsSync } from "node:fs"
+import { copyFileSync, existsSync, mkdirSync } from "node:fs"
 import path from "node:path"
 import type {
   ImageInput,
@@ -17,6 +17,7 @@ import { OmpExtensionUiBridge } from "./omp-extension-ui.js"
 import { OMP_SDK_VERSION } from "./constants.js"
 import { detectOmpVersion, isOmpVersionSupported, ompTooOldError } from "./omp-version.js"
 import { OmpRpcClient, OmpRpcError, unwrapResponse, type OmpRpcFrame } from "./rpc-client.js"
+import { assertManagedSessionFile, managedSessionDirectory } from "./managed-sessions.js"
 
 /**
  * OmpRpcSession —— SessionRuntime 契约的 OMP 实现。
@@ -134,6 +135,7 @@ export class OmpRpcSession implements SessionRuntime {
   private goalContinuations = 0
   private goalTurnStartedAt: number | null = null
   private lastActivity = { streaming: false, retrying: false, compacting: false }
+  private abortInFlight: Promise<JsonValue | undefined> | undefined
 
   private modelsCache: JsonObject[] = []
   private thinkingLevelsCache: string[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
@@ -145,7 +147,10 @@ export class OmpRpcSession implements SessionRuntime {
     const session = new OmpRpcSession()
     session.cwd = normalizeCwd(cwd)
     session.ompOptions = options
-    if (sessionFile) session.sessionFile = resolveUserPath(sessionFile)
+    if (sessionFile) {
+      session.sessionFile = resolveUserPath(sessionFile)
+      assertManagedSessionFile(session.sessionFile)
+    }
     await session.start()
     return session
   }
@@ -158,9 +163,12 @@ export class OmpRpcSession implements SessionRuntime {
     // 版本探测与 RPC 进程拉起并行，不增加启动延迟；探测通常已被 worker
     // 启动时的同步探测填充缓存，直接命中
     const versionProbe = detectOmpVersion(this.ompOptions.bin)
+    const sessionDirectory = managedSessionDirectory(this.cwd)
+    mkdirSync(sessionDirectory, { recursive: true })
     this.client = new OmpRpcClient({
       cwd: this.cwd,
       bin: this.ompOptions.bin,
+      args: ["--session-dir", sessionDirectory],
       env: { PIUI_EMBEDDED: "1" },
     })
     this.client.on("frame", frame => this.handleFrame(frame))
@@ -284,8 +292,14 @@ export class OmpRpcSession implements SessionRuntime {
       case "bash_execution_update":
       case "session_info_changed":
       case "queue_update": {
-        if (type === "agent_start") this.onGoalTurnStart()
-        if (type === "agent_end") this.onGoalTurnEnd()
+        if (type === "agent_start") {
+          this.currentStreaming = true
+          this.onGoalTurnStart()
+        }
+        if (type === "agent_end") {
+          this.currentStreaming = false
+          this.onGoalTurnEnd()
+        }
         this.trackShadowState(frame)
         this.emitPiEvent(frame)
         if (type === "agent_end" || type === "turn_end") this.scheduleEntrySync()
@@ -316,7 +330,10 @@ export class OmpRpcSession implements SessionRuntime {
         return
       }
       case "prompt_result": {
+        if (frame.sessionSettled === true || frame.agentInvoked === false) this.currentStreaming = false
         this.emitPiEvent(frame)
+        this.scheduleEntrySync()
+        this.emitActivityIfChanged()
         return
       }
       case "subagent_lifecycle":
@@ -509,7 +526,7 @@ export class OmpRpcSession implements SessionRuntime {
   private async syncEntriesNow(): Promise<void> {
     if (this.closed) return
     this.syncDirty = false
-    this.syncInFlight = this.syncInFlight.then(() => this.doSyncEntries())
+    this.syncInFlight = this.syncInFlight.catch(() => undefined).then(() => this.doSyncEntries())
     await this.syncInFlight
   }
 
@@ -523,7 +540,7 @@ export class OmpRpcSession implements SessionRuntime {
       const data = unwrapResponse<JsonObject>(response)
       if (!isJsonObject(data) || !Array.isArray(data.entries)) return
       const rawEntries = data.entries.filter(isJsonObject)
-      if (!this.entriesSeeded || command === ({} as JsonObject)) {
+      if (!this.entriesSeeded) {
         this.entries = rawEntries.map(entry => this.recordEntry(entry))
         this.entriesSeeded = true
       } else if (rawEntries.length > 0) {
@@ -806,47 +823,31 @@ export class OmpRpcSession implements SessionRuntime {
 
   // ---------------------------------------------------------------- prompting
 
-  private assertImageSupport(images: ImageInput[] | undefined): void {
-    if (!images?.length) return
-    // OMP 侧 prompt 带图：模型不支持时由 OMP 报错；这里不再前置拦截
-  }
 
   async prompt(text: string, images?: ImageInput[], options: { expandPromptTemplates?: boolean; streamingBehavior?: "steer" | "followUp" } = {}): Promise<void> {
-    this.assertImageSupport(images)
-    this.currentStreaming = true
-    this.emitActivityIfChanged()
+    await this.abortInFlight
+    const command: JsonObject = { type: "prompt", message: text }
+    if (options.streamingBehavior) command.streamingBehavior = options.streamingBehavior
+    if (images?.length) command.images = images.map(image => ({ type: "image", data: image.data, mimeType: image.mimeType }))
     try {
-      const command: JsonObject = { type: "prompt", message: text }
-      if (options.streamingBehavior) command.streamingBehavior = options.streamingBehavior
-      if (images?.length) {
-        command.images = images.map(image => ({ type: "image", data: image.data, mimeType: image.mimeType }))
-      }
-      await this.client.request(command, 30_000)
-      // prompt 只立即 ACK；完成由 prompt_result/session_settled 事件驱动
+      unwrapResponse(await this.client.request(command, 30_000))
     } finally {
       this.scheduleEntrySync()
     }
   }
 
   async steer(text: string, images?: ImageInput[]): Promise<void> {
-    this.assertImageSupport(images)
-    const command: JsonObject = { type: "steer", message: text }
-    if (images?.length) command.images = images.map(image => ({ type: "image", data: image.data, mimeType: image.mimeType }))
-    await this.client.request(command, 30_000)
+    await this.prompt(text, images, { streamingBehavior: "steer" })
   }
 
   async followUp(text: string, images?: ImageInput[]): Promise<void> {
-    this.assertImageSupport(images)
-    const command: JsonObject = { type: "follow_up", message: text }
-    if (images?.length) command.images = images.map(image => ({ type: "image", data: image.data, mimeType: image.mimeType }))
-    await this.client.request(command, 30_000)
+    await this.prompt(text, images, { streamingBehavior: "followUp" })
   }
 
   async sendUserMessage(text: string, images?: ImageInput[], deliverAs?: "steer" | "followUp"): Promise<void> {
-    if (deliverAs === "steer") return this.steer(text, images)
-    if (deliverAs === "followUp") return this.followUp(text, images)
-    if (this.currentStreaming) return this.followUp(text, images)
-    return this.prompt(text, images)
+    // Native prompt decides atomically whether to start or queue. Direct
+    // follow_up/steer can leave an idle session with a never-consumed message.
+    await this.prompt(text, images, { streamingBehavior: deliverAs ?? "followUp" })
   }
 
   // ---------------------------------------------------------------- goal
@@ -979,10 +980,24 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async abort(): Promise<JsonValue | undefined> {
-    const response = await this.client.request({ type: "abort" }, 30_000)
-    // 与 OMP goal 模式语义对齐：用户中断 → 活跃目标自动暂停
+    if (this.abortInFlight) return this.abortInFlight
     this.pauseGoalForAbort()
-    return toJson(unwrapResponse(response)) ?? undefined
+    const flight = (async () => {
+      const result = unwrapResponse(await this.client.request({ type: "abort" }, 30_000))
+      this.currentStreaming = false
+      this.retryShadow = { phase: "idle" }
+      this.liveMessage = undefined
+      this.emitActivityIfChanged()
+      await this.syncEntriesNow()
+      this.emitPiEvent({ type: "agent_settled" })
+      return toJson(result) ?? undefined
+    })()
+    this.abortInFlight = flight
+    try {
+      return await flight
+    } finally {
+      if (this.abortInFlight === flight) this.abortInFlight = undefined
+    }
   }
 
   async newSession(parentSession?: string): Promise<JsonObject> {
@@ -1008,6 +1023,7 @@ export class OmpRpcSession implements SessionRuntime {
   async switchSession(sessionPath: string, _cwdOverride?: string): Promise<JsonObject> {
     const sourceSessionId = this.sessionId
     const target = resolveUserPath(sessionPath)
+    assertManagedSessionFile(target)
     await this.client.request({ type: "switch_session", sessionPath: target }, 120_000)
     await this.refreshIdentity()
     this.resetHistory()

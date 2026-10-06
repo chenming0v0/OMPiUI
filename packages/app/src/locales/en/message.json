@@ -105,6 +105,7 @@
   },
   "todo": {
     "tasks": "Tasks",
+    "empty": "No tasks in this list.",
     "completedCount": "{{completed}}/{{total}}",
     "status": {
       "pending": "Pending",

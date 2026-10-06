@@ -147,13 +147,14 @@ export interface InputBoxProps {
     attachments: Attachment[],
     options?: { agent?: string; variant?: string; delivery?: 'steer' | 'followUp' },
   ) => Promise<boolean> | boolean
-  onAbort?: () => void
+  onAbort?: () => Promise<void> | void
   onCommand?: (command: string) => Promise<boolean> | boolean // 斜杠命令回调，接收完整命令字符串如 "/help"
   onCycleModel?: (direction: 'forward' | 'backward') => void
   onCycleThinkingLevel?: () => void
   onOpenModelSelector?: () => void
   onTextChange?: (text: string) => void // 输入框文本变化（扩展 editor 状态同步）
   onNewChat?: () => void // 新建对话回调
+  onSetGoal?: (objective: string) => Promise<boolean> | boolean
   disabled?: boolean
   isStreaming?: boolean
   /** 兜底：session 在活跃列表中时即使 isStreaming 为 false 也显示停止按钮 */
@@ -210,6 +211,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   onCycleThinkingLevel,
   onOpenModelSelector,
   onNewChat,
+  onSetGoal,
   disabled,
   isStreaming,
   sessionActive,
@@ -275,6 +277,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   // 附件状态（图片、文件、文件夹、agent）
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const submittingRef = useRef(false)
   const [deliveryMode, setDeliveryMode] = useState<'steer' | 'followUp'>('followUp')
   const piCapabilities = usePiCapabilities()
   const effectiveDeliveryMode = deliveryMode === 'steer' && piCapabilities.promptSteer
@@ -379,14 +382,14 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
     })
 
   // 处理 revert 恢复
-  useEffect(() => {
+  useLayoutEffect(() => {
     latestDraftRef.current = { text, attachments }
   }, [text, attachments])
 
   useEffect(() => {
     let frameId: number | null = null
 
-    if (revertedText !== undefined) {
+    if (revertedText !== undefined && revertedText !== prevRevertedTextRef.current) {
       frameId = requestAnimationFrame(() => {
         if (restoreMode === 'append' && appendedRestoreRef.current === revertedText) return
         const current = latestDraftRef.current
@@ -405,14 +408,15 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
           textareaRef.current.setSelectionRange(nextText.length, nextText.length)
         }
       })
-    } else if (prevRevertedTextRef.current !== undefined && revertedText === undefined && !isSubmitting) {
+    } else if (prevRevertedTextRef.current !== undefined && revertedText === undefined && !submittingRef.current) {
       appendedRestoreRef.current = undefined
+      const restoredText = prevRevertedTextRef.current
       frameId = requestAnimationFrame(() => {
         // 只有用户未改动恢复文本时才清空（撤销恢复后的正常收尾）；
         // 若用户已在恢复文本基础上继续输入/删除，说明正在写新内容，
         // 清空会把正在编辑的内容抹掉，此时保留现状。
         const current = latestDraftRef.current
-        if (current.text !== prevRevertedTextRef.current) return
+        if (current.text !== restoredText) return
         setText('')
         setAttachments([])
       })
@@ -425,7 +429,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
         cancelAnimationFrame(frameId)
       }
     }
-  }, [revertedText, revertedAttachments, restoreMode, isSubmitting])
+  }, [revertedText, revertedAttachments, restoreMode])
 
   useEffect(
     () => () => {
@@ -442,10 +446,11 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
     const attachmentHeight = attachments.length > 0 ? (attachmentSectionRef.current?.offsetHeight ?? 0) : 0
     const toolbarHeight = toolbarRef.current?.offsetHeight || INPUT_TOOLBAR_FALLBACK_HEIGHT
     const footerHeight = isCollapsed ? 0 : footerRef.current?.offsetHeight || INPUT_FOOTER_FALLBACK_HEIGHT
+    const goalBarHeight = inputContainerRef.current?.previousElementSibling?.getBoundingClientRect().height ?? 0
     const inputContainerChrome = attachmentHeight + toolbarHeight + TEXTAREA_VERTICAL_CHROME
     const nextInputContainerMaxHeight = Math.max(
       TEXTAREA_MIN_HEIGHT + TEXTAREA_VERTICAL_CHROME + toolbarHeight,
-      nextComposerMaxHeight - footerHeight,
+      nextComposerMaxHeight - footerHeight - goalBarHeight,
     )
     const nextTextareaMaxHeight = Math.max(
       TEXTAREA_MIN_HEIGHT,
@@ -469,6 +474,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
     const observed = [
       inputContainerRef.current?.closest<HTMLElement>('[data-chat-pane-root]'),
       inputContainerRef.current,
+      inputContainerRef.current?.previousElementSibling,
       attachmentSectionRef.current,
       toolbarRef.current,
       footerRef.current,
@@ -582,8 +588,9 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
 
   const runSubmit = useCallback(
     async (submit: () => Promise<boolean | void> | boolean | void, onSuccess?: () => void, onFailure?: () => void) => {
-      if (isSubmitting) return false
+      if (submittingRef.current) return false
 
+      submittingRef.current = true
       setIsSubmitting(true)
       try {
         const result = await submit()
@@ -594,11 +601,16 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
 
         onSuccess?.()
         return true
+      } catch (error) {
+        apiErrorHandler('send message', error)
+        onFailure?.()
+        return false
       } finally {
+        submittingRef.current = false
         setIsSubmitting(false)
       }
     },
-    [isSubmitting],
+    [],
   )
 
   const handleSend = useCallback(() => {
@@ -625,7 +637,10 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
           ...(isStreaming && effectiveDeliveryMode ? { delivery: effectiveDeliveryMode } : {}),
         }),
       () => {
-        resetDraft()
+        // Acceptance belongs to this snapshot, not edits made while awaiting it.
+        setText(current => current === text ? '' : current)
+        setAttachments(current => current.filter(attachment => !attachments.includes(attachment)))
+        resetHistoryIndex()
         onClearRevert?.()
       },
     )
@@ -636,7 +651,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
     onCommand,
     onClearRevert,
     onSend,
-    resetDraft,
+    resetHistoryIndex,
     runSubmit,
     selectedVariant,
     isStreaming,
@@ -1711,20 +1726,9 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
               </div>
             )}
 
-            {/* Goal Bar — 会话目标状态栏（worker 侧 goal 命令；无目标时是"设定目标"
-                入口，有目标时显示状态+目标+时长和暂停/编辑/放弃操作，点击展开编辑器） */}
-            <GoalBar sessionId={sessionId} isCompact={isCompact} />
-
-            {/* Input Container */}
+            {/* Composer shell — Codex 的外层大框，目标栏是上方的内层圆角条。 */}
             <div
-              ref={inputContainerRef}
-              data-input-box
-              data-pane-id={paneId}
-              onPointerDown={handleContainerPointerDown}
-              onDragEnter={handleDragEnter}
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
+              data-input-shell
               className={`glass rounded-2xl relative overflow-hidden focus-within:outline-none shadow-lg ${
                 isDragging || isInternalFileDragging
                   ? 'border border-accent-main-100 ring-2 ring-accent-main-100/30'
@@ -1732,8 +1736,24 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
                     ? 'border border-accent-main-100/50 animate-border-pulse'
                     : 'border border-border-200/60'
               }`}
-              style={{ maxHeight: inputContainerMaxHeight }}
             >
+              {/* Goal Bar — 会话目标状态栏（worker 侧 goal 命令；无目标时是"设定目标"
+                  入口，有目标时显示状态+目标+时长和暂停/编辑/放弃操作，点击展开编辑器） */}
+              <GoalBar sessionId={sessionId} isCompact={isCompact} onSetGoal={onSetGoal} />
+
+              {/* Input Container */}
+              <div
+                ref={inputContainerRef}
+                data-input-box
+                data-pane-id={paneId}
+                onPointerDown={handleContainerPointerDown}
+                onDragEnter={handleDragEnter}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                className="relative overflow-hidden rounded-b-2xl"
+                style={{ maxHeight: inputContainerMaxHeight }}
+              >
               {/* Drop overlay */}
               {(isDragging || isInternalFileDragging) && (
                 <div className="absolute inset-0 z-50 rounded-2xl bg-accent-main-100/5 backdrop-blur-[1px] flex items-center justify-center pointer-events-none">
@@ -1836,6 +1856,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
                     />
                   </div>
                 </div>
+              </div>
               </div>
             </div>
           </div>

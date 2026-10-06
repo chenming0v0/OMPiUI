@@ -139,6 +139,13 @@ export async function openPiSession(
 
   return result
 }
+/** Explicitly continue a read-only native conversation without writing to its file. */
+export async function copyPiSession(sessionId: string, signal?: AbortSignal): Promise<transport.PiSessionOpenResult> {
+  const result = await transport.postPiGlobalCommand<transport.PiSessionOpenResult>("session.copy", { sessionId }, signal)
+  await loadPiSessionData(result.sessionId, signal)
+  return result
+}
+
 
 export function createPiSession(cwd: string, signal?: AbortSignal): Promise<transport.PiSessionCreateResult> {
   return transport.createPiSession(cwd, signal)
