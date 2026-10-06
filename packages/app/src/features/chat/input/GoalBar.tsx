@@ -95,6 +95,7 @@ function GoalEditor({
   onClose,
   onDrop,
   isCompact,
+  sessionId,
 }: {
   goal: SessionGoalSnapshot | null
   draft: string
@@ -103,10 +104,11 @@ function GoalEditor({
   onClose: () => void
   onDrop: () => void
   isCompact: boolean
+  sessionId?: string | null
 }) {
   const { t } = useTranslation('chat')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const canSave = draft.trim().length > 0
+  const canSave = draft.trim().length > 0 && !!sessionId
 
   useEffect(() => {
     const textarea = textareaRef.current
@@ -138,6 +140,13 @@ function GoalEditor({
           <CloseIcon size={14} />
         </IconButton>
       </div>
+      {!sessionId && (
+        <div className="px-4 py-2 mx-3 mb-2 rounded-lg bg-accent-main-100/10 border border-accent-main-100/20">
+          <p className="text-[length:var(--fs-sm)] text-text-300">
+            {t('goalBar.noSessionHint')}
+          </p>
+        </div>
+      )}
       <div className="px-3">
         <textarea
           ref={textareaRef}
@@ -145,15 +154,16 @@ function GoalEditor({
           onChange={event => onDraftChange(event.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={t('goalBar.objectivePlaceholder')}
+          disabled={!sessionId}
           rows={isCompact ? 5 : 4}
-          className="w-full resize-none bg-transparent rounded-xl px-2 py-2 text-text-100 placeholder:text-text-500 focus:outline-none custom-scrollbar text-[length:var(--fs-base)]"
+          className="w-full resize-none bg-transparent rounded-xl px-2 py-2 text-text-100 placeholder:text-text-500 focus:outline-none custom-scrollbar text-[length:var(--fs-base)] disabled:opacity-50 disabled:cursor-not-allowed"
         />
       </div>
       <div
         className="flex items-center gap-2 px-3 pb-3"
         style={isCompact ? { paddingBottom: 'max(0.75rem, var(--safe-area-inset-bottom, 0px))' } : undefined}
       >
-        {goal && (
+        {goal && sessionId && (
           <button
             type="button"
             onClick={onDrop}
@@ -274,8 +284,6 @@ export const GoalBar = memo(function GoalBar({ sessionId, isCompact }: GoalBarPr
     runGoalOp('drop')
   }, [runGoalOp])
 
-  if (!sessionId) return null
-
   // 已用时长：快照值 + active 时从 updatedAt 到现在的本地增量
   let elapsedLabel: string | null = null
   if (goal) {
@@ -291,6 +299,9 @@ export const GoalBar = memo(function GoalBar({ sessionId, isCompact }: GoalBarPr
 
   const statusKey = goal ? (GOAL_STATUS_KEYS[goal.status] ?? 'goalBar.active') : 'goalBar.setGoal'
 
+  // 无 sessionId 时禁用操作按钮但仍允许打开编辑器（用户可以看到占位提示）
+  const canOperate = !!sessionId
+
   return (
     <div ref={rootRef} className="relative" data-goal-bar>
       {editorOpen && (
@@ -302,6 +313,7 @@ export const GoalBar = memo(function GoalBar({ sessionId, isCompact }: GoalBarPr
           onClose={closeEditor}
           onDrop={handleDrop}
           isCompact={isCompact}
+          sessionId={sessionId}
         />
       )}
 
@@ -312,7 +324,8 @@ export const GoalBar = memo(function GoalBar({ sessionId, isCompact }: GoalBarPr
             type="button"
             onClick={openEditor}
             title={goal.objective}
-            className="flex items-center gap-2 min-w-0 flex-1 text-left"
+            disabled={!canOperate}
+            className="flex items-center gap-2 min-w-0 flex-1 text-left disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <span className="shrink-0 text-text-300">{t(statusKey)}</span>
             <span className="truncate text-text-100">{goal.objective}</span>
@@ -324,14 +337,15 @@ export const GoalBar = memo(function GoalBar({ sessionId, isCompact }: GoalBarPr
               size="sm"
               aria-label={t(goal.status === 'paused' ? 'goalBar.resume' : 'goalBar.pause')}
               onClick={handleTogglePause}
+              disabled={!canOperate}
             >
               {goal.status === 'paused' ? <PlayIcon size={14} /> : <PauseIcon size={14} />}
             </IconButton>
           )}
-          <IconButton size="sm" aria-label={t('goalBar.editGoal')} onClick={openEditor}>
+          <IconButton size="sm" aria-label={t('goalBar.editGoal')} onClick={openEditor} disabled={!canOperate}>
             <ExpandIcon size={14} />
           </IconButton>
-          <IconButton size="sm" aria-label={t('goalBar.drop')} onClick={handleDrop}>
+          <IconButton size="sm" aria-label={t('goalBar.drop')} onClick={handleDrop} disabled={!canOperate}>
             <TrashIcon size={14} />
           </IconButton>
         </div>
@@ -339,9 +353,10 @@ export const GoalBar = memo(function GoalBar({ sessionId, isCompact }: GoalBarPr
         <button
           type="button"
           onClick={openEditor}
-          className="mb-2 w-full flex items-center gap-2 h-9 px-3 rounded-xl border border-border-200/50 text-[length:var(--fs-sm)] text-text-500 hover:text-text-300 hover:border-border-200 transition-colors"
+          disabled={!canOperate}
+          className="mb-2 w-full flex items-center justify-center gap-2 h-10 px-4 rounded-xl glass border border-border-200/60 text-[length:var(--fs-sm)] font-medium text-text-200 hover:text-accent-main-100 hover:border-accent-main-100/50 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-text-200 disabled:hover:border-border-200/60 shadow-sm hover:shadow-md"
         >
-          <TargetIcon size={14} className="shrink-0" />
+          <TargetIcon size={16} className="shrink-0" />
           <span>{t('goalBar.setGoal')}</span>
         </button>
       )}
