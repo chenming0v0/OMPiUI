@@ -160,6 +160,8 @@ export type PiAssistantMessageItem = {
   blocks: (TextContent | ThinkingContent | ToolCall)[]
   /** Tool results paired by toolCallId; empty while a call has no result yet */
   toolResults: Record<string, ToolResultMessage>
+  /** Per-call source timestamps when consecutive assistant entries are merged for display. */
+  toolCallTimestamps?: Record<string, number>
   /** True for the live streaming message (not yet persisted as an entry) */
   isStreaming?: boolean
   renderKey?: string
@@ -192,6 +194,7 @@ export type PiBashExecutionGroupItem = {
 export type PiToolExecution = {
   call: ToolCall
   result?: ToolResultMessage
+  startedAt?: number
 }
 
 export type PiCompactionItem = {

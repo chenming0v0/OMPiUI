@@ -837,9 +837,16 @@ function groupBlocksForRender(item: PiAssistantMessageItem): RenderItem[] {
   }
 
   item.blocks.forEach((block, index) => {
+    // Empty provider placeholders are not semantic separators between tool calls.
+    if (block.type === 'thinking' && !block.thinking.trim()) return
+    if (block.type === 'text' && !block.text.trim()) return
     if (block.type === 'toolCall') {
       if (executions.length === 0) firstIndex = index
-      executions.push({ call: block, result: item.toolResults[block.id] })
+      executions.push({
+        call: block,
+        result: item.toolResults[block.id],
+        startedAt: item.toolCallTimestamps?.[block.id] ?? item.timestamp,
+      })
       return
     }
     flushToolGroup()
