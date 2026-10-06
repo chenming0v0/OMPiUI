@@ -1,0 +1,25 @@
+# Run from the repository root:  docker compose -f deploy/docker-compose.yml up -d --build
+services:
+  ompiui:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: ompiui-server
+    container_name: ompiui
+    restart: unless-stopped
+    ports:
+      # Management UI. Keep it tunnelled (ssh -L 9898:127.0.0.1:9898) unless you
+      # front it with HTTPS; it is token-protected but not encrypted by itself.
+      - "127.0.0.1:9898:9898"
+      # Backend API + hosted web client. Publish on 0.0.0.0 (drop the prefix)
+      # when LAN devices or the relay tunnel need to reach it.
+      - "8787:8787"
+    volumes:
+      - ompiui-data:/data
+    # TUI alternative (no ports needed):
+    #   docker exec -it ompiui node packages/admin/dist/cli.js tui
+    # One-off lifecycle commands:
+    #   docker exec ompiui node packages/admin/dist/cli.js status
+
+volumes:
+  ompiui-data:

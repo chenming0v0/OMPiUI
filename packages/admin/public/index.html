@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OMPiUI 服务器管理</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:#111827;color:#e5e7eb}body{max-width:900px;margin:0 auto;padding:28px 18px}h1{font-size:1.5rem}section{background:#1f2937;border:1px solid #374151;border-radius:12px;padding:18px;margin:14px 0}label{display:block;color:#9ca3af;margin-bottom:6px}input,button{font:inherit;border-radius:7px;border:1px solid #4b5563;padding:9px;background:#111827;color:#f9fafb}input{width:min(100%,620px);box-sizing:border-box}button{cursor:pointer;background:#2563eb;border-color:#3b82f6;margin:4px 6px 4px 0}button.secondary{background:#374151;border-color:#4b5563}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#111827;padding:12px;border-radius:8px;min-height:32px}.ok{color:#86efac}.bad{color:#fca5a5}.muted{color:#9ca3af}
+</style>
+</head>
+<body>
+<h1>OMPiUI 服务器管理</h1>
+<p class="muted">独立管理平面；编程会话请打开后端分享链接。</p>
+<section>
+<label for="token">管理令牌</label>
+<input id="token" type="password" autocomplete="off" placeholder="OMPIUI_ADMIN_TOKEN">
+<button id="save">保存并刷新</button>
+<span id="message" class="muted"></span>
+</section>
+<section>
+<h2>后端服务</h2>
+<pre id="status">尚未连接</pre>
+<button data-action="start">启动</button><button data-action="stop" class="secondary">停止</button><button data-action="restart">重启</button><button id="refresh" class="secondary">刷新</button>
+</section>
+<section>
+<h2>网络与穿透</h2>
+<label for="serverUrl">后端 API 地址</label><input id="serverUrl" placeholder="http://127.0.0.1:8787">
+<label for="host">后端监听地址（重启生效）</label><input id="host" placeholder="127.0.0.1（局域网访问用 0.0.0.0）">
+<label for="port">后端监听端口（重启生效）</label><input id="port" placeholder="8787">
+<label for="publicBaseUrl">公网基址（可选）</label><input id="publicBaseUrl" placeholder="https://panel.example.com">
+<label for="tunnelUrl">中转 WSS 地址（可选）</label><input id="tunnelUrl" placeholder="wss://relay.example.com">
+<label for="tunnelKey">中转接入密钥（留空表示不修改）</label><input id="tunnelKey" type="password" autocomplete="off">
+<label for="tunnelId">隧道 ID</label><input id="tunnelId" placeholder="ompiui">
+<button id="configSave">保存配置</button><button id="configRestart" class="secondary">保存并重启后端</button>
+</section>
+<section>
+<h2>凭证与链接</h2>
+<pre id="credentials">点击刷新获取（仅管理令牌可见）</pre>
+<button id="credentialsButton" class="secondary">显示凭证和链接</button>
+</section>
+<script>
+const token=document.querySelector('#token'), message=document.querySelector('#message'), status=document.querySelector('#status'), credentials=document.querySelector('#credentials');
+token.value=sessionStorage.getItem('ompiui-admin-token')||'';
+async function api(path,options={}){const headers={...(options.headers||{}),authorization:'Bearer '+token.value};const response=await fetch(path,{...options,headers});const body=await response.json().catch(()=>({error:'invalid response'}));if(!response.ok)throw new Error(body.error||('HTTP '+response.status));return body}
+function showError(error){message.textContent=error.message;message.className='bad'}
+async function refresh(){try{const body=await api('/api/status');status.textContent=JSON.stringify(body,null,2);message.textContent='已连接';message.className='ok';const config=await api('/api/config');for(const key of ['serverUrl','host','port','publicBaseUrl','tunnelUrl','tunnelId']){const field=document.querySelector('#'+key);if(field)field.value=config[key]||''}}catch(error){status.textContent='';showError(error)}}
+async function action(name){try{await api('/api/service/'+name,{method:'POST'});await refresh()}catch(error){showError(error)}}
+async function saveConfig(restart){try{const body={};for(const key of ['serverUrl','host','port','publicBaseUrl','tunnelUrl','tunnelId'])body[key]=document.querySelector('#'+key).value;const tunnelKey=document.querySelector('#tunnelKey').value;if(tunnelKey)body.tunnelKey=tunnelKey;await api('/api/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});if(restart)await action('restart');else{message.textContent='配置已保存，重启后端后生效';message.className='ok'}}catch(error){showError(error)}}
+document.querySelector('#save').onclick=()=>{sessionStorage.setItem('ompiui-admin-token',token.value);refresh()};document.querySelector('#refresh').onclick=refresh;document.querySelectorAll('[data-action]').forEach(button=>button.onclick=()=>action(button.dataset.action));document.querySelector('#credentialsButton').onclick=async()=>{try{const data=await api('/api/credentials');if(!data.backendToken){credentials.textContent='后端访问令牌尚未生成：先在上方启动一次后端，再点刷新获取。'}else{credentials.textContent=JSON.stringify(data,null,2)}}catch(error){showError(error)}};document.querySelector('#configSave').onclick=()=>saveConfig(false);document.querySelector('#configRestart').onclick=()=>saveConfig(true);
+if(token.value)refresh();
+</script>
+</body>
+</html>

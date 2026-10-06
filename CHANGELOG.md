@@ -4,6 +4,11 @@ OMPiUI 自己的版本从 0.1.0 起算。`packages/app/CHANGELOG.md` 是上游 P
 
 ## [Unreleased]
 
+- feat: 无桌面部署管理平面 `@ompiui/admin`——SSH 友好的 TUI 与独立管理 Web UI（默认 `127.0.0.1:9898`，独立管理令牌），管理后端进程生命周期、凭证与分享链接、监听/公网/中转配置；配置持久化到 `~/.ompiui/admin.json`。
+- feat: VPS 一键安装脚本支持裸机引导克隆、精确 Node >=22.19 检查与 systemd linger；新增 `deploy/docker-compose.yml`、Dockerfile HEALTHCHECK、根 `.dockerignore` 与 `deploy/README.md`。
+- fix: 设置 → 服务器里内置 Local 条目开放编辑名称/地址/token（仍不可删除），保存后健康检查、会话请求、SSE 重连与终端 WebSocket 都改走新地址 (#24)。
+- fix: 选中的远程服务器不再被构建期 `VITE_OMPIUI_API` 钉死，浏览器与 Tauri 的 base 解析一致；管理器探测失败不再污染服务错误状态，主动停止不再显示为异常退出，检测到外部已运行的后端时给出可行动的错误。
+
 ## [v0.3.1] - 2026-10-04
 
 - ui: 设置页改为有边界的分组面板和独立导航；模型可见性支持折叠。Agent 模型配置改为 Slim 式表单：右对齐角色名、主模型与思考强度同一行、底部取消/保存，不再逐项立即写入。
