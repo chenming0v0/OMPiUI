@@ -361,9 +361,13 @@ function useEntryGrowAnimation(
     el.style.height = '0px'
     el.style.clipPath = 'inset(0 -100% 0 -100%)'
     let cancelled = false
-    animate(el, { height: `${targetHeight}px` }, { duration: ENTRY_GROW_DURATION_MS / 1000, ease: 'easeOut' }).then(
+    const animation = animate(el, { height: `${targetHeight}px` }, { duration: ENTRY_GROW_DURATION_MS / 1000, ease: 'easeOut' })
+    void animation.then(
       () => {
         if (cancelled) return
+        // Release WAAPI's fill effect as well as the inline height so attachments
+        // and late-loading images can resize the virtual row after entry.
+        animation.cancel()
         el.style.height = ''
         el.style.clipPath = ''
         finish()
@@ -371,6 +375,7 @@ function useEntryGrowAnimation(
     )
     return () => {
       cancelled = true
+      animation.cancel()
       // 虚拟行中途卸载也放行，避免 Working 壳永远等不到入场完成
       el.style.height = ''
       el.style.clipPath = ''

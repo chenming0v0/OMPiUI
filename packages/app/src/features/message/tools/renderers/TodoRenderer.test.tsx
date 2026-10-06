@@ -54,10 +54,21 @@ describe('Todo tool rendering', () => {
     rerender(view(execution({ phases: [{ name: '实现', tasks: [{ content: '重构设置页面', status: 'completed' }] }] }, args), 'native-update'))
     expect(screen.getByRole('button', { name: '任务 1/1' })).toBeInTheDocument()
     expect(screen.queryByText('核对模型配置')).not.toBeInTheDocument()
-    rerender(view(execution({ phases: [] }, args), 'native-update'))
-    expect(screen.getByRole('button', { name: '任务 0/0' })).toBeInTheDocument()
+    const cleared = execution({ op: 'init', phases: [], storage: 'session' }, { ...args, list: [] })
+    cleared.result!.content = [{ type: 'text', text: 'Todo list cleared.' }]
+    rerender(view(cleared, 'native-update'))
+    expect(screen.getByText('Todo list cleared.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /任务/ })).not.toBeInTheDocument()
     expect(screen.queryByText('旧任务')).not.toBeInTheDocument()
     expect(screen.queryByText('重构设置页面')).not.toBeInTheDocument()
+  })
+
+  it('explains an empty snapshot even when the tool supplies no text', () => {
+    const empty = execution({ phases: [] })
+    empty.result!.content = []
+    render(view(empty, 'native-empty'))
+    expect(screen.getByText('当前任务列表为空。')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /任务/ })).not.toBeInTheDocument()
   })
 
   it('previews native init tasks while the result is pending', () => {

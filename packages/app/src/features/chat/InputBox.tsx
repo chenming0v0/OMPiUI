@@ -147,7 +147,7 @@ export interface InputBoxProps {
     attachments: Attachment[],
     options?: { agent?: string; variant?: string; delivery?: 'steer' | 'followUp' },
   ) => Promise<boolean> | boolean
-  onAbort?: () => void
+  onAbort?: () => Promise<void> | void
   onCommand?: (command: string) => Promise<boolean> | boolean // 斜杠命令回调，接收完整命令字符串如 "/help"
   onCycleModel?: (direction: 'forward' | 'backward') => void
   onCycleThinkingLevel?: () => void
@@ -275,6 +275,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   // 附件状态（图片、文件、文件夹、agent）
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const submittingRef = useRef(false)
   const [deliveryMode, setDeliveryMode] = useState<'steer' | 'followUp'>('followUp')
   const piCapabilities = usePiCapabilities()
   const effectiveDeliveryMode = deliveryMode === 'steer' && piCapabilities.promptSteer
@@ -379,14 +380,14 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
     })
 
   // 处理 revert 恢复
-  useEffect(() => {
+  useLayoutEffect(() => {
     latestDraftRef.current = { text, attachments }
   }, [text, attachments])
 
   useEffect(() => {
     let frameId: number | null = null
 
-    if (revertedText !== undefined) {
+    if (revertedText !== undefined && revertedText !== prevRevertedTextRef.current) {
       frameId = requestAnimationFrame(() => {
         if (restoreMode === 'append' && appendedRestoreRef.current === revertedText) return
         const current = latestDraftRef.current
@@ -405,14 +406,15 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
           textareaRef.current.setSelectionRange(nextText.length, nextText.length)
         }
       })
-    } else if (prevRevertedTextRef.current !== undefined && revertedText === undefined && !isSubmitting) {
+    } else if (prevRevertedTextRef.current !== undefined && revertedText === undefined && !submittingRef.current) {
       appendedRestoreRef.current = undefined
+      const restoredText = prevRevertedTextRef.current
       frameId = requestAnimationFrame(() => {
         // 只有用户未改动恢复文本时才清空（撤销恢复后的正常收尾）；
         // 若用户已在恢复文本基础上继续输入/删除，说明正在写新内容，
         // 清空会把正在编辑的内容抹掉，此时保留现状。
         const current = latestDraftRef.current
-        if (current.text !== prevRevertedTextRef.current) return
+        if (current.text !== restoredText) return
         setText('')
         setAttachments([])
       })
@@ -425,7 +427,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
         cancelAnimationFrame(frameId)
       }
     }
-  }, [revertedText, revertedAttachments, restoreMode, isSubmitting])
+  }, [revertedText, revertedAttachments, restoreMode])
 
   useEffect(
     () => () => {
@@ -582,8 +584,9 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
 
   const runSubmit = useCallback(
     async (submit: () => Promise<boolean | void> | boolean | void, onSuccess?: () => void, onFailure?: () => void) => {
-      if (isSubmitting) return false
+      if (submittingRef.current) return false
 
+      submittingRef.current = true
       setIsSubmitting(true)
       try {
         const result = await submit()
@@ -594,11 +597,16 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
 
         onSuccess?.()
         return true
+      } catch (error) {
+        apiErrorHandler('send message', error)
+        onFailure?.()
+        return false
       } finally {
+        submittingRef.current = false
         setIsSubmitting(false)
       }
     },
-    [isSubmitting],
+    [],
   )
 
   const handleSend = useCallback(() => {
@@ -625,7 +633,10 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
           ...(isStreaming && effectiveDeliveryMode ? { delivery: effectiveDeliveryMode } : {}),
         }),
       () => {
-        resetDraft()
+        // Acceptance belongs to this snapshot, not edits made while awaiting it.
+        setText(current => current === text ? '' : current)
+        setAttachments(current => current.filter(attachment => !attachments.includes(attachment)))
+        resetHistoryIndex()
         onClearRevert?.()
       },
     )
@@ -636,7 +647,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
     onCommand,
     onClearRevert,
     onSend,
-    resetDraft,
+    resetHistoryIndex,
     runSubmit,
     selectedVariant,
     isStreaming,

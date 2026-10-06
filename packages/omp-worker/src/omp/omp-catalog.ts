@@ -7,10 +7,12 @@ import type { JsonObject, JsonValue } from "@ompiui/protocol"
 import { isJsonObject, requireJsonValue } from "@ompiui/protocol"
 import type { CatalogProvider } from "../runtime.js"
 import type { PackagesGateway } from "../command-table.js"
-import { entriesPageFromEntries, sessionHeadFromParts } from "../runtime/pagination.js"
+import { entriesPageFromEntries, imageAttachmentFromEntry, sessionHeadFromParts } from "../runtime/pagination.js"
 import { OmpRpcClient, unwrapResponse } from "./rpc-client.js"
 import { detectOmpVersion } from "./omp-version.js"
 import { OMP_SDK_VERSION } from "./constants.js"
+import { buildSessionTreeFromEntries } from "../runtime/session-tree.js"
+import { copySessionFile, isManagedSessionFile, managedSessionDirectory, managedSessionsRoot } from "./managed-sessions.js"
 
 /**
  * OmpCatalog —— CatalogProvider 的 OMP 实现。
@@ -249,22 +251,19 @@ function readSubagentTitles(parentSessionFile: string): Map<string, string> {
 }
 
 function listSessionFiles(): string[] {
-  const root = sessionsRoot()
-  if (!existsSync(root)) return []
   const files: string[] = []
-  for (const dir of readdirSync(root)) {
-    const dirPath = path.join(root, dir)
-    try {
-      if (!statSync(dirPath).isDirectory()) continue
-    } catch {
-      continue
-    }
-    try {
-      for (const file of readdirSync(dirPath)) {
-        if (file.endsWith(".jsonl")) files.push(path.join(dirPath, file))
+  for (const root of [sessionsRoot(), managedSessionsRoot()]) {
+    if (!existsSync(root)) continue
+    for (const dir of readdirSync(root, { withFileTypes: true })) {
+      if (!dir.isDirectory()) continue
+      const dirPath = path.join(root, dir.name)
+      try {
+        for (const file of readdirSync(dirPath)) {
+          if (file.endsWith(".jsonl")) files.push(path.join(dirPath, file))
+        }
+      } catch {
+        /* unreadable directory */
       }
-    } catch {
-      /* unreadable dir */
     }
   }
   return files
@@ -365,6 +364,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
   }
 
   private previewSummary(summary: SessionFileSummary, params: { cursor?: string; limit?: number; maxBytes?: number }, sdkVersion: string = OMP_SDK_VERSION): JsonValue {
+    const readOnly = !isManagedSessionFile(summary.path)
     // 读取文件并解析条目（磁盘预览不走 RPC 进程）
     const raw = existsSync(summary.path) ? readLinesSync(summary.path) : []
     const entries = previewEntriesFromLines(raw, summary.id)
@@ -372,12 +372,12 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     const header: JsonObject = { version: 3, id: summary.id, cwd: summary.cwd, name: summary.name }
     const head = sessionHeadFromParts({
       sdkVersion,
-      revision: 0,
+      revision: summary.modified,
       sessionFormatVersion: 3,
       header,
       leafId: typeof branch.at(-1)?.id === "string" ? branch.at(-1)!.id as string : null,
       entryCount: entries.length,
-    }, [summary.id, header, entries.length])
+    }, [summary.id, summary.path])
     const page = entriesPageFromEntries(head, branch, {
       cursor: params.cursor,
       limit: params.limit ?? 100,
@@ -385,6 +385,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     }, entry => entry)
     const state: JsonObject = {
       sessionId: summary.id,
+      readOnly,
       sessionFile: summary.path,
       sessionName: summary.name,
       cwd: summary.cwd,
@@ -415,6 +416,53 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
       head,
     }
     return requireJsonValue({ state, branch: page })
+  }
+
+  async readSession(sessionId: string, query: string, params: JsonObject = {}): Promise<JsonValue> {
+    const found = await this.findSessionById(sessionId)
+    if (!found || typeof found.sessionFile !== "string") {
+      throw Object.assign(new Error("session file not found"), { code: "SESSION_NOT_FOUND" })
+    }
+    const summary = await summarizeSessionFileCached(found.sessionFile)
+    if (!summary) throw Object.assign(new Error("session file not found"), { code: "SESSION_NOT_FOUND" })
+    const pageParams = {
+      cursor: typeof params.cursor === "string" ? params.cursor : undefined,
+      limit: typeof params.limit === "number" ? params.limit : 100,
+      maxBytes: typeof params.maxBytes === "number" ? params.maxBytes : 2 * 1024 * 1024,
+    }
+    if (query === "state.get" || query === "branch.get") {
+      const preview = this.previewSummary(summary, pageParams)
+      if (!isJsonObject(preview)) throw new Error("Invalid session preview")
+      return preview[query === "state.get" ? "state" : "branch"]!
+    }
+    const entries = previewEntriesFromLines(readLinesSync(summary.path), summary.id)
+    if (query === "tree.get") return buildSessionTreeFromEntries(entries)
+    if (query === "attachment.get") {
+      const entry = entries.find(item => item.id === params.entryId)
+      if (!entry) throw notFoundError("entry not found")
+      return imageAttachmentFromEntry(entry, Number(params.blockIndex))
+    }
+    if (query === "subagent.messages") {
+      if (typeof params.sessionFile !== "string") throw notFoundError("subagent session file required")
+      return { messages: await readChildSessionMessages(params.sessionFile) }
+    }
+    if (query === "entries.get") {
+      const head = sessionHeadFromParts({ sdkVersion: OMP_SDK_VERSION, revision: summary.modified,
+        header: { id: summary.id, cwd: summary.cwd }, leafId: String(activeBranchFromEntries(entries).at(-1)?.id ?? "") || null,
+        entryCount: entries.length }, [summary.id, summary.path])
+      return entriesPageFromEntries(head, entries, pageParams, entry => entry)
+    }
+    throw Object.assign(new Error(`Unsupported disk query: ${query}`), { code: "CAPABILITY_DISABLED" })
+  }
+
+  async copySession(sessionId: string): Promise<JsonObject> {
+    const found = await this.findSessionById(sessionId)
+    if (!found || typeof found.sessionFile !== "string" || typeof found.cwd !== "string") {
+      throw Object.assign(new Error("session file not found"), { code: "SESSION_NOT_FOUND" })
+    }
+    const copied = copySessionFile(found.sessionFile, managedSessionDirectory(found.cwd))
+    this.summarizeCache = null
+    return copied
   }
 
   async previewSessionById(sessionId: string, params: { cursor?: string; limit?: number; maxBytes?: number } = {}): Promise<JsonValue> {
@@ -509,7 +557,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
 
   async deleteSession(cwd: string, sessionFile: string): Promise<void> {
     const target = resolveUserPath(sessionFile)
-    const root = path.resolve(sessionsRoot())
+    const root = path.resolve(isManagedSessionFile(target) ? managedSessionsRoot() : sessionsRoot())
     if (!existsSync(target)) return
     const realRoot = await fs.realpath(root)
     const realTarget = await fs.realpath(target)
@@ -733,9 +781,10 @@ export async function readChildSessionMessages(sessionFile: string): Promise<Jso
 }
 
 function activeBranchFromEntries(entries: JsonObject[]): JsonObject[] {
-  // 活跃分支 = 从最后一个条目沿 parentId 回溯到根
+  // Lifecycle exits from a stale second process must not select an older branch.
   const byId = new Map(entries.map(entry => [typeof entry.id === "string" ? entry.id : "", entry]))
-  let cursor: string | null = entries.at(-1) && typeof entries.at(-1)!.id === "string" ? entries.at(-1)!.id as string : null
+  const leaf = [...entries].reverse().find((entry: JsonObject) => !(entry.type === "custom" && entry.customType === "session_exit"))
+  let cursor: string | null = typeof leaf?.id === "string" ? leaf.id : null
   const pathEntries: JsonObject[] = []
   const seen = new Set<string>()
   while (cursor && !seen.has(cursor)) {

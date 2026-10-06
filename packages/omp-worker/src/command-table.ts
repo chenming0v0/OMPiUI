@@ -220,6 +220,8 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
     P.reqString(p, "sessionId"),
     { cursor: P.optString(p, "cursor"), limit: P.optNumber(p, "limit"), maxBytes: P.optNumber(p, "maxBytes") },
   ),
+  "session.read": async (ctx, p) => ctx.catalog.readSession(P.reqString(p, "sessionId"), P.reqString(p, "query"), P.optObject(p, "params")),
+  "session.copy": async (ctx, p) => ctx.catalog.copySession(P.reqString(p, "sessionId")),
   "session.children": async (ctx, p) => ctx.catalog.listChildSessions(P.reqString(p, "sessionFile")),
   "session.findById": async (ctx, p) => ctx.catalog.findSessionById(P.reqString(p, "sessionId")),
   "session.findByFile": async (ctx, p) => ctx.catalog.findSessionByFile(P.reqString(p, "sessionFile")),

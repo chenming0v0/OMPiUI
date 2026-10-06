@@ -15,6 +15,7 @@ import {
   type SessionHead,
 } from "./pagination.js"
 import { buildSessionTreeFromEntries } from "./session-tree.js"
+import { copySessionFile } from "../omp/managed-sessions.js"
 
 const MOCK_SDK_VERSION = "mock"
 
@@ -172,14 +173,15 @@ export class MockCatalog implements CatalogProvider, PackagesGateway {
     const info = this.store.list().find(item => item.path === sessionFile)
     if (!info) throw Object.assign(new Error("session file not found"), { code: "SESSION_NOT_FOUND" })
     const sessionId = typeof info.id === "string" ? info.id : "mock-session"
+    const { header, entries } = readJsonlFile(sessionFile)
     const head = sessionHeadFromParts({
       sdkVersion: MOCK_SDK_VERSION,
       revision: 0,
-      header: null,
-      leafId: null,
-      entryCount: 0,
+      header,
+      leafId: typeof entries.at(-1)?.id === "string" ? String(entries.at(-1)?.id) : null,
+      entryCount: entries.length,
     }, sessionId)
-    const branch = entriesPageFromEntries(head, [], {
+    const branch = entriesPageFromEntries(head, entries, {
       cursor: params.cursor,
       limit: params.limit ?? 100,
       maxBytes: params.maxBytes ?? 2 * 1024 * 1024,
@@ -188,6 +190,7 @@ export class MockCatalog implements CatalogProvider, PackagesGateway {
       state: {
         sessionId,
         sessionFile,
+        readOnly: false,
         sessionName: null,
         cwd,
         model: null,
@@ -236,6 +239,35 @@ export class MockCatalog implements CatalogProvider, PackagesGateway {
       throw Object.assign(new Error("session file not found"), { code: "SESSION_NOT_FOUND" })
     }
     return this.previewSession(info.cwd, info.path, params)
+  }
+
+  async readSession(sessionId: string, query: string, params: JsonObject = {}): Promise<JsonValue> {
+    const info = this.store.list().find(item => item.id === sessionId)
+    if (!info || typeof info.path !== "string" || typeof info.cwd !== "string") {
+      throw Object.assign(new Error("session file not found"), { code: "SESSION_NOT_FOUND" })
+    }
+    const preview = await this.previewSession(info.cwd, info.path, params)
+    if (!isJsonObject(preview)) throw new Error("Invalid session preview")
+    if (query === "state.get") return preview.state!
+    if (query === "branch.get" || query === "entries.get") return preview.branch!
+    const { entries } = readJsonlFile(info.path)
+    if (query === "tree.get") return buildSessionTreeFromEntries(entries)
+    if (query === "attachment.get") {
+      const entry = entries.find(item => item.id === params.entryId)
+      const content = isJsonObject(entry?.message) ? entry.message.content : undefined
+      const block = Array.isArray(content) ? content[Number(params.blockIndex)] : undefined
+      if (isJsonObject(block) && block.type === "image") return block
+      throw Object.assign(new Error("image block not found"), { code: "NOT_FOUND" })
+    }
+    throw Object.assign(new Error(`Unsupported disk query: ${query}`), { code: "CAPABILITY_DISABLED" })
+  }
+
+  async copySession(sessionId: string): Promise<JsonObject> {
+    const info = this.store.list().find(item => item.id === sessionId)
+    if (!info || typeof info.path !== "string") {
+      throw Object.assign(new Error("session file not found"), { code: "SESSION_NOT_FOUND" })
+    }
+    return copySessionFile(info.path, sessionsDir())
   }
 
   async deleteSession(_cwd: string, sessionFile: string): Promise<void> {

@@ -13,7 +13,21 @@ import { chevronClass, MessageExpandPanel, useMessageExpandRender } from '../../
 // ============================================
 
 export function TodoRenderer({ execution, partKey }: ToolRendererProps) {
+  const { t } = useTranslation('message')
   const todos = extractTodos(execution)
+  if (todos.length === 0) {
+    const outcome = execution.result?.content
+      .filter(block => block.type === 'text')
+      .map(block => block.text)
+      .join('\n')
+      .trim()
+
+    return (
+      <div className="px-3 py-2 text-[length:var(--fs-sm)] text-text-400 whitespace-pre-wrap break-words">
+        {outcome || t('todo.empty')}
+      </div>
+    )
+  }
 
   return <TodoList todos={todos} stateKey={`message:${partKey}:todo-list`} />
 }
