@@ -156,6 +156,8 @@ export interface InputBoxProps {
   onNewChat?: () => void // 新建对话回调
   onSetGoal?: (objective: string) => Promise<boolean> | boolean
   disabled?: boolean
+  /** Allow editing a draft without submitting to a read-only session. */
+  submissionDisabled?: boolean
   isStreaming?: boolean
   /** 兜底：session 在活跃列表中时即使 isStreaming 为 false 也显示停止按钮 */
   sessionActive?: boolean
@@ -200,6 +202,7 @@ export interface InputBoxProps {
 export interface InputBoxHandle {
   /** Replace the composer text (extension editor set/paste commands) */
   setEditorText: (text: string) => void
+  getEditorText: () => string
 }
 
 const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function InputBoxComponent({
@@ -213,6 +216,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   onNewChat,
   onSetGoal,
   disabled,
+  submissionDisabled = false,
   isStreaming,
   sessionActive,
   isCompacting = false,
@@ -268,6 +272,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   // 扩展 editor 命令接口（set/paste 已由 store 合并为全量文本）
   useImperativeHandle(ref, () => ({
     setEditorText: (next: string) => setText(next),
+    getEditorText: () => textareaRef.current?.value ?? latestDraftRef.current.text,
   }), [])
 
   // 文本变化同步（扩展 editor 状态回传）
@@ -518,7 +523,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
 
   // 计算
   const inputDisabled = !!disabled
-  const canSend = (text.trim().length > 0 || attachments.length > 0) && !inputDisabled
+  const canSend = (text.trim().length > 0 || attachments.length > 0) && !inputDisabled && !submissionDisabled
 
   // ============================================
   // Handlers
