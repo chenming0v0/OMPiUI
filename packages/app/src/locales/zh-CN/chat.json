@@ -65,7 +65,7 @@
     "resume": "恢复目标",
     "drop": "放弃目标",
     "saveHint": "Ctrl+Enter 保存",
-    "noSessionHint": "请先发送一条消息以启动会话，然后即可设定目标。"
+    "noSessionHint": "填写目标并保存即可直接启动会话。"
   },
   "modelSelector": {
     "selectModel": "选择模型",

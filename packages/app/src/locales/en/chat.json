@@ -65,7 +65,7 @@
     "resume": "Resume goal",
     "drop": "Drop goal",
     "saveHint": "Ctrl+Enter to save",
-    "noSessionHint": "Please send a message to start the session first, then you can set a goal."
+    "noSessionHint": "Enter a goal and save it to start the session directly."
   },
   "modelSelector": {
     "selectModel": "Select model",

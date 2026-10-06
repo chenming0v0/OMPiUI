@@ -623,8 +623,8 @@ export function manageSessionGoal(
   op: 'set' | 'pause' | 'resume' | 'drop',
   objective?: string,
   signal?: AbortSignal,
-): Promise<JsonValue> {
-  return postPiSessionCommand(sessionId, 'goal', { op, objective }, signal)
+): Promise<CommandRecord> {
+  return postPiSessionCommand<CommandRecord>(sessionId, 'goal', { op, objective }, signal)
 }
 
 /**
