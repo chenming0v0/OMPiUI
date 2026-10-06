@@ -1,4 +1,4 @@
-import { LOCAL_SERVER_ID, serverStore } from '../store/serverStore'
+import { isCustomizedLocalServerUrl, LOCAL_SERVER_ID, serverStore } from '../store/serverStore'
 import { getHttpFetch, isTauri } from '../utils/tauri'
 import { PROTOCOL_VERSION } from '@ompiui/protocol'
 
@@ -35,8 +35,8 @@ function isAbortError(error: unknown): boolean {
  * HTTP transport base for the OMPiUI server.
  * Browser dev uses same-origin + Vite proxy (`/api` → :8787) to avoid CORS.
  * Tauri 壳的同源是 tauri://localhost，不是 API，必须始终用完整 URL。
- * Browser builds can use VITE_OMPIUI_API. Tauri always follows serverStore so
- * switching servers in Settings cannot be pinned to a build-time endpoint.
+ * Browser 与 Tauri 一样跟随 serverStore：选中的远程服务器和改过地址的默认
+ * local 条目始终直连；VITE_OMPIUI_API 只在未改动的默认 local 上兜底。
  */
 export function getApiBase(): string {
   const envBase = (import.meta as ImportMeta & { env?: { VITE_OMPIUI_API?: string } }).env?.VITE_OMPIUI_API
@@ -46,10 +46,14 @@ export function getApiBase(): string {
       if (active?.url) return active.url.replace(/\/$/, '')
       return envBase?.replace(/\/$/, '') || DEFAULT_BASE
     }
-    if (envBase) return envBase.replace(/\/$/, '')
+    // 浏览器里跟随用户选择，不被构建期 VITE_OMPIUI_API 钉死（与 Tauri 一致）。
     if (active && active.id !== LOCAL_SERVER_ID) return active.url.replace(/\/$/, '')
     const storedLocal = serverStore.getStoredServers().find(server => server.id === LOCAL_SERVER_ID)
     if (active && storedLocal && active.url !== storedLocal.url) return active.url.replace(/\/$/, '')
+    // 用户改过默认 local 地址后必须直连保存值，否则会话请求、SSE 和终端
+    // WebSocket 仍打页面同源，和设置页显示的地址不一致。
+    if (active && storedLocal && isCustomizedLocalServerUrl(storedLocal.url)) return active.url.replace(/\/$/, '')
+    if (envBase) return envBase.replace(/\/$/, '')
     return ''
   }
   return envBase?.replace(/\/$/, '') || DEFAULT_BASE

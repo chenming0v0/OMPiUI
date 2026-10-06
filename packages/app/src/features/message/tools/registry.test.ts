@@ -134,3 +134,45 @@ describe('defaultExtractData', () => {
     expect(extracted.filePath).toBe('C:/work/demo/app.ts')
   })
 })
+
+describe('write destinations', () => {
+  function writeExecution(path: string, details?: unknown): PiToolExecution {
+    return {
+      call: { type: 'toolCall', id: 'write-call', name: 'write', arguments: { path, content: 'submitted payload' } },
+      result: {
+        role: 'toolResult', toolCallId: 'write-call', toolName: 'write', timestamp: 0,
+        content: [{ type: 'text', text: 'Noted, thanks!' }], isError: false, details,
+      },
+    }
+  }
+
+  it.each([
+    'xd://report_issue', 'xd://lsp', 'agent://Main', 'proc://123',
+    'cfg://settings', 'issue://42', 'custom-device://invoke',
+  ])('shows actual output instead of inventing a file for %s', path => {
+    const extracted = extractToolData(writeExecution(path, {
+      xdev: { tool: path.slice('xd://'.length), mode: 'execute', args: { report: 'submitted payload' } },
+    }))
+    expect(extracted.output).toBe('Noted, thanks!')
+    expect(extracted.diff).toBeUndefined()
+    expect(extracted.files).toBeUndefined()
+    expect(extracted.filePath).toBeUndefined()
+  })
+
+  it.each([
+    'src/app.ts', '/tmp/app.ts', 'C:\\work\\app.ts',
+    'file:///tmp/app.ts', 'local://app.ts', 'ssh://host/tmp/app.ts',
+  ])('preserves file content rendering for %s', path => {
+    const extracted = extractToolData(writeExecution(path))
+    expect(extracted.filePath).toBe(path)
+    expect(extracted.diff).toEqual({ before: '', after: 'submitted payload' })
+  })
+
+  it('preserves real file changes reported by a virtual tool', () => {
+    const extracted = extractToolData(writeExecution('xd://lsp', {
+      filepath: 'src/app.ts', filediff: { before: 'old name', after: 'new name' },
+    }))
+    expect(extracted.filePath).toBe('src/app.ts')
+    expect(extracted.diff).toEqual({ before: 'old name', after: 'new name' })
+  })
+})

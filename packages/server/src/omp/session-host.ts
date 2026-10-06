@@ -6,7 +6,7 @@ import { open } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import type { CommandEnvelope, CommandRecord, JsonObject, JsonValue, PiCapability, PiRegistrySnapshot, RegistrySnapshot, SessionActivityStatus, SessionsActivitySnapshot } from "@ompiui/protocol"
 import { isJsonObject, PI_PARITY_SDK_VERSION, PROTOCOL_VERSION, validateParams } from "@ompiui/protocol"
-import { createRegistryDescribeCapability, getCommandCapability, getDriverMode, listCommandCapabilities, type WorkerEvent } from "@ompiui/omp-worker"
+import { createRegistryDescribeCapability, getCommandCapability, getDriverMode, isManagedSessionFile, readOnlySessionError, listCommandCapabilities, type WorkerEvent } from "@ompiui/omp-worker"
 import type { EventHub } from "../event-hub.ts"
 import type { RuntimeSupervisor } from "./supervisor.ts"
 import { SessionExecutor, type SubmittedCommand } from "./session-executor.ts"
@@ -78,6 +78,15 @@ export class SessionHost {
   }
 
   async openSession(cwd: string, sessionFile?: string, signal?: AbortSignal, reuseFromSessionId?: string): Promise<JsonObject> {
+    if (sessionFile && getDriverMode() === "omp" && !isManagedSessionFile(sessionFile)) {
+      const found = await this.catalogCommand("session.findByFile", { sessionFile }, { idempotent: true, signal })
+      if (!isJsonObject(found) || typeof found.id !== "string") {
+        throw Object.assign(new Error("session file not found"), { code: "SESSION_NOT_FOUND" })
+      }
+      const preview = await this.catalogCommand("session.preview", { sessionId: found.id }, { idempotent: true, signal })
+      if (!isJsonObject(preview)) throw new Error("Invalid session preview")
+      return { sessionId: found.id, sessionFile, sessionFileReady: true, cwd: found.cwd ?? cwd, state: preview.state ?? null }
+    }
     if (sessionFile && reuseFromSessionId) {
       const switched = await this.switchAttachedSession(reuseFromSessionId, cwd, sessionFile, signal)
       if (switched) return switched
@@ -260,7 +269,20 @@ export class SessionHost {
 
   async sessionQuery(sessionId: string, type: string, params?: JsonObject, signal?: AbortSignal): Promise<JsonValue | undefined> {
     return withAbort((async () => {
-      const session = await this.ensureAttached(sessionId, signal)
+      let session = this.runtimes.get(sessionId)
+      if (!session) {
+        const diskQueries: Record<string, true> = {
+          "state.get": true, "branch.get": true, "entries.get": true, "tree.get": true,
+          "attachment.get": true, "subagent.messages": true,
+        }
+        if (diskQueries[type]) {
+          return this.catalogCommand("session.read", { sessionId, query: type, params: params ?? {} }, { idempotent: true, signal })
+        }
+        if (this.getSessionCapability(type)?.idempotent) {
+          throw Object.assign(new Error("Runtime resources are unavailable in a disk-only session preview"), { code: "CAPABILITY_DISABLED" })
+        }
+        session = await this.ensureAttached(sessionId, signal)
+      }
       this.touch(session.sessionId)
       if (this.executor.isClosing(sessionId)) {
         throw Object.assign(new Error("session runtime is closing"), { code: "RUNTIME_CLOSING" })
@@ -289,6 +311,7 @@ export class SessionHost {
       if (!found) {
         throw Object.assign(new Error("session is not attached"), { code: "SESSION_NOT_FOUND" })
       }
+      if (getDriverMode() === "omp" && !isManagedSessionFile(found.sessionFile)) throw readOnlySessionError()
       let lastError: unknown
       for (let attempt = 0; attempt <= ATTACH_BUSY_RETRIES; attempt += 1) {
         try {
@@ -418,6 +441,29 @@ export class SessionHost {
       return this.openSession(cwd, sessionFile, options.signal, reuseFromSessionId)
     }
     if (type === "session.attached") return this.listAttachedIds()
+    if (type === "session.preview" && typeof params?.sessionId === "string") {
+      const attached = this.runtimes.get(params.sessionId)
+      if (attached) {
+        this.touch(attached.sessionId)
+        const pageParams: JsonObject = {}
+        for (const key of ["cursor", "limit", "maxBytes"]) {
+          if (params[key] !== undefined) pageParams[key] = params[key]
+        }
+        const [state, branch] = await Promise.all([
+          attached.worker.command("state.get", undefined, options.signal),
+          attached.worker.command("branch.get", pageParams, options.signal),
+        ])
+        return { state: state ?? null, branch: branch ?? null }
+      }
+    }
+    if (type === "session.copy") {
+      validateParams(getCommandCapability(type)?.paramsSchema, params ?? {})
+      const copied = await this.catalogCommand(type, params, { signal: options.signal })
+      if (!isJsonObject(copied) || typeof copied.cwd !== "string" || typeof copied.sessionFile !== "string") {
+        throw new Error("Invalid copied session identity")
+      }
+      return this.openSession(copied.cwd, copied.sessionFile, options.signal)
+    }
     if (type === "session.delete") {
       // Detach a live runtime before the file goes away: an attached worker
       // keeps serving the session from memory and would rewrite the file on

@@ -79,6 +79,7 @@
   },
   "todo": {
     "tasks": "任务",
+    "empty": "当前任务列表为空。",
     "completedCount": "{{completed}}/{{total}}",
     "status": {
       "pending": "待开始",

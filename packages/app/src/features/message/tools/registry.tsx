@@ -357,6 +357,20 @@ function readExtractData(execution: PiToolExecution): ExtractedToolData {
 function writeExtractData(execution: PiToolExecution): ExtractedToolData {
   const base = defaultExtractData(execution)
   const inputObj = execution.call.arguments as Record<string, unknown> | undefined
+  const destination = typeof inputObj?.path === 'string'
+    ? inputObj.path
+    : typeof inputObj?.filePath === 'string' ? inputObj.filePath : base.filePath
+  const scheme = destination?.match(/^([a-z][a-z\d+.-]*):\/\//i)?.[1].toLowerCase()
+
+  // Only filesystem destinations imply file contents. Other URI schemes invoke
+  // devices or send messages; their input is not a newly created file.
+  if (scheme && scheme !== 'file' && scheme !== 'local' && scheme !== 'ssh') {
+    if (base.filePath === destination) {
+      delete base.filePath
+      delete base.outputLang
+    }
+    return base
+  }
 
   // 从 input.content 构造 diff（和 editExtractData 一致）
   // 状态控制由渲染层（OutputBlock）统一处理，extractData 只做数据转换

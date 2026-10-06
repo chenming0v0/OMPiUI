@@ -171,33 +171,31 @@ function ServerItem({
             {statusIcon()}
           </button>
           {!server.isDefault && (
-            <>
-              <button
-                type="button"
-                className="p-1.5 rounded-md text-text-400 hover:text-accent-main-100 hover:bg-accent-main-100/10 transition-colors"
-                onClick={e => {
-                  e.stopPropagation()
-                  setEditing(true)
-                }}
-                title={t('servers.editServer')}
-                aria-label={t('servers.editServer')}
-              >
-                <PencilIcon size={13} />
-              </button>
-              <button
-                type="button"
-                className="p-1.5 rounded-md text-text-400 hover:text-danger-100 hover:bg-danger-100/10 transition-colors"
-                onClick={e => {
-                  e.stopPropagation()
-                  setConfirmDelete(true)
-                }}
-                title={t('common:remove')}
-                aria-label={t('common:remove')}
-              >
-                <TrashIcon size={13} />
-              </button>
-            </>
+            <button
+              type="button"
+              className="p-1.5 rounded-md text-text-400 hover:text-danger-100 hover:bg-danger-100/10 transition-colors"
+              onClick={e => {
+                e.stopPropagation()
+                setConfirmDelete(true)
+              }}
+              title={t('common:remove')}
+              aria-label={t('common:remove')}
+            >
+              <TrashIcon size={13} />
+            </button>
           )}
+          <button
+            type="button"
+            className="p-1.5 rounded-md text-text-400 hover:text-accent-main-100 hover:bg-accent-main-100/10 transition-colors"
+            onClick={e => {
+              e.stopPropagation()
+              setEditing(true)
+            }}
+            title={t('servers.editServer')}
+            aria-label={t('servers.editServer')}
+          >
+            <PencilIcon size={13} />
+          </button>
         </div>
       </div>
 

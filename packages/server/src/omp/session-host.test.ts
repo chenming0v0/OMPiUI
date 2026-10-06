@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto"
 import { rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { JsonObject } from "@ompiui/protocol"
 import { EventHub } from "../event-hub.ts"
 import { getDriverMode } from "@ompiui/omp-worker"
 import type { WorkerSession } from "./worker-client.ts"
@@ -13,6 +14,7 @@ import { SessionHost } from "./session-host.ts"
 test("SessionHost notifies the session list when the session file materializes on disk", async () => {
   const sessionFile = join(tmpdir(), `piui-session-host-${randomUUID()}.jsonl`)
   let emitEvent!: (event: { channel: string; head?: unknown }) => void
+  process.env.OMPIUI_DRIVER = "mock"
   const worker = {
     command: async () => ({}),
     getSessionId: () => "session-1",
@@ -29,6 +31,11 @@ test("SessionHost notifies the session list when the session file materializes o
   } as unknown as WorkerSession
   const supervisor = {
     onEvent: () => () => {},
+    catalogCommand: async (type: string, params?: JsonObject) => {
+      if (type === "session.findByFile") return { id: "session-1", cwd: "." }
+      if (type === "session.preview") return { state: null }
+      return { entries: [] }
+    },
     open: async () => worker,
   } as unknown as RuntimeSupervisor
   const hub = new EventHub()
@@ -63,12 +70,14 @@ test("SessionHost notifies the session list when the session file materializes o
   emitEvent({ channel: "session.head", head: { revision: 4, entryCount: 4 } })
   assert.equal(updated.length, 1)
 
+  delete process.env.OMPIUI_DRIVER
   off()
   host.dispose()
   rmSync(sessionFile, { force: true })
 })
 
 test("SessionHost rejects reopening a runtime while it is closing", async () => {
+  process.env.OMPIUI_DRIVER = "mock"
   let releaseAbort!: () => void
   let opens = 0
   const worker = {
@@ -87,6 +96,11 @@ test("SessionHost rejects reopening a runtime while it is closing", async () => 
   } as unknown as WorkerSession
   const supervisor = {
     onEvent: () => () => {},
+    catalogCommand: async (type: string) => {
+      if (type === "session.findByFile") return { id: "session-1", cwd: "." }
+      if (type === "session.preview") return { state: null }
+      return { entries: [] }
+    },
     open: async () => {
       opens += 1
       return worker
@@ -102,38 +116,11 @@ test("SessionHost rejects reopening a runtime while it is closing", async () => 
   await closing
   await host.openSession(".", "session-1.jsonl")
   assert.equal(opens, 2)
-})
-
-test("SessionHost retries a busy self-heal attach", async () => {
-  let opens = 0
-  const worker = {
-    command: async (type: string) => type === "tree.get" ? [{ id: "root" }] : {},
-    getSessionId: () => "session-1",
-    getSessionFile: () => "session-1.jsonl",
-    getCwd: () => ".",
-    updateSessionIdentity: () => {},
-    onEvent: () => () => {},
-    onCrash: () => () => {},
-    onClose: () => () => {},
-    dispose: async () => {},
-  } as unknown as WorkerSession
-  const supervisor = {
-    onEvent: () => () => {},
-    catalogCommand: async () => [{ id: "session-1", path: "session-1.jsonl", cwd: "." }],
-    open: async () => {
-      opens += 1
-      if (opens === 1) throw Object.assign(new Error("lock is busy"), { code: "SESSION_BUSY" })
-      return worker
-    },
-  } as unknown as RuntimeSupervisor
-  const host = new SessionHost(supervisor, new EventHub())
-
-  assert.deepEqual(await host.sessionQuery("session-1", "tree.get"), [{ id: "root" }])
-  assert.equal(opens, 2)
-  host.dispose()
+  delete process.env.OMPIUI_DRIVER
 })
 
 test("SessionHost retries a busy session.open attach", async () => {
+  process.env.OMPIUI_DRIVER = "mock"
   let opens = 0
   const worker = {
     command: async () => ({}),
@@ -148,6 +135,11 @@ test("SessionHost retries a busy session.open attach", async () => {
   } as unknown as WorkerSession
   const supervisor = {
     onEvent: () => () => {},
+    catalogCommand: async (type: string) => {
+      if (type === "session.findByFile") return { id: "session-1", cwd: "." }
+      if (type === "session.preview") return { state: null }
+      return { entries: [] }
+    },
     open: async () => {
       opens += 1
       if (opens === 1) throw Object.assign(new Error("lock is busy"), { code: "SESSION_BUSY" })
@@ -160,9 +152,11 @@ test("SessionHost retries a busy session.open attach", async () => {
   assert.equal(opened.sessionId, "session-1")
   assert.equal(opens, 2)
   host.dispose()
+  delete process.env.OMPIUI_DRIVER
 })
 
 test("SessionHost reuses an idle runtime for a session switch", async () => {
+  process.env.OMPIUI_DRIVER = "mock"
   let opens = 0
   const worker = {
     command: async (type: string) => {
@@ -190,6 +184,11 @@ test("SessionHost reuses an idle runtime for a session switch", async () => {
   } as unknown as WorkerSession
   const supervisor = {
     onEvent: () => () => {},
+    catalogCommand: async (type: string) => {
+      if (type === "session.findByFile") return { id: "session-2", cwd: "." }
+      if (type === "session.preview") return { state: null }
+      return { entries: [] }
+    },
     open: async () => {
       opens += 1
       return worker
@@ -224,10 +223,12 @@ test("SessionHost reuses an idle runtime for a session switch", async () => {
     targetCwd: ".",
     reason: "runtime-reuse",
   })
+  delete process.env.OMPIUI_DRIVER
   host.dispose()
 })
 
 test("SessionHost routes extension commands by name through the runtime registry", async () => {
+  process.env.OMPIUI_DRIVER = "mock"
   const executed: Array<{ type: string; params?: unknown }> = []
   const worker = {
     command: async (type: string, params?: unknown) => {
@@ -256,6 +257,11 @@ test("SessionHost routes extension commands by name through the runtime registry
   } as unknown as WorkerSession
   const supervisor = {
     onEvent: () => () => {},
+    catalogCommand: async (type: string) => {
+      if (type === "session.findByFile") return { id: "session-1", cwd: "." }
+      if (type === "session.preview") return { state: null }
+      return { entries: [] }
+    },
     open: async () => worker,
   } as unknown as RuntimeSupervisor
   const host = new SessionHost(supervisor, new EventHub())
@@ -272,6 +278,7 @@ test("SessionHost routes extension commands by name through the runtime registry
   )
   assert.deepEqual(executed, [{ type: "my-ext-command", params: { args: "hello" } }])
   host.dispose()
+  delete process.env.OMPIUI_DRIVER
 })
 
 test("SessionHost rejects unknown session commands on a cold session without spawning a worker", async () => {
@@ -294,6 +301,7 @@ test("SessionHost rejects unknown session commands on a cold session without spa
 })
 
 test("SessionHost validates extension tool arguments against Pi's own tool schema", async () => {
+  process.env.OMPIUI_DRIVER = "mock"
   const executed: Array<{ type: string; params?: unknown }> = []
   const worker = {
     command: async (type: string, params?: unknown) => {
@@ -331,6 +339,11 @@ test("SessionHost validates extension tool arguments against Pi's own tool schem
   } as unknown as WorkerSession
   const supervisor = {
     onEvent: () => () => {},
+    catalogCommand: async (type: string) => {
+      if (type === "session.findByFile") return { id: "session-1", cwd: "." }
+      if (type === "session.preview") return { state: null }
+      return { entries: [] }
+    },
     open: async () => worker,
   } as unknown as RuntimeSupervisor
   const host = new SessionHost(supervisor, new EventHub())
@@ -347,9 +360,11 @@ test("SessionHost validates extension tool arguments against Pi's own tool schem
   await submitted.promise
   assert.deepEqual(executed, [{ type: "my-tool", params: { value: "ok" } }])
   host.dispose()
+  delete process.env.OMPIUI_DRIVER
 })
 
 test("SessionHost reaps an idle runtime without prewarming", async () => {
+  process.env.OMPIUI_DRIVER = "mock"
   let prewarmed = 0
   const worker = {
     command: async (type: string) => type === "state.get" ? { sessionId: "idle-session" } : {},
@@ -366,6 +381,11 @@ test("SessionHost reaps an idle runtime without prewarming", async () => {
   } as unknown as WorkerSession
   const supervisor = {
     onEvent: () => () => {},
+    catalogCommand: async (type: string) => {
+      if (type === "session.findByFile") return { id: "idle-session", cwd: "/workspace" }
+      if (type === "session.preview") return { state: null }
+      return { entries: [] }
+    },
     open: async () => worker,
     prewarm: async () => {
       prewarmed += 1
@@ -390,6 +410,7 @@ test("SessionHost reaps an idle runtime without prewarming", async () => {
   // 单共享进程架构：回收后不再补预热（worker 常驻，无需预热进程）
   assert.equal(prewarmed, 0)
   host.dispose()
+  delete process.env.OMPIUI_DRIVER
 })
 
 test("SessionHost piRegistry falls back to the static snapshot while the worker is booting", async () => {

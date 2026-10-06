@@ -125,6 +125,8 @@ export const PI_COMMAND_SPECS = [
   { name: "session.listAll", scope: "global", description: "List all Pi sessions", queue: "immediate", idempotent: true },
   { name: "session.create", scope: "global", description: "Create a Pi session without opening an agent runtime", paramsSchema: CWD_PARAMS, queue: "serialized" },
   { name: "session.preview", scope: "global", description: "Read a Pi session without opening an agent runtime", paramsSchema: SESSION_PREVIEW_PARAMS, queue: "immediate", idempotent: true },
+  { name: "session.read", scope: "global", description: "Read persisted session data without creating a writable runtime", paramsSchema: objectSchema({ sessionId: STRING, query: { enum: ["state.get", "branch.get", "entries.get", "tree.get", "attachment.get", "subagent.messages"] }, params: objectSchema({}, [], true) }, ["sessionId", "query"]), queue: "immediate", idempotent: true },
+  { name: "session.copy", scope: "global", description: "Continue a session in an independent WebUI-owned copy", paramsSchema: objectSchema({ sessionId: STRING }, ["sessionId"]), queue: "serialized" },
   { name: "session.children", scope: "global", description: "List OMP subagent (child) session files nested under a parent session file", paramsSchema: objectSchema({ sessionFile: STRING }, ["sessionFile"]), queue: "immediate", idempotent: true },
   { name: "session.findById", scope: "global", description: "Resolve a session id to its file, including OMP subagent (child) sessions", paramsSchema: objectSchema({ sessionId: STRING }, ["sessionId"]), queue: "immediate", idempotent: true },
   { name: "session.findByFile", scope: "global", description: "Resolve an OMP session jsonl path to its disk identity without listing siblings", paramsSchema: objectSchema({ sessionFile: STRING }, ["sessionFile"]), queue: "immediate", idempotent: true },
@@ -251,6 +253,8 @@ export type PiCommandParams = CoreCommandParams & {
   "session.listAll": Record<string, never>
   "session.create": { cwd: string }
   "session.preview": { sessionId: string } & PiPageParams
+  "session.read": { sessionId: string; query: "state.get" | "branch.get" | "entries.get" | "tree.get" | "attachment.get" | "subagent.messages"; params?: JsonObject }
+  "session.copy": { sessionId: string }
   "session.children": { sessionFile: string }
   "session.findById": { sessionId: string }
   "session.findByFile": { sessionFile: string }

@@ -112,6 +112,14 @@ const LEGACY_ACTIVE_SERVER_KEY = 'piui-active-server'
 export const LOCAL_SERVER_ID = 'local'
 
 /**
+ * 默认 local 条目是否被用户改过地址：保存的是绝对 http(s) URL 且不等于内置
+ * API_BASE_URL。旧数据里的相对路径（如 /api）不算改过，健康检查仍走同源。
+ */
+export function isCustomizedLocalServerUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url) && url !== API_BASE_URL
+}
+
+/**
  * Server Store
  * 管理多个 OMPiUI server 配置
  */
@@ -463,13 +471,17 @@ class ServerStore {
   // ============================================
 
   /**
-   * 健康检查的 base 解析与数据层一致：浏览器里本地默认服务器走同源，
-   * 由 Vite 代理注入 token；只有运行时被改写过地址才直连。
+   * 健康检查的 base 解析与数据层一致：浏览器里未改过的本地默认服务器走同源，
+   * 由 Vite 代理注入 token；运行时被改写、或用户在设置里保存过新地址
+   * （isCustomizedLocalServerUrl）时直连，检查才真正打向显示的那个地址。
    */
   private resolveHealthBaseUrl(server: ServerConfig): string {
+    const stored = this.servers.find(s => s.id === this.DEFAULT_SERVER_ID)
+    const customized = stored !== undefined && isCustomizedLocalServerUrl(stored.url)
     if (
       server.id === this.DEFAULT_SERVER_ID &&
       !this.localServerUrlOverride &&
+      !customized &&
       !isTauri() &&
       typeof window !== 'undefined'
     ) {

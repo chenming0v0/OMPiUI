@@ -162,6 +162,21 @@ describe('serverStore health check', () => {
     expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe('/api/v1/host/health')
   })
 
+  it('checks an edited default local server directly at its saved address', async () => {
+    localStorage.setItem(
+      'ompiui-servers',
+      JSON.stringify([{ id: 'local', name: 'LAN', url: 'http://192.168.1.5:8787', token: 'lan-token', isDefault: true }]),
+    )
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: 1 }))
+    const { serverStore } = await import('./serverStore')
+
+    await serverStore.checkHealth('local')
+
+    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe('http://192.168.1.5:8787/api/v1/host/health')
+    const init = vi.mocked(fetch).mock.calls[0]?.[1] as RequestInit
+    expect(new Headers(init.headers).get('authorization')).toBe('Bearer lan-token')
+  })
+
   it('marks a valid OMPiUI health response as online', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: 1, piSdkVersion: '0.81.1' }))
     const { serverStore } = await import('./serverStore')
@@ -230,6 +245,37 @@ describe('serverStore health check', () => {
 
     expect(staleHealth.status).toBe('error')
     expect(serverStore.getHealth('local')?.status).toBe('online')
+  })
+})
+
+describe('serverStore default server editing', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    localStorage.clear()
+    sessionStorage.clear()
+  })
+
+  it('persists an edited default server url across reloads', async () => {
+    const first = await import('./serverStore')
+
+    expect(first.serverStore.updateServer('local', { name: 'LAN host', url: 'http://192.168.1.5:8787' })).toBe(true)
+
+    vi.resetModules()
+    const second = await import('./serverStore')
+    const local = second.serverStore.getStoredServers().find(server => server.id === 'local')
+    expect(local?.url).toBe('http://192.168.1.5:8787')
+    expect(local?.name).toBe('LAN host')
+    expect(local?.isDefault).toBe(true)
+  })
+
+  it('notifies the data layer when the active default endpoint is edited', async () => {
+    const { serverStore } = await import('./serverStore')
+    const listener = vi.fn()
+    serverStore.onServerChange(listener)
+
+    expect(serverStore.updateServer('local', { url: 'http://192.168.1.5:8787' })).toBe(true)
+
+    expect(listener).toHaveBeenCalledWith('local', 'server-config-updated')
   })
 })
 

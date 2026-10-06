@@ -29,7 +29,7 @@ function itemHasContent(item: PiTimelineItem): boolean {
 }
 
 function endsWithTool(item: PiTimelineItem): boolean {
-  if (item.kind !== 'assistant_message' || item.blocks.length === 0) return false
+  if (item.kind !== 'assistant_message' || item.blocks.length === 0 || item.message.errorMessage) return false
   for (let i = item.blocks.length - 1; i >= 0; i--) {
     const block = item.blocks[i]
     // skip empty thinking / empty text — they carry no visible content
@@ -40,33 +40,14 @@ function endsWithTool(item: PiTimelineItem): boolean {
   return false
 }
 
-function isToolOnlyFollowUp(item: PiTimelineItem): boolean {
+function startsWithTool(item: PiTimelineItem): boolean {
   if (item.kind !== 'assistant_message') return false
-  let sawTool = false
   for (const block of item.blocks) {
-    if (block.type === 'thinking' && block.thinking.trim().length > 0) return false
-    if (block.type === 'text' && block.text.trim().length > 0) return false
-    if (block.type === 'toolCall') sawTool = true
+    if (block.type === 'thinking' && !block.thinking.trim()) continue
+    if (block.type === 'text' && !block.text.trim()) continue
+    return block.type === 'toolCall'
   }
-  return sawTool
-}
-
-function isMergeableTrailing(item: PiTimelineItem): boolean {
-  if (item.kind !== 'assistant_message') return false
-  let sawTool = false
-  let sawVisibleText = false
-  for (const block of item.blocks) {
-    if (block.type === 'thinking' && block.thinking.trim().length > 0) return false
-    if (block.type === 'toolCall') {
-      sawTool = true
-      continue
-    }
-    if (block.type === 'text' && block.text.trim().length > 0) {
-      sawVisibleText = true
-      continue
-    }
-  }
-  return sawTool && sawVisibleText
+  return false
 }
 
 export interface VisibleTimelineEntry {
@@ -127,11 +108,13 @@ export function buildVisibleTimelineEntries(items: PiTimelineItem[]): VisibleTim
       unique.push(item)
     }
   }
-  const filtered = unique.filter(itemHasContent)
+  // Even an empty user message ends the previous assistant tool run.
+  const filtered = unique.filter(item => item.kind === 'user_message' || itemHasContent(item))
   const result: VisibleTimelineEntry[] = []
 
   for (let i = 0; i < filtered.length; i++) {
     const item = filtered[i]
+    if (!itemHasContent(item)) continue
     if (!endsWithTool(item)) {
       result.push({ item, sourceIds: [item.entryId] })
       continue
@@ -140,19 +123,10 @@ export function buildVisibleTimelineEntries(items: PiTimelineItem[]): VisibleTim
     const sourceIds = [item.entryId]
     let j = i + 1
 
-    while (j < filtered.length) {
-      if (isToolOnlyFollowUp(filtered[j])) {
-        sourceIds.push(filtered[j].entryId)
-        j++
-      } else if (isMergeableTrailing(filtered[j])) {
-        sourceIds.push(filtered[j].entryId)
-        j++
-        // 如果该消息也以 tool 结尾（text 在 tool 前面，是中间说明不是结论），
-        // 继续合并链；只有 text 在 tool 后面（真正收尾）才终止
-        if (!endsWithTool(filtered[j - 1])) break
-      } else {
-        break
-      }
+    while (j < filtered.length && startsWithTool(filtered[j])) {
+      sourceIds.push(filtered[j].entryId)
+      j++
+      if (!endsWithTool(filtered[j - 1])) break
     }
 
     if (j === i + 1) {
@@ -168,8 +142,14 @@ export function buildVisibleTimelineEntries(items: PiTimelineItem[]): VisibleTim
           ...first,
           // message 取最后一条（最新模型状态/stopReason）
           message: last.message,
+          isStreaming: last.isStreaming,
           blocks: [...first.blocks, ...mergedItems.flatMap(m => m.blocks)],
           toolResults: Object.assign({}, first.toolResults, ...mergedItems.map(m => m.toolResults)),
+          toolCallTimestamps: Object.fromEntries(chain.flatMap(m =>
+            m.blocks.flatMap(block => block.type === 'toolCall'
+              ? [[block.id, m.toolCallTimestamps?.[block.id] ?? m.timestamp]]
+              : []),
+          )),
         }
         storeMerge(first, chain, merged)
       }

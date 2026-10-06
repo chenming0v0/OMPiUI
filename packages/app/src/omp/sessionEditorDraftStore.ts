@@ -37,6 +37,8 @@ export function configureSessionEditorDraftSync(
 }
 
 export function clearSessionEditorDraft(sessionId: string) {
+  clearTimeout(syncTimers.get(sessionId))
+  syncTimers.delete(sessionId)
   if (!drafts.delete(sessionId)) return
   emit()
 }

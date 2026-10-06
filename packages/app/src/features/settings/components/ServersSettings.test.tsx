@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ServersSettings } from './ServersSettings'
 
@@ -62,5 +62,39 @@ describe('ServersSettings', () => {
     expect(setActiveServerMock).toHaveBeenCalledWith('remote')
     expect(navigateHomeMock).toHaveBeenCalled()
     expect(clearSessionMock).toHaveBeenCalledWith('session-1')
+  })
+
+  it('lets the built-in local server be edited but not removed', () => {
+    const updateServerMock = vi.fn()
+    useServerStoreMock.mockReturnValue({
+      servers: [localServer, remoteServer],
+      activeServer: localServer,
+      addServer: vi.fn(),
+      removeServer: vi.fn(),
+      updateServer: updateServerMock,
+      setActiveServer: setActiveServerMock,
+      checkHealth: checkHealthMock,
+      checkAllHealth: vi.fn(),
+      getHealth: vi.fn(() => null),
+    })
+
+    render(<ServersSettings />)
+
+    const localRow = screen.getByText('Local').closest('.group') as HTMLElement
+    const remoteRow = screen.getByText('Remote').closest('.group') as HTMLElement
+    expect(within(localRow).queryByLabelText('common:remove')).toBeNull()
+    expect(within(remoteRow).getByLabelText('common:remove')).toBeTruthy()
+
+    fireEvent.click(within(localRow).getByLabelText('servers.editServer'))
+    fireEvent.change(screen.getByDisplayValue('http://127.0.0.1:4096'), {
+      target: { value: 'http://192.168.1.5:8787' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'common:save' }))
+
+    expect(updateServerMock).toHaveBeenCalledWith('local', {
+      name: 'Local',
+      url: 'http://192.168.1.5:8787',
+      token: undefined,
+    })
   })
 })

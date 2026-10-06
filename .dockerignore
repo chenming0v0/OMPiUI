@@ -1,0 +1,11 @@
+node_modules
+**/node_modules
+dist
+**/dist
+.git
+.github
+*.log
+temp
+scratch
+docs
+packages/app/src/subagent-smoke.*

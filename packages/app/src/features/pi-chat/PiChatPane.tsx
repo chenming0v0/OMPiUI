@@ -21,6 +21,7 @@ import {
   abortPiOperation,
   abortPiCompaction,
   compactPiSession,
+  copyPiSession,
   cyclePiModel,
   cyclePiThinkingLevel,
   executePiBash,
@@ -49,7 +50,7 @@ import {
   setPiThinkingLevel,
   clearPiQueue,
 } from '../../omp/controllers/index.js'
-import { invokePiCommand } from '../../omp/transport/index.js'
+import { invokePiCommand, manageSessionGoal, waitHostCommand } from '../../omp/transport/index.js'
 import { layoutStore } from '../../store/layoutStore'
 import { themeStore } from '../../store/themeStore'
 import { useSessionActiveEntry } from '../../store/activeSessionStore'
@@ -248,13 +249,16 @@ export function PiChatPane({
   const branch = usePiBranchData(sessionId)
   const branchError = usePiBranchError(sessionId)
   const state = usePiSessionRuntimeState(sessionId)
+  const readOnly = state?.readOnly === true
+  const [isCopyingSession, setIsCopyingSession] = useState(false)
+  const copyingSessionRef = useRef(false)
   // 压缩中：优先用活动状态（worker 推送、已验证可靠），state.isCompacting 兜底
   const sessionEntry = useSessionActiveEntry(sessionId ?? '')
-  const compacting = sessionEntry?.status.type === 'compacting' || state?.isCompacting === true
+  const compacting = !readOnly && (sessionEntry?.status.type === 'compacting' || state?.isCompacting === true)
   // 兜底：session 在活跃列表中（GET /session/status 全量快照驱动，可靠）→
   // 即使 piSessionStateStore 因无事件流而 stale（如 bash 等待期），
   // 输入框发送按钮也保持「停止」状态，避免按钮变暗。
-  const sessionActive = Boolean(sessionEntry)
+  const sessionActive = !readOnly && Boolean(sessionEntry)
   const sessionUnavailableRef = useRef(false)
   const [isRetryingSession, setIsRetryingSession] = useState(false)
   // 本 pane 当前会话的实际工作区（来自会话列表或全局当前目录），用于 @ 补全根目录。
@@ -343,7 +347,7 @@ export function PiChatPane({
     return () => configureSessionEditorDraftSync(undefined)
   }, [])
 
-  const isStreaming = Boolean(state?.isStreaming) || (sessionActive && !compacting)
+  const isStreaming = !readOnly && (Boolean(state?.isStreaming) || (sessionActive && !compacting))
   const queue = state?.queue as { steering?: string[]; followUp?: string[] } | undefined
 
   // 稳定队列引用：ChatArea 是 memo 组件，`?? []` 每次渲染新建数组会让它
@@ -443,6 +447,33 @@ export function PiChatPane({
     return pendingItems.length > 0 ? [...baseItems, ...pendingItems] : baseItems
   }, [baseItems, sessionId, pendingBashCount])
 
+  const pendingStopsRef = useRef(new Map<string, Promise<boolean>>())
+  const stoppedSessionsRef = useRef(new Set<string>())
+  const handleAbort = useCallback(async () => {
+    if (!sessionId || readOnly) return
+    const pending = pendingStopsRef.current.get(sessionId)
+    if (pending) {
+      await pending
+      return
+    }
+    const sid = sessionId
+    const stopping = (async () => {
+      try {
+        await (compacting ? abortPiCompaction(sid) : abortPiOperation(sid))
+        stoppedSessionsRef.current.add(sid)
+        await Promise.all([refreshPiBranch(sid), refreshPiSessionState(sid)])
+        return true
+      } catch (error) {
+        uiErrorHandler('stop operation', error)
+        return false
+      } finally {
+        pendingStopsRef.current.delete(sid)
+      }
+    })()
+    pendingStopsRef.current.set(sid, stopping)
+    await stopping
+  }, [sessionId, readOnly, compacting])
+
   // ── Pane controller 注册（全局快捷键/命令入口）──
   // paneControllerStore 由 OpenCodeUI 迁移保留但从未注册：App 的
   // usePaneController 恒 null，导致 selectModel/newSession/cancelMessage/
@@ -468,10 +499,7 @@ export function PiChatPane({
           navigatePaneToSession?.(paneId, allSessions[idx + 1].id, allSessions[idx + 1].directory)
         }
       },
-      cancelMessage: () => {
-        if (!sessionId) return
-        void (compacting ? abortPiCompaction(sessionId) : abortPiOperation(sessionId)).catch(() => undefined)
-      },
+      cancelMessage: () => { void handleAbort() },
       openModelSelector: () => modelSelectorRef.current?.openMenu(),
       copyLastResponse: () => {
         const lastAssistant = [...items].reverse().find(item => item.kind === 'assistant_message')
@@ -900,101 +928,168 @@ export function PiChatPane({
       }
       localComposerTextRef.current = text
       // 会话已不可用时别再往服务端同步编辑器状态（每敲一个字一个 404）
-      if (!sessionId || sessionUnavailableRef.current) return
+      if (!sessionId || readOnly || sessionUnavailableRef.current) return
       if (editorSyncTimerRef.current !== null) window.clearTimeout(editorSyncTimerRef.current)
       editorSyncTimerRef.current = window.setTimeout(() => {
         editorSyncTimerRef.current = null
         void setPiExtensionEditorState(sessionId, text).catch(() => undefined)
       }, 500)
     },
-    [sessionId],
+    [sessionId, readOnly],
   )
   const handleSend = useCallback(
     async (text: string, attachments: Attachment[], options?: { delivery?: 'steer' | 'followUp' }) => {
-      // Native image blocks from data-url attachments (pi only accepts
-      // ImageContent; backend also validates model image support)
-      const images = attachments
-        .map(attachmentToImage)
-        .filter((image): image is PiImageInput => image !== null)
-      // Unified native entry; deliverAs required while streaming — default
-      // to followUp (don't interrupt the running turn)
-      const deliverAs = options?.delivery ?? (isStreaming ? 'followUp' : undefined)
-
       let targetSessionId = sessionId
-      if (!targetSessionId) {
-        // Home: create the session on first send, then enter it. 全局（未选
-        // 目录）时落到服务器默认工作区（桌面安装目录），与终端的全局语义一致。
-        const directory = currentDirectoryRef.current || (await resolveWorkspacePath())
-        if (!directory) return false
-        const opened = await openPiSession(directory)
-        if (!opened.sessionId) return false
-        const sessionDir = opened.cwd ?? directory
-        targetSessionId = opened.sessionId
-        trackPiSession(targetSessionId, sessionDir)
-        // 本地创建的会话本地就有全部信息，直接进列表——磁盘扫描要等
-        // 首个条目落盘才能看到它
-        registerSessionRef.current({
-          id: targetSessionId,
-          directory: sessionDir,
-          title: text.trim().slice(0, 60) || i18n.t('chat:sidebar.newChat'),
-          firstMessage: text.trim().slice(0, 200),
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-          path: opened.sessionFile ?? undefined,
-        })
-        onEnterSessionRef.current?.(targetSessionId, directory)
-        // 刷新其他列表消费者（文件夹分组等）；挂起合并保证新会话不被冲掉
-        window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
-        // Apply the composer's preferred model and thinking level BEFORE the
-        // first prompt — afterwards they'd queue behind the active turn and
-        // the first turn would run with defaults.
-        const preferred = getPreferredModelKey()
-        const preferredModel = preferred ? models.find(m => `${m.provider}:${m.id}` === preferred) : undefined
-        if (preferredModel) {
-          await setPiModel(targetSessionId, preferredModel.provider, preferredModel.id).catch(() => undefined)
-        }
-        const preferredVariant = preferred ? getModelVariantPref(preferred) : undefined
-        if (preferredVariant) {
-          await setPiThinkingLevel(targetSessionId, preferredVariant).catch(() => undefined)
-        }
-        void refreshPiSessionState(targetSessionId).catch(() => undefined)
-      }
-      const sid = targetSessionId
+      try {
+        if (readOnly) throw new Error('This session is read-only. Continue in a new session to send messages.')
+        const pendingStop = sessionId ? pendingStopsRef.current.get(sessionId) : undefined
+        if (pendingStop && !(await pendingStop)) return false
+        const images = attachments
+          .map(attachmentToImage)
+          .filter((image): image is PiImageInput => image !== null)
+        // Stop is an idle boundary, even if this callback captured streaming UI state.
+        const stopped = sessionId ? stoppedSessionsRef.current.has(sessionId) : false
+        const deliverAs = stopped ? undefined : options?.delivery ?? (isStreaming ? 'followUp' : undefined)
 
-      // 发送前清空两侧的编辑器状态，防止输入框被回填：
-      // 1. 取消挂起的输入同步防抖（否则 500ms 后旧文本被写回 worker）
-      // 2. 清 worker 扩展编辑器状态（否则下一次 state 刷新经 extension
-      //    bridge 的 setEditorText 把旧文本回填输入框——表现为发送后输入
-      //    框不清空，快速输入+发送时必现）
-      if (editorSyncTimerRef.current !== null) {
-        window.clearTimeout(editorSyncTimerRef.current)
-        editorSyncTimerRef.current = null
+        if (!targetSessionId) {
+          const directory = currentDirectoryRef.current || (await resolveWorkspacePath())
+          if (!directory) return false
+          const opened = await openPiSession(directory)
+          if (!opened.sessionId) return false
+          const sessionDir = opened.cwd ?? directory
+          targetSessionId = opened.sessionId
+          trackPiSession(targetSessionId, sessionDir)
+          registerSessionRef.current({
+            id: targetSessionId,
+            directory: sessionDir,
+            title: text.trim().slice(0, 60) || i18n.t('chat:sidebar.newChat'),
+            firstMessage: text.trim().slice(0, 200),
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            path: opened.sessionFile ?? undefined,
+          })
+          onEnterSessionRef.current?.(targetSessionId, directory)
+          window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
+          // Configure the first turn before submitting its prompt.
+          const preferred = getPreferredModelKey()
+          const preferredModel = preferred ? models.find(m => `${m.provider}:${m.id}` === preferred) : undefined
+          if (preferredModel) {
+            await setPiModel(targetSessionId, preferredModel.provider, preferredModel.id).catch(() => undefined)
+          }
+          const preferredVariant = preferred ? getModelVariantPref(preferred) : undefined
+          if (preferredVariant) {
+            await setPiThinkingLevel(targetSessionId, preferredVariant).catch(() => undefined)
+          }
+        }
+        const sid = targetSessionId
+        // The command resolves on backend acceptance, not at the end of the turn.
+        // Until then InputBox retains both the text and its attachments.
+        await sendPiUserMessage(sid, text, images.length ? images : undefined, deliverAs)
+        stoppedSessionsRef.current.delete(sid)
+        if (editorSyncTimerRef.current !== null) {
+          window.clearTimeout(editorSyncTimerRef.current)
+          editorSyncTimerRef.current = null
+        }
+        const currentText = inputBoxRef.current?.getEditorText() ?? localComposerTextRef.current ?? text
+        const remainingText = currentText === text ? '' : currentText
+        localComposerTextRef.current = remainingText
+        lastEditorTextRef.current = remainingText
+        clearSessionEditorDraft(sid)
+        setForkSeedText(undefined)
+        void setPiExtensionEditorState(sid, remainingText).catch(() => undefined)
+        scheduleDelayedRefresh(sid)
+        return true
+      } catch (error) {
+        uiErrorHandler('send message', error)
+        if (targetSessionId) scheduleDelayedRefresh(targetSessionId)
+        return false
       }
-      void setPiExtensionEditorState(sid, '').catch(() => undefined)
-
-      // Fire and refresh: the prompt command stays open for the whole turn,
-      // Fire and refresh: the prompt command stays open for the whole turn,
-      // so awaiting it would block the composer until the turn ends. Return
-      // immediately; the event stream drives updates, and we kick the first
-      // refresh so the user message shows without waiting for the debounce.
-      // 发送失败必须让用户看见——静默丢掉一条消息比报错糟糕得多
-      clearSessionEditorDraft(sid)
-      setForkSeedText(undefined)
-      void sendPiUserMessage(sid, text, images.length ? images : undefined, deliverAs)
-        .then(() => {
-          void refreshPiSessionState(sid).catch(() => undefined)
-        })
-        .catch(error => {
-          uiErrorHandler('send message', error)
-          setSessionEditorDraft(sid, text)
-          void refreshPiBranch(sid).catch(() => undefined)
-          void refreshPiSessionState(sid).catch(() => undefined)
-        })
-      scheduleDelayedRefresh(sid)
-      return true
     },
-    [sessionId, isStreaming, models, scheduleDelayedRefresh],
+    [sessionId, readOnly, isStreaming, models, scheduleDelayedRefresh],
   )
+
+  const handleSetGoal = useCallback(
+    async (objective: string): Promise<boolean> => {
+      let targetSessionId = sessionId
+      try {
+        if (!targetSessionId) {
+          // Goal 可以作为新会话的第一步：先创建会话，再让 worker 立刻进入目标续跑。
+          const directory = currentDirectoryRef.current || (await resolveWorkspacePath())
+          if (!directory) return false
+          const opened = await openPiSession(directory)
+          if (!opened.sessionId) return false
+          const sessionDir = opened.cwd ?? directory
+          targetSessionId = opened.sessionId
+          trackPiSession(targetSessionId, sessionDir)
+          registerSessionRef.current({
+            id: targetSessionId,
+            directory: sessionDir,
+            title: objective.slice(0, 60),
+            firstMessage: objective.slice(0, 200),
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            path: opened.sessionFile ?? undefined,
+          })
+          onEnterSessionRef.current?.(targetSessionId, sessionDir)
+          window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
+
+          const preferred = getPreferredModelKey()
+          const preferredModel = preferred ? models.find(m => `${m.provider}:${m.id}` === preferred) : undefined
+          if (preferredModel) {
+            await setPiModel(targetSessionId, preferredModel.provider, preferredModel.id).catch(() => undefined)
+          }
+          const preferredVariant = preferred ? getModelVariantPref(preferred) : undefined
+          if (preferredVariant) {
+            await setPiThinkingLevel(targetSessionId, preferredVariant).catch(() => undefined)
+          }
+        }
+
+        const submitted = await manageSessionGoal(targetSessionId, 'set', objective)
+        await waitHostCommand(submitted.id)
+        void refreshPiSessionState(targetSessionId).catch(() => undefined)
+        return true
+      } catch (error) {
+        uiErrorHandler('set goal', error)
+        return false
+      }
+    },
+    [models, sessionId],
+  )
+
+  const handleCopySession = useCallback(async () => {
+    if (!sessionId || copyingSessionRef.current) return
+    copyingSessionRef.current = true
+    setIsCopyingSession(true)
+    try {
+      const opened = await copyPiSession(sessionId)
+      if (!opened.sessionId) throw new Error('No session was created')
+      const directory = opened.cwd ?? inputRootPath
+      const source = allSessions.find(session => session.id === sessionId)
+      trackPiSession(opened.sessionId, directory)
+      registerSessionRef.current({
+        id: opened.sessionId,
+        directory,
+        title: source?.title || i18n.t('chat:sidebar.newChat'),
+        firstMessage: source?.firstMessage,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        path: opened.sessionFile ?? undefined,
+      })
+      // InputBox stays mounted across navigation, retaining text and attachments.
+      const draft = inputBoxRef.current?.getEditorText() ?? localComposerTextRef.current ?? ''
+      localComposerTextRef.current = draft
+      lastEditorTextRef.current = draft
+      extensionUiStore.editorCommand(opened.sessionId, { kind: 'set', text: draft })
+      void setPiExtensionEditorState(opened.sessionId, draft).catch(() => undefined)
+      onEnterSessionRef.current?.(opened.sessionId, directory)
+      window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
+    } catch (error) {
+      uiErrorHandler('continue in new session', error)
+    } finally {
+      copyingSessionRef.current = false
+      setIsCopyingSession(false)
+    }
+   }, [sessionId, inputRootPath, allSessions])
 
   // Slash command dispatch, mirroring pi TUI: frontend built-ins are handled
   // locally; everything else goes through the native prompt path, where the
@@ -1675,21 +1770,34 @@ export function PiChatPane({
 
       <div ref={inputBoxWrapperRef} className="absolute bottom-0 left-0 right-0 z-10 pointer-events-none">
         <div className="pointer-events-auto">
+          {readOnly && (
+            <div role="status" className="mx-3 mb-2 rounded-xl border border-border-200 bg-bg-100 px-3 py-2 text-sm text-text-200">
+              <p>{t('inputBox.readOnlySession', { defaultValue: 'This session is read-only. The native TUI keeps ownership of its history; continue in a new session to make changes.' })}</p>
+              <button
+                type="button"
+                className="mt-2 rounded-lg border border-border-200 px-3 py-1 text-accent-main-100 disabled:opacity-50"
+                disabled={isCopyingSession}
+                onClick={() => { void handleCopySession() }}
+              >
+                {isCopyingSession ? t('common:loading') : t('inputBox.continueInNewSession', { defaultValue: 'Continue in new session' })}
+              </button>
+            </div>
+          )}
           <InputBox
             ref={inputBoxRef}
             paneId={paneId}
             sessionId={sessionId}
             rootPath={inputRootPath}
             onSend={handleSend}
-            onCommand={handleCommand}
+            submissionDisabled={readOnly || isCopyingSession}
+            onCommand={readOnly ? undefined : handleCommand}
             onCycleModel={direction => sessionId && void cyclePiModel(sessionId, direction).then(() => refreshPiSessionState(sessionId)).catch(() => undefined)}
             onCycleThinkingLevel={() => sessionId && void cyclePiThinkingLevel(sessionId).then(() => refreshPiSessionState(sessionId)).catch(() => undefined)}
             onOpenModelSelector={() => modelSelectorRef.current?.openMenu()}
             onTextChange={handleTextChange}
-            onAbort={() => (sessionId
-              ? void (compacting ? abortPiCompaction(sessionId) : abortPiOperation(sessionId)).catch(() => undefined)
-              : undefined)}
+            onAbort={handleAbort}
             onNewChat={onNewChat}
+            onSetGoal={handleSetGoal}
             isStreaming={isStreaming}
             sessionActive={sessionActive}
             isCompacting={compacting}

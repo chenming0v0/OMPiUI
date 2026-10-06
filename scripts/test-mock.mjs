@@ -20,6 +20,7 @@ const commands = [
   ["run", "test", "-w", "@ompiui/protocol"],
   ["run", "test", "-w", "@ompiui/omp-worker"],
   ["run", "test", "-w", "@ompiui/server"],
+  ["run", "test", "-w", "@ompiui/admin"],
   ["run", "test:run", "-w", "@ompiui/app"],
 ]
 

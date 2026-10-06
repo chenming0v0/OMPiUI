@@ -121,6 +121,8 @@ export interface CatalogProvider {
   createSession(cwd: string): Promise<JsonValue>
   previewSession(cwd: string, sessionFile: string, params?: { cursor?: string; limit?: number; maxBytes?: number }): Promise<JsonValue>
   previewSessionById(sessionId: string, params?: { cursor?: string; limit?: number; maxBytes?: number }): Promise<JsonValue>
+  readSession(sessionId: string, query: string, params?: JsonObject): Promise<JsonValue>
+  copySession(sessionId: string): Promise<JsonObject>
   deleteSession(cwd: string, sessionFile: string): Promise<void>
   listModels(): Promise<JsonValue>
   getSettings(cwd: string): JsonValue | Promise<JsonValue>

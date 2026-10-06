@@ -47,7 +47,7 @@ export const ToolGroup = memo(function ToolGroup({
   const { t } = useTranslation('message')
   const { descriptiveToolSteps, immersiveMode, processCollapseEnabled } = useTheme()
 
-  const doneCount = executions.filter(e => e.result && !e.result.isError).length
+  const doneCount = executions.filter(e => e.result).length
   const totalCount = executions.length
   const isAllDone = doneCount === totalCount
   const hasActiveTools = executions.some(e => !e.result)
@@ -157,7 +157,7 @@ export const ToolGroup = memo(function ToolGroup({
             compact={isSingleCompact}
             descriptive={descriptiveToolSteps}
             isStreaming={isStreaming}
-            startedAt={startedAt}
+            startedAt={execution.startedAt ?? startedAt}
             defaultExpanded={defaultExpanded}
           />
         ))

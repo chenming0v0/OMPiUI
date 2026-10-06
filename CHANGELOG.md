@@ -2,7 +2,25 @@
 
 OMPiUI 自己的版本从 0.1.0 起算。`packages/app/CHANGELOG.md` 是上游 PiUI 历史，不参与本仓库发版。
 
+## [v0.4.1] - 2026-10-06
+
+- fix: 合入 PR #27，Goal 可作为新会话的第一步直接启动；调整目标编辑器与输入框布局，等待目标命令完成后刷新状态。
+- fix: 外部 OMP TUI 历史改为只读磁盘预览，查看和刷新不会启动第二个写入进程；继续对话时显式复制为独立的 WebUI 托管会话。
+- fix: 补齐运行、结束与停止事件的状态更新；发送等待后端接受，失败保留文本与附件，停止中的后续发送等待停止完成。
+- fix: 释放消息入场动画保留的高度，允许图片附件加载后自然撑开，避免覆盖后续消息。
+- fix: OMP Todo 的权威空快照显示实际清空结果；`xd://` 等虚拟工具写入不再伪装为文件 diff。
+- fix: 无正文或思考分隔的连续工具调用合并到同一步骤线，失败的 Eval 也计入已结束数量，完成后显示 6/6。
+- fix: 运行时分支补齐刷新恢复；默认 Local 可编辑名称、地址与 token，健康检查、会话和重连使用保存的地址（#24）。
+- feat: 新增无桌面部署管理平面，提供管理 TUI、独立 Web 控制台和 VPS 安装、Docker 部署入口。
+- chore: 根包、全部 workspace、Tauri 与 lockfile 统一为 0.4.1，补齐版本脚本对 admin 和根 lockfile 条目的更新。
+- docs: OMP 历史备份、恢复证据及外部 TUI 控制限制记录于 #28；未找到的历史最终回复不作补造。
+
 ## [Unreleased]
+
+- feat: 无桌面部署管理平面 `@ompiui/admin`——SSH 友好的 TUI 与独立管理 Web UI（默认 `127.0.0.1:9898`，独立管理令牌），管理后端进程生命周期、凭证与分享链接、监听/公网/中转配置；配置持久化到 `~/.ompiui/admin.json`。
+- feat: VPS 一键安装脚本支持裸机引导克隆、精确 Node >=22.19 检查与 systemd linger；新增 `deploy/docker-compose.yml`、Dockerfile HEALTHCHECK、根 `.dockerignore` 与 `deploy/README.md`。
+- fix: 设置 → 服务器里内置 Local 条目开放编辑名称/地址/token（仍不可删除），保存后健康检查、会话请求、SSE 重连与终端 WebSocket 都改走新地址 (#24)。
+- fix: 选中的远程服务器不再被构建期 `VITE_OMPIUI_API` 钉死，浏览器与 Tauri 的 base 解析一致；管理器探测失败不再污染服务错误状态，主动停止不再显示为异常退出，检测到外部已运行的后端时给出可行动的错误。
 
 ## [v0.3.1] - 2026-10-04
 
@@ -80,6 +98,7 @@ OMPiUI 自己的版本从 0.1.0 起算。`packages/app/CHANGELOG.md` 是上游 P
 ## [Unreleased]
 
 - fix: Todo 工具适配 OMP 原生 `phases[].tasks[]` 快照，按 OpenCodeUI 的任务卡片显示阶段分组、进度、状态图标和阻塞原因，不再回退为 Input/Output；输入框 Todo 入口共用数据适配，空快照可清除旧任务，失败操作保留错误提示，历史 TodoWrite 清单仍可显示。
+- fix: 刷新页面时不再把正在运行的模型显示成已停止：重连后的实时消息先暂存，分支状态恢复后再合并；无游标的整页刷新会在磁盘预览后重新读取运行时分支，保留工具调用中的 live turn。
 
 - feat: 自建中转（内网穿透）—— 新包 `@ompiui/relay`（bin `omp-relay`）实现 Pebrel 式反向隧道中转：电脑端主动拨号到自己的 VPS（NAT/防火墙后可用，无需公网 IP/端口转发），公网访客走普通 HTTP(S) 入口，每个请求被翻译成控制连接上的一条虚拟连接（open → body 流 → head/响应体/end），WS upgrade（事件流/终端流）101 头保真后两侧 socket 纯字节拼接。安全语义沿用 Pebrel：接入密钥只存 SHA-256 摘要（timing-safe 比较）、重复接入拒绝（先到先得）、30s 心跳、断线指数退避、无存储转发（离线 502 `TUNNEL_OFFLINE`）；限流 100 msg/s、每隧道 64 并发、帧 ≤64KiB，背压按 bufferedAmount 高水位暂停源流。路由支持 `host` 绑定与 `<id>.<domain>` 子域名，未配置任何显式路由时单隧道兜底（配了就不兜底，未匹配 Host 拒绝）；`omp-relay init` 一条命令生成配置 + 43 字符密钥并打印可直接粘贴的 `OMPIUI_TUNNEL_*`，支持内置 TLS 或 Caddy 反代。19 个单测 + 全链路集成测试
 - feat: server 内嵌隧道客户端与动态公网入口 —— 配置 `OMPIUI_TUNNEL_URL/KEY/ID`（或 `--tunnel-*`）后 server 主动拨号到中转并保活（500ms×2ⁿ 上限 15s + 抖动重连），公网请求被重放到本机 `127.0.0.1:port`；有效公网入口 = 显式 `OMPIUI_PUBLIC_BASE_URL` ?? 中转上报地址，Origin 白名单（HTTP + WS 两处）改为动态取值自动纳入隧道公网 origin，share 链接/启动日志同步切换；新增 `GET /api/v1/host/tunnel` 状态端点，`ShareInfo` 附带 tunnel 信息。集成测试覆盖 HTTP/WS 透传、干净停止与中转重启后重连

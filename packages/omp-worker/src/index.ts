@@ -12,6 +12,7 @@ export { OmpRpcClient, OmpRpcError, unwrapResponse, type OmpRpcClientOptions, ty
 export { OMP_SDK_VERSION } from "./omp/constants.js"
 export { createWorkerCommandScheduler } from "./worker-command-scheduler.js"
 export { getDriverMode, type DriverMode } from "./driver.js"
+export { managedSessionsRoot, isManagedSessionFile, readOnlySessionError } from "./omp/managed-sessions.js"
 
 export function getPiWorkerEntryUrl(): URL {
   return new URL("./entry.js", import.meta.url)

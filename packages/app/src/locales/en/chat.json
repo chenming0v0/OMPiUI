@@ -64,7 +64,8 @@
     "pause": "Pause goal",
     "resume": "Resume goal",
     "drop": "Drop goal",
-    "saveHint": "Ctrl+Enter to save"
+    "saveHint": "Ctrl+Enter to save",
+    "noSessionHint": "Enter a goal and save it to start the session directly."
   },
   "modelSelector": {
     "selectModel": "Select model",
