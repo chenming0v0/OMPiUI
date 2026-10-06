@@ -91,3 +91,7 @@ git tag v<version> origin/main && git push origin v<version>   # tag 触发桌�
 ## 许可证
 
 GPL-3.0-only（继承 PiUI）。
+
+## 开源推广
+
+特别致谢：[LINUX DO](https://linux.do)
