@@ -90,6 +90,19 @@ const AUTO_EXPAND_EXCLUDED = new Set(['new', 'settings', 'hotkeys', 'changelog',
 /** 稳定空数组引用：避免 `?? []` 每次渲染新建数组导致 ChatArea memo 失效 */
 const EMPTY_STRING_ARRAY: readonly string[] = []
 
+function resolveExportOutputPath(requested: string, baseDirectory: string): string {
+  const trimmed = requested.trim()
+  const unquoted = trimmed.length >= 2 && ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'")))
+    ? trimmed.slice(1, -1).trim()
+    : trimmed
+  const base = baseDirectory.replace(/[\\/]+$/, '')
+  if (!unquoted) return `${base}/pi-session.html`
+  // Keep absolute Windows/Unix paths intact; resolve relative paths against
+  // the active workspace so the server never receives an ambiguous `.` path.
+  if (/^(?:[A-Za-z]:[\\/]|[\\/]{1,2})/.test(unquoted)) return unquoted
+  return `${base}/${unquoted.replace(/^\.[\\/]+/, '')}`
+}
+
 /** fork 第一条消息的纯前端特判：不开 SDK 会话，直接落在首页预填 */
 const HOME_FORK_KEY = 'home'
 
@@ -356,6 +369,17 @@ export function PiChatPane({
   const queuedSteering = useMemo(() => queue?.steering ?? EMPTY_STRING_ARRAY, [queue?.steering])
   const queuedFollowUps = useMemo(() => queue?.followUp ?? EMPTY_STRING_ARRAY, [queue?.followUp])
 
+  /**
+   * Rebuild a queue after removing or editing one item.  The worker command
+   * is acknowledged only after the runtime accepted the item, so replaying
+   * sequentially keeps the visible order stable and lets us stop on the first
+   * real failure instead of silently dropping the rest.
+   */
+  const replayQueue = useCallback(async (sid: string, steering: readonly string[], followUp: readonly string[]) => {
+    for (const text of steering) await sendPiUserMessage(sid, text, undefined, 'steer')
+    for (const text of followUp) await sendPiUserMessage(sid, text, undefined, 'followUp')
+  }, [])
+
   // ── 队列消息操作（撤销回输入框 / 切换 steer↔followUp 模式）──
   // SDK 无单条队列移除：用 clearQueue（返回清空快照）+ 按目标重放其余实现。
   const handleQueueBackToInput = useCallback(
@@ -375,14 +399,9 @@ export function PiChatPane({
       if (kind === 'steering') restSteering.splice(index, 1)
       const restFollowUp = [...(cleared.followUp ?? [])]
       if (kind === 'followUp') restFollowUp.splice(index, 1)
-      for (const t of restSteering) {
-        void sendPiUserMessage(sessionId, t, undefined, 'steer').catch(() => undefined)
-      }
-      for (const t of restFollowUp) {
-        void sendPiUserMessage(sessionId, t, undefined, 'followUp').catch(() => undefined)
-      }
+      await replayQueue(sessionId, restSteering, restFollowUp).catch(error => uiErrorHandler('rebuild message queue', error))
     },
-    [sessionId, queue],
+    [replayQueue, sessionId, queue],
   )
   const handleQueueMoveMode = useCallback(
     async (kind: 'steering' | 'followUp', index: number) => {
@@ -394,18 +413,17 @@ export function PiChatPane({
         | { steering?: string[]; followUp?: string[] }
         | null
       if (!cleared) return
-      // 该条以目标模式重放；其余保持原模式（排除该条）
-      void sendPiUserMessage(sessionId, text, undefined, kind === 'steering' ? 'followUp' : 'steer').catch(() => undefined)
-      const restSteering = [...(cleared.steering ?? [])].filter(t => t !== text)
-      const restFollowUp = [...(cleared.followUp ?? [])].filter(t => t !== text)
-      for (const t of restSteering) {
-        void sendPiUserMessage(sessionId, t, undefined, 'steer').catch(() => undefined)
-      }
-      for (const t of restFollowUp) {
-        void sendPiUserMessage(sessionId, t, undefined, 'followUp').catch(() => undefined)
-      }
+      // 该条以目标模式重放；其余保持原模式。必须按 kind+index 移除，
+      // 不能按文本值 filter，否则两个相同的“继续”会一起消失。
+      const restSteering = [...(cleared.steering ?? [])]
+      const restFollowUp = [...(cleared.followUp ?? [])]
+      const movedText = kind === 'steering' ? restSteering.splice(index, 1)[0] : restFollowUp.splice(index, 1)[0]
+      if (movedText == null) return
+      if (kind === 'steering') restFollowUp.push(movedText)
+      else restSteering.push(movedText)
+      await replayQueue(sessionId, restSteering, restFollowUp).catch(error => uiErrorHandler('rebuild message queue', error))
     },
-    [sessionId, queue],
+    [replayQueue, sessionId, queue],
   )
   /** 直接清除队列中的一条（不回输入框） */
   const handleQueueClear = useCallback(
@@ -419,14 +437,17 @@ export function PiChatPane({
       if (kind === 'steering') restSteering.splice(index, 1)
       const restFollowUp = [...(cleared.followUp ?? [])]
       if (kind === 'followUp') restFollowUp.splice(index, 1)
-      for (const t of restSteering) {
-        void sendPiUserMessage(sessionId, t, undefined, 'steer').catch(() => undefined)
-      }
-      for (const t of restFollowUp) {
-        void sendPiUserMessage(sessionId, t, undefined, 'followUp').catch(() => undefined)
-      }
+      await replayQueue(sessionId, restSteering, restFollowUp).catch(error => uiErrorHandler('rebuild message queue', error))
     },
-    [sessionId],
+    [replayQueue, sessionId],
+  )
+
+  const handleQueueOpenInSideChat = useCallback(
+    (_kind: 'steering' | 'followUp', _index: number) => {
+      if (!sessionId) return
+      paneLayoutStore.splitPane(paneId, 'horizontal', sessionId)
+    },
+    [paneId, sessionId],
   )
 
   // Timeline items from this session's keyed branch; home (no session)
@@ -1409,7 +1430,12 @@ export function PiChatPane({
       }
 
       if (command === 'export') {
-        const outputPath = args || `${(currentDirectoryRef.current || '.').replace(/[\\/]+$/, '')}/pi-session.html`
+        const baseDirectory = currentDirectoryRef.current || await resolveWorkspacePath()
+        if (!baseDirectory) {
+          report('error', 'Unable to resolve the active workspace for export', sid)
+          return false
+        }
+        const outputPath = resolveExportOutputPath(args, baseDirectory)
         const format = outputPath.toLowerCase().endsWith('.jsonl') ? 'jsonl' : 'html'
         await exportPiSession(sid, format, outputPath)
         report('ok', `Exported session (${format}) to ${outputPath}`, sid)
@@ -1738,6 +1764,7 @@ export function PiChatPane({
             onQueueBackToInput={handleQueueBackToInput}
             onQueueMoveMode={handleQueueMoveMode}
             onQueueClear={handleQueueClear}
+            onQueueOpenInSideChat={handleQueueOpenInSideChat}
             sessionId={sessionId}
             isStreaming={isStreaming}
             isCompacting={compacting}

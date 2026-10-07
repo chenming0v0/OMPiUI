@@ -1,6 +1,6 @@
 {
   "name": "ompiui",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "private": true,
   "type": "module",
   "description": "OMPiUI — third-party web/desktop client for the OMP (oh-my-pi) coding agent. PiUI visual shell + OMP RPC runtime.",

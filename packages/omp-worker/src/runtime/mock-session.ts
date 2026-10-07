@@ -709,9 +709,10 @@ export class MockPiSession implements SessionRuntime {
   }
 
   async sendUserMessage(text: string, images?: ImageInput[], deliverAs?: "steer" | "followUp"): Promise<void> {
-    if (deliverAs === "steer") return this.steer(text)
-    if (deliverAs === "followUp") return this.followUp(text)
-    if (this.streaming) return this.followUp(text)
+    if (this.streaming) {
+      if (deliverAs === "steer") return this.steer(text)
+      return this.followUp(text)
+    }
     return this.prompt(text)
   }
 
@@ -866,6 +867,7 @@ export class MockPiSession implements SessionRuntime {
     const cleared = { steering: [...this.steeringQueue], followUp: [...this.followUpQueue] }
     this.steeringQueue = []
     this.followUpQueue = []
+    this.emitEvent({ type: "queue_update", steering: [], followUp: [] })
     return cleared
   }
 
