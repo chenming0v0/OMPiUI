@@ -33,8 +33,12 @@
     "compacting": "正在压缩上下文…",
     "moveQueueToNext": "移到下一轮",
     "moveQueueToCurrent": "移到本轮",
+    "adjustQueueDirection": "调整方向",
     "clearQueueItem": "清除该条",
-    "editQueueItem": "修改（回到输入框）"
+    "editQueueItem": "编辑消息（回到输入框）",
+    "openQueueInSideChat": "在侧边聊天中打开",
+    "openQueueMenu": "打开排队消息菜单",
+    "queueOptions": "排队消息操作"
   },
   "emptyState": {
     "title": "开始新对话",

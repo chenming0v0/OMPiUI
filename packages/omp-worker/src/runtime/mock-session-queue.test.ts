@@ -33,4 +33,38 @@ describe("MockPiSession sendUserMessage queue", () => {
     assert.ok(events.includes("queue_update"))
     await session.abort()
   })
+
+  it("starts an idle message even when the caller selected follow-up delivery", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ompiui-mock-idle-"))
+    roots.push(root)
+    process.env.OMPIUI_MOCK_DIR = root
+    const session = await MockPiSession.open(root)
+
+    await session.sendUserMessage("idle follow-up", undefined, "followUp")
+    await session.waitForIdle()
+
+    const state = session.getState()
+    const queue = state.queue as { followUp?: string[] }
+    assert.deepEqual(queue.followUp, [])
+    assert.ok(Number(state.messageCount) >= 2)
+  })
+
+  it("clears queued messages and publishes an empty queue snapshot", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ompiui-mock-clear-"))
+    roots.push(root)
+    process.env.OMPIUI_MOCK_DIR = root
+    const session = await MockPiSession.open(root)
+    const events: Array<{ type?: string; followUp?: string[] }> = []
+    session.onPiEvent(event => events.push(event as { type?: string; followUp?: string[] }))
+
+    await session.prompt("first")
+    await session.sendUserMessage("one")
+    await session.sendUserMessage("two")
+    const cleared = await session.clearQueue() as { followUp?: string[] }
+
+    assert.deepEqual(cleared.followUp, ["one", "two"])
+    assert.deepEqual((session.getState().queue as { followUp?: string[] }).followUp, [])
+    assert.deepEqual(events.at(-1), { type: "queue_update", steering: [], followUp: [] })
+    await session.abort()
+  })
 })
