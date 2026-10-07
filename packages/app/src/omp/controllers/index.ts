@@ -369,9 +369,9 @@ export async function loadPiSessionRegistry(sessionId: string, signal?: AbortSig
 }
 
 /** Submit a serialized session command and wait for its result. */
-async function submitAndWait(submit: () => Promise<CommandRecord>, signal?: AbortSignal): Promise<JsonValue> {
+async function submitAndWait(submit: () => Promise<CommandRecord>, signal?: AbortSignal, timeoutMs = 30_000): Promise<JsonValue> {
   const submitted = await submit()
-  return transport.waitHostCommand(submitted.id, signal)
+  return transport.waitHostCommand(submitted.id, signal, timeoutMs)
 }
 
 /** Create a new native session from the current runtime (replacement). */
@@ -405,7 +405,7 @@ export async function exportPiSession(sessionId: string, format: 'html' | 'jsonl
   const submit = format === 'html'
     ? () => transport.exportPiSessionHtml(sessionId, outputPath, signal)
     : () => transport.exportPiSessionJsonl(sessionId, outputPath, signal)
-  return submitAndWait(submit, signal)
+  return submitAndWait(submit, signal, 15 * 60_000)
 }
 
 export async function waitForPiIdle(sessionId: string, signal?: AbortSignal): Promise<void> {

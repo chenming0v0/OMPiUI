@@ -33,8 +33,12 @@
     "compacting": "Compacting context…",
     "moveQueueToNext": "Move to next turn",
     "moveQueueToCurrent": "Move to current turn",
+    "adjustQueueDirection": "Adjust direction",
     "clearQueueItem": "Remove from queue",
-    "editQueueItem": "Edit (back to input)"
+    "editQueueItem": "Edit message (back to input)",
+    "openQueueInSideChat": "Open in side chat",
+    "openQueueMenu": "Open queued message menu",
+    "queueOptions": "Queued message actions"
   },
   "emptyState": {
     "title": "Start a new conversation",

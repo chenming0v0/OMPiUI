@@ -45,6 +45,11 @@ interface EntryRecord {
   [key: string]: JsonValue | undefined
 }
 
+interface QueuedUserMessage {
+  text: string
+  images?: ImageInput[]
+}
+
 // goal 续跑循环的护栏：单个目标最多自动续跑轮数 / settle 后等 entries 落地的宽限
 const GOAL_MAX_CONTINUATIONS = 50
 const GOAL_SETTLE_GRACE_MS = 1_000
@@ -127,6 +132,13 @@ export class OmpRpcSession implements SessionRuntime {
 
   private retryShadow: JsonObject = { phase: "idle" }
   private compactionShadow: JsonObject = { autoEnabled: true, operation: { type: "none" } }
+  // OMP 18.x 的 RPC 没有 clear_queue。用户消息先住在 worker，回合结束后
+  // 再逐条以普通 prompt 发送，因此编辑/删除不会留下已经发给 OMP 的幽灵消息。
+  private userQueue: { steering: QueuedUserMessage[]; followUp: QueuedUserMessage[] } = {
+    steering: [],
+    followUp: [],
+  }
+  private userQueueDrain: Promise<void> | undefined
   // OMPiUI 轻量 goal 运行时的注册表：RPC 模式的 OMP 不注册 goal 隐藏工具、
   // 也没有 goal RPC 命令（实测 18.3.x），目标状态只能住 worker 这里。
   // 未来 OMP 若在 RPC 透出真实 goal_updated，trackShadowState 的透传仍以
@@ -301,9 +313,12 @@ export class OmpRpcSession implements SessionRuntime {
           this.onGoalTurnEnd()
         }
         this.trackShadowState(frame)
-        this.emitPiEvent(frame)
+        // 原生队列可能包含内部 goal/扩展消息，UI 只展示可编辑的用户队列。
+        const queue = this.getUserQueueSnapshot()
+        this.emitPiEvent(type === "queue_update" ? { ...frame, steering: queue.steering, followUp: queue.followUp } : frame)
         if (type === "agent_end" || type === "turn_end") this.scheduleEntrySync()
         this.emitActivityIfChanged()
+        if (type === "agent_end") this.scheduleUserQueueDrain()
         return
       }
       // OMP 用 auto_compaction_*，Pi 前端监听 compaction_start/end —— 改名转发
@@ -327,6 +342,7 @@ export class OmpRpcSession implements SessionRuntime {
         this.emitPiEvent({ type: "agent_settled" })
         this.emitActivityIfChanged()
         this.onGoalSettled()
+        this.scheduleUserQueueDrain()
         return
       }
       case "prompt_result": {
@@ -474,6 +490,43 @@ export class OmpRpcSession implements SessionRuntime {
       default:
         break
     }
+  }
+
+  private getUserQueueSnapshot(): { steering: string[]; followUp: string[] } {
+    return {
+      steering: this.userQueue.steering.map(item => item.text),
+      followUp: this.userQueue.followUp.map(item => item.text),
+    }
+  }
+
+  private emitUserQueueSnapshot(): void {
+    const queue = this.getUserQueueSnapshot()
+    this.emitPiEvent({ type: "queue_update", ...queue })
+    this.emitActivityIfChanged()
+  }
+
+  private scheduleUserQueueDrain(): void {
+    if (this.closed || this.currentStreaming || this.userQueueDrain) return
+    const next = this.userQueue.steering[0] ?? this.userQueue.followUp[0]
+    if (!next) return
+
+    this.userQueueDrain = (async () => {
+      try {
+        // 不携带 streamingBehavior：此时会话已空闲，普通 prompt 才会真正
+        // 开始新回合。等待 prompt 被 OMP 接受后再从可编辑队列中移除。
+        await this.prompt(next.text, next.images)
+        const steeringIndex = this.userQueue.steering.indexOf(next)
+        if (steeringIndex >= 0) this.userQueue.steering.splice(steeringIndex, 1)
+        const followUpIndex = this.userQueue.followUp.indexOf(next)
+        if (followUpIndex >= 0) this.userQueue.followUp.splice(followUpIndex, 1)
+        this.emitUserQueueSnapshot()
+      } catch (error) {
+        // 保留失败消息，静默丢弃会重现“发送成功但消息消失”的问题。
+        console.error("Failed to drain queued user message:", error)
+      } finally {
+        this.userQueueDrain = undefined
+      }
+    })()
   }
 
   private emitActivityIfChanged(): void {
@@ -706,8 +759,7 @@ export class OmpRpcSession implements SessionRuntime {
       isRetrying: this.retryShadow.phase === "waiting" || this.retryShadow.phase === "running",
       retryAttempt: typeof this.retryShadow.attempt === "number" ? this.retryShadow.attempt : 0,
       queue: {
-        steering: [],
-        followUp: [],
+        ...this.getUserQueueSnapshot(),
         steeringMode: typeof native.steeringMode === "string" ? native.steeringMode : "one-at-a-time",
         followUpMode: typeof native.followUpMode === "string" ? native.followUpMode : "one-at-a-time",
       },
@@ -827,7 +879,10 @@ export class OmpRpcSession implements SessionRuntime {
   async prompt(text: string, images?: ImageInput[], options: { expandPromptTemplates?: boolean; streamingBehavior?: "steer" | "followUp" } = {}): Promise<void> {
     await this.abortInFlight
     const command: JsonObject = { type: "prompt", message: text }
-    if (options.streamingBehavior) command.streamingBehavior = options.streamingBehavior
+    // OMP only accepts streamingBehavior while a turn is active. Treat a
+    // stale follow-up/steer hint on an idle session as a normal prompt so the
+    // message starts a turn instead of being parked forever.
+    if (options.streamingBehavior && this.currentStreaming) command.streamingBehavior = options.streamingBehavior
     if (images?.length) command.images = images.map(image => ({ type: "image", data: image.data, mimeType: image.mimeType }))
     try {
       unwrapResponse(await this.client.request(command, 30_000))
@@ -845,9 +900,17 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async sendUserMessage(text: string, images?: ImageInput[], deliverAs?: "steer" | "followUp"): Promise<void> {
-    // Native prompt decides atomically whether to start or queue. Direct
-    // follow_up/steer can leave an idle session with a never-consumed message.
-    await this.prompt(text, images, { streamingBehavior: deliverAs ?? "followUp" })
+    // An idle session must start a normal prompt. Forcing followUp here makes
+    // OMP acknowledge the RPC but place the text in a queue with no active turn
+    // to consume it — the exact "sent and swallowed" failure seen in the UI.
+    if (!this.currentStreaming) {
+      await this.prompt(text, images)
+      return
+    }
+
+    const target = deliverAs === "steer" ? this.userQueue.steering : this.userQueue.followUp
+    target.push({ text, images })
+    this.emitUserQueueSnapshot()
   }
 
   // ---------------------------------------------------------------- goal
@@ -985,8 +1048,10 @@ export class OmpRpcSession implements SessionRuntime {
     const flight = (async () => {
       const result = unwrapResponse(await this.client.request({ type: "abort" }, 30_000))
       this.currentStreaming = false
+      this.userQueue = { steering: [], followUp: [] }
       this.retryShadow = { phase: "idle" }
       this.liveMessage = undefined
+      this.emitUserQueueSnapshot()
       this.emitActivityIfChanged()
       await this.syncEntriesNow()
       this.emitPiEvent({ type: "agent_settled" })
@@ -1049,6 +1114,7 @@ export class OmpRpcSession implements SessionRuntime {
     this.eventSequence = 0
     this.retryShadow = { phase: "idle" }
     this.compactionShadow = { autoEnabled: true, operation: { type: "none" } }
+    this.userQueue = { steering: [], followUp: [] }
     this.extensionUi.cancelAll("session_replaced")
   }
 
@@ -1117,8 +1183,10 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async clearQueue(): Promise<JsonValue | undefined> {
-    // OMP RPC 无独立 clearQueue：返回空结果（abort 会清队列）
-    return { cleared: 0 }
+    const cleared = this.getUserQueueSnapshot()
+    this.userQueue = { steering: [], followUp: [] }
+    this.emitUserQueueSnapshot()
+    return cleared
   }
 
   async compact(customInstructions?: string): Promise<JsonValue | undefined> {
@@ -1217,6 +1285,7 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async exportHtml(outputPath: string): Promise<JsonValue | undefined> {
+    await this.waitForIdle()
     const response = await this.client.request({ type: "export_html", outputPath }, 120_000)
     const data = unwrapResponse<JsonValue>(response)
     return toJson({ path: isJsonObject(data) && typeof data.path === "string" ? data.path : outputPath })
@@ -1225,6 +1294,8 @@ export class OmpRpcSession implements SessionRuntime {
   async exportJsonl(outputPath: string): Promise<JsonValue | undefined> {
     // 会话文件本身就是 JSONL：直接复制
     if (!this.sessionFile) throw Object.assign(new Error("session file not persisted yet"), { code: "NOT_FOUND" })
+    await this.waitForIdle()
+    await this.syncEntriesNow()
     copyFileSync(this.sessionFile, outputPath)
     return { path: outputPath }
   }
