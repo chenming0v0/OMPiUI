@@ -13,13 +13,15 @@
 
 import { serverStore } from '../store/serverStore'
 
+const SERVER_STORAGE_PREFIX = 'srv:'
+
 /**
  * 生成带 serverId 前缀的 localStorage key
  * 格式: `srv:{serverId}:{key}`
  */
 function makeKey(key: string): string {
   const serverId = serverStore.getActiveServerId()
-  return `srv:${serverId}:${key}`
+  return `${SERVER_STORAGE_PREFIX}${serverId}:${key}`
 }
 
 export const serverStorage = {
@@ -81,14 +83,45 @@ export interface PerServerStorageBackup {
   entries: Record<string, string>
 }
 
-const SERVER_STORAGE_PREFIX = 'ompiui-srv:'
+// Preserve the namespace accepted by older schema-4 backups. Do not rename
+// these opaque entries: they were never written by serverStorage.
+const LEGACY_BACKUP_PREFIX = 'ompiui-srv:'
+
+// Only include settings actually owned by serverStorage. A blanket `srv:` (or
+// `ompiui-`) match would also export unrelated data and future credential keys.
+// Add new per-server settings here deliberately when introducing their writer.
+const BACKUP_SETTING_KEYS = new Set([
+  'ompiui-last-directory',
+  'ompiui-saved-directories',
+  'ompiui-recent-projects',
+  'ompiui-path-mode',
+  'ompiui-detected-path-style',
+  'ompiui-selected-project-id',
+  'ompiui-hidden-model-keys',
+  'ompiui-pinned-sessions',
+  'ompiui-model-usage-stats',
+  'ompiui-model-variant-prefs',
+  'ompiui-model-pinned',
+  'ompiui-session-model-selection',
+  'ompiui-preferred-model-key',
+  'ompiui-terminal-shell',
+  'ompiui-remote-tab',
+])
+
+function isBackupKey(key: string): boolean {
+  if (key.startsWith(LEGACY_BACKUP_PREFIX)) return true
+  if (!key.startsWith(SERVER_STORAGE_PREFIX)) return false
+  const separator = key.indexOf(':', SERVER_STORAGE_PREFIX.length)
+  const serverId = key.slice(SERVER_STORAGE_PREFIX.length, separator)
+  return separator !== -1 && /^[^:\s]+$/.test(serverId) && BACKUP_SETTING_KEYS.has(key.slice(separator + 1))
+}
 
 export function exportPerServerStorageBackup(): PerServerStorageBackup {
   const entries: Record<string, string> = {}
 
   for (let index = 0; index < localStorage.length; index += 1) {
     const key = localStorage.key(index)
-    if (!key || !key.startsWith(SERVER_STORAGE_PREFIX)) continue
+    if (!key || !isBackupKey(key)) continue
     const value = localStorage.getItem(key)
     if (value !== null) {
       entries[key] = value
@@ -105,7 +138,7 @@ export function importPerServerStorageBackup(raw: unknown): void {
   const keysToRemove: string[] = []
   for (let index = 0; index < localStorage.length; index += 1) {
     const key = localStorage.key(index)
-    if (key && key.startsWith(SERVER_STORAGE_PREFIX)) {
+    if (key && isBackupKey(key)) {
       keysToRemove.push(key)
     }
   }
@@ -115,7 +148,7 @@ export function importPerServerStorageBackup(raw: unknown): void {
   }
 
   for (const [key, value] of Object.entries(entries as Record<string, unknown>)) {
-    if (key.startsWith(SERVER_STORAGE_PREFIX) && typeof value === 'string') {
+    if (isBackupKey(key) && typeof value === 'string') {
       localStorage.setItem(key, value)
     }
   }

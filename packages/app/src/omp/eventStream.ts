@@ -438,7 +438,7 @@ class PiEventStream {
         // 磁盘数据和 pane 绑定都不变，不做替换清理，只刷新会话列表。
         // 若按真实替换处理，paneLayoutStore.remapSession 会把所有绑定源
         // session 的 pane 全部切走（分屏互相串扰）。
-        window.dispatchEvent(new CustomEvent('omompiui:sessions-changed'))
+        window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
         return
       }
       // Runtime replacement (fork/new/import): the worker now owns a
@@ -452,11 +452,11 @@ class PiEventStream {
       piBranchStore.clear(payload.sourceSessionId)
       piSessionStateStore.clear(payload.sourceSessionId)
       piCommandStore.clearSession(payload.sourceSessionId)
-      window.dispatchEvent(new CustomEvent('omompiui:session-replaced', { detail: payload }))
+      window.dispatchEvent(new CustomEvent('ompiui:session-replaced', { detail: payload }))
     }
     // 事件驱动刷新：SessionContext/useSessions 订阅 ompiui:sessions-changed 会
     // 各自重新拉列表（并更新 piSessionInfoStore），这里不需要再直接拉一次
-    window.dispatchEvent(new CustomEvent('omompiui:sessions-changed'))
+    window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
   }
 
   private handleExtensionUiEvent(sessionId: string, event: PiExtensionUiEvent): void {
@@ -676,7 +676,7 @@ class PiEventStream {
         .then(() => refreshPiBranch(stream.id).catch(() => undefined))
       this.scheduleStateRefresh(stream.id)
     } else if (stream.kind === 'server') {
-      window.dispatchEvent(new CustomEvent('omompiui:sessions-changed'))
+      window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
     } else if (stream.kind === 'provider') {
       receiveProviderAuthUpdated()
     } else if (stream.kind === 'workspace') {

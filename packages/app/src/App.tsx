@@ -41,6 +41,7 @@ import { trackPiSession } from './omp/ompSessionIndex'
 import { piEventStream } from './omp/eventStream.js'
 import { useSessionContext } from './contexts/useSessionContext'
 import { useCloseServiceDialog } from './hooks/useCloseServiceDialog'
+import { useSessionReplacement } from './hooks/useSessionReplacement'
 
 const SettingsDialog = lazy(() =>
   import('./features/settings/SettingsDialog').then(module => ({ default: module.SettingsDialog })),
@@ -135,19 +136,7 @@ function App() {
     }
   }, [activeDirectories])
 
-  // Runtime replacement (fork/new/import): panes follow the new session id
-  useEffect(() => {
-    const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ sourceSessionId?: string; targetSessionId?: string; targetCwd?: string }>).detail
-      if (!detail?.sourceSessionId || !detail.targetSessionId) return
-      paneLayoutStore.remapSession(detail.sourceSessionId, detail.targetSessionId)
-      if (routeSessionId === detail.sourceSessionId) {
-        navigateRouteToSession(detail.targetSessionId, detail.targetCwd ?? routeDirectory)
-      }
-    }
-    window.addEventListener('ompiui:session-replaced', handler)
-    return () => window.removeEventListener('ompiui:session-replaced', handler)
-  }, [routeSessionId, routeDirectory, navigateRouteToSession])
+  useSessionReplacement(routeSessionId, routeDirectory, navigateRouteToSession)
 
   // URL -> focused pane session
   useEffect(() => {

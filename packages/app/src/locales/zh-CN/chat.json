@@ -55,7 +55,10 @@
   "inputBox": {
     "dropFilesHere": "拖放文件到此处",
     "replyToAgentMobile": "回复 Agent...",
-    "replyToAgent": "回复 Agent（输入 @ 提及，/ 执行命令）"
+    "replyToAgent": "回复 Agent（输入 @ 提及，/ 执行命令）",
+    "readOnlySession": "此会话是只读的。原生 TUI 保留其历史记录；继续操作请在新会话中进行。",
+    "copyTuiAndContinue": "复制 TUI 会话并继续",
+    "startNewSession": "启动新会话"
   },
   "goalBar": {
     "setGoal": "设定目标",

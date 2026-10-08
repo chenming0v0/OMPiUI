@@ -4,6 +4,7 @@ import { serverStore } from "../store/serverStore"
 import { clearPiSessionIndex } from "./ompSessionIndex"
 import { piBranchStore, piModelsStore, piSessionStateStore } from "./state/index.js"
 import { piSessionInfoStore } from "./ompSessionInfoStore"
+import { ompSubagentStore } from "./ompSubagentStore"
 import { extensionUiStore } from "./extensionUiStore"
 import { extensionTuiStore } from "./extensionTuiStore"
 import { commandFeedbackStore } from "./commandFeedbackStore"
@@ -87,6 +88,7 @@ export function installPiBackendServerSwitch(): void {
     piSessionStateStore.clearAll()
     piModelsStore.clear()
     piSessionInfoStore.clear()
+    ompSubagentStore.clearAll()
     extensionUiStore.reset()
     extensionTuiStore.reset()
     commandFeedbackStore.reset()

@@ -90,6 +90,7 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
   const [projectLoading, setProjectLoading] = useState(false)
   const [loadingModes, setLoadingModes] = useState({ git: false, branch: false, staged: false, unstaged: false })
   const [loadedModes, setLoadedModes] = useState({ git: false, branch: false, staged: false, unstaged: false })
+  const [diffGenerations, setDiffGenerations] = useState({ git: 0, branch: 0, staged: 0, unstaged: 0 })
   const [gitDiffs, setGitDiffs] = useState<ChangeDiff[]>([])
   const [branchDiffs, setBranchDiffs] = useState<ChangeDiff[]>([])
   const [stagedDiffs, setStagedDiffs] = useState<ChangeDiff[]>([])
@@ -414,6 +415,8 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
         setError(t('sessionChanges.failedToLoad'))
       } finally {
         if (requestId === diffRequestIdRef.current[mode]) {
+          // Even an unchanged list must restart a patch invalidated by this refresh.
+          setDiffGenerations(prev => ({ ...prev, [mode]: requestId }))
           setLoadingModes(prev => ({ ...prev, [mode]: false }))
         }
         if (diffAbortRef.current[mode] === controller) delete diffAbortRef.current[mode]
@@ -636,8 +639,10 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
 
   // 获取选中的 diff 数据
   const selectedDiff = selectedFile ? diffs.find(d => d.file === selectedFile) : null
+  const diffGeneration = diffGenerations[changeMode]
+  const diffLoading = loadingModes[changeMode]
   useEffect(() => {
-    if (!selectedFile || selectedDiff?.patch !== undefined || selectedDiff?.binary) return
+    if (diffLoading || !selectedFile || !selectedDiff || selectedDiff.patch !== undefined || selectedDiff.binary) return
     const controller = new AbortController()
     const listRequestId = diffRequestIdRef.current[changeMode]
     void (async () => {
@@ -655,10 +660,10 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
         else setUnstagedDiffs(apply)
       })
       .catch(error => {
-        if (!controller.signal.aborted) sessionErrorHandler('load file diff', error)
+        if (!controller.signal.aborted && diffRequestIdRef.current[changeMode] === listRequestId) sessionErrorHandler('load file diff', error)
       })
     return () => controller.abort()
-  }, [changeMode, directory, selectedDiff?.binary, selectedDiff?.patch, selectedFile])
+  }, [changeMode, diffGeneration, diffLoading, directory, selectedDiff, selectedFile])
   const previewDiffs = useMemo(
     () =>
       openDiffFiles

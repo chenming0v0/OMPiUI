@@ -14,6 +14,7 @@ import { request as httpRequest, type ClientRequest, type IncomingMessage } from
 import type { Duplex } from "node:stream"
 import { WebSocket } from "ws"
 import type { TunnelStatus } from "@ompiui/protocol"
+import { TUNNEL_FORWARDING_HEADER } from "../host/security.ts"
 import {
   CLOSE_DUPLICATE,
   CLOSE_RATE_LIMITED,
@@ -39,6 +40,8 @@ export interface TunnelClientOptions {
   /** 本机 OMPiUI server 端口（127.0.0.1 上的 loopback）。 */
   localPort: number
   localHost?: string
+  /** Per-start secret for the local HTTP hop only; never sent to the relay. */
+  tunnelForwardingToken?: string
   onStatus?: (status: TunnelStatus) => void
 }
 
@@ -61,6 +64,7 @@ export class TunnelClient {
   private readonly tunnelId: string
   private readonly localPort: number
   private readonly localHost: string
+  private readonly tunnelForwardingToken: string | undefined
   private readonly onStatus: (status: TunnelStatus) => void
 
   private ws: WebSocket | null = null
@@ -80,6 +84,7 @@ export class TunnelClient {
     this.tunnelId = options.tunnelId?.trim() || "ompiui"
     this.localPort = options.localPort
     this.localHost = options.localHost ?? "127.0.0.1"
+    this.tunnelForwardingToken = options.tunnelForwardingToken
     this.onStatus = options.onStatus ?? (() => undefined)
   }
 
@@ -163,7 +168,9 @@ export class TunnelClient {
   private scheduleReconnect(reason: string | null): void {
     if (this.stopped) return
     this.reconnectAttempts += 1
-    this.lastError = reason
+    // Generic closes (notably 1006 after a failed HTTP/WS handshake) carry no
+    // diagnosis. Keep the useful error until a new cause or a successful ready.
+    if (reason) this.lastError = reason
     this.setStatus("reconnecting", null)
     const delay = Math.min(RECONNECT_BASE_MS * 2 ** Math.min(this.reconnectAttempts, 10), RECONNECT_MAX_MS)
       + Math.floor(Math.random() * 500)
@@ -273,6 +280,12 @@ export class TunnelClient {
     const ws = this.ws
     if (!ws) return
     const headers = { ...frame.h }
+    // Public clients can supply any spelling of this header. Never replay it,
+    // even when this TunnelClient has no internal forwarding credentials.
+    for (const name of Object.keys(headers)) {
+      if (name.toLowerCase() === TUNNEL_FORWARDING_HEADER) delete headers[name]
+    }
+    if (this.tunnelForwardingToken) headers[TUNNEL_FORWARDING_HEADER] = this.tunnelForwardingToken
     const isUpgrade = typeof headers.upgrade === "string" && headers.upgrade.length > 0
     const conn: TunnelConn = { kind: isUpgrade ? "upgrade" : "request" }
     const sink = new BodySink(ws)

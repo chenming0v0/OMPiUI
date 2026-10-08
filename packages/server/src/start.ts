@@ -1,5 +1,6 @@
 import { PROTOCOL_VERSION } from "@ompiui/protocol"
 import { getDriverMode } from "@ompiui/omp-worker"
+import { randomBytes } from "node:crypto"
 import { existsSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -204,6 +205,9 @@ export async function startOmpiUiServer(
   // 隧道客户端在 listen 成功后启动；它的公网入口（relay 上报）要喂给
   // Origin 白名单和 share 链接，所以用可变引用 + getter 动态取。
   let tunnelClient: TunnelClient | undefined
+  // Never persist, expose in status, or send to the relay/worker. Authenticate
+  // only the embedded client's local forwarding hop for this server lifetime.
+  const tunnelForwardingToken = config.tunnel ? randomBytes(32).toString("hex") : undefined
   const getTunnelStatus = (): TunnelStatus | null => {
     if (tunnelClient) return tunnelClient.getStatus()
     if (!config.tunnel) return null
@@ -226,6 +230,7 @@ export async function startOmpiUiServer(
     getPublicBaseUrl: () => getTunnelStatus()?.publicUrl ?? null,
     getTunnelStatus,
     pairing,
+    tunnelForwardingToken,
     tailscale,
     staticRoot: config.webRoot ?? undefined,
     onShutdown: () => shutdownHook?.(),
@@ -311,6 +316,7 @@ export async function startOmpiUiServer(
       key: config.tunnel.key,
       tunnelId: config.tunnel.id,
       localPort: config.port,
+      tunnelForwardingToken,
       onStatus: status => {
         if (status.state === "connected" && status.publicUrl) {
           console.info(`[ompiui-tunnel] public entry ${status.publicUrl} (relay ${status.relayUrl}, id ${status.tunnelId})`)

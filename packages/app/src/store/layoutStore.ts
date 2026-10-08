@@ -949,6 +949,11 @@ export class LayoutStore {
       sessions.map(session => {
         const previous = existingTerminalById.get(session.id)
         const saved = savedLayout?.sessions?.[session.id]
+        // buffer 与 cursor 必须成对恢复：没有本地 buffer 时绝不能退回服务端
+        // 的 session.cursor（那是当前末尾），否则 attach 从末尾开始，已有输出
+        // 全部被跳过。省略 cursor 让服务端从最早保留位置重放。
+        const buffer = saved?.buffer ?? previous?.buffer
+        const cursor = buffer ? saved?.cursor ?? previous?.cursor : undefined
         const terminal: TerminalTab = {
           id: session.id,
           title: saved?.title ?? previous?.title ?? session.title,
@@ -957,9 +962,9 @@ export class LayoutStore {
           shell: session.shell,
           cwd: session.cwd,
           status: session.status === 'running' ? (previous?.status === 'connected' ? 'connected' : 'disconnected') : 'exited',
-          buffer: saved?.buffer ?? previous?.buffer,
+          buffer,
           scrollY: saved?.scrollY ?? previous?.scrollY,
-          cursor: saved?.cursor ?? previous?.cursor ?? session.cursor,
+          cursor,
           rows: saved?.rows ?? previous?.rows,
           cols: saved?.cols ?? previous?.cols
         }

@@ -2,7 +2,7 @@
 // DirectoryContext - 管理当前工作目录
 // ============================================
 
-import { useState, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react'
+import { useState, useCallback, useEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react'
 import i18n from '../i18n'
 import { useRouter } from '../hooks/useRouter'
 import { normalizeToForwardSlash, getDirectoryName, isSameDirectory, serverStorage } from '../utils'
@@ -10,6 +10,7 @@ import { layoutStore, useLayoutStore } from '../store/layoutStore'
 import { isTauri } from '../utils/tauri'
 import { DirectoryContext, type DirectoryContextValue, type SavedDirectory } from './DirectoryContext.shared'
 import { hasUnsavedFileChanges } from '../store/unsavedFileStore'
+import { serverStore } from '../store/serverStore'
 
 const STORAGE_KEY_SAVED = 'ompiui-saved-directories'
 const STORAGE_KEY_RECENT = 'ompiui-recent-projects'
@@ -47,6 +48,13 @@ function readRecentProjects(): RecentProjects {
   )
 }
 
+const subscribeServer = (listener: () => void) => serverStore.subscribe(listener)
+const getServerId = () => serverStore.getActiveServerId()
+
+function readProjectState(serverId: string) {
+  return { serverId, savedDirectories: readSavedDirectories(), recentProjects: readRecentProjects() }
+}
+
 export function DirectoryProvider({ children }: { children: ReactNode }) {
   // 从 URL 获取 directory（替代 localStorage）
   const { directory: urlDirectory, setDirectory: setUrlDirectory } = useRouter()
@@ -54,31 +62,48 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
   // 从 layoutStore 获取 sidebarExpanded
   const { sidebarExpanded } = useLayoutStore()
 
-  const [savedDirectories, setSavedDirectories] = useState<SavedDirectory[]>(readSavedDirectories)
+  const serverId = useSyncExternalStore(subscribeServer, getServerId, getServerId)
+  const [projects, setProjects] = useState(() => readProjectState(serverId))
+  // Reset both collections before children render; an effect would expose the
+  // previous server's projects for one commit (and could persist them to this one).
+  if (projects.serverId !== serverId) {
+    setProjects(readProjectState(serverId))
+  }
+  const { savedDirectories, recentProjects } = projects
 
-  const [recentProjects, setRecentProjects] = useState<RecentProjects>(readRecentProjects)
+  const setSavedDirectories = useCallback((update: (previous: SavedDirectory[]) => SavedDirectory[]) => {
+    if (serverId !== getServerId()) return
+    setProjects(previous => previous.serverId === serverId
+      ? { ...previous, savedDirectories: update(previous.savedDirectories) }
+      : previous)
+  }, [serverId])
 
-
-  // 保存 savedDirectories 到 per-server storage
+  // The active server can change after render, before passive effects flush.
+  // Never let an old render write through the dynamically scoped storage API.
   useEffect(() => {
+    if (projects.serverId !== getServerId()) return
     serverStorage.setJSON(STORAGE_KEY_SAVED, savedDirectories)
-  }, [savedDirectories])
+  }, [projects.serverId, savedDirectories])
 
-  // 保存 recentProjects 到 per-server storage
   useEffect(() => {
+    if (projects.serverId !== getServerId()) return
     serverStorage.setJSON(STORAGE_KEY_RECENT, recentProjects)
-  }, [recentProjects])
+  }, [projects.serverId, recentProjects])
 
   // 设置当前目录（更新 URL + 记录最近使用）
   const setCurrentDirectory = useCallback(
     (directory: string | undefined) => {
+      if (serverId !== getServerId()) return
       if (directory !== urlDirectory && hasUnsavedFileChanges() && !window.confirm(i18n.t('components:fileExplorer.discardUnsaved'))) return
       setUrlDirectory(directory)
       if (directory) {
-        setRecentProjects(prev => ({ ...prev, [directory]: Date.now() }))
+        const lastUsedAt = Date.now()
+        setProjects(previous => previous.serverId === serverId
+          ? { ...previous, recentProjects: { ...previous.recentProjects, [directory]: lastUsedAt } }
+          : previous)
       }
     },
-    [setUrlDirectory, urlDirectory],
+    [setUrlDirectory, urlDirectory, serverId],
   )
 
   // 添加目录
@@ -111,7 +136,7 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
       setSavedDirectories(prev => [...prev, newDir])
       setCurrentDirectory(normalized)
     },
-    [savedDirectories, setCurrentDirectory],
+    [savedDirectories, setCurrentDirectory, setSavedDirectories],
   )
 
   // 移除目录
@@ -123,7 +148,7 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
         setCurrentDirectory(undefined)
       }
     },
-    [urlDirectory, setCurrentDirectory],
+    [urlDirectory, setCurrentDirectory, setSavedDirectories],
   )
 
   const reorderDirectories = useCallback((draggedPath: string, targetPath: string) => {
@@ -147,7 +172,7 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
       next.splice(targetIndex, 0, draggedDirectory)
       return next
     })
-  }, [])
+  }, [setSavedDirectories])
 
   // Tauri: 启动时获取 CLI 传入的目录 + 监听后续 open-directory 事件
   // 用 ref 持有最新的 addDirectory 避免 stale closure

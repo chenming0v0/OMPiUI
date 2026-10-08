@@ -15,7 +15,12 @@ import { OmpRpcClient, unwrapResponse } from "./rpc-client.js"
  */
 export class OmpProviderAuth implements ProviderAuthGateway {
   private readonly listeners = new Set<(event: ProviderAuthEvent) => void>()
-  private readonly flows = new Map<string, { providerId: string; client: OmpRpcClient }>()
+  private readonly flows = new Map<string, {
+    providerId: string
+    client: OmpRpcClient
+    event?: ProviderAuthEvent
+    notifications: JsonValue[]
+  }>()
   private boundClient: OmpRpcClient | undefined
   private invalidatePending = false
 
@@ -27,6 +32,12 @@ export class OmpProviderAuth implements ProviderAuthGateway {
   }
 
   private emit(event: ProviderAuthEvent): void {
+    const flow = this.flows.get(event.flowId)
+    if (flow) {
+      if (event.type === "notification") flow.notifications.push(event.event)
+      // A notification must not hide an unanswered prompt.
+      if (event.type !== "notification" || flow.event?.type !== "prompt") flow.event = event
+    }
     for (const listener of this.listeners) listener(event)
   }
 
@@ -96,7 +107,14 @@ export class OmpProviderAuth implements ProviderAuthGateway {
   }
 
   listActiveFlows(): JsonValue {
-    return [...this.flows.keys()].map(flowId => ({ flowId }))
+    // Only outbound UI state is recoverable. Never retain responses/credentials
+    // or expose the RPC client; detach snapshots from the live flow state.
+    return structuredClone([...this.flows].map(([flowId, flow]) => ({
+      flowId,
+      providerId: flow.providerId,
+      event: flow.event ?? null,
+      notifications: flow.notifications,
+    })))
   }
 
   async listModels(): Promise<JsonValue> {
@@ -109,7 +127,7 @@ export class OmpProviderAuth implements ProviderAuthGateway {
   async start(providerId: string, _authType: "api_key" | "oauth"): Promise<JsonValue> {
     const client = await this.ensureBound()
     const flowId = `omp-login-${randomUUID()}`
-    this.flows.set(flowId, { providerId, client })
+    this.flows.set(flowId, { providerId, client, notifications: [] })
     // login 是异步流程：立即返回 flowId，结果经 provider.auth 事件通知
     void client.request({ type: "login", providerId }, 300_000).then(response => {
       this.finishFlow(flowId)
@@ -127,7 +145,9 @@ export class OmpProviderAuth implements ProviderAuthGateway {
 
   respond(flowId: string, promptId: string, value: string): void {
     const flow = this.flows.get(flowId)
-    if (!flow) return
+    if (flow?.event?.type !== "prompt" || flow.event.promptId !== promptId) return
+    // Clear before writing: the next prompt can arrive during the response.
+    flow.event = undefined
     // promptId 即 OMP extension_ui_request 帧 id，原样写回应答帧
     flow.client.writeExtensionUiResponse({ type: "extension_ui_response", id: promptId, value })
   }

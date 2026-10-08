@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import type { JsonObject, ProviderAuthEvent } from '@ompiui/protocol'
+import { isJsonObject } from '@ompiui/protocol'
 
 /** packages.progress payload (worker-side emission is not wired yet). */
 export type PackageProgress = JsonObject & { commandId: string }
@@ -29,6 +30,44 @@ let snapshot: ManagementEventSnapshot = {
 const listeners = new Set<() => void>()
 const streamListeners = new Set<() => void>()
 const providerIds = new Set<string>()
+// Each recovery observes only flows not changed since that request began.
+// Keep dismissals here too, so a late snapshot cannot resurrect a closed flow.
+let authRecovery = new Set<string>()
+
+export function beginProviderAuthRecovery(): Set<string> {
+  authRecovery = new Set()
+  return authRecovery
+}
+
+export function restoreProviderAuthFlows(raw: unknown, recovery: Set<string>): void {
+  if (recovery !== authRecovery || !Array.isArray(raw)) return
+  const flows = { ...snapshot.flows }
+  const restoredProviders: string[] = []
+  for (const item of raw) {
+    if (!isJsonObject(item) || typeof item.flowId !== 'string' || typeof item.providerId !== 'string') continue
+    if (recovery.has(item.flowId)) continue
+    const event = item.event
+    if (event != null && (!isJsonObject(event) || event.flowId !== item.flowId || event.providerId !== item.providerId)) continue
+    if (event != null && !(event.type === 'notification' || (
+      event.type === 'prompt' && typeof event.promptId === 'string' && isJsonObject(event.prompt)
+    ))) continue
+    flows[item.flowId] = {
+      flowId: item.flowId,
+      providerId: item.providerId,
+      sessionId: typeof item.sessionId === 'string' ? item.sessionId : undefined,
+      event: event == null ? undefined : event as ProviderAuthEvent,
+      notifications: Array.isArray(item.notifications) ? item.notifications : [],
+    }
+    restoredProviders.push(item.providerId)
+  }
+  emit({ ...snapshot, flows })
+  trackManagementProviders(restoredProviders)
+}
+
+export function resetProviderAuthFlows(): void {
+  beginProviderAuthRecovery()
+  emit({ ...snapshot, flows: {} })
+}
 
 function emit(next: ManagementEventSnapshot) {
   snapshot = next
@@ -68,6 +107,7 @@ export function subscribeManagementStreams(listener: () => void): () => void {
 }
 
 export function registerProviderAuthFlow(flowId: string, providerId: string, sessionId?: string): void {
+  authRecovery.add(flowId)
   const current = snapshot.flows[flowId]
   emit({
     ...snapshot,
@@ -85,6 +125,7 @@ export function registerProviderAuthFlow(flowId: string, providerId: string, ses
 }
 
 export function receiveProviderAuthEvent(event: ProviderAuthEvent, sessionId?: string): void {
+  authRecovery.add(event.flowId)
   const current = snapshot.flows[event.flowId]
   emit({
     ...snapshot,
@@ -94,7 +135,7 @@ export function receiveProviderAuthEvent(event: ProviderAuthEvent, sessionId?: s
         flowId: event.flowId,
         providerId: event.providerId,
         sessionId: sessionId ?? current?.sessionId,
-        event,
+        event: event.type === 'notification' && current?.event?.type === 'prompt' ? current.event : event,
         notifications: event.type === 'notification'
           ? [...(current?.notifications ?? []), event.event]
           : current?.notifications ?? [],
@@ -104,15 +145,21 @@ export function receiveProviderAuthEvent(event: ProviderAuthEvent, sessionId?: s
 }
 
 export function dismissProviderAuthFlow(flowId: string): void {
+  authRecovery.add(flowId)
   if (!snapshot.flows[flowId]) return
   const flows = { ...snapshot.flows }
   delete flows[flowId]
   emit({ ...snapshot, flows })
 }
 
-export function clearProviderAuthEvent(flowId: string): void {
+export function clearProviderAuthEvent(flowId: string, expectedEvent: ProviderAuthEvent): void {
   const current = snapshot.flows[flowId]
-  if (!current) return
+  if (!current?.event) return
+  const matches = expectedEvent.type === 'prompt'
+    ? current.event.type === 'prompt' && current.event.promptId === expectedEvent.promptId
+    : current.event === expectedEvent
+  if (!matches) return
+  authRecovery.add(flowId)
   emit({
     ...snapshot,
     flows: { ...snapshot.flows, [flowId]: { ...current, event: undefined } },
@@ -139,6 +186,7 @@ export function receiveResourceRevision(workspacePath: string | undefined, revis
 }
 
 export function resetManagementEvents(): void {
+  beginProviderAuthRecovery()
   providerIds.clear()
   emit({ flows: {}, packageProgress: {}, resourceRevisions: {}, providerRevision: 0 })
   streamListeners.forEach(listener => listener())

@@ -46,13 +46,13 @@ describe('handleSessionsUpdated replacement semantics', () => {
   beforeEach(() => {
     replacedEvents = []
     changedCount = 0
-    window.addEventListener('omompiui:session-replaced', onReplaced)
-    window.addEventListener('omompiui:sessions-changed', onChanged)
+    window.addEventListener('ompiui:session-replaced', onReplaced)
+    window.addEventListener('ompiui:sessions-changed', onChanged)
   })
 
   afterEach(() => {
-    window.removeEventListener('omompiui:session-replaced', onReplaced)
-    window.removeEventListener('omompiui:sessions-changed', onChanged)
+    window.removeEventListener('ompiui:session-replaced', onReplaced)
+    window.removeEventListener('ompiui:sessions-changed', onChanged)
     piBranchStore.clear('session-a')
     piSessionStateStore.clear('session-a')
     vi.restoreAllMocks()

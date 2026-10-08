@@ -1,11 +1,45 @@
 import assert from "node:assert/strict"
 import type { IncomingMessage } from "node:http"
 import { describe, it } from "node:test"
-import { requestHasAllowedOrigin } from "./security.ts"
+import { pairingClientKey, requestHasAllowedOrigin, TUNNEL_FORWARDING_HEADER } from "./security.ts"
 
 function reqWith(headers: Record<string, string>): IncomingMessage {
   return { headers } as unknown as IncomingMessage
 }
+
+describe("pairingClientKey", () => {
+  const token = "private-per-start-token"
+  const request = (peer: string, headers: IncomingMessage["headers"]): IncomingMessage =>
+    ({ socket: { remoteAddress: peer }, headers }) as IncomingMessage
+
+  it("requires both loopback and the private marker, not just forwarding headers", () => {
+    const headers = { [TUNNEL_FORWARDING_HEADER]: token, "x-forwarded-for": "198.51.100.7" }
+    for (const peer of ["127.0.0.1", "::1", "::ffff:127.0.0.1"]) {
+      assert.equal(pairingClientKey(request(peer, headers), token), "relay:198.51.100.7")
+      assert.equal(pairingClientKey(request(peer, headers)), peer)
+      assert.equal(pairingClientKey(request(peer, headers), "different-start-token"), peer)
+      assert.equal(pairingClientKey(request(peer, { "x-forwarded-for": "198.51.100.7" }), token), peer)
+    }
+    assert.equal(pairingClientKey(request("192.0.2.5", headers), token), "192.0.2.5")
+  })
+
+  it("accepts only a single relay IP and rejects ambiguous headers", () => {
+    for (const forwarded of [undefined, "", "not-an-ip", "198.51.100.7, 192.0.2.5", ["198.51.100.7"]]) {
+      assert.equal(pairingClientKey(request("127.0.0.1", {
+        [TUNNEL_FORWARDING_HEADER]: token,
+        "x-forwarded-for": forwarded,
+      }), token), "127.0.0.1")
+    }
+    assert.equal(pairingClientKey(request("127.0.0.1", {
+      [TUNNEL_FORWARDING_HEADER]: [token, token],
+      "x-forwarded-for": "198.51.100.7",
+    }), token), "127.0.0.1")
+    assert.equal(pairingClientKey(request("127.0.0.1", {
+      [TUNNEL_FORWARDING_HEADER]: token,
+      "x-forwarded-for": "2001:db8::5",
+    }), token), "relay:2001:db8::5")
+  })
+})
 
 describe("requestHasAllowedOrigin", () => {
   it("allows same-origin LAN requests and local origins", () => {

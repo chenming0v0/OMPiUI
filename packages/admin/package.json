@@ -1,6 +1,6 @@
 {
   "name": "@ompiui/admin",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "OMPiUI headless server manager with TUI and independent web console",
@@ -8,6 +8,7 @@
     "ompiui-admin": "dist/cli.js"
   },
   "scripts": {
+    "admin": "node --import tsx src/cli.ts",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test src/**/*.test.ts"

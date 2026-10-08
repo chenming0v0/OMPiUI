@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { dirname, join } from "node:path"
 import { loadOrCreateAdminToken } from "./config.ts"
+import { createOwnerNonce, nonceEqual, OWNER_NONCE_HEADER } from "./lifecycle.ts"
 import { ServiceManager } from "./manager.ts"
 
 function authorized(request: IncomingMessage, token: string): boolean {
@@ -45,7 +46,10 @@ function stringField(body: Record<string, unknown>, key: string): string | undef
 export class AdminHttpServer {
   readonly manager: ServiceManager
   readonly token: string
+  readonly nonce = createOwnerNonce()
   private readonly server: Server
+  private boundHost = "127.0.0.1"
+  private boundPort = 0
 
   constructor(manager = new ServiceManager(), token = loadOrCreateAdminToken()) {
     this.manager = manager
@@ -61,9 +65,16 @@ export class AdminHttpServer {
       this.server.once("listening", onListening)
       this.server.listen(port, host)
     })
+    const address = this.server.address()
+    if (address && typeof address !== "string") {
+      this.boundHost = address.address
+      this.boundPort = address.port
+    }
+    this.manager.attachOwner({ host: this.boundHost, port: this.boundPort, nonce: this.nonce })
   }
 
   async close(): Promise<void> {
+    this.manager.detachOwner()
     if (!this.server.listening) return
     await new Promise<void>((resolve, reject) => this.server.close(error => error ? reject(error) : resolve()))
   }
@@ -72,6 +83,13 @@ export class AdminHttpServer {
     const address = this.server.address()
     if (!address || typeof address === "string") return null
     return `http://${address.address}:${address.port}`
+  }
+
+  private ownerNonceRejected(request: IncomingMessage): boolean {
+    const header = request.headers[OWNER_NONCE_HEADER]
+    if (header === undefined) return false
+    const provided = Array.isArray(header) ? header[0] : header
+    return !provided || !nonceEqual(provided, this.nonce)
   }
 
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -93,6 +111,9 @@ export class AdminHttpServer {
     if (!pathname.startsWith("/api/")) { json(response, 404, { error: "not found" }); return }
     if (!authorized(request, this.token)) { json(response, 401, { error: "missing or invalid admin token" }); return }
     try {
+      if (request.method === "GET" && pathname === "/api/owner") {
+        json(response, 200, { pid: process.pid, nonce: this.nonce, host: this.boundHost, port: this.boundPort }); return
+      }
       if (request.method === "GET" && pathname === "/api/status") {
         json(response, 200, await this.manager.status()); return
       }
@@ -119,6 +140,9 @@ export class AdminHttpServer {
       }
       if (request.method === "POST" && pathname === "/api/service/start") {
         await this.manager.start(); json(response, 200, { ok: true }); return
+      }
+      if (this.ownerNonceRejected(request)) {
+        json(response, 409, { error: "owner nonce does not match this manager" }); return
       }
       if (request.method === "POST" && pathname === "/api/service/stop") {
         await this.manager.stop(); json(response, 200, { ok: true }); return

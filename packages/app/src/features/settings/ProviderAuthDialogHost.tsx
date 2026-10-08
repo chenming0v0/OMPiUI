@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '../../components/ui/Button'
 import { Dialog } from '../../components/ui/Dialog'
 import {
   clearProviderAuthEvent,
   dismissProviderAuthFlow,
-  receiveProviderAuthEvent,
-  registerProviderAuthFlow,
+  beginProviderAuthRecovery,
+  resetProviderAuthFlows,
+  restoreProviderAuthFlows,
   useManagementEvents,
   type ProviderAuthFlowState,
 } from '../../omp/managementEventStore'
@@ -16,46 +17,54 @@ import {
   listActiveProviderFlows,
   respondProviderAuth,
 } from '../../omp/transport/index.js'
+import { registerSessionConsumer } from '../../hooks/useGlobalEvents'
+import { serverStore } from '../../store/serverStore'
 
 export function ProviderAuthDialogHost() {
   const { flows } = useManagementEvents()
-  // 刷新/重连恢复：进行中的 auth 流程在 worker 侧继续存活（SDK login 仍
-  // 阻塞等待应答，5 分钟超时兜底），这里拉一次快照重建 dialog UI。
-  const restoredRef = useRef(false)
+  const consumerId = useId()
+  // Recover on mount/reconnect, never applying an older server/request snapshot
+  // over a newer prompt, submission or dismissal.
   useEffect(() => {
-    if (restoredRef.current) return
-    restoredRef.current = true
-    void listActiveProviderFlows()
-      .then(snapshot => {
-        if (!Array.isArray(snapshot)) return
-        for (const raw of snapshot) {
-          if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue
-          const flow = raw as { flowId?: unknown; providerId?: unknown; prompts?: unknown }
-          if (typeof flow.flowId !== 'string' || typeof flow.providerId !== 'string') continue
-          registerProviderAuthFlow(flow.flowId, flow.providerId)
-          const prompts = Array.isArray(flow.prompts) ? flow.prompts : []
-          for (const prompt of prompts) {
-            if (!prompt || typeof prompt !== 'object' || typeof prompt.promptId !== 'string') continue
-            receiveProviderAuthEvent({
-              type: 'prompt',
-              flowId: flow.flowId,
-              promptId: prompt.promptId,
-              providerId: flow.providerId,
-              prompt: prompt as ProviderAuthPrompt,
-            })
-          }
-        }
-      })
-      .catch(() => undefined)
-  }, [])
+    let disposed = false
+    let controller: AbortController | undefined
+    const restore = () => {
+      if (disposed) return
+      controller?.abort()
+      const request = new AbortController()
+      controller = request
+      const generation = serverStore.getActiveServerGeneration()
+      const recovery = beginProviderAuthRecovery()
+      void listActiveProviderFlows(request.signal).then(snapshot => {
+        if (request.signal.aborted || generation !== serverStore.getActiveServerGeneration()) return
+        restoreProviderAuthFlows(snapshot, recovery)
+      }).catch(() => undefined)
+    }
+    const unsubscribeReconnect = registerSessionConsumer(consumerId, null, { onReconnected: restore })
+    const unsubscribeServer = serverStore.onServerChange(() => {
+      controller?.abort()
+      resetProviderAuthFlows()
+      // Let the existing backend switch listeners finish clearing their stores.
+      queueMicrotask(restore)
+    })
+    restore()
+    return () => {
+      disposed = true
+      controller?.abort()
+      unsubscribeReconnect()
+      unsubscribeServer()
+    }
+  }, [consumerId])
   const flow = useMemo(() => Object.values(flows).find(item => item.event), [flows])
   if (!flow) return null
-  return <ProviderAuthDialog key={`${flow.flowId}:${flow.event?.type}`} flow={flow} />
+  const eventKey = flow.event?.type === 'prompt' ? flow.event.promptId : flow.event?.type
+  return <ProviderAuthDialog key={`${serverStore.getActiveServerGeneration()}:${flow.flowId}:${eventKey}`} flow={flow} />
 }
 
 function ProviderAuthDialog({ flow }: { flow: ProviderAuthFlowState }) {
   const { t } = useTranslation(['settings', 'common'])
   const event = flow.event
+  const generation = serverStore.getActiveServerGeneration()
   const prompt = event?.type === 'prompt' ? (event.prompt as ProviderAuthPrompt) : undefined
   const [value, setValue] = useState(prompt?.type === 'select' ? prompt.options?.[0]?.id ?? '' : '')
   const [submitting, setSubmitting] = useState(false)
@@ -72,7 +81,7 @@ function ProviderAuthDialog({ flow }: { flow: ProviderAuthFlowState }) {
     setSubmitting(true)
     try {
       await cancelProviderAuth(flow.flowId)
-      dismissProviderAuthFlow(flow.flowId)
+      if (generation === serverStore.getActiveServerGeneration()) dismissProviderAuthFlow(flow.flowId)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
       setSubmitting(false)
@@ -80,12 +89,12 @@ function ProviderAuthDialog({ flow }: { flow: ProviderAuthFlowState }) {
   }
 
   const submit = async () => {
-    if (event.type !== 'prompt') return
+    if (event.type !== 'prompt' || submitting) return
     setSubmitting(true)
     setError(null)
     try {
       await respondProviderAuth(flow.flowId, event.promptId, value)
-      clearProviderAuthEvent(flow.flowId)
+      if (generation === serverStore.getActiveServerGeneration()) clearProviderAuthEvent(flow.flowId, event)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
@@ -135,7 +144,7 @@ function ProviderAuthDialog({ flow }: { flow: ProviderAuthFlowState }) {
         <div className="flex justify-end gap-2">
           <Button variant="secondary" disabled={submitting} onClick={() => void close()}>{terminal ? t('common:close') : t('common:cancel')}</Button>
           {event.type === 'prompt' ? <Button isLoading={submitting} disabled={!value} onClick={() => void submit()}>{t('pi.continue')}</Button> : null}
-          {event.type === 'notification' ? <Button disabled={submitting} onClick={() => clearProviderAuthEvent(flow.flowId)}>{t('pi.keepWaiting')}</Button> : null}
+          {event.type === 'notification' ? <Button disabled={submitting} onClick={() => clearProviderAuthEvent(flow.flowId, event)}>{t('pi.keepWaiting')}</Button> : null}
         </div>
       </div>
     </Dialog>

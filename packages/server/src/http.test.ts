@@ -10,6 +10,8 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { createAppServer, type AppServer } from "./http.ts"
 import { PI_PARITY_SDK_VERSION } from "@ompiui/protocol"
+import { MAX_PAIRING_FAILURES, PairingStore } from "./host/pairing.ts"
+import { TUNNEL_FORWARDING_HEADER } from "./host/security.ts"
 
 // 测试进程的 session 租约目录放进独立临时目录，跑完即删，
 // 不污染默认的 ompiui-session-leases 命名空间。
@@ -32,9 +34,9 @@ async function request(
   port: number,
   method: string,
   path: string,
-  options: { body?: unknown; token?: string } = {},
+  options: { body?: unknown; token?: string; headers?: Record<string, string> } = {},
 ): Promise<{ status: number; json: any }> {
-  const headers: Record<string, string> = { "content-type": "application/json" }
+  const headers: Record<string, string> = { "content-type": "application/json", ...options.headers }
   if (options.token) headers.authorization = `Bearer ${options.token}`
   const response = await fetch(`http://127.0.0.1:${port}${path}`, {
     method,
@@ -62,6 +64,54 @@ describe("http api", () => {
     assert.equal(accepted.status, 200)
     assert.equal(accepted.json.ok, true)
     assert.equal(accepted.json.service, "ompiui-server")
+  })
+
+  it("network reports the listening ephemeral port, not Host, forwarding headers or share config", async () => {
+    const app = createAppServer({ authToken: "test-token", share: { host: "0.0.0.0", port: 8787 } })
+    const port = await listen(app)
+    cleanups.push(() => app.dispose())
+    assert.notEqual(port, 8787)
+    const unauthorized = await request(port, "GET", "/api/v1/host/network")
+    assert.equal(unauthorized.status, 401)
+    const network = await request(port, "GET", "/api/v1/host/network", {
+      token: "test-token",
+      headers: { host: "example.com:1234", "x-forwarded-port": "443", "x-forwarded-host": "example.com:443" },
+    })
+    assert.equal(network.status, 200)
+    assert.equal(network.json.port, port)
+    assert.ok(Array.isArray(network.json.interfaces))
+  })
+
+  it("pairing ignores spoofed forwarding headers and preserves direct-client limits and token checks", async () => {
+    const pairing = new PairingStore()
+    const app = createAppServer({ authToken: "test-token", pairing, tunnelForwardingToken: "internal-only-token" })
+    const port = await listen(app)
+    cleanups.push(() => app.dispose())
+    const invite = pairing.mint()
+    for (let i = 0; i < MAX_PAIRING_FAILURES; i++) {
+      const result = await request(port, "POST", "/api/v1/host/pair/redeem", {
+        body: { code: "invalid" },
+        headers: {
+          "x-forwarded-for": `198.51.100.${i + 1}`,
+          "x-real-ip": `198.51.100.${i + 1}`,
+          forwarded: `for=198.51.100.${i + 1}`,
+          ...(i % 2 ? { [TUNNEL_FORWARDING_HEADER]: "attacker-token" } : {}),
+        },
+      })
+      assert.equal(result.status, i === MAX_PAIRING_FAILURES - 1 ? 429 : 400)
+    }
+    const blocked = await request(port, "POST", "/api/v1/host/pair/redeem", {
+      body: { pair: `${invite.id}.${invite.secret}` },
+      headers: { "x-forwarded-for": "203.0.113.99", [TUNNEL_FORWARDING_HEADER]: "new-attacker-token" },
+    })
+    assert.equal(blocked.status, 429)
+    assert.match(blocked.json.message, /too many failed attempts/)
+    assert.equal(invite.redeemed, false)
+    const unauthenticated = await request(port, "GET", "/api/v1/host/pair/invite", {
+      headers: { "x-forwarded-for": "203.0.113.99", [TUNNEL_FORWARDING_HEADER]: "internal-only-token" },
+    })
+    assert.equal(unauthenticated.status, 401, "even the internal marker is not API authorization")
+    assert.equal((await request(port, "GET", "/api/v1/host/pair/invite", { token: "test-token" })).status, 200)
   })
 
   it("share prefers the configured public base URL over the LAN address", async () => {

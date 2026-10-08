@@ -130,6 +130,8 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
   const previewCacheRef = useRef<Map<string, FileReadResponse>>(new Map())
   const previewLoadIdRef = useRef(0)
   const previewPathRef = useRef<string | null>(null)
+  const previewScopeIdRef = useRef(0)
+  const previewSaveIdsRef = useRef(new Map<string, symbol>())
 
   // 文件状态（git）
   const [fileStatus, setFileStatus] = useState<Map<string, ExplorerFileStatus>>(new Map())
@@ -336,6 +338,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
 
       const loadId = ++previewLoadIdRef.current
       previewPathRef.current = path
+      previewSaveIdsRef.current.delete(path)
 
       setPreviewLoading(true)
       setPreviewError(null)
@@ -377,15 +380,20 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
 
   const savePreview = useCallback(async (path: string, text: string, etag?: string, force = false) => {
     if (!directory) throw new Error('No workspace is available')
-    const current = previewCacheRef.current.get(path) ?? previewContent
+    const current = previewCacheRef.current.get(path) ?? (previewPathRef.current === path ? previewContent : null)
     if (!current || current.type !== 'text') throw new Error('Only text files can be edited')
+    const scopeId = previewScopeIdRef.current
+    const loadId = previewLoadIdRef.current
+    const saveId = Symbol()
+    previewSaveIdsRef.current.set(path, saveId)
     const saved = await saveFile(path, {
       ...current,
       content: text,
       etag: force ? undefined : etag ?? current.etag,
     }, directory)
+    if (scopeId !== previewScopeIdRef.current || previewSaveIdsRef.current.get(path) !== saveId) return saved
     previewCacheRef.current.set(path, saved)
-    if (previewPathRef.current === path) setPreviewContent(saved)
+    if (previewPathRef.current === path && previewLoadIdRef.current === loadId) setPreviewContent(saved)
     return saved
   }, [directory, previewContent])
 
@@ -498,11 +506,15 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
   // 目录/会话变化时重置预览状态（含缓存 ref 清理，无法用渲染期调整表达）
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
+    previewScopeIdRef.current += 1
+    previewSaveIdsRef.current.clear()
     previewCacheRef.current.clear()
     previewLoadIdRef.current += 1
+    previewPathRef.current = null
     setPreviewContent(null)
     setPreviewError(null)
     setPreviewLoading(false)
+    return () => { previewScopeIdRef.current += 1 }
   }, [directory, sessionId])
   /* eslint-enable react-hooks/set-state-in-effect */
 

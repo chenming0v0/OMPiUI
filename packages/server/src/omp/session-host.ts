@@ -742,7 +742,8 @@ export class SessionHost {
       try {
         const state = await session.worker.command("state.get") as JsonObject | undefined
         if (state) {
-          stillBusy = state.isStreaming === true
+          stillBusy = state.isIdle === false
+            || state.isStreaming === true
             || state.isBashRunning === true
             || Number(state.pendingMessageCount ?? 0) > 0
         }

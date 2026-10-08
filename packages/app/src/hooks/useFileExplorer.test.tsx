@@ -203,4 +203,64 @@ describe('useFileExplorer change scope', () => {
     expect(invalidateWorkspaceFileCaches).toHaveBeenCalledWith('/repo')
     expect(listDirectory.mock.calls.filter(call => call[0] === 'src').length).toBeGreaterThanOrEqual(2)
   })
+
+  it.each(['directory', 'session'] as const)('does not publish a save into a new %s with the same file path', async scope => {
+    let resolveSave!: (value: unknown) => void
+    saveFile.mockReturnValueOnce(new Promise(resolve => { resolveSave = resolve }))
+    const { result, rerender } = renderHook(
+      props => useFileExplorer({ ...props, autoLoad: false }),
+      { initialProps: { directory: '/repo-a', sessionId: 'session-a' } },
+    )
+    await act(() => result.current.loadPreview('a.ts'))
+    let save!: ReturnType<typeof result.current.savePreview>
+    act(() => { save = result.current.savePreview('a.ts', 'old workspace save') })
+    rerender(scope === 'directory'
+      ? { directory: '/repo-b', sessionId: 'session-a' }
+      : { directory: '/repo-a', sessionId: 'session-b' })
+    getFileContent.mockResolvedValueOnce({ type: 'text', content: 'new scope', etag: 'new-scope-etag' })
+    await act(() => result.current.loadPreview('a.ts'))
+    await act(async () => {
+      resolveSave({ type: 'text', content: 'old workspace save', etag: 'old-save-etag' })
+      await save
+    })
+    expect(result.current.previewContent?.content).toBe('new scope')
+    await act(() => result.current.loadPreview('a.ts'))
+    expect(result.current.previewContent?.etag).toBe('new-scope-etag')
+  })
+
+  it('rejects an older save response after another request saved the same file', async () => {
+    let resolveOldSave!: (value: unknown) => void
+    saveFile.mockReturnValueOnce(new Promise(resolve => { resolveOldSave = resolve }))
+      .mockResolvedValueOnce({ type: 'text', content: 'newest', etag: 'newest-etag' })
+    const { result } = renderHook(() => useFileExplorer({ directory: '/repo', autoLoad: false }))
+    await act(() => result.current.loadPreview('a.ts'))
+    let oldSave!: ReturnType<typeof result.current.savePreview>
+    act(() => { oldSave = result.current.savePreview('a.ts', 'old') })
+    await act(() => result.current.savePreview('a.ts', 'newest'))
+    await act(async () => {
+      resolveOldSave({ type: 'text', content: 'old', etag: 'old-etag' })
+      await oldSave
+    })
+    expect(result.current.previewContent?.content).toBe('newest')
+    await act(() => result.current.loadPreview('a.ts'))
+    expect(result.current.previewContent?.etag).toBe('newest-etag')
+  })
+
+  it('does not replace the content or cache of a reopened file with an old editor save', async () => {
+    let resolveSave!: (value: unknown) => void
+    saveFile.mockReturnValueOnce(new Promise(resolve => { resolveSave = resolve }))
+    const { result } = renderHook(() => useFileExplorer({ directory: '/repo', autoLoad: false }))
+    await act(() => result.current.loadPreview('a.ts'))
+    let save!: ReturnType<typeof result.current.savePreview>
+    act(() => { save = result.current.savePreview('a.ts', 'old draft') })
+    await act(() => result.current.loadPreview('b.ts'))
+    await act(() => result.current.loadPreview('a.ts'))
+    await act(async () => {
+      resolveSave({ type: 'text', content: 'old draft', etag: 'old-etag' })
+      await save
+    })
+    expect(result.current.previewContent?.content).toBe('test')
+    await act(() => result.current.loadPreview('a.ts'))
+    expect(result.current.previewContent?.content).toBe('test')
+  })
 })

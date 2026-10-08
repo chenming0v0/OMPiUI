@@ -18,7 +18,7 @@ import { RuntimeSupervisor } from "./omp/supervisor.ts"
 import { SessionHost } from "./omp/session-host.ts"
 import { WorkspaceStore } from "./host/workspace-store.ts"
 import { WorkspaceWatcher } from "./host/workspace-watcher.ts"
-import { MAX_JSON_BODY_BYTES, requestHasAllowedOrigin, requestHasValidToken } from "./host/security.ts"
+import { MAX_JSON_BODY_BYTES, pairingClientKey, requestHasAllowedOrigin, requestHasValidToken } from "./host/security.ts"
 import { resolveAuthToken } from "./host/auth-token.ts"
 import { PathSafetyError } from "./host/path-safety.ts"
 import { defaultWorkspaceRoot, HostRuntime } from "./host/command-table.ts"
@@ -190,6 +190,8 @@ export interface CreateAppServerOptions {
   getTunnelStatus?: () => TunnelStatus | null
   /** 手机远程一次性配对（invite/redeem）；缺省时配对接口不可用。 */
   pairing?: PairingStore
+  /** Per-start secret shared only with the embedded TunnelClient, not API auth. */
+  tunnelForwardingToken?: string
   /** 内置 Tailscale 客户端管理；缺省时 tailscale 接口不可用。 */
   tailscale?: TailscaleManager
   /** Web client build directory; when it exists the server hosts the SPA. */
@@ -281,7 +283,7 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
           return sendProblem(res, 501, Object.assign(new Error("sharing is unavailable"), { code: "CAPABILITY_DISABLED" }))
         }
         const body = await readBody(req, scope.signal, MAX_JSON_BODY_BYTES)
-        const clientKey = req.socket.remoteAddress ?? "unknown"
+        const clientKey = pairingClientKey(req, options.tunnelForwardingToken)
         const outcome = options.pairing.redeem(
           {
             pair: typeof body.pair === "string" ? body.pair : undefined,
@@ -397,7 +399,9 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
       }
 
       if (method === "GET" && p === "/api/v1/host/network") {
-        return sendJson(res, 200, { interfaces: listLanInterfaces() })
+        const address = server.address()
+        const port = address && typeof address === "object" ? address.port : options.share?.port
+        return sendJson(res, 200, { interfaces: listLanInterfaces(), ...(port ? { port } : {}) })
       }
 
       if (method === "GET" && p === "/api/v1/host/pair/invite" && options.pairing) {

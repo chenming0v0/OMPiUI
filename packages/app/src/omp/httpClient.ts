@@ -16,9 +16,14 @@ export function abortInFlightPiRequests(): void {
   inflightControllers.clear()
 }
 
-// 连接级失败（connection refused / reset / dns）说明请求根本没送达 server，
-// 此时重试对任何方法都安全；HTTP 层返回了状态码的错误绝不在这里重试。
+// 网络错误也可能发生在 server 已提交写操作之后，不能据此重放写请求。
+// 仅 GET/HEAD 允许重试；有副作用的 GET（如生成配对邀请）必须显式禁用。
 const NETWORK_RETRY_DELAYS_MS = [300, 900]
+
+export type PiRequestInit = RequestInit & {
+  /** Retry network failures for GET/HEAD only (default true); never enables write retries. */
+  retry?: boolean
+}
 
 function isNetworkLevelError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
@@ -29,6 +34,21 @@ function isNetworkLevelError(error: unknown): boolean {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')
+}
+
+function waitForNetworkRetry(delay: number, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted()
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(signal.reason)
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, delay)
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 /**
@@ -77,7 +97,10 @@ export function getPiAuthToken(): string | undefined {
   return (import.meta as ImportMeta & { env?: { VITE_OMPIUI_TOKEN?: string } }).env?.VITE_OMPIUI_TOKEN
 }
 
-export async function piFetch(input: string, init?: RequestInit): Promise<Response> {
+export async function piFetch(input: string, init?: PiRequestInit): Promise<Response> {
+  const { retry = true, ...requestInit } = init ?? {}
+  const method = (requestInit.method ?? 'GET').toUpperCase()
+  const canRetry = retry && (method === 'GET' || method === 'HEAD')
   const generation = requestGeneration
   const inflight = new AbortController()
   inflightControllers.add(inflight)
@@ -94,14 +117,15 @@ export async function piFetch(input: string, init?: RequestInit): Promise<Respon
 
     let lastError: unknown
     for (let attempt = 0; attempt <= NETWORK_RETRY_DELAYS_MS.length; attempt++) {
+      signal.throwIfAborted()
       try {
-        return await fetchImpl(input, { ...init, signal, headers })
+        return await fetchImpl(input, { ...requestInit, signal, headers })
       } catch (error) {
-        if (signal.aborted || isAbortError(error) || !isNetworkLevelError(error)) throw error
+        if (!canRetry || signal.aborted || isAbortError(error) || !isNetworkLevelError(error)) throw error
         lastError = error
         const delay = NETWORK_RETRY_DELAYS_MS[attempt]
         if (delay === undefined) break
-        await new Promise(resolve => setTimeout(resolve, delay))
+        await waitForNetworkRetry(delay, signal)
       }
     }
     throw lastError

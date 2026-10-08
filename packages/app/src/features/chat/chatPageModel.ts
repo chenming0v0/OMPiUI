@@ -1,5 +1,5 @@
 import type { Message } from '../../types/message'
-import type { PiAssistantMessageItem, PiTimelineItem } from '../../omp/domain/index.js'
+import type { PiAssistantMessageItem, PiTimelineItem, PiUserMessageItem } from '../../omp/domain/index.js'
 
 export const PAGE_MESSAGE_COUNT = 20
 export const PAGE_EXTREME_RENDER_WEIGHT = 700
@@ -752,7 +752,7 @@ export type ProcessTimelineItem =
         item: PiTimelineItem
         processContentScope: 'process' | 'inline'
       }>
-      /** 壳外最终回答（结束后才有） */
+      /** 壳外最终回答或失败提示（结束后才有） */
       finalItem?: PiTimelineItem
     }
 
@@ -885,39 +885,38 @@ export function buildProcessTimeline(
   const items: ProcessTimelineItem[] = []
 
   type TurnBag = {
-    user: PiTimelineItem | null
+    kind: 'turn'
+    user: PiUserMessageItem
     assistants: PiAssistantMessageItem[]
   }
 
-  const turns: TurnBag[] = []
+  // Turns and standalone items share one ordered sequence. Collecting system
+  // items separately would move them ahead of all previously collected turns.
+  const segments: Array<TurnBag | Extract<ProcessTimelineItem, { kind: 'message' }>> = []
   let current: TurnBag | null = null
 
   for (const item of visibleItems) {
     if (item.kind === 'user_message') {
-      if (current) turns.push(current)
-      current = { user: item, assistants: [] }
+      current = { kind: 'turn', user: item, assistants: [] }
+      segments.push(current)
       continue
     }
     // 系统条目（bash/compaction/summary/custom/label/unknown）独立平铺，不进壳
     if (item.kind !== 'assistant_message') {
-      if (current) {
-        turns.push(current)
-        current = null
-      }
-      items.push({ kind: 'message', key: itemRenderKey(item), item })
+      current = null
+      segments.push({ kind: 'message', key: itemRenderKey(item), item })
       continue
     }
     if (!current) {
       // 历史续段 / 页首无 user：直接平铺，不挂壳
-      items.push({ kind: 'message', key: itemRenderKey(item), item })
+      segments.push({ kind: 'message', key: itemRenderKey(item), item })
       continue
     }
     current.assistants.push(item)
   }
-  if (current) turns.push(current)
 
   // 只关心带 user 的回合（过程壳的锚点）
-  const userTurns = turns.filter((t): t is TurnBag & { user: PiTimelineItem } => t.user != null)
+  const userTurns = segments.filter((segment): segment is TurnBag => segment.kind === 'turn')
 
   const laterHasAssistant = (fromIndex: number) => {
     for (let j = fromIndex + 1; j < userTurns.length; j++) {
@@ -934,7 +933,7 @@ export function buildProcessTimeline(
     return false
   }
 
-  const isTurnSettled = (turn: TurnBag & { user: PiTimelineItem }, index: number): boolean => {
+  const isTurnSettled = (turn: TurnBag, index: number): boolean => {
     const assistants = turn.assistants
     // 后面 SSE live → 前面 Worked（须最先判断；前轮 completed 常晚到）
     if (laterHasLive(index)) return true
@@ -949,7 +948,7 @@ export function buildProcessTimeline(
     return assistants.every(m => !m.isStreaming)
   }
 
-  const isTurnPending = (turn: TurnBag & { user: PiTimelineItem }, index: number): boolean => {
+  const isTurnPending = (turn: TurnBag, index: number): boolean => {
     if (isTurnSettled(turn, index)) return false
     if (turn.assistants.length > 0) return true
     return sessionIsStreaming && isUserEntryReady(turn.user.entryId)
@@ -964,22 +963,14 @@ export function buildProcessTimeline(
     }
   }
 
-  for (const turn of turns) {
-    if (turn.user) {
-      items.push({ kind: 'message', key: itemRenderKey(turn.user), item: turn.user })
-    }
-
-    const assistants = turn.assistants
-    if (!turn.user && assistants.length === 0) continue
-
-    // 无 user 的续段：平铺
-    if (!turn.user) {
-      for (const m of assistants) {
-        items.push({ kind: 'message', key: itemRenderKey(m), item: m })
-      }
+  for (const turn of segments) {
+    if (turn.kind === 'message') {
+      items.push(turn)
       continue
     }
 
+    items.push({ kind: 'message', key: itemRenderKey(turn.user), item: turn.user })
+    const assistants = turn.assistants
     const userId = turn.user.renderKey ?? turn.user.entryId
     const turnIsActive = activeUserId != null && userId === activeUserId
 
