@@ -55,7 +55,10 @@
   "inputBox": {
     "dropFilesHere": "Drop files here",
     "replyToAgentMobile": "Reply to Agent...",
-    "replyToAgent": "Reply to Agent (type @ to mention, / for commands)"
+    "replyToAgent": "Reply to Agent (type @ to mention, / for commands)",
+    "readOnlySession": "This session is read-only. The native TUI keeps ownership of its history; continue in a new session to make changes.",
+    "copyTuiAndContinue": "Copy TUI session and continue",
+    "startNewSession": "Start new session"
   },
   "goalBar": {
     "setGoal": "Set goal",

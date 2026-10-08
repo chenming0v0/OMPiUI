@@ -29,13 +29,15 @@ const TUNNEL_ID_KEY = 'OMPIUI_TUNNEL_ID'
 export function ServiceSettings() {
   const { t } = useTranslation(['settings', 'common'])
   const desktop = isTauri() && !isTauriMobile()
-  const { activeServerGeneration } = useServerStore()
+  const { activeServer, activeServerGeneration } = useServerStore()
   const { autoStart, useSystemPiSdk, envVars, running, startedByUs, starting } = useServiceStore()
   const [status, setStatus] = useState<DesktopServiceStatus | null>(null)
   const [shells, setShells] = useState<TerminalShell[]>([])
   const [selectedShell, setSelectedShell] = useState('')
   const [shellsLoading, setShellsLoading] = useState(false)
-  const [tunnelStatus, setTunnelStatus] = useState<TunnelStatus | null>(null)
+  const [tunnelSnapshot, setTunnelSnapshot] = useState<{ generation: number; status: TunnelStatus | null } | null>(null)
+  const currentTunnel = tunnelSnapshot?.generation === activeServerGeneration ? tunnelSnapshot : null
+  const tunnelStatus = currentTunnel?.status
   const [busy, setBusy] = useState<'refresh' | 'stop' | 'start' | 'restart' | null>(null)
   const [error, setError] = useState('')
 
@@ -124,7 +126,7 @@ export function ServiceSettings() {
   }, [selectedShell, shells, t])
 
   const terminalShell = (
-    <SettingField label={t('service.terminalShell')} description={t('service.terminalShellDesc')}>
+    <SettingField label={t('service.terminalShell')} description={t('service.terminalShellLocalDesc', { defaultValue: 'Shell for new terminals. Saved on this device, separately for each server.' })}>
       <SettingsSelect
         ariaLabel={t('service.terminalShell')}
         value={selectedShell}
@@ -144,7 +146,7 @@ export function ServiceSettings() {
   // 公网基址不 trim 展示：输入框直接回显原值，服务端启动时统一规范化
   const publicBaseUrl = serviceStore.envVars.find(item => item.key.trim().toUpperCase() === PUBLIC_BASE_URL_KEY)?.value || ''
   const listenSettings = (
-    <SettingsSection title={t('service.listenTitle')} description={t('service.listenDesc')}>
+    <SettingsSection title={t('service.listenTitle')} description={t('service.localListenDesc', { defaultValue: 'Local desktop startup settings. They do not change the connected remote server.' })}>
       <SettingField label={t('service.listenHost')} description={t('service.listenHostDesc')}>
         <SettingsSelect
           ariaLabel={t('service.listenHost')}
@@ -213,10 +215,10 @@ export function ServiceSettings() {
     const load = () => {
       void fetchHostTunnel()
         .then(next => {
-          if (!cancelled) setTunnelStatus(next)
+          if (!cancelled) setTunnelSnapshot({ generation: activeServerGeneration, status: next })
         })
         .catch(() => {
-          if (!cancelled) setTunnelStatus(null)
+          if (!cancelled) setTunnelSnapshot({ generation: activeServerGeneration, status: null })
         })
     }
     load()
@@ -228,7 +230,7 @@ export function ServiceSettings() {
   }, [activeServerGeneration, running])
 
   const tunnelSettings = (
-    <SettingsSection title={t('service.tunnelTitle')} description={t('service.tunnelDesc')}>
+    <SettingsSection title={t('service.tunnelTitle')} description={t('service.localTunnelDesc', { defaultValue: 'Relay settings for the service started by this desktop app. Restart that local service to apply changes.' })}>
       <SettingField label={t('service.tunnelUrl')} description={t('service.tunnelUrlDesc')}>
         <input
           type="text"
@@ -262,30 +264,50 @@ export function ServiceSettings() {
           onChange={event => setTunnelEnv(TUNNEL_ID_KEY, event.target.value)}
         />
       </SettingField>
-      {tunnelStatus && tunnelStatus.enabled && (
-        <SettingField label={t('service.tunnelStatus')}>
-          <div className="min-w-0 break-all text-[length:var(--fs-xs)] leading-relaxed">
-            {tunnelStatus.state === 'connected' && (
-              <div className="font-mono">
-                <span className="text-text-300">{t('service.tunnelStatusConnected')} </span>
-                <span className="text-text-500">{tunnelStatus.publicUrl}</span>
-              </div>
-            )}
-            {tunnelStatus.state === 'connecting' && <div className="text-text-500">{t('service.tunnelStatusConnecting')}</div>}
-            {tunnelStatus.state === 'reconnecting' && (
-              <>
-                <div className="text-warning-100/80">{t('service.tunnelStatusReconnecting', { n: tunnelStatus.reconnectAttempts })}</div>
-                {tunnelStatus.lastError && <div className="text-text-500">{tunnelStatus.lastError}</div>}
-              </>
-            )}
-            {tunnelStatus.state === 'error' && (
-              <div className="text-danger-100">{t('service.tunnelStatusError', { error: tunnelStatus.lastError ?? '' })}</div>
-            )}
-          </div>
+      <div className="text-[length:var(--fs-xs)] leading-relaxed text-warning-100/80">{t('service.tunnelWarning')}</div>
+    </SettingsSection>
+  )
+
+  const backendStatus = (
+    <SettingsSection
+      title={t('service.currentBackendTitle', { defaultValue: 'Current backend' })}
+      description={t('service.currentBackendDesc', { defaultValue: 'Live status from the connected server, not this device’s saved startup settings.' })}
+    >
+      {activeServer && (
+        <SettingField label={t('service.backendAddress', { defaultValue: 'Server address' })}>
+          <div className="break-all font-mono text-[length:var(--fs-xs)] text-text-300">{activeServer.url}</div>
         </SettingField>
       )}
-      <div className="text-[length:var(--fs-xs)] leading-relaxed text-warning-100/80">{t('service.tunnelWarning')}</div>
-      <div className="text-[length:var(--fs-xs)] leading-relaxed text-text-500">{t('service.tunnelRestartHint')}</div>
+      <SettingField label={t('service.tunnelStatus')}>
+        <div role="status" className="min-w-0 break-all text-[length:var(--fs-xs)] leading-relaxed text-text-300">
+          {!currentTunnel && t('service.backendStatusLoading', { defaultValue: 'Loading server status…' })}
+          {currentTunnel && !tunnelStatus && t('service.backendStatusUnavailable', { defaultValue: 'Server status unavailable. Check the connection and server version.' })}
+          {tunnelStatus && (!tunnelStatus.enabled || tunnelStatus.state === 'disabled') && t('service.tunnelStatusDisabled')}
+          {tunnelStatus?.enabled && tunnelStatus.state === 'connected' && (
+            <>
+              <div className="text-success-100">{t('service.tunnelStatusConnected')}</div>
+              <div className="font-mono">{tunnelStatus.publicUrl}</div>
+            </>
+          )}
+          {tunnelStatus?.enabled && tunnelStatus.state === 'connecting' && t('service.tunnelStatusConnecting')}
+          {tunnelStatus?.enabled && tunnelStatus.state === 'reconnecting' && (
+            <div className="text-warning-100/80">{t('service.tunnelStatusReconnecting', { n: tunnelStatus.reconnectAttempts })}</div>
+          )}
+          {tunnelStatus?.enabled && tunnelStatus.state === 'error' && (
+            <div className="text-danger-100">{t('service.tunnelStatusError', { error: tunnelStatus.lastError ?? '' })}</div>
+          )}
+          {tunnelStatus?.lastError && tunnelStatus.state !== 'error' && <div>{tunnelStatus.lastError}</div>}
+        </div>
+      </SettingField>
+      {tunnelStatus?.enabled && tunnelStatus.relayUrl && (
+        <SettingField label={t('service.tunnelUrl')}>
+          <div className="break-all font-mono text-[length:var(--fs-xs)] text-text-300">{tunnelStatus.relayUrl}</div>
+        </SettingField>
+      )}
+      <div className="rounded-lg border border-border-200/60 bg-bg-100 p-3 text-[length:var(--fs-xs)] leading-relaxed text-text-300">
+        <p>{t('service.remoteReadOnly', { defaultValue: 'Remote configuration is read-only here.' })}</p>
+        <p className="mt-1 text-text-400">{t('service.remoteManageHint', { defaultValue: 'Change listening and relay settings on the server, then restart it. If you use OMPiUI Admin, open it separately and sign in with its own credentials.' })}</p>
+      </div>
     </SettingsSection>
   )
 
@@ -293,11 +315,7 @@ export function ServiceSettings() {
     return (
       <>
         <RemoteAccessSettings />
-        <SettingsSection title={t('service.title')} description={t('service.desktopOnly')}>
-          <div className="text-[length:var(--fs-xs)] leading-relaxed text-text-300">{t('service.webModeDesc')}</div>
-        </SettingsSection>
-        {listenSettings}
-        {tunnelSettings}
+        {backendStatus}
         <SettingsSection title={t('service.terminalTitle')} description={t('service.terminalTitleDesc')}>
           {terminalShell}
         </SettingsSection>
@@ -311,11 +329,12 @@ export function ServiceSettings() {
   return (
     <>
       <RemoteAccessSettings />
+      {backendStatus}
       {listenSettings}
       {tunnelSettings}
       <SettingsSection
-        title={t('service.title')}
-        description={t('service.description')}
+        title={t('service.localServiceTitle', { defaultValue: 'Local desktop service' })}
+        description={t('service.localServiceDesc', { defaultValue: 'Start and configure the service on this computer. These controls do not manage a remote server.' })}
         actions={
         <button
           type="button"

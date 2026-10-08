@@ -45,7 +45,7 @@ interface EntryRecord {
   [key: string]: JsonValue | undefined
 }
 
-interface QueuedUserMessage {
+type QueuedUserMessage = {
   text: string
   images?: ImageInput[]
 }
@@ -209,9 +209,9 @@ export class OmpRpcSession implements SessionRuntime {
         await this.client.request({ type: "switch_session", sessionPath: this.sessionFile }, 120_000)
       }
       await this.refreshIdentity()
+      this.extensionUi.bind(this.sessionId, response => this.client.writeExtensionUiResponse(response))
       await Promise.all([this.refreshModels(), this.refreshThinkingLevels(), this.refreshAvailableCommands()])
       await this.syncEntriesNow()
-      this.extensionUi.bind(this.sessionId, response => this.client.writeExtensionUiResponse(response))
     } catch (error) {
       // 启动中途失败：杀掉子进程，避免留下孤儿 omp 进程
       this.client.kill()
@@ -315,7 +315,7 @@ export class OmpRpcSession implements SessionRuntime {
         this.trackShadowState(frame)
         // 原生队列可能包含内部 goal/扩展消息，UI 只展示可编辑的用户队列。
         const queue = this.getUserQueueSnapshot()
-        this.emitPiEvent(type === "queue_update" ? { ...frame, steering: queue.steering, followUp: queue.followUp } : frame)
+        this.emitPiEvent(type === "queue_update" ? { ...frame, ...queue } : frame)
         if (type === "agent_end" || type === "turn_end") this.scheduleEntrySync()
         this.emitActivityIfChanged()
         if (type === "agent_end") this.scheduleUserQueueDrain()
@@ -492,10 +492,12 @@ export class OmpRpcSession implements SessionRuntime {
     }
   }
 
-  private getUserQueueSnapshot(): { steering: string[]; followUp: string[] } {
+  private getUserQueueSnapshot() {
     return {
       steering: this.userQueue.steering.map(item => item.text),
       followUp: this.userQueue.followUp.map(item => item.text),
+      steeringEntries: structuredClone(this.userQueue.steering),
+      followUpEntries: structuredClone(this.userQueue.followUp),
     }
   }
 
@@ -909,7 +911,7 @@ export class OmpRpcSession implements SessionRuntime {
     }
 
     const target = deliverAs === "steer" ? this.userQueue.steering : this.userQueue.followUp
-    target.push({ text, images })
+    target.push({ text, ...(images ? { images: structuredClone(images) } : {}) })
     this.emitUserQueueSnapshot()
   }
 
@@ -1115,7 +1117,10 @@ export class OmpRpcSession implements SessionRuntime {
     this.retryShadow = { phase: "idle" }
     this.compactionShadow = { autoEnabled: true, operation: { type: "none" } }
     this.userQueue = { steering: [], followUp: [] }
+    // Settle old dialogs with their original identity before publishing any
+    // extension events from the refreshed session (including entry sync).
     this.extensionUi.cancelAll("session_replaced")
+    this.extensionUi.bind(this.sessionId, response => this.client.writeExtensionUiResponse(response))
   }
 
   async fork(entryId: string, _position: "before" | "at"): Promise<JsonObject> {

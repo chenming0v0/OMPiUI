@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo, useSyncExternalStore, useLayoutEffect, memo, forwardRef, useImperativeHandle } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo, useSyncExternalStore, useLayoutEffect, memo, forwardRef, useImperativeHandle, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AttachmentPreview, type Attachment } from '../attachment'
 import {
@@ -193,6 +193,8 @@ export interface InputBoxProps {
   // Collapsed dialog capsules
   collapsedPermission?: CollapsedDialogInfo
   collapsedQuestion?: CollapsedDialogInfo
+  /** Sits in the composer column, above the shell, so it shares the input width. */
+  composerNotice?: ReactNode
 }
 
 // ============================================
@@ -246,6 +248,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   onScrollToBottom,
   collapsedPermission,
   collapsedQuestion,
+  composerNotice,
   /** Composer text change callback (extension editor state sync) */
   onTextChange,
 }: InputBoxProps, ref: React.Ref<InputBoxHandle>) {
@@ -271,7 +274,13 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
 
   // 扩展 editor 命令接口（set/paste 已由 store 合并为全量文本）
   useImperativeHandle(ref, () => ({
-    setEditorText: (next: string) => setText(next),
+    setEditorText: (next: string) => {
+      setText(next)
+      // 外部整段替换文本后，旧文本上的偏移量全部失效。若保留带 textRange 的
+      // 命令/@ 附件，handleSend 会优先按旧附件拼出「/旧命令」，劫持下一次发送。
+      // 只丢弃文本相关的附件；图片等独立附件与文本无关，必须保留。
+      setAttachments(prev => prev.filter(attachment => !attachment.textRange))
+    },
     getEditorText: () => textareaRef.current?.value ?? latestDraftRef.current.text,
   }), [])
 
@@ -1624,6 +1633,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
               : { maxHeight: composerMaxHeight }
           }
         >
+          {composerNotice && !isCollapsed ? <div className="pointer-events-auto">{composerNotice}</div> : null}
           {/* FloatingActions — 
               展开态：absolute 定位在内容区上方，不占文档流，避免显隐变化影响高度导致滚动抖动
               收起态：正常文档流，紧贴胶囊上方

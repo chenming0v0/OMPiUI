@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto"
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 
 export interface AdminConfig {
   host: string
@@ -16,6 +17,8 @@ export interface AdminConfig {
 const DEFAULT_HOST = "127.0.0.1"
 const DEFAULT_PORT = 9898
 const DEFAULT_SERVER_URL = "http://127.0.0.1:8787"
+// src/ and dist/ have the same depth, both in a checkout and in @ompiui/*.
+const DEFAULT_SERVER_CWD = fileURLToPath(new URL("../../server/", import.meta.url))
 
 export function adminDataDir(env: NodeJS.ProcessEnv = process.env): string {
   const explicit = env.OMPIUI_ADMIN_DATA_DIR?.trim() || env.OMPIUI_DATA_DIR?.trim()
@@ -33,7 +36,7 @@ export function adminTokenPath(env: NodeJS.ProcessEnv = process.env): string {
 function defaultServerCommand(env: NodeJS.ProcessEnv = process.env): { command: string; args: string[] } {
   const configured = env.OMPIUI_SERVER_ENTRY?.trim()
   if (configured) return { command: process.execPath, args: [configured, "web"] }
-  const entry = resolve(process.cwd(), "packages/server/dist/bundle-entry.js")
+  const entry = join(DEFAULT_SERVER_CWD, "dist/bundle-entry.js")
   return { command: process.execPath, args: [entry, "web"] }
 }
 
@@ -44,7 +47,7 @@ export function defaultAdminConfig(env: NodeJS.ProcessEnv = process.env): AdminC
     port: DEFAULT_PORT,
     serverCommand: server.command,
     serverArgs: server.args,
-    serverCwd: process.cwd(),
+    serverCwd: resolve(DEFAULT_SERVER_CWD),
     serverEnv: {},
     serverUrl: env.OMPIUI_SERVER_URL?.trim() || DEFAULT_SERVER_URL,
   }

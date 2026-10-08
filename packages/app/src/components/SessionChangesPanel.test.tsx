@@ -20,7 +20,7 @@ vi.mock('../omp/transport/index.js', () => ({
 vi.mock('../omp/workspaces', () => ({ resolveWorkspacePath: async (directory?: string) => directory ?? null }))
 
 vi.mock('./DiffViewer', () => ({
-  DiffViewer: () => <div data-testid="diff-viewer">diff viewer</div>,
+  DiffViewer: ({ before, after }: { before: string; after: string }) => <div data-testid="diff-viewer">{before}|{after}</div>,
   useDiffViewerData: () => ({
     beforeTokens: null,
     afterTokens: null,
@@ -40,6 +40,7 @@ function renderSessionChangesPanel() {
 
 describe('SessionChangesPanel', () => {
   beforeEach(() => {
+    vi.clearAllMocks()
     changeScopeStore.clearAll()
     vi.useFakeTimers()
     vi.spyOn(window, 'requestAnimationFrame').mockImplementation(cb =>
@@ -274,5 +275,54 @@ describe('SessionChangesPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open in Files' }))
 
     expect(openFilePreview).toHaveBeenCalledWith({ path: 'src/git.ts', name: 'git.ts' }, 'bottom')
+  })
+
+  it.each(['before', 'after'] as const)('refetches an unchanged selected file when its invalidated patch resolves %s refresh', async timing => {
+    let resolveOldPatch!: (value: unknown) => void
+    let resolveNewPatch!: (value: unknown) => void
+    let resolveList!: (value: unknown) => void
+    getHostGitFileDiff.mockReturnValueOnce(new Promise(resolve => { resolveOldPatch = resolve }))
+      .mockReturnValueOnce(new Promise(resolve => { resolveNewPatch = resolve }))
+    renderSessionChangesPanel()
+    await act(async () => { await Promise.resolve() })
+    expect(getHostGitFileDiff).toHaveBeenCalledTimes(1)
+    const oldSignal = getHostGitFileDiff.mock.calls[0][3] as AbortSignal
+    getHostGitDiff.mockReturnValueOnce(new Promise(resolve => { resolveList = resolve }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    await act(async () => { await Promise.resolve() })
+    expect(getHostGitDiff).toHaveBeenCalledTimes(2)
+    expect(oldSignal.aborted).toBe(true)
+    expect(getHostGitFileDiff).toHaveBeenCalledTimes(1)
+    const patch = (value: string) => ({
+      file: 'src/git.ts', status: 'modified', additions: 1, deletions: 1, binary: false,
+      patch: `--- a/src/git.ts\n+++ b/src/git.ts\n@@ -1 +1 @@\n-old\n+${value}\n`,
+    })
+    if (timing === 'before') await act(async () => resolveOldPatch(patch('stale')))
+
+    await act(async () => resolveList({
+      mode: 'git', files: [{ file: 'src/git.ts', status: 'modified', additions: 1, deletions: 1, binary: false }],
+    }))
+    expect(getHostGitFileDiff).toHaveBeenCalledTimes(2)
+    expect(getHostGitFileDiff).toHaveBeenLastCalledWith('/repo', 'src/git.ts', 'git', expect.any(AbortSignal))
+    await act(async () => resolveNewPatch(patch('fresh')))
+    expect(screen.getByTestId('diff-viewer')).toHaveTextContent('fresh')
+    if (timing === 'after') await act(async () => resolveOldPatch(patch('stale')))
+    expect(screen.getByTestId('diff-viewer')).toHaveTextContent('fresh')
+    expect(screen.getByTestId('diff-viewer')).not.toHaveTextContent('stale')
+    fireEvent.click(screen.getByRole('button', { name: 'Split' }))
+    expect(getHostGitFileDiff).toHaveBeenCalledTimes(2)
+  })
+
+  it('retries an invalidated pending patch even when refreshing its list fails', async () => {
+    getHostGitFileDiff.mockReturnValueOnce(new Promise(() => {}))
+    renderSessionChangesPanel()
+    await act(async () => { await Promise.resolve() })
+    expect(getHostGitFileDiff).toHaveBeenCalledTimes(1)
+    getHostGitDiff.mockRejectedValueOnce(new Error('list refresh failed'))
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    await act(async () => { await Promise.resolve() })
+    expect(getHostGitFileDiff).toHaveBeenCalledTimes(2)
+    expect(screen.getByTestId('diff-viewer')).toHaveTextContent('new')
   })
 })

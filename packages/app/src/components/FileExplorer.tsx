@@ -50,7 +50,7 @@ import { startInternalDrag } from '../lib/internalDragCore'
 import { toAbsolutePath } from '../features/mention'
 import { getDesktopPlatform, isTauri, isTauriMobile } from '../utils/tauri'
 import type { TargetLineRange } from './codeMirrorReadonlyExtensions'
-import { setFileEditorDirty } from '../store/unsavedFileStore'
+import { hasUnsavedFileChanges, setFileEditorDirty } from '../store/unsavedFileStore'
 import { Dialog } from './ui/Dialog'
 import { Button } from './ui/Button'
 
@@ -223,16 +223,26 @@ export const FileExplorer = memo(function FileExplorer({
     }
   }, [loadPreview, previewFile, refresh])
 
+  const editorId = `${panelTabId}:${directory ?? ''}:${previewFile?.path ?? ''}`
+  const confirmDiscard = useCallback(
+    () => !hasUnsavedFileChanges(editorId) || window.confirm(t('fileExplorer.discardUnsaved')),
+    [editorId, t],
+  )
+  const openFilePreview = useCallback((file: PreviewFile) => {
+    if (file.path !== previewFile?.path && !confirmDiscard()) return
+    layoutStore.openFilePreview(file, position)
+  }, [confirmDiscard, position, previewFile?.path])
+
   // 处理文件点击
   const handleFileClick = useCallback(
     (node: FileTreeNode) => {
       if (node.type === 'directory') {
         toggleExpand(node.path)
       } else {
-        layoutStore.openFilePreview({ path: node.path, name: node.name }, position)
+        openFilePreview({ path: node.path, name: node.name })
       }
     },
-    [toggleExpand, position],
+    [toggleExpand, openFilePreview],
   )
 
   const resolveAbsolutePath = useCallback(
@@ -327,22 +337,25 @@ export const FileExplorer = memo(function FileExplorer({
 
   // 关闭预览
   const handleClosePreview = useCallback(() => {
+    if (!confirmDiscard()) return
     layoutStore.closeAllFilePreviews(panelTabId)
     resetSplitHeight()
-  }, [panelTabId, resetSplitHeight])
+  }, [confirmDiscard, panelTabId, resetSplitHeight])
 
   const handleActivatePreview = useCallback(
     (path: string) => {
+      if (path !== previewFile?.path && !confirmDiscard()) return
       layoutStore.activateFilePreview(panelTabId, path)
     },
-    [panelTabId],
+    [confirmDiscard, panelTabId, previewFile?.path],
   )
 
   const handleClosePreviewTab = useCallback(
     (path: string) => {
+      if (path === previewFile?.path && !confirmDiscard()) return
       layoutStore.closeFilePreview(panelTabId, path)
     },
-    [panelTabId],
+    [confirmDiscard, panelTabId, previewFile?.path],
   )
 
   const handleReorderPreviewTabs = useCallback(
@@ -422,7 +435,7 @@ export const FileExplorer = memo(function FileExplorer({
     (match: WorkspaceTextSearchMatch) => {
       const path = match.path.text
       const name = path.split(/[/\\]/).pop() || path
-      layoutStore.openFilePreview(
+      openFilePreview(
         {
           path,
           name,
@@ -430,18 +443,17 @@ export const FileExplorer = memo(function FileExplorer({
           targetKey: `${path}:${match.line_number}:${match.absolute_offset}:${Date.now()}`,
           targetRanges: getSearchMatchRanges(match),
         },
-        position,
       )
     },
-    [position],
+    [openFilePreview],
   )
 
   const handleFileResultClick = useCallback(
     (path: string) => {
       const name = path.split(/[/\\]/).pop() || path
-      layoutStore.openFilePreview({ path, name }, position)
+      openFilePreview({ path, name })
     },
-    [position],
+    [openFilePreview],
   )
 
   const handleSearchQueryChange = useCallback((value: string) => {
@@ -676,7 +688,7 @@ export const FileExplorer = memo(function FileExplorer({
             directory={directory}
             onSave={savePreview}
             onReload={loadPreview}
-            editorId={`${panelTabId}:${directory ?? ''}:${previewFile?.path ?? ''}`}
+            editorId={editorId}
           />
         </div>
       )}
@@ -1010,10 +1022,21 @@ function FilePreview({
   const scrollRef = useRef<HTMLDivElement>(null)
   const [isEditing, setIsEditing] = useState(false)
   const [draft, setDraft] = useState('')
+  const draftRef = useRef('')
+  const saveRequestIdRef = useRef(0)
+  const [savedText, setSavedText] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [editEtag, setEditEtag] = useState<string | undefined>()
   const [saveConflict, setSaveConflict] = useState(false)
+
+  // A keyed preview can unmount while its save is still pending.
+  useEffect(() => () => { saveRequestIdRef.current += 1 }, [])
+
+  const updateDraft = useCallback((text: string) => {
+    draftRef.current = text
+    setDraft(text)
+  }, [])
 
   // 获取文件名
   const fileName = path?.split(/[/\\]/).pop() || 'Untitled'
@@ -1021,12 +1044,14 @@ function FilePreview({
 
   const beginEditing = useCallback(() => {
     if (!content || content.type !== 'text') return
-    setDraft(content.encoding === 'base64' ? decodeBase64Text(content.content) : content.content)
+    const text = content.encoding === 'base64' ? decodeBase64Text(content.content) : content.content
+    updateDraft(text)
+    setSavedText(text)
     setSaveError(null)
     setSaveConflict(false)
     setEditEtag(content.etag)
     setIsEditing(true)
-  }, [content])
+  }, [content, updateDraft])
 
   const cancelEditing = useCallback(() => {
     setIsEditing(false)
@@ -1035,27 +1060,30 @@ function FilePreview({
 
   const saveEditing = useCallback(async (force = false) => {
     if (!path || isSaving) return
+    const requestId = ++saveRequestIdRef.current
+    const submittedDraft = draftRef.current
     setIsSaving(true)
     setSaveError(null)
     try {
-      if (force) await onSave(path, draft, editEtag, true)
-      else await onSave(path, draft, editEtag)
-      setIsEditing(false)
+      const saved = force
+        ? await onSave(path, submittedDraft, editEtag, true)
+        : await onSave(path, submittedDraft, editEtag)
+      if (requestId !== saveRequestIdRef.current) return
+      setSavedText(saved.encoding === 'base64' ? decodeBase64Text(saved.content) : saved.content)
+      setEditEtag(saved.etag)
+      if (draftRef.current === submittedDraft) setIsEditing(false)
       setSaveConflict(false)
     } catch (saveFailure) {
+      if (requestId !== saveRequestIdRef.current) return
       setSaveError(saveFailure instanceof Error ? saveFailure.message : t('fileExplorer.saveFailed'))
       setSaveConflict(Boolean(
         saveFailure && typeof saveFailure === 'object' && 'code' in saveFailure && saveFailure.code === 'STALE_REVISION',
       ))
     } finally {
-      setIsSaving(false)
+      if (requestId === saveRequestIdRef.current) setIsSaving(false)
     }
-  }, [draft, editEtag, isSaving, onSave, path, t])
-  const originalText = content?.type === 'text'
-    ? (content.encoding === 'base64' ? decodeBase64Text(content.content) : content.content)
-    : ''
-  const isDirty = isEditing && draft !== originalText
-  const confirmDiscard = useCallback(() => !isDirty || window.confirm(t('fileExplorer.discardUnsaved')), [isDirty, t])
+  }, [editEtag, isSaving, onSave, path, t])
+  const isDirty = isEditing && draft !== savedText
 
   useEffect(() => {
     setFileEditorDirty(editorId, isDirty)
@@ -1275,9 +1303,9 @@ function FilePreview({
         items={previewTabItems}
         activeId={path}
         closeAllTitle={t('common:closeAllTabs')}
-        onActivate={nextPath => { if (confirmDiscard()) onActivatePreview(nextPath) }}
-        onClose={closePath => { if (confirmDiscard()) onClosePreview(closePath) }}
-        onCloseAll={() => { if (confirmDiscard()) onClose() }}
+        onActivate={onActivatePreview}
+        onClose={onClosePreview}
+        onCloseAll={onClose}
         onReorder={onReorderPreview}
         tabWidthClassName="w-auto max-w-none min-w-max"
         rightActions={
@@ -1359,7 +1387,7 @@ function FilePreview({
               language={language || 'text'}
               isResizing={isResizing}
               readOnly={false}
-              onChange={setDraft}
+              onChange={updateDraft}
             />
           </div>
         ) : displayContent?.type === 'media' ? (

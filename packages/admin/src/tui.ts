@@ -1,6 +1,8 @@
 import { createInterface } from "node:readline/promises"
 import { stdin as input, stdout as output } from "node:process"
+import { loadOrCreateAdminToken } from "./config.ts"
 import { ServiceManager, type ServiceStatus } from "./manager.ts"
+import { AdminHttpServer } from "./server.ts"
 
 function healthLabel(status: ServiceStatus): string {
   if (status.health) return "online"
@@ -21,6 +23,15 @@ function printStatus(status: ServiceStatus): void {
 }
 
 export async function runTui(manager = new ServiceManager()): Promise<void> {
+  const config = manager.getConfig()
+  const server = new AdminHttpServer(manager, loadOrCreateAdminToken())
+  try {
+    await server.listen(config.host, config.port)
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    console.log(`Management API is not listening (${detail}).`)
+    console.log("`ompiui-admin stop` cannot reach this process.")
+  }
   const readline = createInterface({ input, output })
   console.log("OMPiUI server manager — SSH/TUI mode")
   let stoppedBeforeExit = false
@@ -28,10 +39,10 @@ export async function runTui(manager = new ServiceManager()): Promise<void> {
   process.once("SIGINT", () => {
     readline.close()
     if (manager.isRunning()) {
-      console.log("\nBackend is still running in the background.")
-      console.log("Reopen `ompiui-admin tui` to manage it, or run `ompiui-admin stop`.")
+      console.log("\nBackend is still running, but this manager is exiting.")
+      console.log("`ompiui-admin stop` cannot reach it after this process exits.")
     }
-    process.exit(0)
+    void server.close().finally(() => process.exit(0))
   })
   try {
     while (true) {
@@ -73,10 +84,11 @@ export async function runTui(manager = new ServiceManager()): Promise<void> {
     }
   } finally {
     readline.close()
+    await server.close()
   }
-  // 直接 Ctrl+C 退出时后端仍在跑：告诉用户怎么接管，而不是留下无人管理的进程。
+  // 本进程退出后没有 owner 可委托，不能假装别的 `stop` 还能接管。
   if (!stoppedBeforeExit && manager.isRunning()) {
-    console.log("\nBackend is still running in the background.")
-    console.log("Reopen `ompiui-admin tui` to manage it, or run `ompiui-admin stop`.")
+    console.log("\nBackend is still running, but this manager is exiting.")
+    console.log("`ompiui-admin stop` cannot reach it after this process exits.")
   }
 }

@@ -106,6 +106,46 @@ function resolveExportOutputPath(requested: string, baseDirectory: string): stri
 /** fork 第一条消息的纯前端特判：不开 SDK 会话，直接落在首页预填 */
 const HOME_FORK_KEY = 'home'
 
+function ReadOnlySessionNotice({
+  copying,
+  onCopy,
+  onNewSession,
+}: {
+  copying: boolean
+  onCopy: () => void
+  onNewSession: () => void
+}) {
+  const { t } = useTranslation(['chat', 'common'])
+  return (
+    <div role="status" className="glass rounded-2xl border px-3 py-2.5">
+      <p className="text-[length:var(--fs-sm)] leading-5 text-text-300">
+        {t('inputBox.readOnlySession', {
+          defaultValue:
+            'This session is read-only. The native TUI keeps ownership of its history; continue in a new session to make changes.',
+        })}
+      </p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={copying}
+          onClick={onCopy}
+          className="h-7 rounded-lg border border-border-200 px-2.5 text-[length:var(--fs-sm)] text-text-200 transition-colors hover:bg-bg-200 disabled:opacity-50"
+        >
+          {copying ? t('common:loading') : t('inputBox.copyTuiAndContinue', { defaultValue: 'Copy TUI session and continue' })}
+        </button>
+        <button
+          type="button"
+          disabled={copying}
+          onClick={onNewSession}
+          className="h-7 rounded-lg border border-border-200 px-2.5 text-[length:var(--fs-sm)] text-accent-main-100 transition-colors hover:bg-accent-main-100/10 disabled:opacity-50"
+        >
+          {t('inputBox.startNewSession', { defaultValue: 'Start new session' })}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ============================================
 // Compact viewport shell for split panes (from ocui ChatPane).
 // Layout/presentation stay fixed; enableCollapsedInputDock is inherited
@@ -174,6 +214,23 @@ function cancelPendingSplitSessionNavigation() {
   if (splitSessionNavigationToken !== 0) {
     splitSessionNavigationToken += 1
   }
+}
+
+/**
+ * 队列条目。worker 在纯文本数组之外还上报 *Entries，带上图片附件；
+ * 重建队列必须用它，否则图片在撤销/改投递模式时丢失。
+ */
+interface PiQueueEntry {
+  text: string
+  images?: PiImageInput[]
+}
+
+/** queue_update / state.queue / clearQueue 的队列快照形状。 */
+interface PiQueueSnapshot {
+  steering?: string[]
+  followUp?: string[]
+  steeringEntries?: Array<PiQueueEntry | string>
+  followUpEntries?: Array<PiQueueEntry | string>
 }
 
 interface PiChatPaneProps {
@@ -361,7 +418,9 @@ export function PiChatPane({
   }, [])
 
   const isStreaming = !readOnly && (Boolean(state?.isStreaming) || (sessionActive && !compacting))
-  const queue = state?.queue as { steering?: string[]; followUp?: string[] } | undefined
+  // 队列既带用于展示的纯文本数组（兼容旧服务端），也带保留附件的 entries。
+  // 重建队列（撤销/改投递模式/删除）必须按 entries 重放，否则图片附件丢失。
+  const queue = state?.queue as PiQueueSnapshot | undefined
 
   // 稳定队列引用：ChatArea 是 memo 组件，`?? []` 每次渲染新建数组会让它
   // 每次事件都重渲染（实测 4940 事件 → 10356 次渲染）。内容不变时保持
@@ -369,77 +428,80 @@ export function PiChatPane({
   const queuedSteering = useMemo(() => queue?.steering ?? EMPTY_STRING_ARRAY, [queue?.steering])
   const queuedFollowUps = useMemo(() => queue?.followUp ?? EMPTY_STRING_ARRAY, [queue?.followUp])
 
+  const queueEntriesFor = useCallback(
+    (snapshot: PiQueueSnapshot | null | undefined, kind: 'steering' | 'followUp'): PiQueueEntry[] => {
+      const entries = kind === 'steering' ? snapshot?.steeringEntries : snapshot?.followUpEntries
+      if (entries) return entries.map(entry => (typeof entry === 'string' ? { text: entry } : entry))
+      const texts = (kind === 'steering' ? snapshot?.steering : snapshot?.followUp) ?? []
+      return texts.map(text => ({ text }))
+    },
+    [],
+  )
+
   /**
    * Rebuild a queue after removing or editing one item.  The worker command
    * is acknowledged only after the runtime accepted the item, so replaying
    * sequentially keeps the visible order stable and lets us stop on the first
    * real failure instead of silently dropping the rest.
    */
-  const replayQueue = useCallback(async (sid: string, steering: readonly string[], followUp: readonly string[]) => {
-    for (const text of steering) await sendPiUserMessage(sid, text, undefined, 'steer')
-    for (const text of followUp) await sendPiUserMessage(sid, text, undefined, 'followUp')
-  }, [])
+  const replayQueue = useCallback(
+    async (sid: string, steering: readonly PiQueueEntry[], followUp: readonly PiQueueEntry[]) => {
+      for (const entry of steering) await sendPiUserMessage(sid, entry.text, entry.images, 'steer')
+      for (const entry of followUp) await sendPiUserMessage(sid, entry.text, entry.images, 'followUp')
+    },
+    [],
+  )
 
   // ── 队列消息操作（撤销回输入框 / 切换 steer↔followUp 模式）──
   // SDK 无单条队列移除：用 clearQueue（返回清空快照）+ 按目标重放其余实现。
   const handleQueueBackToInput = useCallback(
     async (kind: 'steering' | 'followUp', index: number) => {
       if (!sessionId) return
-      const source = (kind === 'steering' ? queue?.steering : queue?.followUp) ?? []
-      const text = source[index]
-      if (!text) return
-      const cleared = (await clearPiQueue(sessionId).catch(() => null)) as
-        | { steering?: string[]; followUp?: string[] }
-        | null
+      // 编辑器草稿只能存文本：无文本却带附件的条目回填会丢图，宁可不动队列。
+      const target = queueEntriesFor(queue, kind)[index]
+      if (!target || (target.text === '' && target.images?.length)) return
+      const cleared = (await clearPiQueue(sessionId).catch(() => null)) as PiQueueSnapshot | null
       if (!cleared) return
+      const steering = queueEntriesFor(cleared, 'steering')
+      const followUp = queueEntriesFor(cleared, 'followUp')
+      const removed = (kind === 'steering' ? steering : followUp).splice(index, 1)[0]
       // 回填输入框
-      setSessionEditorDraft(sessionId, text)
+      if (removed) setSessionEditorDraft(sessionId, removed.text)
       // 其余按原模式重放（保持顺序），被撤销的那条不再入队
-      const restSteering = [...(cleared.steering ?? [])]
-      if (kind === 'steering') restSteering.splice(index, 1)
-      const restFollowUp = [...(cleared.followUp ?? [])]
-      if (kind === 'followUp') restFollowUp.splice(index, 1)
-      await replayQueue(sessionId, restSteering, restFollowUp).catch(error => uiErrorHandler('rebuild message queue', error))
+      await replayQueue(sessionId, steering, followUp).catch(error => uiErrorHandler('rebuild message queue', error))
     },
-    [replayQueue, sessionId, queue],
+    [queue, queueEntriesFor, replayQueue, sessionId],
   )
   const handleQueueMoveMode = useCallback(
     async (kind: 'steering' | 'followUp', index: number) => {
       if (!sessionId) return
-      const source = (kind === 'steering' ? queue?.steering : queue?.followUp) ?? []
-      const text = source[index]
-      if (!text) return
-      const cleared = (await clearPiQueue(sessionId).catch(() => null)) as
-        | { steering?: string[]; followUp?: string[] }
-        | null
+      if (!queueEntriesFor(queue, kind)[index]) return
+      const cleared = (await clearPiQueue(sessionId).catch(() => null)) as PiQueueSnapshot | null
       if (!cleared) return
       // 该条以目标模式重放；其余保持原模式。必须按 kind+index 移除，
       // 不能按文本值 filter，否则两个相同的“继续”会一起消失。
-      const restSteering = [...(cleared.steering ?? [])]
-      const restFollowUp = [...(cleared.followUp ?? [])]
-      const movedText = kind === 'steering' ? restSteering.splice(index, 1)[0] : restFollowUp.splice(index, 1)[0]
-      if (movedText == null) return
-      if (kind === 'steering') restFollowUp.push(movedText)
-      else restSteering.push(movedText)
-      await replayQueue(sessionId, restSteering, restFollowUp).catch(error => uiErrorHandler('rebuild message queue', error))
+      const steering = queueEntriesFor(cleared, 'steering')
+      const followUp = queueEntriesFor(cleared, 'followUp')
+      const moved = (kind === 'steering' ? steering : followUp).splice(index, 1)[0]
+      if (moved) (kind === 'steering' ? followUp : steering).push(moved)
+      await replayQueue(sessionId, steering, followUp).catch(error => uiErrorHandler('rebuild message queue', error))
     },
-    [replayQueue, sessionId, queue],
+    [queue, queueEntriesFor, replayQueue, sessionId],
   )
   /** 直接清除队列中的一条（不回输入框） */
   const handleQueueClear = useCallback(
     async (kind: 'steering' | 'followUp', index: number) => {
       if (!sessionId) return
-      const cleared = (await clearPiQueue(sessionId).catch(() => null)) as
-        | { steering?: string[]; followUp?: string[] }
-        | null
+      if (!queueEntriesFor(queue, kind)[index]) return
+      const cleared = (await clearPiQueue(sessionId).catch(() => null)) as PiQueueSnapshot | null
       if (!cleared) return
-      const restSteering = [...(cleared.steering ?? [])]
-      if (kind === 'steering') restSteering.splice(index, 1)
-      const restFollowUp = [...(cleared.followUp ?? [])]
-      if (kind === 'followUp') restFollowUp.splice(index, 1)
-      await replayQueue(sessionId, restSteering, restFollowUp).catch(error => uiErrorHandler('rebuild message queue', error))
+      const steering = queueEntriesFor(cleared, 'steering')
+      const followUp = queueEntriesFor(cleared, 'followUp')
+      const rest = kind === 'steering' ? steering : followUp
+      rest.splice(index, 1)
+      await replayQueue(sessionId, steering, followUp).catch(error => uiErrorHandler('rebuild message queue', error))
     },
-    [replayQueue, sessionId],
+    [queue, queueEntriesFor, replayQueue, sessionId],
   )
 
   const handleQueueOpenInSideChat = useCallback(
@@ -1105,7 +1167,7 @@ export function PiChatPane({
       onEnterSessionRef.current?.(opened.sessionId, directory)
       window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
     } catch (error) {
-      uiErrorHandler('continue in new session', error)
+      uiErrorHandler('copy tui session', error)
     } finally {
       copyingSessionRef.current = false
       setIsCopyingSession(false)
@@ -1797,23 +1859,23 @@ export function PiChatPane({
 
       <div ref={inputBoxWrapperRef} className="absolute bottom-0 left-0 right-0 z-10 pointer-events-none">
         <div className="pointer-events-auto">
-          {readOnly && (
-            <div role="status" className="mx-3 mb-2 rounded-xl border border-border-200 bg-bg-100 px-3 py-2 text-sm text-text-200">
-              <p>{t('inputBox.readOnlySession', { defaultValue: 'This session is read-only. The native TUI keeps ownership of its history; continue in a new session to make changes.' })}</p>
-              <button
-                type="button"
-                className="mt-2 rounded-lg border border-border-200 px-3 py-1 text-accent-main-100 disabled:opacity-50"
-                disabled={isCopyingSession}
-                onClick={() => { void handleCopySession() }}
-              >
-                {isCopyingSession ? t('common:loading') : t('inputBox.continueInNewSession', { defaultValue: 'Continue in new session' })}
-              </button>
-            </div>
-          )}
           <InputBox
             ref={inputBoxRef}
             paneId={paneId}
             sessionId={sessionId}
+            composerNotice={
+              readOnly ? (
+                <ReadOnlySessionNotice
+                  copying={isCopyingSession}
+                  onCopy={() => {
+                    void handleCopySession()
+                  }}
+                  onNewSession={() => {
+                    onNewChatRef.current?.()
+                  }}
+                />
+              ) : null
+            }
             rootPath={inputRootPath}
             onSend={handleSend}
             submissionDisabled={readOnly || isCopyingSession}

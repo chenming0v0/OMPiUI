@@ -20,7 +20,7 @@ import { buildVisibleTimelineEntries, getVisibleTimelineForkTargetId, clearVisib
 import type { Message, MessageError, Part } from '../../types/message'
 import type { SessionMessageEntry } from '../../omp/vendor/pi-coding-agent'
 import type { ToolCall, ToolResultMessage } from '../../omp/vendor/pi-ai'
-import type { PiAssistantMessageItem, PiUserMessageItem } from '../../omp/domain/index.js'
+import type { PiAssistantMessageItem, PiTimelineItem, PiUserMessageItem } from '../../omp/domain/index.js'
 
 function createUserMessage(id: string, created: number): Message {
   return {
@@ -425,6 +425,77 @@ describe('buildProcessTimeline', () => {
     item.blocks.some(b => b.type === 'toolCall' || b.type === 'thinking')
   const hasFinal = (item: PiAssistantMessageItem) =>
     item.blocks.some(b => b.type === 'text')
+
+  const systemItems: PiTimelineItem[] = ([
+    { kind: 'bash_execution', message: { role: 'bashExecution', command: 'pwd', output: '/workspace', exitCode: 0, cancelled: false, truncated: false, timestamp: 10 } },
+    { kind: 'compaction', summary: 'Compressed context', tokensBefore: 100, firstKeptEntryId: 'user-1' },
+    { kind: 'branch_summary', summary: 'Branch summary', fromId: 'user-1' },
+    { kind: 'custom_message', customType: 'notice', content: 'Notice', display: true },
+    { kind: 'mode_change', mode: 'plan' },
+    { kind: 'unknown', entryType: 'label' },
+  ] as const).map((item, index) => ({
+    ...item,
+    entryId: `system-${index}`,
+    timestamp: 10,
+    rawEntry: rawEntry(`system-${index}`, 10),
+  }))
+
+  it.each(systemItems)('keeps $kind between the surrounding turns and outside process shells', system => {
+    const first = createAssistantItem('assistant-1', [createToolCall('tool-1'), createTextBlock('first')], 2, 3)
+    const second = createAssistantItem('assistant-2', [createToolCall('tool-2'), createTextBlock('second')], 12, 13)
+    const timeline = buildProcessTimeline([
+      createUserItem('user-1', 1), first, system, createUserItem('user-2', 11), second,
+    ], {
+      turnDurationMap: new Map(), sessionIsStreaming: false,
+      messageHasProcess: hasProcess, messageHasFinal: hasFinal,
+    })
+
+    expect(timeline.map(item => item.key)).toEqual([
+      'user-1', 'process-shell:user-1', system.entryId, 'user-2', 'process-shell:user-2',
+    ])
+    expect(timeline[1]).toMatchObject({ kind: 'process-shell', children: [{ item: first }], finalItem: first })
+    expect(timeline[2]).toMatchObject({ kind: 'message', item: system })
+    expect(timeline[4]).toMatchObject({ kind: 'process-shell', children: [{ item: second }], finalItem: second })
+  })
+
+  it('preserves leading history, consecutive systems, mid-turn boundaries and a trailing system', () => {
+    const [leading, middle, adjacent, trailing] = systemItems
+    const timeline = buildProcessTimeline([
+      leading,
+      createAssistantItem('history', [createTextBlock('older')], 1, 2),
+      createUserItem('user-1', 3),
+      createAssistantItem('assistant-1', [createToolCall('tool-1')], 4, 5),
+      middle, adjacent,
+      createAssistantItem('continuation', [createTextBlock('after notice')], 6, 7),
+      createUserItem('user-2', 8),
+      createAssistantItem('assistant-2', [createTextBlock('done')], 9, 10),
+      trailing,
+    ], {
+      turnDurationMap: new Map(), sessionIsStreaming: false,
+      messageHasProcess: hasProcess, messageHasFinal: hasFinal,
+    })
+
+    expect(timeline.map(item => item.key)).toEqual([
+      leading.entryId, 'history', 'user-1', 'process-shell:user-1',
+      middle.entryId, adjacent.entryId, 'continuation', 'user-2', 'process-shell:user-2', trailing.entryId,
+    ])
+    expect(timeline[6]).toMatchObject({ kind: 'message', item: { entryId: 'continuation' } })
+  })
+
+  it('retains chronological order and only one Working shell across system-separated pending turns', () => {
+    const system = systemItems[0]
+    const timeline = buildProcessTimeline([
+      createUserItem('user-1', 1), system,
+      createUserItem('user-2', 11),
+      { ...createAssistantItem('assistant-2', [createToolCall('tool-2')], 12), isStreaming: true },
+    ], {
+      turnDurationMap: new Map(), sessionIsStreaming: true,
+      messageHasProcess: hasProcess, messageHasFinal: hasFinal,
+    })
+
+    expect(timeline.map(item => item.key)).toEqual(['user-1', system.entryId, 'user-2', 'process-shell:user-2'])
+    expect(timeline.filter(item => item.kind === 'process-shell' && item.isActive)).toHaveLength(1)
+  })
 
   it('delays empty Working shell until entry-ready gate opens', () => {
     const items = [createUserItem('user-1', 1000)]

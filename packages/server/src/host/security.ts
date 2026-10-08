@@ -1,5 +1,24 @@
 import { timingSafeEqual } from "node:crypto"
 import type { IncomingMessage } from "node:http"
+import { isIP } from "node:net"
+
+/** Private to the embedded tunnel's loopback hop; never sent to the relay. */
+export const TUNNEL_FORWARDING_HEADER = "x-ompiui-internal-tunnel"
+
+/** Only the per-start authenticated loopback hop may supply a relay client IP. */
+export function pairingClientKey(req: IncomingMessage, tunnelForwardingToken?: string): string {
+  const peer = req.socket.remoteAddress ?? "unknown"
+  const marker = req.headers[TUNNEL_FORWARDING_HEADER]
+  const loopback = peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1"
+  if (!loopback || !tunnelForwardingToken || typeof marker !== "string" ||
+      !timingSafeTokenEquals(marker, tunnelForwardingToken)) return peer
+
+  // The relay overwrites XFF with its public socket's single IP, never a chain.
+  const forwarded = req.headers["x-forwarded-for"]
+  return typeof forwarded === "string" && isIP(forwarded)
+    ? `relay:${forwarded}`
+    : peer
+}
 
 const LOCAL_ORIGIN = /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/i
 

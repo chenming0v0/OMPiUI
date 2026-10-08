@@ -36,7 +36,7 @@ import type {
 } from '@ompiui/protocol'
 import type { SessionInfo, SessionTreeNode, Skill, PromptTemplate } from '../vendor/pi-coding-agent'
 import type { PiBranchPage, PiConfiguredPackage, PiModelRuntimeSnapshot, PiPackageUpdate, PiProjectTrust, PiProviderAuthInfo, PiSettingsSnapshot, ResolvedPaths } from '../domain/index.js'
-import { getApiBase, getPiAuthToken, piFetch } from '../httpClient.js'
+import { getApiBase, getPiAuthToken, piFetch, type PiRequestInit } from '../httpClient.js'
 import { piCommandStore } from '../state/index.js'
 import type { LanInterfaceInfo, PairInviteInfo, PairRedeemResult, TunnelStatus } from '@ompiui/protocol'
 
@@ -102,13 +102,13 @@ export async function fetchHostTunnel(signal?: AbortSignal): Promise<TunnelStatu
 }
 
 // 手机远程：可达网卡列表（含 Tailscale 接口）
-export async function fetchHostNetwork(signal?: AbortSignal): Promise<{ interfaces: LanInterfaceInfo[] }> {
-  return readJson<{ interfaces: LanInterfaceInfo[] }>(`${getApiBase()}/api/v1/host/network`, { signal })
+export async function fetchHostNetwork(signal?: AbortSignal): Promise<{ interfaces: LanInterfaceInfo[]; port?: number }> {
+  return readJson<{ interfaces: LanInterfaceInfo[]; port?: number }>(`${getApiBase()}/api/v1/host/network`, { signal })
 }
 
 // 手机远程：一次性配对邀请（GET 触发生成；「换一个」就再请求一次）
 export async function mintPairInvite(signal?: AbortSignal): Promise<PairInviteInfo> {
-  return readJson<PairInviteInfo>(`${getApiBase()}/api/v1/host/pair/invite`, { signal })
+  return readJson<PairInviteInfo>(`${getApiBase()}/api/v1/host/pair/invite`, { signal, retry: false })
 }
 
 export async function fetchPairInvite(id: string, signal?: AbortSignal): Promise<PairInviteInfo> {
@@ -304,7 +304,8 @@ export function getHostTerminalWebSocketUrl(terminalId: string, ticket: string, 
   const base = getApiBase() || (typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:8787')
   const url = new URL(`${base.replace(/^http/, 'ws')}/api/v1/host/terminals/${encodeURIComponent(terminalId)}/stream`)
   url.searchParams.set('ticket', ticket)
-  if (cursor !== undefined && Number.isSafeInteger(cursor) && cursor >= 0) url.searchParams.set('cursor', String(cursor))
+  // undefined 从最早保留的输出开始；-1 显式请求当前尾部，非负值恢复已知位置。
+  if (cursor !== undefined && Number.isSafeInteger(cursor) && cursor >= -1) url.searchParams.set('cursor', String(cursor))
   // 同源模式（无 API base）下 WebSocket 升级请求无法携带 Authorization 头，
   // 因此只要配置了 token 就必须走 query 参数，与事件流保持一致。
   const token = getPiAuthToken()
@@ -770,7 +771,7 @@ export function cyclePiThinkingLevel(sessionId: string, signal?: AbortSignal): P
 }
 
 // Helper
-async function readJson<T>(url: string, init?: RequestInit): Promise<T> {
+async function readJson<T>(url: string, init?: PiRequestInit): Promise<T> {
   const response = await piFetch(url, init)
   if (!response.ok) {
     const message = await response.text().catch(() => '')

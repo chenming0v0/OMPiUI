@@ -115,9 +115,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [search])
 
   useEffect(() => {
-    window.addEventListener('omompiui:sessions-changed', scheduleFetch)
+    window.addEventListener('ompiui:sessions-changed', scheduleFetch)
     return () => {
-      window.removeEventListener('omompiui:sessions-changed', scheduleFetch)
+      window.removeEventListener('ompiui:sessions-changed', scheduleFetch)
       if (fetchTimerRef.current !== null) {
         clearTimeout(fetchTimerRef.current)
         fetchTimerRef.current = null
@@ -135,7 +135,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     // 落盘广播丢失（消息发送失败、worker 崩了）时，靠延迟对账把幽灵
     // 条目清出列表
     window.setTimeout(() => {
-      window.dispatchEvent(new CustomEvent('omompiui:sessions-changed'))
+      window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
     }, 15_000)
   }, [])
 
@@ -169,7 +169,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setSessions(filterPiSessionList(allSessionsRef.current, search))
     // 广播删除：其他列表消费者（useSessions 等独立实例）不共享本 context
     // 的状态，需要事件触发重拉，否则删除后它们的列表一直显示旧数据。
-    window.dispatchEvent(new CustomEvent('omompiui:sessions-changed'))
+    window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
   }, [search])
 
   const value = useMemo<SessionContextValue>(() => ({

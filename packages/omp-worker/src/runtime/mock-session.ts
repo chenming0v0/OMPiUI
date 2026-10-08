@@ -209,7 +209,7 @@ export class MockCatalog implements CatalogProvider, PackagesGateway {
         hasPendingBashMessages: false,
         isRetrying: false,
         retryAttempt: 0,
-        queue: { steering: [], followUp: [], steeringMode: "one-at-a-time", followUpMode: "one-at-a-time" },
+        queue: { steering: [], followUp: [], steeringEntries: [], followUpEntries: [], steeringMode: "one-at-a-time", followUpMode: "one-at-a-time" },
         supportsThinking: true,
         activeTools: [],
         scopedModels: [],
@@ -345,6 +345,8 @@ export class MockCatalog implements CatalogProvider, PackagesGateway {
 
 interface MockEntry extends JsonObject {}
 
+type QueuedUserMessage = { text: string; images?: ImageInput[] }
+
 export class MockPiSession implements SessionRuntime {
   private header: JsonObject | null
   private entries: MockEntry[]
@@ -353,8 +355,8 @@ export class MockPiSession implements SessionRuntime {
   private streaming = false
   private compacting = false
   private timers: NodeJS.Timeout[] = []
-  private steeringQueue: string[] = []
-  private followUpQueue: string[] = []
+  private steeringQueue: QueuedUserMessage[] = []
+  private followUpQueue: QueuedUserMessage[] = []
   private steeringMode: "all" | "one-at-a-time" = "all"
   private followUpMode: "all" | "one-at-a-time" = "one-at-a-time"
   private thinkingLevel = "off"
@@ -522,8 +524,7 @@ export class MockPiSession implements SessionRuntime {
       isRetrying: false,
       retryAttempt: 0,
       queue: {
-        steering: [...this.steeringQueue],
-        followUp: [...this.followUpQueue],
+        ...this.getQueueSnapshot(),
         steeringMode: this.steeringMode,
         followUpMode: this.followUpMode,
       },
@@ -678,46 +679,56 @@ export class MockPiSession implements SessionRuntime {
   private drainQueue(): void {
     const next = this.steeringQueue.shift() ?? this.followUpQueue.shift()
     if (next !== undefined) {
-      const entry = this.appendUserMessage(next)
+      this.emitEvent({ type: "queue_update", ...this.getQueueSnapshot() })
+      const entry = this.appendUserMessage(next.text, next.images)
       const text = textFromContent((entry.message as JsonObject).content)
       this.runMockTurn(text)
     }
   }
 
-  async prompt(text: string, _images?: ImageInput[], options: { expandPromptTemplates?: boolean; streamingBehavior?: "steer" | "followUp" } = {}): Promise<void> {
+  async prompt(text: string, images?: ImageInput[], options: { expandPromptTemplates?: boolean; streamingBehavior?: "steer" | "followUp" } = {}): Promise<void> {
     if (this.streaming) {
       if (!options.streamingBehavior) {
         throw Object.assign(new Error("mock session is already streaming"), { code: "SESSION_BUSY" })
       }
-      if (options.streamingBehavior === "followUp") return this.followUp(text)
-      return this.steer(text)
+      if (options.streamingBehavior === "followUp") return this.followUp(text, images)
+      return this.steer(text, images)
     }
-    this.appendUserMessage(text)
+    this.appendUserMessage(text, images)
     this.runMockTurn(text)
   }
 
-  async steer(text: string): Promise<void> {
-    if (!this.streaming) throw Object.assign(new Error("Cannot steer an idle mock session"), { code: "SESSION_CONFLICT" })
-    this.steeringQueue.push(text)
-    this.emitEvent({ type: "queue_update", steering: [...this.steeringQueue], followUp: [...this.followUpQueue] })
+  private getQueueSnapshot() {
+    return {
+      steering: this.steeringQueue.map(item => item.text),
+      followUp: this.followUpQueue.map(item => item.text),
+      steeringEntries: structuredClone(this.steeringQueue),
+      followUpEntries: structuredClone(this.followUpQueue),
+    }
   }
 
-  async followUp(text: string): Promise<void> {
+  async steer(text: string, images?: ImageInput[]): Promise<void> {
+    if (!this.streaming) throw Object.assign(new Error("Cannot steer an idle mock session"), { code: "SESSION_CONFLICT" })
+    this.steeringQueue.push({ text, ...(images ? { images: structuredClone(images) } : {}) })
+    this.emitEvent({ type: "queue_update", ...this.getQueueSnapshot() })
+  }
+
+  async followUp(text: string, images?: ImageInput[]): Promise<void> {
     if (!this.streaming) throw Object.assign(new Error("Cannot queue a follow-up on an idle mock session"), { code: "SESSION_CONFLICT" })
-    this.followUpQueue.push(text)
-    this.emitEvent({ type: "queue_update", steering: [...this.steeringQueue], followUp: [...this.followUpQueue] })
+    this.followUpQueue.push({ text, ...(images ? { images: structuredClone(images) } : {}) })
+    this.emitEvent({ type: "queue_update", ...this.getQueueSnapshot() })
   }
 
   async sendUserMessage(text: string, images?: ImageInput[], deliverAs?: "steer" | "followUp"): Promise<void> {
     if (this.streaming) {
-      if (deliverAs === "steer") return this.steer(text)
-      return this.followUp(text)
+      if (deliverAs === "steer") return this.steer(text, images)
+      return this.followUp(text, images)
     }
-    return this.prompt(text)
+    return this.prompt(text, images)
   }
 
   async abort(): Promise<JsonValue | undefined> {
-    const cleared = { steering: [...this.steeringQueue], followUp: [...this.followUpQueue] }
+    const cleared = this.getQueueSnapshot()
     this.steeringQueue = []
     this.followUpQueue = []
     this.clearTimers()
@@ -864,10 +875,10 @@ export class MockPiSession implements SessionRuntime {
   }
 
   async clearQueue(): Promise<JsonValue | undefined> {
-    const cleared = { steering: [...this.steeringQueue], followUp: [...this.followUpQueue] }
+    const cleared = this.getQueueSnapshot()
     this.steeringQueue = []
     this.followUpQueue = []
-    this.emitEvent({ type: "queue_update", steering: [], followUp: [] })
+    this.emitEvent({ type: "queue_update", ...this.getQueueSnapshot() })
     return cleared
   }
 

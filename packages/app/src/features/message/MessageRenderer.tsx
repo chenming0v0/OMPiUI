@@ -97,6 +97,7 @@ const ProcessCollapseHeader = memo(function ProcessCollapseHeader({
       ref={headerRef}
       type="button"
       onClick={onToggle}
+      aria-expanded={expanded}
       className={`flex w-full items-center gap-1.5 rounded-md ${MSG_SPACING.header} text-left text-[length:var(--fs-sm)] leading-5 text-text-400 hover:bg-bg-200/30 hover:text-text-200 transition-colors`}
     >
       <span className={isActive ? 'reasoning-shimmer-text' : 'text-text-400'}>{label}</span>
@@ -175,7 +176,7 @@ export function ProcessCollapseBlock({
  * 消息内容范围：
  * - all: 正常渲染
  * - process: 只渲染过程部分（进外层折叠块）
- * - final: 只渲染尾部最终 text
+ * - final: 只渲染尾部最终 text 和消息级错误
  * - inline: 完整渲染（已在外层过程块内）
  */
 // 本文件混合导出组件与消息拆分/判断工具函数。这些纯函数与文件内部
@@ -255,9 +256,10 @@ export function assistantHasProcessContent(item: PiAssistantMessageItem): boolea
   return splitProcessRenderItems(items).hasProcess
 }
 
-/** 是否有应留在折叠块外的最终 text（仅消息已结束后才拆） */
+/** 最终正文或失败提示必须留在折叠块外（仅消息已结束后才拆）。 */
 export function assistantHasFinalContent(item: PiAssistantMessageItem): boolean {
   if (assistantStillStreamingProcess(item)) return false
+  if (item.message.stopReason === 'error' || item.message.stopReason === 'aborted') return true
   return splitProcessRenderItems(groupBlocksForRender(item)).hasFinal
 }
 
@@ -713,8 +715,11 @@ const AssistantMessageView = memo(function AssistantMessageView({
     message.stopReason === 'error'
       ? { name: 'UnknownError', data: { message: message.errorMessage ?? t('errors.unknownErrorDesc') } }
       : message.stopReason === 'aborted'
-        ? { name: 'MessageAbortedError', data: { message: message.errorMessage ?? t('errors.messageAborted') } }
+        ? { name: 'MessageAbortedError', data: { message: message.errorMessage ?? t('errors.messageAbortedDesc') } }
         : undefined
+  // The outside final owns the error, even when it has no text. Never render
+  // the same indication in the process/inline copy of this message.
+  const visibleError = processContentScope === 'all' || processContentScope === 'final' ? messageError : undefined
 
   // agent / model（仅 assistant 消息）
   const modelLabel = message.model || undefined
@@ -723,22 +728,15 @@ const AssistantMessageView = memo(function AssistantMessageView({
     !isStreaming && stepFinishDisplay.turnDuration && turnDuration != null && turnDuration > 0
   const showCompletedAtFooter = false
 
-  if (blocks.length === 0) {
-    // Pi has no parts hydration — empty content is truly empty.
-    // Streaming shells (Working indicator) are handled by the process
-    // collapse layer; an empty message must not occupy a row.
-    if (messageError) {
+  if (renderItems.length === 0) {
+    // Empty final content may still carry the only visible failure indication.
+    if (visibleError) {
       return (
         <div className={`flex flex-col ${MSG_SPACING.stack} w-full`}>
-          <MessageErrorView error={messageError} stateKey={`message:${item.entryId}:error`} />
+          <MessageErrorView error={visibleError} stateKey={`message:${item.entryId}:error`} />
         </div>
       )
     }
-    return null
-  }
-
-  // process/final 拆完后可能为空
-  if (renderItems.length === 0 && processContentScope !== 'all' && processContentScope !== 'inline') {
     return null
   }
 
@@ -789,8 +787,8 @@ const AssistantMessageView = memo(function AssistantMessageView({
         </div>
 
       {/* Message-level error：过程壳内不重复挂错误 */}
-      {messageError && processContentScope !== 'process' && processContentScope !== 'inline' && (
-        <MessageErrorView error={messageError} stateKey={`message:${item.entryId}:error`} />
+      {visibleError && (
+        <MessageErrorView error={visibleError} stateKey={`message:${item.entryId}:error`} />
       )}
 
       {processContentScope !== 'process' && processContentScope !== 'inline' && (showTurnDurationFooter || showCompletedAtFooter) && (

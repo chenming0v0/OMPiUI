@@ -361,7 +361,10 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
   const terminalRef = useRef<XTerm | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
   const stickyModifiersRef = useRef<StickyModifiers>(createStickyModifiers())
-  const cursorRef = useRef(0)
+  // undefined = 不带 cursor（服务端从最早保留的输出开始）。不能默认成 0：
+  // 服务端 ring 丢弃过的会话最早可用位置大于 0，写死 0 会永久返回
+  // TERMINAL_CURSOR_EXPIRED，形成无法恢复的重连循环。
+  const cursorRef = useRef<number | undefined>(undefined)
   const transportSendRef = useRef<((data: string) => void) | null>(null)
   const transportDisconnectRef = useRef<(() => void) | null>(null)
   const socketRef = useRef<PiSocket | null>(null)
@@ -441,8 +444,12 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
     const freshTab = layoutStore.getState().panelTabs.find(t => t.id === terminalId && t.type === 'terminal')
     const effectBuffer = typeof freshTab?.buffer === 'string' ? freshTab.buffer : ''
     const effectScrollY = typeof freshTab?.scrollY === 'number' ? freshTab.scrollY : undefined
+    // 只有本地确实存有 buffer 时才复用它的 cursor：buffer 与 cursor 是一对。
+    // 没有 buffer 却用已存 cursor（尤其是服务端当前末尾）会跳过全部已有输出。
     const effectCursor =
-      typeof freshTab?.cursor === 'number' && Number.isSafeInteger(freshTab.cursor) && freshTab.cursor >= 0 ? freshTab.cursor : 0
+      effectBuffer && typeof freshTab?.cursor === 'number' && Number.isSafeInteger(freshTab.cursor) && freshTab.cursor >= 0
+        ? freshTab.cursor
+        : undefined
     const effectCols =
       typeof freshTab?.cols === 'number' && Number.isSafeInteger(freshTab.cols) && freshTab.cols > 0 ? freshTab.cols : undefined
     const effectRows =
@@ -727,7 +734,9 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
               ...(manualTerminalTitlesRef.current ? {} : { title: frame.title })
             })
           } else if (frame.type === 'ready') {
-            cursorRef.current = Math.max(cursorRef.current, frame.cursor)
+            // 首连（未带 cursor）时 ready.cursor 就是已重放到的位置；带 cursor
+            // 重连时取较大值，避免服务端把游标报回到更早位置导致重复输出。
+            cursorRef.current = cursorRef.current === undefined ? frame.cursor : Math.max(cursorRef.current, frame.cursor)
             layoutStore.updateTerminalTab(terminalId, { status: 'connected' })
           } else if (frame.type === 'exit') {
             cursorRef.current = frame.cursor
@@ -740,9 +749,10 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
             }
           } else if (frame.type === 'problem') {
             if (frame.problem.code === 'TERMINAL_CURSOR_EXPIRED') {
-              // 服务端 cursor 已失效（会话可能被重建），清空本地快照后立即重新 attach
-              cursorRef.current = 0
-              layoutStore.updateTerminalSnapshot(terminalId, { buffer: '', cursor: 0, scrollY: 0 })
+              // cursor 已失效（ring 丢弃过、或会话被重建）。重连时必须省略
+              // cursor 让服务端从最早保留的输出重放；继续用 0 只会再次过期。
+              cursorRef.current = undefined
+              layoutStore.updateTerminalSnapshot(terminalId, { buffer: '', cursor: undefined, scrollY: 0 })
               terminal.clear()
               if (reconnectTimer) {
                 clearTimeout(reconnectTimer)

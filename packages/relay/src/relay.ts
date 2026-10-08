@@ -18,7 +18,6 @@ import type { Duplex } from "node:stream"
 import { readFileSync } from "node:fs"
 import { WebSocketServer, WebSocket, type RawData } from "ws"
 import {
-  CLOSE_DUPLICATE,
   CONNECTIONS_PER_TUNNEL_MAX,
   CONTROL_MESSAGE_MAX,
   CONTROL_PATH,
@@ -28,13 +27,13 @@ import {
   MESSAGE_RATE_PER_SECOND,
   WIRE_VERSION,
   decodeFrameMessage,
-  encodeFrameMessages,
   relayProblemBody,
   serializeRawHead,
   stripHopByHopHeaders,
   type ControlFrame,
 } from "./protocol.ts"
 import { BodySink } from "./sink.ts"
+import { ResponseSink } from "./response-sink.ts"
 import { hashTunnelKey, type RelayConfig, type RelayTunnelConfig } from "./config.ts"
 
 export interface StartRelayOptions {
@@ -56,6 +55,8 @@ interface VirtualConn {
   res?: ServerResponse
   socket?: Duplex
   headSent: boolean
+  response: ResponseSink
+  request: BodySink
 }
 
 interface TunnelSession {
@@ -203,7 +204,8 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
   function disposeSession(session: TunnelSession): void {
     if (!tunnels.has(session.id)) return
     tunnels.delete(session.id)
-    for (const conn of session.conns.values()) {
+    for (const [connId, conn] of session.conns) {
+      forgetConnection(session, connId)
       conn.res?.destroy()
       conn.socket?.destroy()
     }
@@ -254,22 +256,21 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
           conn.res!.writeHead(frame.s, stripHopByHopHeaders(frame.h))
         } else {
           // upgrade 响应绕过 ServerResponse 直写 socket：101 头必须原样透传
-          conn.socket!.write(serializeRawHead(frame.s, stripHopByHopHeaders(frame.h, true)))
+          conn.response.write(serializeRawHead(frame.s, stripHopByHopHeaders(frame.h, true)))
         }
         return
       }
       case "end": {
         const conn = session.conns.get(frame.c)
         if (!conn) return
-        session.conns.delete(frame.c)
-        if (conn.kind === "request") conn.res!.end()
-        else conn.socket!.end()
+        // Keep the connection counted until all queued bytes have drained.
+        conn.response.end()
         return
       }
       case "fail": {
         const conn = session.conns.get(frame.c)
         if (!conn) return
-        session.conns.delete(frame.c)
+        forgetConnection(session, frame.c)
         if (conn.kind === "request" && !conn.headSent) {
           sendProblem(conn.res!, 502, "TUNNEL_UPSTREAM_FAILED", frame.e ?? "the computer behind the tunnel refused the connection")
         } else {
@@ -281,7 +282,7 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
       case "close": {
         const conn = session.conns.get(frame.c)
         if (!conn) return
-        session.conns.delete(frame.c)
+        forgetConnection(session, frame.c)
         conn.res?.destroy()
         conn.socket?.destroy()
         return
@@ -293,16 +294,24 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
   }
 
   function deliverBody(session: TunnelSession, connId: number, payload: Buffer): void {
+    session.conns.get(connId)?.response.write(payload)
+  }
+
+  function forgetConnection(session: TunnelSession, connId: number): VirtualConn | undefined {
     const conn = session.conns.get(connId)
     if (!conn) return
-    try {
-      if (conn.kind === "request") conn.res!.write(payload)
-      else conn.socket!.write(payload)
-    } catch {
-      conn.res?.destroy()
-      conn.socket?.destroy()
-      session.conns.delete(connId)
-    }
+    session.conns.delete(connId)
+    conn.response.dispose()
+    conn.request.dispose()
+    return conn
+  }
+
+  function abortConnection(session: TunnelSession, connId: number): void {
+    const conn = forgetConnection(session, connId)
+    if (!conn) return
+    sendControl(session, { type: conn.kind === "request" ? "abort" : "close", c: connId })
+    conn.res?.destroy()
+    conn.socket?.destroy()
   }
 
   // ---------- 公网访客（HTTP + WS upgrade） ----------
@@ -337,9 +346,10 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
 
   function forwardRequest(session: TunnelSession, req: IncomingMessage, res: ServerResponse): void {
     const connId = nextConnId++
-    const conn: VirtualConn = { kind: "request", res, headSent: false }
-    session.conns.set(connId, conn)
     const sink = new BodySink(session.ws)
+    const response = new ResponseSink(res, () => abortConnection(session, connId), () => forgetConnection(session, connId))
+    const conn: VirtualConn = { kind: "request", res, headSent: false, response, request: sink }
+    session.conns.set(connId, conn)
     sendControl(session, {
       type: "open",
       c: connId,
@@ -347,14 +357,19 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
       u: req.url ?? "/",
       h: withForwardedHeaders(stripHopByHopHeaders(req.headers), req),
     })
-    req.on("data", (chunk: Buffer) => sink.write(connId, chunk, req))
-    req.on("end", () => sendControl(session, { type: "reqEnd", c: connId }))
+    req.on("data", (chunk: Buffer) => {
+      if (session.conns.has(connId)) sink.write(connId, chunk, req)
+    })
+    req.on("end", () => {
+      if (session.conns.has(connId)) sendControl(session, { type: "reqEnd", c: connId })
+    })
     const abort = () => {
       // 访客中途断开：通知桌面端终止上游请求，避免本地连接悬挂
-      if (session.conns.delete(connId)) sendControl(session, { type: "abort", c: connId })
+      abortConnection(session, connId)
     }
     req.on("aborted", abort)
     req.on("error", abort)
+    res.on("error", abort)
     res.on("close", () => {
       if (res.writableEnded) return
       abort()
@@ -375,9 +390,13 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
       return
     }
     const connId = nextConnId++
-    const conn: VirtualConn = { kind: "upgrade", socket, headSent: false }
-    session.conns.set(connId, conn)
     const sink = new BodySink(session.ws)
+    const response = new ResponseSink(socket, () => abortConnection(session, connId), () => {
+      forgetConnection(session, connId)
+      socket.destroy()
+    })
+    const conn: VirtualConn = { kind: "upgrade", socket, headSent: false, response, request: sink }
+    session.conns.set(connId, conn)
     // upgrade 的 connection/upgrade 头必须保留给 101 握手
     sendControl(session, {
       type: "open",
@@ -387,12 +406,14 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
       h: withForwardedHeaders(stripHopByHopHeaders(req.headers, true), req),
     })
     if (head.length > 0) sink.write(connId, head, null)
-    socket.on("data", (chunk: Buffer) => sink.write(connId, chunk, socket))
+    socket.on("data", (chunk: Buffer) => {
+      if (session.conns.has(connId)) sink.write(connId, chunk, socket)
+    })
     socket.on("error", () => {
       // 由 close 统一清理
     })
     socket.on("close", () => {
-      if (session.conns.delete(connId)) sendControl(session, { type: "close", c: connId })
+      abortConnection(session, connId)
     })
     socket.resume()
   }
@@ -423,11 +444,14 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
 
   function publicUrlFor(tunnel: RelayTunnelConfig, controlHost: string): string | null {
     const base = config.publicUrl
-    const scheme = base ? new URL(base).protocol.replace(":", "") : useTls ? "https" : "http"
-    if (tunnel.host) return `${scheme}://${tunnel.host}`
-    if (base) return base
-    if (!controlHost) return null
-    return `${scheme}://${controlHost}`
+    const routedHost = tunnel.host ?? (config.domain ? `${tunnel.id}.${config.domain}` : undefined)
+    if (!routedHost && base) return base
+    if (!routedHost && !controlHost) return null
+    const url = new URL(base ?? `${useTls ? "https" : "http"}://${controlHost || routedHost}`)
+    // publicUrl describes the externally reachable scheme/port (possibly a
+    // reverse proxy); routing changes only its hostname, not that endpoint.
+    if (routedHost) url.hostname = routedHost
+    return url.origin
   }
 
   function allowMessage(session: TunnelSession): boolean {

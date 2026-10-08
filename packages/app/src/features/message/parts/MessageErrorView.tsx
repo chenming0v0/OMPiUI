@@ -49,16 +49,20 @@ export const MessageErrorView = memo(function MessageErrorView({ error, stateKey
   }, [details])
 
   return (
-    <div ref={rootRef} className={`px-3 py-2 rounded-md border ${borderClass} bg-bg-100/50`}>
-      <div
+    <div ref={rootRef} role="status" className={`px-3 py-2 rounded-md border ${borderClass} bg-bg-100/50`}>
+      <button
         ref={headerRef}
-        className={`flex items-center gap-2 ${hasDetails ? 'cursor-pointer' : ''}`}
+        type="button"
+        data-compact
+        disabled={!hasDetails}
+        aria-expanded={hasDetails ? expanded : undefined}
+        className={`flex w-full items-center gap-2 text-left ${hasDetails ? 'cursor-pointer' : ''}`}
         onClick={() => hasDetails && withScrollLock(() => setExpanded(!expanded))}
       >
         <AlertCircleIcon className={`w-4 h-4 ${colorClass} flex-shrink-0`} />
         <span className={`text-[length:var(--fs-base)] ${colorClass} flex-1 min-w-0 truncate`}>{title}</span>
         {hasDetails && <ChevronDownIcon className={chevronClass(expanded)} />}
-      </div>
+      </button>
 
       <MessageExpandPanel open={expanded} variant="fade" innerClassName="overflow-hidden">
         {shouldRenderBody && (

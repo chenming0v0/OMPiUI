@@ -5,6 +5,6 @@ export function setFileEditorDirty(editorId: string, dirty: boolean): void {
   else dirtyEditors.delete(editorId)
 }
 
-export function hasUnsavedFileChanges(): boolean {
-  return dirtyEditors.size > 0
+export function hasUnsavedFileChanges(editorId?: string): boolean {
+  return editorId === undefined ? dirtyEditors.size > 0 : dirtyEditors.has(editorId)
 }

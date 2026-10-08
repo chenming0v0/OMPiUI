@@ -255,6 +255,46 @@ describe('serverStore default server editing', () => {
     sessionStorage.clear()
   })
 
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.unstubAllEnvs()
+  })
+
+  it('clears the runtime override on edit and uses the saved endpoint and token before and after reload', async () => {
+    vi.stubEnv('VITE_OMPIUI_API', 'https://build-time.invalid')
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(() => Promise.resolve(jsonResponse({ ok: true })))
+    vi.stubGlobal('fetch', fetchMock)
+    const { serverStore } = await import('./serverStore')
+    const client = await import('../omp/httpClient')
+    serverStore.setLocalServerRuntimeUrl('http://127.0.0.1:58231')
+    const generation = serverStore.getActiveServerGeneration()
+
+    expect(serverStore.updateServer('local', {
+      name: 'Edited local',
+      url: 'https://saved.test:9443/base/',
+      token: 'saved-token',
+    })).toBe(true)
+    expect(serverStore.getActiveServerGeneration()).toBe(generation + 1)
+    expect(serverStore.getLocalServerUrl()).toBe('https://saved.test:9443/base')
+    expect(client.getApiBase()).toBe('https://saved.test:9443/base')
+    await client.piFetch(`${client.getApiBase()}/api/v1/host/health`)
+
+    vi.resetModules()
+    const { serverStore: reloadedStore } = await import('./serverStore')
+    const reloadedClient = await import('../omp/httpClient')
+    expect(reloadedStore.getActiveServer()).toMatchObject({
+      id: 'local', name: 'Edited local', url: 'https://saved.test:9443/base', token: 'saved-token', isDefault: true,
+    })
+    expect(reloadedClient.getApiBase()).toBe('https://saved.test:9443/base')
+    await reloadedClient.piFetch(`${reloadedClient.getApiBase()}/api/v1/host/health`)
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    for (const [url, init] of fetchMock.mock.calls) {
+      expect(url).toBe('https://saved.test:9443/base/api/v1/host/health')
+      expect(new Headers((init as RequestInit).headers).get('authorization')).toBe('Bearer saved-token')
+    }
+  })
+
   it('persists an edited default server url across reloads', async () => {
     const first = await import('./serverStore')
 

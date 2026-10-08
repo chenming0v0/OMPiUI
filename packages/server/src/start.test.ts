@@ -80,6 +80,12 @@ test("one server provides the web app and authenticated API on the same port", a
     })
     assert.equal(health.status, 200)
     assert.equal((await health.json() as { service?: string }).service, "ompiui-server")
+    const network = await fetch(`http://127.0.0.1:${port}/api/v1/host/network`, {
+      headers: { authorization: "Bearer test-token" },
+    })
+    assert.equal(network.status, 200)
+    assert.notEqual(port, 8787)
+    assert.equal((await network.json() as { port?: number }).port, port)
   } finally {
     await running.stop()
   }

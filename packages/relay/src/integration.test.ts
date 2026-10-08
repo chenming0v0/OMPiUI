@@ -302,7 +302,7 @@ describe("relay integration", () => {
     const base = `http://127.0.0.1:${relay.port}`
     const desktopA = new MiniDesktop({ relayUrl: base, key: KEY, upstreamPort: alpha.port, tunnelId: "a" })
     const desktopB = new MiniDesktop({ relayUrl: base, key: keyB, upstreamPort: beta.port, tunnelId: "b" })
-    await desktopA.ready
+    assert.equal((await desktopA.ready).publicUrl, `http://a.relay.test:${relay.port}`)
     await desktopB.ready
 
     const toA = await request(`${base}/hello`, { headers: { host: "a.relay.test" } })
@@ -328,11 +328,13 @@ describe("relay integration", () => {
     const base = `http://127.0.0.1:${relay.port}`
     const desktopA = new MiniDesktop({ relayUrl: base, key: KEY, upstreamPort: alpha.port, tunnelId: "a" })
     const desktopB = new MiniDesktop({ relayUrl: base, key: keyB, upstreamPort: beta.port, tunnelId: "b" })
-    await desktopA.ready
-    await desktopB.ready
+    const readyA = await desktopA.ready
+    const readyB = await desktopB.ready
+    assert.equal(readyA.publicUrl, `http://a.relay.test:${relay.port}`)
+    assert.equal(readyB.publicUrl, `http://b.relay.test:${relay.port}`)
 
-    const toA = await request(`${base}/hello`, { headers: { host: "a.relay.test" } })
-    const toB = await request(`${base}/hello`, { headers: { host: "b.relay.test" } })
+    const toA = await request(`${base}/hello`, { headers: { host: new URL(readyA.publicUrl!).host } })
+    const toB = await request(`${base}/hello`, { headers: { host: new URL(readyB.publicUrl!).host } })
     assert.equal(toA.body.toString(), "hello from alpha")
     assert.equal(toB.body.toString(), "hello from beta")
     const unknown = await request(`${base}/hello`, { headers: { host: "zz.relay.test" } })
@@ -340,4 +342,39 @@ describe("relay integration", () => {
     desktopA.close()
     desktopB.close()
   })
+
+  for (const publicUrl of ["https://entry.example:9443", "https://entry.example", "http://entry.example:8080"]) {
+    it(`advertises routed hosts with the public protocol/port from ${publicUrl}`, async () => {
+      const upstream = await startUpstream("routed")
+      const relay = await startRelay({
+        config: {
+          port: 0, publicUrl, domain: "relay.test",
+          tunnels: [{ id: "a", key: KEY }, { id: "b", key: KEY, host: "custom.example" }],
+        },
+        log: noop,
+      })
+      cleanups.push(() => closeUpstream(upstream.server), () => closeRelay(relay))
+      const base = `http://127.0.0.1:${relay.port}`
+      for (const [id, hostname] of [["a", "a.relay.test"], ["b", "custom.example"]]) {
+        const desktop = new MiniDesktop({ relayUrl: base, key: KEY, upstreamPort: upstream.port, tunnelId: id })
+        const ready = await desktop.ready
+        const expected = new URL(publicUrl)
+        expected.hostname = hostname!
+        assert.equal(ready.publicUrl, expected.origin)
+        const actual = await request(`${base}/hello`, { headers: { host: new URL(ready.publicUrl!).host } })
+        assert.equal(actual.status, 200)
+        assert.equal(actual.body.toString(), "hello from routed")
+        const ws = new WebSocket(`${base.replace("http:", "ws:")}/ws`, { headers: { host: expected.host } })
+        const reply = await new Promise<string>((resolve, reject) => {
+          ws.on("open", () => ws.send("routed"))
+          ws.on("message", data => resolve(data.toString()))
+          ws.on("error", reject)
+        })
+        assert.equal(reply, "echo:routed")
+        ws.close()
+        desktop.close()
+      }
+      assert.equal((await request(`${base}/hello`, { headers: { host: new URL(publicUrl).host } })).status, 404)
+    })
+  }
 })
