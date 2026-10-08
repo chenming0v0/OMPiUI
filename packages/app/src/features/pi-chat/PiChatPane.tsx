@@ -457,51 +457,51 @@ export function PiChatPane({
   const handleQueueBackToInput = useCallback(
     async (kind: 'steering' | 'followUp', index: number) => {
       if (!sessionId) return
-      // 编辑器草稿只能存文本：无文本却带附件的条目回填会丢图，宁可不动队列。
-      const target = queueEntriesFor(queue, kind)[index]
-      if (!target || (target.text === '' && target.images?.length)) return
+      const entry = queueEntriesFor(queue, kind)[index]
+      // 编辑器草稿只能存文本：无文本却带附件的条目回填会静默丢图，宁可不动队列
+      if (!entry || (entry.text === '' && entry.images?.length)) return
       const cleared = (await clearPiQueue(sessionId).catch(() => null)) as PiQueueSnapshot | null
       if (!cleared) return
-      const steering = queueEntriesFor(cleared, 'steering')
-      const followUp = queueEntriesFor(cleared, 'followUp')
-      const removed = (kind === 'steering' ? steering : followUp).splice(index, 1)[0]
-      // 回填输入框
-      if (removed) setSessionEditorDraft(sessionId, removed.text)
-      // 其余按原模式重放（保持顺序），被撤销的那条不再入队
-      await replayQueue(sessionId, steering, followUp).catch(error => uiErrorHandler('rebuild message queue', error))
+      // 回填输入框（仅文本，图片附件 API 暂未暴露）
+      setSessionEditorDraft(sessionId, entry.text)
+      const restSteering = queueEntriesFor(cleared, 'steering')
+      const restFollowUp = queueEntriesFor(cleared, 'followUp')
+      if (kind === 'steering') restSteering.splice(index, 1)
+      else restFollowUp.splice(index, 1)
+      await replayQueue(sessionId, restSteering, restFollowUp).catch(error => uiErrorHandler('rebuild message queue', error))
     },
-    [queue, queueEntriesFor, replayQueue, sessionId],
+    [queueEntriesFor, replayQueue, sessionId, queue],
   )
   const handleQueueMoveMode = useCallback(
     async (kind: 'steering' | 'followUp', index: number) => {
       if (!sessionId) return
-      if (!queueEntriesFor(queue, kind)[index]) return
       const cleared = (await clearPiQueue(sessionId).catch(() => null)) as PiQueueSnapshot | null
       if (!cleared) return
-      // 该条以目标模式重放；其余保持原模式。必须按 kind+index 移除，
-      // 不能按文本值 filter，否则两个相同的“继续”会一起消失。
-      const steering = queueEntriesFor(cleared, 'steering')
-      const followUp = queueEntriesFor(cleared, 'followUp')
-      const moved = (kind === 'steering' ? steering : followUp).splice(index, 1)[0]
-      if (moved) (kind === 'steering' ? followUp : steering).push(moved)
-      await replayQueue(sessionId, steering, followUp).catch(error => uiErrorHandler('rebuild message queue', error))
+      const restSteering = queueEntriesFor(cleared, 'steering')
+      const restFollowUp = queueEntriesFor(cleared, 'followUp')
+      const moved = kind === 'steering' ? restSteering.splice(index, 1)[0] : restFollowUp.splice(index, 1)[0]
+      // 索引意外失效时也要把 clear 掉的队列原样重放，不能留下清空结果
+      if (moved) {
+        if (kind === 'steering') restFollowUp.push(moved)
+        else restSteering.push(moved)
+      }
+      await replayQueue(sessionId, restSteering, restFollowUp).catch(error => uiErrorHandler('rebuild message queue', error))
     },
-    [queue, queueEntriesFor, replayQueue, sessionId],
+    [queueEntriesFor, replayQueue, sessionId],
   )
   /** 直接清除队列中的一条（不回输入框） */
   const handleQueueClear = useCallback(
     async (kind: 'steering' | 'followUp', index: number) => {
       if (!sessionId) return
-      if (!queueEntriesFor(queue, kind)[index]) return
       const cleared = (await clearPiQueue(sessionId).catch(() => null)) as PiQueueSnapshot | null
       if (!cleared) return
-      const steering = queueEntriesFor(cleared, 'steering')
-      const followUp = queueEntriesFor(cleared, 'followUp')
-      const rest = kind === 'steering' ? steering : followUp
-      rest.splice(index, 1)
-      await replayQueue(sessionId, steering, followUp).catch(error => uiErrorHandler('rebuild message queue', error))
+      const restSteering = queueEntriesFor(cleared, 'steering')
+      const restFollowUp = queueEntriesFor(cleared, 'followUp')
+      if (kind === 'steering') restSteering.splice(index, 1)
+      else restFollowUp.splice(index, 1)
+      await replayQueue(sessionId, restSteering, restFollowUp).catch(error => uiErrorHandler('rebuild message queue', error))
     },
-    [queue, queueEntriesFor, replayQueue, sessionId],
+    [queueEntriesFor, replayQueue, sessionId],
   )
 
   const handleQueueOpenInSideChat = useCallback(
