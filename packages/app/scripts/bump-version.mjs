@@ -71,6 +71,24 @@ function replaceCargoPackageVersion(lockContent, packageName, nextVersion) {
   return updatedBlocks.join('[[package]]')
 }
 
+function listVersionSortedTags(extraArgs) {
+  return execSync(`git tag ${extraArgs} --sort=-v:refname`, { encoding: 'utf-8', cwd: repoRoot })
+    .split(/\r?\n/)
+    .map(tag => tag.trim())
+    .filter(Boolean)
+}
+
+/** stable tag（vX.Y.Z）与本次版本号比较，前者更小返回负数。 */
+function compareStableTagToVersion(tag, nextVersion) {
+  const left = tag.slice(1).split('.').map(Number)
+  const right = nextVersion.split('.').map(Number)
+  for (let index = 0; index < 3; index += 1) {
+    const delta = (left[index] ?? 0) - (right[index] ?? 0)
+    if (delta !== 0) return delta
+  }
+  return 0
+}
+
 function getReleaseBaseTag() {
   if (isPrerelease) {
     return execSync('git describe --tags --abbrev=0 2>/dev/null', {
@@ -79,24 +97,39 @@ function getReleaseBaseTag() {
     }).trim()
   }
 
-  const mergedTags = execSync('git tag --merged HEAD --sort=-v:refname', {
-    encoding: 'utf-8',
-    cwd: repoRoot,
-  })
-    .split(/\r?\n/)
-    .map(tag => tag.trim())
-    .filter(Boolean)
-
-  const lastStableTag = mergedTags.find(tag => stableTagRe.test(tag) && tag !== tagName)
+  // 基线优先取 HEAD 可达的最近 stable tag，并且必须低于本次版本。
+  const isBaseCandidate = tag => stableTagRe.test(tag) && tag !== tagName && compareStableTagToVersion(tag, version) < 0
+  let lastStableTag = listVersionSortedTags('--merged HEAD').find(isBaseCandidate)
+  if (!lastStableTag) {
+    // 本仓库的 tag 打在 main 上，而 main 从不并回 dev：在 dev 上发版时 stable
+    // tag 一律不可达，--merged HEAD 会把它整个过滤掉，旧实现在此抛错后被外层
+    // catch 吞掉，于是把整仓历史当成本次条目倒进 CHANGELOG。不可达只是
+    // --merged 这一层筛选失败，git log <tag>..HEAD 取的仍是「本分支自上次发版
+    // 以来的提交」，正是想要的区间，因此退回按版本排序取最新的 stable tag，
+    // 并响亮提示操作者把 main 并回来。
+    lastStableTag = listVersionSortedTags('').find(isBaseCandidate)
+    if (lastStableTag) {
+      console.warn(`  CHANGELOG base tag ${lastStableTag} is not reachable from HEAD; using it by version order.`)
+      console.warn('  Merge main back into this branch after each release so the range stays reachable.')
+    }
+  }
   if (!lastStableTag) {
     throw new Error('No previous stable tag found')
   }
 
+  console.log(`  CHANGELOG base tag      ${lastStableTag}`)
   return lastStableTag
 }
 
 // OMPiUI 自身 workspace 包名（互依赖引用也随版本一起升）
-const WORKSPACE_PACKAGE_NAMES = ['@ompiui/app', '@ompiui/server', '@ompiui/omp-worker', '@ompiui/protocol', '@ompiui/relay', '@ompiui/admin']
+const WORKSPACE_PACKAGE_NAMES = [
+  '@ompiui/app',
+  '@ompiui/server',
+  '@ompiui/omp-worker',
+  '@ompiui/protocol',
+  '@ompiui/relay',
+  '@ompiui/admin',
+]
 
 function bumpPackageJson(relativePath, oldVersion) {
   const fullPath = resolve(repoRoot, relativePath)
@@ -270,6 +303,9 @@ if (existsSync(changelogPath)) {
 } else {
   writeFileSync(changelogPath, `# Changelog${lineEnding}${lineEnding}${changelogEntry}`)
 }
+// CHANGELOG 也必须过一遍 prettier：否则发版提交带着格式问题进仓库，
+// 下一次 `prettier --check` 直接失败（条目里的长中文行尤其容易被判定需要重排）。
+formatWithPrettier('CHANGELOG.md')
 console.log(`  CHANGELOG.md          added entry for ${tagName}`)
 
 // ---------------------------------------------------------------------------
