@@ -518,3 +518,84 @@ test("SessionHost mirrors detached subagent registry frames to the server stream
   off()
   await host.dispose()
 })
+
+// ============================================
+// 空闲回收：判据问不到答案时绝不回收
+// ============================================
+
+// 回归：state.get 失败被当作空闲，正在跑长命令的 runtime 直接被 dispose——
+// OMP 落盘 session_exit(dispose) 并把在途工具写成 "Command aborted"，用户看到
+// 整条回合突然重置且不再继续，而模型从没拿到那次工具结果。
+async function reaperFixture() {
+  process.env.OMPIUI_DRIVER = "mock"
+  let disposed = 0
+  // openSession 本身也会走一次 state.get，回收判据的答复在会话打开后再注入
+  let stateGet: () => Promise<JsonObject> = async () => ({ sessionId: "reap-session" })
+  const worker = {
+    command: async (type: string) => type === "state.get" ? stateGet() : {},
+    getSessionId: () => "reap-session",
+    getSessionFile: () => "reap-session.jsonl",
+    getCwd: () => "/workspace",
+    updateSessionIdentity: () => {},
+    onEvent: () => () => {},
+    onCrash: () => () => {},
+    onClose: () => () => {},
+    dispose: async () => { disposed += 1 },
+  } as unknown as WorkerSession
+  const supervisor = {
+    onEvent: () => () => {},
+    catalogCommand: async (type: string) => {
+      if (type === "session.findByFile") return { id: "reap-session", cwd: "/workspace" }
+      if (type === "session.preview") return { state: null }
+      return { entries: [] }
+    },
+    open: async () => worker,
+  } as unknown as RuntimeSupervisor
+  const host = new SessionHost(supervisor, new EventHub())
+  await host.openSession("/workspace", "reap-session.jsonl")
+  // 把 lastAccess 推到 TTL 之外，让 runtime 进入回收候选
+  const lastAccess = (host as unknown as { lastAccess: Map<string, number> }).lastAccess
+  lastAccess.set("reap-session", Date.now() - 10 * 60_000)
+  const reap = async () => {
+    await (host as unknown as { reapIdleRuntimes(): Promise<void> }).reapIdleRuntimes.call(host)
+  }
+  return {
+    host,
+    reap,
+    disposed: () => disposed,
+    setCheck: (check: () => Promise<JsonObject>) => { stateGet = check },
+  }
+}
+
+test("SessionHost keeps a runtime whose idle busy-check cannot be answered", async () => {
+  const fixture = await reaperFixture()
+  fixture.setCheck(async () => {
+    throw Object.assign(new Error("Pi worker command timed out: state.get"), { code: "WORKER_RESULT_UNKNOWN" })
+  })
+
+  await fixture.reap()
+
+  assert.notEqual(fixture.host.getAttached("reap-session"), undefined)
+  assert.equal(fixture.disposed(), 0)
+  await fixture.host.dispose()
+  delete process.env.OMPIUI_DRIVER
+})
+
+test("SessionHost keeps a runtime with pending async work and still reaps a settled one", async () => {
+  // isIdle=true 也不够：后台 bash / async task / eval 的结果还没回灌，会话仍会被叫醒
+  const pending = await reaperFixture()
+  pending.setCheck(async () => ({ sessionId: "reap-session", isIdle: true, hasPendingAsyncWork: true }))
+  await pending.reap()
+  assert.notEqual(pending.host.getAttached("reap-session"), undefined)
+  assert.equal(pending.disposed(), 0)
+  await pending.host.dispose()
+
+  // 对照组：确实收到「无事」的答复时回收行为不变
+  const idle = await reaperFixture()
+  idle.setCheck(async () => ({ sessionId: "reap-session", isIdle: true }))
+  await idle.reap()
+  assert.equal(idle.host.getAttached("reap-session"), undefined)
+  assert.equal(idle.disposed(), 1)
+  await idle.host.dispose()
+  delete process.env.OMPIUI_DRIVER
+})
