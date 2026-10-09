@@ -512,42 +512,43 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
   }
 
   /**
-   * 按 session id 解析会话文件：先查顶层扫描，再扫子代理嵌套目录（读文件头
-   * 匹配 id）。深度查找每次全量读头，仅在显式打开/重载子会话时触发。
+   * 按 session id 解析会话文件：先查顶层扫描，再扫原生与 WebUI 托管目录
+   * 下的子代理会话。顶层列表仍不包含子会话，重载/深链可按 id 读取。
    */
   async findSessionById(sessionId: string): Promise<JsonObject | null> {
     const top = await this.summarizeAll()
     const hit = top.find(item => item.id === sessionId)
     if (hit) return { id: hit.id, cwd: hit.cwd, sessionFile: hit.path }
-    const root = sessionsRoot()
-    if (!existsSync(root)) return null
-    let projects: string[] = []
-    try {
-      projects = readdirSync(root)
-    } catch {
-      return null
-    }
-    for (const project of projects) {
-      const projectPath = path.join(root, project)
-      let entries
+    for (const root of [sessionsRoot(), managedSessionsRoot()]) {
+      if (!existsSync(root)) continue
+      let projects: string[] = []
       try {
-        entries = readdirSync(projectPath, { withFileTypes: true })
+        projects = readdirSync(root)
       } catch {
         continue
       }
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue
-        const childDir = path.join(projectPath, entry.name)
-        let names: string[] = []
+      for (const project of projects) {
+        const projectPath = path.join(root, project)
+        let entries
         try {
-          names = readdirSync(childDir).filter(name => name.endsWith(".jsonl"))
+          entries = readdirSync(projectPath, { withFileTypes: true })
         } catch {
           continue
         }
-        for (const name of names) {
-          const summary = await summarizeSessionFileCached(path.join(childDir, name))
-          if (summary && summary.id === sessionId) {
-            return { id: summary.id, cwd: summary.cwd, sessionFile: summary.path }
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue
+          const childDir = path.join(projectPath, entry.name)
+          let names: string[] = []
+          try {
+            names = readdirSync(childDir).filter(name => name.endsWith(".jsonl"))
+          } catch {
+            continue
+          }
+          for (const name of names) {
+            const summary = await summarizeSessionFileCached(path.join(childDir, name))
+            if (summary && summary.id === sessionId) {
+              return { id: summary.id, cwd: summary.cwd, sessionFile: summary.path }
+            }
           }
         }
       }
@@ -747,13 +748,13 @@ function notFoundError(message: string): Error {
  * OMP 的子代理注册表是进程内的（RpcSubagentRegistry），终态 run 还会被
  * 删除——新拉起的 `omp --mode rpc` 进程对历史子会话文件一律报
  * "Unknown subagent session file"。转录本来就落盘在子会话 jsonl 里，
- * 直接读文件即可。安全约束：目标必须是 OMP sessions 根内的 .jsonl
- * （realpath 归一后校验，与 deleteSession 同款防穿越）。
+ * 直接读文件即可。安全约束：目标必须是原生 OMP 或 WebUI 托管 sessions
+ * 根内的 .jsonl（realpath 归一后校验，与 deleteSession 同款防穿越）。
  */
 export async function readChildSessionMessages(sessionFile: string): Promise<JsonObject[]> {
   const target = resolveUserPath(sessionFile)
   if (!target.endsWith(".jsonl")) throw notFoundError("session file not found")
-  const root = path.resolve(sessionsRoot())
+  const root = path.resolve(isManagedSessionFile(target) ? managedSessionsRoot() : sessionsRoot())
   let realRoot = root
   try {
     realRoot = await fs.realpath(root)

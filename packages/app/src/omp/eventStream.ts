@@ -36,6 +36,7 @@ import {
   type PackageProgress,
 } from './managementEventStore'
 import type { SessionStatus } from '../types/session'
+import { BrowserDiagnostics } from './browserDiagnostics'
 import {
   loadPiModels,
   loadPiSessionData,
@@ -95,6 +96,8 @@ class PiEventStream {
   }
 
   private ws: PiSocket | null = null
+  private readonly diagnostics = new BrowserDiagnostics(message => this.send(message))
+  private lastCloseCode: number | undefined
   private refCounts = new Map<string, number>()
   private workspaceRefCounts = new Map<string, number>()
   private cursors = new Map<string, EventCursor>()
@@ -127,6 +130,7 @@ class PiEventStream {
       this.refCounts.delete(sessionId)
       this.cursors.delete(eventStreamKey({ kind: 'session', id: sessionId }))
       this.pendingLiveMessages.delete(sessionId)
+      this.diagnostics.forget(sessionId)
       this.clearRefreshTimers(sessionId)
       liveToolOutputStore.clearSession(sessionId)
     } else {
@@ -178,6 +182,7 @@ class PiEventStream {
 
   /** Drop everything (server switch etc.). */
   disconnectAll(): void {
+    this.diagnostics.record('disconnect', { reason: 'server_switch_or_reset' })
     for (const sessionId of this.refCounts.keys()) this.clearRefreshTimers(sessionId)
     this.refCounts.clear()
     this.workspaceRefCounts.clear()
@@ -217,7 +222,8 @@ class PiEventStream {
     this.openSocket()
   }
 
-  private closeSocket(): void {
+  private closeSocket(reason = 'unsubscribe'): void {
+    this.diagnostics.record('disconnect', { reason })
     const ws = this.ws
     this.ws = null
     this.clearPing()
@@ -240,6 +246,7 @@ class PiEventStream {
 
     ws.onopen = () => {
       if (this.ws !== ws) return
+      this.diagnostics.connected(this.lastCloseCode)
       this.sendSubscribe()
       notifyReconnected()
       this.pingTimer = setInterval(() => {
@@ -253,10 +260,11 @@ class PiEventStream {
       if (this.ws !== ws) return
       this.handleRaw(String(e.data))
     }
-    ws.onclose = () => {
+    ws.onclose = event => {
       if (this.ws !== ws) return
       this.clearPing()
       this.ws = null
+      this.lastCloseCode = event.code
       if (this.hasSubscriptions()) {
         if (this.reconnectTimer) return
         this.reconnectTimer = setTimeout(() => {
@@ -331,7 +339,7 @@ class PiEventStream {
       return
     }
     if ('channel' in message && message.channel === 'control' && message.type === 'problem') {
-      this.closeSocket()
+      this.closeSocket('protocol_problem')
       window.dispatchEvent(new CustomEvent('ompiui:event-stream-error', { detail: message.problem }))
     }
   }
@@ -672,7 +680,8 @@ class PiEventStream {
       // Preview includes the checkpoint for an attached runtime. External
       // histories stay disk-only; neither refresh is allowed to spawn a writer.
       void loadPiSessionData(stream.id)
-        .catch(() => undefined)
+        .then(() => this.diagnostics.state(stream.id, piSessionStateStore.getState(stream.id)))
+        .catch(error => this.diagnostics.error('branch_error', stream.id, error))
         .then(() => refreshPiBranch(stream.id).catch(() => undefined))
       this.scheduleStateRefresh(stream.id)
     } else if (stream.kind === 'server') {
@@ -695,7 +704,7 @@ class PiEventStream {
       this.branchRefreshTimers.delete(sessionId)
       void refreshPiBranch(sessionId)
         .then(() => this.flushPendingLiveMessage(sessionId))
-        .catch(() => undefined)
+        .catch(error => this.diagnostics.error('branch_error', sessionId, error))
     }, REFRESH_DEBOUNCE_MS)
     this.branchRefreshTimers.set(sessionId, timer)
   }
@@ -704,7 +713,9 @@ class PiEventStream {
     if (this.stateRefreshTimers.has(sessionId)) return
     const timer = setTimeout(() => {
       this.stateRefreshTimers.delete(sessionId)
-      void refreshPiSessionState(sessionId).catch(() => undefined)
+      void refreshPiSessionState(sessionId)
+        .then(() => this.diagnostics.state(sessionId, piSessionStateStore.getState(sessionId)))
+        .catch(error => this.diagnostics.error('state_error', sessionId, error))
     }, REFRESH_DEBOUNCE_MS)
     this.stateRefreshTimers.set(sessionId, timer)
   }

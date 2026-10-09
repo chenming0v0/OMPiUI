@@ -9,6 +9,7 @@ import { isJsonObject, PI_PARITY_SDK_VERSION, PROTOCOL_VERSION, validateParams }
 import { createRegistryDescribeCapability, getCommandCapability, getDriverMode, isManagedSessionFile, readOnlySessionError, listCommandCapabilities, type WorkerEvent } from "@ompiui/omp-worker"
 import type { EventHub } from "../event-hub.ts"
 import { logToFile } from "../logger.ts"
+import { diagnostics, diagnosticErrorCode, summarizeRunState } from "../diagnostics/recorder.ts"
 import type { RuntimeSupervisor } from "./supervisor.ts"
 import { SessionExecutor, type SubmittedCommand } from "./session-executor.ts"
 import { SessionRuntimeRegistry, type AttachedSession } from "./session-registry.ts"
@@ -50,6 +51,11 @@ const DEFAULT_IDLE_RUNTIME_TTL_MS = 2 * 60_000
 const RUNTIME_REAPER_INTERVAL_MS = 30_000
 const ATTACH_BUSY_RETRIES = 12
 const ATTACH_BUSY_DELAY_MS = 100
+const DIAGNOSTIC_AGENT_EVENTS = new Set([
+  "agent_start", "agent_end", "agent_settled", "turn_start", "turn_end", "message_end",
+  "tool_execution_start", "tool_execution_end", "queue_update",
+  "auto_retry_start", "auto_retry_end", "compaction_start", "compaction_end", "goal_updated",
+])
 
 function idleRuntimeTtlMs(): number {
   const configured = Number(process.env.OMPIUI_SESSION_IDLE_TTL_MS)
@@ -189,6 +195,7 @@ export class SessionHost {
   }
 
   private attach(session: AttachedSession): void {
+    diagnostics.record("session.attached", { sessionId: session.sessionId })
     this.executor.resetSession(session.sessionId)
     this.runtimes.set(session)
     this.touch(session.sessionId)
@@ -199,7 +206,8 @@ export class SessionHost {
     }
     session.worker.onReplacementCommitted?.(replacement => this.trackReplacement(session, replacement, { leaseCommitted: true }))
     session.worker.onEvent(event => this.routeSessionEvent(session, event))
-    session.worker.onCrash(() => {
+    session.worker.onCrash(error => {
+      diagnostics.record("session.crashed", { sessionId: session.sessionId, errorCode: diagnosticErrorCode(error) }, "error")
       this.executor.markRuntimeCrashed(session.sessionId)
       this.runtimes.delete(session.sessionId)
       this.activity.delete(session.sessionId)
@@ -215,6 +223,7 @@ export class SessionHost {
       })
     })
     session.worker.onClose(() => {
+      diagnostics.record("session.detached", { sessionId: session.sessionId, reason: "worker_handle_closed" })
       const wasAttached = this.runtimes.delete(session.sessionId)
       const hadActivity = this.activity.delete(session.sessionId)
       this.lastAccess.delete(session.sessionId)
@@ -232,9 +241,12 @@ export class SessionHost {
     })
   }
 
-  async closeSession(sessionId: string): Promise<void> {
+  async closeSession(sessionId: string, reason = "explicit_session_close"): Promise<void> {
     const session = this.runtimes.get(sessionId)
     if (!session) throw Object.assign(new Error("session is not attached"), { code: "SESSION_NOT_FOUND" })
+    diagnostics.record("session.close.requested", {
+      sessionId, reason, status: this.activity.get(sessionId)?.type ?? "idle",
+    })
     this.lastAccess.delete(sessionId)
     await this.executor.close(sessionId, {
       interrupt: async () => {
@@ -244,6 +256,7 @@ export class SessionHost {
         this.runtimes.delete(sessionId)
         this.activity.delete(sessionId)
         await session.worker.dispose()
+        diagnostics.record("session.close.completed", { sessionId, reason })
         this.hub.publish({ kind: "server", id: "server" }, "sessions.updated", {
           sessionId,
           detached: true,
@@ -472,7 +485,7 @@ export class SessionHost {
       const sessionFile = typeof params?.sessionFile === "string" ? params.sessionFile : undefined
       if (sessionFile) {
         const live = this.runtimes.findBySessionFile(sessionFile)
-        if (live) await this.closeSession(live.sessionId)
+        if (live) await this.closeSession(live.sessionId, "session_delete")
       }
     }
     const capability = getCommandCapability(type)
@@ -560,6 +573,7 @@ export class SessionHost {
     const targetSessionId = data.targetSessionId
     const target = this.runtimes.get(targetSessionId)
     if (target && target !== session) {
+      diagnostics.record("session.replacement.failed", { sessionId: sourceSessionId, targetSessionId, reason: "target_already_attached" }, "error")
       const error = Object.assign(new Error("replacement target session is already attached"), { code: "SESSION_BUSY" })
       setImmediate(() => { void session.worker.dispose() })
       throw error
@@ -592,6 +606,10 @@ export class SessionHost {
       if (previousActivity !== undefined) this.activity.set(targetSessionId, previousActivity)
       if (wasMaterialized) this.materialized.add(targetSessionId)
       this.runtimes.set(session)
+      diagnostics.record("session.replaced", {
+        sessionId: targetSessionId, sourceSessionId, targetSessionId,
+        reason: options.reason ?? "session_replacement",
+      })
       this.hub.publish({ kind: "server", id: "server" }, "sessions.updated", {
         replaced: true,
         sourceSessionId: typeof data.sourceSessionId === "string" ? data.sourceSessionId : sourceSessionId,
@@ -603,6 +621,9 @@ export class SessionHost {
         ...(options.reason ? { reason: options.reason } : {}),
       })
     } catch (error) {
+      diagnostics.record("session.replacement.failed", {
+        sessionId: sourceSessionId, targetSessionId, reason: "lease_commit_failed", errorCode: diagnosticErrorCode(error),
+      }, "error")
       // The SDK has already changed identity. A failed parent-side commit
       // cannot be rolled back safely, so stop this worker before it can write.
       setImmediate(() => { void session.worker.dispose() })
@@ -613,6 +634,20 @@ export class SessionHost {
   private routeSessionEvent(session: AttachedSession, event: WorkerEvent): void {
     this.touch(session.sessionId)
     if (event.channel === "pi.event") {
+      const type = event.event.type
+      if (typeof type === "string" && DIAGNOSTIC_AGENT_EVENTS.has(type)) {
+        const meta = event.event as unknown as JsonObject
+        const message = isJsonObject(meta.message) ? meta.message : undefined
+        const stopReason = typeof message?.stopReason === "string" ? message.stopReason : undefined
+        diagnostics.record("agent.event", {
+          sessionId: session.sessionId, eventType: type,
+          sequence: event.meta.sequence, epoch: event.meta.epoch,
+          toolName: typeof meta.toolName === "string" ? meta.toolName : undefined,
+          toolCallId: typeof meta.toolCallId === "string" ? meta.toolCallId : undefined,
+          status: stopReason ?? (typeof meta.isError === "boolean" ? meta.isError ? "failed" : "completed" : undefined),
+          errorCode: stopReason === "error" ? "MODEL_RESPONSE_ERROR" : undefined,
+        }, stopReason === "error" ? "error" : stopReason === "aborted" ? "warn" : "info")
+      }
       this.hub.publish({ kind: "session", id: session.sessionId }, "pi.event", {
         event: event.event,
         meta: event.meta,
@@ -702,7 +737,12 @@ export class SessionHost {
       : !previous || previous.type !== next.type
     if (next) this.activity.set(sessionId, next)
     else this.activity.delete(sessionId)
-    if (changed) this.publishActivity()
+    if (changed) {
+      diagnostics.record("session.activity", {
+        sessionId, previousStatus: previous?.type ?? "idle", status: next?.type ?? "idle",
+      })
+      this.publishActivity()
+    }
   }
 
   getActivitySnapshot(): SessionsActivitySnapshot {
@@ -714,6 +754,7 @@ export class SessionHost {
   }
 
   dispose(): void {
+    diagnostics.record("session.host.disposed", { sessionIds: this.listAttachedIds(), reason: "server_shutdown" })
     clearInterval(this.runtimeReaper)
     this.lastAccess.clear()
     this.activity.clear()
@@ -752,12 +793,16 @@ export class SessionHost {
       try {
         state = await session.worker.command("state.get")
       } catch (error) {
+        diagnostics.record("session.reaper.kept", {
+          sessionId: session.sessionId, reason: "state_query_failed", errorCode: diagnosticErrorCode(error),
+        }, "warn")
         const message = `[ompiui-server] idle reaper: state.get failed for ${session.sessionId}, keeping runtime: ${error instanceof Error ? error.message : String(error)}`
         console.error(message)
         logToFile(message)
         continue
       }
       if (!isJsonObject(state)) {
+        diagnostics.record("session.reaper.kept", { sessionId: session.sessionId, reason: "state_unavailable" }, "warn")
         const message = `[ompiui-server] idle reaper: state.get returned no state for ${session.sessionId}, keeping runtime`
         console.error(message)
         logToFile(message)
@@ -769,16 +814,27 @@ export class SessionHost {
         || state.hasPendingAsyncWork === true
         || Number(state.pendingMessageCount ?? 0) > 0
       if (stillBusy) {
+        diagnostics.record("session.reaper.kept", {
+          sessionId: session.sessionId, reason: "runtime_busy", state: summarizeRunState(state),
+        })
         this.touch(session.sessionId)
         continue
       }
-      await this.closeSession(session.sessionId).catch(() => undefined)
+      diagnostics.record("session.reaper.close", {
+        sessionId: session.sessionId, reason: "idle_ttl", state: summarizeRunState(state),
+      })
+      await this.closeSession(session.sessionId, "idle_ttl").catch(() => undefined)
       // 单共享进程下无需补 warm：worker 常驻，下次 attach 只是进程内建
       // runtime（旧架构里回收后补预热是为了避免冷启动新进程）。
     }
   }
 
   private emitCommandUpdate(record: CommandRecord): void {
+    diagnostics.record("command.status", {
+      sessionId: record.sessionId, commandId: record.id, command: record.type,
+      status: record.status, errorCode: record.error?.code,
+      durationMs: record.completedAt ? Date.parse(record.completedAt) - Date.parse(record.submittedAt) : undefined,
+    }, record.status === "failed" || record.status === "unknown_after_crash" ? "error" : "info")
     const stream = record.sessionId
       ? { kind: "session" as const, id: record.sessionId }
       : { kind: "server" as const, id: "server" }

@@ -50,6 +50,13 @@ type QueuedUserMessage = {
   images?: ImageInput[]
 }
 
+type SubmittedUserMessage = {
+  id: string
+  message: JsonObject
+  accepted: boolean
+  nativeTimestamp?: number
+}
+
 // goal 续跑循环的护栏：单个目标最多自动续跑轮数 / settle 后等 entries 落地的宽限
 const GOAL_MAX_CONTINUATIONS = 50
 const GOAL_SETTLE_GRACE_MS = 1_000
@@ -139,6 +146,8 @@ export class OmpRpcSession implements SessionRuntime {
     followUp: [],
   }
   private userQueueDrain: Promise<void> | undefined
+  private queueSubmissionInFlight = false
+  private submittedMessages: SubmittedUserMessage[] = []
   // OMPiUI 轻量 goal 运行时的注册表：RPC 模式的 OMP 不注册 goal 隐藏工具、
   // 也没有 goal RPC 命令（实测 18.3.x），目标状态只能住 worker 这里。
   // 未来 OMP 若在 RPC 透出真实 goal_updated，trackShadowState 的透传仍以
@@ -276,6 +285,7 @@ export class OmpRpcSession implements SessionRuntime {
       case "message_start":
       case "message_update":
       case "message_end": {
+        this.trackSubmittedMessage(frame)
         this.trackLiveMessage(frame)
         this.emitPiEvent(frame)
         if (type === "message_end") this.scheduleEntrySync()
@@ -427,7 +437,7 @@ export class OmpRpcSession implements SessionRuntime {
         void this.syncEntriesNow().then(() => {
           if (this.liveMessage?.phase === "persisting") this.liveMessage = undefined
           this.emitHeadIfChanged()
-        })
+        }).catch(error => this.reportEntrySyncError(error))
       })
     }
     void isStart
@@ -507,8 +517,62 @@ export class OmpRpcSession implements SessionRuntime {
     this.emitActivityIfChanged()
   }
 
+  private trackSubmittedMessage(frame: OmpRpcFrame): void {
+    if (frame.type !== "message_start" || !isJsonObject(frame.message) || frame.message.role !== "user") return
+    const message = frame.message
+    const content = message.content
+    const text = typeof content === "string" ? content : Array.isArray(content)
+      ? content.filter(isJsonObject).filter(block => block.type === "text").map(block => block.text).join("")
+      : ""
+    const pending = this.submittedMessages.find(item => item.nativeTimestamp === undefined &&
+      Array.isArray(item.message.content) &&
+      item.message.content.filter(isJsonObject).filter(block => block.type === "text").map(block => block.text).join("") === text)
+    if (!pending || typeof message.timestamp !== "number") return
+    pending.nativeTimestamp = message.timestamp
+    pending.message = structuredClone(message)
+    if (pending.accepted) this.emitUserQueueSnapshot()
+  }
+
+  private reconcileSubmittedMessages(): void {
+    const previousLength = this.submittedMessages.length
+    this.submittedMessages = this.submittedMessages.filter(item => item.nativeTimestamp === undefined ||
+      !this.entries.some(entry => isJsonObject(entry.message) &&
+        entry.message.role === "user" && entry.message.timestamp === item.nativeTimestamp))
+    if (this.submittedMessages.length !== previousLength) this.emitUserQueueSnapshot()
+  }
+
+  private async submitUserMessageNow(text: string, images?: ImageInput[]): Promise<void> {
+    const pending: SubmittedUserMessage = {
+      id: `submitted:${randomUUID()}`,
+      message: {
+        role: "user",
+        content: [{ type: "text", text }, ...(images?.map(image => ({ ...image })) ?? [])],
+        timestamp: Date.now(),
+      },
+      accepted: false,
+    }
+    // 原生 ACK 早于用户消息持久化；这里只记录展示快照，不额外写入模型上下文。
+    this.submittedMessages.push(pending)
+    try {
+      if (this.currentStreaming) {
+        const command: JsonObject = { type: "steer", message: text }
+        if (images?.length) command.images = images.map(image => ({ ...image }))
+        unwrapResponse(await this.client.request(command, 30_000))
+        this.scheduleEntrySync()
+      } else {
+        await this.prompt(text, images)
+      }
+      pending.accepted = true
+      this.reconcileSubmittedMessages()
+    } catch (error) {
+      this.submittedMessages = this.submittedMessages.filter(item => item !== pending)
+      throw error
+    }
+    this.emitUserQueueSnapshot()
+  }
+
   private scheduleUserQueueDrain(): void {
-    if (this.closed || this.currentStreaming || this.userQueueDrain) return
+    if (this.closed || this.currentStreaming || this.userQueueDrain || this.queueSubmissionInFlight) return
     const next = this.userQueue.steering[0] ?? this.userQueue.followUp[0]
     if (!next) return
 
@@ -573,9 +637,15 @@ export class OmpRpcSession implements SessionRuntime {
     if (this.syncTimer) return
     this.syncTimer = setTimeout(() => {
       this.syncTimer = undefined
-      void this.syncEntriesNow()
+      void this.syncEntriesNow().catch(error => this.reportEntrySyncError(error))
     }, 150)
     this.syncTimer.unref?.()
+  }
+
+  private reportEntrySyncError(error: unknown): void {
+    if (this.closed) return
+    console.error("Failed to synchronize OMP session history:", error)
+    this.syncDirty = true
   }
 
   private async syncEntriesNow(): Promise<void> {
@@ -611,6 +681,7 @@ export class OmpRpcSession implements SessionRuntime {
       if (typeof data.leafId === "string" || data.leafId === null) {
         this.leafId = data.leafId as string | null
       }
+      this.reconcileSubmittedMessages()
       this.emitHeadIfChanged()
     } catch (error) {
       if (error instanceof OmpRpcError && error.code === "unknown_since") {
@@ -770,6 +841,8 @@ export class OmpRpcSession implements SessionRuntime {
         steeringMode: typeof native.steeringMode === "string" ? native.steeringMode : "one-at-a-time",
         followUpMode: typeof native.followUpMode === "string" ? native.followUpMode : "one-at-a-time",
       },
+      submittedMessages: this.submittedMessages.filter(item => item.accepted)
+        .map(item => ({ id: item.id, message: structuredClone(item.message) })),
       pendingExtensionUiRequests: this.extensionUi.listPending(),
       extensionUiState: this.extensionUi.getStateMirror(),
       extensionTuiPanels: [],
@@ -920,6 +993,24 @@ export class OmpRpcSession implements SessionRuntime {
     this.emitUserQueueSnapshot()
   }
 
+  async sendQueuedMessage(kind: "steering" | "followUp", index: number): Promise<void> {
+    if (this.queueSubmissionInFlight || this.userQueueDrain) {
+      throw Object.assign(new Error("A queued message is already being submitted"), { code: "SESSION_BUSY" })
+    }
+    const queue = this.userQueue[kind]
+    const entry = queue[index]
+    if (!entry) throw Object.assign(new Error(`no ${kind} message queued at index ${index}`), { code: "NOT_FOUND" })
+    this.queueSubmissionInFlight = true
+    try {
+      await this.submitUserMessageNow(entry.text, entry.images)
+      const position = queue.indexOf(entry)
+      if (position >= 0) queue.splice(position, 1)
+      this.emitUserQueueSnapshot()
+    } finally {
+      this.queueSubmissionInFlight = false
+    }
+  }
+
   // ---------------------------------------------------------------- goal
 
   /**
@@ -1056,6 +1147,7 @@ export class OmpRpcSession implements SessionRuntime {
       const result = unwrapResponse(await this.client.request({ type: "abort" }, 30_000))
       this.currentStreaming = false
       this.userQueue = { steering: [], followUp: [] }
+      this.submittedMessages = []
       this.retryShadow = { phase: "idle" }
       this.liveMessage = undefined
       this.emitUserQueueSnapshot()
@@ -1122,6 +1214,7 @@ export class OmpRpcSession implements SessionRuntime {
     this.retryShadow = { phase: "idle" }
     this.compactionShadow = { autoEnabled: true, operation: { type: "none" } }
     this.userQueue = { steering: [], followUp: [] }
+    this.submittedMessages = []
     // Settle old dialogs with their original identity before publishing any
     // extension events from the refreshed session (including entry sync).
     this.extensionUi.cancelAll("session_replaced")

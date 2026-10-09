@@ -1,6 +1,6 @@
 {
   "name": "@ompiui/server",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "bin": {
@@ -8,7 +8,9 @@
   },
   "scripts": {
     "predev": "npm run build -w @ompiui/protocol && npm run build -w @ompiui/omp-worker",
-    "dev": "node --import tsx --watch --watch-preserve-output src/index.ts",
+    "dev": "node --import tsx src/index.ts",
+    "predev:watch": "npm run predev",
+    "dev:watch": "node --import tsx --watch --watch-preserve-output src/index.ts",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/bundle-entry.js web",
     "omp-worker": "node --import tsx src/bundle-entry.ts",
@@ -17,9 +19,9 @@
   },
   "dependencies": {
     "@lydell/node-pty": "^1.2.0-beta.14",
-    "@ompiui/omp-worker": "0.5.1",
-    "@ompiui/protocol": "0.5.1",
-    "@ompiui/relay": "0.5.1",
+    "@ompiui/omp-worker": "0.6.0",
+    "@ompiui/protocol": "0.6.0",
+    "@ompiui/relay": "0.6.0",
     "bun-pty": "^0.4.8",
     "chokidar": "^4.0.3",
     "ws": "^8.21.1"

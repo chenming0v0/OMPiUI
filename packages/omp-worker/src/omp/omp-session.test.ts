@@ -29,6 +29,7 @@ async function sessionFixture(t: TestContext) {
   }
   const commands: JsonObject[] = []
   const responses: JsonObject[] = []
+  const entries: JsonObject[] = []
   const native: JsonObject = { sessionId: "old-session", cwd: process.cwd(), isStreaming: true }
   const rpc = {
     onRequest: (_command: JsonObject) => {},
@@ -41,7 +42,7 @@ async function sessionFixture(t: TestContext) {
       if (command.type === "set_follow_up_mode") native.followUpMode = command.mode
       rpc.onRequest(command)
       const data = command.type === "get_state" ? structuredClone(native)
-        : command.type === "get_entries" ? { entries: [], leafId: null }
+        : command.type === "get_entries" ? { entries: structuredClone(entries), leafId: entries.at(-1)?.id ?? null }
           : {}
       return { type: "response", success: true, command: command.type, data }
     },
@@ -53,7 +54,7 @@ async function sessionFixture(t: TestContext) {
   internal.extensionUi.bind(session.getSessionId(), response => rpc.writeExtensionUiResponse(response))
   t.after(() => session.dispose())
   return {
-    session, commands, responses, native, rpc,
+    session, commands, responses, native, rpc, entries,
     frame: (frame: OmpRpcFrame) => internal.handleFrame(frame),
     drain: () => internal.userQueueDrain,
   }
@@ -61,6 +62,82 @@ async function sessionFixture(t: TestContext) {
 
 const emptyQueue: QueueSnapshot = { steering: [], followUp: [], steeringEntries: [], followUpEntries: [] }
 const image = (data: string): ImageInput => ({ type: "image", data, mimeType: "image/png" })
+
+describe("OmpRpcSession immediate queued delivery", () => {
+  it("submits only the selected message with images before the current turn ends", async t => {
+    const { session, frame, commands, entries } = await sessionFixture(t)
+    frame({ type: "agent_start" })
+    await session.sendUserMessage("neighbor", undefined, "followUp")
+    await session.sendUserMessage("send now", [image("AgM=")], "followUp")
+    await session.sendQueuedMessage("followUp", 1)
+    assert.deepEqual(commands.filter(command => command.type === "steer"), [
+      { type: "steer", message: "send now", images: [image("AgM=")] },
+    ])
+    const accepted = await session.getState()
+    assert.deepEqual((accepted.queue as QueueSnapshot).followUp, ["neighbor"])
+    assert.equal((accepted.submittedMessages as JsonObject[]).length, 1)
+    assert.deepEqual((accepted.submittedMessages as JsonObject[])[0]!.message, {
+      role: "user", content: [{ type: "text", text: "send now" }, image("AgM=")],
+      timestamp: ((accepted.submittedMessages as JsonObject[])[0]!.message as JsonObject).timestamp,
+    })
+    const message: JsonObject = {
+      role: "user", content: [{ type: "text", text: "send now" }, image("AgM=")], timestamp: 123456,
+    }
+    frame({ type: "message_start", message })
+    const consumed = (await session.getState()).submittedMessages as JsonObject[]
+    assert.equal((consumed[0]!.message as JsonObject).timestamp, 123456)
+    entries.push({ type: "message", id: "native-user", parentId: null, timestamp: new Date(123456).toISOString(), message })
+    frame({ type: "message_end", message })
+    await session.ensureSynced()
+    assert.deepEqual((await session.getState()).submittedMessages, [])
+    assert.equal((await session.getBranchPage(undefined, 100, 100000)).items.length, 1)
+  })
+
+  it("retains the selected message on failed submission and rejects overlapping submissions", async t => {
+    const { session, frame, rpc } = await sessionFixture(t)
+    frame({ type: "agent_start" })
+    await session.sendUserMessage("keep", [image("AA==")], "steer")
+    let fail = true
+    rpc.onRequest = command => {
+      if (command.type === "steer" && fail) throw new Error("provider rejected")
+    }
+    await assert.rejects(session.sendQueuedMessage("steering", 0), /provider rejected/)
+    assert.deepEqual((await session.getState()).submittedMessages, [])
+    assert.deepEqual(((await session.getState()).queue as QueueSnapshot).steering, ["keep"])
+    fail = false
+    const sending = session.sendQueuedMessage("steering", 0)
+    await assert.rejects(session.sendQueuedMessage("steering", 0), /already being submitted/)
+    await sending
+    assert.deepEqual(((await session.getState()).queue as QueueSnapshot).steering, [])
+  })
+
+  it("starts a normal prompt if the queued message is sent after the turn becomes idle", async t => {
+    const { session, frame, native, commands } = await sessionFixture(t)
+    frame({ type: "agent_start" })
+    await session.sendUserMessage("idle send", undefined, "followUp")
+    native.isStreaming = false
+    await session.getState()
+    await session.sendQueuedMessage("followUp", 0)
+    assert.deepEqual(commands.filter(command => command.type === "prompt"), [{ type: "prompt", message: "idle send" }])
+  })
+})
+
+describe("OmpRpcSession background history synchronization", () => {
+  it("contains both event and timer sync failures and retries on the next read", async t => {
+    const { session, frame, rpc, entries } = await sessionFixture(t)
+    t.mock.method(console, "error", () => undefined)
+    let failed = true
+    rpc.onRequest = command => {
+      if (command.type === "get_entries" && failed) throw new Error("history transport failed")
+    }
+    frame({ type: "message_end", message: { role: "assistant", content: [], timestamp: 1 } })
+    await new Promise(resolve => setTimeout(resolve, 180))
+    failed = false
+    entries.push({ type: "message", id: "recovered", parentId: null, timestamp: new Date(1).toISOString(),
+      message: { role: "assistant", content: [], timestamp: 1 } })
+    assert.equal((await session.getBranchPage(undefined, 100, 100000)).items.length, 1)
+  })
+})
 
 describe("OmpRpcSession extension identity after replacement", () => {
   for (const operation of ["new", "switch", "fork"] as const) {

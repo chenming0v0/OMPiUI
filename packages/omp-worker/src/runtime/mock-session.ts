@@ -357,6 +357,8 @@ export class MockPiSession implements SessionRuntime {
   private timers: NodeJS.Timeout[] = []
   private steeringQueue: QueuedUserMessage[] = []
   private followUpQueue: QueuedUserMessage[] = []
+  /** 已受理但当前回合尚未消费的用户消息（立即提交/队列排空后本轮内消费） */
+  private acceptedUserMessages: QueuedUserMessage[] = []
   private steeringMode: "all" | "one-at-a-time" = "all"
   private followUpMode: "all" | "one-at-a-time" = "one-at-a-time"
   private thinkingLevel = "off"
@@ -672,17 +674,37 @@ export class MockPiSession implements SessionRuntime {
       this.liveMessage = undefined
       this.streaming = false
       this.emitEvent({ type: "agent_end" })
+      // 已受理消息（立即提交 / 队列排空）在当前回合结束后合并进同一条后续
+      // 回复，而不是各自单开一回合——steering 的语义就是“本轮追加”。
+      const accepted = this.acceptedUserMessages
+      this.acceptedUserMessages = []
+      if (accepted.length > 0) {
+        const joined = accepted.map(item => item.text).join("\n")
+        this.runMockTurn(joined)
+        return
+      }
       this.drainQueue()
     }, 25)
+  }
+
+  /**
+   * 立即投递一条已受理的用户消息。会话忙碌时按真实 steering 语义追加到
+   * 当前回合（本轮结束后合并成一条后续回复），空闲时直接开启新回合。
+   */
+  private deliverAcceptedUserMessage(text: string, images?: ImageInput[]): void {
+    const entry = this.appendUserMessage(text, images)
+    if (!this.streaming) {
+      this.runMockTurn(textFromContent((entry.message as JsonObject).content))
+      return
+    }
+    this.acceptedUserMessages.push({ text, ...(images ? { images: structuredClone(images) } : {}) })
   }
 
   private drainQueue(): void {
     const next = this.steeringQueue.shift() ?? this.followUpQueue.shift()
     if (next !== undefined) {
       this.emitEvent({ type: "queue_update", ...this.getQueueSnapshot() })
-      const entry = this.appendUserMessage(next.text, next.images)
-      const text = textFromContent((entry.message as JsonObject).content)
-      this.runMockTurn(text)
+      this.deliverAcceptedUserMessage(next.text, next.images)
     }
   }
 
@@ -727,10 +749,23 @@ export class MockPiSession implements SessionRuntime {
     return this.prompt(text, images)
   }
 
+  async sendQueuedMessage(kind: "steering" | "followUp", index: number): Promise<void> {
+    const queue = kind === "steering" ? this.steeringQueue : this.followUpQueue
+    const entry = queue[index]
+    if (!entry) {
+      throw Object.assign(new Error(`no ${kind} message queued at index ${index}`), { code: "NOT_FOUND" })
+    }
+    // 先投递再出队：投递失败时队列保持原样，不会静默丢失。
+    this.deliverAcceptedUserMessage(entry.text, entry.images)
+    queue.splice(index, 1)
+    this.emitEvent({ type: "queue_update", ...this.getQueueSnapshot() })
+  }
+
   async abort(): Promise<JsonValue | undefined> {
     const cleared = this.getQueueSnapshot()
     this.steeringQueue = []
     this.followUpQueue = []
+    this.acceptedUserMessages = []
     this.clearTimers()
     if (this.streaming) {
       this.streaming = false
@@ -836,6 +871,7 @@ export class MockPiSession implements SessionRuntime {
   private resetLive(): void {
     this.clearTimers()
     this.streaming = false
+    this.acceptedUserMessages = []
     this.liveMessage = undefined
     this.leafId = typeof this.entries.at(-1)?.id === "string" ? this.entries.at(-1)!.id as string : null
     this.revision += 1

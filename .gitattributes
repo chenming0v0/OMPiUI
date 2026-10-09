@@ -1,0 +1,52 @@
+# 跨 Windows / WSL 统一行尾：文本一律以 LF 存储并检出。
+#
+# 为什么必须有这个文件：仓库此前没有任何属性，行为完全取决于每个人本机的
+# core.autocrlf。Windows 上 autocrlf=true 把工作区检出成 CRLF，Linux 与 WSL
+# 默认 false 检出 LF，同一个 blob 在两种克隆里字节不同，git 就会把对方的正常
+# 文件看成整篇改动（本仓库真实踩过：一次清理里 141 个「改动」全是这么来的）。
+# 定死 eol=lf 之后 autocrlf 不再生效，两边字节一致，diff 才是可信的。
+#
+# 需要例外的是 Windows 专用脚本（cmd 与 PowerShell 的历史包袱），以及必须
+# 逐字节保真的东西，下面单列。
+
+* text=auto eol=lf
+
+# Windows 专用脚本：cmd 与 PowerShell 对 LF 的处理有历史问题，保持 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Shell 脚本在 Linux 侧必须是 LF，否则 shebang 带上 \r 直接跑不起来
+*.sh text eol=lf
+gradlew text eol=lf
+
+# 逐字节保真：patch-package 按上下文匹配，行尾变了补丁就应用失败
+*.patch -text -diff
+
+# 二进制资源与产物，禁止任何行尾转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.mp3 binary
+*.wav binary
+*.jar binary
+*.apk binary
+*.zip binary
+*.gz binary
+*.node binary
+*.dll binary
+*.so binary
+*.dylib binary
+*.jks binary
+*.keystore binary
+
+# SVG 是文本，但常按图片资源引用，显式声明避免自动判定误伤
+*.svg text eol=lf

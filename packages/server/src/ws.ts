@@ -1,4 +1,5 @@
 import type { Server as HttpServer, IncomingMessage } from "node:http"
+import { randomUUID } from "node:crypto"
 import type { Duplex } from "node:stream"
 import { WebSocketServer, WebSocket } from "ws"
 import {
@@ -16,6 +17,8 @@ import type { EventHub } from "./event-hub.ts"
 import { requestHasAllowedOrigin, requestHasValidToken, timingSafeTokenEquals, type AllowedOrigins } from "./host/security.ts"
 import { resolveAuthToken } from "./host/auth-token.ts"
 import type { TerminalManager } from "./host/terminal-manager.ts"
+import { diagnostics, diagnosticErrorCode } from "./diagnostics/recorder.ts"
+import { recordBrowserDiagnostic } from "./diagnostics/browser.ts"
 
 const MAX_BUFFERED_BYTES = 8 * 1024 * 1024
 // Client frames are tiny (ping/subscribe); cap to avoid buffering huge frames.
@@ -110,6 +113,16 @@ export function closeEventWebSocket(
 
 function attachConnection(ws: WebSocket, eventHub: EventHub, onSubscribe?: (send: (message: EventServerMessage) => void) => void): void {
   const subscribed = new Set<string>()
+  const connectionId = randomUUID()
+  const started = performance.now()
+  let clientId: string | undefined
+  let sessionIds: string[] = []
+  let diagnosticWindow = Date.now()
+  let diagnosticCount = 0
+  diagnostics.record("connection.opened", { connectionId })
+  ws.on("error", error => diagnostics.record("connection.error", {
+    connectionId, clientId, sessionIds, errorCode: diagnosticErrorCode(error),
+  }, "warn"))
   send(ws, {
     type: "hello",
     protocolVersion: PROTOCOL_VERSION,
@@ -124,6 +137,18 @@ function attachConnection(ws: WebSocket, eventHub: EventHub, onSubscribe?: (send
   ws.on("message", raw => {
     try {
       const message = JSON.parse(String(raw)) as EventClientMessage
+      if (message.type === "diagnostic") {
+        if (message.protocolVersion !== PROTOCOL_VERSION) return
+        if (Date.now() - diagnosticWindow >= 60_000) {
+          diagnosticWindow = Date.now()
+          diagnosticCount = 0
+        }
+        // 客户端记录只供诊断，不进入业务事件流，并限制写盘频率。
+        if (++diagnosticCount <= 120) {
+          clientId = recordBrowserDiagnostic(message, connectionId, sessionIds) ?? clientId
+        }
+        return
+      }
       if (message.type === "ping") {
         if (message.protocolVersion !== PROTOCOL_VERSION) {
           rejectProtocol(ws)
@@ -162,12 +187,27 @@ function attachConnection(ws: WebSocket, eventHub: EventHub, onSubscribe?: (send
       if (Object.keys(resync).length > 0) {
         send(ws, { channel: "control", type: "resync_required", streams: resync })
       }
+      sessionIds = message.streams.filter(stream => stream.kind === "session" && typeof stream.id === "string").map(stream => stream.id)
+      diagnostics.record("connection.subscribed", { connectionId, clientId, sessionIds, count: subscribed.size })
+      for (const [key, value] of Object.entries(resync)) {
+        const stream = message.streams.find(stream => eventStreamKey(stream) === key)
+        diagnostics.record("connection.resync", {
+          connectionId, clientId, sessionId: stream?.kind === "session" ? stream.id : undefined,
+          reason: value?.reason, sequence: value?.cursor.sequence, epoch: value?.cursor.epoch,
+        })
+      }
       onSubscribe?.(message => send(ws, message))
     } catch {
       /* ignore malformed client messages */
     }
   })
-  ws.on("close", unsubscribe)
+  ws.on("close", (code: number) => {
+    unsubscribe()
+    diagnostics.record("connection.closed", {
+      connectionId, clientId, sessionIds, code, durationMs: Math.round(performance.now() - started),
+      reason: code === 1006 ? "abnormal_disconnect" : "socket_closed",
+    }, code === 1006 ? "warn" : "info")
+  })
 }
 
 function isEventStreamKind(value: string): value is EventStreamRef["kind"] {

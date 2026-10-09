@@ -16,6 +16,7 @@ import type { ModelSelectorHandle } from './ModelSelector'
 import { InputFooter } from './input/InputFooter'
 import { FloatingActions, CollapsedCapsule } from './input/InputActions'
 import { GoalBar } from './input/GoalBar'
+import { QueuedUserMessageQueue, type ComposerQueueProps } from './input/QueuedUserMessageQueue'
 import { useMobileCollapse } from './input/useMobileCollapse'
 import { useAttachmentRail } from './input/useAttachmentRail'
 import { useInputHistory } from './input/useInputHistory'
@@ -140,7 +141,7 @@ export interface CollapsedDialogInfo {
   onExpand: () => void
 }
 
-export interface InputBoxProps {
+export interface InputBoxProps extends ComposerQueueProps {
   paneId: string
   onSend: (
     text: string,
@@ -249,6 +250,12 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   collapsedPermission,
   collapsedQuestion,
   composerNotice,
+  queuedSteering,
+  queuedFollowUps,
+  onQueueBackToInput,
+  onQueueSendNow,
+  onQueueClear,
+  onQueueOpenInSideChat,
   /** Composer text change callback (extension editor state sync) */
   onTextChange,
 }: InputBoxProps, ref: React.Ref<InputBoxHandle>) {
@@ -460,7 +467,10 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
     const attachmentHeight = attachments.length > 0 ? (attachmentSectionRef.current?.offsetHeight ?? 0) : 0
     const toolbarHeight = toolbarRef.current?.offsetHeight || INPUT_TOOLBAR_FALLBACK_HEIGHT
     const footerHeight = isCollapsed ? 0 : footerRef.current?.offsetHeight || INPUT_FOOTER_FALLBACK_HEIGHT
-    const goalBarHeight = inputContainerRef.current?.previousElementSibling?.getBoundingClientRect().height ?? 0
+    const goalBar = inputContainerRef.current?.parentElement?.previousElementSibling
+    const goalBarHeight = goalBar instanceof HTMLElement
+      ? goalBar.getBoundingClientRect().height + parseFloat(getComputedStyle(goalBar).marginBottom)
+      : 0
     const inputContainerChrome = attachmentHeight + toolbarHeight + TEXTAREA_VERTICAL_CHROME
     const nextInputContainerMaxHeight = Math.max(
       TEXTAREA_MIN_HEIGHT + TEXTAREA_VERTICAL_CHROME + toolbarHeight,
@@ -488,7 +498,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
     const observed = [
       inputContainerRef.current?.closest<HTMLElement>('[data-chat-pane-root]'),
       inputContainerRef.current,
-      inputContainerRef.current?.previousElementSibling,
+      inputContainerRef.current?.parentElement?.previousElementSibling,
       attachmentSectionRef.current,
       toolbarRef.current,
       footerRef.current,
@@ -1741,10 +1751,37 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
               </div>
             )}
 
-            {/* Composer shell — Codex 的外层大框，目标栏是上方的内层圆角条。 */}
+            {/* 目标卡片在输入框外侧，底部延伸到前景输入框后方。 */}
+            <GoalBar
+              sessionId={sessionId}
+              isCompact={isCompact}
+              onSetGoal={onSetGoal}
+              queuedMessages={
+                <>
+                  <QueuedUserMessageQueue
+                    kind="current"
+                    items={queuedSteering ?? []}
+                    onBackToInput={onQueueBackToInput}
+                    onSendNow={onQueueSendNow}
+                    onClear={onQueueClear}
+                    onOpenInSideChat={onQueueOpenInSideChat}
+                  />
+                  <QueuedUserMessageQueue
+                    kind="next"
+                    items={queuedFollowUps ?? []}
+                    onBackToInput={onQueueBackToInput}
+                    onSendNow={onQueueSendNow}
+                    onClear={onQueueClear}
+                    onOpenInSideChat={onQueueOpenInSideChat}
+                  />
+                </>
+              }
+            />
+
+            {/* Composer shell — 更宽的前景圆角矩形，遮住目标卡片下沿。 */}
             <div
               data-input-shell
-              className={`glass rounded-2xl relative overflow-hidden focus-within:outline-none shadow-lg ${
+              className={`glass rounded-2xl relative z-10 overflow-hidden focus-within:outline-none shadow-lg ${
                 isDragging || isInternalFileDragging
                   ? 'border border-accent-main-100 ring-2 ring-accent-main-100/30'
                   : isStreaming
@@ -1752,10 +1789,6 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
                     : 'border border-border-200/60'
               }`}
             >
-              {/* Goal Bar — 会话目标状态栏（worker 侧 goal 命令；无目标时是"设定目标"
-                  入口，有目标时显示状态+目标+时长和暂停/编辑/放弃操作，点击展开编辑器） */}
-              <GoalBar sessionId={sessionId} isCompact={isCompact} onSetGoal={onSetGoal} />
-
               {/* Input Container */}
               <div
                 ref={inputContainerRef}
@@ -1766,7 +1799,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
                 onDrop={handleDrop}
-                className="relative overflow-hidden rounded-b-2xl"
+                className="relative overflow-hidden rounded-2xl"
                 style={{ maxHeight: inputContainerMaxHeight }}
               >
               {/* Drop overlay */}

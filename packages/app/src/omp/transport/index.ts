@@ -26,6 +26,7 @@ import type {
   FollowUpParams,
   PromptParams,
   SendUserMessageParams,
+  SendQueuedMessageParams,
   SetModelParams,
   SetThinkingLevelParams,
   SteerParams,
@@ -714,6 +715,18 @@ export function abortPiRetry(sessionId: string, signal?: AbortSignal): Promise<J
 
 export function clearPiQueue(sessionId: string, signal?: AbortSignal): Promise<JsonValue> {
   return postPiSessionCommand(sessionId, 'clearQueue', undefined, signal)
+}
+
+/**
+ * 立即提交队列里的某一条（原子操作，worker 端从队列取出后按真实 OMP
+ * steering / prompt 语义投递）。前端不得用 clearQueue + 重放来模拟。
+ */
+export function sendQueuedMessage(
+  sessionId: string,
+  params: SendQueuedMessageParams,
+  signal?: AbortSignal,
+): Promise<JsonValue> {
+  return postPiSessionCommand(sessionId, 'sendQueuedMessage', params, signal)
 }
 
 export function setPiSteeringMode(sessionId: string, mode: 'all' | 'one-at-a-time', signal?: AbortSignal): Promise<JsonValue> {

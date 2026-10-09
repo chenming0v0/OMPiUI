@@ -101,6 +101,13 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
     await ctx.requireRuntime().setFollowUpMode(P.optEnum(p, "mode", QUEUE_MODES) ?? "one-at-a-time")
   },
   clearQueue: async (ctx) => ctx.requireRuntime().clearQueue(),
+  sendQueuedMessage: async (ctx, p) => {
+    const kind = P.optEnum(p, "kind", ["steering", "followUp"] as const)
+    if (!kind) {
+      throw Object.assign(new Error("params.kind must be one of steering, followUp"), { code: "INVALID_REQUEST" })
+    }
+    await ctx.requireRuntime().sendQueuedMessage(kind, P.reqNonNegativeInteger(p, "index"))
+  },
 
   compact: async (ctx, p) => ctx.requireRuntime().compact(P.optString(p, "customInstructions")),
   abortCompaction: async (ctx) => ctx.requireRuntime().abortCompaction(),

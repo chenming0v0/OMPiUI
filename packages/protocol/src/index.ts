@@ -123,3 +123,4 @@ export type TailscaleInfo = {
   hostName: string | null
   version: string | null
 }
+export * from "./diagnostics.js"

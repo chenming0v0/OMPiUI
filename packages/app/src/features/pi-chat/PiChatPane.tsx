@@ -15,6 +15,7 @@ import { ProjectTrustPrompt } from './ProjectTrustPrompt'
 import { OutlineIndex } from '../../components/OutlineIndex'
 import { buildOutlineSourceEntries } from '../../components/outlineIndexModel'
 import { selectPiTimelineItemsCached } from '../../omp/selectors/timelineCache.js'
+import { appendSubmittedUserMessages } from '../../omp/selectors/submittedMessages.js'
 import { piEventStream } from '../../omp/eventStream.js'
 import { bashPendingStore } from '../../omp/bashPendingStore'
 import {
@@ -50,7 +51,7 @@ import {
   setPiThinkingLevel,
   clearPiQueue,
 } from '../../omp/controllers/index.js'
-import { invokePiCommand, manageSessionGoal, waitHostCommand } from '../../omp/transport/index.js'
+import { invokePiCommand, manageSessionGoal, sendQueuedMessage, waitHostCommand } from '../../omp/transport/index.js'
 import { layoutStore } from '../../store/layoutStore'
 import { themeStore } from '../../store/themeStore'
 import { useSessionActiveEntry } from '../../store/activeSessionStore'
@@ -422,9 +423,7 @@ export function PiChatPane({
   // 重建队列（撤销/改投递模式/删除）必须按 entries 重放，否则图片附件丢失。
   const queue = state?.queue as PiQueueSnapshot | undefined
 
-  // 稳定队列引用：ChatArea 是 memo 组件，`?? []` 每次渲染新建数组会让它
-  // 每次事件都重渲染（实测 4940 事件 → 10356 次渲染）。内容不变时保持
-  // 旧引用，只有队列实际变化才触发 ChatArea 重渲染。
+  // 输入框是 memo 组件；内容不变时复用队列引用，避免每个流式事件都重绘队列。
   const queuedSteering = useMemo(() => queue?.steering ?? EMPTY_STRING_ARRAY, [queue?.steering])
   const queuedFollowUps = useMemo(() => queue?.followUp ?? EMPTY_STRING_ARRAY, [queue?.followUp])
 
@@ -472,22 +471,22 @@ export function PiChatPane({
     },
     [queueEntriesFor, replayQueue, sessionId, queue],
   )
-  const handleQueueMoveMode = useCallback(
+  /**
+   * 立即提交队列中的一条（本轮 steer / 下一轮 prompt）。worker 端原子地
+   * 从队列取出并投递，只有真正受理后前端才刷新；失败时队列原样保留。
+   * 不允许用 clearQueue + 重放来模拟，那会丢附件并打乱顺序。
+   */
+  const handleQueueSendNow = useCallback(
     async (kind: 'steering' | 'followUp', index: number) => {
       if (!sessionId) return
-      const cleared = (await clearPiQueue(sessionId).catch(() => null)) as PiQueueSnapshot | null
-      if (!cleared) return
-      const restSteering = queueEntriesFor(cleared, 'steering')
-      const restFollowUp = queueEntriesFor(cleared, 'followUp')
-      const moved = kind === 'steering' ? restSteering.splice(index, 1)[0] : restFollowUp.splice(index, 1)[0]
-      // 索引意外失效时也要把 clear 掉的队列原样重放，不能留下清空结果
-      if (moved) {
-        if (kind === 'steering') restFollowUp.push(moved)
-        else restSteering.push(moved)
+      try {
+        await sendQueuedMessage(sessionId, { kind, index })
+        await Promise.all([refreshPiSessionState(sessionId), refreshPiBranch(sessionId)])
+      } catch (error) {
+        uiErrorHandler('send queued message', error)
       }
-      await replayQueue(sessionId, restSteering, restFollowUp).catch(error => uiErrorHandler('rebuild message queue', error))
     },
-    [queueEntriesFor, replayQueue, sessionId],
+    [sessionId],
   )
   /** 直接清除队列中的一条（不回输入框） */
   const handleQueueClear = useCallback(
@@ -527,8 +526,9 @@ export function PiChatPane({
     // 触发重渲染，这里显式引用以把它算进依赖，确保乐观条目被重新合并。
     void pendingBashCount
     const pendingItems = sessionId ? bashPendingStore.toItems(baseItems, sessionId) : []
-    return pendingItems.length > 0 ? [...baseItems, ...pendingItems] : baseItems
-  }, [baseItems, sessionId, pendingBashCount])
+    const timeline = appendSubmittedUserMessages(baseItems, state?.submittedMessages)
+    return pendingItems.length > 0 ? [...timeline, ...pendingItems] : timeline
+  }, [baseItems, sessionId, pendingBashCount, state?.submittedMessages])
 
   const pendingStopsRef = useRef(new Map<string, Promise<boolean>>())
   const stoppedSessionsRef = useRef(new Set<string>())
@@ -1821,12 +1821,6 @@ export function PiChatPane({
             key={chatAreaMountKey}
             ref={chatAreaRef}
             items={items}
-            queuedSteering={queuedSteering}
-            queuedFollowUps={queuedFollowUps}
-            onQueueBackToInput={handleQueueBackToInput}
-            onQueueMoveMode={handleQueueMoveMode}
-            onQueueClear={handleQueueClear}
-            onQueueOpenInSideChat={handleQueueOpenInSideChat}
             sessionId={sessionId}
             isStreaming={isStreaming}
             isCompacting={compacting}
@@ -1863,6 +1857,12 @@ export function PiChatPane({
             ref={inputBoxRef}
             paneId={paneId}
             sessionId={sessionId}
+            queuedSteering={queuedSteering}
+            queuedFollowUps={queuedFollowUps}
+            onQueueBackToInput={handleQueueBackToInput}
+            onQueueSendNow={handleQueueSendNow}
+            onQueueClear={handleQueueClear}
+            onQueueOpenInSideChat={handleQueueOpenInSideChat}
             composerNotice={
               readOnly ? (
                 <ReadOnlySessionNotice

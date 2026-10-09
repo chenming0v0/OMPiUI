@@ -1,4 +1,5 @@
 import type { JsonObject, JsonValue } from "./json.js"
+import type { BrowserDiagnosticMessage } from "./diagnostics.js"
 import type { Problem } from "./problem.js"
 import { EVENT_WS_SUBPROTOCOL, PROTOCOL_VERSION } from "./version.js"
 
@@ -107,7 +108,7 @@ export type EventSubscribeMessage = {
   cursors: EventCursorMap
 }
 
-export type EventClientMessage = EventSubscribeMessage | { type: "ping"; protocolVersion: typeof PROTOCOL_VERSION }
+export type EventClientMessage = EventSubscribeMessage | BrowserDiagnosticMessage | { type: "ping"; protocolVersion: typeof PROTOCOL_VERSION }
 
 export type EventServerMessage =
   | {

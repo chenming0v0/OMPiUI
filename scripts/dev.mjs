@@ -1,5 +1,5 @@
 /**
- * One-command dev: backend (tsx --watch) + frontend (vite HMR).
+ * 开发入口：后端保持运行，前端使用 Vite HMR；后端热重启需显式选择 dev:watch。
  * Any child exit stops the other and exits with the same code.
  */
 import { spawn } from "node:child_process"

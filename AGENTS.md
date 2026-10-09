@@ -24,3 +24,21 @@ git push origin v<version>
 
 - `v*` tag 触发 Desktop And Mobile Release。Android 签名 secrets：`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`。
 - 应用内更新检查读本仓库 `releases/latest`，不是 PiUI。
+
+## 诊断日志
+
+- 查找会话运行日志、排查刷新后停止、断连重连、状态恢复、命令中止、空闲回收或服务端/worker 重启问题时，优先使用本仓库诊断工具 `npm run diagnostics --`，不要只搜索服务端文本日志就下结论。
+- 已知会话 ID 时，先查对应时间线；已知故障时间时，加 `--since`，使用带时区的 ISO 时间。查询会保留服务端和全局 worker 生命周期作为上下文。
+
+```bash
+npm run diagnostics -- --session <sessionId>
+npm run diagnostics -- --session <sessionId> --since 2026-10-09T18:00:00+08:00
+npm run diagnostics -- --level warn
+npm run diagnostics -- --event connection --limit 500
+npm run diagnostics -- --session <sessionId> --out diagnostic-report.jsonl
+```
+
+- `--json` 输出 JSONL，`--dir` 可查询其他机器复制来的诊断目录。完整字段、事件含义、保存位置与配置见 `docs/diagnostics.md`。
+- 诊断记录不足时，再结合原始服务端日志和会话 JSONL。旧版本或关闭诊断记录时可能没有数据；缺少结束日志不代表任务正常完成，浏览器自报事件也不是后端状态的权威来源。
+- 排查时区分浏览器断连、请求取消、Agent 收到 `abort`、runtime 被回收和进程重启，不要把这些原因混为“自动停止”。
+- 不要为了查日志重启或中止正在工作的会话；分享记录优先使用诊断工具导出，避免直接传播含正文或令牌的原始日志。
