@@ -319,7 +319,7 @@ export const GoalBar = memo(function GoalBar({ sessionId, isCompact, onSetGoal }
   const canOperate = !!sessionId || !!onSetGoal
 
   return (
-    <div ref={rootRef} className={`relative ${isCompact ? '' : 'px-2 pt-2'}`} data-goal-bar>
+    <div ref={rootRef} className={`relative z-0 px-4 ${editorOpen ? 'pt-2' : 'h-[68px] -mb-8'}`} data-goal-bar>
       {editorOpen ? (
         <GoalEditor
           goal={goal}
@@ -333,7 +333,7 @@ export const GoalBar = memo(function GoalBar({ sessionId, isCompact, onSetGoal }
           isSaving={isSaving}
         />
       ) : goal ? (
-        <div className="mb-2 flex items-center gap-1 h-9 pl-3 pr-1.5 rounded-xl glass border border-border-200/60 text-[length:var(--fs-sm)]">
+        <div className="flex items-center gap-1 h-[68px] pb-8 pl-3 pr-1.5 rounded-2xl glass-alt border border-border-200/60 text-[length:var(--fs-sm)]">
           <TargetIcon size={14} className="shrink-0 text-accent-main-100" />
           <button
             type="button"
@@ -369,7 +369,7 @@ export const GoalBar = memo(function GoalBar({ sessionId, isCompact, onSetGoal }
           type="button"
           onClick={openEditor}
           disabled={!canOperate}
-          className="mb-2 w-full flex items-center justify-center gap-2 h-9 px-4 rounded-xl glass border border-border-200/60 text-[length:var(--fs-sm)] font-medium text-text-200 hover:text-accent-main-100 hover:border-accent-main-100/50 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-text-200 disabled:hover:border-border-200/60 shadow-sm hover:shadow-md"
+          className="w-full flex items-center justify-start gap-2 h-[68px] pb-8 px-3 rounded-2xl glass-alt border border-border-200/60 text-[length:var(--fs-sm)] font-medium text-text-200 hover:text-accent-main-100 hover:border-accent-main-100/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-text-200 disabled:hover:border-border-200/60"
         >
           <TargetIcon size={15} className="shrink-0" />
           <span>{t('goalBar.setGoal')}</span>

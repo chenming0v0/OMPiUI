@@ -53,6 +53,8 @@
 
 ## [Unreleased]
 
+- ui: 目标栏移到输入框外侧，改为较窄的上层圆角目标卡片，由前景输入框遮住下沿，避免目标控件嵌入输入区。
+
 - feat: 无桌面部署管理平面 `@ompiui/admin`——SSH 友好的 TUI 与独立管理 Web UI（默认 `127.0.0.1:9898`，独立管理令牌），管理后端进程生命周期、凭证与分享链接、监听/公网/中转配置；配置持久化到 `~/.ompiui/admin.json`。
 - feat: VPS 一键安装脚本支持裸机引导克隆、精确 Node >=22.19 检查与 systemd linger；新增 `deploy/docker-compose.yml`、Dockerfile HEALTHCHECK、根 `.dockerignore` 与 `deploy/README.md`。
 - fix: 设置 → 服务器里内置 Local 条目开放编辑名称/地址/token（仍不可删除），保存后健康检查、会话请求、SSE 重连与终端 WebSocket 都改走新地址 (#24)。
