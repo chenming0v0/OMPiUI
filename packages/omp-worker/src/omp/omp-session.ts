@@ -154,6 +154,7 @@ export class OmpRpcSession implements SessionRuntime {
   // 事件帧为准覆写本状态。经 state.get 的 goal 字段 + goal 命令到达前端。
   private goal: JsonValue = null
   private goalContinuations = 0
+  private goalGeneration = 0
   private goalTurnStartedAt: number | null = null
   private lastActivity = { streaming: false, retrying: false, compacting: false }
   private abortInFlight: Promise<JsonValue | undefined> | undefined
@@ -580,7 +581,10 @@ export class OmpRpcSession implements SessionRuntime {
       try {
         // 不携带 streamingBehavior：此时会话已空闲，普通 prompt 才会真正
         // 开始新回合。等待 prompt 被 OMP 接受后再从可编辑队列中移除。
-        await this.prompt(next.text, next.images)
+        await this.submitPrompt(next.text, next.images, {}, () =>
+          !this.closed && !this.abortInFlight &&
+          (this.userQueue.steering.includes(next) || this.userQueue.followUp.includes(next)),
+        )
         const steeringIndex = this.userQueue.steering.indexOf(next)
         if (steeringIndex >= 0) this.userQueue.steering.splice(steeringIndex, 1)
         const followUpIndex = this.userQueue.followUp.indexOf(next)
@@ -902,7 +906,7 @@ export class OmpRpcSession implements SessionRuntime {
       (item.provider === provider || item.provider === undefined) && item.id === id)
     if (found) return { ...found, provider: found.provider ?? provider }
     // get_state 的 model 没有完整描述符时，用缓存的最小形状补齐
-    if (provider || id) return { provider, id, name: id, reasoning: false, input: ["text"] }
+    if (provider || id) return { ...model, provider, id, name: model.name ?? id, reasoning: model.reasoning ?? false, input: model.input ?? ["text"] }
     return undefined
   }
 
@@ -957,7 +961,18 @@ export class OmpRpcSession implements SessionRuntime {
 
 
   async prompt(text: string, images?: ImageInput[], options: { expandPromptTemplates?: boolean; streamingBehavior?: "steer" | "followUp" } = {}): Promise<void> {
+    await this.submitPrompt(text, images, options)
+  }
+
+  private async submitPrompt(
+    text: string,
+    images?: ImageInput[],
+    options: { streamingBehavior?: "steer" | "followUp" } = {},
+    shouldSubmit?: () => boolean,
+  ): Promise<void> {
     await this.abortInFlight
+    // 自动投递在等待期间可能已被暂停或清队列，写入 RPC 前重新确认。
+    if (shouldSubmit && !shouldSubmit()) return
     const command: JsonObject = { type: "prompt", message: text }
     // OMP only accepts streamingBehavior while a turn is active. Treat a
     // stale follow-up/steer hint on an idle session as a normal prompt so the
@@ -1052,7 +1067,9 @@ export class OmpRpcSession implements SessionRuntime {
         this.goal = goal
       }
     }
+    this.goalGeneration += 1
     this.emitGoalUpdated()
+    if (params.op === "pause" && this.goalStatus() === "paused") await this.abort()
     if (params.op === "set" || params.op === "resume") this.pumpGoalContinuation()
     return { goal: this.goal }
   }
@@ -1068,6 +1085,7 @@ export class OmpRpcSession implements SessionRuntime {
   private setGoalStatus(status: string): void {
     if (!isJsonObject(this.goal)) return
     this.goal = { ...this.goal, status, updatedAt: Date.now() }
+    this.goalGeneration += 1
     this.emitGoalUpdated()
   }
 
@@ -1091,9 +1109,10 @@ export class OmpRpcSession implements SessionRuntime {
   private onGoalSettled(): void {
     this.onGoalTurnEnd()
     if (this.goalStatus() !== "active") return
+    const generation = this.goalGeneration
     // entries 落盘是异步的：等同步落地后判定完成标记，避免把已完成的目标再续跑一轮
     setTimeout(() => {
-      if (this.closed || this.currentStreaming || this.goalStatus() !== "active") return
+      if (this.closed || this.currentStreaming || this.goalStatus() !== "active" || generation !== this.goalGeneration) return
       if (this.lastAssistantTextEndsWith(GOAL_COMPLETE_MARKER)) {
         this.setGoalStatus("complete")
         return
@@ -1110,6 +1129,7 @@ export class OmpRpcSession implements SessionRuntime {
   private pumpGoalContinuation(): void {
     if (!isJsonObject(this.goal) || typeof this.goal.objective !== "string") return
     if (this.goal.status !== "active" || this.currentStreaming || this.closed) return
+    const generation = this.goalGeneration
     this.goalContinuations += 1
     if (this.goalContinuations > GOAL_MAX_CONTINUATIONS) {
       this.setGoalStatus("budget-limited")
@@ -1119,7 +1139,10 @@ export class OmpRpcSession implements SessionRuntime {
     const message =
       `[goal continuation ${this.goalContinuations}/${GOAL_MAX_CONTINUATIONS}] Session goal: "${objective}". ` +
       `Continue working toward it. If it is already fully achieved, end your reply with the exact marker ${GOAL_COMPLETE_MARKER} and do nothing else.`
-    void this.prompt(message, undefined, { streamingBehavior: "followUp" }).catch(() => undefined)
+    void this.submitPrompt(message, undefined, { streamingBehavior: "followUp" }, () =>
+      generation === this.goalGeneration && this.goalStatus() === "active" &&
+      !this.currentStreaming && !this.closed,
+    ).catch(() => undefined)
   }
 
   private lastAssistantTextEndsWith(marker: string): boolean {
@@ -1252,7 +1275,7 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async setModel(provider: string, modelId: string): Promise<void> {
-    await this.client.request({ type: "set_model", provider, modelId }, 60_000)
+    unwrapResponse(await this.client.request({ type: "set_model", provider, modelId }, 60_000))
     await Promise.all([this.refreshModels(), this.refreshThinkingLevels()])
   }
 
@@ -1268,7 +1291,7 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async setThinkingLevel(level: string): Promise<void> {
-    await this.client.request({ type: "set_thinking_level", level }, 30_000)
+    unwrapResponse(await this.client.request({ type: "set_thinking_level", level }, 30_000))
   }
 
   async cycleThinkingLevel(): Promise<JsonValue | undefined> {

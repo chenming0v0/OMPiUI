@@ -10,6 +10,7 @@ import {
   type EventStreamRef,
   isJsonObject,
   type CommandRecord,
+  type JsonObject,
 } from '@ompiui/protocol'
 import type { AgentMessage, AgentSessionEvent, PiBranchPage, PiLiveMessage } from './domain/index.js'
 import type { ProviderAuthEvent, SessionsActivitySnapshot, SessionActivityStatus } from '@ompiui/protocol'
@@ -49,7 +50,7 @@ const RECONNECT_DELAY_MS = 1_000
 const REFRESH_DEBOUNCE_MS = 150
 
 type PiEventPayload = {
-  event: AgentSessionEvent
+  event: AgentSessionEvent | { type: 'config_update'; model?: JsonObject; thinkingLevel?: string }
   meta: EventCursor & { liveMessage?: { id: string; revision: number } }
 }
 
@@ -195,6 +196,7 @@ class PiEventStream {
   /** Replace every subscription when the active backend changes. */
   handleServerChange(): void {
     this.disconnectAll()
+    this.knownActiveSessions.clear()
     if (getTrackedManagementProviders().length > 0) {
       this.ensureSocket()
       if (this.ws?.readyState === PI_SOCKET_OPEN) this.sendSubscribe()
@@ -535,13 +537,26 @@ class PiEventStream {
       activeSessionStore.updateStatus(sessionId, activityToSessionStatus(status))
     }
     // Sessions no longer active -> idle (clears their dot)
-    for (const sessionId of this.knownActiveSessions) {
+    const candidates = new Set([...this.knownActiveSessions, ...this.refCounts.keys()])
+    for (const sessionId of candidates) {
       if (!(sessionId in active)) {
+        const state = piSessionStateStore.getState(sessionId)
+        if (this.knownActiveSessions.has(sessionId) || state?.isStreaming || state?.isCompacting || state?.isRetrying || state?.hasPendingAsyncWork) {
+          this.markSessionSettled(sessionId)
+        }
         activeSessionStore.updateStatus(sessionId, { type: 'idle' })
         notifySessionIdle(sessionId)
       }
     }
     this.knownActiveSessions = new Set(Object.keys(active))
+  }
+
+  private markSessionSettled(sessionId: string): void {
+    piSessionStateStore.patchState(sessionId, {
+      isStreaming: false, isIdle: true, isRetrying: false, isCompacting: false,
+      isBashRunning: false, hasPendingAsyncWork: false, retry: null, compaction: null,
+    })
+    this.pendingLiveMessages.delete(sessionId)
   }
 
   private knownActiveSessions = new Set<string>()
@@ -568,6 +583,14 @@ class PiEventStream {
   private handlePiEvent(sessionId: string, payload: PiEventPayload): void {
     const { event, meta } = payload
     switch (event.type) {
+      case 'config_update': {
+        const patch: JsonObject = {}
+        if (isJsonObject(event.model)) patch.model = event.model
+        if (typeof event.thinkingLevel === 'string') patch.thinkingLevel = event.thinkingLevel
+        piSessionStateStore.patchState(sessionId, patch)
+        this.scheduleStateRefresh(sessionId)
+        break
+      }
       case 'message_start':
       case 'message_update':
         this.updateLiveMessage(sessionId, event.message, meta)
@@ -601,23 +624,36 @@ class PiEventStream {
         this.scheduleStateRefresh(sessionId)
         break
       }
-      case 'agent_end':
       case 'agent_settled':
+        this.markSessionSettled(sessionId)
+        activeSessionStore.updateStatus(sessionId, { type: 'idle' })
+        this.knownActiveSessions.delete(sessionId)
+        this.scheduleBranchRefresh(sessionId)
+        this.scheduleStateRefresh(sessionId)
+        notifySessionIdle(sessionId)
+        break
+      case 'agent_end':
+        piSessionStateStore.patchState(sessionId, { isStreaming: false })
         this.pendingLiveMessages.delete(sessionId)
         this.scheduleBranchRefresh(sessionId)
         this.scheduleStateRefresh(sessionId)
         notifySessionIdle(sessionId)
         break
       case 'agent_start':
+        piSessionStateStore.patchState(sessionId, { isStreaming: true, isIdle: false })
+        activeSessionStore.updateStatus(sessionId, { type: 'busy' })
+        this.knownActiveSessions.add(sessionId)
         notifySessionStarted(sessionId)
         this.scheduleStateRefresh(sessionId)
         break
       case 'turn_start':
+      case 'model_changed':
       case 'thinking_level_changed':
       case 'session_info_changed':
       case 'queue_update':
       case 'compaction_start':
       case 'compaction_end':
+        piSessionStateStore.beginRequest(sessionId)
         this.scheduleStateRefresh(sessionId)
         // 压缩结束会改写会话（插入 compaction 摘要条目）：强制刷新分支，
         // 让"上下文已压缩"分隔线出现在聊天流里，而不是等不可靠的

@@ -994,6 +994,7 @@ export class MockPiSession implements SessionRuntime {
       else if (this.goal) this.goal.updatedAt = now
     }
     this.emitEvent({ type: "goal_updated", goal: this.goal ?? null })
+    if (params.op === "pause" && this.goal?.status === "paused") await this.abort()
     return { goal: this.goal ?? null }
   }
 

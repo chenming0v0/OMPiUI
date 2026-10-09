@@ -173,6 +173,7 @@ export async function loadPiSessionData(sessionId: string, signal?: AbortSignal)
 
 async function loadPiSessionDataOnce(sessionId: string, signal?: AbortSignal): Promise<void> {
   const serverGeneration = serverStore.getActiveServerGeneration()
+  const requestVersion = piSessionStateStore.beginRequest(sessionId)
   let lastError: unknown
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
@@ -183,7 +184,7 @@ async function loadPiSessionDataOnce(sessionId: string, signal?: AbortSignal): P
         ), signal)
 
       if (serverStore.getActiveServerGeneration() !== serverGeneration) return
-      piSessionStateStore.setState(sessionId, preview.state)
+      piSessionStateStore.setStateIfCurrent(sessionId, preview.state, requestVersion)
       piBranchStore.setData(sessionId, preview.branch)
       return
     } catch (error) {
@@ -196,7 +197,9 @@ async function loadPiSessionDataOnce(sessionId: string, signal?: AbortSignal): P
 
   if (serverStore.getActiveServerGeneration() !== serverGeneration) return
   console.error('Failed to load session data:', lastError)
-  piSessionStateStore.setError(sessionId, lastError as Error)
+  if (piSessionStateStore.isRequestCurrent(sessionId, requestVersion)) {
+    piSessionStateStore.setError(sessionId, lastError as Error)
+  }
   piBranchStore.setError(sessionId, lastError as Error)
   throw lastError
 }
@@ -306,9 +309,10 @@ export async function refreshPiBranch(sessionId: string, signal?: AbortSignal): 
  */
 export async function refreshPiSessionState(sessionId: string, signal?: AbortSignal): Promise<void> {
   const serverGeneration = serverStore.getActiveServerGeneration()
+  const requestVersion = piSessionStateStore.beginRequest(sessionId)
   const state = await transport.getPiSessionState(sessionId, signal)
   if (serverStore.getActiveServerGeneration() !== serverGeneration) return
-  piSessionStateStore.setState(sessionId, state as JsonObject)
+  if (!piSessionStateStore.setStateIfCurrent(sessionId, state as JsonObject, requestVersion)) return
   // worker 的子代理注册表快照并入全局 store：页面刷新 / 重连后 HUD 与
   // TaskRenderer 内联视图据此恢复（运行中的随后由 progress 帧继续推进）
   if (state && typeof state === 'object' && !Array.isArray(state)

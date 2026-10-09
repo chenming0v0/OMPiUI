@@ -12,6 +12,8 @@ import { piEventStream } from './eventStream'
 import { piBranchStore, piSessionStateStore, piCommandStore } from './state/index.js'
 import { ompSubagentStore } from './ompSubagentStore'
 import type { PiBranchPage } from './domain/index.js'
+import { activeSessionStore } from '../store/activeSessionStore'
+import * as controllers from './controllers/index.js'
 
 // 触达私有方法做白盒测试（事件驱动路径需要 WS，单测直接调 handler）
 type Handler = (payload: unknown) => void
@@ -171,5 +173,96 @@ describe('refresh replay hydration', () => {
       role: 'assistant',
       content: [{ type: 'text', text: 'still working' }],
     })
+  })
+})
+
+describe('session configuration and stop synchronization', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.spyOn(controllers, 'refreshPiSessionState').mockResolvedValue()
+    vi.spyOn(controllers, 'refreshPiBranch').mockResolvedValue()
+    piSessionStateStore.setState('session-stop', { isStreaming: true, isIdle: false })
+  })
+
+  afterEach(() => {
+    piEventStream.disconnectAll()
+    ;(piEventStream as unknown as { knownActiveSessions: Set<string> }).knownActiveSessions.clear()
+    piSessionStateStore.clearAll()
+    activeSessionStore.reset()
+    vi.clearAllTimers()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  function event(event: unknown) {
+    handleEvent({
+      stream: { kind: 'session', id: 'session-stop' },
+      cursor: { epoch: 'test', sequence: 1 },
+      channel: 'pi.event',
+      payload: { event, meta: { epoch: 'test', sequence: 1 } },
+    })
+  }
+
+  function activity(sessions: unknown) {
+    handleEvent({
+      stream: { kind: 'server', id: 'server' },
+      cursor: { epoch: 'test', sequence: 1 },
+      channel: 'sessions.activity',
+      payload: { sessions },
+    })
+  }
+
+  it('refreshes the actual model on model_changed and invalidates older reads', async () => {
+    const old = piSessionStateStore.beginRequest('session-stop')
+    event({ type: 'model_changed' })
+    expect(piSessionStateStore.isRequestCurrent('session-stop', old)).toBe(false)
+    await vi.advanceTimersByTimeAsync(200)
+    expect(controllers.refreshPiSessionState).toHaveBeenCalledWith('session-stop')
+  })
+
+  it('applies config_update from native slash commands to the correct session immediately', () => {
+    event({ type: 'config_update', model: { provider: 'custom', id: 'correct' }, thinkingLevel: 'xhigh' })
+    expect(piSessionStateStore.getState('session-stop')).toMatchObject({
+      model: { provider: 'custom', id: 'correct' }, thinkingLevel: 'xhigh',
+    })
+    expect(piSessionStateStore.getState('another-session')).toBeNull()
+  })
+
+  it('clears both streaming and activity immediately on agent_settled without waiting for HTTP', () => {
+    activity({ 'session-stop': { type: 'busy' } })
+    const old = piSessionStateStore.beginRequest('session-stop')
+    event({ type: 'agent_settled' })
+    expect(piSessionStateStore.getState('session-stop')).toMatchObject({
+      isStreaming: false, isIdle: true, isRetrying: false, isCompacting: false,
+    })
+    expect(activeSessionStore.getBusySessionsSnapshot()).toHaveLength(0)
+    expect(piSessionStateStore.isRequestCurrent('session-stop', old)).toBe(false)
+    expect(controllers.refreshPiSessionState).not.toHaveBeenCalled()
+  })
+
+  it('clears stale streaming when the global activity snapshot reports idle', () => {
+    activity({ 'session-stop': { type: 'busy' } })
+    activity({})
+    expect(piSessionStateStore.getState('session-stop')).toMatchObject({ isStreaming: false, isIdle: true })
+    expect(activeSessionStore.getBusySessionsSnapshot()).toHaveLength(0)
+  })
+
+  it('reconciles a cached busy state on reconnect even without an earlier active snapshot', () => {
+    const internal = piEventStream as unknown as { refCounts: Map<string, number> }
+    internal.refCounts.set('session-stop', 1)
+    activity({})
+    expect(piSessionStateStore.getState('session-stop')).toMatchObject({ isStreaming: false, isIdle: true })
+  })
+
+  it('keeps pending background work active at agent_end until the session settles', () => {
+    activity({ 'session-stop': { type: 'busy' } })
+    piSessionStateStore.patchState('session-stop', { hasPendingAsyncWork: true, isIdle: false })
+    event({ type: 'agent_end' })
+    expect(piSessionStateStore.getState('session-stop')).toMatchObject({
+      isStreaming: false, isIdle: false, hasPendingAsyncWork: true,
+    })
+    expect(activeSessionStore.getBusySessionsSnapshot()).toHaveLength(1)
+    event({ type: 'agent_settled' })
+    expect(activeSessionStore.getBusySessionsSnapshot()).toHaveLength(0)
   })
 })

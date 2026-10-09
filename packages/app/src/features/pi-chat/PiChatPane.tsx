@@ -649,17 +649,18 @@ export function PiChatPane({
   // session) fall back to the composer's persisted preferred model.
   const currentModel = state?.model as { provider?: string; id?: string } | null | undefined
   const [homeModelKey, setHomeModelKey] = useState<string | null>(() => getPreferredModelKey())
-  const [pendingModelKey, setPendingModelKey] = useState<string | null>(null)
+  const [pendingModel, setPendingModel] = useState<{ sessionId: string; key: string } | null>(null)
+  const pendingModelKey = pendingModel?.sessionId === sessionId ? pendingModel.key : null
   const selectedModelKey =
-    pendingModelKey ?? (currentModel?.provider && currentModel?.id ? `${currentModel.provider}:${currentModel.id}` : homeModelKey)
+    pendingModelKey ?? (currentModel?.provider && currentModel?.id ? `${currentModel.provider}:${currentModel.id}` : sessionId ? null : homeModelKey)
 
   // Thinking level: variants filtered by the current model's support map,
   // current value from runtime state — the native home for this control.
   const currentModelObj = useMemo(
     () => models.find(m => `${m.provider}:${m.id}` === pendingModelKey)
       ?? models.find(m => m.provider === currentModel?.provider && m.id === currentModel?.id)
-      ?? (homeModelKey ? models.find(m => `${m.provider}:${m.id}` === homeModelKey) : undefined),
-    [models, pendingModelKey, currentModel?.provider, currentModel?.id, homeModelKey],
+      ?? (!sessionId && homeModelKey ? models.find(m => `${m.provider}:${m.id}` === homeModelKey) : undefined),
+    [models, pendingModelKey, currentModel?.provider, currentModel?.id, homeModelKey, sessionId],
   )
   const thinkingLevels = useMemo(() => {
     if (!currentModelObj?.reasoning) return ['off']
@@ -671,7 +672,8 @@ export function PiChatPane({
   const [homeVariant, setHomeVariant] = useState<string | undefined>(() =>
     homeModelKey ? getModelVariantPref(homeModelKey) : undefined,
   )
-  const [pendingThinkingLevel, setPendingThinkingLevel] = useState<string | undefined>(undefined)
+  const [pendingThinking, setPendingThinking] = useState<{ sessionId: string; level: string } | null>(null)
+  const pendingThinkingLevel = pendingThinking?.sessionId === sessionId ? pendingThinking.level : undefined
   // home 模型切换时重读持久化 variant 偏好（渲染期间调整 state）
   const [homeVariantForModel, setHomeVariantForModel] = useState(homeModelKey)
   if (homeModelKey !== homeVariantForModel) {
@@ -682,11 +684,11 @@ export function PiChatPane({
   const [resetSessionId, setResetSessionId] = useState(sessionId)
   if (sessionId !== resetSessionId) {
     setResetSessionId(sessionId)
-    setPendingModelKey(null)
-    setPendingThinkingLevel(undefined)
+    setPendingModel(null)
+    setPendingThinking(null)
   }
   const thinkingLevel =
-    pendingThinkingLevel ?? (typeof state?.thinkingLevel === 'string' ? state.thinkingLevel : undefined) ?? homeVariant
+    pendingThinkingLevel ?? (typeof state?.thinkingLevel === 'string' ? state.thinkingLevel : undefined) ?? (sessionId ? undefined : homeVariant)
 
   const handleVariantChange = useCallback(
     (variant: string | undefined) => {
@@ -696,12 +698,13 @@ export function PiChatPane({
         if (homeModelKey) saveModelVariantPref(homeModelKey, variant)
         return
       }
-      setPendingThinkingLevel(variant)
+      const selection = { sessionId, level: variant }
+      setPendingThinking(selection)
       void setPiThinkingLevel(sessionId, variant)
         .then(() => refreshPiSessionState(sessionId))
-        .then(() => setPendingThinkingLevel(current => current === variant ? undefined : current))
+        .then(() => setPendingThinking(current => current === selection ? null : current))
         .catch(error => {
-          setPendingThinkingLevel(current => current === variant ? undefined : current)
+          setPendingThinking(current => current === selection ? null : current)
           uiErrorHandler('set thinking level', error)
         })
     },
@@ -715,13 +718,14 @@ export function PiChatPane({
       setHomeModelKey(key)
       setPreferredModelKey(key)
       if (!sessionId) return
-      setPendingModelKey(key)
-      setPendingThinkingLevel(undefined)
+      const selection = { sessionId, key }
+      setPendingModel(selection)
+      setPendingThinking(null)
       void setPiModel(sessionId, model.provider, model.id)
         .then(() => refreshPiSessionState(sessionId))
-        .then(() => setPendingModelKey(current => current === key ? null : current))
+        .then(() => setPendingModel(current => current === selection ? null : current))
         .catch(error => {
-          setPendingModelKey(current => current === key ? null : current)
+          setPendingModel(current => current === selection ? null : current)
           uiErrorHandler('set model', error)
         })
     },
