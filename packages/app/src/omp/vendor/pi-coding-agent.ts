@@ -326,6 +326,9 @@ export type AgentSessionEvent =
       name: string | undefined
     }
   | {
+      type: 'model_changed'
+    }
+  | {
       type: 'thinking_level_changed'
       level: ThinkingLevel
     }

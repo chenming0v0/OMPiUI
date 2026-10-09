@@ -13,6 +13,7 @@ import { detectOmpVersion } from "./omp-version.js"
 import { OMP_SDK_VERSION } from "./constants.js"
 import { buildSessionTreeFromEntries } from "../runtime/session-tree.js"
 import { copySessionFile, isManagedSessionFile, managedSessionDirectory, managedSessionsRoot } from "./managed-sessions.js"
+import { sessionConfigFromBranch } from "./session-config.js"
 
 /**
  * OmpCatalog —— CatalogProvider 的 OMP 实现。
@@ -369,6 +370,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     const raw = existsSync(summary.path) ? readLinesSync(summary.path) : []
     const entries = previewEntriesFromLines(raw, summary.id)
     const branch = activeBranchFromEntries(entries)
+    const config = sessionConfigFromBranch(branch)
     const header: JsonObject = { version: 3, id: summary.id, cwd: summary.cwd, name: summary.name }
     const head = sessionHeadFromParts({
       sdkVersion,
@@ -389,8 +391,8 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
       sessionFile: summary.path,
       sessionName: summary.name,
       cwd: summary.cwd,
-      model: null,
-      thinkingLevel: "off",
+      model: config.model,
+      thinkingLevel: config.thinkingLevel,
       isStreaming: false,
       isCompacting: false,
       steeringMode: "one-at-a-time",

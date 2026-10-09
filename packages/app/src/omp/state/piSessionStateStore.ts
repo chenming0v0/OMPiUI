@@ -7,6 +7,7 @@ interface StateEntry {
   state: JsonObject | null
   loading: boolean
   error: Error | null
+  requestVersion: number
 }
 
 /**
@@ -16,6 +17,7 @@ interface StateEntry {
 class PiSessionStateStore {
   private bySessionId = new Map<string, StateEntry>()
   private listeners = new Set<() => void>()
+  private nextVersion = 0
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener)
@@ -29,7 +31,7 @@ class PiSessionStateStore {
   private entry(sessionId: string): StateEntry {
     let entry = this.bySessionId.get(sessionId)
     if (!entry) {
-      entry = { state: null, loading: false, error: null }
+      entry = { state: null, loading: false, error: null, requestVersion: ++this.nextVersion }
       this.bySessionId.set(sessionId, entry)
     }
     return entry
@@ -42,11 +44,33 @@ class PiSessionStateStore {
 
   setState(sessionId: string, state: JsonObject): void {
     const entry = this.entry(sessionId)
+    entry.requestVersion = ++this.nextVersion
     entry.state = state
     entry.error = null
     entry.loading = false
     this.restoreExtensionUi(sessionId, state)
     this.notify()
+  }
+
+  beginRequest(sessionId: string): number {
+    const entry = this.entry(sessionId)
+    entry.requestVersion = ++this.nextVersion
+    return entry.requestVersion
+  }
+
+  isRequestCurrent(sessionId: string, version: number): boolean {
+    return this.bySessionId.get(sessionId)?.requestVersion === version
+  }
+
+  setStateIfCurrent(sessionId: string, state: JsonObject, version: number): boolean {
+    if (!this.isRequestCurrent(sessionId, version)) return false
+    this.setState(sessionId, state)
+    return true
+  }
+
+  patchState(sessionId: string, patch: JsonObject): void {
+    const state = this.getState(sessionId)
+    this.setState(sessionId, { ...state, ...patch })
   }
 
   setError(sessionId: string, error: Error): void {

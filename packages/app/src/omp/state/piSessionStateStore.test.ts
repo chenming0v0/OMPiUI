@@ -116,3 +116,25 @@ describe('piSessionStateStore pending dialog recovery', () => {
     expect(after.map(panel => panel.key)).toEqual(['plan'])
   })
 })
+
+describe('piSessionStateStore request versions', () => {
+  afterEach(() => piSessionStateStore.clearAll())
+
+  it('does not restore state from a response belonging to a cleared session', () => {
+    const version = piSessionStateStore.beginRequest('session-1')
+    piSessionStateStore.clear('session-1')
+    piSessionStateStore.beginRequest('session-1')
+    expect(piSessionStateStore.setStateIfCurrent('session-1', { thinkingLevel: 'low' }, version)).toBe(false)
+    expect(piSessionStateStore.getState('session-1')).toBeNull()
+  })
+
+  it('patches lifecycle state without replacing the session model and thinking level', () => {
+    piSessionStateStore.setState('session-1', {
+      model: { provider: 'custom', id: 'correct' }, thinkingLevel: 'xhigh', isStreaming: true,
+    })
+    piSessionStateStore.patchState('session-1', { isStreaming: false, isIdle: true })
+    expect(piSessionStateStore.getState('session-1')).toEqual({
+      model: { provider: 'custom', id: 'correct' }, thinkingLevel: 'xhigh', isStreaming: false, isIdle: true,
+    })
+  })
+})
