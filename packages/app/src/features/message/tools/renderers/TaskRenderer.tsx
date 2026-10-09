@@ -19,6 +19,7 @@ import { formatCompactDuration, formatCompactTokens, subagentDisplayTitle } from
 import { buildPersistedSubagentRun, deriveChildSessionFile, extractPersistedResults, type PersistedSubagentResult } from './persistedSubagentRun'
 import { useUiDisclosureState } from '../../../../utils/uiDisclosureState'
 import type { ToolRendererProps } from '../types'
+import { toolResultText } from '../toolResultContent'
 import { MessageExpandPanel, useMessageExpandRender } from '../../messageExpand'
 
 // ============================================
@@ -152,9 +153,7 @@ function SubagentTask({ slot, execution, partKey, intent, targetSessionId, showA
   }, [opening, sessionFile, subagentRun?.sessionId, targetSessionId, currentDirectory, navigateToSession])
 
   const resultOutput = typeof slot.result?.output === 'string' ? slot.result.output
-    : showAggregateOutput && execution.result ? execution.result.content
-      .filter((block): block is Extract<typeof block, { type: 'text' }> => block.type === 'text')
-      .map(block => block.text).join('\n') : undefined
+    : showAggregateOutput && execution.result ? toolResultText(execution.result) : undefined
   const handleContentFullscreenChange = useCallback((isFullscreen: boolean) => {
     setIsContentFullscreen(isFullscreen)
     onFullscreenChange?.(isFullscreen)
