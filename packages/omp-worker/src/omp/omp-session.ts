@@ -756,6 +756,11 @@ export class OmpRpcSession implements SessionRuntime {
       pendingMessageCount: typeof native.queuedMessageCount === "number" ? native.queuedMessageCount : 0,
       availableThinkingLevels: this.thinkingLevelsCache,
       isIdle: !native.isStreaming && (native.isSettled !== false),
+      // 上游 get_state 的两个「还会被唤醒」信号，宿主回收空闲 runtime 时依赖：
+      // hasPendingAsyncWork 覆盖后台 bash / async task / eval 尚未回灌的长尾，
+      // isSettled 是 session_settled 的同一谓词。isBashRunning 在 OMP RPC 下
+      // 恒为 false（那是 pi SDK 的用户 bang-bash 语义），后台作业只能靠这里透出。
+      hasPendingAsyncWork: Boolean(native.hasPendingAsyncWork),
       isBashRunning: false,
       hasPendingBashMessages: false,
       isRetrying: this.retryShadow.phase === "waiting" || this.retryShadow.phase === "running",

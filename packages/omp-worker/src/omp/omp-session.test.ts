@@ -203,3 +203,25 @@ describe("OmpRpcSession image-bearing user queue", () => {
     })
   })
 })
+
+describe("OmpRpcSession idle reporting for host recycling", () => {
+  it("surfaces hasPendingAsyncWork and keeps isIdle false while the session can still wake", async t => {
+    const { session, native } = await sessionFixture(t)
+    // 回合已 yield，但后台作业（bash 后台化 / async task / eval）还会把会话叫醒：
+    // OMP 此时 isStreaming=false、isSettled=false、hasPendingAsyncWork=true。
+    // 宿主的空闲回收判据完全依赖这两个字段，丢失就会误杀正在收尾的会话。
+    native.isStreaming = false
+    native.isSettled = false
+    native.hasPendingAsyncWork = true
+    const pending = await session.getState()
+    assert.equal(pending.isStreaming, false)
+    assert.equal(pending.isIdle, false)
+    assert.equal(pending.hasPendingAsyncWork, true)
+
+    native.isSettled = true
+    delete native.hasPendingAsyncWork
+    const settled = await session.getState()
+    assert.equal(settled.isIdle, true)
+    assert.equal(settled.hasPendingAsyncWork, false)
+  })
+})

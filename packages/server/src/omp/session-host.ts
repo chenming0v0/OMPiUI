@@ -8,6 +8,7 @@ import type { CommandEnvelope, CommandRecord, JsonObject, JsonValue, PiCapabilit
 import { isJsonObject, PI_PARITY_SDK_VERSION, PROTOCOL_VERSION, validateParams } from "@ompiui/protocol"
 import { createRegistryDescribeCapability, getCommandCapability, getDriverMode, isManagedSessionFile, readOnlySessionError, listCommandCapabilities, type WorkerEvent } from "@ompiui/omp-worker"
 import type { EventHub } from "../event-hub.ts"
+import { logToFile } from "../logger.ts"
 import type { RuntimeSupervisor } from "./supervisor.ts"
 import { SessionExecutor, type SubmittedCommand } from "./session-executor.ts"
 import { SessionRuntimeRegistry, type AttachedSession } from "./session-registry.ts"
@@ -734,27 +735,43 @@ export class SessionHost {
     })
 
     for (const session of candidates) {
-      // 双保险：向 worker 确认确实无未完成工作再回收。activity 是事件驱动
-      // 上报（可能有延迟/遗漏），state.get 是 SDK 同步真相源——isStreaming
-      // （agent run 活跃）、isBashRunning（长 bash 在跑）、pendingMessageCount
-      // （队列有消息）任一成立都跳过，绝不误杀正在工作的会话。
-      let stillBusy = false
+      // 双保险：向 worker 确认确实无未完成工作再回收。activity 是事件驱动上报
+      // （可能有延迟/遗漏），state.get 是 SDK 同步真相源——isIdle（会话确实无事）、
+      // isStreaming（agent run 活跃，工具执行期间同样为真）、hasPendingAsyncWork
+      // （后台 bash / async task / eval 的结果还没回灌）、pendingMessageCount
+      // （队列里还有消息）任一成立都跳过。
+      //
+      // 问不到答案一律按「未知 → 不回收」处理，绝不把问不到当成空闲：worker 的
+      // getState() 要先 await ensureSynced()，而 get_entries 的超时是 120s，比
+      // server 侧单条命令的 60s 超时更长，会话越忙越容易让这道检查先失败。旧实现
+      // 在 catch 里当作空闲直接 dispose，恰好杀掉正在跑长命令的会话——OMP 落盘
+      // session_exit(dispose) 并把在途工具写成 "Command aborted"，前端表现为整条
+      // 时间线重置、回合不再继续，而模型从没拿到那次工具结果。worker 真崩/真断开
+      // 由 onCrash 与心跳看门狗负责清理，不需要回收器兜底。
+      let state: JsonValue | undefined
       try {
-        const state = await session.worker.command("state.get") as JsonObject | undefined
-        if (state) {
-          stillBusy = state.isIdle === false
-            || state.isStreaming === true
-            || state.isBashRunning === true
-            || Number(state.pendingMessageCount ?? 0) > 0
-        }
-      } catch {
-        // worker 已不可用（崩溃/断开）：回收无妨
+        state = await session.worker.command("state.get")
+      } catch (error) {
+        const message = `[ompiui-server] idle reaper: state.get failed for ${session.sessionId}, keeping runtime: ${error instanceof Error ? error.message : String(error)}`
+        console.error(message)
+        logToFile(message)
+        continue
       }
+      if (!isJsonObject(state)) {
+        const message = `[ompiui-server] idle reaper: state.get returned no state for ${session.sessionId}, keeping runtime`
+        console.error(message)
+        logToFile(message)
+        continue
+      }
+      const stillBusy = state.isIdle === false
+        || state.isStreaming === true
+        || state.isBashRunning === true
+        || state.hasPendingAsyncWork === true
+        || Number(state.pendingMessageCount ?? 0) > 0
       if (stillBusy) {
         this.touch(session.sessionId)
         continue
       }
-      const cwd = session.cwd
       await this.closeSession(session.sessionId).catch(() => undefined)
       // 单共享进程下无需补 warm：worker 常驻，下次 attach 只是进程内建
       // runtime（旧架构里回收后补预热是为了避免冷启动新进程）。

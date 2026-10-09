@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import type { ToolResultMessage } from '../../../omp/vendor/pi-ai'
+import { toolResultBlocks, toolResultText } from './toolResultContent'
 import i18n from '../../../i18n'
 import type { PiToolExecution } from '../../../omp/domain/index.js'
 import type { ToolConfig, ToolRegistry, ExtractedToolData, DiagnosticInfo, YieldResultData } from './types'
@@ -63,13 +63,6 @@ interface MetadataDiagnosticEntry {
 // Default Data Extractor
 // ============================================
 
-function resultText(result: ToolResultMessage): string {
-  return result.content
-    .filter((block): block is Extract<typeof block, { type: 'text' }> => block.type === 'text')
-    .map(block => block.text)
-    .join('\n')
-}
-
 export function defaultExtractData(execution: PiToolExecution): ExtractedToolData {
   const { call, result: toolResult } = execution
   const inputObj = call.arguments as Record<string, unknown> | undefined
@@ -82,13 +75,13 @@ export function defaultExtractData(execution: PiToolExecution): ExtractedToolDat
   const normalized = metadata?.normalized && typeof metadata.normalized === 'object'
     ? metadata.normalized as Record<string, unknown>
     : undefined
-  const output = toolResult ? resultText(toolResult) : undefined
+  const output = toolResult ? toolResultText(toolResult) : undefined
 
   const result: ExtractedToolData = {}
 
   // Native inline image blocks (pi tool results carry ImageContent inline)
   if (toolResult) {
-    const images = toolResult.content.flatMap(block =>
+    const images = toolResultBlocks(toolResult).flatMap(block =>
       block.type === 'image'
         ? [{ url: `data:${block.mimeType};base64,${block.data}`, mimeType: block.mimeType }]
         : [],

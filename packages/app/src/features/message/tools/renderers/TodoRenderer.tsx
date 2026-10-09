@@ -2,6 +2,7 @@ import { Fragment } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ChevronDownIcon, CheckIcon, ClockIcon, CloseIcon, CircleIcon } from '../../../../components/Icons'
 import type { ToolRendererProps } from '../types'
+import { toolResultText } from '../toolResultContent'
 import { useDisclosureScrollLock } from '../../../../hooks'
 import { extractTodos } from './todoUtils'
 import type { TodoItem } from '../../../../omp/domain/todo'
@@ -16,11 +17,7 @@ export function TodoRenderer({ execution, partKey }: ToolRendererProps) {
   const { t } = useTranslation('message')
   const todos = extractTodos(execution)
   if (todos.length === 0) {
-    const outcome = execution.result?.content
-      .filter(block => block.type === 'text')
-      .map(block => block.text)
-      .join('\n')
-      .trim()
+    const outcome = toolResultText(execution.result).trim()
 
     return (
       <div className="px-3 py-2 text-[length:var(--fs-sm)] text-text-400 whitespace-pre-wrap break-words">
