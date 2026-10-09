@@ -91,9 +91,12 @@ function compareStableTagToVersion(tag, nextVersion) {
 
 function getReleaseBaseTag() {
   if (isPrerelease) {
-    return execSync('git describe --tags --abbrev=0 2>/dev/null', {
+    // 不写 `2>/dev/null`：那是 POSIX 的重定向写法，在 Windows 的 cmd 下会被
+    // 解释成往 \dev\null 写文件。丢弃 stderr 改用 stdio 表达。
+    return execSync('git describe --tags --abbrev=0', {
       encoding: 'utf-8',
       cwd: repoRoot,
+      stdio: ['ignore', 'pipe', 'ignore'],
     }).trim()
   }
 

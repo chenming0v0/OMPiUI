@@ -26,9 +26,7 @@ import {
   assistantHasProcessContent,
 } from '../message'
 import { MessageErrorView } from '../message/parts'
-import { SpinnerIcon, ArrowDownIcon, ArrowUpIcon, PencilIcon, TrashIcon, MoreVerticalIcon, MessageSquareIcon } from '../../components/Icons'
-import { CopyButton, DropdownMenu, MenuItem } from '../../components/ui'
-import { useInputCapabilities } from '../../hooks/useInputCapabilities'
+import { SpinnerIcon } from '../../components/Icons'
 import type { MessageError } from '../../types/message'
 import type { PiTimelineItem } from '../../omp/domain/index.js'
 import { RetryStatusInline, type RetryStatusInlineData } from './RetryStatusInline'
@@ -100,13 +98,6 @@ function sessionCacheKey(sessionId: string, processCollapseEnabled: boolean): st
 
 interface ChatAreaProps {
   items: PiTimelineItem[]
-  queuedSteering?: readonly string[]
-  queuedFollowUps?: readonly string[]
-  /** 队列消息操作：撤销回输入框 / 切换 steer↔followUp 模式 / 直接清除 */
-  onQueueBackToInput?: (kind: 'steering' | 'followUp', index: number) => void | Promise<void>
-  onQueueMoveMode?: (kind: 'steering' | 'followUp', index: number) => void | Promise<void>
-  onQueueClear?: (kind: 'steering' | 'followUp', index: number) => void | Promise<void>
-  onQueueOpenInSideChat?: (kind: 'steering' | 'followUp', index: number) => void | Promise<void>
   pageRecords?: StableChatPage[]
   forkTargetIdMap?: Map<string, string | undefined>
   turnDurationMap?: Map<string, number>
@@ -168,6 +159,7 @@ const MessageBody = memo(function MessageBody({
 }: MessageBodyProps) {
   const messageId = item.renderKey ?? item.entryId
   const isUser = item.kind === 'user_message'
+  const isSubmitted = item.entryId.startsWith('submitted:')
   return (
     <div
       ref={node => registerMessage?.(messageId, node as HTMLDivElement | null)}
@@ -181,10 +173,10 @@ const MessageBody = memo(function MessageBody({
             turnDuration={turnDuration}
             isTurnLatestAssistant={isTurnLatestAssistant}
             processContentScope={processContentScope}
-            onUndo={isUser ? onUndo : undefined}
-            onFork={onFork}
+            onUndo={isUser && !isSubmitted ? onUndo : undefined}
+            onFork={isSubmitted ? undefined : onFork}
             forkMessageId={forkMessageId}
-            canUndo={isUser ? canUndo : undefined}
+            canUndo={isUser && !isSubmitted ? canUndo : undefined}
             onEntryGrowComplete={isUser ? onEntryGrowComplete : undefined}
           />
         </div>
@@ -193,174 +185,6 @@ const MessageBody = memo(function MessageBody({
   )
 })
 
-export const QueuedUserMessageQueue = memo(function QueuedUserMessageQueue({
-  kind,
-  items,
-  maxWidthClass,
-  paddingClass,
-  onBackToInput,
-  onMoveMode,
-  onClear,
-  onOpenInSideChat,
-}: {
-  kind: 'current' | 'next'
-  items: readonly string[]
-  maxWidthClass: string
-  paddingClass: string
-  /** 修改该条（pi 不支持队列内修改：清除后回填输入框，编辑后重发） */
-  onBackToInput?: (queueKind: 'steering' | 'followUp', index: number) => void | Promise<void>
-  /** 切换该条队列模式（steer ↔ followUp） */
-  onMoveMode?: (queueKind: 'steering' | 'followUp', index: number) => void | Promise<void>
-  /** 直接清除该条 */
-  onClear?: (queueKind: 'steering' | 'followUp', index: number) => void | Promise<void>
-  onOpenInSideChat?: (queueKind: 'steering' | 'followUp', index: number) => void | Promise<void>
-}) {
-  const { t } = useTranslation('chat')
-  const { preferTouchUi } = useInputCapabilities()
-  const [openMenuIndex, setOpenMenuIndex] = useState<number | null>(null)
-  const menuTriggerRefs = useRef<Array<HTMLButtonElement | null>>([])
-  useEffect(() => {
-    if (openMenuIndex === null) return
-    const handlePointerDown = (event: MouseEvent) => {
-      const trigger = menuTriggerRefs.current[openMenuIndex]
-      const target = event.target as Element | null
-      if (trigger?.contains(event.target as Node) || target?.closest('[role="menu"]')) return
-      setOpenMenuIndex(null)
-    }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpenMenuIndex(null)
-    }
-    document.addEventListener('mousedown', handlePointerDown)
-    document.addEventListener('keydown', handleKeyDown)
-    return () => {
-      document.removeEventListener('mousedown', handlePointerDown)
-      document.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [openMenuIndex])
-  if (items.length === 0) return null
-
-  const queueKind = kind === 'current' ? 'steering' : 'followUp'
-  const moveTitle = t(kind === 'current' ? 'chatArea.moveQueueToNext' : 'chatArea.moveQueueToCurrent')
-  const label = t(kind === 'current' ? 'chatArea.currentTurnQueue' : 'chatArea.nextTurnQueue', {
-    count: items.length,
-  })
-  // 对齐用户消息 action bar：PC 悬浮显示、触控恒显示
-  const actionBarClass = preferTouchUi
-    ? 'flex items-center gap-0.5 transition-opacity'
-    : 'flex items-center gap-0.5 opacity-70 group-hover/msg:opacity-100 group-focus-within/msg:opacity-100 transition-opacity'
-  const actionBtnClass =
-    'inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[length:var(--fs-xs)] text-text-400 hover:bg-bg-200/60 hover:text-text-100 transition-colors'
-  return (
-    <section
-      data-message-queue={kind}
-      aria-label={label}
-      className={`w-full ${maxWidthClass} mx-auto ${paddingClass} pt-1 pb-2`}
-    >
-      <div className="sr-only" role="status">{label}</div>
-      <div className="overflow-hidden rounded-xl border border-border-200/70 bg-bg-100/85 shadow-sm">
-        {items.map((text, index) => (
-          <div key={`${kind}:${index}:${text}`} className="group/msg flex items-center gap-2 px-3 py-1.5 min-h-10 border-b border-border-200/60 last:border-b-0">
-            <span className="shrink-0 text-text-400" aria-hidden="true">
-              {kind === 'current' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
-            </span>
-            <div className="min-w-0 flex-1 whitespace-pre-wrap break-words text-[length:var(--fs-sm)] leading-5 text-text-200">
-              {text}
-            </div>
-            {(onBackToInput || onMoveMode || onClear || onOpenInSideChat) && (
-              <div className={`relative shrink-0 ${actionBarClass}`}>
-                <CopyButton text={text} position="static" />
-                {onMoveMode && (
-                  <button
-                    type="button"
-                    onClick={() => void onMoveMode(queueKind, index)}
-                    title={moveTitle}
-                    aria-label={moveTitle}
-                    className={actionBtnClass}
-                  >
-                    {kind === 'current' ? <ArrowDownIcon size={14} /> : <ArrowUpIcon size={14} />}
-                    <span className="hidden sm:inline">{t('chatArea.adjustQueueDirection')}</span>
-                  </button>
-                )}
-                {onClear && (
-                  <button
-                    type="button"
-                    onClick={() => void onClear(queueKind, index)}
-                    title={t('chatArea.clearQueueItem')}
-                    aria-label={t('chatArea.clearQueueItem')}
-                    className={actionBtnClass}
-                  >
-                    <TrashIcon size={14} />
-                  </button>
-                )}
-                <button
-                  ref={element => { menuTriggerRefs.current[index] = element }}
-                  type="button"
-                  aria-label={t('chatArea.openQueueMenu')}
-                  aria-expanded={openMenuIndex === index}
-                  onClick={() => setOpenMenuIndex(current => current === index ? null : index)}
-                  className={actionBtnClass}
-                >
-                  <MoreVerticalIcon size={14} />
-                </button>
-                <DropdownMenu
-                  triggerRef={{ current: menuTriggerRefs.current[index] }}
-                  isOpen={openMenuIndex === index}
-                  position="top"
-                  align="right"
-                  minWidth="190px"
-                  zIndex={300}
-                >
-                  <div role="menu" aria-label={t('chatArea.queueOptions')} className="p-1">
-                    {onBackToInput && (
-                      <MenuItem
-                        label={t('chatArea.editQueueItem')}
-                        icon={<PencilIcon size={15} />}
-                        onClick={() => {
-                          setOpenMenuIndex(null)
-                          void onBackToInput(queueKind, index)
-                        }}
-                      />
-                    )}
-                    {onMoveMode && (
-                      <MenuItem
-                        label={moveTitle}
-                        icon={kind === 'current' ? <ArrowDownIcon size={15} /> : <ArrowUpIcon size={15} />}
-                        onClick={() => {
-                          setOpenMenuIndex(null)
-                          void onMoveMode(queueKind, index)
-                        }}
-                      />
-                    )}
-                    {onOpenInSideChat && (
-                      <MenuItem
-                        label={t('chatArea.openQueueInSideChat')}
-                        icon={<MessageSquareIcon size={15} />}
-                        onClick={() => {
-                          setOpenMenuIndex(null)
-                          void onOpenInSideChat(queueKind, index)
-                        }}
-                      />
-                    )}
-                    {onClear && (
-                      <MenuItem
-                        label={t('chatArea.clearQueueItem')}
-                        icon={<TrashIcon size={15} />}
-                        onClick={() => {
-                          setOpenMenuIndex(null)
-                          void onClear(queueKind, index)
-                        }}
-                      />
-                    )}
-                  </div>
-                </DropdownMenu>
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-    </section>
-  )
-})
 
 interface RowProps {
   virtualItem: VirtualItem
@@ -523,8 +347,7 @@ export const ChatArea = memo(
   forwardRef<ChatAreaHandle, ChatAreaProps>(
     (
       {
-        items, queuedSteering = [], queuedFollowUps = [],
-        onQueueBackToInput, onQueueMoveMode, onQueueClear, onQueueOpenInSideChat,
+        items,
         forkTargetIdMap: forkTargetIdMapProp, turnDurationMap: turnDurationMapProp,
         turnLatestAssistantIds: turnLatestAssistantIdsProp,
         sessionId, isStreaming = false, isCompacting = false,
@@ -1015,7 +838,7 @@ export const ChatArea = memo(
 
       // retry/error 出现消失、输入框高度变 → 底部 footer 高度变，贴底时要跟着滚
       // 否则重试条进出后 scrollTop 停在旧位置，看起来没贴底
-      const footerPinKey = `${retryStatus ? 'r' : ''}|${loadError || connectionError ? 'e' : ''}|${queuedSteering.join('\u0000')}|${queuedFollowUps.join('\u0000')}|${spacerHeight}`
+      const footerPinKey = `${retryStatus ? 'r' : ''}|${loadError || connectionError ? 'e' : ''}|${spacerHeight}`
       useLayoutEffect(() => {
         if (!shouldAnchorBottom() || prependLoading.current) return
         pinToBottom()
@@ -1247,29 +1070,7 @@ export const ChatArea = memo(
               })}
             </div>
 
-            <QueuedUserMessageQueue
-              kind="current"
-              items={queuedSteering}
-              maxWidthClass={maxWidthClass}
-              paddingClass={paddingClass}
-              onBackToInput={onQueueBackToInput}
-              onMoveMode={onQueueMoveMode}
-              onClear={onQueueClear}
-              onOpenInSideChat={onQueueOpenInSideChat}
-            />
-            <QueuedUserMessageQueue
-              kind="next"
-              items={queuedFollowUps}
-              maxWidthClass={maxWidthClass}
-              paddingClass={paddingClass}
-              onBackToInput={onQueueBackToInput}
-              onMoveMode={onQueueMoveMode}
-              onClear={onQueueClear}
-              onOpenInSideChat={onQueueOpenInSideChat}
-            />
-
-            {/* 顺序必须是：消息 → 下一轮队列 → 重试/错误提示 → 输入框占位。
-                旧 Virtuoso Footer 就是这样；换 virtualizer 后 paddingEnd 在前、提示在后，会叠到输入框下。 */}
+            {/* 消息 → 重试/错误提示 → 输入框占位；队列由输入框上方的目标卡片展示。 */}
             {retryStatus && (
               <div className={`w-full ${maxWidthClass} mx-auto ${paddingClass}`}>
                 <div className="flex justify-start">

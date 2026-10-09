@@ -8,6 +8,7 @@ import type { Server as HttpServer } from "node:http"
 import type { TunnelStatus } from "@ompiui/protocol"
 import { authTokenPath, ensureCursorSecretEnv, resolveAuthToken } from "./host/auth-token.ts"
 import { enableFileLogging, logToFile, dataRoot } from "./logger.ts"
+import { diagnostics, diagnosticErrorCode } from "./diagnostics/recorder.ts"
 import { PairingStore } from "./host/pairing.ts"
 import { TailscaleManager } from "./host/tailscale.ts"
 import { RuntimeSupervisor } from "./omp/supervisor.ts"
@@ -195,6 +196,9 @@ export async function startOmpiUiServer(
   // server 的，启用后它的输出也会落盘。
   enableFileLogging()
   const config = resolveServerConfig(process.env, overrides)
+  diagnostics.record("server.starting", {
+    port: config.port, driver: config.driver, reason: process.execArgv.some(arg => arg.startsWith("--watch")) ? "watch_mode_flags" : "normal_start",
+  })
   const authToken = config.authToken ?? resolveAuthToken()
   // 分页光标密钥持久化并注入环境，保证 worker 重启后客户端旧光标仍有效
   // （必须在任何 worker spawn 之前完成）。
@@ -289,6 +293,7 @@ export async function startOmpiUiServer(
       })
     })
   } catch (error) {
+    diagnostics.record("server.start.failed", { errorCode: diagnosticErrorCode(error) }, "error")
     await shutdownAppServer(app.server, eventServer, { timeoutMs: config.shutdownTimeoutMs, cleanup: () => app.dispose() }).catch(() => undefined)
     throw error
   }
@@ -296,6 +301,7 @@ export async function startOmpiUiServer(
 
   console.info(`[ompiui-server] listening http://${config.host}:${config.port}`)
   logToFile(`[ompiui-server] listening http://${config.host}:${config.port} (pid=${process.pid})`)
+  diagnostics.record("server.started", { port: config.port, driver: config.driver })
   console.info(`[ompiui-server] events ws://${config.host}:${config.port}/api/v1/events`)
   console.info(`[ompiui-server] terminal stream ws://${config.host}:${config.port}/api/v1/host/terminals/:terminalId/stream`)
   console.info(`[ompiui-server] driver=${config.driver}${config.driver === "omp" ? " (OMP agent runtime)" : " (no LLM)"}`)
@@ -344,15 +350,20 @@ export async function startOmpiUiServer(
   const stop = async (signal?: NodeJS.Signals): Promise<void> => {
     if (stopped) return
     stopped = true
+    diagnostics.record("server.stopping", { signal, reason: signal ?? "stop_requested", port: config.port })
     if (signal) console.info(`[ompiui-server] received ${signal}, shutting down`)
     // 先断隧道：中转不再往这边送新请求，然后才排空/关闭 HTTP 服务
     tunnelClient?.stop()
     tailscale.dispose()
     await shutdownAppServer(app.server, eventServer, {
       timeoutMs: config.shutdownTimeoutMs,
-      onTimeout: () => console.error(`[ompiui-server] shutdown exceeded ${config.shutdownTimeoutMs}ms; closing active HTTP connections`),
+      onTimeout: () => {
+        diagnostics.record("server.shutdown.timeout", { timeoutMs: config.shutdownTimeoutMs }, "warn")
+        console.error(`[ompiui-server] shutdown exceeded ${config.shutdownTimeoutMs}ms; closing active HTTP connections`)
+      },
       cleanup: () => app.dispose(),
     })
+    diagnostics.record("server.stopped", { port: config.port })
   }
   shutdownHook = stop
 
@@ -365,6 +376,7 @@ export async function startOmpiUiServer(
     // TCP 实体占住端口（与 taskkill /F 同一类问题）。先走 stop() 优雅
     // 关闭再退出，日志里带堆栈便于定位死因。
     process.once("uncaughtException", error => {
+      diagnostics.record("server.uncaught_exception", { errorCode: diagnosticErrorCode(error) }, "error")
       console.error("[ompiui-server] uncaught exception; shutting down gracefully:", error)
       stop().finally(() => process.exit(1))
     })

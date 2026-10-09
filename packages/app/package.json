@@ -29,7 +29,7 @@
     "tauri:ios:init": "tauri ios init",
     "tauri:ios:dev": "tauri ios dev",
     "tauri:ios:build": "tauri ios build",
-    "android:dev": "bash scripts/dev-android.sh",
+    "android:dev": "node scripts/dev-android.mjs",
     "postinstall": "node scripts/copy-material-icons.mjs"
   },
   "dependencies": {

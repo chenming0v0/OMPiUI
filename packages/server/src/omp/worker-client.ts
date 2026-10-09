@@ -1,6 +1,8 @@
 import { fork, spawn, type ChildProcess } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { logToFile } from "../logger.ts"
+import { diagnostics, diagnosticErrorCode } from "../diagnostics/recorder.ts"
+import { traceWorkerRequest } from "../diagnostics/worker-request.ts"
 import type { JsonObject, JsonValue, Problem } from "@ompiui/protocol"
 import {
   PI_WORKER_HEARTBEAT_INTERVAL_MS,
@@ -317,11 +319,13 @@ class WorkerHostCore {
     this.heartbeatTimer = setInterval(() => {
       this.heartbeatMisses += 1
       if (this.heartbeatMisses === warnAt && !this.exitHandled) {
+        diagnostics.record("worker.heartbeat.missing", { workerPid: this.child.pid, misses: this.heartbeatMisses }, "warn")
         const message = `[piui-worker] heartbeat missing for ${this.heartbeatMisses} consecutive ticks (pid=${this.child.pid ?? "?"}); worker may be stuck`
         console.warn(message)
         logToFile(message)
       }
       if (this.heartbeatMisses > missLimit) {
+        diagnostics.record("worker.heartbeat.kill", { workerPid: this.child.pid, misses: this.heartbeatMisses, reason: "heartbeat_timeout" }, "error")
         // 先杀后记账：反过来会有「server 已判死并孵化新 worker，旧进程还
         // 活着」的并存窗口
         killProcessTree(this.child)
@@ -336,6 +340,12 @@ class WorkerHostCore {
   private handleExit(code: number | null, signal: NodeJS.Signals | null, error?: Error): void {
     if (this.exitHandled) return
     this.exitHandled = true
+    diagnostics.record("worker.exited", {
+      workerPid: this.child.pid, code: code ?? undefined, signal,
+      reason: this.disposed ? "host_dispose" : "unexpected_exit",
+      errorCode: error ? diagnosticErrorCode(error) : undefined,
+      sessionIds: [...this.handles.keys()],
+    }, this.disposed ? "info" : "error")
     this.resolveExited()
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer)
     this.exitError = error ?? (this.disposed
@@ -465,7 +475,8 @@ class WorkerHostCore {
   ): Promise<JsonValue | undefined> {
     if (this.exitHandled) return Promise.reject(this.exitError ?? new Error("Pi worker is not available"))
     const id = randomUUID()
-    return new Promise((resolve, reject) => {
+    const trace = traceWorkerRequest({ sessionId, requestId: id, command: command.type, workerPid: this.child.pid })
+    return new Promise<JsonValue | undefined>((resolve, reject) => {
       if (signal?.aborted) {
         reject(Object.assign(new Error("request aborted"), { code: "REQUEST_ABORTED" }))
         return
@@ -495,6 +506,10 @@ class WorkerHostCore {
               const message = `[piui-worker] command ${command.type} timed out after ${timeoutMs}ms (misses=${this.heartbeatMisses}); discarding command, worker stays`
               console.error(message)
               logToFile(message)
+              diagnostics.record("worker.request.timeout", {
+                sessionId, requestId: id, command: command.type, workerPid: this.child.pid,
+                timeoutMs, misses: this.heartbeatMisses, reason: "discard_request_keep_worker",
+              }, "error")
               reject(Object.assign(new Error(`Pi worker command timed out: ${command.type}`), {
                 code: "WORKER_RESULT_UNKNOWN",
               }))
@@ -542,11 +557,18 @@ class WorkerHostCore {
         pending.removeAbort?.()
         reject(error)
       })
+    }).then(data => {
+      trace.completed(data)
+      return data
+    }, error => {
+      trace.failed(error)
+      throw error
     })
   }
 
   async dispose(): Promise<void> {
     if (this.disposed) return
+    diagnostics.record("worker.dispose", { workerPid: this.child.pid, sessionIds: [...this.handles.keys()], reason: "host_dispose" })
     this.disposed = true
     if (this.exitHandled) return
     try {

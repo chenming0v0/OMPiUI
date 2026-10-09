@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type ReactNode,
 } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
@@ -25,6 +26,7 @@ interface GoalBarProps {
   sessionId?: string | null
   isCompact: boolean
   onSetGoal?: (objective: string) => Promise<boolean> | boolean
+  queuedMessages?: ReactNode
 }
 
 const GOAL_STATUS_KEYS: Record<string, string> = {
@@ -219,13 +221,13 @@ function GoalEditor({
   }
 
   return (
-    <div data-goal-editor-sheet className="mb-2 glass border border-border-200/60 rounded-2xl shadow-lg overflow-hidden">
+    <div data-goal-editor-sheet>
       {body}
     </div>
   )
 }
 
-export const GoalBar = memo(function GoalBar({ sessionId, isCompact, onSetGoal }: GoalBarProps) {
+export const GoalBar = memo(function GoalBar({ sessionId, isCompact, onSetGoal, queuedMessages }: GoalBarProps) {
   const { t } = useTranslation('chat')
   const goal = useSessionGoal(sessionId)
   const [editorOpen, setEditorOpen] = useState(false)
@@ -319,8 +321,11 @@ export const GoalBar = memo(function GoalBar({ sessionId, isCompact, onSetGoal }
   const canOperate = !!sessionId || !!onSetGoal
 
   return (
-    <div ref={rootRef} className={`relative z-0 px-4 ${editorOpen ? 'pt-2' : 'h-[68px] -mb-8'}`} data-goal-bar>
-      {editorOpen ? (
+    <div ref={rootRef} className="relative z-0 mx-4 -mb-8 pb-8 rounded-2xl glass-alt border border-border-200/60" data-goal-bar>
+      <div data-composer-queue className="max-h-[min(200px,25dvh)] overflow-y-auto custom-scrollbar rounded-t-2xl">
+        {queuedMessages}
+      </div>
+      {editorOpen && !isCompact ? (
         <GoalEditor
           goal={goal}
           draft={draft}
@@ -333,7 +338,7 @@ export const GoalBar = memo(function GoalBar({ sessionId, isCompact, onSetGoal }
           isSaving={isSaving}
         />
       ) : goal ? (
-        <div className="flex items-center gap-1 h-[68px] pb-8 pl-3 pr-1.5 rounded-2xl glass-alt border border-border-200/60 text-[length:var(--fs-sm)]">
+        <div className="flex items-center gap-1 h-9 pl-3 pr-1.5 text-[length:var(--fs-sm)]">
           <TargetIcon size={14} className="shrink-0 text-accent-main-100" />
           <button
             type="button"
@@ -369,11 +374,24 @@ export const GoalBar = memo(function GoalBar({ sessionId, isCompact, onSetGoal }
           type="button"
           onClick={openEditor}
           disabled={!canOperate}
-          className="w-full flex items-center justify-start gap-2 h-[68px] pb-8 px-3 rounded-2xl glass-alt border border-border-200/60 text-[length:var(--fs-sm)] font-medium text-text-200 hover:text-accent-main-100 hover:border-accent-main-100/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-text-200 disabled:hover:border-border-200/60"
+          className="w-full flex items-center justify-start gap-2 h-9 px-3 rounded-t-2xl text-[length:var(--fs-sm)] font-medium text-text-200 hover:text-accent-main-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-text-200"
         >
           <TargetIcon size={15} className="shrink-0" />
           <span>{t('goalBar.setGoal')}</span>
         </button>
+      )}
+      {editorOpen && isCompact && (
+        <GoalEditor
+          goal={goal}
+          draft={draft}
+          onDraftChange={setDraft}
+          onSave={handleSave}
+          onClose={closeEditor}
+          onDrop={handleDrop}
+          isCompact={isCompact}
+          sessionId={sessionId}
+          isSaving={isSaving}
+        />
       )}
     </div>
   )

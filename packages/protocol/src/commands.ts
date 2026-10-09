@@ -20,6 +20,7 @@ export const CORE_COMMAND_TYPES = [
   "setSteeringMode",
   "setFollowUpMode",
   "clearQueue",
+  "sendQueuedMessage",
   "compact",
   "abortCompaction",
   "abortBranchSummary",
@@ -79,6 +80,12 @@ export type SendUserMessageParams = {
   text: string
   images?: ImageInput[]
   deliverAs?: "steer" | "followUp"
+}
+
+/** 立即提交指定队列中的一条；kind 标识来源队列，index 为该队列下标。 */
+export type SendQueuedMessageParams = {
+  kind: "steering" | "followUp"
+  index: number
 }
 
 export type NewSessionParams = {
@@ -237,6 +244,7 @@ export type CoreCommandParams = {
   setSteeringMode: SetQueueModeParams
   setFollowUpMode: SetQueueModeParams
   clearQueue: Record<string, never>
+  sendQueuedMessage: SendQueuedMessageParams
   compact: CompactParams
   abortCompaction: Record<string, never>
   abortBranchSummary: Record<string, never>

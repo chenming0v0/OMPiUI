@@ -16,6 +16,7 @@ import type { ModelSelectorHandle } from './ModelSelector'
 import { InputFooter } from './input/InputFooter'
 import { FloatingActions, CollapsedCapsule } from './input/InputActions'
 import { GoalBar } from './input/GoalBar'
+import { QueuedUserMessageQueue, type ComposerQueueProps } from './input/QueuedUserMessageQueue'
 import { useMobileCollapse } from './input/useMobileCollapse'
 import { useAttachmentRail } from './input/useAttachmentRail'
 import { useInputHistory } from './input/useInputHistory'
@@ -140,7 +141,7 @@ export interface CollapsedDialogInfo {
   onExpand: () => void
 }
 
-export interface InputBoxProps {
+export interface InputBoxProps extends ComposerQueueProps {
   paneId: string
   onSend: (
     text: string,
@@ -249,6 +250,12 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   collapsedPermission,
   collapsedQuestion,
   composerNotice,
+  queuedSteering,
+  queuedFollowUps,
+  onQueueBackToInput,
+  onQueueSendNow,
+  onQueueClear,
+  onQueueOpenInSideChat,
   /** Composer text change callback (extension editor state sync) */
   onTextChange,
 }: InputBoxProps, ref: React.Ref<InputBoxHandle>) {
@@ -1745,7 +1752,31 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
             )}
 
             {/* 目标卡片在输入框外侧，底部延伸到前景输入框后方。 */}
-            <GoalBar sessionId={sessionId} isCompact={isCompact} onSetGoal={onSetGoal} />
+            <GoalBar
+              sessionId={sessionId}
+              isCompact={isCompact}
+              onSetGoal={onSetGoal}
+              queuedMessages={
+                <>
+                  <QueuedUserMessageQueue
+                    kind="current"
+                    items={queuedSteering ?? []}
+                    onBackToInput={onQueueBackToInput}
+                    onSendNow={onQueueSendNow}
+                    onClear={onQueueClear}
+                    onOpenInSideChat={onQueueOpenInSideChat}
+                  />
+                  <QueuedUserMessageQueue
+                    kind="next"
+                    items={queuedFollowUps ?? []}
+                    onBackToInput={onQueueBackToInput}
+                    onSendNow={onQueueSendNow}
+                    onClear={onQueueClear}
+                    onOpenInSideChat={onQueueOpenInSideChat}
+                  />
+                </>
+              }
+            />
 
             {/* Composer shell — 更宽的前景圆角矩形，遮住目标卡片下沿。 */}
             <div

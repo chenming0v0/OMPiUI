@@ -20,6 +20,7 @@
     "dev:app": "npm run dev -w @ompiui/app",
     "build": "npm run build -w @ompiui/protocol && npm run build -w @ompiui/omp-worker && npm run build -w @ompiui/relay && npm run build -w @ompiui/server && npm run build -w @ompiui/admin && npm run build -w @ompiui/app",
     "test": "node scripts/test-mock.mjs",
+    "diagnostics": "node scripts/diagnostics.mjs",
     "typecheck": "npm run build -w @ompiui/protocol && npm run build -w @ompiui/omp-worker && npm run build -w @ompiui/relay && npm run typecheck -w @ompiui/server && npm run typecheck -w @ompiui/admin && npm run typecheck -w @ompiui/app",
     "lint": "npm run lint -w @ompiui/app",
     "format": "npm run format -w @ompiui/app",

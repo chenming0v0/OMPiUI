@@ -54,6 +54,8 @@ export interface SessionRuntime {
   setSteeringMode(mode: "all" | "one-at-a-time"): Promise<void>
   setFollowUpMode(mode: "all" | "one-at-a-time"): Promise<void>
   clearQueue(): Promise<JsonValue | undefined>
+  /** 原子提交队列中的一条（kind=steering 本轮 / followUp 下一轮）：受理成功才出队 */
+  sendQueuedMessage(kind: "steering" | "followUp", index: number): Promise<void>
 
   compact(customInstructions?: string): Promise<JsonValue | undefined>
   abortCompaction(): Promise<void>

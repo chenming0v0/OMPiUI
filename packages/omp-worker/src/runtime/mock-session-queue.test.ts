@@ -163,3 +163,70 @@ describe("MockPiSession image-bearing queue", () => {
     ])
   })
 })
+
+describe("MockPiSession sendQueuedMessage", () => {
+  it("submits one queued steering entry into the in-flight turn without touching its neighbours", async t => {
+    const root = mkdtempSync(path.join(tmpdir(), "ompiui-mock-sendqueued-"))
+    roots.push(root)
+    process.env.OMPIUI_MOCK_DIR = root
+    const session = await MockPiSession.open(root)
+    t.after(() => session.abort())
+    await session.prompt("first")
+    await session.sendUserMessage("keep-a", [image("AAEC+/==")], "steer")
+    await session.sendUserMessage("submit-me", [image("AgM=")], "steer")
+    await session.sendUserMessage("keep-b", undefined, "steer")
+    await session.sendUserMessage("next-round", [image("BAU=")], "followUp")
+
+    await session.sendQueuedMessage("steering", 1)
+
+    // The submitted row leaves only its own queue slot; neighbours and the
+    // follow-up queue keep their text, order and attachments.
+    assert.deepEqual(session.getState().queue, {
+      ...emptyQueue,
+      steering: ["keep-a", "keep-b"],
+      steeringEntries: [{ text: "keep-a", images: [image("AAEC+/==")] }, { text: "keep-b" }],
+      followUp: ["next-round"],
+      followUpEntries: [{ text: "next-round", images: [image("BAU=")] }],
+      steeringMode: "all",
+      followUpMode: "one-at-a-time",
+    })
+    // The accepted user row is persisted immediately, while the in-flight turn
+    // is still running — before any queued neighbour has been drained.
+    const userContents = (): unknown[] => session.getEntriesPage(undefined, 100, 1024 * 1024).items
+      .map(entry => entry.message as JsonObject)
+      .filter(message => message?.role === "user")
+      .map(message => message.content)
+    assert.deepEqual(userContents(), [
+      "first",
+      [{ type: "text", text: "submit-me" }, image("AgM=")],
+    ])
+    await session.waitForIdle()
+    const replies = session.getEntriesPage(undefined, 100, 1024 * 1024).items
+      .map(entry => entry.message as JsonObject)
+      .filter(message => message?.role === "assistant")
+    // The next mock turn answers the submitted message instead of dropping it.
+    assert.ok(replies.some(message => JSON.stringify(message.content).includes("Mock reply to: submit-me")))
+  })
+
+  it("rejects an out-of-range index and leaves the queue untouched", async t => {
+    const root = mkdtempSync(path.join(tmpdir(), "ompiui-mock-sendqueued-miss-"))
+    roots.push(root)
+    process.env.OMPIUI_MOCK_DIR = root
+    const session = await MockPiSession.open(root)
+    t.after(() => session.abort())
+    await session.prompt("first")
+    await session.sendUserMessage("only", [image("AAEC+/==")], "steer")
+
+    await assert.rejects(
+      session.sendQueuedMessage("steering", 3),
+      (error: unknown) => error instanceof Error && "code" in error && error.code === "NOT_FOUND",
+    )
+    assert.deepEqual(session.getState().queue, {
+      ...emptyQueue,
+      steering: ["only"],
+      steeringEntries: [{ text: "only", images: [image("AAEC+/==")] }],
+      steeringMode: "all",
+      followUpMode: "one-at-a-time",
+    })
+  })
+})
