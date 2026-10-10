@@ -49,6 +49,20 @@ class TailscaleBridge(private val context: Context, private val webView: WebView
 
   @JavascriptInterface
   fun request(id: String, method: String, payload: String) {
+    if (method == "openLogin") {
+      handler.post {
+        val response = JSONObject().put("id", id)
+        try {
+          TailscaleBrowser.open(context, JSONObject(payload).getString("url"))
+          response.put("result", JSONObject().put("ok", true))
+        } catch (error: Exception) {
+          Log.w("OMPiUITailscale", "Failed to open authorization browser", error)
+          response.put("error", error.message ?: "Failed to open authorization browser")
+        }
+        sendResponse(response)
+      }
+      return
+    }
     executor.execute {
       val response = JSONObject().put("id", id)
       try {
@@ -80,16 +94,18 @@ class TailscaleBridge(private val context: Context, private val webView: WebView
         }
         response.put("result", result)
       } catch (error: Exception) {
+        Log.w("OMPiUITailscale", "Tailscale operation failed: $method", error)
         response.put("error", error.message ?: "Tailscale operation failed")
       }
-      val json = response.toString()
-      handler.post {
-        webView.evaluateJavascript(
-          "window.dispatchEvent(new CustomEvent('ompiui-tailscale-result',{detail:$json}));",
-          null
-        )
-      }
+      handler.post { sendResponse(response) }
     }
+  }
+
+  private fun sendResponse(response: JSONObject) {
+    webView.evaluateJavascript(
+      "window.dispatchEvent(new CustomEvent('ompiui-tailscale-result',{detail:$response}));",
+      null
+    )
   }
 
   fun dispose() {
