@@ -217,6 +217,30 @@ describe('persisted subagent fallback', () => {
     expect(screen.getByRole('button', { name: 'ReadmeScout · Summarize the project from README.md' })).toBeInTheDocument()
   })
 
+  it('renders disk tool results in compact rows while preserving assistant text between them', async () => {
+    getOmpSubagentMessagesMock.mockResolvedValue({
+      messages: [
+        { role: 'toolResult', toolName: 'read', content: [] },
+        { role: 'toolResult', toolName: 'grep', content: [] },
+        { role: 'assistant', content: 'Now checking the build' },
+        { role: 'toolResult', toolName: 'bash', content: [], isError: true },
+      ],
+    })
+
+    renderTask(completedTaskExecution())
+    const read = await screen.findByTitle('read')
+    const grep = screen.getByTitle('grep')
+    const bash = screen.getByTitle('bash')
+    expect(read.parentElement).toBe(grep.parentElement)
+    expect(read.parentElement).toHaveClass('flex', 'flex-wrap')
+    expect(bash.parentElement).not.toBe(read.parentElement)
+    expect(bash).toHaveClass('text-danger-100')
+    const rows = read.parentElement!.parentElement!.parentElement!
+    expect(Array.from(rows.children).map(node => node.textContent)).toEqual([
+      'ReadGrep', 'Now checking the buildBash',
+    ])
+  })
+
   it('maps out-of-order persisted siblings to their own names, transcripts and destinations', async () => {
     const execution = completedTaskExecution()
     execution.call.arguments = { tasks: [
