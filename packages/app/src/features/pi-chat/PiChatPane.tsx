@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 import i18n from '../../i18n'
 import type { Model, Api } from '../../omp/vendor/pi-ai'
@@ -10,6 +10,15 @@ import { useFolderProjectDrop } from '../chat/useFolderProjectDrop.js'
 import { FolderProjectDropOverlay } from '../chat/FolderProjectDropOverlay.js'
 import { ChatViewportProvider, useChatViewportMaybe, type ChatViewportValue } from '../chat/chatViewport.js'
 import type { Attachment } from '../attachment/index.js'
+import {
+  acceptComposerDraft,
+  composerDraftKey,
+  copyComposerDraft,
+  getComposerDraft,
+  hasComposerDraft,
+  hydrateComposerDraft,
+  moveComposerDraft,
+} from '../chat/input/composerDraftStore'
 import { ExtensionUiDialogHost } from '../chat/ExtensionUiDialogHost.js'
 import { ProjectTrustPrompt } from './ProjectTrustPrompt'
 import { OutlineIndex } from '../../components/OutlineIndex'
@@ -298,6 +307,11 @@ export function PiChatPane({
   const { currentDirectory, addDirectory } = useDirectory()
   const { sessions: allSessions, registerSession } = useSessionContext()
   const { activeServer, activeServerGeneration } = useServerStore()
+  const draftKey = composerDraftKey(activeServer, sessionId, currentDirectory ?? '', paneId)
+  const sessionDraftKey = useCallback(
+    (sid: string) => composerDraftKey(activeServer, sid, '', paneId),
+    [activeServer, paneId],
+  )
   const { providerRevision } = useManagementEvents()
   const registerSessionRef = useRef(registerSession)
   const currentDirectoryRef = useRef(currentDirectory)
@@ -372,7 +386,8 @@ export function PiChatPane({
   // fork 的 replacement 事件比命令结果先到时，导航会先于 stash 发生，
   // 所以既要在 sessionId 变化时尝试，也要订阅 stash 通知补漏；
   // 只有真正拿到种子才标记已应用，拿不到就等通知
-  const [forkSeedText, setForkSeedText] = useState<string | undefined>(undefined)
+  const [forkSeed, setForkSeed] = useState<{ sessionId: string | null; text: string } | undefined>(undefined)
+  const forkSeedText = forkSeed?.sessionId === sessionId ? forkSeed.text : undefined
   const forkSeedAppliedForRef = useRef<string | null>(null)
   const forkSeedHomeAppliedRef = useRef(false)
   const lastEditorTextRef = useRef<string | undefined>(undefined)
@@ -386,7 +401,7 @@ export function PiChatPane({
         const seed = takeForkText(HOME_FORK_KEY)
         if (seed) {
           forkSeedHomeAppliedRef.current = true
-          setForkSeedText(seed)
+          setForkSeed({ sessionId: null, text: seed })
         }
       }
       return
@@ -396,7 +411,7 @@ export function PiChatPane({
       const seed = takeForkText(sid)
       if (!seed) return
       forkSeedAppliedForRef.current = sid
-      setForkSeedText(seed)
+      setForkSeed({ sessionId: sid, text: seed })
       // 让扩展编辑器状态和种子一致：worker 端新会话的 editorText 是空，
       // 同步 effect 会把种子抹掉；同时推到 worker，刷新后也能恢复
       extensionUiStore.editorCommand(sid, { kind: 'set', text: seed })
@@ -965,6 +980,14 @@ export function PiChatPane({
   // worker 镜像比较，防止滞后的镜像把用户正在编辑的内容打回旧值。
   const localComposerTextRef = useRef<string | undefined>(undefined)
   const composerMountedRef = useRef(false)
+  const currentDraftKeyRef = useRef(draftKey)
+  useLayoutEffect(() => {
+    const saved = hasComposerDraft(draftKey) ? getComposerDraft(draftKey).text : undefined
+    localComposerTextRef.current = saved
+    lastEditorTextRef.current = saved
+    composerMountedRef.current = false
+    currentDraftKeyRef.current = draftKey
+  }, [draftKey])
   useEffect(() => {
     if (!extensionState || extensionState.editorText === lastEditorTextRef.current) return
     const source = getEditorTextSource(sessionId)
@@ -974,13 +997,14 @@ export function PiChatPane({
     // 与镜像不同），就跳过回填，否则输入框会被反复打回旧文本。
     // 扩展真实发出的 editor set/paste 事件（'extension'）不受此限。
     const localText = localComposerTextRef.current
-    if (source === 'mirror' && localText !== undefined && localText !== extensionState.editorText) {
+    if (source === 'mirror' && (hasComposerDraft(draftKey)
+      || (localText !== undefined && localText !== extensionState.editorText))) {
       lastEditorTextRef.current = localText
       return
     }
     lastEditorTextRef.current = extensionState.editorText
     inputBoxRef.current?.setEditorText(extensionState.editorText)
-  }, [extensionState, sessionId])
+  }, [extensionState, sessionId, draftKey])
 
   const editorSyncTimerRef = useRef<number | null>(null)
   const refreshTimerRefs = useRef(new Set<number>())
@@ -1011,7 +1035,7 @@ export function PiChatPane({
       // 用户输入）；从真实输入开始记录本地最新文本，供镜像回填判断。
       if (!composerMountedRef.current) {
         composerMountedRef.current = true
-        if (text === '') return
+        if (text === '' && !hasComposerDraft(draftKey)) return
       }
       localComposerTextRef.current = text
       // 会话已不可用时别再往服务端同步编辑器状态（每敲一个字一个 404）
@@ -1022,11 +1046,12 @@ export function PiChatPane({
         void setPiExtensionEditorState(sessionId, text).catch(() => undefined)
       }, 500)
     },
-    [sessionId, readOnly],
+    [sessionId, readOnly, draftKey],
   )
   const handleSend = useCallback(
     async (text: string, attachments: Attachment[], options?: { delivery?: 'steer' | 'followUp' }) => {
       let targetSessionId = sessionId
+      const submittedDraft = { text: getComposerDraft(draftKey).text, attachments }
       try {
         if (readOnly) throw new Error('This session is read-only. Continue in a new session to send messages.')
         const pendingStop = sessionId ? pendingStopsRef.current.get(sessionId) : undefined
@@ -1045,6 +1070,7 @@ export function PiChatPane({
           if (!opened.sessionId) return false
           const sessionDir = opened.cwd ?? directory
           targetSessionId = opened.sessionId
+          moveComposerDraft(draftKey, sessionDraftKey(targetSessionId))
           trackPiSession(targetSessionId, sessionDir)
           registerSessionRef.current({
             id: targetSessionId,
@@ -1077,12 +1103,15 @@ export function PiChatPane({
           window.clearTimeout(editorSyncTimerRef.current)
           editorSyncTimerRef.current = null
         }
-        const currentText = inputBoxRef.current?.getEditorText() ?? localComposerTextRef.current ?? text
-        const remainingText = currentText === text ? '' : currentText
-        localComposerTextRef.current = remainingText
-        lastEditorTextRef.current = remainingText
+        const acceptedDraftKey = sessionDraftKey(sid)
+        acceptComposerDraft(acceptedDraftKey, submittedDraft)
+        const remainingText = getComposerDraft(acceptedDraftKey).text
+        if (currentDraftKeyRef.current === acceptedDraftKey) {
+          localComposerTextRef.current = remainingText
+          lastEditorTextRef.current = remainingText
+        }
         clearSessionEditorDraft(sid)
-        setForkSeedText(undefined)
+        setForkSeed(undefined)
         void setPiExtensionEditorState(sid, remainingText).catch(() => undefined)
         scheduleDelayedRefresh(sid)
         return true
@@ -1092,7 +1121,7 @@ export function PiChatPane({
         return false
       }
     },
-    [sessionId, readOnly, isStreaming, models, scheduleDelayedRefresh],
+    [sessionId, readOnly, isStreaming, models, scheduleDelayedRefresh, draftKey, sessionDraftKey],
   )
 
   const handleSetGoal = useCallback(
@@ -1107,6 +1136,7 @@ export function PiChatPane({
           if (!opened.sessionId) return false
           const sessionDir = opened.cwd ?? directory
           targetSessionId = opened.sessionId
+          moveComposerDraft(draftKey, sessionDraftKey(targetSessionId))
           trackPiSession(targetSessionId, sessionDir)
           registerSessionRef.current({
             id: targetSessionId,
@@ -1140,7 +1170,7 @@ export function PiChatPane({
         return false
       }
     },
-    [models, sessionId],
+    [models, sessionId, draftKey, sessionDraftKey],
   )
 
   const handleCopySession = useCallback(async () => {
@@ -1163,7 +1193,9 @@ export function PiChatPane({
         path: opened.sessionFile ?? undefined,
       })
       // InputBox stays mounted across navigation, retaining text and attachments.
-      const draft = inputBoxRef.current?.getEditorText() ?? localComposerTextRef.current ?? ''
+      await hydrateComposerDraft(draftKey)
+      const draft = getComposerDraft(draftKey).text
+      copyComposerDraft(draftKey, sessionDraftKey(opened.sessionId))
       localComposerTextRef.current = draft
       lastEditorTextRef.current = draft
       extensionUiStore.editorCommand(opened.sessionId, { kind: 'set', text: draft })
@@ -1176,7 +1208,7 @@ export function PiChatPane({
       copyingSessionRef.current = false
       setIsCopyingSession(false)
     }
-   }, [sessionId, inputRootPath, allSessions])
+   }, [sessionId, inputRootPath, allSessions, draftKey, sessionDraftKey])
 
   // Slash command dispatch, mirroring pi TUI: frontend built-ins are handled
   // locally; everything else goes through the native prompt path, where the
@@ -1249,6 +1281,7 @@ export function PiChatPane({
         const opened = await openPiSession(directory)
         if (!opened.sessionId) return false
         targetSessionId = opened.sessionId
+        moveComposerDraft(draftKey, sessionDraftKey(targetSessionId))
         onEnterSessionRef.current?.(targetSessionId, directory)
       }
       const sid = targetSessionId
@@ -1592,7 +1625,7 @@ export function PiChatPane({
       scheduleDelayedRefresh(sid)
       return true
     },
-    [currentDirectoryRef, handleFork, handleModelChange, isStreaming, items, models, onOpenSettings, onOpenSettingsTab, onOpenSidebar, scheduleDelayedRefresh, sessionId, state],
+    [currentDirectoryRef, handleFork, handleModelChange, isStreaming, items, models, onOpenSettings, onOpenSettingsTab, onOpenSidebar, scheduleDelayedRefresh, sessionId, state, draftKey, sessionDraftKey],
   )
 
   // Image attachment capability from the current model's native input
@@ -1861,6 +1894,7 @@ export function PiChatPane({
             ref={inputBoxRef}
             paneId={paneId}
             sessionId={sessionId}
+            draftKey={draftKey}
             queuedSteering={queuedSteering}
             queuedFollowUps={queuedFollowUps}
             onQueueBackToInput={handleQueueBackToInput}
