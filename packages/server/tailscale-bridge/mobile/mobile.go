@@ -37,6 +37,9 @@ func Start(stateDir, hostname string) (err error) {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return err
 	}
+	if err := prepareLogsDirectory(stateDir); err != nil {
+		return fmt.Errorf("prepare Tailscale log directory: %w", err)
+	}
 	s := &tsnet.Server{
 		Dir: stateDir, Hostname: hostname,
 		UserLogf: func(string, ...any) {}, Logf: func(string, ...any) {},
