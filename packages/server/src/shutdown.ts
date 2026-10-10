@@ -5,6 +5,7 @@ import { closeEventWebSocket } from "./ws.ts"
 export interface ShutdownOptions {
   timeoutMs?: number
   hardStopGraceMs?: number
+  cleanupTimeoutMs?: number
   forceExit?: (code: number) => void
   onTimeout?: () => void
   cleanup?: () => Promise<void>
@@ -35,9 +36,20 @@ export function shutdownAppServer(
       server.close(error => (error ? reject(error) : resolve()))
     }),
   ]).then(async results => {
+    // 连接排空与 worker 清理使用独立预算，端口已关闭后不能再被 HTTP 短超时误杀。
+    clearTimeout(deadline)
+    if (hardStop) clearTimeout(hardStop)
     const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected")
     if (failure) throw failure.reason
-    await options.cleanup?.()
+    if (options.cleanup) {
+      const cleanupDeadline = setTimeout(() => forceExit(1), options.cleanupTimeoutMs ?? 20_000)
+      cleanupDeadline.unref()
+      try {
+        await options.cleanup()
+      } finally {
+        clearTimeout(cleanupDeadline)
+      }
+    }
   })
 
   void closing.finally(() => {

@@ -15,7 +15,7 @@ test("an idle OMP terminal still blocks session writes until its process exits",
 })
 
 test("RPC processes and version probes do not block their own worker", () => {
-  for (const args of ["--mode rpc", '--mode "rpc"', "--mode=rpc", "--mode rpc-ui", "--version"]) {
+  for (const args of ["--mode rpc", '--mode "rpc"', "--mode=rpc", "--mode rpc-ui", "--version", "__omp_worker_daemon_broker", "__omp_worker_tiny_inference"]) {
     assert.equal(isOmpTerminalProcess({ pid: 42, name: "omp.exe", commandLine: `"C:\\bin\\omp.exe" ${args}` }), false)
   }
 })
