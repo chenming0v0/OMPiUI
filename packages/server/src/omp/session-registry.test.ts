@@ -83,3 +83,25 @@ test("SessionRuntimeRegistry does not reuse an open flight after its last waiter
   }), "second")
   assert.equal(calls, 2)
 })
+
+test("SessionRuntimeRegistry waits for cancelled runtime cleanup before a retry", async () => {
+  const registry = new SessionRuntimeRegistry()
+  const controller = new AbortController()
+  let release!: () => void
+  let retryStarted = false
+  const first = registry.openFlight("cleanup-session.jsonl", async () => {
+    await new Promise<void>(resolve => { release = resolve })
+    throw Object.assign(new Error("open cancelled after cleanup"), { code: "REQUEST_ABORTED" })
+  }, controller.signal)
+  await new Promise(resolve => setImmediate(resolve))
+  controller.abort()
+  await assert.rejects(first, { code: "REQUEST_ABORTED" })
+  const retry = registry.openFlight("cleanup-session.jsonl", async () => {
+    retryStarted = true
+    return "retry"
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(retryStarted, false)
+  release()
+  assert.equal(await retry, "retry")
+})

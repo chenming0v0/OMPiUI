@@ -50,6 +50,11 @@ export class SessionRuntimeRegistry {
   async openFlight<T>(sessionFile: string, operation: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
     const key = sessionFileKey(sessionFile)
     let flight = this.openFlights.get(key)
+    if (flight?.controller.signal.aborted) {
+      // 上一次打开仍可能在清理 runtime；完成前不能重试并争用它的租约。
+      await flight.promise.catch(() => undefined)
+      return this.openFlight(sessionFile, operation, signal)
+    }
     if (!flight) {
       const controller = new AbortController()
       const promise = Promise.resolve().then(() => operation(controller.signal))
@@ -75,7 +80,6 @@ export class SessionRuntimeRegistry {
       const abort = () => finish(() => {
         if (flight!.waiters === 0) {
           flight!.controller.abort()
-          if (this.openFlights.get(key) === flight) this.openFlights.delete(key)
         }
         reject(Object.assign(new Error("request aborted"), { code: "REQUEST_ABORTED" }))
       })

@@ -4,9 +4,10 @@ interface BranchEntry {
   data: PiBranchPage | null
   loading: boolean
   error: Error | null
+  requestVersion: number
 }
 
-const EMPTY_ENTRY: BranchEntry = { data: null, loading: false, error: null }
+const EMPTY_ENTRY: BranchEntry = { data: null, loading: false, error: null, requestVersion: 0 }
 
 /**
  * Raw branch page store, keyed by session id (multi-pane safe).
@@ -15,6 +16,7 @@ const EMPTY_ENTRY: BranchEntry = { data: null, loading: false, error: null }
 class PiBranchStore {
   private bySessionId = new Map<string, BranchEntry>()
   private listeners = new Set<() => void>()
+  private nextVersion = 0
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener)
@@ -28,7 +30,7 @@ class PiBranchStore {
   private entry(sessionId: string): BranchEntry {
     let entry = this.bySessionId.get(sessionId)
     if (!entry) {
-      entry = { data: null, loading: false, error: null }
+      entry = { data: null, loading: false, error: null, requestVersion: ++this.nextVersion }
       this.bySessionId.set(sessionId, entry)
     }
     return entry
@@ -41,10 +43,25 @@ class PiBranchStore {
 
   setData(sessionId: string, data: PiBranchPage): void {
     const entry = this.entry(sessionId)
+    entry.requestVersion = ++this.nextVersion
     entry.data = data
     entry.error = null
     entry.loading = false
     this.notify()
+  }
+
+  beginRequest(sessionId: string): number {
+    const entry = this.entry(sessionId)
+    entry.requestVersion = ++this.nextVersion
+    return entry.requestVersion
+  }
+
+  isRequestCurrent(sessionId: string, version: number): boolean {
+    return this.bySessionId.get(sessionId)?.requestVersion === version
+  }
+
+  setDataIfCurrent(sessionId: string, data: PiBranchPage, version: number): void {
+    if (this.isRequestCurrent(sessionId, version)) this.setData(sessionId, data)
   }
 
   setError(sessionId: string, error: Error): void {

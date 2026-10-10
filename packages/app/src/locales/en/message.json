@@ -155,6 +155,11 @@
     }
   },
   "system": {
+    "agentMessage": "Agent · {{name}}",
+    "backgroundJob": "Background job · {{name}}",
+    "jobCompleted": "Completed",
+    "jobResult": "Result",
+    "jobFullOutput": "Full output: {{path}}",
     "retryAttempt": "Retry attempt {{attempt}}",
     "retryable": "Retryable",
     "statusCode": "Status: {{code}}",

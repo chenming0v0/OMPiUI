@@ -70,6 +70,8 @@ export class SessionHost {
   private readonly lastAccess = new Map<string, number>()
   private readonly materialized = new Set<string>()
   private readonly runtimeReaper: NodeJS.Timeout
+  private readonly recoveryController = new AbortController()
+  private readonly recoveries = new Map<string, Promise<void>>()
   readonly executor: SessionExecutor
 
   constructor(
@@ -150,6 +152,7 @@ export class SessionHost {
   }
 
   private async openSessionOnce(cwd: string, sessionFile?: string, signal?: AbortSignal): Promise<JsonObject> {
+    if (signal?.aborted) throw abortError()
     // Idempotent attach: reopening an already-attached session file reuses
     // its runtime instead of spawning a second worker that would lose the
     // session lease (SESSION_BUSY 409).
@@ -174,6 +177,7 @@ export class SessionHost {
     try {
       worker = await this.supervisor.open(cwd, sessionFile, signal)
       const state = await worker.command("state.get", undefined, signal) as JsonObject | undefined
+      if (signal?.aborted || this.recoveryController.signal.aborted) throw abortError()
       const session: AttachedSession = {
         sessionId: worker.getSessionId(),
         cwd: worker.getCwd() || cwd,
@@ -207,6 +211,7 @@ export class SessionHost {
     session.worker.onReplacementCommitted?.(replacement => this.trackReplacement(session, replacement, { leaseCommitted: true }))
     session.worker.onEvent(event => this.routeSessionEvent(session, event))
     session.worker.onCrash(error => {
+      if (this.runtimes.get(session.sessionId) !== session) return
       diagnostics.record("session.crashed", { sessionId: session.sessionId, errorCode: diagnosticErrorCode(error) }, "error")
       this.executor.markRuntimeCrashed(session.sessionId)
       this.runtimes.delete(session.sessionId)
@@ -215,7 +220,25 @@ export class SessionHost {
       // Dispose so the process exits and the supervisor releases the lease —
       // without this a crashed runtime orphans the session (permanent
       // SESSION_BUSY on reattach).
-      void session.worker.dispose().catch(() => undefined)
+      const cleanup = session.worker.dispose().catch(() => undefined)
+      const sessionFile = session.worker.getSessionFile() ?? session.sessionFile
+      if (sessionFile && !this.recoveryController.signal.aborted) {
+        // 先释放旧 runtime 的租约，再按原身份挂接；不重放结果未知的命令。
+        const recovery = cleanup.then(async () => {
+          if (this.recoveryController.signal.aborted) return
+          await this.openSession(session.cwd, sessionFile, this.recoveryController.signal)
+          this.hub.publish({ kind: "session", id: session.sessionId }, "sessions.updated", {
+            sessionId: session.sessionId, recovered: true,
+          })
+        }).catch(error => {
+          const message = `[ompiui-server] runtime recovery failed for ${session.sessionId}: ${error instanceof Error ? error.message : String(error)}`
+          console.error(message)
+          logToFile(message)
+        }).finally(() => {
+          if (this.recoveries.get(session.sessionId) === recovery) this.recoveries.delete(session.sessionId)
+        })
+        this.recoveries.set(session.sessionId, recovery)
+      }
       this.publishActivity()
       this.hub.publish({ kind: "session", id: session.sessionId }, "sessions.updated", {
         sessionId: session.sessionId,
@@ -223,6 +246,8 @@ export class SessionHost {
       })
     })
     session.worker.onClose(() => {
+      const current = this.runtimes.get(session.sessionId)
+      if (current && current !== session) return
       diagnostics.record("session.detached", { sessionId: session.sessionId, reason: "worker_handle_closed" })
       const wasAttached = this.runtimes.delete(session.sessionId)
       const hadActivity = this.activity.delete(session.sessionId)
@@ -242,6 +267,7 @@ export class SessionHost {
   }
 
   async closeSession(sessionId: string, reason = "explicit_session_close"): Promise<void> {
+    await this.recoveries.get(sessionId)
     const session = this.runtimes.get(sessionId)
     if (!session) throw Object.assign(new Error("session is not attached"), { code: "SESSION_NOT_FOUND" })
     diagnostics.record("session.close.requested", {
@@ -754,6 +780,7 @@ export class SessionHost {
   }
 
   dispose(): void {
+    this.recoveryController.abort()
     diagnostics.record("session.host.disposed", { sessionIds: this.listAttachedIds(), reason: "server_shutdown" })
     clearInterval(this.runtimeReaper)
     this.lastAccess.clear()

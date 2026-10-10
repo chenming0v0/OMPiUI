@@ -85,6 +85,52 @@ describe('piSessionStateStore pending dialog recovery', () => {
     expect(snapshot?.state.editorText).toBe('prefill')
   })
 
+  it('restores the array mirror returned by the OMP worker without clearing current editor text', () => {
+    extensionUiStore.editorCommand('session-1', { kind: 'set', text: 'draft' })
+    piSessionStateStore.setState('session-1', {
+      extensionUiState: [
+        { kind: 'status', key: 'mode', text: 'Planning' },
+        { kind: 'widget', key: 'plan', lines: ['Inspect'], placement: 'aboveEditor' },
+        { kind: 'toolsExpanded', expanded: true },
+      ],
+    })
+    const state = extensionUiStore.getSnapshot().sessions['session-1']?.state
+    expect(state?.statuses.mode).toBe('Planning')
+    expect(state?.widgets.plan?.lines).toEqual(['Inspect'])
+    expect(state?.editorText).toBe('draft')
+    expect(state?.toolsExpanded).toBe(true)
+  })
+
+  it('does not reopen a settled dialog from a delayed response or cached lifecycle state', () => {
+    const request = dialogRequest()
+    piSessionStateStore.setState('session-1', stateWith([request]))
+    const version = piSessionStateStore.beginRequest('session-1')
+    extensionUiStore.requestSettled('session-1', request.requestId)
+    activeSessionStore.resolvePendingRequest(request.requestId)
+    piSessionStateStore.setStateIfCurrent('session-1', stateWith([request]), version)
+    piSessionStateStore.patchState('session-1', { isStreaming: false })
+    expect(extensionUiStore.getSnapshot().sessions['session-1']?.pending).toEqual([])
+    expect(activeSessionStore.getBusySessionsSnapshot().some(entry => entry.pendingAction)).toBe(false)
+  })
+
+  it('allows a new worker generation to reuse a request id after the old one settled', () => {
+    const oldRequest = dialogRequest({ workerGeneration: 'old' })
+    const newRequest = dialogRequest({ workerGeneration: 'new' })
+    piSessionStateStore.setState('session-1', stateWith([oldRequest]))
+    extensionUiStore.requestSettled('session-1', oldRequest.requestId)
+    expect(extensionUiStore.requestOpened(newRequest)).toBe(true)
+    expect(extensionUiStore.getSnapshot().sessions['session-1']?.pending[0]?.workerGeneration).toBe('new')
+  })
+
+  it('does not replay an old extension mirror when lifecycle state changes', () => {
+    piSessionStateStore.setState('session-1', {
+      extensionUiState: [{ kind: 'status', key: 'mode', text: 'Old' }],
+    })
+    extensionUiStore.statePatched('session-1', { kind: 'status', key: 'mode', text: 'New' })
+    piSessionStateStore.patchState('session-1', { isStreaming: false })
+    expect(extensionUiStore.getSnapshot().sessions['session-1']?.state.statuses.mode).toBe('New')
+  })
+
   it('keeps pending dialogs when restoring the state mirror (live events first)', () => {
     extensionUiStore.requestOpened(dialogRequest())
     piSessionStateStore.setState('session-1', {

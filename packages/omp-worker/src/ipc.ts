@@ -45,6 +45,7 @@ export type WorkerEvent =
     }
   | { kind: "event"; generation: string; sessionId: string; channel: "session.head"; head: JsonObject }
   | { kind: "event"; generation: string; sessionId: string; channel: "session.activity"; event: JsonObject }
+  | { kind: "event"; generation: string; sessionId: string; channel: "session.crashed"; event: JsonObject }
   | { kind: "event"; generation: string; sessionId: string; channel: "extension.ui"; event: JsonObject }
   | { kind: "event"; generation: string; sessionId: string; channel: "omp.subagent"; event: JsonObject }
   | { kind: "event"; generation: string; sessionId: string; channel: "registry.updated"; event: JsonObject }

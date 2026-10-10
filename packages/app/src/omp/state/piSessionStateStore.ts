@@ -58,6 +58,10 @@ class PiSessionStateStore {
     return entry.requestVersion
   }
 
+  invalidateRequests(sessionId: string): void {
+    this.entry(sessionId).requestVersion = ++this.nextVersion
+  }
+
   isRequestCurrent(sessionId: string, version: number): boolean {
     return this.bySessionId.get(sessionId)?.requestVersion === version
   }
@@ -69,8 +73,13 @@ class PiSessionStateStore {
   }
 
   patchState(sessionId: string, patch: JsonObject): void {
-    const state = this.getState(sessionId)
-    this.setState(sessionId, { ...state, ...patch })
+    const entry = this.entry(sessionId)
+    entry.requestVersion = ++this.nextVersion
+    entry.state = { ...entry.state, ...patch }
+    entry.error = null
+    entry.loading = false
+    // 生命周期补丁不是新快照，不能重新播放缓存中的扩展状态。
+    this.notify()
   }
 
   setError(sessionId: string, error: Error): void {
@@ -118,7 +127,7 @@ class PiSessionStateStore {
         if (!request || typeof request !== 'object' || typeof request.requestId !== 'string') continue
         if (typeof request.sessionId === 'string' && request.sessionId !== sessionId) continue
         if (!request.kind || !['select', 'confirm', 'input', 'editor'].includes(request.kind)) continue
-        extensionUiStore.requestOpened(request as ExtensionUiDialogRequest)
+        if (!extensionUiStore.requestOpened(request as ExtensionUiDialogRequest)) continue
         activeSessionStore.addPendingRequest(
           request.requestId,
           sessionId,
@@ -127,12 +136,15 @@ class PiSessionStateStore {
         )
       }
     }
-    const mirror = state.extensionUiState as { patches?: unknown; editorText?: unknown; toolsExpanded?: unknown } | null | undefined
-    if (mirror && typeof mirror === 'object' && Array.isArray(mirror.patches)) {
+    const mirror = state.extensionUiState
+    // OMP 返回 patch 数组；旧驱动返回带 patches 的对象，两种快照都可恢复。
+    const objectMirror = mirror && typeof mirror === 'object' && !Array.isArray(mirror) ? mirror : undefined
+    const patches = Array.isArray(mirror) ? mirror : objectMirror?.patches
+    if (Array.isArray(patches)) {
       extensionUiStore.restore(sessionId, {
-        patches: mirror.patches as ExtensionUiStatePatch[],
-        editorText: typeof mirror.editorText === 'string' ? mirror.editorText : '',
-        toolsExpanded: mirror.toolsExpanded === true,
+        patches: patches as ExtensionUiStatePatch[],
+        editorText: typeof objectMirror?.editorText === 'string' ? objectMirror.editorText : undefined,
+        toolsExpanded: typeof objectMirror?.toolsExpanded === 'boolean' ? objectMirror.toolsExpanded : undefined,
       })
     }
     // offscreen 扩展 TUI 面板：组件在 worker 侧仍挂着，用全量快照替换恢复

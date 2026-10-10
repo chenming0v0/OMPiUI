@@ -17,6 +17,9 @@ import { PI_WORKER_PROTOCOL_VERSION } from "../../../omp-worker/src/ipc.ts"
 const mode = process.env.OMPIUI_FIXTURE_MODE ?? "hello-ok"
 const heartbeatIntervalMs = Number(process.env.OMPIUI_FIXTURE_HEARTBEAT_MS ?? 20)
 const generation = "fixture-gen"
+const sessions = new Set()
+const sessionIds = new Map()
+let nextSession = 0
 
 const send = (message) => process.send?.(message)
 
@@ -72,6 +75,24 @@ if (mode === "silent" || mode === "wrong-protocol") {
     process.on("message", message => {
       if (!message || typeof message !== "object" || message.kind !== "request") return
       const reply = { kind: "response", id: message.id, generation, ok: true, data: { fixture: "ok" } }
+      if (message.command?.type === "session.open") {
+        const file = message.command.params?.sessionFile
+        const sessionId = sessionIds.get(file) ?? `fixture-session-${++nextSession}`
+        if (file) sessionIds.set(file, sessionId)
+        const opened = () => {
+          sessions.add(sessionId)
+          send({ ...reply, data: { sessionId, sessionFile: message.command.params?.sessionFile, cwd: message.command.params?.cwd } })
+        }
+        if (mode === "slow-open") setTimeout(opened, 150)
+        else opened()
+        return
+      }
+      if (message.command?.type === "session.close") sessions.delete(message.sessionId)
+      if (message.command?.type === "fixture.sessions") reply.data = { active: sessions.size }
+      if (message.command?.type === "fixture.crash") {
+        sessions.delete(message.sessionId)
+        send({ kind: "event", generation, sessionId: message.sessionId, channel: "session.crashed", event: { message: "fixture OMP child exited" } })
+      }
       send(reply)
       // Mirror the real worker: acknowledge dispose, then exit so the client's
       // dispose() doesn't wait out its 5s kill timeout.

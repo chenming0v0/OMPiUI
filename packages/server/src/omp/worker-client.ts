@@ -248,7 +248,14 @@ class WorkerHostCore {
     if (message.kind === "event") {
       // 带 sessionId 的事件路由到对应句柄；无归属的全局事件广播给 host 监听者
       if ("sessionId" in message && message.sessionId) {
-        this.handles.get(message.sessionId)?.dispatchEvent(message)
+        const handle = this.handles.get(message.sessionId)
+        if (message.channel === "session.crashed") {
+          handle?.dispatchCrash(Object.assign(new Error(String(message.event.message ?? "OMP runtime crashed")), {
+            code: "SESSION_RUNTIME_CRASHED",
+          }))
+        } else {
+          handle?.dispatchEvent(message)
+        }
       } else {
         for (const listener of this.hostEventListeners) {
           try {
@@ -405,10 +412,12 @@ class WorkerHostCore {
 
   async open(cwd: string, sessionFile?: string, signal?: AbortSignal): Promise<WorkerSession> {
     await this.ready
+    if (signal?.aborted) throw Object.assign(new Error("request aborted"), { code: "REQUEST_ABORTED" })
+    // 打开有副作用：保留响应以定位并关闭取消后创建的 runtime，不能丢弃请求。
     const data = await this.request({
       type: "session.open",
       params: { cwd, sessionFile: sessionFile ?? null },
-    }, signal)
+    })
     const opened = data as { sessionId?: string; sessionFile?: string; cwd?: string } | undefined
     const sessionId = opened?.sessionId
     if (!sessionId) {
@@ -420,6 +429,10 @@ class WorkerHostCore {
       cwd: opened?.cwd ?? cwd,
     })
     this.handles.set(handle.getSessionId(), handle)
+    if (signal?.aborted) {
+      await handle.dispose()
+      throw Object.assign(new Error("request aborted"), { code: "REQUEST_ABORTED" })
+    }
     return handle
   }
 

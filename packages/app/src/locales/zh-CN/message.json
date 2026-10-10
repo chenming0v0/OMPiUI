@@ -129,6 +129,11 @@
     }
   },
   "system": {
+    "agentMessage": "代理 · {{name}}",
+    "backgroundJob": "后台任务 · {{name}}",
+    "jobCompleted": "已完成",
+    "jobResult": "结果",
+    "jobFullOutput": "完整输出：{{path}}",
     "retryAttempt": "重试第 {{attempt}} 次",
     "retryable": "可重试",
     "statusCode": "状态码：{{code}}",

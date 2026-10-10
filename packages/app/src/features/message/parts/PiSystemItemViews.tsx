@@ -18,6 +18,8 @@ import { useDisclosureScrollLock } from '../../../hooks'
 import { useNow } from '../../../hooks/useNow'
 import { chevronClass, MessageExpandPanel, useMessageExpandRender } from '../messageExpand'
 import { ToolGroup } from './ToolGroup'
+import { formatDuration } from '../../../utils/formatUtils'
+import { customMessageText, readAgentMessage, readBackgroundJobs, type BackgroundJobView } from './customMessagePresentation'
 
 // ============================================
 // Pi system timeline item views
@@ -173,42 +175,67 @@ function BranchSummaryItemView({ item }: { item: PiBranchSummaryItem }) {
   return <DividerRow partKey={item.entryId} label={t('system.branchSummary')} detail={item.summary} />
 }
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
-}
-
 function CustomMessageItemView({ item }: { item: PiCustomMessageItem }) {
-  const text = typeof item.content === 'string'
-    ? item.content
-    : item.content
-        .filter((block): block is Extract<typeof block, { type: 'text' }> => block.type === 'text')
-        .map(block => block.text)
-        .join('\n')
-  if (!text.trim()) return null
-  if (item.customType === 'async-result' || item.customType === 'Background job') {
-    const details = asRecord(item.details) ?? {}
-    const job = asRecord(Array.isArray(details.jobs) ? details.jobs[0] : details) ?? {}
-    const title = `Background job ${typeof job.jobId === 'string' ? job.jobId : 'unknown'} has completed`
-    const status = typeof job.status === 'string' ? job.status : 'completed'
-    const label = typeof job.label === 'string' ? job.label : typeof job.type === 'string' ? job.type : 'unknown'
-    const durationMs = typeof job.durationMs === 'number' ? job.durationMs : undefined
-    const meta = asRecord(job.meta) ?? {}
-    const schema = asRecord(job.schema) ?? {}
+  const { t } = useTranslation('message')
+  const agent = readAgentMessage(item)
+  if (agent) {
     return (
-      <div className="px-3 py-2 rounded-md border border-border-300 bg-bg-100/50">
-        <div className="text-[length:var(--fs-sm)] text-text-300 mb-1">{title}</div>
-        <div className="text-[length:var(--fs-sm)] space-y-1">
-          {label && <div>Label: {label}</div>}
-          {durationMs != null && <div>Duration: {Math.round(durationMs / 1000)}s</div>}
-          {Object.keys(meta).length > 0 && <div>Meta: {JSON.stringify(meta)}</div>}
-          {Object.keys(schema).length > 0 && <div>Schema: {JSON.stringify(schema)}</div>}
-          <div>Status: {status}</div>
-        </div>
-        <pre className="mt-2 text-[length:var(--fs-sm)] font-mono whitespace-pre-wrap break-words max-h-[240px] overflow-auto bg-bg-200/50 p-2 rounded">{text}</pre>
-      </div>
+      <section className="min-w-0 rounded-md border border-border-200 bg-bg-100/50 px-3 py-2" aria-label={t('system.agentMessage', { name: agent.sender })}>
+        <div className="mb-1 text-[length:var(--fs-xs)] font-medium text-text-400">{t('system.agentMessage', { name: agent.sender })}</div>
+        <MarkdownRenderer content={agent.body} />
+      </section>
     )
   }
-  return <MarkdownRenderer content={text} />
+  const jobs = readBackgroundJobs(item)
+  if (jobs) {
+    return <div className="min-w-0 space-y-2">{jobs.map((job, index) => <BackgroundJobCard key={`${job.id}:${index}`} job={job} partKey={`${item.entryId}:${job.id}:${index}`} />)}</div>
+  }
+  const text = customMessageText(item)
+  return text.trim() ? <MarkdownRenderer content={text} /> : null
+}
+
+function BackgroundJobCard({ job, partKey }: { job: BackgroundJobView; partKey: string }) {
+  const { t } = useTranslation('message')
+  const [expanded, setExpanded] = useUiDisclosureState(`pi:${partKey}:job-result`, false)
+  const shouldRenderBody = useMessageExpandRender(expanded)
+  const { rootRef, headerRef, withScrollLock } = useDisclosureScrollLock()
+  const duration = job.durationMs !== undefined ? formatDuration(job.durationMs) : job.duration
+  const status = job.status === 'completed' ? t('system.jobCompleted') : job.status
+  const body = job.body.trim()
+  const structured = body.startsWith('[') || body.startsWith('{')
+
+  return (
+    <section ref={rootRef} className="min-w-0 rounded-md border border-border-200 bg-bg-100/50 px-3 py-2" aria-label={t('system.backgroundJob', { name: job.name })}>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[length:var(--fs-xs)] text-text-400">
+        <span className="font-medium text-text-200 break-all">{job.name}</span>
+        <span>{status}</span>
+        {duration && <span className="tabular-nums">{duration}</span>}
+      </div>
+      {job.summary && !job.errors.length && <p className="mt-1 line-clamp-3 whitespace-pre-wrap break-words text-[length:var(--fs-sm)] text-text-300">{job.summary}</p>}
+      {job.errors.map((error, index) => <p key={index} className="mt-1 whitespace-pre-wrap break-words text-[length:var(--fs-sm)] text-danger-100">{error}</p>)}
+      {(job.body || job.metadata && Object.keys(job.metadata).length > 0) && (
+        <>
+          <button ref={headerRef} type="button" aria-expanded={expanded} onClick={() => withScrollLock(() => setExpanded(!expanded))} className="mt-2 inline-flex items-center gap-1 text-[length:var(--fs-xs)] text-text-400 hover:text-text-200 focus-visible:outline-2 focus-visible:outline-primary-100">
+            <ChevronDownIcon size={12} className={chevronClass(expanded)} />
+            {t('system.jobResult')}
+          </button>
+          <MessageExpandPanel open={expanded} innerClassName="overflow-hidden">
+            {shouldRenderBody && (
+              <div className="mt-2 min-w-0">
+                {structured
+                  ? <pre className="whitespace-pre-wrap break-words text-[length:var(--fs-sm)] font-mono">{job.body}</pre>
+                  : <MarkdownRenderer content={job.body} />}
+                {job.metadata && Object.keys(job.metadata).length > 0 && (
+                  <pre className="mt-2 whitespace-pre-wrap break-words text-[length:var(--fs-xs)] font-mono text-text-400">{JSON.stringify(job.metadata, null, 2)}</pre>
+                )}
+              </div>
+            )}
+          </MessageExpandPanel>
+        </>
+      )}
+      {job.fullOutput && <p className="mt-1 break-all text-[length:var(--fs-xs)] text-text-400">{t('system.jobFullOutput', { path: job.fullOutput })}</p>}
+    </section>
+  )
 }
 
 function UnknownItemView({ item }: { item: PiUnknownItem }) {
