@@ -1856,7 +1856,8 @@ export function PiChatPane({
       <ProjectTrustPrompt cwd={currentDirectory} />
 
       <div ref={inputBoxWrapperRef} className="absolute bottom-0 left-0 right-0 z-10 pointer-events-none">
-        <div className="pointer-events-auto">
+        {/* 仅由输入区和可见按钮接收触摸，避免收起后的透明占位阻挡消息滚动。 */}
+        <div className="pointer-events-none">
           <InputBox
             ref={inputBoxRef}
             paneId={paneId}
