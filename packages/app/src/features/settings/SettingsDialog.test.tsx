@@ -41,6 +41,9 @@ vi.mock('./components/NotificationSettings', () => ({
 }))
 vi.mock('./components/ServiceSettings', () => ({ ServiceSettings: () => <div>Service content</div> }))
 vi.mock('./components/ServersSettings', () => ({ ServersSettings: () => <div>Servers content</div> }))
+vi.mock('./components/TrafficAuditSettings', () => ({
+  TrafficAuditSettings: () => <div data-setting-label="Record traffic"><button type="button">Traffic control</button></div>,
+}))
 vi.mock('./components/WorkspaceSettings', () => ({ WorkspaceSettings: () => <div>Workspace content</div> }))
 vi.mock('./components/ConfigSettings', () => ({ ConfigSettings: () => <div>Config content</div> }))
 
@@ -99,6 +102,20 @@ describe('SettingsDialog search', () => {
     expect(screen.queryByRole('tab', { name: 'Service' })).not.toBeInTheDocument()
     expect(screen.queryByText('Service content')).not.toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'Servers' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('keeps traffic auditing available on Android and reachable from settings search', async () => {
+    tauriState.mobile = true
+    render(<SettingsDialog isOpen onClose={vi.fn()} />)
+    await act(async () => vi.advanceTimersByTime(1))
+    expect(screen.getByRole('tab', { name: 'Traffic Audit' })).toBeInTheDocument()
+    const input = screen.getByRole('combobox', { name: 'Search settings' })
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: 'Record traffic' } })
+    fireEvent.click(screen.getByRole('option', { name: /Record traffic/ }))
+    await act(async () => vi.advanceTimersByTime(1))
+    expect(screen.getByRole('tab', { name: 'Traffic Audit' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('button', { name: 'Traffic control' })).toHaveFocus()
   })
 
   it('distinguishes duplicate setting labels by their subgroup', async () => {

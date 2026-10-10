@@ -261,7 +261,7 @@ class PiEventStream {
       // swapped this.ws (server switch). Ignore messages from any socket that
       // is no longer the active one, mirroring the onclose identity check.
       if (this.ws !== ws) return
-      this.handleRaw(String(e.data))
+      this.handleRaw(String(e.data), e.annotateTraffic)
     }
     ws.onclose = event => {
       if (this.ws !== ws) return
@@ -325,13 +325,14 @@ class PiEventStream {
     }
   }
 
-  private handleRaw(raw: string): void {
+  private handleRaw(raw: string, annotateTraffic?: (parsed: unknown) => void): void {
     let message: EventServerMessage
     try {
       message = JSON.parse(raw) as EventServerMessage
     } catch {
       return
     }
+    annotateTraffic?.(message)
     if ('channel' in message && message.channel === 'event') {
       this.handleEvent(message.event)
       return

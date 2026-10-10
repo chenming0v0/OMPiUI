@@ -28,6 +28,7 @@ const definitions = (tab: SettingsTab, labelKeys: string[]): SettingsSearchDefin
 
 export const SETTINGS_SEARCH_DEFINITIONS: SettingsSearchDefinition[] = [
   ...definitions('servers', ['servers.connections']),
+  ...definitions('traffic', ['tabs.traffic', 'traffic.recording', 'traffic.previews', 'traffic.requests']),
   ...definitions('service', ['service.title', 'service.useSystemPiSdk', 'service.envVars', 'service.environment']),
   ...definitions('models', ['models.rolesTitle', 'models.visibility']),
   ...definitions('agent', [

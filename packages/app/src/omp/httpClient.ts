@@ -2,6 +2,7 @@ import { isCustomizedLocalServerUrl, LOCAL_SERVER_ID, serverStore } from '../sto
 import { getHttpFetch, isTauri } from '../utils/tauri'
 import { PROTOCOL_VERSION } from '@ompiui/protocol'
 import { resolveAndroidTailscaleUrl } from '../utils/androidTailscale'
+import { auditHttpRequest } from './trafficAudit/http'
 
 const DEFAULT_BASE = 'http://127.0.0.1:8787'
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000
@@ -103,6 +104,7 @@ export async function piFetch(input: string, init?: PiRequestInit): Promise<Resp
   const method = (requestInit.method ?? 'GET').toUpperCase()
   const canRetry = retry && (method === 'GET' || method === 'HEAD')
   const generation = requestGeneration
+  const auditServer = serverStore.getActiveServer()?.url
   const inflight = new AbortController()
   inflightControllers.add(inflight)
   try {
@@ -120,9 +122,11 @@ export async function piFetch(input: string, init?: PiRequestInit): Promise<Resp
     for (let attempt = 0; attempt <= NETWORK_RETRY_DELAYS_MS.length; attempt++) {
       signal.throwIfAborted()
       try {
-        const resolved = await resolveAndroidTailscaleUrl(input)
-        signal.throwIfAborted()
-        return await fetchImpl(resolved, { ...requestInit, signal, headers })
+        return await auditHttpRequest(input, { ...requestInit, signal }, async () => {
+          const resolved = await resolveAndroidTailscaleUrl(input)
+          signal.throwIfAborted()
+          return fetchImpl(resolved, { ...requestInit, signal, headers })
+        }, input.startsWith('/') ? auditServer : undefined, attempt + 1)
       } catch (error) {
         if (!canRetry || signal.aborted || isAbortError(error) || !isNetworkLevelError(error)) throw error
         lastError = error

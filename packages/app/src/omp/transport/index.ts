@@ -40,6 +40,7 @@ import type { PiBranchPage, PiConfiguredPackage, PiModelRuntimeSnapshot, PiPacka
 import { getApiBase, getPiAuthToken, piFetch, type PiRequestInit } from '../httpClient.js'
 import { piCommandStore } from '../state/index.js'
 import { getHttpFetch } from '../../utils/tauri'
+import { auditHttpRequest } from '../trafficAudit/http'
 import { resolveAndroidTailscaleUrl } from '../../utils/androidTailscale'
 import type { LanInterfaceInfo, PairInviteInfo, PairRedeemResult, TunnelStatus } from '@ompiui/protocol'
 
@@ -122,12 +123,13 @@ export async function fetchPairInvite(id: string, signal?: AbortSignal): Promise
 export async function redeemPairCode(pair: string, origin: string, signal?: AbortSignal): Promise<PairRedeemResult> {
   const f = await getHttpFetch()
   const url = await resolveAndroidTailscaleUrl(`${origin}/api/v1/host/pair/redeem`)
-  const response = await f(url, {
+  const init: RequestInit = {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ pair }),
     signal,
-  })
+  }
+  const response = await auditHttpRequest(`${origin}/api/v1/host/pair/redeem`, init, () => f(url, init))
   if (!response.ok) {
     const message = await response.text().catch(() => '')
     throw Object.assign(new Error(`pair redeem failed: ${response.status}${message ? ` ${message}` : ''}`), { status: response.status })

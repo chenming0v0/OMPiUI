@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Dialog } from '../../components/ui/Dialog'
+import { Activity } from 'lucide-react'
 import { ErrorBoundary } from '../../components/ErrorBoundary'
 import {
   SunIcon,
@@ -27,6 +28,7 @@ import { ServersSettings } from './components/ServersSettings'
 import { WorkspaceSettings } from './components/WorkspaceSettings'
 import { PiManagementSettings } from './components/PiManagementSettings'
 import { ServiceSettings } from './components/ServiceSettings'
+import { TrafficAuditSettings } from './components/TrafficAuditSettings'
 import { SettingsSearch } from './SettingsSearch'
 import { SETTINGS_SEARCH_DEFINITIONS, type SettingsSearchItem } from './settingsSearchCatalog'
 import { usePiCapabilities } from '../../omp/capabilities'
@@ -44,6 +46,7 @@ export type SettingsTab =
   | 'notifications'
   | 'config'
   | 'servers'
+  | 'traffic'
   | 'service'
   | 'keybindings'
   | 'workspace'
@@ -61,6 +64,7 @@ interface SettingsDialogProps {
 
 const TAB_ICONS: Record<SettingsTab, React.ReactNode> = {
   servers: <GlobeIcon size={15} />,
+  traffic: <Activity size={15} />,
   service: <GlobeIcon size={15} />,
   agent: <AgentIcon size={15} />,
   chat: <MessageSquareIcon size={15} />,
@@ -75,6 +79,7 @@ const TAB_ICONS: Record<SettingsTab, React.ReactNode> = {
 
 const TAB_IDS: SettingsTab[] = [
   'servers',
+  'traffic',
   'service',
   'models',
   'agent',
@@ -89,6 +94,7 @@ const TAB_IDS: SettingsTab[] = [
 
 const TAB_LABEL_KEYS: Record<SettingsTab, string> = {
   servers: 'tabs.servers',
+  traffic: 'tabs.traffic',
   service: 'tabs.service',
   agent: 'tabs.agent',
   chat: 'tabs.chat',
@@ -102,7 +108,7 @@ const TAB_LABEL_KEYS: Record<SettingsTab, string> = {
 }
 
 const GROUP_DEFS: { labelKey: string; tabs: SettingsTab[] }[] = [
-  { labelKey: 'groups.core', tabs: ['servers', 'models', 'agent', 'chat', 'workspace', 'appearance', 'notifications'] },
+  { labelKey: 'groups.core', tabs: ['servers', 'traffic', 'models', 'agent', 'chat', 'workspace', 'appearance', 'notifications'] },
   { labelKey: 'groups.advanced', tabs: ['service', 'config', 'keybindings', 'about'] },
 ]
 
@@ -126,6 +132,8 @@ function TabContent({ tab }: { tab: SettingsTab }) {
       return <PiManagementSettings />
     case 'servers':
       return <ServersSettings />
+    case 'traffic':
+      return <TrafficAuditSettings />
     case 'service':
       return <ServiceSettings />
     case 'keybindings':
