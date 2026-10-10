@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { randomUUID } from "node:crypto"
-import { rmSync, writeFileSync } from "node:fs"
+import { readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { JsonObject } from "@ompiui/protocol"
@@ -10,6 +10,42 @@ import { getDriverMode } from "@ompiui/omp-worker"
 import type { WorkerSession } from "./worker-client.ts"
 import type { RuntimeSupervisor } from "./supervisor.ts"
 import { SessionHost } from "./session-host.ts"
+
+test("viewing an OMP terminal history and syncing a draft never opens a writer", async t => {
+  const file = join(tmpdir(), `ompiui-preview-${randomUUID()}.jsonl`)
+  const bytes = '{"type":"session","id":"terminal-session"}\n{"type":"message","id":"latest-tui-answer"}\n'
+  writeFileSync(file, bytes)
+  const previous = process.env.OMPIUI_DRIVER
+  process.env.OMPIUI_DRIVER = "omp"
+  let opens = 0
+  const supervisor = {
+    onEvent: () => () => {},
+    open: async () => { opens++; throw new Error("Browsing must not start a writer") },
+    catalogCommand: async (type: string) => {
+      if (type === "session.findByFile") return { id: "terminal-session", cwd: ".", sessionFile: file }
+      if (type === "session.preview") return { state: { diskPreview: true, readOnly: false } }
+      if (type === "session.read") return { diskPreview: true, readOnly: false }
+      throw new Error(`Unexpected catalog command ${type}`)
+    },
+  } as unknown as RuntimeSupervisor
+  const host = new SessionHost(supervisor, new EventHub())
+  t.after(() => {
+    host.dispose()
+    if (previous === undefined) delete process.env.OMPIUI_DRIVER
+    else process.env.OMPIUI_DRIVER = previous
+    rmSync(file, { force: true })
+  })
+  assert.equal((await host.openSession(".", file)).sessionId, "terminal-session")
+  await host.sessionQuery("terminal-session", "state.get")
+  await host.sessionQuery("terminal-session", "branch.get")
+  await host.sessionQuery("terminal-session", "setExtensionEditorState", { text: "draft" })
+  assert.equal(opens, 0)
+  assert.equal(readFileSync(file, "utf8"), bytes)
+  writeFileSync(file, `${bytes}{"type":"message","id":"another-tui-answer"}\n`)
+  await host.openSession(".", file)
+  assert.match(readFileSync(file, "utf8"), /another-tui-answer/)
+  assert.equal(opens, 0)
+})
 
 test("SessionHost notifies the session list when the session file materializes on disk", async () => {
   const sessionFile = join(tmpdir(), `piui-session-host-${randomUUID()}.jsonl`)

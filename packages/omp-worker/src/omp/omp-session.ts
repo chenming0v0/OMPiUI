@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { copyFileSync, existsSync, mkdirSync } from "node:fs"
+import { copyFileSync, existsSync } from "node:fs"
 import path from "node:path"
 import type {
   ImageInput,
@@ -17,7 +17,8 @@ import { OmpExtensionUiBridge } from "./omp-extension-ui.js"
 import { OMP_SDK_VERSION } from "./constants.js"
 import { detectOmpVersion, isOmpVersionSupported, ompTooOldError } from "./omp-version.js"
 import { OmpRpcClient, OmpRpcError, unwrapResponse, type OmpRpcFrame } from "./rpc-client.js"
-import { assertManagedSessionFile, managedSessionDirectory } from "./managed-sessions.js"
+import { assertOmpSessionFile, backupOmpSession } from "./managed-sessions.js"
+import { assertOmpTerminalStopped } from "./terminal-presence.js"
 
 /**
  * OmpRpcSession —— SessionRuntime 契约的 OMP 实现。
@@ -115,6 +116,7 @@ export class OmpRpcSession implements SessionRuntime {
   private cwd = ""
   private sessionName: string | null = null
   private closed = false
+  private terminalWatch?: NodeJS.Timeout
 
   private readonly piEventListeners = new Set<(event: JsonObject, meta: PiEventMeta) => void>()
   private readonly headListeners = new Set<(head: SessionHead) => void>()
@@ -167,11 +169,13 @@ export class OmpRpcSession implements SessionRuntime {
 
   static async open(cwd: string, sessionFile?: string, options: OmpSessionOptions = {}): Promise<OmpRpcSession> {
     const session = new OmpRpcSession()
+    await assertOmpTerminalStopped()
     session.cwd = normalizeCwd(cwd)
     session.ompOptions = options
     if (sessionFile) {
       session.sessionFile = resolveUserPath(sessionFile)
-      assertManagedSessionFile(session.sessionFile)
+      assertOmpSessionFile(session.sessionFile)
+      backupOmpSession(session.sessionFile)
     }
     await session.start()
     return session
@@ -185,12 +189,12 @@ export class OmpRpcSession implements SessionRuntime {
     // 版本探测与 RPC 进程拉起并行，不增加启动延迟；探测通常已被 worker
     // 启动时的同步探测填充缓存，直接命中
     const versionProbe = detectOmpVersion(this.ompOptions.bin)
-    const sessionDirectory = managedSessionDirectory(this.cwd)
-    mkdirSync(sessionDirectory, { recursive: true })
     this.client = new OmpRpcClient({
       cwd: this.cwd,
       bin: this.ompOptions.bin,
-      args: ["--session-dir", sessionDirectory],
+      // 指定原文件在启动阶段直接恢复，避免先自动恢复另一个会话再切换。
+      args: this.sessionFile ? ["--resume", this.sessionFile] : [],
+      protectSession: true,
       env: { PIUI_EMBEDDED: "1" },
     })
     this.client.on("frame", frame => this.handleFrame(frame))
@@ -214,14 +218,18 @@ export class OmpRpcSession implements SessionRuntime {
       await this.client.request({ type: "negotiate_protocol", protocolVersion: 2 })
       // 子代理帧：lifecycle + progress + 完整事件
       await this.client.request({ type: "set_subagent_subscription", level: "events" })
-      if (this.sessionFile) {
-        // 绑定到指定会话文件（等价 CLI --resume <file> 的 RPC 形式）
-        await this.client.request({ type: "switch_session", sessionPath: this.sessionFile }, 120_000)
-      }
       await this.refreshIdentity()
       this.extensionUi.bind(this.sessionId, response => this.client.writeExtensionUiResponse(response))
       await Promise.all([this.refreshModels(), this.refreshThinkingLevels(), this.refreshAvailableCommands()])
       await this.syncEntriesNow()
+      this.terminalWatch = setInterval(() => {
+        void assertOmpTerminalStopped().catch(() => {
+          if (this.closed) return
+          if (this.terminalWatch) clearInterval(this.terminalWatch)
+          this.client.kill()
+        })
+      }, 1_000)
+      this.terminalWatch.unref()
     } catch (error) {
       // 启动中途失败：杀掉子进程，避免留下孤儿 omp 进程
       this.client.kill()
@@ -1210,7 +1218,8 @@ export class OmpRpcSession implements SessionRuntime {
   async switchSession(sessionPath: string, _cwdOverride?: string): Promise<JsonObject> {
     const sourceSessionId = this.sessionId
     const target = resolveUserPath(sessionPath)
-    assertManagedSessionFile(target)
+    assertOmpSessionFile(target)
+    backupOmpSession(target)
     await this.client.request({ type: "switch_session", sessionPath: target }, 120_000)
     await this.refreshIdentity()
     this.resetHistory()
@@ -1575,6 +1584,7 @@ export class OmpRpcSession implements SessionRuntime {
 
   async dispose(): Promise<void> {
     this.closed = true
+    if (this.terminalWatch) clearInterval(this.terminalWatch)
     if (this.syncTimer) clearTimeout(this.syncTimer)
     this.extensionUi.cancelAll("runtime_disposed")
     this.piEventListeners.clear()

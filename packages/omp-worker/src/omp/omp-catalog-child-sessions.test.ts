@@ -62,7 +62,7 @@ after(() => {
 
 describe("OmpCatalog child session lookup", () => {
   for (const fixture of [
-    { label: "native", id: "child-1", file: childFile, parent: parentFile, messageId: "m1", readOnly: true },
+    { label: "native", id: "child-1", file: childFile, parent: parentFile, messageId: "m1", readOnly: false },
     { label: "WebUI-managed", id: "web-child", file: managedChildFile, parent: managedParentFile, messageId: "web-msg", readOnly: false },
   ]) {
     it(`opens a listed ${fixture.label} child by id after catalog restart`, async () => {

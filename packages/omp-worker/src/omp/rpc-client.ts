@@ -1,10 +1,12 @@
-import { spawn, type ChildProcess } from "node:child_process"
-import { existsSync } from "node:fs"
+import { spawn, spawnSync, type ChildProcess } from "node:child_process"
+import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { EventEmitter } from "node:events"
 import type { JsonObject, JsonValue } from "@ompiui/protocol"
 import { isJsonObject } from "@ompiui/protocol"
+import { assertOmpTerminalStopped } from "./terminal-presence.js"
+import { managedSessionsRoot } from "./managed-sessions.js"
 
 /**
  * 可选的 OMP 兼容配置覆盖：`~/.ompiui/omp-compat.yml` 存在时以 `--config`
@@ -16,6 +18,13 @@ import { isJsonObject } from "@ompiui/protocol"
 export function ompCompatConfigArgs(): string[] {
   const path = join(homedir(), ".ompiui", "omp-compat.yml")
   return existsSync(path) ? ["--config", path] : []
+}
+
+function noAutoResumeArgs(): string[] {
+  const file = join(dirname(managedSessionsRoot()), "runtime-config", "no-auto-resume.yml")
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
+  if (!existsSync(file)) writeFileSync(file, "autoResume: false\n", { mode: 0o600 })
+  return ["--config", file]
 }
 
 /**
@@ -36,6 +45,7 @@ export interface OmpRpcClientOptions {
   /** 额外 CLI 参数（如 --session-dir） */
   args?: string[]
   env?: NodeJS.ProcessEnv
+  protectSession?: boolean
 }
 
 export type OmpRpcFrame = JsonObject & { type: string }
@@ -85,16 +95,20 @@ export class OmpRpcClient extends EventEmitter {
   constructor(readonly options: OmpRpcClientOptions) {
     super()
     this.setMaxListeners(100)
-    // omp 是外部 CLI，参数全部是固定 flag（无用户输入），shell 解析在这里安全；
-    // Windows 上 shell:true 让 cmd 按 PATHEXT 自行解析 omp.exe
-    const bin = options.bin?.trim() || "omp"
-    const args = ["--mode", "rpc", ...ompCompatConfigArgs(), ...(options.args ?? [])]
-    // omp 是外部 CLI，参数全部是固定 flag（无用户输入），shell 解析在这里安全
+    // 优先直接执行原生二进制，避免包含空格的会话路径被 cmd 拆成多个参数。
+    let bin = options.bin?.trim() || "omp"
+    if (process.platform === "win32") {
+      const located = spawnSync("where.exe", [bin], { encoding: "utf8", windowsHide: true })
+      const candidates = located.status === 0 ? located.stdout.trim().split(/\r?\n/) : []
+      bin = candidates.find(candidate => /\.exe$/i.test(candidate)) ?? candidates[0] ?? bin
+    }
+    const args = ["--mode", "rpc", ...ompCompatConfigArgs(), ...(options.protectSession ? noAutoResumeArgs() : []), ...(options.args ?? [])]
     this.proc = spawn(bin, args, {
       cwd: options.cwd,
-      env: { ...process.env, ...options.env },
+      env: { ...process.env, ...(process.env.OMP_AGENT_DIR ? { PI_CODING_AGENT_DIR: process.env.OMP_AGENT_DIR } : {}), ...options.env },
       stdio: ["pipe", "pipe", "pipe"],
-      shell: process.platform === "win32",
+      shell: process.platform === "win32" && !/\.exe$/i.test(bin),
+      windowsHide: true,
     })
     this.proc.stdout!.setEncoding("utf8")
     this.proc.stdout!.on("data", chunk => this.handleStdout(chunk))
@@ -278,7 +292,15 @@ export class OmpRpcClient extends EventEmitter {
     void byteLength
   }
 
-  request<T extends JsonValue = JsonValue>(command: JsonObject, timeoutMs = 60_000): Promise<OmpRpcResponse & { data?: T }> {
+  async request<T extends JsonValue = JsonValue>(command: JsonObject, timeoutMs = 60_000): Promise<OmpRpcResponse & { data?: T }> {
+    if (this.options.protectSession && !/^(get_|negotiate_protocol$|set_subagent_subscription$|abort$)/.test(String(command.type))) {
+      try {
+        await assertOmpTerminalStopped()
+      } catch (error) {
+        this.kill()
+        throw error
+      }
+    }
     const id = `req_${++this.nextId}`
     const commandType = typeof command.type === "string" ? command.type : ""
     const full: JsonObject = { id, ...command }
@@ -321,6 +343,16 @@ export class OmpRpcClient extends EventEmitter {
   }
 
   async close(): Promise<void> {
+    if (this.options.protectSession) {
+      try {
+        await assertOmpTerminalStopped()
+      } catch {
+        // 终端后来启动时，不允许旧 runtime 在退出阶段回写历史。
+        this.kill()
+        await this.waitForExit(2_000)
+        return
+      }
+    }
     try {
       this.proc.stdin!.end()
     } catch {
@@ -339,7 +371,12 @@ export class OmpRpcClient extends EventEmitter {
 
   kill(): void {
     try {
-      this.proc.kill("SIGKILL")
+      if (process.platform === "win32" && this.proc.pid) {
+        spawn("taskkill", ["/pid", String(this.proc.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true })
+          .on("error", () => { this.proc.kill("SIGKILL") })
+      } else {
+        this.proc.kill("SIGKILL")
+      }
     } catch {
       /* best effort */
     }

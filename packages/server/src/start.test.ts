@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, test } from "node:test"
 import { parseWebArgs, resolveServerConfig, startOmpiUiServer } from "./start.ts"
+import { TailscaleManager } from "./host/tailscale.ts"
 
 const roots: string[] = []
 const previousDriver = process.env.OMPIUI_DRIVER
@@ -102,3 +103,48 @@ async function availablePort(): Promise<number> {
   await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
   return port
 }
+
+test("shutdown immediately after health works while Tailscale startup is still pending", { timeout: 15_000 }, async t => {
+  process.env.OMPIUI_DRIVER = "mock"
+  let releaseResume!: () => void
+  let resumeStarted!: () => void
+  const enteredResume = new Promise<void>(resolve => { resumeStarted = resolve })
+  t.mock.method(TailscaleManager.prototype, "resume", async () => {
+    resumeStarted()
+    await new Promise<void>(resolve => { releaseResume = resolve })
+  })
+  const port = await availablePort()
+  const starting = startOmpiUiServer(
+    { host: "127.0.0.1", port, webRoot: null, authToken: "test-token", shutdownTimeoutMs: 5_000 },
+    { installSignalHandlers: false },
+  )
+  try {
+    await enteredResume
+    const url = `http://127.0.0.1:${port}`
+    const headers = { authorization: "Bearer test-token", connection: "close" }
+    const health = await fetch(`${url}/api/v1/host/health`, { headers })
+    assert.equal(health.status, 200)
+    await health.arrayBuffer()
+    const shutdown = await fetch(`${url}/api/v1/host/shutdown`, { method: "POST", headers })
+    assert.equal(shutdown.status, 200)
+    await shutdown.arrayBuffer()
+    // 不释放 resume 也必须关闭监听；旧实现此时返回 200 却完全不执行 stop。
+    let closed = false
+    for (let attempt = 0; attempt < 50; attempt++) {
+      try {
+        const response = await fetch(`${url}/api/v1/host/health`, { headers, signal: AbortSignal.timeout(500) })
+        await response.arrayBuffer()
+      } catch {
+        closed = true
+        break
+      }
+      await new Promise(resolve => setTimeout(resolve, 20))
+    }
+    assert.equal(closed, true, "shutdown must close the listener before startup restoration finishes")
+  } finally {
+    releaseResume()
+    const running = await starting
+    await running.stop()
+    assert.equal(running.server.listening, false)
+  }
+})

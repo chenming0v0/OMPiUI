@@ -6,7 +6,7 @@ import { open } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import type { CommandEnvelope, CommandRecord, JsonObject, JsonValue, PiCapability, PiRegistrySnapshot, RegistrySnapshot, SessionActivityStatus, SessionsActivitySnapshot } from "@ompiui/protocol"
 import { isJsonObject, PI_PARITY_SDK_VERSION, PROTOCOL_VERSION, validateParams } from "@ompiui/protocol"
-import { createRegistryDescribeCapability, getCommandCapability, getDriverMode, isManagedSessionFile, readOnlySessionError, listCommandCapabilities, type WorkerEvent } from "@ompiui/omp-worker"
+import { assertOmpTerminalStopped, createRegistryDescribeCapability, getCommandCapability, getDriverMode, listCommandCapabilities, type WorkerEvent } from "@ompiui/omp-worker"
 import type { EventHub } from "../event-hub.ts"
 import { logToFile } from "../logger.ts"
 import { diagnostics, diagnosticErrorCode, summarizeRunState } from "../diagnostics/recorder.ts"
@@ -87,7 +87,7 @@ export class SessionHost {
   }
 
   async openSession(cwd: string, sessionFile?: string, signal?: AbortSignal, reuseFromSessionId?: string): Promise<JsonObject> {
-    if (sessionFile && getDriverMode() === "omp" && !isManagedSessionFile(sessionFile)) {
+    if (sessionFile && getDriverMode() === "omp" && !this.runtimes.findBySessionFile(sessionFile)) {
       const found = await this.catalogCommand("session.findByFile", { sessionFile }, { idempotent: true, signal })
       if (!isJsonObject(found) || typeof found.id !== "string") {
         throw Object.assign(new Error("session file not found"), { code: "SESSION_NOT_FOUND" })
@@ -96,6 +96,7 @@ export class SessionHost {
       if (!isJsonObject(preview)) throw new Error("Invalid session preview")
       return { sessionId: found.id, sessionFile, sessionFileReady: true, cwd: found.cwd ?? cwd, state: preview.state ?? null }
     }
+    if (!sessionFile && getDriverMode() === "omp") await assertOmpTerminalStopped()
     if (sessionFile && reuseFromSessionId) {
       const switched = await this.switchAttachedSession(reuseFromSessionId, cwd, sessionFile, signal)
       if (switched) return switched
@@ -226,7 +227,8 @@ export class SessionHost {
         // 先释放旧 runtime 的租约，再按原身份挂接；不重放结果未知的命令。
         const recovery = cleanup.then(async () => {
           if (this.recoveryController.signal.aborted) return
-          await this.openSession(session.cwd, sessionFile, this.recoveryController.signal)
+          if (getDriverMode() === "omp") await assertOmpTerminalStopped()
+          await this.openSessionOnce(session.cwd, sessionFile, this.recoveryController.signal)
           this.hub.publish({ kind: "session", id: session.sessionId }, "sessions.updated", {
             sessionId: session.sessionId, recovered: true,
           })
@@ -311,6 +313,8 @@ export class SessionHost {
     return withAbort((async () => {
       let session = this.runtimes.get(sessionId)
       if (!session) {
+        // 草稿同步是浏览动作，不能为了 no-op 编辑器命令启动写入进程。
+        if (type === "setExtensionEditorState" && getDriverMode() === "omp") return undefined
         const diskQueries: Record<string, true> = {
           "state.get": true, "branch.get": true, "entries.get": true, "tree.get": true,
           "attachment.get": true, "subagent.messages": true,
@@ -351,7 +355,7 @@ export class SessionHost {
       if (!found) {
         throw Object.assign(new Error("session is not attached"), { code: "SESSION_NOT_FOUND" })
       }
-      if (getDriverMode() === "omp" && !isManagedSessionFile(found.sessionFile)) throw readOnlySessionError()
+      if (getDriverMode() === "omp") await assertOmpTerminalStopped()
       let lastError: unknown
       for (let attempt = 0; attempt <= ATTACH_BUSY_RETRIES; attempt += 1) {
         try {
@@ -359,7 +363,9 @@ export class SessionHost {
           // 切身份过去（switchSession），而不是新开一个——切 session 不单开。
           // 源 worker 忙/异目录时 switch 自动失败，回落正常 open（不影响正在工作）。
           const reusable = this.findReusableRuntime(found.sessionFile)
-          await this.openSession(found.cwd, found.sessionFile, signal, reusable?.sessionId)
+          if (!reusable || !(await this.switchAttachedSession(reusable.sessionId, found.cwd, found.sessionFile, signal))) {
+            await this.openSessionOnce(found.cwd, found.sessionFile, signal)
+          }
           return this.requireAttached(sessionId)
         } catch (error) {
           lastError = error

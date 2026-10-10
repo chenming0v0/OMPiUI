@@ -115,7 +115,8 @@ class PiEventStream {
     if (this.refCounts.get(sessionId) === 1) {
       let refreshing = false
       this.diskRefreshTimers.set(sessionId, window.setInterval(() => {
-        if (refreshing || piSessionStateStore.getState(sessionId)?.readOnly !== true) return
+        const state = piSessionStateStore.getState(sessionId)
+        if (refreshing || (state?.readOnly !== true && state?.diskPreview !== true)) return
         refreshing = true
         void refreshPiBranch(sessionId).catch(() => undefined).finally(() => { refreshing = false })
       }, 1_500))
