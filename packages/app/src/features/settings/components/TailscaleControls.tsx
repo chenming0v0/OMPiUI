@@ -28,14 +28,14 @@ export function TailscaleControls({ state, authUrl, ips, enabled, available, bus
       <div className="flex flex-wrap items-center gap-2">
         {state !== 'Running' && available && (
           <button type="button" disabled={busy} onClick={onLogin}
-            className="inline-flex min-h-8 items-center gap-1.5 rounded-md px-2 text-[length:var(--fs-xs)] text-accent-main-100 hover:bg-accent-main-100/10 disabled:opacity-50">
+            className="inline-flex min-h-11 sm:min-h-8 items-center gap-1.5 rounded-md px-2 text-[length:var(--fs-xs)] text-accent-main-100 hover:bg-accent-main-100/10 disabled:opacity-50">
             {busy ? <SpinnerIcon size={14} className="animate-spin" /> : authUrl ? <ExternalLink size={14} /> : <LogIn size={14} />}
             {t(authUrl ? 'service.remoteTailscaleAuthorize' : 'service.remoteTailscaleLogin')}
           </button>
         )}
         {enabled && (
           <button type="button" disabled={busy} onClick={onDisconnect}
-            className="inline-flex min-h-8 items-center gap-1.5 rounded-md px-2 text-[length:var(--fs-xs)] text-text-400 hover:bg-bg-200 disabled:opacity-50">
+            className="inline-flex min-h-11 sm:min-h-8 items-center gap-1.5 rounded-md px-2 text-[length:var(--fs-xs)] text-text-400 hover:bg-bg-200 disabled:opacity-50">
             <Power size={14} />{t('service.remoteTailscaleDisconnect')}
           </button>
         )}

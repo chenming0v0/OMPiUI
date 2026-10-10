@@ -34,7 +34,7 @@ beforeEach(() => {
   mocks.copyDiagnostics.mockResolvedValue(undefined)
   mocks.exportDiagnostics.mockResolvedValue(undefined)
 })
-afterEach(cleanup)
+afterEach(() => { cleanup(); vi.useRealTimers() })
 
 describe('phone independent Tailscale enrollment', () => {
   it('copies diagnostics while the core is unavailable without starting it', async () => {
@@ -80,26 +80,43 @@ describe('phone independent Tailscale enrollment', () => {
     expect(button).toBeEnabled()
   })
 
-  it('redeems a full invite and saves the actual Tailnet URL, not the phone loopback port', async () => {
-    render(<AndroidTailscaleSettings />)
-    fireEvent.change(await screen.findByLabelText('Full pairing link'), {
-      target: { value: 'http://100.101.2.3:8787/?pair=once.secret' },
-    })
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Pair' })))
-    expect(mocks.redeem).toHaveBeenCalledWith('once.secret', 'http://100.101.2.3:8787', expect.any(AbortSignal))
-    expect(mocks.add).toHaveBeenCalledWith({ name: '100.101.2.3:8787', url: 'http://100.101.2.3:8787', token: 'server-token' })
-    expect(mocks.select).toHaveBeenCalledWith('paired-phone')
-    expect(mocks.check).toHaveBeenCalledWith('paired-phone')
+  it('has no server connection form and does not redirect a phone that is already authenticated', async () => {
+    const completed = vi.fn()
+    mocks.status.mockResolvedValue({ enabled: true, BackendState: 'Running', TailscaleIPs: ['100.101.2.4'] })
+    render(<AndroidTailscaleSettings onAuthenticated={completed} />)
+    expect(await screen.findByRole('button', { name: 'Add server connection' })).toBeEnabled()
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    expect(completed).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Add server connection' }))
+    expect(completed).toHaveBeenCalledOnce()
   })
 
-  it('shows expired invite errors instead of adding an unauthenticated server', async () => {
-    mocks.redeem.mockRejectedValue(new Error('pairing code expired'))
-    render(<AndroidTailscaleSettings />)
-    fireEvent.change(await screen.findByLabelText('Full pairing link'), {
-      target: { value: 'http://100.101.2.3:8787/?pair=expired.secret' },
-    })
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Pair' })))
-    expect(await screen.findByRole('alert')).toHaveTextContent('pairing code expired')
-    expect(mocks.add).not.toHaveBeenCalled()
+  it('redirects only after the requested login reaches Running, not when the browser opens or approval is pending', async () => {
+    vi.useFakeTimers()
+    const completed = vi.fn()
+    render(<AndroidTailscaleSettings onAuthenticated={completed} />)
+    await act(async () => {})
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Log in to Tailscale' })))
+    expect(mocks.open).toHaveBeenCalled()
+    expect(completed).not.toHaveBeenCalled()
+    mocks.status.mockResolvedValue({ enabled: true, BackendState: 'NeedsMachineAuth' })
+    await act(async () => vi.advanceTimersByTimeAsync(3_000))
+    expect(completed).not.toHaveBeenCalled()
+    mocks.status.mockResolvedValue({ enabled: true, BackendState: 'Running', TailscaleIPs: ['100.101.2.4'] })
+    await act(async () => vi.advanceTimersByTimeAsync(3_000))
+    expect(completed).toHaveBeenCalledOnce()
+    await act(async () => vi.advanceTimersByTimeAsync(3_000))
+    expect(completed).toHaveBeenCalledOnce()
+  })
+
+  it('redirects when login immediately restores an authenticated identity', async () => {
+    const completed = vi.fn()
+    mocks.login.mockResolvedValue({ enabled: true, BackendState: 'Running' })
+    render(<AndroidTailscaleSettings onAuthenticated={completed} />)
+    const button = await screen.findByRole('button', { name: 'Log in to Tailscale' })
+    await waitFor(() => expect(button).toBeEnabled())
+    await act(async () => fireEvent.click(button))
+    expect(completed).toHaveBeenCalledOnce()
+    expect(mocks.open).not.toHaveBeenCalled()
   })
 })

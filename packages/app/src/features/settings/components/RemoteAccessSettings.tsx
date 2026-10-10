@@ -17,6 +17,7 @@ import { useServerStore } from '../../../hooks'
 import { settingsFieldClass, SettingsSection } from './SettingsUI'
 import { TailscaleControls } from './TailscaleControls'
 import { openTailscaleLogin } from '../../../utils/tailscaleLogin'
+import { isTauri, isTauriMobile } from '../../../utils/tauri'
 
 const REMOTE_TAB_KEY = 'ompiui-remote-tab'
 const PAIR_POLL_MS = 3_000
@@ -45,6 +46,7 @@ export function RemoteAccessSettings() {
 
 function RemoteAccessPanel() {
   const { t } = useTranslation(['settings', 'common'])
+  const desktop = isTauri() && !isTauriMobile()
   const [tab, setTab] = useState<RemoteTab>(() => {
     const stored = serverStorage.get(REMOTE_TAB_KEY)
     return stored === 'relay' || stored === 'tailscale' ? stored : 'lan'
@@ -231,7 +233,7 @@ function RemoteAccessPanel() {
   )
 
   return (
-    <SettingsSection title={t('settings:service.remoteTitle')} description={t('settings:service.remoteBackendDesc', { defaultValue: 'Pair another device with the currently connected backend. Addresses and ports below come from that server.' })}>
+    <SettingsSection title={t('settings:authentication.title')} description={t('settings:service.remoteBackendDesc')}>
       <div className="rounded-lg border border-border-200/60 bg-bg-100 p-3">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
@@ -242,7 +244,7 @@ function RemoteAccessPanel() {
               {(
                 [
                   ['lan', t('settings:service.remoteTabLan')],
-                  ['tailscale', 'Tailscale'],
+                  ['tailscale', t('settings:service.remoteTabTailscale')],
                   ['relay', t('settings:service.remoteTabRelay')],
                 ] as Array<[RemoteTab, string]>
               ).map(([value, label]) => (
@@ -274,7 +276,7 @@ function RemoteAccessPanel() {
                     className={`${settingsFieldClass} max-w-64`}
                     onChange={event => setSelectedAddress(event.target.value)}
                   >
-                    {interfaces.length === 0 && <option value="">{t('settings:service.remoteNoNetwork', { defaultValue: 'No network address available' })}</option>}
+                    {interfaces.length === 0 && <option value="">{t('settings:service.remoteNoNetwork')}</option>}
                     {interfaces.map(item => (
                       <option key={item.address} value={item.address}>
                         {item.name} · {item.address}
@@ -298,13 +300,13 @@ function RemoteAccessPanel() {
                 </div>
                 <div>
                   <div className="text-[length:var(--fs-sm)] font-medium text-text-200">{t('settings:service.remotePort')}</div>
-                  <div className="text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('settings:service.remoteServerPortDesc', { defaultValue: 'Reported by the current backend, not this device’s local settings.' })}</div>
+                  <div className="text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('settings:service.remoteServerPortDesc')}</div>
                   <div aria-label={t('settings:service.remotePort')} className="mt-1 font-mono text-[length:var(--fs-sm)] text-text-200">
                     {listenPort ?? '—'}
                   </div>
                   {!networkLoading && !listenPort && (
                     <p role="status" className="mt-1 text-[length:var(--fs-xs)] leading-relaxed text-text-400">
-                      {t('settings:service.remotePortUnavailable', { defaultValue: 'The server did not report a listening port. LAN QR pairing is unavailable. Use the known server address or update the server.' })}
+                      {t('settings:service.remotePortUnavailable')}
                     </p>
                   )}
                 </div>
@@ -315,10 +317,10 @@ function RemoteAccessPanel() {
               <div className="mt-3 text-[length:var(--fs-xs)] leading-relaxed">
                 {!tunnel ? (
                   <span className="text-text-400">{tunnel === undefined
-                    ? t('settings:service.backendStatusLoading', { defaultValue: 'Loading server status…' })
-                    : t('settings:service.backendStatusUnavailable', { defaultValue: 'Server status unavailable. Check the connection and server version.' })}</span>
+                    ? t('settings:service.backendStatusLoading')
+                    : t('settings:service.backendStatusUnavailable')}</span>
                 ) : !tunnel.enabled ? (
-                  <span className="text-text-400">{t('settings:service.remoteRelayManageHint', { defaultValue: 'No relay configured on this backend. Configure it on the server or in OMPiUI Admin, then restart the service.' })}</span>
+                  <span className="text-text-400">{t(desktop ? 'settings:service.remoteRelayNotConfigured' : 'settings:service.remoteRelayManageHint')}</span>
                 ) : tunnel.state === 'connected' ? (
                   <span className="break-all text-success-100">
                     {t('settings:service.remoteRelayConnected')}
@@ -332,7 +334,7 @@ function RemoteAccessPanel() {
             {tab === 'tailscale' && (
               <div className="mt-3">
                 {tailscalePanel ?? <p role="status" className="text-[length:var(--fs-xs)] text-text-400">
-                  {t('settings:service.backendStatusUnavailable', { defaultValue: 'Server status unavailable. Check the connection and server version.' })}
+                  {t('settings:service.backendStatusUnavailable')}
                 </p>}
               </div>
             )}
@@ -346,8 +348,8 @@ function RemoteAccessPanel() {
                 {tailscaleNeedsLogin
                   ? t('settings:service.remoteTailscalePairLoginRequired')
                   : pairPending
-                  ? <span className="flex items-center gap-2"><SpinnerIcon size={16} className="shrink-0 animate-spin" />{t('settings:service.backendStatusLoading', { defaultValue: 'Loading server status…' })}</span>
-                  : t('settings:service.remoteQrUnavailable', { defaultValue: 'QR code unavailable' })}
+                  ? <span className="flex items-center gap-2"><SpinnerIcon size={16} className="shrink-0 animate-spin" />{t('settings:service.backendStatusLoading')}</span>
+                  : t('settings:service.remoteQrUnavailable')}
               </div>
             )}
             {invite && !expired && !invite.redeemed && (
@@ -411,7 +413,7 @@ function RemoteAccessPanel() {
               ? t('settings:service.remoteWaiting', { url: pairUrl })
               : tailscaleNeedsLogin
                 ? t('settings:service.remoteTailscalePairLoginRequired')
-                : t('settings:service.remotePairUnavailable', { defaultValue: 'Pairing needs a reachable server address and an active code.' })}
+                : t('settings:service.remotePairUnavailable')}
         </div>
       </div>
     </SettingsSection>

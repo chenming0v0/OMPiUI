@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TunnelStatus } from '@ompiui/protocol'
 import { serviceStore } from '../../../store/serviceStore'
 import { ServiceSettings } from './ServiceSettings'
+import i18n from '../../../i18n'
 
 const mocks = vi.hoisted(() => ({
   desktop: false,
@@ -30,8 +31,8 @@ vi.mock('../../../services/desktopService', () => ({
   restartDesktopService: mocks.restart,
   stopDesktopService: mocks.stop,
 }))
-// Pairing and its real backend actions have their own component regressions.
-vi.mock('./RemoteAccessSettings', () => ({ RemoteAccessSettings: () => null }))
+// 认证页面独立验证；服务页面不应再挂载它。
+vi.mock('./RemoteAccessSettings', () => ({ RemoteAccessSettings: () => <div>Authentication panel</div> }))
 
 const connected: TunnelStatus = {
   enabled: true,
@@ -43,7 +44,8 @@ const connected: TunnelStatus = {
   reconnectAttempts: 0,
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  await i18n.changeLanguage('en')
   vi.clearAllMocks()
   mocks.desktop = false
   mocks.mobile = false
@@ -66,9 +68,10 @@ beforeEach(() => {
   serviceStore.setStarting(false)
 })
 
-afterEach(() => {
+afterEach(async () => {
   cleanup()
   vi.restoreAllMocks()
+  await i18n.changeLanguage('en')
 })
 
 describe('ServiceSettings ownership of configuration', () => {
@@ -104,15 +107,19 @@ describe('ServiceSettings ownership of configuration', () => {
     render(<ServiceSettings />)
     await waitFor(() => expect(mocks.refresh).toHaveBeenCalled())
     expect(screen.getByText('Local desktop service')).toBeInTheDocument()
+    expect(screen.queryByText('Authentication panel')).not.toBeInTheDocument()
     expect(screen.getByText(/They do not change the connected remote server/)).toBeInTheDocument()
 
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Listen port' }), { target: { value: '9191' } })
-    fireEvent.change(screen.getByRole('textbox', { name: 'Relay URL' }), { target: { value: 'wss://desktop-relay.test' } })
-    fireEvent.change(screen.getByLabelText('Access key'), { target: { value: 'desktop-key' } })
+    expect(screen.queryByRole('textbox', { name: 'Relay URL' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Access key')).not.toBeInTheDocument()
+    expect(screen.queryByText('Tunnel (self-hosted relay)')).not.toBeInTheDocument()
+    expect(screen.queryByDisplayValue('OMPIUI_TUNNEL_URL')).not.toBeInTheDocument()
+    expect(screen.queryByDisplayValue('local-only-key')).not.toBeInTheDocument()
     expect(serviceStore.envVarsRecord).toMatchObject({
       OMPIUI_PORT: '9191',
-      OMPIUI_TUNNEL_URL: 'wss://desktop-relay.test',
-      OMPIUI_TUNNEL_KEY: 'desktop-key',
+      OMPIUI_TUNNEL_URL: 'wss://local-only.example.test',
+      OMPIUI_TUNNEL_KEY: 'local-only-key',
     })
     expect(screen.getByText(connected.publicUrl!)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /^start$/i }))
@@ -131,11 +138,44 @@ describe('ServiceSettings ownership of configuration', () => {
     await waitFor(() => expect(mocks.stop).toHaveBeenCalledOnce())
   })
 
+  it('keeps original variable indexes when relay fields are hidden from the generic editor', async () => {
+    mocks.desktop = true
+    serviceStore.setEnvVars([
+      { key: 'OMPIUI_TUNNEL_KEY', value: 'saved-key' },
+      { key: 'HTTPS_PROXY', value: 'http://old-proxy.test' },
+      { key: 'OMPIUI_TUNNEL_URL', value: 'wss://saved-relay.test' },
+      { key: 'CUSTOM_SETTING', value: 'old-value' },
+    ])
+    render(<ServiceSettings />)
+    await waitFor(() => expect(mocks.refresh).toHaveBeenCalled())
+    expect(screen.queryByDisplayValue('saved-key')).not.toBeInTheDocument()
+    fireEvent.change(screen.getByDisplayValue('old-value'), { target: { value: 'new-value' } })
+    fireEvent.click(screen.getByDisplayValue('HTTPS_PROXY').parentElement!.querySelector('button')!)
+    expect(serviceStore.envVarsRecord).toEqual({
+      OMPIUI_TUNNEL_KEY: 'saved-key',
+      OMPIUI_TUNNEL_URL: 'wss://saved-relay.test',
+      CUSTOM_SETTING: 'new-value',
+    })
+  })
+
   it('does not turn an unavailable status into a disabled tunnel', async () => {
     mocks.tunnel.mockRejectedValue(new Error('offline'))
     render(<ServiceSettings />)
     expect(await screen.findByText(/Server status unavailable/)).toBeInTheDocument()
     expect(screen.queryByText(/Disabled: the service has no tunnel configured/)).not.toBeInTheDocument()
+  })
+
+  it('renders server status and desktop service descriptions in Chinese without English fallbacks', async () => {
+    await i18n.changeLanguage('zh-CN')
+    mocks.desktop = true
+    mocks.tunnel.mockRejectedValue(new Error('offline'))
+    const { container } = render(<ServiceSettings />)
+    expect(await screen.findByText('无法获取服务器状态，请检查连接和服务器版本。')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '当前服务器' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '本机服务' })).toBeInTheDocument()
+    expect(screen.getByText('这台电脑的服务监听配置，不会修改当前连接的远程服务器。')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '终端程序' })).toBeInTheDocument()
+    expect(container.textContent).not.toMatch(/Local desktop|Current backend|Live status|Remote configuration|Server status unavailable|Saved on this device/)
   })
 
   it('shows disabled and reconnecting/error status from the backend', async () => {

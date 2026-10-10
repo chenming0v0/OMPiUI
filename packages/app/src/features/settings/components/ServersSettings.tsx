@@ -20,9 +20,8 @@ import { clearSessionRuntimeState } from '../../../utils/sessionLifecycle'
 import { settingsFieldClass, SettingsSection } from './SettingsUI'
 import type { ServerConfig, ServerHealth } from '../../../store/serverStore'
 import { parseConnectLink } from '../../../store/serverStore'
-import { fetchHostShare } from '../../../omp/transport'
+import { fetchHostShare, redeemPairCode } from '../../../omp/transport'
 import type { ShareInfo } from '@ompiui/protocol'
-import { AndroidTailscaleSettings } from './AndroidTailscaleSettings'
 
 const IPV4_PATTERN = /^(?:\d{1,3}\.){3}\d{1,3}$/
 /** 显示名长度上限，避免列表项把右侧操作按钮挤穿 */
@@ -480,7 +479,7 @@ function AddServerForm({
   onAdd,
   onCancel,
 }: {
-  onAdd: (name: string, url: string, token?: string) => void
+  onAdd: (name: string, url: string, token?: string, activate?: boolean) => void
   onCancel: () => void
 }) {
   const { t } = useTranslation(['settings', 'common'])
@@ -489,28 +488,45 @@ function AddServerForm({
   const [token, setToken] = useState('')
   const [showAuth, setShowAuth] = useState(false)
   const [error, setError] = useState('')
+  const [pairing, setPairing] = useState(false)
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (pairing) return
     const connectLink = parseConnectLink(url)
-    const trimmedName =
-      name.trim().slice(0, SERVER_NAME_MAX_LENGTH) || (connectLink ? hostNameOf(connectLink.url) : '')
-    if (!trimmedName) {
-      setError(t('servers.nameRequired'))
+    let parsed: URL
+    try {
+      parsed = new URL(connectLink?.url ?? url.trim())
+    } catch {
+      setError(t(url.trim() ? 'servers.invalidUrl' : 'servers.urlRequired'))
       return
     }
-    if (!url.trim()) {
-      setError(t('servers.urlRequired'))
+    const pairCode = parsed.searchParams.get('pair')
+    const trimmedName =
+      name.trim().slice(0, SERVER_NAME_MAX_LENGTH) || (connectLink || pairCode ? hostNameOf(parsed.href) : '')
+    if (!trimmedName) {
+      setError(t('servers.nameRequired'))
       return
     }
     if (connectLink) {
       onAdd(trimmedName, connectLink.url, connectLink.token)
       return
     }
-    try {
-      new URL(url)
-    } catch {
-      setError(t('servers.invalidUrl'))
+    if (pairCode) {
+      if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+        setError(t('service.remotePairInvalid'))
+        return
+      }
+      setPairing(true)
+      setError('')
+      try {
+        const result = await redeemPairCode(pairCode, parsed.origin, AbortSignal.timeout(15_000))
+        onAdd(trimmedName, result.url, result.token, true)
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : String(reason))
+      } finally {
+        setPairing(false)
+      }
       return
     }
 
@@ -522,12 +538,14 @@ function AddServerForm({
   const inputCls = settingsFieldClass
 
   return (
-    <form onSubmit={handleSubmit} className="p-3 rounded-lg border border-border-200 bg-bg-100 space-y-2.5">
+    <form onSubmit={event => void handleSubmit(event)} aria-busy={pairing} className="p-3 rounded-lg border border-border-200 bg-bg-100 space-y-2.5">
       <div>
         <label className="block text-[length:var(--fs-xs)] font-medium text-text-300 mb-1">{t('servers.name')}</label>
         <input
           type="text"
           value={name}
+          aria-label={t('servers.name')}
+          disabled={pairing}
           maxLength={SERVER_NAME_MAX_LENGTH}
           onChange={e => {
             setName(e.target.value.slice(0, SERVER_NAME_MAX_LENGTH))
@@ -543,6 +561,8 @@ function AddServerForm({
         <input
           type="text"
           value={url}
+          aria-label={t('servers.url')}
+          disabled={pairing}
           onChange={e => {
             setUrl(e.target.value)
             setError('')
@@ -555,6 +575,7 @@ function AddServerForm({
 
       <button
         type="button"
+        disabled={pairing}
         onClick={() => setShowAuth(!showAuth)}
         className="flex items-center gap-1.5 text-[length:var(--fs-xs)] text-accent-main-100 hover:text-accent-main-200 transition-colors"
       >
@@ -569,6 +590,8 @@ function AddServerForm({
             <input
               type="password"
               value={token}
+              aria-label={t('servers.token')}
+              disabled={pairing}
               onChange={e => {
                 setToken(e.target.value)
                 setError('')
@@ -588,12 +611,13 @@ function AddServerForm({
         </div>
       )}
 
-      {error && <p className="text-[length:var(--fs-xs)] text-danger-100">{error}</p>}
+      {error && <p role="alert" className="text-[length:var(--fs-xs)] text-danger-100">{error}</p>}
       <div className="flex justify-end gap-2 pt-1">
-        <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
+        <Button type="button" variant="ghost" size="sm" onClick={onCancel} disabled={pairing}>
           {t('common:cancel')}
         </Button>
-        <Button type="submit" size="sm">
+        <Button type="submit" size="sm" disabled={pairing}>
+          {pairing && <SpinnerIcon size={13} className="mr-1.5 animate-spin" />}
           {t('common:add')}
         </Button>
       </div>
@@ -605,9 +629,9 @@ function AddServerForm({
 // Tab: Servers
 // ============================================
 
-export function ServersSettings() {
+export function ServersSettings({ initialAddingServer = false }: { initialAddingServer?: boolean }) {
   const { t } = useTranslation(['settings', 'common'])
-  const [addingServer, setAddingServer] = useState(false)
+  const [addingServer, setAddingServer] = useState(initialAddingServer)
   const {
     servers,
     activeServer,
@@ -672,7 +696,6 @@ export function ServersSettings() {
         </div>
       }
     >
-      <AndroidTailscaleSettings />
       <div className="space-y-1.5">
         {orderedServers.map(s => (
           <ServerItem
@@ -692,10 +715,11 @@ export function ServersSettings() {
 
         {addingServer && (
           <AddServerForm
-            onAdd={(n, u, token) => {
+            onAdd={(n, u, token, activate) => {
               const s = addServer({ name: n, url: u, token })
               setAddingServer(false)
-              void checkHealth(s.id)
+              if (activate) handleSelectServer(s.id)
+              else void checkHealth(s.id)
             }}
             onCancel={() => setAddingServer(false)}
           />

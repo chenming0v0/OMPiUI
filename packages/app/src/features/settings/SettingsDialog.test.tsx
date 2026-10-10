@@ -4,13 +4,13 @@ import i18n from '../../i18n'
 import { SettingsDialog } from './SettingsDialog'
 
 const notificationTargets = vi.hoisted(() => ({ mode: 'both' as 'both' | 'system' | 'sound' }))
-const tauriState = vi.hoisted(() => ({ mobile: false }))
+const tauriState = vi.hoisted(() => ({ mobile: false, smallScreen: false }))
 
 vi.mock('../../components/ui/Dialog', () => ({
   Dialog: ({ isOpen, children, ariaLabel }: { isOpen: boolean; children: React.ReactNode; ariaLabel: string }) =>
     isOpen ? <div role="dialog" aria-label={ariaLabel}>{children}</div> : null,
 }))
-vi.mock('../../hooks', () => ({ useIsMobile: () => false }))
+vi.mock('../../hooks', () => ({ useIsMobile: () => tauriState.smallScreen }))
 vi.mock('../../utils/tauri', () => ({ isTauri: () => true, isTauriMobile: () => tauriState.mobile }))
 vi.mock('./KeybindingsSection', () => ({ KeybindingsSection: () => <div>Shortcuts content</div> }))
 vi.mock('./components/AgentSettings', () => ({ AgentSettings: () => <div>Agent content</div> }))
@@ -40,7 +40,16 @@ vi.mock('./components/NotificationSettings', () => ({
   ),
 }))
 vi.mock('./components/ServiceSettings', () => ({ ServiceSettings: () => <div>Service content</div> }))
-vi.mock('./components/ServersSettings', () => ({ ServersSettings: () => <div>Servers content</div> }))
+vi.mock('./components/ServersSettings', () => ({
+  ServersSettings: ({ initialAddingServer }: { initialAddingServer?: boolean }) => (
+    <div>Servers content{initialAddingServer && <input aria-label="New connection" />}</div>
+  ),
+}))
+vi.mock('./components/AuthenticationSettings', () => ({
+  AuthenticationSettings: ({ onAuthenticated }: { onAuthenticated?: () => void }) => (
+    <div data-setting-label="Authentication"><button type="button" onClick={onAuthenticated}>Complete authentication</button></div>
+  ),
+}))
 vi.mock('./components/TrafficAuditSettings', () => ({
   TrafficAuditSettings: () => <div data-setting-label="Record traffic"><button type="button">Traffic control</button></div>,
 }))
@@ -52,6 +61,7 @@ describe('SettingsDialog search', () => {
     await i18n.changeLanguage('en')
     notificationTargets.mode = 'both'
     tauriState.mobile = false
+    tauriState.smallScreen = false
     vi.stubGlobal('__APP_VERSION__', 'test')
     vi.useFakeTimers()
     vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => window.setTimeout(() => callback(0), 0))
@@ -92,6 +102,46 @@ describe('SettingsDialog search', () => {
     expect(advancedGroup).not.toBeNull()
     expect(within(advancedGroup!).getByRole('tab', { name: 'Service' })).toBeInTheDocument()
     expect(within(screen.getByText('Core').parentElement!).queryByRole('tab', { name: 'Service' })).not.toBeInTheDocument()
+  })
+
+  it('places authentication first under Advanced on desktop', async () => {
+    render(<SettingsDialog isOpen onClose={vi.fn()} />)
+    await act(async () => vi.advanceTimersByTime(1))
+    const advancedGroup = screen.getByText('Advanced').parentElement!
+    expect(within(advancedGroup).getAllByRole('tab')[0]).toHaveTextContent('Authentication')
+    expect(within(screen.getByText('Core').parentElement!).queryByRole('tab', { name: 'Authentication' })).toBeNull()
+    fireEvent.click(screen.getByRole('tab', { name: 'Authentication' }))
+    expect(screen.getByRole('button', { name: 'Complete authentication' })).toBeInTheDocument()
+    expect(screen.queryByText('Service content')).not.toBeInTheDocument()
+  })
+
+  it('puts mobile authentication immediately right of Servers and opens a new connection after success', async () => {
+    tauriState.mobile = true
+    tauriState.smallScreen = true
+    render(<SettingsDialog isOpen onClose={vi.fn()} />)
+    await act(async () => vi.advanceTimersByTime(1))
+    const tabs = screen.getAllByRole('tab')
+    expect(tabs[0]).toHaveTextContent('Servers')
+    expect(tabs[1]).toHaveTextContent('Authentication')
+    fireEvent.click(tabs[1])
+    fireEvent.click(screen.getByRole('button', { name: 'Complete authentication' }))
+    expect(screen.getByRole('tab', { name: 'Servers' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByLabelText('New connection')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: 'Authentication' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Servers' }))
+    expect(screen.queryByLabelText('New connection')).not.toBeInTheDocument()
+  })
+
+  it('finds Tailscale in the independent authentication page', async () => {
+    render(<SettingsDialog isOpen onClose={vi.fn()} />)
+    await act(async () => vi.advanceTimersByTime(1))
+    const input = screen.getByRole('combobox', { name: 'Search settings' })
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: 'Tailscale' } })
+    fireEvent.click(screen.getAllByRole('option')[0])
+    await act(async () => vi.advanceTimersByTime(1))
+    expect(screen.getByRole('tab', { name: 'Authentication' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('button', { name: 'Complete authentication' })).toHaveFocus()
   })
 
   it('hides desktop service controls in the Android shell', async () => {

@@ -1,11 +1,17 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ServersSettings } from './ServersSettings'
 
-const { useServerStoreMock, navigateHomeMock, clearSessionMock } = vi.hoisted(() => ({
+const { useServerStoreMock, navigateHomeMock, clearSessionMock, redeemMock } = vi.hoisted(() => ({
   useServerStoreMock: vi.fn(),
   navigateHomeMock: vi.fn(),
   clearSessionMock: vi.fn(),
+  redeemMock: vi.fn(),
+}))
+
+vi.mock('../../../omp/transport', () => ({ fetchHostShare: vi.fn(), redeemPairCode: redeemMock }))
+vi.mock('./AndroidTailscaleSettings', () => ({
+  AndroidTailscaleSettings: () => <div>service.remoteTailscalePhoneTitle</div>,
 }))
 
 vi.mock('react-i18next', () => ({
@@ -36,10 +42,11 @@ describe('ServersSettings', () => {
     setActiveServerMock.mockReset()
     navigateHomeMock.mockReset()
     clearSessionMock.mockReset()
+    redeemMock.mockReset().mockResolvedValue({ url: 'http://100.101.2.3:8787', token: 'server-token' })
     useServerStoreMock.mockReturnValue({
       servers: [localServer, remoteServer],
       activeServer: localServer,
-      addServer: vi.fn(),
+      addServer: vi.fn(() => ({ id: 'new-server' })),
       removeServer: vi.fn(),
       updateServer: vi.fn(),
       setActiveServer: setActiveServerMock,
@@ -47,6 +54,66 @@ describe('ServersSettings', () => {
       checkAllHealth: vi.fn(),
       getHealth: vi.fn(() => null),
     })
+  })
+
+  it('opens only the connection form when arriving from authentication', () => {
+    render(<ServersSettings initialAddingServer />)
+    expect(screen.getByLabelText('servers.url')).toBeInTheDocument()
+    expect(screen.queryByText('service.remoteTailscalePhoneTitle')).not.toBeInTheDocument()
+  })
+
+  it('redeems a full pairing link, saves the actual URL and switches through the existing session cleanup', async () => {
+    render(<ServersSettings initialAddingServer />)
+    fireEvent.change(screen.getByLabelText('servers.url'), {
+      target: { value: 'http://100.101.2.3:8787/?pair=once.secret' },
+    })
+    await act(async () => fireEvent.click(screen.getAllByRole('button', { name: 'common:add' }).find(button => !button.hasAttribute('disabled'))!))
+    expect(redeemMock).toHaveBeenCalledWith('once.secret', 'http://100.101.2.3:8787', expect.any(AbortSignal))
+    expect(useServerStoreMock().addServer).toHaveBeenCalledWith({
+      name: '100.101.2.3:8787', url: 'http://100.101.2.3:8787', token: 'server-token',
+    })
+    expect(setActiveServerMock).toHaveBeenCalledWith('new-server')
+    expect(checkHealthMock).toHaveBeenCalledWith('new-server')
+    expect(clearSessionMock).toHaveBeenCalledWith('session-1')
+    expect(navigateHomeMock).toHaveBeenCalledOnce()
+  })
+
+  it('keeps expired pairing links editable without creating an unauthenticated connection', async () => {
+    redeemMock.mockRejectedValue(new Error('pairing code expired'))
+    render(<ServersSettings initialAddingServer />)
+    fireEvent.change(screen.getByLabelText('servers.url'), { target: { value: 'http://remote.test/?pair=expired.secret' } })
+    await act(async () => fireEvent.submit(screen.getByLabelText('servers.url').closest('form')!))
+    expect(await screen.findByRole('alert')).toHaveTextContent('pairing code expired')
+    expect(useServerStoreMock().addServer).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('servers.url')).toBeEnabled()
+  })
+
+  it('prevents duplicate pairing submissions while redeeming a link', async () => {
+    let complete!: (value: { url: string; token: string }) => void
+    redeemMock.mockReturnValue(new Promise(resolve => { complete = resolve }))
+    render(<ServersSettings initialAddingServer />)
+    const input = screen.getByLabelText('servers.url')
+    fireEvent.change(input, { target: { value: 'http://remote.test/?pair=once.secret' } })
+    const form = input.closest('form')!
+    fireEvent.submit(form)
+    expect(input).toBeDisabled()
+    fireEvent.submit(form)
+    expect(redeemMock).toHaveBeenCalledOnce()
+    await act(async () => complete({ url: 'http://remote.test', token: 'server-token' }))
+    expect(useServerStoreMock().addServer).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    { name: 'Remote', url: 'http://remote.test', token: undefined, expectedUrl: 'http://remote.test' },
+    { name: '', url: 'ompiui://connect?url=http%3A%2F%2Fremote.test&token=share-token', token: 'share-token', expectedUrl: 'http://remote.test' },
+  ])('preserves adding ordinary URLs and share links: $url', async ({ name, url, token, expectedUrl }) => {
+    render(<ServersSettings initialAddingServer />)
+    fireEvent.change(screen.getByLabelText('servers.name'), { target: { value: name } })
+    fireEvent.change(screen.getByLabelText('servers.url'), { target: { value: url } })
+    await act(async () => fireEvent.submit(screen.getByLabelText('servers.url').closest('form')!))
+    expect(useServerStoreMock().addServer).toHaveBeenCalledWith({ name: name || 'remote.test', url: expectedUrl, token })
+    expect(redeemMock).not.toHaveBeenCalled()
+    expect(setActiveServerMock).not.toHaveBeenCalled()
   })
 
   it('switches servers even when health verification fails', async () => {

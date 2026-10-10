@@ -57,6 +57,25 @@ pub(super) fn resource_root(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// 桌面壳在 Tauri resource 目录里查找的后端可执行文件名。
+///
+/// 必须与 `scripts/prepare-tauri-resources.mjs` 拷进去的文件名一致（即
+/// `scripts/package-desktop.mjs` 的 bun 编译产物）。改名不同步会让桌面端
+/// 永远找不到自带的 server，启动服务时报「server binary was not bundled」。
+fn bundled_server_binary(resource: &Path) -> Result<PathBuf, String> {
+    let binary = resource.join(if cfg!(target_os = "windows") {
+        "omp-worker.exe"
+    } else {
+        "omp-worker"
+    });
+    binary.is_file().then_some(binary).ok_or_else(|| {
+        format!(
+            "OMPiUI server binary was not bundled in {}",
+            resource.display()
+        )
+    })
+}
+
 fn server_binary(resource: &Path) -> Result<PathBuf, String> {
     if let Ok(path) = env::var("OMPIUI_SERVER_BIN") {
         let path = PathBuf::from(path);
@@ -65,17 +84,7 @@ fn server_binary(resource: &Path) -> Result<PathBuf, String> {
         }
     }
 
-    let binary = resource.join(if cfg!(target_os = "windows") {
-        "pi-worker.exe"
-    } else {
-        "pi-worker"
-    });
-    binary.is_file().then_some(binary).ok_or_else(|| {
-        format!(
-            "OMPiUI server binary was not bundled in {}",
-            resource.display()
-        )
-    })
+    bundled_server_binary(resource)
 }
 
 pub(super) fn prepare_server(app: &AppHandle) -> Result<PreparedServer, String> {
@@ -208,4 +217,33 @@ pub(super) fn is_process_alive(pid: u32) -> bool {
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 打包脚本 (prepare-tauri-resources.mjs → package-desktop.mjs) 产出的
+    /// 文件名，钉住桌面壳查找路径：改错任一侧都会让桌面端找不到自带 server。
+    #[test]
+    fn bundled_server_binary_matches_packaged_name() {
+        let dir = env::temp_dir().join(format!("ompiui-bundled-binary-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        assert!(
+            bundled_server_binary(&dir).is_err(),
+            "empty resource dir must not resolve"
+        );
+
+        let name = if cfg!(target_os = "windows") {
+            "omp-worker.exe"
+        } else {
+            "omp-worker"
+        };
+        std::fs::write(dir.join(name), b"").expect("write bundled binary");
+        let found = bundled_server_binary(&dir).expect("packaged name must resolve");
+
+        std::fs::remove_dir_all(&dir).expect("clean temp dir");
+        assert_eq!(found, dir.join(name));
+    }
 }

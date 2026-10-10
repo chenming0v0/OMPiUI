@@ -21,7 +21,7 @@ function hasSameMessageContent(
  * Merge a freshly-fetched latest page with locally held branch data.
  *
  * Local data may contain older items loaded via pagination. Rules:
- * - Different epoch: session file was replaced — take latest wholesale.
+ * - 历史 epoch 变化：丢弃旧分页；同一事件流内保留较新的实时消息。
  * - Local leaf no longer in the latest page: branch moved (tree
  *   navigation/undo) — local data is stale, take latest wholesale.
  *   TUI parity: navigateTree rebuilds the context wholesale.
@@ -34,7 +34,6 @@ function hasSameMessageContent(
  */
 export function mergeLatestBranchPage(current: PiBranchPage | null, latest: PiBranchPage): PiBranchPage {
   if (!current) return latest
-  if (current.head.epoch !== latest.head.epoch) return latest
 
   const withClientState = (page: PiBranchPage): PiBranchPage => {
     const stableEntryIds = { ...page.client?.stableEntryIds, ...current.client?.stableEntryIds }
@@ -45,10 +44,14 @@ export function mergeLatestBranchPage(current: PiBranchPage | null, latest: PiBr
 
     if (persistedMatch && liveMessage) stableEntryIds[persistedMatch.id] = liveMessage.id
 
-    // branch.get can win the race with persistence. Keep the live checkpoint
-    // until a matching persisted entry is visible, otherwise the message
-    // briefly disappears before returning with a different React key.
-    const checkpoint = liveMessage && !persistedMatch && !page.checkpoint?.liveMessage
+    // 历史响应与流式事件独立交接，较旧的快照不能覆盖响应等待期间的新思考。
+    const localPosition = current.checkpoint?.position
+    const remotePosition = page.checkpoint?.position
+    const sameStream = !remotePosition || localPosition?.epoch === remotePosition.epoch
+    const localIsNewer = sameStream && localPosition && remotePosition
+      && localPosition.sequence > remotePosition.sequence
+    const checkpoint = liveMessage && !persistedMatch && sameStream
+      && (localIsNewer || !page.checkpoint?.liveMessage)
       ? current.checkpoint
       : page.checkpoint
 
@@ -60,6 +63,14 @@ export function mergeLatestBranchPage(current: PiBranchPage | null, latest: PiBr
         ? { ...page.client, stableEntryIds }
         : page.client,
     }
+  }
+
+  if (current.head.epoch !== latest.head.epoch) {
+    // OMP 历史 epoch 随条目数量变化；同一事件流仍需交接较新的 live 消息。
+    return current.checkpoint && latest.checkpoint
+      && current.checkpoint.position.epoch === latest.checkpoint.position.epoch
+      ? withClientState(latest)
+      : latest
   }
 
   const latestIds = new Set(latest.items.map(item => item.id))

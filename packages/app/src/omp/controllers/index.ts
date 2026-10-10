@@ -186,7 +186,7 @@ async function loadPiSessionDataOnce(sessionId: string, signal?: AbortSignal): P
 
       if (serverStore.getActiveServerGeneration() !== serverGeneration) return
       piSessionStateStore.setStateIfCurrent(sessionId, preview.state, requestVersion)
-      piBranchStore.setDataIfCurrent(sessionId, preview.branch, branchVersion)
+      piBranchStore.setDataIfCurrent(sessionId, mergeLatestBranchPage(piBranchStore.getData(sessionId), preview.branch), branchVersion)
       return
     } catch (error) {
       lastError = error

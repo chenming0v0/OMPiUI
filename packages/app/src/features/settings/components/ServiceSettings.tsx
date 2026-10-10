@@ -16,15 +16,11 @@ import { fetchHostTunnel, listHostShells } from '../../../omp/transport/index.js
 import { serverStorage } from '../../../utils'
 import { useServerStore } from '../../../hooks'
 import { settingsFieldClass, SettingField, SettingRow, SettingsSection, SettingsSelect, Toggle } from './SettingsUI'
-import { RemoteAccessSettings } from './RemoteAccessSettings'
 
 const TERMINAL_SHELL_STORAGE_KEY = 'ompiui-terminal-shell'
 const LISTEN_HOST_KEY = 'OMPIUI_HOST'
 const LISTEN_PORT_KEY = 'OMPIUI_PORT'
 const PUBLIC_BASE_URL_KEY = 'OMPIUI_PUBLIC_BASE_URL'
-const TUNNEL_URL_KEY = 'OMPIUI_TUNNEL_URL'
-const TUNNEL_KEY_KEY = 'OMPIUI_TUNNEL_KEY'
-const TUNNEL_ID_KEY = 'OMPIUI_TUNNEL_ID'
 
 export function ServiceSettings() {
   const { t } = useTranslation(['settings', 'common'])
@@ -126,7 +122,7 @@ export function ServiceSettings() {
   }, [selectedShell, shells, t])
 
   const terminalShell = (
-    <SettingField label={t('service.terminalShell')} description={t('service.terminalShellLocalDesc', { defaultValue: 'Shell for new terminals. Saved on this device, separately for each server.' })}>
+    <SettingField label={t('service.terminalShell')} description={t('service.terminalShellLocalDesc')}>
       <SettingsSelect
         ariaLabel={t('service.terminalShell')}
         value={selectedShell}
@@ -146,7 +142,7 @@ export function ServiceSettings() {
   // 公网基址不 trim 展示：输入框直接回显原值，服务端启动时统一规范化
   const publicBaseUrl = serviceStore.envVars.find(item => item.key.trim().toUpperCase() === PUBLIC_BASE_URL_KEY)?.value || ''
   const listenSettings = (
-    <SettingsSection title={t('service.listenTitle')} description={t('service.localListenDesc', { defaultValue: 'Local desktop startup settings. They do not change the connected remote server.' })}>
+    <SettingsSection title={t('service.listenTitle')} description={t('service.localListenDesc')}>
       <SettingField label={t('service.listenHost')} description={t('service.listenHostDesc')}>
         <SettingsSelect
           ariaLabel={t('service.listenHost')}
@@ -201,14 +197,6 @@ export function ServiceSettings() {
     </SettingsSection>
   )
 
-  const tunnelUrl = serviceStore.envVars.find(item => item.key.trim().toUpperCase() === TUNNEL_URL_KEY)?.value || ''
-  const tunnelKey = serviceStore.envVars.find(item => item.key.trim().toUpperCase() === TUNNEL_KEY_KEY)?.value || ''
-  const tunnelId = serviceStore.envVars.find(item => item.key.trim().toUpperCase() === TUNNEL_ID_KEY)?.value || ''
-  const setTunnelEnv = (key: string, value: string) => {
-    if (value.trim()) serviceStore.upsertEnvVar(key, value)
-    else serviceStore.setEnvVars(serviceStore.envVars.filter(item => item.key.trim().toUpperCase() !== key))
-  }
-
   // 隧道运行状态轮询：隧道在服务端后台自动重连，状态只存在那里
   useEffect(() => {
     let cancelled = false
@@ -229,59 +217,20 @@ export function ServiceSettings() {
     }
   }, [activeServerGeneration, running])
 
-  const tunnelSettings = (
-    <SettingsSection title={t('service.tunnelTitle')} description={t('service.localTunnelDesc', { defaultValue: 'Relay settings for the service started by this desktop app. Restart that local service to apply changes.' })}>
-      <SettingField label={t('service.tunnelUrl')} description={t('service.tunnelUrlDesc')}>
-        <input
-          type="text"
-          value={tunnelUrl}
-          placeholder="wss://relay.example.com"
-          aria-label={t('service.tunnelUrl')}
-          spellCheck={false}
-          className={`${settingsFieldClass} font-mono`}
-          onChange={event => setTunnelEnv(TUNNEL_URL_KEY, event.target.value)}
-        />
-      </SettingField>
-      <SettingField label={t('service.tunnelKey')} description={t('service.tunnelKeyDesc')}>
-        <input
-          type="password"
-          value={tunnelKey}
-          aria-label={t('service.tunnelKey')}
-          autoComplete="off"
-          spellCheck={false}
-          className={`${settingsFieldClass} font-mono`}
-          onChange={event => setTunnelEnv(TUNNEL_KEY_KEY, event.target.value)}
-        />
-      </SettingField>
-      <SettingField label={t('service.tunnelId')} description={t('service.tunnelIdDesc')}>
-        <input
-          type="text"
-          value={tunnelId}
-          placeholder="ompiui"
-          aria-label={t('service.tunnelId')}
-          spellCheck={false}
-          className={`${settingsFieldClass} font-mono`}
-          onChange={event => setTunnelEnv(TUNNEL_ID_KEY, event.target.value)}
-        />
-      </SettingField>
-      <div className="text-[length:var(--fs-xs)] leading-relaxed text-warning-100/80">{t('service.tunnelWarning')}</div>
-    </SettingsSection>
-  )
-
   const backendStatus = (
     <SettingsSection
-      title={t('service.currentBackendTitle', { defaultValue: 'Current backend' })}
-      description={t('service.currentBackendDesc', { defaultValue: 'Live status from the connected server, not this device’s saved startup settings.' })}
+      title={t('service.currentBackendTitle')}
+      description={t('service.currentBackendDesc')}
     >
       {activeServer && (
-        <SettingField label={t('service.backendAddress', { defaultValue: 'Server address' })}>
+        <SettingField label={t('service.backendAddress')}>
           <div className="break-all font-mono text-[length:var(--fs-xs)] text-text-300">{activeServer.url}</div>
         </SettingField>
       )}
       <SettingField label={t('service.tunnelStatus')}>
         <div role="status" className="min-w-0 break-all text-[length:var(--fs-xs)] leading-relaxed text-text-300">
-          {!currentTunnel && t('service.backendStatusLoading', { defaultValue: 'Loading server status…' })}
-          {currentTunnel && !tunnelStatus && t('service.backendStatusUnavailable', { defaultValue: 'Server status unavailable. Check the connection and server version.' })}
+          {!currentTunnel && t('service.backendStatusLoading')}
+          {currentTunnel && !tunnelStatus && t('service.backendStatusUnavailable')}
           {tunnelStatus && (!tunnelStatus.enabled || tunnelStatus.state === 'disabled') && t('service.tunnelStatusDisabled')}
           {tunnelStatus?.enabled && tunnelStatus.state === 'connected' && (
             <>
@@ -305,8 +254,8 @@ export function ServiceSettings() {
         </SettingField>
       )}
       <div className="rounded-lg border border-border-200/60 bg-bg-100 p-3 text-[length:var(--fs-xs)] leading-relaxed text-text-300">
-        <p>{t('service.remoteReadOnly', { defaultValue: 'Remote configuration is read-only here.' })}</p>
-        <p className="mt-1 text-text-400">{t('service.remoteManageHint', { defaultValue: 'Change listening and relay settings on the server, then restart it. If you use OMPiUI Admin, open it separately and sign in with its own credentials.' })}</p>
+        <p>{t('service.remoteReadOnly')}</p>
+        <p className="mt-1 text-text-400">{t('service.remoteManageHint')}</p>
       </div>
     </SettingsSection>
   )
@@ -314,7 +263,6 @@ export function ServiceSettings() {
   if (!desktop) {
     return (
       <>
-        <RemoteAccessSettings />
         {backendStatus}
         <SettingsSection title={t('service.terminalTitle')} description={t('service.terminalTitleDesc')}>
           {terminalShell}
@@ -325,16 +273,18 @@ export function ServiceSettings() {
 
   const isBusy = busy !== null || starting
   const serviceEnvironment = status?.environment ?? {}
+  // 中转配置只在认证页编辑，保留原下标以更新其他环境变量。
+  const customEnvVars = envVars.map((env, index) => ({ env, index })).filter(({ env }) =>
+    !['OMPIUI_TUNNEL_URL', 'OMPIUI_TUNNEL_KEY', 'OMPIUI_TUNNEL_ID'].includes(env.key.trim().toUpperCase()),
+  )
 
   return (
     <>
-      <RemoteAccessSettings />
       {backendStatus}
       {listenSettings}
-      {tunnelSettings}
       <SettingsSection
-        title={t('service.localServiceTitle', { defaultValue: 'Local desktop service' })}
-        description={t('service.localServiceDesc', { defaultValue: 'Start and configure the service on this computer. These controls do not manage a remote server.' })}
+        title={t('service.localServiceTitle')}
+        description={t('service.localServiceDesc')}
         actions={
         <button
           type="button"
@@ -449,9 +399,9 @@ export function ServiceSettings() {
           </div>
         }
       >
-        {envVars.length > 0 && (
+        {customEnvVars.length > 0 && (
           <div className="flex flex-col gap-1.5">
-            {envVars.map((env, index) => (
+            {customEnvVars.map(({ env, index }) => (
               <div
                 key={`${index}-${env.key}`}
                 className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1.5fr)_auto] items-center gap-1.5"
