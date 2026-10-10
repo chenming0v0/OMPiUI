@@ -1,4 +1,4 @@
-import type { PiBranchPage } from '../domain/index.js'
+import type { PiBranchCheckpoint, PiBranchPage } from '../domain/index.js'
 
 interface BranchEntry {
   data: PiBranchPage | null
@@ -47,6 +47,14 @@ class PiBranchStore {
     entry.data = data
     entry.error = null
     entry.loading = false
+    this.notify()
+  }
+
+  /** 流式内容不使历史请求失效；响应合并时按事件游标保留较新的 checkpoint。 */
+  setLiveCheckpoint(sessionId: string, checkpoint: PiBranchCheckpoint): void {
+    const entry = this.bySessionId.get(sessionId)
+    if (!entry?.data) return
+    entry.data = { ...entry.data, checkpoint }
     this.notify()
   }
 

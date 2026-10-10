@@ -1,4 +1,7 @@
 import { isTauri } from '../utils/tauri'
+import { resolveAndroidTailscaleUrl } from '../utils/androidTailscale'
+import { serverStore } from '../store/serverStore'
+import { auditSocket } from './trafficAudit/socket'
 
 /**
  * PiSocket：WebSocket 的最小抽象（open/message/close + readyState/send/close）。
@@ -13,10 +16,15 @@ export const PI_SOCKET_CLOSED = 3
 /** 桥连接 open 看门狗：超时仍未收到 open 事件则主动失败让调用方重连 */
 const WS_BRIDGE_OPEN_TIMEOUT_MS = 8_000
 
+export interface PiSocketMessage {
+  data: unknown
+  annotateTraffic?: (parsed: unknown) => void
+}
+
 export interface PiSocket {
   readonly readyState: number
   onopen: (() => void) | null
-  onmessage: ((event: { data: unknown }) => void) | null
+  onmessage: ((event: PiSocketMessage) => void) | null
   onclose: ((event: { code: number; reason?: string }) => void) | null
   onerror: (() => void) | null
   send(data: string): void
@@ -53,6 +61,8 @@ class TauriBridgeSocket implements PiSocket {
       this.invokeFn = invoke as TauriInvoke
       const channel = new Channel<BridgeEvent>()
       channel.onmessage = event => this.handleEvent(event)
+      const resolved = await resolveAndroidTailscaleUrl(url)
+      if (this.closedByUs) return
       // 首次 webview 会话的 IPC 偶发不可靠：invoke 悬挂或事件不送达时，
       // 靠 open 看门狗主动失败一次，让调用方的重连逻辑用全新的 Channel/
       // invoke 重试（等价于一次刷新）。
@@ -64,7 +74,7 @@ class TauriBridgeSocket implements PiSocket {
         this.onerror?.()
         this.onclose?.({ code: 1006 })
       }, WS_BRIDGE_OPEN_TIMEOUT_MS)
-      const id = await invoke<number>('ws_bridge_connect', { url, onEvent: channel })
+      const id = await invoke<number>('ws_bridge_connect', { url: resolved, onEvent: channel })
       clearTimeout(openWatchdog)
       if (watchdogFired || this.closedByUs) {
         // 看门狗已判死：这条 Rust 连接不再需要，及时关掉避免泄漏。
@@ -128,6 +138,6 @@ class TauriBridgeSocket implements PiSocket {
 }
 
 export function openPiSocket(url: string): PiSocket {
-  if (!isTauri()) return new WebSocket(url) as unknown as PiSocket
-  return new TauriBridgeSocket(url)
+  const socket = isTauri() ? new TauriBridgeSocket(url) : new WebSocket(url) as unknown as PiSocket
+  return auditSocket(socket, url, serverStore.getActiveServer()?.url)
 }

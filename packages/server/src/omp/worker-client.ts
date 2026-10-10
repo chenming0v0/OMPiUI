@@ -5,8 +5,8 @@ import { diagnostics, diagnosticErrorCode } from "../diagnostics/recorder.ts"
 import { traceWorkerRequest } from "../diagnostics/worker-request.ts"
 import type { JsonObject, JsonValue, Problem } from "@ompiui/protocol"
 import {
-  PI_WORKER_HEARTBEAT_INTERVAL_MS,
-  PI_WORKER_PROTOCOL_VERSION,
+  OMP_WORKER_HEARTBEAT_INTERVAL_MS,
+  OMP_WORKER_PROTOCOL_VERSION,
   type WorkerEvent,
   type WorkerHello,
   type WorkerHostCall,
@@ -215,15 +215,15 @@ class WorkerHostCore {
   private handleMessage(message: WorkerMessage): void {
     if (!message || typeof message !== "object") return
     if (message.kind === "hello") {
-      if (message.workerProtocolVersion !== PI_WORKER_PROTOCOL_VERSION) {
+      if (message.workerProtocolVersion !== OMP_WORKER_PROTOCOL_VERSION) {
         this.settleReadyError(Object.assign(
-          new Error(`Pi worker protocol ${message.workerProtocolVersion} does not match ${PI_WORKER_PROTOCOL_VERSION}`),
+          new Error(`OMP worker protocol ${message.workerProtocolVersion} does not match ${OMP_WORKER_PROTOCOL_VERSION}`),
           { code: "WORKER_PROTOCOL_MISMATCH" },
         ))
         return
       }
       this.heartbeatMisses = 0
-      this.startHeartbeatWatchdog(message.heartbeatIntervalMs || PI_WORKER_HEARTBEAT_INTERVAL_MS)
+      this.startHeartbeatWatchdog(message.heartbeatIntervalMs || OMP_WORKER_HEARTBEAT_INTERVAL_MS)
       if (!this.readySettled) {
         this.readySettled = true
         this.readyHello = message
@@ -327,7 +327,7 @@ class WorkerHostCore {
       this.heartbeatMisses += 1
       if (this.heartbeatMisses === warnAt && !this.exitHandled) {
         diagnostics.record("worker.heartbeat.missing", { workerPid: this.child.pid, misses: this.heartbeatMisses }, "warn")
-        const message = `[piui-worker] heartbeat missing for ${this.heartbeatMisses} consecutive ticks (pid=${this.child.pid ?? "?"}); worker may be stuck`
+        const message = `[omp-worker] heartbeat missing for ${this.heartbeatMisses} consecutive ticks (pid=${this.child.pid ?? "?"}); worker may be stuck`
         console.warn(message)
         logToFile(message)
       }
@@ -363,11 +363,11 @@ class WorkerHostCore {
     // 崩溃/退出必须有可见记录：之前这里完全静默，用户（和日志）无法知道
     // worker 何时、为何死亡，"突然死了"无从排查。
     if (!this.disposed) {
-      const message = `[piui-worker] worker process exited unexpectedly (pid=${this.child.pid ?? "?"} code=${code} signal=${signal}): ${this.exitError.message}`
+      const message = `[omp-worker] worker process exited unexpectedly (pid=${this.child.pid ?? "?"} code=${code} signal=${signal}): ${this.exitError.message}`
       console.error(message)
       logToFile(message)
     } else {
-      const message = `[piui-worker] worker process stopped (pid=${this.child.pid ?? "?"})`
+      const message = `[omp-worker] worker process stopped (pid=${this.child.pid ?? "?"})`
       console.info(message)
       logToFile(message)
     }
@@ -516,7 +516,7 @@ class WorkerHostCore {
               // 真正的进程级卡死由心跳看门狗兜底：心跳持续丢失累积到
               // missLimit（12 次 ≈ 60s+）才杀。单条命令超时（如模型响应慢）
               // 只废弃该命令，共享进程继续服务其他会话。
-              const message = `[piui-worker] command ${command.type} timed out after ${timeoutMs}ms (misses=${this.heartbeatMisses}); discarding command, worker stays`
+              const message = `[omp-worker] command ${command.type} timed out after ${timeoutMs}ms (misses=${this.heartbeatMisses}); discarding command, worker stays`
               console.error(message)
               logToFile(message)
               diagnostics.record("worker.request.timeout", {

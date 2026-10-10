@@ -409,6 +409,8 @@ export const ModelSelector = memo(
       if (!selectedModelKey) return null
       return models.find(m => getModelKey(m) === selectedModelKey) ?? null
     }, [models, selectedModelKey])
+    const selectedModelName = selectedModel?.name
+      ?? (selectedModelKey ? selectedModelKey.slice(selectedModelKey.indexOf(':') + 1) : undefined)
 
     const focusRelativeToTrigger = useCallback((direction: 1 | -1) => {
       const trigger = triggerRef.current
@@ -442,8 +444,8 @@ export const ModelSelector = memo(
 
     const displayName =
       trigger === 'header'
-        ? selectedModel?.name || placeholder || t('modelSelector.selectModel')
-        : selectedModel?.name || placeholder || (isLoading ? '...' : t('modelSelector.model'))
+        ? selectedModelName || placeholder || t('modelSelector.selectModel')
+        : selectedModelName || placeholder || (isLoading ? '...' : t('modelSelector.model'))
 
     // ---- Open / Close ----
 
@@ -832,7 +834,7 @@ export const ModelSelector = memo(
           disabled={disabled || isLoading}
           aria-expanded={isOpen}
           className="flex items-center px-2 py-1.5 text-[length:var(--fs-base)] rounded-lg transition-all duration-150 hover:bg-bg-200 active:scale-95 cursor-pointer min-w-0 overflow-hidden w-full"
-          title={selectedModel?.name || t('modelSelector.selectModel')}
+          title={selectedModelName || t('modelSelector.selectModel')}
         >
           <span className="text-[length:var(--fs-sm)] text-text-300 truncate">{displayName}</span>
         </button>

@@ -57,7 +57,7 @@ import { themeStore } from '../../store/themeStore'
 import { useSessionActiveEntry } from '../../store/activeSessionStore'
 import type { PiImageInput } from '../../omp/transport/index.js'
 import { attachmentToImage } from './attachmentToImage'
-import { piBranchStore } from '../../omp/state/index.js'
+import { piBranchStore, piSessionStateStore } from '../../omp/state/index.js'
 import { captureRedoCheckpoints, commitRedoPlan, redoPlanStore, type RedoPlan } from '../../omp/redoPlanStore'
 import { extensionUiStore, getEditorTextSource } from '../../omp/extensionUiStore'
 import { paneControllerStore } from '../../store/paneControllerStore'
@@ -362,7 +362,8 @@ export function PiChatPane({
     // 会话已不可用：不订阅事件流，免得每次重连都 resync 打 404
     if (!sessionId || sessionUnavailable || sessionLoadError) return
     piEventStream.connect(sessionId)
-    if (!piBranchStore.getData(sessionId)) {
+    const cachedState = piSessionStateStore.getState(sessionId)
+    if (!piBranchStore.getData(sessionId) || cachedState?.model === undefined || cachedState?.thinkingLevel === undefined) {
       void loadPiSessionData(sessionId).catch(() => undefined)
     }
     return () => piEventStream.disconnect(sessionId)
@@ -663,7 +664,8 @@ export function PiChatPane({
     [models, pendingModelKey, currentModel?.provider, currentModel?.id, homeModelKey, sessionId],
   )
   const thinkingLevels = useMemo(() => {
-    if (!currentModelObj?.reasoning) return ['off']
+    if (!currentModelObj) return PI_THINKING_LEVELS
+    if (!currentModelObj.reasoning) return ['off']
     const map = currentModelObj.thinkingLevelMap as Record<string, string | null> | undefined
     return PI_THINKING_LEVELS.filter(level => !map || map[level] !== null)
   }, [currentModelObj])

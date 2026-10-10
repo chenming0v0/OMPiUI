@@ -124,4 +124,31 @@ describe('mergeLatestBranchPage', () => {
     expect(merged.client?.stableEntryIds).toEqual({ assistant: 'live-assistant' })
     expect(selectPiTimelineItems(merged).find(item => item.entryId === 'assistant')?.renderKey).toBe('live-assistant')
   })
+
+  it('takes a newer remote live checkpoint instead of freezing local thinking', () => {
+    const current = page(['a'], {
+      checkpoint: {
+        position: { epoch: 'events', sequence: 2 },
+        liveMessage: { id: 'thinking', revision: 2, phase: 'streaming', message: { role: 'assistant', content: [{ type: 'text', text: 'older' }] } } as PiLiveMessage,
+      },
+    })
+    const latest = page(['a'], {
+      checkpoint: {
+        position: { epoch: 'events', sequence: 4 },
+        liveMessage: { id: 'thinking', revision: 4, phase: 'streaming', message: { role: 'assistant', content: [{ type: 'text', text: 'newer' }] } } as PiLiveMessage,
+      },
+    })
+    expect(mergeLatestBranchPage(current, latest).checkpoint).toBe(latest.checkpoint)
+  })
+
+  it('does not retain local thinking after the runtime event epoch changes', () => {
+    const current = page(['a'], {
+      checkpoint: {
+        position: { epoch: 'old-runtime', sequence: 20 },
+        liveMessage: { id: 'thinking', revision: 20, phase: 'streaming', message: { role: 'assistant', content: [{ type: 'text', text: 'old runtime' }] } } as PiLiveMessage,
+      },
+    })
+    const latest = page(['a'], { checkpoint: { position: { epoch: 'new-runtime', sequence: 1 } } })
+    expect(mergeLatestBranchPage(current, latest).checkpoint).toBe(latest.checkpoint)
+  })
 })

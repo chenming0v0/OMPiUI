@@ -56,8 +56,8 @@ import { assertRuntimeTargetBindings } from "./runtime-contract.js"
 import { createWorkerCommandScheduler } from "./worker-command-scheduler.js"
 import { getDriverMode } from "./driver.js"
 import {
-  PI_WORKER_HEARTBEAT_INTERVAL_MS,
-  PI_WORKER_PROTOCOL_VERSION,
+  OMP_WORKER_HEARTBEAT_INTERVAL_MS,
+  OMP_WORKER_PROTOCOL_VERSION,
   type WorkerHostCall,
   type WorkerHostReply,
   type WorkerMessage,
@@ -201,12 +201,12 @@ function subscribeRuntimeEvents(current: SessionRuntime): Array<() => void> {
     })))
     unsubs.push(current.onCrash(error => {
       const stderr = current.stderrTail
-      console.error(`[ompiui-worker] omp rpc process crashed for session ${current.getSessionId()}: ${error.message}${stderr ? `\n[ompiui-worker] omp stderr: ${stderr.slice(-1500)}` : ""}`)
+      console.error(`[omp-worker] omp rpc process crashed for session ${current.getSessionId()}: ${error.message}${stderr ? `\n[omp-worker] omp stderr: ${stderr.slice(-1500)}` : ""}`)
       send({
         kind: "event", generation: workerGeneration, sessionId: current.getSessionId(),
         channel: "session.crashed", event: { message: error.message },
       })
-      void closeRuntime(current.getSessionId()).catch(error => console.error("[ompiui-worker] crashed runtime cleanup failed", error))
+      void closeRuntime(current.getSessionId()).catch(error => console.error("[omp-worker] crashed runtime cleanup failed", error))
     }))
   }
   return unsubs
@@ -432,14 +432,14 @@ const unsubscribeProviderAuth = providerAuth.onEvent(event => send({
 
 const heartbeatTimer = setInterval(() => {
   send({ kind: "heartbeat", generation: workerGeneration, timestamp: Date.now() })
-}, PI_WORKER_HEARTBEAT_INTERVAL_MS)
+}, OMP_WORKER_HEARTBEAT_INTERVAL_MS)
 heartbeatTimer.unref()
 
 // 子进程的异步疏忽产生的 unhandledRejection：记录并继续，单个 RPC 调用的
 // promise 泄漏不应杀死 worker。uncaughtException = 进程级错误，记录后有界
 // 清理并退出，重建交还 supervisor。
 process.on("unhandledRejection", (reason) => {
-  console.error(`[ompiui-worker] unhandled rejection: ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}`)
+  console.error(`[omp-worker] unhandled rejection: ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}`)
 })
 
 let fatalExitStarted = false
@@ -456,7 +456,7 @@ async function fatalExit(code: number): Promise<void> {
 }
 
 process.on("uncaughtException", (error) => {
-  console.error(`[ompiui-worker] uncaught exception: ${error?.stack ?? error}`)
+  console.error(`[omp-worker] uncaught exception: ${error?.stack ?? error}`)
   if (fatalExitStarted) return
   fatalExitStarted = true
   void fatalExit(1)
@@ -566,7 +566,7 @@ process.on("disconnect", () => {
     try {
       await schedule.close(cleanupWorker)
     } catch (error) {
-      console.error(`[ompiui-worker] disconnect cleanup failed: ${error instanceof Error ? error.message : String(error)}`)
+      console.error(`[omp-worker] disconnect cleanup failed: ${error instanceof Error ? error.message : String(error)}`)
       exitCode = 1
     }
     process.exit(exitCode)
@@ -574,15 +574,15 @@ process.on("disconnect", () => {
 })
 
 if (ompBin) {
-  console.info(`[ompiui-worker] omp binary: ${ompBin}`)
+  console.info(`[omp-worker] omp binary: ${ompBin}`)
 }
 
 send({
   kind: "hello",
-  workerProtocolVersion: PI_WORKER_PROTOCOL_VERSION,
+  workerProtocolVersion: OMP_WORKER_PROTOCOL_VERSION,
   piSdkVersion: detectedOmpVersion(OMP_SDK_VERSION, ompBin),
   piSdkVerified: true,
   generation: workerGeneration,
   processId: process.pid,
-  heartbeatIntervalMs: PI_WORKER_HEARTBEAT_INTERVAL_MS,
+  heartbeatIntervalMs: OMP_WORKER_HEARTBEAT_INTERVAL_MS,
 })

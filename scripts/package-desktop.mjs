@@ -26,6 +26,9 @@ if (!skipBuild) {
   run("npm", ["run", "build"])
 }
 mkdirSync(outDir, { recursive: true })
+const goOs = target.includes("windows") ? "windows" : target.includes("darwin") ? "darwin" : "linux"
+const goArch = target.includes("arm64") ? "arm64" : "amd64"
+run("node", ["scripts/build-tailscale.mjs", "--os", goOs, "--arch", goArch, "--out", join(outDir, "tailscale")])
 rmSync(join(outDir, "runtime"), { recursive: true, force: true })
 rmSync(join(outDir, "piui-server.exe"), { force: true })
 rmSync(join(outDir, "piui-server"), { force: true })
@@ -73,6 +76,7 @@ run("bun", [
 
 const requiredFiles = [
   outfile,
+  join(outDir, "tailscale", `ompiui-tailscale-bridge${goOs === "windows" ? ".exe" : ""}`),
   join(outDir, "web", "index.html"),
   join(outDir, "node_modules", "bun-pty", "src", "index.ts"),
   join(outDir, "node_modules", "bun-pty", "rust-pty", "target", "release", nativeLibrary),

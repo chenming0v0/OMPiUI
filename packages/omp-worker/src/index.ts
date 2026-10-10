@@ -14,6 +14,6 @@ export { createWorkerCommandScheduler } from "./worker-command-scheduler.js"
 export { getDriverMode, type DriverMode } from "./driver.js"
 export { managedSessionsRoot, isManagedSessionFile, readOnlySessionError } from "./omp/managed-sessions.js"
 
-export function getPiWorkerEntryUrl(): URL {
+export function getOmpWorkerEntryUrl(): URL {
   return new URL("./entry.js", import.meta.url)
 }

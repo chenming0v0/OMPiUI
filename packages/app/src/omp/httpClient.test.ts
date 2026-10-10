@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { abortInFlightPiRequests, getApiBase, piFetch } from './httpClient'
 import { LOCAL_SERVER_ID, serverStore } from '../store/serverStore'
+import { trafficAuditStore } from './trafficAudit/store'
 
 const mocks = vi.hoisted(() => ({ isTauri: false }))
 
@@ -89,6 +90,8 @@ describe('HTTP network retry safety', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     nativeFetchMock.mockReset()
+    trafficAuditStore.setEnabled(true)
+    trafficAuditStore.clear()
   })
 
   afterEach(() => {
@@ -139,6 +142,20 @@ describe('HTTP network retry safety', () => {
     await vi.advanceTimersByTimeAsync(2_000)
     await result
     expect(nativeFetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('audits every retry as a separate request with the final consumed response size', async () => {
+    nativeFetchMock
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockRejectedValueOnce(new Error('connection reset'))
+      .mockResolvedValueOnce(new Response('{"ok":true}'))
+    const request = piFetch('/api/read')
+    await vi.advanceTimersByTimeAsync(1_200)
+    const response = await request
+    expect(await response.json()).toEqual({ ok: true })
+    expect(trafficAuditStore.getSnapshot().records.map(record => [record.attempt, record.status]))
+      .toEqual([[3, 'complete'], [2, 'error'], [1, 'error']])
+    expect(trafficAuditStore.getSnapshot().records[0].receivedBytes).toBe(11)
   })
 
   it('lets a side-effectful GET opt out without forwarding the retry option to fetch', async () => {

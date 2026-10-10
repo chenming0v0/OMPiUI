@@ -1,4 +1,4 @@
-import { getPiWorkerEntryUrl, type WorkerEvent, type WorkerHello, type WorkerHostCall } from "@ompiui/omp-worker"
+import { getOmpWorkerEntryUrl, type WorkerEvent, type WorkerHello, type WorkerHostCall } from "@ompiui/omp-worker"
 import { resolve } from "node:path"
 import type { JsonObject, JsonValue } from "@ompiui/protocol"
 import {
@@ -43,7 +43,7 @@ export class RuntimeSupervisor {
   private disposed = false
 
   constructor(options: RuntimeSupervisorOptions = {}) {
-    this.workerEntry = options.workerEntry ?? getPiWorkerEntryUrl()
+    this.workerEntry = options.workerEntry ?? getOmpWorkerEntryUrl()
     this.workerOptions = options.worker
     this.leases = options.leases ?? new SessionLeaseManager()
   }

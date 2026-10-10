@@ -65,6 +65,11 @@ const MODELS: ModelInfo[] = [
 ]
 
 describe('ModelSelector', () => {
+  it.each(['header', 'toolbar'] as const)('shows the historical model missing from the catalog in the %s trigger', trigger => {
+    render(<ModelSelector models={MODELS} selectedModelKey="custom:org/child-model" onSelect={vi.fn()} trigger={trigger} />)
+    expect(screen.getByTitle('org/child-model')).toHaveTextContent('org/child-model')
+  })
+
   it('opens menu and selects a model', () => {
     const onSelect = vi.fn()
 

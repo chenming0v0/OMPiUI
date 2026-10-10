@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { it } from "node:test"
 import { isJsonObject, type JsonObject } from "@ompiui/protocol"
-import { OmpCatalog } from "./omp-catalog.js"
+import { OmpCatalog, previewEntriesFromLines } from "./omp-catalog.js"
 import { sessionConfigFromBranch } from "./session-config.js"
 
 it("restores the explicit default model instead of an auxiliary role or temporary fallback", () => {
@@ -30,6 +30,38 @@ it("supports legacy model changes and assistant messages without explicit model 
   assert.deepEqual(sessionConfigFromBranch([
     { type: "model_change", model: "custom/org/model" },
   ]), { model: { provider: "custom", id: "org/model" }, thinkingLevel: "off" })
+})
+
+it("restores subagent model and effort from initialization without exposing the prompt", () => {
+  const entries = previewEntriesFromLines([
+    JSON.stringify({
+      type: "session_init", id: "init", parentId: null,
+      resolvedModel: "custom/org/child-model:high", systemPrompt: "private prompt", tools: ["read"],
+    }),
+    JSON.stringify({
+      type: "message", id: "reply", parentId: "init",
+      message: { role: "assistant", provider: "other", model: "temporary-fallback" },
+    }),
+  ], "child")
+  assert.equal(entries[0]!.type, "omp.dropped")
+  assert.equal(entries[0]!.systemPrompt, undefined)
+  assert.equal(entries[0]!.tools, undefined)
+  assert.deepEqual(sessionConfigFromBranch(entries), {
+    model: { provider: "custom", id: "org/child-model" }, thinkingLevel: "high",
+  })
+})
+
+it("keeps explicit changes authoritative over subagent initialization selectors", () => {
+  assert.deepEqual(sessionConfigFromBranch([
+    { type: "model_change", model: "custom/actual" },
+    { type: "thinking_level_change", thinkingLevel: "off" },
+    { type: "session_init", resolvedModel: "other/initial:high" },
+  ]), { model: { provider: "custom", id: "actual" }, thinkingLevel: "off" })
+  assert.deepEqual(sessionConfigFromBranch([
+    { type: "session_init", resolvedModel: "custom/initial:medium" },
+    { type: "model_change", model: "custom/updated" },
+    { type: "thinking_level_change", thinkingLevel: "xhigh" },
+  ]), { model: { provider: "custom", id: "updated" }, thinkingLevel: "xhigh" })
 })
 
 it("disk preview and state.get restore configuration from the active branch, not abandoned siblings", async t => {

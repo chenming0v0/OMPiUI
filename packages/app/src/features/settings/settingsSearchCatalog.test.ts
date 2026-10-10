@@ -41,4 +41,12 @@ describe('settings search catalog', () => {
       'notifications.eventSounds',
     ])
   })
+
+  it('routes relay configuration searches to Authentication instead of Service', () => {
+    const relayItems = SETTINGS_SEARCH_DEFINITIONS.filter(item => item.labelKey.startsWith('service.tunnel'))
+    expect(relayItems.map(item => item.labelKey)).toEqual([
+      'service.tunnelTitle', 'service.tunnelUrl', 'service.tunnelKey', 'service.tunnelId',
+    ])
+    expect(relayItems.every(item => item.tab === 'authentication')).toBe(true)
+  })
 })

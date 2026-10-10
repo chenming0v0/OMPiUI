@@ -420,12 +420,16 @@ export interface SettingsSectionProps {
   children: React.ReactNode
   className?: string
   collapsible?: boolean
+  status?: React.ReactNode
 }
 
-export function SettingsSection({ title, description, actions, children, className, collapsible = false }: SettingsSectionProps) {
+export function SettingsSection({ title, description, actions, children, className, collapsible = false, status }: SettingsSectionProps) {
   const heading = (
     <div className="min-w-0 flex-1 text-left">
-      <h2 className="text-[length:var(--fs-base)] font-semibold text-text-100 leading-snug">{title}</h2>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <h2 className="text-[length:var(--fs-base)] font-semibold text-text-100 leading-snug">{title}</h2>
+        {status}
+      </div>
       {description && (
         <p className="mt-1.5 text-[length:var(--fs-xs)] font-normal text-text-300 leading-relaxed">
           {description}

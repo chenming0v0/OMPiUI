@@ -186,7 +186,7 @@ async function loadPiSessionDataOnce(sessionId: string, signal?: AbortSignal): P
 
       if (serverStore.getActiveServerGeneration() !== serverGeneration) return
       piSessionStateStore.setStateIfCurrent(sessionId, preview.state, requestVersion)
-      piBranchStore.setDataIfCurrent(sessionId, preview.branch, branchVersion)
+      piBranchStore.setDataIfCurrent(sessionId, mergeLatestBranchPage(piBranchStore.getData(sessionId), preview.branch), branchVersion)
       return
     } catch (error) {
       lastError = error
@@ -636,17 +636,19 @@ export async function setPiFollowUpMode(sessionId: string, mode: 'all' | 'one-at
 /**
  * Load available models from the Pi model runtime into the models store.
  */
-const modelFlights = new Map<number, Promise<Model<Api>[]>>()
+const modelFlights = new Map<string, Promise<Model<Api>[]>>()
 
 export async function loadPiModels(signal?: AbortSignal): Promise<Model<Api>[]> {
   const serverGeneration = serverStore.getActiveServerGeneration()
-  const existing = modelFlights.get(serverGeneration)
+  const syncVersion = piModelsStore.getSyncVersion()
+  const key = `${serverGeneration}:${syncVersion}`
+  const existing = modelFlights.get(key)
   if (existing) return existing
 
-  const flight = loadPiModelsOnce(serverGeneration, signal)
-  modelFlights.set(serverGeneration, flight)
+  const flight = loadPiModelsOnce(serverGeneration, syncVersion, signal)
+  modelFlights.set(key, flight)
   void flight.finally(() => {
-    if (modelFlights.get(serverGeneration) === flight) modelFlights.delete(serverGeneration)
+    if (modelFlights.get(key) === flight) modelFlights.delete(key)
   }).catch(() => undefined)
   return flight
 }
@@ -663,16 +665,16 @@ export async function startPiProviderAuth(providerId: string, authType?: 'api_ke
   await transport.startProviderAuth(providerId, authType, signal)
 }
 
-async function loadPiModelsOnce(serverGeneration: number, signal?: AbortSignal): Promise<Model<Api>[]> {
+async function loadPiModelsOnce(serverGeneration: number, syncVersion: number, signal?: AbortSignal): Promise<Model<Api>[]> {
   piModelsStore.setLoading(true)
   try {
     const result = await retryUnavailable(() => transport.listPiModels(signal), signal)
     const models = (Array.isArray(result) ? result : []) as unknown as Model<Api>[]
-    if (serverStore.getActiveServerGeneration() !== serverGeneration) return models
+    if (serverStore.getActiveServerGeneration() !== serverGeneration || piModelsStore.getSyncVersion() !== syncVersion) return models
     piModelsStore.setModels(models)
     return models
   } catch (error) {
-    if (serverStore.getActiveServerGeneration() !== serverGeneration) throw error
+    if (serverStore.getActiveServerGeneration() !== serverGeneration || piModelsStore.getSyncVersion() !== syncVersion) throw error
     piModelsStore.setError(error as Error)
     throw error
   }

@@ -12,7 +12,7 @@
 //
 // Heartbeat cadence comes from OMPIUI_FIXTURE_HEARTBEAT_MS (default 20ms) so the
 // client watchdog fires quickly without slowing the suite.
-import { PI_WORKER_PROTOCOL_VERSION } from "../../../omp-worker/src/ipc.ts"
+import { OMP_WORKER_PROTOCOL_VERSION } from "../../../omp-worker/src/ipc.ts"
 
 const mode = process.env.OMPIUI_FIXTURE_MODE ?? "hello-ok"
 const heartbeatIntervalMs = Number(process.env.OMPIUI_FIXTURE_HEARTBEAT_MS ?? 20)
@@ -25,7 +25,7 @@ const send = (message) => process.send?.(message)
 
 const hello = () => send({
   kind: "hello",
-  workerProtocolVersion: mode === "wrong-protocol" ? PI_WORKER_PROTOCOL_VERSION + 1 : PI_WORKER_PROTOCOL_VERSION,
+  workerProtocolVersion: mode === "wrong-protocol" ? OMP_WORKER_PROTOCOL_VERSION + 1 : OMP_WORKER_PROTOCOL_VERSION,
   piSdkVersion: "0.84.0",
   piSdkVerified: true,
   generation,

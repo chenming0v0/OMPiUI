@@ -20,5 +20,6 @@ mkdirSync(target, { recursive: true })
 cpSync(server, join(target, serverName))
 cpSync(join(source, "node_modules"), join(target, "node_modules"), { recursive: true })
 cpSync(join(source, "web"), join(target, "web"), { recursive: true })
+cpSync(join(source, "tailscale"), join(target, "tailscale"), { recursive: true })
 
 console.info(`[tauri] resources prepared at ${target}`)

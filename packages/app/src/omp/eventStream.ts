@@ -12,7 +12,7 @@ import {
   type CommandRecord,
   type JsonObject,
 } from '@ompiui/protocol'
-import type { AgentMessage, AgentSessionEvent, PiBranchPage, PiLiveMessage } from './domain/index.js'
+import type { AgentMessage, AgentSessionEvent, PiLiveMessage } from './domain/index.js'
 import type { ProviderAuthEvent, SessionsActivitySnapshot, SessionActivityStatus } from '@ompiui/protocol'
 import { getApiBase, getPiAuthToken } from './httpClient.js'
 import { openPiSocket, PI_SOCKET_CLOSED, PI_SOCKET_CLOSING, PI_SOCKET_OPEN, type PiSocket } from './ompSocket'
@@ -38,8 +38,8 @@ import {
 } from './managementEventStore'
 import type { SessionStatus } from '../types/session'
 import { BrowserDiagnostics } from './browserDiagnostics'
+import { markModelSettingsDisconnected, refreshModelSettings } from './modelSettingsSync'
 import {
-  loadPiModels,
   loadPiSessionData,
   refreshPiBranch,
   refreshPiSessionState,
@@ -102,7 +102,7 @@ class PiEventStream {
   private refCounts = new Map<string, number>()
   private workspaceRefCounts = new Map<string, number>()
   private cursors = new Map<string, EventCursor>()
-  private pendingLiveMessages = new Map<string, PiLiveMessage>()
+  private pendingLiveMessages = new Map<string, { liveMessage: PiLiveMessage; position: EventCursor }>()
   private pingTimer: ReturnType<typeof setInterval> | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private branchRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -251,6 +251,7 @@ class PiEventStream {
       this.diagnostics.connected(this.lastCloseCode)
       this.sendSubscribe()
       notifyReconnected()
+      if (this.lastCloseCode !== undefined) refreshModelSettings()
       this.pingTimer = setInterval(() => {
         this.send({ type: 'ping', protocolVersion: PROTOCOL_VERSION })
       }, PING_INTERVAL_MS)
@@ -260,12 +261,13 @@ class PiEventStream {
       // swapped this.ws (server switch). Ignore messages from any socket that
       // is no longer the active one, mirroring the onclose identity check.
       if (this.ws !== ws) return
-      this.handleRaw(String(e.data))
+      this.handleRaw(String(e.data), e.annotateTraffic)
     }
     ws.onclose = event => {
       if (this.ws !== ws) return
       this.clearPing()
       this.ws = null
+      markModelSettingsDisconnected()
       this.lastCloseCode = event.code
       if (this.hasSubscriptions()) {
         if (this.reconnectTimer) return
@@ -323,13 +325,14 @@ class PiEventStream {
     }
   }
 
-  private handleRaw(raw: string): void {
+  private handleRaw(raw: string, annotateTraffic?: (parsed: unknown) => void): void {
     let message: EventServerMessage
     try {
       message = JSON.parse(raw) as EventServerMessage
     } catch {
       return
     }
+    annotateTraffic?.(message)
     if ('channel' in message && message.channel === 'event') {
       this.handleEvent(message.event)
       return
@@ -396,7 +399,7 @@ class PiEventStream {
         // 凭据同源，bump providerRevision 让管理页重拉；模型选择器的列表
         // store 直接刷新（有 flight 去重），不依赖某个组件恰好挂载
         receiveProviderAuthUpdated()
-        void loadPiModels().catch(() => undefined)
+        refreshModelSettings()
         break
       }
       case 'packages.progress':
@@ -685,29 +688,29 @@ class PiEventStream {
       // On a page refresh the socket can replay frames before session.preview
       // hydrates the keyed branch store. Keep the newest frame and hydrate it
       // through the same branch refresh instead of dropping the live turn.
-      this.pendingLiveMessages.set(sessionId, liveMessage)
+      this.pendingLiveMessages.set(sessionId, { liveMessage, position: { epoch: meta.epoch, sequence: meta.sequence } })
       this.scheduleBranchRefresh(sessionId)
       return
     }
-    this.applyLiveMessage(sessionId, data, liveMessage)
+    this.applyLiveMessage(sessionId, liveMessage, meta)
   }
 
-  private applyLiveMessage(sessionId: string, data: PiBranchPage, liveMessage: PiLiveMessage): void {
-    // checkpoint 可能不存在（fresh 会话本地构造的 page / preview 未带
-    // checkpoint）：此时仍要保留 liveMessage，否则流式内容被丢弃，要等
-    // message_end 后 branch refresh 才整体出现。position 用 head 兜底。
-    const checkpoint = data.checkpoint
-      ? { ...data.checkpoint, liveMessage }
-      : { position: { epoch: data.head.epoch, sequence: data.head.revision }, liveMessage }
-    piBranchStore.setData(sessionId, { ...data, checkpoint })
+  private applyLiveMessage(sessionId: string, liveMessage: PiLiveMessage, position: EventCursor): void {
+    // checkpoint 可随首个流式帧创建；游标必须来自事件，不能使用历史 head 的版本。
+    piBranchStore.setLiveCheckpoint(sessionId, {
+      position: { epoch: position.epoch, sequence: position.sequence },
+      liveMessage,
+    })
   }
 
   private flushPendingLiveMessage(sessionId: string): void {
-    const liveMessage = this.pendingLiveMessages.get(sessionId)
+    const pending = this.pendingLiveMessages.get(sessionId)
     const data = piBranchStore.getData(sessionId)
-    if (!liveMessage || !data) return
+    if (!pending || !data) return
     this.pendingLiveMessages.delete(sessionId)
-    this.applyLiveMessage(sessionId, data, liveMessage)
+    const current = data.checkpoint?.position
+    if (current && (current.epoch !== pending.position.epoch || current.sequence >= pending.position.sequence)) return
+    this.applyLiveMessage(sessionId, pending.liveMessage, pending.position)
   }
   private handleResync(key: string, cursor?: EventCursor): void {
     const stream = parseEventStreamKey(key)

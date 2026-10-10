@@ -39,6 +39,9 @@ import type { SessionInfo, SessionTreeNode, Skill, PromptTemplate } from '../ven
 import type { PiBranchPage, PiConfiguredPackage, PiModelRuntimeSnapshot, PiPackageUpdate, PiProjectTrust, PiProviderAuthInfo, PiSettingsSnapshot, ResolvedPaths } from '../domain/index.js'
 import { getApiBase, getPiAuthToken, piFetch, type PiRequestInit } from '../httpClient.js'
 import { piCommandStore } from '../state/index.js'
+import { getHttpFetch } from '../../utils/tauri'
+import { auditHttpRequest } from '../trafficAudit/http'
+import { resolveAndroidTailscaleUrl } from '../../utils/androidTailscale'
 import type { LanInterfaceInfo, PairInviteInfo, PairRedeemResult, TunnelStatus } from '@ompiui/protocol'
 
 // Response types
@@ -118,12 +121,15 @@ export async function fetchPairInvite(id: string, signal?: AbortSignal): Promise
 
 /** 无鉴权：手机扫码后兑换访问令牌（服务端一次性 + 频控）。 */
 export async function redeemPairCode(pair: string, origin: string, signal?: AbortSignal): Promise<PairRedeemResult> {
-  const response = await fetch(`${origin}/api/v1/host/pair/redeem`, {
+  const f = await getHttpFetch()
+  const url = await resolveAndroidTailscaleUrl(`${origin}/api/v1/host/pair/redeem`)
+  const init: RequestInit = {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ pair }),
     signal,
-  })
+  }
+  const response = await auditHttpRequest(`${origin}/api/v1/host/pair/redeem`, init, () => f(url, init))
   if (!response.ok) {
     const message = await response.text().catch(() => '')
     throw Object.assign(new Error(`pair redeem failed: ${response.status}${message ? ` ${message}` : ''}`), { status: response.status })
@@ -142,6 +148,10 @@ export async function startTailscaleInstall(): Promise<void> {
 
 export async function startTailscaleLogin(): Promise<void> {
   await readJson<{ ok: boolean }>(`${getApiBase()}/api/v1/host/tailscale/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+}
+
+export async function disconnectTailscale(): Promise<void> {
+  await readJson<{ ok: boolean }>(`${getApiBase()}/api/v1/host/tailscale/disconnect`, { method: 'POST', body: '{}' })
 }
 
 export async function fetchPiRegistry(signal?: AbortSignal): Promise<PiRegistrySnapshot> {

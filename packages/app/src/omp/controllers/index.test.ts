@@ -50,6 +50,21 @@ describe('session state response ordering', () => {
     expect(piBranchStore.getData('session-a')).not.toBeNull()
   })
 
+  it('hydrates subagent configuration when a lifecycle event arrives before the first preview', async () => {
+    const preview = deferred<Awaited<ReturnType<typeof transport.previewPiSession>>>()
+    vi.spyOn(transport, 'previewPiSession').mockReturnValueOnce(preview.promise)
+    const loading = loadPiSessionData('session-a')
+    piSessionStateStore.patchState('session-a', { isStreaming: false, isIdle: true })
+    preview.resolve({
+      state: { model: { provider: 'custom', id: 'child-model' }, thinkingLevel: 'high', isStreaming: true },
+      branch: { head: { sdkVersion: 'test', revision: 1, header: null, leafId: null, entryCount: 0, epoch: 'test' }, items: [], hasMore: false },
+    })
+    await loading
+    expect(piSessionStateStore.getState('session-a')).toMatchObject({
+      model: { provider: 'custom', id: 'child-model' }, thinkingLevel: 'high', isStreaming: false, isIdle: true,
+    })
+  })
+
   it('does not resurrect streaming when a stale read finishes after a settled event', async () => {
     const old = deferred<JsonObject>()
     vi.spyOn(transport, 'getPiSessionState').mockReturnValueOnce(old.promise)

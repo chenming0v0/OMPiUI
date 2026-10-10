@@ -106,6 +106,8 @@
 - ui: 工作中发送的本轮追加与下一轮消息移入目标卡片上方，逐条单行显示并省略长文本，目标栏始终位于最后一行；保留队列编辑、立即发送、清除与侧边聊天操作。
 - fix: 队列上箭头通过原生 OMP `steer` 立即提交选中消息，受理后显示到时间线并进入下一次模型请求；保留附件与相邻队列项，发送失败不丢消息，原生落盘后移除临时展示条目。
 - fix: 后台历史同步异常不再成为未处理的 Promise 拒绝；默认开发后端不随源码或编译产物变化自动重启，显式 `dev:watch` 保留热重启入口，避免 Agent 修改自身服务代码时中断会话。
+- fix: 桌面端重新找到随包分发的后端——PiUI 改名后 Tauri 仍在 resource 目录查找 `pi-worker(.exe)`，而打包脚本已产出 `omp-worker(.exe)`，导致桌面版启动本地服务时报「server binary was not bundled」（v0.1.1 起所有桌面安装包受影响）；查找路径与打包产物对齐并加回归测试。
+- chore: 补完 PiUI 改名遗漏的 worker 标识——`PI_WORKER_PROTOCOL_VERSION`/`PI_WORKER_HEARTBEAT_INTERVAL_MS` → `OMP_WORKER_*`、`getPiWorkerEntryUrl` → `getOmpWorkerEntryUrl`，worker 与服务端日志前缀 `[piui-worker]` → `[omp-worker]`，协议不匹配报错文案同步更新；均为内部标识，不影响协议帧与 IPC 契约。
 
 - feat: 新增会话运行诊断日志，关联浏览器刷新重连、状态恢复、命令中止、空闲回收及服务端/worker 生命周期；提供敏感数据白名单、容量轮转、按会话查询与 JSONL 导出。
 

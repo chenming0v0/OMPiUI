@@ -5,6 +5,8 @@
 import { API_BASE_URL } from '../constants'
 import { getHttpFetch, isTauri } from '../utils/tauri'
 import { PROTOCOL_VERSION } from '@ompiui/protocol'
+import { resolveAndroidTailscaleUrl } from '../utils/androidTailscale'
+import { auditHttpRequest } from '../omp/trafficAudit/http'
 
 /**
  * 服务器配置
@@ -528,11 +530,13 @@ class ServerStore {
       }
 
       const f = await getHttpFetch()
-      const response = await f(healthUrl, {
+      const resolvedUrl = await resolveAndroidTailscaleUrl(healthUrl)
+      const init: RequestInit = {
         method: 'GET',
         signal: controller.signal,
         headers,
-      })
+      }
+      const response = await auditHttpRequest(healthUrl, init, () => f(resolvedUrl, init), server.url)
 
       const latency = Date.now() - startTime
       const responseBody = await response.text().catch(err => `[Failed to read response body: ${normalizeConnectionError(err)}]`)
@@ -732,12 +736,15 @@ export function applyUrlTokenParam(search: string, origin: string): boolean {
  */
 export async function applyPairParam(pair: string, origin: string): Promise<boolean> {
   try {
-    const response = await fetch(`${origin.replace(/\/+$/, '')}/api/v1/host/pair/redeem`, {
+    const f = await getHttpFetch()
+    const resolved = await resolveAndroidTailscaleUrl(`${origin.replace(/\/+$/, '')}/api/v1/host/pair/redeem`)
+    const init: RequestInit = {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ pair }),
       signal: AbortSignal.timeout(10_000),
-    })
+    }
+    const response = await auditHttpRequest(`${origin.replace(/\/+$/, '')}/api/v1/host/pair/redeem`, init, () => f(resolved, init))
     if (!response.ok) return false
     const body = (await response.json()) as { url?: string; token?: string }
     if (!body.token) return false

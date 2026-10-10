@@ -3,18 +3,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LanInterfaceInfo, PairInviteInfo, TunnelStatus } from '@ompiui/protocol'
 import { serviceStore } from '../../../store/serviceStore'
 import { RemoteAccessSettings } from './RemoteAccessSettings'
+import i18n from '../../../i18n'
 
 const mocks = vi.hoisted(() => ({
   generation: 1,
+  desktop: false,
   network: vi.fn(),
   mint: vi.fn(),
   poll: vi.fn(),
   tunnel: vi.fn(),
   tailscale: vi.fn(),
+  openLogin: vi.fn(),
   get: vi.fn(),
 }))
 vi.mock('../../../hooks', () => ({ useServerStore: () => ({ activeServerGeneration: mocks.generation }) }))
+vi.mock('../../../utils/tauri', () => ({ isTauri: () => mocks.desktop, isTauriMobile: () => false }))
 vi.mock('../../../utils', () => ({ serverStorage: { get: mocks.get, set: vi.fn() } }))
+vi.mock('../../../utils/tailscaleLogin', () => ({ openTailscaleLogin: mocks.openLogin }))
 vi.mock('../../../omp/transport/index.js', () => ({
   fetchHostNetwork: mocks.network,
   mintPairInvite: mocks.mint,
@@ -23,6 +28,7 @@ vi.mock('../../../omp/transport/index.js', () => ({
   fetchTailscale: mocks.tailscale,
   startTailscaleInstall: vi.fn(),
   startTailscaleLogin: vi.fn(),
+  disconnectTailscale: vi.fn(),
 }))
 // Observe the exact payload given to the QR encoder, not its SVG internals.
 vi.mock('../../../components/QrCode', () => ({ QrCode: ({ text }: { text: string }) => <div data-testid="qr" data-url={text} /> }))
@@ -40,21 +46,83 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  await i18n.changeLanguage('en')
   vi.clearAllMocks()
   mocks.generation = 1
+  mocks.desktop = false
   mocks.get.mockReturnValue(null)
   mocks.network.mockReset().mockResolvedValue(network())
   mocks.mint.mockReset().mockResolvedValue(invite())
   mocks.poll.mockResolvedValue(invite())
   mocks.tunnel.mockReset().mockResolvedValue(disabledTunnel)
   mocks.tailscale.mockRejectedValue(new Error('unsupported'))
+  mocks.openLogin.mockResolvedValue(undefined)
   serviceStore.setEnvVars([{ key: 'OMPIUI_PORT', value: '7777' }])
 })
 
-afterEach(() => { cleanup() })
+afterEach(async () => { cleanup(); await i18n.changeLanguage('en') })
 
 describe('RemoteAccessSettings authoritative addresses', () => {
+  it('uses the embedded Tailnet listener rather than a system network adapter', async () => {
+    mocks.get.mockReturnValue('tailscale')
+    mocks.network.mockResolvedValue({ interfaces: [] })
+    mocks.tailscale.mockResolvedValue({
+      mode: 'embedded', installed: true, enabled: true, supported: true, reachable: true,
+      backendState: 'Running', ips: ['100.101.2.3'], url: 'http://100.101.2.3:9292',
+      authUrl: null, lastError: null,
+    })
+    render(<RemoteAccessSettings />)
+    expect(await screen.findByTestId('qr')).toHaveAttribute('data-url', 'http://100.101.2.3:9292/?pair=first.secret')
+    expect(screen.getByText('Tailscale connected · 100.101.2.3')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Install Tailscale' })).not.toBeInTheDocument()
+  })
+
+  it.each([null, 'https://login.tailscale.com/a/test'])('does not render a login or pairing QR while awaiting authorization: %s', async authUrl => {
+    mocks.get.mockReturnValue('tailscale')
+    mocks.tailscale.mockResolvedValue({
+      mode: 'embedded', installed: true, enabled: true, backendState: 'NeedsLogin',
+      ips: [], url: null, authUrl, lastError: null,
+    })
+    render(<RemoteAccessSettings />)
+    expect(await screen.findByText('Connecting / awaiting sign-in')).toBeInTheDocument()
+    expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
+    expect(screen.getAllByText('Complete Tailscale sign-in first')).toHaveLength(2)
+    expect(screen.getByRole('button', { name: 'Copy full pairing info' })).toBeDisabled()
+    if (authUrl) {
+      fireEvent.click(screen.getByRole('button', { name: 'Open official authorization' }))
+      await waitFor(() => expect(mocks.openLogin).toHaveBeenCalledWith(authUrl))
+    }
+  })
+
+  it('replaces the sign-in prompt with the pairing QR after Tailscale connects', async () => {
+    mocks.get.mockReturnValue('tailscale')
+    mocks.tailscale.mockResolvedValue({
+      mode: 'embedded', installed: true, enabled: true, backendState: 'NeedsLogin',
+      ips: [], url: null, authUrl: 'https://login.tailscale.com/a/test', lastError: null,
+    })
+    vi.useFakeTimers()
+    try {
+      await act(async () => { render(<RemoteAccessSettings />) })
+      expect(screen.getByText('Connecting / awaiting sign-in')).toBeInTheDocument()
+      expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
+      mocks.tailscale.mockResolvedValue({
+        mode: 'embedded', installed: true, enabled: true, backendState: 'Running',
+        ips: ['100.101.2.3'], url: 'http://100.101.2.3:9292', authUrl: null, lastError: null,
+      })
+      fireEvent.click(screen.getByRole('button', { name: 'Open official authorization' }))
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+      expect(screen.getAllByTestId('qr')).toHaveLength(1)
+      expect(screen.getByTestId('qr')).toHaveAttribute('data-url', 'http://100.101.2.3:9292/?pair=first.secret')
+      expect(screen.queryByText('Complete Tailscale sign-in first')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Open official authorization' })).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Copy full pairing info' })).toBeEnabled()
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
   it('uses the backend non-default port even when local desktop settings differ', async () => {
     render(<RemoteAccessSettings />)
     expect(await screen.findByTestId('qr')).toHaveAttribute('data-url', 'http://192.168.50.10:9191/?pair=first.secret')
@@ -162,6 +230,29 @@ describe('RemoteAccessSettings authoritative addresses', () => {
     expect(await screen.findByText(/Server status unavailable/)).toBeInTheDocument()
     expect(screen.queryByText(/No relay configured/)).not.toBeInTheDocument()
     expect(screen.getByText('QR code unavailable')).toBeInTheDocument()
+  })
+
+  it('directs desktop relay setup to the form on the Authentication page', async () => {
+    mocks.desktop = true
+    mocks.get.mockReturnValue('relay')
+    render(<RemoteAccessSettings />)
+    expect(await screen.findByText(/Fill in Tunnel below/)).toBeInTheDocument()
+    expect(screen.queryByText(/Configure it on the server or in OMPiUI Admin/)).not.toBeInTheDocument()
+  })
+
+  it('uses Chinese text for pairing details, missing ports and unavailable QR codes', async () => {
+    await i18n.changeLanguage('zh-CN')
+    mocks.network.mockResolvedValue({ interfaces: [] })
+    const { container } = render(<RemoteAccessSettings />)
+    expect(await screen.findByText('二维码暂不可用')).toBeInTheDocument()
+    expect(screen.getByText('暂无可用的网络地址')).toBeInTheDocument()
+    expect(screen.getByText('由当前服务器提供，不是本机的监听配置。')).toBeInTheDocument()
+    expect(screen.getByText(/服务器未提供监听端口/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '虚拟组网' })).toBeInTheDocument()
+    expect(container.textContent).not.toMatch(/Pair another device|Reported by the current|The server did not report|QR code unavailable|No network address/)
+    fireEvent.click(screen.getByRole('button', { name: '自建中转' }))
+    expect(await screen.findByText(/当前服务器未配置自建中转/)).toBeInTheDocument()
+    expect(container.textContent).not.toMatch(/No relay configured|Configure it on the server/)
   })
 
   it.each(['expired', 'redeemed'])('does not offer a QR or copy action for an %s invite', async state => {

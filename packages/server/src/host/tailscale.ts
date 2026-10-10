@@ -1,380 +1,269 @@
-/**
- * 内置 Tailscale 客户端管理。
- *
- * 手机远程的「Tailscale 直连」依赖电脑端有一个可用的 Tailscale。这里做到
- * 设置里一键化：
- * - Windows：从 pkgs.tailscale.com 下载官方 MSI，`msiexec /passive` 安装
- *   （弹一次 UAC），装完即系统服务，入站直连性能最好。
- * - Linux：下载官方 tgz 解压到数据目录，`tailscaled --tun=userspace-networking`
- *   以普通用户跑（免 root），CLI 走显式 socket。
- * - macOS：不提供内嵌安装（系统引导用户装官方 App），但会探测已装 CLI。
- *
- * 登录：`tailscale login` 的 stdout 里捕获 login.tailscale.com 授权链接，
- * 前端把它渲染成二维码——用户手机扫一下登录自己的 Tailscale 账号授权，
- * 电脑即加入其 Tailnet。授权完成后 `status` 变为 Running，我们收掉登录
- * 子进程并读出 Tailscale IP 供配对二维码使用。
- */
-
-import { execFile, spawn, type ChildProcess } from "node:child_process"
-import { createWriteStream, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs"
-import { basename, join } from "node:path"
+import { spawn, type ChildProcess } from "node:child_process"
+import { randomBytes } from "node:crypto"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { hostname } from "node:os"
+import { dirname, join } from "node:path"
+import { createInterface } from "node:readline"
+import { fileURLToPath } from "node:url"
 import type { TailscaleInfo } from "@ompiui/protocol"
 
-export const PKGS_STABLE_URL = "https://pkgs.tailscale.com/stable/"
-const LOGIN_URL_PATTERN = /https:\/\/login\.tailscale\.com\/[A-Za-z0-9/._-]+/
-const STATUS_TIMEOUT_MS = 6_000
-const INSTALL_TIMEOUT_MS = 10 * 60_000
-const LOGIN_POLL_MS = 2_500
-const LOGIN_MAX_MS = 10 * 60_000
-
-export interface ResolvedDownload {
-  version: string
-  url: string
-  file: string
-  kind: "msi" | "tgz"
-}
-
-/** 从 stable 列表页 HTML 解析当前版本的下载地址（平台/架构匹配）。 */
-export function resolveDownloadTarget(
-  html: string,
-  platform: NodeJS.Platform,
-  arch: string,
-): ResolvedDownload | null {
-  if (platform === "win32") {
-    const flavor = arch === "arm64" ? "arm64" : arch === "ia32" ? "x86" : "amd64"
-    const match = html.match(new RegExp(`tailscale-setup-([0-9][0-9.]*)-${flavor}\\.msi`))
-    if (!match) return null
-    const file = `tailscale-setup-${match[1]}-${flavor}.msi`
-    return { version: match[1], url: PKGS_STABLE_URL + file, file, kind: "msi" }
-  }
-  if (platform === "linux") {
-    const flavor = arch === "arm64" ? "arm64" : arch === "armv7l" || arch === "arm" ? "arm" : "amd64"
-    const match = html.match(new RegExp(`tailscale_([0-9][0-9.]*)_(${flavor})\\.tgz`))
-    if (!match) return null
-    const file = `tailscale_${match[1]}_${match[2]}.tgz`
-    return { version: match[1], url: PKGS_STABLE_URL + file, file, kind: "tgz" }
-  }
-  return null
-}
-
-export interface MappedTailscaleStatus {
-  backendState: string | null
-  ips: string[]
-  authUrl: string | null
-  hostName: string | null
-  version: string | null
-}
-
-/** `tailscale status --json` 的防御性解析：字段缺失/异型都回落 null。 */
-export function mapStatusJson(raw: unknown): MappedTailscaleStatus {
-  const body = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>
-  const stringValue = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.trim() : null)
-  const self = (body.Self && typeof body.Self === "object" ? body.Self : {}) as Record<string, unknown>
-  const dnsName = stringValue(self.DNSName)
-  const version = stringValue(body.Version)
+export function mapStatusJson(raw: unknown) {
+  const body = raw as { BackendState?: string; AuthURL?: string; TailscaleIPs?: string[]; Version?: string; Self?: { DNSName?: string } } | null
   return {
-    backendState: stringValue(body.BackendState),
-    ips: Array.isArray(body.TailscaleIPs) ? body.TailscaleIPs.filter((item): item is string => typeof item === "string") : [],
-    authUrl: stringValue(body.AuthURL)?.startsWith("https://") ? (stringValue(body.AuthURL)) : null,
-    hostName: dnsName ? dnsName.replace(/\.+$/, "") : null,
-    version: version ? version.split("-")[0] : null,
+    backendState: typeof body?.BackendState === "string" ? body.BackendState : null,
+    authUrl: typeof body?.AuthURL === "string" && body.AuthURL.startsWith("https://login.tailscale.com/") ? body.AuthURL : null,
+    ips: Array.isArray(body?.TailscaleIPs) ? body.TailscaleIPs.filter(ip => typeof ip === "string") : [],
+    hostName: typeof body?.Self?.DNSName === "string" ? body.Self.DNSName.replace(/\.+$/, "") : null,
+    version: typeof body?.Version === "string" ? body.Version.split("-")[0] : null,
   }
 }
 
-function execFileLine(
-  command: string,
-  args: string[],
-  timeoutMs: number,
-): Promise<{ stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    execFile(command, args, { timeout: timeoutMs, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error) {
-        Object.assign(error, { stdout, stderr })
-        reject(error)
-        return
-      }
-      resolve({ stdout: String(stdout ?? ""), stderr: String(stderr ?? "") })
-    })
-  })
+type Options = {
+  dataDir: string
+  log?: (line: string) => void
+  embeddedBridgePath?: string
+  launch?: (binary: string, args: string[], token: string) => ChildProcess
 }
 
 export class TailscaleManager {
-  private installState: TailscaleInfo["installState"] = "idle"
-  private installProgress: number | null = null
-  private installError: string | null = null
-  private loginChild: ChildProcess | null = null
-  private authUrl: string | null = null
-  private daemonChild: ChildProcess | null = null
+  private child: ChildProcess | null = null
+  private controlUrl: string | null = null
+  private controlToken = ""
+  private starting: Promise<boolean> | null = null
+  private localPort: number | null = null
+  private localHost = "127.0.0.1"
+  private enabled = false
   private disposed = false
+  private lastError: string | null = null
+  private status: ReturnType<typeof mapStatusJson> = mapStatusJson(null)
 
-  constructor(private readonly options: { dataDir: string; log?: (line: string) => void }) {}
-
-  private get installDir(): string {
-    return join(this.options.dataDir, "tailscale")
+  constructor(private readonly options: Options) {
+    try {
+      this.enabled = JSON.parse(readFileSync(this.settingsPath, "utf8")).enabled === true
+    } catch {
+      // 首次启用前不存在配置，旧安装器的数据也不自动启动。
+    }
   }
 
-  private log(line: string): void {
-    this.options.log?.(line)
-  }
+  private get stateDir() { return join(this.options.dataDir, "tailscale", "tsnet") }
+  private get settingsPath() { return join(this.stateDir, "ompiui.json") }
 
-  /** 数据目录里解压出来的便携 CLI（Linux tgz 路径）。 */
-  private resolvePortableCli(): string | null {
-    const dir = this.installDir
-    if (!existsSync(dir)) return null
-    const entries = readdirSync(dir, { withFileTypes: true })
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue
-      const candidate = join(dir, entry.name, process.platform === "win32" ? "tailscale.exe" : "tailscale")
-      if (existsSync(candidate)) return candidate
-    }
-    const flat = join(dir, process.platform === "win32" ? "tailscale.exe" : "tailscale")
-    return existsSync(flat) ? flat : null
-  }
-
-  resolveCli(): string | null {
-    if (process.platform === "win32") {
-      const programFiles = process.env.ProgramFiles ?? "C:\\Program Files"
-      const installed = join(programFiles, "Tailscale", "tailscale.exe")
-      return existsSync(installed) ? installed : null
-    }
-    if (process.platform === "darwin") {
-      const installed = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
-      return existsSync(installed) ? installed : null
-    }
-    const portable = this.resolvePortableCli()
-    if (portable) return portable
-    for (const candidate of ["/usr/local/bin/tailscale", "/usr/bin/tailscale"]) {
-      if (existsSync(candidate)) return candidate
-    }
-    return null
+  resolveEmbeddedBridge(): string | null {
+    const name = process.platform === "win32" ? "ompiui-tailscale-bridge.exe" : "ompiui-tailscale-bridge"
+    // 显式路径不回退，便于诊断缺失资源及可重复测试。
+    const explicit = this.options.embeddedBridgePath ?? process.env.OMPIUI_TAILSCALE_BRIDGE
+    if (explicit) return existsSync(explicit) ? explicit : null
+    const sourceRoot = fileURLToPath(new URL("../../", import.meta.url))
+    return [
+      join(dirname(process.execPath), "tailscale", name),
+      join(process.cwd(), "tailscale", name),
+      join(sourceRoot, "tailscale-bridge", "build", name),
+    ].find(path => existsSync(path)) ?? null
   }
 
   getStatus(): TailscaleInfo {
-    const supported = process.platform === "win32" || process.platform === "linux"
-    const cli = this.resolveCli()
+    const binary = this.resolveEmbeddedBridge()
+    const address = this.status.ips.find(ip => !ip.includes(":")) ?? this.status.ips[0]
+    const host = address?.includes(":") ? `[${address}]` : address
     return {
       platform: process.platform,
-      supported,
-      installed: cli !== null,
-      reachable: false,
-      cliPath: cli,
-      installState: this.installState,
-      installProgress: this.installProgress,
-      installError: this.installError,
-      backendState: null,
-      authUrl: this.authUrl,
-      loginPending: this.loginChild !== null,
-      ips: [],
-      hostName: null,
-      version: null,
+      supported: ["win32", "linux", "darwin"].includes(process.platform),
+      installed: binary !== null,
+      mode: binary ? "embedded" : "unavailable",
+      component: binary ? "tsnet" : null,
+      usesSystemVpn: false,
+      enabled: this.enabled,
+      reachable: this.controlUrl !== null,
+      cliPath: binary,
+      installState: this.lastError ? "error" : "idle",
+      installProgress: null,
+      installError: this.lastError,
+      lastError: this.lastError,
+      backendState: this.child ? this.status.backendState ?? "Starting" : "Stopped",
+      authUrl: this.status.backendState === "Running" ? null : this.status.authUrl,
+      loginPending: this.child !== null && this.status.backendState !== "Running",
+      ips: this.child ? this.status.ips : [],
+      hostName: this.status.hostName,
+      version: this.status.version,
+      url: this.child && this.status.backendState === "Running" && host && this.localPort
+        ? `http://${host}:${this.localPort}` : null,
     }
   }
 
-  /** CLI 的同步探测（可能命中文件系统），详细状态由 status() 异步补充。 */
-  async detailStatus(): Promise<TailscaleInfo & { reachable: boolean }> {
-    const base = this.getStatus()
-    if (!base.installed || !base.cliPath) return { ...base, reachable: false }
-    const args: string[] = []
-    const sock = this.embeddedSocketArgs()
-    if (sock) args.push("--socket", sock)
-    args.push("status", "--json")
-    try {
-      const { stdout } = await execFileLine(base.cliPath, args, STATUS_TIMEOUT_MS)
-      const mapped = mapStatusJson(JSON.parse(stdout))
-      return {
-        ...base,
-        reachable: true,
-        backendState: mapped.backendState,
-        ips: mapped.ips,
-        hostName: mapped.hostName,
-        version: mapped.version,
-        // status 里直接带了未完成的授权链接时优先用它
-        authUrl: this.authUrl ?? mapped.authUrl,
+  async detailStatus(): Promise<TailscaleInfo> {
+    if (this.controlUrl) {
+      try {
+        const response = await this.request("/status")
+        this.status = mapStatusJson(await response.json())
+        this.lastError = null
+      } catch (error) {
+        this.lastError = error instanceof Error ? error.message : String(error)
       }
-    } catch {
-      return { ...base, reachable: false }
     }
+    return this.getStatus()
   }
 
-  private embeddedSocketArgs(): string | null {
-    if (process.platform !== "linux" || !this.daemonChild) return null
-    return join(this.installDir, "tailscaled.sock")
+  /** 后端监听成功后才提供回环上游；只恢复用户曾启用的节点。 */
+  async resume(localPort: number, bindHost = "127.0.0.1"): Promise<void> {
+    this.localPort = localPort
+    this.localHost = bindHost === "::" || bindHost === "::1" ? "::1"
+      : bindHost === "0.0.0.0" || bindHost === "localhost" ? "127.0.0.1" : bindHost
+    if (this.enabled) await this.startEmbedded()
   }
 
-  /** 一键下载安装（Windows: MSI + msiexec /passive；Linux: tgz 解压）。 */
+  /** 兼容旧接口名称，不再下载或安装系统客户端。 */
   async install(): Promise<void> {
-    if (process.platform !== "win32" && process.platform !== "linux") {
-      this.installError = "此平台不支持内嵌安装，请从 tailscale.com 官网安装"
-      this.installState = "error"
-      return
-    }
-    if (this.installState === "downloading" || this.installState === "installing") return
-    this.installError = null
-    this.installProgress = null
-    this.log("[ompiui-tailscale] downloading stable release metadata")
-    try {
-      const response = await fetch(PKGS_STABLE_URL, { redirect: "follow", signal: AbortSignal.timeout(15_000) })
-      if (!response.ok) throw new Error(`pkgs.tailscale.com responded ${response.status}`)
-      const html = await response.text()
-      const target = resolveDownloadTarget(html, process.platform, process.arch)
-      if (!target) throw new Error("stable 列表里没有匹配当前平台/架构的安装包")
-      const dir = this.installDir
-      mkdirSync(dir, { recursive: true })
-      const filePath = join(dir, target.file)
-      this.installState = "downloading"
-      this.log(`[ompiui-tailscale] downloading ${target.url}`)
-      await this.download(target.url, filePath, progress => {
-        this.installProgress = progress
-      })
-      this.installState = "installing"
-      this.installProgress = null
-      if (target.kind === "msi") {
-        this.log("[ompiui-tailscale] running MSI install (a UAC prompt will appear)")
-        try {
-          await execFileLine("msiexec", ["/i", filePath, "/passive", "/norestart"], INSTALL_TIMEOUT_MS)
-        } catch (error) {
-          const code = (error as NodeJS.ErrnoException & { code?: string | number }).code
-          rmSync(filePath, { force: true })
-          if (String(code) === "1602") throw new Error("安装被取消")
-          throw new Error(`MSI 安装失败（退出码 ${code ?? "unknown"}）；需要管理员权限`)
-        }
-        rmSync(filePath, { force: true })
-      } else {
-        await execFileLine("tar", ["-xzf", filePath, "-C", dir], 120_000)
-        rmSync(filePath, { force: true })
-      }
-      this.installState = "done"
-      this.log("[ompiui-tailscale] install finished")
-    } catch (error) {
-      this.installState = "error"
-      this.installError = error instanceof Error ? error.message : String(error)
-      this.log(`[ompiui-tailscale] install failed: ${this.installError}`)
+    if (!this.resolveEmbeddedBridge()) {
+      this.lastError = "当前构建缺少内嵌 Tailscale 组件，请安装完整 OMPiUI 包"
     }
   }
 
-  private async download(url: string, filePath: string, onProgress: (ratio: number) => void): Promise<void> {
-    const response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(INSTALL_TIMEOUT_MS) })
-    if (!response.ok || !response.body) throw new Error(`download failed: HTTP ${response.status}`)
-    const total = Number(response.headers.get("content-length") ?? 0)
-    const out = createWriteStream(filePath)
-    let received = 0
-    const reader = response.body.getReader()
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      received += value.byteLength
-      if (!out.write(value as unknown as Uint8Array)) {
-        await new Promise<void>(resolve => out.once("drain", resolve))
-      }
-      if (total > 0) onProgress(Math.min(1, received / total))
-    }
-    await new Promise<void>((resolve, reject) => {
-      out.on("error", reject)
-      out.end(resolve)
-    })
-    if (total > 0) onProgress(1)
-  }
-
-  /**
-   * 发起登录：优先用 status --json 自带的 AuthURL；否则跑 `tailscale login`
-   * 捕获授权链接。登录子进程在授权完成（Running）或超时后收掉。
-   */
   async startLogin(): Promise<{ ok: boolean; error?: string }> {
-    const cli = this.resolveCli()
-    if (!cli) return { ok: false, error: "Tailscale 尚未安装" }
-    if (this.loginChild) return { ok: true }
-    const detail = await this.detailStatus()
-    if (detail.backendState === "Running") return { ok: true }
-    if (detail.authUrl) {
-      this.authUrl = detail.authUrl
-      return { ok: true }
-    }
-    // 便携 CLI（Linux tgz）需要先把 userspace daemon 拉起来
-    if (process.platform === "linux" && cli.startsWith(this.installDir)) {
-      const started = await this.ensureEmbeddedDaemon()
-      if (!started) return { ok: false, error: "tailscaled 启动失败" }
-    }
-    const args: string[] = []
-    const sock = this.embeddedSocketArgs()
-    if (sock) args.push("--socket", sock)
-    args.push("login")
-    const child = spawn(cli, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true })
-    this.loginChild = child
-    this.log("[ompiui-tailscale] waiting for login authorization")
-    const capture = (chunk: Buffer | string) => {
-      const match = LOGIN_URL_PATTERN.exec(String(chunk))
-      if (match && !this.authUrl) {
-        this.authUrl = match[0]
-        this.log(`[ompiui-tailscale] login URL ready: ${this.authUrl}`)
+    if (!await this.startEmbedded()) return { ok: false, error: this.lastError ?? "内嵌 Tailscale 启动失败" }
+    this.enabled = true
+    this.persistEnabled()
+    const current = await this.detailStatus()
+    if (current.backendState !== "Running" && !current.authUrl) {
+      try {
+        await this.request("/login", "POST")
+      } catch (error) {
+        this.lastError = error instanceof Error ? error.message : String(error)
+        return { ok: false, error: this.lastError }
       }
     }
-    child.stdout?.on("data", capture)
-    child.stderr?.on("data", capture)
-    child.on("exit", () => {
-      if (this.loginChild === child) this.loginChild = null
-    })
-    const startedAt = Date.now()
-    const poll = setInterval(() => {
-      void (async () => {
-        if (this.disposed) {
-          clearInterval(poll)
-          return
-        }
-        const status = await this.detailStatus()
-        if (status.backendState === "Running" || Date.now() - startedAt > LOGIN_MAX_MS) {
-          clearInterval(poll)
-          this.killLogin()
-          if (status.backendState === "Running") this.authUrl = null
-        }
-      })().catch(() => undefined)
-    }, LOGIN_POLL_MS)
-    poll.unref?.()
+    await this.detailStatus()
     return { ok: true }
   }
 
-  private killLogin(): void {
-    if (this.loginChild) {
-      try {
-        this.loginChild.kill()
-      } catch {
-        // 已退出
-      }
-      this.loginChild = null
+  async disconnect(): Promise<void> {
+    this.enabled = false
+    this.persistEnabled()
+    await this.stopChild()
+    this.status = mapStatusJson(null)
+    this.lastError = null
+  }
+
+  private persistEnabled(): void {
+    mkdirSync(this.stateDir, { recursive: true })
+    writeFileSync(this.settingsPath, JSON.stringify({ enabled: this.enabled }), { mode: 0o600 })
+  }
+
+  private async request(path: string, method = "GET"): Promise<Response> {
+    if (!this.controlUrl) throw new Error("内嵌 Tailscale 未启动")
+    const response = await fetch(`${this.controlUrl}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${this.controlToken}` },
+      signal: AbortSignal.timeout(5_000),
+    })
+    if (!response.ok) throw new Error(`内嵌 Tailscale 状态接口失败 (${response.status})`)
+    return response
+  }
+
+  async startEmbedded(): Promise<boolean> {
+    if (this.disposed) return false
+    if (this.starting) return this.starting
+    if (this.child && this.controlUrl) return true
+    const binary = this.resolveEmbeddedBridge()
+    if (!binary || !this.localPort) {
+      this.lastError = binary ? "后端尚未开始监听" : "当前构建缺少内嵌 Tailscale 组件"
+      return false
     }
+    // 内嵌网关只允许转发回环后端，非回环绑定不能偷偷暴露其他服务。
+    if (!["127.0.0.1", "::1"].includes(this.localHost)) {
+      this.lastError = "内嵌 Tailscale 需要后端监听 127.0.0.1、0.0.0.0 或 ::"
+      return false
+    }
+    this.starting = this.launch(binary).finally(() => { this.starting = null })
+    return this.starting
   }
 
-  private async ensureEmbeddedDaemon(): Promise<boolean> {
-    if (this.daemonChild && this.daemonChild.exitCode === null) return true
-    const dir = this.installDir
-    const cli = this.resolveCli()
-    if (!cli) return false
-    const tailscaled = join(dir, basename(cli).replace(/tailscale$/, "tailscaled"))
-    if (!existsSync(tailscaled)) return false
-    mkdirSync(dir, { recursive: true })
-    const child = spawn(
-      tailscaled,
-      [
-        "--tun=userspace-networking",
-        `--statedir=${dir}`,
-        `--socket=${join(dir, "tailscaled.sock")}`,
-      ],
-      { stdio: "ignore", windowsHide: true },
-    )
-    this.daemonChild = child
-    await new Promise(resolve => setTimeout(resolve, 1_200))
-    return child.exitCode === null
+  private launch(binary: string): Promise<boolean> {
+    this.controlToken = randomBytes(32).toString("hex")
+    const host = this.localHost.includes(":") ? `[${this.localHost}]` : this.localHost
+    const args = [
+      "--state-dir", this.stateDir,
+      "--hostname", `ompiui-${hostname().toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 48)}`,
+      "--listen", `:${this.localPort}`,
+      "--upstream", `http://${host}:${this.localPort}`,
+    ]
+    return new Promise<boolean>(resolve => {
+      let child: ChildProcess
+      try {
+        child = this.options.launch?.(binary, args, this.controlToken) ?? spawn(binary, args, {
+          stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
+          env: { ...process.env, OMPIUI_BRIDGE_TOKEN: this.controlToken },
+        })
+      } catch (error) {
+        this.lastError = String(error)
+        resolve(false)
+        return
+      }
+      this.child = child
+      let settled = false
+      const finish = (ok: boolean) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve(ok)
+      }
+      const timer = setTimeout(() => {
+        this.lastError = "内嵌 Tailscale 启动超时"
+        child.stdin?.end()
+        child.kill()
+        finish(false)
+      }, 30_000)
+      if (child.stdout) {
+        const lines = createInterface({ input: child.stdout })
+        lines.on("line", line => {
+          try {
+            const message = JSON.parse(line)
+            const url = new URL(message.controlAddr)
+            if (this.child === child && !this.disposed && message.event === "ready" && url.protocol === "http:" && url.hostname === "127.0.0.1" && url.port) {
+              this.controlUrl = url.origin
+              this.lastError = null
+              finish(true)
+            }
+          } catch {
+            this.options.log?.("[ompiui-tailscale] invalid bridge control message")
+          }
+        })
+      }
+      if (child.stderr) {
+        createInterface({ input: child.stderr }).on("line", line => {
+          this.options.log?.(`[ompiui-tailscale] ${line.replace(/https:\/\/login\.tailscale\.com\/\S+/g, "<redacted-login-url>")}`)
+        })
+      }
+      child.once("error", error => {
+        this.lastError = error.message
+        if (this.child === child) { this.child = null; this.controlUrl = null }
+        finish(false)
+      })
+      child.once("exit", code => {
+        if (this.child === child) {
+          this.child = null
+          this.controlUrl = null
+          this.status = mapStatusJson(null)
+          if (this.enabled && !this.disposed) this.lastError = `内嵌 Tailscale 已退出 (${code ?? "signal"})，请重新连接`
+        }
+        finish(false)
+      })
+    })
   }
 
-  dispose(): void {
+  private async stopChild(): Promise<void> {
+    const child = this.child
+    if (!child) return
+    const exited = new Promise<void>(resolve => child.once("exit", () => resolve()))
+    this.child = null
+    this.controlUrl = null
+    child.stdin?.end()
+    const timer = setTimeout(() => child.kill("SIGKILL"), 1_000)
+    await exited
+    clearTimeout(timer)
+  }
+
+  async dispose(): Promise<void> {
     this.disposed = true
-    this.killLogin()
-    if (this.daemonChild) {
-      try {
-        this.daemonChild.kill()
-      } catch {
-        // 已退出
-      }
-      this.daemonChild = null
-    }
+    await this.stopChild()
   }
 }

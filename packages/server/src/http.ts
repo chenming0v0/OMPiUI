@@ -446,6 +446,14 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
         return sendJson(res, 200, { ok: true })
       }
 
+      if (method === "POST" && p === "/api/v1/host/tailscale/disconnect") {
+        if (!options.tailscale) {
+          return sendProblem(res, 501, Object.assign(new Error("tailscale management is unavailable"), { code: "CAPABILITY_DISABLED" }))
+        }
+        await options.tailscale.disconnect()
+        return sendJson(res, 200, { ok: true })
+      }
+
       if (method === "GET" && p === "/api/v1/host/registry") {
         return sendJson(res, 200, host.registry())
       }
@@ -533,7 +541,8 @@ function allowedMethodsForPath(pathname: string): string | undefined {
   if (pathname === "/api/v1/host/shutdown" ||
     pathname === "/api/v1/host/pair/redeem" ||
     pathname === "/api/v1/host/tailscale/install" ||
-    pathname === "/api/v1/host/tailscale/login") return "POST"
+    pathname === "/api/v1/host/tailscale/login" ||
+    pathname === "/api/v1/host/tailscale/disconnect") return "POST"
   if (/^\/api\/v1\/pi\/commands\/[^/]+$/.test(pathname) ||
     /^\/api\/v1\/pi\/sessions\/[^/]+\/commands\/[^/]+$/.test(pathname)) return "POST"
   if (/^\/api\/v1\/host\/commands\/[^/]+$/.test(pathname)) return "GET, POST"

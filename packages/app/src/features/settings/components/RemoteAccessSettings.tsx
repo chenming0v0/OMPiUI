@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { LanInterfaceInfo, PairInviteInfo, TunnelStatus } from '@ompiui/protocol'
 import { CheckIcon, CopyIcon, RetryIcon, SpinnerIcon } from '../../../components/Icons'
@@ -9,18 +9,21 @@ import {
   fetchTailscale,
   fetchHostTunnel,
   mintPairInvite,
-  startTailscaleInstall,
   startTailscaleLogin,
+  disconnectTailscale,
 } from '../../../omp/transport/index.js'
 import { serverStorage } from '../../../utils'
 import { useServerStore } from '../../../hooks'
 import { settingsFieldClass, SettingsSection } from './SettingsUI'
+import { TailscaleControls } from './TailscaleControls'
+import { openTailscaleLogin } from '../../../utils/tailscaleLogin'
+import { isTauri, isTauriMobile } from '../../../utils/tauri'
 
 const REMOTE_TAB_KEY = 'ompiui-remote-tab'
 const PAIR_POLL_MS = 3_000
 const TUNNEL_POLL_MS = 5_000
 
-type RemoteTab = 'lan' | 'relay'
+type RemoteTab = 'lan' | 'tailscale' | 'relay'
 type HostNetwork = { interfaces: LanInterfaceInfo[]; port?: number }
 
 function formatCountdown(expiresAt: number, now: number): string {
@@ -43,7 +46,11 @@ export function RemoteAccessSettings() {
 
 function RemoteAccessPanel() {
   const { t } = useTranslation(['settings', 'common'])
-  const [tab, setTab] = useState<RemoteTab>(() => (serverStorage.get(REMOTE_TAB_KEY) === 'relay' ? 'relay' : 'lan'))
+  const desktop = isTauri() && !isTauriMobile()
+  const [tab, setTab] = useState<RemoteTab>(() => {
+    const stored = serverStorage.get(REMOTE_TAB_KEY)
+    return stored === 'relay' || stored === 'tailscale' ? stored : 'lan'
+  })
   const [network, setNetwork] = useState<HostNetwork | null>(null)
   const [networkLoading, setNetworkLoading] = useState(true)
   const [networkRefresh, setNetworkRefresh] = useState(0)
@@ -55,6 +62,8 @@ function RemoteAccessPanel() {
   const [tunnel, setTunnel] = useState<TunnelStatus | null | undefined>(undefined)
   const [tailscale, setTailscale] = useState<import('@ompiui/protocol').TailscaleInfo | null>(null)
   const [tailscaleBusy, setTailscaleBusy] = useState(false)
+  const [tailscaleError, setTailscaleError] = useState('')
+  const waitingForAuth = useRef(false)
   const [copied, setCopied] = useState(false)
 
   const interfaces = network?.interfaces ?? []
@@ -136,7 +145,13 @@ function RemoteAccessPanel() {
         })
       void fetchTailscale()
         .then(next => {
-          if (!cancelled) setTailscale(next)
+          if (!cancelled) {
+            setTailscale(next)
+            if (waitingForAuth.current && next.authUrl) {
+              waitingForAuth.current = false
+              void openTailscaleLogin(next.authUrl).catch(error => setTailscaleError(error instanceof Error ? error.message : String(error)))
+            }
+          }
         })
         .catch(() => {
           if (!cancelled) setTailscale(null)
@@ -160,11 +175,15 @@ function RemoteAccessPanel() {
   const lanBase = address && listenPort ? `http://${address}:${listenPort}` : null
   const base = tab === 'relay'
     ? (tunnel?.state === 'connected' ? tunnel.publicUrl?.replace(/\/+$/, '') : null)
+    : tab === 'tailscale' ? (tailscale?.backendState === 'Running' ? tailscale.url : null)
     : lanBase
 
   const expired = invite !== null && now >= invite.expiresAt
   const pairUrl = invite && !expired && !invite.redeemed && base ? `${base}/?pair=${encodeURIComponent(invite.pair)}` : null
   const pairPending = (!invite && !inviteGone) || (tab === 'lan' ? networkLoading : tunnel === undefined)
+  const tailscaleNeedsLogin = tab === 'tailscale' && tailscale !== null
+    && tailscale.backendState !== 'Running' && tailscale.backendState !== 'NeedsMachineAuth'
+    && (tailscale.backendState === 'NeedsLogin' || Boolean(tailscale.authUrl))
 
   const copyInvite = async () => {
     if (!pairUrl) return
@@ -184,79 +203,37 @@ function RemoteAccessPanel() {
 
   const runTailscaleAction = (action: () => Promise<void>) => {
     setTailscaleBusy(true)
+    setTailscaleError('')
     void action()
-      .catch(() => undefined)
+      .catch(error => setTailscaleError(error instanceof Error ? error.message : String(error)))
       .finally(() => setTailscaleBusy(false))
   }
 
   const tailscalePanel = tailscale && (
     <div className="mt-1 grid gap-1.5">
       <div className="text-[length:var(--fs-sm)] font-medium text-text-200">{t('settings:service.remoteTailscaleTitle')}</div>
-      {!tailscale.supported && (
-        <div className="text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('settings:service.remoteTailscaleUnsupported')}</div>
-      )}
-      {tailscale.supported && !tailscale.installed && tailscale.installState === 'idle' && (
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            className="h-7 rounded-md px-2 text-[length:var(--fs-xs)] font-medium text-accent-main-100 transition-colors hover:bg-accent-main-100/10"
-            onClick={() => runTailscaleAction(startTailscaleInstall)}
-            disabled={tailscaleBusy}
-          >
-            {t('settings:service.remoteTailscaleInstall')}
-          </button>
-          <span className="text-[length:var(--fs-xxs)] leading-relaxed text-text-500">{t('settings:service.remoteTailscaleInstallHint')}</span>
-        </div>
-      )}
-      {(tailscale.installState === 'downloading' || tailscale.installState === 'installing') && (
-        <div className="flex items-center gap-2 text-[length:var(--fs-xs)] text-text-400">
-          <SpinnerIcon size={13} className="animate-spin" />
-          {t('settings:service.remoteTailscaleInstalling')}
-          {tailscale.installProgress !== null && ` ${Math.round(tailscale.installProgress * 100)}%`}
-        </div>
-      )}
-      {tailscale.installState === 'error' && tailscale.installError && (
-        <div className="break-all text-[length:var(--fs-xs)] text-danger-100">{tailscale.installError}</div>
-      )}
-      {tailscale.installed && !tailscale.reachable && (
-        <div className="text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('settings:service.remoteTailscaleNotRunning')}</div>
-      )}
-      {tailscale.reachable && tailscale.backendState !== 'Running' && (
-        <div className="grid gap-1.5">
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              className="h-7 rounded-md px-2 text-[length:var(--fs-xs)] font-medium text-accent-main-100 transition-colors hover:bg-accent-main-100/10"
-              disabled={tailscaleBusy}
-              onClick={() => runTailscaleAction(startTailscaleLogin)}
-            >
-              {tailscaleBusy ? <SpinnerIcon size={12} className="animate-spin" /> : t('settings:service.remoteTailscaleLogin')}
-            </button>
-          </div>
-          {tailscale.authUrl && (
-            <div className="flex items-center gap-3">
-              <QrCode text={tailscale.authUrl} size={128} />
-              <div className="min-w-0 text-[length:var(--fs-xs)] leading-relaxed text-text-400">
-                {t('settings:service.remoteTailscaleLoginHint')}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-      {tailscale.reachable && tailscale.backendState === 'Running' && (
-        <div className="text-[length:var(--fs-xs)] leading-relaxed text-success-100">
-          {t('settings:service.remoteTailscaleRunning', { ip: tailscale.ips[0] ?? '' })}
-          {tailscale.hostName ? <span className="text-text-500"> · {tailscale.hostName}</span> : null}
-        </div>
-      )}
-      {tailscale.supported && (
-        <div className="text-[length:var(--fs-xxs)] leading-relaxed text-text-500">{t('settings:service.remoteTailscalePhoneHint')}</div>
-      )}
+      <TailscaleControls state={tailscale.backendState} authUrl={tailscale.authUrl} ips={tailscale.ips}
+        enabled={tailscale.enabled} available={tailscale.mode === 'embedded' && tailscale.installed}
+        busy={tailscaleBusy} error={tailscaleError || tailscale.lastError}
+        showAuthQr={false}
+        onLogin={() => runTailscaleAction(async () => {
+          if (tailscale.authUrl) { await openTailscaleLogin(tailscale.authUrl); return }
+          await startTailscaleLogin()
+          const next = await fetchTailscale()
+          setTailscale(next)
+          if (next.authUrl) await openTailscaleLogin(next.authUrl)
+          else waitingForAuth.current = next.backendState !== 'Running'
+        })}
+        onDisconnect={() => runTailscaleAction(async () => {
+          await disconnectTailscale()
+          waitingForAuth.current = false
+          setTailscale(await fetchTailscale())
+        })} />
     </div>
   )
 
   return (
-    <SettingsSection title={t('settings:service.remoteTitle')} description={t('settings:service.remoteBackendDesc', { defaultValue: 'Pair another device with the currently connected backend. Addresses and ports below come from that server.' })}>
+    <SettingsSection title={t('settings:authentication.title')} description={t('settings:service.remoteBackendDesc')}>
       <div className="rounded-lg border border-border-200/60 bg-bg-100 p-3">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
@@ -267,6 +244,7 @@ function RemoteAccessPanel() {
               {(
                 [
                   ['lan', t('settings:service.remoteTabLan')],
+                  ['tailscale', t('settings:service.remoteTabTailscale')],
                   ['relay', t('settings:service.remoteTabRelay')],
                 ] as Array<[RemoteTab, string]>
               ).map(([value, label]) => (
@@ -298,7 +276,7 @@ function RemoteAccessPanel() {
                     className={`${settingsFieldClass} max-w-64`}
                     onChange={event => setSelectedAddress(event.target.value)}
                   >
-                    {interfaces.length === 0 && <option value="">{t('settings:service.remoteNoNetwork', { defaultValue: 'No network address available' })}</option>}
+                    {interfaces.length === 0 && <option value="">{t('settings:service.remoteNoNetwork')}</option>}
                     {interfaces.map(item => (
                       <option key={item.address} value={item.address}>
                         {item.name} · {item.address}
@@ -322,13 +300,13 @@ function RemoteAccessPanel() {
                 </div>
                 <div>
                   <div className="text-[length:var(--fs-sm)] font-medium text-text-200">{t('settings:service.remotePort')}</div>
-                  <div className="text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('settings:service.remoteServerPortDesc', { defaultValue: 'Reported by the current backend, not this device’s local settings.' })}</div>
+                  <div className="text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('settings:service.remoteServerPortDesc')}</div>
                   <div aria-label={t('settings:service.remotePort')} className="mt-1 font-mono text-[length:var(--fs-sm)] text-text-200">
                     {listenPort ?? '—'}
                   </div>
                   {!networkLoading && !listenPort && (
                     <p role="status" className="mt-1 text-[length:var(--fs-xs)] leading-relaxed text-text-400">
-                      {t('settings:service.remotePortUnavailable', { defaultValue: 'The server did not report a listening port. LAN QR pairing is unavailable. Use the known server address or update the server.' })}
+                      {t('settings:service.remotePortUnavailable')}
                     </p>
                   )}
                 </div>
@@ -339,10 +317,10 @@ function RemoteAccessPanel() {
               <div className="mt-3 text-[length:var(--fs-xs)] leading-relaxed">
                 {!tunnel ? (
                   <span className="text-text-400">{tunnel === undefined
-                    ? t('settings:service.backendStatusLoading', { defaultValue: 'Loading server status…' })
-                    : t('settings:service.backendStatusUnavailable', { defaultValue: 'Server status unavailable. Check the connection and server version.' })}</span>
+                    ? t('settings:service.backendStatusLoading')
+                    : t('settings:service.backendStatusUnavailable')}</span>
                 ) : !tunnel.enabled ? (
-                  <span className="text-text-400">{t('settings:service.remoteRelayManageHint', { defaultValue: 'No relay configured on this backend. Configure it on the server or in OMPiUI Admin, then restart the service.' })}</span>
+                  <span className="text-text-400">{t(desktop ? 'settings:service.remoteRelayNotConfigured' : 'settings:service.remoteRelayManageHint')}</span>
                 ) : tunnel.state === 'connected' ? (
                   <span className="break-all text-success-100">
                     {t('settings:service.remoteRelayConnected')}
@@ -353,6 +331,13 @@ function RemoteAccessPanel() {
                 )}
               </div>
             )}
+            {tab === 'tailscale' && (
+              <div className="mt-3">
+                {tailscalePanel ?? <p role="status" className="text-[length:var(--fs-xs)] text-text-400">
+                  {t('settings:service.backendStatusUnavailable')}
+                </p>}
+              </div>
+            )}
           </div>
 
           <div className="flex flex-col items-center gap-1.5">
@@ -360,9 +345,11 @@ function RemoteAccessPanel() {
               <QrCode text={pairUrl} size={176} />
             ) : (
               <div role="status" className="flex h-[186px] w-[186px] items-center justify-center rounded-lg bg-bg-200/60 p-4 text-center text-[length:var(--fs-xs)] leading-relaxed text-text-400">
-                {pairPending
-                  ? <span className="flex items-center gap-2"><SpinnerIcon size={16} className="shrink-0 animate-spin" />{t('settings:service.backendStatusLoading', { defaultValue: 'Loading server status…' })}</span>
-                  : t('settings:service.remoteQrUnavailable', { defaultValue: 'QR code unavailable' })}
+                {tailscaleNeedsLogin
+                  ? t('settings:service.remoteTailscalePairLoginRequired')
+                  : pairPending
+                  ? <span className="flex items-center gap-2"><SpinnerIcon size={16} className="shrink-0 animate-spin" />{t('settings:service.backendStatusLoading')}</span>
+                  : t('settings:service.remoteQrUnavailable')}
               </div>
             )}
             {invite && !expired && !invite.redeemed && (
@@ -424,11 +411,11 @@ function RemoteAccessPanel() {
             ? t('settings:service.remoteApproved')
             : pairUrl
               ? t('settings:service.remoteWaiting', { url: pairUrl })
-              : t('settings:service.remotePairUnavailable', { defaultValue: 'Pairing needs a reachable server address and an active code.' })}
+              : tailscaleNeedsLogin
+                ? t('settings:service.remoteTailscalePairLoginRequired')
+                : t('settings:service.remotePairUnavailable')}
         </div>
       </div>
-
-      {tab === 'lan' && tailscalePanel}
     </SettingsSection>
   )
 }

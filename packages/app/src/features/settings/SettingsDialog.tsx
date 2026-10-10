@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Dialog } from '../../components/ui/Dialog'
+import { Activity, ShieldCheck } from 'lucide-react'
 import { ErrorBoundary } from '../../components/ErrorBoundary'
 import {
   SunIcon,
@@ -27,6 +28,8 @@ import { ServersSettings } from './components/ServersSettings'
 import { WorkspaceSettings } from './components/WorkspaceSettings'
 import { PiManagementSettings } from './components/PiManagementSettings'
 import { ServiceSettings } from './components/ServiceSettings'
+import { TrafficAuditSettings } from './components/TrafficAuditSettings'
+import { AuthenticationSettings } from './components/AuthenticationSettings'
 import { SettingsSearch } from './SettingsSearch'
 import { SETTINGS_SEARCH_DEFINITIONS, type SettingsSearchItem } from './settingsSearchCatalog'
 import { usePiCapabilities } from '../../omp/capabilities'
@@ -44,6 +47,8 @@ export type SettingsTab =
   | 'notifications'
   | 'config'
   | 'servers'
+  | 'authentication'
+  | 'traffic'
   | 'service'
   | 'keybindings'
   | 'workspace'
@@ -61,6 +66,8 @@ interface SettingsDialogProps {
 
 const TAB_ICONS: Record<SettingsTab, React.ReactNode> = {
   servers: <GlobeIcon size={15} />,
+  authentication: <ShieldCheck size={15} />,
+  traffic: <Activity size={15} />,
   service: <GlobeIcon size={15} />,
   agent: <AgentIcon size={15} />,
   chat: <MessageSquareIcon size={15} />,
@@ -75,6 +82,8 @@ const TAB_ICONS: Record<SettingsTab, React.ReactNode> = {
 
 const TAB_IDS: SettingsTab[] = [
   'servers',
+  'authentication',
+  'traffic',
   'service',
   'models',
   'agent',
@@ -89,6 +98,8 @@ const TAB_IDS: SettingsTab[] = [
 
 const TAB_LABEL_KEYS: Record<SettingsTab, string> = {
   servers: 'tabs.servers',
+  authentication: 'tabs.authentication',
+  traffic: 'tabs.traffic',
   service: 'tabs.service',
   agent: 'tabs.agent',
   chat: 'tabs.chat',
@@ -102,15 +113,19 @@ const TAB_LABEL_KEYS: Record<SettingsTab, string> = {
 }
 
 const GROUP_DEFS: { labelKey: string; tabs: SettingsTab[] }[] = [
-  { labelKey: 'groups.core', tabs: ['servers', 'models', 'agent', 'chat', 'workspace', 'appearance', 'notifications'] },
-  { labelKey: 'groups.advanced', tabs: ['service', 'config', 'keybindings', 'about'] },
+  { labelKey: 'groups.core', tabs: ['servers', 'traffic', 'models', 'agent', 'chat', 'workspace', 'appearance', 'notifications'] },
+  { labelKey: 'groups.advanced', tabs: ['authentication', 'service', 'config', 'keybindings', 'about'] },
 ]
 
 // ============================================
 // Tab Content Router
 // ============================================
 
-function TabContent({ tab }: { tab: SettingsTab }) {
+function TabContent({ tab, addConnection, onAuthenticated }: {
+  tab: SettingsTab
+  addConnection: boolean
+  onAuthenticated?: () => void
+}) {
   switch (tab) {
     case 'agent':
       return <AgentSettings />
@@ -125,7 +140,11 @@ function TabContent({ tab }: { tab: SettingsTab }) {
     case 'config':
       return <PiManagementSettings />
     case 'servers':
-      return <ServersSettings />
+      return <ServersSettings initialAddingServer={addConnection} />
+    case 'authentication':
+      return <AuthenticationSettings onAuthenticated={onAuthenticated} />
+    case 'traffic':
+      return <TrafficAuditSettings />
     case 'service':
       return <ServiceSettings />
     case 'keybindings':
@@ -156,10 +175,12 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
     return next
   }, [])
   const [tab, setTab] = useState<SettingsTab>(normalizeTab(initialTab))
+  const [addConnection, setAddConnection] = useState(false)
 
   const visibleTabIds = useMemo(
-    () => TAB_IDS.filter(id => (capabilities.config || id !== 'config') && (!nativeMobile || id !== 'service')),
-    [capabilities.config, nativeMobile],
+    () => (isMobile ? TAB_IDS : GROUP_DEFS.flatMap(group => group.tabs))
+      .filter(id => (capabilities.config || id !== 'config') && (!nativeMobile || id !== 'service')),
+    [capabilities.config, nativeMobile, isMobile],
   )
 
   const visibleTabs = useMemo(
@@ -207,6 +228,7 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
 
     const frameId = requestAnimationFrame(() => {
       const next = normalizeTab(initialTab)
+      setAddConnection(false)
       setTab(next)
     })
 
@@ -254,11 +276,17 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
 
   // 切换 tab 时重置滚动位置
   const switchTab = useCallback((nextTab: SettingsTab) => {
+    setAddConnection(false)
     setTab(nextTab)
     requestAnimationFrame(() => {
       scrollRef.current?.scrollTo({ top: 0 })
     })
   }, [])
+
+  const handleAuthenticated = useCallback(() => {
+    switchTab('servers')
+    setAddConnection(true)
+  }, [switchTab])
 
   const selectSearchItem = useCallback(
     (item: SettingsSearchItem) => {
@@ -373,7 +401,7 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
                   aria-controls={`settings-panel-${vt.id}`}
                   tabIndex={vt.id === tab ? 0 : -1}
                   onClick={() => switchTab(vt.id)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[length:var(--fs-md)] font-medium transition-colors whitespace-nowrap shrink-0
+                  className={`flex min-h-11 items-center gap-1.5 px-3 py-1.5 rounded-md text-[length:var(--fs-md)] font-medium transition-colors whitespace-nowrap shrink-0
                     ${
                       vt.id === tab
                         ? 'bg-bg-200 text-text-100'
@@ -397,7 +425,7 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
           >
             {/* key 按 tab 重挂载：单个面板崩溃只降级当前页，不拖垮整个应用 */}
             <ErrorBoundary key={tab}>
-              <TabContent tab={tab} />
+              <TabContent tab={tab} addConnection={addConnection} onAuthenticated={handleAuthenticated} />
             </ErrorBoundary>
           </div>
         </div>
@@ -495,7 +523,7 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
         >
           {/* key 按 tab 重挂载：单个面板崩溃只降级当前页，不拖垮整个应用 */}
           <ErrorBoundary key={tab}>
-            <TabContent tab={tab} />
+            <TabContent tab={tab} addConnection={addConnection} onAuthenticated={nativeMobile ? handleAuthenticated : undefined} />
           </ErrorBoundary>
         </div>
       </div>

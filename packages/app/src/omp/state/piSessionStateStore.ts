@@ -8,6 +8,7 @@ interface StateEntry {
   loading: boolean
   error: Error | null
   requestVersion: number
+  pendingPatch: JsonObject
 }
 
 /**
@@ -31,7 +32,7 @@ class PiSessionStateStore {
   private entry(sessionId: string): StateEntry {
     let entry = this.bySessionId.get(sessionId)
     if (!entry) {
-      entry = { state: null, loading: false, error: null, requestVersion: ++this.nextVersion }
+      entry = { state: null, loading: false, error: null, requestVersion: ++this.nextVersion, pendingPatch: {} }
       this.bySessionId.set(sessionId, entry)
     }
     return entry
@@ -45,6 +46,7 @@ class PiSessionStateStore {
   setState(sessionId: string, state: JsonObject): void {
     const entry = this.entry(sessionId)
     entry.requestVersion = ++this.nextVersion
+    entry.pendingPatch = {}
     entry.state = state
     entry.error = null
     entry.loading = false
@@ -55,6 +57,7 @@ class PiSessionStateStore {
   beginRequest(sessionId: string): number {
     const entry = this.entry(sessionId)
     entry.requestVersion = ++this.nextVersion
+    entry.pendingPatch = {}
     return entry.requestVersion
   }
 
@@ -67,14 +70,28 @@ class PiSessionStateStore {
   }
 
   setStateIfCurrent(sessionId: string, state: JsonObject, version: number): boolean {
-    if (!this.isRequestCurrent(sessionId, version)) return false
-    this.setState(sessionId, state)
+    const entry = this.entry(sessionId)
+    if (!this.isRequestCurrent(sessionId, version)) {
+      // 生命周期事件会让旧快照失效，但首次预览仍可能是唯一的模型/思考
+      // 来源；只在当前状态缺少这些配置时补齐，绝不覆盖更新后的运行态。
+      const current = entry.state
+      const needsHydration = current !== null && (
+        (state.model !== undefined && current?.model === undefined)
+        || (state.thinkingLevel !== undefined && current?.thinkingLevel === undefined)
+      )
+      if (!needsHydration) return false
+      this.setState(sessionId, { ...state, ...current, ...entry.pendingPatch })
+      return true
+    }
+    // 快照加载期间的事件只覆盖自身字段，不能丢掉快照里的模型等配置。
+    this.setState(sessionId, { ...state, ...entry.pendingPatch })
     return true
   }
 
   patchState(sessionId: string, patch: JsonObject): void {
     const entry = this.entry(sessionId)
     entry.requestVersion = ++this.nextVersion
+    entry.pendingPatch = { ...entry.pendingPatch, ...patch }
     entry.state = { ...entry.state, ...patch }
     entry.error = null
     entry.loading = false

@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-desktop/
 build/
 # 打包用的应用图标必须入库，不被上面通用的 build/ 规则误伤
 !packages/app/assets/build/
@@ -26,3 +27,6 @@ server-stderr.log
 # END oh-my-opencode-slim worktrees
 .slim/deepwork/
 .slim/artifacts/
+packages/app/src-tauri/gen/android/app/libs/ompiui-tailscale.aar
+packages/app/src-tauri/gen/android/app/libs/ompiui-tailscale-sources.jar
+packages/app/src-tauri/gen/android/app/src/main/assets/tailscale/
