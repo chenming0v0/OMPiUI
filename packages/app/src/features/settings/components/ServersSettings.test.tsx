@@ -10,6 +10,9 @@ const { useServerStoreMock, navigateHomeMock, clearSessionMock, redeemMock } = v
 }))
 
 vi.mock('../../../omp/transport', () => ({ fetchHostShare: vi.fn(), redeemPairCode: redeemMock }))
+vi.mock('./AndroidTailscaleSettings', () => ({
+  AndroidTailscaleSettings: () => <div>service.remoteTailscalePhoneTitle</div>,
+}))
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({

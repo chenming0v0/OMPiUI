@@ -22,7 +22,6 @@ import type { ServerConfig, ServerHealth } from '../../../store/serverStore'
 import { parseConnectLink } from '../../../store/serverStore'
 import { fetchHostShare, redeemPairCode } from '../../../omp/transport'
 import type { ShareInfo } from '@ompiui/protocol'
-import { AndroidTailscaleSettings } from './AndroidTailscaleSettings'
 
 const IPV4_PATTERN = /^(?:\d{1,3}\.){3}\d{1,3}$/
 /** 显示名长度上限，避免列表项把右侧操作按钮挤穿 */
@@ -697,7 +696,6 @@ export function ServersSettings({ initialAddingServer = false }: { initialAdding
         </div>
       }
     >
-      <AndroidTailscaleSettings />
       <div className="space-y-1.5">
         {orderedServers.map(s => (
           <ServerItem
