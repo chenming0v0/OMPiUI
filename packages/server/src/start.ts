@@ -203,8 +203,7 @@ export async function startOmpiUiServer(
   // 分页光标密钥持久化并注入环境，保证 worker 重启后客户端旧光标仍有效
   // （必须在任何 worker spawn 之前完成）。
   ensureCursorSecretEnv()
-  // POST /api/v1/host/shutdown 的钩子：createAppServer 返回后才定义 stop()，
-  // 用可变引用延迟绑定 —— HTTP 请求只能发生在 listen 之后，届时 stop 已就位。
+  // 关闭钩子在 listen 前绑定，不能因启动阶段的异步恢复返回虚假的成功响应。
   let shutdownHook: (() => Promise<void>) | undefined
   // 隧道客户端在 listen 成功后启动；它的公网入口（relay 上报）要喂给
   // Origin 白名单和 share 链接，所以用可变引用 + getter 动态取。
@@ -266,6 +265,29 @@ export async function startOmpiUiServer(
     },
   })
 
+  let stopped = false
+  let stopping: Promise<void> | undefined
+  const stop = (signal?: NodeJS.Signals): Promise<void> => {
+    stopping ??= (async () => {
+      stopped = true
+      diagnostics.record("server.stopping", { signal, reason: signal ?? "stop_requested", port: config.port })
+      if (signal) console.info(`[ompiui-server] received ${signal}, shutting down`)
+      tunnelClient?.stop()
+      await tailscale.dispose()
+      await shutdownAppServer(app.server, eventServer, {
+        timeoutMs: config.shutdownTimeoutMs,
+        onTimeout: () => {
+          diagnostics.record("server.shutdown.timeout", { timeoutMs: config.shutdownTimeoutMs }, "warn")
+          console.error(`[ompiui-server] shutdown exceeded ${config.shutdownTimeoutMs}ms; closing active HTTP connections`)
+        },
+        cleanup: () => app.dispose(),
+      })
+      diagnostics.record("server.stopped", { port: config.port })
+    })()
+    return stopping
+  }
+  shutdownHook = stop
+
   // 后台预热共享 catalog worker，与 listen 并行：SDK 冷启动要秒级，预热每
   // 提前一点，首个 catalog 命令/会话 attach 就少等一点；预热失败不影响服
   // 务（真正用到时会重新孵化）。health 走只读快照保持毫秒级响应。
@@ -304,6 +326,11 @@ export async function startOmpiUiServer(
     boundAddress && typeof boundAddress === "object" ? boundAddress.port : config.port,
     config.host,
   )
+  // 早到的关闭请求已经执行，不再启动隧道或宣告服务启动成功。
+  if (stopped) {
+    await stop()
+    return { server: app.server, config, stop }
+  }
 
   console.info(`[ompiui-server] listening http://${config.host}:${config.port}`)
   logToFile(`[ompiui-server] listening http://${config.host}:${config.port} (pid=${process.pid})`)
@@ -351,27 +378,6 @@ export async function startOmpiUiServer(
   } else if (config.host !== "127.0.0.1" && config.host !== "::1" && config.host !== "localhost") {
     console.info(`[ompiui-server] LAN sharing enabled at http://${lanHost}:${config.port}`)
   }
-
-  let stopped = false
-  const stop = async (signal?: NodeJS.Signals): Promise<void> => {
-    if (stopped) return
-    stopped = true
-    diagnostics.record("server.stopping", { signal, reason: signal ?? "stop_requested", port: config.port })
-    if (signal) console.info(`[ompiui-server] received ${signal}, shutting down`)
-    // 先断隧道：中转不再往这边送新请求，然后才排空/关闭 HTTP 服务
-    tunnelClient?.stop()
-    await tailscale.dispose()
-    await shutdownAppServer(app.server, eventServer, {
-      timeoutMs: config.shutdownTimeoutMs,
-      onTimeout: () => {
-        diagnostics.record("server.shutdown.timeout", { timeoutMs: config.shutdownTimeoutMs }, "warn")
-        console.error(`[ompiui-server] shutdown exceeded ${config.shutdownTimeoutMs}ms; closing active HTTP connections`)
-      },
-      cleanup: () => app.dispose(),
-    })
-    diagnostics.record("server.stopped", { port: config.port })
-  }
-  shutdownHook = stop
 
   if (options.installSignalHandlers !== false) {
     process.once("SIGINT", () => { void stop("SIGINT").catch(error => { console.error("[ompiui-server] shutdown failed", error); process.exitCode = 1 }) })

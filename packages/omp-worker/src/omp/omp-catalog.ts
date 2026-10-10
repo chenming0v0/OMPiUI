@@ -12,7 +12,9 @@ import { OmpRpcClient, unwrapResponse } from "./rpc-client.js"
 import { detectOmpVersion } from "./omp-version.js"
 import { OMP_SDK_VERSION } from "./constants.js"
 import { buildSessionTreeFromEntries } from "../runtime/session-tree.js"
-import { copySessionFile, isManagedSessionFile, managedSessionDirectory, managedSessionsRoot } from "./managed-sessions.js"
+import { assertOmpSessionFile, isManagedSessionFile, managedSessionsRoot, ompSessionsRoot } from "./managed-sessions.js"
+import { ompAgentDirectory } from "./omp-directories.js"
+import { assertOmpTerminalStopped } from "./terminal-presence.js"
 import { sessionConfigFromBranch } from "./session-config.js"
 
 /**
@@ -45,9 +47,7 @@ export function resolveUserPath(input: string): string {
 }
 
 export function ompAgentDir(): string {
-  const env = process.env.OMP_AGENT_DIR?.trim()
-  if (env) return resolveUserPath(env)
-  return path.join(homedir(), ".omp", "agent")
+  return ompAgentDirectory()
 }
 
 /** OMP 子代理会话目录：<parent>.jsonl 去后缀的同名目录 */
@@ -58,7 +58,7 @@ function childSessionDir(parentSessionFile: string): string | null {
 }
 
 function sessionsRoot(): string {
-  return path.join(ompAgentDir(), "sessions")
+  return ompSessionsRoot()
 }
 
 /** 磁盘预览丢弃的元数据条目（与 OmpRpcSession.adaptEntry 的丢弃清单一致） */
@@ -280,7 +280,7 @@ function pathKey(value: string): string {
 
 /** 短生命周期控制 RPC 进程：跑一条命令就退（模型列表等无会话查询） */
 async function withControlRpc<T>(cwd: string, run: (client: OmpRpcClient) => Promise<T>): Promise<T> {
-  const client = new OmpRpcClient({ cwd, env: { PIUI_EMBEDDED: "1" } })
+  const client = new OmpRpcClient({ cwd, args: ["--no-session"], env: { PIUI_EMBEDDED: "1" } })
   try {
     await client.waitForReady(30_000)
     await client.request({ type: "negotiate_protocol", protocolVersion: 2 })
@@ -300,7 +300,7 @@ export class OmpControlChannel {
   async acquire(): Promise<OmpRpcClient> {
     if (this.client && !this.client.hasExited) return this.client
     this.starting ??= (async () => {
-      const client = new OmpRpcClient({ cwd: this.cwd, env: { PIUI_EMBEDDED: "1" } })
+      const client = new OmpRpcClient({ cwd: this.cwd, args: ["--no-session"], env: { PIUI_EMBEDDED: "1" } })
       await client.waitForReady(30_000)
       await client.request({ type: "negotiate_protocol", protocolVersion: 2 })
       client.on("exit", () => {
@@ -368,7 +368,6 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
   }
 
   private previewSummary(summary: SessionFileSummary, params: { cursor?: string; limit?: number; maxBytes?: number }, sdkVersion: string = OMP_SDK_VERSION): JsonValue {
-    const readOnly = !isManagedSessionFile(summary.path)
     // 读取文件并解析条目（磁盘预览不走 RPC 进程）
     const raw = existsSync(summary.path) ? readLinesSync(summary.path) : []
     const entries = previewEntriesFromLines(raw, summary.id)
@@ -390,7 +389,8 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     }, entry => entry)
     const state: JsonObject = {
       sessionId: summary.id,
-      readOnly,
+      readOnly: false,
+      diskPreview: true,
       sessionFile: summary.path,
       sessionName: summary.name,
       cwd: summary.cwd,
@@ -465,9 +465,24 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     if (!found || typeof found.sessionFile !== "string" || typeof found.cwd !== "string") {
       throw Object.assign(new Error("session file not found"), { code: "SESSION_NOT_FOUND" })
     }
-    const copied = copySessionFile(found.sessionFile, managedSessionDirectory(found.cwd))
-    this.summarizeCache = null
-    return copied
+    assertOmpSessionFile(found.sessionFile)
+    await assertOmpTerminalStopped()
+    // 显式复制也走官方 fork：原生目录、全新身份与关联附件一起保留。
+    const client = new OmpRpcClient({
+      cwd: found.cwd, args: ["--fork", found.sessionFile], protectSession: true,
+      bin: process.env.OMPI_OMP_BIN, env: { PIUI_EMBEDDED: "1" },
+    })
+    try {
+      await client.waitForReady()
+      const state = unwrapResponse<JsonObject>(await client.request({ type: "get_state" }))
+      if (!isJsonObject(state) || typeof state.sessionId !== "string" || typeof state.sessionFile !== "string") {
+        throw new Error("Invalid forked session identity")
+      }
+      this.summarizeCache = null
+      return { sessionId: state.sessionId, sessionFile: state.sessionFile, cwd: found.cwd }
+    } finally {
+      await client.close()
+    }
   }
 
   async previewSessionById(sessionId: string, params: { cursor?: string; limit?: number; maxBytes?: number } = {}): Promise<JsonValue> {
@@ -565,6 +580,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     const target = resolveUserPath(sessionFile)
     const root = path.resolve(isManagedSessionFile(target) ? managedSessionsRoot() : sessionsRoot())
     if (!existsSync(target)) return
+    await assertOmpTerminalStopped()
     const realRoot = await fs.realpath(root)
     const realTarget = await fs.realpath(target)
     const rootKey = process.platform === "win32" ? realRoot.toLowerCase() : realRoot
