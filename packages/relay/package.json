@@ -1,6 +1,6 @@
 {
   "name": "@ompiui/relay",
-  "version": "0.6.8",
+  "version": "0.6.9",
   "private": true,
   "type": "module",
   "description": "OMPiUI 自建中转（反向隧道）服务端：桌面端主动拨出，公网浏览器经它访问内网 OMPiUI 服务。",

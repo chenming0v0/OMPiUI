@@ -715,6 +715,7 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
           } catch {
             return
           }
+          event.annotateTraffic?.(value)
           const frame = parseServerFrame(value)
           if (!frame) return
           if (frame.type === 'hello') {
