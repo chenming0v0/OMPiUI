@@ -35,3 +35,43 @@ it("ends a stalled HTTP request at the shutdown deadline without forcing exit", 
   assert.equal(forcedExit, false)
   assert.equal(socket.destroyed, true)
 })
+
+it("does not force exit during worker cleanup after HTTP has closed", async () => {
+  const app = createAppServer({ authToken: null })
+  const eventServer = attachEventWebSocket(app.server, { eventHub: app.eventHub, authToken: null })
+  await new Promise<void>(resolve => app.server.listen(0, "127.0.0.1", resolve))
+  let forcedExit = false
+  let cleaned = false
+  await shutdownAppServer(app.server, eventServer, {
+    timeoutMs: 10,
+    hardStopGraceMs: 10,
+    cleanupTimeoutMs: 1_000,
+    forceExit: () => { forcedExit = true },
+    cleanup: async () => {
+      assert.equal(app.server.listening, false)
+      await new Promise(resolve => setTimeout(resolve, 100))
+      await app.dispose()
+      cleaned = true
+    },
+  })
+  assert.equal(cleaned, true)
+  assert.equal(forcedExit, false)
+})
+
+it("still enforces a separate deadline for stuck worker cleanup", async () => {
+  const app = createAppServer({ authToken: null })
+  const eventServer = attachEventWebSocket(app.server, { eventHub: app.eventHub, authToken: null })
+  await new Promise<void>(resolve => app.server.listen(0, "127.0.0.1", resolve))
+  let forcedExit = false
+  await shutdownAppServer(app.server, eventServer, {
+    timeoutMs: 10,
+    hardStopGraceMs: 10,
+    cleanupTimeoutMs: 20,
+    forceExit: () => { forcedExit = true },
+    cleanup: async () => {
+      await new Promise(resolve => setTimeout(resolve, 80))
+      await app.dispose()
+    },
+  })
+  assert.equal(forcedExit, true)
+})

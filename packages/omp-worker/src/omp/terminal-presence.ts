@@ -13,11 +13,12 @@ export interface OmpProcess {
 export function isOmpTerminalProcess(process: OmpProcess): boolean {
   const name = process.name.replace(/\.exe$/i, "").toLowerCase()
   const command = process.commandLine
-  if ((name === "omp" || name === "bun" || name === "node") && (command === null || !command.trim())) return true
+  if (name === "omp" && (command === null || !command.trim())) return true
   const isOmp = name === "omp" ||
     (command !== null && /(?:oh-my-pi|pi-coding-agent|packages[\\/]coding-agent)[\\/].*(?:cli\.(?:[cm]?js|ts)|omp)(?:["'\s]|$)/i.test(command))
   if (!isOmp) return false
   if (command === null) return true
+  if (/(?:^|\s)__omp_worker_[a-z_]+(?:\s|$)/.test(command)) return false
   return !/(?:^|\s)--mode(?:=|\s+)["']?rpc(?:-ui)?["']?(?:\s|$)/i.test(command) &&
     !/(?:^|\s)--version(?:\s|$)/.test(command)
 }
