@@ -1,5 +1,7 @@
 import type { JsonObject } from '@ompiui/protocol'
 import { subagentDisplayTitle } from './ompSubagentFormat'
+import { appendTranscriptEvent, transcriptItemsFromMessages, type OmpSubagentTranscriptItem } from './ompSubagentTranscript'
+export { transcriptItemsFromMessages, type OmpSubagentTranscriptItem } from './ompSubagentTranscript'
 
 /**
  * OMP 子代理实时状态（来源：`omp --mode rpc` 的 subagent_lifecycle /
@@ -59,23 +61,10 @@ export type OmpSubagentRun = {
   endedAt?: number
 }
 
-export type OmpSubagentTranscriptItem = {
-  kind: 'user' | 'assistant' | 'tool'
-  text: string
-  toolName?: string
-  isError?: boolean
-  timestamp: number
-  /** 内部标记：该气泡对应的消息仍在流式推进（下一帧更新它的文本而非新增一行） */
-  streaming?: boolean
-}
-
 export type OmpSubagentSnapshot = {
   runs: OmpSubagentRun[]
   revision: number
 }
-
-const MAX_TRANSCRIPT_ITEMS = 200
-const MAX_OUTPUT_CHARS_PER_ITEM = 4000
 
 // HUD 里被用户清掉的 run（终态）：localStorage 持久化，防止刷新后
 // state.get 快照把已清除的条目带回来（OpenCodeUI pinned 列表的同款语义）
@@ -180,104 +169,6 @@ function normalizeProgress(raw: unknown): OmpSubagentProgress | undefined {
     resolvedModel: str(record.resolvedModel),
     lastIntent: str(record.lastIntent),
   }
-}
-
-/** 提取消息文本块（assistant 消息常带 thinking 块，只取 text） */
-function extractMessageText(message: JsonObject): string {
-  const content = message.content
-  if (typeof content === 'string') return content
-  if (!Array.isArray(content)) return ''
-  return content.map(block => {
-    const record = asRecord(block)
-    return record?.type === 'text' && typeof record.text === 'string' ? record.text : ''
-  }).filter(Boolean).join('\n')
-}
-
-function appendTranscriptItem(
-  into: OmpSubagentTranscriptItem[],
-  item: Omit<OmpSubagentTranscriptItem, 'timestamp'>,
-): OmpSubagentTranscriptItem[] {
-  const next = [...into, { ...item, timestamp: Date.now() }]
-  return next.length > MAX_TRANSCRIPT_ITEMS ? next.slice(next.length - MAX_TRANSCRIPT_ITEMS) : next
-}
-
-/**
- * 子代理 session 事件 → 轻量转录行（贴近 OpenCodeUI SubSessionView 的显示粒度）。
- *
- * OMP 的消息事件语义（对真实 RPC 帧抓包确认）：message_start / message_update /
- * message_end 每一帧都带顶层 message —— assistant 的 update 帧携带的是累计
- * 快照，不是增量。因此不能"见 message 就追加一行"：否则 user 消息会在
- * start + end 各渲染一条、assistant 流式文本在首个 text update 和 end 各渲染
- * 一条，同一条消息变成重复气泡（ping 测试里"两条一样的 prompt + 两条 pong"）。
- * 规则：assistant 用 streaming 标记的"打开气泡"推进，user 只在 end 落定成行。
- */
-function appendTranscriptEvent(event: JsonObject, into: OmpSubagentTranscriptItem[]): OmpSubagentTranscriptItem[] {
-  const type = str(event.type)
-  const message = asRecord(event.message)
-  if ((type === 'message_start' || type === 'message_update' || type === 'message_end') && message) {
-    const role = str(message.role)
-    if (role !== 'user' && role !== 'assistant') return into
-    const text = extractMessageText(message).slice(0, MAX_OUTPUT_CHARS_PER_ITEM)
-    const last = into.at(-1)
-
-    if (role === 'assistant' && type !== 'message_end') {
-      // 流式推进：合并进当前打开的气泡；没有打开的气泡则新开一个
-      if (!text) return into
-      if (last?.kind === 'assistant' && last.streaming) {
-        return [...into.slice(0, -1), { ...last, text }]
-      }
-      return appendTranscriptItem(into, { kind: 'assistant', text, streaming: true })
-    }
-
-    if (type === 'message_end') {
-      if (role === 'assistant') {
-        // 收口当前打开的气泡；空落定（纯 thinking + 工具调用）不留空行
-        if (last?.kind === 'assistant' && last.streaming) {
-          if (!text) return last.text ? [...into.slice(0, -1), { ...last, streaming: false }] : [...into.slice(0, -1)]
-          return [...into.slice(0, -1), { ...last, text, streaming: false }]
-        }
-        if (!text) return into
-        return appendTranscriptItem(into, { kind: 'assistant', text })
-      }
-      // user：只在 end 落定（start 的全文与 end 相同，追加会重复）
-      if (last?.kind === 'user' && last.text === text) return into
-      if (!text) return into
-      return appendTranscriptItem(into, { kind: 'user', text })
-    }
-
-    // user 的 start/update：忽略（等 end 落定）
-    return into
-  }
-  if (type === 'tool_execution_end') {
-    const toolName = str(event.toolName) ?? 'tool'
-    return appendTranscriptItem(into, { kind: 'tool', text: '', toolName, isError: event.isError === true })
-  }
-  return into
-}
-
-/**
- * 子代理会话磁盘消息（get_subagent_messages 的 messages）→ 轻量转录行。
- * 与实时流同粒度：user / assistant 文本一行，toolResult 一枚工具徽标，
- * developer/system-reminder 与纯工具调用轮次不留空行。
- */
-export function transcriptItemsFromMessages(messages: unknown[]): OmpSubagentTranscriptItem[] {
-  const items: OmpSubagentTranscriptItem[] = []
-  for (const raw of messages) {
-    const message = asRecord(raw)
-    if (!message) continue
-    const role = str(message.role)
-    if (role === 'user' || role === 'assistant') {
-      const text = extractMessageText(message).slice(0, MAX_OUTPUT_CHARS_PER_ITEM)
-      if (!text) continue
-      items.push({ kind: role, text, timestamp: Date.now() })
-      continue
-    }
-    if (role === 'toolResult') {
-      const toolName = str(message.toolName) ?? 'tool'
-      items.push({ kind: 'tool', text: '', toolName, isError: message.isError === true, timestamp: Date.now() })
-    }
-  }
-  return items
 }
 
 const EMPTY_RUNS: OmpSubagentRun[] = []
