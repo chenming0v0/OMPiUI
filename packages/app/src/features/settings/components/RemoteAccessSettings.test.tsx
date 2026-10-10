@@ -23,6 +23,7 @@ vi.mock('../../../omp/transport/index.js', () => ({
   fetchTailscale: mocks.tailscale,
   startTailscaleInstall: vi.fn(),
   startTailscaleLogin: vi.fn(),
+  disconnectTailscale: vi.fn(),
 }))
 // Observe the exact payload given to the QR encoder, not its SVG internals.
 vi.mock('../../../components/QrCode', () => ({ QrCode: ({ text }: { text: string }) => <div data-testid="qr" data-url={text} /> }))
@@ -55,6 +56,32 @@ beforeEach(() => {
 afterEach(() => { cleanup() })
 
 describe('RemoteAccessSettings authoritative addresses', () => {
+  it('uses the embedded Tailnet listener rather than a system network adapter', async () => {
+    mocks.get.mockReturnValue('tailscale')
+    mocks.network.mockResolvedValue({ interfaces: [] })
+    mocks.tailscale.mockResolvedValue({
+      mode: 'embedded', installed: true, enabled: true, supported: true, reachable: true,
+      backendState: 'Running', ips: ['100.101.2.3'], url: 'http://100.101.2.3:9292',
+      authUrl: null, lastError: null,
+    })
+    render(<RemoteAccessSettings />)
+    expect(await screen.findByTestId('qr')).toHaveAttribute('data-url', 'http://100.101.2.3:9292/?pair=first.secret')
+    expect(screen.getByText('Tailscale connected · 100.101.2.3')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Install Tailscale' })).not.toBeInTheDocument()
+  })
+
+  it('does not publish a pairing address for a node awaiting authorization', async () => {
+    mocks.get.mockReturnValue('tailscale')
+    mocks.tailscale.mockResolvedValue({
+      mode: 'embedded', installed: true, enabled: true, backendState: 'NeedsLogin',
+      ips: [], url: null, authUrl: null, lastError: null,
+    })
+    render(<RemoteAccessSettings />)
+    expect(await screen.findByText('Connecting / awaiting sign-in')).toBeInTheDocument()
+    expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Copy full pairing info' })).toBeDisabled()
+  })
+
   it('uses the backend non-default port even when local desktop settings differ', async () => {
     render(<RemoteAccessSettings />)
     expect(await screen.findByTestId('qr')).toHaveAttribute('data-url', 'http://192.168.50.10:9191/?pair=first.secret')

@@ -1,6 +1,6 @@
 {
   "name": "ompiui",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "private": true,
   "type": "module",
   "description": "OMPiUI — third-party web/desktop client for the OMP (oh-my-pi) coding agent. PiUI visual shell + OMP RPC runtime.",
@@ -29,6 +29,8 @@
     "check": "npm run lint && npm run test:run -w @ompiui/app && npm run build",
     "validate": "npm run typecheck && npm run lint && npm test && npm run build",
     "package:desktop": "node scripts/package-desktop.mjs",
+    "build:tailscale": "node scripts/build-tailscale.mjs",
+    "build:tailscale:android": "node scripts/build-tailscale-android.mjs",
     "prepare:tauri-resources": "node scripts/prepare-tauri-resources.mjs",
     "prepare:tauri-mobile-resources": "node scripts/prepare-tauri-mobile-resources.mjs",
     "tauri": "npm run tauri -w @ompiui/app --",

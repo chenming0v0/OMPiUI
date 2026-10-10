@@ -23,6 +23,7 @@ class MainActivity : TauriActivity() {
   private var cachedInsetsJs: String? = null
   private var themeSyncRunnable: Runnable? = null
   private var cachedWebView: WebView? = null
+  private var tailscaleBridge: TailscaleBridge? = null
 
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
@@ -91,6 +92,12 @@ class MainActivity : TauriActivity() {
   override fun onPause() {
     stopThemeSync()
     super.onPause()
+  }
+
+  override fun onDestroy() {
+    tailscaleBridge?.dispose()
+    tailscaleBridge = null
+    super.onDestroy()
   }
 
   private fun startThemeSync() {
@@ -292,6 +299,11 @@ class MainActivity : TauriActivity() {
   private fun ensureJsBridge(webView: WebView) {
     try {
       webView.addJavascriptInterface(SystemBarBridge(), "__ompiui_android")
+      if (tailscaleBridge == null) {
+        val bridge = TailscaleBridge(applicationContext, webView)
+        tailscaleBridge = bridge
+        webView.addJavascriptInterface(bridge, "__ompiui_tailscale")
+      }
     } catch (_: Exception) {
       // ignore - may be added already
     }

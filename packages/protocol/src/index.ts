@@ -103,19 +103,30 @@ export type LanInterfaceInfo = {
   tailscale: boolean
 }
 
-/** Embedded/installed Tailscale client state (GET /api/v1/host/tailscale)。 */
+/** 内嵌 Tailscale 节点状态（GET /api/v1/host/tailscale）。 */
 export type TailscaleInfo = {
   platform: string
-  /** Platform has an embeddable Tailscale distribution. */
+  /** 当前平台支持内嵌网络组件。 */
   supported: boolean
+  /** 当前构建包含可用的 Tailscale 组件。 */
   installed: boolean
-  /** `tailscale status` 可以连上 daemon（服务在跑）。 */
+  /** 区分内嵌组件、系统客户端和缺失组件。 */
+  mode: "embedded" | "system" | "unavailable"
+  /** 后端使用的网络实现。 */
+  component: "tsnet" | "tailscaled" | "system-cli" | null
+  /** 是否依赖系统级 VPN 或客户端。 */
+  usesSystemVpn: boolean
+  enabled: boolean
+  /** 内嵌节点正在监听的 Tailnet 地址，不是公网入口。 */
+  url: string | null
+  lastError: string | null
+  /** 内嵌组件的本地状态接口可达。 */
   reachable: boolean
   cliPath: string | null
   installState: "idle" | "downloading" | "installing" | "done" | "error"
   installProgress: number | null
   installError: string | null
-  /** tailscaled backend state: Running / NeedsLogin / null (not reachable). */
+  /** 节点状态：Running、NeedsLogin、NeedsMachineAuth、Stopped 等。 */
   backendState: string | null
   authUrl: string | null
   loginPending: boolean

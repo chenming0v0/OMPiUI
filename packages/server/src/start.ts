@@ -294,10 +294,16 @@ export async function startOmpiUiServer(
     })
   } catch (error) {
     diagnostics.record("server.start.failed", { errorCode: diagnosticErrorCode(error) }, "error")
+    await tailscale.dispose()
     await shutdownAppServer(app.server, eventServer, { timeoutMs: config.shutdownTimeoutMs, cleanup: () => app.dispose() }).catch(() => undefined)
     throw error
   }
   app.server.on("error", error => console.error("[ompiui-server] server error", error))
+  const boundAddress = app.server.address()
+  await tailscale.resume(
+    boundAddress && typeof boundAddress === "object" ? boundAddress.port : config.port,
+    config.host,
+  )
 
   console.info(`[ompiui-server] listening http://${config.host}:${config.port}`)
   logToFile(`[ompiui-server] listening http://${config.host}:${config.port} (pid=${process.pid})`)
@@ -354,7 +360,7 @@ export async function startOmpiUiServer(
     if (signal) console.info(`[ompiui-server] received ${signal}, shutting down`)
     // 先断隧道：中转不再往这边送新请求，然后才排空/关闭 HTTP 服务
     tunnelClient?.stop()
-    tailscale.dispose()
+    await tailscale.dispose()
     await shutdownAppServer(app.server, eventServer, {
       timeoutMs: config.shutdownTimeoutMs,
       onTimeout: () => {
