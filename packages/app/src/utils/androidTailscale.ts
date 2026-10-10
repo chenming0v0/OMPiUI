@@ -73,6 +73,10 @@ export function loginAndroidTailscale(): Promise<AndroidTailscaleStatus> {
   return nativeRequest('login')
 }
 
+export function openAndroidTailscaleLogin(url: string): Promise<void> {
+  return nativeRequest('openLogin', { url })
+}
+
 const routeRequests = new Map<string, Promise<string>>()
 
 export async function disconnectAndroidTailscale(): Promise<void> {

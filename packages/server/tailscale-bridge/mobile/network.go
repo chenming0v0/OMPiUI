@@ -31,7 +31,8 @@ var networkLock sync.RWMutex
 var networkInterfaces []netmon.Interface
 
 // UpdateNetworkState 在启动前接收 Android 网络信息，避免 Go 访问被系统禁止的 Netlink。
-func UpdateNetworkState(snapshotJSON string) error {
+func UpdateNetworkState(snapshotJSON string) (err error) {
+	defer recoverNativeError("network update", &err)
 	var snapshot networkSnapshot
 	if err := json.Unmarshal([]byte(snapshotJSON), &snapshot); err != nil {
 		return fmt.Errorf("invalid Android network state: %w", err)

@@ -42,6 +42,16 @@ describe('phone independent Tailscale enrollment', () => {
     expect(mocks.redeem).not.toHaveBeenCalled()
   })
 
+  it('shows browser errors without losing the login button', async () => {
+    mocks.open.mockRejectedValue(new Error('No browser is available'))
+    render(<AndroidTailscaleSettings />)
+    const button = await screen.findByRole('button', { name: 'Log in to Tailscale' })
+    await waitFor(() => expect(button).toBeEnabled())
+    await act(async () => fireEvent.click(button))
+    expect(await screen.findByRole('alert')).toHaveTextContent('No browser is available')
+    expect(button).toBeEnabled()
+  })
+
   it('redeems a full invite and saves the actual Tailnet URL, not the phone loopback port', async () => {
     render(<AndroidTailscaleSettings />)
     fireEvent.change(await screen.findByLabelText('Full pairing link'), {

@@ -27,7 +27,8 @@ var node *tsnet.Server
 var routes = map[string]route{}
 
 // Start 在应用私有目录中恢复节点，不创建 Android VpnService。
-func Start(stateDir, hostname string) error {
+func Start(stateDir, hostname string) (err error) {
+	defer recoverNativeError("start", &err)
 	lock.Lock()
 	defer lock.Unlock()
 	if node != nil {
@@ -48,7 +49,8 @@ func Start(stateDir, hostname string) error {
 	return nil
 }
 
-func Status() (string, error) {
+func Status() (result string, err error) {
+	defer recoverNativeError("status", &err)
 	lock.Lock()
 	s := node
 	lock.Unlock()
@@ -69,7 +71,8 @@ func Status() (string, error) {
 	return string(data), err
 }
 
-func Login() error {
+func Login() (err error) {
+	defer recoverNativeError("login", &err)
 	lock.Lock()
 	s := node
 	lock.Unlock()
