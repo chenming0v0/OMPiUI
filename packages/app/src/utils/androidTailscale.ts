@@ -5,6 +5,8 @@ export type AndroidTailscaleStatus = {
   BackendState: string
   AuthURL?: string
   TailscaleIPs?: string[]
+  lastError?: string
+  startupInterrupted?: boolean
   Self?: { DNSName?: string }
 }
 
@@ -75,6 +77,14 @@ export function loginAndroidTailscale(): Promise<AndroidTailscaleStatus> {
 
 export function openAndroidTailscaleLogin(url: string): Promise<void> {
   return nativeRequest('openLogin', { url })
+}
+
+export function copyAndroidTailscaleDiagnostics(): Promise<void> {
+  return nativeRequest('copyDiagnostics')
+}
+
+export function exportAndroidTailscaleDiagnostics(): Promise<void> {
+  return nativeRequest('exportDiagnostics')
 }
 
 const routeRequests = new Map<string, Promise<string>>()

@@ -5,12 +5,15 @@ import { AndroidTailscaleSettings } from './AndroidTailscaleSettings'
 const mocks = vi.hoisted(() => ({
   status: vi.fn(), login: vi.fn(), disconnect: vi.fn(), redeem: vi.fn(), open: vi.fn(),
   add: vi.fn(), select: vi.fn(), check: vi.fn(),
+  copyDiagnostics: vi.fn(), exportDiagnostics: vi.fn(),
 }))
 vi.mock('../../../utils/androidTailscale', () => ({
   isAndroidTailscalePlatform: () => true,
   getAndroidTailscaleStatus: mocks.status,
   loginAndroidTailscale: mocks.login,
   disconnectAndroidTailscale: mocks.disconnect,
+  copyAndroidTailscaleDiagnostics: mocks.copyDiagnostics,
+  exportAndroidTailscaleDiagnostics: mocks.exportDiagnostics,
 }))
 vi.mock('../../../omp/transport', () => ({ redeemPairCode: mocks.redeem }))
 vi.mock('../../../store/serverStore', () => ({
@@ -28,10 +31,35 @@ beforeEach(() => {
   mocks.check.mockResolvedValue({ status: 'online' })
   mocks.redeem.mockResolvedValue({ url: 'http://100.101.2.3:8787', token: 'server-token' })
   mocks.open.mockResolvedValue(undefined)
+  mocks.copyDiagnostics.mockResolvedValue(undefined)
+  mocks.exportDiagnostics.mockResolvedValue(undefined)
 })
 afterEach(cleanup)
 
 describe('phone independent Tailscale enrollment', () => {
+  it('copies diagnostics while the core is unavailable without starting it', async () => {
+    mocks.status.mockRejectedValue(new Error('core unavailable'))
+    render(<AndroidTailscaleSettings />)
+    const button = await screen.findByRole('button', { name: 'Copy login diagnostics' })
+    await act(async () => fireEvent.click(button))
+    expect(mocks.copyDiagnostics).toHaveBeenCalledOnce()
+    expect(await screen.findByText('Diagnostics copied. Paste them to share.')).toBeVisible()
+    expect(mocks.login).not.toHaveBeenCalled()
+  })
+  it('exports diagnostics independently of login and pairing', async () => {
+    render(<AndroidTailscaleSettings />)
+    const button = await screen.findByRole('button', { name: 'Export login diagnostics' })
+    await act(async () => fireEvent.click(button))
+    expect(mocks.exportDiagnostics).toHaveBeenCalledOnce()
+    expect(mocks.login).not.toHaveBeenCalled()
+    expect(mocks.redeem).not.toHaveBeenCalled()
+  })
+  it('shows that automatic restore is paused after an interrupted startup', async () => {
+    mocks.status.mockResolvedValue({ enabled: false, BackendState: 'Stopped', startupInterrupted: true })
+    render(<AndroidTailscaleSettings />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Automatic recovery is paused')
+    expect(screen.getByRole('button', { name: 'Copy login diagnostics' })).toBeEnabled()
+  })
   it('opens official phone authorization without needing a reachable computer backend', async () => {
     render(<AndroidTailscaleSettings />)
     const button = await screen.findByRole('button', { name: 'Log in to Tailscale' })

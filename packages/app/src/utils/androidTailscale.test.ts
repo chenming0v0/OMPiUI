@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   disconnectAndroidTailscale, isTailnetUrl, openAndroidTailscaleLogin, resolveAndroidTailscaleUrl,
+  copyAndroidTailscaleDiagnostics, exportAndroidTailscaleDiagnostics,
 } from './androidTailscale'
 
 vi.mock('./tauri', () => ({ isTauri: () => true }))
@@ -22,6 +23,11 @@ afterEach(async () => {
 })
 
 describe('Android embedded Tailscale transport', () => {
+  it('requests local diagnostics without login or opening a route', async () => {
+    await copyAndroidTailscaleDiagnostics()
+    await exportAndroidTailscaleDiagnostics()
+    expect(request.mock.calls.map(call => call[1])).toEqual(['copyDiagnostics', 'exportDiagnostics'])
+  })
   it('passes the authorization URL to the native browser operation', async () => {
     await openAndroidTailscaleLogin('https://login.tailscale.com/a/phone')
     expect(request).toHaveBeenCalledWith(expect.any(String), 'openLogin',

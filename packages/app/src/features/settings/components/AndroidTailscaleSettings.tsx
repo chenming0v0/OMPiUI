@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Link, Check } from 'lucide-react'
+import { Link, Check, Copy, Share2 } from 'lucide-react'
 import {
   disconnectAndroidTailscale, getAndroidTailscaleStatus, isAndroidTailscalePlatform,
   loginAndroidTailscale, type AndroidTailscaleStatus,
+  copyAndroidTailscaleDiagnostics, exportAndroidTailscaleDiagnostics,
 } from '../../../utils/androidTailscale'
 import { redeemPairCode } from '../../../omp/transport'
 import { serverStore } from '../../../store/serverStore'
@@ -23,6 +24,7 @@ function AndroidTailscalePanel() {
   const [statusError, setStatusError] = useState('')
   const [invite, setInvite] = useState('')
   const [paired, setPaired] = useState(false)
+  const [diagnosticsCopied, setDiagnosticsCopied] = useState(false)
   const waitingForAuth = useRef(false)
   useEffect(() => {
     let cancelled = false
@@ -74,7 +76,8 @@ function AndroidTailscalePanel() {
       {!status && !statusError ? <p role="status" className="text-[length:var(--fs-xs)] text-text-400">
         {t('service.backendStatusLoading', { defaultValue: 'Loading server status…' })}
       </p> : <TailscaleControls state={status?.BackendState} authUrl={status?.AuthURL} ips={status?.TailscaleIPs ?? []}
-        enabled={status?.enabled ?? false} available={status !== null} busy={busy} error={error || statusError}
+        enabled={status?.enabled ?? false} available={status !== null} busy={busy}
+        error={error || statusError || (status?.startupInterrupted ? t('service.remoteTailscaleStartupInterrupted') : status?.lastError)}
         showAuthQr={false}
         onLogin={() => run(login)}
         onDisconnect={() => run(async () => {
@@ -83,6 +86,21 @@ function AndroidTailscalePanel() {
           setStatus(await getAndroidTailscaleStatus())
           serverStore.checkAllHealth()
         })} />}
+      <div className="flex flex-wrap items-center gap-3">
+        <button type="button" disabled={busy} onClick={() => run(async () => {
+          await copyAndroidTailscaleDiagnostics()
+          setDiagnosticsCopied(true)
+        })} className="inline-flex min-h-8 items-center gap-1.5 text-[length:var(--fs-xs)] text-text-300 hover:text-text-100 disabled:opacity-50">
+          <Copy size={14} />{t('service.remoteTailscaleCopyDiagnostics')}
+        </button>
+        <button type="button" disabled={busy} onClick={() => run(exportAndroidTailscaleDiagnostics)}
+          className="inline-flex min-h-8 items-center gap-1.5 text-[length:var(--fs-xs)] text-text-300 hover:text-text-100 disabled:opacity-50">
+          <Share2 size={14} />{t('service.remoteTailscaleExportDiagnostics')}
+        </button>
+      </div>
+      {diagnosticsCopied && <p role="status" className="text-[length:var(--fs-xs)] text-text-300">
+        {t('service.remoteTailscaleDiagnosticsCopied')}
+      </p>}
       <form className="flex min-w-0 flex-wrap items-center gap-2" onSubmit={event => { event.preventDefault(); run(pair) }}>
         <input aria-label={t('service.remotePairInput')} value={invite}
           onChange={event => { setInvite(event.target.value); setPaired(false) }}

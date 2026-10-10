@@ -16,13 +16,15 @@ class TailscaleBridge(private val context: Context, private val webView: WebView
   private val handler = Handler(Looper.getMainLooper())
   private val preferences = context.getSharedPreferences("ompiui-tailscale", Context.MODE_PRIVATE)
   private var disposed = false
+  private val diagnostics = TailscaleDiagnostics(context)
+  private var diagnosticsPrepared = false
   private val networkMonitor = TailscaleNetworkMonitor(context, ::refreshNetworkState)
 
   private fun refreshNetworkState() {
     synchronized(executor) {
       if (!disposed) executor.execute {
         try {
-          networkMonitor.refresh()
+          core("network") { networkMonitor.refresh() }
         } catch (error: Exception) {
           Log.w("OMPiUITailscale", "Failed to refresh network state", error)
         }
@@ -31,10 +33,17 @@ class TailscaleBridge(private val context: Context, private val webView: WebView
   }
 
   private fun start() {
+    check(!diagnostics.startupBlocked) {
+      "Tailscale automatic recovery is paused. Export login diagnostics or log in manually to retry."
+    }
+    if (!diagnosticsPrepared) {
+      core("prepare-log") { Mobile.prepareDiagnostics(diagnostics.directory.absolutePath) }
+      diagnosticsPrepared = true
+    }
     networkMonitor.start()
     try {
-      networkMonitor.refresh()
-      Mobile.start(File(context.filesDir, "tailscale").absolutePath, "ompiui-android")
+      core("network") { networkMonitor.refresh() }
+      core("start") { Mobile.start(File(context.filesDir, "tailscale").absolutePath, "ompiui-android") }
     } catch (error: Exception) {
       networkMonitor.stop()
       throw error
@@ -42,22 +51,42 @@ class TailscaleBridge(private val context: Context, private val webView: WebView
   }
 
   private fun status(): JSONObject {
+    if (diagnostics.startupBlocked) {
+      return JSONObject().put("enabled", false).put("BackendState", "Stopped")
+        .put("startupInterrupted", true)
+    }
     val enabled = preferences.getBoolean("enabled", false)
     if (enabled) start()
-    return JSONObject(Mobile.status()).put("enabled", enabled)
+    return JSONObject(core("status") { Mobile.status() }).put("enabled", enabled)
+  }
+
+  private fun <T> core(stage: String, action: () -> T): T {
+    diagnostics.begin("core.$stage")
+    try {
+      val result = action()
+      diagnostics.finish("core.$stage")
+      return result
+    } catch (error: Exception) {
+      diagnostics.finish("core.$stage", error)
+      throw error
+    }
   }
 
   @JavascriptInterface
   fun request(id: String, method: String, payload: String) {
-    if (method == "openLogin") {
+    if (method in listOf("openLogin", "copyDiagnostics", "exportDiagnostics")) {
       handler.post {
         val response = JSONObject().put("id", id)
         try {
-          TailscaleBrowser.open(context, JSONObject(payload).getString("url"))
+          when (method) {
+            "openLogin" -> core("browser") { TailscaleBrowser.open(context, JSONObject(payload).getString("url")) }
+            "copyDiagnostics" -> diagnostics.copy()
+            "exportDiagnostics" -> diagnostics.share()
+          }
           response.put("result", JSONObject().put("ok", true))
         } catch (error: Exception) {
-          Log.w("OMPiUITailscale", "Failed to open authorization browser", error)
-          response.put("error", error.message ?: "Failed to open authorization browser")
+          Log.w("OMPiUITailscale", "Native operation failed: $method", error)
+          response.put("error", error.message ?: "Native operation failed")
         }
         sendResponse(response)
       }
@@ -69,18 +98,19 @@ class TailscaleBridge(private val context: Context, private val webView: WebView
         val result: Any = when (method) {
           "status" -> status()
           "login" -> {
+            diagnostics.resumeStartup()
             start()
             preferences.edit().putBoolean("enabled", true).apply()
-            val current = JSONObject(Mobile.status())
+            val current = JSONObject(core("status") { Mobile.status() })
             if (current.optString("BackendState") != "Running" && current.optString("AuthURL").isEmpty()) {
-              Mobile.login()
+              core("login") { Mobile.login() }
             }
             status()
           }
           "disconnect" -> {
             preferences.edit().putBoolean("enabled", false).apply()
             networkMonitor.stop()
-            Mobile.stop()
+            core("stop") { Mobile.stop() }
             JSONObject().put("ok", true)
           }
           "route" -> {
@@ -88,7 +118,7 @@ class TailscaleBridge(private val context: Context, private val webView: WebView
               throw IllegalStateException("Sign in to Tailscale on this phone first")
             }
             start()
-            Mobile.openRoute(JSONObject(payload).getString("origin"))
+            core("route") { Mobile.openRoute(JSONObject(payload).getString("origin")) }
           }
           else -> throw IllegalArgumentException("Unknown Tailscale operation")
         }
@@ -113,7 +143,7 @@ class TailscaleBridge(private val context: Context, private val webView: WebView
       disposed = true
       executor.execute {
         networkMonitor.stop()
-        Mobile.stop()
+        core("stop") { Mobile.stop() }
       }
       executor.shutdown()
     }
