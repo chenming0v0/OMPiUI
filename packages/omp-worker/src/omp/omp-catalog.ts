@@ -90,6 +90,9 @@ export function previewEntriesFromLines(raw: string[], fallbackIdPrefix: string)
           parentId: typeof parsed.parentId === "string" ? parsed.parentId : null,
           timestamp: typeof parsed.timestamp === "string" ? parsed.timestamp : "",
           droppedType: type,
+          ...(type === "session_init" && typeof parsed.resolvedModel === "string"
+            ? { resolvedModel: parsed.resolvedModel }
+            : {}),
         })
         continue
       }

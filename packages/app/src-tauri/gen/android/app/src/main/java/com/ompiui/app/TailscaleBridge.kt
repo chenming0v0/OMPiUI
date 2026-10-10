@@ -3,6 +3,7 @@ package com.ompiui.app
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import com.ompiui.tailscale.mobile.Mobile
@@ -14,9 +15,30 @@ class TailscaleBridge(private val context: Context, private val webView: WebView
   private val executor = Executors.newSingleThreadExecutor()
   private val handler = Handler(Looper.getMainLooper())
   private val preferences = context.getSharedPreferences("ompiui-tailscale", Context.MODE_PRIVATE)
+  private var disposed = false
+  private val networkMonitor = TailscaleNetworkMonitor(context, ::refreshNetworkState)
+
+  private fun refreshNetworkState() {
+    synchronized(executor) {
+      if (!disposed) executor.execute {
+        try {
+          networkMonitor.refresh()
+        } catch (error: Exception) {
+          Log.w("OMPiUITailscale", "Failed to refresh network state", error)
+        }
+      }
+    }
+  }
 
   private fun start() {
-    Mobile.start(File(context.filesDir, "tailscale").absolutePath, "ompiui-android")
+    networkMonitor.start()
+    try {
+      networkMonitor.refresh()
+      Mobile.start(File(context.filesDir, "tailscale").absolutePath, "ompiui-android")
+    } catch (error: Exception) {
+      networkMonitor.stop()
+      throw error
+    }
   }
 
   private fun status(): JSONObject {
@@ -43,6 +65,7 @@ class TailscaleBridge(private val context: Context, private val webView: WebView
           }
           "disconnect" -> {
             preferences.edit().putBoolean("enabled", false).apply()
+            networkMonitor.stop()
             Mobile.stop()
             JSONObject().put("ok", true)
           }
@@ -70,7 +93,13 @@ class TailscaleBridge(private val context: Context, private val webView: WebView
   }
 
   fun dispose() {
-    executor.execute { Mobile.stop() }
-    executor.shutdown()
+    synchronized(executor) {
+      disposed = true
+      executor.execute {
+        networkMonitor.stop()
+        Mobile.stop()
+      }
+      executor.shutdown()
+    }
   }
 }

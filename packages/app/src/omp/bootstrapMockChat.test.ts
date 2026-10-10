@@ -5,6 +5,14 @@ import { piEventStream } from './eventStream'
 import { ompSubagentStore, selectHudRuns } from './ompSubagentStore'
 import { openPiSocket, type PiSocket } from './ompSocket'
 import { LOCAL_SERVER_ID, serverStore } from '../store/serverStore'
+import { piModelsStore } from './state/piModelsStore'
+import * as controllers from './controllers/index'
+import { piModelRolesStore } from './state/piModelRolesStore'
+import * as rolesController from './controllers/modelRoles'
+
+vi.mock('../api/events', () => ({
+  subscribeToConnectionState: vi.fn(),
+}))
 
 vi.mock('./ompSocket', () => ({
   openPiSocket: vi.fn(),
@@ -132,5 +140,27 @@ describe('backend generation reset clears subagent state', () => {
     installPiBackendServerSwitch()
     serverStore.setActiveServer(remoteId)
     expect(clear).toHaveBeenCalledTimes(1)
+  })
+
+  it('marks models disconnected on socket loss and revalidates on reconnect', async () => {
+    const load = vi.spyOn(controllers, 'loadPiModels').mockResolvedValue([])
+    const loadRoles = vi.spyOn(rolesController, 'loadPiModelRoles').mockResolvedValue({})
+    piEventStream.connectWorkspace('/workspace')
+    const socket = vi.mocked(openPiSocket).mock.results.at(-1)!.value as PiSocket
+    piModelsStore.setModels([])
+    piModelRolesStore.beginRead()
+    piModelRolesStore.setRoles({})
+    expect(piModelsStore.isSynced()).toBe(true)
+    socket.onclose?.({ code: 1006 })
+    expect(piModelsStore.isSynced()).toBe(false)
+    expect(piModelRolesStore.getSnapshot().syncStatus).toBe('disconnected')
+    await vi.advanceTimersByTimeAsync(5000)
+    const reconnected = vi.mocked(openPiSocket).mock.results.at(-1)!.value as PiSocket
+    reconnected.onopen?.()
+    expect(load).toHaveBeenCalledTimes(1)
+    expect(loadRoles).toHaveBeenCalledWith(true)
+    expect(piModelsStore.isSynced()).toBe(false)
+    piModelsStore.setModels([])
+    expect(piModelsStore.isSynced()).toBe(true)
   })
 })

@@ -179,6 +179,9 @@ function RemoteAccessPanel() {
   const expired = invite !== null && now >= invite.expiresAt
   const pairUrl = invite && !expired && !invite.redeemed && base ? `${base}/?pair=${encodeURIComponent(invite.pair)}` : null
   const pairPending = (!invite && !inviteGone) || (tab === 'lan' ? networkLoading : tunnel === undefined)
+  const tailscaleNeedsLogin = tab === 'tailscale' && tailscale !== null
+    && tailscale.backendState !== 'Running' && tailscale.backendState !== 'NeedsMachineAuth'
+    && (tailscale.backendState === 'NeedsLogin' || Boolean(tailscale.authUrl))
 
   const copyInvite = async () => {
     if (!pairUrl) return
@@ -210,6 +213,7 @@ function RemoteAccessPanel() {
       <TailscaleControls state={tailscale.backendState} authUrl={tailscale.authUrl} ips={tailscale.ips}
         enabled={tailscale.enabled} available={tailscale.mode === 'embedded' && tailscale.installed}
         busy={tailscaleBusy} error={tailscaleError || tailscale.lastError}
+        showAuthQr={false}
         onLogin={() => runTailscaleAction(async () => {
           if (tailscale.authUrl) { await openTailscaleLogin(tailscale.authUrl); return }
           await startTailscaleLogin()
@@ -339,7 +343,9 @@ function RemoteAccessPanel() {
               <QrCode text={pairUrl} size={176} />
             ) : (
               <div role="status" className="flex h-[186px] w-[186px] items-center justify-center rounded-lg bg-bg-200/60 p-4 text-center text-[length:var(--fs-xs)] leading-relaxed text-text-400">
-                {pairPending
+                {tailscaleNeedsLogin
+                  ? t('settings:service.remoteTailscalePairLoginRequired')
+                  : pairPending
                   ? <span className="flex items-center gap-2"><SpinnerIcon size={16} className="shrink-0 animate-spin" />{t('settings:service.backendStatusLoading', { defaultValue: 'Loading server status…' })}</span>
                   : t('settings:service.remoteQrUnavailable', { defaultValue: 'QR code unavailable' })}
               </div>
@@ -403,7 +409,9 @@ function RemoteAccessPanel() {
             ? t('settings:service.remoteApproved')
             : pairUrl
               ? t('settings:service.remoteWaiting', { url: pairUrl })
-              : t('settings:service.remotePairUnavailable', { defaultValue: 'Pairing needs a reachable server address and an active code.' })}
+              : tailscaleNeedsLogin
+                ? t('settings:service.remoteTailscalePairLoginRequired')
+                : t('settings:service.remotePairUnavailable', { defaultValue: 'Pairing needs a reachable server address and an active code.' })}
         </div>
       </div>
     </SettingsSection>
