@@ -9,6 +9,7 @@ import (
 )
 
 func TestStartReturnsNativePanicAsError(t *testing.T) {
+	t.Setenv("TS_LOGS_DIR", "")
 	// 模拟平台接口回调抛出 panic，验证真实启动路径不会让 JNI 调用终止进程。
 	netmon.RegisterInterfaceGetter(func() ([]netmon.Interface, error) {
 		panic("Android interface callback failed")

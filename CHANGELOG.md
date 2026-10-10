@@ -1,3 +1,9 @@
+## [v0.6.8] - 2026-10-10
+
+- fix: 修复 Android Tailscale 启动时报 `no safe place found to store log state`：启动前创建应用私有日志目录并设置 `TS_LOGS_DIR`，避免依赖系统 HOME、工作目录或临时目录。
+- test: 调用真实 Tailscale 日志策略验证目录选择、写入与重试状态保留；日志目录不可用时返回错误，移动模块与网关测试通过。
+- chore: 统一版本为 `0.6.8`，保留已有 UI、模型同步和手机诊断功能；正式 APK 由 GitHub Actions 生成，授权流程由维护者实机验证。
+
 ## [v0.6.7] - 2026-10-10
 
 - feat: Android 服务器设置新增复制及导出登录诊断，可直接从手机取得安装版本、登录阶段、系统退出原因与异常记录，无需 ADB。
