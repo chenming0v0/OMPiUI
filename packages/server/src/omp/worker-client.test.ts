@@ -121,6 +121,41 @@ test("WorkerSession rejects the handshake on a protocol version mismatch", async
   }
 })
 
+test("WorkerSession closes a runtime created after its open was cancelled", async () => {
+  const host = startHost("slow-open")
+  try {
+    await host.getHandshake()
+    const controller = new AbortController()
+    const opening = host.open(".", "cancelled.jsonl", controller.signal)
+    await new Promise(resolve => setTimeout(resolve, 30))
+    controller.abort()
+    await assert.rejects(opening, { code: "REQUEST_ABORTED" })
+    assert.deepEqual(await host.command("fixture.sessions"), { active: 0 })
+    const retry = await host.open(".", "cancelled.jsonl")
+    assert.deepEqual(await host.command("fixture.sessions"), { active: 1 })
+    await retry.dispose()
+  } finally {
+    await host.dispose()
+  }
+})
+
+test("WorkerSession reports an OMP child crash without killing another runtime", async () => {
+  const host = startHost("hello-ok")
+  try {
+    const crashed = await host.open(".", "crashed.jsonl")
+    const other = await host.open(".", "other.jsonl")
+    let crash: Error | undefined
+    crashed.onCrash(error => { crash = error })
+    await crashed.command("fixture.crash")
+    assert.equal((crash as (Error & { code: string }) | undefined)?.code, "SESSION_RUNTIME_CRASHED")
+    assert.deepEqual(await other.command("state.get"), { fixture: "ok" })
+    await crashed.dispose()
+    await other.dispose()
+  } finally {
+    await host.dispose()
+  }
+})
+
 async function waitFor(check: () => boolean, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (!check()) {

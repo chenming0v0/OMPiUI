@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { JsonObject } from '@ompiui/protocol'
 import * as transport from '../transport/index.js'
-import { loadPiSessionData, refreshPiSessionState } from './index.js'
+import { loadPiSessionData, refreshPiSessionState, refreshPiBranch } from './index.js'
 import { piSessionStateStore, piBranchStore } from '../state/index.js'
 
 function deferred<T>() {
@@ -68,5 +68,36 @@ describe('session state response ordering', () => {
     await Promise.all([refreshPiSessionState('session-a'), refreshPiSessionState('session-b')])
     expect(piSessionStateStore.getState('session-a')?.thinkingLevel).toBe('high')
     expect(piSessionStateStore.getState('session-b')?.thinkingLevel).toBe('low')
+  })
+
+  it('does not let a slow preview replace newer branch data or its live message', async () => {
+    const preview = deferred<Awaited<ReturnType<typeof transport.previewPiSession>>>()
+    vi.spyOn(transport, 'previewPiSession').mockReturnValueOnce(preview.promise)
+    const loading = loadPiSessionData('session-a')
+    const latest = {
+      head: { sdkVersion: 'test', revision: 2, header: null, leafId: null, entryCount: 0, epoch: 'test' },
+      items: [], hasMore: false,
+    }
+    piBranchStore.setData('session-a', latest)
+    preview.resolve({
+      state: { isStreaming: false },
+      branch: { ...latest, head: { ...latest.head, revision: 1 } },
+    })
+    await loading
+    expect(piBranchStore.getData('session-a')).toBe(latest)
+  })
+
+  it('does not let an older branch refresh replace a newer response', async () => {
+    const old = deferred<Awaited<ReturnType<typeof transport.getPiBranchPage>>>()
+    const latest = {
+      head: { sdkVersion: 'test', revision: 2, header: null, leafId: null, entryCount: 0, epoch: 'test' },
+      items: [], hasMore: false,
+    }
+    vi.spyOn(transport, 'getPiBranchPage').mockReturnValueOnce(old.promise).mockResolvedValueOnce(latest)
+    const first = refreshPiBranch('session-a')
+    await refreshPiBranch('session-a')
+    old.resolve({ ...latest, head: { ...latest.head, revision: 1 } })
+    await first
+    expect(piBranchStore.getData('session-a')?.head.revision).toBe(2)
   })
 })

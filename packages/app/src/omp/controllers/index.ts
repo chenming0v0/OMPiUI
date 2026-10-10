@@ -174,6 +174,7 @@ export async function loadPiSessionData(sessionId: string, signal?: AbortSignal)
 async function loadPiSessionDataOnce(sessionId: string, signal?: AbortSignal): Promise<void> {
   const serverGeneration = serverStore.getActiveServerGeneration()
   const requestVersion = piSessionStateStore.beginRequest(sessionId)
+  const branchVersion = piBranchStore.beginRequest(sessionId)
   let lastError: unknown
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
@@ -185,7 +186,7 @@ async function loadPiSessionDataOnce(sessionId: string, signal?: AbortSignal): P
 
       if (serverStore.getActiveServerGeneration() !== serverGeneration) return
       piSessionStateStore.setStateIfCurrent(sessionId, preview.state, requestVersion)
-      piBranchStore.setData(sessionId, preview.branch)
+      piBranchStore.setDataIfCurrent(sessionId, preview.branch, branchVersion)
       return
     } catch (error) {
       lastError = error
@@ -200,7 +201,9 @@ async function loadPiSessionDataOnce(sessionId: string, signal?: AbortSignal): P
   if (piSessionStateStore.isRequestCurrent(sessionId, requestVersion)) {
     piSessionStateStore.setError(sessionId, lastError as Error)
   }
-  piBranchStore.setError(sessionId, lastError as Error)
+  if (piBranchStore.isRequestCurrent(sessionId, branchVersion)) {
+    piBranchStore.setError(sessionId, lastError as Error)
+  }
   throw lastError
 }
 
@@ -298,9 +301,10 @@ export async function loadMorePiBranchEntries(sessionId: string, signal?: AbortS
  */
 export async function refreshPiBranch(sessionId: string, signal?: AbortSignal): Promise<void> {
   const serverGeneration = serverStore.getActiveServerGeneration()
+  const version = piBranchStore.beginRequest(sessionId)
   const latest = await transport.getPiBranchPage(sessionId, { limit: BRANCH_PAGE_LIMIT, maxBytes: BRANCH_PAGE_MAX_BYTES }, signal)
   if (serverStore.getActiveServerGeneration() !== serverGeneration) return
-  piBranchStore.setData(sessionId, mergeLatestBranchPage(piBranchStore.getData(sessionId), latest))
+  piBranchStore.setDataIfCurrent(sessionId, mergeLatestBranchPage(piBranchStore.getData(sessionId), latest), version)
 }
 
 /**

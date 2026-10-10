@@ -202,6 +202,11 @@ function subscribeRuntimeEvents(current: SessionRuntime): Array<() => void> {
     unsubs.push(current.onCrash(error => {
       const stderr = current.stderrTail
       console.error(`[ompiui-worker] omp rpc process crashed for session ${current.getSessionId()}: ${error.message}${stderr ? `\n[ompiui-worker] omp stderr: ${stderr.slice(-1500)}` : ""}`)
+      send({
+        kind: "event", generation: workerGeneration, sessionId: current.getSessionId(),
+        channel: "session.crashed", event: { message: error.message },
+      })
+      void closeRuntime(current.getSessionId()).catch(error => console.error("[ompiui-worker] crashed runtime cleanup failed", error))
     }))
   }
   return unsubs
@@ -226,18 +231,19 @@ async function openRuntime(params: JsonObject): Promise<JsonValue> {
   runtimes.set(sessionId, opened)
   try {
     await setRuntimeRegistryBaseline(sessionId, opened)
+    const state = await opened.getState()
+    return {
+      sessionId,
+      sessionFile: opened.getSessionFile() ?? null,
+      cwd: opened.getCwd(),
+      state,
+    }
   } catch (error) {
     runtimes.delete(sessionId)
     registryDigests.delete(sessionId)
     unsubs.forEach(unsub => unsub())
     await opened.dispose()
     throw error
-  }
-  return {
-    sessionId,
-    sessionFile: opened.getSessionFile() ?? null,
-    cwd: opened.getCwd(),
-    state: await opened.getState(),
   }
 }
 

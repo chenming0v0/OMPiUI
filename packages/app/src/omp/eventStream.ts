@@ -470,9 +470,10 @@ class PiEventStream {
   }
 
   private handleExtensionUiEvent(sessionId: string, event: PiExtensionUiEvent): void {
+    piSessionStateStore.invalidateRequests(sessionId)
     switch (event.type) {
       case 'requested':
-        extensionUiStore.requestOpened(event.request)
+        if (!extensionUiStore.requestOpened(event.request)) break
         // Surface as pending action on the sidebar (awaiting permission/answer)
         activeSessionStore.addPendingRequest(
           event.request.requestId,

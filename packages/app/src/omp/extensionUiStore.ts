@@ -16,6 +16,7 @@ interface ExtensionUiStoreSnapshot {
 type EditorTextSource = 'none' | 'mirror' | 'extension'
 
 const editorTextSourceBySession = new Map<string, EditorTextSource>()
+const settledRequestsBySession = new Map<string, Set<string>>()
 
 const emptyState = (): ExtensionUiState => ({
   revision: 0,
@@ -64,6 +65,9 @@ function applyStatePatch(state: ExtensionUiState, patch: ExtensionUiStatePatch):
 
 let current: ExtensionUiStoreSnapshot = { sessions: {} }
 const listeners = new Set<() => void>()
+function settledKey(requestId: string, workerGeneration?: string): string {
+  return `${workerGeneration ?? ''}:${requestId}`
+}
 
 function update(sessionId: string, value: ExtensionUiSnapshot): void {
   current = { sessions: { ...current.sessions, [sessionId]: value } }
@@ -88,17 +92,25 @@ export const extensionUiStore = {
     update(snapshot.sessionId, structuredClone(snapshot))
   },
 
-  requestOpened(request: ExtensionUiDialogRequest): void {
+  requestOpened(request: ExtensionUiDialogRequest): boolean {
     const snapshot = existing(request.sessionId)
+    if (settledRequestsBySession.get(request.sessionId)?.has(
+      settledKey(request.requestId, request.workerGeneration ?? snapshot.workerGeneration),
+    )) return false
     update(request.sessionId, {
       ...snapshot,
       workerGeneration: request.workerGeneration ?? snapshot.workerGeneration,
       pending: [...snapshot.pending.filter(item => item.requestId !== request.requestId), structuredClone(request)],
     })
+    return true
   },
 
   requestSettled(sessionId: string, requestId: string): void {
+    // 已结算的请求不能由迟到快照或缓存的会话状态重新打开。
     const snapshot = existing(sessionId)
+    const settled = settledRequestsBySession.get(sessionId) ?? new Set<string>()
+    settled.add(settledKey(requestId, snapshot.workerGeneration))
+    settledRequestsBySession.set(sessionId, settled)
     update(sessionId, { ...snapshot, pending: snapshot.pending.filter(item => item.requestId !== requestId) })
   },
 
@@ -111,7 +123,7 @@ export const extensionUiStore = {
    */
   restore(
     sessionId: string,
-    mirror: { patches: ExtensionUiStatePatch[]; editorText: string; toolsExpanded: boolean },
+    mirror: { patches: ExtensionUiStatePatch[]; editorText?: string; toolsExpanded?: boolean },
   ): void {
     const snapshot = existing(sessionId)
     let state = emptyState()
@@ -119,7 +131,11 @@ export const extensionUiStore = {
     editorTextSourceBySession.set(sessionId, 'mirror')
     update(sessionId, {
       ...snapshot,
-      state: { ...state, editorText: mirror.editorText },
+      state: {
+        ...state,
+        editorText: mirror.editorText ?? snapshot.state.editorText,
+        toolsExpanded: mirror.toolsExpanded ?? state.toolsExpanded,
+      },
     })
   },
 
@@ -141,6 +157,7 @@ export const extensionUiStore = {
   },
 
   remove(sessionId: string): void {
+    settledRequestsBySession.delete(sessionId)
     if (!(sessionId in current.sessions)) return
     const sessions = { ...current.sessions }
     delete sessions[sessionId]
@@ -150,6 +167,7 @@ export const extensionUiStore = {
   },
 
   reset(): void {
+    settledRequestsBySession.clear()
     current = { sessions: {} }
     editorTextSourceBySession.clear()
     for (const listener of listeners) listener()

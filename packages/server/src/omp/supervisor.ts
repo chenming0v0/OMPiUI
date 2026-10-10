@@ -116,9 +116,11 @@ export class RuntimeSupervisor {
   }
 
   private async performOpen(cwd: string, sessionFile?: string, signal?: AbortSignal): Promise<WorkerSession> {
+    if (signal?.aborted) throw Object.assign(new Error("request aborted"), { code: "REQUEST_ABORTED" })
     let lease: SessionLease | undefined = sessionFile ? await this.leases.acquire(sessionFile) : undefined
-    if (this.disposed) {
+    if (this.disposed || signal?.aborted) {
       lease?.release()
+      if (signal?.aborted) throw Object.assign(new Error("request aborted"), { code: "REQUEST_ABORTED" })
       throw new Error("Runtime supervisor is disposed")
     }
     let runtime: WorkerSession
@@ -129,17 +131,15 @@ export class RuntimeSupervisor {
       throw error
     }
     try {
-      if (this.disposed) {
-        await runtime.dispose()
-        lease?.release()
+      if (this.disposed || signal?.aborted) {
+        if (signal?.aborted) throw Object.assign(new Error("request aborted"), { code: "REQUEST_ABORTED" })
         throw new Error("Runtime supervisor is disposed")
       }
       const runtimeSessionFile = sessionFile ?? runtime.getSessionFile() ?? `memory:${runtime.getSessionId()}`
       if (lease) await lease.refresh(runtimeSessionFile, runtime.getSessionId())
       else lease = await this.leases.acquire(runtimeSessionFile, runtime.getSessionId())
-      if (this.disposed) {
-        await runtime.dispose()
-        lease.release()
+      if (this.disposed || signal?.aborted) {
+        if (signal?.aborted) throw Object.assign(new Error("request aborted"), { code: "REQUEST_ABORTED" })
         throw new Error("Runtime supervisor is disposed")
       }
       const release = once(() => lease?.release())
