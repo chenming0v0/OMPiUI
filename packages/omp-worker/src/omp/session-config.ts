@@ -5,9 +5,11 @@ export function sessionConfigFromBranch(branch: JsonObject[]): { model: JsonObje
   let model: JsonObject | null = null
   let explicitModel = false
   let thinkingLevel = "off"
+  let explicitThinking = false
   for (const entry of branch) {
     if (entry.type === "thinking_level_change") {
       thinkingLevel = typeof entry.thinkingLevel === "string" ? entry.thinkingLevel : "off"
+      explicitThinking = true
     } else if (entry.type === "model_change" && (entry.role === undefined || entry.role === "default")) {
       if (typeof entry.provider === "string" && typeof entry.modelId === "string") {
         model = { provider: entry.provider, id: entry.modelId }
@@ -19,6 +21,18 @@ export function sessionConfigFromBranch(branch: JsonObject[]): { model: JsonObje
           explicitModel = true
         }
       }
+    } else if (entry.type === "session_init" || (entry.type === "omp.dropped" && entry.droppedType === "session_init")) {
+      // 子代理初始化选择器可能包含思考强度后缀，显式变更记录仍优先。
+      if (typeof entry.resolvedModel !== "string") continue
+      const selector = entry.resolvedModel
+      const suffix = /:(off|minimal|low|medium|high|xhigh|max|auto)$/.exec(selector)
+      const identity = suffix ? selector.slice(0, suffix.index) : selector
+      const separator = identity.indexOf("/")
+      if (!explicitModel && separator > 0) {
+        model = { provider: identity.slice(0, separator), id: identity.slice(separator + 1) }
+        explicitModel = true
+      }
+      if (!explicitThinking && suffix) thinkingLevel = suffix[1]!
     } else if (!explicitModel && entry.type === "message" && isJsonObject(entry.message)) {
       const message = entry.message
       if (message.role === "assistant" && typeof message.provider === "string" && typeof message.model === "string") {

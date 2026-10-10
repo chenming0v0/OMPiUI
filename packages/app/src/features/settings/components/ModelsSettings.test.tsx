@@ -3,6 +3,10 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { ModelsSettings } from './ModelsSettings'
 import type { AnyModel } from '../../../utils/modelUtils'
 
+vi.mock('../../../omp/controllers/index.js', () => ({
+  loadPiModels: vi.fn().mockResolvedValue([]),
+}))
+
 const { usePiModelsMock, useHiddenModelKeysMock, setVisibleMock, setManyVisibleMock } = vi.hoisted(() => ({
   usePiModelsMock: vi.fn(),
   useHiddenModelKeysMock: vi.fn(),
@@ -58,7 +62,7 @@ const MODELS: AnyModel[] = [makeModel('gpt-4.1', 'GPT-4.1'), makeModel('gpt-4o-m
 
 describe('ModelsSettings', () => {
   beforeEach(() => {
-    usePiModelsMock.mockReturnValue({ models: MODELS, isLoading: false })
+    usePiModelsMock.mockReturnValue({ models: MODELS, isLoading: false, syncStatus: 'synced' })
     useHiddenModelKeysMock.mockReturnValue([])
     setVisibleMock.mockReset()
     setManyVisibleMock.mockReset()
@@ -103,5 +107,23 @@ describe('ModelsSettings', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Show all' }))
     expect(setManyVisibleMock).toHaveBeenCalledWith(MODELS, true)
+  })
+
+  it('shows cached models during refresh with a gray unsynced status', () => {
+    usePiModelsMock.mockReturnValue({ models: MODELS, isLoading: true, syncStatus: 'unknown' })
+    const { rerender } = render(<ModelsSettings />)
+    expect(screen.getByRole('button', { name: /GPT-4.1/i })).toBeVisible()
+    expect(screen.getByRole('status')).toHaveAccessibleName('Not synced yet')
+    expect(screen.getByRole('status')).toHaveClass('text-text-400')
+
+    usePiModelsMock.mockReturnValue({ models: MODELS, isLoading: false, syncStatus: 'synced' })
+    rerender(<ModelsSettings />)
+    expect(screen.getByRole('status')).toHaveAccessibleName('Connected / synced')
+    expect(screen.getByRole('status')).toHaveClass('text-success-100')
+
+    usePiModelsMock.mockReturnValue({ models: MODELS, isLoading: false, syncStatus: 'disconnected' })
+    rerender(<ModelsSettings />)
+    expect(screen.getByRole('status')).toHaveClass('text-danger-100')
+    expect(screen.getByRole('button', { name: /GPT-4.1/i })).toBeVisible()
   })
 })

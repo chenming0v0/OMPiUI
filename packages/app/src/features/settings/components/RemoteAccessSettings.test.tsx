@@ -11,10 +11,12 @@ const mocks = vi.hoisted(() => ({
   poll: vi.fn(),
   tunnel: vi.fn(),
   tailscale: vi.fn(),
+  openLogin: vi.fn(),
   get: vi.fn(),
 }))
 vi.mock('../../../hooks', () => ({ useServerStore: () => ({ activeServerGeneration: mocks.generation }) }))
 vi.mock('../../../utils', () => ({ serverStorage: { get: mocks.get, set: vi.fn() } }))
+vi.mock('../../../utils/tailscaleLogin', () => ({ openTailscaleLogin: mocks.openLogin }))
 vi.mock('../../../omp/transport/index.js', () => ({
   fetchHostNetwork: mocks.network,
   mintPairInvite: mocks.mint,
@@ -50,6 +52,7 @@ beforeEach(() => {
   mocks.poll.mockResolvedValue(invite())
   mocks.tunnel.mockReset().mockResolvedValue(disabledTunnel)
   mocks.tailscale.mockRejectedValue(new Error('unsupported'))
+  mocks.openLogin.mockResolvedValue(undefined)
   serviceStore.setEnvVars([{ key: 'OMPIUI_PORT', value: '7777' }])
 })
 
@@ -70,16 +73,49 @@ describe('RemoteAccessSettings authoritative addresses', () => {
     expect(screen.queryByRole('button', { name: 'Install Tailscale' })).not.toBeInTheDocument()
   })
 
-  it('does not publish a pairing address for a node awaiting authorization', async () => {
+  it.each([null, 'https://login.tailscale.com/a/test'])('does not render a login or pairing QR while awaiting authorization: %s', async authUrl => {
     mocks.get.mockReturnValue('tailscale')
     mocks.tailscale.mockResolvedValue({
       mode: 'embedded', installed: true, enabled: true, backendState: 'NeedsLogin',
-      ips: [], url: null, authUrl: null, lastError: null,
+      ips: [], url: null, authUrl, lastError: null,
     })
     render(<RemoteAccessSettings />)
     expect(await screen.findByText('Connecting / awaiting sign-in')).toBeInTheDocument()
     expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
+    expect(screen.getAllByText('Complete Tailscale sign-in first')).toHaveLength(2)
     expect(screen.getByRole('button', { name: 'Copy full pairing info' })).toBeDisabled()
+    if (authUrl) {
+      fireEvent.click(screen.getByRole('button', { name: 'Open official authorization' }))
+      await waitFor(() => expect(mocks.openLogin).toHaveBeenCalledWith(authUrl))
+    }
+  })
+
+  it('replaces the sign-in prompt with the pairing QR after Tailscale connects', async () => {
+    mocks.get.mockReturnValue('tailscale')
+    mocks.tailscale.mockResolvedValue({
+      mode: 'embedded', installed: true, enabled: true, backendState: 'NeedsLogin',
+      ips: [], url: null, authUrl: 'https://login.tailscale.com/a/test', lastError: null,
+    })
+    vi.useFakeTimers()
+    try {
+      await act(async () => { render(<RemoteAccessSettings />) })
+      expect(screen.getByText('Connecting / awaiting sign-in')).toBeInTheDocument()
+      expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
+      mocks.tailscale.mockResolvedValue({
+        mode: 'embedded', installed: true, enabled: true, backendState: 'Running',
+        ips: ['100.101.2.3'], url: 'http://100.101.2.3:9292', authUrl: null, lastError: null,
+      })
+      fireEvent.click(screen.getByRole('button', { name: 'Open official authorization' }))
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+      expect(screen.getAllByTestId('qr')).toHaveLength(1)
+      expect(screen.getByTestId('qr')).toHaveAttribute('data-url', 'http://100.101.2.3:9292/?pair=first.secret')
+      expect(screen.queryByText('Complete Tailscale sign-in first')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Open official authorization' })).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Copy full pairing info' })).toBeEnabled()
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
   })
 
   it('uses the backend non-default port even when local desktop settings differ', async () => {

@@ -113,7 +113,17 @@ export function usePiModels() {
     () => piModelsStore.isLoading(),
     () => piModelsStore.isLoading(),
   )
-  return { models, isLoading }
+  const isSynced = useSyncExternalStore(
+    piModelsStore.subscribe,
+    () => piModelsStore.isSynced(),
+    () => false,
+  )
+  const syncStatus = useSyncExternalStore(
+    piModelsStore.subscribe,
+    () => piModelsStore.getSyncStatus(),
+    () => 'unknown' as const,
+  )
+  return { models, isLoading, isSynced, syncStatus }
 }
 
 /**

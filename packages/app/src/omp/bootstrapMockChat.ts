@@ -17,6 +17,8 @@ import { piEventStream } from "./eventStream"
 import { abortInFlightPiRequests } from "./httpClient"
 import { activeSessionStore } from "../store/activeSessionStore"
 import { PROTOCOL_VERSION } from "@ompiui/protocol"
+import { piModelRolesStore } from "./state/piModelRolesStore"
+import { installModelSettingsSync } from "./modelSettingsSync"
 
 export interface PiBackendBootstrapResult {
   available: boolean
@@ -86,7 +88,8 @@ export function installPiBackendServerSwitch(): void {
     clearPiTimelineItemCache()
     piBranchStore.clearAll()
     piSessionStateStore.clearAll()
-    piModelsStore.clear()
+    piModelsStore.restoreCache()
+    piModelRolesStore.restoreCache()
     piSessionInfoStore.clear()
     ompSubagentStore.clearAll()
     extensionUiStore.reset()
@@ -104,6 +107,7 @@ export function installPiBackendServerSwitch(): void {
       if (getPiBackendState().status === "booting") void initializePiBackend()
     })
   })
+  installModelSettingsSync()
 }
 
 function scheduleBackendRetry(): void {

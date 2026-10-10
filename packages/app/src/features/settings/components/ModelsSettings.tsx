@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useMemo, useRef, useState } from 'react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   ChevronDownIcon,
@@ -14,6 +14,10 @@ import { groupModelsByProvider, getModelKey } from '../../../utils/modelUtils'
 import type { AnyModel } from '../../../utils/modelUtils'
 import { SettingsSection } from './SettingsUI'
 import { ModelRolesSettings } from './ModelRolesSettings'
+import { ModelSyncStatus } from './ModelSyncStatus'
+import { loadPiModels } from '../../../omp/controllers/index.js'
+import { piModelsStore } from '../../../omp/state/piModelsStore'
+import { useServerStore } from '../../../hooks/useServerStore'
 
 function formatContext(limit: number): string {
   if (!limit) return ''
@@ -69,7 +73,11 @@ function ModelVisibilityButton({
 
 export function ModelsSettings() {
   const { t } = useTranslation('settings')
-  const { models, isLoading } = usePiModels()
+  const { models, isLoading, syncStatus } = usePiModels()
+  const { activeServerGeneration } = useServerStore()
+  useEffect(() => {
+    if (!piModelsStore.isSynced()) void loadPiModels().catch(() => undefined)
+  }, [activeServerGeneration])
   const hiddenModelKeys = useHiddenModelKeys()
   const [query, setQuery] = useState('')
   const deferredQuery = useDeferredValue(query)
@@ -192,7 +200,7 @@ export function ModelsSettings() {
   return (
     <div>
       <ModelRolesSettings />
-      <SettingsSection title={t('models.visibility')} description={t('models.visibilityDesc')} collapsible className="model-visibility-section">
+      <SettingsSection title={t('models.visibility')} description={t('models.visibilityDesc')} status={<ModelSyncStatus status={syncStatus} />} collapsible className="model-visibility-section">
       <div className="relative group">
         <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 text-text-400 w-3.5 h-3.5 group-focus-within:text-accent-main-100 transition-colors pointer-events-none" />
         <input
@@ -219,7 +227,7 @@ export function ModelsSettings() {
         )}
       </div>
 
-      {isLoading ? (
+      {isLoading && models.length === 0 ? (
         <div className="py-10 text-center text-[length:var(--fs-sm)] text-text-400">{t('models.loading')}</div>
       ) : groups.length === 0 ? (
         <div className="py-10 text-center text-[length:var(--fs-sm)] text-text-400">

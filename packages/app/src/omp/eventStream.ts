@@ -38,8 +38,8 @@ import {
 } from './managementEventStore'
 import type { SessionStatus } from '../types/session'
 import { BrowserDiagnostics } from './browserDiagnostics'
+import { markModelSettingsDisconnected, refreshModelSettings } from './modelSettingsSync'
 import {
-  loadPiModels,
   loadPiSessionData,
   refreshPiBranch,
   refreshPiSessionState,
@@ -251,6 +251,7 @@ class PiEventStream {
       this.diagnostics.connected(this.lastCloseCode)
       this.sendSubscribe()
       notifyReconnected()
+      if (this.lastCloseCode !== undefined) refreshModelSettings()
       this.pingTimer = setInterval(() => {
         this.send({ type: 'ping', protocolVersion: PROTOCOL_VERSION })
       }, PING_INTERVAL_MS)
@@ -266,6 +267,7 @@ class PiEventStream {
       if (this.ws !== ws) return
       this.clearPing()
       this.ws = null
+      markModelSettingsDisconnected()
       this.lastCloseCode = event.code
       if (this.hasSubscriptions()) {
         if (this.reconnectTimer) return
@@ -396,7 +398,7 @@ class PiEventStream {
         // 凭据同源，bump providerRevision 让管理页重拉；模型选择器的列表
         // store 直接刷新（有 flight 去重），不依赖某个组件恰好挂载
         receiveProviderAuthUpdated()
-        void loadPiModels().catch(() => undefined)
+        refreshModelSettings()
         break
       }
       case 'packages.progress':

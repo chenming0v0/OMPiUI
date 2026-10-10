@@ -1,8 +1,12 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import i18n from '../../../i18n'
 import { ModelRolesSettings } from './ModelRolesSettings'
 import type { AnyModel } from '../../../utils/modelUtils'
+import { readModelRolesCache, writeModelRolesCache } from '../../../omp/modelSettingsCache'
+import { serverStore } from '../../../store/serverStore'
+import { piModelRolesStore } from '../../../omp/state/piModelRolesStore'
+import { loadPiModelRoles } from '../../../omp/controllers/modelRoles'
 
 const { usePiModelsMock } = vi.hoisted(() => ({
   usePiModelsMock: vi.fn(),
@@ -58,10 +62,17 @@ function makeModel(id: string, reasoning = true): AnyModel {
 
 const MODELS = [makeModel('gpt-4.1'), makeModel('gpt-4o-mini', false)]
 
+function seedRoles(roles: Record<string, string>) {
+  writeModelRolesCache(roles)
+  piModelRolesStore.restoreCache()
+}
+
 describe('ModelRolesSettings', () => {
   beforeEach(async () => {
+    localStorage.clear()
+    piModelRolesStore.restoreCache()
     await i18n.changeLanguage('en')
-    usePiModelsMock.mockReturnValue({ models: MODELS, isLoading: false })
+    usePiModelsMock.mockReturnValue({ models: MODELS, isLoading: false, syncStatus: 'synced' })
     getPiModelRolesMock.mockReset().mockResolvedValue({})
     setPiModelRolesMock.mockReset().mockImplementation(async (roles: Record<string, string>) => roles)
   })
@@ -174,5 +185,133 @@ describe('ModelRolesSettings', () => {
     await waitFor(() => {
       expect(setPiModelRolesMock).toHaveBeenCalledWith({ slow: 'openai/gpt-4.1:high' })
     })
+  })
+
+  it('renders cached roles immediately, then refreshes them and turns green', async () => {
+    seedRoles({ default: 'openai/gpt-4o-mini' })
+    let resolve!: (roles: Record<string, string>) => void
+    getPiModelRolesMock.mockReturnValue(new Promise(done => { resolve = done }))
+    render(<ModelRolesSettings />)
+    expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4o-mini')
+    expect(screen.getByRole('status')).toHaveClass('text-text-400')
+    resolve({ default: 'openai/gpt-4.1' })
+    await waitFor(() => expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4.1'))
+    expect(screen.getByRole('status')).toHaveClass('text-success-100')
+    expect(readModelRolesCache()).toEqual({ default: 'openai/gpt-4.1' })
+  })
+
+  it('keeps unsaved edits when a delayed refresh updates untouched roles', async () => {
+    seedRoles({ default: 'openai/gpt-4o-mini' })
+    let resolve!: (roles: Record<string, string>) => void
+    getPiModelRolesMock.mockReturnValue(new Promise(done => { resolve = done }))
+    render(<ModelRolesSettings />)
+    fireEvent.click(screen.getAllByTestId('model-selector-stub')[0])
+    resolve({ default: 'openai/gpt-4o-mini', smol: 'openai/gpt-4o-mini:low' })
+    await waitFor(() => expect(screen.getAllByTestId('model-selector-stub')[1]).toHaveTextContent('openai:gpt-4o-mini'))
+    expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4.1')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(readModelRolesCache()).toEqual({
+      default: 'openai/gpt-4.1', smol: 'openai/gpt-4o-mini:low',
+    }))
+  })
+
+  it('does not let an old read overwrite a successful save', async () => {
+    seedRoles({ default: 'openai/gpt-4o-mini' })
+    let resolve!: (roles: Record<string, string>) => void
+    getPiModelRolesMock.mockReturnValue(new Promise(done => { resolve = done }))
+    render(<ModelRolesSettings />)
+    fireEvent.click(screen.getAllByTestId('model-selector-stub')[0])
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(readModelRolesCache()).toEqual({ default: 'openai/gpt-4.1' }))
+    resolve({ default: 'openai/gpt-4o-mini' })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled())
+    expect(readModelRolesCache()).toEqual({ default: 'openai/gpt-4.1' })
+  })
+
+  it('retains cached roles and a red status when the request fails', async () => {
+    seedRoles({ default: 'openai/gpt-4o-mini' })
+    getPiModelRolesMock.mockRejectedValue(new Error('network unavailable'))
+    render(<ModelRolesSettings />)
+    expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4o-mini')
+    await screen.findByRole('alert')
+    expect(screen.getByRole('status')).toHaveClass('text-danger-100')
+  })
+
+  it('recovers roles after a failed first request when the shared connection refreshes', async () => {
+    getPiModelRolesMock.mockRejectedValueOnce(new Error('offline')).mockResolvedValue({ default: 'openai/gpt-4.1' })
+    render(<ModelRolesSettings />)
+    await waitFor(() => expect(getPiModelRolesMock).toHaveBeenCalledTimes(1))
+    await act(async () => { await loadPiModelRoles(true) })
+    await waitFor(() => expect(screen.getByRole('status')).toHaveClass('text-success-100'))
+    expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4.1')
+  })
+
+  it('retains green status when reopened without issuing another request', async () => {
+    getPiModelRolesMock.mockResolvedValue({ default: 'openai/gpt-4.1' })
+    const first = render(<ModelRolesSettings />)
+    await waitFor(() => expect(screen.getByRole('status')).toHaveAccessibleName('Connected / synced'))
+    first.unmount()
+    getPiModelRolesMock.mockImplementation(() => new Promise(() => {}))
+    render(<ModelRolesSettings />)
+    expect(screen.getByRole('status')).toHaveAccessibleName('Connected / synced')
+    expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4.1')
+    expect(getPiModelRolesMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not reset a pending request when closed and reopened', async () => {
+    seedRoles({ default: 'openai/gpt-4o-mini' })
+    let resolve!: (roles: Record<string, string>) => void
+    getPiModelRolesMock.mockReturnValue(new Promise(done => { resolve = done }))
+    const first = render(<ModelRolesSettings />)
+    first.unmount()
+    render(<ModelRolesSettings />)
+    expect(getPiModelRolesMock).toHaveBeenCalledTimes(1)
+    await act(async () => { resolve({ default: 'openai/gpt-4.1' }) })
+    await waitFor(() => expect(screen.getByRole('status')).toHaveAccessibleName('Connected / synced'))
+  })
+
+  it('tracks connection loss while closed and reopens red without discarding cached data', async () => {
+    getPiModelRolesMock.mockResolvedValue({ default: 'openai/gpt-4.1' })
+    const first = render(<ModelRolesSettings />)
+    await waitFor(() => expect(screen.getByRole('status')).toHaveAccessibleName('Connected / synced'))
+    first.unmount()
+    piModelRolesStore.markDisconnected()
+    getPiModelRolesMock.mockImplementation(() => new Promise(() => {}))
+    render(<ModelRolesSettings />)
+    expect(screen.getByRole('status')).toHaveAccessibleName('Disconnected')
+    expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4.1')
+  })
+
+  it('shows background updates immediately on reopening', async () => {
+    getPiModelRolesMock.mockResolvedValueOnce({ default: 'openai/gpt-4o-mini' })
+      .mockResolvedValueOnce({ default: 'openai/gpt-4.1' })
+    const first = render(<ModelRolesSettings />)
+    await waitFor(() => expect(screen.getByRole('status')).toHaveAccessibleName('Connected / synced'))
+    first.unmount()
+    await loadPiModelRoles(true)
+    render(<ModelRolesSettings />)
+    expect(screen.getByRole('status')).toHaveAccessibleName('Connected / synced')
+    expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4.1')
+    expect(getPiModelRolesMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not persist an old-server save into the newly selected server cache', async () => {
+    seedRoles({ default: 'openai/gpt-4o-mini' })
+    let resolve!: (roles: Record<string, string>) => void
+    setPiModelRolesMock.mockReturnValue(new Promise(done => { resolve = done }))
+    const remote = serverStore.addServer({ name: 'Cache test', url: 'http://cache-test.invalid' })
+    const originalId = serverStore.getActiveServerId()
+    const { unmount } = render(<ModelRolesSettings />)
+    fireEvent.click(screen.getAllByTestId('model-selector-stub')[0])
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    try {
+      serverStore.setActiveServer(remote.id)
+      resolve({ default: 'openai/gpt-4.1' })
+      await waitFor(() => expect(readModelRolesCache()).toBeNull())
+    } finally {
+      unmount()
+      serverStore.setActiveServer(originalId)
+      serverStore.removeServer(remote.id)
+    }
   })
 })

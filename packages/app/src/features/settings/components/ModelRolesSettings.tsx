@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { Model, Api } from '../../../omp/vendor/pi-ai'
 import { Button } from '../../../components/ui/Button'
@@ -7,8 +7,12 @@ import { MenuItem } from '../../../components/ui/MenuItem'
 import { ModelSelector } from '../../chat/ModelSelector'
 import { ChevronDownIcon, MoreVerticalIcon, QuestionIcon } from '../../../components/Icons'
 import { usePiModels } from '../../../omp/hooks/index.js'
-import { getPiModelRoles, setPiModelRoles } from '../../../omp/transport/index.js'
+import { loadPiModelRoles, savePiModelRoles } from '../../../omp/controllers/modelRoles'
 import { SettingsSelect, SettingsSection } from './SettingsUI'
+import { useServerStore } from '../../../hooks/useServerStore'
+import { serverStore } from '../../../store/serverStore'
+import { piModelRolesStore } from '../../../omp/state/piModelRolesStore'
+import { ModelSyncStatus } from './ModelSyncStatus'
 
 const PI_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 const THINKING_LEVEL_SET: ReadonlySet<string> = new Set(PI_THINKING_LEVELS)
@@ -90,6 +94,23 @@ function sameRoles(left: Record<string, string>, right: Record<string, string>):
   return true
 }
 
+function mergeRoleDraft(
+  previous: Record<string, string> | null,
+  current: Record<string, string> | null,
+  record: Record<string, string> | null,
+): Record<string, string> | null {
+  if (!record) return null
+  if (!current || !previous || sameRoles(current, previous)) return cloneRoles(record)
+  // 刷新只更新未编辑的字段，保留本地草稿及清除操作。
+  const next = cloneRoles(record)
+  for (const key of new Set([...Object.keys(previous), ...Object.keys(current)])) {
+    if ((previous[key] ?? '') === (current[key] ?? '')) continue
+    if (current[key]) next[key] = current[key]
+    else delete next[key]
+  }
+  return next
+}
+
 const roleFieldBoxClass =
   'rounded-md border border-border-200 bg-bg-200 transition-colors hover:border-border-300 focus-within:border-accent-main-100 focus-within:ring-1 focus-within:ring-accent-main-100/30'
 
@@ -104,30 +125,30 @@ const roleFieldBoxClass =
  * 非 OMP 驱动（没有该命令）时整块隐藏。
  */
 export function ModelRolesSettings() {
+  const { activeServerGeneration } = useServerStore()
+  return <ModelRolesPanel key={activeServerGeneration} serverGeneration={activeServerGeneration} />
+}
+
+function ModelRolesPanel({ serverGeneration }: { serverGeneration: number }) {
   const { t } = useTranslation('settings')
   const { t: tc } = useTranslation('common')
   const { models, isLoading } = usePiModels()
-  const [saved, setSaved] = useState<Record<string, string> | null>(null)
-  const [draft, setDraft] = useState<Record<string, string> | null>(null)
-  const [unavailable, setUnavailable] = useState(false)
+  const { roles: saved, syncStatus, error: syncError } = useSyncExternalStore(
+    piModelRolesStore.subscribe, piModelRolesStore.getSnapshot, piModelRolesStore.getSnapshot,
+  )
+  const [baseline, setBaseline] = useState(saved)
+  const [draft, setDraft] = useState<Record<string, string> | null>(() => saved && cloneRoles(saved))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  if (saved !== baseline) {
+    setBaseline(saved)
+    setDraft(mergeRoleDraft(baseline, draft, saved))
+  }
+
   useEffect(() => {
-    let cancelled = false
-    getPiModelRoles()
-      .then(record => {
-        if (cancelled) return
-        setSaved(record)
-        setDraft(cloneRoles(record))
-      })
-      .catch(() => {
-        if (!cancelled) setUnavailable(true)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
+    void loadPiModelRoles().catch(() => undefined)
+  }, [serverGeneration])
 
   const handleRoleModel = useCallback((def: ModelRoleDef, model: Model<Api> | null) => {
     setDraft(current => {
@@ -161,17 +182,18 @@ export function ModelRolesSettings() {
     setSaving(true)
     setError(null)
     try {
-      const next = await setPiModelRoles(draft)
-      setSaved(next)
+      const next = await savePiModelRoles(draft)
+      if (serverStore.getActiveServerGeneration() !== serverGeneration) return
       setDraft(cloneRoles(next))
     } catch (cause) {
+      if (serverStore.getActiveServerGeneration() !== serverGeneration) return
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
       setSaving(false)
     }
-  }, [draft])
+  }, [draft, serverGeneration])
 
-  if (unavailable || !saved || !draft) return null
+  if (!saved || !draft) return null
 
   const dirty = !sameRoles(saved, draft)
   const renderRoleRow = (def: ModelRoleDef) => (
@@ -189,8 +211,8 @@ export function ModelRolesSettings() {
   )
 
   return (
-    <SettingsSection title={t('models.rolesTitle')} description={t('models.rolesDesc')} collapsible className="model-roles-section">
-      {error ? <p role="alert" className="text-[length:var(--fs-xs)] text-danger-100">{error}</p> : null}
+    <SettingsSection title={t('models.rolesTitle')} description={t('models.rolesDesc')} status={<ModelSyncStatus status={syncStatus} />} collapsible className="model-roles-section">
+      {error || syncError ? <p role="alert" className="text-[length:var(--fs-xs)] text-danger-100">{error ?? syncError?.message}</p> : null}
       <RoleGroup label={t('models.rolesChatGroup')}>{CHAT_ROLE_DEFS.map(renderRoleRow)}</RoleGroup>
       <RoleGroup label={t('models.rolesKindGroup')}>{KIND_ROLE_DEFS.map(renderRoleRow)}</RoleGroup>
       <div className="model-roles-footer">
