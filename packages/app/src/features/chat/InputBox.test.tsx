@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { InputBox } from './InputBox'
 import type { Command } from '../slash-command'
 import type { PiBranchPage } from '../../omp/domain'
+import { getComposerDraft, moveComposerDraft } from './input/composerDraftStore'
 
 let slashCommands: Command[] = []
 let historyTexts: string[] = []
@@ -346,6 +347,128 @@ describe('InputBox slash command selection', () => {
     })
 
     expect(textarea.value).toBe('hello world')
+  })
+
+  it('saves text immediately and restores it after the composer is remounted', () => {
+    const draftKey = 'refresh-text'
+    const first = render(<InputBox paneId="pane-test" draftKey={draftKey} onSend={vi.fn()} />)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'unsent\nmessage' } })
+
+    expect(JSON.parse(localStorage.getItem(`ompiui-composer-draft:${draftKey}`)!).text).toBe('unsent\nmessage')
+    first.unmount()
+    render(<InputBox paneId="pane-test" draftKey={draftKey} onSend={vi.fn()} />)
+    expect(screen.getByRole('textbox')).toHaveValue('unsent\nmessage')
+  })
+
+  it('restores persisted text before the first text-change callback', () => {
+    const draftKey = 'first-callback'
+    localStorage.setItem(`ompiui-composer-draft:${draftKey}`, JSON.stringify({
+      text: 'saved before refresh',
+      attachmentRevision: null,
+    }))
+    const onTextChange = vi.fn()
+    render(<InputBox paneId="pane-test" draftKey={draftKey} onSend={vi.fn()} onTextChange={onTextChange} />)
+    expect(screen.getByRole('textbox')).toHaveValue('saved before refresh')
+    expect(onTextChange.mock.calls).toEqual([['saved before refresh']])
+  })
+
+  it('keeps separate drafts while switching sessions without remounting', () => {
+    const onSend = vi.fn()
+    const { rerender } = render(<InputBox paneId="pane-test" draftKey="session-a" onSend={onSend} />)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'draft A' } })
+    rerender(<InputBox paneId="pane-test" draftKey="session-b" onSend={onSend} />)
+    expect(screen.getByRole('textbox')).toHaveValue('')
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'draft B' } })
+    rerender(<InputBox paneId="pane-test" draftKey="session-a" onSend={onSend} />)
+    expect(screen.getByRole('textbox')).toHaveValue('draft A')
+  })
+
+  it('preserves failed sends across a composer remount', async () => {
+    const draftKey = 'failed-send'
+    const first = render(<InputBox paneId="pane-test" draftKey={draftKey} onSend={vi.fn().mockResolvedValue(false)} />)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'keep this draft' } })
+    fireEvent.click(screen.getByRole('button', { name: 'send' }))
+    await act(async () => {})
+    first.unmount()
+    render(<InputBox paneId="pane-test" draftKey={draftKey} onSend={vi.fn()} />)
+    expect(screen.getByRole('textbox')).toHaveValue('keep this draft')
+  })
+
+  it('persists successful send cleanup without deleting text typed while awaiting acceptance', async () => {
+    const draftKey = 'pending-edits'
+    let resolveSend!: (accepted: boolean) => void
+    const onSend = vi.fn(() => new Promise<boolean>(resolve => { resolveSend = resolve }))
+    const first = render(<InputBox paneId="pane-test" draftKey={draftKey} onSend={onSend} />)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'submitted text' } })
+    fireEvent.click(screen.getByRole('button', { name: 'send' }))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'next message' } })
+    await act(async () => { resolveSend(true) })
+    expect(getComposerDraft(draftKey).text).toBe('next message')
+    first.unmount()
+    render(<InputBox paneId="pane-test" draftKey={draftKey} onSend={vi.fn().mockResolvedValue(true)} />)
+    fireEvent.click(screen.getByRole('button', { name: 'send' }))
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue(''))
+    expect(JSON.parse(localStorage.getItem(`ompiui-composer-draft:${draftKey}`)!).text).toBe('')
+  })
+
+  it('does not clear a different session when a pending send is accepted', async () => {
+    let resolveSend!: (accepted: boolean) => void
+    const onSend = vi.fn(() => new Promise<boolean>(resolve => { resolveSend = resolve }))
+    const { rerender } = render(<InputBox paneId="pane-test" draftKey="sending-session" onSend={onSend} />)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'same text' } })
+    fireEvent.click(screen.getByRole('button', { name: 'send' }))
+    rerender(<InputBox paneId="pane-test" draftKey="other-session" onSend={onSend} />)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'same text' } })
+    await act(async () => { resolveSend(true) })
+    expect(screen.getByRole('textbox')).toHaveValue('same text')
+    expect(getComposerDraft('sending-session').text).toBe('')
+  })
+
+  it('restores a failed home command in the session created by that command', async () => {
+    slashCommands = [{ name: 'review', description: 'Review', source: 'api' }]
+    let resolveCommand!: (accepted: boolean) => void
+    const onCommand = vi.fn(() => new Promise<boolean>(resolve => { resolveCommand = resolve }))
+    const onSend = vi.fn()
+    const { rerender } = render(
+      <InputBox paneId="pane-test" draftKey="command-home" onSend={onSend} onCommand={onCommand} />,
+    )
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '/', selectionStart: 1 } })
+    fireEvent.click(screen.getByRole('button', { name: 'review' }))
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('/review '))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '/review code' } })
+    fireEvent.click(screen.getByRole('button', { name: 'send' }))
+    expect(onCommand).toHaveBeenCalledWith('/review code')
+    act(() => { moveComposerDraft('command-home', 'command-session') })
+    rerender(<InputBox paneId="pane-test" draftKey="command-session" onSend={onSend} onCommand={onCommand} />)
+    await act(async () => { resolveCommand(false) })
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('/review code'))
+    expect(getComposerDraft('command-home').text).toBe('')
+    expect(getComposerDraft('command-session').text).toBe('/review code')
+  })
+
+  it('does not let the previous session undo marker clear the next session draft', async () => {
+    const onSend = vi.fn()
+    const { rerender } = render(
+      <InputBox paneId="pane-test" draftKey="undo-session" onSend={onSend} revertedText="same text" />,
+    )
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('same text'))
+    rerender(<InputBox paneId="pane-test" draftKey="normal-session" onSend={onSend} />)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'same text' } })
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)) })
+    expect(screen.getByRole('textbox')).toHaveValue('same text')
+  })
+
+  it('keeps edits to restored text when navigating away and back to that session', async () => {
+    const onSend = vi.fn()
+    const { rerender } = render(
+      <InputBox paneId="pane-test" draftKey="edited-undo" onSend={onSend} revertedText="original text" />,
+    )
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('original text'))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'edited restored text' } })
+    rerender(<InputBox paneId="pane-test" draftKey="another-undo" onSend={onSend} />)
+    rerender(<InputBox paneId="pane-test" draftKey="edited-undo" onSend={onSend} revertedText="original text" />)
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)) })
+    expect(screen.getByRole('textbox')).toHaveValue('edited restored text')
   })
 
   it('appends async recovery text once without overwriting a newer draft', async () => {

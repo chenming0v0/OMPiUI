@@ -40,6 +40,11 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
 
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: packages/server/tailscale-bridge/go.mod
+          cache-dependency-path: packages/server/tailscale-bridge/go.sum
+
       - name: drop windows-only patch
         if: runner.os != 'Windows'
         run: rm -f patches/@lydell+node-pty-win32-x64+*.patch
@@ -90,6 +95,11 @@ jobs:
       - uses: oven-sh/setup-bun@v2
 
       - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: packages/server/tailscale-bridge/go.mod
+          cache-dependency-path: packages/server/tailscale-bridge/go.sum
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -207,6 +217,11 @@ jobs:
       - name: Install Android NDK
         run: sdkmanager "ndk;29.0.14206865"
 
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: packages/server/tailscale-bridge/go.mod
+          cache-dependency-path: packages/server/tailscale-bridge/go.sum
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust-target }}
@@ -230,6 +245,9 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: node scripts/prepare-tauri-mobile-resources.mjs
+
+      - name: Build embedded Android Tailscale
+        run: npm run build:tailscale:android -- --target ${{ matrix.target }}
 
       - name: Build Android APK
         working-directory: packages/app

@@ -26,3 +26,6 @@ server-stderr.log
 # END oh-my-opencode-slim worktrees
 .slim/deepwork/
 .slim/artifacts/
+packages/app/src-tauri/gen/android/app/libs/ompiui-tailscale.aar
+packages/app/src-tauri/gen/android/app/libs/ompiui-tailscale-sources.jar
+packages/app/src-tauri/gen/android/app/src/main/assets/tailscale/

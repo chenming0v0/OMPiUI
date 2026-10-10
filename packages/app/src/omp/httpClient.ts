@@ -1,6 +1,7 @@
 import { isCustomizedLocalServerUrl, LOCAL_SERVER_ID, serverStore } from '../store/serverStore'
 import { getHttpFetch, isTauri } from '../utils/tauri'
 import { PROTOCOL_VERSION } from '@ompiui/protocol'
+import { resolveAndroidTailscaleUrl } from '../utils/androidTailscale'
 
 const DEFAULT_BASE = 'http://127.0.0.1:8787'
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000
@@ -119,7 +120,9 @@ export async function piFetch(input: string, init?: PiRequestInit): Promise<Resp
     for (let attempt = 0; attempt <= NETWORK_RETRY_DELAYS_MS.length; attempt++) {
       signal.throwIfAborted()
       try {
-        return await fetchImpl(input, { ...requestInit, signal, headers })
+        const resolved = await resolveAndroidTailscaleUrl(input)
+        signal.throwIfAborted()
+        return await fetchImpl(resolved, { ...requestInit, signal, headers })
       } catch (error) {
         if (!canRetry || signal.aborted || isAbortError(error) || !isNetworkLevelError(error)) throw error
         lastError = error

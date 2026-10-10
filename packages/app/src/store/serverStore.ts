@@ -5,6 +5,7 @@
 import { API_BASE_URL } from '../constants'
 import { getHttpFetch, isTauri } from '../utils/tauri'
 import { PROTOCOL_VERSION } from '@ompiui/protocol'
+import { resolveAndroidTailscaleUrl } from '../utils/androidTailscale'
 
 /**
  * 服务器配置
@@ -528,7 +529,8 @@ class ServerStore {
       }
 
       const f = await getHttpFetch()
-      const response = await f(healthUrl, {
+      const resolvedUrl = await resolveAndroidTailscaleUrl(healthUrl)
+      const response = await f(resolvedUrl, {
         method: 'GET',
         signal: controller.signal,
         headers,
@@ -732,7 +734,9 @@ export function applyUrlTokenParam(search: string, origin: string): boolean {
  */
 export async function applyPairParam(pair: string, origin: string): Promise<boolean> {
   try {
-    const response = await fetch(`${origin.replace(/\/+$/, '')}/api/v1/host/pair/redeem`, {
+    const f = await getHttpFetch()
+    const resolved = await resolveAndroidTailscaleUrl(`${origin.replace(/\/+$/, '')}/api/v1/host/pair/redeem`)
+    const response = await f(resolved, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ pair }),

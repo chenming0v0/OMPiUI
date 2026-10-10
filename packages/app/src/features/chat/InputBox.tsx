@@ -20,6 +20,8 @@ import { QueuedUserMessageQueue, type ComposerQueueProps } from './input/QueuedU
 import { useMobileCollapse } from './input/useMobileCollapse'
 import { useAttachmentRail } from './input/useAttachmentRail'
 import { useInputHistory } from './input/useInputHistory'
+import { useComposerDraft } from './input/useComposerDraft'
+import { getComposerDraft, updateComposerDraft, wasComposerDraftMovedFrom } from './input/composerDraftStore'
 import {
   TEXT_STYLE,
   bytesToDataUrl,
@@ -177,6 +179,7 @@ export interface InputBoxProps extends ComposerQueueProps {
   modelSelectorRef?: React.RefObject<ModelSelectorHandle | null>
   rootPath?: string
   sessionId?: string | null
+  draftKey?: string
   // Undo/Redo
   revertedText?: string
   revertedAttachments?: Attachment[]
@@ -235,6 +238,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   modelSelectorRef,
   rootPath = '',
   sessionId,
+  draftKey,
   revertedText,
   revertedAttachments,
   restoreMode = 'replace',
@@ -277,7 +281,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   const supportsAnyFile = fileCaps.image || fileCaps.pdf || fileCaps.audio || fileCaps.video
 
   // 文本状态
-  const [text, setText] = useState('')
+  const { text, attachments, ready: draftReady, setText, setAttachments } = useComposerDraft(draftKey)
 
   // 扩展 editor 命令接口（set/paste 已由 store 合并为全量文本）
   useImperativeHandle(ref, () => ({
@@ -289,14 +293,13 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
       setAttachments(prev => prev.filter(attachment => !attachment.textRange))
     },
     getEditorText: () => textareaRef.current?.value ?? latestDraftRef.current.text,
-  }), [])
+  }), [setText, setAttachments])
 
   // 文本变化同步（扩展 editor 状态回传）
   useEffect(() => {
     onTextChange?.(text)
   }, [text, onTextChange])
   // 附件状态（图片、文件、文件夹、agent）
-  const [attachments, setAttachments] = useState<Attachment[]>([])
   const [isSubmitting, setIsSubmitting] = useState(false)
   const submittingRef = useRef(false)
   const [deliveryMode, setDeliveryMode] = useState<'steer' | 'followUp'>('followUp')
@@ -369,6 +372,13 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   const [composerMaxHeight, setComposerMaxHeight] = useState(280)
   const [inputContainerMaxHeight, setInputContainerMaxHeight] = useState(240)
   const [textareaMaxHeight, setTextareaMaxHeight] = useState(180)
+  const activeDraftKeyRef = useRef(draftKey)
+  const restoredTextByDraftRef = useRef(new Map<string | undefined, string | undefined>())
+  useLayoutEffect(() => {
+    activeDraftKeyRef.current = draftKey
+    prevRevertedTextRef.current = restoredTextByDraftRef.current.get(draftKey)
+    appendedRestoreRef.current = undefined
+  }, [draftKey])
 
   // 附件横向轨道
   const {
@@ -444,13 +454,14 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
     }
 
     prevRevertedTextRef.current = revertedText
+    restoredTextByDraftRef.current.set(draftKey, revertedText)
 
     return () => {
       if (frameId !== null) {
         cancelAnimationFrame(frameId)
       }
     }
-  }, [revertedText, revertedAttachments, restoreMode])
+  }, [revertedText, revertedAttachments, restoreMode, setText, setAttachments, draftKey])
 
   useEffect(
     () => () => {
@@ -541,7 +552,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   }, [text, textareaMaxHeight])
 
   // 计算
-  const inputDisabled = !!disabled
+  const inputDisabled = !!disabled || !draftReady
   const canSend = (text.trim().length > 0 || attachments.length > 0) && !inputDisabled && !submissionDisabled
 
   // ============================================
@@ -553,7 +564,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
     setText('')
     setAttachments([])
     resetHistoryIndex()
-  }, [resetHistoryIndex])
+  }, [resetHistoryIndex, setText, setAttachments])
 
   const restoreDraft = useCallback(
     (draft: HistoryEntry) => {
@@ -569,7 +580,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
         textareaRef.current.setSelectionRange(cursorPos, cursorPos)
       })
     },
-    [resetHistoryIndex],
+    [resetHistoryIndex, setText, setAttachments],
   )
 
   const submitCommandOptimistically = useCallback(
@@ -601,13 +612,21 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
           return
         }
 
-        const currentDraft = latestDraftRef.current
+        const activeKey = activeDraftKeyRef.current
+        const recoveryKey = draftKey && activeKey && wasComposerDraftMovedFrom(activeKey, draftKey)
+          ? activeKey
+          : draftKey
+        const currentDraft = recoveryKey ? getComposerDraft(recoveryKey) : latestDraftRef.current
         if (currentDraft.text.length === 0 && currentDraft.attachments.length === 0) {
-          restoreDraft(draftSnapshot)
+          if (recoveryKey && recoveryKey !== draftKey) {
+            updateComposerDraft(recoveryKey, () => ({ ...draftSnapshot, ready: true }))
+          } else {
+            restoreDraft(draftSnapshot)
+          }
         }
       })()
     },
-    [attachments, onClearRevert, onCommand, resetDraft, restoreDraft, text],
+    [attachments, onClearRevert, onCommand, resetDraft, restoreDraft, text, draftKey],
   )
 
   const runSubmit = useCallback(
@@ -681,6 +700,8 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
     isStreaming,
     effectiveDeliveryMode,
     submitCommandOptimistically,
+    setText,
+    setAttachments,
     text,
   ])
 
@@ -704,7 +725,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
         textareaRef.current.focus()
       })
     },
-    [text, mentionStartIndex, mentionQuery],
+    [text, mentionStartIndex, mentionQuery, setText],
   )
 
   // ============================================
@@ -816,7 +837,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
         textareaRef.current.focus()
       })
     },
-    [closeArgCompletions, text],
+    [closeArgCompletions, text, setText],
   )
 
   /**
@@ -1022,7 +1043,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
         handleSend()
       }
     },
-    [mentionOpen, slashOpen, mentionQuery, updateMentionQuery, handleSend, text, attachments, handleHistoryKeyDown, onCycleModel, onCycleThinkingLevel, onOpenModelSelector, argCompletionOpen, argCompletionItems, argCompletionIndex, applyArgCompletion, closeArgCompletions, handleArgCompletionTab],
+    [mentionOpen, slashOpen, mentionQuery, updateMentionQuery, handleSend, text, attachments, handleHistoryKeyDown, onCycleModel, onCycleThinkingLevel, onOpenModelSelector, argCompletionOpen, argCompletionItems, argCompletionIndex, applyArgCompletion, closeArgCompletions, handleArgCompletionTab, setText, setAttachments],
   )
 
   const handleChange = useCallback(
@@ -1101,7 +1122,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
         }
       }
     },
-    [scheduleArgCompletion, closeArgCompletions, handleHistoryChange, attachments],
+    [scheduleArgCompletion, closeArgCompletions, handleHistoryChange, attachments, setText, setAttachments],
   )
 
   const handleCompositionStart = useCallback(() => {
@@ -1179,7 +1200,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
         textareaRef.current.focus()
       })
     },
-    [text, mentionStartIndex, mentionQuery, updateMentionQuery],
+    [text, mentionStartIndex, mentionQuery, updateMentionQuery, setText, setAttachments],
   )
 
   const handleMentionClose = useCallback(() => {
@@ -1251,7 +1272,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
         textareaRef.current.focus()
       })
     },
-    [text, slashStartIndex, slashQuery, onCommand, requestArgCompletions, submitCommandOptimistically],
+    [text, slashStartIndex, slashQuery, onCommand, requestArgCompletions, submitCommandOptimistically, setText, setAttachments],
   )
 
   const handleSlashClose = useCallback(() => {
@@ -1292,7 +1313,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
         setAttachments(prev => [...prev, ...nextAttachments])
       }
     },
-    [supportsAnyFile, fileCaps, isSubmitting],
+    [supportsAnyFile, fileCaps, isSubmitting, setAttachments],
   )
 
   // 删除附件
@@ -1313,7 +1334,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
 
       setAttachments(prev => prev.filter(a => a.id !== id))
     },
-    [attachments, isSubmitting, text],
+    [attachments, isSubmitting, text, setText, setAttachments],
   )
 
   // 粘贴处理 — 根据模型能力过滤可粘贴的文件类型
@@ -1423,7 +1444,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
         textareaRef.current.focus()
       })
     },
-    [text],
+    [text, setText, setAttachments],
   )
 
   const insertDraggedFile = useCallback((fileInfo: DraggedFileInfo) => insertDraggedFiles([fileInfo]), [insertDraggedFiles])
@@ -1539,7 +1560,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
         console.warn('[InputBox] Failed to process Tauri dropped paths:', err)
       }
     },
-    [buildDraggedFileInfo, createUploadAttachmentFromDroppedPath, externalFileDropMode, insertDraggedFiles, isSubmitting],
+    [buildDraggedFileInfo, createUploadAttachmentFromDroppedPath, externalFileDropMode, insertDraggedFiles, isSubmitting, setAttachments],
   )
 
   const handleTauriDragDropEvent = useCallback(

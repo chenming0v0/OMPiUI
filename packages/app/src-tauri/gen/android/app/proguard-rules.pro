@@ -19,3 +19,9 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+-keep class go.** { *; }
+-keep class com.ompiui.tailscale.** { *; }
+-keepclassmembers class com.ompiui.app.TailscaleBridge {
+    @android.webkit.JavascriptInterface <methods>;
+}
