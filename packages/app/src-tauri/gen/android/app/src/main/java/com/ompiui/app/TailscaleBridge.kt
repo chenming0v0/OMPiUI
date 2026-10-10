@@ -16,7 +16,9 @@ class TailscaleBridge(private val context: Context, private val webView: WebView
   private val handler = Handler(Looper.getMainLooper())
   private val preferences = context.getSharedPreferences("ompiui-tailscale", Context.MODE_PRIVATE)
   private var disposed = false
-  private val networkMonitor: TailscaleNetworkMonitor = TailscaleNetworkMonitor(context) {
+  private val networkMonitor = TailscaleNetworkMonitor(context, ::refreshNetworkState)
+
+  private fun refreshNetworkState() {
     synchronized(executor) {
       if (!disposed) executor.execute {
         try {
