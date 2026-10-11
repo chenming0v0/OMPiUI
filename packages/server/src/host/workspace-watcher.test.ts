@@ -26,11 +26,14 @@ describe("WorkspaceWatcher", () => {
     const workspace = new WorkspaceStore().resolve(root)
     watcher.watch(workspace)
     try {
-      await waitFor(() => events.some(event => event.channel === "workspace.files"))
+      // 两种通知通过独立 IPC 消息到达，收到文件通知不代表 Git 通知已被处理。
+      const hasFileAndGitEvents = () => events.some(event => event.channel === "workspace.files")
+        && events.some(event => event.channel === "workspace.git")
+      await waitFor(hasFileAndGitEvents)
       const initialCursor = hub.getCursor({ kind: "workspace", id: workspace.canonicalRoot })
       events.length = 0
       writeFileSync(path.join(root, "created.txt"), "hello")
-      await waitFor(() => events.some(event => event.channel === "workspace.files"))
+      await waitFor(hasFileAndGitEvents)
       const event = events.find(event => event.channel === "workspace.files")!
       assert.equal(event.stream.id, workspace.canonicalRoot)
       assert.deepEqual((event.payload as { changes: unknown[] }).changes, [{ path: "created.txt", kind: "created", type: "file" }])
