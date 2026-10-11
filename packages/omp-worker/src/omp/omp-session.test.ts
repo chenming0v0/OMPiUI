@@ -63,6 +63,46 @@ async function sessionFixture(t: TestContext) {
 const emptyQueue: QueueSnapshot = { steering: [], followUp: [], steeringEntries: [], followUpEntries: [] }
 const image = (data: string): ImageInput => ({ type: "image", data, mimeType: "image/png" })
 
+describe("OmpRpcSession native subagent progress", () => {
+  it("tracks progress.id and keeps the parent task identity in refreshed state", async t => {
+    const { session, frame } = await sessionFixture(t)
+    frame({ type: "subagent_lifecycle", payload: {
+      id: "LaneAppNav", parentToolCallId: "task-call", status: "started", index: 0,
+    } })
+    frame({ type: "subagent_progress", payload: {
+      index: 0, parentToolCallId: "task-call", task: "Review navigation",
+      sessionFile: "C:/sessions/parent/LaneAppNav.jsonl",
+      progress: { id: "LaneAppNav", status: "running", currentTool: "read", tokens: 123 },
+    } })
+    const state = await session.getState()
+    assert.deepEqual((state.subagents as JsonObject[])[0]?.progress, {
+      id: "LaneAppNav", status: "running", currentTool: "read", tokens: 123,
+    })
+    assert.equal((state.subagents as JsonObject[])[0]?.sessionFile, "C:/sessions/parent/LaneAppNav.jsonl")
+    assert.equal((state.subagents as JsonObject[])[0]?.parentToolCallId, "task-call")
+  })
+
+  it("coalesces parent task snapshots but preserves the final tool result and every bash delta", async t => {
+    const { session, frame } = await sessionFixture(t)
+    const events: JsonObject[] = []
+    session.onPiEvent(event => events.push(event))
+    for (let index = 0; index < 10_000; index++) {
+      frame({ type: "tool_execution_update", toolCallId: "parent-task", partialResult: {
+        content: [{ type: "text", text: `Progress ${index}` }],
+      } })
+    }
+    assert.equal(events.length, 0)
+    frame({ type: "tool_execution_end", toolCallId: "parent-task", result: { content: "All ten results" } })
+    assert.equal(events.length, 2)
+    assert.equal(((events[0]!.partialResult as JsonObject).content as JsonObject[])[0]?.text, "Progress 9999")
+    assert.equal((events[1]!.result as JsonObject).content, "All ten results")
+    for (let index = 0; index < 20; index++) {
+      frame({ type: "bash_execution_update", id: "bash-stream", delta: String(index) })
+    }
+    assert.equal(events.filter(event => event.type === "bash_execution_update").map(event => event.delta).join(","), Array.from({ length: 20 }, (_, index) => String(index)).join(","))
+  })
+})
+
 describe("OmpRpcSession immediate queued delivery", () => {
   it("submits only the selected message with images before the current turn ends", async t => {
     const { session, frame, commands, entries } = await sessionFixture(t)

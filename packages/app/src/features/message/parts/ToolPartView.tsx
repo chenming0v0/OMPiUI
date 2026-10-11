@@ -21,6 +21,7 @@ import {
 } from '../tools'
 import { MSG_SPACING } from '../messageSpacing'
 import { MessageExpandPanel, useMessageExpandRender } from '../messageExpand'
+import { useTaskRuntimeStopped } from '../tools/useTaskRuntimeStopped'
 
 // ============================================
 // ToolPartView - 单个工具调用
@@ -60,7 +61,8 @@ export const ToolPartView = memo(function ToolPartView({
   const { t } = useTranslation('message')
   const { call, result } = execution
   const toolName = call.name
-  const status = result ? (result.isError ? 'error' : 'completed') : 'pending'
+  const taskStopped = useTaskRuntimeStopped(toolName === 'task')
+  const status = result ? (result.isError ? 'error' : 'completed') : taskStopped ? 'error' : 'pending'
   // title 显示工具调用实质（命令/路径/模式），而不是重复工具名——
   // pi SDK 的工具调用事件只有 toolName + args，没有工具描述字段；
   // formatToolName(toolName) 已展示工具名，title 再显示同名就是冗余。

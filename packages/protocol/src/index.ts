@@ -135,3 +135,4 @@ export type TailscaleInfo = {
   version: string | null
 }
 export * from "./diagnostics.js"
+export * from "./fault-report.js"

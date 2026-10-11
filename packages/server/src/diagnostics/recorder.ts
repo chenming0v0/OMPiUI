@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import { appendFileSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import { dataRoot } from "../logger.ts"
-import type { DiagnosticRunState } from "@ompiui/protocol"
+import type { DiagnosticRunState, FaultNotice } from "@ompiui/protocol"
 
 export type DiagnosticLevel = "debug" | "info" | "warn" | "error"
 export type RunState = DiagnosticRunState
@@ -115,10 +115,21 @@ export class DiagnosticRecorder {
   private file = ""
   private bytes = 0
   private warned = false
+  private readonly faults: FaultNotice[] = []
+  private faultSequence = 0
 
   constructor(private readonly options: RecorderOptions) {}
 
   record(event: string, fields: DiagnosticFields = {}, level: DiagnosticLevel = "info"): void {
+    // 故障提示独立于磁盘记录开关；磁盘满时客户端仍应知道 runtime 已崩溃。
+    if (event === "session.crashed" && fields.sessionId) {
+      this.faults.push({
+        id: `${this.runId}:fault:${++this.faultSequence}`,
+        kind: "runtime_crashed", time: new Date(this.options.now?.() ?? Date.now()).toISOString(),
+        sessionId: safeText(fields.sessionId), errorCode: fields.errorCode ? safeText(fields.errorCode) : undefined,
+      })
+      if (this.faults.length > 20) this.faults.shift()
+    }
     if (this.options.enabled === false || LEVELS[level] < LEVELS[this.options.level ?? "info"]) return
     try {
       const now = this.options.now?.() ?? Date.now()
@@ -146,6 +157,10 @@ export class DiagnosticRecorder {
         console.warn("[ompiui-diagnostics] cannot write diagnostic log; application continues")
       }
     }
+  }
+
+  recentFaults(): FaultNotice[] {
+    return this.faults.map(fault => ({ ...fault }))
   }
 
   private prune(now: number): void {

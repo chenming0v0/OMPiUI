@@ -13,6 +13,7 @@
 // Heartbeat cadence comes from OMPIUI_FIXTURE_HEARTBEAT_MS (default 20ms) so the
 // client watchdog fires quickly without slowing the suite.
 import { OMP_WORKER_PROTOCOL_VERSION } from "../../../omp-worker/src/ipc.ts"
+import { RpcLineReader } from "../../../omp-worker/src/omp/rpc-line-reader.ts"
 
 const mode = process.env.OMPIUI_FIXTURE_MODE ?? "hello-ok"
 const heartbeatIntervalMs = Number(process.env.OMPIUI_FIXTURE_HEARTBEAT_MS ?? 20)
@@ -49,7 +50,9 @@ if (mode === "silent" || mode === "wrong-protocol") {
   }
 } else {
   const heartbeat = setInterval(() => {
-    send({ kind: "heartbeat", generation, timestamp: Date.now() })
+    send(mode === "event-only"
+      ? { kind: "event", generation, channel: "models.updated", event: {} }
+      : { kind: "heartbeat", generation, timestamp: Date.now() })
   }, heartbeatIntervalMs)
   heartbeat.unref?.()
 
@@ -75,6 +78,28 @@ if (mode === "silent" || mode === "wrong-protocol") {
     process.on("message", message => {
       if (!message || typeof message !== "object" || message.kind !== "request") return
       const reply = { kind: "response", id: message.id, generation, ok: true, data: { fixture: "ok" } }
+      if (message.command?.type === "fixture.flood") {
+        let consumed = 0
+        const consume = () => {
+          // 模拟累计消息解析、拷贝、序列化的同步负载，父进程看门狗独立运行。
+          const until = performance.now() + 0.2
+          while (performance.now() < until) {}
+          consumed++
+        }
+        const lines = "snapshot\n".repeat(3000)
+        if (mode === "flood-blocking") {
+          for (const line of lines.trim().split("\n")) consume(line)
+          send({ ...reply, data: { consumed } })
+        } else {
+          const reader = new RpcLineReader(consume, () => {}, () => {})
+          reader.push(lines)
+          reader.finish(() => {
+            reader.close()
+            send({ ...reply, data: { consumed } })
+          })
+        }
+        return
+      }
       if (message.command?.type === "session.open") {
         const file = message.command.params?.sessionFile
         const sessionId = sessionIds.get(file) ?? `fixture-session-${++nextSession}`

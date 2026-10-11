@@ -43,6 +43,34 @@ test("WorkerSession fulfills a command on a healthy worker", async () => {
   }
 })
 
+test("RPC flood reproduces watchdog termination; batching keeps the same work alive", async () => {
+  const blocked = startCatalog("flood-blocking", { requestTimeoutMs: 5000 })
+  const batched = startCatalog("flood-yielding", { requestTimeoutMs: 5000 })
+  try {
+    await Promise.all([blocked.getHandshake(), batched.getHandshake()])
+    const failure = assert.rejects(blocked.command("fixture.flood"), { code: "WORKER_RESULT_UNKNOWN" })
+    assert.deepEqual(await batched.command("fixture.flood"), { consumed: 3000 })
+    await failure
+    assert.deepEqual(await batched.command("state.get"), { fixture: "ok" })
+  } finally {
+    await Promise.all([blocked.dispose(), batched.dispose()])
+  }
+})
+
+test("event traffic proves worker liveness even when heartbeat frames are delayed", async () => {
+  const catalog = startCatalog("event-only")
+  const crashes: Error[] = []
+  catalog.onCrash(error => crashes.push(error))
+  try {
+    await catalog.getHandshake()
+    await new Promise(resolve => setTimeout(resolve, 500))
+    assert.equal(crashes.length, 0)
+    assert.deepEqual(await catalog.command("state.get"), { fixture: "ok" })
+  } finally {
+    await catalog.dispose()
+  }
+})
+
 test("WorkerSession kills a worker that stops heartbeating and fails pending commands", async () => {
   const catalog = startCatalog("silent")
   const crashes: Error[] = []

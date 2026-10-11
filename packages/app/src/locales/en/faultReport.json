@@ -1,0 +1,39 @@
+{
+  "title": "Diagnostic Report",
+  "reopen": "Fault report",
+  "kind": {
+    "runtime_crashed": "The task runtime exited unexpectedly",
+    "connection_lost": "The backend connection is unstable",
+    "server_restarted": "The backend restarted while a task was running"
+  },
+  "description": {
+    "runtime_crashed": "Normal completion was not confirmed. A report has been retained locally. Send its link to the maintainer.",
+    "connection_lost": "The connection repeatedly failed or disconnected. This may be a network or backend problem; it does not prove the task stopped.",
+    "server_restarted": "The backend run changed and an active task may have been interrupted. Operations with unknown results are not replayed automatically."
+  },
+  "time": "Detected",
+  "server": "Server",
+  "code": "Error code",
+  "session": "Session",
+  "collecting": "Collecting redacted diagnostic logs…",
+  "complete": "Collected {{files}} log files. Conversation text, tool output, tokens and private URLs are excluded.",
+  "incomplete": "This report is incomplete: some backend logs are unavailable or outside retention/collection limits. Client records are retained; collect again after reconnecting.",
+  "restoreMissing": "The full report has not been restored from local storage. Resuming upload is disabled. Collect again or save the current summary.",
+  "preview": "Preview redacted report",
+  "previewLimited": "Only the first 12000 characters are previewed. Download and upload include the entire report.",
+  "sendToMaintainer": "Send this link and a description of the problem to the maintainer.",
+  "partialUpload": "Uploaded {{count}} / {{total}} parts. Existing links are retained; resume to complete the report.",
+  "shareLink": "Report links",
+  "previousLinks": "Previous report links",
+  "copy": "Copy report link",
+  "copied": "Copied",
+  "consent": "I agree to upload this redacted report to the third-party service mclo.gs. Anyone with the link can read it.",
+  "upload": "Upload report",
+  "retryUpload": "Resume upload",
+  "uploading": "Uploading {{count}} / {{total}}",
+  "save": "Save locally",
+  "refresh": "Collect missing logs",
+  "later": "Later",
+  "uploadFailed": "Upload failed. The report and successful links remain on this device. Retry or save locally.",
+  "copyFailed": "Copy failed. Select and copy the link manually."
+}

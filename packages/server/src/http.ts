@@ -27,6 +27,7 @@ import { PairingStore, type PairRedeemFailure } from "./host/pairing.ts"
 import { listLanInterfaces } from "./host/network.ts"
 import type { TailscaleManager } from "./host/tailscale.ts"
 import { createStaticServer } from "./static.ts"
+import { FaultReportService } from "./diagnostics/fault-reports.ts"
 
 const CORS_HEADERS: Record<string, string> = {
   "access-control-allow-methods": "GET,POST,OPTIONS",
@@ -196,6 +197,7 @@ export interface CreateAppServerOptions {
   tailscale?: TailscaleManager
   /** Web client build directory; when it exists the server hosts the SPA. */
   staticRoot?: string
+  faultReports?: FaultReportService
   /**
    * Invoked by POST /api/v1/host/shutdown after the response is flushed.
    * Hosts wire this to their graceful stop (close listeners, drain
@@ -228,6 +230,7 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
   const host = new HostRuntime({ store, watcher, sessions, terminals })
   const authToken = options.authToken === undefined ? resolveAuthToken() : options.authToken
   const staticServer = options.staticRoot ? createStaticServer(options.staticRoot) : undefined
+  const faultReports = options.faultReports ?? new FaultReportService()
   // 生效的公网入口：显式公网基址优先，其次自建中转隧道上报的地址（两者都
   // 可能缺席）。Origin 白名单、share 链接都以它为准。
   const effectivePublicBaseUrl = (): string | null => {
@@ -313,6 +316,13 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
 
       if (!requestHasValidToken(req, authToken)) {
         return sendProblem(res, 401, Object.assign(new Error("missing or invalid authorization token"), { code: "UNAUTHORIZED" }))
+      }
+
+      if (method === "GET" && p === "/api/v1/host/diagnostics/status") {
+        return sendJson(res, 200, { ...faultReports.status(), activeSessionIds: Object.keys(sessions.getActivitySnapshot().sessions) })
+      }
+      if (method === "GET" && p === "/api/v1/host/diagnostics/report") {
+        return sendJson(res, 200, (await faultReports.collect()).report)
       }
 
       if (method === "GET" && p === "/api/v1/host/health") {

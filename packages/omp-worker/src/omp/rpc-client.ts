@@ -7,6 +7,7 @@ import type { JsonObject, JsonValue } from "@ompiui/protocol"
 import { isJsonObject } from "@ompiui/protocol"
 import { assertOmpTerminalStopped } from "./terminal-presence.js"
 import { managedSessionsRoot } from "./managed-sessions.js"
+import { RpcLineReader } from "./rpc-line-reader.js"
 
 /**
  * 可选的 OMP 兼容配置覆盖：`~/.ompiui/omp-compat.yml` 存在时以 `--config`
@@ -71,7 +72,7 @@ const CHUNK_TIMEOUT_MS = 30_000
 
 export class OmpRpcClient extends EventEmitter {
   readonly proc: ChildProcess
-  private buffer = ""
+  private readonly stdoutReader: RpcLineReader
   private nextId = 0
   private readonly pending = new Map<string, {
     commandType: string
@@ -110,8 +111,13 @@ export class OmpRpcClient extends EventEmitter {
       shell: process.platform === "win32" && !/\.exe$/i.test(bin),
       windowsHide: true,
     })
+    this.stdoutReader = new RpcLineReader(
+      line => this.handleStdoutLine(line),
+      () => this.proc.stdout!.pause(),
+      () => this.proc.stdout!.resume(),
+    )
     this.proc.stdout!.setEncoding("utf8")
-    this.proc.stdout!.on("data", chunk => this.handleStdout(chunk))
+    this.proc.stdout!.on("data", chunk => this.stdoutReader.push(chunk))
     this.proc.stderr!.setEncoding("utf8")
     this.proc.stderr!.on("data", chunk => {
       this.stderrBuffer.push(chunk)
@@ -120,18 +126,22 @@ export class OmpRpcClient extends EventEmitter {
     this.proc.on("error", error => {
       this.exitError = error
     })
-    this.proc.on("exit", (code, signal) => {
-      this.exited = true
-      this.exitCode = code
-      const tail = this.stderrBuffer.join("").trim()
-      if (!this.exitError) {
-        this.exitError = new Error(
-          `omp RPC process exited (code=${code ?? "null"} signal=${signal ?? "null"})${tail ? `: ${tail.slice(-2000)}` : ""}`,
-        )
-      }
-      this.failAllPending()
-      this.emit("exit", code, signal)
-      this.exitWaiterResolve?.()
+    // close 在 stdout 排空之后触发，不能在 exit 时丢掉尚未处理的最终结果。
+    this.proc.on("close", (code, signal) => {
+      this.stdoutReader.finish(() => {
+        this.stdoutReader.close()
+        this.exited = true
+        this.exitCode = code
+        const tail = this.stderrBuffer.join("").trim()
+        if (!this.exitError) {
+          this.exitError = new Error(
+            `omp RPC process exited (code=${code ?? "null"} signal=${signal ?? "null"})${tail ? `: ${tail.slice(-2000)}` : ""}`,
+          )
+        }
+        this.failAllPending()
+        this.emit("exit", code, signal)
+        this.exitWaiterResolve?.()
+      })
     })
     this.exitWaiter = new Promise(resolve => {
       this.exitWaiterResolve = resolve
@@ -140,6 +150,10 @@ export class OmpRpcClient extends EventEmitter {
 
   get pid(): number | undefined {
     return this.proc.pid
+  }
+
+  setOutputPaused(paused: boolean): void {
+    this.stdoutReader.setPaused(paused)
   }
 
   private readyPromise: Promise<void> | undefined
@@ -204,22 +218,15 @@ export class OmpRpcClient extends EventEmitter {
     return { code: this.exitCode, error: this.exitError }
   }
 
-  private handleStdout(chunk: string): void {
-    this.buffer += chunk
-    let index: number
-    while ((index = this.buffer.indexOf("\n")) >= 0) {
-      const line = this.buffer.slice(0, index).trim()
-      this.buffer = this.buffer.slice(index + 1)
-      if (!line) continue
-      let frame: unknown
-      try {
-        frame = JSON.parse(line)
-      } catch {
-        continue
-      }
-      if (!isJsonObject(frame) || typeof frame.type !== "string") continue
-      this.dispatchFrame(frame as OmpRpcFrame)
+  private handleStdoutLine(line: string): void {
+    let frame: unknown
+    try {
+      frame = JSON.parse(line)
+    } catch {
+      return
     }
+    if (!isJsonObject(frame) || typeof frame.type !== "string") return
+    this.dispatchFrame(frame as OmpRpcFrame)
   }
 
   private dispatchFrame(frame: OmpRpcFrame): void {

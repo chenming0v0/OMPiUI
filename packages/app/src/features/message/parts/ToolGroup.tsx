@@ -10,6 +10,7 @@ import { useUiDisclosureState } from '../../../utils/uiDisclosureState'
 import { MessageExpandPanel, useMessageExpandRender } from '../messageExpand'
 import { MSG_SPACING } from '../messageSpacing'
 import { ToolPartView } from './ToolPartView'
+import { useTaskRuntimeStopped } from '../tools/useTaskRuntimeStopped'
 
 // ============================================
 // Tool Group (连续的 tool parts)
@@ -50,7 +51,8 @@ export const ToolGroup = memo(function ToolGroup({
   const doneCount = executions.filter(e => e.result).length
   const totalCount = executions.length
   const isAllDone = doneCount === totalCount
-  const hasActiveTools = executions.some(e => !e.result)
+  const taskStopped = useTaskRuntimeStopped(executions.some(e => e.call.name === 'task'))
+  const hasActiveTools = executions.some(e => !e.result && !(e.call.name === 'task' && taskStopped))
   const stepsSummary = descriptiveToolSteps ? buildDescriptiveToolStepsSummary(executions, t) : undefined
 
   // 汇总所有成功完成的工具的 diff stats（失败的不算）

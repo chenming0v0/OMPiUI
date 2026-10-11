@@ -214,6 +214,7 @@ export class SessionHost {
     session.worker.onCrash(error => {
       if (this.runtimes.get(session.sessionId) !== session) return
       diagnostics.record("session.crashed", { sessionId: session.sessionId, errorCode: diagnosticErrorCode(error) }, "error")
+      const fault = diagnostics.recentFaults().at(-1)
       this.executor.markRuntimeCrashed(session.sessionId)
       this.runtimes.delete(session.sessionId)
       this.activity.delete(session.sessionId)
@@ -242,10 +243,12 @@ export class SessionHost {
         this.recoveries.set(session.sessionId, recovery)
       }
       this.publishActivity()
-      this.hub.publish({ kind: "session", id: session.sessionId }, "sessions.updated", {
-        sessionId: session.sessionId,
-        crashed: true,
-      })
+      const crashed = {
+        sessionId: session.sessionId, crashed: true,
+        ...(fault ? { faultId: fault.id, faultTime: fault.time, errorCode: fault.errorCode ?? "SESSION_RUNTIME_CRASHED" } : {}),
+      }
+      this.hub.publish({ kind: "session", id: session.sessionId }, "sessions.updated", crashed)
+      this.hub.publish({ kind: "server", id: "server" }, "sessions.updated", crashed)
     })
     session.worker.onClose(() => {
       const current = this.runtimes.get(session.sessionId)

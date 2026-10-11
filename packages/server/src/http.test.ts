@@ -12,6 +12,7 @@ import { createAppServer, type AppServer } from "./http.ts"
 import { PI_PARITY_SDK_VERSION } from "@ompiui/protocol"
 import { MAX_PAIRING_FAILURES, PairingStore } from "./host/pairing.ts"
 import { TUNNEL_FORWARDING_HEADER } from "./host/security.ts"
+import { FaultReportService } from "./diagnostics/fault-reports.ts"
 
 // 测试进程的 session 租约目录放进独立临时目录，跑完即删，
 // 不污染默认的 ompiui-session-leases 命名空间。
@@ -64,6 +65,22 @@ describe("http api", () => {
     assert.equal(accepted.status, 200)
     assert.equal(accepted.json.ok, true)
     assert.equal(accepted.json.service, "ompiui-server")
+  })
+
+  it("protects fault report/status endpoints and reads them without opening a runtime", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ompiui-report-api-"))
+    const app = createAppServer({ authToken: "report-token", faultReports: new FaultReportService(root, []) })
+    const port = await listen(app)
+    cleanups.push(async () => { await app.dispose(); rmSync(root, { recursive: true, force: true }) })
+    assert.equal((await request(port, "GET", "/api/v1/host/diagnostics/report")).status, 401)
+    assert.equal((await request(port, "GET", "/api/v1/host/diagnostics/status")).status, 401)
+    const report = await request(port, "GET", "/api/v1/host/diagnostics/report", { token: "report-token" })
+    assert.equal(report.status, 200)
+    assert.equal(report.json.complete, false)
+    const status = await request(port, "GET", "/api/v1/host/diagnostics/status", { token: "report-token" })
+    assert.equal(status.status, 200)
+    assert.ok(status.json.runId)
+    assert.deepEqual(app.sessionHost.listAttachedIds(), [])
   })
 
   it("network reports the listening ephemeral port, not Host, forwarding headers or share config", async () => {

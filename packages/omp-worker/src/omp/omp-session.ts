@@ -19,6 +19,8 @@ import { detectOmpVersion, isOmpVersionSupported, ompTooOldError } from "./omp-v
 import { OmpRpcClient, OmpRpcError, unwrapResponse, type OmpRpcFrame } from "./rpc-client.js"
 import { assertOmpSessionFile, backupOmpSession } from "./managed-sessions.js"
 import { assertOmpTerminalStopped } from "./terminal-presence.js"
+import { SubagentEventBuffer } from "./subagent-event-buffer.js"
+import { EventSnapshotBuffer } from "./event-snapshot-buffer.js"
 
 /**
  * OmpRpcSession —— SessionRuntime 契约的 OMP 实现。
@@ -122,6 +124,10 @@ export class OmpRpcSession implements SessionRuntime {
   private readonly headListeners = new Set<(head: SessionHead) => void>()
   private readonly activityListeners = new Set<(status: SessionActivityStatus | null) => void>()
   private readonly subagentListeners = new Set<(event: JsonObject) => void>()
+  private readonly subagentEvents = new SubagentEventBuffer(event => {
+    for (const listener of this.subagentListeners) listener(event)
+  })
+  private readonly piEvents = new EventSnapshotBuffer<JsonObject>(event => this.publishPiEvent(event))
   private readonly crashListeners = new Set<(error: Error) => void>()
   private readonly closeListeners = new Set<() => void>()
 
@@ -375,10 +381,13 @@ export class OmpRpcSession implements SessionRuntime {
       case "subagent_progress":
       case "subagent_event": {
         const kind = type === "subagent_lifecycle" ? "lifecycle" : type === "subagent_progress" ? "progress" : "event"
-        const payload = toJsonObject(frame.payload ?? {})
+        // RPC 帧已是 JSON；不要对每个 token 再完整序列化一次累计消息。
+        const raw = isJsonObject(frame.payload) ? frame.payload : {}
+        const progress = isJsonObject(raw.progress) ? raw.progress : undefined
+        const payload = typeof raw.id !== "string" && typeof progress?.id === "string"
+          ? { ...raw, id: progress.id } : raw
         this.trackSubagentFrame(kind, payload)
-        const event: JsonObject = { kind, payload }
-        for (const listener of this.subagentListeners) listener(event)
+        this.subagentEvents.push(kind, payload)
         return
       }
       case "extension_ui_request": {
@@ -408,6 +417,12 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   private emitPiEvent(event: JsonObject): void {
+    const update = event.type === "message_update" ? "message"
+      : event.type === "tool_execution_update" ? `tool:${String(event.toolCallId ?? "")}` : undefined
+    this.piEvents.push(this.sessionId, update, event)
+  }
+
+  private publishPiEvent(event: JsonObject): void {
     const meta: PiEventMeta = {
       epoch: this.eventEpoch,
       sequence: ++this.eventSequence,
@@ -893,7 +908,7 @@ export class OmpRpcSession implements SessionRuntime {
       for (const key of ["agent", "agentSource", "description", "status", "sessionFile", "parentToolCallId", "index", "detached"]) {
         if (payload[key] !== undefined) merged[key] = payload[key]
       }
-      if (payload.status === "started") merged.progressStatus = "running"
+      if (payload.status === "started") merged.status = "running"
     } else if (kind === "progress") {
       for (const key of ["agent", "task", "assignment", "sessionFile", "parentToolCallId", "index", "detached"]) {
         if (payload[key] !== undefined) merged[key] = payload[key]
@@ -1486,6 +1501,10 @@ export class OmpRpcSession implements SessionRuntime {
     return () => this.subagentListeners.delete(listener)
   }
 
+  setOutputPaused(paused: boolean): void {
+    this.client.setOutputPaused?.(paused)
+  }
+
   async listSubagents(): Promise<JsonValue> {
     try {
       const response = await this.client.request({ type: "get_subagents" }, 30_000)
@@ -1587,9 +1606,11 @@ export class OmpRpcSession implements SessionRuntime {
     if (this.terminalWatch) clearInterval(this.terminalWatch)
     if (this.syncTimer) clearTimeout(this.syncTimer)
     this.extensionUi.cancelAll("runtime_disposed")
+    this.piEvents.flush()
     this.piEventListeners.clear()
     this.headListeners.clear()
     this.activityListeners.clear()
+    this.subagentEvents.dispose()
     this.subagentListeners.clear()
     this.crashListeners.clear()
     this.closeListeners.clear()

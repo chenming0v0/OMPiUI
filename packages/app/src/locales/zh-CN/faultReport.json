@@ -1,0 +1,39 @@
+{
+  "title": "故障诊断报告",
+  "reopen": "故障报告",
+  "kind": {
+    "runtime_crashed": "任务运行实例意外退出",
+    "connection_lost": "无法稳定连接服务端",
+    "server_restarted": "任务运行期间服务端重新启动"
+  },
+  "description": {
+    "runtime_crashed": "任务未被确认正常完成。诊断报告已在本机保留，请将报告链接发给维护者排查。",
+    "connection_lost": "连接持续失败或反复断开。这可能是网络或服务端异常，并不代表任务已停止。",
+    "server_restarted": "服务端的启动批次发生变化，之前运行中的任务可能已中断。不会自动重放结果未知的操作。"
+  },
+  "time": "发现时间",
+  "server": "服务器",
+  "code": "故障编号",
+  "session": "会话",
+  "collecting": "正在收集脱敏诊断日志…",
+  "complete": "已收集 {{files}} 份日志。聊天正文、工具输出、令牌和私有地址不包含在报告中。",
+  "incomplete": "报告不完整：部分服务端日志不可用或已超过保留/收集限制。现有客户端记录已保留，恢复连接后可补齐。",
+  "restoreMissing": "完整报告尚未从本地存储恢复，暂不允许续传。可以重新收集日志或保存当前摘要。",
+  "preview": "查看脱敏报告",
+  "previewLimited": "预览仅显示前 12000 个字符；保存和上传包含报告的全部内容。",
+  "sendToMaintainer": "请复制这个链接，连同遇到的问题一起发给维护者。",
+  "partialUpload": "已上传 {{count}} / {{total}} 份；尚未全部完成。现有链接已保留，可以继续上传。",
+  "shareLink": "报告分享链接",
+  "previousLinks": "之前的报告链接",
+  "copy": "复制分享链接",
+  "copied": "已复制",
+  "consent": "我同意将此脱敏报告上传至第三方 mclo.gs。获得分享链接的人可以查看报告。",
+  "upload": "上传诊断报告",
+  "retryUpload": "继续上传",
+  "uploading": "正在上传 {{count}} / {{total}}",
+  "save": "保存到本地",
+  "refresh": "补齐日志",
+  "later": "稍后处理",
+  "uploadFailed": "上传失败，报告和已成功的链接仍保留在本机。可重试或保存到本地。",
+  "copyFailed": "复制失败，请手动选择并复制上面的链接。"
+}
