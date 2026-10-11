@@ -70,6 +70,7 @@
     "export": "Export filtered records",
     "clear": "Clear audit records",
     "ranking": "Retained traffic ranking",
+    "rankingBreakdown": "Sent {{sent}} · Received {{received}} · Peak {{peak}} per exchange",
     "times": "{{count}} times",
     "url": "Request URL",
     "status": "Status",

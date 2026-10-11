@@ -1,5 +1,6 @@
 import type { JsonObject } from "./json.js"
 import type { CoreCommandParams, ImageInput } from "./commands.js"
+import type { BranchSyncRequest } from "./session-page.js"
 import type { PiCapability, PiCapabilityQueue, PiCapabilityScope, PiCapabilitySource } from "./registry.js"
 import {
   ANY_JSON,
@@ -115,7 +116,7 @@ export const PI_COMMAND_SPECS = [
   { name: "state.get", scope: "session", description: "Read current Pi session state", queue: "immediate", idempotent: true },
   { name: "subagent.messages", scope: "session", description: "Read OMP subagent transcript messages from disk (incremental via fromByte)", paramsSchema: objectSchema({ subagentId: STRING, sessionFile: STRING, fromByte: { type: "integer", minimum: 0 } }, []), queue: "immediate", idempotent: true },
   { name: "entries.get", scope: "session", description: "Read a page of Pi session entries", paramsSchema: pageParams(), queue: "immediate", idempotent: true },
-  { name: "branch.get", scope: "session", description: "Read a page of the active Pi branch", paramsSchema: pageParams(), queue: "immediate", idempotent: true },
+  { name: "branch.get", scope: "session", description: "Read a page of the active Pi branch", paramsSchema: pageParams({ syncCursor: STRING, beforeId: STRING }), queue: "immediate", idempotent: true },
   { name: "tree.get", scope: "session", description: "Read the Pi session tree", queue: "immediate", idempotent: true },
   { name: "registry.get", scope: "session", description: "Read runtime tools, commands, extensions, and handlers", queue: "immediate", idempotent: true },
   { name: "skills.list", scope: "session", description: "List loaded Pi skills", queue: "immediate", idempotent: true },
@@ -241,7 +242,7 @@ export type PiPageParams = {
 export type PiCommandParams = CoreCommandParams & {
   "state.get": Record<string, never>
   "entries.get": PiPageParams
-  "branch.get": PiPageParams
+  "branch.get": PiPageParams & BranchSyncRequest
   "tree.get": Record<string, never>
   "registry.get": Record<string, never>
   "skills.list": Record<string, never>

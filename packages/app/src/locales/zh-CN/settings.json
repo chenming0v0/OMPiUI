@@ -70,6 +70,7 @@
     "export": "导出筛选记录",
     "clear": "清空审计记录",
     "ranking": "保留记录流量排行",
+    "rankingBreakdown": "提交 {{sent}} · 接收 {{received}} · 单次峰值 {{peak}}（双向）",
     "times": "{{count}} 次",
     "url": "请求地址",
     "status": "状态",

@@ -1,4 +1,4 @@
-import type { ImageInput, JsonObject, JsonValue, RegistrySnapshot, SessionActivityStatus } from "@ompiui/protocol"
+import type { BranchSyncRequest, ImageInput, JsonObject, JsonValue, RegistrySnapshot, SessionActivityStatus } from "@ompiui/protocol"
 
 export interface PiEventMeta {
   epoch: string
@@ -24,7 +24,7 @@ export interface SessionRuntime {
 
   getState(): JsonObject | Promise<JsonObject>
   getEntriesPage(cursor: string | undefined, limit: number, maxBytes: number): JsonObject | Promise<JsonObject>
-  getBranchPage(cursor: string | undefined, limit: number, maxBytes: number): JsonObject | Promise<JsonObject>
+  getBranchPage(cursor: string | undefined, limit: number, maxBytes: number, sync?: BranchSyncRequest): JsonObject | Promise<JsonObject>
   getTree(): JsonValue | Promise<JsonValue>
   getAttachment(entryId: string, blockIndex: number): JsonObject | Promise<JsonObject>
   getSubagentMessages(params: { subagentId?: string; sessionFile?: string; fromByte?: number }): JsonValue | Promise<JsonValue>

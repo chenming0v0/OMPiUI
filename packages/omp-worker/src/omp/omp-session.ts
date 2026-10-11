@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import { copyFileSync, existsSync } from "node:fs"
 import path from "node:path"
 import type {
+  BranchSyncRequest,
   ImageInput,
   JsonObject,
   JsonValue,
@@ -20,6 +21,8 @@ import { OmpRpcClient, OmpRpcError, unwrapResponse, type OmpRpcFrame } from "./r
 import { assertOmpSessionFile, backupOmpSession } from "./managed-sessions.js"
 import { SubagentEventBuffer } from "./subagent-event-buffer.js"
 import { EventSnapshotBuffer } from "./event-snapshot-buffer.js"
+import { BranchPageReader } from "../runtime/branch-pages.js"
+import { projectSubagentPayload, projectToolUpdate } from "./event-payload.js"
 
 /**
  * OmpRpcSession —— SessionRuntime 契约的 OMP 实现。
@@ -131,6 +134,7 @@ export class OmpRpcSession implements SessionRuntime {
 
   // 历史条目（append 顺序）+ 活跃分支缓存
   private entries: EntryRecord[] = []
+  private readonly branchPages = new BranchPageReader<EntryRecord>()
   private leafId: string | null = null
   private entriesSeeded = false
   private syncInFlight: Promise<void> = Promise.resolve()
@@ -373,7 +377,7 @@ export class OmpRpcSession implements SessionRuntime {
       case "subagent_event": {
         const kind = type === "subagent_lifecycle" ? "lifecycle" : type === "subagent_progress" ? "progress" : "event"
         // RPC 帧已是 JSON；不要对每个 token 再完整序列化一次累计消息。
-        const raw = isJsonObject(frame.payload) ? frame.payload : {}
+        const raw = projectSubagentPayload(kind, isJsonObject(frame.payload) ? frame.payload : {})
         const progress = isJsonObject(raw.progress) ? raw.progress : undefined
         const payload = typeof raw.id !== "string" && typeof progress?.id === "string"
           ? { ...raw, id: progress.id } : raw
@@ -410,7 +414,7 @@ export class OmpRpcSession implements SessionRuntime {
   private emitPiEvent(event: JsonObject): void {
     const update = event.type === "message_update" ? "message"
       : event.type === "tool_execution_update" ? `tool:${String(event.toolCallId ?? "")}` : undefined
-    this.piEvents.push(this.sessionId, update, event)
+    this.piEvents.push(this.sessionId, update, projectToolUpdate(event))
   }
 
   private publishPiEvent(event: JsonObject): void {
@@ -706,6 +710,7 @@ export class OmpRpcSession implements SessionRuntime {
         // 历史被改写（压缩/切换）：全量重播种
         this.entriesSeeded = false
         this.entries = []
+        this.branchPages.clear()
         await this.doSyncEntries()
         return
       }
@@ -784,13 +789,13 @@ export class OmpRpcSession implements SessionRuntime {
     return entriesPageFromEntries(this.getHead(), this.entries, { cursor, limit, maxBytes }, toJsonObject)
   }
 
-  async getBranchPage(cursor: string | undefined, limit: number, maxBytes: number): Promise<EntriesPage> {
+  async getBranchPage(cursor: string | undefined, limit: number, maxBytes: number, sync?: BranchSyncRequest): Promise<EntriesPage> {
     await this.ensureSynced()
     const checkpoint: BranchCheckpoint | undefined = cursor ? undefined : {
       position: { epoch: this.eventEpoch, sequence: this.eventSequence },
       liveMessage: this.liveMessage?.value,
     }
-    return entriesPageFromEntries(this.getHead(), this.branchEntries(), { cursor, limit, maxBytes, checkpoint }, toJsonObject)
+    return this.branchPages.read(this.getHead(), this.branchEntries(), { cursor, limit, maxBytes, checkpoint, ...sync }, toJsonObject)
   }
 
   async getTree(): Promise<JsonValue> {
@@ -1254,6 +1259,7 @@ export class OmpRpcSession implements SessionRuntime {
 
   private resetHistory(): void {
     this.entries = []
+    this.branchPages.clear()
     this.leafId = null
     this.entriesSeeded = false
     this.liveMessage = undefined

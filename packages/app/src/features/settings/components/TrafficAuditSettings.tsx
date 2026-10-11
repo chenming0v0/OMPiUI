@@ -313,14 +313,23 @@ export function TrafficAuditSettings() {
             {ranking.map(group => (
               <li
                 key={group.label}
-                className="flex min-w-0 items-start justify-between gap-3 text-[length:var(--fs-xs)]"
+                className="min-w-0 text-[length:var(--fs-xs)]"
               >
-                <span className="min-w-0 break-all font-mono text-text-300">{group.label}</span>
-                <span className="shrink-0 text-right font-mono tabular-nums text-text-200">
-                  {formatTrafficBytes(group.bytes)}
-                  <br />
-                  <span className="text-text-300">{t('traffic.times', { count: group.count })}</span>
-                </span>
+                <div className="flex min-w-0 items-start justify-between gap-3">
+                  <span className="min-w-0 break-all font-mono text-text-300">{group.label}</span>
+                  <span className="shrink-0 text-right font-mono tabular-nums text-text-200">
+                    {formatTrafficBytes(group.bytes)}
+                    <br />
+                    <span className="text-text-300">{t('traffic.times', { count: group.count })}</span>
+                  </span>
+                </div>
+                <p className="mt-1 break-words text-text-300">
+                  {t('traffic.rankingBreakdown', {
+                    sent: formatTrafficBytes(group.sentBytes),
+                    received: formatTrafficBytes(group.receivedBytes),
+                    peak: formatTrafficBytes(group.peakBytes),
+                  })}
+                </p>
               </li>
             ))}
           </ol>

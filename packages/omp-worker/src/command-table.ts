@@ -211,6 +211,7 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
       P.optString(p, "cursor"),
       P.optPositiveInteger(p, "limit") ?? 200,
       P.optPositiveInteger(p, "maxBytes") ?? 4 * 1024 * 1024,
+      { syncCursor: P.optString(p, "syncCursor"), beforeId: P.optString(p, "beforeId") },
     ),
   "tree.get": async (ctx) => ctx.requireRuntime().getTree(),
   "registry.get": async (ctx) => ctx.requireRuntime().getRegistry(),

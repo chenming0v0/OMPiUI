@@ -627,13 +627,14 @@ class PiEventStream {
           liveToolOutputStore.delete(event.toolCallId)
         }
         this.scheduleBranchRefresh(sessionId)
+        this.scheduleStateRefresh(sessionId)
         break
       case 'tool_execution_update': {
         if ('toolCallId' in event && typeof event.toolCallId === 'string') {
           const text = extractToolExecutionText('partialResult' in event ? event.partialResult : undefined)
           if (text) liveToolOutputStore.set(event.toolCallId, sessionId, text)
         }
-        this.scheduleStateRefresh(sessionId)
+        // 输出进度由事件直接更新；状态在工具结束等边界刷新，避免每帧再拉完整快照。
         break
       }
       case 'bash_execution_update': {

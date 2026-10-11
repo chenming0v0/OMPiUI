@@ -29,6 +29,16 @@ export type EntriesPage = {
   checkpoint?: BranchCheckpoint
   beforeCursor?: string
   hasMore: boolean
+  /** 运行时历史快照标识；只有持有该标识的客户端可以请求增量。 */
+  syncCursor?: string
+  /** 存在时 items 仅含相对该快照新增的条目。 */
+  deltaFrom?: string
+}
+
+export type BranchSyncRequest = {
+  syncCursor?: string
+  /** 客户端已加载历史的最早条目，用于刷新向前分页游标。 */
+  beforeId?: string
 }
 
 /**

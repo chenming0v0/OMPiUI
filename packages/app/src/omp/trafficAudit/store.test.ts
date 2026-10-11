@@ -86,8 +86,26 @@ describe('traffic audit storage', () => {
     store.start('https://remote.test/api/v1/sessions/two/branch', request)
     expect(store.getSnapshot().records[1].url).not.toContain('secret')
     expect(trafficRanking(store.getSnapshot().records)).toEqual([
-      { label: 'HTTP GET /api/v1/sessions/:id/branch', count: 2, bytes: 0 },
+      { label: 'HTTP GET /api/v1/sessions/:id/branch', count: 2, bytes: 0, sentBytes: 0, receivedBytes: 0, peakBytes: 0 },
     ])
+  })
+  it('separates command names while combining sessions and measuring both directions and peaks', () => {
+    const store = new TrafficAuditStore()
+    for (const [session, command, sent, received] of [
+      ['one', 'branch.get', 20, 1000],
+      ['two', 'branch.get', 30, 2000],
+      ['one', 'state.get', 2, 500],
+    ] as const) {
+      const handle = store.start(`/api/v1/pi/sessions/${session}/commands/${command}`, { ...request, operation: 'POST', sentBytes: sent })
+      store.update(handle, { receivedBytes: received })
+    }
+    const groups = trafficRanking(store.getSnapshot().records)
+    expect(groups).toEqual([
+      { label: 'HTTP POST /api/v1/pi/sessions/:id/commands/branch.get', count: 2, bytes: 3050, sentBytes: 50, receivedBytes: 3000, peakBytes: 2030 },
+      { label: 'HTTP POST /api/v1/pi/sessions/:id/commands/state.get', count: 1, bytes: 502, sentBytes: 2, receivedBytes: 500, peakBytes: 502 },
+    ])
+    store.start('/api/v1/pi/commands/record-123', request)
+    expect(trafficRanking(store.getSnapshot().records).at(-1)?.label).toBe('HTTP GET /api/v1/pi/commands/:id')
   })
 })
 

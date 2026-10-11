@@ -65,6 +65,8 @@ export type PiBranchGetParams = {
   cursor?: string
   limit?: number
   maxBytes?: number
+  syncCursor?: string
+  beforeId?: string
 }
 
 export type PiSessionListParams = {
