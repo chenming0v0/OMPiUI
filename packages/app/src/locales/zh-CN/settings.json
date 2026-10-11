@@ -155,6 +155,8 @@
     "remoteNoNetwork": "暂无可用的网络地址",
     "remoteServerPortDesc": "由当前服务器提供，不是本机的监听配置。",
     "remotePortUnavailable": "服务器未提供监听端口，无法生成局域网配对二维码。请使用已知的服务器地址，或更新服务器版本。",
+    "remoteHostUnavailable": "服务器未提供实际监听地址，无法确认局域网配对是否可用，请更新服务器版本。",
+    "remoteLanNotListening": "服务器监听 {{host}}，未开放所选网卡的局域网访问。请在服务器上将 OMPIUI_HOST 设置为 0.0.0.0 并重启服务；本机桌面服务可在「服务 → 网络监听」中修改。请确认防火墙允许访问。",
     "remoteRelayManageHint": "当前服务器未配置自建中转，请在服务器或管理后台中配置，再重启服务。",
     "remoteQrUnavailable": "二维码暂不可用",
     "remotePairUnavailable": "配对需要可访问的服务器地址和有效的配对码。",

@@ -42,7 +42,7 @@ import { piCommandStore } from '../state/index.js'
 import { getHttpFetch } from '../../utils/tauri'
 import { auditHttpRequest } from '../trafficAudit/http'
 import { resolveAndroidTailscaleUrl } from '../../utils/androidTailscale'
-import type { LanInterfaceInfo, PairInviteInfo, PairRedeemResult, TunnelStatus } from '@ompiui/protocol'
+import type { HostNetworkInfo, PairInviteInfo, PairRedeemResult, TunnelStatus } from '@ompiui/protocol'
 
 // Response types
 export type PiCommandResponse<T = JsonValue | undefined> = {
@@ -106,8 +106,8 @@ export async function fetchHostTunnel(signal?: AbortSignal): Promise<TunnelStatu
 }
 
 // 手机远程：可达网卡列表（含 Tailscale 接口）
-export async function fetchHostNetwork(signal?: AbortSignal): Promise<{ interfaces: LanInterfaceInfo[]; port?: number }> {
-  return readJson<{ interfaces: LanInterfaceInfo[]; port?: number }>(`${getApiBase()}/api/v1/host/network`, { signal })
+export async function fetchHostNetwork(signal?: AbortSignal): Promise<HostNetworkInfo> {
+  return readJson<HostNetworkInfo>(`${getApiBase()}/api/v1/host/network`, { signal })
 }
 
 // 手机远程：一次性配对邀请（GET 触发生成；「换一个」就再请求一次）

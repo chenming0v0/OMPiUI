@@ -15,6 +15,43 @@ afterEach(() => {
 })
 
 describe("WorkspaceWatcher", () => {
+  it("isolates file and Git notifications and stops publishing after unwatch", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ompiui-watch-thread-"))
+    roots.push(root)
+    mkdirSync(path.join(root, ".git"))
+    const hub = new EventHub()
+    const events: EventEnvelope[] = []
+    const unsubscribe = hub.subscribe(event => events.push(event))
+    const watcher = new WorkspaceWatcher(hub, undefined, 0, true)
+    const workspace = new WorkspaceStore().resolve(root)
+    watcher.watch(workspace)
+    try {
+      await waitFor(() => events.some(event => event.channel === "workspace.files"))
+      const initialCursor = hub.getCursor({ kind: "workspace", id: workspace.canonicalRoot })
+      events.length = 0
+      writeFileSync(path.join(root, "created.txt"), "hello")
+      await waitFor(() => events.some(event => event.channel === "workspace.files"))
+      const event = events.find(event => event.channel === "workspace.files")!
+      assert.equal(event.stream.id, workspace.canonicalRoot)
+      assert.deepEqual((event.payload as { changes: unknown[] }).changes, [{ path: "created.txt", kind: "created", type: "file" }])
+      assert.ok(event.cursor.sequence > initialCursor.sequence)
+      assert.equal(event.cursor.epoch, initialCursor.epoch)
+      assert.ok(events.some(event => event.channel === "workspace.git"))
+      events.length = 0
+      writeFileSync(path.join(root, ".git", "HEAD"), "ref: refs/heads/main\n")
+      await waitFor(() => events.some(event => event.channel === "workspace.git"))
+      assert.ok(!events.some(event => event.channel === "workspace.files"))
+      watcher.unwatch(workspace)
+      events.length = 0
+      writeFileSync(path.join(root, "created.txt"), "updated")
+      await new Promise(resolve => setTimeout(resolve, 300))
+      assert.equal(events.length, 0)
+    } finally {
+      unsubscribe()
+      await watcher.dispose()
+    }
+  })
+
   it("publishes batched file and Git invalidation events", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "ompiui-watch-"))
     roots.push(root)

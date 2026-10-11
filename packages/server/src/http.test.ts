@@ -96,7 +96,21 @@ describe("http api", () => {
     })
     assert.equal(network.status, 200)
     assert.equal(network.json.port, port)
+    assert.equal(network.json.host, "127.0.0.1")
     assert.ok(Array.isArray(network.json.interfaces))
+  })
+
+  it("network reports the actual wildcard listener", async () => {
+    const app = createAppServer({ authToken: "test-token", share: { host: "127.0.0.1", port: 8787 } })
+    cleanups.push(() => app.dispose())
+    await new Promise<void>(resolve => app.server.listen(0, "0.0.0.0", resolve))
+    const address = app.server.address()
+    assert.ok(address && typeof address === "object")
+    const network = await request(address.port, "GET", "/api/v1/host/network", { token: "test-token" })
+    assert.equal(network.status, 200)
+    assert.equal(network.json.host, "0.0.0.0")
+    assert.equal(network.json.port, address.port)
+    assert.deepEqual(app.sessionHost.listAttachedIds(), [])
   })
 
   it("pairing ignores spoofed forwarding headers and preserves direct-client limits and token checks", async () => {

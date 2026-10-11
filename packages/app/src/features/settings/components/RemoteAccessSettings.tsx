@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { LanInterfaceInfo, PairInviteInfo, TunnelStatus } from '@ompiui/protocol'
+import type { HostNetworkInfo, PairInviteInfo, TunnelStatus } from '@ompiui/protocol'
 import { CheckIcon, CopyIcon, RetryIcon, SpinnerIcon } from '../../../components/Icons'
 import { QrCode } from '../../../components/QrCode'
 import {
@@ -24,7 +24,6 @@ const PAIR_POLL_MS = 3_000
 const TUNNEL_POLL_MS = 5_000
 
 type RemoteTab = 'lan' | 'tailscale' | 'relay'
-type HostNetwork = { interfaces: LanInterfaceInfo[]; port?: number }
 
 function formatCountdown(expiresAt: number, now: number): string {
   const remaining = Math.max(0, Math.floor((expiresAt - now) / 1000))
@@ -51,7 +50,7 @@ function RemoteAccessPanel() {
     const stored = serverStorage.get(REMOTE_TAB_KEY)
     return stored === 'relay' || stored === 'tailscale' ? stored : 'lan'
   })
-  const [network, setNetwork] = useState<HostNetwork | null>(null)
+  const [network, setNetwork] = useState<HostNetworkInfo | null>(null)
   const [networkLoading, setNetworkLoading] = useState(true)
   const [networkRefresh, setNetworkRefresh] = useState(0)
   const [selectedAddress, setSelectedAddress] = useState('')
@@ -172,7 +171,13 @@ function RemoteAccessPanel() {
   }
 
   const address = interfaces.some(item => item.address === selectedAddress) ? selectedAddress : null
-  const lanBase = address && listenPort ? `http://${address}:${listenPort}` : null
+  const listenHost = network?.host
+  const lanListening = Boolean(address && listenHost &&
+    ['0.0.0.0', '::', '::ffff:0.0.0.0', address, `::ffff:${address}`].includes(listenHost))
+  const lanBase = address && listenPort && lanListening ? `http://${address}:${listenPort}` : null
+  const lanUnavailable = !networkLoading && listenPort && address && !lanListening
+    ? t(listenHost ? 'settings:service.remoteLanNotListening' : 'settings:service.remoteHostUnavailable', { host: listenHost })
+    : null
   const base = tab === 'relay'
     ? (tunnel?.state === 'connected' ? tunnel.publicUrl?.replace(/\/+$/, '') : null)
     : tab === 'tailscale' ? (tailscale?.backendState === 'Running' ? tailscale.url : null)
@@ -310,6 +315,11 @@ function RemoteAccessPanel() {
                     </p>
                   )}
                 </div>
+                {lanUnavailable && (
+                  <p role="status" className="break-words text-[length:var(--fs-xs)] leading-relaxed text-warning-100/80">
+                    {lanUnavailable}
+                  </p>
+                )}
               </div>
             )}
 
@@ -345,7 +355,9 @@ function RemoteAccessPanel() {
               <QrCode text={pairUrl} size={176} />
             ) : (
               <div role="status" className="flex h-[186px] w-[186px] items-center justify-center rounded-lg bg-bg-200/60 p-4 text-center text-[length:var(--fs-xs)] leading-relaxed text-text-400">
-                {tailscaleNeedsLogin
+                {tab === 'lan' && lanUnavailable
+                  ? t('settings:service.remoteQrUnavailable')
+                  : tailscaleNeedsLogin
                   ? t('settings:service.remoteTailscalePairLoginRequired')
                   : pairPending
                   ? <span className="flex items-center gap-2"><SpinnerIcon size={16} className="shrink-0 animate-spin" />{t('settings:service.backendStatusLoading')}</span>
@@ -411,7 +423,9 @@ function RemoteAccessPanel() {
             ? t('settings:service.remoteApproved')
             : pairUrl
               ? t('settings:service.remoteWaiting', { url: pairUrl })
-              : tailscaleNeedsLogin
+              : tab === 'lan' && lanUnavailable
+                ? lanUnavailable
+                : tailscaleNeedsLogin
                 ? t('settings:service.remoteTailscalePairLoginRequired')
                 : t('settings:service.remotePairUnavailable')}
         </div>
