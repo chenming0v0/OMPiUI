@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import { goalMessagePreview } from '@ompiui/protocol'
 import { useMemo } from 'react'
 import { piSessionInfoStore, piBranchStore, piSessionStateStore, piModelsStore } from '../state/index.js'
 import { paneLayoutStore } from '../../store/paneLayoutStore'
@@ -136,8 +137,9 @@ export function usePiSessionTitle(sessionId: string | null): string | null {
   return useMemo(() => {
     if (!sessionId) return null
     const stateName = typeof state?.sessionName === 'string' && state.sessionName.trim() ? state.sessionName.trim() : null
-    if (stateName) return stateName
+    if (stateName) return goalMessagePreview(stateName)
     const info = sessionInfos.find(item => item.id === sessionId)
-    return info?.name?.trim() || info?.firstMessage?.trim() || null
+    const title = info?.name?.trim() || info?.firstMessage?.trim()
+    return title ? goalMessagePreview(title) : null
   }, [sessionId, state?.sessionName, sessionInfos])
 }

@@ -14,6 +14,7 @@ export * from "./extension-ui.js"
 export * from "./session-page.js"
 export * from "./provider-auth.js"
 export * from "./terminal.js"
+export * from "./goal-message.js"
 
 export type HealthResponse = {
   ok: true

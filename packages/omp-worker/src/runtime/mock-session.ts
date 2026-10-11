@@ -364,7 +364,7 @@ export class MockPiSession implements SessionRuntime {
   private thinkingLevel = "off"
   private activeTools = ["mock-tool"]
   private dynamicToolRegistered = false
-  private goal: { id: string; objective: string; status: string; tokensUsed: number; timeUsedSeconds: number; createdAt: number; updatedAt: number } | null = null
+  private goal: { id: string; objective: string; images?: ImageInput[]; status: string; tokensUsed: number; timeUsedSeconds: number; createdAt: number; updatedAt: number } | null = null
   private autoCompaction = true
   private autoRetry = true
   private eventEpoch = randomUUID()
@@ -969,7 +969,7 @@ export class MockPiSession implements SessionRuntime {
   }
 
   // mock 无续跑循环：只维护目标注册表本身，前端状态栏可联调
-  async manageGoal(params: { op: "set" | "pause" | "resume" | "drop"; objective?: string }): Promise<JsonObject> {
+  async manageGoal(params: { op: "set" | "pause" | "resume" | "drop"; objective?: string; images?: ImageInput[] }): Promise<JsonObject> {
     const now = Date.now()
     if (params.op === "set") {
       const objective = (params.objective ?? "").trim()
@@ -979,6 +979,7 @@ export class MockPiSession implements SessionRuntime {
       this.goal = {
         id: randomUUID(),
         objective,
+        images: structuredClone(params.images ?? []),
         status: "active",
         tokensUsed: 0,
         timeUsedSeconds: 0,

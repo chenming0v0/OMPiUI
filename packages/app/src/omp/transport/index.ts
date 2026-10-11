@@ -635,8 +635,9 @@ export function manageSessionGoal(
   op: 'set' | 'pause' | 'resume' | 'drop',
   objective?: string,
   signal?: AbortSignal,
+  images?: PiImageInput[],
 ): Promise<CommandRecord> {
-  return postPiSessionCommand<CommandRecord>(sessionId, 'goal', { op, objective }, signal)
+  return postPiSessionCommand<CommandRecord>(sessionId, 'goal', { op, objective, ...(images ? { images } : {}) }, signal)
 }
 
 /**

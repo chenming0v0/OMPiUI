@@ -1,4 +1,5 @@
 import type { ThinkingLevel } from '../vendor/pi-agent-core'
+import { goalMessagePreview } from '@ompiui/protocol'
 import type { AssistantMessage } from '../vendor/pi-ai'
 import type { SessionEntry } from '../vendor/pi-coding-agent'
 import type {
@@ -28,8 +29,8 @@ export function selectPiSessionRows(): PiSessionRow[] {
       id: session.id,
       sessionFile: session.path,
       cwd: session.cwd,
-      title: session.name || session.firstMessage || 'New chat',
-      preview: session.firstMessage,
+      title: session.name || goalMessagePreview(session.firstMessage || '') || 'New chat',
+      preview: goalMessagePreview(session.firstMessage || ''),
       createdAt: parseTime(session.created),
       modifiedAt: parseTime(session.modified) || parseTime(session.created),
       messageCount: session.messageCount ?? 0,

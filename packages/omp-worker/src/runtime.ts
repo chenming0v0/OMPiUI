@@ -73,7 +73,7 @@ export interface SessionRuntime {
   getCommandCompletions(name: string, prefix: string): Promise<JsonValue | undefined>
 
   /** OMPiUI 轻量 goal 运行时（`goal` 命令落点）：set/pause/resume/drop + 续跑循环 */
-  manageGoal(params: { op: "set" | "pause" | "resume" | "drop"; objective?: string }): Promise<JsonObject>
+  manageGoal(params: { op: "set" | "pause" | "resume" | "drop"; objective?: string; images?: ImageInput[] }): Promise<JsonObject>
 
   navigateTree(
     entryId: string,

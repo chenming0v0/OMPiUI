@@ -59,6 +59,15 @@
     "startNewSession": "Start new session"
   },
   "goalBar": {
+    "messageSet": "Set as goal",
+    "messageContinuation": "Continuing goal",
+    "imagePasteHint": "Paste images to use as goal references.",
+    "imageAlt": "Goal reference image {{index}}",
+    "removeImage": "Remove image {{index}}",
+    "readingImages": "Reading images…",
+    "imagesUnsupported": "This model does not support images. Switch models or remove the images.",
+    "imageReadFailed": "Could not read the image. Please paste it again.",
+    "saveFailed": "Could not save the goal. Your draft is preserved; please retry.",
     "setGoal": "Set goal",
     "editGoal": "Edit goal",
     "active": "Active goal",

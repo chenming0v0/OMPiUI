@@ -4,7 +4,7 @@ import { homedir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import type { JsonObject, JsonValue } from "@ompiui/protocol"
-import { isJsonObject, requireJsonValue } from "@ompiui/protocol"
+import { goalMessagePreview, isJsonObject, requireJsonValue } from "@ompiui/protocol"
 import type { CatalogProvider } from "../runtime.js"
 import type { PackagesGateway } from "../command-table.js"
 import { entriesPageFromEntries, imageAttachmentFromEntry, sessionHeadFromParts } from "../runtime/pagination.js"
@@ -192,7 +192,7 @@ async function summarizeSessionFile(filePath: string, childTitles?: Map<string, 
   } catch {
     /* keep 0 */
   }
-  return { id, cwd, path: filePath, name, firstMessage, created, modified, messageCount }
+  return { id, cwd, path: filePath, name, firstMessage: firstMessage ? goalMessagePreview(firstMessage) : firstMessage, created, modified, messageCount }
 }
 
 async function summarizeSessionFileCached(filePath: string, childTitles?: Map<string, string>): Promise<SessionFileSummary | null> {

@@ -389,6 +389,7 @@ export type AgentSessionEvent =
 export interface SessionGoalSnapshot {
   id: string
   objective: string
+  images?: ImageContent[]
   status: 'active' | 'paused' | 'budget-limited' | 'complete' | 'dropped' | (string & {})
   tokenBudget?: number
   tokensUsed: number

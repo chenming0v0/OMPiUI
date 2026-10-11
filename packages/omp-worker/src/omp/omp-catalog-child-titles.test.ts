@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { formatGoalMessage } from "@ompiui/protocol"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { after, before, describe, it } from "node:test"
@@ -70,6 +71,19 @@ after(() => {
 })
 
 describe("child session titles", () => {
+  it("extracts the goal for list previews without rewriting native history", async () => {
+    const goalFile = path.join(projectDir, "goal.jsonl")
+    const prompt = formatGoalMessage({ kind: "set", objective: "检查截图布局", round: 1, limit: 50 })
+    writeSession(goalFile, [
+      { type: "session", version: 3, id: "goal-1", timestamp: "t0", cwd: "C:/proj" },
+      { type: "message", id: "g1", parentId: null, message: { role: "user", content: [{ type: "text", text: prompt }, { type: "image", data: "AA==", mimeType: "image/png" }] } },
+    ])
+    const before = readFileSync(goalFile, "utf8")
+    const listed = await new OmpCatalog().listAllSessions() as Array<{ id: string; firstMessage: string | null }>
+    assert.equal(listed.find(item => item.id === "goal-1")?.firstMessage, "检查截图布局")
+    assert.equal(readFileSync(goalFile, "utf8"), before)
+  })
+
   it("prefers authored titles, then parent task summaries, and never uses injected prompts as child names", async () => {
     const listed = await new OmpCatalog().listChildSessions(parentFile) as Array<{ id: string; name: string | null; firstMessage: string | null }>
     const byId = new Map(listed.map(item => [item.id, item]))

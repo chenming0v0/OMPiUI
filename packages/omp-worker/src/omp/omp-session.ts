@@ -8,7 +8,7 @@ import type {
   RegistrySnapshot,
   SessionActivityStatus,
 } from "@ompiui/protocol"
-import { isJsonObject } from "@ompiui/protocol"
+import { formatGoalMessage, isJsonObject } from "@ompiui/protocol"
 import { entriesPageFromEntries, sessionHeadFromParts, type BranchCheckpoint, type EntriesPage, type LiveMessage, type SessionHead } from "../runtime/pagination.js"
 import { buildSessionTreeFromEntries } from "../runtime/session-tree.js"
 import type { PiEventMeta, SessionRuntime, Unsubscribe } from "../runtime.js"
@@ -160,6 +160,8 @@ export class OmpRpcSession implements SessionRuntime {
   // 事件帧为准覆写本状态。经 state.get 的 goal 字段 + goal 命令到达前端。
   private goal: JsonValue = null
   private goalContinuations = 0
+  private goalAnnouncementPending = false
+  private goalImages: ImageInput[] = []
   private goalGeneration = 0
   private goalTurnStartedAt: number | null = null
   private lastActivity = { streaming: false, retrying: false, compacting: false }
@@ -1047,7 +1049,7 @@ export class OmpRpcSession implements SessionRuntime {
    * 自动暂停。状态经 state.get 的 goal 字段 + 合成 goal_updated 事件到达
    * 前端目标栏。goal 只随 worker 进程存活（RPC 无自定义条目可持久化）。
    */
-  async manageGoal(params: { op: "set" | "pause" | "resume" | "drop"; objective?: string }): Promise<JsonObject> {
+  async manageGoal(params: { op: "set" | "pause" | "resume" | "drop"; objective?: string; images?: ImageInput[] }): Promise<JsonObject> {
     const now = Date.now()
     if (params.op === "set") {
       const objective = (params.objective ?? "").trim()
@@ -1057,6 +1059,7 @@ export class OmpRpcSession implements SessionRuntime {
       this.goal = {
         id: randomUUID(),
         objective,
+        images: structuredClone(params.images ?? []),
         status: "active",
         tokensUsed: 0,
         timeUsedSeconds: 0,
@@ -1064,6 +1067,8 @@ export class OmpRpcSession implements SessionRuntime {
         updatedAt: now,
       }
       this.goalContinuations = 0
+      this.goalAnnouncementPending = true
+      this.goalImages = structuredClone(params.images ?? [])
     } else if (isJsonObject(this.goal)) {
       const goal = { ...this.goal }
       if (params.op === "pause") {
@@ -1073,6 +1078,8 @@ export class OmpRpcSession implements SessionRuntime {
         this.goalContinuations = 0
       } else {
         this.goal = null
+        this.goalAnnouncementPending = false
+        this.goalImages = []
       }
       if (isJsonObject(this.goal)) {
         goal.updatedAt = now
@@ -1148,13 +1155,18 @@ export class OmpRpcSession implements SessionRuntime {
       return
     }
     const objective = this.goal.objective
-    const message =
-      `[goal continuation ${this.goalContinuations}/${GOAL_MAX_CONTINUATIONS}] Session goal: "${objective}". ` +
-      `Continue working toward it. If it is already fully achieved, end your reply with the exact marker ${GOAL_COMPLETE_MARKER} and do nothing else.`
-    void this.submitPrompt(message, undefined, { streamingBehavior: "followUp" }, () =>
-      generation === this.goalGeneration && this.goalStatus() === "active" &&
-      !this.currentStreaming && !this.closed,
-    ).catch(() => undefined)
+    const announce = this.goalAnnouncementPending
+    const message = formatGoalMessage({
+      kind: announce ? "set" : "continuation", objective,
+      round: this.goalContinuations, limit: GOAL_MAX_CONTINUATIONS,
+    })
+    void this.submitPrompt(message, announce ? this.goalImages : undefined, { streamingBehavior: "followUp" }, () => {
+      if (generation !== this.goalGeneration || this.goalStatus() !== "active" || this.currentStreaming || this.closed) return false
+      this.goalAnnouncementPending = false
+      return true
+    }).catch(() => {
+      if (generation === this.goalGeneration && announce) this.goalAnnouncementPending = true
+    })
   }
 
   private lastAssistantTextEndsWith(marker: string): boolean {

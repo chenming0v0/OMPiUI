@@ -59,6 +59,15 @@
     "startNewSession": "启动新会话"
   },
   "goalBar": {
+    "messageSet": "设为目标",
+    "messageContinuation": "继续执行目标",
+    "imagePasteHint": "支持粘贴图片作为目标参考。",
+    "imageAlt": "目标参考图片 {{index}}",
+    "removeImage": "移除图片 {{index}}",
+    "readingImages": "正在读取图片…",
+    "imagesUnsupported": "当前模型不支持图片，请切换模型或移除图片。",
+    "imageReadFailed": "图片读取失败，请重新粘贴。",
+    "saveFailed": "目标保存失败，内容已保留，请重试。",
     "setGoal": "设定目标",
     "editGoal": "编辑目标",
     "active": "进行中的目标",

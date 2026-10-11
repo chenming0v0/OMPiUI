@@ -6,6 +6,8 @@ import {
   useState,
   useSyncExternalStore,
   type ReactNode,
+  type Dispatch,
+  type SetStateAction,
 } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
@@ -19,13 +21,15 @@ import {
   TrashIcon,
 } from '../../../components/Icons'
 import { piSessionStateStore } from '../../../omp/state/index.js'
-import { manageSessionGoal } from '../../../omp/transport/index.js'
+import { manageSessionGoal, waitHostCommand, type PiImageInput } from '../../../omp/transport/index.js'
 import type { SessionGoalSnapshot } from '../../../omp/vendor/pi-coding-agent'
+import { useGoalImagePaste } from './useGoalImagePaste'
 
 interface GoalBarProps {
   sessionId?: string | null
   isCompact: boolean
-  onSetGoal?: (objective: string) => Promise<boolean> | boolean
+  onSetGoal?: (objective: string, images?: PiImageInput[]) => Promise<boolean> | boolean
+  supportsImages?: boolean
   queuedMessages?: ReactNode
 }
 
@@ -46,6 +50,7 @@ function parseGoal(raw: unknown): SessionGoalSnapshot | null {
   return {
     id: typeof value.id === 'string' ? value.id : '',
     objective: value.objective,
+    images: Array.isArray(value.images) ? value.images as PiImageInput[] : [],
     status: typeof value.status === 'string' ? value.status : 'active',
     tokenBudget: typeof value.tokenBudget === 'number' ? value.tokenBudget : undefined,
     tokensUsed: typeof value.tokensUsed === 'number' ? value.tokensUsed : 0,
@@ -100,6 +105,10 @@ function GoalEditor({
   isCompact,
   sessionId,
   isSaving,
+  images,
+  setImages,
+  supportsImages,
+  saveError,
 }: {
   goal: SessionGoalSnapshot | null
   draft: string
@@ -110,10 +119,15 @@ function GoalEditor({
   isCompact: boolean
   sessionId?: string | null
   isSaving: boolean
+  images: PiImageInput[]
+  setImages: Dispatch<SetStateAction<PiImageInput[]>>
+  supportsImages: boolean
+  saveError: boolean
 }) {
   const { t } = useTranslation('chat')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const canSave = draft.trim().length > 0 && !isSaving
+  const { onPaste, readingImages, imageError } = useGoalImagePaste(supportsImages, isSaving, setImages)
+  const canSave = draft.trim().length > 0 && !isSaving && !readingImages && (supportsImages || images.length === 0)
 
   useEffect(() => {
     const textarea = textareaRef.current
@@ -157,12 +171,32 @@ function GoalEditor({
           ref={textareaRef}
           value={draft}
           onChange={event => onDraftChange(event.target.value)}
+          onPaste={onPaste}
           onKeyDown={handleKeyDown}
           placeholder={t('goalBar.objectivePlaceholder')}
           disabled={isSaving}
           rows={isCompact ? 5 : 4}
           className="w-full resize-none bg-transparent rounded-xl px-2 py-2 text-text-100 placeholder:text-text-500 focus:outline-none custom-scrollbar text-[length:var(--fs-base)] disabled:opacity-60 disabled:cursor-wait"
         />
+        {images.length > 0 && (
+          <div className="flex flex-wrap gap-2 px-2 pb-2">
+            {images.map((image, index) => (
+              <div key={index} className="relative rounded-lg border border-border-200 p-1">
+                <img src={`data:${image.mimeType};base64,${image.data}`} alt={t('goalBar.imageAlt', { index: index + 1 })} className="h-20 w-20 rounded-md object-contain" />
+                <button type="button" disabled={isSaving} aria-label={t('goalBar.removeImage', { index: index + 1 })}
+                  className="absolute -right-1 -top-1 rounded-full bg-bg-100 p-1 text-text-300 hover:text-text-100"
+                  onClick={() => setImages(previous => previous.filter((_, i) => i !== index))}>
+                  <CloseIcon size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {supportsImages && <p className="px-2 pb-2 text-[length:var(--fs-xs)] text-text-500">{t('goalBar.imagePasteHint')}</p>}
+        {readingImages && <p role="status" className="px-2 pb-2 text-[length:var(--fs-xs)] text-text-400">{t('goalBar.readingImages')}</p>}
+        {(imageError || saveError || (!supportsImages && images.length > 0)) && (
+          <p role="alert" className="px-2 pb-2 text-[length:var(--fs-xs)] text-red-400">{t(imageError ?? (saveError ? 'goalBar.saveFailed' : 'goalBar.imagesUnsupported'))}</p>
+        )}
       </div>
       <div
         className="flex items-center gap-2 px-3 pb-3"
@@ -227,12 +261,14 @@ function GoalEditor({
   )
 }
 
-export const GoalBar = memo(function GoalBar({ sessionId, isCompact, onSetGoal, queuedMessages }: GoalBarProps) {
+export const GoalBar = memo(function GoalBar({ sessionId, isCompact, onSetGoal, queuedMessages, supportsImages = false }: GoalBarProps) {
   const { t } = useTranslation('chat')
   const goal = useSessionGoal(sessionId)
   const [editorOpen, setEditorOpen] = useState(false)
   const [draft, setDraft] = useState('')
   const [isSaving, setIsSaving] = useState(false)
+  const [images, setImages] = useState<PiImageInput[]>([])
+  const [saveError, setSaveError] = useState(false)
   const [now, setNow] = useState(() => Date.now())
   const rootRef = useRef<HTMLDivElement>(null)
 
@@ -256,18 +292,21 @@ export const GoalBar = memo(function GoalBar({ sessionId, isCompact, onSetGoal, 
 
   const openEditor = useCallback(() => {
     setDraft(goal?.objective ?? '')
+    setImages(goal?.images ?? [])
+    setSaveError(false)
     setEditorOpen(true)
-  }, [goal?.objective])
+  }, [goal?.objective, goal?.images])
 
   const closeEditor = useCallback(() => setEditorOpen(false), [])
 
   // goal 操作走 worker 侧的 `goal` 命令：确定性变更 + worker 合成 goal_updated
   // 事件 → eventStream 刷新 state → 本组件经 piSessionStateStore 拿到新快照
   const runGoalOp = useCallback(
-    async (op: 'set' | 'pause' | 'resume' | 'drop', objective?: string): Promise<boolean> => {
+    async (op: 'set' | 'pause' | 'resume' | 'drop', objective?: string, goalImages?: PiImageInput[]): Promise<boolean> => {
       if (!sessionId) return false
       try {
-        await manageSessionGoal(sessionId, op, objective)
+        const command = await manageSessionGoal(sessionId, op, objective, undefined, goalImages)
+        await waitHostCommand(command.id)
         return true
       } catch {
         return false
@@ -280,18 +319,20 @@ export const GoalBar = memo(function GoalBar({ sessionId, isCompact, onSetGoal, 
     const text = draft.trim()
     if (text === '' || isSaving) return
     setIsSaving(true)
+    setSaveError(false)
     let saved = false
     try {
       saved = sessionId
-        ? await runGoalOp('set', text)
-        : onSetGoal ? (await onSetGoal(text)) !== false : false
+        ? await runGoalOp('set', text, images)
+        : onSetGoal ? (await onSetGoal(text, images)) !== false : false
     } catch {
       saved = false
     } finally {
       setIsSaving(false)
     }
     if (saved) setEditorOpen(false)
-  }, [draft, isSaving, onSetGoal, runGoalOp, sessionId])
+    else setSaveError(true)
+  }, [draft, images, isSaving, onSetGoal, runGoalOp, sessionId])
 
   const handleTogglePause = useCallback(() => {
     runGoalOp(goal?.status === 'paused' || goal?.status === 'budget-limited' ? 'resume' : 'pause')
@@ -336,6 +377,10 @@ export const GoalBar = memo(function GoalBar({ sessionId, isCompact, onSetGoal, 
           isCompact={isCompact}
           sessionId={sessionId}
           isSaving={isSaving}
+          images={images}
+          setImages={setImages}
+          supportsImages={supportsImages}
+          saveError={saveError}
         />
       ) : goal ? (
         <div className="flex items-center gap-1 h-9 pl-3 pr-1.5 text-[length:var(--fs-sm)]">
@@ -391,6 +436,10 @@ export const GoalBar = memo(function GoalBar({ sessionId, isCompact, onSetGoal, 
           isCompact={isCompact}
           sessionId={sessionId}
           isSaving={isSaving}
+          images={images}
+          setImages={setImages}
+          supportsImages={supportsImages}
+          saveError={saveError}
         />
       )}
     </div>

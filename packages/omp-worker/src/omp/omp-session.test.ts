@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { describe, it, type TestContext } from "node:test"
 import type { ImageInput, JsonObject } from "@ompiui/protocol"
+import { parseGoalMessage } from "@ompiui/protocol"
 import { OmpExtensionUiBridge } from "./omp-extension-ui.js"
 import { OmpRpcSession } from "./omp-session.js"
 import type { OmpRpcFrame } from "./rpc-client.js"
@@ -344,6 +345,48 @@ describe("OmpRpcSession idle reporting for host recycling", () => {
 })
 
 describe("OmpRpcSession goal pause and continuation", () => {
+  it("sends goal images on the first turn and keeps subsequent continuations compact", async t => {
+    const { session, frame, commands, native } = await sessionFixture(t)
+    native.isStreaming = false
+    await session.getState()
+    await session.manageGoal({ op: "set", objective: '按 "截图" 修复\n布局', images: [image("AA==")] })
+    await new Promise(resolve => setImmediate(resolve))
+    const first = commands.find(command => command.type === "prompt")!
+    assert.equal(parseGoalMessage(String(first.message))?.kind, "set")
+    assert.deepEqual(first.images, [image("AA==")])
+    assert.deepEqual(((await session.getState()).goal as JsonObject).images, [image("AA==")])
+    frame({ type: "agent_start" })
+    native.isStreaming = false
+    frame({ type: "session_settled" })
+    await new Promise(resolve => setTimeout(resolve, 1100))
+    const prompts = commands.filter(command => command.type === "prompt")
+    assert.equal(prompts.length, 2)
+    assert.equal(parseGoalMessage(String(prompts[1]!.message))?.kind, "continuation")
+    assert.equal(prompts[1]!.images, undefined)
+    await session.manageGoal({ op: "drop" })
+    await session.manageGoal({ op: "set", objective: "新目标" })
+    await new Promise(resolve => setImmediate(resolve))
+    const last = commands.filter(command => command.type === "prompt").at(-1)!
+    assert.equal(parseGoalMessage(String(last.message))?.objective, "新目标")
+    assert.equal(last.images, undefined)
+  })
+
+  it("preserves pending goal images across pause before the first submission", async t => {
+    const { session, commands, native } = await sessionFixture(t)
+    native.isStreaming = false
+    await session.getState()
+    await Promise.all([
+      session.manageGoal({ op: "set", objective: "图片目标", images: [image("AA==")] }),
+      session.manageGoal({ op: "pause" }),
+    ])
+    assert.equal(commands.filter(command => command.type === "prompt").length, 0)
+    await session.manageGoal({ op: "resume" })
+    await new Promise(resolve => setImmediate(resolve))
+    const first = commands.find(command => command.type === "prompt")!
+    assert.deepEqual(first.images, [image("AA==")])
+    assert.equal(parseGoalMessage(String(first.message))?.kind, "set")
+  })
+
   it("aborts the running turn and clears queued messages before acknowledging pause", async t => {
     const { session, frame, commands, native, rpc, drain } = await sessionFixture(t)
     frame({ type: "agent_start" })

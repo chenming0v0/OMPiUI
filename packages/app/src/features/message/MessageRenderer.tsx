@@ -1,7 +1,8 @@
 import { memo, useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
+import { parseGoalMessage } from '@ompiui/protocol'
 import { animate } from 'motion/mini'
-import { ChevronDownIcon, ChevronRightIcon, SplitIcon, SpinnerIcon, UndoIcon } from '../../components/Icons'
+import { ChevronDownIcon, ChevronRightIcon, SplitIcon, SpinnerIcon, TargetIcon, UndoIcon } from '../../components/Icons'
 import { CopyButton } from '../../components/ui'
 import { MarkdownRenderer } from '../../components/MarkdownRenderer'
 import { useDisclosureScrollLock } from '../../hooks'
@@ -571,7 +572,9 @@ const UserMessageView = memo(function UserMessageView({
   // 文本块拼接；图片块走附件胶囊渲染（AttachmentItem 通用消费）
   const textBlocks = blocks.filter((block): block is Extract<typeof block, { type: 'text' }> => block.type === 'text')
   const imageBlocks = blocks.filter((block): block is Extract<typeof block, { type: 'image' }> => block.type === 'image')
-  const messageText = textBlocks.map(block => block.text).join('')
+  const rawText = textBlocks.map(block => block.text).join('')
+  const goalMessage = parseGoalMessage(rawText)
+  const messageText = goalMessage ? (goalMessage.kind === 'set' ? goalMessage.objective : '') : rawText
   const hasUserHtmlArtifact = renderUserMarkdown && USER_HTML_ARTIFACT_PATTERN.test(messageText)
 
   return (
@@ -602,6 +605,14 @@ const UserMessageView = memo(function UserMessageView({
                 size="sm"
               />
             ))}
+          </div>
+        )}
+
+        {goalMessage && (
+          <div data-goal-message={goalMessage.kind} className="mt-1 flex items-center gap-1.5 text-[length:var(--fs-xs)] text-text-400">
+            <TargetIcon size={13} />
+            <span>{t(goalMessage.kind === 'set' ? 'chat:goalBar.messageSet' : 'chat:goalBar.messageContinuation')}</span>
+            {goalMessage.kind === 'continuation' && <span className="text-text-500">{goalMessage.round}/{goalMessage.limit}</span>}
           </div>
         )}
 
