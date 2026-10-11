@@ -577,6 +577,7 @@ class PiEventStream {
       isStreaming: false, isIdle: true, isRetrying: false, isCompacting: false,
       isBashRunning: false, hasPendingAsyncWork: false, retry: null, compaction: null,
     })
+    piBranchStore.settleLiveMessage(sessionId)
     this.pendingLiveMessages.delete(sessionId)
   }
 

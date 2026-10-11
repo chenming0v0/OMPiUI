@@ -412,14 +412,19 @@ class OmpSubagentStore {
   markSessionCrashed(sessionId: string): void {
     for (const run of this.runsForSession(sessionId)) {
       if (isTerminalStatus(run.status)) continue
-      this.upsert(sessionId, run.id, current => ({
-        ...current, status: 'failed', endedAt: Date.now(),
-        transcript: current.transcript.map(item => ({
-          ...item, streaming: false,
-          toolStatus: item.toolStatus === 'running' || item.toolStatus === 'pending' ? 'error' : item.toolStatus,
-        })),
-      }))
+      this.settleRun(sessionId, run.id, 'failed')
     }
+  }
+
+  private settleRun(sessionId: string, runId: string, status: 'failed' | 'aborted'): void {
+    this.upsert(sessionId, runId, current => ({
+      ...current, status, endedAt: Date.now(),
+      progress: current.progress ? { ...current.progress, status } : undefined,
+      transcript: current.transcript.map(item => ({
+        ...item, streaming: false,
+        toolStatus: item.toolStatus === 'running' || item.toolStatus === 'pending' ? 'error' : item.toolStatus,
+      })),
+    }))
   }
 
   /**
@@ -438,11 +443,13 @@ class OmpSubagentStore {
   }
 
   /** state.get 恢复快照（worker 从最近 lifecycle/progress 帧累计的注册表） */
-  applySnapshot(sessionId: string, runs: unknown[]): void {
+  applySnapshot(sessionId: string, runs: unknown[], settled = false): void {
+    const present = new Set<string>()
     for (const raw of runs) {
       const record = asRecord(raw)
       const id = str(record?.id)
       if (!record || !id) continue
+      present.add(id)
       this.upsert(sessionId, id, run => {
         const incomingStatus = record.status === undefined ? run.status : normalizeStatus(record.status)
         const status = mergeStatus(run.status, incomingStatus)
@@ -460,6 +467,12 @@ class OmpSubagentStore {
           endedAt: isTerminalStatus(status) && !run.endedAt ? Date.now() : run.endedAt,
         }
       })
+    }
+    // 只在后端已确认空闲时处理缺失条目；忙碌期间的部分快照不能中止新任务。
+    if (settled) {
+      for (const run of this.runsForSession(sessionId)) {
+        if (!present.has(run.id) && !isTerminalStatus(run.status)) this.settleRun(sessionId, run.id, 'aborted')
+      }
     }
   }
 }

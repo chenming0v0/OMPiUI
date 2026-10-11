@@ -60,6 +60,8 @@ npm run diagnostics -- --session <sessionId> --out diagnostic-report.jsonl
   服务端关闭造成的实例销毁。
 - `server.started` 的 `runId/pid` 变化：服务端已重启。
 - `worker.heartbeat.kill / worker.exited`：看门狗或 worker 异常退出。
+- `session.crashed` 的 `workerPid/code/signal/reason`：内层 OMP 进程的退出信息；
+  `unexpected_exit` 表示未主动停止。不要将内层 OMP 退出与共享 worker 退出混淆。
 - `agent.event.eventType=message_end` 的 `status=error/aborted`：
   模型回复失败或中止；失败使用 `MODEL_RESPONSE_ERROR`，原始错误正文不进入诊断日志。
 - `command.status.status=unknown_after_crash`：命令结果因崩溃无法确认。
@@ -67,6 +69,14 @@ npm run diagnostics -- --session <sessionId> --out diagnostic-report.jsonl
 异常强杀或 watch 重启可能没有完整的停止事件。此时只能结合新启动批次与旧
 记录推断重启，不能把没有结束日志当作“已正常完成”。
 浏览器 pagehide 是尽力发送，网络已经断开时无法补发；重连会上报前次关闭码。
+桌面 Bun 和 Node 的 worker 错误均写入数据根目录的日志。重连和故障状态探测
+会重新校准当前运行状态；后端确认空闲且子代理已不在注册表时，遗留条目标记中断。
+
+OMPiUI 管理的会话使用进程级 `task.maxRecursionDepth: 1`：主代理可以并发派任务，
+子代理不能继续派子代理；不修改官方终端的全局配置，也不降低第一层并发上限。
+
+打开尚未运行的历史会话、刷新和草稿同步走只读路径，不启动会写盘的 OMP runtime。
+主动发消息或明确修改会话时才恢复写入；不扫描或拦截官方终端进程。
 
 ## 隐私与负载
 

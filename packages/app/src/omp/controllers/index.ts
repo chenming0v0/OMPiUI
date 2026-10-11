@@ -316,12 +316,18 @@ export async function refreshPiSessionState(sessionId: string, signal?: AbortSig
   const requestVersion = piSessionStateStore.beginRequest(sessionId)
   const state = await transport.getPiSessionState(sessionId, signal)
   if (serverStore.getActiveServerGeneration() !== serverGeneration) return
+  const currentRequest = piSessionStateStore.isRequestCurrent(sessionId, requestVersion)
   if (!piSessionStateStore.setStateIfCurrent(sessionId, state as JsonObject, requestVersion)) return
+  if (!currentRequest) return
   // worker 的子代理注册表快照并入全局 store：页面刷新 / 重连后 HUD 与
   // TaskRenderer 内联视图据此恢复（运行中的随后由 progress 帧继续推进）
-  if (state && typeof state === 'object' && !Array.isArray(state)
-    && Array.isArray((state as JsonObject).subagents)) {
-    ompSubagentStore.applySnapshot(sessionId, (state as JsonObject).subagents as unknown[])
+  if (isJsonObject(state)) {
+    const settled = state.isIdle === true && !state.isStreaming && !state.isCompacting &&
+      !state.isRetrying && !state.isBashRunning && !state.hasPendingAsyncWork
+    if (settled) piBranchStore.settleLiveMessage(sessionId)
+    if (Array.isArray(state.subagents) || (settled && state.diskPreview === true)) {
+      ompSubagentStore.applySnapshot(sessionId, Array.isArray(state.subagents) ? state.subagents : [], settled)
+    }
   }
 }
 

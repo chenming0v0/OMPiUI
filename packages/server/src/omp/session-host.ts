@@ -6,7 +6,7 @@ import { open } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import type { CommandEnvelope, CommandRecord, JsonObject, JsonValue, PiCapability, PiRegistrySnapshot, RegistrySnapshot, SessionActivityStatus, SessionsActivitySnapshot } from "@ompiui/protocol"
 import { isJsonObject, PI_PARITY_SDK_VERSION, PROTOCOL_VERSION, validateParams } from "@ompiui/protocol"
-import { assertOmpTerminalStopped, createRegistryDescribeCapability, getCommandCapability, getDriverMode, listCommandCapabilities, type WorkerEvent } from "@ompiui/omp-worker"
+import { createRegistryDescribeCapability, getCommandCapability, getDriverMode, listCommandCapabilities, type WorkerEvent } from "@ompiui/omp-worker"
 import type { EventHub } from "../event-hub.ts"
 import { logToFile } from "../logger.ts"
 import { diagnostics, diagnosticErrorCode, summarizeRunState } from "../diagnostics/recorder.ts"
@@ -96,7 +96,6 @@ export class SessionHost {
       if (!isJsonObject(preview)) throw new Error("Invalid session preview")
       return { sessionId: found.id, sessionFile, sessionFileReady: true, cwd: found.cwd ?? cwd, state: preview.state ?? null }
     }
-    if (!sessionFile && getDriverMode() === "omp") await assertOmpTerminalStopped()
     if (sessionFile && reuseFromSessionId) {
       const switched = await this.switchAttachedSession(reuseFromSessionId, cwd, sessionFile, signal)
       if (switched) return switched
@@ -213,7 +212,14 @@ export class SessionHost {
     session.worker.onEvent(event => this.routeSessionEvent(session, event))
     session.worker.onCrash(error => {
       if (this.runtimes.get(session.sessionId) !== session) return
-      diagnostics.record("session.crashed", { sessionId: session.sessionId, errorCode: diagnosticErrorCode(error) }, "error")
+      const runtimeExit = "runtimeExit" in error && isJsonObject(error.runtimeExit) ? error.runtimeExit : undefined
+      diagnostics.record("session.crashed", {
+        sessionId: session.sessionId, errorCode: diagnosticErrorCode(error),
+        workerPid: typeof runtimeExit?.pid === "number" ? runtimeExit.pid : undefined,
+        code: typeof runtimeExit?.code === "number" ? runtimeExit.code : undefined,
+        signal: typeof runtimeExit?.signal === "string" ? runtimeExit.signal : undefined,
+        reason: typeof runtimeExit?.reason === "string" ? runtimeExit.reason : undefined,
+      }, "error")
       const fault = diagnostics.recentFaults().at(-1)
       this.executor.markRuntimeCrashed(session.sessionId)
       this.runtimes.delete(session.sessionId)
@@ -228,7 +234,6 @@ export class SessionHost {
         // 先释放旧 runtime 的租约，再按原身份挂接；不重放结果未知的命令。
         const recovery = cleanup.then(async () => {
           if (this.recoveryController.signal.aborted) return
-          if (getDriverMode() === "omp") await assertOmpTerminalStopped()
           await this.openSessionOnce(session.cwd, sessionFile, this.recoveryController.signal)
           this.hub.publish({ kind: "session", id: session.sessionId }, "sessions.updated", {
             sessionId: session.sessionId, recovered: true,
@@ -358,7 +363,6 @@ export class SessionHost {
       if (!found) {
         throw Object.assign(new Error("session is not attached"), { code: "SESSION_NOT_FOUND" })
       }
-      if (getDriverMode() === "omp") await assertOmpTerminalStopped()
       let lastError: unknown
       for (let attempt = 0; attempt <= ATTACH_BUSY_RETRIES; attempt += 1) {
         try {

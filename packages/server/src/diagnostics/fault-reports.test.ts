@@ -12,7 +12,10 @@ test("reports retained diagnostics and safe lifecycle logs, not transcripts or s
   const dir = join(root, "logs", "diagnostics")
   mkdirSync(dir, { recursive: true })
   const recorder = new DiagnosticRecorder({ directory: dir })
-  recorder.record("session.crashed", { sessionId: "session-test", errorCode: "SESSION_RUNTIME_CRASHED" }, "error")
+  recorder.record("session.crashed", {
+    sessionId: "session-test", errorCode: "SESSION_RUNTIME_CRASHED",
+    workerPid: 12345, code: 1, signal: "SIGKILL", reason: "unexpected_exit",
+  }, "error")
   writeFileSync(join(root, "logs", "ompiui-server-2026-10-11.log"), [
     '[2026-10-11T01:00:00.000Z] [omp-worker] heartbeat missing for 3 consecutive ticks (pid=123)',
     '[2026-10-11T01:00:00.000Z] [ompiui-server] listening https://private.example/?token=PRIVATE_TOKEN',
@@ -28,6 +31,9 @@ test("reports retained diagnostics and safe lifecycle logs, not transcripts or s
   const { report } = await service.collect()
   assert.equal(report.complete, true)
   assert.ok(report.content.includes("session.crashed"))
+  assert.ok(report.content.includes('"reason":"unexpected_exit"'))
+  assert.ok(report.content.includes('"workerPid":12345'))
+  assert.ok(report.content.includes('"code":1'))
   assert.ok(report.content.includes("heartbeat missing"))
   assert.ok(report.content.includes("worker.exited"))
   assert.ok(report.content.includes('"isStreaming":true'))

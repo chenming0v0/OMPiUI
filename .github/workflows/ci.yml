@@ -10,34 +10,152 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  validate:
-    name: validate ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+  # 第一层：每种系统只构建一次共享依赖，后续任务恢复同一次运行的产物。
+  build-deps:
+    name: build dependencies ${{ matrix.platform }}
+    runs-on: ${{ matrix.platform }}-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { name: ubuntu, os: ubuntu-latest }
-          - { name: windows, os: windows-latest }
-
+        platform: [ubuntu, windows]
     steps:
       - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-workspace
 
-      - uses: actions/setup-node@v6
+      - name: Build shared workspaces
+        run: |
+          npm run build -w @ompiui/protocol
+          npm run build -w @ompiui/omp-worker
+          npm run build -w @ompiui/relay
+          npm run build -w @ompiui/server
+          npm run build -w @ompiui/admin
+
+      - uses: actions/upload-artifact@v4
         with:
-          node-version: 22
-          cache: npm
+          name: ci-build-${{ matrix.platform }}
+          path: |
+            packages/protocol/dist
+            packages/omp-worker/dist
+            packages/relay/dist
+            packages/server/dist
+            packages/admin/dist
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 1
+          overwrite: true
 
-      # win32 专属补丁在非 Windows 上会让 patch-package 直接报错（包不存在）
-      - name: drop windows-only patch
-        if: runner.os != 'Windows'
-        run: rm -f patches/@lydell+node-pty-win32-x64+*.patch
+  # 第二层：基础模块、服务端、前端分片和前端构建分别占用独立 runner。
+  test-backend:
+    name: test ${{ matrix.suite }} ${{ matrix.platform }}
+    needs: build-deps
+    runs-on: ${{ matrix.platform }}-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ubuntu, windows]
+        suite: [core, server]
+    env:
+      OMPIUI_DRIVER: mock
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-workspace
+        with:
+          build-artifact: ci-build-${{ matrix.platform }}
 
-      - run: npm ci
+      - name: Check and test core workspaces
+        if: matrix.suite == 'core'
+        run: |
+          npm run typecheck -w @ompiui/relay
+          npm run typecheck -w @ompiui/admin
+          npm run test -w @ompiui/protocol
+          npm run test -w @ompiui/omp-worker
+          npm run test -w @ompiui/relay
+          npm run test -w @ompiui/admin
 
-      - run: npm run validate
+      - name: Check and test server
+        if: matrix.suite == 'server'
+        run: |
+          npm run typecheck -w @ompiui/server
+          npm run test -w @ompiui/server
+
+  test-app:
+    name: test app ${{ matrix.platform }} ${{ matrix.shard }}/4
+    needs: build-deps
+    runs-on: ${{ matrix.platform }}-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ubuntu, windows]
+        shard: [1, 2, 3, 4]
+    env:
+      OMPIUI_DRIVER: mock
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-workspace
+        with:
+          build-artifact: ci-build-${{ matrix.platform }}
+      - name: Test frontend shard
+        run: npm run test:run -w @ompiui/app -- --shard=${{ matrix.shard }}/4
+
+  build-app:
+    name: build app ${{ matrix.platform }}
+    needs: build-deps
+    runs-on: ${{ matrix.platform }}-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ubuntu, windows]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-workspace
+        with:
+          build-artifact: ci-build-${{ matrix.platform }}
+      # build 已包含完整的前端 TypeScript 检查，无需再单独执行一次。
+      - run: npm run build -w @ompiui/app
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-workspace
+      - run: npm run lint
+
+  # 第三层：保留分支保护使用的检查名称，任何上游失败或跳过都不能放行。
+  validate:
+    name: validate ${{ matrix.platform }}
+    if: always()
+    needs: [build-deps, test-backend, test-app, build-app, lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    strategy:
+      matrix:
+        platform: [ubuntu, windows]
+    steps:
+      - name: Require all validation jobs
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          node --input-type=module <<'JS'
+          const results = JSON.parse(process.env.JOB_RESULTS)
+          const failures = Object.entries(results).filter(([, job]) => job.result !== 'success')
+          for (const [name, job] of failures) console.error(`${name}: ${job.result}`)
+          if (failures.length) process.exit(1)
+          console.log('All validation jobs passed')
+          JS
 
   tauri-check:
     name: tauri check

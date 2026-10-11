@@ -116,7 +116,10 @@ if (mode === "silent" || mode === "wrong-protocol") {
       if (message.command?.type === "fixture.sessions") reply.data = { active: sessions.size }
       if (message.command?.type === "fixture.crash") {
         sessions.delete(message.sessionId)
-        send({ kind: "event", generation, sessionId: message.sessionId, channel: "session.crashed", event: { message: "fixture OMP child exited" } })
+        send({ kind: "event", generation, sessionId: message.sessionId, channel: "session.crashed", event: {
+          message: "fixture OMP child exited",
+          runtimeExit: { pid: 12345, code: 1, signal: null, reason: "unexpected_exit" },
+        } })
       }
       send(reply)
       // Mirror the real worker: acknowledge dispose, then exit so the client's

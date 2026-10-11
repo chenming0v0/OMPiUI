@@ -3,6 +3,7 @@ import type { JsonObject } from '@ompiui/protocol'
 import * as transport from '../transport/index.js'
 import { loadPiSessionData, refreshPiSessionState, refreshPiBranch } from './index.js'
 import { piSessionStateStore, piBranchStore } from '../state/index.js'
+import { ompSubagentStore } from '../ompSubagentStore'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -15,6 +16,7 @@ describe('session state response ordering', () => {
     vi.restoreAllMocks()
     piSessionStateStore.clearAll()
     piBranchStore.clear('session-a')
+    ompSubagentStore.clearAll()
   })
 
   it('does not let an older state read overwrite newer model, thinking and idle state', async () => {
@@ -83,6 +85,31 @@ describe('session state response ordering', () => {
     await Promise.all([refreshPiSessionState('session-a'), refreshPiSessionState('session-b')])
     expect(piSessionStateStore.getState('session-a')?.thinkingLevel).toBe('high')
     expect(piSessionStateStore.getState('session-b')?.thinkingLevel).toBe('low')
+  })
+
+  it('reconciles missed crash state from an empty idle snapshot or a disk-only preview', async () => {
+    vi.spyOn(transport, 'getPiSessionState')
+      .mockResolvedValueOnce({ isIdle: true, isStreaming: false, subagents: [] })
+      .mockResolvedValueOnce({ isIdle: true, isStreaming: false, diskPreview: true })
+    for (const sessionId of ['session-a', 'session-b']) {
+      piSessionStateStore.setState(sessionId, { isStreaming: true, isIdle: false })
+      ompSubagentStore.applyLifecycle(sessionId, { id: `child-${sessionId}`, status: 'started', detached: true })
+      await refreshPiSessionState(sessionId)
+      expect(piSessionStateStore.getState(sessionId)).toMatchObject({ isIdle: true, isStreaming: false })
+      expect(ompSubagentStore.runsForSession(sessionId)[0]?.status).toBe('aborted')
+    }
+  })
+
+  it('never uses a stale idle response that only hydrates configuration to stop newer agents', async () => {
+    const old = deferred<JsonObject>()
+    vi.spyOn(transport, 'getPiSessionState').mockReturnValueOnce(old.promise)
+    const reading = refreshPiSessionState('session-a')
+    piSessionStateStore.patchState('session-a', { isStreaming: true, isIdle: false })
+    ompSubagentStore.applyLifecycle('session-a', { id: 'new-child', status: 'started', detached: true })
+    old.resolve({ model: { provider: 'custom', id: 'model' }, isIdle: true, isStreaming: false, subagents: [] })
+    await reading
+    expect(piSessionStateStore.getState('session-a')).toMatchObject({ isIdle: false, isStreaming: true })
+    expect(ompSubagentStore.runsForSession('session-a')[0]?.status).toBe('running')
   })
 
   it('does not let a slow preview replace newer branch data or its live message', async () => {

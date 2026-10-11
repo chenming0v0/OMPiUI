@@ -51,7 +51,18 @@ export function reportRuntimeCrash(sessionId: string, faultId?: string, time?: s
 }
 
 function detect(notice: FaultNotice): void {
-  if (faultAuditStore.detect(notice, serverId())) void collectFaultReport()
+  if (!faultAuditStore.detect(notice, serverId())) return
+  void collectFaultReport()
+  if (notice.sessionId && (notice.kind === 'runtime_crashed' || notice.kind === 'server_restarted')) {
+    const sessionId = notice.sessionId
+    const generation = serverStore.getActiveServerGeneration()
+    // 补到的故障可能属于上一轮；读取当前状态，不能直接覆盖已经重新开始的任务。
+    void import('../controllers/index.js').then(async controllers => {
+      if (serverStore.getActiveServerGeneration() !== generation) return
+      await controllers.refreshPiSessionState(sessionId)
+      if (serverStore.getActiveServerGeneration() === generation) await controllers.refreshPiBranch(sessionId)
+    }).catch(() => { /* 后端仍不可达时保留故障提示，由重连继续校准。 */ })
+  }
 }
 
 export function recordClientDiagnostic(event: string, fields: Record<string, unknown>): void {

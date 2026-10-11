@@ -14,7 +14,6 @@ import { OMP_SDK_VERSION } from "./constants.js"
 import { buildSessionTreeFromEntries } from "../runtime/session-tree.js"
 import { assertOmpSessionFile, isManagedSessionFile, managedSessionsRoot, ompSessionsRoot } from "./managed-sessions.js"
 import { ompAgentDirectory } from "./omp-directories.js"
-import { assertOmpTerminalStopped } from "./terminal-presence.js"
 import { sessionConfigFromBranch } from "./session-config.js"
 
 /**
@@ -466,10 +465,9 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
       throw Object.assign(new Error("session file not found"), { code: "SESSION_NOT_FOUND" })
     }
     assertOmpSessionFile(found.sessionFile)
-    await assertOmpTerminalStopped()
     // 显式复制也走官方 fork：原生目录、全新身份与关联附件一起保留。
     const client = new OmpRpcClient({
-      cwd: found.cwd, args: ["--fork", found.sessionFile], protectSession: true,
+      cwd: found.cwd, args: ["--fork", found.sessionFile], applyRuntimePolicy: true,
       bin: process.env.OMPI_OMP_BIN, env: { PIUI_EMBEDDED: "1" },
     })
     try {
@@ -580,7 +578,6 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     const target = resolveUserPath(sessionFile)
     const root = path.resolve(isManagedSessionFile(target) ? managedSessionsRoot() : sessionsRoot())
     if (!existsSync(target)) return
-    await assertOmpTerminalStopped()
     const realRoot = await fs.realpath(root)
     const realTarget = await fs.realpath(target)
     const rootKey = process.platform === "win32" ? realRoot.toLowerCase() : realRoot

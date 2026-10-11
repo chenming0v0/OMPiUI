@@ -14,6 +14,7 @@ import { ompSubagentStore } from './ompSubagentStore'
 import type { PiBranchPage } from './domain/index.js'
 import { activeSessionStore } from '../store/activeSessionStore'
 import * as controllers from './controllers/index.js'
+import { buildPiLiveItems } from './selectors/index.js'
 
 // 触达私有方法做白盒测试（事件驱动路径需要 WS，单测直接调 handler）
 type Handler = (payload: unknown) => void
@@ -63,12 +64,29 @@ describe('handleSessionsUpdated replacement semantics', () => {
   it('a runtime crash settles live subagent tools instead of leaving them running', () => {
     ompSubagentStore.clearAll()
     piSessionStateStore.setState('session-a', { isStreaming: true, isIdle: false })
+    const page = {
+      ...fakeBranchPage('session-a'),
+      checkpoint: {
+        position: { epoch: 'stream-a', sequence: 1 },
+        liveMessage: {
+          id: 'partial-reply', revision: 1, phase: 'streaming',
+          message: { role: 'assistant', timestamp: 1, content: [{ type: 'text', text: 'Partial reply' }] },
+        },
+      },
+    } as PiBranchPage
+    piBranchStore.setData('session-a', page)
+    const oldBranchRequest = piBranchStore.beginRequest('session-a')
     ompSubagentStore.applyLifecycle('session-a', { id: 'crash-child', parentToolCallId: 'task-crash', status: 'started' })
     ompSubagentStore.applyEvent('session-a', {
       id: 'crash-child', event: { type: 'tool_execution_start', toolCallId: 'read-crash', toolName: 'read' },
     })
     handle({ sessionId: 'session-a', crashed: true })
     expect(piSessionStateStore.getState('session-a')).toMatchObject({ isStreaming: false, isIdle: true })
+    const settled = piBranchStore.getData('session-a')!
+    expect(settled.checkpoint?.liveMessage?.phase).toBe('persisting')
+    expect(buildPiLiveItems(settled)[0]).toMatchObject({ kind: 'assistant_message', isStreaming: false })
+    piBranchStore.setDataIfCurrent('session-a', page, oldBranchRequest)
+    expect(piBranchStore.getData('session-a')).toBe(settled)
     expect(ompSubagentStore.getRunsForToolCall('task-crash', 'session-a')[0]).toMatchObject({
       status: 'failed', transcript: [{ toolCallId: 'read-crash', toolStatus: 'error', streaming: false }],
     })
