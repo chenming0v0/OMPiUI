@@ -133,6 +133,8 @@ jobs:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup-workspace
       - run: npm run lint
+      - name: Validate release artifact selection
+        run: node --test scripts/release/resolve.test.mjs
 
   # 第三层：保留分支保护使用的检查名称，任何上游失败或跳过都不能放行。
   validate:
