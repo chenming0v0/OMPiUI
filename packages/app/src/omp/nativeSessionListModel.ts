@@ -1,10 +1,12 @@
 import type { UiSession } from '../types/session'
+import { goalMessagePreview } from '@ompiui/protocol'
 import type { SessionInfo } from './vendor/pi-coding-agent'
 
 export function piSessionInfoToUiSession(item: SessionInfo): UiSession | null {
   if (!item.id || !item.cwd || !item.path) return null
   const name = firstString(item.name)
-  const firstMessage = firstString(item.firstMessage)
+  const rawFirstMessage = firstString(item.firstMessage)
+  const firstMessage = rawFirstMessage ? goalMessagePreview(rawFirstMessage) : rawFirstMessage
   const createdAt = parseTime(item.created)
   const updatedAt = parseTime(item.modified) || createdAt
   return {

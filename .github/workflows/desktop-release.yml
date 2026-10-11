@@ -2,6 +2,7 @@ name: Desktop And Mobile Release
 
 on:
   push:
+    branches: [dev]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
@@ -9,73 +10,66 @@ on:
         description: "Target tag (e.g. v0.1.0). Empty = use latest v* tag."
         required: false
         type: string
+      rebuild:
+        description: "Rebuild from source instead of reusing matching dev artifacts"
+        required: false
+        default: false
+        type: boolean
+      verify_only:
+        description: "Validate artifacts without publishing; empty tag uses the selected branch"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
-  contents: write
+  contents: read
+  actions: read
+
+defaults:
+  run:
+    shell: bash
 
 concurrency:
-  group: desktop-release-${{ github.ref }}-${{ github.event.inputs.tag }}
+  # 手动验收不能取消正在生成可复用产物的 dev 预构建。
+  group: desktop-release-${{ github.event_name }}-${{ github.ref }}-${{ inputs.tag }}-${{ inputs.verify_only }}
   cancel-in-progress: true
 
 jobs:
-  portable:
-    name: portable ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { name: windows-x64, os: windows-latest, target: bun-windows-x64 }
-          - { name: linux-x64, os: ubuntu-latest, target: bun-linux-x64 }
-          - { name: macos-arm64, os: macos-latest, target: bun-darwin-arm64 }
-
+  prepare:
+    name: resolve source and prebuilt artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      publish: ${{ steps.source.outputs.publish }}
+      deliver: ${{ steps.source.outputs.deliver }}
+      tag: ${{ steps.source.outputs.tag }}
+      ref: ${{ steps.source.outputs.ref }}
+      tree: ${{ steps.source.outputs.tree }}
+      android: ${{ steps.source.outputs.android }}
+      reuse_run: ${{ steps.source.outputs.reuse_run }}
     steps:
       - uses: actions/checkout@v6
-
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-          cache: npm
-
-      - uses: oven-sh/setup-bun@v2
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: packages/server/tailscale-bridge/go.mod
-          cache-dependency-path: packages/server/tailscale-bridge/go.sum
-
-      - name: drop windows-only patch
-        if: runner.os != 'Windows'
-        run: rm -f patches/@lydell+node-pty-win32-x64+*.patch
-
-      - run: npm ci
-      - run: npm run build
-
-      - name: package desktop bundle
-        run: node scripts/package-desktop.mjs --skip-build --target ${{ matrix.target }}
-
-      - name: archive bundle
-        shell: bash
-        run: |
-          cd dist-desktop
-          if [ "${{ matrix.name }}" = "windows-x64" ]; then
-            7z a -tzip "../ompiui-${{ matrix.name }}.zip" .
-          else
-            tar -czf "../ompiui-${{ matrix.name }}.tar.gz" .
-          fi
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ompiui-${{ matrix.name }}
-          path: |
-            ompiui-${{ matrix.name }}.zip
-            ompiui-${{ matrix.name }}.tar.gz
-          if-no-files-found: ignore
+      - name: Resolve release source
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          FORCE_REBUILD: ${{ inputs.rebuild }}
+          VERIFY_ONLY: ${{ inputs.verify_only }}
+          ANDROID_ENABLED: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        run: node scripts/release/resolve.mjs
 
   desktop:
-    name: desktop ${{ matrix.name }}
+    name: desktop and portable ${{ matrix.name }}
+    needs: prepare
+    if: needs.prepare.outputs.reuse_run == ''
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -86,6 +80,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
 
       - uses: actions/setup-node@v6
         with:
@@ -105,7 +101,8 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: './packages/app/src-tauri -> target'
-          key: desktop-${{ matrix.name }}
+          shared-key: release-desktop-${{ matrix.name }}
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
 
       - name: Drop Windows-only patch on Unix
         if: runner.os != 'Windows'
@@ -118,7 +115,10 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - run: npm ci
-      - run: npm run build
+      - name: Build workspaces once
+        run: |
+          npm run build
+          printf '%s\n' '{"build":{"beforeBuildCommand":""}}' > "$RUNNER_TEMP/tauri-release.json"
 
       - name: Build bundled OMPiUI server
         run: node scripts/package-desktop.mjs --skip-build --target ${{ matrix.target }}
@@ -127,7 +127,17 @@ jobs:
         run: node scripts/prepare-tauri-resources.mjs
 
       - name: Build Tauri desktop bundle
-        run: npm run tauri:build -w @ompiui/app
+        run: npm run tauri:build -w @ompiui/app -- --config "$RUNNER_TEMP/tauri-release.json"
+
+      - name: Archive portable bundle
+        working-directory: dist-desktop
+        run: |
+          mkdir -p ../release-artifacts
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a -tzip "../release-artifacts/ompiui-${{ matrix.name }}.zip" .
+          else
+            tar -czf "../release-artifacts/ompiui-${{ matrix.name }}.tar.gz" .
+          fi
 
       - name: Collect desktop artifacts
         shell: bash
@@ -147,37 +157,19 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: ompiui-desktop-${{ matrix.name }}
+          name: ompiui-release-${{ needs.prepare.outputs.tree }}-${{ matrix.name }}
           path: release-artifacts/*
           if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
 
-  # 签名 secrets 未配置时跳过 Android（AGENTS.md：ANDROID_KEYSTORE_BASE64 /
-  # ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS）。没有密钥就无法签名，
-  # 未签名 APK 无法安装——与其让整个 release 卡死（v0.1.1 就这样没发出来），
-  # 不如先发桌面端，Android 等 secrets 配好随下个 tag 出。
-  android-secrets-check:
-    name: android signing secrets gate
-    runs-on: ubuntu-latest
-    outputs:
-      enabled: ${{ steps.gate.outputs.enabled }}
-    steps:
-      - id: gate
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        shell: bash
-        run: |
-          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
-            echo "::warning::ANDROID_KEYSTORE_BASE64 is not configured — skipping the Android APK. Set ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS repo secrets to enable signed Android releases."
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          fi
-
+  # 未配置签名密钥时保持仅发布桌面端的行为。
   android:
     name: android ${{ matrix.name }}
-    needs: android-secrets-check
-    if: needs.android-secrets-check.outputs.enabled == 'true'
+    needs: prepare
+    if: needs.prepare.outputs.android == 'true' && needs.prepare.outputs.reuse_run == ''
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -187,6 +179,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
 
       - uses: actions/setup-node@v6
         with:
@@ -209,7 +203,8 @@ jobs:
       - name: Accept Android SDK licenses
         run: |
           rm -rf "$ANDROID_HOME/tools"
-          yes | sdkmanager --licenses > /dev/null
+          # sdkmanager 读完后会关闭输入，只检查它自身的退出码。
+          sdkmanager --licenses > /dev/null < <(yes 2>/dev/null)
 
       - name: Drop Windows-only patch
         run: rm -f patches/@lydell+node-pty-win32-x64+*.patch
@@ -217,7 +212,17 @@ jobs:
       - name: Install Android NDK
         run: sdkmanager "ndk;29.0.14206865"
 
+      - name: Embedded Tailscale cache
+        id: tailscale
+        uses: actions/cache@v5
+        with:
+          path: |
+            packages/app/src-tauri/gen/android/app/libs/ompiui-tailscale.aar
+            packages/app/src-tauri/gen/android/app/src/main/assets/tailscale
+          key: android-aar-ndk29-${{ matrix.name }}-${{ hashFiles('packages/server/tailscale-bridge/**', 'scripts/build-tailscale-android.mjs', 'scripts/tailscale-licenses.mjs') }}
+
       - uses: actions/setup-go@v6
+        if: steps.tailscale.outputs.cache-hit != 'true'
         with:
           go-version-file: packages/server/tailscale-bridge/go.mod
           cache-dependency-path: packages/server/tailscale-bridge/go.sum
@@ -230,7 +235,8 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: './packages/app/src-tauri -> target'
-          key: android-${{ matrix.name }}
+          shared-key: release-android-${{ matrix.name }}
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
 
       - name: Gradle cache
         uses: actions/cache@v5
@@ -240,18 +246,23 @@ jobs:
             ~/.gradle/wrapper
             packages/app/src-tauri/gen/android/.gradle
           key: gradle-${{ matrix.name }}-${{ hashFiles('packages/app/src-tauri/gen/android/**/*.gradle*', 'packages/app/src-tauri/gen/android/**/gradle-wrapper.properties') }}
-          restore-keys: gradle-
+          restore-keys: gradle-${{ matrix.name }}-
 
       - run: npm ci
-      - run: npm run build
+      - name: Build mobile frontend once
+        run: |
+          npm run build -w @ompiui/protocol
+          npm run build -w @ompiui/app
+          printf '%s\n' '{"build":{"beforeBuildCommand":""}}' > "$RUNNER_TEMP/tauri-release.json"
       - run: node scripts/prepare-tauri-mobile-resources.mjs
 
       - name: Build embedded Android Tailscale
+        if: steps.tailscale.outputs.cache-hit != 'true'
         run: npm run build:tailscale:android -- --target ${{ matrix.target }}
 
       - name: Build Android APK
         working-directory: packages/app
-        run: npx tauri android build --apk --target ${{ matrix.target }}
+        run: npx tauri android build --apk --target ${{ matrix.target }} --config "$RUNNER_TEMP/tauri-release.json"
 
       - name: Sign Android APK
         shell: bash
@@ -284,50 +295,66 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: ompiui-android-${{ matrix.name }}
+          name: ompiui-release-${{ needs.prepare.outputs.tree }}-android-${{ matrix.name }}
           path: release-artifacts/*.apk
           if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
 
   publish:
-    name: publish release assets
-    needs: [portable, desktop, android]
+    name: validate and publish release assets
+    needs: [prepare, desktop, android]
     if: >-
       always() &&
-      needs.portable.result == 'success' &&
-      needs.desktop.result == 'success' &&
-      (needs.android.result == 'success' || needs.android.result == 'skipped')
+      !cancelled() &&
+      needs.prepare.result == 'success' &&
+      needs.prepare.outputs.deliver == 'true' &&
+      (needs.prepare.outputs.reuse_run != '' ||
+       (needs.desktop.result == 'success' &&
+        (needs.android.result == 'success' || needs.android.result == 'skipped')))
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v6
-
-      - name: Resolve release tag
-        id: tag
-        shell: bash
-        run: |
-          if [ -n "${{ github.event.inputs.tag }}" ]; then
-            TAG="${{ github.event.inputs.tag }}"
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            TAG="${{ github.ref_name }}"
-          else
-            TAG=$(git tag --list 'v*' --sort=-v:refname | head -1)
-          fi
-          if [ -z "$TAG" ]; then
-            echo "no release tag found" >&2
-            exit 1
-          fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
 
       - uses: actions/download-artifact@v8
         with:
-          pattern: ompiui-*
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.prepare.outputs.reuse_run || github.run_id }}
+          pattern: ompiui-release-${{ needs.prepare.outputs.tree }}-*
           path: release-assets
           merge-multiple: true
 
+      - name: Validate complete release assets
+        env:
+          ANDROID_ENABLED: ${{ needs.prepare.outputs.android }}
+        run: |
+          node --input-type=module <<'JS'
+          import { readdirSync, statSync } from 'node:fs'
+          const files = readdirSync('release-assets').filter(name => statSync(`release-assets/${name}`).size > 0)
+          const required = ['ompiui-windows-x64.zip', 'ompiui-linux-x64.tar.gz', 'ompiui-macos-arm64.tar.gz']
+          if (process.env.ANDROID_ENABLED === 'true') required.push('ompiui-android-arm64.apk', 'ompiui-android-armv7.apk')
+          for (const name of required) {
+            if (!files.includes(name)) throw new Error(`Missing release asset: ${name}`)
+          }
+          for (const extension of ['.exe', '.dmg', '.deb']) {
+            if (!files.some(name => name.endsWith(extension))) throw new Error(`Missing desktop installer: ${extension}`)
+          }
+          console.log(`Validated ${files.length} release assets: ${files.join(', ')}`)
+          JS
+
       - name: Extract changelog for tag
+        if: needs.prepare.outputs.publish == 'true'
         id: changelog
         shell: bash
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
-          TAG="${{ steps.tag.outputs.tag }}"
           BODY=$(sed -n "/^## \[${TAG}\]/,/^## \[/{ /^## \[${TAG}\]/d; /^## \[/d; p; }" CHANGELOG.md 2>/dev/null || true)
           BODY=$(echo "$BODY" | sed -e '/./,$!d' -e :a -e '/^\n*$/{$d;N;ba;}')
           if [ -z "$BODY" ]; then
@@ -343,10 +370,40 @@ jobs:
           } >> /tmp/release-body.md
 
       - uses: softprops/action-gh-release@v2
+        if: needs.prepare.outputs.publish == 'true'
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: 'OMPiUI ${{ steps.tag.outputs.tag }}'
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: 'OMPiUI ${{ needs.prepare.outputs.tag }}'
           body_path: /tmp/release-body.md
           files: release-assets/**
+          fail_on_unmatched_files: true
           draft: false
-          prerelease: ${{ contains(steps.tag.outputs.tag, 'canary') || contains(steps.tag.outputs.tag, 'alpha') || contains(steps.tag.outputs.tag, 'beta') }}
+          prerelease: ${{ contains(needs.prepare.outputs.tag, 'canary') || contains(needs.prepare.outputs.tag, 'alpha') || contains(needs.prepare.outputs.tag, 'beta') }}
+
+      - name: Upload verified assets without creating a release
+        if: needs.prepare.outputs.publish != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ompiui-verified-${{ needs.prepare.outputs.tree }}
+          path: release-assets/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Report delivery time
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REUSED: ${{ needs.prepare.outputs.reuse_run != '' }}
+          PUBLISHED: ${{ needs.prepare.outputs.publish }}
+        run: |
+          export RELEASE_RUN_STARTED_AT
+          RELEASE_RUN_STARTED_AT=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .created_at)
+          node --input-type=module <<'JS'
+          import { appendFileSync } from 'node:fs'
+          const seconds = Math.ceil((Date.now() - Date.parse(process.env.RELEASE_RUN_STARTED_AT)) / 1000)
+          const operation = process.env.PUBLISHED === 'true' ? '发布完成' : '验收完成（未创建 Release）'
+          const result = `${operation}：从工作流创建到全部附件就绪，共 ${seconds} 秒。`
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\n### 耗时验收\n\n${result}\n`)
+          console.log(result)
+          if (process.env.REUSED === 'true' && seconds > 300) console.warn('::warning::预构建已命中，但本次交付超过 5 分钟；请检查 runner 排队和附件传输耗时。')
+          JS

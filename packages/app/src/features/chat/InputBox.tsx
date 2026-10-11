@@ -39,7 +39,7 @@ import type { FileCapabilities } from '../../types/ui'
 
 type ModelInfo = Model<Api>
 import { usePiCapabilities } from '../../omp/capabilities'
-import { getPiCommandCompletions } from '../../omp/transport/index.js'
+import { getPiCommandCompletions, type PiImageInput } from '../../omp/transport/index.js'
 import { apiErrorHandler } from '../../utils'
 import { scrollItemIntoView } from '../../utils/scrollUtils'
 import {
@@ -157,7 +157,7 @@ export interface InputBoxProps extends ComposerQueueProps {
   onOpenModelSelector?: () => void
   onTextChange?: (text: string) => void // 输入框文本变化（扩展 editor 状态同步）
   onNewChat?: () => void // 新建对话回调
-  onSetGoal?: (objective: string) => Promise<boolean> | boolean
+  onSetGoal?: (objective: string, images?: PiImageInput[]) => Promise<boolean> | boolean
   disabled?: boolean
   /** Allow editing a draft without submitting to a read-only session. */
   submissionDisabled?: boolean
@@ -1777,6 +1777,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
               sessionId={sessionId}
               isCompact={isCompact}
               onSetGoal={onSetGoal}
+              supportsImages={fileCaps.image}
               queuedMessages={
                 <>
                   <QueuedUserMessageQueue

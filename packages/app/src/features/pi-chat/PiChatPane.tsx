@@ -1098,7 +1098,7 @@ export function PiChatPane({
   )
 
   const handleSetGoal = useCallback(
-    async (objective: string): Promise<boolean> => {
+    async (objective: string, images?: PiImageInput[]): Promise<boolean> => {
       let targetSessionId = sessionId
       try {
         if (!targetSessionId) {
@@ -1133,7 +1133,7 @@ export function PiChatPane({
           }
         }
 
-        const submitted = await manageSessionGoal(targetSessionId, 'set', objective)
+        const submitted = await manageSessionGoal(targetSessionId, 'set', objective, undefined, images)
         await waitHostCommand(submitted.id)
         void refreshPiSessionState(targetSessionId).catch(() => undefined)
         return true

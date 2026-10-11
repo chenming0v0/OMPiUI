@@ -7,6 +7,7 @@ import {
   fetchPairInvite,
   getHostTerminalWebSocketUrl,
   listActiveProviderFlows,
+  manageSessionGoal,
   mintPairInvite,
   promptPi,
   writeHostFile,
@@ -60,6 +61,16 @@ describe('getHostTerminalWebSocketUrl', () => {
 })
 
 describe('transport retry and response contracts', () => {
+  it('includes reference images in a goal command', async () => {
+    nativeFetchMock.mockResolvedValue(Response.json({ data: { id: 'goal-command' } }))
+    const images = [{ type: 'image' as const, mimeType: 'image/png', data: 'AA==' }]
+    await manageSessionGoal('session-1', 'set', '检查截图', undefined, images)
+    const [url, init] = nativeFetchMock.mock.calls[0]
+    const payload = JSON.parse(init.body)
+    expect(url).toContain('/sessions/session-1/commands/goal')
+    expect(payload).toEqual({ op: 'set', objective: '检查截图', images })
+  })
+
   beforeEach(() => {
     vi.useFakeTimers()
     nativeFetchMock.mockReset()

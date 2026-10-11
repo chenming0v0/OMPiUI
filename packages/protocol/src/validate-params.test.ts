@@ -43,7 +43,9 @@ test("validates nested objects and arrays", () => {
 test("declared command specs accept their documented shapes", () => {
   const spec = (name: string) => PI_COMMAND_SPECS.find(item => item.name === name)?.paramsSchema
   validateParams(spec("setModel"), { provider: "openai", modelId: "gpt-5" })
+  validateParams(spec("goal"), { op: "set", objective: "检查截图", images: [{ type: "image", mimeType: "image/png", data: "AA==" }] })
   validateParams(spec("branch.get"), { cursor: null, limit: 50 })
+  validateParams(spec("branch.get"), { syncCursor: "snapshot", beforeId: "oldest-visible", limit: 100, maxBytes: 2097152 })
   validateParams(spec("fork"), { entryId: "e1" })
   validateParams(spec("fork"), { entryId: "e1", position: "before" })
   const hostSpec = (name: string) => HOST_COMMAND_SPECS.find(item => item.name === name)?.paramsSchema

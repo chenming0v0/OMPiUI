@@ -136,7 +136,7 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
     if (!op) {
       throw Object.assign(new Error("params.op must be one of set|pause|resume|drop"), { code: "INVALID_REQUEST" })
     }
-    await ctx.requireRuntime().manageGoal({ op, objective: P.optString(p, "objective") })
+    await ctx.requireRuntime().manageGoal({ op, objective: P.optString(p, "objective"), images: P.optImages(p) })
     return { ok: true }
   },
   "commands.completions": async (ctx, p) =>
@@ -211,6 +211,7 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
       P.optString(p, "cursor"),
       P.optPositiveInteger(p, "limit") ?? 200,
       P.optPositiveInteger(p, "maxBytes") ?? 4 * 1024 * 1024,
+      { syncCursor: P.optString(p, "syncCursor"), beforeId: P.optString(p, "beforeId") },
     ),
   "tree.get": async (ctx) => ctx.requireRuntime().getTree(),
   "registry.get": async (ctx) => ctx.requireRuntime().getRegistry(),

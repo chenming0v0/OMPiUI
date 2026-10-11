@@ -105,6 +105,10 @@ export function imageAttachmentFromEntry(
   }
 }
 
+export function beforeEntryCursor(head: SessionHead, beforeId: string): string {
+  return encodeCursor({ v: 1, epoch: head.epoch, beforeId })
+}
+
 function encodeCursor(cursor: NativeCursor): string {
   const payload = Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url")
   const signature = createHmac("sha256", cursorSecret).update(payload).digest("base64url")

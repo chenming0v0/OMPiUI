@@ -1,4 +1,5 @@
 import type { PiTimelineItem } from '../omp/domain/index.js'
+import { parseGoalMessage } from '@ompiui/protocol'
 
 const FULL_TITLE_MAX = 80
 
@@ -73,10 +74,11 @@ export function buildOutlineSourceEntries(items: PiTimelineItem[]): OutlineSourc
   const entries: OutlineSourceEntry[] = []
   for (const item of items.filter(itemHasContent)) {
     if (item.kind !== 'user_message') continue
-    const raw = item.blocks
+    const texts = item.blocks
       .filter((block): block is Extract<typeof block, { type: 'text' }> => block.type === 'text')
       .map(block => block.text)
-      .join('\n')
+    const goal = parseGoalMessage(texts.join(''))
+    const raw = (goal?.objective ?? texts.join('\n'))
       .trim()
       .split(/\r?\n/)
       .map(l => l.trim())

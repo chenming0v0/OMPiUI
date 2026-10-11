@@ -274,6 +274,8 @@ export async function loadMorePiBranchEntries(sessionId: string, signal?: AbortS
     // Prepend older items; keep latest head/hasMore/cursor from the new page
     piBranchStore.setData(sessionId, {
       ...olderPage,
+      head: currentBranch.head,
+      syncCursor: currentBranch.syncCursor,
       checkpoint: currentBranch.checkpoint,
       items: [...olderPage.items, ...currentBranch.items],
     })
@@ -302,7 +304,16 @@ export async function loadMorePiBranchEntries(sessionId: string, signal?: AbortS
 export async function refreshPiBranch(sessionId: string, signal?: AbortSignal): Promise<void> {
   const serverGeneration = serverStore.getActiveServerGeneration()
   const version = piBranchStore.beginRequest(sessionId)
-  const latest = await transport.getPiBranchPage(sessionId, { limit: BRANCH_PAGE_LIMIT, maxBytes: BRANCH_PAGE_MAX_BYTES }, signal)
+  const current = piBranchStore.getData(sessionId)
+  const params = { limit: BRANCH_PAGE_LIMIT, maxBytes: BRANCH_PAGE_MAX_BYTES }
+  let latest = await transport.getPiBranchPage(sessionId, {
+    ...params,
+    ...(current?.syncCursor ? { syncCursor: current.syncCursor, beforeId: current.items[0]?.id } : {}),
+  }, signal)
+  if (serverStore.getActiveServerGeneration() !== serverGeneration || !piBranchStore.isRequestCurrent(sessionId, version)) return
+  if (latest.deltaFrom && latest.deltaFrom !== piBranchStore.getData(sessionId)?.syncCursor) {
+    latest = await transport.getPiBranchPage(sessionId, params, signal)
+  }
   if (serverStore.getActiveServerGeneration() !== serverGeneration) return
   piBranchStore.setDataIfCurrent(sessionId, mergeLatestBranchPage(piBranchStore.getData(sessionId), latest), version)
 }

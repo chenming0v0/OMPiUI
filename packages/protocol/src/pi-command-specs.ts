@@ -1,5 +1,6 @@
 import type { JsonObject } from "./json.js"
-import type { CoreCommandParams } from "./commands.js"
+import type { CoreCommandParams, ImageInput } from "./commands.js"
+import type { BranchSyncRequest } from "./session-page.js"
 import type { PiCapability, PiCapabilityQueue, PiCapabilityScope, PiCapabilitySource } from "./registry.js"
 import {
   ANY_JSON,
@@ -97,7 +98,7 @@ export const PI_COMMAND_SPECS = [
   { name: "setActiveTools", scope: "session", description: "Set active Pi tools", paramsSchema: objectSchema({ toolNames: STRING_ARRAY }), queue: "serialized" },
   { name: "invokeTool", scope: "session", source: "pi-extension", description: "Invoke a registered Pi tool by name", paramsSchema: objectSchema({ name: STRING, arguments: objectSchema({}, [], true) }, ["name"]), queue: "serialized" },
   { name: "invokeCommand", scope: "session", source: "pi-extension", description: "Invoke a registered Pi slash command by name", paramsSchema: objectSchema({ name: STRING, args: STRING }, ["name"]), queue: "serialized" },
-  { name: "goal", scope: "session", description: "Manage the OMPiUI session goal (worker-side registry: set/pause/resume/drop + continuation loop)", paramsSchema: objectSchema({ op: { enum: ["set", "pause", "resume", "drop"] }, objective: STRING }, ["op"]), queue: "serialized" },
+  { name: "goal", scope: "session", description: "Manage the OMPiUI session goal (worker-side registry: set/pause/resume/drop + continuation loop)", paramsSchema: objectSchema({ op: { enum: ["set", "pause", "resume", "drop"] }, objective: STRING, images: IMAGES }, ["op"]), queue: "serialized" },
   { name: "commands.completions", scope: "session", description: "Resolve argument completions for a registered slash command (pi TUI getArgumentCompletions parity)", paramsSchema: objectSchema({ name: STRING, prefix: STRING }, ["name"]), queue: "immediate", idempotent: true },
   { name: "navigateTree", scope: "session", description: "Navigate the Pi session tree", paramsSchema: objectSchema({ entryId: STRING, summarize: BOOLEAN, customInstructions: STRING, replaceInstructions: BOOLEAN, label: STRING }, ["entryId"]), queue: "serialized", replacement: true, cancellable: true },
   { name: "setLabel", scope: "session", description: "Set an entry label", paramsSchema: objectSchema({ entryId: STRING, label: STRING }, ["entryId"]), queue: "serialized" },
@@ -115,7 +116,7 @@ export const PI_COMMAND_SPECS = [
   { name: "state.get", scope: "session", description: "Read current Pi session state", queue: "immediate", idempotent: true },
   { name: "subagent.messages", scope: "session", description: "Read OMP subagent transcript messages from disk (incremental via fromByte)", paramsSchema: objectSchema({ subagentId: STRING, sessionFile: STRING, fromByte: { type: "integer", minimum: 0 } }, []), queue: "immediate", idempotent: true },
   { name: "entries.get", scope: "session", description: "Read a page of Pi session entries", paramsSchema: pageParams(), queue: "immediate", idempotent: true },
-  { name: "branch.get", scope: "session", description: "Read a page of the active Pi branch", paramsSchema: pageParams(), queue: "immediate", idempotent: true },
+  { name: "branch.get", scope: "session", description: "Read a page of the active Pi branch", paramsSchema: pageParams({ syncCursor: STRING, beforeId: STRING }), queue: "immediate", idempotent: true },
   { name: "tree.get", scope: "session", description: "Read the Pi session tree", queue: "immediate", idempotent: true },
   { name: "registry.get", scope: "session", description: "Read runtime tools, commands, extensions, and handlers", queue: "immediate", idempotent: true },
   { name: "skills.list", scope: "session", description: "List loaded Pi skills", queue: "immediate", idempotent: true },
@@ -241,7 +242,7 @@ export type PiPageParams = {
 export type PiCommandParams = CoreCommandParams & {
   "state.get": Record<string, never>
   "entries.get": PiPageParams
-  "branch.get": PiPageParams
+  "branch.get": PiPageParams & BranchSyncRequest
   "tree.get": Record<string, never>
   "registry.get": Record<string, never>
   "skills.list": Record<string, never>
@@ -250,7 +251,7 @@ export type PiCommandParams = CoreCommandParams & {
   "attachment.get": { entryId: string; blockIndex: number }
   "subagent.messages": { subagentId?: string; sessionFile?: string; fromByte?: number }
   "commands.completions": { name: string; prefix: string }
-  goal: { op: "set" | "pause" | "resume" | "drop"; objective?: string }
+  goal: { op: "set" | "pause" | "resume" | "drop"; objective?: string; images?: ImageInput[] }
   "session.list": { cwd: string }
   "session.listAll": Record<string, never>
   "session.create": { cwd: string }

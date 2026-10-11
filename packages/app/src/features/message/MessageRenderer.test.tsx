@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { formatGoalMessage } from '@ompiui/protocol'
 import {
   MessageRenderer,
   assistantHasFinalContent,
@@ -124,6 +125,25 @@ describe('MessageRenderer assistant fork', () => {
 
     expect(screen.queryByTestId('user-markdown')).toBeNull()
     expect(screen.getByText('Use **bold** text')).toBeInTheDocument()
+  })
+
+  it('shows the goal objective and marker without exposing the internal prompt', () => {
+    const text = formatGoalMessage({ kind: 'set', objective: '修复截图布局', round: 1, limit: 50 })
+    const { container } = render(<MessageRenderer item={createUserTextItem(text)} />)
+    expect(screen.getByText('修复截图布局')).toBeInTheDocument()
+    expect(container.querySelector('[data-goal-message="set"]')).toBeInTheDocument()
+    expect(container.textContent).not.toContain('GOAL_COMPLETE')
+    expect(screen.getByRole('button', { name: 'copy:修复截图布局' })).toBeInTheDocument()
+  })
+
+  it('renders automatic continuation as a small marker instead of another user bubble', () => {
+    const text = formatGoalMessage({ kind: 'continuation', objective: '修复截图布局', round: 2, limit: 50 })
+    const { container } = render(<MessageRenderer item={createUserTextItem(text)} />)
+    expect(container.querySelector('[data-goal-message="continuation"]')).toBeInTheDocument()
+    expect(screen.getByText('2/50')).toBeInTheDocument()
+    expect(container.textContent).not.toContain('修复截图布局')
+    expect(container.textContent).not.toContain('Continue working')
+    expect(screen.queryByRole('button', { name: /copy/i })).toBeNull()
   })
 
   it('renders user text through markdown when enabled', () => {

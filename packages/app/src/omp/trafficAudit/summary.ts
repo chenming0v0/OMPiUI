@@ -17,14 +17,20 @@ export function trafficTotals(snapshot: TrafficSnapshot, server?: string): Traff
 }
 
 export function trafficRanking(records: readonly TrafficRecord[]) {
-  const groups = new Map<string, { label: string; count: number; bytes: number }>()
+  const groups = new Map<string, { label: string; count: number; bytes: number; sentBytes: number; receivedBytes: number; peakBytes: number }>()
   for (const record of records) {
     if (record.direction === 'connection') continue
-    const path = record.path.replace(/(\/sessions\/|\/terminals\/|\/commands\/|\/invite\/)[^/]+/g, '$1:id')
+    // POST /commands/<name> 是命令名；其他 /commands/<id> 才是命令记录 ID。
+    const path = record.path.replace(/(\/sessions\/|\/terminals\/|\/invite\/)[^/]+/g, '$1:id')
+      .replace(/\/commands\/[^/]+/g, part => record.protocol === 'http' && record.operation === 'POST' ? part : '/commands/:id')
     const label = `${record.protocol.toUpperCase()} ${record.operation} ${path}`
-    const group = groups.get(label) ?? { label, count: 0, bytes: 0 }
+    const group = groups.get(label) ?? { label, count: 0, bytes: 0, sentBytes: 0, receivedBytes: 0, peakBytes: 0 }
     group.count++
-    group.bytes += (record.sentBytes ?? 0) + (record.receivedBytes ?? 0)
+    const bytes = (record.sentBytes ?? 0) + (record.receivedBytes ?? 0)
+    group.bytes += bytes
+    group.sentBytes += record.sentBytes ?? 0
+    group.receivedBytes += record.receivedBytes ?? 0
+    group.peakBytes = Math.max(group.peakBytes, bytes)
     groups.set(label, group)
   }
   return [...groups.values()].sort((a, b) => b.bytes - a.bytes).slice(0, 5)

@@ -10,11 +10,11 @@ vi.mock('../../../hooks/useServerStore', () => ({
 }))
 vi.mock('../../../utils/downloadUtils', () => ({ saveData: saveDataMock }))
 
-function addRequest(path: string, bytes = 10, server = 'http://remote.test') {
+function addRequest(path: string, bytes = 10, server = 'http://remote.test', operation = 'GET') {
   const handle = trafficAuditStore.start(`${server}${path}`, {
     protocol: 'http',
     direction: 'exchange',
-    operation: 'GET',
+    operation,
     status: 'pending',
     sentBytes: 0,
     receivedBytes: null,
@@ -37,6 +37,13 @@ afterEach(() => {
 })
 
 describe('TrafficAuditSettings', () => {
+  it('shows command names and separates received traffic from the per-request peak', () => {
+    addRequest('/api/v1/pi/sessions/one/commands/branch.get', 1024, 'http://remote.test', 'POST')
+    addRequest('/api/v1/pi/sessions/two/commands/branch.get', 2048, 'http://remote.test', 'POST')
+    render(<TrafficAuditSettings />)
+    expect(screen.getByText('HTTP POST /api/v1/pi/sessions/:id/commands/branch.get')).toBeInTheDocument()
+    expect(screen.getByText('Sent 0 B · Received 3.0 KiB · Peak 2.0 KiB per exchange')).toBeInTheDocument()
+  })
   it('shows current-server traffic, expands details and searches requests', () => {
     addRequest('/api/branch', 1024)
     addRequest('/api/models', 7)

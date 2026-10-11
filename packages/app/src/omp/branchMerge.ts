@@ -65,6 +65,16 @@ export function mergeLatestBranchPage(current: PiBranchPage | null, latest: PiBr
     }
   }
 
+  if (latest.deltaFrom) {
+    // 增量只对匹配的基线有效；控制器在竞争导致失配时重新读取完整页。
+    if (current.syncCursor !== latest.deltaFrom) return current
+    return withClientState({
+      ...latest,
+      deltaFrom: undefined,
+      items: [...current.items, ...latest.items],
+    })
+  }
+
   if (current.head.epoch !== latest.head.epoch) {
     // OMP 历史 epoch 随条目数量变化；同一事件流仍需交接较新的 live 消息。
     return current.checkpoint && latest.checkpoint

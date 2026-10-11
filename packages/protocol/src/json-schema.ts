@@ -32,10 +32,11 @@ export const IMAGE_INPUT: JsonObject = objectSchema(
 )
 export const IMAGES: JsonObject = { type: "array", items: IMAGE_INPUT }
 
-export function pageParams(): JsonObject {
+export function pageParams(extra: JsonObject = {}): JsonObject {
   return objectSchema({
     cursor: nullable(STRING),
     limit: { type: "integer", minimum: 1 },
     maxBytes: { type: "integer", minimum: 1 },
+    ...extra,
   })
 }
