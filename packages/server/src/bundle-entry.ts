@@ -9,6 +9,7 @@ const { existsSync } = await import("node:fs")
 const execDir = dirname(process.execPath)
 const launchDir = process.cwd()
 const isWorker = process.argv[2] === "--omp-worker"
+const isWatcher = process.argv[2] === "--workspace-watcher"
 const isWeb = process.argv[2] === "web"
 
 if (isWeb && !process.env.OMPIUI_NATIVE_MODULES) {
@@ -35,7 +36,9 @@ if (isWeb && !process.env.OMPIUI_NATIVE_MODULES) {
   if (nativeDir) process.env.OMPIUI_NATIVE_MODULES = nativeDir
 }
 
-if (isWorker) {
+if (isWatcher) {
+  await import("./workspace-watch-process.ts")
+} else if (isWorker) {
   // 用相对路径指向已构建的 worker 产物：Bun 打包时包名（workspace）内的
   // 动态 import SDK 不会内联（Cannot find module），相对路径能正确打包。
   // 指向 dist 而非 src，避免 tsc rootDir 把 omp-worker 源文件拉进 server 编译。

@@ -1,7 +1,9 @@
 import path from "node:path"
 import chokidar, { type FSWatcher } from "chokidar"
 import { lstat, readFile, readdir } from "node:fs/promises"
-import type { JsonObject } from "@ompiui/protocol"
+import { fork, spawn, type ChildProcess } from "node:child_process"
+import { once } from "node:events"
+import type { EventEnvelope } from "@ompiui/protocol"
 
 type WorkspaceFileChange = { path: string; kind: "created" | "changed" | "deleted"; type: "file" | "directory" }
 import type { EventHub } from "../event-hub.ts"
@@ -11,11 +13,7 @@ import { workspacePathKey, type WorkspaceRecord } from "./workspace-store.ts"
 const FLUSH_DELAY_MS = 80
 const MAX_CHANGES_PER_EVENT = 512
 const MAX_WATCHED_WORKSPACES = 32
-/**
- * chokidar 建立延迟：bun 编译的 exe 下，chokidar 初始扫描会同步阻塞服务端
- * 事件循环 ~1.2s（node 无此问题）。推迟到启动请求洪峰之后，避免把停顿转嫁
- * 给浏览器首波 API 请求。
- */
+// 避开启动请求洪峰；Bun 的扫描与监听另在子进程执行，延迟本身不能防止卡顿。
 const WATCH_STARTUP_DELAY_MS = 3_000
 // chokidar recursively enumerates the tree and opens one fs.watch handle per
 // directory. Past this many directories the initial scan alone can take minutes
@@ -26,6 +24,7 @@ const PRE_SCAN_BATCH = 64
 const SKIP_SEGMENTS = new Set(["node_modules", "dist", "build", ".next", "coverage", ".turbo", "target"])
 
 interface WatchedWorkspace {
+  root: string
   watcher?: FSWatcher
   gitWatcher?: FSWatcher
   revision: number
@@ -39,14 +38,32 @@ interface WatchedWorkspace {
 
 export class WorkspaceWatcher {
   private readonly watched = new Map<string, WatchedWorkspace>()
+  private process?: ChildProcess
 
   constructor(
     private readonly eventHub: EventHub,
     private readonly maxWatchDirectories = MAX_WATCH_DIRECTORIES,
     private readonly startupDelayMs = WATCH_STARTUP_DELAY_MS,
+    private readonly isolate = Boolean("bun" in process.versions),
   ) {}
 
   async dispose(): Promise<void> {
+    if (this.process) {
+      const child = this.process
+      this.process = undefined
+      this.watched.clear()
+      const exited = once(child, "exit")
+      child.send({ type: "dispose" }, () => undefined)
+      let timer: NodeJS.Timeout | undefined
+      await Promise.race([exited, new Promise(resolve => { timer = setTimeout(resolve, 2_000) })])
+      clearTimeout(timer)
+      // 监听进程没有会话和业务子进程，卡在原生扫描时可直接终止。
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL")
+        await exited
+      }
+      return
+    }
     const closing = [...this.watched.values()].map(async state => {
       if (state.timer) clearTimeout(state.timer)
       if (state.startupTimer) clearTimeout(state.startupTimer)
@@ -65,6 +82,7 @@ export class WorkspaceWatcher {
     }
     if (this.watched.size >= MAX_WATCHED_WORKSPACES) this.evictOldest()
     const state: WatchedWorkspace = {
+      root: workspace.canonicalRoot,
       revision: 0,
       pending: new Map(),
       gitDirty: false,
@@ -72,17 +90,53 @@ export class WorkspaceWatcher {
       lastAccessedAt: Date.now(),
     }
     this.watched.set(key, state)
-    // 延迟建立 watcher：bun 编译的 exe 下，chokidar 初始扫描（创建→ready）
-    // 会在服务端事件循环上产生一次 ~1.2s 的同步停顿（实测 loop 被阻塞，node
-    // 无此问题），若与浏览器启动期的并发 API（models.list/session.listAll/
-    // registry 等）撞车，所有在途请求会被一起拖住。把建立推迟到启动请求洪峰
-    // 过去之后，停顿发生在空闲窗口；功能不变（文件变更事件仍在）。
+    if (this.isolate) {
+      this.ensureProcess().send({ type: "watch", workspace }, () => undefined)
+      return
+    }
     state.startupTimer = setTimeout(() => {
       state.startupTimer = undefined
       if (this.watched.get(key) !== state) return
       void this.establishWatch(workspace, key, state)
     }, this.startupDelayMs)
     state.startupTimer.unref?.()
+  }
+
+  private ensureProcess(): ChildProcess {
+    if (this.process) return this.process
+    const child = "bun" in process.versions
+      ? spawn(process.execPath, ["--workspace-watcher"], { stdio: ["ignore", "inherit", "inherit", "ipc"], windowsHide: true })
+      : fork(new URL(import.meta.url.endsWith(".ts") ? "../workspace-watch-process.ts" : "../workspace-watch-process.js", import.meta.url),
+        { stdio: ["ignore", "inherit", "inherit", "ipc"], windowsHide: true })
+    this.process = child
+    child.on("message", (message: unknown) => {
+      const event = message as EventEnvelope
+      const state = this.watched.get(workspacePathKey(event.stream.id))
+      if (this.process !== child || !state) return
+      const revision = (event.payload as { revision: number }).revision
+      state.revision = revision
+      // Git 查询缓存属于 HTTP 进程，不能只使监听进程内的缓存失效。
+      if (event.channel === "workspace.git") invalidateGitCache(event.stream.id)
+      this.eventHub.publish(event.stream, event.channel, event.payload)
+    })
+    child.on("error", error => {
+      console.error(`[ompiui-server] workspace watch process failed: ${error.message}`)
+    })
+    child.on("exit", () => {
+      if (this.process !== child) return
+      this.process = undefined
+      for (const state of this.watched.values()) {
+        const root = state.root
+        this.eventHub.publish({ kind: "workspace", id: root }, "workspace.files", {
+          workspacePath: root, revision: state.revision + 1, changes: [], rescan: true,
+        })
+      }
+      this.watched.clear()
+    })
+    child.send({ type: "configure", maxWatchDirectories: this.maxWatchDirectories, startupDelayMs: this.startupDelayMs }, () => undefined)
+    child.unref()
+    child.channel?.unref?.()
+    return child
   }
 
   /**
@@ -200,6 +254,7 @@ export class WorkspaceWatcher {
     if (state.timer) clearTimeout(state.timer)
     if (state.startupTimer) clearTimeout(state.startupTimer)
     this.watched.delete(key)
+    this.process?.send({ type: "unwatch", root: workspace.canonicalRoot }, () => undefined)
     void Promise.all([state.watcher?.close(), state.gitWatcher?.close()]).catch(() => undefined)
   }
 
@@ -210,6 +265,7 @@ export class WorkspaceWatcher {
     if (state.timer) clearTimeout(state.timer)
     if (state.startupTimer) clearTimeout(state.startupTimer)
     this.watched.delete(key)
+    this.process?.send({ type: "unwatch", root: state.root }, () => undefined)
     void Promise.all([state.watcher?.close(), state.gitWatcher?.close()]).catch(() => undefined)
   }
 
