@@ -1,6 +1,9 @@
 import assert from "node:assert/strict"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { describe, it } from "node:test"
-import { previewEntriesFromLines } from "./omp-catalog.js"
+import { OmpCatalog, previewEntriesFromLines } from "./omp-catalog.js"
 
 /** 子代理 jsonl 的典型头部：title/title_change/session 头 + session_init + 消息 */
 const childSessionLines = [
@@ -75,5 +78,46 @@ describe("previewEntriesFromLines", () => {
     assert.ok(message)
     assert.equal(message.id, "e-msg")
     assert.equal(entries.length, 6)
+  })
+})
+
+describe("OmpCatalog disk branch refresh", () => {
+  it("returns an empty incremental page when the session file is unchanged", async (t) => {
+    const root = mkdtempSync(path.join(tmpdir(), "ompiui-catalog-refresh-"))
+    t.after(() => rmSync(root, { recursive: true, force: true }))
+    const sessionFile = path.join(root, "session.jsonl")
+    const lines = [
+      { type: "session", version: 3, id: "disk-refresh", timestamp: "2026-10-12T00:00:00.000Z", cwd: root },
+      { type: "message", id: "message-1", parentId: "disk-refresh", timestamp: "2026-10-12T00:00:01.000Z", message: { role: "user", content: "hello" } },
+      { type: "message", id: "message-2", parentId: "message-1", timestamp: "2026-10-12T00:00:02.000Z", message: { role: "assistant", content: "world" } },
+    ]
+    writeFileSync(sessionFile, lines.map(line => JSON.stringify(line)).join("\n") + "\n")
+
+    const catalog = new OmpCatalog()
+    const first = await catalog.previewSession(root, sessionFile, { limit: 100 }) as { branch: { items: Array<{ id: string }>; syncCursor?: string } }
+    assert.ok(first.branch.syncCursor)
+    const second = await catalog.previewSession(root, sessionFile, {
+      limit: 100,
+      syncCursor: first.branch.syncCursor,
+      beforeId: first.branch.items[0]?.id,
+    }) as { branch: { items: Array<unknown>; deltaFrom?: string } }
+
+    assert.equal(second.branch.deltaFrom, first.branch.syncCursor)
+    assert.deepEqual(second.branch.items, [])
+
+    writeFileSync(sessionFile, `${lines.map(line => JSON.stringify(line)).join("\n")}\n${JSON.stringify({
+      type: "message",
+      id: "message-3",
+      parentId: "message-2",
+      timestamp: "2026-10-12T00:00:03.000Z",
+      message: { role: "user", content: "again" },
+    })}\n`)
+    const third = await catalog.previewSession(root, sessionFile, {
+      limit: 100,
+      syncCursor: second.branch.deltaFrom,
+      beforeId: first.branch.items[0]?.id,
+    }) as { branch: { items: Array<{ id: string }>; deltaFrom?: string } }
+    assert.equal(third.branch.deltaFrom, second.branch.deltaFrom)
+    assert.deepEqual(third.branch.items.map(item => item.id), ["message-3"])
   })
 })
