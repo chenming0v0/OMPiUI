@@ -30,7 +30,8 @@ defaults:
     shell: bash
 
 concurrency:
-  group: desktop-release-${{ github.ref }}-${{ github.event.inputs.tag }}
+  # 手动验收不能取消正在生成可复用产物的 dev 预构建。
+  group: desktop-release-${{ github.event_name }}-${{ github.ref }}-${{ inputs.tag }}-${{ inputs.verify_only }}
   cancel-in-progress: true
 
 jobs:
@@ -202,7 +203,8 @@ jobs:
       - name: Accept Android SDK licenses
         run: |
           rm -rf "$ANDROID_HOME/tools"
-          yes | sdkmanager --licenses > /dev/null
+          # sdkmanager 读完后会关闭输入，只检查它自身的退出码。
+          sdkmanager --licenses > /dev/null < <(yes 2>/dev/null)
 
       - name: Drop Windows-only patch
         run: rm -f patches/@lydell+node-pty-win32-x64+*.patch
@@ -377,6 +379,16 @@ jobs:
           fail_on_unmatched_files: true
           draft: false
           prerelease: ${{ contains(needs.prepare.outputs.tag, 'canary') || contains(needs.prepare.outputs.tag, 'alpha') || contains(needs.prepare.outputs.tag, 'beta') }}
+
+      - name: Upload verified assets without creating a release
+        if: needs.prepare.outputs.publish != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ompiui-verified-${{ needs.prepare.outputs.tree }}
+          path: release-assets/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
 
       - name: Report delivery time
         env:
