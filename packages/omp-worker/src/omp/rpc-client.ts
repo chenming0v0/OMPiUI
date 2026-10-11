@@ -5,7 +5,6 @@ import { join } from "node:path"
 import { EventEmitter } from "node:events"
 import type { JsonObject, JsonValue } from "@ompiui/protocol"
 import { isJsonObject } from "@ompiui/protocol"
-import { assertOmpTerminalStopped } from "./terminal-presence.js"
 import { runtimePolicyArgs } from "./runtime-policy.js"
 import { RpcLineReader } from "./rpc-line-reader.js"
 
@@ -39,7 +38,8 @@ export interface OmpRpcClientOptions {
   /** 额外 CLI 参数（如 --session-dir） */
   args?: string[]
   env?: NodeJS.ProcessEnv
-  protectSession?: boolean
+  /** 对 UI 主动启动的会话应用运行配置，禁止隐式恢复其他会话。 */
+  applyRuntimePolicy?: boolean
 }
 
 export type OmpRpcFrame = JsonObject & { type: string }
@@ -98,7 +98,7 @@ export class OmpRpcClient extends EventEmitter {
       const candidates = located.status === 0 ? located.stdout.trim().split(/\r?\n/) : []
       bin = candidates.find(candidate => /\.exe$/i.test(candidate)) ?? candidates[0] ?? bin
     }
-    const args = ["--mode", "rpc", ...ompCompatConfigArgs(), ...(options.args ?? []), ...(options.protectSession ? runtimePolicyArgs() : [])]
+    const args = ["--mode", "rpc", ...ompCompatConfigArgs(), ...(options.args ?? []), ...(options.applyRuntimePolicy ? runtimePolicyArgs() : [])]
     this.proc = spawn(bin, args, {
       cwd: options.cwd,
       env: { ...process.env, ...(process.env.OMP_AGENT_DIR ? { PI_CODING_AGENT_DIR: process.env.OMP_AGENT_DIR } : {}), ...options.env },
@@ -301,14 +301,6 @@ export class OmpRpcClient extends EventEmitter {
   }
 
   async request<T extends JsonValue = JsonValue>(command: JsonObject, timeoutMs = 60_000): Promise<OmpRpcResponse & { data?: T }> {
-    if (this.options.protectSession && !/^(get_|negotiate_protocol$|set_subagent_subscription$|abort$)/.test(String(command.type))) {
-      try {
-        await assertOmpTerminalStopped()
-      } catch (error) {
-        this.kill(terminalConflictReason(error))
-        throw error
-      }
-    }
     const id = `req_${++this.nextId}`
     const commandType = typeof command.type === "string" ? command.type : ""
     const full: JsonObject = { id, ...command }
@@ -351,16 +343,6 @@ export class OmpRpcClient extends EventEmitter {
   }
 
   async close(): Promise<void> {
-    if (this.options.protectSession) {
-      try {
-        await assertOmpTerminalStopped()
-      } catch (error) {
-        // 终端后来启动时，不允许旧 runtime 在退出阶段回写历史。
-        this.kill(terminalConflictReason(error))
-        await this.waitForExit(2_000)
-        return
-      }
-    }
     this.exitReason = "host_dispose"
     try {
       this.proc.stdin!.end()
@@ -411,11 +393,6 @@ export class OmpRpcClient extends EventEmitter {
       this.chunks.delete(chunkId)
     }
   }
-}
-
-export function terminalConflictReason(error: unknown): string {
-  return error && typeof error === "object" && "reason" in error && error.reason === "terminal_running"
-    ? "terminal_running" : "terminal_probe_failed"
 }
 
 /** 解析 OMP RPC 响应：success=false 时抛 OmpRpcError（带 code） */

@@ -16,9 +16,8 @@ import { normalizeCwd, readChildSessionMessages, resolveUserPath } from "./omp-c
 import { OmpExtensionUiBridge } from "./omp-extension-ui.js"
 import { OMP_SDK_VERSION } from "./constants.js"
 import { detectOmpVersion, isOmpVersionSupported, ompTooOldError } from "./omp-version.js"
-import { OmpRpcClient, OmpRpcError, terminalConflictReason, unwrapResponse, type OmpRpcFrame } from "./rpc-client.js"
+import { OmpRpcClient, OmpRpcError, unwrapResponse, type OmpRpcFrame } from "./rpc-client.js"
 import { assertOmpSessionFile, backupOmpSession } from "./managed-sessions.js"
-import { assertOmpTerminalStopped } from "./terminal-presence.js"
 import { SubagentEventBuffer } from "./subagent-event-buffer.js"
 import { EventSnapshotBuffer } from "./event-snapshot-buffer.js"
 
@@ -118,7 +117,6 @@ export class OmpRpcSession implements SessionRuntime {
   private cwd = ""
   private sessionName: string | null = null
   private closed = false
-  private terminalWatch?: NodeJS.Timeout
 
   private readonly piEventListeners = new Set<(event: JsonObject, meta: PiEventMeta) => void>()
   private readonly headListeners = new Set<(head: SessionHead) => void>()
@@ -175,7 +173,6 @@ export class OmpRpcSession implements SessionRuntime {
 
   static async open(cwd: string, sessionFile?: string, options: OmpSessionOptions = {}): Promise<OmpRpcSession> {
     const session = new OmpRpcSession()
-    await assertOmpTerminalStopped()
     session.cwd = normalizeCwd(cwd)
     session.ompOptions = options
     if (sessionFile) {
@@ -200,7 +197,7 @@ export class OmpRpcSession implements SessionRuntime {
       bin: this.ompOptions.bin,
       // 指定原文件在启动阶段直接恢复，避免先自动恢复另一个会话再切换。
       args: this.sessionFile ? ["--resume", this.sessionFile] : [],
-      protectSession: true,
+      applyRuntimePolicy: true,
       env: { PIUI_EMBEDDED: "1" },
     })
     this.client.on("frame", frame => this.handleFrame(frame))
@@ -228,14 +225,6 @@ export class OmpRpcSession implements SessionRuntime {
       this.extensionUi.bind(this.sessionId, response => this.client.writeExtensionUiResponse(response))
       await Promise.all([this.refreshModels(), this.refreshThinkingLevels(), this.refreshAvailableCommands()])
       await this.syncEntriesNow()
-      this.terminalWatch = setInterval(() => {
-        void assertOmpTerminalStopped().catch(error => {
-          if (this.closed) return
-          if (this.terminalWatch) clearInterval(this.terminalWatch)
-          this.client.kill(terminalConflictReason(error))
-        })
-      }, 1_000)
-      this.terminalWatch.unref()
     } catch (error) {
       // 启动中途失败：杀掉子进程，避免留下孤儿 omp 进程
       this.client.kill("startup_failed")
@@ -1607,7 +1596,6 @@ export class OmpRpcSession implements SessionRuntime {
 
   async dispose(): Promise<void> {
     this.closed = true
-    if (this.terminalWatch) clearInterval(this.terminalWatch)
     if (this.syncTimer) clearTimeout(this.syncTimer)
     this.extensionUi.cancelAll("runtime_disposed")
     this.piEvents.flush()

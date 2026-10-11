@@ -118,7 +118,7 @@ if (mode === "silent" || mode === "wrong-protocol") {
         sessions.delete(message.sessionId)
         send({ kind: "event", generation, sessionId: message.sessionId, channel: "session.crashed", event: {
           message: "fixture OMP child exited",
-          runtimeExit: { pid: 12345, code: 1, signal: null, reason: "terminal_probe_failed" },
+          runtimeExit: { pid: 12345, code: 1, signal: null, reason: "unexpected_exit" },
         } })
       }
       send(reply)

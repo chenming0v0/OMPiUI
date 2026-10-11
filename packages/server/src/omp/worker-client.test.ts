@@ -177,7 +177,7 @@ test("WorkerSession reports an OMP child crash without killing another runtime",
     await crashed.command("fixture.crash")
     assert.equal((crash as (Error & { code: string }) | undefined)?.code, "SESSION_RUNTIME_CRASHED")
     assert.deepEqual((crash as (Error & { runtimeExit: unknown }) | undefined)?.runtimeExit, {
-      pid: 12345, code: 1, signal: null, reason: "terminal_probe_failed",
+      pid: 12345, code: 1, signal: null, reason: "unexpected_exit",
     })
     assert.deepEqual(await other.command("state.get"), { fixture: "ok" })
     await crashed.dispose()

@@ -61,7 +61,6 @@ npm run diagnostics -- --session <sessionId> --out diagnostic-report.jsonl
 - `server.started` 的 `runId/pid` 变化：服务端已重启。
 - `worker.heartbeat.kill / worker.exited`：看门狗或 worker 异常退出。
 - `session.crashed` 的 `workerPid/code/signal/reason`：内层 OMP 进程的退出信息；
-  `terminal_running` 表示发现独立终端，`terminal_probe_failed` 表示进程探测失败，
   `unexpected_exit` 表示未主动停止。不要将内层 OMP 退出与共享 worker 退出混淆。
 - `agent.event.eventType=message_end` 的 `status=error/aborted`：
   模型回复失败或中止；失败使用 `MODEL_RESPONSE_ERROR`，原始错误正文不进入诊断日志。
@@ -75,6 +74,9 @@ npm run diagnostics -- --session <sessionId> --out diagnostic-report.jsonl
 
 OMPiUI 管理的会话使用进程级 `task.maxRecursionDepth: 1`：主代理可以并发派任务，
 子代理不能继续派子代理；不修改官方终端的全局配置，也不降低第一层并发上限。
+
+打开尚未运行的历史会话、刷新和草稿同步走只读路径，不启动会写盘的 OMP runtime。
+主动发消息或明确修改会话时才恢复写入；不扫描或拦截官方终端进程。
 
 ## 隐私与负载
 

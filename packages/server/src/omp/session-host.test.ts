@@ -38,6 +38,10 @@ test("viewing an OMP terminal history and syncing a draft never opens a writer",
   assert.equal((await host.openSession(".", file)).sessionId, "terminal-session")
   await host.sessionQuery("terminal-session", "state.get")
   await host.sessionQuery("terminal-session", "branch.get")
+  await host.sessionQuery("terminal-session", "entries.get")
+  await host.sessionQuery("terminal-session", "tree.get")
+  await host.sessionQuery("terminal-session", "attachment.get", { entryId: "image", blockIndex: 0 })
+  await host.sessionQuery("terminal-session", "subagent.messages", { sessionFile: file })
   await host.sessionQuery("terminal-session", "setExtensionEditorState", { text: "draft" })
   assert.equal(opens, 0)
   assert.equal(readFileSync(file, "utf8"), bytes)
@@ -45,6 +49,59 @@ test("viewing an OMP terminal history and syncing a draft never opens a writer",
   await host.openSession(".", file)
   assert.match(readFileSync(file, "utf8"), /another-tui-answer/)
   assert.equal(opens, 0)
+})
+
+test("an explicit message attaches a previewed OMP session using its latest history", async t => {
+  const file = join(tmpdir(), `ompiui-send-${randomUUID()}.jsonl`)
+  const bytes = '{"type":"session","id":"terminal-session"}\n'
+  writeFileSync(file, bytes)
+  const previous = process.env.OMPIUI_DRIVER
+  process.env.OMPIUI_DRIVER = "omp"
+  const commands: string[] = []
+  let openedBytes: string | undefined
+  let opens = 0
+  const worker = {
+    command: async (type: string) => { commands.push(type); return {} },
+    getSessionId: () => "terminal-session",
+    getSessionFile: () => file,
+    getCwd: () => ".",
+    onEvent: () => () => {},
+    onCrash: () => () => {},
+    onClose: () => () => {},
+    dispose: async () => {},
+  } as unknown as WorkerSession
+  const supervisor = {
+    onEvent: () => () => {},
+    open: async (_cwd: string, sessionFile: string) => {
+      assert.equal(sessionFile, file)
+      opens++
+      openedBytes = readFileSync(file, "utf8")
+      return worker
+    },
+    catalogCommand: async (type: string) => {
+      if (type === "session.findByFile") return { id: "terminal-session", cwd: ".", sessionFile: file }
+      if (type === "session.preview") return { state: { diskPreview: true, readOnly: false } }
+      if (type === "session.listAll") return [{ id: "terminal-session", cwd: ".", path: file }]
+      throw new Error(`Unexpected catalog command ${type}`)
+    },
+  } as unknown as RuntimeSupervisor
+  const host = new SessionHost(supervisor, new EventHub())
+  t.after(() => {
+    host.dispose()
+    if (previous === undefined) delete process.env.OMPIUI_DRIVER
+    else process.env.OMPIUI_DRIVER = previous
+    rmSync(file, { force: true })
+  })
+  await host.openSession(".", file)
+  await host.sessionQuery("terminal-session", "setExtensionEditorState", { text: "draft" })
+  assert.equal(opens, 0)
+  // 模拟浏览期间官方终端新增记录，主动发送时必须读取最新版原文件。
+  const latest = `${bytes}{"type":"message","id":"latest-tui-answer"}\n`
+  writeFileSync(file, latest)
+  await host.sessionQuery("terminal-session", "sendUserMessage", { text: "continue" })
+  assert.equal(opens, 1)
+  assert.equal(openedBytes, latest)
+  assert.deepEqual(commands, ["state.get", "sendUserMessage"])
 })
 
 test("SessionHost notifies the session list when the session file materializes on disk", async () => {
