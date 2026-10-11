@@ -375,8 +375,8 @@ class OmpSubagentStore {
   }
 
   applyProgress(sessionId: string, payload: JsonObject): void {
-    // progress 帧没有 id 时按 index 归位
-    let id = str(payload.id)
+    // 官方进度帧的身份在 progress.id；旧版镜像也可能带外层 id。
+    let id = str(payload.id) ?? str(asRecord(payload.progress)?.id)
     if (!id && typeof payload.index === 'number') {
       id = this.runsForSession(sessionId).find(run => run.index === payload.index)?.id
     }
@@ -407,6 +407,19 @@ class OmpSubagentStore {
       ...run,
       transcript: appendTranscriptEvent(event, run.transcript),
     }))
+  }
+
+  markSessionCrashed(sessionId: string): void {
+    for (const run of this.runsForSession(sessionId)) {
+      if (isTerminalStatus(run.status)) continue
+      this.upsert(sessionId, run.id, current => ({
+        ...current, status: 'failed', endedAt: Date.now(),
+        transcript: current.transcript.map(item => ({
+          ...item, streaming: false,
+          toolStatus: item.toolStatus === 'running' || item.toolStatus === 'pending' ? 'error' : item.toolStatus,
+        })),
+      }))
+    }
   }
 
   /**

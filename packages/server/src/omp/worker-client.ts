@@ -132,9 +132,8 @@ function disposeTimeoutMs(): number {
 }
 
 /**
- * 单条命令的超时预算。默认 60s：worker 卡死（进程活着但事件循环不动）时
- * 前端请求不该挂 10 分钟——SDK 内部一次正常调用极少超过 60s，超时即视为
- * 该命令失败；若心跳同时丢失，说明进程级卡死，直接杀掉重建（见 request）。
+ * 单条命令的超时预算。超时只废弃该请求，绝不杀共享 worker；
+ * 进程级失联由看门狗独立判断，仍在传递事件或响应时不得判死。
  */
 function requestTimeoutMs(): number {
   const fromEnv = Number(process.env.OMPIUI_WORKER_REQUEST_TIMEOUT_MS)
@@ -214,6 +213,10 @@ class WorkerHostCore {
 
   private handleMessage(message: WorkerMessage): void {
     if (!message || typeof message !== "object") return
+    // 收到合法协议消息也证明进程仍在通信，心跳不能被繁忙的事件队列挤成误杀。
+    if (message.kind === "heartbeat" || message.kind === "response" || message.kind === "event" || message.kind === "hostCall") {
+      this.heartbeatMisses = 0
+    }
     if (message.kind === "hello") {
       if (message.workerProtocolVersion !== OMP_WORKER_PROTOCOL_VERSION) {
         this.settleReadyError(Object.assign(

@@ -65,6 +65,7 @@ import {
   type WorkerRequest,
 } from "./ipc.js"
 import type { SessionRuntime } from "./runtime.js"
+import { WorkerIpcSender } from "./worker-ipc-sender.js"
 import * as P from "./params.js"
 
 const workerGeneration = randomUUID()
@@ -80,26 +81,26 @@ const driver = getDriverMode()
 // 会话命令 → 驱动方法绑定门禁：缺实现或缺 target 直接启动失败（响亮，不回退）。
 assertRuntimeTargetBindings()
 
-function send(message: WorkerMessage): void {
+const ipcSender = new WorkerIpcSender((message, done) => {
   try {
-    process.send?.(message)
-  } catch {
-    // 通道已断（parent 消失）：disconnect 处理器会接手做有界清理退出，
-    // 这里不能让 ERR_IPC_CHANNEL_CLOSED 炸进 uncaughtException
+    if (process.send && process.connected) process.send(message, error => done(error ?? undefined))
+    else done(new Error("Worker IPC channel disconnected"))
+  } catch (error) {
+    done(error instanceof Error ? error : new Error(String(error)))
   }
+}, paused => {
+  for (const runtime of runtimes.values()) {
+    if (runtime instanceof OmpRpcSession) runtime.setOutputPaused(paused)
+  }
+})
+
+function send(message: WorkerMessage): void {
+  ipcSender.send(message)
 }
 
 /** 等 IPC flush 完再回调（用于退出前的最后一条消息）；通道不可用时立即回调 */
 function sendWithCallback(message: WorkerMessage, callback: () => void): void {
-  try {
-    if (process.send) {
-      process.send(message, () => callback())
-      return
-    }
-  } catch {
-    /* channel already gone */
-  }
-  callback()
+  ipcSender.send(message, callback)
 }
 
 const ompBin = process.env.OMPI_OMP_BIN?.trim() || undefined
@@ -139,7 +140,7 @@ function callHost(call: WorkerHostCall): Promise<void> {
     }, 15_000)
     timer.unref()
     pendingHostCalls.set(id, { resolve, reject, timer })
-    process.send?.({ kind: "hostCall", id, generation: workerGeneration, call }, error => {
+    ipcSender.send({ kind: "hostCall", id, generation: workerGeneration, call }, error => {
       if (!error) return
       const pending = pendingHostCalls.get(id)
       if (pending) clearTimeout(pending.timer)

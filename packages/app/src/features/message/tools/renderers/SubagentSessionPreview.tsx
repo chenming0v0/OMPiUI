@@ -78,6 +78,11 @@ export const SubagentSessionPreview = memo(function SubagentSessionPreview({
     )
   }
   if (transcript.length === 0) {
+    const progress = run?.progress
+    const summary = [progress?.currentTool, progress?.lastIntent, ...(progress?.recentOutput ?? [])].filter(Boolean).join('\n')
+    if (summary) {
+      return <div role="status" className="text-[length:var(--fs-sm)] text-text-300 whitespace-pre-wrap break-words py-2">{summary}</div>
+    }
     return <div className="text-[length:var(--fs-sm)] text-text-500 italic py-2">{t('task.waitingForResponse')}</div>
   }
   return (

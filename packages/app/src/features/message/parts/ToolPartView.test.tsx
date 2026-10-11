@@ -2,6 +2,8 @@ import { act, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ToolPartView } from './ToolPartView'
 import type { PiToolExecution } from '../../../omp/domain/index.js'
+import { SessionNavigationContext } from '../../../contexts/SessionNavigationContext'
+import { piSessionStateStore } from '../../../omp/state/index.js'
 
 const { getActiveCalibratedNowMock } = vi.hoisted(() => ({
   getActiveCalibratedNowMock: vi.fn<() => number | undefined>(() => undefined),
@@ -90,6 +92,21 @@ describe('ToolPartView running duration', () => {
     })
 
     expect(screen.getByText('3.0s')).toBeInTheDocument()
+  })
+
+  it('does not keep the running timer on an interrupted task after the backend is idle', () => {
+    piSessionStateStore.setState('stopped-task-session', { isIdle: true, isStreaming: false })
+    const execution = createRunningExecution()
+    execution.call.name = 'task'
+    render(
+      <SessionNavigationContext.Provider value={{ currentSessionId: 'stopped-task-session', navigateToSession: vi.fn(), currentDirectory: undefined }}>
+        <ToolPartView execution={execution} partKey="stopped-task" startedAt={7500} />
+      </SessionNavigationContext.Provider>,
+    )
+    expect(screen.getByText('Failed')).toBeInTheDocument()
+    expect(screen.getByText('Running')).toHaveClass('opacity-0')
+    expect(screen.queryByText('2.5s')).not.toBeInTheDocument()
+    piSessionStateStore.clear('stopped-task-session')
   })
 
   it('uses calibrated server time for running tools when available', () => {

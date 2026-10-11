@@ -22,6 +22,7 @@ import type { ToolRendererProps } from '../types'
 import { toolResultText } from '../toolResultContent'
 import { MessageExpandPanel, useMessageExpandRender } from '../../messageExpand'
 import { SubagentSessionPreview } from './SubagentSessionPreview'
+import { useTaskRuntimeStopped } from '../useTaskRuntimeStopped'
 
 // ============================================
 // Task Tool Renderer (子 agent)
@@ -97,11 +98,12 @@ function SubagentTask({ slot, execution, partKey, intent, targetSessionId, showA
 }) {
   const { t } = useTranslation('message')
   const { navigateToSession, currentDirectory, currentSessionId } = useSessionNavigation()
-  // liveRun 缺席时持久化 run 必为终态（completed/failed/aborted），isRunning
-  // 只由 liveRun / 工具结果决定，可先于转录 hook 计算——转录拉取要用
-  // shouldRenderBody 门控（折叠的历史行不触发 worker 调用）
+  // 先确认运行状态，再按展开状态读取历史；中断且没有结果的任务不能永久计时。
   const liveRun = slot.liveRun
-  const isRunning = liveRun ? liveRun.status === 'running' || liveRun.status === 'pending' : !execution.result
+  const runtimeStopped = useTaskRuntimeStopped()
+  const isRunning = liveRun
+    ? (liveRun.status === 'running' || liveRun.status === 'pending') && (!runtimeStopped || liveRun.detached)
+    : !execution.result && !runtimeStopped
   const [expanded, setExpanded] = useUiDisclosureState(`message:${partKey}:task-body`, isRunning)
   const [isContentFullscreen, setIsContentFullscreen] = useState(false)
   const [opening, setOpening] = useState(false)
@@ -109,9 +111,21 @@ function SubagentTask({ slot, execution, partKey, intent, targetSessionId, showA
   const { rootRef, headerRef, withScrollLock } = useDisclosureScrollLock()
   const effectiveExpanded = expanded || isContentFullscreen
   const shouldRenderBody = useMessageExpandRender(effectiveExpanded)
-  const { run: persistedRun, loading: previewLoading } = usePersistedSubagentRun(execution.call.id, slot.result, Boolean(liveRun), currentSessionId, shouldRenderBody)
+  // 中途崩溃没有 task 结果，但已命名子代理的转录仍在父文件同名目录。
+  const diskResult = useMemo<PersistedSubagentResult | undefined>(() => slot.result ??
+    (typeof slot.input.name === 'string' && slot.input.name ? {
+      id: slot.input.name,
+      agent: typeof slot.input.agent === 'string' ? slot.input.agent : undefined,
+      task: typeof slot.input.task === 'string' ? slot.input.task : undefined,
+      index: slot.index,
+    } : undefined), [slot.result, slot.input, slot.index])
+  const { run: persistedRun, loading: previewLoading } = usePersistedSubagentRun(
+    execution.call.id, diskResult, Boolean(liveRun), currentSessionId, shouldRenderBody,
+    !slot.result ? runtimeStopped ? 'aborted' : 'running' : undefined,
+  )
   const subagentRun = liveRun ?? persistedRun
-  const isError = subagentRun ? subagentRun.status === 'failed' || subagentRun.status === 'aborted' : Boolean(execution.result?.isError)
+  const isError = subagentRun ? subagentRun.status === 'failed' || subagentRun.status === 'aborted' || (!isRunning && !execution.result && runtimeStopped)
+    : Boolean(execution.result?.isError) || (!execution.result && runtimeStopped)
   const isCompleted = !isRunning && !isError
   const name = subagentDisplayTitle(
     typeof slot.input.name === 'string' ? slot.input.name : undefined,
@@ -369,6 +383,7 @@ function usePersistedSubagentRun(
   hasLiveRun: boolean,
   parentSessionId: string | null | undefined,
   enabled: boolean,
+  fallbackStatus?: OmpSubagentRun['status'],
 ): { run?: OmpSubagentRun; loading: boolean } {
   // 只选原始值（sessionFile/cwd 字符串）：订阅整个 state 对象会让
   // 每个历史 task 行跟着父会话的每次 state 刷新重渲染
@@ -379,8 +394,9 @@ function usePersistedSubagentRun(
   const parentFile = useSyncExternalStore(piSessionStateStore.subscribe, getParentFile, getParentFile)
   const baseRun = useMemo(() => {
     if (hasLiveRun || !result || !parentSessionId) return undefined
-    return buildPersistedSubagentRun(callId, result, deriveChildSessionFile(result, parentFile ?? undefined), parentSessionId)
-  }, [callId, hasLiveRun, parentSessionId, result, parentFile])
+    const run = buildPersistedSubagentRun(callId, result, deriveChildSessionFile(result, parentFile ?? undefined), parentSessionId)
+    return run && fallbackStatus ? { ...run, status: fallbackStatus } : run
+  }, [callId, hasLiveRun, parentSessionId, result, parentFile, fallbackStatus])
   const [loaded, setLoaded] = useState<{ key: string; items: OmpSubagentTranscriptItem[] }>({ key: '', items: [] })
   useEffect(() => {
     if (!enabled || !baseRun?.sessionFile || !parentSessionId) return

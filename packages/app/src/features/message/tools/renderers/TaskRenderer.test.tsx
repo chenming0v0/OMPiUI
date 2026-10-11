@@ -167,6 +167,27 @@ describe('persisted subagent fallback', () => {
     openSubagentSessionMock.mockReset()
   })
 
+  it('restores all ten interrupted child transcripts without a task result', async () => {
+    piSessionStateStore.setState('parent-session', {
+      sessionFile: 'C:/sessions/parent.jsonl', isIdle: true, isStreaming: false,
+    })
+    getOmpSubagentMessagesMock.mockImplementation((_sessionId, { sessionFile }) => Promise.resolve({
+      messages: [{ role: 'assistant', content: `Recovered ${sessionFile}` }],
+    }))
+    renderTask({
+      call: {
+        type: 'toolCall', id: 'interrupted-task', name: 'task',
+        arguments: { tasks: Array.from({ length: 10 }, (_, index) => ({ name: `Lane${index}`, agent: 'scout', task: `Review ${index}` })) },
+      },
+    })
+    await waitFor(() => expect(getOmpSubagentMessagesMock).toHaveBeenCalledTimes(10))
+    for (let index = 0; index < 10; index++) {
+      expect(await screen.findByText(`Recovered C:/sessions/parent/Lane${index}.jsonl`)).toBeInTheDocument()
+    }
+    expect(screen.queryByText('task.waitingForResponse')).not.toBeInTheDocument()
+    expect(screen.getAllByText('task.error')).toHaveLength(10)
+  })
+
   it('derives the child session file from outputPath / parent session file', () => {
     expect(deriveChildSessionFile({ id: 'ReadmeScout', outputPath: 'C:\\dir\\sub\\ReadmeScout.md' }))
       .toBe('C:\\dir\\sub/ReadmeScout.jsonl')

@@ -60,6 +60,21 @@ describe('handleSessionsUpdated replacement semantics', () => {
     vi.restoreAllMocks()
   })
 
+  it('a runtime crash settles live subagent tools instead of leaving them running', () => {
+    ompSubagentStore.clearAll()
+    piSessionStateStore.setState('session-a', { isStreaming: true, isIdle: false })
+    ompSubagentStore.applyLifecycle('session-a', { id: 'crash-child', parentToolCallId: 'task-crash', status: 'started' })
+    ompSubagentStore.applyEvent('session-a', {
+      id: 'crash-child', event: { type: 'tool_execution_start', toolCallId: 'read-crash', toolName: 'read' },
+    })
+    handle({ sessionId: 'session-a', crashed: true })
+    expect(piSessionStateStore.getState('session-a')).toMatchObject({ isStreaming: false, isIdle: true })
+    expect(ompSubagentStore.getRunsForToolCall('task-crash', 'session-a')[0]).toMatchObject({
+      status: 'failed', transcript: [{ toolCallId: 'read-crash', toolStatus: 'error', streaming: false }],
+    })
+    ompSubagentStore.clearAll()
+  })
+
   it('runtime-reuse: keeps source keyed stores and does not emit session-replaced', () => {
     piBranchStore.setData('session-a', fakeBranchPage('session-a'))
     piSessionStateStore.setState('session-a', { isStreaming: false })

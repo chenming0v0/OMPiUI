@@ -39,6 +39,7 @@ import {
 import type { SessionStatus } from '../types/session'
 import { BrowserDiagnostics } from './browserDiagnostics'
 import { markModelSettingsDisconnected, refreshModelSettings } from './modelSettingsSync'
+import { faultSocketOpened, faultSocketClosed, faultSocketUnused, reportRuntimeCrash } from './faultAudit/controller'
 import {
   loadPiSessionData,
   refreshPiBranch,
@@ -69,6 +70,10 @@ type SessionsUpdatedPayload = {
   attached?: boolean
   detached?: boolean
   materialized?: boolean
+  crashed?: boolean
+  faultId?: string
+  faultTime?: string
+  errorCode?: string
   /** 会话活跃期间 head 推进（新条目），节流后通知列表刷新 */
   updated?: boolean
   replaced?: boolean
@@ -226,6 +231,8 @@ class PiEventStream {
   }
 
   private closeSocket(reason = 'unsubscribe'): void {
+    if (reason === 'protocol_problem') faultSocketClosed(1002)
+    else faultSocketUnused()
     this.diagnostics.record('disconnect', { reason })
     const ws = this.ws
     this.ws = null
@@ -249,6 +256,7 @@ class PiEventStream {
 
     ws.onopen = () => {
       if (this.ws !== ws) return
+      faultSocketOpened()
       this.diagnostics.connected(this.lastCloseCode)
       this.sendSubscribe()
       notifyReconnected()
@@ -266,6 +274,7 @@ class PiEventStream {
     }
     ws.onclose = event => {
       if (this.ws !== ws) return
+      faultSocketClosed(event.code)
       this.clearPing()
       this.ws = null
       markModelSettingsDisconnected()
@@ -446,6 +455,11 @@ class PiEventStream {
   }
 
   private handleSessionsUpdated(payload: SessionsUpdatedPayload | undefined): void {
+    if (payload?.crashed && payload.sessionId) {
+      reportRuntimeCrash(payload.sessionId, payload.faultId, payload.faultTime, payload.errorCode)
+      this.markSessionSettled(payload.sessionId)
+      ompSubagentStore.markSessionCrashed(payload.sessionId)
+    }
     if (payload?.replaced && payload.sourceSessionId && payload.targetSessionId) {
       if (payload.reason === 'runtime-reuse') {
         // runtime 复用（ensureAttached 偷同目录空闲 runtime）：源 session 的
@@ -538,6 +552,7 @@ class PiEventStream {
   private handleActivitySnapshot(snapshot: SessionsActivitySnapshot): void {
     const active = snapshot?.sessions ?? {}
     for (const [sessionId, status] of Object.entries(active)) {
+      this.diagnostics.record('activity', { sessionId, status: status.type })
       if (!this.knownActiveSessions.has(sessionId)) notifySessionStarted(sessionId)
       activeSessionStore.updateStatus(sessionId, activityToSessionStatus(status))
     }
@@ -545,6 +560,7 @@ class PiEventStream {
     const candidates = new Set([...this.knownActiveSessions, ...this.refCounts.keys()])
     for (const sessionId of candidates) {
       if (!(sessionId in active)) {
+        this.diagnostics.record('activity', { sessionId, status: 'idle' })
         const state = piSessionStateStore.getState(sessionId)
         if (this.knownActiveSessions.has(sessionId) || state?.isStreaming || state?.isCompacting || state?.isRetrying || state?.hasPendingAsyncWork) {
           this.markSessionSettled(sessionId)

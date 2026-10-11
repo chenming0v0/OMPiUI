@@ -59,6 +59,18 @@ describe('ompSubagentStore HUD', () => {
     expect(selectHudRuns(ompSubagentStore.getSnapshot()).some(run => run.id === 'snap-2')).toBe(false)
   })
 
+  it('accepts the official progress.id identity without requiring an outer id', () => {
+    ompSubagentStore.applyLifecycle('session-a', { id: 'native-progress', parentToolCallId: 'call-native', status: 'started', index: 0 })
+    ompSubagentStore.applyProgress('session-a', {
+      index: 0, parentToolCallId: 'call-native', sessionFile: 'C:/sessions/native-progress.jsonl',
+      task: 'Inspect the source', progress: { id: 'native-progress', status: 'running', currentTool: 'read', tokens: 42 },
+    })
+    expect(ompSubagentStore.getRunsForToolCall('call-native', 'session-a')[0]).toMatchObject({
+      task: 'Inspect the source', sessionFile: 'C:/sessions/native-progress.jsonl',
+      progress: { currentTool: 'read', tokens: 42 },
+    })
+  })
+
   it('keeps concurrent runs for one task and never regresses a terminal run', () => {
     ompSubagentStore.applyLifecycle('session-task', {
       id: 'child-a', parentToolCallId: 'task-call', detached: false, status: 'started', index: 0,

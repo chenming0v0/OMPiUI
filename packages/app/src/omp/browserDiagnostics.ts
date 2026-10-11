@@ -1,4 +1,5 @@
 import { PROTOCOL_VERSION, type BrowserDiagnosticMessage, type DiagnosticRunState } from '@ompiui/protocol'
+import { recordClientDiagnostic } from './faultAudit/controller'
 
 type Fields = Omit<BrowserDiagnosticMessage, 'type' | 'protocolVersion' | 'event' | 'clientId'>
 
@@ -19,6 +20,7 @@ export class BrowserDiagnostics {
 
   record(event: BrowserDiagnosticMessage['event'], fields: Fields = {}): void {
     try {
+      recordClientDiagnostic(event, fields)
       this.send({ type: 'diagnostic', protocolVersion: PROTOCOL_VERSION, clientId: this.clientId, event, ...fields })
     } catch {
       // 诊断记录不能影响正常连接和状态恢复。

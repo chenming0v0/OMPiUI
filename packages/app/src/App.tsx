@@ -42,6 +42,7 @@ import { piEventStream } from './omp/eventStream.js'
 import { useSessionContext } from './contexts/useSessionContext'
 import { useCloseServiceDialog } from './hooks/useCloseServiceDialog'
 import { useSessionReplacement } from './hooks/useSessionReplacement'
+import { FaultReportDialog } from './features/diagnostics/FaultReportDialog'
 
 const SettingsDialog = lazy(() =>
   import('./features/settings/SettingsDialog').then(module => ({ default: module.SettingsDialog })),
@@ -1017,6 +1018,7 @@ function App() {
           )}
           <ToastContainer onOpenAbout={openAboutSettings} />
           <ProviderAuthDialogHost />
+          <FaultReportDialog />
         </div>
 
         <Suspense fallback={null}>
