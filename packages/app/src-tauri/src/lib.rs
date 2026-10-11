@@ -16,7 +16,7 @@ use dir_state::OpenDirectoryState;
 #[cfg(desktop)]
 use service::{
     confirm_close_app, get_ompiui_service_status, restart_ompiui_service, start_ompiui_service,
-    stop_ompiui_service, ServiceState,
+    stop_ompiui_service, get_ompiui_service_diagnostics, ServiceState,
 };
 
 // ============================================
@@ -395,6 +395,7 @@ pub fn run() {
             stop_ompiui_service,
             restart_ompiui_service,
             get_ompiui_service_status,
+            get_ompiui_service_diagnostics,
             confirm_close_app,
             desktop_window_ready,
             open_new_window,

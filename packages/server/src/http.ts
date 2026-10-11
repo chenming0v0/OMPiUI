@@ -339,6 +339,8 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
           piSdkVerified: handshake?.piSdkVerified,
           piSdkFallback: handshake?.piSdkFallback ?? null,
           processId: process.pid,
+          workerReady: !!handshake,
+          startedAt: Math.round(Date.now() - process.uptime() * 1000),
         }
         return sendJson(res, 200, body)
       }

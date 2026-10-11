@@ -210,6 +210,46 @@
   "toast": {
     "clearAll": "Clear all"
   },
+  "desktopService": {
+    "open": "View local backend status",
+    "title": "Local backend",
+    "backend": "Backend",
+    "engine": "OMP engine",
+    "seconds": "{{count}}s",
+    "requestedAt": "Start / stop requested",
+    "spawnedAt": "Backend process started",
+    "completedAt": "Operation completed",
+    "waiting": "Waiting",
+    "duration": "Operation duration",
+    "process": "Backend process PID",
+    "timeline": "Operation timeline",
+    "output": "View recent backend output",
+    "outputHint": "The latest 24 lines are shown locally and are not automatically included in shareable fault reports.",
+    "noOutput": "No backend output yet. Check the startup phase above if no process has been created.",
+    "noEvents": "No startup operation has been recorded in this window. The start time of an existing service may be unknown.",
+    "runtimeHint": "Once the engine is ready, it can handle tasks. Session runtimes start on demand when sending messages or making changes. Browsing history or opening this panel does not start a runtime.",
+    "queryFailed": "Desktop service status is temporarily unavailable. Retrying.",
+    "healthRejected": "The backend rejected its health check. Check the local service authentication settings.",
+    "phase": {
+      "idle": "Not started",
+      "unknown": "Checking status",
+      "preparing": "Preparing",
+      "checking": "Checking existing service",
+      "starting": "Starting process",
+      "waiting_health": "Waiting for readiness",
+      "running": "Running",
+      "stopping": "Stopping",
+      "stopped": "Stopped",
+      "failed": "Operation failed",
+      "unreachable": "Unreachable"
+    },
+    "worker": {
+      "ready": "Ready",
+      "warming": "Initializing",
+      "unavailable": "Waiting for backend",
+      "unknown": "Not reported by service"
+    }
+  },
   "desktopTitlebar": {
     "goBack": "Go Back",
     "goForward": "Go Forward",

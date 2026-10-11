@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { FaultAuditStore } from './store'
 import type { FaultNotice } from '@ompiui/protocol'
+import { desktopDiagnosticsStore } from '../../store/desktopDiagnosticsStore'
 
 const persistence = vi.hoisted(() => ({ save: vi.fn(), read: vi.fn() }))
 vi.mock('./storage', () => ({
@@ -46,6 +47,24 @@ describe('local fault reports', () => {
     expect(store.getSnapshot().error).toBe('MCLOG_UPLOAD_HTTP_503')
     expect(store.getSnapshot().saved?.report.content).toBe(before)
     expect(store.getSnapshot().uploading).toBe(false)
+  })
+
+  it('includes desktop launch timing offline without exporting native output or error text', () => {
+    desktopDiagnosticsStore.receive({
+      revision: 3, phase: 'failed', requestedAt: 1000, spawnedAt: null, completedAt: 2000,
+      pid: null, error: 'PRIVATE_ERROR', output: ['PRIVATE_OUTPUT'],
+      events: [{ time: 1000, phase: 'preparing' }, { time: 2000, phase: 'failed' }],
+      reachable: false, workerReady: null, healthError: 'unreachable',
+    })
+    desktopDiagnosticsStore.finish('PRIVATE_COMMAND_ERROR')
+    const store = new FaultAuditStore(false)
+    store.detect(fault, 'local')
+    const content = store.getSnapshot().saved!.report.content
+    expect(content).toContain('Desktop startup (metadata only)')
+    expect(content).toContain('"requestedAt":1000')
+    expect(content).toContain('"commandFailed":true')
+    expect(content).not.toContain('PRIVATE_')
+    desktopDiagnosticsStore.finish()
   })
 
   it('records failed collection, can collect again after reconnecting and persists successful links', async () => {

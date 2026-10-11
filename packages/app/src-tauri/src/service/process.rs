@@ -186,17 +186,24 @@ pub(super) async fn request_graceful_shutdown(url: &str, token: Option<&str>) ->
 
 #[cfg(target_os = "windows")]
 pub(super) fn is_process_alive(pid: u32) -> bool {
-    use std::os::windows::process::CommandExt;
-    let mut command = Command::new("tasklist");
-    command
-        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-        .creation_flags(0x08000000);
-    command
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).contains(&format!("\",\"{pid}\",")))
-        .unwrap_or(false)
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, WAIT_TIMEOUT},
+        System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE},
+    };
+    if pid == 0 {
+        return false;
+    }
+    // 只查询指定 PID；tasklist 依赖系统管理服务，实机会阻塞数分钟。
+    // 进程退出时句柄变为有信号，零超时等待不会阻塞启动线程。
+    unsafe {
+        let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+        if handle.is_null() {
+            return GetLastError() == ERROR_ACCESS_DENIED;
+        }
+        let alive = WaitForSingleObject(handle, 0) == WAIT_TIMEOUT;
+        CloseHandle(handle);
+        alive
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
