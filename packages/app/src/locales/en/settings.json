@@ -155,6 +155,8 @@
     "remoteNoNetwork": "No network address available",
     "remoteServerPortDesc": "Reported by the current backend, not this device's local settings.",
     "remotePortUnavailable": "The server did not report a listening port. LAN QR pairing is unavailable. Use the known server address or update the server.",
+    "remoteHostUnavailable": "The server did not report its listening address. LAN pairing cannot be verified; update the server.",
+    "remoteLanNotListening": "The server listens on {{host}}, not the selected LAN adapter. Set OMPIUI_HOST to 0.0.0.0 on the server and restart it. For the local desktop service, use Service > Network listening. Check that the firewall allows access.",
     "remoteRelayManageHint": "No relay configured on this backend. Configure it on the server or in OMPiUI Admin, then restart the service.",
     "remoteQrUnavailable": "QR code unavailable",
     "remotePairUnavailable": "Pairing needs a reachable server address and an active code.",

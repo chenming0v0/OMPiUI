@@ -411,7 +411,8 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
       if (method === "GET" && p === "/api/v1/host/network") {
         const address = server.address()
         const port = address && typeof address === "object" ? address.port : options.share?.port
-        return sendJson(res, 200, { interfaces: listLanInterfaces(), ...(port ? { port } : {}) })
+        const host = address && typeof address === "object" ? address.address : undefined
+        return sendJson(res, 200, { interfaces: listLanInterfaces(), ...(port ? { port } : {}), ...(host ? { host } : {}) })
       }
 
       if (method === "GET" && p === "/api/v1/host/pair/invite" && options.pairing) {

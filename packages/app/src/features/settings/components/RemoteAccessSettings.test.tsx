@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { LanInterfaceInfo, PairInviteInfo, TunnelStatus } from '@ompiui/protocol'
+import type { HostNetworkInfo, PairInviteInfo, TunnelStatus } from '@ompiui/protocol'
 import { serviceStore } from '../../../store/serviceStore'
 import { RemoteAccessSettings } from './RemoteAccessSettings'
 import i18n from '../../../i18n'
@@ -33,9 +33,9 @@ vi.mock('../../../omp/transport/index.js', () => ({
 // Observe the exact payload given to the QR encoder, not its SVG internals.
 vi.mock('../../../components/QrCode', () => ({ QrCode: ({ text }: { text: string }) => <div data-testid="qr" data-url={text} /> }))
 
-type Network = { interfaces: LanInterfaceInfo[]; port?: number }
+type Network = HostNetworkInfo
 const network = (address = '192.168.50.10', port = 9191): Network => ({
-  interfaces: [{ name: 'Ethernet', address, tailscale: false }], port,
+  interfaces: [{ name: 'Ethernet', address, tailscale: false }], port, host: '0.0.0.0',
 })
 const invite = (id = 'first'): PairInviteInfo => ({ id, pair: `${id}.secret`, code: '12345678', expiresAt: Date.now() + 600_000, redeemed: false })
 const disabledTunnel: TunnelStatus = { enabled: false, state: 'disabled', publicUrl: null, relayUrl: null, tunnelId: null, lastError: null, reconnectAttempts: 0 }
@@ -64,6 +64,67 @@ beforeEach(async () => {
 afterEach(async () => { cleanup(); await i18n.changeLanguage('en') })
 
 describe('RemoteAccessSettings authoritative addresses', () => {
+  it.each(['127.0.0.1', '::1', '::ffff:127.0.0.1', '192.168.50.99'])('blocks a LAN QR when the listener does not serve the selected adapter: %s', async host => {
+    mocks.network.mockResolvedValue({ ...network(), host })
+    render(<RemoteAccessSettings />)
+    expect(await screen.findByText('QR code unavailable')).toBeInTheDocument()
+    expect(screen.getAllByText(/not the selected LAN adapter/)).toHaveLength(2)
+    expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Copy full pairing info' })).toBeDisabled()
+    expect(serviceStore.envVarsRecord).not.toHaveProperty('OMPIUI_HOST')
+  })
+
+  it.each(['0.0.0.0', '::', '192.168.50.10', '::ffff:192.168.50.10'])('allows a LAN QR for a matching listener: %s', async host => {
+    mocks.network.mockResolvedValue({ ...network(), host })
+    render(<RemoteAccessSettings />)
+    expect(await screen.findByTestId('qr')).toHaveAttribute('data-url', 'http://192.168.50.10:9191/?pair=first.secret')
+  })
+
+  it('does not assume older servers without a listener address allow LAN access', async () => {
+    mocks.network.mockResolvedValue({ ...network(), host: undefined })
+    render(<RemoteAccessSettings />)
+    expect(await screen.findByText('QR code unavailable')).toBeInTheDocument()
+    expect(screen.getAllByText(/did not report its listening address/)).toHaveLength(2)
+    expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
+  })
+
+  it('refreshes the listener after LAN access is enabled on the server', async () => {
+    mocks.network.mockResolvedValueOnce({ ...network(), host: '127.0.0.1' })
+    render(<RemoteAccessSettings />)
+    await screen.findByText('QR code unavailable')
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    expect(await screen.findByTestId('qr')).toHaveAttribute('data-url', 'http://192.168.50.10:9191/?pair=first.secret')
+    expect(screen.queryByText(/not the selected LAN adapter/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Copy full pairing info' })).toBeEnabled()
+  })
+
+  it('blocks an adapter that does not match a specific listener after selection changes', async () => {
+    mocks.network.mockResolvedValue({
+      ...network(), host: '192.168.50.10',
+      interfaces: [
+        ...network().interfaces,
+        { name: 'Other adapter', address: '172.31.48.1', tailscale: false },
+      ],
+    })
+    render(<RemoteAccessSettings />)
+    await screen.findByTestId('qr')
+    fireEvent.change(screen.getByRole('combobox', { name: 'Network adapter' }), { target: { value: '172.31.48.1' } })
+    expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Copy full pairing info' })).toBeDisabled()
+  })
+
+  it('renders Chinese adapter names and the loopback listener warning', async () => {
+    await i18n.changeLanguage('zh-CN')
+    mocks.network.mockResolvedValue({
+      ...network(), host: '127.0.0.1',
+      interfaces: [{ name: '以太网', address: '192.168.50.10', tailscale: false }],
+    })
+    render(<RemoteAccessSettings />)
+    expect(await screen.findByRole('option', { name: '以太网 · 192.168.50.10' })).toBeInTheDocument()
+    expect(screen.getAllByText(/未开放所选网卡的局域网访问/)).toHaveLength(2)
+    expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
+  })
+
   it('uses the embedded Tailnet listener rather than a system network adapter', async () => {
     mocks.get.mockReturnValue('tailscale')
     mocks.network.mockResolvedValue({ interfaces: [] })

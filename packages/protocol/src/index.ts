@@ -103,6 +103,13 @@ export type LanInterfaceInfo = {
   tailscale: boolean
 }
 
+export type HostNetworkInfo = {
+  interfaces: LanInterfaceInfo[]
+  port?: number
+  /** 服务端实际绑定的地址；旧版服务端可能不提供。 */
+  host?: string
+}
+
 /** 内嵌 Tailscale 节点状态（GET /api/v1/host/tailscale）。 */
 export type TailscaleInfo = {
   platform: string
