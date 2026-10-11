@@ -200,13 +200,13 @@ describe('selectPiTimelineItems live/persisted key handover', () => {
     expect(persisted?.renderKey).toBe('live-a1')
   })
 
-  it('still renders a persisting live row while its entry is not yet visible', () => {
+  it.each(['streaming', 'persisting'] as const)('renders the %s live row until its entry is visible', phase => {
     const branch = branchWith({
       position: { epoch: 'epoch-1', sequence: 3 },
       liveMessage: {
         id: 'live-a1',
         revision: 3,
-        phase: 'persisting',
+        phase,
         message: {
           role: 'assistant',
           content: [{ type: 'text', text: 'done' }],
@@ -220,6 +220,9 @@ describe('selectPiTimelineItems live/persisted key handover', () => {
       },
     })
     const items = selectPiTimelineItems(branch)
-    expect(items.some(i => i.kind === 'assistant_message' && i.entryId === 'live-a1' && i.isStreaming)).toBe(true)
+    expect(items.find(i => i.kind === 'assistant_message' && i.entryId === 'live-a1')).toMatchObject({
+      blocks: [{ type: 'text', text: 'done' }],
+      isStreaming: phase === 'streaming',
+    })
   })
 })
