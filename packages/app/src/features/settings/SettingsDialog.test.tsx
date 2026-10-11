@@ -46,8 +46,8 @@ vi.mock('./components/ServersSettings', () => ({
   ),
 }))
 vi.mock('./components/AuthenticationSettings', () => ({
-  AuthenticationSettings: ({ onAuthenticated }: { onAuthenticated?: () => void }) => (
-    <div data-setting-label="Authentication"><button type="button" onClick={onAuthenticated}>Complete authentication</button></div>
+  AuthenticationSettings: ({ onPaired }: { onPaired?: () => void }) => (
+    <div data-setting-label="Authentication"><button type="button" onClick={onPaired}>Complete authentication</button></div>
   ),
 }))
 vi.mock('./components/TrafficAuditSettings', () => ({
@@ -115,7 +115,7 @@ describe('SettingsDialog search', () => {
     expect(screen.queryByText('Service content')).not.toBeInTheDocument()
   })
 
-  it('puts mobile authentication immediately right of Servers and opens a new connection after success', async () => {
+  it('puts mobile authentication immediately right of Servers and shows the server list after pairing', async () => {
     tauriState.mobile = true
     tauriState.smallScreen = true
     render(<SettingsDialog isOpen onClose={vi.fn()} />)
@@ -126,7 +126,7 @@ describe('SettingsDialog search', () => {
     fireEvent.click(tabs[1])
     fireEvent.click(screen.getByRole('button', { name: 'Complete authentication' }))
     expect(screen.getByRole('tab', { name: 'Servers' })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByLabelText('New connection')).toBeInTheDocument()
+    expect(screen.queryByLabelText('New connection')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('tab', { name: 'Authentication' }))
     fireEvent.click(screen.getByRole('tab', { name: 'Servers' }))
     expect(screen.queryByLabelText('New connection')).not.toBeInTheDocument()

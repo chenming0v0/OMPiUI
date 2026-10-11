@@ -28,7 +28,17 @@
   },
   "authentication": {
     "title": "认证",
-    "addConnection": "添加服务器连接"
+    "addConnection": "添加服务器连接",
+    "pairingInfo": "配对信息",
+    "pairingPlaceholder": "粘贴完整配对链接或连接分享信息",
+    "connect": "配对连接",
+    "connected": "配对成功，已连接服务器",
+    "invalidLink": "未找到有效的配对链接或连接分享链接。",
+    "scan": "扫码配对",
+    "scanPrompt": "扫描电脑端的配对二维码",
+    "scanUnavailable": "当前安装包不支持扫码，请更新手机端或粘贴配对链接。",
+    "scanPermissionDenied": "未获得相机权限，请在系统设置中允许使用相机，或粘贴配对链接。",
+    "scanFailed": "无法启动相机扫码，请重试或粘贴配对链接。"
   },
   "traffic": {
     "scopeShort": "本机客户端 · HTTP / WebSocket 载荷",

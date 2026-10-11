@@ -121,10 +121,9 @@ const GROUP_DEFS: { labelKey: string; tabs: SettingsTab[] }[] = [
 // Tab Content Router
 // ============================================
 
-function TabContent({ tab, addConnection, onAuthenticated }: {
+function TabContent({ tab, onPaired }: {
   tab: SettingsTab
-  addConnection: boolean
-  onAuthenticated?: () => void
+  onPaired?: () => void
 }) {
   switch (tab) {
     case 'agent':
@@ -140,9 +139,9 @@ function TabContent({ tab, addConnection, onAuthenticated }: {
     case 'config':
       return <PiManagementSettings />
     case 'servers':
-      return <ServersSettings initialAddingServer={addConnection} />
+      return <ServersSettings />
     case 'authentication':
-      return <AuthenticationSettings onAuthenticated={onAuthenticated} />
+      return <AuthenticationSettings onPaired={onPaired} />
     case 'traffic':
       return <TrafficAuditSettings />
     case 'service':
@@ -175,7 +174,6 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
     return next
   }, [])
   const [tab, setTab] = useState<SettingsTab>(normalizeTab(initialTab))
-  const [addConnection, setAddConnection] = useState(false)
 
   const visibleTabIds = useMemo(
     () => (isMobile ? TAB_IDS : GROUP_DEFS.flatMap(group => group.tabs))
@@ -228,7 +226,6 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
 
     const frameId = requestAnimationFrame(() => {
       const next = normalizeTab(initialTab)
-      setAddConnection(false)
       setTab(next)
     })
 
@@ -276,16 +273,14 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
 
   // 切换 tab 时重置滚动位置
   const switchTab = useCallback((nextTab: SettingsTab) => {
-    setAddConnection(false)
     setTab(nextTab)
     requestAnimationFrame(() => {
       scrollRef.current?.scrollTo({ top: 0 })
     })
   }, [])
 
-  const handleAuthenticated = useCallback(() => {
+  const handlePaired = useCallback(() => {
     switchTab('servers')
-    setAddConnection(true)
   }, [switchTab])
 
   const selectSearchItem = useCallback(
@@ -425,7 +420,7 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
           >
             {/* key 按 tab 重挂载：单个面板崩溃只降级当前页，不拖垮整个应用 */}
             <ErrorBoundary key={tab}>
-              <TabContent tab={tab} addConnection={addConnection} onAuthenticated={handleAuthenticated} />
+              <TabContent tab={tab} onPaired={handlePaired} />
             </ErrorBoundary>
           </div>
         </div>
@@ -523,7 +518,7 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
         >
           {/* key 按 tab 重挂载：单个面板崩溃只降级当前页，不拖垮整个应用 */}
           <ErrorBoundary key={tab}>
-            <TabContent tab={tab} addConnection={addConnection} onAuthenticated={nativeMobile ? handleAuthenticated : undefined} />
+            <TabContent tab={tab} onPaired={nativeMobile ? handlePaired : undefined} />
           </ErrorBoundary>
         </div>
       </div>

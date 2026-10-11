@@ -24,6 +24,7 @@ class MainActivity : TauriActivity() {
   private var themeSyncRunnable: Runnable? = null
   private var cachedWebView: WebView? = null
   private var tailscaleBridge: TailscaleBridge? = null
+  private val qrScannerBridge = QrScannerBridge(this) { cachedWebView }
 
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
@@ -299,6 +300,7 @@ class MainActivity : TauriActivity() {
   private fun ensureJsBridge(webView: WebView) {
     try {
       webView.addJavascriptInterface(SystemBarBridge(), "__ompiui_android")
+      webView.addJavascriptInterface(qrScannerBridge, "__ompiui_qr_scanner")
       if (tailscaleBridge == null) {
         val bridge = TailscaleBridge(applicationContext, webView)
         tailscaleBridge = bridge
