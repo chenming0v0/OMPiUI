@@ -108,6 +108,83 @@ describe('tool completion during assistant streaming', () => {
     })
   })
 
+  it('adopts the final message immediately instead of leaving the last partial tool streaming', () => {
+    event('message_update', 3, {
+      message: {
+        role: 'assistant',
+        content: [{ type: 'toolCall', id: 'discarded-write', name: 'write', arguments: {} }],
+      },
+    })
+    event('message_end', 4, {
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Final reply' }] },
+    })
+
+    const data = piBranchStore.getData('session-stream')!
+    expect(data.checkpoint?.liveMessage).toMatchObject({
+      phase: 'persisting', message: { content: [{ type: 'text', text: 'Final reply' }] },
+    })
+    expect(data.checkpoint?.position).toEqual({ epoch: 'events', sequence: 4 })
+    expect(selectPiTimelineItems(data).find(item => item.entryId === 'thinking')).toMatchObject({
+      kind: 'assistant_message', isStreaming: false,
+    })
+  })
+
+  it('does not revive a completed tool when a delayed history response contains its partial arguments', async () => {
+    const response = deferred<PiBranchPage>()
+    vi.spyOn(transport, 'getPiBranchPage').mockReturnValueOnce(response.promise)
+    const partial = {
+      role: 'assistant',
+      content: [{ type: 'toolCall', id: 'eval-call', name: 'eval', arguments: {} }],
+    }
+    event('message_update', 3, { message: partial })
+    const refreshing = refreshPiBranch('session-stream')
+    event('message_end', 4, {
+      message: {
+        ...partial,
+        content: [{ type: 'toolCall', id: 'eval-call', name: 'eval', arguments: { code: 'print(200)' } }],
+      },
+    })
+    const latest = branch(true)
+    latest.checkpoint = {
+      position: { epoch: 'events', sequence: 3 },
+      liveMessage: { id: 'thinking', revision: 3, phase: 'streaming', message: partial },
+    } as PiBranchPage['checkpoint']
+    response.resolve(latest)
+    await refreshing
+
+    const data = piBranchStore.getData('session-stream')!
+    const assistants = selectPiTimelineItems(data).filter(item => item.kind === 'assistant_message')
+    expect(assistants).toHaveLength(1)
+    expect(assistants[0].toolResults['eval-call']).toMatchObject({ isError: false })
+    expect(assistants[0].isStreaming).not.toBe(true)
+  })
+
+  it('does not replace newer assistant thinking with a concurrent tool result', () => {
+    thinking(4, 'Continuing the next step')
+    const checkpoint = piBranchStore.getData('session-stream')!.checkpoint
+    event('message_end', 5, {
+      message: {
+        role: 'toolResult', toolCallId: 'eval-call', toolName: 'eval',
+        content: [{ type: 'text', text: 'done' }], isError: false,
+      },
+    })
+
+    expect(piBranchStore.getData('session-stream')!.checkpoint).toBe(checkpoint)
+  })
+
+  it('keeps the live user message visible until its persisted entry is loaded', () => {
+    event('message_start', 3, {
+      message: { role: 'user', content: 'Continue' },
+    })
+    event('message_end', 4, {
+      message: { role: 'user', content: 'Continue' },
+    })
+
+    expect(selectPiTimelineItems(piBranchStore.getData('session-stream')!).find(item => item.entryId === 'thinking')).toMatchObject({
+      kind: 'user_message', blocks: [{ type: 'text', text: 'Continue' }],
+    })
+  })
+
   it('still discards a delayed branch response after the session store is cleared', async () => {
     const response = deferred<PiBranchPage>()
     vi.spyOn(transport, 'getPiBranchPage').mockReturnValueOnce(response.promise)

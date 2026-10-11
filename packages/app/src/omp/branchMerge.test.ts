@@ -125,6 +125,100 @@ describe('mergeLatestBranchPage', () => {
     expect(selectPiTimelineItems(merged).find(item => item.entryId === 'assistant')?.renderKey).toBe('live-assistant')
   })
 
+  it('hands a partial tool call over to its persisted owner even when the arguments differ', () => {
+    const liveMessage = {
+      id: 'live-write', revision: 2, phase: 'streaming',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'toolCall', id: 'write-call', name: 'write', arguments: {} }],
+      },
+    } as PiLiveMessage
+    const current = page(['user'], {
+      checkpoint: { position: { epoch: 'events', sequence: 10 }, liveMessage },
+    })
+    const latest = page(['user', 'assistant', 'result'], {
+      checkpoint: { position: { epoch: 'events', sequence: 8 } },
+    })
+    latest.items[1] = {
+      type: 'message', id: 'assistant', parentId: 'user', timestamp: '2026-01-01T00:00:00Z',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'toolCall', id: 'write-call', name: 'write', arguments: { path: 'output.txt', content: 'done' } }],
+        api: 'openai-responses', provider: 'openai', model: 'test', timestamp: 0, stopReason: 'toolUse',
+        usage: {
+          input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+      },
+    } as SessionEntry
+    latest.items[2] = {
+      type: 'message', id: 'result', parentId: 'assistant', timestamp: '2026-01-01T00:00:00Z',
+      message: {
+        role: 'toolResult', toolCallId: 'write-call', toolName: 'write',
+        content: [{ type: 'text', text: 'written' }], isError: false,
+      },
+    } as SessionEntry
+
+    const merged = mergeLatestBranchPage(current, latest)
+    const assistants = selectPiTimelineItems(merged).filter(item => item.kind === 'assistant_message')
+
+    expect(merged.client?.stableEntryIds).toEqual({ assistant: 'live-write' })
+    expect(assistants).toHaveLength(1)
+    expect(assistants[0].toolResults['write-call']).toMatchObject({ isError: false })
+    expect(merged.checkpoint?.liveMessage).toBeUndefined()
+  })
+
+  it('uses the persisted entry identity when the final text differs from the live text', () => {
+    const liveMessage = {
+      id: 'assistant', revision: 2, phase: 'persisting',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'partial' }] },
+    } as PiLiveMessage
+    const current = page(['user'], {
+      checkpoint: { position: { epoch: 'events', sequence: 10 }, liveMessage },
+    })
+    const latest = page(['user', 'assistant'])
+    latest.items[1] = messageEntry('assistant', 'assistant', 'final')
+
+    const merged = mergeLatestBranchPage(current, latest)
+
+    expect(selectPiTimelineItems(merged).filter(item => item.kind === 'assistant_message')).toHaveLength(1)
+    expect(merged.client?.stableEntryIds).toEqual({ assistant: 'assistant' })
+    expect(merged.checkpoint?.liveMessage).toBeUndefined()
+  })
+
+  it.each([10, 12])('clears an unmatched live tool when the authoritative snapshot reaches sequence %i', sequence => {
+    const current = page(['user'], {
+      checkpoint: {
+        position: { epoch: 'events', sequence: 10 },
+        liveMessage: {
+          id: 'discarded-message', revision: 2, phase: 'streaming',
+          message: { role: 'assistant', content: [{ type: 'toolCall', id: 'discarded-write', name: 'write', arguments: {} }] },
+        } as PiLiveMessage,
+      },
+    })
+    const latest = page(['user'], { checkpoint: { position: { epoch: 'events', sequence } } })
+
+    const merged = mergeLatestBranchPage(current, latest)
+
+    expect(merged.checkpoint).toBe(latest.checkpoint)
+    expect(selectPiTimelineItems(merged).filter(item => item.kind === 'assistant_message')).toHaveLength(0)
+  })
+
+  it('keeps newer live thinking when an older snapshot has no live message', () => {
+    const current = page(['user'], {
+      checkpoint: {
+        position: { epoch: 'events', sequence: 12 },
+        liveMessage: {
+          id: 'new-thinking', revision: 1, phase: 'streaming',
+          message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'Still working' }] },
+        } as PiLiveMessage,
+      },
+    })
+    const latest = page(['user'], { checkpoint: { position: { epoch: 'events', sequence: 10 } } })
+
+    expect(mergeLatestBranchPage(current, latest).checkpoint).toBe(current.checkpoint)
+  })
+
   it('takes a newer remote live checkpoint instead of freezing local thinking', () => {
     const current = page(['a'], {
       checkpoint: {
