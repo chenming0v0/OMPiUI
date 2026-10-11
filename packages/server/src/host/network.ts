@@ -5,6 +5,7 @@
  */
 
 import { networkInterfaces } from "node:os"
+import { isUtf8 } from "node:buffer"
 
 export interface LanInterface {
   name: string
@@ -13,6 +14,16 @@ export interface LanInterface {
 }
 
 const TAILSCALE_INTERFACE_NAME = /tailscale/i
+
+export function normalizeInterfaceName(
+  name: string,
+  repairEncoding = process.platform === "win32" && Boolean(process.versions.bun),
+): string {
+  // Windows Bun 将 UTF-8 网卡名按 Latin-1 解码；只还原可无损解码的字节序列。
+  if (!repairEncoding || !/[\u0080-\u00ff]/.test(name) || /[^\u0000-\u00ff]/.test(name)) return name
+  const bytes = Buffer.from(name, "latin1")
+  return isUtf8(bytes) ? bytes.toString("utf8") : name
+}
 
 /** 100.64.0.0/10（CGNAT）段判定：Tailscale 分配的地址都在这里。 */
 export function isTailscaleAddress(address: string): boolean {
@@ -27,7 +38,8 @@ export function filterLanInterfaces(
   raw: Record<string, Array<{ family: string | number; address: string; internal: boolean } | undefined> | undefined>,
 ): LanInterface[] {
   const byAddress = new Map<string, LanInterface>()
-  for (const [name, infos] of Object.entries(raw)) {
+  for (const [rawName, infos] of Object.entries(raw)) {
+    const name = normalizeInterfaceName(rawName)
     for (const info of infos ?? []) {
       if (!info || info.internal) continue
       // Node 18+ 的 family 是数值（4/6），老版本是字符串 'IPv4'

@@ -1,6 +1,22 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
-import { filterLanInterfaces, isTailscaleAddress } from "./network.ts"
+import { filterLanInterfaces, isTailscaleAddress, normalizeInterfaceName } from "./network.ts"
+
+describe("normalizeInterfaceName", () => {
+  it("repairs Windows Bun UTF-8 names decoded as Latin-1", () => {
+    for (const name of ["以太网", "以太网 3", "无线网络"]) {
+      const broken = Buffer.from(name, "utf8").toString("latin1")
+      assert.equal(normalizeInterfaceName(broken, true), name)
+      assert.equal(normalizeInterfaceName(broken, false), broken)
+    }
+  })
+
+  it("preserves correct Unicode, ASCII and names that are not UTF-8 byte sequences", () => {
+    for (const name of ["以太网", "Mihomo", "vEthernet (WSL (Hyper-V firewall))", "Réseau", "LAN ÿ"]) {
+      assert.equal(normalizeInterfaceName(name, true), name)
+    }
+  })
+})
 
 describe("isTailscaleAddress", () => {
   it("recognizes the 100.64.0.0/10 CGNAT range", () => {
