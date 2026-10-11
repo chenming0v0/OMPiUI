@@ -1,12 +1,12 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process"
-import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { existsSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, join } from "node:path"
+import { join } from "node:path"
 import { EventEmitter } from "node:events"
 import type { JsonObject, JsonValue } from "@ompiui/protocol"
 import { isJsonObject } from "@ompiui/protocol"
 import { assertOmpTerminalStopped } from "./terminal-presence.js"
-import { managedSessionsRoot } from "./managed-sessions.js"
+import { runtimePolicyArgs } from "./runtime-policy.js"
 import { RpcLineReader } from "./rpc-line-reader.js"
 
 /**
@@ -19,13 +19,6 @@ import { RpcLineReader } from "./rpc-line-reader.js"
 export function ompCompatConfigArgs(): string[] {
   const path = join(homedir(), ".ompiui", "omp-compat.yml")
   return existsSync(path) ? ["--config", path] : []
-}
-
-function noAutoResumeArgs(): string[] {
-  const file = join(dirname(managedSessionsRoot()), "runtime-config", "no-auto-resume.yml")
-  mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
-  if (!existsSync(file)) writeFileSync(file, "autoResume: false\n", { mode: 0o600 })
-  return ["--config", file]
 }
 
 /**
@@ -89,6 +82,8 @@ export class OmpRpcClient extends EventEmitter {
   private stderrBuffer: string[] = []
   private exited = false
   private exitCode: number | null = null
+  private exitSignal: NodeJS.Signals | null = null
+  private exitReason = "unexpected_exit"
   private exitError: Error | undefined
   private readonly exitWaiter: Promise<void>
   private exitWaiterResolve: (() => void) | undefined
@@ -103,7 +98,7 @@ export class OmpRpcClient extends EventEmitter {
       const candidates = located.status === 0 ? located.stdout.trim().split(/\r?\n/) : []
       bin = candidates.find(candidate => /\.exe$/i.test(candidate)) ?? candidates[0] ?? bin
     }
-    const args = ["--mode", "rpc", ...ompCompatConfigArgs(), ...(options.protectSession ? noAutoResumeArgs() : []), ...(options.args ?? [])]
+    const args = ["--mode", "rpc", ...ompCompatConfigArgs(), ...(options.args ?? []), ...(options.protectSession ? runtimePolicyArgs() : [])]
     this.proc = spawn(bin, args, {
       cwd: options.cwd,
       env: { ...process.env, ...(process.env.OMP_AGENT_DIR ? { PI_CODING_AGENT_DIR: process.env.OMP_AGENT_DIR } : {}), ...options.env },
@@ -125,6 +120,7 @@ export class OmpRpcClient extends EventEmitter {
     })
     this.proc.on("error", error => {
       this.exitError = error
+      this.exitReason = "spawn_error"
     })
     // close 在 stdout 排空之后触发，不能在 exit 时丢掉尚未处理的最终结果。
     this.proc.on("close", (code, signal) => {
@@ -132,6 +128,7 @@ export class OmpRpcClient extends EventEmitter {
         this.stdoutReader.close()
         this.exited = true
         this.exitCode = code
+        this.exitSignal = signal
         const tail = this.stderrBuffer.join("").trim()
         if (!this.exitError) {
           this.exitError = new Error(
@@ -216,6 +213,10 @@ export class OmpRpcClient extends EventEmitter {
 
   get exitInfo(): { code: number | null; error?: Error } {
     return { code: this.exitCode, error: this.exitError }
+  }
+
+  get runtimeExitInfo(): JsonObject {
+    return { code: this.exitCode, signal: this.exitSignal, reason: this.exitReason, pid: this.pid ?? null }
   }
 
   private handleStdoutLine(line: string): void {
@@ -304,7 +305,7 @@ export class OmpRpcClient extends EventEmitter {
       try {
         await assertOmpTerminalStopped()
       } catch (error) {
-        this.kill()
+        this.kill(terminalConflictReason(error))
         throw error
       }
     }
@@ -353,13 +354,14 @@ export class OmpRpcClient extends EventEmitter {
     if (this.options.protectSession) {
       try {
         await assertOmpTerminalStopped()
-      } catch {
+      } catch (error) {
         // 终端后来启动时，不允许旧 runtime 在退出阶段回写历史。
-        this.kill()
+        this.kill(terminalConflictReason(error))
         await this.waitForExit(2_000)
         return
       }
     }
+    this.exitReason = "host_dispose"
     try {
       this.proc.stdin!.end()
     } catch {
@@ -367,16 +369,13 @@ export class OmpRpcClient extends EventEmitter {
     }
     await this.waitForExit(10_000)
     if (!this.exited) {
-      try {
-        this.proc.kill()
-      } catch {
-        /* best effort */
-      }
+      this.kill("graceful_close_timeout")
       await this.waitForExit(2_000)
     }
   }
 
-  kill(): void {
+  kill(reason = "forced_stop"): void {
+    this.exitReason = reason
     try {
       if (process.platform === "win32" && this.proc.pid) {
         spawn("taskkill", ["/pid", String(this.proc.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true })
@@ -412,6 +411,11 @@ export class OmpRpcClient extends EventEmitter {
       this.chunks.delete(chunkId)
     }
   }
+}
+
+export function terminalConflictReason(error: unknown): string {
+  return error && typeof error === "object" && "reason" in error && error.reason === "terminal_running"
+    ? "terminal_running" : "terminal_probe_failed"
 }
 
 /** 解析 OMP RPC 响应：success=false 时抛 OmpRpcError（带 code） */

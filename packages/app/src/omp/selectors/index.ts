@@ -282,7 +282,7 @@ export function buildPiLiveItems(branch: PiBranchPage): PiTimelineItem[] {
       message,
       blocks: message.content,
       toolResults: {},
-      isStreaming: true,
+      isStreaming: live.phase === 'streaming',
     })
   }
 

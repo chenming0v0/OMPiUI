@@ -58,6 +58,19 @@ class PiBranchStore {
     this.notify()
   }
 
+  /** 保留崩溃前收到的正文，但停止流式动画，旧的历史响应不能再将它变回运行中。 */
+  settleLiveMessage(sessionId: string): void {
+    const entry = this.bySessionId.get(sessionId)
+    const checkpoint = entry?.data?.checkpoint
+    const liveMessage = checkpoint?.liveMessage
+    if (!entry?.data || !checkpoint || liveMessage?.phase !== 'streaming') return
+    entry.requestVersion = ++this.nextVersion
+    entry.data = {
+      ...entry.data, checkpoint: { ...checkpoint, liveMessage: { ...liveMessage, phase: 'persisting' } },
+    }
+    this.notify()
+  }
+
   beginRequest(sessionId: string): number {
     const entry = this.entry(sessionId)
     entry.requestVersion = ++this.nextVersion

@@ -1,46 +1,8 @@
 import { randomUUID } from "node:crypto"
-import { appendFileSync, mkdirSync } from "node:fs"
-import { homedir } from "node:os"
-import { join, resolve } from "node:path"
+import { resolve } from "node:path"
+import { installWorkerFileLogging } from "./worker-logger.js"
 
-// worker 的 stderr 是 inherit 到 server 的：桌面壳（Tauri）只保留最近 24
-// 行内存缓冲，进程退出后全丢。这里把 worker 自己的 stderr 也追加写到
-// 和 server 相同的日志目录，崩溃后可回溯（server 侧的 handleExit 日志在
-// server 进程里写，worker 进程内的 uncaughtException 等在这里写）。
-function wireWorkerStderrFileLog(): void {
-  if (process.env.OMPIUI_FILE_LOG === "0") return
-  let logDir: string | undefined
-  const day = () => new Date().toISOString().slice(0, 10)
-  let file: string | undefined
-  let currentDay = ""
-  const write = (chunk: string) => {
-    try {
-      if (!file || currentDay !== day()) {
-        currentDay = day()
-        if (!logDir) {
-          const env = process.env.OMPIUI_DATA_DIR?.trim()
-          logDir = env
-            ? resolve(env)
-            : process.platform === "win32" && process.env.APPDATA
-              ? join(process.env.APPDATA, "com.ompiui.desktop")
-              : join(homedir(), ".ompiui")
-          logDir = join(logDir, "logs")
-          mkdirSync(logDir, { recursive: true })
-        }
-        file = join(logDir!, `ompiui-server-${currentDay}.log`)
-      }
-      appendFileSync(file, `[${new Date().toISOString()}] ${chunk}`)
-    } catch {
-      /* 磁盘/权限问题不阻塞 */
-    }
-  }
-  const orig = process.stderr.write.bind(process.stderr)
-  process.stderr.write = ((chunk: unknown, ...rest: unknown[]) => {
-    if (typeof chunk === "string") write(chunk)
-    return orig(chunk as never, ...(rest as never[]))
-  }) as typeof process.stderr.write
-}
-wireWorkerStderrFileLog()
+installWorkerFileLogging()
 
 import type { JsonObject, JsonValue, PiRegistrySnapshot } from "@ompiui/protocol"
 import { isJsonObject, problemFromError, PROTOCOL_VERSION, validateParams } from "@ompiui/protocol"
@@ -205,7 +167,7 @@ function subscribeRuntimeEvents(current: SessionRuntime): Array<() => void> {
       console.error(`[omp-worker] omp rpc process crashed for session ${current.getSessionId()}: ${error.message}${stderr ? `\n[omp-worker] omp stderr: ${stderr.slice(-1500)}` : ""}`)
       send({
         kind: "event", generation: workerGeneration, sessionId: current.getSessionId(),
-        channel: "session.crashed", event: { message: error.message },
+        channel: "session.crashed", event: { message: error.message, runtimeExit: current.runtimeExitInfo },
       })
       void closeRuntime(current.getSessionId()).catch(error => console.error("[omp-worker] crashed runtime cleanup failed", error))
     }))

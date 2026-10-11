@@ -213,7 +213,14 @@ export class SessionHost {
     session.worker.onEvent(event => this.routeSessionEvent(session, event))
     session.worker.onCrash(error => {
       if (this.runtimes.get(session.sessionId) !== session) return
-      diagnostics.record("session.crashed", { sessionId: session.sessionId, errorCode: diagnosticErrorCode(error) }, "error")
+      const runtimeExit = "runtimeExit" in error && isJsonObject(error.runtimeExit) ? error.runtimeExit : undefined
+      diagnostics.record("session.crashed", {
+        sessionId: session.sessionId, errorCode: diagnosticErrorCode(error),
+        workerPid: typeof runtimeExit?.pid === "number" ? runtimeExit.pid : undefined,
+        code: typeof runtimeExit?.code === "number" ? runtimeExit.code : undefined,
+        signal: typeof runtimeExit?.signal === "string" ? runtimeExit.signal : undefined,
+        reason: typeof runtimeExit?.reason === "string" ? runtimeExit.reason : undefined,
+      }, "error")
       const fault = diagnostics.recentFaults().at(-1)
       this.executor.markRuntimeCrashed(session.sessionId)
       this.runtimes.delete(session.sessionId)

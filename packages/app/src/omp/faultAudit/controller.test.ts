@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const network = vi.hoisted(() => ({ fetch: vi.fn(), onServerChange: vi.fn(), generation: 1 }))
+const refresh = vi.hoisted(() => ({ state: vi.fn(), branch: vi.fn() }))
+vi.mock('../controllers/index.js', () => ({ refreshPiSessionState: refresh.state, refreshPiBranch: refresh.branch }))
 vi.mock('../httpClient', () => ({ getApiBase: () => '', piFetch: network.fetch }))
 vi.mock('../../store/serverStore', () => ({
   serverStore: {
@@ -21,6 +23,8 @@ describe('fault audit integration', () => {
     network.fetch.mockReset()
     network.onServerChange.mockReturnValue(() => {})
     network.generation = 1
+    refresh.state.mockReset().mockResolvedValue(undefined)
+    refresh.branch.mockReset().mockResolvedValue(undefined)
   })
   afterEach(() => { stop?.(); stop = undefined; vi.useRealTimers() })
 
@@ -46,6 +50,31 @@ describe('fault audit integration', () => {
     await vi.advanceTimersByTimeAsync(60_000)
     expect(faultAuditStore.getSnapshot().saved).toBeUndefined()
     expect(network.fetch.mock.calls.some(([url]) => String(url).endsWith('/host/health'))).toBe(true)
+  })
+
+  it('refreshes authoritative state and history when polling finds a crash missed by the socket', async () => {
+    const notice = { id: 'missed-crash', kind: 'runtime_crashed', time: new Date().toISOString(), sessionId: 'session-mobile' }
+    network.fetch.mockImplementation((url: string) => Promise.resolve(new Response(JSON.stringify(
+      url.endsWith('/diagnostics/status')
+        ? { runId: 'run-a', version: 'test', faults: [notice], activeSessionIds: [] }
+        : { content: 'crash metadata', complete: true, files: 1, unavailable: [] },
+    ))))
+    const { startFaultAudit } = await import('./controller')
+    stop = startFaultAudit()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(refresh.state).toHaveBeenCalledWith('session-mobile')
+    expect(refresh.branch).toHaveBeenCalledWith('session-mobile')
+    expect(refresh.state).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not apply a late fault refresh to a different server', async () => {
+    network.fetch.mockResolvedValue(new Response(JSON.stringify({ content: '', complete: true, files: 0, unavailable: [] })))
+    const { reportRuntimeCrash } = await import('./controller')
+    reportRuntimeCrash('old-server-session')
+    network.generation += 1
+    await vi.advanceTimersByTimeAsync(0)
+    expect(refresh.state).not.toHaveBeenCalled()
+    expect(refresh.branch).not.toHaveBeenCalled()
   })
 
   it('keeps an offline client report and fills it after the same server reconnects', async () => {

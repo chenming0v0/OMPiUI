@@ -50,7 +50,7 @@ export async function listOmpProcesses(): Promise<OmpProcess[]> {
 
 export function assertTerminalInventory(items: OmpProcess[]): void {
   if (items.some(isOmpTerminalProcess)) {
-    throw Object.assign(new Error("OMP terminal is still running. You can view its history, but must exit OMP in the terminal before continuing this session in OMPiUI."), { code: "SESSION_BUSY" })
+    throw Object.assign(new Error("OMP terminal is still running. You can view its history, but must exit OMP in the terminal before continuing this session in OMPiUI."), { code: "SESSION_BUSY", reason: "terminal_running" })
   }
 }
 
@@ -60,7 +60,7 @@ let pending: Promise<void> | undefined
 export function assertOmpTerminalStopped(): Promise<void> {
   pending ??= listOmpProcesses().then(assertTerminalInventory).catch(error => {
     if (error?.code === "SESSION_BUSY") throw error
-    throw Object.assign(new Error("Cannot verify that the OMP terminal has exited. Session writes are blocked; history remains available."), { code: "SESSION_BUSY" })
+    throw Object.assign(new Error("Cannot verify that the OMP terminal has exited. Session writes are blocked; history remains available."), { code: "SESSION_BUSY", reason: "terminal_probe_failed" })
   }).finally(() => { pending = undefined })
   return pending
 }

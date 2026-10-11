@@ -255,6 +255,7 @@ class WorkerHostCore {
         if (message.channel === "session.crashed") {
           handle?.dispatchCrash(Object.assign(new Error(String(message.event.message ?? "OMP runtime crashed")), {
             code: "SESSION_RUNTIME_CRASHED",
+            runtimeExit: message.event.runtimeExit,
           }))
         } else {
           handle?.dispatchEvent(message)

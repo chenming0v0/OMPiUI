@@ -59,6 +59,31 @@ describe('ompSubagentStore HUD', () => {
     expect(selectHudRuns(ompSubagentStore.getSnapshot()).some(run => run.id === 'snap-2')).toBe(false)
   })
 
+  it('settles missing runs and their live tools after an authoritative idle reconnect', () => {
+    ompSubagentStore.applyLifecycle('session-a', { id: 'lost', status: 'started', detached: true })
+    ompSubagentStore.applyProgress('session-a', { id: 'lost', progress: { status: 'running' } })
+    ompSubagentStore.applyEvent('session-a', {
+      id: 'lost', event: { type: 'tool_execution_start', toolCallId: 'lost-read', toolName: 'read' },
+    })
+    ompSubagentStore.applyLifecycle('session-a', { id: 'finished', status: 'completed' })
+    ompSubagentStore.applyLifecycle('session-b', { id: 'other', status: 'started', detached: true })
+    ompSubagentStore.applySnapshot('session-a', [], true)
+    expect(ompSubagentStore.runsForSession('session-a').find(run => run.id === 'lost')).toMatchObject({
+      status: 'aborted', progress: { status: 'aborted' },
+      transcript: [{ toolCallId: 'lost-read', toolStatus: 'error', streaming: false }],
+    })
+    expect(ompSubagentStore.runsForSession('session-a').find(run => run.id === 'finished')?.status).toBe('completed')
+    expect(ompSubagentStore.runsForSession('session-b')[0]?.status).toBe('running')
+  })
+
+  it('does not stop present detached agents or infer failure from a partial busy snapshot', () => {
+    ompSubagentStore.applyLifecycle('session-a', { id: 'active', status: 'started', detached: true })
+    ompSubagentStore.applySnapshot('session-a', [])
+    expect(ompSubagentStore.runsForSession('session-a')[0]?.status).toBe('running')
+    ompSubagentStore.applySnapshot('session-a', [{ id: 'active', status: 'running', detached: true }], true)
+    expect(ompSubagentStore.runsForSession('session-a')[0]?.status).toBe('running')
+  })
+
   it('accepts the official progress.id identity without requiring an outer id', () => {
     ompSubagentStore.applyLifecycle('session-a', { id: 'native-progress', parentToolCallId: 'call-native', status: 'started', index: 0 })
     ompSubagentStore.applyProgress('session-a', {

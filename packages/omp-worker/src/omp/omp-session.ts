@@ -16,7 +16,7 @@ import { normalizeCwd, readChildSessionMessages, resolveUserPath } from "./omp-c
 import { OmpExtensionUiBridge } from "./omp-extension-ui.js"
 import { OMP_SDK_VERSION } from "./constants.js"
 import { detectOmpVersion, isOmpVersionSupported, ompTooOldError } from "./omp-version.js"
-import { OmpRpcClient, OmpRpcError, unwrapResponse, type OmpRpcFrame } from "./rpc-client.js"
+import { OmpRpcClient, OmpRpcError, terminalConflictReason, unwrapResponse, type OmpRpcFrame } from "./rpc-client.js"
 import { assertOmpSessionFile, backupOmpSession } from "./managed-sessions.js"
 import { assertOmpTerminalStopped } from "./terminal-presence.js"
 import { SubagentEventBuffer } from "./subagent-event-buffer.js"
@@ -229,16 +229,16 @@ export class OmpRpcSession implements SessionRuntime {
       await Promise.all([this.refreshModels(), this.refreshThinkingLevels(), this.refreshAvailableCommands()])
       await this.syncEntriesNow()
       this.terminalWatch = setInterval(() => {
-        void assertOmpTerminalStopped().catch(() => {
+        void assertOmpTerminalStopped().catch(error => {
           if (this.closed) return
           if (this.terminalWatch) clearInterval(this.terminalWatch)
-          this.client.kill()
+          this.client.kill(terminalConflictReason(error))
         })
       }, 1_000)
       this.terminalWatch.unref()
     } catch (error) {
       // 启动中途失败：杀掉子进程，避免留下孤儿 omp 进程
-      this.client.kill()
+      this.client.kill("startup_failed")
       throw error
     }
   }
@@ -1566,6 +1566,10 @@ export class OmpRpcSession implements SessionRuntime {
   /** 崩溃诊断用：omp 子进程 stderr 末尾 */
   get stderrTail(): string {
     return this.client?.stderrTail ?? ""
+  }
+
+  get runtimeExitInfo(): JsonObject {
+    return this.client.runtimeExitInfo
   }
 
   getSessionId(): string {
