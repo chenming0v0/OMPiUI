@@ -1,5 +1,6 @@
 import { applyLocalServerConfig } from '../store/serverStore'
 import { serviceStore } from '../store/serviceStore'
+import { desktopDiagnosticsStore, type DesktopServiceDiagnostics } from '../store/desktopDiagnosticsStore'
 
 export interface DesktopServiceStatus {
   running: boolean
@@ -45,7 +46,12 @@ async function withOperation<T>(operation: () => Promise<T>): Promise<T> {
   pendingOperations += 1
   serviceStore.setStarting(true)
   try {
-    return await operation()
+    const result = await operation()
+    desktopDiagnosticsStore.finish()
+    return result
+  } catch (error) {
+    desktopDiagnosticsStore.finish(error)
+    throw error
   } finally {
     pendingOperations -= 1
     serviceStore.setStarting(pendingOperations > 0)
@@ -57,10 +63,16 @@ export async function refreshDesktopServiceStatus(): Promise<DesktopServiceStatu
   return applyStatus(await invoke<DesktopServiceStatus>('get_ompiui_service_status', environmentArgs()))
 }
 
+export async function readDesktopServiceDiagnostics(): Promise<DesktopServiceDiagnostics> {
+  const invoke = await getInvoke()
+  return invoke<DesktopServiceDiagnostics>('get_ompiui_service_diagnostics', environmentArgs())
+}
+
 async function startOrRestartDesktopService(
   command: 'start_ompiui_service' | 'restart_ompiui_service',
 ): Promise<DesktopServiceStartOutcome> {
   return withOperation(async () => {
+    desktopDiagnosticsStore.begin('preparing')
     const invoke = await getInvoke()
     const result = await invoke<DesktopServiceStartResult>(command, environmentArgs())
     if (!result.url || !result.token) {
@@ -83,6 +95,7 @@ export function restartDesktopService(): Promise<DesktopServiceStartOutcome> {
 
 export function stopDesktopService(): Promise<DesktopServiceStatus> {
   return withOperation(async () => {
+    desktopDiagnosticsStore.begin('stopping')
     const invoke = await getInvoke()
     await invoke('stop_ompiui_service')
     serviceStore.setRunning(false)

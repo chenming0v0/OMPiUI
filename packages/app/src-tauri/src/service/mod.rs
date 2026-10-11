@@ -16,6 +16,10 @@ use tauri::{AppHandle, Manager, State};
 
 mod marker;
 mod process;
+mod diagnostics;
+
+pub use diagnostics::get_ompiui_service_diagnostics;
+use diagnostics::{Phase, StartupDiagnostics};
 
 use process::{
     is_process_alive, kill_process_tree, prepare_server, request_graceful_shutdown, resource_root,
@@ -32,6 +36,8 @@ pub struct ServiceState {
     /// 用户在关闭确认里选择「保留后台服务」：退出兜底不再强杀子进程。
     keep_on_exit: AtomicBool,
     lifecycle: tokio::sync::Mutex<()>,
+    operations: tokio::sync::Mutex<()>,
+    startup: StartupDiagnostics,
     /// 有 start 命令正在等 health，其他命令不要把它当僵死进程杀掉。
     is_starting: AtomicBool,
     service_url: Mutex<Option<String>>,
@@ -125,6 +131,8 @@ impl Default for ServiceState {
             allow_close: AtomicBool::new(false),
             keep_on_exit: AtomicBool::new(false),
             lifecycle: tokio::sync::Mutex::new(()),
+            operations: tokio::sync::Mutex::new(()),
+            startup: StartupDiagnostics::default(),
             is_starting: AtomicBool::new(false),
             service_url: Mutex::new(None),
             service_token: Mutex::new(None),
@@ -156,6 +164,8 @@ pub struct ServiceStatusResult {
 #[serde(rename_all = "camelCase")]
 struct HealthResponse {
     process_id: Option<u32>,
+    worker_ready: Option<bool>,
+    started_at: Option<u64>,
 }
 
 enum HealthFailure {
@@ -269,6 +279,7 @@ async fn service_health_with_timeout(
     // worker），正常响应在毫秒级；但系统繁忙/杀软扫描时仍可能抖动，
     // 过紧的超时会把「活着」的服务误判为不可达，进而触发不必要的清场。
     let client = Client::builder()
+        .no_proxy()
         .connect_timeout(Duration::from_secs(2))
         .build()
         .map_err(|_| HealthFailure::Unreachable)?;
@@ -532,27 +543,47 @@ pub async fn start_ompiui_service(
     state: State<'_, ServiceState>,
     env_vars: BTreeMap<String, String>,
 ) -> Result<StartServiceResult, String> {
-    let config = ServiceConfig::new(env_vars);
-    let prepared = prepare_server_async(&app).await?;
+    launch_service(&app, &state, env_vars, false).await
+}
 
-    let mut lifecycle = Some(state.lifecycle.lock().await);
-    loop {
-        match try_reuse_existing_service(&app, &state, &config).await? {
-            ReuseOutcome::Ready(result) => return Ok(result),
-            ReuseOutcome::NeedSpawn => {
-                state.is_starting.store(true, Ordering::SeqCst);
-                break;
-            }
-            ReuseOutcome::NeedWait => {
-                drop(lifecycle.take().unwrap());
-                wait_for_start_to_complete(&state).await;
-                lifecycle = Some(state.lifecycle.lock().await);
-                continue;
+async fn launch_service(
+    app: &AppHandle,
+    state: &ServiceState,
+    env_vars: BTreeMap<String, String>,
+    restart: bool,
+) -> Result<StartServiceResult, String> {
+    let _operation = state.operations.lock().await;
+    state.startup.begin(Phase::Preparing);
+    let result = async {
+        let config = ServiceConfig::new(env_vars);
+        let prepared = prepare_server_async(app).await?;
+        let mut lifecycle = Some(state.lifecycle.lock().await);
+        if restart {
+            state.startup.phase(Phase::Stopping);
+            stop_ompiui_service_process(app, state).await;
+        }
+        state.startup.phase(Phase::Checking);
+        loop {
+            match try_reuse_existing_service(app, state, &config).await? {
+                ReuseOutcome::Ready(result) => return Ok(result),
+                ReuseOutcome::NeedSpawn => {
+                    state.is_starting.store(true, Ordering::SeqCst);
+                    break;
+                }
+                ReuseOutcome::NeedWait => {
+                    drop(lifecycle.take().unwrap());
+                    wait_for_start_to_complete(state).await;
+                    lifecycle = Some(state.lifecycle.lock().await);
+                }
             }
         }
-    }
-
-    start_service_after_prepare(&app, &state, &config, prepared, lifecycle.take().unwrap()).await
+        state.startup.phase(Phase::Starting);
+        start_service_after_prepare(app, state, &config, prepared, lifecycle.take().unwrap()).await
+    }.await;
+    // 包括创建进程失败在内的所有返回路径都解除启动状态，允许重试。
+    state.is_starting.store(false, Ordering::SeqCst);
+    state.startup.finish(result.as_ref().map(|_| ()).map_err(String::as_str), Phase::Running);
+    result
 }
 
 /// 在已持有 lifecycle 锁的情况下孵化子进程、写入状态、持久化 marker，
@@ -571,6 +602,7 @@ async fn start_service_after_prepare(
     }
     let spawned = spawn_server(prepared, state.output.clone(), &config.environment)?;
     let pid = spawned.id();
+    state.startup.spawned(pid);
 
     {
         let mut child = state.child.lock().map_err(|error| error.to_string())?;
@@ -596,7 +628,8 @@ async fn start_service_after_prepare(
     drop(lifecycle_guard);
 
     let mut error_message = None;
-    for _ in 0..120 {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while tokio::time::Instant::now() < deadline {
         let exited = {
             let mut child = state.child.lock().map_err(|error| error.to_string())?;
             child
@@ -615,7 +648,8 @@ async fn start_service_after_prepare(
         }
 
         let current_token = config.token();
-        match service_health(&config.url, current_token.as_deref()).await {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match service_health_with_timeout(&config.url, current_token.as_deref(), remaining.min(Duration::from_secs(5))).await {
             Ok(health) if health.process_id == Some(pid) => {
                 // 身份确认：端口上活着的确实是刚 spawn 的进程。
                 let _lifecycle = state.lifecycle.lock().await;
@@ -640,7 +674,7 @@ async fn start_service_after_prepare(
                 // 还没起来（冷启动中），继续等。
             }
         }
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(500).min(deadline.saturating_duration_since(tokio::time::Instant::now()))).await;
     }
 
     // 启动失败：重新持锁做最终清理。
@@ -737,6 +771,8 @@ pub async fn stop_ompiui_service(
     app: AppHandle,
     state: State<'_, ServiceState>,
 ) -> Result<(), String> {
+    let _operation = state.operations.lock().await;
+    state.startup.begin(Phase::Stopping);
     let mut lifecycle = Some(state.lifecycle.lock().await);
     loop {
         if state.is_starting.load(Ordering::SeqCst) {
@@ -746,6 +782,7 @@ pub async fn stop_ompiui_service(
             continue;
         }
         stop_ompiui_service_process(&app, &state).await;
+        state.startup.finish(Ok(()), Phase::Stopped);
         return Ok(());
     }
 }
@@ -756,34 +793,7 @@ pub async fn restart_ompiui_service(
     state: State<'_, ServiceState>,
     env_vars: BTreeMap<String, String>,
 ) -> Result<StartServiceResult, String> {
-    let config = ServiceConfig::new(env_vars);
-    let prepared = prepare_server_async(&app).await?;
-
-    let mut lifecycle = Some(state.lifecycle.lock().await);
-    loop {
-        if state.is_starting.load(Ordering::SeqCst) {
-            drop(lifecycle.take().unwrap());
-            wait_for_start_to_complete(&state).await;
-            lifecycle = Some(state.lifecycle.lock().await);
-            continue;
-        }
-        stop_ompiui_service_process(&app, &state).await;
-        match try_reuse_existing_service(&app, &state, &config).await? {
-            ReuseOutcome::Ready(result) => return Ok(result),
-            ReuseOutcome::NeedSpawn => {
-                state.is_starting.store(true, Ordering::SeqCst);
-                break;
-            }
-            ReuseOutcome::NeedWait => {
-                drop(lifecycle.take().unwrap());
-                wait_for_start_to_complete(&state).await;
-                lifecycle = Some(state.lifecycle.lock().await);
-                continue;
-            }
-        }
-    }
-
-    start_service_after_prepare(&app, &state, &config, prepared, lifecycle.take().unwrap()).await
+    launch_service(&app, &state, env_vars, true).await
 }
 
 #[tauri::command]
@@ -792,6 +802,7 @@ pub async fn get_ompiui_service_status(
     state: State<'_, ServiceState>,
     env_vars: BTreeMap<String, String>,
 ) -> Result<ServiceStatusResult, String> {
+    let _operation = state.operations.lock().await;
     let mut lifecycle = Some(state.lifecycle.lock().await);
     let config;
     loop {
@@ -905,19 +916,17 @@ mod tests {
 
     #[test]
     fn process_liveness_distinguishes_current_and_missing_processes() {
+        let started = std::time::Instant::now();
         assert!(is_process_alive(std::process::id()));
-        // u32::MAX 在某些 Linux 内核上 kill -0 会误判为存活，不可靠。
-        // 用"已退出子进程的 PID"——任何平台都能确定它已死。
-        let exited = std::process::Command::new(if cfg!(windows) { "cmd" } else { "true" })
-            .status()
-            .expect("spawn helper should succeed");
-        // 直接拿子进程 PID 不可行（status 不暴露），改用它退出后由系统回收
-        // 的常见空 PID：spawn 一个会立刻自杀的子进程。
-        let mut child = std::process::Command::new(if cfg!(windows) { "cmd" } else { "true" })
-            .spawn()
-            .expect("spawn helper should succeed");
+        // 使用确实退出的子进程，避免随意选 PID 或启动交互式 cmd。
+        let mut command = std::process::Command::new(if cfg!(windows) { "cmd" } else { "true" });
+        if cfg!(windows) {
+            command.args(["/C", "exit", "0"]);
+        }
+        let mut child = command.spawn().expect("spawn helper should succeed");
         let dead_pid = child.id();
         let _ = child.wait();
         assert!(!is_process_alive(dead_pid));
+        assert!(started.elapsed() < Duration::from_secs(2), "PID checks must not wait for tasklist");
     }
 }

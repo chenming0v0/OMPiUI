@@ -20,6 +20,7 @@ import { useTheme } from '../hooks/useTheme'
 import { getDesktopPlatform, isTauri, usesCustomDesktopTitlebar } from '../utils/tauri'
 import { useUpdateStore, hasUpdateAvailable } from '../store/updateStore'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { DesktopServiceStatus } from './DesktopServiceStatus'
 
 /* 标题栏图标按钮通用样式 — Windows 和 macOS 视觉节奏不同，按钮尺寸分开控制 */
 const TB_BTN =
@@ -186,7 +187,13 @@ export function DesktopTitlebar() {
     })
   }, [])
 
-  if (!isDesktopChrome) return null
+  if (!isDesktopChrome) {
+    return platform === 'linux' ? (
+      <div className="flex h-9 shrink-0 items-center justify-end border-b border-border-200 bg-bg-100">
+        <DesktopServiceStatus />
+      </div>
+    ) : null
+  }
 
   return (
     <header
@@ -264,12 +271,11 @@ export function DesktopTitlebar() {
       {/* ---- 中间：拖拽区 ---- */}
       <div data-tauri-drag-region className="h-full min-w-0" />
 
-      {/* ---- 右侧：Windows 控制按钮 / macOS 留白 ---- */}
-      {platform === 'windows' ? (
-        <WindowsControls />
-      ) : (
-        <div data-tauri-drag-region className="h-full w-3 shrink-0" />
-      )}
+      {/* ---- 右侧：本地后端状态 + 平台窗口控制 ---- */}
+      <div className="flex h-full shrink-0 items-center">
+        <DesktopServiceStatus />
+        {platform === 'windows' ? <WindowsControls /> : <div data-tauri-drag-region className="h-full w-3 shrink-0" />}
+      </div>
     </header>
   )
 }

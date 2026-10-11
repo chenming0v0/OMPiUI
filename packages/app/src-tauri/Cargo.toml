@@ -1,6 +1,6 @@
 [package]
 name = "ompiui"
-version = "0.6.16"
+version = "0.6.17"
 description = "OMPiUI desktop client"
 authors = ["OMPiUI contributors"]
 license = "GPL-3.0-only"
@@ -37,6 +37,9 @@ tauri-plugin-log = "2"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [profile.release]
 strip = true

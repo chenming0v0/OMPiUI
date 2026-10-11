@@ -88,6 +88,58 @@ jobs:
           npm run typecheck -w @ompiui/server
           npm run test -w @ompiui/server
 
+  test-omp-interop:
+    name: OMP interop ${{ matrix.omp }} ${{ matrix.platform }}
+    needs: build-deps
+    runs-on: ${{ matrix.platform }}-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ubuntu, windows]
+        omp: [supported, latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-workspace
+        with:
+          build-artifact: ci-build-${{ matrix.platform }}
+
+      # 同时验证当前标定版本和官方最新稳定版，及时发现上游目录或 RPC 协议变化。
+      # 使用官方原生二进制，Windows 下不经过会拆分空格参数的 cmd 启动脚本。
+      - name: Install official OMP binary
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OMP_TEST_CHANNEL: ${{ matrix.omp }}
+        run: |
+          if ($env:OMP_TEST_CHANNEL -eq 'supported') {
+            $ompTestVersion = node --input-type=module -e "import { OMP_SDK_VERSION } from './packages/omp-worker/dist/omp/constants.js'; console.log(OMP_SDK_VERSION)"
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot read supported OMP version' }
+            $ompTestRelease = "v$ompTestVersion"
+          } else {
+            $ompTestRelease = gh api repos/can1357/oh-my-pi/releases/latest --jq .tag_name
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve latest OMP release' }
+          }
+          $ompTestAsset = if ($IsWindows) { 'omp-windows-x64.exe' } else { 'omp-linux-x64' }
+          $ompTestName = if ($IsWindows) { 'omp.exe' } else { 'omp' }
+          $ompTestDirectory = Join-Path $env:RUNNER_TEMP 'omp-interop-bin'
+          New-Item -ItemType Directory -Path $ompTestDirectory -Force | Out-Null
+          gh release download $ompTestRelease --repo can1357/oh-my-pi --pattern $ompTestAsset --dir $ompTestDirectory
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot download official OMP binary' }
+          $ompTestBinary = Join-Path $ompTestDirectory $ompTestName
+          Move-Item -LiteralPath (Join-Path $ompTestDirectory $ompTestAsset) -Destination $ompTestBinary
+          if (-not $IsWindows) {
+            chmod +x $ompTestBinary
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot make OMP executable' }
+          }
+          $ompTestDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          Write-Host "Testing official OMP release $ompTestRelease"
+          & $ompTestBinary --version
+          if ($LASTEXITCODE -ne 0) { throw 'Official OMP binary cannot start' }
+
+      - name: Verify native and migrated session interoperability
+        run: node scripts/verify-session-safety.mjs
+
   test-app:
     name: test app ${{ matrix.platform }} ${{ matrix.shard }}/4
     needs: build-deps
@@ -140,7 +192,7 @@ jobs:
   validate:
     name: validate ${{ matrix.platform }}
     if: always()
-    needs: [build-deps, test-backend, test-app, build-app, lint]
+    needs: [build-deps, test-backend, test-omp-interop, test-app, build-app, lint]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     strategy:

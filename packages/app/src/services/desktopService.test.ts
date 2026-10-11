@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { restartDesktopService, startDesktopService, stopDesktopService } from './desktopService'
+import { desktopDiagnosticsStore } from '../store/desktopDiagnosticsStore'
 
 const { invokeMock, applyLocalServerConfigMock, serviceStoreMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
@@ -74,5 +75,16 @@ describe('desktopService', () => {
     expect(invokeMock).toHaveBeenNthCalledWith(2, 'get_ompiui_service_status', {
       envVars: { OMPIUI_USE_SYSTEM_PI: '1' },
     })
+  })
+
+  it('retains startup failures for the status panel and permits a successful retry', async () => {
+    invokeMock.mockRejectedValueOnce('failed to spawn')
+    await expect(startDesktopService()).rejects.toBe('failed to spawn')
+    expect(desktopDiagnosticsStore.getSnapshot().commandError).toBe('failed to spawn')
+    expect(desktopDiagnosticsStore.getSnapshot().operation).toBeNull()
+    expect(serviceStoreMock.setStarting).toHaveBeenLastCalledWith(false)
+    invokeMock.mockResolvedValueOnce({ started: true, startedByUs: true, url: runningStatus.url, token: 'token' }).mockResolvedValueOnce(runningStatus)
+    await startDesktopService()
+    expect(desktopDiagnosticsStore.getSnapshot().commandError).toBeNull()
   })
 })

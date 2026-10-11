@@ -19,8 +19,8 @@ import { useServerStore, useRouter } from '../../../hooks'
 import { clearSessionRuntimeState } from '../../../utils/sessionLifecycle'
 import { settingsFieldClass, SettingsSection } from './SettingsUI'
 import type { ServerConfig, ServerHealth } from '../../../store/serverStore'
-import { parseConnectLink } from '../../../store/serverStore'
-import { fetchHostShare, redeemPairCode } from '../../../omp/transport'
+import { parseConnectionLink, resolveConnectionLink } from '../../../utils/connectionLink'
+import { fetchHostShare } from '../../../omp/transport'
 import type { ShareInfo } from '@ompiui/protocol'
 
 const IPV4_PATTERN = /^(?:\d{1,3}\.){3}\d{1,3}$/
@@ -493,7 +493,7 @@ function AddServerForm({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (pairing) return
-    const connectLink = parseConnectLink(url)
+    const connectLink = parseConnectionLink(url)
     let parsed: URL
     try {
       parsed = new URL(connectLink?.url ?? url.trim())
@@ -508,20 +508,16 @@ function AddServerForm({
       setError(t('servers.nameRequired'))
       return
     }
-    if (connectLink) {
-      onAdd(trimmedName, connectLink.url, connectLink.token)
+    if (pairCode && !connectLink) {
+      setError(t('service.remotePairInvalid'))
       return
     }
-    if (pairCode) {
-      if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
-        setError(t('service.remotePairInvalid'))
-        return
-      }
+    if (connectLink) {
       setPairing(true)
       setError('')
       try {
-        const result = await redeemPairCode(pairCode, parsed.origin, AbortSignal.timeout(15_000))
-        onAdd(trimmedName, result.url, result.token, true)
+        const result = await resolveConnectionLink(connectLink)
+        onAdd(trimmedName, result.url, result.token, !!connectLink.pair)
       } catch (reason) {
         setError(reason instanceof Error ? reason.message : String(reason))
       } finally {

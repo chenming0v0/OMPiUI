@@ -4,13 +4,15 @@ import { AndroidTailscaleSettings } from './AndroidTailscaleSettings'
 import { RemoteAccessSettings } from './RemoteAccessSettings'
 import { RelaySettings } from './RelaySettings'
 import { SettingsSection } from './SettingsUI'
+import { PhonePairingForm } from './PhonePairingForm'
 
-export function AuthenticationSettings({ onAuthenticated }: { onAuthenticated?: () => void }) {
+export function AuthenticationSettings({ onPaired }: { onPaired?: () => void }) {
   const { t } = useTranslation('settings')
   if (isAndroidTailscalePlatform()) {
     return (
       <SettingsSection title={t('authentication.title')}>
-        <AndroidTailscaleSettings onAuthenticated={onAuthenticated} />
+        <AndroidTailscaleSettings />
+        <PhonePairingForm onPaired={onPaired} />
       </SettingsSection>
     )
   }

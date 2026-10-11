@@ -3,6 +3,7 @@ import {
   type FaultNotice, type FaultReport, type FaultUploadProgress,
 } from '@ompiui/protocol'
 import { getHttpFetch } from '../../utils/tauri'
+import { desktopDiagnosticsStore } from '../../store/desktopDiagnosticsStore'
 import { readFullSavedFault, readSavedFault, saveFault, type SavedFault } from './storage'
 
 export type ClientFaultEvent = {
@@ -102,12 +103,21 @@ export class FaultAuditStore {
   }
 
   private clientContent(notice: FaultNotice): string {
+    const desktop = desktopDiagnosticsStore.getSnapshot()
+    const startup = desktop.native
     return [
       'OMPiUI client fault report', `App version: ${typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'development'}`,
       `Incident: ${JSON.stringify(notice)}`,
       `Platform: ${/Android/i.test(navigator.userAgent) ? 'Android' : /Windows/i.test(navigator.userAgent) ? 'Windows' : 'Web'}`,
       `Online: ${navigator.onLine}; visibility: ${document.visibilityState}`,
       `Client retention: latest 300 metadata events; older events evicted: ${this.discardedClientEvents}`,
+      // 仅共享启动阶段和时间；本机输出、错误正文、地址和环境变量不进入报告。
+      ...(startup || desktop.commandError ? [`Desktop startup (metadata only): ${JSON.stringify({
+        phase: startup?.phase, requestedAt: startup?.requestedAt, spawnedAt: startup?.spawnedAt,
+        completedAt: startup?.completedAt, events: startup?.events,
+        reachable: startup?.reachable, workerReady: startup?.workerReady,
+        commandFailed: !!desktop.commandError,
+      })}`] : []),
       'Client events (metadata only):', ...this.current.history.map(event => JSON.stringify(event)),
     ].join('\n')
   }

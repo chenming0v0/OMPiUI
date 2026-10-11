@@ -379,7 +379,7 @@ describe("http api", () => {
       onEvent: () => () => {},
       prewarm: async () => {},
       peekCatalogHandshake: async () => hello,
-      getCatalogHandshake: async () => hello,
+      getCatalogHandshake: async () => { throw new Error("health must not start or wait for a worker") },
       dispose: async () => {},
     } as unknown as import("./omp/supervisor.ts").RuntimeSupervisor
     const app = createAppServer({ authToken: "test-token", supervisor })
@@ -390,6 +390,8 @@ describe("http api", () => {
     assert.equal(health.status, 200)
     assert.equal(health.json.piSdkVersion, "9.9.9")
     assert.equal(health.json.piSdkVerified, false)
+    assert.equal(health.json.workerReady, true)
+    assert.ok(typeof health.json.startedAt === "number" && health.json.startedAt <= Date.now())
     assert.deepEqual(health.json.piSdkFallback, { source: "global", message: "incompatible contract: missing createAgentSessionRuntime" })
   })
 
@@ -409,6 +411,7 @@ describe("http api", () => {
     assert.equal(health.status, 200)
     assert.equal(health.json.piSdkVersion, PI_PARITY_SDK_VERSION)
     assert.equal(health.json.piSdkVerified, undefined)
+    assert.equal(health.json.workerReady, false)
     assert.equal(health.json.piSdkFallback, null)
   })
 

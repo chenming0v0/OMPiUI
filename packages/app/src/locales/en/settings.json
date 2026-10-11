@@ -28,7 +28,17 @@
   },
   "authentication": {
     "title": "Authentication",
-    "addConnection": "Add server connection"
+    "addConnection": "Add server connection",
+    "pairingInfo": "Pairing information",
+    "pairingPlaceholder": "Paste a full pairing link or connection share",
+    "connect": "Pair and connect",
+    "connected": "Paired and connected to the server",
+    "invalidLink": "No valid pairing or connection share link was found.",
+    "scan": "Scan pairing QR",
+    "scanPrompt": "Scan the pairing QR code on your computer",
+    "scanUnavailable": "This build does not support scanning. Update the mobile app or paste a pairing link.",
+    "scanPermissionDenied": "Camera permission was denied. Allow camera access in system settings or paste a pairing link.",
+    "scanFailed": "Unable to start the camera scanner. Retry or paste a pairing link."
   },
   "traffic": {
     "scopeShort": "This client · HTTP / WebSocket payloads",

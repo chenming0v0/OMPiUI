@@ -208,6 +208,46 @@
   "toast": {
     "clearAll": "清除全部"
   },
+  "desktopService": {
+    "open": "查看本地后端状态",
+    "title": "本地后端",
+    "backend": "后端",
+    "engine": "OMP 引擎",
+    "seconds": "{{count}} 秒",
+    "requestedAt": "本次启动 / 停止请求",
+    "spawnedAt": "后端进程启动时间",
+    "completedAt": "本次操作完成时间",
+    "waiting": "已等待",
+    "duration": "本次耗时",
+    "process": "后端进程 PID",
+    "timeline": "本次启动记录",
+    "output": "查看后端最近输出",
+    "outputHint": "仅在本机显示最近 24 行，不自动加入可分享的故障报告。",
+    "noOutput": "暂无后端输出。进程尚未创建时，请查看上面的启动阶段。",
+    "noEvents": "本窗口尚未记录启动操作；复用已有服务时，进程启动时间可能未知。",
+    "runtimeHint": "引擎就绪后可处理任务。各会话运行时会在发送消息等操作时按需启动，浏览历史会话或打开此面板不会启动运行时。",
+    "queryFailed": "暂时无法读取桌面服务状态，正在重试。",
+    "healthRejected": "后端拒绝了健康检查，请检查本地服务的认证配置。",
+    "phase": {
+      "idle": "尚未启动",
+      "unknown": "状态查询中",
+      "preparing": "准备启动",
+      "checking": "检查已有服务",
+      "starting": "创建后端进程",
+      "waiting_health": "等待后端就绪",
+      "running": "运行中",
+      "stopping": "正在停止",
+      "stopped": "已停止",
+      "failed": "操作失败",
+      "unreachable": "连接不可用"
+    },
+    "worker": {
+      "ready": "已就绪",
+      "warming": "初始化中",
+      "unavailable": "等待后端连接",
+      "unknown": "服务未提供状态"
+    }
+  },
   "desktopTitlebar": {
     "goBack": "后退",
     "goForward": "前进",

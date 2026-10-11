@@ -24,6 +24,10 @@ export type HealthResponse = {
   piSdkVerified?: boolean
   piSdkFallback?: { source: string; message: string } | null
   processId?: number
+  /** 只读握手快照；不代表任何会话运行时已被启动。 */
+  workerReady?: boolean
+  /** 后端进程启动时间，Unix 毫秒。 */
+  startedAt?: number
 }
 
 /**
