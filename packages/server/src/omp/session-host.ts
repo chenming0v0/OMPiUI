@@ -323,6 +323,10 @@ export class SessionHost {
       if (!session) {
         // 草稿同步是浏览动作，不能为了 no-op 编辑器命令启动写入进程。
         if (type === "setExtensionEditorState" && getDriverMode() === "omp") return undefined
+        // TUI 镜像命令需要运行中的 runtime;磁盘预览不得为它启动写入进程(退出时会向官方会话写 session_exit)。
+        if (type === "extensionUi.tuiInput" || type === "extensionUi.tuiResize" || type === "extensionUi.tuiRedraw") {
+          throw Object.assign(new Error("TUI mirror requires an attached runtime; disk preview is read-only"), { code: "CAPABILITY_DISABLED" })
+        }
         const diskQueries: Record<string, true> = {
           "state.get": true, "branch.get": true, "entries.get": true, "tree.get": true,
           "attachment.get": true, "subagent.messages": true,

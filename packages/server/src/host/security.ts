@@ -1,23 +1,42 @@
 import { timingSafeEqual } from "node:crypto"
 import type { IncomingMessage } from "node:http"
 import { isIP } from "node:net"
+import { isTrustedProxy, parseTrustedProxies, resolveForwardedClient, type TrustedProxies } from "@ompiui/relay"
 
 /** Private to the embedded tunnel's loopback hop; never sent to the relay. */
 export const TUNNEL_FORWARDING_HEADER = "x-ompiui-internal-tunnel"
 
-/** Only the per-start authenticated loopback hop may supply a relay client IP. */
-export function pairingClientKey(req: IncomingMessage, tunnelForwardingToken?: string): string {
+const NO_TRUSTED_PROXIES: TrustedProxies = parseTrustedProxies([])
+
+/**
+ * 配对限速的客户端桶键:
+ * 1. 内置中转隧道的回环跳:对端为回环且携带每次启动私有标记时,采纳中转写入的
+ *    单个 XFF(原有行为)。
+ * 2. 显式可信代理(OMPIUI_TRUSTED_PROXIES):只有 TCP 对端属于该列表时才解析 XFF,
+ *    从右向左剥离可信跳,取第一个非可信地址。
+ * 3. 其它情况一律使用 TCP 对端地址,忽略任何 XFF。
+ * 头部非法或无法确定时回退为对端地址,不据此伪装访客,因此无法绕过限速。
+ */
+export function pairingClientKey(
+  req: IncomingMessage,
+  tunnelForwardingToken?: string,
+  trustedProxies: TrustedProxies = NO_TRUSTED_PROXIES,
+): string {
   const peer = req.socket.remoteAddress ?? "unknown"
   const marker = req.headers[TUNNEL_FORWARDING_HEADER]
   const loopback = peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1"
-  if (!loopback || !tunnelForwardingToken || typeof marker !== "string" ||
-      !timingSafeTokenEquals(marker, tunnelForwardingToken)) return peer
-
-  // The relay overwrites XFF with its public socket's single IP, never a chain.
-  const forwarded = req.headers["x-forwarded-for"]
-  return typeof forwarded === "string" && isIP(forwarded)
-    ? `relay:${forwarded}`
-    : peer
+  if (loopback && tunnelForwardingToken && typeof marker === "string" &&
+      timingSafeTokenEquals(marker, tunnelForwardingToken)) {
+    // The relay overwrites XFF with its public socket's single IP, never a chain.
+    const forwarded = req.headers["x-forwarded-for"]
+    const forwardedIp = typeof forwarded === "string" ? forwarded.trim().toLowerCase().replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/, "") : ""
+    return isIP(forwardedIp) ? `relay:${forwardedIp}` : peer
+  }
+  if (isTrustedProxy(peer, trustedProxies)) {
+    const client = resolveForwardedClient(req.headers["x-forwarded-for"], trustedProxies)
+    return client ? `proxy:${client}` : peer
+  }
+  return peer
 }
 
 const LOCAL_ORIGIN = /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/i

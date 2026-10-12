@@ -1,7 +1,9 @@
 import { useSyncExternalStore } from "react"
+import type { Attachment } from "../features/attachment"
 
 interface SessionEditorDraft {
   text: string
+  attachments?: Attachment[]
   revision: number
 }
 
@@ -15,8 +17,12 @@ function emit() {
   for (const listener of listeners) listener()
 }
 
-export function setSessionEditorDraft(sessionId: string, text: string, options: { sync?: boolean } = {}) {
-  drafts.set(sessionId, { text, revision: ++revision })
+export function setSessionEditorDraft(
+  sessionId: string,
+  text: string,
+  options: { sync?: boolean; attachments?: Attachment[] } = {},
+) {
+  drafts.set(sessionId, { text, attachments: options.attachments, revision: ++revision })
   emit()
   if (options.sync === false || !syncDraft) return
   const previous = syncTimers.get(sessionId)

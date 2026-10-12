@@ -63,9 +63,51 @@ npm run build
 mkdir -p "$DATA_DIR"
 chmod 700 "$DATA_DIR" 2>/dev/null || true
 
+# systemd parses unit values itself. Escape % (specifiers) everywhere; inside a
+# double-quoted word escape \ and "; for ExecStart also escape $ (variable expansion).
+sd_pct() {
+  local value="$1" pct='%'
+  printf '%s' "${value//"$pct"/"$pct$pct"}"
+}
+sd_word() {
+  local value="$1" bs='\' dq='"' dollar='$'
+  value=${value//"$bs"/"$bs$bs"}
+  value=${value//"$dq"/"$bs$dq"}
+  value=${value//"$dollar"/"$dollar$dollar"}
+  printf '"%s"' "$(sd_pct "$value")"
+}
+sd_assign() {
+  local value="$1" bs='\' dq='"'
+  value=${value//"$bs"/"$bs$bs"}
+  value=${value//"$dq"/"$bs$dq"}
+  printf '"%s"' "$(sd_pct "$value")"
+}
+
+# The token file is written by the service on first start. Wait for it with a
+# deadline, and fail early if the unit has already entered the failed state.
+wait_for_admin_token() {
+  local token_file="$DATA_DIR/admin-token" deadline=$((SECONDS + 30)) token
+  while :; do
+    token="$(cat "$token_file" 2>/dev/null || true)"
+    token="${token//[[:space:]]/}"
+    if [ -n "$token" ]; then return 0; fi
+    if systemctl --user is-failed --quiet ompiui-admin.service 2>/dev/null; then
+      echo "ompiui-admin.service failed before writing the management token; see: journalctl --user -u ompiui-admin.service -n 50" >&2
+      return 1
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      echo "timed out waiting for $token_file; see: journalctl --user -u ompiui-admin.service -n 50" >&2
+      return 1
+    fi
+    sleep 1
+  done
+}
+
+
 SERVICE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 SERVICE_FILE="$SERVICE_DIR/ompiui-admin.service"
 mkdir -p "$SERVICE_DIR"
+EXEC_START="$(sd_word "$(command -v node)") $(sd_word "$ROOT/packages/admin/dist/cli.js") web --host $(sd_word "$ADMIN_HOST") --port $(sd_word "$ADMIN_PORT")"
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=OMPiUI headless server manager
@@ -74,11 +116,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=$ROOT
-Environment=OMPIUI_DATA_DIR=$DATA_DIR
-Environment=OMPIUI_ADMIN_DATA_DIR=$DATA_DIR
-Environment=OMPIUI_SERVER_ENTRY=$ROOT/packages/server/dist/bundle-entry.js
-ExecStart=$(command -v node) $ROOT/packages/admin/dist/cli.js web --host $ADMIN_HOST --port $ADMIN_PORT
+WorkingDirectory=$(sd_pct "$ROOT")
+Environment=$(sd_assign "OMPIUI_DATA_DIR=$DATA_DIR")
+Environment=$(sd_assign "OMPIUI_ADMIN_DATA_DIR=$DATA_DIR")
+Environment=$(sd_assign "OMPIUI_SERVER_ENTRY=$ROOT/packages/server/dist/bundle-entry.js")
+ExecStart=$EXEC_START
 Restart=on-failure
 RestartSec=3
 
@@ -89,6 +131,10 @@ chmod 600 "$SERVICE_FILE"
 
 if command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload >/dev/null 2>&1; then
   systemctl --user enable --now ompiui-admin.service
+  if [ -z "${OMPIUI_ADMIN_TOKEN:-}" ] && ! wait_for_admin_token; then
+    echo "Install incomplete: the service did not produce its management token." >&2
+    exit 1
+  fi
   # Without linger the user manager (and the service) dies on logout.
   if command -v loginctl >/dev/null 2>&1; then
     loginctl enable-linger "${USER:-$(id -un)}" 2>/dev/null || \

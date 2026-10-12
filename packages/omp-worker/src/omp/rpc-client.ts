@@ -7,6 +7,7 @@ import type { JsonObject, JsonValue } from "@ompiui/protocol"
 import { isJsonObject } from "@ompiui/protocol"
 import { runtimePolicyArgs } from "./runtime-policy.js"
 import { RpcLineReader } from "./rpc-line-reader.js"
+import { ompChildEnv } from "./omp-directories.js"
 
 /**
  * 可选的 OMP 兼容配置覆盖：`~/.ompiui/omp-compat.yml` 存在时以 `--config`
@@ -62,6 +63,11 @@ export class OmpRpcError extends Error {
 }
 
 const CHUNK_TIMEOUT_MS = 30_000
+/** exit 后等待 stdout 读到 EOF(close)的有界宽限;到期即按已缓冲内容收尾 */
+const EXIT_STDOUT_GRACE_MS = 1_000
+const MAX_REASSEMBLED_BYTES = 64 * 1024 * 1024
+const MAX_CHUNK_COUNT = MAX_REASSEMBLED_BYTES
+const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true })
 
 export class OmpRpcClient extends EventEmitter {
   readonly proc: ChildProcess
@@ -74,9 +80,10 @@ export class OmpRpcClient extends EventEmitter {
     timer: NodeJS.Timeout
   }>()
   private readonly chunks = new Map<string, {
-    parts: Map<number, string>
+    parts: Map<number, Buffer>
     count: number
     byteLength: number
+    receivedBytes: number
     timer: NodeJS.Timeout
   }>()
   private stderrBuffer: string[] = []
@@ -101,7 +108,7 @@ export class OmpRpcClient extends EventEmitter {
     const args = ["--mode", "rpc", ...ompCompatConfigArgs(), ...(options.args ?? []), ...(options.applyRuntimePolicy ? runtimePolicyArgs() : [])]
     this.proc = spawn(bin, args, {
       cwd: options.cwd,
-      env: { ...process.env, ...(process.env.OMP_AGENT_DIR ? { PI_CODING_AGENT_DIR: process.env.OMP_AGENT_DIR } : {}), ...options.env },
+      env: { ...process.env, ...ompChildEnv(), ...options.env },
       stdio: ["pipe", "pipe", "pipe"],
       shell: process.platform === "win32" && !/\.exe$/i.test(bin),
       windowsHide: true,
@@ -122,23 +129,37 @@ export class OmpRpcClient extends EventEmitter {
       this.exitError = error
       this.exitReason = "spawn_error"
     })
-    // close 在 stdout 排空之后触发，不能在 exit 时丢掉尚未处理的最终结果。
+    // 子进程退出记账不能依赖 stdout 排空:背压暂停时 stdout 不被读取,EOF 与 close
+    // 都不会到达,finish 回调也永远不执行。exit 是主路径,close 作为兜底;二者共用幂等收尾。
+    const finalizeExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+      if (this.exited) return
+      // flushForExit 只交付退出前已缓冲的完整行,不等待 IPC 恢复,因此有界
+      this.stdoutReader.flushForExit()
+      this.stdoutReader.close()
+      this.exited = true
+      this.exitCode = code
+      this.exitSignal = signal
+      const tail = this.stderrBuffer.join("").trim()
+      if (!this.exitError) {
+        this.exitError = new Error(
+          `omp RPC process exited (code=${code ?? "null"} signal=${signal ?? "null"})${tail ? `: ${tail.slice(-2000)}` : ""}`,
+        )
+      }
+      this.failAllPending()
+      this.emit("exit", code, signal)
+      this.exitWaiterResolve?.()
+    }
+    // exit 后给 stdout 一个很短的有界宽限等待 close,让管道中的最终输出先被读完;
+    // 若 stdout 因背压暂停而读不到 EOF,宽限到期后直接收尾(只交付已缓冲行),不会永久卡住。
+    let exitGrace: NodeJS.Timeout | undefined
+    this.proc.on("exit", (code, signal) => {
+      if (this.exited || exitGrace) return
+      exitGrace = setTimeout(() => finalizeExit(code, signal), EXIT_STDOUT_GRACE_MS)
+      exitGrace.unref()
+    })
     this.proc.on("close", (code, signal) => {
-      this.stdoutReader.finish(() => {
-        this.stdoutReader.close()
-        this.exited = true
-        this.exitCode = code
-        this.exitSignal = signal
-        const tail = this.stderrBuffer.join("").trim()
-        if (!this.exitError) {
-          this.exitError = new Error(
-            `omp RPC process exited (code=${code ?? "null"} signal=${signal ?? "null"})${tail ? `: ${tail.slice(-2000)}` : ""}`,
-          )
-        }
-        this.failAllPending()
-        this.emit("exit", code, signal)
-        this.exitWaiterResolve?.()
-      })
+      if (exitGrace) clearTimeout(exitGrace)
+      finalizeExit(code, signal)
     })
     this.exitWaiter = new Promise(resolve => {
       this.exitWaiterResolve = resolve
@@ -270,24 +291,59 @@ export class OmpRpcClient extends EventEmitter {
     const count = typeof frame.count === "number" ? frame.count : 0
     const byteLength = typeof frame.byteLength === "number" ? frame.byteLength : 0
     const data = typeof frame.data === "string" ? frame.data : ""
-    if (!chunkId || count <= 0 || index < 0 || index >= count || !data) return
+    if (!chunkId || !Number.isSafeInteger(count) || count < 1 || count > MAX_CHUNK_COUNT) return
+    if (!Number.isSafeInteger(index) || index < 0 || index >= count || !data) return
+    if (!Number.isSafeInteger(byteLength) || byteLength < 0 || byteLength > MAX_REASSEMBLED_BYTES) return
+    // 分片以原始字节保存:UTF-8 多字节字符可能跨分片边界,只能在整帧拼接后解码。
+    const bytes = Buffer.from(data, "base64")
+    if (bytes.byteLength === 0 || bytes.byteLength > MAX_REASSEMBLED_BYTES) {
+      this.abortChunk(chunkId, "invalid rpc chunk payload")
+      return
+    }
     let entry = this.chunks.get(chunkId)
     if (!entry) {
-      const timer = setTimeout(() => this.chunks.delete(chunkId), CHUNK_TIMEOUT_MS)
+      const timer = setTimeout(() => this.abortChunk(chunkId, "rpc chunk timed out"), CHUNK_TIMEOUT_MS)
       timer.unref()
-      entry = { parts: new Map(), count, byteLength, timer }
+      entry = { parts: new Map(), count, byteLength, receivedBytes: 0, timer }
       this.chunks.set(chunkId, entry)
     }
-    entry.parts.set(index, data)
-    if (entry.parts.size < count) return
+    if (entry.count !== count || entry.byteLength !== byteLength) {
+      this.abortChunk(chunkId, "rpc chunk metadata mismatch")
+      return
+    }
+    if (entry.parts.has(index)) {
+      this.abortChunk(chunkId, "duplicate rpc chunk index")
+      return
+    }
+    entry.parts.set(index, bytes)
+    entry.receivedBytes += bytes.byteLength
+    if (entry.receivedBytes > MAX_REASSEMBLED_BYTES || (entry.byteLength > 0 && entry.receivedBytes > entry.byteLength)) {
+      this.abortChunk(chunkId, "rpc chunk exceeds declared length")
+      return
+    }
+    if (entry.parts.size < entry.count) return
     clearTimeout(entry.timer)
     this.chunks.delete(chunkId)
-    // 校验完整性后按 index 拼接、解码、重组为一个 JSON 对象
-    let json = ""
-    for (let i = 0; i < count; i++) {
+    if (entry.byteLength > 0 && entry.receivedBytes !== entry.byteLength) {
+      this.emitProtocolError(`rpc chunk ${chunkId} length mismatch: got ${entry.receivedBytes} expected ${entry.byteLength}`)
+      return
+    }
+    const ordered: Buffer[] = []
+    for (let i = 0; i < entry.count; i++) {
       const part = entry.parts.get(i)
-      if (!part) return
-      json += Buffer.from(part, "base64").toString("utf8")
+      if (!part) {
+        this.emitProtocolError(`rpc chunk ${chunkId} missing index ${i}`)
+        return
+      }
+      ordered.push(part)
+    }
+    // 整帧严格解码:非法 UTF-8 直接报错,而不是静默替换为 U+FFFD
+    let json: string
+    try {
+      json = UTF8_DECODER.decode(Buffer.concat(ordered, entry.receivedBytes))
+    } catch {
+      this.emitProtocolError(`rpc chunk ${chunkId} is not valid UTF-8`)
+      return
     }
     try {
       const reassembled = JSON.parse(json) as unknown
@@ -295,9 +351,22 @@ export class OmpRpcClient extends EventEmitter {
         this.dispatchFrame(reassembled as OmpRpcFrame)
       }
     } catch {
-      /* 重组失败：丢弃 */
+      this.emitProtocolError(`rpc chunk ${chunkId} is not a valid JSON frame`)
     }
-    void byteLength
+  }
+
+  /** 丢弃未完成的分片序列并记录协议错误(不静默吞掉) */
+  private abortChunk(chunkId: string, reason: string): void {
+    const entry = this.chunks.get(chunkId)
+    if (!entry) return
+    clearTimeout(entry.timer)
+    this.chunks.delete(chunkId)
+    this.emitProtocolError(`${reason} (${chunkId})`)
+  }
+
+  private emitProtocolError(message: string): void {
+    this.stderrBuffer.push(`[omp-rpc] ${message}\n`)
+    if (this.stderrBuffer.length > 200) this.stderrBuffer.splice(0, this.stderrBuffer.length - 200)
   }
 
   async request<T extends JsonValue = JsonValue>(command: JsonObject, timeoutMs = 60_000): Promise<OmpRpcResponse & { data?: T }> {

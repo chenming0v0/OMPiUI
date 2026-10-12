@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto"
 import { logToFile } from "../logger.ts"
 import { diagnostics, diagnosticErrorCode } from "../diagnostics/recorder.ts"
 import { traceWorkerRequest } from "../diagnostics/worker-request.ts"
-import type { JsonObject, JsonValue, Problem } from "@ompiui/protocol"
+import { isJsonObject, type JsonObject, type JsonValue, type Problem } from "@ompiui/protocol"
 import {
   OMP_WORKER_HEARTBEAT_INTERVAL_MS,
   OMP_WORKER_PROTOCOL_VERSION,
@@ -31,6 +31,11 @@ interface PendingRequest {
   reject: (error: Error) => void
   timer?: NodeJS.Timeout
   removeAbort?: () => void
+}
+
+interface LateResponseHandlers {
+  onAbandoned: () => void
+  onLate: (ok: boolean, data: JsonValue | undefined) => void
 }
 
 /**
@@ -76,7 +81,7 @@ export interface WorkerHost {
    */
   peekHandshake(): WorkerHello | undefined
   /** 在共享进程内打开一个会话 runtime，返回每会话句柄 */
-  open(cwd: string, sessionFile?: string, signal?: AbortSignal): Promise<WorkerSession>
+  open(cwd: string, sessionFile?: string, signal?: AbortSignal, onLeaseSettled?: () => void): Promise<WorkerSession>
   /** 无会话归属的全局事件（provider.auth / packages.progress / resources.updated） */
   onEvent(listener: (event: WorkerEvent) => void): () => void
   onCrash(listener: (error: Error) => void): () => void
@@ -153,6 +158,8 @@ class WorkerHostCore {
   private readonly hostCallHandlers = new Map<string, (call: WorkerHostCall) => void | Promise<void>>()
   /** reservationId → sessionId：commit/abort 没有会话字段，靠 reserve 时的归属路由 */
   private readonly reservationOwners = new Map<string, string>()
+  /** 已放弃(超时/取消)的请求的晚到响应处理器:用于关闭孤儿 runtime 并结束租约 */
+  private readonly lateResponses = new Map<string, (ok: boolean, data: JsonValue | undefined) => void>()
   private child: ChildProcess
   private disposed = false
   private exitHandled = false
@@ -240,7 +247,12 @@ class WorkerHostCore {
     }
     if (message.kind === "response") {
       const pending = this.pending.get(message.id)
-      if (!pending) return
+      if (!pending) {
+        const late = this.lateResponses.get(message.id)
+        this.lateResponses.delete(message.id)
+        late?.(message.ok, message.ok ? message.data : undefined)
+        return
+      }
       this.pending.delete(message.id)
       clearTimeout(pending.timer)
       pending.removeAbort?.()
@@ -384,6 +396,10 @@ class WorkerHostCore {
       }))
     }
     this.pending.clear()
+    // 进程已退出:晚到响应不会再到达,直接结束放弃请求的收尾
+    const lates = [...this.lateResponses.values()]
+    this.lateResponses.clear()
+    for (const late of lates) late(false, undefined)
     // 共享进程崩溃 = 所有会话 runtime 一起失效：逐个句柄通知
     const handles = [...this.handles.values()]
     this.handles.clear()
@@ -414,13 +430,23 @@ class WorkerHostCore {
     return this.readyHello
   }
 
-  async open(cwd: string, sessionFile?: string, signal?: AbortSignal): Promise<WorkerSession> {
+  async open(cwd: string, sessionFile?: string, signal?: AbortSignal, onLeaseSettled?: () => void): Promise<WorkerSession> {
     await this.ready
     if (signal?.aborted) throw Object.assign(new Error("request aborted"), { code: "REQUEST_ABORTED" })
-    // 打开有副作用：保留响应以定位并关闭取消后创建的 runtime，不能丢弃请求。
-    const data = await this.request({
-      type: "session.open",
-      params: { cwd, sessionFile: sessionFile ?? null },
+    // 打开有副作用:超时/取消后保留晚到响应,由 settleLateOpen 关闭孤儿 runtime 并结束租约。
+    let abandoned = false
+    const data = await this.request(
+      { type: "session.open", params: { cwd, sessionFile: sessionFile ?? null } },
+      signal,
+      undefined,
+      {
+        onAbandoned: () => { abandoned = true },
+        onLate: (ok, lateData) => this.settleLateOpen(ok, lateData, onLeaseSettled),
+      },
+    ).catch(error => {
+      // 放弃的请求仍持有租约,由晚到响应或进程退出时统一释放
+      if (abandoned) Object.assign(error, { leaseHeld: true })
+      throw error
     })
     const opened = data as { sessionId?: string; sessionFile?: string; cwd?: string } | undefined
     const sessionId = opened?.sessionId
@@ -440,6 +466,28 @@ class WorkerHostCore {
     return handle
   }
 
+  /** 超时/取消后晚到的 session.open:runtime 无句柄归属则关闭,随后结束租约 */
+  private settleLateOpen(ok: boolean, data: JsonValue | undefined, onSettled?: () => void): void {
+    const sessionId = ok && isJsonObject(data) && typeof data.sessionId === "string" ? data.sessionId : undefined
+    // 已有句柄归属的 sessionId 可能被其他请求复用,绝不关闭
+    if (!sessionId || this.exitHandled || this.handles.has(sessionId)) {
+      onSettled?.()
+      return
+    }
+    diagnostics.record("worker.open.late_closed", {
+      workerPid: this.child.pid, sessionId, reason: "open_abandoned",
+    }, "error")
+    this.request({ type: "session.close" }, undefined, sessionId)
+      .catch(() => undefined)
+      .finally(() => onSettled?.())
+  }
+
+  /** 放弃的请求从未发送到 worker:不会有晚到响应,直接结束其收尾(租约) */
+  private settleUnsentLate(id: string): void {
+    const late = this.lateResponses.get(id)
+    this.lateResponses.delete(id)
+    late?.(false, undefined)
+  }
   /** 迁移句柄在路由表里的 key（runtime 替换后 sessionId 变化时由句柄调用） */
   rebindHandle(handle: WorkerSession, previousSessionId: string, nextSessionId: string): void {
     if (this.handles.get(previousSessionId) === handle) {
@@ -489,6 +537,7 @@ class WorkerHostCore {
     command: { type: string; params?: JsonObject },
     signal?: AbortSignal,
     sessionId?: string,
+    late?: LateResponseHandlers,
   ): Promise<JsonValue | undefined> {
     if (this.exitHandled) return Promise.reject(this.exitError ?? new Error("Pi worker is not available"))
     const id = randomUUID()
@@ -509,6 +558,10 @@ class WorkerHostCore {
           : setTimeout(() => {
               const pending = this.pending.get(id)
               this.pending.delete(id)
+              if (pending && late) {
+                this.lateResponses.set(id, late.onLate)
+                late.onAbandoned()
+              }
               pending?.removeAbort?.()
               // 命令超时——只丢弃这一条命令并落日志，绝不杀进程。
               //
@@ -538,6 +591,10 @@ class WorkerHostCore {
         this.pending.delete(id)
         clearTimeout(timer)
         pending.removeAbort?.()
+        if (late) {
+          this.lateResponses.set(id, late.onLate)
+          late.onAbandoned()
+        }
         reject(Object.assign(new Error("request aborted"), { code: "REQUEST_ABORTED" }))
       }
       pending = { resolve, reject, timer }
@@ -552,6 +609,7 @@ class WorkerHostCore {
           clearTimeout(timer)
           pending.removeAbort?.()
           if (this.exitHandled) reject(this.exitError ?? new Error("Pi worker is not available"))
+          this.settleUnsentLate(id)
           return
         }
         this.child.send({
@@ -568,7 +626,10 @@ class WorkerHostCore {
           reject(error)
         })
       }).catch(error => {
-        if (this.pending.get(id) !== pending) return
+        if (this.pending.get(id) !== pending) {
+          this.settleUnsentLate(id)
+          return
+        }
         this.pending.delete(id)
         clearTimeout(timer)
         pending.removeAbort?.()
@@ -649,7 +710,7 @@ export class WorkerSession {
     return {
       getHandshake: () => core.getHandshake(),
       peekHandshake: () => core.peekHandshake(),
-      open: (cwd, sessionFile, signal) => core.open(cwd, sessionFile, signal),
+      open: (cwd, sessionFile, signal, onLeaseSettled) => core.open(cwd, sessionFile, signal, onLeaseSettled),
       onEvent: listener => core.onEvent(listener),
       onCrash: listener => core.onCrash(listener),
       command: (type, params, signal) => core.command(type, params, signal),

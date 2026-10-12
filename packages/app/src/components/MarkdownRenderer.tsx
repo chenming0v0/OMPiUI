@@ -35,6 +35,8 @@ import {
 } from './htmlSandbox'
 import { getCachedMermaidSvg, getOrRenderMermaidSvg } from './mermaidRenderCache'
 import { inferImageDimensions } from './imageDimensions'
+import i18n from '../i18n'
+import { notificationStore } from '../store/notificationStore'
 
 interface MarkdownRendererProps {
   content: string
@@ -85,15 +87,12 @@ function getCachedHtml(src: string, isReasoning: boolean): string {
   return html
 }
 
-/**
- * live 尾段是否可以只追加到最后一个文本节点。
- * 保守：后缀一旦含 markdown 结构/强调/代码/链接等字符，回退全量 parse+morph。
- */
-function canAppendLiveMarkdownSuffix(suffix: string): boolean {
-  if (!suffix) return false
-  // 排除会改 markdown 结构、math/code，或可能形成 autolink 的字符
-  // （含 :/@/ 时回退全量 parse，避免流式中链接一直是纯文本）
-  return /^[^\n`*_[\]()#>|!~\\<$:/@]+$/.test(suffix)
+/** 只有纯文本单行段落追加时能保持 HTML 结构不变。 */
+function canAppendLiveMarkdownSuffix(suffix: string, nextSrc: string): boolean {
+  if (!suffix || /\s$/.test(suffix)) return false
+  if (nextSrc.includes('\n') || /[`*_[\]()#>|!~\\<$:/@&;]/.test(nextSrc) || /www\./i.test(nextSrc)) return false
+  if (!nextSrc.slice(0, -suffix.length)) return false
+  return !/^[ \t]{0,3}(?:[-+*>|#=~`_]|\d)/.test(nextSrc)
 }
 
 /** 最后一个 Text 是否安全承接追加（不能在 strong/em/a/code 等行内节点里） */
@@ -102,12 +101,13 @@ function canAppendIntoTextNode(textNode: Text): boolean {
   if (!parent) return false
   // 父节点后面还有兄弟时，追加会插在中间，结构不对
   if (parent.lastChild !== textNode) return false
-  // 只允许块级/列表等容器的直接文本；行内格式内追加会把后续字错误包进强调/链接
-  return /^(P|LI|TD|TH|H[1-6]|BLOCKQUOTE|DIV)$/.test(parent.tagName)
+  // 只有纯文本段落的直接文本节点能原样追加后缀。
+  return parent.tagName === 'P' && parent.parentElement?.childElementCount === 1
 }
 
 /** 把纯文本后缀接到 root 内最后一个 Text 节点；失败返回 false */
 function tryAppendLiveText(root: HTMLElement, suffix: string): boolean {
+  if (root.childElementCount !== 1 || root.firstElementChild?.tagName !== 'P') return false
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
   let last: Text | null = null
   let node = walker.nextNode()
@@ -246,9 +246,25 @@ function decodeLocalFileHref(href?: string): string | null {
   }
 }
 
+const LOCAL_ABSOLUTE_PATH_PATTERN = /^(?:[A-Za-z]:[\\/]|\\\\[^\\]|\/[^/])/
+
+/** 仅在用户明确点击时调用;非本地绝对路径(含 file:/javascript: 等 scheme)与打开失败(含 opener ACL 拒绝)均通过 toast 可见 */
 function openLocalFilePath(filePath: string) {
   if (!isTauri()) return
-  import('@tauri-apps/plugin-opener').then(mod => mod.openPath(filePath)).catch(() => {})
+  if (filePath.includes('\0') || !LOCAL_ABSOLUTE_PATH_PATTERN.test(filePath)) {
+    notificationStore.push('error', i18n.t('components:markdown.openLocalFileFailed'), filePath, '')
+    return
+  }
+  import('@tauri-apps/plugin-opener')
+    .then(mod => mod.openPath(filePath))
+    .catch((error: unknown) => {
+      notificationStore.push(
+        'error',
+        i18n.t('components:markdown.openLocalFileFailed'),
+        error instanceof Error ? error.message : String(error),
+        '',
+      )
+    })
 }
 
 function getOrderedListPadding(start: number, itemCount: number): string {
@@ -1288,7 +1304,7 @@ const MarkdownDomBlock = memo(function MarkdownDomBlock({
       renderSrc.startsWith(prevSrc)
     ) {
       const suffix = renderSrc.slice(prevSrc.length)
-      if (canAppendLiveMarkdownSuffix(suffix) && tryAppendLiveText(root, suffix)) {
+      if (canAppendLiveMarkdownSuffix(suffix, renderSrc) && tryAppendLiveText(root, suffix)) {
         appliedSrcRef.current = renderSrc
         // 文本已偏离开 html 快照，强制后续全量路径重算
         appliedHtmlRef.current = null

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TerminalShell, TunnelStatus } from '@ompiui/protocol'
 import { Button } from '../../../components/ui/Button'
@@ -10,7 +10,11 @@ import {
   restartDesktopService,
   startDesktopService,
   stopDesktopService,
+  type DesktopBackgroundStatus,
   type DesktopServiceStatus,
+  getDesktopBackgroundStatus,
+  redactBackgroundError,
+  setDesktopBackgroundSettings,
 } from '../../../services/desktopService'
 import { fetchHostTunnel, listHostShells } from '../../../omp/transport/index.js'
 import { serverStorage } from '../../../utils'
@@ -36,6 +40,39 @@ export function ServiceSettings() {
   const tunnelStatus = currentTunnel?.status
   const [busy, setBusy] = useState<'refresh' | 'stop' | 'start' | 'restart' | null>(null)
   const [error, setError] = useState('')
+  // 后台配置以 native 为唯一持久源;只有保存成功返回后才更新界面,失败保留上一次已生效状态。
+  const [background, setBackground] = useState<DesktopBackgroundStatus | null>(null)
+  const [backgroundBusy, setBackgroundBusy] = useState(false)
+  const [backgroundError, setBackgroundError] = useState('')
+  const backgroundRequest = useRef(0)
+
+  const loadBackground = useCallback(async () => {
+    if (!desktop) return
+    const request = ++backgroundRequest.current
+    try {
+      const next = await getDesktopBackgroundStatus()
+      if (request === backgroundRequest.current) setBackground(next)
+    } catch (reason) {
+      if (request === backgroundRequest.current) {
+        setBackground(null)
+        setBackgroundError(redactBackgroundError(String(reason)))
+      }
+    }
+  }, [desktop])
+
+  const updateBackground = useCallback(async (next: { loginStart: boolean; crashRecovery: boolean }) => {
+    const request = ++backgroundRequest.current
+    setBackgroundBusy(true)
+    setBackgroundError('')
+    try {
+      const saved = await setDesktopBackgroundSettings(next)
+      if (request === backgroundRequest.current) setBackground(saved)
+    } catch (reason) {
+      setBackgroundError(redactBackgroundError(String(reason)))
+    } finally {
+      setBackgroundBusy(false)
+    }
+  }, [])
 
   const refresh = useCallback(async () => {
     if (!desktop) return
@@ -44,12 +81,13 @@ export function ServiceSettings() {
     try {
       const next = await refreshDesktopServiceStatus()
       setStatus(next)
+      await loadBackground()
     } catch (reason) {
       setError(String(reason))
     } finally {
       setBusy(null)
     }
-  }, [desktop])
+  }, [desktop, loadBackground])
 
   const start = useCallback(
     async (operation: 'start' | 'restart') => {
@@ -58,13 +96,14 @@ export function ServiceSettings() {
       try {
         const outcome = await (operation === 'start' ? startDesktopService() : restartDesktopService())
         setStatus(outcome.status)
+        await loadBackground()
       } catch (reason) {
         setError(String(reason))
       } finally {
         setBusy(null)
       }
     },
-    [],
+    [loadBackground],
   )
 
   const stop = useCallback(async () => {
@@ -72,17 +111,47 @@ export function ServiceSettings() {
     setError('')
     try {
       setStatus(await stopDesktopService())
+      await loadBackground()
     } catch (reason) {
       setError(String(reason))
     } finally {
       setBusy(null)
     }
-  }, [])
+  }, [loadBackground])
 
   useEffect(() => {
     const timer = window.setTimeout(() => void refresh(), 0)
     return () => window.clearTimeout(timer)
   }, [refresh])
+
+  useEffect(() => {
+    if (!desktop || backgroundBusy || busy) return
+    const timer = window.setInterval(() => void loadBackground(), 5_000)
+    return () => window.clearInterval(timer)
+  }, [desktop, backgroundBusy, busy, loadBackground])
+
+  useEffect(() => () => { backgroundRequest.current += 1 }, [])
+
+  // 环境变量变化后,把当前后台开关连同最新 envVars 写回 native,使后台启动与 GUI 使用同一份配置。
+  // 首次拿到后台状态时只记录基线,不触发写入。
+  const envSignature = JSON.stringify(serviceStore.envVarsRecord)
+  const syncedEnvSignature = useRef<string | null>(null)
+  const backgroundSupported = background?.supported ?? false
+  const backgroundLoginStart = background?.loginStart ?? false
+  const backgroundCrashRecovery = background?.crashRecovery ?? false
+  useEffect(() => {
+    if (!desktop || !backgroundSupported) return
+    if (syncedEnvSignature.current === null) {
+      syncedEnvSignature.current = envSignature
+      return
+    }
+    if (syncedEnvSignature.current === envSignature) return
+    const timer = window.setTimeout(() => {
+      syncedEnvSignature.current = envSignature
+      void updateBackground({ loginStart: backgroundLoginStart, crashRecovery: backgroundCrashRecovery })
+    }, 600)
+    return () => window.clearTimeout(timer)
+  }, [desktop, backgroundSupported, backgroundLoginStart, backgroundCrashRecovery, envSignature, updateBackground])
 
   // 加载主机 shells：请求-响应模式，loading/选中值需与请求同步设置
   /* eslint-disable react-hooks/set-state-in-effect */
@@ -307,6 +376,57 @@ export function ServiceSettings() {
       >
         <Toggle enabled={autoStart} onChange={() => serviceStore.setAutoStart(!autoStart)} />
       </SettingRow>
+
+      {background?.supported && (
+        <>
+          <SettingRow
+            label={t('service.backgroundLoginStart')}
+            description={t('service.backgroundLoginStartDesc')}
+            disabled={backgroundBusy}
+            onClick={() => void updateBackground({ loginStart: !background.loginStart, crashRecovery: background.crashRecovery })}
+          >
+            <Toggle
+              enabled={background.loginStart}
+              disabled={backgroundBusy}
+              onChange={() => void updateBackground({ loginStart: !background.loginStart, crashRecovery: background.crashRecovery })}
+            />
+          </SettingRow>
+
+          <SettingRow
+            label={t('service.backgroundCrashRecovery')}
+            description={t('service.backgroundCrashRecoveryDesc')}
+            disabled={backgroundBusy}
+            onClick={() => void updateBackground({ loginStart: background.loginStart, crashRecovery: !background.crashRecovery })}
+          >
+            <Toggle
+              enabled={background.crashRecovery}
+              disabled={backgroundBusy}
+              onChange={() => void updateBackground({ loginStart: background.loginStart, crashRecovery: !background.crashRecovery })}
+            />
+          </SettingRow>
+
+          <SettingRow
+            label={t('service.backgroundLifecycle')}
+            description={background.lastError ?? undefined}
+            disabled={backgroundBusy}
+          >
+            <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5 text-[length:var(--fs-xs)] text-text-300">
+              <span>{t(`service.backgroundState.${background.lifecycle}`)}</span>
+              {background.pid ? <span className="font-mono text-text-500">{t('service.backgroundPid', { pid: background.pid })}</span> : null}
+              {(background.lifecycle === 'running' || background.lifecycle === 'recovering') && (
+                <Button size="sm" variant="ghost" onClick={() => void stop()} disabled={isBusy}>
+                  <StopIcon size={12} className="mr-1" />
+                  {t('common:stop')}
+                </Button>
+              )}
+            </div>
+          </SettingRow>
+        </>
+      )}
+      {desktop && background && !background.supported && (
+        <div className="text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('service.backgroundUnsupported')}</div>
+      )}
+      {backgroundError && <p className="break-all text-[length:var(--fs-xs)] text-danger-100">{backgroundError}</p>}
 
       <SettingRow
         label={t('service.useSystemPiSdk')}

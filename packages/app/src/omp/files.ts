@@ -161,7 +161,11 @@ export async function getFileContent(path: string, directory?: string): Promise<
 }
 
 export async function saveFile(path: string, content: Pick<FileReadResponse, 'content'> & Partial<FileReadResponse>, directory?: string): Promise<FileReadResponse> {
+  const generation = serverStore.getActiveServerGeneration()
   const workspacePath = await requireWorkspacePath(directory)
+  if (generation !== serverStore.getActiveServerGeneration()) {
+    throw new Error('The server changed before the file could be saved')
+  }
   const relative = toPiRelativePath(path, directory)
   const saved = await writeHostFile(
     workspacePath,

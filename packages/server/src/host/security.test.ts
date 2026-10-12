@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import type { IncomingMessage } from "node:http"
 import { describe, it } from "node:test"
+import { parseTrustedProxies } from "@ompiui/relay"
 import { pairingClientKey, requestHasAllowedOrigin, TUNNEL_FORWARDING_HEADER } from "./security.ts"
 
 function reqWith(headers: Record<string, string>): IncomingMessage {
@@ -38,6 +39,38 @@ describe("pairingClientKey", () => {
       [TUNNEL_FORWARDING_HEADER]: token,
       "x-forwarded-for": "2001:db8::5",
     }), token), "relay:2001:db8::5")
+  })
+
+  it("ignores X-Forwarded-For from untrusted direct peers, even without a tunnel token", () => {
+    const trusted = parseTrustedProxies(["127.0.0.1"])
+    assert.equal(pairingClientKey(request("198.51.100.9", { "x-forwarded-for": "203.0.113.1" }), undefined, trusted), "198.51.100.9")
+    assert.equal(pairingClientKey(request("198.51.100.9", { "x-forwarded-for": "203.0.113.1" })), "198.51.100.9")
+  })
+
+  it("honors X-Forwarded-For only from a trusted proxy and resolves the rightmost untrusted hop", () => {
+    const trusted = parseTrustedProxies(["127.0.0.1", "10.0.0.0/8"])
+    assert.equal(
+      pairingClientKey(request("127.0.0.1", { "x-forwarded-for": "6.6.6.6, 198.51.100.7" }), undefined, trusted),
+      "proxy:198.51.100.7",
+    )
+    assert.equal(
+      pairingClientKey(request("127.0.0.1", { "x-forwarded-for": "198.51.100.7, 10.1.2.3" }), undefined, trusted),
+      "proxy:198.51.100.7",
+    )
+  })
+
+  it("falls back to the proxy peer when the forwarded chain is malformed", () => {
+    const trusted = parseTrustedProxies(["127.0.0.1"])
+    assert.equal(pairingClientKey(request("127.0.0.1", { "x-forwarded-for": "198.51.100.7, bogus" }), undefined, trusted), "127.0.0.1")
+    assert.equal(pairingClientKey(request("127.0.0.1", { "x-forwarded-for": ["198.51.100.7"] }), undefined, trusted), "127.0.0.1")
+  })
+
+  it("keeps the internal tunnel path working when direct trusted proxies are configured", () => {
+    const trusted = parseTrustedProxies(["10.0.0.0/8"])
+    assert.equal(
+      pairingClientKey(request("127.0.0.1", { [TUNNEL_FORWARDING_HEADER]: token, "x-forwarded-for": "198.51.100.7" }), token, trusted),
+      "relay:198.51.100.7",
+    )
   })
 })
 

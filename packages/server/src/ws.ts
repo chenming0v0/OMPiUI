@@ -42,7 +42,12 @@ export interface EventWebSocketOptions {
 }
 
 export function attachEventWebSocket(server: HttpServer, options: EventWebSocketOptions) {
-  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES })
+  const wss = new WebSocketServer({
+    noServer: true,
+    maxPayload: MAX_MESSAGE_BYTES,
+    // 只协商本服务声明的子协议;未声明子协议的客户端照常握手(不带协议头)
+    handleProtocols: protocols => (protocols.has(EVENT_WS_SUBPROTOCOL) ? EVENT_WS_SUBPROTOCOL : false),
+  })
   const eventHub = options.eventHub
   const authToken = options.authToken === undefined ? resolveAuthToken() : options.authToken
   const terminalConnections = new WeakMap<IncomingMessage, { terminalId: string; workspacePath: string }>()
@@ -63,6 +68,13 @@ export function attachEventWebSocket(server: HttpServer, options: EventWebSocket
     const isEventPath = url.pathname === "/api/v1/events"
     if ((!isEventPath && !terminalMatch) || !requestHasAllowedOrigin(req, options.allowedOrigins) || !hasToken) {
       socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+      socket.destroy()
+      return
+    }
+    const offered = req.headers["sec-websocket-protocol"]
+    if (isEventPath && offered !== undefined && !String(offered).split(",").some(name => name.trim() === EVENT_WS_SUBPROTOCOL)) {
+      // 客户端声明了其它子协议:明确拒绝,而不是 ws 默认的回显行为
+      socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
       socket.destroy()
       return
     }

@@ -16,7 +16,7 @@
   "code": "Error code",
   "session": "Session",
   "collecting": "Collecting redacted diagnostic logs…",
-  "complete": "Collected {{files}} log files. Conversation text, tool output, tokens and private URLs are excluded.",
+  "complete": "Collected {{files}} log files. Conversation text, tool output, tokens, private URLs, error messages and arbitrary console text are excluded; backend log lines keep only fixed lifecycle labels.",
   "incomplete": "This report is incomplete: some backend logs are unavailable or outside retention/collection limits. Client records are retained; collect again after reconnecting.",
   "restoreMissing": "The full report has not been restored from local storage. Resuming upload is disabled. Collect again or save the current summary.",
   "preview": "Preview redacted report",

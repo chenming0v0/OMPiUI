@@ -7,3 +7,10 @@
 export * from "./protocol.ts"
 export { BodySink, type BodySource } from "./sink.ts"
 export { startRelay, type RunningRelay, type StartRelayOptions } from "./relay.ts"
+export {
+  isTrustedProxy,
+  parseTrustedProxies,
+  parseTrustedProxyEntry,
+  resolveForwardedClient,
+  type TrustedProxies,
+} from "./trusted-proxy.ts"

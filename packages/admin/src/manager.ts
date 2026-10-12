@@ -33,6 +33,16 @@ export interface ServiceStatus {
   error: string | null
 }
 
+/** 后端 shutdown 预算:server 端 cleanupTimeoutMs 为 20s,留 5s 余量后才允许强杀。 */
+const STOP_GRACE_MS = 25_000
+
+function waitForExit(exited: Promise<void>, ms: number): Promise<boolean> {
+  return new Promise(resolve => {
+    const handle = setTimeout(() => resolve(false), ms)
+    void exited.then(() => { clearTimeout(handle); resolve(true) })
+  })
+}
+
 export class ServiceManager {
   private readonly env: NodeJS.ProcessEnv
   private config: AdminConfig
@@ -192,10 +202,34 @@ export class ServiceManager {
     })
   }
 
+  /**
+   * Ask this exact child to shut down through its authenticated HTTP endpoint.
+   * The health probe must report the child's own pid first, so a stale or
+   * foreign listener on the configured URL is never sent the shutdown request.
+   */
+  private async requestGracefulShutdown(child: ChildProcess): Promise<boolean> {
+    const token = readBackendToken(this.backendEnv())
+    if (!token) return false
+    const health = await this.probeBackend("/api/v1/host/health")
+    if (!health.ok || typeof health.body !== "object" || health.body === null) return false
+    if (!("processId" in health.body) || health.body.processId !== child.pid) return false
+    try {
+      const response = await fetch(`${this.config.serverUrl}/api/v1/host/shutdown`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        redirect: "error",
+        signal: AbortSignal.timeout(2_000),
+      })
+      return response.ok
+    } catch {
+      return false
+    }
+  }
+
   async stop(): Promise<void> {
     this.startEpoch += 1
     const child = this.child
-    if (!child || child.exitCode !== null) {
+    if (!child || child.exitCode !== null || child.signalCode !== null) {
       this.lifecycle = "stopped"
       this.withdrawOwner()
       this.pokeIdle()
@@ -203,13 +237,21 @@ export class ServiceManager {
     }
     this.stopping = true
     const exited = new Promise<void>(resolve => { child.once("exit", () => resolve()) })
-    child.kill("SIGTERM")
-    const graceTimer = new Promise<false>(resolve => {
-      const handle = setTimeout(() => resolve(false), 5_000)
-      handle.unref?.()
-    })
-    const graceful = await Promise.race([exited.then(() => true), graceTimer])
-    if (!graceful && child.exitCode === null) {
+    const alive = () => child.exitCode === null && child.signalCode === null
+    // 优先走后端自己的鉴权关闭接口:它先关监听、排空连接、dispose worker。
+    // Windows 的 child.kill() 是 TerminateProcess,不是优雅信号,所以只在 POSIX 上把 SIGTERM 当作 HTTP 不可达时的退路。
+    let stalled: string | null = null
+    if (await this.requestGracefulShutdown(child)) {
+      if (!(await waitForExit(exited, STOP_GRACE_MS))) stalled = `backend did not exit within ${STOP_GRACE_MS / 1000}s after graceful shutdown`
+    } else if (process.platform !== "win32") {
+      child.kill("SIGTERM")
+      if (!(await waitForExit(exited, STOP_GRACE_MS))) stalled = `backend did not exit within ${STOP_GRACE_MS / 1000}s after SIGTERM`
+    } else {
+      stalled = "graceful shutdown endpoint was unreachable on Windows"
+    }
+    if (alive()) {
+      // 强杀必须在状态里可见,而不是伪装成正常 stopped。
+      this.error = `forced stop with SIGKILL: ${stalled ?? "backend still running"}`
       child.kill("SIGKILL")
       await exited
     }

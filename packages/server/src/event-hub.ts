@@ -24,6 +24,7 @@ interface StreamState {
 export class EventHub {
   private readonly listeners = new Set<Listener>()
   private readonly streams = new Map<string, StreamState>()
+  private readonly emptyEpoch = randomUUID()
 
   constructor(private readonly historyLimit = 256) {}
 
@@ -59,8 +60,8 @@ export class EventHub {
   }
 
   getCursor(stream: EventStreamRef): EventCursor {
-    const state = this.getOrCreate(stream)
-    return { epoch: state.epoch, sequence: state.sequence }
+    const state = this.streams.get(eventStreamKey(stream))
+    return state ? { epoch: state.epoch, sequence: state.sequence } : { epoch: this.emptyEpoch, sequence: 0 }
   }
 
   getCursorMap(streams: EventStreamRef[]): EventCursorMap {
@@ -71,8 +72,20 @@ export class EventHub {
     stream: EventStreamRef,
     cursor?: EventCursor,
   ): { events: EventEnvelope[]; resyncRequired: boolean; reason?: EventResyncReason } {
-    const state = this.getOrCreate(stream)
+    const state = this.streams.get(eventStreamKey(stream))
+    if (!state) {
+      if (!cursor) return { events: [], resyncRequired: true, reason: "missing_cursor" }
+      if (cursor.epoch !== this.emptyEpoch) return { events: [], resyncRequired: true, reason: "epoch_mismatch" }
+      if (cursor.sequence !== 0) return { events: [], resyncRequired: true, reason: "future_cursor" }
+      return { events: [], resyncRequired: false }
+    }
     if (!cursor) return { events: [], resyncRequired: true, reason: "missing_cursor" }
+    if (cursor.epoch === this.emptyEpoch && cursor.sequence === 0) {
+      const first = state.history[0]?.cursor.sequence ?? state.sequence + 1
+      return first === 1
+        ? { events: [...state.history], resyncRequired: false }
+        : { events: [], resyncRequired: true, reason: 'history_expired' }
+    }
     if (cursor.epoch !== state.epoch) return { events: [], resyncRequired: true, reason: "epoch_mismatch" }
     if (cursor.sequence > state.sequence) return { events: [], resyncRequired: true, reason: "future_cursor" }
     const oldest = state.history[0]?.cursor.sequence ?? state.sequence + 1
@@ -90,22 +103,24 @@ export class EventHub {
     state.history.length = 0
   }
 
+
   private getOrCreate(stream: EventStreamRef): StreamState {
     const key = eventStreamKey(stream)
     const existing = this.streams.get(key)
     if (existing) {
-      // Keep active streams recent so arbitrary client stream ids cannot pin
-      // every historical stream in the process forever.
       this.streams.delete(key)
       this.streams.set(key, existing)
       return existing
     }
+    // Only server publications create history. Arbitrary client subscriptions
+    // cannot consume slots, pin entries, or evict another client's cursor.
     if (this.streams.size >= MAX_STREAMS) {
       const oldest = this.streams.keys().next().value
-      if (typeof oldest === "string") this.streams.delete(oldest)
+      if (oldest !== undefined) this.streams.delete(oldest)
     }
     const state: StreamState = { stream, epoch: randomUUID(), sequence: 0, history: [] }
     this.streams.set(key, state)
     return state
   }
+
 }

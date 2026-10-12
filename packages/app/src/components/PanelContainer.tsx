@@ -19,6 +19,7 @@ import {
   TerminalIcon
 } from './Icons'
 import { layoutStore, useLayoutStore, type PanelTab, type PanelPosition, type PanelTabType } from '../store/layoutStore'
+import { confirmDiscardUnsavedFileChanges } from '../store/unsavedFileStore'
 import { getInternalDragSnapshot, startInternalDrag, subscribeInternalDrag, subscribeInternalDrop } from '../lib/internalDragCore'
 import { useDragEdgeAutoScroll } from '../hooks/useDragEdgeAutoScroll'
 import { IconButton } from './ui/IconButton'
@@ -200,6 +201,7 @@ export const PanelContainer = memo(function PanelContainer({
   const handleCloseTab = useCallback(
     (tabId: string, tab: PanelTab, e: React.MouseEvent) => {
       e.stopPropagation()
+      if (tab.type === 'files' && !confirmDiscardUnsavedFileChanges(tabId)) return
       if (tab.type === 'terminal' && onCloseTerminal) {
         void onCloseTerminal(tab.terminalId ?? tab.id)
       }

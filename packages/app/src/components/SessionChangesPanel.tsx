@@ -14,6 +14,7 @@ import { ViewModeSwitch } from './FullscreenViewer'
 import { getHostGitDiff, getHostGitFileDiff, getHostGitInfo } from '../omp/transport/index.js'
 import { resolveWorkspacePath } from '../omp/workspaces'
 import type { GitDiffItem, GitInfoResponse } from '@ompiui/protocol'
+import { confirmDiscardUnsavedFileChanges } from '../store/unsavedFileStore'
 
 /** List row: git.diff item, optionally enriched with the lazy git.fileDiff patch. */
 type ChangeDiff = GitDiffItem & { patch?: string }
@@ -559,6 +560,8 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
     if (!fileContextMenu) return
     const file = fileContextMenu.file
     const name = file.split(/[/\\]/).pop() || file
+    // 跨面板直写 layoutStore 会替换 Files 预览;必须先经过统一草稿守卫,拒绝则不改动任何状态。
+    if (!confirmDiscardUnsavedFileChanges()) return
     layoutStore.openFilePreview({ path: file, name }, position)
     setFileContextMenu(null)
   }, [fileContextMenu, position])

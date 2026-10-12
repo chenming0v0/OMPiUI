@@ -69,12 +69,10 @@ export function useChildSessions(
       if (timer) clearTimeout(timer)
       timer = setTimeout(load, 400)
     }
-    window.addEventListener('omompiui:sessions-changed', onChanged)
     window.addEventListener('ompiui:sessions-changed', onChanged)
     return () => {
       cancelled = true
       if (timer) clearTimeout(timer)
-      window.removeEventListener('omompiui:sessions-changed', onChanged)
       window.removeEventListener('ompiui:sessions-changed', onChanged)
     }
   }, [parentPath, parentSession])

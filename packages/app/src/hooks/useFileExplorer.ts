@@ -21,6 +21,7 @@ import { useAutoRefresh } from './useAutoRefresh'
 import { resolveWorkspacePath } from '../omp/workspaces'
 import { piEventStream } from '../omp/eventStream.js'
 import { useServerStore } from './useServerStore'
+import { serverStore } from '../store/serverStore'
 
 export interface FileTreeNode extends FileNodeDto {
   /** workspace root + relative path, for drag/context actions */
@@ -80,7 +81,7 @@ export interface UseFileExplorerResult {
 export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileExplorerResult {
   const { directory, autoLoad = true, sessionId, consumerId = 'file-explorer' } = options
   const { t } = useTranslation(['components'])
-  const { activeServer } = useServerStore()
+  const { activeServer, activeServerGeneration } = useServerStore()
   const changeMode = useSessionChangeScope(sessionId ?? null)
   const directoryRef = useRef(directory)
   useEffect(() => {
@@ -97,7 +98,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
       }).catch(() => undefined)
     }
     return () => { cancelled = true }
-  }, [directory])
+  }, [directory, activeServerGeneration])
 
   useEffect(() => {
     if (!directory) return
@@ -335,6 +336,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
   const loadPreview = useCallback(
     async (path: string) => {
       if (!directory) return
+      const generation = activeServerGeneration
 
       const loadId = ++previewLoadIdRef.current
       previewPathRef.current = path
@@ -354,7 +356,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
 
       try {
         const content = await getFileContent(path, directory)
-        if (loadId !== previewLoadIdRef.current) return
+        if (loadId !== previewLoadIdRef.current || generation !== serverStore.getActiveServerGeneration()) return
         previewCacheRef.current.set(path, content)
         setPreviewContent(content)
       } catch (e) {
@@ -367,7 +369,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
         }
       }
     },
-    [directory, t],
+    [directory, activeServerGeneration, t],
   )
 
   const clearPreview = useCallback(() => {
@@ -380,6 +382,9 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
 
   const savePreview = useCallback(async (path: string, text: string, etag?: string, force = false) => {
     if (!directory) throw new Error('No workspace is available')
+    if (activeServerGeneration !== serverStore.getActiveServerGeneration()) {
+      throw new Error(t('fileExplorer.serverChanged', { defaultValue: 'The server changed. Reopen the file before saving this draft.' }))
+    }
     const current = previewCacheRef.current.get(path) ?? (previewPathRef.current === path ? previewContent : null)
     if (!current || current.type !== 'text') throw new Error('Only text files can be edited')
     const scopeId = previewScopeIdRef.current
@@ -395,7 +400,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
     previewCacheRef.current.set(path, saved)
     if (previewPathRef.current === path && previewLoadIdRef.current === loadId) setPreviewContent(saved)
     return saved
-  }, [directory, previewContent])
+  }, [directory, previewContent, activeServerGeneration, t])
 
   // 刷新
   const refresh = useCallback(async () => {
@@ -515,7 +520,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
     setPreviewError(null)
     setPreviewLoading(false)
     return () => { previewScopeIdRef.current += 1 }
-  }, [directory, sessionId])
+  }, [directory, sessionId, activeServerGeneration])
   /* eslint-enable react-hooks/set-state-in-effect */
 
   return {

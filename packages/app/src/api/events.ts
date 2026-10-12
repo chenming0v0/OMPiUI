@@ -41,15 +41,19 @@ function mapHealthToState(health: ServerHealth | null): ConnectionState {
 
 let tracking = false
 let serverSwitchPending = false
+// Last real auth rejection (401). Reconnect/offline churn must not erase it.
+let lastAuthError: string | undefined
 
 function syncFromStore(): void {
   const health = serverStore.getHealth(serverStore.getActiveServerId())
   const previousState = connectionInfo.state
   const nextState = mapHealthToState(health)
+  if (health?.status === 'unauthorized') lastAuthError = health.error ?? lastAuthError
+  else if (!health || health.status === 'online') lastAuthError = undefined
   connectionInfo = {
     ...connectionInfo,
     state: nextState,
-    error: health?.error,
+    error: lastAuthError ?? health?.error,
     lastEventTime: health?.lastCheck ?? connectionInfo.lastEventTime,
   }
   if (previousState !== 'connected' && nextState === 'connected') {

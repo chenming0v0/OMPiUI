@@ -36,6 +36,26 @@
     "fs:default",
     "fs:allow-read-file",
     "fs:allow-write-file",
-    "opener:default"
+    "opener:default",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [{ "path": "**" }],
+      "deny": [
+        { "path": "**/*.exe" },
+        { "path": "**/*.bat" },
+        { "path": "**/*.cmd" },
+        { "path": "**/*.com" },
+        { "path": "**/*.msi" },
+        { "path": "**/*.ps1" },
+        { "path": "**/*.vbs" },
+        { "path": "**/*.js" },
+        { "path": "**/*.jse" },
+        { "path": "**/*.wsf" },
+        { "path": "**/*.lnk" },
+        { "path": "**/*.scr" },
+        { "path": "**/*.sh" },
+        { "path": "**/*.app" }
+      ]
+    }
   ]
 }

@@ -12,8 +12,8 @@ import { OmpRpcClient, unwrapResponse } from "./rpc-client.js"
 import { detectOmpVersion } from "./omp-version.js"
 import { OMP_SDK_VERSION } from "./constants.js"
 import { buildSessionTreeFromEntries } from "../runtime/session-tree.js"
-import { assertOmpSessionFile, isManagedSessionFile, managedSessionsRoot, ompSessionsRoot } from "./managed-sessions.js"
-import { ompAgentDirectory } from "./omp-directories.js"
+import { assertOmpSessionFile, isManagedSessionFile, isOmpSessionFile, managedSessionsRoot, ompSessionRootFor, ompSessionRoots } from "./managed-sessions.js"
+import { ompAgentDirectory, ompChildEnv } from "./omp-directories.js"
 import { sessionConfigFromBranch } from "./session-config.js"
 import { BranchPageReader } from "../runtime/branch-pages.js"
 import { resolveOmpConfigCommand, type OmpConfigCommand } from "./omp-config-command.js"
@@ -58,9 +58,6 @@ function childSessionDir(parentSessionFile: string): string | null {
   return target.slice(0, -".jsonl".length)
 }
 
-function sessionsRoot(): string {
-  return ompSessionsRoot()
-}
 
 /** 磁盘预览丢弃的元数据条目（与 OmpRpcSession.adaptEntry 的丢弃清单一致） */
 const DROPPED_META_ENTRY_TYPES = new Set(["title", "title_change", "model_usage", "session", "session_init"])
@@ -280,8 +277,12 @@ function readSubagentTitles(parentSessionFile: string): Map<string, string> {
 
 function listSessionFiles(): string[] {
   const files: string[] = []
-  for (const root of [sessionsRoot(), managedSessionsRoot()]) {
+  for (const root of [...ompSessionRoots(), managedSessionsRoot()]) {
     if (!existsSync(root)) continue
+    // 配置的 PI_CODING_AGENT_SESSION_DIR 为扁平目录(官方 CLI 直接写入该目录,不建 cwd 子目录)。
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (entry.isFile() && entry.name.endsWith(".jsonl")) files.push(path.join(root, entry.name))
+    }
     for (const dir of readdirSync(root, { withFileTypes: true })) {
       if (!dir.isDirectory()) continue
       const dirPath = path.join(root, dir.name)
@@ -397,6 +398,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
 
   async previewSession(cwd: string, sessionFile: string, params: DiskPageParams = {}): Promise<JsonValue> {
     const target = resolveUserPath(sessionFile)
+    assertOmpSessionFile(target)
     const summary = await summarizeSessionFileCached(target)
     if (!summary) throw Object.assign(new Error("session file not found"), { code: "SESSION_NOT_FOUND" })
     return this.previewSummary(summary, params, await detectOmpVersion() ?? OMP_SDK_VERSION)
@@ -556,6 +558,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
    * 与 OMP 子代理落盘布局一致）。顶层列表刻意不扫这一层，避免刷屏主列表。
    */
   async listChildSessions(parentSessionFile: string): Promise<JsonValue> {
+    assertOmpSessionFile(resolveUserPath(parentSessionFile))
     const dir = childSessionDir(parentSessionFile)
     if (!dir || !existsSync(dir)) return []
     let names: string[] = []
@@ -578,7 +581,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
    */
   async findSessionByFile(sessionFile: string): Promise<JsonObject | null> {
     const target = resolveUserPath(sessionFile)
-    if (!target.endsWith(".jsonl")) return null
+    if (!target.endsWith(".jsonl") || !isOmpSessionFile(target)) return null
     const summary = await summarizeSessionFileCached(target)
     if (!summary) return null
     return { id: summary.id, cwd: summary.cwd, sessionFile: summary.path, name: summary.name }
@@ -592,7 +595,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     const top = await this.summarizeAll()
     const hit = top.find(item => item.id === sessionId)
     if (hit) return { id: hit.id, cwd: hit.cwd, sessionFile: hit.path }
-    for (const root of [sessionsRoot(), managedSessionsRoot()]) {
+    for (const root of [...ompSessionRoots(), managedSessionsRoot()]) {
       if (!existsSync(root)) continue
       let projects: string[] = []
       try {
@@ -631,7 +634,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
 
   async deleteSession(cwd: string, sessionFile: string): Promise<void> {
     const target = resolveUserPath(sessionFile)
-    const root = path.resolve(isManagedSessionFile(target) ? managedSessionsRoot() : sessionsRoot())
+    const root = path.resolve(isManagedSessionFile(target) ? managedSessionsRoot() : ompSessionRootFor(target))
     if (!existsSync(target)) return
     const realRoot = await fs.realpath(root)
     const realTarget = await fs.realpath(target)
@@ -685,7 +688,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     return await new Promise<string>((resolve, reject) => {
       const child = spawn(command, [...args, ...cliArgs], {
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, ...(process.env.OMP_AGENT_DIR ? { PI_CODING_AGENT_DIR: process.env.OMP_AGENT_DIR } : {}) },
+        env: { ...process.env, ...ompChildEnv() },
         shell: false,
         windowsHide: true,
       })
@@ -809,7 +812,7 @@ function notFoundError(message: string): Error {
 export async function readChildSessionMessages(sessionFile: string): Promise<JsonObject[]> {
   const target = resolveUserPath(sessionFile)
   if (!target.endsWith(".jsonl")) throw notFoundError("session file not found")
-  const root = path.resolve(isManagedSessionFile(target) ? managedSessionsRoot() : sessionsRoot())
+  const root = path.resolve(isManagedSessionFile(target) ? managedSessionsRoot() : ompSessionRootFor(target))
   let realRoot = root
   try {
     realRoot = await fs.realpath(root)

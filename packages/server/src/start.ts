@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Server as HttpServer } from "node:http"
 import type { TunnelStatus } from "@ompiui/protocol"
+import { parseTrustedProxies, parseTrustedProxyEntry } from "@ompiui/relay"
 import { authTokenPath, ensureCursorSecretEnv, resolveAuthToken } from "./host/auth-token.ts"
 import { enableFileLogging, logToFile, dataRoot } from "./logger.ts"
 import { diagnostics, diagnosticErrorCode } from "./diagnostics/recorder.ts"
@@ -44,6 +45,11 @@ export interface ServerConfig {
    * 浏览器/OMPiUI App 经中转的公网地址访问本服务——无需公网 IP/端口转发。
    */
   tunnel: TunnelConfig | null
+  /**
+   * 可信反向代理列表(OMPIUI_TRUSTED_PROXIES),已校验。只影响配对限速的客户端
+   * 桶键:对端不在列表内时 XFF 一律忽略。
+   */
+  trustedProxies: readonly string[]
 }
 
 export interface ServerConfigOverrides {
@@ -56,6 +62,11 @@ export interface ServerConfigOverrides {
   tunnelUrl?: string | null
   tunnelKey?: string | null
   tunnelId?: string | null
+  /**
+   * 直连反代(无隧道)时可信的代理 IP/CIDR;默认空。仅当 TCP 对端属于该列表时
+   * 才采纳 X-Forwarded-For。对应 OMPIUI_TRUSTED_PROXIES / --trusted-proxy。
+   */
+  trustedProxies?: readonly string[] | string | null
   /**
    * 是否以 self-spawn 方式孵化 worker（bun 打包的单文件 exe 无法 fork，
    * worker = 同一个 exe 加 --omp-worker 再拉一个自己）。由 bundle-entry
@@ -109,6 +120,9 @@ export function resolveServerConfig(
     overrides.tunnelKey !== undefined ? overrides.tunnelKey : env.OMPIUI_TUNNEL_KEY?.trim() || null,
     overrides.tunnelId !== undefined ? overrides.tunnelId : env.OMPIUI_TUNNEL_ID?.trim() || null,
   )
+  const trustedProxies = resolveTrustedProxyList(
+    overrides.trustedProxies !== undefined ? overrides.trustedProxies : env.OMPIUI_TRUSTED_PROXIES,
+  )
 
   return {
     host,
@@ -119,7 +133,29 @@ export function resolveServerConfig(
     authToken: overrides.authToken,
     publicBaseUrl,
     tunnel,
+    trustedProxies,
   }
+}
+
+/**
+ * OMPIUI_TRUSTED_PROXIES(逗号分隔的 IP 或 CIDR)。默认空:不信任任何 XFF。
+ * 非法项告警并跳过,不影响其它合法项。
+ */
+function resolveTrustedProxyList(raw: string | readonly string[] | null | undefined): string[] {
+  const entries = (typeof raw === "string" ? raw.split(",") : (raw ?? []))
+    .map(entry => entry.trim())
+    .filter(entry => entry.length > 0)
+  const valid: string[] = []
+  for (const entry of entries) {
+    if (parseTrustedProxyEntry(entry)) valid.push(entry)
+    else {
+      console.warn(
+        `[ompiui-server] ignoring invalid trusted proxy entry: ${entry} ` +
+          "(expected an IP or CIDR, e.g. 127.0.0.1 or 10.0.0.0/8)",
+      )
+    }
+  }
+  return valid
 }
 
 /**
@@ -165,6 +201,7 @@ export function parseWebArgs(args: string[]): WebCliOptions {
     else if (name === "--tunnel-url") options.tunnelUrl = value
     else if (name === "--tunnel-key") options.tunnelKey = value
     else if (name === "--tunnel-id") options.tunnelId = value
+    else if (name === "--trusted-proxy") options.trustedProxies = [...(options.trustedProxies ?? []), ...value.split(",")]
     else throw new Error(`unknown web option: ${arg}`)
   }
   return options
@@ -176,6 +213,8 @@ export function printWebHelp(): void {
 Options:
   --host <host>       Listen address (default: 127.0.0.1)
   --port <port>       Listen port (default: 8787)
+  --trusted-proxy <list> Comma-separated IP/CIDR of reverse proxies whose X-Forwarded-For
+                      is honored for pairing rate limits (default: none)
   --web-root <path>   Serve a specific web build directory
   --api-only          Disable SPA hosting while keeping the same service
   --public-base-url <url>  Public entry URL (e.g. https://panel.example.com)
@@ -234,6 +273,7 @@ export async function startOmpiUiServer(
     getTunnelStatus,
     pairing,
     tunnelForwardingToken,
+    trustedProxies: parseTrustedProxies(config.trustedProxies),
     tailscale,
     staticRoot: config.webRoot ?? undefined,
     onShutdown: () => shutdownHook?.(),

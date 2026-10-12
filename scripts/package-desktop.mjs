@@ -17,18 +17,38 @@ const args = process.argv.slice(2)
 const skipBuild = args.includes("--skip-build")
 const target = args.find((arg, i) => args[i - 1] === "--target") ?? "bun-windows-x64"
 
+// npm 在 Windows 上的入口是 npm.cmd(cmd 批处理),shell:false 时无法直接执行,
+// 也不能为此开启 shell(参数会被 cmd.exe 按空格拆分)。与 scripts/test-mock.mjs 一致:
+// 通过 npm_execpath 指向的 npm-cli.js 交给 node 执行。
+function npmInvocation() {
+  const execPath = process.env.npm_execpath
+  if (execPath && /npm-cli\.(c?js|mjs)$/i.test(execPath)) {
+    return { command: process.execPath, prefix: [execPath] }
+  }
+  if (process.platform !== "win32") return { command: "npm", prefix: [] }
+  // 未经 npm 启动时没有 npm_execpath:按 node.exe 同级的标准安装布局定位 npm-cli.js。
+  const bundled = join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js")
+  if (existsSync(bundled)) return { command: process.execPath, prefix: [bundled] }
+  throw new Error("cannot locate npm-cli.js: run through `npm run package:desktop` or install npm next to node.exe")
+}
+
+
+// 全部调用目标都是真实可执行文件(node、npm-cli.js 经 node、bun、go),
+// 因此 shell:false:参数数组原样进入子进程 argv,空格与 CJK 路径不会被拆分。
 const run = (command, cmdArgs, options = {}) => {
-  console.info(`$ ${command} ${cmdArgs.join(" ")}`)
-  execFileSync(command, cmdArgs, { cwd: repoRoot, stdio: "inherit", shell: process.platform === "win32", ...options })
+  console.info(`$ ${[command, ...cmdArgs].map(arg => /[\s"]/.test(arg) ? JSON.stringify(arg) : arg).join(" ")}`)
+  execFileSync(command, cmdArgs, { cwd: repoRoot, stdio: "inherit", shell: false, ...options })
 }
 
 if (!skipBuild) {
-  run("npm", ["run", "build"])
+  const npm = npmInvocation()
+  run(npm.command, [...npm.prefix, "run", "build"])
 }
 mkdirSync(outDir, { recursive: true })
 const goOs = target.includes("windows") ? "windows" : target.includes("darwin") ? "darwin" : "linux"
 const goArch = target.includes("arm64") ? "arm64" : "amd64"
-run("node", ["scripts/build-tailscale.mjs", "--os", goOs, "--arch", goArch, "--out", join(outDir, "tailscale")])
+const tailscaleOut = join(outDir, "tailscale")
+run(process.execPath, ["scripts/build-tailscale.mjs", "--os", goOs, "--arch", goArch, "--out", tailscaleOut])
 rmSync(join(outDir, "runtime"), { recursive: true, force: true })
 rmSync(join(outDir, "piui-server.exe"), { force: true })
 rmSync(join(outDir, "piui-server"), { force: true })
@@ -76,7 +96,7 @@ run("bun", [
 
 const requiredFiles = [
   outfile,
-  join(outDir, "tailscale", `ompiui-tailscale-bridge${goOs === "windows" ? ".exe" : ""}`),
+  join(tailscaleOut, `ompiui-tailscale-bridge${goOs === "windows" ? ".exe" : ""}`),
   join(outDir, "web", "index.html"),
   join(outDir, "node_modules", "bun-pty", "src", "index.ts"),
   join(outDir, "node_modules", "bun-pty", "rust-pty", "target", "release", nativeLibrary),

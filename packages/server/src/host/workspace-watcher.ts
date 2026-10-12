@@ -15,6 +15,10 @@ const MAX_CHANGES_PER_EVENT = 512
 const MAX_WATCHED_WORKSPACES = 32
 // 避开启动请求洪峰；Bun 的扫描与监听另在子进程执行，延迟本身不能防止卡顿。
 const WATCH_STARTUP_DELAY_MS = 3_000
+const MAX_RESTART_ATTEMPTS = 5
+const RESTART_BASE_DELAY_MS = 500
+const RESTART_MAX_DELAY_MS = 10_000
+const RESTART_STABLE_MS = 30_000
 // chokidar recursively enumerates the tree and opens one fs.watch handle per
 // directory. Past this many directories the initial scan alone can take minutes
 // and exhaust memory (a dev drive root such as E:\dev easily holds 20k+
@@ -25,6 +29,7 @@ const SKIP_SEGMENTS = new Set(["node_modules", "dist", "build", ".next", "covera
 
 interface WatchedWorkspace {
   root: string
+  record: WorkspaceRecord
   watcher?: FSWatcher
   gitWatcher?: FSWatcher
   revision: number
@@ -39,6 +44,9 @@ interface WatchedWorkspace {
 export class WorkspaceWatcher {
   private readonly watched = new Map<string, WatchedWorkspace>()
   private process?: ChildProcess
+  private restartTimer?: NodeJS.Timeout
+  private restartAttempts = 0
+  private processStartedAt = 0
 
   constructor(
     private readonly eventHub: EventHub,
@@ -48,6 +56,8 @@ export class WorkspaceWatcher {
   ) {}
 
   async dispose(): Promise<void> {
+    clearTimeout(this.restartTimer)
+    this.restartTimer = undefined
     if (this.process) {
       const child = this.process
       this.process = undefined
@@ -83,6 +93,7 @@ export class WorkspaceWatcher {
     if (this.watched.size >= MAX_WATCHED_WORKSPACES) this.evictOldest()
     const state: WatchedWorkspace = {
       root: workspace.canonicalRoot,
+      record: workspace,
       revision: 0,
       pending: new Map(),
       gitDirty: false,
@@ -109,12 +120,13 @@ export class WorkspaceWatcher {
       : fork(new URL(import.meta.url.endsWith(".ts") ? "../workspace-watch-process.ts" : "../workspace-watch-process.js", import.meta.url),
         { stdio: ["ignore", "inherit", "inherit", "ipc"], windowsHide: true })
     this.process = child
+    this.processStartedAt = Date.now()
     child.on("message", (message: unknown) => {
       const event = message as EventEnvelope
       const state = this.watched.get(workspacePathKey(event.stream.id))
       if (this.process !== child || !state) return
-      const revision = (event.payload as { revision: number }).revision
-      state.revision = revision
+      const payload = event.payload as { revision: number }
+      payload.revision = ++state.revision
       // Git 查询缓存属于 HTTP 进程，不能只使监听进程内的缓存失效。
       if (event.channel === "workspace.git") invalidateGitCache(event.stream.id)
       this.eventHub.publish(event.stream, event.channel, event.payload)
@@ -124,19 +136,45 @@ export class WorkspaceWatcher {
     })
     child.on("exit", () => {
       if (this.process !== child) return
+      if (Date.now() - this.processStartedAt >= RESTART_STABLE_MS) this.restartAttempts = 0
       this.process = undefined
       for (const state of this.watched.values()) {
         const root = state.root
+        state.revision += 1
         this.eventHub.publish({ kind: "workspace", id: root }, "workspace.files", {
-          workspacePath: root, revision: state.revision + 1, changes: [], rescan: true,
+          workspacePath: root, revision: state.revision, changes: [], rescan: true,
         })
       }
-      this.watched.clear()
+      // 保留 watched 记录,退避后重启子进程并对每个工作区重新下发 watch
+      this.scheduleRestart()
     })
     child.send({ type: "configure", maxWatchDirectories: this.maxWatchDirectories, startupDelayMs: this.startupDelayMs }, () => undefined)
     child.unref()
     child.channel?.unref?.()
     return child
+  }
+
+  private scheduleRestart(): void {
+    if (this.watched.size === 0 || this.restartTimer) return
+    if (this.restartAttempts >= MAX_RESTART_ATTEMPTS) {
+      console.error(
+        `[ompiui-server] workspace watch process kept exiting; giving up after ${this.restartAttempts} restarts`,
+      )
+      this.watched.clear()
+      this.restartAttempts = 0
+      return
+    }
+    const delay = Math.min(RESTART_BASE_DELAY_MS * 2 ** this.restartAttempts, RESTART_MAX_DELAY_MS)
+    this.restartAttempts += 1
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = undefined
+      if (this.watched.size === 0) return
+      const child = this.ensureProcess()
+      for (const state of this.watched.values()) {
+        child.send({ type: "watch", workspace: state.record }, () => undefined)
+      }
+    }, delay)
+    this.restartTimer.unref?.()
   }
 
   /**

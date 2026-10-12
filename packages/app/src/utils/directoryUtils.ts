@@ -41,6 +41,7 @@ let _detectedStyle: DetectedPathStyle | null = null
 export function resetPathModeCache(): void {
   _pathMode = null
   _detectedStyle = null
+  notifyListeners()
 }
 
 // Path mode change listeners

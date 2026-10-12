@@ -17,6 +17,7 @@ use tauri::{AppHandle, Manager, State};
 mod marker;
 mod process;
 mod diagnostics;
+pub mod background;
 
 pub use diagnostics::get_ompiui_service_diagnostics;
 use diagnostics::{Phase, StartupDiagnostics};
@@ -57,6 +58,10 @@ impl ServiceState {
     /// 那类场景由下次启动时的收养逻辑清场。
     pub fn stop_service_on_exit(&self) {
         if self.keep_on_exit.load(Ordering::SeqCst) {
+            return;
+        }
+        if background::enabled().unwrap_or(true) {
+            let _ = tauri::async_runtime::block_on(background::stop());
             return;
         }
         // 如果服务还在冷启动中，先等一小会儿让启动完成或失败，避免退出时
@@ -543,25 +548,36 @@ pub async fn start_ompiui_service(
     state: State<'_, ServiceState>,
     env_vars: BTreeMap<String, String>,
 ) -> Result<StartServiceResult, String> {
-    launch_service(&app, &state, env_vars, false).await
+    let _operation = state.operations.lock().await;
+    if background::enabled()? {
+        let existing = state.started_by_us.load(Ordering::SeqCst)
+            .then_some(state.child_pid.load(Ordering::SeqCst)).filter(|pid| *pid > 0);
+        let (pid, url, token) = background::start(env_vars, existing).await?;
+        state.child_pid.store(pid, Ordering::SeqCst);
+        state.started_by_us.store(true, Ordering::SeqCst);
+        *state.service_url.lock().map_err(|error| error.to_string())? = Some(url.clone());
+        *state.service_token.lock().map_err(|error| error.to_string())? = Some(token.clone());
+        marker::persist(&app, pid, &url)?;
+        return Ok(StartServiceResult { started: true, started_by_us: true, url: Some(url), token: Some(token) });
+    }
+    let environment = env_vars.clone();
+    let result = launch_service(&app, &state, env_vars).await?;
+    if state.started_by_us.load(Ordering::SeqCst) {
+        background::remember_backend(environment, state.child_pid.load(Ordering::SeqCst))?;
+    }
+    Ok(result)
 }
 
 async fn launch_service(
     app: &AppHandle,
     state: &ServiceState,
     env_vars: BTreeMap<String, String>,
-    restart: bool,
 ) -> Result<StartServiceResult, String> {
-    let _operation = state.operations.lock().await;
     state.startup.begin(Phase::Preparing);
     let result = async {
         let config = ServiceConfig::new(env_vars);
         let prepared = prepare_server_async(app).await?;
         let mut lifecycle = Some(state.lifecycle.lock().await);
-        if restart {
-            state.startup.phase(Phase::Stopping);
-            stop_ompiui_service_process(app, state).await;
-        }
         state.startup.phase(Phase::Checking);
         loop {
             match try_reuse_existing_service(app, state, &config).await? {
@@ -772,6 +788,7 @@ pub async fn stop_ompiui_service(
     state: State<'_, ServiceState>,
 ) -> Result<(), String> {
     let _operation = state.operations.lock().await;
+    background::stop().await?;
     state.startup.begin(Phase::Stopping);
     let mut lifecycle = Some(state.lifecycle.lock().await);
     loop {
@@ -793,7 +810,8 @@ pub async fn restart_ompiui_service(
     state: State<'_, ServiceState>,
     env_vars: BTreeMap<String, String>,
 ) -> Result<StartServiceResult, String> {
-    launch_service(&app, &state, env_vars, true).await
+    stop_ompiui_service(app.clone(), state.clone()).await?;
+    start_ompiui_service(app, state, env_vars).await
 }
 
 #[tauri::command]
@@ -803,6 +821,17 @@ pub async fn get_ompiui_service_status(
     env_vars: BTreeMap<String, String>,
 ) -> Result<ServiceStatusResult, String> {
     let _operation = state.operations.lock().await;
+    if background::enabled()? {
+        if let Some((pid, url, token)) = background::connection().await? {
+            if state.child_pid.load(Ordering::SeqCst) != pid {
+                marker::persist(&app, pid, &url)?;
+            }
+            state.child_pid.store(pid, Ordering::SeqCst);
+            state.started_by_us.store(true, Ordering::SeqCst);
+            *state.service_url.lock().map_err(|error| error.to_string())? = Some(url);
+            *state.service_token.lock().map_err(|error| error.to_string())? = Some(token);
+        }
+    }
     let mut lifecycle = Some(state.lifecycle.lock().await);
     let config;
     loop {
@@ -822,7 +851,8 @@ pub async fn get_ompiui_service_status(
         .map_err(|error| error.to_string())?
         .clone()
         .unwrap_or_else(|| config.url.clone());
-    let health = service_health(&url, config.initial_token.as_deref())
+    let token = state.service_token.lock().map_err(|error| error.to_string())?.clone().or(config.initial_token);
+    let health = service_health(&url, token.as_deref())
         .await
         .ok();
     let running = health.is_some();
@@ -854,6 +884,7 @@ pub async fn confirm_close_app(
     // 决定是否强杀子进程——选了「保留」就不能杀。
     state.keep_on_exit.store(!stop_service, Ordering::SeqCst);
     if stop_service {
+        background::stop().await?;
         let mut lifecycle = Some(state.lifecycle.lock().await);
         loop {
             if state.is_starting.load(Ordering::SeqCst) {
@@ -868,6 +899,27 @@ pub async fn confirm_close_app(
     }
     state.allow_close.store(true, Ordering::SeqCst);
     window.destroy().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn get_ompiui_background_status(
+    env_vars: BTreeMap<String, String>,
+) -> Result<background::BackgroundStatus, String> {
+    let _ = env_vars;
+    background::status().await
+}
+
+#[tauri::command]
+pub async fn set_ompiui_background_settings(
+    state: State<'_, ServiceState>,
+    login_start: bool,
+    crash_recovery: bool,
+    env_vars: BTreeMap<String, String>,
+) -> Result<background::BackgroundStatus, String> {
+    let _operation = state.operations.lock().await;
+    let existing = state.started_by_us.load(Ordering::SeqCst)
+        .then_some(state.child_pid.load(Ordering::SeqCst)).filter(|pid| *pid > 0);
+    background::settings(login_start, crash_recovery, env_vars, existing).await
 }
 
 #[cfg(test)]
