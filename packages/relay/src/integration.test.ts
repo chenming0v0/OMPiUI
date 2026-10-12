@@ -119,6 +119,12 @@ class MiniDesktop {
   }
 
   close(): void {
+    // 控制通道关闭时一并释放独立协议客户端持有的上游连接。
+    for (const conn of this.conns.values()) {
+      conn.req?.destroy()
+      conn.socket?.destroy()
+    }
+    this.conns.clear()
     this.ws.close()
   }
 }
