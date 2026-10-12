@@ -12,7 +12,7 @@ import { OMP_SDK_VERSION } from "./constants.js"
 function fixture(t: TestContext) {
   const root = mkdtempSync(path.join(tmpdir(), "ompiui-legacy-migration-"))
   const previous = { ...process.env }
-  process.env.OMP_AGENT_DIR = path.join(root, "agent")
+  process.env.PI_CODING_AGENT_DIR = path.join(root, "agent")
   process.env.OMPIUI_DATA_DIR = path.join(root, "webui")
   delete process.env.OMP_PROFILE
   delete process.env.PI_PROFILE

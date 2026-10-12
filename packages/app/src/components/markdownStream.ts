@@ -449,17 +449,15 @@ export function splitMarkdownStream(markdown: string, isStreaming: boolean): Mar
   })
 }
 
-/** suffix 可能切出新块时必须全量 re-lex；宁可多 split，不可错并块 */
-function suffixBreaksLiveBlock(suffix: string): boolean {
+/** suffix 可能切出新块时必须全量 re-lex;宁可多 split,不可错并块。nextSrc 为追加后的完整 live 源码 */
+function suffixBreaksLiveBlock(suffix: string, nextSrc: string): boolean {
   if (!suffix) return false
-  if (suffix.includes('\n\n')) return true
+  // 词法分析器归一化后的列表尾部不是原始源码，直接追加会丢失标记和缩进。
+  if (suffix.includes('\n') || nextSrc.includes('\n')) return true
+  if (/^[ \t]{0,3}(?:[-*+_>|=~`#]|\d)/.test(nextSrc)) return true
   if (suffix.includes('```') || suffix.includes('~~~')) return true
   // 引用定义 / 脚注标号
   if (suffix.includes(']:')) return true
-  // 行首块结构（heading / list / quote / table / hr）
-  if (/\n(?:#{1,6}\s|[-*+]\s|\d+\.\s|>\s?|\||-{3,}|\*{3,}|_{3,})/.test(suffix)) return true
-  // suffix 本身以块结构开头（上一帧刚好停在段落边界之后）
-  if (/^(?:#{1,6}\s|[-*+]\s|\d+\.\s|>\s?|\|)/.test(suffix)) return true
   return false
 }
 
@@ -499,8 +497,8 @@ export function projectMarkdownStream(
     }
   }
 
-  // live 尾段纯追加：稳定块保持同一引用，只改 tail.src
-  if (tail?.mode === 'live' && !suffixBreaksLiveBlock(suffix)) {
+  // 只有原始纯文本段落尾部能跳过重新分词直接追加。
+  if (tail?.mode === 'live' && !suffixBreaksLiveBlock(suffix, tail.src + suffix)) {
     return {
       text: markdown,
       blocks: [

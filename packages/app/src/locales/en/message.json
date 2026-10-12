@@ -123,7 +123,13 @@
     "stop": "Stop",
     "openSession": "Open session",
     "waitingForResponse": "Waiting for response...",
-    "taskFailed": "Task failed"
+    "taskFailed": "Task failed",
+    "tools_one": "{{count}} tool",
+    "tools_other": "{{count}} tools",
+    "requests_one": "{{count}} request",
+    "requests_other": "{{count}} requests",
+    "tokens_one": "{{count}} token",
+    "tokens_other": "{{count}} tokens"
   },
   "yield": {
     "completed": "Task completed",

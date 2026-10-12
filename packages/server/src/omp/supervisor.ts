@@ -125,9 +125,11 @@ export class RuntimeSupervisor {
     }
     let runtime: WorkerSession
     try {
-      runtime = await this.ensureRuntimeHost().open(cwd, sessionFile, signal)
+      runtime = await this.ensureRuntimeHost().open(cwd, sessionFile, signal, () => lease?.release())
     } catch (error) {
-      lease?.release()
+      // 超时/取消后晚到的 session.open 仍可能创建 runtime:租约交给晚到响应处理后再释放
+      const leaseHeld = error instanceof Error && "leaseHeld" in error && error.leaseHeld === true
+      if (!leaseHeld) lease?.release()
       throw error
     }
     try {

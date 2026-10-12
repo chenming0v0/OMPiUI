@@ -74,10 +74,16 @@ export function mergeLatestBranchPage(current: PiBranchPage | null, latest: PiBr
   if (latest.deltaFrom) {
     // 增量只对匹配的基线有效；控制器在竞争导致失配时重新读取完整页。
     if (current.syncCursor !== latest.deltaFrom) return current
+    const seenIds = new Set(current.items.map(item => item.id))
+    const appended = latest.items.filter(item => {
+      if (seenIds.has(item.id)) return false
+      seenIds.add(item.id)
+      return true
+    })
     return withClientState({
       ...latest,
       deltaFrom: undefined,
-      items: [...current.items, ...latest.items],
+      items: [...current.items, ...appended],
     })
   }
 

@@ -14,6 +14,7 @@ import { applyUrlTokenParam } from './store/serverStore'
 import { isTauri, isTauriMobile } from './utils/tauri'
 import { globalErrorHandler } from './utils/errorHandling'
 import { serviceStore } from './store/serviceStore'
+import { startDesktopServiceIfAllowed } from './services/desktopService'
 
 // Polyfill: randomUUID 在非 HTTPS 环境可能缺失（如局域网 HTTP）
 // 统一补齐，避免业务层 scattered fallback。
@@ -113,8 +114,9 @@ function bootstrap() {
 
 async function startNativeOmpiUiService(): Promise<void> {
   if (!isNativeTauri || isTauriMobile() || !serviceStore.autoStart) return
-  const { startDesktopService } = await import('./services/desktopService')
-  const { result } = await startDesktopService()
+  const outcome = await startDesktopServiceIfAllowed()
+  if (!outcome) return
+  const { result } = outcome
   console.info(`[OMPiUI] local server ${result.started ? 'started by app' : 'already running'} at ${result.url}`)
 }
 

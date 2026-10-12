@@ -50,6 +50,10 @@ OMP 原生模型与凭据配置来自 `~/.omp/agent/models.yml`、`config.yml`�
 | `OMPIUI_PUBLIC_BASE_URL` | 空 | 反向代理或隧道后的公网基址 |
 | `OMPIUI_AUTH_TOKEN` | 自动生成 | 后端 Bearer token，默认持久化到 `~/.ompiui/auth-token` |
 | `OMPIUI_DATA_DIR` | `~/.ompiui` | OMPiUI 自身状态目录，不是 OMP 原生会话目录 |
+| `PI_CODING_AGENT_DIR` | `~/.omp/agent` | 官方 Agent 配置与会话根；终端和服务应同时使用此变量配置相同目录，profile 规则仍按官方目录处理 |
+| `OMP_AGENT_DIR` | 空 | 旧别名仅发现和打开其中 `sessions` 下的历史会话，不改变新会话或模型配置写入目录。官方终端继续旧目录时需显式设置 `PI_CODING_AGENT_DIR` 或使用 `--session-dir` |
+| `PI_CODING_AGENT_SESSION_DIR` | 空 | 官方 CLI 的会话目录(扁平存放)。设置后 UI 新建会话写入此目录,并同时发现原生目录中的会话 |
+| `OMPIUI_OMP_SESSION_DIRS` | 空 | 额外登记的官方会话目录(对应官方 `--session-dir`),用系统路径分隔符分隔(Windows `;`,其他 `:`)。只读取登记目录,不扫描全盘 |
 | `OMPIUI_TUNNEL_URL` / `OMPIUI_TUNNEL_KEY` / `OMPIUI_TUNNEL_ID` | 空 | 自建中转地址、密钥与节点 ID |
 | `VITE_OMPIUI_API` / `VITE_OMPIUI_TOKEN` | 空 | 浏览器构建时指定后端地址与令牌 |
 | `OMPIUI_ADMIN_TOKEN` / `OMPIUI_ADMIN_HOST` / `OMPIUI_ADMIN_PORT` | 自动生成 / `127.0.0.1` / `9898` | 管理令牌与监听地址 |
@@ -57,6 +61,21 @@ OMP 原生模型与凭据配置来自 `~/.omp/agent/models.yml`、`config.yml`�
 公网基址同时用于分享地址和 Origin 校验。入口链接中的 `?token=` 会在首屏读取后移出地址栏，后续请求使用 `Authorization`；公开分享链接前必须移除真实令牌。
 
 个别 OpenAI 兼容网关对 OMP 的 `wait` 工具会返回 0-token 空响应。OMPiUI 启动的 OMP 进程会附加 `~/.ompiui/omp-compat.yml`（存在时），可使用 `async.enabled: false` 等覆盖项，而不修改官方 CLI 配置。
+
+## Windows 后台生命周期
+
+Windows 官方安装包的桌面应用可以按用户明确开启的选项管理后端,两个开关默认均关闭,由原生层持久化保存:
+
+- **登录后仅后台启动后端**:登录系统后以 headless 模式启动安装目录内的官方 `omp-worker.exe`,不打开桌面窗口。同一后端不会被桌面窗口重复创建。
+- **异常退出后自动恢复**:仅在后端异常退出时按退避间隔重启。用户主动停止、退出并停止服务、禁用、升级暂停时保持停止,不会被恢复。
+
+状态分为:后台已禁用、后端在后台运行、已由用户停止、升级暂停、异常退出等待恢复。设置页显示当前 PID 与脱敏后的最近错误,并提供停止入口。桌面端与后台启动共用同一份 `envVars` 配置;界面只在原生层保存成功返回后才更新开关,不以 localStorage 代表后台是否已生效。
+
+原生配置保存在 `~/.ompiui/background.json`；`OMPIUI_BACKGROUND_DIR` 仅用于隔离运行验收。当前运行进程的有效环境与下次启动配置分开记录，防止修改端口/令牌后向错误地址发送关闭请求。Windows 登录项为当前官方桌面 exe 的 `--background`，监督进程先于 GUI 初始化启动，不创建 WebView。
+
+安装器在安装或升级前会先暂停恢复并优雅停止本应用的后端与 supervisor；失败阻止替换文件，重复维护调用保持幂等。安装完成后按原有设置恢复新的 worker。卸载清理本应用的后台进程与登录登记，只保留不会自行启动的用户偏好，以兼容 NSIS 的卸载后重装升级路径。独立终端中的 OMP 会话不受影响。
+
+前一轮已有隔离 Windows 目录中编译后原生 exe 的运行记录：后台启动、重复启动保持一个后端、异常退出后恢复、正常关闭不恢复、升级暂停后替换实际 worker 文件并恢复、重复恢复不创建第二个后端。本轮收尾仅静态核对，未重新运行上述场景。未在真实重新登录及完整 NSIS 安装/卸载环境执行，不能把原生维护命令演练等同于完整安装器验收。
 
 ## 开发与验证
 

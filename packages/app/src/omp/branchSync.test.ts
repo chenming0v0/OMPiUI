@@ -47,6 +47,12 @@ describe('branch sync over HTTP', () => {
     expect(mergeLatestBranchPage(current, { ...empty, deltaFrom: 'wrong' })).toBe(current)
   })
 
+  it('does not append delta entries that overlap the loaded history', () => {
+    const current = page(['a', 'b'], 'base')
+    const delta = { ...page(['b', 'c', 'c'], 'next'), deltaFrom: 'base' }
+    expect(mergeLatestBranchPage(current, delta).items.map(entry => entry.id)).toEqual(['a', 'b', 'c'])
+  })
+
   it('requests a delta only after the server supplies a baseline; older servers remain full-page reads', async () => {
     piBranchStore.setData('sync', page(['a']))
     const fetch = vi.spyOn(transport, 'getPiBranchPage')

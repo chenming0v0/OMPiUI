@@ -7,8 +7,8 @@ import { OmpCatalog } from "./omp-catalog.js"
 
 function fixture(t: TestContext, cwd: string) {
   const root = mkdtempSync(path.join(tmpdir(), "ompiui-catalog-paths-"))
-  const previous = { OMP_AGENT_DIR: process.env.OMP_AGENT_DIR, OMP_PROFILE: process.env.OMP_PROFILE, PI_PROFILE: process.env.PI_PROFILE }
-  process.env.OMP_AGENT_DIR = root
+  const previous = { PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, OMP_PROFILE: process.env.OMP_PROFILE, PI_PROFILE: process.env.PI_PROFILE }
+  process.env.PI_CODING_AGENT_DIR = root
   delete process.env.OMP_PROFILE
   delete process.env.PI_PROFILE
   const directory = path.join(root, "sessions", "project")

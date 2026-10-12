@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
 import { normalizeToForwardSlash, serverStorage } from '../utils'
 import { STORAGE_KEY_LAST_DIRECTORY } from '../constants/storage'
 import { useIsMobile } from './useIsMobile'
+import { confirmDiscardUnsavedFileChanges } from '../store/unsavedFileStore'
 
 /**
  * Hash 路由，支持 directory 参数
@@ -86,7 +87,15 @@ function emitRoute(next: RouteState) {
 }
 
 function syncRouteFromHash() {
-  emitRoute(parseHash())
+  const prev = ensureSnapshot()
+  const next = parseHash()
+  // 目录变化(标题栏 Back/Forward 等只改 hash 的路径)必须先过草稿守卫。
+  // 拒绝时用 replaceState 回滚 URL(不触发 hashchange、不产生历史记录),保持路由与草稿一致。
+  if (prev.directory !== next.directory && !confirmDiscardUnsavedFileChanges()) {
+    window.history.replaceState(null, '', buildHash(prev.sessionId, prev.directory))
+    return
+  }
+  emitRoute(next)
 }
 
 function ensureWindowListener() {
@@ -124,6 +133,7 @@ export function useRouter() {
   const navigateToSession = useCallback((sessionId: string, directory?: string) => {
     const currentRoute = getSnapshot()
     const dir = directory !== undefined ? normalizeToForwardSlash(directory) || undefined : currentRoute.directory
+    if (dir !== currentRoute.directory && !confirmDiscardUnsavedFileChanges()) return
     const next = { sessionId, directory: dir }
     const newHash = buildHash(sessionId, dir)
     if (isMobileRef.current) {
@@ -149,6 +159,7 @@ export function useRouter() {
   const replaceSession = useCallback((sessionId: string | null, directory?: string) => {
     const currentRoute = getSnapshot()
     const dir = directory !== undefined ? normalizeToForwardSlash(directory) || undefined : currentRoute.directory
+    if (dir !== currentRoute.directory && !confirmDiscardUnsavedFileChanges()) return
     const newHash = buildHash(sessionId, dir)
     window.history.replaceState(null, '', newHash)
     emitRoute({ sessionId, directory: dir })
@@ -156,6 +167,7 @@ export function useRouter() {
 
   const setDirectory = useCallback((directory: string | undefined) => {
     const normalized = directory ? normalizeToForwardSlash(directory) : undefined
+    if (normalized !== getSnapshot().directory && !confirmDiscardUnsavedFileChanges()) return false
     const newHash = buildHash(null, normalized || undefined)
     const next = { sessionId: null, directory: normalized || undefined }
     if (normalized) {
@@ -165,11 +177,13 @@ export function useRouter() {
     }
     window.location.hash = newHash
     emitRoute(next)
+    return true
   }, [])
 
   const replaceDirectory = useCallback((directory: string | undefined) => {
     const currentRoute = getSnapshot()
     const normalized = directory ? normalizeToForwardSlash(directory) : undefined
+    if (normalized !== currentRoute.directory && !confirmDiscardUnsavedFileChanges()) return
     const newHash = buildHash(currentRoute.sessionId, normalized || undefined)
     if (normalized) {
       serverStorage.set(STORAGE_KEY_LAST_DIRECTORY, normalized)

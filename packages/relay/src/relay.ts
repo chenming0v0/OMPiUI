@@ -32,6 +32,7 @@ import {
   stripHopByHopHeaders,
   type ControlFrame,
 } from "./protocol.ts"
+import { isTrustedProxy, parseTrustedProxies, resolveForwardedClient } from "./trusted-proxy.ts"
 import { BodySink } from "./sink.ts"
 import { ResponseSink } from "./response-sink.ts"
 import { hashTunnelKey, type RelayConfig, type RelayTunnelConfig } from "./config.ts"
@@ -80,6 +81,7 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
   const log = options.log ?? ((line: string) => console.info(line))
   const keyHashes = new Map<string, string>()
   for (const tunnel of config.tunnels) keyHashes.set(tunnel.id, hashTunnelKey(tunnel.key))
+  const trustedProxies = parseTrustedProxies(config.trustedProxies ?? [])
 
   const tunnels = new Map<string, TunnelSession>()
   let nextConnId = 1
@@ -398,8 +400,11 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
     const picked = pickTunnel(hostOf(req))
     const session = typeof picked === "object" ? picked : undefined
     if (!session || session.conns.size >= CONNECTIONS_PER_TUNNEL_MAX) {
-      socket.write("HTTP/1.1 502 Bad Gateway\r\nconnection: close\r\ncontent-length: 0\r\n\r\n")
-      socket.destroy()
+      socket.end("HTTP/1.1 502 Bad Gateway\r\nconnection: close\r\ncontent-length: 0\r\n\r\n", () => socket.destroy())
+      return
+    }
+    if (!allowMessage(session)) {
+      socket.end("HTTP/1.1 429 Too Many Requests\r\nconnection: close\r\ncontent-length: 0\r\n\r\n", () => socket.destroy())
       return
     }
     const connId = nextConnId++
@@ -421,6 +426,10 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
     if (head.length > 0) sink.write(connId, head, null)
     socket.on("data", (chunk: Buffer) => {
       if (session.conns.has(connId)) sink.write(connId, chunk, socket)
+    })
+    socket.on("end", () => {
+      abortConnection(session, connId)
+      socket.destroy()
     })
     socket.on("error", () => {
       // 由 close 统一清理
@@ -479,7 +488,11 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
 
   function withForwardedHeaders(headers: Record<string, string>, req: IncomingMessage): Record<string, string> {
     const result = { ...headers }
-    if (req.socket.remoteAddress) result["x-forwarded-for"] = req.socket.remoteAddress
+    // 访客可伪造任意 XFF;这里一律先删除,再按可信链写回
+    delete result["x-forwarded-for"]
+    const peer = req.socket.remoteAddress
+    const client = isTrustedProxy(peer, trustedProxies) ? (resolveForwardedClient(req.headers["x-forwarded-for"], trustedProxies) ?? peer) : peer
+    if (client) result["x-forwarded-for"] = client
     result["x-forwarded-proto"] = useTls ? "https" : "http"
     if (req.headers.host) result["x-forwarded-host"] = String(req.headers.host)
     return result

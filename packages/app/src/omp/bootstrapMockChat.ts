@@ -18,6 +18,7 @@ import { abortInFlightPiRequests } from "./httpClient"
 import { activeSessionStore } from "../store/activeSessionStore"
 import { PROTOCOL_VERSION } from "@ompiui/protocol"
 import { piModelRolesStore } from "./state/piModelRolesStore"
+import { resetPathModeCache } from "../utils/directoryUtils"
 import { installModelSettingsSync } from "./modelSettingsSync"
 
 export interface PiBackendBootstrapResult {
@@ -97,6 +98,7 @@ export function installPiBackendServerSwitch(): void {
     commandFeedbackStore.reset()
     activeSessionStore.reset()
     resetWorkspaceResolutionCache()
+    resetPathModeCache()
     clearAllWorkspaceFileCaches()
     resetManagementEvents()
     setPiBackendState({ status: "booting" })

@@ -388,6 +388,12 @@ class ServerStore {
     if (id === this.DEFAULT_SERVER_ID && updates.url) {
       this.localServerUrlOverride = null
     }
+    if (endpointChanged) {
+      // Drop the previous endpoint's verdict (e.g. 401 for the old token) and invalidate in-flight checks.
+      // Bump the sequence instead of deleting it so a reused sequence number can never commit a stale result.
+      this.healthMap.delete(id)
+      this.healthCheckSeqMap.set(id, (this.healthCheckSeqMap.get(id) ?? 0) + 1)
+    }
     this.saveToStorage()
     this.notify()
     if (id === this.getActiveServerId() && endpointChanged) {

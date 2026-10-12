@@ -11,7 +11,6 @@ const agent = path.join(root, "agent")
 const cwd = path.join(root, "workspace")
 mkdirSync(agent)
 mkdirSync(cwd)
-process.env.OMP_AGENT_DIR = agent
 process.env.PI_CODING_AGENT_DIR = agent
 process.env.OMPIUI_DATA_DIR = path.join(root, "webui")
 delete process.env.OMP_PROFILE

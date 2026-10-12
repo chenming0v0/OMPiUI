@@ -31,6 +31,7 @@
     "apply": "应用",
     "operationFailed": "文件操作失败",
     "saveFailed": "保存文件失败",
+    "serverChanged": "服务器已切换。请重新打开文件后再保存此草稿。",
     "discardUnsaved": "放弃未保存的修改？",
     "reload": "重新加载",
     "overwrite": "覆盖"
@@ -299,6 +300,7 @@
   "markdown": {
     "mermaidRenderFailed": "Mermaid 渲染失败",
     "mermaidRenderError": "无法渲染 Mermaid 图表",
+    "openLocalFileFailed": "无法打开本地文件",
     "renderingDiagram": "正在渲染图表",
     "disableDiagramPan": "禁用图表拖动",
     "enableDiagramPan": "启用图表拖动",

@@ -363,6 +363,8 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   const argCompletionMenuRef = useRef<HTMLDivElement>(null)
   const argCompletionListRef = useRef<HTMLDivElement>(null)
   const prevRevertedTextRef = useRef<string | undefined>(undefined)
+  // 纯图片条目回填时文本可能与上次相同(多为 ''),需用附件数组身份作为新回填的判据
+  const prevRevertedAttachmentsRef = useRef<Attachment[] | undefined>(undefined)
   const latestDraftRef = useRef<HistoryEntry>({ text: '', attachments: [] })
   const appendedRestoreRef = useRef<string | undefined>(undefined)
   const contentWrapRef = useRef<HTMLDivElement>(null)
@@ -420,7 +422,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   useEffect(() => {
     let frameId: number | null = null
 
-    if (revertedText !== undefined && revertedText !== prevRevertedTextRef.current) {
+    if (revertedText !== undefined && (revertedText !== prevRevertedTextRef.current || revertedAttachments !== prevRevertedAttachmentsRef.current)) {
       frameId = requestAnimationFrame(() => {
         if (restoreMode === 'append' && appendedRestoreRef.current === revertedText) return
         const current = latestDraftRef.current
@@ -442,18 +444,21 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
     } else if (prevRevertedTextRef.current !== undefined && revertedText === undefined && !submittingRef.current) {
       appendedRestoreRef.current = undefined
       const restoredText = prevRevertedTextRef.current
+      const restoredAttachments = prevRevertedAttachmentsRef.current ?? []
       frameId = requestAnimationFrame(() => {
         // 只有用户未改动恢复文本时才清空（撤销恢复后的正常收尾）；
         // 若用户已在恢复文本基础上继续输入/删除，说明正在写新内容，
         // 清空会把正在编辑的内容抹掉，此时保留现状。
         const current = latestDraftRef.current
         if (current.text !== restoredText) return
+        if (current.attachments.length !== restoredAttachments.length || current.attachments.some((attachment, index) => attachment.id !== restoredAttachments[index]?.id)) return
         setText('')
         setAttachments([])
       })
     }
 
     prevRevertedTextRef.current = revertedText
+    prevRevertedAttachmentsRef.current = revertedAttachments
     restoredTextByDraftRef.current.set(draftKey, revertedText)
 
     return () => {

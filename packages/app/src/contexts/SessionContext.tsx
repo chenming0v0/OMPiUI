@@ -11,6 +11,7 @@ import { useDirectory } from './useDirectory'
 import { resolveWorkspacePath } from '../omp/workspaces.js'
 import { sessionErrorHandler } from '../utils'
 import { clearSessionRuntimeState } from '../utils/sessionLifecycle'
+import { serverStore } from '../store/serverStore'
 import { SessionContext, type SessionContextValue } from './SessionContext.shared'
 
 export function SessionProvider({ children }: { children: ReactNode }) {
@@ -78,7 +79,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       // 后续由 sessions-changed 事件或下一次操作触发刷新恢复。
       sessionErrorHandler('fetch sessions', error)
     } finally {
-      fetchInFlightRef.current = false
+      if (requestId === requestIdRef.current) fetchInFlightRef.current = false
       if (requestId === requestIdRef.current) {
         setIsLoading(false)
         if (fetchQueuedRef.current) {
@@ -124,6 +125,28 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       }
     }
   }, [scheduleFetch])
+
+  // 服务器切换:作废旧服务器的会话行、待落盘本地会话与在途请求,并立即向新服务器重拉。
+  // 不依赖工作区订阅(首页无 workspace 订阅时也必须生效)。
+  useEffect(() => serverStore.onServerChange(() => {
+    requestIdRef.current += 1
+    fetchInFlightRef.current = false
+    fetchQueuedRef.current = false
+    if (fetchTimerRef.current !== null) {
+      clearTimeout(fetchTimerRef.current)
+      fetchTimerRef.current = null
+    }
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current)
+      retryTimerRef.current = null
+    }
+    pendingRef.current.clear()
+    allSessionsRef.current = []
+    setSessions([])
+    setIsLoading(true)
+    // 推迟到同步监听器(bootstrap 中止在途请求等)执行完毕后再发起
+    void Promise.resolve().then(() => fetchSessionsRef.current())
+  }), [])
 
   const refresh = useCallback(() => fetchSessions(), [fetchSessions])
   const loadMore = useCallback(async () => {}, [])

@@ -6,6 +6,7 @@ import { createPiSession, loadPiSessions, loadPiSessionsForCwd, deletePiSession 
 import { filterPiSessionList, linkPiSessionForks, piSessionInfoToUiSession } from '../omp/nativeSessionListModel'
 import { trackPiSession } from '../omp/ompSessionIndex'
 import { resolveWorkspacePath } from '../omp/workspaces.js'
+import { serverStore } from '../store/serverStore'
 
 interface UseSessionsOptions {
   /** 每页数量 */
@@ -207,6 +208,23 @@ export function useSessions(options: UseSessionsOptions = {}): UseSessionsResult
     window.addEventListener('ompiui:sessions-changed', refreshFromEvent)
     return () => window.removeEventListener('ompiui:sessions-changed', refreshFromEvent)
   }, [enabled, matchesDirectory, pageSize])
+
+  // 服务器切换:作废在途请求并立即按新服务器重拉(与 SessionContext 一致,不依赖工作区订阅)
+  useEffect(() => {
+    if (!enabled) return
+    return serverStore.onServerChange(() => {
+      requestIdRef.current += 1
+      isFetchingRef.current = false
+      queuedReconnectRefreshRef.current = false
+      if (retryTimerRef.current) {
+        clearTimeout(retryTimerRef.current)
+        retryTimerRef.current = null
+      }
+      setSessions([])
+      setHasMore(false)
+      void Promise.resolve().then(() => fetchSessionsRef.current({ search: searchRef.current || undefined }))
+    })
+  }, [enabled])
 
   // 加载更多：递增 limit 重新拉取完整列表（与 SessionContext 一致）
   const loadMore = useCallback(async () => {

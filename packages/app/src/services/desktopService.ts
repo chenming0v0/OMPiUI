@@ -103,3 +103,58 @@ export function stopDesktopService(): Promise<DesktopServiceStatus> {
     return refreshDesktopServiceStatus()
   })
 }
+
+export type DesktopBackgroundLifecycle = 'disabled' | 'running' | 'stopped' | 'update-paused' | 'recovering'
+
+/** 原生层持久化的后台配置与状态;GUI 不以 localStorage 代表后台是否已生效。 */
+export interface DesktopBackgroundStatus {
+  supported: boolean
+  loginStart: boolean
+  crashRecovery: boolean
+  lifecycle: DesktopBackgroundLifecycle
+  pid: number | null
+  lastError: string | null
+}
+
+export interface DesktopBackgroundSettingsInput {
+  loginStart: boolean
+  crashRecovery: boolean
+}
+
+/** 错误文本在显示前脱敏:令牌、密钥、Bearer、URL 查询参数与 Windows 用户目录名。 */
+export function redactBackgroundError(message: string): string {
+  return message
+    .replace(/Bearer\s+[^\s'"]+/gi, 'Bearer ***')
+    .replace(/((?:token|key|secret|password|credential)[\w-]*\s*[=:]\s*)[^\s'",;]+/gi, '$1***')
+    .replace(/(https?:\/\/[^\s?#'"]+)\?[^\s'"]*/gi, '$1?***')
+    .replace(/([A-Za-z]:[\\/]+Users[\\/]+)[^\\/\s'"]+/gi, '$1***')
+}
+
+export async function getDesktopBackgroundStatus(): Promise<DesktopBackgroundStatus> {
+  const invoke = await getInvoke()
+  const status = await invoke<DesktopBackgroundStatus>('get_ompiui_background_status', environmentArgs())
+  return { ...status, lastError: status.lastError ? redactBackgroundError(status.lastError) : null }
+}
+
+/**
+ * 保存后台开关。调用方必须等待返回值才更新界面:只有原生层真实持久化成功后
+ * 才会得到新的状态;失败时抛出错误,界面保持上一次已生效的配置。
+ */
+export async function setDesktopBackgroundSettings(
+  settings: DesktopBackgroundSettingsInput,
+): Promise<DesktopBackgroundStatus> {
+  const invoke = await getInvoke()
+  const status = await invoke<DesktopBackgroundStatus>('set_ompiui_background_settings', {
+    loginStart: settings.loginStart,
+    crashRecovery: settings.crashRecovery,
+    ...environmentArgs(),
+  })
+  return { ...status, lastError: status.lastError ? redactBackgroundError(status.lastError) : null }
+}
+
+/** GUI 自动启动入口:尊重 native 持久化的用户停止与更新暂停,不把它们覆盖成运行中。 */
+export async function startDesktopServiceIfAllowed(): Promise<DesktopServiceStartOutcome | null> {
+  const background = await getDesktopBackgroundStatus()
+  if (background.lifecycle === 'stopped' || background.lifecycle === 'update-paused') return null
+  return startDesktopService()
+}

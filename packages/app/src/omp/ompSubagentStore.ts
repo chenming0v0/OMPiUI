@@ -180,6 +180,8 @@ class OmpSubagentStore {
   private bySession = new Map<string, string[]>()
   /** parentToolCallId → run.id[]（TaskRenderer 分片索引；不扫整表） */
   private byToolCall = new Map<string, string[]>()
+  /** 防止重连/双流把同一份子代理事件重复追加到转录。 */
+  private eventFingerprints = new Map<string, Set<string>>()
   /** 用户从 HUD 清掉的终态 run：后续帧与快照恢复一律忽略 */
   private dismissed = new Set<string>(loadDismissedIds())
   private revision = 0
@@ -246,6 +248,7 @@ class OmpSubagentStore {
         this.unlinkToolCall(run)
       }
       this.runs.delete(id)
+      this.eventFingerprints.delete(id)
     }
     this.bySession.delete(sessionId)
     this.bump()
@@ -255,6 +258,7 @@ class OmpSubagentStore {
     this.runs.clear()
     this.bySession.clear()
     this.byToolCall.clear()
+    this.eventFingerprints.clear()
     this.keyCache.clear()
     this.keyVersions.clear()
     this.bump()
@@ -274,6 +278,7 @@ class OmpSubagentStore {
       else this.bySession.delete(run.sessionId)
     }
     this.runs.delete(runId)
+    this.eventFingerprints.delete(runId)
     this.dismissed.add(runId)
     saveDismissedIds(this.dismissed)
     this.bump()
@@ -403,6 +408,16 @@ class OmpSubagentStore {
     const id = str(payload.id)
     const event = asRecord(payload.event)
     if (!id || !event) return
+    const fingerprint = JSON.stringify(event)
+    const seen = this.eventFingerprints.get(id) ?? new Set<string>()
+    if (seen.has(fingerprint)) return
+    seen.add(fingerprint)
+    // 只保留最近一小段事件指纹，避免长任务的去重表无限增长。
+    if (seen.size > 512) {
+      const oldest = seen.values().next().value
+      if (typeof oldest === 'string') seen.delete(oldest)
+    }
+    this.eventFingerprints.set(id, seen)
     this.upsert(sessionId, id, run => ({
       ...run,
       transcript: appendTranscriptEvent(event, run.transcript),

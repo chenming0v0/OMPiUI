@@ -50,9 +50,10 @@ import { startInternalDrag } from '../lib/internalDragCore'
 import { toAbsolutePath } from '../features/mention'
 import { getDesktopPlatform, isTauri, isTauriMobile } from '../utils/tauri'
 import type { TargetLineRange } from './codeMirrorReadonlyExtensions'
-import { hasUnsavedFileChanges, setFileEditorDirty } from '../store/unsavedFileStore'
+import { confirmDiscardUnsavedFileChanges, setFileEditorDirty } from '../store/unsavedFileStore'
 import { Dialog } from './ui/Dialog'
 import { Button } from './ui/Button'
+import { serverStore } from '../store/serverStore'
 
 function canRevealInSystemExplorer(): boolean {
   return isTauri() && !isTauriMobile()
@@ -225,8 +226,8 @@ export const FileExplorer = memo(function FileExplorer({
 
   const editorId = `${panelTabId}:${directory ?? ''}:${previewFile?.path ?? ''}`
   const confirmDiscard = useCallback(
-    () => !hasUnsavedFileChanges(editorId) || window.confirm(t('fileExplorer.discardUnsaved')),
-    [editorId, t],
+    () => confirmDiscardUnsavedFileChanges(panelTabId),
+    [panelTabId],
   )
   const openFilePreview = useCallback((file: PreviewFile) => {
     if (file.path !== previewFile?.path && !confirmDiscard()) return
@@ -1029,6 +1030,7 @@ function FilePreview({
   const [saveError, setSaveError] = useState<string | null>(null)
   const [editEtag, setEditEtag] = useState<string | undefined>()
   const [saveConflict, setSaveConflict] = useState(false)
+  const editGenerationRef = useRef<number | null>(null)
 
   // A keyed preview can unmount while its save is still pending.
   useEffect(() => () => { saveRequestIdRef.current += 1 }, [])
@@ -1050,6 +1052,7 @@ function FilePreview({
     setSaveError(null)
     setSaveConflict(false)
     setEditEtag(content.etag)
+    editGenerationRef.current = serverStore.getActiveServerGeneration()
     setIsEditing(true)
   }, [content, updateDraft])
 
@@ -1065,6 +1068,9 @@ function FilePreview({
     setIsSaving(true)
     setSaveError(null)
     try {
+      if (editGenerationRef.current !== serverStore.getActiveServerGeneration()) {
+        throw new Error(t('fileExplorer.serverChanged', { defaultValue: 'The server changed. Reopen the file before saving this draft.' }))
+      }
       const saved = force
         ? await onSave(path, submittedDraft, editEtag, true)
         : await onSave(path, submittedDraft, editEtag)

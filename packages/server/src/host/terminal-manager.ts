@@ -151,7 +151,11 @@ export class TerminalManager {
   async create(workspacePath: string, params: TerminalCreateParams = {}): Promise<TerminalInfo> {
     // Reserve a slot synchronously so concurrent creates cannot all pass the
     // limit check while an earlier one is still awaiting its working directory.
-    if (this.terminals.size + this.pendingCreates >= TERMINAL_LIMIT) {
+    let running = 0
+    for (const terminal of this.terminals.values()) {
+      if (terminal.info.status === "running") running += 1
+    }
+    if (running + this.pendingCreates >= TERMINAL_LIMIT) {
       throw Object.assign(new Error("terminal limit reached"), { code: "TERMINAL_LIMIT_REACHED" })
     }
     this.pendingCreates += 1

@@ -13,8 +13,8 @@ function fixture(t: TestContext, tempInsideHome = false) {
   const agent = path.join(root, "agent")
   mkdirSync(home)
   mkdirSync(temp, { recursive: true })
-  const previous = { agent: process.env.OMP_AGENT_DIR, profile: process.env.OMP_PROFILE, piProfile: process.env.PI_PROFILE }
-  process.env.OMP_AGENT_DIR = agent
+  const previous = { agent: process.env.PI_CODING_AGENT_DIR, profile: process.env.OMP_PROFILE, piProfile: process.env.PI_PROFILE }
+  process.env.PI_CODING_AGENT_DIR = agent
   delete process.env.OMP_PROFILE
   delete process.env.PI_PROFILE
   t.mock.method(os, "homedir", () => home)
@@ -23,7 +23,7 @@ function fixture(t: TestContext, tempInsideHome = false) {
   t.after(() => {
     t.mock.restoreAll()
     syncBuiltinESMExports()
-    for (const [key, value] of Object.entries({ OMP_AGENT_DIR: previous.agent, OMP_PROFILE: previous.profile, PI_PROFILE: previous.piProfile })) {
+    for (const [key, value] of Object.entries({ PI_CODING_AGENT_DIR: previous.agent, OMP_PROFILE: previous.profile, PI_PROFILE: previous.piProfile })) {
       if (value === undefined) delete process.env[key]
       else process.env[key] = value
     }

@@ -5,7 +5,7 @@ import path from "node:path"
 import { after, before, describe, it } from "node:test"
 import { readChildSessionMessages } from "./omp-catalog.js"
 
-// ompAgentDir 每次调用读 OMP_AGENT_DIR：整个文件级 fixture 指向临时目录
+// ompAgentDir 每次调用读 PI_CODING_AGENT_DIR：整个文件级 fixture 指向临时目录
 const root = mkdtempSync(path.join(tmpdir(), "ompiui-child-msgs-"))
 const sessionsRoot = path.join(root, "sessions")
 const projectDir = path.join(sessionsRoot, "-C-proj")
@@ -15,7 +15,7 @@ const childFile = path.join(childDir, "ReadmeScout.jsonl")
 const managedDataDir = path.join(root, "webui")
 const managedChildDir = path.join(managedDataDir, "sessions", "project", "parent")
 const managedChildFile = path.join(managedChildDir, "Worker.jsonl")
-const previousAgentDir = process.env.OMP_AGENT_DIR
+const previousAgentDir = process.env.PI_CODING_AGENT_DIR
 const previousDataDir = process.env.OMPIUI_DATA_DIR
 const managedMessages = [
   { role: "user", content: "Review changes" },
@@ -23,7 +23,7 @@ const managedMessages = [
 ]
 
 before(() => {
-  process.env.OMP_AGENT_DIR = root
+  process.env.PI_CODING_AGENT_DIR = root
   process.env.OMPIUI_DATA_DIR = managedDataDir
   mkdirSync(childDir, { recursive: true })
   writeFileSync(parentFile, [
@@ -45,8 +45,8 @@ before(() => {
 })
 
 after(() => {
-  if (previousAgentDir === undefined) delete process.env.OMP_AGENT_DIR
-  else process.env.OMP_AGENT_DIR = previousAgentDir
+  if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR
+  else process.env.PI_CODING_AGENT_DIR = previousAgentDir
   if (previousDataDir === undefined) delete process.env.OMPIUI_DATA_DIR
   else process.env.OMPIUI_DATA_DIR = previousDataDir
   rmSync(root, { recursive: true, force: true })
@@ -65,11 +65,11 @@ describe("readChildSessionMessages", () => {
   })
 
   it("reads managed transcripts when the native sessions root does not exist", async () => {
-    process.env.OMP_AGENT_DIR = path.join(root, "no-native-agent")
+    process.env.PI_CODING_AGENT_DIR = path.join(root, "no-native-agent")
     try {
       assert.deepEqual(await readChildSessionMessages(managedChildFile), managedMessages)
     } finally {
-      process.env.OMP_AGENT_DIR = root
+      process.env.PI_CODING_AGENT_DIR = root
     }
   })
 
