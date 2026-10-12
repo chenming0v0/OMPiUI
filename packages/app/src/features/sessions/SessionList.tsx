@@ -12,6 +12,7 @@ import type { UiSession } from '../../types/session'
 import { startInternalDrag } from '../../lib/internalDragCore'
 import { pinnedSessionsStore, type PinnedSessionEntry } from '../../store/pinnedSessionsStore'
 import { usePiCapabilities } from '../../omp/capabilities'
+import { serverStore } from '../../store/serverStore'
 
 interface SessionListProps {
   sessions: UiSession[]
@@ -403,6 +404,7 @@ export function SessionListItem({
   onToggleCheck,
 }: SessionListItemProps) {
   const { t } = useTranslation(['commands', 'common', 'chat'])
+  const sessionGeneration = useMemo(() => serverStore.getActiveServerGeneration(), [session])
   const { sessionRename: canRename, sessionDelete: canDelete } = usePiCapabilities()
   const [isEditing, setIsEditing] = useState(false)
   const [editTitle, setEditTitle] = useState(session.title || '')
@@ -446,6 +448,7 @@ export function SessionListItem({
 
   const handleDelete = (e: React.MouseEvent) => {
     e.stopPropagation()
+    if (sessionGeneration !== serverStore.getActiveServerGeneration()) return
     if (!canDelete) return
     setShowActions(false)
     onDelete()
@@ -453,6 +456,7 @@ export function SessionListItem({
 
   const handleStartEdit = (e: React.MouseEvent) => {
     e.stopPropagation()
+    if (sessionGeneration !== serverStore.getActiveServerGeneration()) return
     if (!canRename) return
     setShowActions(false)
     setEditTitle(session.title || '')
@@ -461,6 +465,7 @@ export function SessionListItem({
 
   const handlePin = (e: React.MouseEvent) => {
     e.stopPropagation()
+    if (sessionGeneration !== serverStore.getActiveServerGeneration()) return
     ;(e.currentTarget as HTMLElement).blur()
     if (isPinned) {
       pinnedSessionsStore.unpin(session.id)
@@ -474,6 +479,7 @@ export function SessionListItem({
   }
 
   const handleSaveEdit = () => {
+    if (sessionGeneration !== serverStore.getActiveServerGeneration()) return
     const trimmed = editTitle.trim()
     if (trimmed && trimmed !== session.title) {
       onRename(trimmed)
@@ -552,6 +558,7 @@ export function SessionListItem({
   }, [])
 
   const handleClick = (e?: React.MouseEvent) => {
+    if (sessionGeneration !== serverStore.getActiveServerGeneration()) return
     if (isEditMode) {
       onToggleCheck?.({ shiftKey: e?.shiftKey })
       return

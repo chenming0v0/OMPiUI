@@ -80,6 +80,12 @@ export class EventHub {
       return { events: [], resyncRequired: false }
     }
     if (!cursor) return { events: [], resyncRequired: true, reason: "missing_cursor" }
+    if (cursor.epoch === this.emptyEpoch && cursor.sequence === 0) {
+      const first = state.history[0]?.cursor.sequence ?? state.sequence + 1
+      return first === 1
+        ? { events: [...state.history], resyncRequired: false }
+        : { events: [], resyncRequired: true, reason: 'history_expired' }
+    }
     if (cursor.epoch !== state.epoch) return { events: [], resyncRequired: true, reason: "epoch_mismatch" }
     if (cursor.sequence > state.sequence) return { events: [], resyncRequired: true, reason: "future_cursor" }
     const oldest = state.history[0]?.cursor.sequence ?? state.sequence + 1

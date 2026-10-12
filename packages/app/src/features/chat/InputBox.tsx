@@ -444,12 +444,14 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
     } else if (prevRevertedTextRef.current !== undefined && revertedText === undefined && !submittingRef.current) {
       appendedRestoreRef.current = undefined
       const restoredText = prevRevertedTextRef.current
+      const restoredAttachments = prevRevertedAttachmentsRef.current ?? []
       frameId = requestAnimationFrame(() => {
         // 只有用户未改动恢复文本时才清空（撤销恢复后的正常收尾）；
         // 若用户已在恢复文本基础上继续输入/删除，说明正在写新内容，
         // 清空会把正在编辑的内容抹掉，此时保留现状。
         const current = latestDraftRef.current
         if (current.text !== restoredText) return
+        if (current.attachments.length !== restoredAttachments.length || current.attachments.some((attachment, index) => attachment.id !== restoredAttachments[index]?.id)) return
         setText('')
         setAttachments([])
       })

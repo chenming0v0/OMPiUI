@@ -1,3 +1,4 @@
+import Ajv from 'ajv'
 import { isJsonObject } from '@ompiui/protocol'
 import { STORAGE_KEY_NOTIFICATIONS_ENABLED } from '../constants/storage'
 import {
@@ -82,101 +83,150 @@ function importNotificationBackup(raw: unknown): void {
   importNotificationEventSettingsBackup(parsed?.events)
 }
 
-function validateBackupModules(modules: Record<string, unknown>): void {
-  const invalid: (id: string) => never = id => { throw new Error(`Invalid backup module: ${id}`) }
-  for (const [id, module] of Object.entries(modules)) {
-    if (!isJsonObject(module)) invalid(id)
-  }
-  const theme = modules.theme as Record<string, unknown>
-  if (typeof theme.presetId !== 'string' || !['light', 'dark', 'system'].includes(String(theme.colorMode)) || typeof theme.customCSS !== 'string') invalid('theme')
-  for (const [key, value] of Object.entries(theme)) {
-    if (['collapseUserMessages', 'renderUserMarkdown', 'wideMode', 'descriptiveToolSteps', 'codeWordWrap', 'immersiveMode', 'glassEffect', 'queueFollowupMessages', 'manualTerminalTitles', 'outlineCurrentHighlight', 'autoExpandExtensionsOnCommand', 'actionsOnLatestAssistantOnly', 'desktopCollapsedInputDock', 'processCollapseEnabled'].includes(key) && typeof value !== 'boolean') invalid(`theme.${key}`)
-    if (['uiFontScale', 'codeFontScale'].includes(key) && (typeof value !== 'number' || !Number.isFinite(value))) invalid(`theme.${key}`)
-  }
-  if (theme.customCSSSnippets !== undefined && (!Array.isArray(theme.customCSSSnippets) || theme.customCSSSnippets.some(item => !isJsonObject(item) || typeof item.id !== 'string' || typeof item.name !== 'string' || typeof item.css !== 'string'))) invalid('theme.customCSSSnippets')
-
-  const layout = modules.layout as Record<string, unknown>
-  if (typeof layout.sidebarExpanded !== 'boolean' || typeof layout.rightPanelWidth !== 'number' || !Number.isFinite(layout.rightPanelWidth) || typeof layout.bottomPanelHeight !== 'number' || !Number.isFinite(layout.bottomPanelHeight)) invalid('layout')
-  for (const key of ['sidebarFolderRecents', 'sidebarShowChildSessions', 'wakeLock']) {
-    if (layout[key] !== undefined && typeof layout[key] !== 'boolean') invalid(`layout.${key}`)
-  }
-  if (layout.panelLayout !== undefined && (!isJsonObject(layout.panelLayout) || layout.panelLayout.version !== 1 || !Array.isArray(layout.panelLayout.panelTabs) || !isJsonObject(layout.panelLayout.activeTabId))) invalid('layout.panelLayout')
-  if (layout.terminalLayout !== undefined && (!isJsonObject(layout.terminalLayout) || layout.terminalLayout.version !== 1 || !isJsonObject(layout.terminalLayout.directories))) invalid('layout.terminalLayout')
-
-  const servers = modules.servers as Record<string, unknown>
-  if (!Array.isArray(servers.servers) || servers.servers.length === 0 || servers.servers.some(server => !isJsonObject(server) || typeof server.id !== 'string' || !server.id || typeof server.name !== 'string' || typeof server.url !== 'string' || (server.token !== undefined && typeof server.token !== 'string') || (server.isDefault !== undefined && typeof server.isDefault !== 'boolean')) || (servers.activeServerId !== null && typeof servers.activeServerId !== 'string')) invalid('servers')
-  const perServerStorage = modules.perServerStorage as Record<string, unknown>
-  if (!isJsonObject(perServerStorage.entries) || Object.values(perServerStorage.entries).some(value => typeof value !== 'string')) invalid('perServerStorage')
-  const service = modules.service as Record<string, unknown>
-  if (typeof service.autoStart !== 'boolean' || !Array.isArray(service.envVars) || service.envVars.some(item => !isJsonObject(item) || typeof item.key !== 'string' || typeof item.value !== 'string')) invalid('service')
-  const keybindings = modules.keybindings as Record<string, unknown>
-  if (!isJsonObject(keybindings.customKeys) || Object.values(keybindings.customKeys).some(value => typeof value !== 'string')) invalid('keybindings')
-
-  const notifications = modules.notifications as Record<string, unknown>
-  if (typeof notifications.browserNotificationsEnabled !== 'boolean' || !isJsonObject(notifications.toast) || typeof notifications.toast.toastEnabled !== 'boolean' || !isJsonObject(notifications.events) || !isJsonObject(notifications.events.events)) invalid('notifications')
-  const events = (notifications.events as Record<string, unknown>).events as Record<string, unknown>
-  for (const type of ['completed', 'permission', 'question', 'error']) {
-    if (!isJsonObject(events[type]) || typeof events[type].systemEnabled !== 'boolean') invalid(`notifications.events.${type}`)
-  }
-  const sound = modules.sound as Record<string, unknown>
-  if (!isJsonObject(sound.settings) || typeof sound.settings.enabled !== 'boolean' || typeof sound.settings.currentSessionEnabled !== 'boolean' || typeof sound.settings.volume !== 'number' || !Number.isFinite(sound.settings.volume) || !isJsonObject(sound.settings.events) || !isJsonObject(sound.customAudio)) invalid('sound')
-  const sounds = (sound.settings as Record<string, unknown>).events as Record<string, unknown>
-  for (const type of ['completed', 'permission', 'question', 'error']) {
-    if (!isJsonObject(sounds[type]) || typeof sounds[type].soundId !== 'string') invalid(`sound.events.${type}`)
-  }
-  for (const audio of Object.values(sound.customAudio as Record<string, unknown>)) {
-    if (!isJsonObject(audio) || typeof audio.base64 !== 'string' || typeof audio.mimeType !== 'string' || (audio.fileName !== undefined && typeof audio.fileName !== 'string')) invalid('sound.customAudio')
-    try { atob(audio.base64 as string) } catch { invalid('sound.customAudio') }
-  }
-  const update = modules.update as Record<string, unknown>
-  if ((update.lastCheckedAt !== null && (typeof update.lastCheckedAt !== 'number' || !Number.isFinite(update.lastCheckedAt))) || (update.dismissedVersion !== null && typeof update.dismissedVersion !== 'string')) invalid('update')
-  if (update.latestRelease !== null) {
-    const release = update.latestRelease
-    if (!isJsonObject(release) || typeof release.version !== 'string' || typeof release.tagName !== 'string' || typeof release.url !== 'string' || (release.publishedAt !== null && typeof release.publishedAt !== 'string') || (release.name !== null && typeof release.name !== 'string')) invalid('update.latestRelease')
-  }
-}
+const validateBackupModules = new Ajv({ strict: false }).compile<SettingsBackupModules>({
+  type: 'object',
+  required: ['theme', 'layout', 'servers', 'perServerStorage', 'service', 'keybindings', 'notifications', 'sound', 'update'],
+  $defs: {
+    stringMap: { type: 'object', additionalProperties: { type: 'string' } },
+    nullableString: { type: ['string', 'null'] },
+    panelActiveIds: {
+      type: 'object', required: ['bottom', 'right'],
+      properties: { bottom: { $ref: '#/$defs/nullableString' }, right: { $ref: '#/$defs/nullableString' } },
+    },
+    terminalDirectory: {
+      type: 'object', required: ['order', 'activeTabId'],
+      properties: {
+        order: { type: 'object', required: ['bottom', 'right'], properties: { bottom: { type: 'array', items: { type: 'string', minLength: 1 } }, right: { type: 'array', items: { type: 'string', minLength: 1 } } } },
+        activeTabId: { $ref: '#/$defs/panelActiveIds' },
+        sessions: {
+          type: 'object', additionalProperties: {
+            type: 'object',
+            properties: {
+              title: { type: 'string' }, shellTitle: { type: 'string' }, customTitle: { type: 'string' }, buffer: { type: 'string' },
+              scrollY: { type: 'number' }, cursor: { type: 'number' }, rows: { type: 'number' }, cols: { type: 'number' },
+            },
+          },
+        },
+      },
+    },
+    notificationEvents: {
+      type: 'object', required: ['completed', 'permission', 'question', 'error'],
+      additionalProperties: { type: 'object', required: ['systemEnabled'], properties: { systemEnabled: { type: 'boolean' } } },
+    },
+    soundEvents: {
+      type: 'object', required: ['completed', 'permission', 'question', 'error'],
+      additionalProperties: { type: 'object', required: ['soundId'], properties: { soundId: { type: 'string' }, customFileName: { type: 'string' } } },
+    },
+  },
+  properties: {
+    theme: {
+      type: 'object', required: ['presetId', 'colorMode', 'customCSS'],
+      properties: {
+        presetId: { type: 'string' }, colorMode: { enum: ['light', 'dark', 'system'] }, customCSS: { type: 'string' },
+        customCSSSnippets: { type: 'array', items: { type: 'object', required: ['id', 'name', 'css'], properties: { id: { type: 'string' }, name: { type: 'string' }, css: { type: 'string' } } } },
+        activeCustomCSSSnippetId: { $ref: '#/$defs/nullableString' },
+        ...Object.fromEntries(['collapseUserMessages', 'renderUserMarkdown', 'wideMode', 'descriptiveToolSteps', 'codeWordWrap', 'immersiveMode', 'glassEffect', 'queueFollowupMessages', 'manualTerminalTitles', 'outlineCurrentHighlight', 'autoExpandExtensionsOnCommand', 'actionsOnLatestAssistantOnly', 'desktopCollapsedInputDock', 'processCollapseEnabled'].map(key => [key, { type: 'boolean' }])),
+        uiFontScale: { type: 'number' }, codeFontScale: { type: 'number' },
+        stepFinishDisplay: { type: 'object', additionalProperties: { type: 'boolean' } },
+        completedAtFormat: { enum: ['time', 'dateTime'] }, reasoningDisplayMode: { enum: ['capsule', 'italic', 'markdown'] },
+        diffStyle: { enum: ['markers', 'changeBars'] }, toolCardStyle: { enum: ['classic', 'compact'] },
+        externalFileDropMode: { enum: ['upload-first', 'mention'] }, codeBlockThemeLight: { type: 'string' }, codeBlockThemeDark: { type: 'string' },
+      },
+    },
+    layout: {
+      type: 'object', required: ['sidebarExpanded', 'rightPanelWidth', 'bottomPanelHeight'],
+      properties: {
+        sidebarExpanded: { type: 'boolean' }, sidebarFolderRecents: { type: 'boolean' }, sidebarShowChildSessions: { type: 'boolean' }, wakeLock: { type: 'boolean' },
+        rightPanelWidth: { type: 'number' }, bottomPanelHeight: { type: 'number' }, sidebarWidth: { type: ['number', 'null'] },
+        panelLayout: {
+          type: 'object', required: ['version', 'panelTabs', 'activeTabId'],
+          properties: {
+            version: { const: 1 }, rightPanelOpen: { type: 'boolean' }, bottomPanelOpen: { type: 'boolean' },
+            activeTabId: { $ref: '#/$defs/panelActiveIds' },
+            panelTabs: { type: 'array', items: { type: 'object', required: ['id', 'type', 'position'], properties: { id: { type: 'string', minLength: 1 }, type: { enum: ['files', 'changes', 'session-tree', 'session-controls', 'skill', 'extensions'] }, position: { enum: ['bottom', 'right'] }, title: { type: 'string' } } } },
+          },
+        },
+        terminalLayout: { type: 'object', required: ['version', 'directories'], properties: { version: { const: 1 }, directories: { type: 'object', additionalProperties: { $ref: '#/$defs/terminalDirectory' } } } },
+      },
+    },
+    servers: {
+      type: 'object', required: ['servers', 'activeServerId'],
+      properties: {
+        activeServerId: { $ref: '#/$defs/nullableString' },
+        servers: { type: 'array', minItems: 1, items: { type: 'object', required: ['id', 'name', 'url'], properties: { id: { type: 'string', minLength: 1 }, name: { type: 'string' }, url: { type: 'string' }, token: { type: 'string' }, isDefault: { type: 'boolean' } } } },
+      },
+    },
+    perServerStorage: { type: 'object', required: ['entries'], properties: { entries: { $ref: '#/$defs/stringMap' } } },
+    service: {
+      type: 'object', required: ['autoStart', 'envVars'],
+      properties: {
+        autoStart: { type: 'boolean' },
+        envVars: {
+          type: 'array', items: {
+            type: 'object', required: ['key', 'value'],
+            properties: { key: { type: 'string' }, value: { type: 'string' } },
+          },
+        },
+      },
+    },
+    keybindings: { type: 'object', required: ['customKeys'], properties: { customKeys: { $ref: '#/$defs/stringMap' } } },
+    notifications: {
+      type: 'object', required: ['browserNotificationsEnabled', 'toast', 'events'],
+      properties: { browserNotificationsEnabled: { type: 'boolean' }, toast: { type: 'object', required: ['toastEnabled'], properties: { toastEnabled: { type: 'boolean' } } }, events: { type: 'object', required: ['events'], properties: { events: { $ref: '#/$defs/notificationEvents' } } } },
+    },
+    sound: {
+      type: 'object', required: ['settings', 'customAudio'],
+      properties: {
+        settings: { type: 'object', required: ['enabled', 'currentSessionEnabled', 'volume', 'events'], properties: { enabled: { type: 'boolean' }, currentSessionEnabled: { type: 'boolean' }, volume: { type: 'number', minimum: 0, maximum: 100 }, events: { $ref: '#/$defs/soundEvents' } } },
+        customAudio: { type: 'object', additionalProperties: { type: 'object', required: ['base64', 'mimeType'], properties: { base64: { type: 'string' }, mimeType: { type: 'string' }, fileName: { type: 'string' } } } },
+      },
+    },
+    update: {
+      type: 'object', required: ['latestRelease', 'lastCheckedAt', 'dismissedVersion'],
+      properties: { lastCheckedAt: { type: ['number', 'null'] }, dismissedVersion: { $ref: '#/$defs/nullableString' }, latestRelease: { anyOf: [{ type: 'null' }, { type: 'object', required: ['version', 'tagName', 'url', 'publishedAt', 'name'], properties: { version: { type: 'string' }, tagName: { type: 'string' }, url: { type: 'string' }, publishedAt: { $ref: '#/$defs/nullableString' }, name: { $ref: '#/$defs/nullableString' } } }] } },
+    },
+  },
+})
 
 function normalizeBackupFile(raw: unknown): SettingsBackupFile {
-  if (!raw || typeof raw !== 'object') {
+  if (!isJsonObject(raw)) {
     throw new Error('Invalid backup file')
   }
 
-  const parsed = raw as Record<string, unknown>
   // 改名前导出的备份 app 字段是 'PiUI'，导入时一并接受
-  if ((parsed.app !== 'OMPiUI' && parsed.app !== 'PiUI') || parsed.kind !== BACKUP_KIND || parsed.schemaVersion !== BACKUP_SCHEMA_VERSION) {
+  if ((raw.app !== 'OMPiUI' && raw.app !== 'PiUI') || raw.kind !== BACKUP_KIND || raw.schemaVersion !== BACKUP_SCHEMA_VERSION) {
     throw new Error('Unsupported backup format')
   }
 
-  if (!parsed.modules || typeof parsed.modules !== 'object') {
+  if (!isJsonObject(raw.modules)) {
     throw new Error('Missing backup modules')
   }
 
-  const modules = parsed.modules as Record<string, unknown>
-  const requiredModules: Array<keyof SettingsBackupModules> = [
-    'theme',
-    'layout',
-    'servers',
-    'perServerStorage',
-    'service',
-    'keybindings',
-    'notifications',
-    'sound',
-    'update',
-  ]
-
-  for (const id of requiredModules) {
-    if (!(id in modules)) {
-      throw new Error(`Missing backup module: ${id}`)
+  const modules = raw.modules
+  if (!validateBackupModules(modules)) {
+    const error = validateBackupModules.errors?.[0]
+    throw new Error(`Invalid backup module: ${error?.instancePath || '/modules'} ${error?.message || ''}`)
+  }
+  for (const server of modules.servers.servers) {
+    try {
+      const url = new URL(server.url)
+      if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Unsupported server URL')
+    } catch {
+      throw new Error('Invalid backup module: servers.url')
     }
   }
-  validateBackupModules(modules)
+  // 在任何存储写入前解码，避免替换服务器配置后才发现音频损坏。
+  for (const audio of Object.values(modules.sound.customAudio)) {
+    if (!audio) continue
+    try { atob(audio.base64) } catch { throw new Error('Invalid backup module: sound.customAudio') }
+  }
 
   return {
     app: 'OMPiUI',
     kind: BACKUP_KIND,
     schemaVersion: BACKUP_SCHEMA_VERSION,
-    createdAt: typeof parsed.createdAt === 'string' ? parsed.createdAt : new Date().toISOString(),
-    modules: modules as unknown as SettingsBackupModules,
+    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : new Date().toISOString(),
+    modules,
   }
 }
 

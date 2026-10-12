@@ -167,7 +167,7 @@ describe('settingsBackup', () => {
     ['wrong app', JSON.stringify({ app: 'Other', kind: 'settings-backup', schemaVersion: 4 }), 'Unsupported backup format'],
     ['wrong schema', JSON.stringify({ app: 'OMPiUI', kind: 'settings-backup', schemaVersion: 3 }), 'Unsupported backup format'],
     ['missing modules', JSON.stringify({ app: 'OMPiUI', kind: 'settings-backup', schemaVersion: 4 }), 'Missing backup modules'],
-    ['missing module', JSON.stringify({ app: 'OMPiUI', kind: 'settings-backup', schemaVersion: 4, modules: {} }), 'Missing backup module: theme'],
+    ['missing module', JSON.stringify({ app: 'OMPiUI', kind: 'settings-backup', schemaVersion: 4, modules: {} }), 'Invalid backup module:'],
   ])('rejects %s without mutating storage', async (_name, text, error) => {
     const { importSettingsBackup } = await import('./settingsBackup')
     localStorage.setItem('srv:local:ompiui-last-directory', '/keep')

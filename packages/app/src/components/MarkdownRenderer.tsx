@@ -87,34 +87,12 @@ function getCachedHtml(src: string, isReasoning: boolean): string {
   return html
 }
 
-/**
- * 行内语法字符。只有“边界 token”(nextSrc 末尾的非空白连续段,含后缀)含这些字符时,
- * 追加才可能改变解析结果(实体 `&am`+`p;`、强调 `*`、链接 `[`、autolink `://`、`www.` 等),
- * 因此只检查边界 token,而不是整段:长段落中更早出现的 `:`、`/` 不会导致每帧全量 parse。
- */
-const LIVE_APPEND_UNSAFE_CHARS = /[`*_[\]()#>|!~\\<$:/@&;]/
-
-/**
- * live 尾段是否可以只追加到最后一个文本节点(可证明为纯文本段落续写时才为 true,否则回退全量 parse+morph)。
- * 条件(全部满足):
- * 1) 后缀非空且为单行;
- * 2) 边界 token(nextSrc 末尾非空白段,含后缀)不含行内语法字符,且不含 "www." ;
- * 3) 当前行行首不是块级结构(缩进代码、列表、标题、引用、分隔线、表格、有序编号等)。
- * 第 3 条只看行首,成本不随段落长度增长。
- */
+/** 只有纯文本单行段落追加时能保持 HTML 结构不变。 */
 function canAppendLiveMarkdownSuffix(suffix: string, nextSrc: string): boolean {
-  if (!suffix || suffix.includes('\n')) return false
-  const prevSrc = nextSrc.slice(0, nextSrc.length - suffix.length)
-  // 前文以换行结束(新段落/新行开头)时,追加会把两行粘成一个词,必须全量 parse
-  if (!prevSrc || prevSrc.endsWith('\n')) return false
-  let start = nextSrc.length
-  while (start > 0 && !/\s/.test(nextSrc[start - 1]!)) start--
-  const boundary = nextSrc.slice(start)
-  if (LIVE_APPEND_UNSAFE_CHARS.test(boundary)) return false
-  if (/www\./i.test(boundary)) return false
-  const lastLine = nextSrc.slice(nextSrc.lastIndexOf('\n') + 1)
-  if (/^(?: {4}|\t)/.test(lastLine)) return false
-  return !/^[ \t]{0,3}(?:[-+*>|#=~`_]|\d)/.test(lastLine)
+  if (!suffix || /\s$/.test(suffix)) return false
+  if (nextSrc.includes('\n') || /[`*_[\]()#>|!~\\<$:/@&;]/.test(nextSrc) || /www\./i.test(nextSrc)) return false
+  if (!nextSrc.slice(0, -suffix.length)) return false
+  return !/^[ \t]{0,3}(?:[-+*>|#=~`_]|\d)/.test(nextSrc)
 }
 
 /** 最后一个 Text 是否安全承接追加（不能在 strong/em/a/code 等行内节点里） */
@@ -123,12 +101,13 @@ function canAppendIntoTextNode(textNode: Text): boolean {
   if (!parent) return false
   // 父节点后面还有兄弟时，追加会插在中间，结构不对
   if (parent.lastChild !== textNode) return false
-  // 只允许块级/列表等容器的直接文本；行内格式内追加会把后续字错误包进强调/链接
-  return /^(P|LI|TD|TH|H[1-6]|BLOCKQUOTE|DIV)$/.test(parent.tagName)
+  // 只有纯文本段落的直接文本节点能原样追加后缀。
+  return parent.tagName === 'P' && parent.parentElement?.childElementCount === 1
 }
 
 /** 把纯文本后缀接到 root 内最后一个 Text 节点；失败返回 false */
 function tryAppendLiveText(root: HTMLElement, suffix: string): boolean {
+  if (root.childElementCount !== 1 || root.firstElementChild?.tagName !== 'P') return false
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
   let last: Text | null = null
   let node = walker.nextNode()

@@ -400,13 +400,11 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
     const picked = pickTunnel(hostOf(req))
     const session = typeof picked === "object" ? picked : undefined
     if (!session || session.conns.size >= CONNECTIONS_PER_TUNNEL_MAX) {
-      socket.write("HTTP/1.1 502 Bad Gateway\r\nconnection: close\r\ncontent-length: 0\r\n\r\n")
-      socket.destroy()
+      socket.end("HTTP/1.1 502 Bad Gateway\r\nconnection: close\r\ncontent-length: 0\r\n\r\n", () => socket.destroy())
       return
     }
     if (!allowMessage(session)) {
-      socket.write("HTTP/1.1 429 Too Many Requests\r\nconnection: close\r\ncontent-length: 0\r\n\r\n")
-      socket.destroy()
+      socket.end("HTTP/1.1 429 Too Many Requests\r\nconnection: close\r\ncontent-length: 0\r\n\r\n", () => socket.destroy())
       return
     }
     const connId = nextConnId++
@@ -428,6 +426,10 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
     if (head.length > 0) sink.write(connId, head, null)
     socket.on("data", (chunk: Buffer) => {
       if (session.conns.has(connId)) sink.write(connId, chunk, socket)
+    })
+    socket.on("end", () => {
+      abortConnection(session, connId)
+      socket.destroy()
     })
     socket.on("error", () => {
       // 由 close 统一清理
