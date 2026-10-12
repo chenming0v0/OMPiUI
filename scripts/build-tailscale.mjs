@@ -7,7 +7,12 @@ import { writeTailscaleLicenses } from "./tailscale-licenses.mjs"
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const source = join(root, "packages", "server", "tailscale-bridge")
 const args = process.argv.slice(2)
-const value = name => args[args.indexOf(name) + 1]
+const value = name => {
+  const index = args.indexOf(name)
+  const next = index === -1 ? undefined : args[index + 1]
+  if (next === undefined || next.startsWith("--")) throw new Error(`${name} requires a value`)
+  return next
+}
 const platform = args.includes("--os") ? value("--os") : process.platform === "win32" ? "windows" : process.platform
 const arch = args.includes("--arch") ? value("--arch") : process.arch === "x64" ? "amd64" : process.arch
 const out = resolve(args.includes("--out") ? value("--out") : join(source, "build"))
