@@ -52,9 +52,17 @@ impl Drop for NamedLock {
 fn lock(kind: &str, timeout_ms: u32) -> Result<Option<NamedLock>, String> {
     use std::hash::{Hash, Hasher};
     use windows_sys::Win32::{Foundation::{CloseHandle, WAIT_OBJECT_0, WAIT_ABANDONED, WAIT_TIMEOUT}, System::Threading::{CreateMutexW, WaitForSingleObject}};
-    let mut hash = std::collections::hash_map::DefaultHasher::new();
-    config_path()?.to_string_lossy().to_lowercase().hash(&mut hash);
-    let name: Vec<u16> = format!("Local\\OMPiUI.Background.{kind}.{:x}\0", hash.finish()).encode_utf16().collect();
+    static DOMAIN: std::sync::LazyLock<Result<u64, String>> = std::sync::LazyLock::new(|| {
+        let path = config_path()?;
+        let parent = path.parent().ok_or("Invalid background configuration directory")?;
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        let identity = parent.canonicalize().map_err(|error| error.to_string())?;
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        identity.to_string_lossy().to_lowercase().hash(&mut hash);
+        Ok(hash.finish())
+    });
+    let domain = DOMAIN.as_ref().map_err(|error| error.clone())?;
+    let name: Vec<u16> = format!("Local\\OMPiUI.Background.{kind}.{domain:x}\0").encode_utf16().collect();
     unsafe {
         let handle = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
         if handle.is_null() { return Err(std::io::Error::last_os_error().to_string()); }
@@ -82,16 +90,28 @@ fn update_config<T>(update: impl FnOnce(&mut Config) -> T) -> Result<T, String> 
     let result = update(&mut config);
     let path = config_path()?;
     fs::create_dir_all(path.parent().ok_or("Invalid background configuration path")?).map_err(|error| error.to_string())?;
-    let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, serde_json::to_vec_pretty(&config).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
+    let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    fs::write(&temporary, serde_json::to_vec_pretty(&config).map_err(|error| error.to_string())?)
+        .map_err(|error| format!("Cannot write background configuration: {error}"))?;
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH};
         let source: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
         let destination: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-        if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) } == 0 {
-            return Err(std::io::Error::last_os_error().to_string());
+        // Windows antivirus/indexing readers can temporarily deny replacement.
+        // Keep the old complete file until the atomic replace succeeds; never
+        // fall back to truncating the live configuration or discard the error.
+        let deadline = Instant::now() + Duration::from_millis(500);
+        loop {
+            if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) } != 0 { break; }
+            let error = std::io::Error::last_os_error();
+            if matches!(error.raw_os_error(), Some(5 | 32)) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            let _ = fs::remove_file(&temporary);
+            return Err(format!("Cannot atomically replace background configuration: {error}"));
         }
     }
     #[cfg(not(windows))]
@@ -291,8 +311,16 @@ async fn shutdown_recorded(config: &Config) -> Result<(), String> {
 }
 
 pub async fn stop() -> Result<(), String> {
+    stop_with_intent(false).await
+}
+
+async fn stop_with_intent(preserve_update: bool) -> Result<(), String> {
     if !cfg!(windows) { return Ok(()); }
-    let config = update_config(|config| { config.desired = false; config.clone() })?;
+    let config = update_config(|config| {
+        config.desired = false;
+        if !preserve_update { config.restore_after_update = false; }
+        config.clone()
+    })?;
     // The persisted stop intent wins over any concurrent crash recovery.
     shutdown_recorded(&config).await?;
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -397,16 +425,24 @@ pub fn handle_cli() -> Option<i32> {
                 Ok(())
             }
             "--background-pause-update" => {
-                update_config(|config| { config.restore_after_update = config.desired && configured(config); config.paused_for_update = true; })?;
-                stop().await
+                update_config(|config| {
+                    if !config.paused_for_update { config.restore_after_update = config.desired && configured(config); }
+                    config.paused_for_update = true;
+                    config.desired = false;
+                })?;
+                stop_with_intent(true).await
             }
             "--background-resume-update" => {
+                let previous = read_config()?;
+                if previous.paused_for_update && previous.backend_pid.is_some() { stop_with_intent(true).await?; }
                 let restore = update_config(|config| {
-                    config.paused_for_update = false;
-                    config.desired = config.restore_after_update && configured(config);
-                    config.restore_after_update = false;
-                    config.backend_pid = None;
-                    config.desired
+                    if config.paused_for_update {
+                        config.paused_for_update = false;
+                        config.desired = config.restore_after_update && configured(config);
+                        config.restore_after_update = false;
+                        config.backend_pid = None;
+                    }
+                    config.desired && configured(config)
                 })?;
                 #[cfg(windows)]
                 configure_login(read_config()?.login_start)?;
@@ -414,10 +450,17 @@ pub fn handle_cli() -> Option<i32> {
                 Ok(())
             }
             "--background-uninstall" => {
-                stop().await?;
+                update_config(|config| {
+                    if !config.paused_for_update { config.restore_after_update = config.desired && configured(config); }
+                    config.paused_for_update = true;
+                    config.desired = false;
+                })?;
+                stop_with_intent(true).await?;
                 #[cfg(windows)]
                 configure_login(false)?;
-                update_config(|config| { config.login_start = false; config.crash_recovery = false; config.restore_after_update = false; config.paused_for_update = true; })?;
+                // Preserve passive user preferences for NSIS's uninstall-before-
+                // reinstall path. No process or login entry survives uninstall;
+                // only a subsequent explicit installer completion can resume.
                 Ok(())
             }
             _ => unreachable!(),
