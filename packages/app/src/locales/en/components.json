@@ -302,6 +302,7 @@
   "markdown": {
     "mermaidRenderFailed": "Mermaid render failed",
     "mermaidRenderError": "Failed to render Mermaid diagram",
+    "openLocalFileFailed": "Failed to open local file",
     "renderingDiagram": "Rendering diagram",
     "disableDiagramPan": "Disable diagram pan",
     "enableDiagramPan": "Enable diagram pan",

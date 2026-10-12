@@ -299,6 +299,7 @@
   "markdown": {
     "mermaidRenderFailed": "Mermaid 渲染失败",
     "mermaidRenderError": "无法渲染 Mermaid 图表",
+    "openLocalFileFailed": "无法打开本地文件",
     "renderingDiagram": "正在渲染图表",
     "disableDiagramPan": "禁用图表拖动",
     "enableDiagramPan": "启用图表拖动",

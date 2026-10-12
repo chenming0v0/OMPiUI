@@ -449,8 +449,11 @@ export function splitMarkdownStream(markdown: string, isStreaming: boolean): Mar
   })
 }
 
-/** suffix 可能切出新块时必须全量 re-lex；宁可多 split，不可错并块 */
-function suffixBreaksLiveBlock(suffix: string): boolean {
+/** 当前行是否为块级标记或其未完成前缀(如 '-'、'1.'、'##'、'[x]:');此类尾行须全量 re-lex */
+const BLOCK_MARKER_LINE_PATTERN = /^[ \t]{0,3}(?:[-*+_>|=~`]+|\d{1,9}[.)]?|#{1,6})[ \t]*$/
+
+/** suffix 可能切出新块时必须全量 re-lex;宁可多 split,不可错并块。nextSrc 为追加后的完整 live 源码 */
+function suffixBreaksLiveBlock(suffix: string, nextSrc: string): boolean {
   if (!suffix) return false
   if (suffix.includes('\n\n')) return true
   if (suffix.includes('```') || suffix.includes('~~~')) return true
@@ -460,6 +463,9 @@ function suffixBreaksLiveBlock(suffix: string): boolean {
   if (/\n(?:#{1,6}\s|[-*+]\s|\d+\.\s|>\s?|\||-{3,}|\*{3,}|_{3,})/.test(suffix)) return true
   // suffix 本身以块结构开头（上一帧刚好停在段落边界之后）
   if (/^(?:#{1,6}\s|[-*+]\s|\d+\.\s|>\s?|\|)/.test(suffix)) return true
+  // 追加后当前行仅剩块标记或其前缀(如单独的 '-'、'1.'、'##'):上面的规则抓不到这类半成品
+  const lastLine = nextSrc.slice(nextSrc.lastIndexOf('\n') + 1)
+  if (BLOCK_MARKER_LINE_PATTERN.test(lastLine)) return true
   return false
 }
 
@@ -500,7 +506,7 @@ export function projectMarkdownStream(
   }
 
   // live 尾段纯追加：稳定块保持同一引用，只改 tail.src
-  if (tail?.mode === 'live' && !suffixBreaksLiveBlock(suffix)) {
+  if (tail?.mode === 'live' && !suffixBreaksLiveBlock(suffix, tail.src + suffix)) {
     return {
       text: markdown,
       blocks: [

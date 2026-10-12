@@ -35,6 +35,8 @@ import {
 } from './htmlSandbox'
 import { getCachedMermaidSvg, getOrRenderMermaidSvg } from './mermaidRenderCache'
 import { inferImageDimensions } from './imageDimensions'
+import i18n from '../i18n'
+import { notificationStore } from '../store/notificationStore'
 
 interface MarkdownRendererProps {
   content: string
@@ -87,13 +89,19 @@ function getCachedHtml(src: string, isReasoning: boolean): string {
 
 /**
  * live 尾段是否可以只追加到最后一个文本节点。
- * 保守：后缀一旦含 markdown 结构/强调/代码/链接等字符，回退全量 parse+morph。
+ * 保守:后缀含 markdown 结构/强调/代码/链接等字符,或追加后的当前行行首可能是块标记
+ * (列表 '-'/'1.'、标题 '#'、引用 '>'、分隔线 '='/'-' 等)时,回退全量 parse+morph。
+ * nextSrc 为追加后的完整 live 源码。
  */
-function canAppendLiveMarkdownSuffix(suffix: string): boolean {
+function canAppendLiveMarkdownSuffix(suffix: string, nextSrc: string): boolean {
   if (!suffix) return false
-  // 排除会改 markdown 结构、math/code，或可能形成 autolink 的字符
-  // （含 :/@/ 时回退全量 parse，避免流式中链接一直是纯文本）
-  return /^[^\n`*_[\]()#>|!~\\<$:/@]+$/.test(suffix)
+  // 排除会改 markdown 结构、math/code、HTML 实体(&amp; 流式中会显示为字面量),或可能形成 autolink 的字符
+  // (含 :/@ 时回退全量 parse,避免流式中链接一直是纯文本)
+  if (!/^[^\n`*_[\]()#>|!~\\<$:/@&]+$/.test(suffix)) return false
+  // 当前行行首为块级标记字符或数字(数字可能是有序列表)时,必须交给 parser 判定
+  const lastLine = nextSrc.slice(nextSrc.lastIndexOf('\n') + 1)
+  if (/www\./i.test(lastLine)) return false
+  return !/^[ \t]*[-+*>|#=~`_\d]/.test(lastLine)
 }
 
 /** 最后一个 Text 是否安全承接追加（不能在 strong/em/a/code 等行内节点里） */
@@ -246,9 +254,25 @@ function decodeLocalFileHref(href?: string): string | null {
   }
 }
 
+const LOCAL_ABSOLUTE_PATH_PATTERN = /^(?:[A-Za-z]:[\\/]|\\\\[^\\]|\/[^/])/
+
+/** 仅在用户明确点击时调用;非本地绝对路径(含 file:/javascript: 等 scheme)与打开失败(含 opener ACL 拒绝)均通过 toast 可见 */
 function openLocalFilePath(filePath: string) {
   if (!isTauri()) return
-  import('@tauri-apps/plugin-opener').then(mod => mod.openPath(filePath)).catch(() => {})
+  if (filePath.includes('\0') || !LOCAL_ABSOLUTE_PATH_PATTERN.test(filePath)) {
+    notificationStore.push('error', i18n.t('components:markdown.openLocalFileFailed'), filePath, '')
+    return
+  }
+  import('@tauri-apps/plugin-opener')
+    .then(mod => mod.openPath(filePath))
+    .catch((error: unknown) => {
+      notificationStore.push(
+        'error',
+        i18n.t('components:markdown.openLocalFileFailed'),
+        error instanceof Error ? error.message : String(error),
+        '',
+      )
+    })
 }
 
 function getOrderedListPadding(start: number, itemCount: number): string {
@@ -1288,7 +1312,7 @@ const MarkdownDomBlock = memo(function MarkdownDomBlock({
       renderSrc.startsWith(prevSrc)
     ) {
       const suffix = renderSrc.slice(prevSrc.length)
-      if (canAppendLiveMarkdownSuffix(suffix) && tryAppendLiveText(root, suffix)) {
+      if (canAppendLiveMarkdownSuffix(suffix, renderSrc) && tryAppendLiveText(root, suffix)) {
         appliedSrcRef.current = renderSrc
         // 文本已偏离开 html 快照，强制后续全量路径重算
         appliedHtmlRef.current = null
