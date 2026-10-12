@@ -63,8 +63,10 @@ const CWD_PARAMS = objectSchema({ cwd: STRING }, ["cwd"])
 const SESSION_PREVIEW_PARAMS = objectSchema({
   sessionId: STRING,
   cursor: nullable(STRING),
-  limit: { type: "integer", minimum: 1 },
-  maxBytes: { type: "integer", minimum: 1 },
+  syncCursor: STRING,
+  beforeId: STRING,
+  limit: { type: "integer", minimum: 1, maximum: 200 },
+  maxBytes: { type: "integer", minimum: 1, maximum: 4 * 1024 * 1024 },
 }, ["sessionId"])
 
 export const PI_COMMAND_SPECS = [
@@ -86,6 +88,7 @@ export const PI_COMMAND_SPECS = [
   { name: "setSteeringMode", scope: "session", description: "Set steering queue delivery mode", paramsSchema: objectSchema({ mode: QUEUE_MODE }), queue: "immediate" },
   { name: "setFollowUpMode", scope: "session", description: "Set follow-up queue delivery mode", paramsSchema: objectSchema({ mode: QUEUE_MODE }), queue: "immediate" },
   { name: "clearQueue", scope: "session", description: "Clear pending steering and follow-up queues", queue: "immediate" },
+  { name: "removeQueuedMessage", scope: "session", description: "Remove one queued message without reuploading the remaining entries", paramsSchema: objectSchema({ kind: { enum: ["steering", "followUp"] }, index: { type: "integer", minimum: 0 } }, ["kind", "index"]), queue: "immediate" },
   { name: "sendQueuedMessage", scope: "session", description: "Atomically submit one queued steering/follow-up message now", paramsSchema: objectSchema({ kind: { enum: ["steering", "followUp"] }, index: { type: "integer", minimum: 0 } }, ["kind", "index"]), queue: "immediate" },
   { name: "compact", scope: "session", description: "Start Pi compaction", paramsSchema: objectSchema({ customInstructions: STRING }), queue: "serialized", cancellable: true },
   { name: "abortCompaction", scope: "session", description: "Abort active compaction", queue: "immediate" },
@@ -185,6 +188,7 @@ export const RUNTIME_TARGETS = {
   setSteeringMode: "setSteeringMode",
   setFollowUpMode: "setFollowUpMode",
   clearQueue: "clearQueue",
+  removeQueuedMessage: "removeQueuedMessage",
   sendQueuedMessage: "sendQueuedMessage",
   compact: "compact",
   abortCompaction: "abortCompaction",
@@ -240,6 +244,7 @@ export type PiPageParams = {
  * 复用 commands.ts 的 CoreCommandParams。
  */
 export type PiCommandParams = CoreCommandParams & {
+  removeQueuedMessage: { kind: "steering" | "followUp"; index: number }
   "state.get": Record<string, never>
   "entries.get": PiPageParams
   "branch.get": PiPageParams & BranchSyncRequest
@@ -255,7 +260,7 @@ export type PiCommandParams = CoreCommandParams & {
   "session.list": { cwd: string }
   "session.listAll": Record<string, never>
   "session.create": { cwd: string }
-  "session.preview": { sessionId: string } & PiPageParams
+  "session.preview": { sessionId: string } & PiPageParams & BranchSyncRequest
   "session.read": { sessionId: string; query: "state.get" | "branch.get" | "entries.get" | "tree.get" | "attachment.get" | "subagent.messages"; params?: JsonObject }
   "session.copy": { sessionId: string }
   "session.children": { sessionFile: string }

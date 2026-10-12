@@ -17,6 +17,31 @@ class PiBranchStore {
   private bySessionId = new Map<string, BranchEntry>()
   private listeners = new Set<() => void>()
   private nextVersion = 0
+  private activeSessions = new Set<string>()
+
+  retain(sessionId: string): void {
+    this.activeSessions.add(sessionId)
+    const entry = this.bySessionId.get(sessionId)
+    if (entry) {
+      this.bySessionId.delete(sessionId)
+      this.bySessionId.set(sessionId, entry)
+    }
+  }
+
+  release(sessionId: string): void {
+    this.activeSessions.delete(sessionId)
+    // 已关闭的 pane 只保留最新一页；主动阅读的活动 pane 不丢历史。
+    const entry = this.bySessionId.get(sessionId)
+    if (entry?.data && (entry.data.items.length > 100 || new TextEncoder().encode(JSON.stringify(entry.data)).byteLength > 8 * 1024 * 1024)) {
+      this.clear(sessionId)
+    }
+    this.trimInactive()
+  }
+
+  private trimInactive(): void {
+    const inactive = [...this.bySessionId.keys()].filter(id => !this.activeSessions.has(id))
+    for (const id of inactive.slice(0, Math.max(0, inactive.length - 4))) this.bySessionId.delete(id)
+  }
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener)
@@ -47,6 +72,7 @@ class PiBranchStore {
     entry.data = data
     entry.error = null
     entry.loading = false
+    this.trimInactive()
     this.notify()
   }
 
@@ -111,6 +137,7 @@ class PiBranchStore {
 
   clearAll(): void {
     this.bySessionId.clear()
+    this.activeSessions.clear()
     this.notify()
   }
 }

@@ -19,6 +19,7 @@ export class BranchPageReader<T extends { id: string }> {
   }
 
   read(head: SessionHead, entries: readonly T[], options: PageOptions, serialize: (entry: T) => JsonObject): EntriesPage {
+    options = { ...options, limit: Math.min(options.limit, 200), maxBytes: Math.min(options.maxBytes, 4 * 1024 * 1024) }
     if (options.cursor) return entriesPageFromEntries(head, entries, options, serialize)
 
     const previous = options.syncCursor ? this.snapshots.get(options.syncCursor) : undefined

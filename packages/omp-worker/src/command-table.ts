@@ -101,6 +101,11 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
     await ctx.requireRuntime().setFollowUpMode(P.optEnum(p, "mode", QUEUE_MODES) ?? "one-at-a-time")
   },
   clearQueue: async (ctx) => ctx.requireRuntime().clearQueue(),
+  removeQueuedMessage: async (ctx, p) => {
+    const kind = P.optEnum(p, "kind", ["steering", "followUp"] as const)
+    if (!kind) throw Object.assign(new Error("invalid queue kind"), { code: "INVALID_REQUEST" })
+    return ctx.requireRuntime().removeQueuedMessage(kind, P.reqNonNegativeInteger(p, "index"))
+  },
   sendQueuedMessage: async (ctx, p) => {
     const kind = P.optEnum(p, "kind", ["steering", "followUp"] as const)
     if (!kind) {
@@ -227,7 +232,8 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
   "session.create": async (ctx, p) => ctx.catalog.createSession(P.reqString(p, "cwd")),
   "session.preview": async (ctx, p) => ctx.catalog.previewSessionById(
     P.reqString(p, "sessionId"),
-    { cursor: P.optString(p, "cursor"), limit: P.optNumber(p, "limit"), maxBytes: P.optNumber(p, "maxBytes") },
+    { cursor: P.optString(p, "cursor"), limit: P.optPositiveInteger(p, "limit"), maxBytes: P.optPositiveInteger(p, "maxBytes"),
+      syncCursor: P.optString(p, "syncCursor"), beforeId: P.optString(p, "beforeId") },
   ),
   "session.read": async (ctx, p) => ctx.catalog.readSession(P.reqString(p, "sessionId"), P.reqString(p, "query"), P.optObject(p, "params")),
   "session.copy": async (ctx, p) => ctx.catalog.copySession(P.reqString(p, "sessionId")),

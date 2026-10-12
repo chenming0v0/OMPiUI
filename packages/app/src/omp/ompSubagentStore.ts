@@ -57,6 +57,8 @@ export type OmpSubagentRun = {
   transcript: OmpSubagentTranscriptItem[]
   /** 已尝试过磁盘转录回填（get_subagent_messages），避免重复拉取 */
   historyLoaded?: boolean
+  historyTruncated?: boolean
+  historyHasMore?: boolean
   startedAt: number
   endedAt?: number
 }
@@ -455,7 +457,7 @@ class OmpSubagentStore {
    * 非空说明实时帧已在推进（回填响应晚到的竞态），保持现状即可。
    * 刷新后只收到增量尾部的预览，待终态再用原生历史补齐。
    */
-  applyHistory(sessionId: string, runId: string, messages: unknown[]): void {
+  applyHistory(sessionId: string, runId: string, messages: unknown[], page?: { truncated: boolean; hasMore: boolean }): void {
     // 回填只作用于已存在的 run（回填不负责凭空创建）
     if (!this.runs.has(runId)) return
     this.upsert(sessionId, runId, run => {
@@ -464,7 +466,9 @@ class OmpSubagentStore {
       return {
         ...run,
         historyLoaded: !incomplete || terminal,
-        transcript: run.transcript.length > 0 && !(terminal && incomplete && messages.length > 0)
+        historyTruncated: page?.truncated,
+        historyHasMore: page?.hasMore,
+        transcript: run.transcript.length > 0 && !(terminal && (incomplete || run.historyLoaded) && messages.length > 0)
           ? run.transcript : transcriptItemsFromMessages(messages),
       }
     })

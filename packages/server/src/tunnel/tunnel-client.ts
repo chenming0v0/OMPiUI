@@ -20,6 +20,8 @@ import {
   CLOSE_RATE_LIMITED,
   CLOSE_UNAUTHORIZED,
   CONTROL_PATH,
+  CONTROL_MESSAGE_MAX,
+  FRAME_PAYLOAD_MAX,
   HEARTBEAT_INTERVAL_MS,
   RECONNECT_BASE_MS,
   RECONNECT_MAX_MS,
@@ -139,6 +141,7 @@ export class TunnelClient {
         "x-ompiui-tunnel": this.tunnelId,
       },
       handshakeTimeout: 10_000,
+      maxPayload: Math.max(CONTROL_MESSAGE_MAX, FRAME_PAYLOAD_MAX + 4),
     })
     this.ws = ws
     ws.on("pong", () => {
@@ -227,8 +230,10 @@ export class TunnelClient {
   private handleMessage(data: unknown, isBinary: boolean): void {
     const ws = this.ws
     if (!ws || ws.readyState !== WebSocket.OPEN) return
+    const raw = toBuffer(data)
     if (isBinary) {
-      const frame = decodeFrameMessage(toBuffer(data))
+      if (raw.length > FRAME_PAYLOAD_MAX + 4) { ws.terminate(); return }
+      const frame = decodeFrameMessage(raw)
       if (!frame) {
         ws.terminate()
         return
@@ -239,7 +244,8 @@ export class TunnelClient {
       else conn.req?.write(frame.payload)
       return
     }
-    const frame = JSON.parse(toBuffer(data).toString("utf8")) as ControlFrame
+    if (raw.length > CONTROL_MESSAGE_MAX) { ws.terminate(); return }
+    const frame = JSON.parse(raw.toString("utf8")) as ControlFrame
     switch (frame.type) {
       case "ready": {
         if (frame.v !== WIRE_VERSION) {

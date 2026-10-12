@@ -120,6 +120,8 @@ export class OmpRpcClient extends EventEmitter {
       line => this.handleStdoutLine(line),
       () => this.proc.stdout!.pause(),
       () => this.proc.stdout!.resume(),
+      64,
+      message => this.emitProtocolError(message),
     )
     this.proc.stdout!.setEncoding("utf8")
     this.proc.stdout!.on("data", chunk => this.stdoutReader.push(chunk))

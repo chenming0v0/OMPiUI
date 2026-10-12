@@ -1,4 +1,6 @@
 {
+  "attachmentLimitTitle": "Attachment too large",
+  "attachmentLimitBody": "Each attachment must be at most 5 MiB, with at most 16 MiB in total.",
   "header": {
     "newChat": "New Chat",
     "openSidebar": "Open sidebar",

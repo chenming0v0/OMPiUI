@@ -40,6 +40,7 @@ import type { SessionStatus } from '../types/session'
 import { BrowserDiagnostics } from './browserDiagnostics'
 import { markModelSettingsDisconnected, refreshModelSettings } from './modelSettingsSync'
 import { retryDelay } from './networkRetry'
+import { clearSubagentTranscripts } from './subagentTranscript'
 import { faultSocketOpened, faultSocketClosed, faultSocketUnused, reportRuntimeCrash } from './faultAudit/controller'
 import {
   loadPiSessionData,
@@ -134,6 +135,7 @@ class PiEventStream {
 
   /** Subscribe a session stream (reference counted). */
   connect(sessionId: string): void {
+    piBranchStore.retain(sessionId)
     this.refCounts.set(sessionId, (this.refCounts.get(sessionId) ?? 0) + 1)
     if (this.refCounts.get(sessionId) === 1) {
       const poll = { timer: 0, delay: 1500 }
@@ -163,6 +165,7 @@ class PiEventStream {
     const count = this.refCounts.get(sessionId) ?? 0
     if (count <= 1) {
       this.refCounts.delete(sessionId)
+      piBranchStore.release(sessionId)
       // 暂时关掉 pane 仍保留游标；服务端切换时由 disconnectAll 统一清理。
       this.pendingLiveMessages.delete(sessionId)
       this.diagnostics.forget(sessionId)
@@ -220,6 +223,8 @@ class PiEventStream {
     this.diagnostics.record('disconnect', { reason: 'server_switch_or_reset' })
     for (const sessionId of this.refCounts.keys()) this.clearRefreshTimers(sessionId)
     this.refCounts.clear()
+    piBranchStore.clearAll()
+    clearSubagentTranscripts()
     this.workspaceRefCounts.clear()
     this.cursors.clear()
     this.reconnectAttempts = 0

@@ -1346,6 +1346,17 @@ export class OmpRpcSession implements SessionRuntime {
     return cleared
   }
 
+  async removeQueuedMessage(kind: "steering" | "followUp", index: number): Promise<JsonValue> {
+    if (this.queueSubmissionInFlight || this.userQueueDrain) {
+      throw Object.assign(new Error("A queued message is being submitted"), { code: "SESSION_BUSY" })
+    }
+    const entry = this.userQueue[kind][index]
+    if (!entry) throw Object.assign(new Error("queued message not found"), { code: "NOT_FOUND" })
+    this.userQueue[kind].splice(index, 1)
+    this.emitUserQueueSnapshot()
+    return entry as unknown as JsonValue
+  }
+
   async compact(customInstructions?: string): Promise<JsonValue | undefined> {
     const command: JsonObject = { type: "compact" }
     if (customInstructions) command.customInstructions = customInstructions

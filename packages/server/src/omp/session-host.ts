@@ -501,11 +501,12 @@ export class SessionHost {
     }
     if (type === "session.attached") return this.listAttachedIds()
     if (type === "session.preview" && typeof params?.sessionId === "string") {
+      validateParams(getCommandCapability(type)?.paramsSchema, params)
       const attached = this.runtimes.get(params.sessionId)
       if (attached) {
         this.touch(attached.sessionId)
         const pageParams: JsonObject = {}
-        for (const key of ["cursor", "limit", "maxBytes"]) {
+        for (const key of ["cursor", "limit", "maxBytes", "syncCursor", "beforeId"]) {
           if (params[key] !== undefined) pageParams[key] = params[key]
         }
         const [state, branch] = await Promise.all([

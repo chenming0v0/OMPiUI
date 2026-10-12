@@ -233,6 +233,7 @@ describe('persisted subagent fallback', () => {
     expect(getOmpSubagentMessagesMock).toHaveBeenCalledWith(
       'parent-session',
       { sessionFile: 'C:\\sessions\\proj\\2026-parent/ReadmeScout.jsonl' },
+      expect.any(AbortSignal),
     )
     expect(screen.getByRole('button', { name: 'scout' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'ReadmeScout · Summarize the project from README.md' })).toBeInTheDocument()

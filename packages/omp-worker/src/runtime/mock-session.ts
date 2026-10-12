@@ -761,6 +761,15 @@ export class MockPiSession implements SessionRuntime {
     this.emitEvent({ type: "queue_update", ...this.getQueueSnapshot() })
   }
 
+  async removeQueuedMessage(kind: "steering" | "followUp", index: number): Promise<JsonValue> {
+    const queue = kind === "steering" ? this.steeringQueue : this.followUpQueue
+    const entry = queue[index]
+    if (!entry) throw Object.assign(new Error("queued message not found"), { code: "NOT_FOUND" })
+    queue.splice(index, 1)
+    this.emitEvent({ type: "queue_update", ...this.getQueueSnapshot() })
+    return entry as unknown as JsonValue
+  }
+
   async abort(): Promise<JsonValue | undefined> {
     const cleared = this.getQueueSnapshot()
     this.steeringQueue = []

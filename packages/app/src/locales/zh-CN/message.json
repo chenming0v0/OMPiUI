@@ -91,6 +91,8 @@
     }
   },
   "task": {
+    "partialTranscript": "仅显示部分转录",
+    "loadMoreTranscript": "继续读取",
     "subtask": "Subtask",
     "result": "Result",
     "error": "Error",

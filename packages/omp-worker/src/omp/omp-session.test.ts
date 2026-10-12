@@ -244,6 +244,18 @@ describe("OmpRpcSession extension identity after replacement", () => {
 })
 
 describe("OmpRpcSession image-bearing user queue", () => {
+  it("removes only the selected image-bearing queue entry without resubmitting its neighbors", async t => {
+    const { session, frame, commands } = await sessionFixture(t)
+    frame({ type: "agent_start" })
+    await session.sendUserMessage("first", [image("AA==")], "steer")
+    await session.sendUserMessage("second", [image("AQ==")], "steer")
+    const before = commands.length
+    assert.deepEqual(await session.removeQueuedMessage("steering", 0), { text: "first", images: [image("AA==")] })
+    assert.equal(commands.length, before)
+    const queue = (await session.getState()).queue as QueueSnapshot
+    assert.deepEqual(queue.steeringEntries, [{ text: "second", images: [image("AQ==")] }])
+    await assert.rejects(session.removeQueuedMessage("steering", 10), { code: "NOT_FOUND" })
+  })
   it("preserves duplicate text, image-only entries and clone boundaries in snapshots, events and clear results", async t => {
     const { session, frame } = await sessionFixture(t)
     const events: JsonObject[] = []

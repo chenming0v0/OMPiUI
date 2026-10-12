@@ -1,3 +1,6 @@
+const MAX_LINE_BYTES = 1024 * 1024
+const MAX_BUFFER_BYTES = 8 * 1024 * 1024
+
 /** 分批消费 stdout，让心跳、IPC 响应和其他会话能在事件洪流中继续调度。 */
 export class RpcLineReader {
   private buffer = ""
@@ -5,17 +8,35 @@ export class RpcLineReader {
   private closed = false
   private paused = false
   private finished?: () => void
+  private droppingLine = false
 
   constructor(
     private readonly consume: (line: string) => void,
     private readonly pause: () => void,
     private readonly resume: () => void,
     private readonly batchSize = 64,
+    private readonly onError: (message: string) => void = () => {},
   ) {}
 
   push(chunk: string): void {
     if (this.closed) return
+    if (this.droppingLine) {
+      const end = chunk.indexOf("\n")
+      if (end < 0) return
+      chunk = chunk.slice(end + 1)
+      this.droppingLine = false
+    }
     this.buffer += chunk
+    const lastNewline = this.buffer.lastIndexOf("\n")
+    if (Buffer.byteLength(this.buffer.slice(lastNewline + 1)) > MAX_LINE_BYTES) {
+      this.buffer = this.buffer.slice(0, lastNewline + 1)
+      this.droppingLine = true
+      this.onError("rpc stdout line exceeds 1 MiB")
+    }
+    if (Buffer.byteLength(this.buffer) > MAX_BUFFER_BYTES) {
+      this.buffer = ""
+      this.onError("rpc stdout buffer exceeds 8 MiB")
+    }
     if (!this.paused && !this.scheduled) this.drain()
   }
 
@@ -38,7 +59,8 @@ export class RpcLineReader {
     while (!this.closed && !this.paused && (index = this.buffer.indexOf("\n")) >= 0) {
       const line = this.buffer.slice(0, index).trim()
       this.buffer = this.buffer.slice(index + 1)
-      if (line) this.consume(line)
+      if (line && Buffer.byteLength(line) <= MAX_LINE_BYTES) this.consume(line)
+      else if (line) this.onError("rpc stdout line exceeds 1 MiB")
       if (++count >= this.batchSize || performance.now() - started >= 4) break
     }
     if (this.closed || this.paused) return
@@ -67,7 +89,8 @@ export class RpcLineReader {
     while ((index = this.buffer.indexOf("\n")) >= 0) {
       const line = this.buffer.slice(0, index).trim()
       this.buffer = this.buffer.slice(index + 1)
-      if (line) this.consume(line)
+      if (line && Buffer.byteLength(line) <= MAX_LINE_BYTES) this.consume(line)
+      else if (line) this.onError("rpc stdout line exceeds 1 MiB")
     }
     this.buffer = ""
   }

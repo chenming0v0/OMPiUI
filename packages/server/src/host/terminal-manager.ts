@@ -95,6 +95,7 @@ type ActiveTerminal = {
   customTitle?: string
   titleBuffer: string
   output: string
+  outputBytes: number
   bufferCursor: number
   subscribers: Map<object, Subscriber>
   listeners: Array<{ dispose(): void }>
@@ -214,6 +215,7 @@ export class TerminalManager {
       customTitle,
       titleBuffer: "",
       output: "",
+      outputBytes: 0,
       bufferCursor: 0,
       subscribers: new Map(),
       listeners: [],
@@ -474,10 +476,15 @@ export class TerminalManager {
       }
     }
     terminal.output += data
-    if (terminal.output.length > OUTPUT_BUFFER_LIMIT) {
-      const excess = terminal.output.length - OUTPUT_BUFFER_LIMIT
-      terminal.output = terminal.output.slice(excess)
-      terminal.bufferCursor += excess
+    terminal.outputBytes += Buffer.byteLength(data)
+    if (terminal.outputBytes > OUTPUT_BUFFER_LIMIT) {
+      const bytes = Buffer.from(terminal.output)
+      let start = bytes.length - OUTPUT_BUFFER_LIMIT
+      while ((bytes[start]! & 0xc0) === 0x80) start++
+      const retained = bytes.subarray(start).toString("utf8")
+      terminal.bufferCursor += terminal.output.length - retained.length
+      terminal.output = retained
+      terminal.outputBytes = bytes.length - start
     }
   }
 

@@ -38,6 +38,10 @@ export function entriesPageFromEntries<T>(
   options: { cursor?: string; limit: number; maxBytes: number; checkpoint?: BranchCheckpoint },
   serialize: (entry: T) => JsonObject,
 ): EntriesPage {
+  if (!Number.isSafeInteger(options.limit) || options.limit < 1 || !Number.isSafeInteger(options.maxBytes) || options.maxBytes < 1) {
+    throw Object.assign(new Error("invalid page limits"), { code: "INVALID_REQUEST" })
+  }
+  options = { ...options, limit: Math.min(options.limit, 200), maxBytes: Math.min(options.maxBytes, 4 * 1024 * 1024) }
   const decoded = options.cursor ? decodeCursor(options.cursor) : undefined
   if (decoded && decoded.epoch !== head.epoch) throw staleCursor("cursor belongs to another session epoch")
   const before = decoded

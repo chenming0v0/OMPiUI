@@ -1,4 +1,6 @@
 {
+  "attachmentLimitTitle": "附件过大",
+  "attachmentLimitBody": "单个附件不能超过 5 MiB，附件总量不能超过 16 MiB。",
   "header": {
     "newChat": "新对话",
     "openSidebar": "打开侧边栏",

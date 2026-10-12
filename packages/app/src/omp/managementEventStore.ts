@@ -171,9 +171,14 @@ export function receiveProviderAuthUpdated(): void {
 }
 
 export function receivePackageProgress(progress: PackageProgress): void {
+  const packageProgress = { ...snapshot.packageProgress }
+  delete packageProgress[progress.commandId]
+  packageProgress[progress.commandId] = progress
+  const ids = Object.keys(packageProgress)
+  for (const id of ids.slice(0, Math.max(0, ids.length - 32))) delete packageProgress[id]
   emit({
     ...snapshot,
-    packageProgress: { ...snapshot.packageProgress, [progress.commandId]: progress },
+    packageProgress,
   })
 }
 

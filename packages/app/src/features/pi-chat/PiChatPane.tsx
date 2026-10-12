@@ -48,9 +48,8 @@ import {
   setPiExtensionEditorState,
   setPiModel,
   setPiThinkingLevel,
-  clearPiQueue,
 } from '../../omp/controllers/index.js'
-import { invokePiCommand, manageSessionGoal, sendQueuedMessage, waitHostCommand } from '../../omp/transport/index.js'
+import { invokePiCommand, manageSessionGoal, removeQueuedMessage, sendQueuedMessage, waitHostCommand } from '../../omp/transport/index.js'
 import { layoutStore } from '../../store/layoutStore'
 import { themeStore } from '../../store/themeStore'
 import { useSessionActiveEntry } from '../../store/activeSessionStore'
@@ -376,64 +375,27 @@ export function PiChatPane({
   }, [])
 
   const isStreaming = Boolean(state?.isStreaming) || (sessionActive && !compacting)
-  // 队列既带用于展示的纯文本数组（兼容旧服务端），也带保留附件的 entries。
-  // 重建队列（撤销/改投递模式/删除）必须按 entries 重放，否则图片附件丢失。
+  // 队列操作在 worker 内完成，前端不重传未修改条目的图片。
   const queue = state?.queue as PiQueueSnapshot | undefined
 
   // 输入框是 memo 组件；内容不变时复用队列引用，避免每个流式事件都重绘队列。
   const queuedSteering = useMemo(() => queue?.steering ?? EMPTY_STRING_ARRAY, [queue?.steering])
   const queuedFollowUps = useMemo(() => queue?.followUp ?? EMPTY_STRING_ARRAY, [queue?.followUp])
 
-  const queueEntriesFor = useCallback(
-    (snapshot: PiQueueSnapshot | null | undefined, kind: 'steering' | 'followUp'): PiQueueEntry[] => {
-      const entries = kind === 'steering' ? snapshot?.steeringEntries : snapshot?.followUpEntries
-      if (entries) return entries.map(entry => (typeof entry === 'string' ? { text: entry } : entry))
-      const texts = (kind === 'steering' ? snapshot?.steering : snapshot?.followUp) ?? []
-      return texts.map(text => ({ text }))
-    },
-    [],
-  )
-
-  /**
-   * Rebuild a queue after removing or editing one item.  The worker command
-   * is acknowledged only after the runtime accepted the item, so replaying
-   * sequentially keeps the visible order stable and lets us stop on the first
-   * real failure instead of silently dropping the rest.
-   */
-  const replayQueue = useCallback(
-    async (sid: string, steering: readonly PiQueueEntry[], followUp: readonly PiQueueEntry[]) => {
-      for (const entry of steering) await sendPiUserMessage(sid, entry.text, entry.images, 'steer')
-      for (const entry of followUp) await sendPiUserMessage(sid, entry.text, entry.images, 'followUp')
-    },
-    [],
-  )
-
-  // ── 队列消息操作（撤销回输入框 / 切换 steer↔followUp 模式）──
-  // SDK 无单条队列移除：用 clearQueue（返回清空快照）+ 按目标重放其余实现。
   const handleQueueBackToInput = useCallback(
     async (kind: 'steering' | 'followUp', index: number) => {
       if (!sessionId) return
-      // 无该条目时不清空队列,避免无意义的重放
-      if (!queueEntriesFor(queue, kind)[index]) return
-      // clearQueue 失败则队列原样保留;成功后以返回的权威快照为准取条目
-      const cleared = (await clearPiQueue(sessionId).catch(() => null)) as PiQueueSnapshot | null
-      if (!cleared) return
-      const restSteering = queueEntriesFor(cleared, 'steering')
-      const restFollowUp = queueEntriesFor(cleared, 'followUp')
-      const restOfKind = kind === 'steering' ? restSteering : restFollowUp
-      const entry = restOfKind[index]
-      if (!entry) {
-        await replayQueue(sessionId, restSteering, restFollowUp).catch(error => uiErrorHandler('rebuild message queue', error))
-        return
+      try {
+        const entry = await removeQueuedMessage(sessionId, { kind, index })
+        setSessionEditorDraft(sessionId, entry.text, {
+          attachments: entry.images?.map(image => imageInputToAttachment(image)),
+        })
+        await refreshPiSessionState(sessionId)
+      } catch (error) {
+        uiErrorHandler('remove queued message', error)
       }
-      restOfKind.splice(index, 1)
-      // 文本与图片一并回填:图片转为输入框附件(同一 data-url 表示),发送时由 attachmentToImage 还原为原始图片块
-      setSessionEditorDraft(sessionId, entry.text, {
-        attachments: entry.images?.map(image => imageInputToAttachment(image)),
-      })
-      await replayQueue(sessionId, restSteering, restFollowUp).catch(error => uiErrorHandler('rebuild message queue', error))
     },
-    [queueEntriesFor, replayQueue, sessionId, queue],
+    [sessionId],
   )
   /**
    * 立即提交队列中的一条（本轮 steer / 下一轮 prompt）。worker 端原子地
@@ -456,15 +418,14 @@ export function PiChatPane({
   const handleQueueClear = useCallback(
     async (kind: 'steering' | 'followUp', index: number) => {
       if (!sessionId) return
-      const cleared = (await clearPiQueue(sessionId).catch(() => null)) as PiQueueSnapshot | null
-      if (!cleared) return
-      const restSteering = queueEntriesFor(cleared, 'steering')
-      const restFollowUp = queueEntriesFor(cleared, 'followUp')
-      if (kind === 'steering') restSteering.splice(index, 1)
-      else restFollowUp.splice(index, 1)
-      await replayQueue(sessionId, restSteering, restFollowUp).catch(error => uiErrorHandler('rebuild message queue', error))
+      try {
+        await removeQueuedMessage(sessionId, { kind, index })
+        await refreshPiSessionState(sessionId)
+      } catch (error) {
+        uiErrorHandler('remove queued message', error)
+      }
     },
-    [queueEntriesFor, replayQueue, sessionId],
+    [sessionId],
   )
 
   const handleQueueOpenInSideChat = useCallback(

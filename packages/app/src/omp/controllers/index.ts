@@ -189,38 +189,23 @@ async function loadPiSessionDataOnce(sessionId: string, signal?: AbortSignal): P
   const serverGeneration = serverStore.getActiveServerGeneration()
   const requestVersion = piSessionStateStore.beginRequest(sessionId)
   const branchVersion = piBranchStore.beginRequest(sessionId)
-  let lastError: unknown
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-        const current = piBranchStore.getData(sessionId)
-        const preview = await retryUnavailable(() => transport.previewPiSession(
-          sessionId,
-          { limit: BRANCH_PAGE_LIMIT, maxBytes: BRANCH_PAGE_MAX_BYTES,
-            ...(current?.syncCursor ? { syncCursor: current.syncCursor, beforeId: current.items[0]?.id } : {}) },
-          signal,
-        ), signal)
-
-      if (serverStore.getActiveServerGeneration() !== serverGeneration) return
-      piSessionStateStore.setStateIfCurrent(sessionId, preview.state, requestVersion)
-      piBranchStore.setDataIfCurrent(sessionId, mergeLatestBranchPage(piBranchStore.getData(sessionId), preview.branch), branchVersion)
-      return
-    } catch (error) {
-      lastError = error
-      if (!isSessionBusyError(error) && !isTransientServerError(error)) break
-      if (attempt === 2) break
-      await waitForRetry(150 * (attempt + 1), undefined)
-    }
+  try {
+    const current = piBranchStore.getData(sessionId)
+    const preview = await retryUnavailable(() => transport.previewPiSession(
+      sessionId,
+      { limit: BRANCH_PAGE_LIMIT, maxBytes: BRANCH_PAGE_MAX_BYTES,
+        ...(current?.syncCursor ? { syncCursor: current.syncCursor, beforeId: current.items[0]?.id } : {}) },
+      signal,
+    ), signal, true)
+    if (serverStore.getActiveServerGeneration() !== serverGeneration) return
+    piSessionStateStore.setStateIfCurrent(sessionId, preview.state, requestVersion)
+    piBranchStore.setDataIfCurrent(sessionId, mergeLatestBranchPage(piBranchStore.getData(sessionId), preview.branch), branchVersion)
+  } catch (error) {
+    if (serverStore.getActiveServerGeneration() !== serverGeneration) return
+    if (piSessionStateStore.isRequestCurrent(sessionId, requestVersion)) piSessionStateStore.setError(sessionId, error as Error)
+    if (piBranchStore.isRequestCurrent(sessionId, branchVersion)) piBranchStore.setError(sessionId, error as Error)
+    throw error
   }
-
-  if (serverStore.getActiveServerGeneration() !== serverGeneration) return
-  console.error('Failed to load session data:', lastError)
-  if (piSessionStateStore.isRequestCurrent(sessionId, requestVersion)) {
-    piSessionStateStore.setError(sessionId, lastError as Error)
-  }
-  if (piBranchStore.isRequestCurrent(sessionId, branchVersion)) {
-    piBranchStore.setError(sessionId, lastError as Error)
-  }
-  throw lastError
 }
 
 function isSessionBusyError(error: unknown): boolean {
@@ -230,15 +215,18 @@ function isSessionBusyError(error: unknown): boolean {
 function isTransientServerError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false
   const candidate = error as { status?: unknown; code?: unknown }
+  if (candidate.code === 'WORKER_RESULT_UNKNOWN' || candidate.code === 'REQUEST_ABORTED') return false
   return candidate.status === 502 || candidate.status === 503 || candidate.status === 504
     || candidate.code === 'BACKEND_UNAVAILABLE'
-    || candidate.code === 'WORKER_RESULT_UNKNOWN'
 }
 
 async function waitForRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) throw signal.reason ?? new DOMException('The operation was aborted', 'AbortError')
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(resolve, delayMs)
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, delayMs)
     const onAbort = () => {
       clearTimeout(timer)
       reject(signal?.reason ?? new DOMException('The operation was aborted', 'AbortError'))
@@ -247,14 +235,14 @@ async function waitForRetry(delayMs: number, signal?: AbortSignal): Promise<void
   })
 }
 
-async function retryUnavailable<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+async function retryUnavailable<T>(operation: () => Promise<T>, signal?: AbortSignal, retryBusy = false): Promise<T> {
   let lastError: unknown
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       return await operation()
     } catch (error) {
       lastError = error
-      if (!isTransientServerError(error) || attempt === 2) throw error
+      if ((!isTransientServerError(error) && !(retryBusy && isSessionBusyError(error))) || attempt === 2) throw error
       await waitForRetry(250 * 2 ** attempt, signal)
     }
   }

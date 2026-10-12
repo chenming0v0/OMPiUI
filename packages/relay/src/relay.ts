@@ -248,7 +248,7 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
       return
     }
     if (isBinary) {
-      const raw = toBuffer(data)
+      const raw = rawData
       if (raw.length > FRAME_PAYLOAD_MAX + 4) {
         session.ws.terminate()
         return
@@ -262,11 +262,11 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
       deliverBody(session, frame.connId, frame.payload)
       return
     }
-    const text = toBuffer(data).toString("utf8")
-    if (text.length > CONTROL_MESSAGE_MAX) {
+    if (rawData.length > CONTROL_MESSAGE_MAX) {
       session.ws.terminate()
       return
     }
+    const text = rawData.toString("utf8")
     let frame: ControlFrame
     try {
       frame = JSON.parse(text) as ControlFrame
