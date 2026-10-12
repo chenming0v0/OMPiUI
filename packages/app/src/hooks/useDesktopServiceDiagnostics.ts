@@ -26,7 +26,8 @@ export function useDesktopServiceDiagnostics() {
         if (disposed) return
         desktopDiagnosticsStore.receive(diagnostics)
         failures = 0
-        if (isServiceBusy(diagnostics.phase)) delay = 1000
+        if (isServiceBusy(diagnostics.phase) || (diagnostics.phase === 'running' && !diagnostics.workerReady))
+          delay = 1000
       } catch {
         if (!disposed) desktopDiagnosticsStore.queryFailed()
         delay = Math.min(60_000, 15_000 * 2 ** ++failures)
