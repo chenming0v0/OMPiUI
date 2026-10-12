@@ -300,14 +300,12 @@ function pathKey(value: string): string {
   const resolved = path.resolve(value)
   let canonical = resolved
   try {
-    // OMP 18.4+ expands Windows 8.3 paths before writing the session header.
-    // Compare the filesystem identity too, otherwise RUNNER~1 and runneradmin
-    // refer to the same project but fail the catalog's cwd filter.
+    // OMP 会将 Windows 短路径展开后写入会话头；按真实目录匹配同一项目。
     canonical = process.platform === "win32"
       ? realpathSync.native(resolved)
       : realpathSync(resolved)
   } catch {
-    /* Keep the resolved spelling for a missing or inaccessible cwd. */
+    /* 目录已删除或不可访问时保留原路径。 */
   }
   const normalized = normalizeCwd(canonical)
   return process.platform === "win32" ? normalized.toLowerCase() : normalized
