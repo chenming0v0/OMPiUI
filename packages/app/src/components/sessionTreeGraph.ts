@@ -66,7 +66,10 @@ function textFromNative(value: JsonValue | undefined): string {
 }
 
 function normalizePreview(value: string): string {
-  const normalized = value.replace(/[\t\r\n]+/g, ' ').replace(/\s+/g, ' ').trim()
+  const normalized = value
+    .replace(/[\t\r\n]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
   return normalized.length > 180 ? `${normalized.slice(0, 177)}…` : normalized
 }
 
@@ -97,15 +100,18 @@ export function sessionTreeEntryPreview(entry: NativeEntry, typeLabel: (type: st
     if (role === 'assistant') {
       if (text) return text
       if (message.stopReason === 'aborted') return typeLabel('assistant_aborted')
-      if (typeof message.errorMessage === 'string' && message.errorMessage) return normalizePreview(message.errorMessage)
+      if (typeof message.errorMessage === 'string' && message.errorMessage)
+        return normalizePreview(message.errorMessage)
       return typeLabel('assistant_empty')
     }
     return text || role || typeLabel(type)
   }
   if (type === 'model_change') return `${String(entry.provider ?? '')}/${String(entry.modelId ?? '')}`
   if (type === 'thinking_level_change') return String(entry.thinkingLevel ?? typeLabel(type))
-  if (type === 'compaction' || type === 'branch_summary') return normalizePreview(String(entry.summary ?? typeLabel(type)))
-  if (type === 'custom_message') return normalizePreview(textFromNative(entry.content) || String(entry.customType ?? typeLabel(type)))
+  if (type === 'compaction' || type === 'branch_summary')
+    return normalizePreview(String(entry.summary ?? typeLabel(type)))
+  if (type === 'custom_message')
+    return normalizePreview(textFromNative(entry.content) || String(entry.customType ?? typeLabel(type)))
   if (type === 'custom') return String(entry.customType ?? typeLabel(type))
   if (type === 'label') return String(entry.label ?? typeLabel(type))
   if (type === 'session_info') return String(entry.name ?? typeLabel(type))
@@ -128,21 +134,23 @@ export function findSessionTreeNode(tree: NativeTreeNode[], entryId: string | nu
  * "旧分支上被裁掉的部分"：旧时间线 − 这条路径 = redo 的来源。
  */
 export function findSessionTreePath(tree: NativeTreeNode[], entryId: string): string[] | null {
-  const path: string[] = []
-  const visit = (node: NativeTreeNode): boolean => {
+  type Link = { node: NativeTreeNode; parent?: Link }
+  const stack: Link[] = [...tree].reverse().map(node => ({ node }))
+  const seen = new Set<NativeTreeNode>()
+  while (stack.length) {
+    const link = stack.pop()!
+    const node = link.node
+    if (seen.has(node)) continue
+    seen.add(node)
     const rawId = nodeEntry(node).id
     const id = typeof rawId === 'string' ? rawId : ''
-    path.push(id)
-    if (id === entryId) return true
-    for (const child of nodeChildren(node)) {
-      if (visit(child)) return true
+    if (id === entryId) {
+      const path: string[] = []
+      for (let current: Link | undefined = link; current; current = current.parent)
+        path.push(String(nodeEntry(current.node).id ?? ''))
+      return path.reverse()
     }
-    path.pop()
-    return false
-  }
-  for (const root of tree) {
-    path.length = 0
-    if (visit(root)) return path
+    for (const child of [...nodeChildren(node)].reverse()) stack.push({ node: child, parent: link })
   }
   return null
 }
@@ -185,8 +193,8 @@ export function isTreeVisibleEntry(entry: NativeEntry, currentLeafId: string | n
       if (message.role === 'toolResult') return false
       if (message.role === 'assistant') {
         const hasText = textFromNative(message.content).trim().length > 0
-        const isErrorOrAborted = typeof message.stopReason === 'string' &&
-          message.stopReason !== 'stop' && message.stopReason !== 'toolUse'
+        const isErrorOrAborted =
+          typeof message.stopReason === 'string' && message.stopReason !== 'stop' && message.stopReason !== 'toolUse'
         return hasText || isErrorOrAborted
       }
       return true
@@ -198,8 +206,8 @@ export function isTreeVisibleEntry(entry: NativeEntry, currentLeafId: string | n
     if (message.role === 'toolResult') return false
     if (message.role === 'assistant') {
       const hasText = textFromNative(message.content).trim().length > 0
-      const isErrorOrAborted = typeof message.stopReason === 'string' &&
-        message.stopReason !== 'stop' && message.stopReason !== 'toolUse'
+      const isErrorOrAborted =
+        typeof message.stopReason === 'string' && message.stopReason !== 'stop' && message.stopReason !== 'toolUse'
       return hasText || isErrorOrAborted
     }
     return true

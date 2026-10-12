@@ -50,6 +50,7 @@ class TauriBridgeSocket implements PiSocket {
   private closedByUs = false
   private pendingSends: string[] = []
   private invokeFn: TauriInvoke | null = null
+  private inFlight = 0
 
   constructor(url: string) {
     void this.connect(url)
@@ -115,18 +116,32 @@ class TauriBridgeSocket implements PiSocket {
 
   send(data: string): void {
     if (this.readyState !== PI_SOCKET_OPEN) return
+    if (new TextEncoder().encode(data).byteLength > 128 * 1024 || this.pendingSends.length + this.inFlight >= 64) {
+      this.onerror?.()
+      this.close(1013, 'WebSocket bridge queue limit exceeded')
+      return
+    }
     if (this.id === null || !this.invokeFn) {
       // open 事件可能先于 invoke 返回 id 到达，先缓冲
       this.pendingSends.push(data)
       return
     }
     const id = this.id
-    void this.invokeFn('ws_bridge_send', { id, data }).catch(() => undefined)
+    this.inFlight++
+    void this.invokeFn('ws_bridge_send', { id, data })
+      .catch(() => {
+        this.onerror?.()
+        this.close(1013, 'WebSocket bridge send failed')
+      })
+      .finally(() => {
+        this.inFlight--
+      })
   }
 
   close(code?: number, reason?: string): void {
     if (this.readyState === PI_SOCKET_CLOSED) return
     this.closedByUs = true
+    this.pendingSends = []
     const id = this.id
     if (id !== null && this.invokeFn) {
       this.readyState = PI_SOCKET_CLOSING
@@ -138,6 +153,6 @@ class TauriBridgeSocket implements PiSocket {
 }
 
 export function openPiSocket(url: string): PiSocket {
-  const socket = isTauri() ? new TauriBridgeSocket(url) : new WebSocket(url) as unknown as PiSocket
+  const socket = isTauri() ? new TauriBridgeSocket(url) : (new WebSocket(url) as unknown as PiSocket)
   return auditSocket(socket, url, serverStore.getActiveServer()?.url)
 }

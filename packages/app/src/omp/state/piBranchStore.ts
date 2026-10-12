@@ -1,4 +1,5 @@
 import type { PiBranchCheckpoint, PiBranchPage } from '../domain/index.js'
+import { windowBranch } from '../branchWindow'
 
 interface BranchEntry {
   data: PiBranchPage | null
@@ -32,7 +33,11 @@ class PiBranchStore {
     this.activeSessions.delete(sessionId)
     // 已关闭的 pane 只保留最新一页；主动阅读的活动 pane 不丢历史。
     const entry = this.bySessionId.get(sessionId)
-    if (entry?.data && (entry.data.items.length > 100 || new TextEncoder().encode(JSON.stringify(entry.data)).byteLength > 8 * 1024 * 1024)) {
+    if (
+      entry?.data &&
+      (entry.data.items.length > 100 ||
+        new TextEncoder().encode(JSON.stringify(entry.data)).byteLength > 8 * 1024 * 1024)
+    ) {
       this.clear(sessionId)
     }
     this.trimInactive()
@@ -69,7 +74,7 @@ class PiBranchStore {
   setData(sessionId: string, data: PiBranchPage): void {
     const entry = this.entry(sessionId)
     entry.requestVersion = ++this.nextVersion
-    entry.data = data
+    entry.data = windowBranch(data, data.client?.historyWindowed)
     entry.error = null
     entry.loading = false
     this.trimInactive()
@@ -92,7 +97,8 @@ class PiBranchStore {
     if (!entry?.data || !checkpoint || liveMessage?.phase !== 'streaming') return
     entry.requestVersion = ++this.nextVersion
     entry.data = {
-      ...entry.data, checkpoint: { ...checkpoint, liveMessage: { ...liveMessage, phase: 'persisting' } },
+      ...entry.data,
+      checkpoint: { ...checkpoint, liveMessage: { ...liveMessage, phase: 'persisting' } },
     }
     this.notify()
   }

@@ -5,6 +5,7 @@ import { usePathMode, useTheme } from '../../../hooks'
 import { themeStore, type ReasoningDisplayMode, type CompletedAtFormat } from '../../../store/themeStore'
 import { Toggle, SegmentedControl, SettingRow, SettingField, SettingsSection } from './SettingsUI'
 import type { PathMode } from '../../../utils/directoryUtils'
+import { PreviewSettings } from './PreviewSettings'
 
 const STEP_FINISH_FIELDS = [
   { key: 'latestOnly', label: 'chat.latestOnly', desc: 'chat.showLatestOnly' },
@@ -56,6 +57,7 @@ export function ChatSettings() {
 
   return (
     <div>
+      <PreviewSettings />
       <SettingsSection title={t('chat.pathsFormatting')} description={t('chat.pathsFormattingDesc')}>
         <div>
           <div className="w-full max-w-[320px]">

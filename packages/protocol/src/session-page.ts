@@ -1,45 +1,48 @@
-import type { EventCursor } from "./envelope.js"
-import type { JsonObject, JsonValue } from "./json.js"
+import type { EventCursor } from "./envelope.js";
+import type { JsonObject, JsonValue } from "./json.js";
 
 export type SessionHead = {
-  sdkVersion: string
-  revision: number
-  sessionFormatVersion?: number
-  header: JsonObject | null
-  leafId: string | null
-  entryCount: number
-  epoch: string
-}
+  sdkVersion: string;
+  revision: number;
+  sessionFormatVersion?: number;
+  header: JsonObject | null;
+  leafId: string | null;
+  entryCount: number;
+  epoch: string;
+};
 
 export type LiveMessage = {
-  id: string
-  revision: number
-  phase: "streaming" | "persisting"
-  message: JsonValue
-}
+  id: string;
+  revision: number;
+  phase: "streaming" | "persisting";
+  message: JsonValue;
+  complete?: boolean;
+};
 
 export type BranchCheckpoint = {
-  position: EventCursor
-  liveMessage?: LiveMessage
-}
+  position: EventCursor;
+  liveMessageOmitted?: boolean;
+  liveMessage?: LiveMessage;
+};
 
 export type EntriesPage = {
-  head: SessionHead
-  items: JsonObject[]
-  checkpoint?: BranchCheckpoint
-  beforeCursor?: string
-  hasMore: boolean
+  head: SessionHead;
+  items: JsonObject[];
+  checkpoint?: BranchCheckpoint;
+  beforeCursor?: string;
+  hasMore: boolean;
   /** 运行时历史快照标识；只有持有该标识的客户端可以请求增量。 */
-  syncCursor?: string
+  syncCursor?: string;
   /** 存在时 items 仅含相对该快照新增的条目。 */
-  deltaFrom?: string
-}
+  deltaFrom?: string;
+};
 
 export type BranchSyncRequest = {
-  syncCursor?: string
+  syncCursor?: string;
+  includeLiveMessage?: boolean;
   /** 客户端已加载历史的最早条目，用于刷新向前分页游标。 */
-  beforeId?: string
-}
+  beforeId?: string;
+};
 
 /**
  * Global session activity status (sessions.activity channel, server stream).
@@ -48,10 +51,10 @@ export type BranchSyncRequest = {
 export type SessionActivityStatus =
   | { type: "busy" }
   | { type: "compacting" }
-  | { type: "retry"; attempt: number; message: string; next: number }
+  | { type: "retry"; attempt: number; message: string; next: number };
 
 export type SessionsActivitySnapshot = {
-  sessions: Record<string, SessionActivityStatus>
-  delta?: boolean
-  removed?: string[]
-}
+  sessions: Record<string, SessionActivityStatus>;
+  delta?: boolean;
+  removed?: string[];
+};

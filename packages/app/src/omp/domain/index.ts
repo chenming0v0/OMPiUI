@@ -25,11 +25,7 @@ export type {
 } from '../vendor/pi-coding-agent'
 
 // Agent messages and content blocks
-export type {
-  AgentMessage,
-  AgentEvent,
-  ThinkingLevel,
-} from '../vendor/pi-agent-core'
+export type { AgentMessage, AgentEvent, ThinkingLevel } from '../vendor/pi-agent-core'
 export type {
   UserMessage,
   AssistantMessage,
@@ -44,12 +40,7 @@ export type {
 } from '../vendor/pi-ai'
 
 // Agent session runtime
-export type {
-  AgentSessionEvent,
-  SessionStats,
-  PromptOptions,
-  ModelCycleResult,
-} from '../vendor/pi-coding-agent'
+export type { AgentSessionEvent, SessionStats, PromptOptions, ModelCycleResult } from '../vendor/pi-coding-agent'
 
 // Custom messages (bashExecution, custom, branchSummary, compactionSummary)
 // are part of the vendored AgentMessage union — extract them by role.
@@ -355,6 +346,7 @@ export type PiBranchPage = Omit<EntriesPage, 'items' | 'checkpoint'> & {
   checkpoint?: PiBranchCheckpoint
   client?: {
     stableEntryIds?: Record<string, string>
+    historyWindowed?: boolean
   }
 }
 

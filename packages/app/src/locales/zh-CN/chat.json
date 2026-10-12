@@ -18,6 +18,8 @@
     "closePane": "关闭窗格"
   },
   "chatArea": {
+    "historyWindow": "正在阅读较早历史",
+    "returnToLatest": "返回最新",
     "loadingSession": "加载会话中...",
     "loadingHistory": "加载历史记录...",
     "currentTurnQueue": "等待本轮追加 · {{count}}",

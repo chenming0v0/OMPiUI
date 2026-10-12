@@ -54,21 +54,33 @@ export function mergeLatestBranchPage(current: PiBranchPage | null, latest: PiBr
     const localPosition = current.checkpoint?.position
     const remotePosition = page.checkpoint?.position
     const sameStream = !remotePosition || localPosition?.epoch === remotePosition.epoch
-    const localIsNewer = sameStream && localPosition && remotePosition
-      && localPosition.sequence > remotePosition.sequence
-    const checkpoint = liveMessage && !persistedMatch && sameStream
-      && (localIsNewer || !remotePosition)
-      ? current.checkpoint
-      : page.checkpoint
+    const localIsNewer =
+      sameStream && localPosition && remotePosition && localPosition.sequence > remotePosition.sequence
+    const checkpoint =
+      liveMessage &&
+      !persistedMatch &&
+      sameStream &&
+      (localIsNewer || !remotePosition || page.checkpoint?.liveMessageOmitted)
+        ? localIsNewer || !remotePosition
+          ? current.checkpoint
+          : { ...current.checkpoint!, position: remotePosition }
+        : page.checkpoint
 
     if (checkpoint === page.checkpoint && Object.keys(stableEntryIds).length === 0) return page
     return {
       ...page,
       checkpoint,
-      client: Object.keys(stableEntryIds).length > 0
-        ? { ...page.client, stableEntryIds }
-        : page.client,
+      client: Object.keys(stableEntryIds).length > 0 ? { ...page.client, stableEntryIds } : page.client,
     }
+  }
+
+  if (current.client?.historyWindowed) {
+    return withClientState({
+      ...current,
+      head: latest.head,
+      checkpoint: latest.checkpoint,
+      syncCursor: latest.syncCursor,
+    })
   }
 
   if (latest.deltaFrom) {
@@ -89,8 +101,9 @@ export function mergeLatestBranchPage(current: PiBranchPage | null, latest: PiBr
 
   if (current.head.epoch !== latest.head.epoch) {
     // OMP 历史 epoch 随条目数量变化；同一事件流仍需交接较新的 live 消息。
-    return current.checkpoint && latest.checkpoint
-      && current.checkpoint.position.epoch === latest.checkpoint.position.epoch
+    return current.checkpoint &&
+      latest.checkpoint &&
+      current.checkpoint.position.epoch === latest.checkpoint.position.epoch
       ? withClientState(latest)
       : latest
   }

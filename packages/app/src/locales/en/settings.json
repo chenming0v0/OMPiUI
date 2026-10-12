@@ -1,4 +1,5 @@
 {
+  "backendPreview": { "title": "Backend Preview", "thinking": "Subagent Thinking" },
   "title": "Settings",
   "closeSettings": "Close settings",
   "version": "Pi v{{version}}",

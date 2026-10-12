@@ -18,6 +18,8 @@
     "closePane": "Close pane"
   },
   "chatArea": {
+    "historyWindow": "Reading earlier history",
+    "returnToLatest": "Return to latest",
     "loadingSession": "Loading session...",
     "loadingHistory": "Loading history...",
     "currentTurnQueue": "Waiting for current turn · {{count}}",

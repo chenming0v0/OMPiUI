@@ -11,12 +11,17 @@
  * 探活、无存储转发（对端不在线的请求直接 502）。
  */
 
-import { createHash, timingSafeEqual } from "node:crypto"
-import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
-import { createServer as createHttpsServer } from "node:https"
-import type { Duplex } from "node:stream"
-import { readFileSync } from "node:fs"
-import { WebSocketServer, WebSocket, type RawData } from "ws"
+import { createHash, timingSafeEqual } from "node:crypto";
+import {
+  createServer as createHttpServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from "node:http";
+import { createServer as createHttpsServer } from "node:https";
+import type { Duplex } from "node:stream";
+import { readFileSync } from "node:fs";
+import { WebSocketServer, WebSocket, type RawData } from "ws";
 import {
   CONNECTIONS_PER_TUNNEL_MAX,
   CONTROL_MESSAGE_MAX,
@@ -31,164 +36,209 @@ import {
   serializeRawHead,
   stripHopByHopHeaders,
   type ControlFrame,
-} from "./protocol.ts"
-import { isTrustedProxy, parseTrustedProxies, resolveForwardedClient } from "./trusted-proxy.ts"
-import { BodySink } from "./sink.ts"
-import { DataRateLimit } from "./data-rate-limit.ts"
-import { ResponseSink } from "./response-sink.ts"
-import { hashTunnelKey, type RelayConfig, type RelayTunnelConfig } from "./config.ts"
+} from "./protocol.ts";
+import {
+  isTrustedProxy,
+  parseTrustedProxies,
+  resolveForwardedClient,
+} from "./trusted-proxy.ts";
+import { BodySink } from "./sink.ts";
+import { DataRateLimit } from "./data-rate-limit.ts";
+import { ResponseSink } from "./response-sink.ts";
+import {
+  hashTunnelKey,
+  type RelayConfig,
+  type RelayTunnelConfig,
+} from "./config.ts";
 
 export interface StartRelayOptions {
-  config: RelayConfig
+  config: RelayConfig;
   /** 结构化日志；缺省 console.info。测试传空函数静音。 */
-  log?: (line: string) => void
+  log?: (line: string) => void;
 }
 
 export interface RunningRelay {
-  server: Server
+  server: Server;
   /** 实际监听端口（config.port）。 */
-  port: number
-  close(): Promise<void>
-  onlineTunnelIds(): string[]
-  tunnelStatus(): Array<{ id: string; online: boolean; connections: number }>
-  disconnectTunnel(id: string): boolean
+  port: number;
+  close(): Promise<void>;
+  onlineTunnelIds(): string[];
+  tunnelStatus(): Array<{ id: string; online: boolean; connections: number }>;
+  disconnectTunnel(id: string): boolean;
 }
 
 interface VirtualConn {
-  kind: "request" | "upgrade"
-  res?: ServerResponse
-  socket?: Duplex
-  headSent: boolean
-  response: ResponseSink
-  request: BodySink
-  upload: DataRateLimit
-  download: DataRateLimit
+  kind: "request" | "upgrade";
+  res?: ServerResponse;
+  socket?: Duplex;
+  headSent: boolean;
+  response: ResponseSink;
+  request: BodySink;
+  upload: DataRateLimit;
+  download: DataRateLimit;
 }
 
 interface TunnelSession {
-  id: string
-  ws: WebSocket
-  conns: Map<number, VirtualConn>
-  alive: boolean
-  rateTokens: number
-  rateLast: number
-  upload: DataRateLimit
-  download: DataRateLimit
+  id: string;
+  ws: WebSocket;
+  conns: Map<number, VirtualConn>;
+  alive: boolean;
+  rateTokens: number;
+  rateLast: number;
+  upload: DataRateLimit;
+  download: DataRateLimit;
+  control: DataRateLimit;
 }
 
 /** 返回值语义：session=路由命中且在线；"offline"=命中已配置隧道但不在线；undefined=无路由。 */
-type PickedTunnel = TunnelSession | "offline" | undefined
+type PickedTunnel = TunnelSession | "offline" | undefined;
 
-const TUNNEL_ID_HOSTNAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/
+const TUNNEL_ID_HOSTNAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
 export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
-  const { config } = options
-  const log = options.log ?? ((line: string) => console.info(line))
-  const keyHashes = new Map<string, string>()
-  for (const tunnel of config.tunnels) keyHashes.set(tunnel.id, hashTunnelKey(tunnel.key))
-  const trustedProxies = parseTrustedProxies(config.trustedProxies ?? [])
+  const { config } = options;
+  const log = options.log ?? ((line: string) => console.info(line));
+  const keyHashes = new Map<string, string>();
+  for (const tunnel of config.tunnels)
+    keyHashes.set(tunnel.id, hashTunnelKey(tunnel.key));
+  const trustedProxies = parseTrustedProxies(config.trustedProxies ?? []);
 
-  const tunnels = new Map<string, TunnelSession>()
-  let nextConnId = 1
-  let heartbeat: NodeJS.Timeout | undefined
+  const tunnels = new Map<string, TunnelSession>();
+  let nextConnId = 1;
+  let heartbeat: NodeJS.Timeout | undefined;
 
-  const useTls = Boolean(config.tls)
+  const useTls = Boolean(config.tls);
   const server = useTls
     ? createHttpsServer({
         cert: readFileSync(config.tls!.cert),
         key: readFileSync(config.tls!.key),
       })
-    : createHttpServer()
-  const wss = new WebSocketServer({ noServer: true, maxPayload: CONTROL_MESSAGE_MAX })
+    : createHttpServer();
+  const wss = new WebSocketServer({
+    noServer: true,
+    maxPayload: CONTROL_MESSAGE_MAX,
+  });
 
-  server.on("request", handleRequest)
-  server.on("upgrade", handleUpgrade)
+  server.on("request", handleRequest);
+  server.on("upgrade", handleUpgrade);
   server.on("clientError", (error, socket) => {
     // 畸形 HTTP 直接断，避免默认的裸文本响应泄漏内部细节
-    if (socket.writable) socket.end("HTTP/1.1 400 Bad Request\r\nconnection: close\r\ncontent-length: 0\r\n\r\n")
-    void error
-  })
+    if (socket.writable)
+      socket.end(
+        "HTTP/1.1 400 Bad Request\r\nconnection: close\r\ncontent-length: 0\r\n\r\n",
+      );
+    void error;
+  });
 
   return new Promise((resolveStart, rejectStart) => {
-    server.once("error", rejectStart)
+    server.once("error", rejectStart);
     server.listen(config.port, config.host ?? "127.0.0.1", () => {
-      server.removeListener("error", rejectStart)
-      const address = server.address()
-      const port = typeof address === "object" && address ? address.port : config.port
+      server.removeListener("error", rejectStart);
+      const address = server.address();
+      const port =
+        typeof address === "object" && address ? address.port : config.port;
       heartbeat = setInterval(() => {
         for (const session of tunnels.values()) {
           if (!session.alive) {
-            session.ws.terminate()
-            continue
+            session.ws.terminate();
+            continue;
           }
-          session.alive = false
-          session.ws.ping()
+          session.alive = false;
+          session.ws.ping();
         }
-      }, HEARTBEAT_INTERVAL_MS)
-      heartbeat.unref()
-      log(`[omp-relay] listening ${useTls ? "https" : "http"}://${config.host ?? "127.0.0.1"}:${port}`)
+      }, HEARTBEAT_INTERVAL_MS);
+      heartbeat.unref();
+      log(
+        `[omp-relay] listening ${useTls ? "https" : "http"}://${config.host ?? "127.0.0.1"}:${port}`,
+      );
       if (!useTls) {
-        log('[omp-relay] TLS is off — put Caddy/nginx (HTTPS) in front, or set "tls" in the config for direct exposure')
+        log(
+          '[omp-relay] TLS is off — put Caddy/nginx (HTTPS) in front, or set "tls" in the config for direct exposure',
+        );
       }
-      log(`[omp-relay] tunnels configured: ${config.tunnels.map(tunnel => tunnel.id).join(", ")}`)
+      log(
+        `[omp-relay] tunnels configured: ${config.tunnels.map((tunnel) => tunnel.id).join(", ")}`,
+      );
       resolveStart({
         server,
         port,
         close: () => closeRelay(),
         onlineTunnelIds: () => [...tunnels.keys()],
-        tunnelStatus: () => config.tunnels.map(tunnel => ({
-          id: tunnel.id,
-          online: tunnels.has(tunnel.id),
-          connections: tunnels.get(tunnel.id)?.conns.size ?? 0,
-        })),
-        disconnectTunnel: id => {
-          const session = tunnels.get(id)
-          if (!session) return false
-          disposeSession(session)
-          return true
+        tunnelStatus: () =>
+          config.tunnels.map((tunnel) => ({
+            id: tunnel.id,
+            online: tunnels.has(tunnel.id),
+            connections: tunnels.get(tunnel.id)?.conns.size ?? 0,
+          })),
+        disconnectTunnel: (id) => {
+          const session = tunnels.get(id);
+          if (!session) return false;
+          disposeSession(session);
+          return true;
         },
-      })
-    })
-  })
+      });
+    });
+  });
 
   async function closeRelay(): Promise<void> {
-    if (heartbeat) clearInterval(heartbeat)
-    for (const session of [...tunnels.values()]) disposeSession(session)
+    if (heartbeat) clearInterval(heartbeat);
+    for (const session of [...tunnels.values()]) disposeSession(session);
     await new Promise<void>((resolve, reject) => {
-      server.close(error => (error ? reject(error) : resolve()))
+      server.close((error) => (error ? reject(error) : resolve()));
       // 残留的访客/upgrade 连接直接断，保证 close() 可确定性返回
-      server.closeAllConnections()
-    })
+      server.closeAllConnections();
+    });
   }
 
   // ---------- 控制通道（桌面端拨入） ----------
 
-  function handleControlUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
-    const url = new URL(req.url ?? "/", "http://relay.invalid")
-    const tunnelId = (url.searchParams.get("tunnel") ?? req.headers["x-ompiui-tunnel"] ?? "")
+  function handleControlUpgrade(
+    req: IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+  ): void {
+    const url = new URL(req.url ?? "/", "http://relay.invalid");
+    const tunnelId = (
+      url.searchParams.get("tunnel") ??
+      req.headers["x-ompiui-tunnel"] ??
+      ""
+    )
       .toString()
       .trim()
-      .toLowerCase()
-    const authorization = req.headers.authorization ?? ""
-    const bearer = /^Bearer\s+(.+)$/i.exec(authorization)?.[1] ?? ""
-    const tunnel = config.tunnels.find(item => item.id === tunnelId)
+      .toLowerCase();
+    const authorization = req.headers.authorization ?? "";
+    const bearer = /^Bearer\s+(.+)$/i.exec(authorization)?.[1] ?? "";
+    const tunnel = config.tunnels.find((item) => item.id === tunnelId);
     // 比较十六进制摘要（等长 64 字节，timing-safe）；未知隧道与坏密钥走同一
     // 条拒绝路径，不区分（避免探测隧道 ID）
-    const digestHex = createHash("sha256").update(bearer, "utf8").digest("hex")
-    const expectedHex = keyHashes.get(tunnelId) ?? hashTunnelKey("\u0000-invalid-\u0000")
-    if (!tunnel || !timingSafeEqual(Buffer.from(digestHex, "utf8"), Buffer.from(expectedHex, "utf8"))) {
-      rejectUpgrade(socket, 401, "Unauthorized")
-      return
+    const digestHex = createHash("sha256").update(bearer, "utf8").digest("hex");
+    const expectedHex =
+      keyHashes.get(tunnelId) ?? hashTunnelKey("\u0000-invalid-\u0000");
+    if (
+      !tunnel ||
+      !timingSafeEqual(
+        Buffer.from(digestHex, "utf8"),
+        Buffer.from(expectedHex, "utf8"),
+      )
+    ) {
+      rejectUpgrade(socket, 401, "Unauthorized");
+      return;
     }
     if (tunnels.has(tunnel.id)) {
       // Pebrel 同语义：先到先得，重复接入拒绝（防止新连接顶掉正在服务的旧连接）
-      rejectUpgrade(socket, 409, "Tunnel already connected")
-      return
+      rejectUpgrade(socket, 409, "Tunnel already connected");
+      return;
     }
-    wss.handleUpgrade(req, socket, head, ws => registerSession(ws, tunnel, req.headers.host ?? ""))
+    wss.handleUpgrade(req, socket, head, (ws) =>
+      registerSession(ws, tunnel, req.headers.host ?? ""),
+    );
   }
 
-  function registerSession(ws: WebSocket, tunnel: RelayTunnelConfig, controlHost: string): void {
+  function registerSession(
+    ws: WebSocket,
+    tunnel: RelayTunnelConfig,
+    controlHost: string,
+  ): void {
     const session: TunnelSession = {
       id: tunnel.id,
       ws,
@@ -198,253 +248,354 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
       rateLast: Date.now(),
       upload: new DataRateLimit(),
       download: new DataRateLimit(),
-    }
-    tunnels.set(tunnel.id, session)
-    log(`[omp-relay] tunnel "${tunnel.id}" connected (public entry: ${publicUrlFor(tunnel, controlHost)})`)
+      control: new DataRateLimit(1024 * 1024, 2 * 1024 * 1024),
+    };
+    tunnels.set(tunnel.id, session);
+    log(
+      `[omp-relay] tunnel "${tunnel.id}" connected (public entry: ${publicUrlFor(tunnel, controlHost)})`,
+    );
     sendControl(session, {
       type: "ready",
       v: WIRE_VERSION,
       tunnel: tunnel.id,
       publicUrl: publicUrlFor(tunnel, controlHost),
-    })
+    });
     ws.on("pong", () => {
-      session.alive = true
-    })
+      session.alive = true;
+    });
     ws.on("message", (data: RawData, isBinary: boolean) => {
       try {
-        handleTunnelMessage(session, data, isBinary)
+        handleTunnelMessage(session, data, isBinary);
       } catch (error) {
-        log(`[omp-relay] tunnel "${session.id}" message error: ${error instanceof Error ? error.message : String(error)}`)
-        session.ws.terminate()
+        log(
+          `[omp-relay] tunnel "${session.id}" message error: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        session.ws.terminate();
       }
-    })
-    const drop = () => disposeSession(session)
-    ws.on("close", drop)
-    ws.on("error", drop)
+    });
+    const drop = () => disposeSession(session);
+    ws.on("close", drop);
+    ws.on("error", drop);
   }
 
   function disposeSession(session: TunnelSession): void {
-    if (!tunnels.has(session.id)) return
-    tunnels.delete(session.id)
+    if (!tunnels.has(session.id)) return;
+    tunnels.delete(session.id);
     for (const [connId, conn] of session.conns) {
-      forgetConnection(session, connId)
-      conn.res?.destroy()
-      conn.socket?.destroy()
+      forgetConnection(session, connId);
+      conn.res?.destroy();
+      conn.socket?.destroy();
     }
-    session.conns.clear()
+    session.conns.clear();
     try {
-      session.ws.terminate()
+      session.ws.terminate();
     } catch {
       // 已断开的连接 terminate 会抛，忽略
     }
-    log(`[omp-relay] tunnel "${session.id}" disconnected (${tunnels.size} online)`)
+    log(
+      `[omp-relay] tunnel "${session.id}" disconnected (${tunnels.size} online)`,
+    );
   }
 
-  function handleTunnelMessage(session: TunnelSession, data: RawData, isBinary: boolean): void {
-    if (session.ws.readyState !== WebSocket.OPEN) return
-    const rawData = toBuffer(data)
-    if (!session.download.allow(rawData.length)) {
-      disposeSession(session)
-      return
-    }
+  function handleTunnelMessage(
+    session: TunnelSession,
+    data: RawData,
+    isBinary: boolean,
+  ): void {
+    if (session.ws.readyState !== WebSocket.OPEN) return;
+    const rawData = toBuffer(data);
     if (isBinary) {
-      const raw = rawData
+      const raw = rawData;
       if (raw.length > FRAME_PAYLOAD_MAX + 4) {
-        session.ws.terminate()
-        return
+        session.ws.terminate();
+        return;
       }
-      const frame = decodeFrameMessage(raw)
+      const frame = decodeFrameMessage(raw);
       // 协议违例（帧头非法）直接断线，桌面端会退避重连
       if (!frame) {
-        session.ws.terminate()
-        return
+        session.ws.terminate();
+        return;
       }
-      deliverBody(session, frame.connId, frame.payload)
-      return
+      if (!session.download.allow(raw.length + 14)) {
+        abortConnection(session, frame.connId);
+        return;
+      }
+      deliverBody(session, frame.connId, frame.payload);
+      return;
     }
     if (rawData.length > CONTROL_MESSAGE_MAX) {
-      session.ws.terminate()
-      return
+      session.ws.terminate();
+      return;
     }
-    const text = rawData.toString("utf8")
-    let frame: ControlFrame
+    const text = rawData.toString("utf8");
+    let frame: ControlFrame;
     try {
-      frame = JSON.parse(text) as ControlFrame
+      frame = JSON.parse(text) as ControlFrame;
     } catch {
-      session.ws.terminate()
-      return
+      session.ws.terminate();
+      return;
+    }
+    if (!session.control.allow(rawData.length + 14)) {
+      disposeSession(session);
+      return;
     }
     switch (frame.type) {
       case "head": {
-        const conn = session.conns.get(frame.c)
-        if (!conn || conn.headSent) return
-        conn.headSent = true
+        const conn = session.conns.get(frame.c);
+        if (!conn || conn.headSent) return;
+        conn.headSent = true;
         if (conn.kind === "request") {
-          conn.res!.writeHead(frame.s, stripHopByHopHeaders(frame.h))
+          conn.res!.writeHead(frame.s, stripHopByHopHeaders(frame.h));
         } else {
           // upgrade 响应绕过 ServerResponse 直写 socket：101 头必须原样透传
-          conn.response.write(serializeRawHead(frame.s, stripHopByHopHeaders(frame.h, true)))
+          conn.response.write(
+            serializeRawHead(frame.s, stripHopByHopHeaders(frame.h, true)),
+          );
         }
-        return
+        return;
       }
       case "end": {
-        const conn = session.conns.get(frame.c)
-        if (!conn) return
+        const conn = session.conns.get(frame.c);
+        if (!conn) return;
         // Keep the connection counted until all queued bytes have drained.
-        conn.response.end()
-        return
+        conn.response.end();
+        return;
       }
       case "fail": {
-        const conn = session.conns.get(frame.c)
-        if (!conn) return
-        forgetConnection(session, frame.c)
+        const conn = session.conns.get(frame.c);
+        if (!conn) return;
+        forgetConnection(session, frame.c);
         if (conn.kind === "request" && !conn.headSent) {
-          sendProblem(conn.res!, 502, "TUNNEL_UPSTREAM_FAILED", frame.e ?? "the computer behind the tunnel refused the connection")
+          sendProblem(
+            conn.res!,
+            502,
+            "TUNNEL_UPSTREAM_FAILED",
+            frame.e ?? "the computer behind the tunnel refused the connection",
+          );
         } else {
-          conn.res?.destroy()
-          conn.socket?.destroy()
+          conn.res?.destroy();
+          conn.socket?.destroy();
         }
-        return
+        return;
       }
       case "close": {
-        const conn = session.conns.get(frame.c)
-        if (!conn) return
-        forgetConnection(session, frame.c)
-        conn.res?.destroy()
-        conn.socket?.destroy()
-        return
+        const conn = session.conns.get(frame.c);
+        if (!conn) return;
+        forgetConnection(session, frame.c);
+        conn.res?.destroy();
+        conn.socket?.destroy();
+        return;
       }
       default:
         // 未知控制帧：忽略（向前兼容）
-        return
+        return;
     }
   }
 
-  function deliverBody(session: TunnelSession, connId: number, payload: Buffer): void {
-    const conn = session.conns.get(connId)
-    if (!conn) return
-    if (!conn.download.allow(payload.length)) { abortConnection(session, connId); return }
-    conn.response.write(payload)
+  function deliverBody(
+    session: TunnelSession,
+    connId: number,
+    payload: Buffer,
+  ): void {
+    const conn = session.conns.get(connId);
+    if (!conn) return;
+    if (!conn.download.allow(payload.length + 18)) {
+      abortConnection(session, connId);
+      return;
+    }
+    conn.response.write(payload);
   }
 
-  function forgetConnection(session: TunnelSession, connId: number): VirtualConn | undefined {
-    const conn = session.conns.get(connId)
-    if (!conn) return
-    session.conns.delete(connId)
-    conn.response.dispose()
-    conn.request.dispose()
-    return conn
+  function forgetConnection(
+    session: TunnelSession,
+    connId: number,
+  ): VirtualConn | undefined {
+    const conn = session.conns.get(connId);
+    if (!conn) return;
+    session.conns.delete(connId);
+    conn.response.dispose();
+    conn.request.dispose();
+    return conn;
   }
 
   function abortConnection(session: TunnelSession, connId: number): void {
-    const conn = forgetConnection(session, connId)
-    if (!conn) return
-    sendControl(session, { type: conn.kind === "request" ? "abort" : "close", c: connId })
-    conn.res?.destroy()
-    conn.socket?.destroy()
+    const conn = forgetConnection(session, connId);
+    if (!conn) return;
+    sendControl(session, {
+      type: conn.kind === "request" ? "abort" : "close",
+      c: connId,
+    });
+    conn.res?.destroy();
+    conn.socket?.destroy();
   }
 
   // ---------- 公网访客（HTTP + WS upgrade） ----------
 
   function handleRequest(req: IncomingMessage, res: ServerResponse): void {
-    const pathname = safePathname(req)
-    if ((req.method === "GET" || req.method === "HEAD") && pathname === "/healthz") {
-      res.writeHead(200, { "content-type": "text/plain; charset=utf-8" })
-      res.end("ok")
-      return
+    const pathname = safePathname(req);
+    if (
+      (req.method === "GET" || req.method === "HEAD") &&
+      pathname === "/healthz"
+    ) {
+      res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+      res.end("ok");
+      return;
     }
-    const picked = pickTunnel(hostOf(req))
-    const session = typeof picked === "object" ? picked : undefined
+    const picked = pickTunnel(hostOf(req));
+    const session = typeof picked === "object" ? picked : undefined;
     if (!session) {
       if (picked === "offline") {
-        sendProblem(res, 502, "TUNNEL_OFFLINE", "the tunnel is configured but the computer is not connected")
+        sendProblem(
+          res,
+          502,
+          "TUNNEL_OFFLINE",
+          "the tunnel is configured but the computer is not connected",
+        );
       } else {
-        sendProblem(res, 404, "TUNNEL_NO_ROUTE", "no tunnel is bound to this host")
+        sendProblem(
+          res,
+          404,
+          "TUNNEL_NO_ROUTE",
+          "no tunnel is bound to this host",
+        );
       }
-      return
+      return;
     }
     if (session.conns.size >= CONNECTIONS_PER_TUNNEL_MAX) {
-      sendProblem(res, 503, "TUNNEL_BUSY", "the tunnel has reached its concurrent connection limit")
-      return
+      sendProblem(
+        res,
+        503,
+        "TUNNEL_BUSY",
+        "the tunnel has reached its concurrent connection limit",
+      );
+      return;
     }
     if (!allowMessage(session)) {
-      sendProblem(res, 429, "TUNNEL_RATE_LIMITED", "too many requests for this tunnel")
-      return
+      sendProblem(
+        res,
+        429,
+        "TUNNEL_RATE_LIMITED",
+        "too many requests for this tunnel",
+      );
+      return;
     }
-    forwardRequest(session, req, res)
+    forwardRequest(session, req, res);
   }
 
-  function forwardRequest(session: TunnelSession, req: IncomingMessage, res: ServerResponse): void {
-    const connId = nextConnId++
-    const sink = new BodySink(session.ws)
-    const response = new ResponseSink(res, () => abortConnection(session, connId), () => forgetConnection(session, connId))
-    const conn: VirtualConn = { kind: "request", res, headSent: false, response, request: sink,
-      upload: new DataRateLimit(4 * 1024 * 1024, 8 * 1024 * 1024), download: new DataRateLimit() }
-    session.conns.set(connId, conn)
+  function forwardRequest(
+    session: TunnelSession,
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): void {
+    const connId = nextConnId++;
+    const sink = new BodySink(session.ws, (bytes, frames) => {
+      if (
+        !session.upload.canAllow(bytes, frames) ||
+        !conn.upload.canAllow(bytes, frames)
+      )
+        return false;
+      session.upload.allow(bytes, frames);
+      conn.upload.allow(bytes, frames);
+      return true;
+    });
+    const response = new ResponseSink(
+      res,
+      () => abortConnection(session, connId),
+      () => forgetConnection(session, connId),
+    );
+    const conn: VirtualConn = {
+      kind: "request",
+      res,
+      headSent: false,
+      response,
+      request: sink,
+      upload: new DataRateLimit(4 * 1024 * 1024, 8 * 1024 * 1024),
+      download: new DataRateLimit(),
+    };
+    session.conns.set(connId, conn);
     sendControl(session, {
       type: "open",
       c: connId,
       m: req.method ?? "GET",
       u: req.url ?? "/",
       h: withForwardedHeaders(stripHopByHopHeaders(req.headers), req),
-    })
+    });
     req.on("data", (chunk: Buffer) => {
-      if (!session.conns.has(connId)) return
-      if (!session.upload.allow(chunk.length) || !conn.upload.allow(chunk.length)) {
-        if (res.headersSent) abortConnection(session, connId)
-        else {
-          forgetConnection(session, connId)
-          sendControl(session, { type: "abort", c: connId })
-          req.pause()
-          res.setHeader("connection", "close")
-          res.once("finish", () => req.destroy())
-          sendProblem(res, 429, "TUNNEL_RATE_LIMITED", "tunnel upload rate exceeded")
-        }
-        return
-      }
-      sink.write(connId, chunk, req)
-    })
+      if (!session.conns.has(connId)) return;
+      sink.write(connId, chunk, req);
+    });
     req.on("end", () => {
-      if (session.conns.has(connId)) sendControl(session, { type: "reqEnd", c: connId })
-    })
+      if (session.conns.has(connId))
+        sendControl(session, { type: "reqEnd", c: connId });
+    });
     const abort = () => {
       // 访客中途断开：通知桌面端终止上游请求，避免本地连接悬挂
-      abortConnection(session, connId)
-    }
-    req.on("aborted", abort)
-    req.on("error", abort)
-    res.on("error", abort)
+      abortConnection(session, connId);
+    };
+    req.on("aborted", abort);
+    req.on("error", abort);
+    res.on("error", abort);
     res.on("close", () => {
-      if (res.writableEnded) return
-      abort()
-    })
+      if (res.writableEnded) return;
+      abort();
+    });
   }
 
-  function handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
-    const pathname = safePathname(req)
+  function handleUpgrade(
+    req: IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+  ): void {
+    const pathname = safePathname(req);
     if (pathname === CONTROL_PATH) {
-      handleControlUpgrade(req, socket, head)
-      return
+      handleControlUpgrade(req, socket, head);
+      return;
     }
-    const picked = pickTunnel(hostOf(req))
-    const session = typeof picked === "object" ? picked : undefined
+    const picked = pickTunnel(hostOf(req));
+    const session = typeof picked === "object" ? picked : undefined;
     if (!session || session.conns.size >= CONNECTIONS_PER_TUNNEL_MAX) {
-      socket.end("HTTP/1.1 502 Bad Gateway\r\nconnection: close\r\ncontent-length: 0\r\n\r\n", () => socket.destroy())
-      return
+      socket.end(
+        "HTTP/1.1 502 Bad Gateway\r\nconnection: close\r\ncontent-length: 0\r\n\r\n",
+        () => socket.destroy(),
+      );
+      return;
     }
     if (!allowMessage(session)) {
-      socket.end("HTTP/1.1 429 Too Many Requests\r\nconnection: close\r\ncontent-length: 0\r\n\r\n", () => socket.destroy())
-      return
+      socket.end(
+        "HTTP/1.1 429 Too Many Requests\r\nconnection: close\r\ncontent-length: 0\r\n\r\n",
+        () => socket.destroy(),
+      );
+      return;
     }
-    const connId = nextConnId++
-    const sink = new BodySink(session.ws)
-    const response = new ResponseSink(socket, () => abortConnection(session, connId), () => {
-      forgetConnection(session, connId)
-      socket.destroy()
-    })
-    const conn: VirtualConn = { kind: "upgrade", socket, headSent: false, response, request: sink,
-      upload: new DataRateLimit(4 * 1024 * 1024, 8 * 1024 * 1024), download: new DataRateLimit() }
-    session.conns.set(connId, conn)
+    const connId = nextConnId++;
+    const sink = new BodySink(session.ws, (bytes, frames) => {
+      if (
+        !session.upload.canAllow(bytes, frames) ||
+        !conn.upload.canAllow(bytes, frames)
+      )
+        return false;
+      session.upload.allow(bytes, frames);
+      conn.upload.allow(bytes, frames);
+      return true;
+    });
+    const response = new ResponseSink(
+      socket,
+      () => abortConnection(session, connId),
+      () => {
+        forgetConnection(session, connId);
+        socket.destroy();
+      },
+    );
+    const conn: VirtualConn = {
+      kind: "upgrade",
+      socket,
+      headSent: false,
+      response,
+      request: sink,
+      upload: new DataRateLimit(4 * 1024 * 1024, 8 * 1024 * 1024),
+      download: new DataRateLimit(),
+    };
+    session.conns.set(connId, conn);
     // upgrade 的 connection/upgrade 头必须保留给 101 握手
     sendControl(session, {
       type: "open",
@@ -452,125 +603,169 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
       m: req.method ?? "GET",
       u: req.url ?? "/",
       h: withForwardedHeaders(stripHopByHopHeaders(req.headers, true), req),
-    })
+    });
     if (head.length > 0) {
-      if (!session.upload.allow(head.length) || !conn.upload.allow(head.length)) { abortConnection(session, connId); return }
-      sink.write(connId, head, null)
+      sink.write(connId, head, null);
     }
     socket.on("data", (chunk: Buffer) => {
-      if (!session.conns.has(connId)) return
-      if (!session.upload.allow(chunk.length) || !conn.upload.allow(chunk.length)) { abortConnection(session, connId); return }
-      sink.write(connId, chunk, socket)
-    })
+      if (!session.conns.has(connId)) return;
+      sink.write(connId, chunk, socket);
+    });
     socket.on("end", () => {
-      abortConnection(session, connId)
-      socket.destroy()
-    })
+      abortConnection(session, connId);
+      socket.destroy();
+    });
     socket.on("error", () => {
       // 由 close 统一清理
-    })
+    });
     socket.on("close", () => {
-      abortConnection(session, connId)
-    })
-    socket.resume()
+      abortConnection(session, connId);
+    });
+    socket.resume();
   }
 
   // ---------- 路由 / 工具 ----------
 
   function pickTunnel(requestHost: string): PickedTunnel {
-    const explicitRouting = Boolean(config.domain) || config.tunnels.some(tunnel => tunnel.host)
+    const explicitRouting =
+      Boolean(config.domain) || config.tunnels.some((tunnel) => tunnel.host);
     for (const tunnel of config.tunnels) {
       if (tunnel.host && tunnel.host === requestHost) {
-        return tunnels.get(tunnel.id) ?? "offline"
+        return tunnels.get(tunnel.id) ?? "offline";
       }
     }
     if (config.domain && requestHost.endsWith(`.${config.domain}`)) {
-      const id = requestHost.slice(0, requestHost.length - config.domain.length - 1)
-      if (TUNNEL_ID_HOSTNAME_PATTERN.test(id) && config.tunnels.some(tunnel => tunnel.id === id)) {
-        return tunnels.get(id) ?? "offline"
+      const id = requestHost.slice(
+        0,
+        requestHost.length - config.domain.length - 1,
+      );
+      if (
+        TUNNEL_ID_HOSTNAME_PATTERN.test(id) &&
+        config.tunnels.some((tunnel) => tunnel.id === id)
+      ) {
+        return tunnels.get(id) ?? "offline";
       }
     }
     // 单隧道兜底只属于「没做任何显式路由」的个人部署：一旦运维配置了
     // host/domain 绑定，未匹配的 Host 不能被静默转发到别的隧道。
     if (!explicitRouting) {
-      if (tunnels.size === 1) return tunnels.values().next().value
-      if (tunnels.size === 0) return "offline"
+      if (tunnels.size === 1) return tunnels.values().next().value;
+      if (tunnels.size === 0) return "offline";
     }
-    return undefined
+    return undefined;
   }
 
-  function publicUrlFor(tunnel: RelayTunnelConfig, controlHost: string): string | null {
-    const base = config.publicUrl
-    const routedHost = tunnel.host ?? (config.domain ? `${tunnel.id}.${config.domain}` : undefined)
-    if (!routedHost && base) return base
-    if (!routedHost && !controlHost) return null
-    const url = new URL(base ?? `${useTls ? "https" : "http"}://${controlHost || routedHost}`)
+  function publicUrlFor(
+    tunnel: RelayTunnelConfig,
+    controlHost: string,
+  ): string | null {
+    const base = config.publicUrl;
+    const routedHost =
+      tunnel.host ??
+      (config.domain ? `${tunnel.id}.${config.domain}` : undefined);
+    if (!routedHost && base) return base;
+    if (!routedHost && !controlHost) return null;
+    const url = new URL(
+      base ?? `${useTls ? "https" : "http"}://${controlHost || routedHost}`,
+    );
     // publicUrl describes the externally reachable scheme/port (possibly a
     // reverse proxy); routing changes only its hostname, not that endpoint.
-    if (routedHost) url.hostname = routedHost
-    return url.origin
+    if (routedHost) url.hostname = routedHost;
+    return url.origin;
   }
 
   function allowMessage(session: TunnelSession): boolean {
-    const now = Date.now()
-    const elapsed = Math.max(0, now - session.rateLast) / 1000
-    session.rateLast = now
-    session.rateTokens = Math.min(MESSAGE_RATE_BURST, session.rateTokens + elapsed * MESSAGE_RATE_PER_SECOND)
-    if (session.rateTokens < 1) return false
-    session.rateTokens -= 1
-    return true
+    const now = Date.now();
+    const elapsed = Math.max(0, now - session.rateLast) / 1000;
+    session.rateLast = now;
+    session.rateTokens = Math.min(
+      MESSAGE_RATE_BURST,
+      session.rateTokens + elapsed * MESSAGE_RATE_PER_SECOND,
+    );
+    if (session.rateTokens < 1) return false;
+    session.rateTokens -= 1;
+    return true;
   }
 
-  function withForwardedHeaders(headers: Record<string, string>, req: IncomingMessage): Record<string, string> {
-    const result = { ...headers }
+  function withForwardedHeaders(
+    headers: Record<string, string>,
+    req: IncomingMessage,
+  ): Record<string, string> {
+    const result = { ...headers };
     // 访客可伪造任意 XFF;这里一律先删除,再按可信链写回
-    delete result["x-forwarded-for"]
-    const peer = req.socket.remoteAddress
-    const client = isTrustedProxy(peer, trustedProxies) ? (resolveForwardedClient(req.headers["x-forwarded-for"], trustedProxies) ?? peer) : peer
-    if (client) result["x-forwarded-for"] = client
-    result["x-forwarded-proto"] = useTls ? "https" : "http"
-    if (req.headers.host) result["x-forwarded-host"] = String(req.headers.host)
-    return result
+    delete result["x-forwarded-for"];
+    const peer = req.socket.remoteAddress;
+    const client = isTrustedProxy(peer, trustedProxies)
+      ? (resolveForwardedClient(
+          req.headers["x-forwarded-for"],
+          trustedProxies,
+        ) ?? peer)
+      : peer;
+    if (client) result["x-forwarded-for"] = client;
+    result["x-forwarded-proto"] = useTls ? "https" : "http";
+    if (req.headers.host) result["x-forwarded-host"] = String(req.headers.host);
+    return result;
   }
 
   function sendControl(session: TunnelSession, frame: ControlFrame): void {
-    if (session.ws.readyState !== WebSocket.OPEN) return
-    const data = JSON.stringify(frame)
-    if (!session.upload.allow(Buffer.byteLength(data))) { disposeSession(session); return }
-    session.ws.send(data)
+    if (session.ws.readyState !== WebSocket.OPEN) return;
+    const send = () => {
+      if (session.ws.readyState !== WebSocket.OPEN) return;
+      const data = JSON.stringify(frame);
+      if (!session.control.allow(Buffer.byteLength(data) + 14)) {
+        disposeSession(session);
+        return;
+      }
+      session.ws.send(data);
+    };
+    const sink =
+      "c" in frame && (frame.type === "reqEnd" || frame.type === "close")
+        ? session.conns.get(frame.c)?.request
+        : undefined;
+    if (sink && "c" in frame) sink.finish(frame.c, send);
+    else send();
   }
 }
 
-
-function sendProblem(res: ServerResponse, status: number, code: string, message: string): void {
-  if (res.destroyed || res.writableEnded) return
-  const body = relayProblemBody(code, message)
+function sendProblem(
+  res: ServerResponse,
+  status: number,
+  code: string,
+  message: string,
+): void {
+  if (res.destroyed || res.writableEnded) return;
+  const body = relayProblemBody(code, message);
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(body),
-  })
-  res.end(body)
+  });
+  res.end(body);
 }
 
 function rejectUpgrade(socket: Duplex, status: number, reason: string): void {
-  socket.write(`HTTP/1.1 ${status} ${reason}\r\nconnection: close\r\ncontent-length: 0\r\n\r\n`)
-  socket.destroy()
+  socket.write(
+    `HTTP/1.1 ${status} ${reason}\r\nconnection: close\r\ncontent-length: 0\r\n\r\n`,
+  );
+  socket.destroy();
 }
 
 function safePathname(req: IncomingMessage): string {
   try {
-    return new URL(req.url ?? "/", "http://relay.invalid").pathname
+    return new URL(req.url ?? "/", "http://relay.invalid").pathname;
   } catch {
-    return "/"
+    return "/";
   }
 }
 
 function hostOf(req: IncomingMessage): string {
-  return String(req.headers.host ?? "").trim().toLowerCase().replace(/:\d+$/, "")
+  return String(req.headers.host ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/:\d+$/, "");
 }
 
 function toBuffer(data: RawData): Buffer {
-  if (Array.isArray(data)) return Buffer.concat(data)
-  if (Buffer.isBuffer(data)) return data
-  return Buffer.from(data as ArrayBuffer)
+  if (Array.isArray(data)) return Buffer.concat(data);
+  if (Buffer.isBuffer(data)) return data;
+  return Buffer.from(data as ArrayBuffer);
 }

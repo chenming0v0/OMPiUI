@@ -1,9 +1,15 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
-import { networkInterfaces } from "node:os"
-import { gzip } from "node:zlib"
+import {
+  createServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from "node:http";
+import { networkInterfaces } from "node:os";
+import { gzip } from "node:zlib";
 import {
   PI_PARITY_SDK_VERSION,
   PROTOCOL_VERSION,
+  hostCommandBodyLimit,
   isErrorCode,
   problem,
   problemFromError,
@@ -13,34 +19,40 @@ import {
   type PairRedeemResult,
   type ShareInfo,
   type TunnelStatus,
-} from "@ompiui/protocol"
-import { EventHub } from "./event-hub.ts"
-import { RuntimeSupervisor } from "./omp/supervisor.ts"
-import { SessionHost } from "./omp/session-host.ts"
-import { WorkspaceStore } from "./host/workspace-store.ts"
-import { WorkspaceWatcher } from "./host/workspace-watcher.ts"
-import { MAX_JSON_BODY_BYTES, MAX_PROMPT_BODY_BYTES, pairingClientKey, requestHasAllowedOrigin, requestHasValidToken } from "./host/security.ts"
-import { resolveAuthToken } from "./host/auth-token.ts"
-import { PathSafetyError } from "./host/path-safety.ts"
-import { defaultWorkspaceRoot, HostRuntime } from "./host/command-table.ts"
-import { TerminalManager } from "./host/terminal-manager.ts"
-import { PairingStore, type PairRedeemFailure } from "./host/pairing.ts"
-import { listLanInterfaces } from "./host/network.ts"
-import type { TailscaleManager } from "./host/tailscale.ts"
-import { createStaticServer } from "./static.ts"
-import { FaultReportService } from "./diagnostics/fault-reports.ts"
-import type { TrustedProxies } from "@ompiui/relay"
+} from "@ompiui/protocol";
+import { EventHub } from "./event-hub.ts";
+import { RuntimeSupervisor } from "./omp/supervisor.ts";
+import { SessionHost } from "./omp/session-host.ts";
+import { WorkspaceStore } from "./host/workspace-store.ts";
+import { WorkspaceWatcher } from "./host/workspace-watcher.ts";
+import {
+  MAX_JSON_BODY_BYTES,
+  MAX_PROMPT_BODY_BYTES,
+  pairingClientKey,
+  requestHasAllowedOrigin,
+  requestHasValidToken,
+} from "./host/security.ts";
+import { resolveAuthToken } from "./host/auth-token.ts";
+import { PathSafetyError } from "./host/path-safety.ts";
+import { defaultWorkspaceRoot, HostRuntime } from "./host/command-table.ts";
+import { TerminalManager } from "./host/terminal-manager.ts";
+import { PairingStore, type PairRedeemFailure } from "./host/pairing.ts";
+import { listLanInterfaces } from "./host/network.ts";
+import type { TailscaleManager } from "./host/tailscale.ts";
+import { createStaticServer } from "./static.ts";
+import { FaultReportService } from "./diagnostics/fault-reports.ts";
+import type { TrustedProxies } from "@ompiui/relay";
 
 const CORS_HEADERS: Record<string, string> = {
   "access-control-allow-methods": "GET,POST,OPTIONS",
   "access-control-allow-headers": "content-type,authorization,if-match",
-}
+};
 
 function sendJson(res: ServerResponse, status: number, body: unknown): boolean {
-  if (res.destroyed || res.writableEnded) return false
-  const data = JSON.stringify(body)
+  if (res.destroyed || res.writableEnded) return false;
+  const data = JSON.stringify(body);
   const finish = (payload: string | Buffer, compressed = false) => {
-    if (res.destroyed || res.writableEnded) return false
+    if (res.destroyed || res.writableEnded) return false;
     try {
       res.writeHead(status, {
         "content-type": "application/json; charset=utf-8",
@@ -48,136 +60,208 @@ function sendJson(res: ServerResponse, status: number, body: unknown): boolean {
         vary: "Accept-Encoding",
         ...(compressed ? { "content-encoding": "gzip" } : {}),
         ...CORS_HEADERS,
-      })
-      res.end(payload)
-      return true
+      });
+      if (status === 413 && !res.req.complete) {
+        // 先交付错误正文，再结束仍有上传字节的连接，避免 RST 吞掉 413。
+        res.write(payload);
+        const req = res.req;
+        const cleanup = () => {
+          clearTimeout(timer);
+          req.removeListener("end", finish);
+          req.removeListener("aborted", finish);
+          req.removeListener("error", finish);
+        };
+        const finish = () => {
+          cleanup();
+          if (!res.destroyed && !res.writableEnded) res.end();
+        };
+        const timer = setTimeout(finish, 1000);
+        timer.unref();
+        req.once("end", finish);
+        req.once("aborted", finish);
+        req.once("error", finish);
+        res.once("close", cleanup);
+        req.resume();
+      } else res.end(payload);
+      return true;
     } catch {
-      return false
+      return false;
     }
-  }
-  const acceptsGzip = String(res.req.headers["accept-encoding"] ?? "").split(",").some(value => {
-    const [name, ...params] = value.trim().split(";")
-    const quality = params.find(param => param.trim().startsWith("q="))
-    return name === "gzip" && (!quality || Number(quality.trim().slice(2)) > 0)
-  })
+  };
+  const acceptsGzip = String(res.req.headers["accept-encoding"] ?? "")
+    .split(",")
+    .some((value) => {
+      const [name, ...params] = value.trim().split(";");
+      const quality = params.find((param) => param.trim().startsWith("q="));
+      return (
+        name === "gzip" && (!quality || Number(quality.trim().slice(2)) > 0)
+      );
+    });
   if (acceptsGzip && Buffer.byteLength(data) >= 4096) {
-    gzip(data, (error, compressed) => { finish(error ? data : compressed, !error) })
-    return true
+    gzip(data, (error, compressed) => {
+      finish(error ? data : compressed, !error);
+    });
+    return true;
   }
-  return finish(data)
+  return finish(data);
 }
 
-function sendProblem(res: ServerResponse, status: number, error: unknown): boolean {
-  const p = problemFromError(error)
-  return sendJson(res, status, problem(isErrorCode(p.code) ? p.code : "INTERNAL", p.message))
+function sendProblem(
+  res: ServerResponse,
+  status: number,
+  error: unknown,
+): boolean {
+  const p = problemFromError(error);
+  return sendJson(
+    res,
+    status,
+    problem(isErrorCode(p.code) ? p.code : "INTERNAL", p.message),
+  );
 }
 
-async function readBody(req: IncomingMessage, signal?: AbortSignal, maxBytes = MAX_JSON_BODY_BYTES): Promise<JsonObject> {
-  const chunks: Buffer[] = []
-  let size = 0
-  throwIfAborted(signal)
+async function readBody(
+  req: IncomingMessage,
+  signal?: AbortSignal,
+  maxBytes = MAX_JSON_BODY_BYTES,
+): Promise<JsonObject> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  throwIfAborted(signal);
+  const declared = Number(req.headers["content-length"]);
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    req.pause();
+    throw Object.assign(new Error("request body too large"), {
+      code: "FILE_TOO_LARGE",
+      bodyTooLarge: true,
+    });
+  }
   // Do not throw out of IncomingMessage's async iterator: Node/Bun destroy
   // the request differently, which can discard the 413 response itself.
   await new Promise<void>((resolve, reject) => {
     const cleanup = () => {
-      req.removeListener("data", onData)
-      req.removeListener("end", onEnd)
-      req.removeListener("error", onError)
-      req.removeListener("aborted", onAbort)
-      signal?.removeEventListener("abort", onAbort)
-    }
-    const onError = (error: Error) => { cleanup(); reject(error) }
-    const onAbort = () => onError(Object.assign(new Error("request aborted"), { code: "REQUEST_ABORTED" }))
+      req.removeListener("data", onData);
+      req.removeListener("end", onEnd);
+      req.removeListener("error", onError);
+      req.removeListener("aborted", onAbort);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onAbort = () =>
+      onError(
+        Object.assign(new Error("request aborted"), {
+          code: "REQUEST_ABORTED",
+        }),
+      );
     const onData = (chunk: Buffer) => {
-      size += chunk.length
+      size += chunk.length;
       if (size > maxBytes) {
-        req.pause()
-        onError(Object.assign(new Error("request body too large"), { code: "FILE_TOO_LARGE", bodyTooLarge: true }))
-        return
+        req.pause();
+        onError(
+          Object.assign(new Error("request body too large"), {
+            code: "FILE_TOO_LARGE",
+            bodyTooLarge: true,
+          }),
+        );
+        return;
       }
-      chunks.push(chunk)
-    }
-    const onEnd = () => { cleanup(); resolve() }
-    req.on("data", onData)
-    req.once("end", onEnd)
-    req.once("error", onError)
-    req.once("aborted", onAbort)
-    signal?.addEventListener("abort", onAbort, { once: true })
-  })
-  const raw = Buffer.concat(chunks, size).toString("utf8")
-  let body: unknown
+      chunks.push(chunk);
+    };
+    const onEnd = () => {
+      cleanup();
+      resolve();
+    };
+    req.on("data", onData);
+    req.once("end", onEnd);
+    req.once("error", onError);
+    req.once("aborted", onAbort);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+  const raw = Buffer.concat(chunks, size).toString("utf8");
+  let body: unknown;
   try {
-    body = JSON.parse(raw || "{}")
+    body = JSON.parse(raw || "{}");
   } catch {
-    throw Object.assign(new Error("invalid json"), { code: "INVALID_REQUEST" })
+    throw Object.assign(new Error("invalid json"), { code: "INVALID_REQUEST" });
   }
   if (!body || typeof body !== "object" || Array.isArray(body)) {
-    throw Object.assign(new Error("json body must be an object"), { code: "INVALID_REQUEST" })
+    throw Object.assign(new Error("json body must be an object"), {
+      code: "INVALID_REQUEST",
+    });
   }
-  return body as JsonObject
+  return body as JsonObject;
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (!signal?.aborted) return
-  throw Object.assign(new Error("request aborted"), { code: "REQUEST_ABORTED" })
+  if (!signal?.aborted) return;
+  throw Object.assign(new Error("request aborted"), {
+    code: "REQUEST_ABORTED",
+  });
 }
 
-function requestScope(req: IncomingMessage, res: ServerResponse): { signal: AbortSignal; cleanup: () => void } {
-  const controller = new AbortController()
-  let responseFinished = false
-  const abort = () => controller.abort()
+function requestScope(
+  req: IncomingMessage,
+  res: ServerResponse,
+): { signal: AbortSignal; cleanup: () => void } {
+  const controller = new AbortController();
+  let responseFinished = false;
+  const abort = () => controller.abort();
   const abortIncompleteRequest = () => {
-    if (!req.complete) controller.abort()
-  }
+    if (!req.complete) controller.abort();
+  };
   const abortIncompleteResponse = () => {
-    if (!responseFinished && !res.writableFinished) controller.abort()
-  }
-  const markFinished = () => { responseFinished = true }
-  req.once("aborted", abort)
-  req.once("close", abortIncompleteRequest)
-  res.once("finish", markFinished)
-  res.once("close", abortIncompleteResponse)
+    if (!responseFinished && !res.writableFinished) controller.abort();
+  };
+  const markFinished = () => {
+    responseFinished = true;
+  };
+  req.once("aborted", abort);
+  req.once("close", abortIncompleteRequest);
+  res.once("finish", markFinished);
+  res.once("close", abortIncompleteResponse);
   return {
     signal: controller.signal,
     cleanup: () => {
-      req.removeListener("aborted", abort)
-      req.removeListener("close", abortIncompleteRequest)
-      res.removeListener("finish", markFinished)
-      res.removeListener("close", abortIncompleteResponse)
+      req.removeListener("aborted", abort);
+      req.removeListener("close", abortIncompleteRequest);
+      res.removeListener("finish", markFinished);
+      res.removeListener("close", abortIncompleteResponse);
     },
-  }
+  };
 }
 
 function parseUrl(req: IncomingMessage): URL | null {
-  const host = req.headers.host ?? "127.0.0.1"
+  const host = req.headers.host ?? "127.0.0.1";
   try {
-    return new URL(req.url ?? "/", `http://${host}`)
+    return new URL(req.url ?? "/", `http://${host}`);
   } catch {
     // Malformed Host header (e.g. invalid port) or invalid URL -> 400.
-    return null
+    return null;
   }
 }
 
 function invalidRequest(message: string): Error {
-  return Object.assign(new Error(message), { code: "INVALID_REQUEST" })
+  return Object.assign(new Error(message), { code: "INVALID_REQUEST" });
 }
 
 function safeDecode(value: string): string {
   try {
-    return decodeURIComponent(value)
+    return decodeURIComponent(value);
   } catch {
     // Malformed percent-encoding -> treat as an invalid request.
-    throw invalidRequest(`malformed percent-encoding in path segment`)
+    throw invalidRequest(`malformed percent-encoding in path segment`);
   }
 }
 
 export function firstLanAddress(): string | undefined {
   for (const infos of Object.values(networkInterfaces())) {
     for (const info of infos ?? []) {
-      if (info.family === "IPv4" && !info.internal) return info.address
+      if (info.family === "IPv4" && !info.internal) return info.address;
     }
   }
-  return undefined
+  return undefined;
 }
 
 /**
@@ -185,213 +269,322 @@ export function firstLanAddress(): string | undefined {
  * 斜杠、丢弃 query/hash，只接受 http(s)。非法或为空返回 null——调用方凭
  * 原始输入非空但结果为空来识别「配置了但无效」，决定告警。
  */
-export function normalizePublicBaseUrl(input: string | null | undefined): string | null {
-  const trimmed = input?.trim().replace(/\/+$/, "")
-  if (!trimmed) return null
+export function normalizePublicBaseUrl(
+  input: string | null | undefined,
+): string | null {
+  const trimmed = input?.trim().replace(/\/+$/, "");
+  if (!trimmed) return null;
   try {
-    const parsed = new URL(trimmed)
-    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null
-    return parsed.origin + (parsed.pathname === "/" ? "" : parsed.pathname)
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:")
+      return null;
+    return parsed.origin + (parsed.pathname === "/" ? "" : parsed.pathname);
   } catch {
-    return null
+    return null;
   }
 }
 // 仅允许 Host 为私网/CGNAT(Tailscale)/.local 或已配置的分享主机;回环与任意公网名一律不信任
-const TRUSTED_FALLBACK_IPV4 = /^(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}|169\.254\.\d{1,3}\.\d{1,3})$/
+const TRUSTED_FALLBACK_IPV4 =
+  /^(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}|169\.254\.\d{1,3}\.\d{1,3})$/;
 
 /**
  * 配对兑换在未配置公网基址时的回退地址。协议只接受精确的 https,其它一律 http;
  * Host 必须是可信的非回环主机,否则返回本机可达的 localBase,不把请求头原样下发。
  */
-function pairFallbackBase(req: IncomingMessage, localBase: string, shareHost?: string): string {
-  const proto = req.headers["x-forwarded-proto"] === "https" ? "https" : "http"
-  const host = req.headers.host
-  if (typeof host !== "string") return localBase
+function pairFallbackBase(
+  req: IncomingMessage,
+  localBase: string,
+  shareHost?: string,
+): string {
+  const proto = req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
+  const host = req.headers.host;
+  if (typeof host !== "string") return localBase;
   try {
-    const parsed = new URL(`${proto}://${host}`)
-    if (parsed.username || parsed.password || parsed.pathname !== "/") return localBase
-    const name = parsed.hostname
-    const trusted = TRUSTED_FALLBACK_IPV4.test(name) || name.endsWith(".local") ||
-      (!!shareHost && shareHost !== "0.0.0.0" && shareHost !== "::" && name === shareHost && name !== "localhost" && name !== "127.0.0.1")
-    return trusted ? `${proto}://${parsed.host}` : localBase
+    const parsed = new URL(`${proto}://${host}`);
+    if (parsed.username || parsed.password || parsed.pathname !== "/")
+      return localBase;
+    const name = parsed.hostname;
+    const trusted =
+      TRUSTED_FALLBACK_IPV4.test(name) ||
+      name.endsWith(".local") ||
+      (!!shareHost &&
+        shareHost !== "0.0.0.0" &&
+        shareHost !== "::" &&
+        name === shareHost &&
+        name !== "localhost" &&
+        name !== "127.0.0.1");
+    return trusted ? `${proto}://${parsed.host}` : localBase;
   } catch {
-    return localBase
+    return localBase;
   }
 }
 
 function commandParams(body: JsonObject): JsonObject | undefined {
-  if (body.params && typeof body.params === "object" && !Array.isArray(body.params)) {
-    return body.params as JsonObject
+  if (
+    body.params &&
+    typeof body.params === "object" &&
+    !Array.isArray(body.params)
+  ) {
+    return body.params as JsonObject;
   }
-  const { id: _id, ...params } = body
-  return Object.keys(params).length > 0 ? params : undefined
+  const { id: _id, ...params } = body;
+  return Object.keys(params).length > 0 ? params : undefined;
 }
 
-function isSubmittedCommand(value: unknown): value is { record: unknown; promise: Promise<unknown> } {
-  return !!value && typeof value === "object" && "record" in value && "promise" in value
+function isSubmittedCommand(
+  value: unknown,
+): value is { record: unknown; promise: Promise<unknown> } {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    "record" in value &&
+    "promise" in value
+  );
 }
 
 export interface CreateAppServerOptions {
-  supervisor?: RuntimeSupervisor
-  sessionHost?: SessionHost
-  eventHub?: EventHub
-  authToken?: string | null
+  supervisor?: RuntimeSupervisor;
+  sessionHost?: SessionHost;
+  eventHub?: EventHub;
+  authToken?: string | null;
   /**
    * Bind address, used to build the share link other clients connect with.
    * `publicBaseUrl`（OMPIUI_PUBLIC_BASE_URL / --public-base-url）存在时优先
    * 于绑定的局域网地址：分享链接、启动日志和 Origin 白名单都以运营者显式
    * 声明的对外入口为准（反向代理 / 隧道后的地址，如 https://panel.example.com）。
    */
-  share?: { host: string; port: number; publicBaseUrl?: string | null }
+  share?: { host: string; port: number; publicBaseUrl?: string | null };
   /**
    * 自建中转隧道连上后上报的公网入口 getter。优先级低于 share.publicBaseUrl
    * （显式配置的公网基址永远赢）：用于 Origin 白名单、share 链接和启动日志
    * ——隧道是动态上线/掉线的，只能在运行时取。
    */
-  getPublicBaseUrl?: () => string | null
+  getPublicBaseUrl?: () => string | null;
   /** 自建中转隧道运行状态 getter（GET /api/v1/host/tunnel）。 */
-  getTunnelStatus?: () => TunnelStatus | null
+  getTunnelStatus?: () => TunnelStatus | null;
   /** 手机远程一次性配对（invite/redeem）；缺省时配对接口不可用。 */
-  pairing?: PairingStore
+  pairing?: PairingStore;
   /** Per-start secret shared only with the embedded TunnelClient, not API auth. */
-  tunnelForwardingToken?: string
+  tunnelForwardingToken?: string;
   /** 可信反向代理(由 start 从 OMPIUI_TRUSTED_PROXIES 解析)。缺省为空:忽略所有 XFF。 */
-  trustedProxies?: TrustedProxies
+  trustedProxies?: TrustedProxies;
   /** 内置 Tailscale 客户端管理；缺省时 tailscale 接口不可用。 */
-  tailscale?: TailscaleManager
+  tailscale?: TailscaleManager;
   /** Web client build directory; when it exists the server hosts the SPA. */
-  staticRoot?: string
-  faultReports?: FaultReportService
+  staticRoot?: string;
+  faultReports?: FaultReportService;
   /**
    * Invoked by POST /api/v1/host/shutdown after the response is flushed.
    * Hosts wire this to their graceful stop (close listeners, drain
    * connections, dispose workers) so Windows taskkill /F fallback is only a
    * last resort — a force kill leaves orphaned TCP sockets bound to the port.
    */
-  onShutdown?: () => void | Promise<void>
+  onShutdown?: () => void | Promise<void>;
 }
 
 export interface AppServer {
-  server: Server
-  eventHub: EventHub
-  sessionHost: SessionHost
-  supervisor: RuntimeSupervisor
-  terminals: TerminalManager
-  dispose(): Promise<void>
+  server: Server;
+  eventHub: EventHub;
+  sessionHost: SessionHost;
+  supervisor: RuntimeSupervisor;
+  terminals: TerminalManager;
+  dispose(): Promise<void>;
 }
 
-export function createAppServer(options: CreateAppServerOptions = {}): AppServer {
-  const store = new WorkspaceStore()
-  const hub = options.eventHub ?? new EventHub()
-  const supervisor = options.supervisor ?? new RuntimeSupervisor()
-  const sessions = options.sessionHost ?? new SessionHost(supervisor, hub)
-  const watcher = new WorkspaceWatcher(hub)
+export function createAppServer(
+  options: CreateAppServerOptions = {},
+): AppServer {
+  const store = new WorkspaceStore();
+  const hub = options.eventHub ?? new EventHub();
+  const supervisor = options.supervisor ?? new RuntimeSupervisor();
+  const sessions = options.sessionHost ?? new SessionHost(supervisor, hub);
+  const reportClients = new Map<string, number>();
+  const watcher = new WorkspaceWatcher(hub);
   const terminals = new TerminalManager({
     publish: (workspacePath, channel, payload) => {
-      hub.publish({ kind: "workspace", id: workspacePath }, channel, payload)
+      hub.publish({ kind: "workspace", id: workspacePath }, channel, payload);
     },
-  })
-  const host = new HostRuntime({ store, watcher, sessions, terminals })
-  const authToken = options.authToken === undefined ? resolveAuthToken() : options.authToken
-  const staticServer = options.staticRoot ? createStaticServer(options.staticRoot) : undefined
-  const faultReports = options.faultReports ?? new FaultReportService()
+  });
+  const host = new HostRuntime({ store, watcher, sessions, terminals });
+  const authToken =
+    options.authToken === undefined ? resolveAuthToken() : options.authToken;
+  const staticServer = options.staticRoot
+    ? createStaticServer(options.staticRoot)
+    : undefined;
+  const faultReports = options.faultReports ?? new FaultReportService();
   // 生效的公网入口：显式公网基址优先，其次自建中转隧道上报的地址（两者都
   // 可能缺席）。Origin 白名单、share 链接都以它为准。
   const effectivePublicBaseUrl = (): string | null => {
-    const explicit = normalizePublicBaseUrl(options.share?.publicBaseUrl)
-    if (explicit) return explicit
-    return normalizePublicBaseUrl(options.getPublicBaseUrl?.())
-  }
+    const explicit = normalizePublicBaseUrl(options.share?.publicBaseUrl);
+    if (explicit) return explicit;
+    return normalizePublicBaseUrl(options.getPublicBaseUrl?.());
+  };
   // 配置了公网入口时，其 Origin 一并放行（反向代理/隧道改写 Host 的场景）
-  const allowedOrigin = effectivePublicBaseUrl
-  let disposal: Promise<void> | undefined
+  const allowedOrigin = effectivePublicBaseUrl;
+  let disposal: Promise<void> | undefined;
 
   const closeHttpServer = (): Promise<void> => {
-    if (!server.listening) return Promise.resolve()
+    if (!server.listening) return Promise.resolve();
     return new Promise<void>((resolve, reject) => {
-      server.close(error => (error ? reject(error) : resolve()))
-    })
-  }
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  };
 
   const server = createServer(async (req, res) => {
-    const scope = requestScope(req, res)
+    const scope = requestScope(req, res);
     try {
-      const url = parseUrl(req)
+      const url = parseUrl(req);
       if (!url) {
-        return sendProblem(res, 400, Object.assign(new Error("malformed request URL"), { code: "INVALID_REQUEST" }))
+        return sendProblem(
+          res,
+          400,
+          Object.assign(new Error("malformed request URL"), {
+            code: "INVALID_REQUEST",
+          }),
+        );
       }
-      const method = req.method ?? "GET"
-      const p = url.pathname
+      const method = req.method ?? "GET";
+      const p = url.pathname;
 
       // Web 客户端静态托管：/api 之外的 GET/HEAD 不走 token——页面本身必须
       // 公开可达，鉴权由 API 层把守（token 通过分享链接带进客户端）
-       if (staticServer && (method === "GET" || method === "HEAD") && p !== "/api" && !p.startsWith("/api/")) {
-        if (staticServer.serve(req, res, p)) return
-        return sendProblem(res, 404, Object.assign(new Error("not found"), { code: "NOT_FOUND" }))
+      if (
+        staticServer &&
+        (method === "GET" || method === "HEAD") &&
+        p !== "/api" &&
+        !p.startsWith("/api/")
+      ) {
+        if (staticServer.serve(req, res, p)) return;
+        return sendProblem(
+          res,
+          404,
+          Object.assign(new Error("not found"), { code: "NOT_FOUND" }),
+        );
       }
 
       if (!requestHasAllowedOrigin(req, allowedOrigin)) {
-        return sendProblem(res, 403, Object.assign(new Error("origin not allowed"), { code: "FORBIDDEN" }))
+        return sendProblem(
+          res,
+          403,
+          Object.assign(new Error("origin not allowed"), { code: "FORBIDDEN" }),
+        );
       }
       if (typeof req.headers.origin === "string") {
-        res.setHeader("access-control-allow-origin", req.headers.origin)
-        res.setHeader("vary", "Origin")
+        res.setHeader("access-control-allow-origin", req.headers.origin);
+        res.setHeader("vary", "Origin");
       }
       if (method === "OPTIONS") {
-        res.writeHead(204, CORS_HEADERS)
-        res.end()
-        return
+        res.writeHead(204, CORS_HEADERS);
+        res.end();
+        return;
       }
 
       // 手机远程的一次性兑换：必须无鉴权（手机此刻还没有 token），且排在
       // token 校验之前。Origin 校验已在上面完成（CSRF 防线），失败有频控。
-      if (method === "POST" && p === "/api/v1/host/pair/redeem" && options.pairing) {
+      if (
+        method === "POST" &&
+        p === "/api/v1/host/pair/redeem" &&
+        options.pairing
+      ) {
         if (!authToken) {
-          return sendProblem(res, 501, Object.assign(new Error("sharing is unavailable"), { code: "CAPABILITY_DISABLED" }))
+          return sendProblem(
+            res,
+            501,
+            Object.assign(new Error("sharing is unavailable"), {
+              code: "CAPABILITY_DISABLED",
+            }),
+          );
         }
-        const body = await readBody(req, scope.signal, MAX_JSON_BODY_BYTES)
-        const clientKey = pairingClientKey(req, options.tunnelForwardingToken, options.trustedProxies)
+        const body = await readBody(req, scope.signal, MAX_JSON_BODY_BYTES);
+        const clientKey = pairingClientKey(
+          req,
+          options.tunnelForwardingToken,
+          options.trustedProxies,
+        );
         const outcome = options.pairing.redeem(
           {
             pair: typeof body.pair === "string" ? body.pair : undefined,
             code: typeof body.code === "string" ? body.code : undefined,
           },
           clientKey,
-        )
+        );
         if (!outcome.ok) {
-          const [code, message]: [string, string] = outcome.reason === "USED"
-            ? ["PAIR_USED", "this pairing code has already been used"]
-            : outcome.reason === "RATE_LIMITED"
-              ? ["PAIR_RATE_LIMITED", "too many failed attempts; try again later"]
-              : ["PAIR_INVALID", "invalid, expired or already used pairing code"]
-          return sendProblem(res, pairErrorStatus(outcome.reason), Object.assign(new Error(message), { code }))
+          const [code, message]: [string, string] =
+            outcome.reason === "USED"
+              ? ["PAIR_USED", "this pairing code has already been used"]
+              : outcome.reason === "RATE_LIMITED"
+                ? [
+                    "PAIR_RATE_LIMITED",
+                    "too many failed attempts; try again later",
+                  ]
+                : [
+                    "PAIR_INVALID",
+                    "invalid, expired or already used pairing code",
+                  ];
+          return sendProblem(
+            res,
+            pairErrorStatus(outcome.reason),
+            Object.assign(new Error(message), { code }),
+          );
         }
         // 生效公网入口优先(与 share 一致);未配置时才回退到请求头推导,且回退值须经协议白名单与可信主机校验
-        const address = server.address()
-        const boundPort = address && typeof address === "object" ? address.port : undefined
-        const localHost = options.share && options.share.host !== "0.0.0.0" && options.share.host !== "::"
-          ? options.share.host
-          : (firstLanAddress() ?? "127.0.0.1")
-        const localPort = options.share?.port ?? boundPort
-        const localBase = localPort ? `http://${localHost}:${localPort}` : `http://${localHost}`
-        const url = effectivePublicBaseUrl() ?? pairFallbackBase(req, localBase, options.share?.host)
+        const address = server.address();
+        const boundPort =
+          address && typeof address === "object" ? address.port : undefined;
+        const localHost =
+          options.share &&
+          options.share.host !== "0.0.0.0" &&
+          options.share.host !== "::"
+            ? options.share.host
+            : (firstLanAddress() ?? "127.0.0.1");
+        const localPort = options.share?.port ?? boundPort;
+        const localBase = localPort
+          ? `http://${localHost}:${localPort}`
+          : `http://${localHost}`;
+        const url =
+          effectivePublicBaseUrl() ??
+          pairFallbackBase(req, localBase, options.share?.host);
         const redeemBody: PairRedeemResult = {
           url,
           token: authToken,
           link: `ompiui://connect?url=${encodeURIComponent(url)}&token=${encodeURIComponent(authToken)}`,
-        }
-        return sendJson(res, 200, redeemBody)
+        };
+        return sendJson(res, 200, redeemBody);
       }
 
       if (!requestHasValidToken(req, authToken)) {
-        return sendProblem(res, 401, Object.assign(new Error("missing or invalid authorization token"), { code: "UNAUTHORIZED" }))
+        return sendProblem(
+          res,
+          401,
+          Object.assign(new Error("missing or invalid authorization token"), {
+            code: "UNAUTHORIZED",
+          }),
+        );
       }
 
       if (method === "GET" && p === "/api/v1/host/diagnostics/status") {
-        return sendJson(res, 200, { ...faultReports.status(), activeSessionIds: Object.keys(sessions.getActivitySnapshot().sessions) })
+        return sendJson(res, 200, {
+          ...faultReports.status(),
+          activeSessionCount: Object.keys(
+            sessions.getActivitySnapshot().sessions,
+          ).length,
+        });
       }
       if (method === "GET" && p === "/api/v1/host/diagnostics/report") {
-        return sendJson(res, 200, (await faultReports.collect()).report)
+        const client = pairingClientKey(req);
+        const last = reportClients.get(client) ?? 0;
+        if (Date.now() - last < 30_000)
+          return sendProblem(
+            res,
+            429,
+            Object.assign(new Error("report collection rate limited"), {
+              code: "RATE_LIMITED",
+            }),
+          );
+        reportClients.set(client, Date.now());
+        if (reportClients.size > 256)
+          reportClients.delete(reportClients.keys().next().value!);
+        return sendJson(res, 200, (await faultReports.collect()).report);
       }
 
       if (method === "GET" && p === "/api/v1/host/health") {
@@ -399,7 +592,9 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
         // undefined，回退 parity 常量），绝不在请求路径上孵化/等待 worker
         // ——worker 冷启动动辄数秒，等握手会把「活着」的服务误判为不可达。
         // worker 由启动时的后台预热负责孵化。
-        const handshake = await supervisor.peekCatalogHandshake().catch(() => undefined)
+        const handshake = await supervisor
+          .peekCatalogHandshake()
+          .catch(() => undefined);
         const body: HealthResponse = {
           ok: true,
           protocolVersion: PROTOCOL_VERSION,
@@ -410,50 +605,66 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
           processId: process.pid,
           workerReady: !!handshake,
           startedAt: Math.round(Date.now() - process.uptime() * 1000),
-        }
-        return sendJson(res, 200, body)
+        };
+        return sendJson(res, 200, body);
       }
 
       if (method === "POST" && p === "/api/v1/host/shutdown") {
         // 先 flush 响应再触发关闭：进程退出不能让客户端读不到 200。
-        sendJson(res, 200, { ok: true })
+        sendJson(res, 200, { ok: true });
         if (options.onShutdown) {
           setImmediate(() => {
-            Promise.resolve(options.onShutdown!()).catch(error => {
-              console.error("[ompiui-server] graceful shutdown hook failed", error)
-              process.kill(process.pid, "SIGTERM")
-            })
-          })
+            Promise.resolve(options.onShutdown!()).catch((error) => {
+              console.error(
+                "[ompiui-server] graceful shutdown hook failed",
+                error,
+              );
+              process.kill(process.pid, "SIGTERM");
+            });
+          });
         } else {
-          setImmediate(() => process.kill(process.pid, "SIGTERM"))
+          setImmediate(() => process.kill(process.pid, "SIGTERM"));
         }
-        return
+        return;
       }
 
       if (method === "GET" && p === "/api/v1/host/share") {
         if (!options.share || !authToken) {
-          return sendProblem(res, 501, Object.assign(new Error("sharing is unavailable"), { code: "CAPABILITY_DISABLED" }))
+          return sendProblem(
+            res,
+            501,
+            Object.assign(new Error("sharing is unavailable"), {
+              code: "CAPABILITY_DISABLED",
+            }),
+          );
         }
-        const shareHost = options.share.host
-        const lan = shareHost !== "127.0.0.1" && shareHost !== "::1" && shareHost !== "localhost"
+        const shareHost = options.share.host;
+        const lan =
+          shareHost !== "127.0.0.1" &&
+          shareHost !== "::1" &&
+          shareHost !== "localhost";
         // 公网入口优先：显式公网基址 > 自建中转隧道上报的地址；绑 0.0.0.0 时
         // 第一块局域网 IPv4 在公网不可达，对外声明的入口才是能打开的地址
-        const publicBase = effectivePublicBaseUrl()
+        const publicBase = effectivePublicBaseUrl();
         const urlHost = publicBase
           ? undefined
           : shareHost === "0.0.0.0" || shareHost === "::"
             ? (firstLanAddress() ?? shareHost)
-            : shareHost
-        const url = publicBase ?? `http://${urlHost}:${options.share.port}`
-        const link = `ompiui://connect?url=${encodeURIComponent(url)}&token=${encodeURIComponent(authToken)}`
-        const tunnelStatus = options.getTunnelStatus?.() ?? null
+            : shareHost;
+        const url = publicBase ?? `http://${urlHost}:${options.share.port}`;
+        const link = `ompiui://connect?url=${encodeURIComponent(url)}&token=${encodeURIComponent(authToken)}`;
+        const tunnelStatus = options.getTunnelStatus?.() ?? null;
         const tunnel = tunnelStatus?.enabled
           ? {
               connected: tunnelStatus.state === "connected",
-              ...(tunnelStatus.publicUrl ? { publicUrl: tunnelStatus.publicUrl } : {}),
-              ...(tunnelStatus.relayUrl ? { relayUrl: tunnelStatus.relayUrl } : {}),
+              ...(tunnelStatus.publicUrl
+                ? { publicUrl: tunnelStatus.publicUrl }
+                : {}),
+              ...(tunnelStatus.relayUrl
+                ? { relayUrl: tunnelStatus.relayUrl }
+                : {}),
             }
-          : undefined
+          : undefined;
         const body: ShareInfo = {
           url,
           token: authToken,
@@ -461,12 +672,12 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
           lan: lan || Boolean(publicBase),
           ...(publicBase ? { public: true } : {}),
           ...(tunnel ? { tunnel } : {}),
-        }
-        return sendJson(res, 200, body)
+        };
+        return sendJson(res, 200, body);
       }
 
       if (method === "GET" && p === "/api/v1/host/tunnel") {
-        const status = options.getTunnelStatus?.()
+        const status = options.getTunnelStatus?.();
         const body: TunnelStatus = status ?? {
           enabled: false,
           state: "disabled",
@@ -475,126 +686,216 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
           publicUrl: null,
           lastError: null,
           reconnectAttempts: 0,
-        }
-        return sendJson(res, 200, body)
+        };
+        return sendJson(res, 200, body);
       }
 
       if (method === "GET" && p === "/api/v1/host/network") {
-        const address = server.address()
-        const port = address && typeof address === "object" ? address.port : options.share?.port
-        const host = address && typeof address === "object" ? address.address : undefined
-        return sendJson(res, 200, { interfaces: listLanInterfaces(), ...(port ? { port } : {}), ...(host ? { host } : {}) })
+        const address = server.address();
+        const port =
+          address && typeof address === "object"
+            ? address.port
+            : options.share?.port;
+        const host =
+          address && typeof address === "object" ? address.address : undefined;
+        return sendJson(res, 200, {
+          interfaces: listLanInterfaces(),
+          ...(port ? { port } : {}),
+          ...(host ? { host } : {}),
+        });
       }
 
-      if (method === "GET" && p === "/api/v1/host/pair/invite" && options.pairing) {
-        const invite = options.pairing.mint()
-        return sendJson(res, 200, pairInviteInfo(invite))
+      if (
+        method === "GET" &&
+        p === "/api/v1/host/pair/invite" &&
+        options.pairing
+      ) {
+        const invite = options.pairing.mint();
+        return sendJson(res, 200, pairInviteInfo(invite));
       }
 
-      const pairInviteMatch = p.match(/^\/api\/v1\/host\/pair\/invite\/([^/]+)$/)
+      const pairInviteMatch = p.match(
+        /^\/api\/v1\/host\/pair\/invite\/([^/]+)$/,
+      );
       if (pairInviteMatch && method === "GET" && options.pairing) {
-        const invite = options.pairing.find(safeDecode(pairInviteMatch[1]!))
+        const invite = options.pairing.find(safeDecode(pairInviteMatch[1]!));
         if (!invite) {
-          return sendProblem(res, 404, Object.assign(new Error("pairing invite not found or expired"), { code: "NOT_FOUND" }))
+          return sendProblem(
+            res,
+            404,
+            Object.assign(new Error("pairing invite not found or expired"), {
+              code: "NOT_FOUND",
+            }),
+          );
         }
-        return sendJson(res, 200, pairInviteInfo(invite))
+        return sendJson(res, 200, pairInviteInfo(invite));
       }
 
       if (method === "GET" && p === "/api/v1/host/tailscale") {
-        const body = options.tailscale ? await options.tailscale.detailStatus() : null
+        const body = options.tailscale
+          ? await options.tailscale.detailStatus()
+          : null;
         if (!body) {
-          return sendProblem(res, 501, Object.assign(new Error("tailscale management is unavailable"), { code: "CAPABILITY_DISABLED" }))
+          return sendProblem(
+            res,
+            501,
+            Object.assign(new Error("tailscale management is unavailable"), {
+              code: "CAPABILITY_DISABLED",
+            }),
+          );
         }
-        return sendJson(res, 200, body)
+        return sendJson(res, 200, body);
       }
 
       if (method === "POST" && p === "/api/v1/host/tailscale/install") {
         if (!options.tailscale) {
-          return sendProblem(res, 501, Object.assign(new Error("tailscale management is unavailable"), { code: "CAPABILITY_DISABLED" }))
+          return sendProblem(
+            res,
+            501,
+            Object.assign(new Error("tailscale management is unavailable"), {
+              code: "CAPABILITY_DISABLED",
+            }),
+          );
         }
         // 异步执行：前端轮询 GET /api/v1/host/tailscale 看进度
-        void options.tailscale.install()
-        return sendJson(res, 202, { ok: true })
+        void options.tailscale.install();
+        return sendJson(res, 202, { ok: true });
       }
 
       if (method === "POST" && p === "/api/v1/host/tailscale/login") {
         if (!options.tailscale) {
-          return sendProblem(res, 501, Object.assign(new Error("tailscale management is unavailable"), { code: "CAPABILITY_DISABLED" }))
+          return sendProblem(
+            res,
+            501,
+            Object.assign(new Error("tailscale management is unavailable"), {
+              code: "CAPABILITY_DISABLED",
+            }),
+          );
         }
-        const result = await options.tailscale.startLogin()
+        const result = await options.tailscale.startLogin();
         if (!result.ok) {
-          return sendProblem(res, 409, Object.assign(new Error(result.error ?? "无法发起 Tailscale 登录"), { code: "TAILSCALE_LOGIN_FAILED" }))
+          return sendProblem(
+            res,
+            409,
+            Object.assign(
+              new Error(result.error ?? "无法发起 Tailscale 登录"),
+              { code: "TAILSCALE_LOGIN_FAILED" },
+            ),
+          );
         }
-        return sendJson(res, 200, { ok: true })
+        return sendJson(res, 200, { ok: true });
       }
 
       if (method === "POST" && p === "/api/v1/host/tailscale/disconnect") {
         if (!options.tailscale) {
-          return sendProblem(res, 501, Object.assign(new Error("tailscale management is unavailable"), { code: "CAPABILITY_DISABLED" }))
+          return sendProblem(
+            res,
+            501,
+            Object.assign(new Error("tailscale management is unavailable"), {
+              code: "CAPABILITY_DISABLED",
+            }),
+          );
         }
-        await options.tailscale.disconnect()
-        return sendJson(res, 200, { ok: true })
+        await options.tailscale.disconnect();
+        return sendJson(res, 200, { ok: true });
       }
 
       if (method === "GET" && p === "/api/v1/host/registry") {
-        return sendJson(res, 200, host.registry())
+        return sendJson(res, 200, host.registry());
       }
 
       if (method === "GET" && p === "/api/v1/pi/registry") {
-        return sendJson(res, 200, await sessions.piRegistry(scope.signal))
+        return sendJson(res, 200, await sessions.piRegistry(scope.signal));
       }
 
-      const piCommandMatch = p.match(/^\/api\/v1\/pi\/commands\/([^/]+)$/)
+      const piCommandMatch = p.match(/^\/api\/v1\/pi\/commands\/([^/]+)$/);
       if (piCommandMatch && method === "POST") {
-        const body = await readBody(req, scope.signal, MAX_PROMPT_BODY_BYTES)
-        const name = safeDecode(piCommandMatch[1]!)
-        const data = await sessions.executeGlobalCommand(name, commandParams(body), { signal: scope.signal })
-        return sendJson(res, 200, { data: data ?? null })
+        const body = await readBody(req, scope.signal, MAX_PROMPT_BODY_BYTES);
+        const name = safeDecode(piCommandMatch[1]!);
+        const data = await sessions.executeGlobalCommand(
+          name,
+          commandParams(body),
+          { signal: scope.signal },
+        );
+        return sendJson(res, 200, { data: data ?? null });
       }
 
-      const piSessionCommandMatch = p.match(/^\/api\/v1\/pi\/sessions\/([^/]+)\/commands\/([^/]+)$/)
+      const piSessionCommandMatch = p.match(
+        /^\/api\/v1\/pi\/sessions\/([^/]+)\/commands\/([^/]+)$/,
+      );
       if (piSessionCommandMatch && method === "POST") {
-        const body = await readBody(req, scope.signal, MAX_PROMPT_BODY_BYTES)
-        const sessionId = safeDecode(piSessionCommandMatch[1]!)
-        const name = safeDecode(piSessionCommandMatch[2]!)
-        const id = typeof body.id === "string" && body.id ? body.id : undefined
-        const result = await sessions.executeSessionCommand(sessionId, name, commandParams(body), id, { signal: scope.signal })
+        const body = await readBody(req, scope.signal, MAX_PROMPT_BODY_BYTES);
+        const sessionId = safeDecode(piSessionCommandMatch[1]!);
+        const name = safeDecode(piSessionCommandMatch[2]!);
+        const id = typeof body.id === "string" && body.id ? body.id : undefined;
+        const result = await sessions.executeSessionCommand(
+          sessionId,
+          name,
+          commandParams(body),
+          id,
+          { signal: scope.signal },
+        );
         if (isSubmittedCommand(result)) {
-          void result.promise.catch(() => undefined)
-          return sendJson(res, 202, { command: result.record })
+          void result.promise.catch(() => undefined);
+          return sendJson(res, 202, { command: result.record });
         }
-        return sendJson(res, 200, { data: result ?? null })
+        return sendJson(res, 200, { data: result ?? null });
       }
 
-      const commandMatch = p.match(/^\/api\/v1\/host\/commands\/([^/]+)$/)
+      const commandMatch = p.match(/^\/api\/v1\/host\/commands\/([^/]+)$/);
       if (commandMatch && method === "GET") {
-        const data = await host.execute("commands.get", { id: safeDecode(commandMatch[1]!) }, { signal: scope.signal })
-        return sendJson(res, 200, data ?? null)
+        const data = await host.execute(
+          "commands.get",
+          { id: safeDecode(commandMatch[1]!) },
+          { signal: scope.signal },
+        );
+        return sendJson(res, 200, data ?? null);
       }
       if (commandMatch && method === "POST") {
-        const body = await readBody(req, scope.signal, MAX_PROMPT_BODY_BYTES)
-        const data = await host.execute(safeDecode(commandMatch[1]!), commandParams(body) ?? {}, { signal: scope.signal })
-        return sendJson(res, 200, { data: data ?? null })
+        const name = safeDecode(commandMatch[1]!);
+        const body = await readBody(
+          req,
+          scope.signal,
+          hostCommandBodyLimit(name) ?? MAX_PROMPT_BODY_BYTES,
+        );
+        const data = await host.execute(name, commandParams(body) ?? {}, {
+          signal: scope.signal,
+        });
+        return sendJson(res, 200, { data: data ?? null });
       }
 
-      const allowedMethods = allowedMethodsForPath(p)
+      const allowedMethods = allowedMethodsForPath(p);
       if (allowedMethods) {
-        res.setHeader("allow", allowedMethods)
-        return sendProblem(res, 405, Object.assign(new Error("method not allowed"), { code: "METHOD_NOT_ALLOWED" }))
+        res.setHeader("allow", allowedMethods);
+        return sendProblem(
+          res,
+          405,
+          Object.assign(new Error("method not allowed"), {
+            code: "METHOD_NOT_ALLOWED",
+          }),
+        );
       }
-      return sendProblem(res, 404, Object.assign(new Error("not found"), { code: "NOT_FOUND" }))
+      return sendProblem(
+        res,
+        404,
+        Object.assign(new Error("not found"), { code: "NOT_FOUND" }),
+      );
     } catch (error) {
-      if (res.destroyed || res.writableEnded) return
+      if (res.destroyed || res.writableEnded) return;
       // 超限读取由服务端自己中断,会触发 req 'aborted' 并置位 signal;这不代表客户端断开,必须照常回 413 并关闭连接
-      const tooLarge = !!error && typeof error === "object" && "bodyTooLarge" in error && error.bodyTooLarge === true
-      if (scope.signal.aborted && !tooLarge) return
-      if (tooLarge) res.setHeader("connection", "close")
-      const status = statusForError(error)
-      return sendProblem(res, status, error)
+      const tooLarge =
+        !!error &&
+        typeof error === "object" &&
+        "bodyTooLarge" in error &&
+        error.bodyTooLarge === true;
+      if (scope.signal.aborted && !tooLarge) return;
+      if (tooLarge) res.setHeader("connection", "close");
+      const status = statusForError(error);
+      return sendProblem(res, status, error);
     } finally {
-      scope.cleanup()
+      scope.cleanup();
     }
-  })
+  });
 
   return {
     server,
@@ -603,44 +904,55 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
     supervisor,
     terminals,
     dispose: async () => {
-      if (disposal) return disposal
+      if (disposal) return disposal;
       disposal = (async () => {
-        await closeHttpServer()
-        await watcher.dispose()
-        terminals.dispose()
-        sessions.dispose()
-        await supervisor.dispose()
-      })()
-      return disposal
+        await closeHttpServer();
+        await watcher.dispose();
+        terminals.dispose();
+        sessions.dispose();
+        await supervisor.dispose();
+      })();
+      return disposal;
     },
-  }
+  };
 }
 
 function allowedMethodsForPath(pathname: string): string | undefined {
-  if (pathname === "/api/v1/host/health" || pathname === "/api/v1/host/share" ||
+  if (
+    pathname === "/api/v1/host/health" ||
+    pathname === "/api/v1/host/share" ||
     pathname === "/api/v1/host/tunnel" ||
     pathname === "/api/v1/host/network" ||
     pathname === "/api/v1/host/pair/invite" ||
     /^\/api\/v1\/host\/pair\/invite\/[^/]+$/.test(pathname) ||
     pathname === "/api/v1/host/tailscale" ||
-    pathname === "/api/v1/host/registry" || pathname === "/api/v1/pi/registry") return "GET"
-  if (pathname === "/api/v1/host/shutdown" ||
+    pathname === "/api/v1/host/registry" ||
+    pathname === "/api/v1/pi/registry"
+  )
+    return "GET";
+  if (
+    pathname === "/api/v1/host/shutdown" ||
     pathname === "/api/v1/host/pair/redeem" ||
     pathname === "/api/v1/host/tailscale/install" ||
     pathname === "/api/v1/host/tailscale/login" ||
-    pathname === "/api/v1/host/tailscale/disconnect") return "POST"
-  if (/^\/api\/v1\/pi\/commands\/[^/]+$/.test(pathname) ||
-    /^\/api\/v1\/pi\/sessions\/[^/]+\/commands\/[^/]+$/.test(pathname)) return "POST"
-  if (/^\/api\/v1\/host\/commands\/[^/]+$/.test(pathname)) return "GET, POST"
-  return undefined
+    pathname === "/api/v1/host/tailscale/disconnect"
+  )
+    return "POST";
+  if (
+    /^\/api\/v1\/pi\/commands\/[^/]+$/.test(pathname) ||
+    /^\/api\/v1\/pi\/sessions\/[^/]+\/commands\/[^/]+$/.test(pathname)
+  )
+    return "POST";
+  if (/^\/api\/v1\/host\/commands\/[^/]+$/.test(pathname)) return "GET, POST";
+  return undefined;
 }
 
 function pairInviteInfo(invite: {
-  id: string
-  secret: string
-  code: string
-  expiresAt: number
-  redeemed: boolean
+  id: string;
+  secret: string;
+  code: string;
+  expiresAt: number;
+  redeemed: boolean;
 }): PairInviteInfo {
   return {
     id: invite.id,
@@ -648,70 +960,73 @@ function pairInviteInfo(invite: {
     pair: `${invite.id}.${invite.secret}`,
     expiresAt: invite.expiresAt,
     redeemed: invite.redeemed,
-  }
+  };
 }
 
 function pairErrorStatus(reason: PairRedeemFailure): number {
   switch (reason) {
     case "USED":
-      return 409
+      return 409;
     case "RATE_LIMITED":
-      return 429
+      return 429;
     default:
-      return 400
+      return 400;
   }
 }
 
 export function statusForError(error: unknown): number {
   if (error instanceof PathSafetyError) {
-    return error.code === "INVALID_REQUEST" ? 400 : 403
+    return error.code === "INVALID_REQUEST" ? 400 : 403;
   }
-  const code = error && typeof error === "object" && "code" in error ? String(error.code) : "INTERNAL"
+  const code =
+    error && typeof error === "object" && "code" in error
+      ? String(error.code)
+      : "INTERNAL";
   switch (code) {
     case "INVALID_REQUEST":
     case "STALE_CURSOR":
-      return 400
+      return 400;
     case "UNAUTHORIZED":
     case "AUTH_REQUIRED":
-      return 401
+      return 401;
     case "FORBIDDEN":
     case "PATH_OUTSIDE_WORKSPACE":
     case "SYMLINK_ESCAPE":
     case "PROJECT_TRUST_REQUIRED":
-      return 403
+      return 403;
     case "NOT_FOUND":
     case "UNKNOWN_COMMAND":
     case "SESSION_NOT_FOUND":
     case "WORKSPACE_NOT_FOUND":
     case "TERMINAL_NOT_FOUND":
-      return 404
+      return 404;
     case "TERMINAL_CURSOR_EXPIRED":
-      return 409
+      return 409;
     case "TERMINAL_EXITED":
-      return 409
+      return 409;
     case "TERMINAL_LIMIT_REACHED":
     case "TERMINAL_START_FAILED":
-      return 503
+      return 503;
     case "FILE_TOO_LARGE":
     case "GIT_OUTPUT_LIMIT":
-      return 413
+      return 413;
     case "GIT_TIMEOUT":
-      return 504
+      return 504;
     case "GIT_BASE_NOT_FOUND":
     case "EXTENSION_UI_CANCELLED":
-      return 409
+      return 409;
     case "EXTENSION_UI_TUI_ONLY":
-      return 501
+      return 501;
     case "PI_SDK_VERSION_MISMATCH":
-      return 503
+      return 503;
     case "HOST_CALL_TIMEOUT":
-      return 504
+      return 504;
     case "REGISTRY_UNAVAILABLE":
     case "DRIVER_UNAVAILABLE":
     case "WORKER_RESULT_UNKNOWN":
-      return 503
+      return 503;
     case "METHOD_NOT_ALLOWED":
-      return 405
+      return 405;
     case "SESSION_BUSY":
     case "SESSION_READ_ONLY":
     case "WORKSPACE_BUSY":
@@ -723,10 +1038,10 @@ export function statusForError(error: unknown): number {
     case "RUNTIME_CLOSING":
     case "WORKSPACE_REPLACED":
     case "STALE_REVISION":
-      return 409
+      return 409;
     case "CAPABILITY_DISABLED":
-      return 501
+      return 501;
     default:
-      return 500
+      return 500;
   }
 }

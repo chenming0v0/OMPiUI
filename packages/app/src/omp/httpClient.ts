@@ -23,6 +23,7 @@ export function abortInFlightPiRequests(): void {
 const NETWORK_RETRY_DELAYS_MS = [300, 900]
 
 export type PiRequestInit = RequestInit & {
+  timeoutMs?: number
   /** Retry network failures for GET/HEAD only (default true); never enables write retries. */
   retry?: boolean
 }
@@ -100,7 +101,7 @@ export function getPiAuthToken(): string | undefined {
 }
 
 export async function piFetch(input: string, init?: PiRequestInit): Promise<Response> {
-  const { retry = true, ...requestInit } = init ?? {}
+  const { retry = true, timeoutMs, ...requestInit } = init ?? {}
   const method = (requestInit.method ?? 'GET').toUpperCase()
   const canRetry = retry && (method === 'GET' || method === 'HEAD')
   const generation = requestGeneration
@@ -112,7 +113,21 @@ export async function piFetch(input: string, init?: PiRequestInit): Promise<Resp
     if (generation !== requestGeneration) {
       throw new DOMException('Stale OMPiUI request: server changed', 'AbortError')
     }
-    const timeout = AbortSignal.timeout(DEFAULT_REQUEST_TIMEOUT_MS)
+    const bodyBytes = typeof requestInit.body === 'string' ? new TextEncoder().encode(requestInit.body).byteLength : 0
+    const bulkRead =
+      /(?:branch\.get|entries\.get|tree\.get|state\.get|session\.preview|session\.read|files\.read|diagnostics\/report)/.test(
+        input,
+      )
+    const timeout = AbortSignal.timeout(
+      timeoutMs ??
+        Math.min(
+          300_000,
+          Math.max(
+            bulkRead ? 300_000 : DEFAULT_REQUEST_TIMEOUT_MS,
+            DEFAULT_REQUEST_TIMEOUT_MS + Math.ceil(bodyBytes / (128 * 1024)) * 1000,
+          ),
+        ),
+    )
     const signals = [inflight.signal, timeout]
     if (init?.signal) signals.push(init.signal)
     const signal = AbortSignal.any(signals)
@@ -122,11 +137,17 @@ export async function piFetch(input: string, init?: PiRequestInit): Promise<Resp
     for (let attempt = 0; attempt <= NETWORK_RETRY_DELAYS_MS.length; attempt++) {
       signal.throwIfAborted()
       try {
-        return await auditHttpRequest(input, { ...requestInit, signal }, async () => {
-          const resolved = await resolveAndroidTailscaleUrl(input)
-          signal.throwIfAborted()
-          return fetchImpl(resolved, { ...requestInit, signal, headers })
-        }, input.startsWith('/') ? auditServer : undefined, attempt + 1)
+        return await auditHttpRequest(
+          input,
+          { ...requestInit, signal },
+          async () => {
+            const resolved = await resolveAndroidTailscaleUrl(input)
+            signal.throwIfAborted()
+            return fetchImpl(resolved, { ...requestInit, signal, headers })
+          },
+          input.startsWith('/') ? auditServer : undefined,
+          attempt + 1,
+        )
       } catch (error) {
         if (!canRetry || signal.aborted || isAbortError(error) || !isNetworkLevelError(error)) throw error
         lastError = error

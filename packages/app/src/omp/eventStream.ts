@@ -42,12 +42,7 @@ import { markModelSettingsDisconnected, refreshModelSettings } from './modelSett
 import { retryDelay } from './networkRetry'
 import { clearSubagentTranscripts } from './subagentTranscript'
 import { faultSocketOpened, faultSocketClosed, faultSocketUnused, reportRuntimeCrash } from './faultAudit/controller'
-import {
-  loadPiSessionData,
-  refreshPiBranch,
-  refreshPiSessionState,
-  settlePiLiveMessage,
-} from './controllers/index.js'
+import { loadPiSessionData, refreshPiBranch, refreshPiSessionState, settlePiLiveMessage } from './controllers/index.js'
 
 const PING_INTERVAL_MS = 25_000
 const RECONNECT_DELAY_MS = 1_000
@@ -55,7 +50,8 @@ const MAX_RECONNECT_ATTEMPTS = 10
 const REFRESH_DEBOUNCE_MS = 150
 
 type PiEventPayload = {
-  event: AgentSessionEvent
+  event:
+    | AgentSessionEvent
     | { type: 'config_update'; model?: JsonObject; thinkingLevel?: string }
     | { type: 'irc_message'; message: JsonObject }
   meta: EventCursor & { liveMessage?: { id: string; revision: number } }
@@ -132,6 +128,7 @@ class PiEventStream {
   private stableTimer: ReturnType<typeof setTimeout> | null = null
   private subscribeQueued = false
   private sentStreams = new Set<string>()
+  private subagentSeen = new Set<string>()
 
   /** Subscribe a session stream (reference counted). */
   connect(sessionId: string): void {
@@ -142,16 +139,22 @@ class PiEventStream {
       const refresh = async () => {
         if (this.diskRefreshTimers.get(sessionId) !== poll) return
         const state = piSessionStateStore.getState(sessionId)
-        if (navigator.onLine && document.visibilityState !== 'hidden' && (state?.readOnly === true || state?.diskPreview === true)) {
+        if (
+          navigator.onLine &&
+          document.visibilityState !== 'hidden' &&
+          (state?.readOnly === true || state?.diskPreview === true)
+        ) {
           const cursor = piBranchStore.getData(sessionId)?.syncCursor
           try {
             await refreshPiBranch(sessionId)
-            poll.delay = cursor !== piBranchStore.getData(sessionId)?.syncCursor ? 1500 : Math.min(10_000, poll.delay * 1.5)
+            poll.delay =
+              cursor !== piBranchStore.getData(sessionId)?.syncCursor ? 1500 : Math.min(10_000, poll.delay * 1.5)
           } catch {
             poll.delay = Math.min(30_000, poll.delay * 2)
           }
         }
-        if (this.diskRefreshTimers.get(sessionId) === poll) poll.timer = window.setTimeout(() => void refresh(), retryDelay(0, poll.delay, poll.delay))
+        if (this.diskRefreshTimers.get(sessionId) === poll)
+          poll.timer = window.setTimeout(() => void refresh(), retryDelay(0, poll.delay, poll.delay))
       }
       this.diskRefreshTimers.set(sessionId, poll)
       poll.timer = window.setTimeout(() => void refresh(), poll.delay)
@@ -225,6 +228,7 @@ class PiEventStream {
     this.refCounts.clear()
     piBranchStore.clearAll()
     clearSubagentTranscripts()
+    this.subagentSeen.clear()
     this.workspaceRefCounts.clear()
     this.cursors.clear()
     this.reconnectAttempts = 0
@@ -296,7 +300,9 @@ class PiEventStream {
       this.diagnostics.connected(this.lastCloseCode)
       this.sendSubscribe()
       notifyReconnected()
-      this.stableTimer = setTimeout(() => { this.reconnectAttempts = 0 }, 30_000)
+      this.stableTimer = setTimeout(() => {
+        this.reconnectAttempts = 0
+      }, 30_000)
       if (this.lastCloseCode !== undefined) refreshModelSettings()
       this.pingTimer = setInterval(() => {
         this.send({ type: 'ping', protocolVersion: PROTOCOL_VERSION })
@@ -374,7 +380,8 @@ class PiEventStream {
     // 上下文用量永远不恢复。每次订阅建立都主动 pull 一次（有防抖合并），
     // 让打开/刷新会话时立即拿到正在工作的 runtime 的真实状态。
     for (const sessionId of this.refCounts.keys()) {
-      if (!this.sentStreams.has(eventStreamKey({ kind: 'session', id: sessionId }))) this.scheduleStateRefresh(sessionId)
+      if (!this.sentStreams.has(eventStreamKey({ kind: 'session', id: sessionId })))
+        this.scheduleStateRefresh(sessionId)
     }
     this.sentStreams = new Set(streams.map(eventStreamKey))
   }
@@ -444,9 +451,8 @@ class PiEventStream {
         // 会话流上 sessionId 取 envelope；server 流上的注册帧镜像由 payload
         // 携带 sessionId（detached 后台子代理的父会话可能没有 pane 订阅）
         const mirrorPayload = envelope.payload as { sessionId?: unknown } | undefined
-        const mirrorSessionId = isJsonObject(mirrorPayload) && typeof mirrorPayload.sessionId === 'string'
-          ? mirrorPayload.sessionId
-          : null
+        const mirrorSessionId =
+          isJsonObject(mirrorPayload) && typeof mirrorPayload.sessionId === 'string' ? mirrorPayload.sessionId : null
         const runSessionId = sessionId ?? mirrorSessionId
         if (runSessionId) this.handleOmpSubagentEvent(runSessionId, envelope.payload)
         break
@@ -479,9 +485,11 @@ class PiEventStream {
       case 'registry.updated': {
         const payload = envelope.payload as { sessionId?: string } | undefined
         if (sessionId || payload?.sessionId) {
-          window.dispatchEvent(new CustomEvent('ompiui:registry-updated', {
-            detail: { sessionId: sessionId ?? payload?.sessionId },
-          }))
+          window.dispatchEvent(
+            new CustomEvent('ompiui:registry-updated', {
+              detail: { sessionId: sessionId ?? payload?.sessionId },
+            }),
+          )
         }
         break
       }
@@ -489,9 +497,11 @@ class PiEventStream {
       case 'terminal.updated':
       case 'terminal.exited':
       case 'terminal.deleted':
-        window.dispatchEvent(new CustomEvent('ompiui:terminals-changed', {
-          detail: { workspacePath: envelope.stream.kind === 'workspace' ? envelope.stream.id : undefined },
-        }))
+        window.dispatchEvent(
+          new CustomEvent('ompiui:terminals-changed', {
+            detail: { workspacePath: envelope.stream.kind === 'workspace' ? envelope.stream.id : undefined },
+          }),
+        )
         break
     }
   }
@@ -614,7 +624,13 @@ class PiEventStream {
       if (!(sessionId in active)) {
         this.diagnostics.record('activity', { sessionId, status: 'idle' })
         const state = piSessionStateStore.getState(sessionId)
-        if (this.knownActiveSessions.has(sessionId) || state?.isStreaming || state?.isCompacting || state?.isRetrying || state?.hasPendingAsyncWork) {
+        if (
+          this.knownActiveSessions.has(sessionId) ||
+          state?.isStreaming ||
+          state?.isCompacting ||
+          state?.isRetrying ||
+          state?.hasPendingAsyncWork
+        ) {
           this.markSessionSettled(sessionId)
         }
         activeSessionStore.updateStatus(sessionId, { type: 'idle' })
@@ -629,8 +645,14 @@ class PiEventStream {
 
   private markSessionSettled(sessionId: string): void {
     piSessionStateStore.patchState(sessionId, {
-      isStreaming: false, isIdle: true, isRetrying: false, isCompacting: false,
-      isBashRunning: false, hasPendingAsyncWork: false, retry: null, compaction: null,
+      isStreaming: false,
+      isIdle: true,
+      isRetrying: false,
+      isCompacting: false,
+      isBashRunning: false,
+      hasPendingAsyncWork: false,
+      retry: null,
+      compaction: null,
     })
     settlePiLiveMessage(sessionId)
     this.pendingLiveMessages.delete(sessionId)
@@ -644,6 +666,12 @@ class PiEventStream {
     const kind = typeof payload.kind === 'string' ? payload.kind : ''
     const inner = payload.payload
     if (!isJsonObject(inner)) return
+    if (typeof payload.eventId === 'string') {
+      const key = `${sessionId}:${payload.eventId}`
+      if (this.subagentSeen.has(key)) return
+      this.subagentSeen.add(key)
+      if (this.subagentSeen.size > 1024) this.subagentSeen.delete(this.subagentSeen.values().next().value!)
+    }
     switch (kind) {
       case 'lifecycle':
         ompSubagentStore.applyLifecycle(sessionId, inner)
@@ -659,6 +687,76 @@ class PiEventStream {
 
   private handlePiEvent(sessionId: string, payload: PiEventPayload): void {
     const { event, meta } = payload
+    const patch = event as unknown as JsonObject
+    if (patch.type === 'message_patch' && isJsonObject(patch.block)) {
+      const current =
+        this.pendingLiveMessages.get(sessionId)?.liveMessage ??
+        piBranchStore.getData(sessionId)?.checkpoint?.liveMessage
+      if (
+        current?.id === meta.liveMessage?.id &&
+        current &&
+        meta.liveMessage &&
+        (current.revision > meta.liveMessage.revision ||
+          (current.complete && current.revision === meta.liveMessage.revision))
+      )
+        return
+      const currentMessage = current?.message as unknown as JsonObject | undefined
+      const content =
+        current && current.id === meta.liveMessage?.id && Array.isArray(currentMessage?.content)
+          ? [...currentMessage.content]
+          : []
+      const index = Number(patch.index)
+      const block = patch.block
+      if (patch.field === 'arguments' && typeof patch.argument === 'string') {
+        const previous = isJsonObject(content[index]) ? content[index] : undefined
+        const oldArgs = previous && isJsonObject(previous.arguments) ? previous.arguments : {}
+        const args = { ...oldArgs }
+        if (Array.isArray(patch.argumentKeys))
+          for (const key of Object.keys(args)) {
+            if (!patch.argumentKeys.includes(key)) delete args[key]
+          }
+        const before = typeof args[patch.argument] === 'string' ? String(args[patch.argument]) : ''
+        if (typeof patch.delta === 'string') {
+          const offset = Number(patch.offset)
+          if (offset > before.length) {
+            void refreshPiBranch(sessionId, undefined, { includeLiveMessage: true }).catch(() => {})
+            return
+          }
+          Object.defineProperty(args, patch.argument, {
+            value: before.slice(0, offset) + patch.delta,
+            enumerable: true,
+            configurable: true,
+            writable: true,
+          })
+        } else
+          Object.defineProperty(args, patch.argument, {
+            value: patch.value,
+            enumerable: true,
+            configurable: true,
+            writable: true,
+          })
+        content[index] = { ...block, arguments: args }
+      } else if (typeof patch.field === 'string' && typeof patch.delta === 'string') {
+        const previous = isJsonObject(content[index]) ? content[index] : undefined
+        const previousText = previous?.[patch.field]
+        const text = typeof previousText === 'string' ? previousText : ''
+        const offset = Number(patch.offset)
+        if (offset > text.length) {
+          void refreshPiBranch(sessionId, undefined, { includeLiveMessage: true }).catch(() => {})
+          return
+        }
+        content[index] = { ...block, [patch.field]: text.slice(0, offset) + patch.delta } as never
+      } else content[index] = block as never
+      if (typeof patch.blockCount === 'number') content.length = patch.blockCount
+      this.updateLiveMessage(
+        sessionId,
+        { ...(patch.metadata as JsonObject), content } as unknown as AgentMessage,
+        meta,
+        'streaming',
+        Boolean(patch.complete),
+      )
+      return
+    }
     switch (event.type) {
       case 'config_update': {
         const patch: JsonObject = {}
@@ -701,8 +799,13 @@ class PiEventStream {
       case 'bash_execution_update': {
         // 用户 `!cmd`/`/bash` 的流式输出（pi TUI onChunk 的事件流对应物）。
         // id = worker 透传的 clientId，delta 是增量 chunk。
-        if ('id' in event && typeof event.id === 'string' && event.id
-          && 'delta' in event && typeof event.delta === 'string') {
+        if (
+          'id' in event &&
+          typeof event.id === 'string' &&
+          event.id &&
+          'delta' in event &&
+          typeof event.delta === 'string'
+        ) {
           liveToolOutputStore.append(event.id, sessionId, event.delta)
         }
         this.scheduleStateRefresh(sessionId)
@@ -760,6 +863,7 @@ class PiEventStream {
     message: AgentMessage,
     meta: PiEventPayload['meta'],
     phase: PiLiveMessage['phase'] = 'streaming',
+    complete = true,
   ): void {
     perfMark('ompiui:event-message-update')
     const liveMessage: PiLiveMessage = {
@@ -767,6 +871,7 @@ class PiEventStream {
       revision: meta.liveMessage?.revision ?? meta.sequence,
       phase,
       message,
+      complete,
     }
     const data = piBranchStore.getData(sessionId)
     if (!data) {
@@ -794,6 +899,8 @@ class PiEventStream {
     if (!pending || !data) return
     this.pendingLiveMessages.delete(sessionId)
     const current = data.checkpoint?.position
+    const live = data.checkpoint?.liveMessage
+    if (live?.id === pending.liveMessage.id && live.complete && live.revision >= pending.liveMessage.revision) return
     if (current && (current.epoch !== pending.position.epoch || current.sequence >= pending.position.sequence)) return
     this.applyLiveMessage(sessionId, pending.liveMessage, pending.position)
   }
@@ -804,8 +911,10 @@ class PiEventStream {
     if (stream.kind === 'session') {
       // Preview includes the checkpoint for an attached runtime. External
       // histories stay disk-only; neither refresh is allowed to spawn a writer.
-      const refresh = piBranchStore.getData(stream.id) ? refreshPiBranch : loadPiSessionData
-      void refresh(stream.id)
+      const refresh = piBranchStore.getData(stream.id)
+        ? refreshPiBranch(stream.id, undefined, { includeLiveMessage: true })
+        : loadPiSessionData(stream.id)
+      void refresh
         .then(() => this.diagnostics.state(stream.id, piSessionStateStore.getState(stream.id)))
         .catch(error => this.diagnostics.error('branch_error', stream.id, error))
         .then(() => this.flushPendingLiveMessage(stream.id))
@@ -815,12 +924,16 @@ class PiEventStream {
     } else if (stream.kind === 'provider') {
       receiveProviderAuthUpdated()
     } else if (stream.kind === 'workspace') {
-      window.dispatchEvent(new CustomEvent('ompiui:workspace-files-changed', {
-        detail: { workspacePath: stream.id, changes: [], rescan: true },
-      }))
-      window.dispatchEvent(new CustomEvent('ompiui:workspace-git-updated', {
-        detail: { workspacePath: stream.id },
-      }))
+      window.dispatchEvent(
+        new CustomEvent('ompiui:workspace-files-changed', {
+          detail: { workspacePath: stream.id, changes: [], rescan: true },
+        }),
+      )
+      window.dispatchEvent(
+        new CustomEvent('ompiui:workspace-git-updated', {
+          detail: { workspacePath: stream.id },
+        }),
+      )
     }
   }
 
@@ -865,11 +978,17 @@ serverStore.onServerChange(() => piEventStream.handleServerChange())
 
 function isCommandRecord(value: unknown): value is CommandRecord {
   if (!isJsonObject(value)) return false
-  return typeof value.id === 'string' &&
+  return (
+    typeof value.id === 'string' &&
     typeof value.type === 'string' &&
-    (value.status === 'accepted' || value.status === 'running' || value.status === 'completed' ||
-      value.status === 'failed' || value.status === 'cancelled' || value.status === 'unknown_after_crash') &&
+    (value.status === 'accepted' ||
+      value.status === 'running' ||
+      value.status === 'completed' ||
+      value.status === 'failed' ||
+      value.status === 'cancelled' ||
+      value.status === 'unknown_after_crash') &&
     typeof value.submittedAt === 'string'
+  )
 }
 
 function activityToSessionStatus(status: SessionActivityStatus): SessionStatus {

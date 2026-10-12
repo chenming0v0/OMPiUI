@@ -5,11 +5,14 @@ import { retryDelay, waitNetworkDelay } from './networkRetry'
 
 const network = vi.hoisted(() => ({ open: vi.fn(), branch: vi.fn(), load: vi.fn(), state: vi.fn() }))
 vi.mock('./ompSocket', async importOriginal => ({
-  ...await importOriginal<typeof import('./ompSocket')>(), openPiSocket: network.open,
+  ...(await importOriginal<typeof import('./ompSocket')>()),
+  openPiSocket: network.open,
 }))
 vi.mock('./controllers/index.js', async importOriginal => ({
-  ...await importOriginal<typeof import('./controllers/index.js')>(),
-  refreshPiBranch: network.branch, loadPiSessionData: network.load, refreshPiSessionState: network.state,
+  ...(await importOriginal<typeof import('./controllers/index.js')>()),
+  refreshPiBranch: network.branch,
+  loadPiSessionData: network.load,
+  refreshPiSessionState: network.state,
 }))
 vi.mock('./modelSettingsSync', () => ({ markModelSettingsDisconnected: vi.fn(), refreshModelSettings: vi.fn() }))
 import { piEventStream } from './eventStream'
@@ -87,10 +90,14 @@ describe('network recovery', () => {
   })
 
   it('uses incremental recovery for cached branches and only loads an initial page when absent', async () => {
-    piBranchStore.setData('network-session', { items: [], hasMore: false, syncCursor: 'sync' } as unknown as PiBranchPage)
+    piBranchStore.setData('network-session', {
+      items: [],
+      hasMore: false,
+      syncCursor: 'sync',
+    } as unknown as PiBranchPage)
     internals.handleResync('session:network-session')
     await vi.advanceTimersByTimeAsync(0)
-    expect(network.branch).toHaveBeenCalledWith('network-session')
+    expect(network.branch).toHaveBeenCalledWith('network-session', undefined, { includeLiveMessage: true })
     expect(network.load).not.toHaveBeenCalled()
     piBranchStore.clear('network-session')
     internals.handleResync('session:network-session')

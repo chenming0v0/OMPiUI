@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
+import { ArrowDown } from 'lucide-react'
 import i18n from '../../i18n'
 import type { Model, Api } from '../../omp/vendor/pi-ai'
 import { ChatArea, Header, InputBox, type ChatAreaHandle, type InputBoxHandle } from '../chat/index.js'
@@ -32,6 +33,7 @@ import {
   loadPiSessionRegistry,
   logoutPiProvider,
   refreshPiBranch,
+  returnToLatestPiBranch,
   refreshPiSessionState,
   loadPiModels,
   loadPiSessionData,
@@ -49,7 +51,13 @@ import {
   setPiModel,
   setPiThinkingLevel,
 } from '../../omp/controllers/index.js'
-import { invokePiCommand, manageSessionGoal, removeQueuedMessage, sendQueuedMessage, waitHostCommand } from '../../omp/transport/index.js'
+import {
+  invokePiCommand,
+  manageSessionGoal,
+  removeQueuedMessage,
+  sendQueuedMessage,
+  waitHostCommand,
+} from '../../omp/transport/index.js'
 import { layoutStore } from '../../store/layoutStore'
 import { themeStore } from '../../store/themeStore'
 import { useSessionActiveEntry } from '../../store/activeSessionStore'
@@ -63,7 +71,12 @@ import { commandFeedbackStore, type CommandFeedbackStatus } from '../../omp/comm
 import { trackPiSession } from '../../omp/ompSessionIndex'
 import { resolveWorkspacePath } from '../../omp/workspaces.js'
 import { stashForkText, subscribeForkSeed, takeForkText } from '../../omp/pendingForkText'
-import { clearSessionEditorDraft, configureSessionEditorDraftSync, setSessionEditorDraft, useSessionEditorDraft } from '../../omp/sessionEditorDraftStore'
+import {
+  clearSessionEditorDraft,
+  configureSessionEditorDraftSync,
+  setSessionEditorDraft,
+  useSessionEditorDraft,
+} from '../../omp/sessionEditorDraftStore'
 import { isSessionBusyError, isSessionNotFoundError, uiErrorHandler } from '../../utils'
 import { usePiBranchData, usePiBranchError, usePiModels, usePiSessionRuntimeState } from '../../omp/hooks/index.js'
 import { useDirectory } from '../../contexts/useDirectory'
@@ -91,9 +104,11 @@ const EMPTY_STRING_ARRAY: readonly string[] = []
 
 function resolveExportOutputPath(requested: string, baseDirectory: string): string {
   const trimmed = requested.trim()
-  const unquoted = trimmed.length >= 2 && ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'")))
-    ? trimmed.slice(1, -1).trim()
-    : trimmed
+  const unquoted =
+    trimmed.length >= 2 &&
+    ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'")))
+      ? trimmed.slice(1, -1).trim()
+      : trimmed
   const base = baseDirectory.replace(/[\\/]+$/, '')
   if (!unquoted) return `${base}/pi-session.html`
   // Keep absolute Windows/Unix paths intact; resolve relative paths against
@@ -212,17 +227,19 @@ interface PiChatPaneProps {
   navigatePaneToSession?: (paneId: string, sessionId: string, directory?: string) => void
 }
 
-
 function textFromTimelineItem(item: unknown): string {
   if (!item || typeof item !== 'object' || Array.isArray(item)) return ''
   const blocks = (item as { blocks?: unknown }).blocks
   if (!Array.isArray(blocks)) return ''
   return blocks
-    .filter((block): block is { type: 'text'; text: string } => (
-      Boolean(block) && typeof block === 'object' && !Array.isArray(block)
-      && (block as { type?: unknown }).type === 'text'
-      && typeof (block as { text?: unknown }).text === 'string'
-    ))
+    .filter(
+      (block): block is { type: 'text'; text: string } =>
+        Boolean(block) &&
+        typeof block === 'object' &&
+        !Array.isArray(block) &&
+        (block as { type?: unknown }).type === 'text' &&
+        typeof (block as { text?: unknown }).text === 'string',
+    )
     .map(block => block.text)
     .join('\n')
 }
@@ -273,7 +290,14 @@ export function PiChatPane({
   const { models, isLoading: modelsLoading } = usePiModels()
   useEffect(() => {
     void loadPiModels().catch(() => undefined)
-  }, [activeServerGeneration, activeServer?.id, activeServer?.url, activeServer?.token, currentDirectory, providerRevision])
+  }, [
+    activeServerGeneration,
+    activeServer?.id,
+    activeServer?.url,
+    activeServer?.token,
+    currentDirectory,
+    providerRevision,
+  ])
 
   const branch = usePiBranchData(sessionId)
   const branchError = usePiBranchError(sessionId)
@@ -318,11 +342,23 @@ export function PiChatPane({
     if (!sessionId || sessionUnavailable || sessionLoadError) return
     piEventStream.connect(sessionId)
     const cachedState = piSessionStateStore.getState(sessionId)
-    if (!piBranchStore.getData(sessionId) || cachedState?.model === undefined || cachedState?.thinkingLevel === undefined) {
+    if (
+      !piBranchStore.getData(sessionId) ||
+      cachedState?.model === undefined ||
+      cachedState?.thinkingLevel === undefined
+    ) {
       void loadPiSessionData(sessionId).catch(() => undefined)
     }
     return () => piEventStream.disconnect(sessionId)
-  }, [activeServerGeneration, activeServer?.id, activeServer?.token, activeServer?.url, sessionId, sessionLoadError, sessionUnavailable])
+  }, [
+    activeServerGeneration,
+    activeServer?.id,
+    activeServer?.token,
+    activeServer?.url,
+    sessionId,
+    sessionLoadError,
+    sessionUnavailable,
+  ])
 
   // Fork 带来的待编辑文本：进入目标会话时取走，灌进输入框。
   // fork 的 replacement 事件比命令结果先到时，导航会先于 stash 发生，
@@ -507,7 +543,9 @@ export function PiChatPane({
           navigatePaneToSession?.(paneId, allSessions[idx + 1].id, allSessions[idx + 1].directory)
         }
       },
-      cancelMessage: () => { void handleAbort() },
+      cancelMessage: () => {
+        void handleAbort()
+      },
       openModelSelector: () => modelSelectorRef.current?.openMenu(),
       copyLastResponse: () => {
         const lastAssistant = [...items].reverse().find(item => item.kind === 'assistant_message')
@@ -550,7 +588,7 @@ export function PiChatPane({
     extensionUiStore.getSnapshot,
   )
   const pendingDialogs = useMemo(
-    () => (sessionId ? extensionDialogSnapshot.sessions[sessionId]?.pending ?? [] : []),
+    () => (sessionId ? (extensionDialogSnapshot.sessions[sessionId]?.pending ?? []) : []),
     [sessionId, extensionDialogSnapshot],
   )
   const dialogRequest = useMemo(
@@ -577,14 +615,20 @@ export function PiChatPane({
   const [pendingModel, setPendingModel] = useState<{ sessionId: string; key: string } | null>(null)
   const pendingModelKey = pendingModel?.sessionId === sessionId ? pendingModel.key : null
   const selectedModelKey =
-    pendingModelKey ?? (currentModel?.provider && currentModel?.id ? `${currentModel.provider}:${currentModel.id}` : sessionId ? null : homeModelKey)
+    pendingModelKey ??
+    (currentModel?.provider && currentModel?.id
+      ? `${currentModel.provider}:${currentModel.id}`
+      : sessionId
+        ? null
+        : homeModelKey)
 
   // Thinking level: variants filtered by the current model's support map,
   // current value from runtime state — the native home for this control.
   const currentModelObj = useMemo(
-    () => models.find(m => `${m.provider}:${m.id}` === pendingModelKey)
-      ?? models.find(m => m.provider === currentModel?.provider && m.id === currentModel?.id)
-      ?? (!sessionId && homeModelKey ? models.find(m => `${m.provider}:${m.id}` === homeModelKey) : undefined),
+    () =>
+      models.find(m => `${m.provider}:${m.id}` === pendingModelKey) ??
+      models.find(m => m.provider === currentModel?.provider && m.id === currentModel?.id) ??
+      (!sessionId && homeModelKey ? models.find(m => `${m.provider}:${m.id}` === homeModelKey) : undefined),
     [models, pendingModelKey, currentModel?.provider, currentModel?.id, homeModelKey, sessionId],
   )
   const thinkingLevels = useMemo(() => {
@@ -614,7 +658,9 @@ export function PiChatPane({
     setPendingThinking(null)
   }
   const thinkingLevel =
-    pendingThinkingLevel ?? (typeof state?.thinkingLevel === 'string' ? state.thinkingLevel : undefined) ?? (sessionId ? undefined : homeVariant)
+    pendingThinkingLevel ??
+    (typeof state?.thinkingLevel === 'string' ? state.thinkingLevel : undefined) ??
+    (sessionId ? undefined : homeVariant)
 
   const handleVariantChange = useCallback(
     (variant: string | undefined) => {
@@ -628,9 +674,9 @@ export function PiChatPane({
       setPendingThinking(selection)
       void setPiThinkingLevel(sessionId, variant)
         .then(() => refreshPiSessionState(sessionId))
-        .then(() => setPendingThinking(current => current === selection ? null : current))
+        .then(() => setPendingThinking(current => (current === selection ? null : current)))
         .catch(error => {
-          setPendingThinking(current => current === selection ? null : current)
+          setPendingThinking(current => (current === selection ? null : current))
           uiErrorHandler('set thinking level', error)
         })
     },
@@ -649,9 +695,9 @@ export function PiChatPane({
       setPendingThinking(null)
       void setPiModel(sessionId, model.provider, model.id)
         .then(() => refreshPiSessionState(sessionId))
-        .then(() => setPendingModel(current => current === selection ? null : current))
+        .then(() => setPendingModel(current => (current === selection ? null : current)))
         .catch(error => {
-          setPendingModel(current => current === selection ? null : current)
+          setPendingModel(current => (current === selection ? null : current))
           uiErrorHandler('set model', error)
         })
     },
@@ -697,7 +743,18 @@ export function PiChatPane({
 
   // 加载更早历史：稳定引用（ChatArea memo），避免每次渲染新建箭头函数
   const handleLoadMore = useCallback(() => {
-    if (sessionId) void loadMorePiBranchEntries(sessionId)
+    return sessionId ? loadMorePiBranchEntries(sessionId) : undefined
+  }, [sessionId])
+  const latestSessionRef = useRef(sessionId)
+  useEffect(() => {
+    latestSessionRef.current = sessionId
+  }, [sessionId])
+  const handleReturnToLatest = useCallback(async () => {
+    if (!sessionId) return
+    await returnToLatestPiBranch(sessionId)
+    requestAnimationFrame(() => {
+      if (latestSessionRef.current === sessionId) chatAreaRef.current?.scrollToBottom()
+    })
   }, [sessionId])
 
   // ============================================
@@ -731,9 +788,12 @@ export function PiChatPane({
   )
   const redoRestoreAttemptedRef = useRef<string | null>(null)
 
-  const updateRevertState = useCallback((plan: RedoPlan | null) => {
-    if (sessionId) redoPlanStore.setPlan(sessionId, plan)
-  }, [sessionId])
+  const updateRevertState = useCallback(
+    (plan: RedoPlan | null) => {
+      if (sessionId) redoPlanStore.setPlan(sessionId, plan)
+    },
+    [sessionId],
+  )
 
   // Reset the redo pointer whenever the session changes
   useEffect(() => {
@@ -748,10 +808,7 @@ export function PiChatPane({
     redoRestoreAttemptedRef.current = sessionId
     const plan = redoPlanStore.getPlan(sessionId)
     if (!plan) return
-    const positions = new Set<string | null>([
-      plan.undoLeafId,
-      ...plan.checkpoints.slice(0, plan.restored),
-    ])
+    const positions = new Set<string | null>([plan.undoLeafId, ...plan.checkpoints.slice(0, plan.restored)])
     if (plan.epoch !== head?.epoch || !positions.has(headLeafId)) redoPlanStore.setPlan(sessionId, null)
   }, [sessionId, state, headLeafId, head?.epoch])
 
@@ -759,10 +816,7 @@ export function PiChatPane({
   // the undo point plus the already-restored checkpoints.
   const revertPositions = useMemo(() => {
     if (!revertState) return null
-    return new Set<string | null>([
-      revertState.undoLeafId,
-      ...revertState.checkpoints.slice(0, revertState.restored),
-    ])
+    return new Set<string | null>([revertState.undoLeafId, ...revertState.checkpoints.slice(0, revertState.restored)])
   }, [revertState])
 
   // Leaf left the undo path (new send / tree navigation) -> the plan lapses
@@ -956,12 +1010,10 @@ export function PiChatPane({
       try {
         const pendingStop = sessionId ? pendingStopsRef.current.get(sessionId) : undefined
         if (pendingStop && !(await pendingStop)) return false
-        const images = attachments
-          .map(attachmentToImage)
-          .filter((image): image is PiImageInput => image !== null)
+        const images = attachments.map(attachmentToImage).filter((image): image is PiImageInput => image !== null)
         // Stop is an idle boundary, even if this callback captured streaming UI state.
         const stopped = sessionId ? stoppedSessionsRef.current.has(sessionId) : false
-        const deliverAs = stopped ? undefined : options?.delivery ?? (isStreaming ? 'followUp' : undefined)
+        const deliverAs = stopped ? undefined : (options?.delivery ?? (isStreaming ? 'followUp' : undefined))
 
         if (!targetSessionId) {
           const directory = currentDirectoryRef.current || (await resolveWorkspacePath())
@@ -1159,13 +1211,15 @@ export function PiChatPane({
         report('info', 'Compaction started — this can take a while (no progress stream from the SDK)', sid)
         void compactPiSession(sid, args || undefined)
           .then(async result => {
-            const details = result && typeof result === 'object' && !Array.isArray(result)
-              ? result as Record<string, unknown>
-              : {}
+            const details =
+              result && typeof result === 'object' && !Array.isArray(result) ? (result as Record<string, unknown>) : {}
             const skipped = details.status === 'skipped'
-            const message = typeof details.message === 'string'
-              ? details.message
-              : skipped ? i18n.t('chat:notification.nothingToCompact') : i18n.t('chat:notification.contextCompacted')
+            const message =
+              typeof details.message === 'string'
+                ? details.message
+                : skipped
+                  ? i18n.t('chat:notification.nothingToCompact')
+                  : i18n.t('chat:notification.contextCompacted')
             report(skipped ? 'info' : 'ok', message, sid)
             notificationStore.push(
               'completed',
@@ -1174,10 +1228,7 @@ export function PiChatPane({
               sid,
               currentDirectoryRef.current,
             )
-            await Promise.all([
-              refreshPiBranch(sid),
-              refreshPiSessionState(sid),
-            ])
+            await Promise.all([refreshPiBranch(sid), refreshPiSessionState(sid)])
           })
           .catch(error => {
             console.error('Failed to compact session:', error)
@@ -1208,13 +1259,7 @@ export function PiChatPane({
           console.error('Failed to run bash command:', error)
           const message = error instanceof Error ? error.message : String(error)
           report('error', `bash failed: ${message}`, sid)
-          notificationStore.push(
-            'error',
-            '/bash',
-            message,
-            sid,
-            currentDirectoryRef.current,
-          )
+          notificationStore.push('error', '/bash', message, sid, currentDirectoryRef.current)
         })
         scheduleDelayedRefresh(sid)
         return true
@@ -1237,23 +1282,11 @@ export function PiChatPane({
         try {
           await reloadPiSessionResources(sid)
           report('ok', 'Pi resources reloaded (keybindings, extensions, skills, prompts, themes, context files)', sid)
-          notificationStore.push(
-            'completed',
-            '/reload',
-            'Pi resources reloaded',
-            sid,
-            currentDirectoryRef.current,
-          )
+          notificationStore.push('completed', '/reload', 'Pi resources reloaded', sid, currentDirectoryRef.current)
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           report('error', `Reload failed: ${message}`, sid)
-          notificationStore.push(
-            'error',
-            '/reload',
-            message,
-            sid,
-            currentDirectoryRef.current,
-          )
+          notificationStore.push('error', '/reload', message, sid, currentDirectoryRef.current)
         }
         return true
       }
@@ -1272,7 +1305,10 @@ export function PiChatPane({
       }
 
       if (command === 'scoped-models') {
-        const patterns = args.split(/[\s,]+/).map(value => value.trim()).filter(Boolean)
+        const patterns = args
+          .split(/[\s,]+/)
+          .map(value => value.trim())
+          .filter(Boolean)
         if (patterns.length === 0) {
           report('info', 'Opened scoped-model settings', sid)
           onOpenSettingsTab?.('config')
@@ -1287,8 +1323,18 @@ export function PiChatPane({
       if (command === 'name') {
         if (!args) {
           const currentName = state?.sessionName
-          report('info', typeof currentName === 'string' && currentName ? `Current name: ${currentName}` : 'Session has no name', sid)
-          notificationStore.push('completed', '/name', typeof currentName === 'string' && currentName ? currentName : 'Session has no name', sid, currentDirectoryRef.current)
+          report(
+            'info',
+            typeof currentName === 'string' && currentName ? `Current name: ${currentName}` : 'Session has no name',
+            sid,
+          )
+          notificationStore.push(
+            'completed',
+            '/name',
+            typeof currentName === 'string' && currentName ? currentName : 'Session has no name',
+            sid,
+            currentDirectoryRef.current,
+          )
           return true
         }
         await renamePiSession(sid, args)
@@ -1338,13 +1384,14 @@ export function PiChatPane({
           onOpenSettingsTab?.('config')
           return true
         }
-        const value = decision === 'yes' || decision === 'true' || decision === 'allow'
-          ? true
-          : decision === 'no' || decision === 'false' || decision === 'deny'
-            ? false
-            : decision === 'reset' || decision === 'ask'
-              ? null
-              : undefined
+        const value =
+          decision === 'yes' || decision === 'true' || decision === 'allow'
+            ? true
+            : decision === 'no' || decision === 'false' || decision === 'deny'
+              ? false
+              : decision === 'reset' || decision === 'ask'
+                ? null
+                : undefined
         if (value === undefined) {
           report('error', 'Use yes, no, or reset', sid)
           notificationStore.push('error', '/trust', 'Use yes, no, or reset', sid, currentDirectoryRef.current)
@@ -1353,7 +1400,13 @@ export function PiChatPane({
         const cwd = currentDirectoryRef.current
         if (!cwd) {
           report('error', 'Open a project before changing trust', sid)
-          notificationStore.push('error', '/trust', 'Open a project before changing trust', sid, currentDirectoryRef.current)
+          notificationStore.push(
+            'error',
+            '/trust',
+            'Open a project before changing trust',
+            sid,
+            currentDirectoryRef.current,
+          )
           return true
         }
         await setPiProjectTrust(cwd, value)
@@ -1386,7 +1439,7 @@ export function PiChatPane({
       }
 
       if (command === 'export') {
-        const baseDirectory = currentDirectoryRef.current || await resolveWorkspacePath()
+        const baseDirectory = currentDirectoryRef.current || (await resolveWorkspacePath())
         if (!baseDirectory) {
           report('error', 'Unable to resolve the active workspace for export', sid)
           return false
@@ -1422,12 +1475,17 @@ export function PiChatPane({
 
       if (command === 'session') {
         const model = state?.model as { provider?: string; id?: string } | undefined
-        const stats = state?.sessionStats as { totalMessages?: number; userMessages?: number; assistantMessages?: number; toolCalls?: number } | undefined
+        const stats = state?.sessionStats as
+          { totalMessages?: number; userMessages?: number; assistantMessages?: number; toolCalls?: number } | undefined
         const summary = [
           typeof state?.sessionName === 'string' && state.sessionName ? state.sessionName : sid,
           model?.provider && model.id ? `${model.provider}/${model.id}` : undefined,
-          stats ? `${stats.totalMessages ?? 0} messages · ${stats.userMessages ?? 0} user · ${stats.assistantMessages ?? 0} assistant · ${stats.toolCalls ?? 0} tool calls` : undefined,
-        ].filter(Boolean).join(' · ')
+          stats
+            ? `${stats.totalMessages ?? 0} messages · ${stats.userMessages ?? 0} user · ${stats.assistantMessages ?? 0} assistant · ${stats.toolCalls ?? 0} tool calls`
+            : undefined,
+        ]
+          .filter(Boolean)
+          .join(' · ')
         report('ok', summary, sid)
         notificationStore.push('completed', '/session', summary, sid, currentDirectoryRef.current)
         return true
@@ -1435,17 +1493,31 @@ export function PiChatPane({
 
       if (command === 'quit') {
         report('info', 'The web app stays open; close its window to exit', sid)
-        notificationStore.push('completed', '/quit', 'The web app stays open; close its window to exit', sid, currentDirectoryRef.current)
+        notificationStore.push(
+          'completed',
+          '/quit',
+          'The web app stays open; close its window to exit',
+          sid,
+          currentDirectoryRef.current,
+        )
         return true
       }
 
       const registry = await loadPiSessionRegistry(sid)
       const registered = registry?.commands.find(item => item.name === command)
       const sourceInfo = registered?.sourceInfo
-      const isBuiltin = Boolean(sourceInfo && typeof sourceInfo === 'object' && !Array.isArray(sourceInfo) && sourceInfo.builtin === true)
+      const isBuiltin = Boolean(
+        sourceInfo && typeof sourceInfo === 'object' && !Array.isArray(sourceInfo) && sourceInfo.builtin === true,
+      )
       if (isBuiltin) {
         report('error', 'This Pi command needs a GUI interaction that is not available here yet', sid)
-        notificationStore.push('error', `/${command}`, 'This Pi command needs a GUI interaction that is not available here yet', sid, currentDirectoryRef.current)
+        notificationStore.push(
+          'error',
+          `/${command}`,
+          'This Pi command needs a GUI interaction that is not available here yet',
+          sid,
+          currentDirectoryRef.current,
+        )
         return true
       }
 
@@ -1482,7 +1554,20 @@ export function PiChatPane({
       scheduleDelayedRefresh(sid)
       return true
     },
-    [currentDirectoryRef, handleFork, handleModelChange, isStreaming, items, models, onOpenSettings, onOpenSettingsTab, onOpenSidebar, scheduleDelayedRefresh, sessionId, state],
+    [
+      currentDirectoryRef,
+      handleFork,
+      handleModelChange,
+      isStreaming,
+      items,
+      models,
+      onOpenSettings,
+      onOpenSettingsTab,
+      onOpenSidebar,
+      scheduleDelayedRefresh,
+      sessionId,
+      state,
+    ],
   )
 
   // Image attachment capability from the current model's native input
@@ -1711,23 +1796,43 @@ export function PiChatPane({
             </div>
           </div>
         ) : (
-          <ChatArea
-            key={chatAreaMountKey}
-            ref={chatAreaRef}
-            items={items}
-            sessionId={sessionId}
-            isStreaming={isStreaming}
-            isCompacting={compacting}
-            loadState="loaded"
-            hasMoreHistory={Boolean(branch?.hasMore)}
-            onLoadMore={handleLoadMore}
-            bottomPadding={inputBoxHeight}
-            onVisibleMessageIdsChange={handleVisibleIdsChange}
-            onAtBottomChange={setIsAtBottom}
-            onFork={handleFork}
-            onUndo={canUndo ? handleUndo : undefined}
-            canUndo={canUndo}
-          />
+          <div className="h-full flex flex-col">
+            {branch?.client?.historyWindowed && (
+              <div className="shrink-0 flex flex-wrap items-center justify-between gap-2 border-b border-border-200 px-4 py-2 text-[length:var(--fs-xs)] text-text-400">
+                <span>{t('chat:chatArea.historyWindow')}</span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void handleReturnToLatest().catch(error => uiErrorHandler('load latest history', error))
+                  }
+                  title={t('chat:chatArea.returnToLatest')}
+                  className="inline-flex items-center gap-1 text-text-200 focus-visible:outline focus-visible:outline-2"
+                >
+                  <ArrowDown size={14} aria-hidden="true" />
+                  {t('chat:chatArea.returnToLatest')}
+                </button>
+              </div>
+            )}
+            <div className="min-h-0 flex-1">
+              <ChatArea
+                key={chatAreaMountKey}
+                ref={chatAreaRef}
+                items={items}
+                sessionId={sessionId}
+                isStreaming={isStreaming}
+                isCompacting={compacting}
+                loadState="loaded"
+                hasMoreHistory={Boolean(branch?.hasMore)}
+                onLoadMore={handleLoadMore}
+                bottomPadding={inputBoxHeight}
+                onVisibleMessageIdsChange={handleVisibleIdsChange}
+                onAtBottomChange={setIsAtBottom}
+                onFork={handleFork}
+                onUndo={canUndo ? handleUndo : undefined}
+                canUndo={canUndo}
+              />
+            </div>
+          </div>
         )}
       </div>
 
@@ -1737,11 +1842,7 @@ export function PiChatPane({
         onScrollToMessageId={handleOutlineScrollToMessage}
       />
 
-      <ExtensionUiDialogHost
-        sessionId={sessionId}
-        collapsed={dialogCollapsed}
-        onCollapsedChange={setDialogCollapsed}
-      />
+      <ExtensionUiDialogHost sessionId={sessionId} collapsed={dialogCollapsed} onCollapsedChange={setDialogCollapsed} />
 
       <ProjectTrustPrompt cwd={currentDirectory} />
 
@@ -1761,8 +1862,18 @@ export function PiChatPane({
             rootPath={inputRootPath}
             onSend={handleSend}
             onCommand={handleCommand}
-            onCycleModel={direction => sessionId && void cyclePiModel(sessionId, direction).then(() => refreshPiSessionState(sessionId)).catch(() => undefined)}
-            onCycleThinkingLevel={() => sessionId && void cyclePiThinkingLevel(sessionId).then(() => refreshPiSessionState(sessionId)).catch(() => undefined)}
+            onCycleModel={direction =>
+              sessionId &&
+              void cyclePiModel(sessionId, direction)
+                .then(() => refreshPiSessionState(sessionId))
+                .catch(() => undefined)
+            }
+            onCycleThinkingLevel={() =>
+              sessionId &&
+              void cyclePiThinkingLevel(sessionId)
+                .then(() => refreshPiSessionState(sessionId))
+                .catch(() => undefined)
+            }
             onOpenModelSelector={() => modelSelectorRef.current?.openMenu()}
             onTextChange={handleTextChange}
             onAbort={handleAbort}

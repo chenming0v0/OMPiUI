@@ -145,7 +145,7 @@ describe('serverStore health check', () => {
       'ompiui-servers',
       JSON.stringify([{ id: 'local', name: 'Local', url: '/api', isDefault: true }]),
     )
-    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: 1 }))
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: 2 }))
     const { serverStore } = await import('./serverStore')
 
     await serverStore.checkHealth('local')
@@ -154,7 +154,7 @@ describe('serverStore health check', () => {
   })
 
   it('checks the local default server same-origin through the dev proxy', async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: 1 }))
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: 2 }))
     const { serverStore } = await import('./serverStore')
 
     await serverStore.checkHealth('local')
@@ -165,9 +165,11 @@ describe('serverStore health check', () => {
   it('checks an edited default local server directly at its saved address', async () => {
     localStorage.setItem(
       'ompiui-servers',
-      JSON.stringify([{ id: 'local', name: 'LAN', url: 'http://192.168.1.5:8787', token: 'lan-token', isDefault: true }]),
+      JSON.stringify([
+        { id: 'local', name: 'LAN', url: 'http://192.168.1.5:8787', token: 'lan-token', isDefault: true },
+      ]),
     )
-    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: 1 }))
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: 2 }))
     const { serverStore } = await import('./serverStore')
 
     await serverStore.checkHealth('local')
@@ -178,7 +180,9 @@ describe('serverStore health check', () => {
   })
 
   it('marks a valid OMPiUI health response as online', async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: 1, piSdkVersion: '0.81.1' }))
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: 2, piSdkVersion: '0.81.1' }),
+    )
     const { serverStore } = await import('./serverStore')
 
     const health = await serverStore.checkHealth('local')
@@ -225,7 +229,9 @@ describe('serverStore health check', () => {
     const staleResponse = createDeferred<Response>()
     vi.mocked(fetch)
       .mockImplementationOnce(() => staleResponse.promise)
-      .mockResolvedValueOnce(jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: 1, piSdkVersion: '0.81.1' }))
+      .mockResolvedValueOnce(
+        jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: 2, piSdkVersion: '0.81.1' }),
+      )
 
     const { serverStore } = await import('./serverStore')
 
@@ -269,11 +275,13 @@ describe('serverStore default server editing', () => {
     serverStore.setLocalServerRuntimeUrl('http://127.0.0.1:58231')
     const generation = serverStore.getActiveServerGeneration()
 
-    expect(serverStore.updateServer('local', {
-      name: 'Edited local',
-      url: 'https://saved.test:9443/base/',
-      token: 'saved-token',
-    })).toBe(true)
+    expect(
+      serverStore.updateServer('local', {
+        name: 'Edited local',
+        url: 'https://saved.test:9443/base/',
+        token: 'saved-token',
+      }),
+    ).toBe(true)
     expect(serverStore.getActiveServerGeneration()).toBe(generation + 1)
     expect(serverStore.getLocalServerUrl()).toBe('https://saved.test:9443/base')
     expect(client.getApiBase()).toBe('https://saved.test:9443/base')
@@ -283,7 +291,11 @@ describe('serverStore default server editing', () => {
     const { serverStore: reloadedStore } = await import('./serverStore')
     const reloadedClient = await import('../omp/httpClient')
     expect(reloadedStore.getActiveServer()).toMatchObject({
-      id: 'local', name: 'Edited local', url: 'https://saved.test:9443/base', token: 'saved-token', isDefault: true,
+      id: 'local',
+      name: 'Edited local',
+      url: 'https://saved.test:9443/base',
+      token: 'saved-token',
+      isDefault: true,
     })
     expect(reloadedClient.getApiBase()).toBe('https://saved.test:9443/base')
     await reloadedClient.piFetch(`${reloadedClient.getApiBase()}/api/v1/host/health`)

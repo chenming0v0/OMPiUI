@@ -14,9 +14,10 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
-use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
-use tokio_tungstenite::connect_async;
+use tokio::sync::mpsc::{channel, Sender};
+use tokio_tungstenite::connect_async_with_config;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 
 /// 复合键：(window label, bridge id)。同一窗口内 id 唯一；不同窗口可复用 id。
@@ -29,7 +30,7 @@ struct BridgeKey {
 #[derive(Default)]
 pub struct BridgeState {
     next_id: AtomicU32,
-    senders: Mutex<HashMap<BridgeKey, UnboundedSender<Message>>>,
+    senders: Mutex<HashMap<BridgeKey, Sender<Message>>>,
 }
 
 impl BridgeState {
@@ -38,14 +39,14 @@ impl BridgeState {
         self.next_id.fetch_add(1, Ordering::SeqCst).wrapping_add(1)
     }
 
-    fn insert(&self, key: BridgeKey, sender: UnboundedSender<Message>) {
+    fn insert(&self, key: BridgeKey, sender: Sender<Message>) {
         self.senders
             .lock()
             .expect("bridge state poisoned")
             .insert(key, sender);
     }
 
-    fn sender(&self, key: &BridgeKey) -> Option<UnboundedSender<Message>> {
+    fn sender(&self, key: &BridgeKey) -> Option<Sender<Message>> {
         self.senders
             .lock()
             .expect("bridge state poisoned")
@@ -53,7 +54,7 @@ impl BridgeState {
             .cloned()
     }
 
-    fn remove(&self, key: &BridgeKey) -> Option<UnboundedSender<Message>> {
+    fn remove(&self, key: &BridgeKey) -> Option<Sender<Message>> {
         self.senders
             .lock()
             .expect("bridge state poisoned")
@@ -74,7 +75,7 @@ impl BridgeState {
                 .collect::<Vec<_>>()
         };
         for sender in removed {
-            let _ = sender.send(Message::Close(None));
+            let _ = sender.try_send(Message::Close(None));
         }
     }
 }
@@ -92,10 +93,21 @@ pub async fn ws_bridge_connect(
     url: String,
     on_event: Channel<Value>,
 ) -> Result<u32, String> {
-    let (socket, _) = tokio::time::timeout(WS_CONNECT_TIMEOUT, connect_async(&url))
-        .await
-        .map_err(|_| format!("WebSocket connect timed out after {}s", WS_CONNECT_TIMEOUT.as_secs()))?
-        .map_err(|error| format!("WebSocket connect failed: {error}"))?;
+    let mut config = WebSocketConfig::default();
+    config.max_message_size = Some(4 * 1024 * 1024);
+    config.max_frame_size = Some(4 * 1024 * 1024);
+    let (socket, _) = tokio::time::timeout(
+        WS_CONNECT_TIMEOUT,
+        connect_async_with_config(&url, Some(config), false),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "WebSocket connect timed out after {}s",
+            WS_CONNECT_TIMEOUT.as_secs()
+        )
+    })?
+    .map_err(|error| format!("WebSocket connect failed: {error}"))?;
     let (mut writer, mut reader) = socket.split();
 
     let id = state.next_id();
@@ -103,14 +115,17 @@ pub async fn ws_bridge_connect(
         window_label: window.label().to_string(),
         bridge_id: id,
     };
-    let (tx, mut rx) = unbounded_channel::<Message>();
+    let (tx, mut rx) = channel::<Message>(64);
     state.insert(key.clone(), tx);
 
     // 写循环：从 channel 取消息发往远端；Close 帧发出后退出。
     tauri::async_runtime::spawn(async move {
         while let Some(message) = rx.recv().await {
             let is_close = matches!(message, Message::Close(_));
-            if writer.send(message).await.is_err() {
+            if !matches!(
+                tokio::time::timeout(Duration::from_secs(15), writer.send(message)).await,
+                Ok(Ok(()))
+            ) {
                 break;
             }
             if is_close {
@@ -162,11 +177,9 @@ pub async fn ws_bridge_connect(
                 }
                 Ok(Message::Ping(payload)) => {
                     // split 之后 tungstenite 不会自动回 pong，显式回
-                    let pong = reader_app
-                        .state::<BridgeState>()
-                        .sender(&key);
+                    let pong = reader_app.state::<BridgeState>().sender(&key);
                     if let Some(sender) = pong {
-                        let _ = sender.send(Message::Pong(payload));
+                        let _ = sender.try_send(Message::Pong(payload));
                     }
                 }
                 Ok(_) => {}
@@ -197,8 +210,11 @@ pub fn ws_bridge_send(
     let sender = state
         .sender(&key)
         .ok_or_else(|| "WebSocket is not connected".to_string())?;
+    if data.len() > 128 * 1024 {
+        return Err("WebSocket bridge message exceeds 128 KiB".to_string());
+    }
     sender
-        .send(Message::Text(data.into()))
+        .try_send(Message::Text(data.into()))
         .map_err(|error| error.to_string())
 }
 
@@ -220,7 +236,7 @@ pub fn ws_bridge_close(
             code: code.into(),
             reason: reason.unwrap_or_default().into(),
         });
-        let _ = sender.send(Message::Close(frame));
+        let _ = sender.try_send(Message::Close(frame));
     }
     Ok(())
 }
@@ -239,9 +255,9 @@ mod tests {
     #[test]
     fn window_destroy_cleans_only_that_windows_bridges() {
         let state = BridgeState::default();
-        let (tx_a1, _rx_a1) = unbounded_channel::<Message>();
-        let (tx_a2, _rx_a2) = unbounded_channel::<Message>();
-        let (tx_b1, _rx_b1) = unbounded_channel::<Message>();
+        let (tx_a1, _rx_a1) = channel::<Message>(64);
+        let (tx_a2, _rx_a2) = channel::<Message>(64);
+        let (tx_b1, _rx_b1) = channel::<Message>(64);
         state.insert(key("main", 1), tx_a1);
         state.insert(key("main", 2), tx_a2);
         state.insert(key("win-1", 1), tx_b1);
@@ -257,8 +273,8 @@ mod tests {
     #[test]
     fn same_id_in_different_windows_is_isolated() {
         let state = BridgeState::default();
-        let (tx_a, _rx_a) = unbounded_channel::<Message>();
-        let (tx_b, _rx_b) = unbounded_channel::<Message>();
+        let (tx_a, _rx_a) = channel::<Message>(64);
+        let (tx_b, _rx_b) = channel::<Message>(64);
         state.insert(key("main", 7), tx_a);
         state.insert(key("win-1", 7), tx_b);
 

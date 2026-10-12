@@ -16,6 +16,7 @@ interface AttachmentItemProps {
   size?: 'sm' | 'md'
   expandable?: boolean
   className?: string
+  defaultExpanded?: boolean
 }
 
 function AttachmentItemComponent({
@@ -24,9 +25,10 @@ function AttachmentItemComponent({
   size = 'md',
   expandable = false,
   className,
+  defaultExpanded = false,
 }: AttachmentItemProps) {
   const { t } = useTranslation(['commands', 'common'])
-  const [isExpanded, setIsExpanded] = useState(false)
+  const [isExpanded, setIsExpanded] = useState(defaultExpanded)
   const [imageError, setImageError] = useState(false)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const shouldRenderBody = useDelayedRender(isExpanded)
@@ -35,9 +37,7 @@ function AttachmentItemComponent({
     attachment.requiresAuth,
     shouldRenderBody || isModalOpen,
   )
-  const renderedAttachment = attachment.requiresAuth
-    ? { ...attachment, url: resolvedUrl }
-    : attachment
+  const renderedAttachment = attachment.requiresAuth ? { ...attachment, url: resolvedUrl } : attachment
 
   const { Icon, colorClass } = getAttachmentIcon(attachment)
   const canExpand = expandable && hasExpandableContent(attachment)
@@ -137,7 +137,11 @@ function AttachmentItemComponent({
       )}
 
       {/* 附件详情弹窗 */}
-      <AttachmentDetailModal attachment={renderedAttachment} isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} />
+      <AttachmentDetailModal
+        attachment={renderedAttachment}
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+      />
     </div>
   )
 }
@@ -346,7 +350,8 @@ function ActionBar({ attachment, hasContent, hasDownloadable, onOpenDetail, show
 
   if (!hasContent && !hasDownloadable) return null
 
-  const btnBase = 'inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[length:var(--fs-xxs)] transition-colors duration-150'
+  const btnBase =
+    'inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[length:var(--fs-xxs)] transition-colors duration-150'
 
   return (
     <div

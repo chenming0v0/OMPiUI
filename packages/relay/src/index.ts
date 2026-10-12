@@ -4,13 +4,19 @@
  * CLI（cli.ts）与配置加载（config.ts）只在直接运行 omp-relay 时使用。
  */
 
-export * from "./protocol.ts"
-export { BodySink, type BodySource } from "./sink.ts"
-export { startRelay, type RunningRelay, type StartRelayOptions } from "./relay.ts"
+export * from "./protocol.ts";
+export { BodySink, type BodySource } from "./sink.ts";
+export { ResponseSink, RESPONSE_BUFFER_MAX } from "./response-sink.ts";
+export { DataRateLimit } from "./data-rate-limit.ts";
+export {
+  startRelay,
+  type RunningRelay,
+  type StartRelayOptions,
+} from "./relay.ts";
 export {
   isTrustedProxy,
   parseTrustedProxies,
   parseTrustedProxyEntry,
   resolveForwardedClient,
   type TrustedProxies,
-} from "./trusted-proxy.ts"
+} from "./trusted-proxy.ts";

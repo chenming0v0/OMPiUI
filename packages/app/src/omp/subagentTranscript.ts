@@ -2,7 +2,14 @@ import type { JsonObject, JsonValue } from '@ompiui/protocol'
 
 const BYTE_LIMIT = 8 * 1024 * 1024
 const MESSAGE_LIMIT = 2000
-type Transcript = { messages: JsonObject[]; pending: string; nextByte: number; bytes: number; truncated: boolean }
+type Transcript = {
+  messages: JsonObject[]
+  pending: string
+  nextByte: number
+  bytes: number
+  truncated: boolean
+  settingsRevision?: string
+}
 type Flight = { controller: AbortController; promise: Promise<JsonValue>; users: number }
 const cache = new Map<string, Transcript>()
 const flights = new Map<string, Flight>()
@@ -50,7 +57,14 @@ export function readSubagentTranscript(
       if (finish()) reject(signal?.reason)
     }
     signal?.addEventListener('abort', onAbort, { once: true })
-    current.promise.then(value => { if (finish()) resolve(value) }, error => { if (finish()) reject(error) })
+    current.promise.then(
+      value => {
+        if (finish()) resolve(value)
+      },
+      error => {
+        if (finish()) reject(error)
+      },
+    )
   })
 }
 
@@ -72,7 +86,23 @@ async function readPages(
     signal.throwIfAborted()
     const page = await fetchPage(state.nextByte, signal)
     signal.throwIfAborted()
-    if (!page || typeof page !== 'object' || Array.isArray(page) || typeof page.transcript !== 'string') return page
+    if (!page || typeof page !== 'object' || Array.isArray(page)) return page
+    const structured = Array.isArray(page.messages)
+    if (!structured && typeof page.transcript !== 'string') return page
+    if (structured && !Number.isSafeInteger(Number(page.nextByte))) return page
+    if (typeof page.settingsRevision === 'string') {
+      const changed = state.settingsRevision && state.settingsRevision !== page.settingsRevision
+      state.settingsRevision = page.settingsRevision
+      if (changed && state.nextByte) {
+        state.messages = []
+        state.pending = ''
+        state.nextByte = 0
+        state.bytes = 0
+        state.truncated = false
+        reset = true
+        continue
+      }
+    }
     if (page.reset) {
       state.messages = []
       state.pending = ''
@@ -81,9 +111,19 @@ async function readPages(
       state.nextByte = 0
       reset = true
     }
-    downloaded += encoder.encode(page.transcript).byteLength
+    const transcript = typeof page.transcript === 'string' ? page.transcript : ''
+    downloaded += encoder.encode(structured ? JSON.stringify(page.messages) : transcript).byteLength
     pages++
-    state.pending += page.transcript
+    if (structured) {
+      for (const message of page.messages as JsonValue[]) {
+        if (message && typeof message === 'object' && !Array.isArray(message)) {
+          state.messages.push(message)
+          state.bytes += encoder.encode(JSON.stringify(message)).byteLength
+        }
+      }
+      state.truncated ||= Boolean(page.previewTruncated)
+    }
+    state.pending += transcript
     if (encoder.encode(state.pending).byteLength > BYTE_LIMIT) {
       throw Object.assign(new Error('Subagent transcript line exceeds 8 MiB'), { code: 'FILE_TOO_LARGE' })
     }
@@ -94,16 +134,25 @@ async function readPages(
         JSON.parse(state.pending)
         lines.push(state.pending)
         state.pending = ''
-      } catch { /* 未写完的末行保留到下次续读。 */ }
+      } catch {
+        /* 未写完的末行保留到下次续读。 */
+      }
     }
     for (const line of lines) {
       try {
         const entry = JSON.parse(line) as JsonObject
-        if (entry.type === 'message' && entry.message && typeof entry.message === 'object' && !Array.isArray(entry.message)) {
+        if (
+          entry.type === 'message' &&
+          entry.message &&
+          typeof entry.message === 'object' &&
+          !Array.isArray(entry.message)
+        ) {
           state.messages.push(entry.message)
           state.bytes += encoder.encode(JSON.stringify(entry.message)).byteLength
         }
-      } catch { /* 跳过非消息及损坏的完整行。 */ }
+      } catch {
+        /* 跳过非消息及损坏的完整行。 */
+      }
     }
     while (state.messages.length > MESSAGE_LIMIT || state.bytes > BYTE_LIMIT) {
       state.bytes -= encoder.encode(JSON.stringify(state.messages.shift())).byteLength
@@ -121,7 +170,11 @@ async function readPages(
   cache.set(key, state)
   while (cache.size > 4) cache.delete(cache.keys().next().value!)
   return {
-    messages: state.messages, fromByte: fromByte ?? 0, nextByte: state.nextByte,
-    reset, hasMore, truncated: hasMore || state.truncated,
+    messages: state.messages,
+    fromByte: fromByte ?? 0,
+    nextByte: state.nextByte,
+    reset,
+    hasMore,
+    truncated: hasMore || state.truncated,
   }
 }

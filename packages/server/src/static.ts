@@ -1,6 +1,8 @@
-import { createReadStream, existsSync, realpathSync, statSync } from "node:fs"
-import { extname, join, normalize, resolve, sep } from "node:path"
-import type { IncomingMessage, ServerResponse } from "node:http"
+import { createReadStream, existsSync, realpathSync, statSync } from "node:fs";
+import { extname, join, normalize, resolve, sep } from "node:path";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { createGzip } from "node:zlib";
+import { pipeline } from "node:stream";
 
 /**
  * Static hosting for the web client — lets a browser (desktop or phone) hit
@@ -26,80 +28,168 @@ const MIME_TYPES: Record<string, string> = {
   ".ttf": "font/ttf",
   ".map": "application/json",
   ".webmanifest": "application/manifest+json",
-}
+};
 
 function contentType(path: string): string {
-  return MIME_TYPES[extname(path).toLowerCase()] ?? "application/octet-stream"
+  return MIME_TYPES[extname(path).toLowerCase()] ?? "application/octet-stream";
 }
 
 /** Resolve a URL path inside root; returns undefined for traversal attempts. */
-export function resolveStaticPath(root: string, urlPath: string): string | undefined {
-  let decoded: string
+export function resolveStaticPath(
+  root: string,
+  urlPath: string,
+): string | undefined {
+  let decoded: string;
   try {
-    decoded = decodeURIComponent(urlPath)
+    decoded = decodeURIComponent(urlPath);
   } catch {
-    return undefined
+    return undefined;
   }
-  if (decoded.includes("\0")) return undefined
-  const absolute = resolve(root, `.${normalize(decoded)}`)
-  const rootWithSep = resolve(root) + sep
-  if (absolute !== resolve(root) && !absolute.startsWith(rootWithSep)) return undefined
-  return absolute
+  if (decoded.includes("\0")) return undefined;
+  const absolute = resolve(root, `.${normalize(decoded)}`);
+  const rootWithSep = resolve(root) + sep;
+  if (absolute !== resolve(root) && !absolute.startsWith(rootWithSep))
+    return undefined;
+  return absolute;
 }
 
 export interface StaticServer {
   /** True when the request was handled (file or SPA fallback served). */
-  serve(req: IncomingMessage, res: ServerResponse, urlPath: string): boolean
+  serve(req: IncomingMessage, res: ServerResponse, urlPath: string): boolean;
 }
 
 export function createStaticServer(root: string): StaticServer | undefined {
-  const indexHtml = join(root, "index.html")
-  if (!existsSync(indexHtml)) return undefined
-  const canonicalRoot = realpathSync(root)
-  const canonicalIndex = realpathSync(indexHtml)
+  const indexHtml = join(root, "index.html");
+  if (!existsSync(indexHtml)) return undefined;
+  const canonicalRoot = realpathSync(root);
+  const canonicalIndex = realpathSync(indexHtml);
 
   const isInsideRoot = (candidate: string): boolean => {
-    const rootWithSep = canonicalRoot.endsWith(sep) ? canonicalRoot : canonicalRoot + sep
-    return candidate === canonicalRoot || candidate.startsWith(rootWithSep)
-  }
+    const rootWithSep = canonicalRoot.endsWith(sep)
+      ? canonicalRoot
+      : canonicalRoot + sep;
+    return candidate === canonicalRoot || candidate.startsWith(rootWithSep);
+  };
 
-  if (!isInsideRoot(canonicalIndex)) return undefined
+  if (!isInsideRoot(canonicalIndex)) return undefined;
 
-  const sendFile = (res: ServerResponse, path: string, headOnly: boolean, cache: boolean): boolean => {
-    res.writeHead(200, {
+  const sendFile = (
+    req: IncomingMessage,
+    res: ServerResponse,
+    path: string,
+    headOnly: boolean,
+    cache: boolean,
+  ): boolean => {
+    const stat = statSync(path);
+    const compress =
+      !req.headers.range &&
+      /\.(html|[cm]?js|css|json|svg|map|webmanifest)$/.test(path) &&
+      stat.size >= 1024 &&
+      String(req.headers["accept-encoding"] ?? "")
+        .split(",")
+        .some(
+          (value) =>
+            /^gzip(?:\s*;|$)/.test(value.trim()) &&
+            !/q=0(?:\.0*)?(?:\s|$)/.test(value),
+        );
+    const etag = `W/"${stat.size.toString(16)}-${stat.mtimeMs.toString(16)}${compress ? "-gzip" : ""}"`;
+    const headers: Record<string, string | number> = {
       "content-type": contentType(path),
-      "content-length": statSync(path).size,
-      // 指纹资产随便缓存；index.html 必须每次重取，否则发新版用户看不到
-      "cache-control": cache ? "public, max-age=31536000, immutable" : "no-cache",
-    })
-    if (headOnly) {
-      res.end()
-      return true
+      "cache-control": cache
+        ? "public, max-age=31536000, immutable"
+        : "no-cache",
+      etag,
+      "last-modified": stat.mtime.toUTCString(),
+      vary: "Accept-Encoding",
+      "accept-ranges": "bytes",
+    };
+    if (
+      String(req.headers["if-none-match"] ?? "")
+        .split(",")
+        .map((value) => value.trim())
+        .some((value) => value === "*" || value === etag) ||
+      (!req.headers["if-none-match"] &&
+        req.headers["if-modified-since"] &&
+        stat.mtimeMs < Date.parse(req.headers["if-modified-since"]) + 1000)
+    ) {
+      res.writeHead(304, headers);
+      res.end();
+      return true;
     }
-    createReadStream(path).pipe(res)
-    return true
-  }
+    let start = 0;
+    let end = stat.size - 1;
+    let status = 200;
+    if (
+      req.headers.range &&
+      (!req.headers["if-range"] ||
+        req.headers["if-range"] === headers["last-modified"])
+    ) {
+      const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range);
+      if (!range || (!range[1] && !range[2])) {
+        res.writeHead(416, {
+          ...headers,
+          "content-range": `bytes */${stat.size}`,
+        });
+        res.end();
+        return true;
+      }
+      start = range[1]
+        ? Number(range[1])
+        : Math.max(0, stat.size - Number(range[2]));
+      end = range[1] && range[2] ? Math.min(end, Number(range[2])) : end;
+      if (start > end || start >= stat.size) {
+        res.writeHead(416, {
+          ...headers,
+          "content-range": `bytes */${stat.size}`,
+        });
+        res.end();
+        return true;
+      }
+      status = 206;
+      headers["content-range"] = `bytes ${start}-${end}/${stat.size}`;
+    }
+    if (compress) headers["content-encoding"] = "gzip";
+    else headers["content-length"] = Math.max(0, end - start + 1);
+    res.writeHead(status, headers);
+    if (headOnly) {
+      res.end();
+      return true;
+    }
+    const source = createReadStream(
+      path,
+      stat.size ? { start, end } : undefined,
+    );
+    const failed = (error: NodeJS.ErrnoException | null) => {
+      if (error) res.destroy(error);
+    };
+    if (compress) pipeline(source, createGzip(), res, failed);
+    else pipeline(source, res, failed);
+    return true;
+  };
 
   return {
     serve(req, res, urlPath) {
-      const headOnly = req.method === "HEAD"
-      const resolved = resolveStaticPath(root, urlPath)
+      const headOnly = req.method === "HEAD";
+      const resolved = resolveStaticPath(root, urlPath);
       if (resolved && existsSync(resolved) && statSync(resolved).isFile()) {
-        let physicalPath: string
+        let physicalPath: string;
         try {
-          physicalPath = realpathSync(resolved)
+          physicalPath = realpathSync(resolved);
         } catch {
-          return false
+          return false;
         }
-        if (!isInsideRoot(physicalPath)) return false
-        const fingerprinted = /[.-][0-9a-zA-Z_-]{8,}\.(js|css|woff2?|png|jpg|svg|webp)$/.test(physicalPath)
-        return sendFile(res, physicalPath, headOnly, fingerprinted)
+        if (!isInsideRoot(physicalPath)) return false;
+        const fingerprinted =
+          /[.-][0-9a-zA-Z_-]{8,}\.(js|css|woff2?|png|jpg|svg|webp)$/.test(
+            physicalPath,
+          );
+        return sendFile(req, res, physicalPath, headOnly, fingerprinted);
       }
       // SPA fallback：客户端路由的路径都回 index.html
       if (!extname(urlPath)) {
-        return sendFile(res, canonicalIndex, headOnly, false)
+        return sendFile(req, res, canonicalIndex, headOnly, false);
       }
-      return false
+      return false;
     },
-  }
+  };
 }
