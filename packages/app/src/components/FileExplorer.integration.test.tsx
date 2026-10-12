@@ -13,7 +13,10 @@ const { getFileContent, saveFile, searchFiles, searchText } = vi.hoisted(() => (
 // Keep the explorer hook, preview tabs, dirty registry and layout store real.
 vi.mock('../hooks', async () => ({ useFileExplorer: (await import('../hooks/useFileExplorer')).useFileExplorer }))
 vi.mock('../hooks/useAutoRefresh', () => ({ useAutoRefresh: vi.fn() }))
-vi.mock('../hooks/useServerStore', () => ({ useServerStore: () => ({ activeServer: null }) }))
+vi.mock('../hooks/useServerStore', async () => {
+  const { serverStore } = await import('../store/serverStore')
+  return { useServerStore: () => ({ activeServer: null, activeServerGeneration: serverStore.getActiveServerGeneration() }) }
+})
 vi.mock('../omp/eventStream', () => ({ piEventStream: { connectWorkspace: vi.fn(), disconnectWorkspace: vi.fn() } }))
 vi.mock('../omp/workspaces', () => ({ resolveWorkspacePath: async (directory: string) => directory }))
 vi.mock('../omp/files', () => ({

@@ -84,6 +84,12 @@ describe("previewEntriesFromLines", () => {
 describe("OmpCatalog disk branch refresh", () => {
   it("returns an empty incremental page when the session file is unchanged", async (t) => {
     const root = mkdtempSync(path.join(tmpdir(), "ompiui-catalog-refresh-"))
+    const previousDirectories = process.env.OMPIUI_OMP_SESSION_DIRS
+    process.env.OMPIUI_OMP_SESSION_DIRS = [previousDirectories, root].filter(Boolean).join(path.delimiter)
+    t.after(() => {
+      if (previousDirectories === undefined) delete process.env.OMPIUI_OMP_SESSION_DIRS
+      else process.env.OMPIUI_OMP_SESSION_DIRS = previousDirectories
+    })
     t.after(() => rmSync(root, { recursive: true, force: true }))
     const sessionFile = path.join(root, "session.jsonl")
     const lines = [

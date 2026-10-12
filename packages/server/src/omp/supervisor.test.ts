@@ -7,6 +7,8 @@ import { EventHub } from "../event-hub.ts"
 
 test("RuntimeSupervisor retains the lease until a cancelled background open is cleaned up", async () => {
   let leases = 0
+  let settled!: () => void
+  const leaseSettled = new Promise<void>(resolve => { settled = resolve })
   const supervisor = new RuntimeSupervisor({
     workerEntry: new URL("./worker-client-fixture.mjs", import.meta.url),
     worker: { env: { OMPIUI_FIXTURE_MODE: "slow-open" }, execArgv: ["--import", "tsx"] },
@@ -14,7 +16,7 @@ test("RuntimeSupervisor retains the lease until a cancelled background open is c
       acquire: async () => {
         leases += 1
         return {
-          refresh: async () => {}, release: () => { leases -= 1 },
+          refresh: async () => {}, release: () => { leases -= 1; settled() },
         } as unknown as SessionLease
       },
       dispose: () => {},
@@ -28,6 +30,8 @@ test("RuntimeSupervisor retains the lease until a cancelled background open is c
     controller.abort()
     assert.equal(leases, 1)
     await assert.rejects(opening, { code: "REQUEST_ABORTED" })
+    assert.equal(leases, 1)
+    await leaseSettled
     assert.equal(leases, 0)
     assert.deepEqual(await supervisor.catalogCommand("fixture.sessions"), { active: 0 })
   } finally {
