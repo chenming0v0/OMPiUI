@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { isJsonObject, type JsonObject } from "@ompiui/protocol"
-import { configuredSessionDirectory, nativeOmpSessionsRoot, registeredSessionDirectories } from "./omp-directories.js"
+import { configuredSessionDirectory, legacyOmpSessionsRoot, nativeOmpSessionsRoot, registeredSessionDirectories } from "./omp-directories.js"
 
 /** 旧版 OMPiUI 会话目录；新会话使用 OMP 原生目录。 */
 export function managedSessionsRoot(): string {
@@ -11,10 +11,10 @@ export function managedSessionsRoot(): string {
   return path.join(dataDir ? path.resolve(dataDir) : path.join(homedir(), ".ompiui"), "sessions")
 }
 
-/** 官方终端共享的会话根集合:配置的 PI_CODING_AGENT_SESSION_DIR、OMPIUI_OMP_SESSION_DIRS 登记目录与原生目录,去重。 */
+/** 发现与路径校验共用原生、显式配置和旧别名历史目录；历史目录不决定默认写入位置。 */
 export function ompSessionRoots(): string[] {
   const configured = configuredSessionDirectory()
-  const roots = [configured, ...registeredSessionDirectories(), nativeOmpSessionsRoot()].filter((root): root is string => Boolean(root))
+  const roots = [configured, ...registeredSessionDirectories(), nativeOmpSessionsRoot(), legacyOmpSessionsRoot()].filter((root): root is string => Boolean(root))
   return [...new Set(roots.map(root => path.resolve(root)))]
 }
 

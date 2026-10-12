@@ -7,7 +7,6 @@ import type { JsonObject, JsonValue } from "@ompiui/protocol"
 import { isJsonObject } from "@ompiui/protocol"
 import { runtimePolicyArgs } from "./runtime-policy.js"
 import { RpcLineReader } from "./rpc-line-reader.js"
-import { ompChildEnv } from "./omp-directories.js"
 
 /**
  * 可选的 OMP 兼容配置覆盖：`~/.ompiui/omp-compat.yml` 存在时以 `--config`
@@ -108,7 +107,7 @@ export class OmpRpcClient extends EventEmitter {
     const args = ["--mode", "rpc", ...ompCompatConfigArgs(), ...(options.args ?? []), ...(options.applyRuntimePolicy ? runtimePolicyArgs() : [])]
     this.proc = spawn(bin, args, {
       cwd: options.cwd,
-      env: { ...process.env, ...ompChildEnv(), ...options.env },
+      env: { ...process.env, ...options.env },
       stdio: ["pipe", "pipe", "pipe"],
       shell: process.platform === "win32" && !/\.exe$/i.test(bin),
       windowsHide: true,

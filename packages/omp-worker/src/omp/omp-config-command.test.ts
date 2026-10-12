@@ -25,7 +25,8 @@ function fixture(t: TestContext) {
   writeFileSync(script, `#!/usr/bin/env node
 import { readFileSync, writeFileSync } from "node:fs";
 import assert from "node:assert/strict";
-assert.equal(process.env.PI_CODING_AGENT_DIR, process.env.OMP_AGENT_DIR);
+assert.equal(process.env.PI_CODING_AGENT_DIR, ${JSON.stringify(path.join(root, "agent"))});
+assert.notEqual(process.env.PI_CODING_AGENT_DIR, process.env.OMP_AGENT_DIR);
 const [command, action, key, value] = process.argv.slice(2);
 assert.equal(command, "config");
 assert.equal(key, "modelRoles");
@@ -39,8 +40,8 @@ else process.stdout.write(JSON.stringify({value: JSON.parse(readFileSync(file, "
     `"%_prog%" "%dp0%${path.sep}..${path.sep}cli space.mjs" %*`,
   ].join("\r\n"))
   process.env.OMPI_TEST_ROLES_FILE = state
-  process.env.OMP_AGENT_DIR = path.join(root, "agent")
-  delete process.env.PI_CODING_AGENT_DIR
+  process.env.OMP_AGENT_DIR = path.join(root, "must-not-use")
+  process.env.PI_CODING_AGENT_DIR = path.join(root, "agent")
   return { root, binDir, script, state, shim }
 }
 

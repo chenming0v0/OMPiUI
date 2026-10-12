@@ -6,9 +6,9 @@ import path from "node:path"
 import { after, before, describe, it } from "node:test"
 import { OmpCatalog } from "./omp-catalog.js"
 
-// ompAgentDir 每次调用读 OMP_AGENT_DIR：整个文件级 fixture 指向临时目录
+// ompAgentDir 每次调用读 PI_CODING_AGENT_DIR：整个文件级 fixture 指向临时目录
 const root = mkdtempSync(path.join(tmpdir(), "ompiui-child-titles-"))
-const previousAgentDir = process.env.OMP_AGENT_DIR
+const previousAgentDir = process.env.PI_CODING_AGENT_DIR
 const sessionsRoot = path.join(root, "sessions")
 const projectDir = path.join(sessionsRoot, "-C-proj")
 const parentFile = path.join(projectDir, "2026-01-01T00-00-00Z_parent.jsonl")
@@ -19,7 +19,7 @@ function writeSession(filePath: string, lines: unknown[]): void {
 }
 
 before(() => {
-  process.env.OMP_AGENT_DIR = root
+  process.env.PI_CODING_AGENT_DIR = root
   mkdirSync(childDir, { recursive: true })
   writeSession(parentFile, [
     { type: "title", v: 1, title: "Parent chat" },
@@ -65,8 +65,8 @@ before(() => {
 })
 
 after(() => {
-  if (previousAgentDir === undefined) delete process.env.OMP_AGENT_DIR
-  else process.env.OMP_AGENT_DIR = previousAgentDir
+  if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR
+  else process.env.PI_CODING_AGENT_DIR = previousAgentDir
   rmSync(root, { recursive: true, force: true })
 })
 

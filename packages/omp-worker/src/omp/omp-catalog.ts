@@ -13,7 +13,7 @@ import { detectOmpVersion } from "./omp-version.js"
 import { OMP_SDK_VERSION } from "./constants.js"
 import { buildSessionTreeFromEntries } from "../runtime/session-tree.js"
 import { assertOmpSessionFile, isManagedSessionFile, isOmpSessionFile, managedSessionsRoot, ompSessionRootFor, ompSessionRoots } from "./managed-sessions.js"
-import { ompAgentDirectory, ompChildEnv } from "./omp-directories.js"
+import { ompAgentDirectory } from "./omp-directories.js"
 import { sessionConfigFromBranch } from "./session-config.js"
 import { BranchPageReader } from "../runtime/branch-pages.js"
 import { resolveOmpConfigCommand, type OmpConfigCommand } from "./omp-config-command.js"
@@ -688,7 +688,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     return await new Promise<string>((resolve, reject) => {
       const child = spawn(command, [...args, ...cliArgs], {
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, ...ompChildEnv() },
+        env: { ...process.env },
         shell: false,
         windowsHide: true,
       })

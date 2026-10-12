@@ -7,18 +7,28 @@ import { assertOmpSessionFile, backupOmpSession, isOmpSessionFile, managedSessio
 
 test("native and legacy sessions are allowed and takeover backups never change the original bytes", t => {
   const root = mkdtempSync(path.join(tmpdir(), "ompiui-shared-sessions-"))
-  const previous = { agent: process.env.OMP_AGENT_DIR, data: process.env.OMPIUI_DATA_DIR }
-  process.env.OMP_AGENT_DIR = path.join(root, "agent")
+  const keys = ["PI_CODING_AGENT_DIR", "OMP_AGENT_DIR", "OMPIUI_DATA_DIR", "PI_CODING_AGENT_SESSION_DIR", "OMP_PROFILE", "PI_PROFILE"]
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]))
+  process.env.PI_CODING_AGENT_DIR = path.join(root, "agent")
+  const historicalRoot = path.join(root, "historical-agent", "sessions")
+  process.env.OMP_AGENT_DIR = path.dirname(historicalRoot)
   process.env.OMPIUI_DATA_DIR = path.join(root, "webui")
+  delete process.env.PI_CODING_AGENT_SESSION_DIR
+  delete process.env.OMP_PROFILE
+  delete process.env.PI_PROFILE
   t.after(() => {
-    if (previous.agent === undefined) delete process.env.OMP_AGENT_DIR
-    else process.env.OMP_AGENT_DIR = previous.agent
-    if (previous.data === undefined) delete process.env.OMPIUI_DATA_DIR
-    else process.env.OMPIUI_DATA_DIR = previous.data
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key]
+      else process.env[key] = previous[key]
+    }
     rmSync(root, { recursive: true, force: true })
   })
   const contents = Buffer.from('{"type":"session","id":"shared","cwd":"C:/project"}\r\n{"type":"message","id":"last-tui-reply"}\r\n')
-  for (const base of [ompSessionsRoot(), managedSessionsRoot()]) {
+  const nativeRoot = ompSessionsRoot()
+  delete process.env.PI_CODING_AGENT_DIR
+  assert.notEqual(ompSessionsRoot(), historicalRoot)
+  process.env.PI_CODING_AGENT_DIR = path.join(root, "agent")
+  for (const base of [nativeRoot, managedSessionsRoot(), historicalRoot]) {
     const directory = path.join(base, "project")
     mkdirSync(directory, { recursive: true })
     const file = path.join(directory, "session.jsonl")
@@ -30,7 +40,7 @@ test("native and legacy sessions are allowed and takeover backups never change t
     assert.deepEqual(readFileSync(file), contents)
   }
   const backups = path.join(root, "webui", "session-backups")
-  assert.equal(readdirSync(backups).length, 2)
+  assert.equal(readdirSync(backups).length, 3)
   for (const directory of readdirSync(backups)) {
     const files = readdirSync(path.join(backups, directory))
     assert.equal(files.length, 1)

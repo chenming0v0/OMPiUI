@@ -15,11 +15,11 @@ const childFile = path.join(childDir, "ReadmeScout.jsonl")
 const managedDataDir = path.join(root, "webui")
 const managedParentFile = path.join(managedDataDir, "sessions", "project", "parent.jsonl")
 const managedChildFile = path.join(managedDataDir, "sessions", "project", "parent", "Worker.jsonl")
-const previousAgentDir = process.env.OMP_AGENT_DIR
+const previousAgentDir = process.env.PI_CODING_AGENT_DIR
 const previousDataDir = process.env.OMPIUI_DATA_DIR
 
 before(() => {
-  process.env.OMP_AGENT_DIR = root
+  process.env.PI_CODING_AGENT_DIR = root
   process.env.OMPIUI_DATA_DIR = managedDataDir
   mkdirSync(childDir, { recursive: true })
   writeFileSync(parentFile, [
@@ -53,8 +53,8 @@ before(() => {
 })
 
 after(() => {
-  if (previousAgentDir === undefined) delete process.env.OMP_AGENT_DIR
-  else process.env.OMP_AGENT_DIR = previousAgentDir
+  if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR
+  else process.env.PI_CODING_AGENT_DIR = previousAgentDir
   if (previousDataDir === undefined) delete process.env.OMPIUI_DATA_DIR
   else process.env.OMPIUI_DATA_DIR = previousDataDir
   rmSync(root, { recursive: true, force: true })

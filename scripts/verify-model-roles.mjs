@@ -31,8 +31,8 @@ try {
   const bins = process.argv.slice(2)
   if (!bins.length) bins.push(process.env.OMPI_OMP_BIN || "omp")
   for (const [index, bin] of bins.entries()) {
-    process.env.OMP_AGENT_DIR = path.join(root, `agent-${index}`)
-    process.env.PI_CODING_AGENT_DIR = path.join(root, "must-not-use")
+    process.env.OMP_AGENT_DIR = path.join(root, "must-not-use")
+    process.env.PI_CODING_AGENT_DIR = path.join(root, `agent-${index}`)
     process.env.OMPI_OMP_BIN = bin
     const catalog = new OmpCatalog()
     try {
