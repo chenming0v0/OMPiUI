@@ -7,6 +7,7 @@ import { FaultMonitor, type ConnectionMemory } from './monitor'
 const MEMORY_KEY = 'ompiui-fault-connections'
 let monitor: FaultMonitor | undefined
 let stopMonitoring: (() => void) | undefined
+let resumeProbe: (() => void) | undefined
 
 function serverId(): string { return serverStore.getActiveServer()?.id ?? 'default' }
 function loadMemory(id: string): ConnectionMemory {
@@ -73,7 +74,7 @@ export function recordClientDiagnostic(event: string, fields: Record<string, unk
     monitor?.sessionState(fields.sessionId, { isStreaming: fields.status !== 'idle' })
   }
 }
-export function faultSocketOpened(): void { monitor?.socketOpened(); faultAuditStore.record('socket_opened') }
+export function faultSocketOpened(): void { monitor?.socketOpened(); faultAuditStore.record('socket_opened'); resumeProbe?.() }
 export function faultSocketClosed(code: number): void { monitor?.socketClosed(code); faultAuditStore.record('socket_closed', { code }) }
 export function faultSocketUnused(): void { monitor?.socketUnused() }
 
@@ -81,7 +82,28 @@ export function startFaultAudit(): () => void {
   if (stopMonitoring) return () => {}
   let busy = false
   let stopped = false
+  let failures = 0
+  let nextProbeAt = 0
+  let leader = !navigator.locks
+  let leaseController: AbortController | undefined
+  let releaseLease: (() => void) | undefined
+  const channel = typeof BroadcastChannel === 'undefined' ? undefined : new BroadcastChannel('ompiui-health')
+  const key = () => `${getApiBase()}:${serverId()}`
+  const recoverReport = () => {
+    const saved = faultAuditStore.getSnapshot().saved
+    if (saved?.serverId === serverId() && saved.report.unavailable.includes('server_unreachable') && saved.upload.links.length === 0) {
+      void collectFaultReport()
+    }
+  }
+  if (channel) channel.onmessage = event => {
+    const data = event.data as { key?: string; status?: FaultStatus; failed?: string }
+    if (stopped || data.key !== key()) return
+    if (data.status) { monitor?.healthy(data.status); recoverReport() }
+    else if (data.failed) monitor?.failed(data.failed)
+  }
   const reset = (restore = false) => {
+    failures = 0
+    nextProbeAt = 0
     const id = serverId()
     monitor = new FaultMonitor(id, detect, memory => saveMemory(id, memory), restore ? loadMemory(id) : { busySessions: [] })
   }
@@ -90,7 +112,7 @@ export function startFaultAudit(): () => void {
     if (busy || stopped) return
     const eligible = navigator.onLine && document.visibilityState !== 'hidden'
     monitor?.tick(eligible)
-    if (!eligible) return
+    if (!eligible || !leader || Date.now() < nextProbeAt) return
     busy = true
     const current = monitor
     try {
@@ -103,9 +125,13 @@ export function startFaultAudit(): () => void {
         if (!health.ok) throw new Error(`HTTP_${health.status}`)
         const body: unknown = await health.json()
         if (!isJsonObject(body) || body.service !== 'ompiui-server') throw new Error('STATUS_INVALID')
-        if (monitor === current && !stopped) current?.healthy({
-          runId: `legacy:${String(body.processId ?? 'unknown')}`, version: 'legacy', faults: [],
-        })
+        if (monitor === current && !stopped) {
+          const status = { runId: `legacy:${String(body.processId ?? 'unknown')}`, version: 'legacy', faults: [] }
+          current?.healthy(status)
+          channel?.postMessage({ key: key(), status })
+          recoverReport()
+        }
+        failures = 0
         return
       }
       if (!response.ok) throw new Error(`HTTP_${response.status}`)
@@ -113,29 +139,59 @@ export function startFaultAudit(): () => void {
       if (!isJsonObject(raw) || typeof raw.runId !== 'string' || !Array.isArray(raw.faults)) throw new Error('STATUS_INVALID')
       if (monitor !== current || stopped) return
       current?.healthy(raw as unknown as FaultStatus)
-      const saved = faultAuditStore.getSnapshot().saved
+      channel?.postMessage({ key: key(), status: raw })
+      failures = 0
       // 断线报告恢复后补齐日志；已有上传分片不改变内容，避免混接不同报告。
-      if (saved?.serverId === serverId() && saved.report.unavailable.includes('server_unreachable') && saved.upload.links.length === 0) {
-        void collectFaultReport()
-      }
+      recoverReport()
     } catch (error) {
       if (monitor !== current || stopped) return
       current?.failed(error instanceof Error && /^HTTP_/.test(error.message) ? error.message : 'CONNECTION_UNAVAILABLE')
+      channel?.postMessage({ key: key(), failed: error instanceof Error && /^HTTP_/.test(error.message) ? error.message : 'CONNECTION_UNAVAILABLE' })
+      failures++
       faultAuditStore.record('health_failed', { errorCode: error instanceof Error ? error.name : 'UNKNOWN' })
     } finally {
       busy = false
+      if (monitor === current) nextProbeAt = Date.now() + Math.min(30_000, 5000 * 2 ** Math.min(failures, 3)) * (0.8 + Math.random() * 0.2)
       if (monitor === current) current?.tick(navigator.onLine && document.visibilityState !== 'hidden')
     }
   }
+  const release = () => {
+    leaseController?.abort()
+    releaseLease?.()
+    releaseLease = undefined
+    leader = !navigator.locks
+  }
+  const elect = () => {
+    release()
+    if (!navigator.locks || document.visibilityState === 'hidden') return
+    const controller = new AbortController()
+    leaseController = controller
+    void navigator.locks.request(`ompiui-health:${key()}`, { signal: controller.signal }, async () => {
+      if (stopped || controller.signal.aborted) return
+      leader = true
+      nextProbeAt = 0
+      void probe()
+      await new Promise<void>(resolve => { releaseLease = resolve })
+      if (leaseController === controller) leader = false
+    }).catch(() => { /* 退出或切换后取消排队选举。 */ })
+  }
+  elect()
   const timer = setInterval(() => void probe(), 5000)
-  const unsubscribe = serverStore.onServerChange(() => { reset(); void probe() })
-  const visibility = () => { if (document.visibilityState !== 'hidden') void probe(); else monitor?.suspend() }
+  const unsubscribe = serverStore.onServerChange(() => { reset(); elect(); void probe() })
+  const visibility = () => {
+    if (document.visibilityState !== 'hidden') { elect(); nextProbeAt = 0; void probe() }
+    else { release(); monitor?.suspend() }
+  }
   document.addEventListener('visibilitychange', visibility)
-  const online = () => void probe()
+  const online = () => { nextProbeAt = 0; failures = 0; void probe() }
+  resumeProbe = online
   window.addEventListener('online', online)
   void probe()
   stopMonitoring = () => {
     stopped = true
+    if (resumeProbe === online) resumeProbe = undefined
+    release()
+    channel?.close()
     clearInterval(timer)
     unsubscribe()
     document.removeEventListener('visibilitychange', visibility)

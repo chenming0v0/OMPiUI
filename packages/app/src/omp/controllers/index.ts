@@ -192,9 +192,11 @@ async function loadPiSessionDataOnce(sessionId: string, signal?: AbortSignal): P
   let lastError: unknown
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
+        const current = piBranchStore.getData(sessionId)
         const preview = await retryUnavailable(() => transport.previewPiSession(
           sessionId,
-          { limit: BRANCH_PAGE_LIMIT, maxBytes: BRANCH_PAGE_MAX_BYTES },
+          { limit: BRANCH_PAGE_LIMIT, maxBytes: BRANCH_PAGE_MAX_BYTES,
+            ...(current?.syncCursor ? { syncCursor: current.syncCursor, beforeId: current.items[0]?.id } : {}) },
           signal,
         ), signal)
 
@@ -315,7 +317,45 @@ export async function loadMorePiBranchEntries(sessionId: string, signal?: AbortS
  * Refresh branch with the latest page, merging local pagination history.
  * Used by the event stream when head revision changes.
  */
-export async function refreshPiBranch(sessionId: string, signal?: AbortSignal): Promise<void> {
+const branchRefreshFlights = new Map<string, { promise: Promise<void>; dirty: boolean }>()
+
+export function refreshPiBranch(sessionId: string, signal?: AbortSignal): Promise<void> {
+  if (signal) return refreshPiBranchOnce(sessionId, signal)
+  const generation = serverStore.getActiveServerGeneration()
+  const key = `${serverStore.getActiveServerGeneration()}:${sessionId}`
+  const existing = branchRefreshFlights.get(key)
+  if (existing) {
+    existing.dirty = true
+    return existing.promise
+  }
+  const entry = { promise: Promise.resolve(), dirty: false }
+  const flight = (async () => {
+    do {
+      entry.dirty = false
+      try {
+        await refreshPiBranchOnce(sessionId)
+      } catch (error) {
+        if (!entry.dirty || serverStore.getActiveServerGeneration() !== generation) throw error
+      }
+    } while (entry.dirty && serverStore.getActiveServerGeneration() === generation)
+  })().finally(() => {
+    if (branchRefreshFlights.get(key) === entry) branchRefreshFlights.delete(key)
+  })
+  entry.promise = flight
+  branchRefreshFlights.set(key, entry)
+  return flight
+}
+
+export function settlePiLiveMessage(sessionId: string): void {
+  const changed = piBranchStore.getData(sessionId)?.checkpoint?.liveMessage?.phase === 'streaming'
+  piBranchStore.settleLiveMessage(sessionId)
+  if (changed) {
+    const flight = branchRefreshFlights.get(`${serverStore.getActiveServerGeneration()}:${sessionId}`)
+    if (flight) flight.dirty = true
+  }
+}
+
+async function refreshPiBranchOnce(sessionId: string, signal?: AbortSignal): Promise<void> {
   const serverGeneration = serverStore.getActiveServerGeneration()
   const version = piBranchStore.beginRequest(sessionId)
   const current = piBranchStore.getData(sessionId)
@@ -349,7 +389,7 @@ export async function refreshPiSessionState(sessionId: string, signal?: AbortSig
   if (isJsonObject(state)) {
     const settled = state.isIdle === true && !state.isStreaming && !state.isCompacting &&
       !state.isRetrying && !state.isBashRunning && !state.hasPendingAsyncWork
-    if (settled) piBranchStore.settleLiveMessage(sessionId)
+    if (settled) settlePiLiveMessage(sessionId)
     if (Array.isArray(state.subagents) || (settled && state.diskPreview === true)) {
       ompSubagentStore.applySnapshot(sessionId, Array.isArray(state.subagents) ? state.subagents : [], settled)
     }

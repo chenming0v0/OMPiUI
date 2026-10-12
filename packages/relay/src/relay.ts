@@ -34,6 +34,7 @@ import {
 } from "./protocol.ts"
 import { isTrustedProxy, parseTrustedProxies, resolveForwardedClient } from "./trusted-proxy.ts"
 import { BodySink } from "./sink.ts"
+import { DataRateLimit } from "./data-rate-limit.ts"
 import { ResponseSink } from "./response-sink.ts"
 import { hashTunnelKey, type RelayConfig, type RelayTunnelConfig } from "./config.ts"
 
@@ -60,6 +61,8 @@ interface VirtualConn {
   headSent: boolean
   response: ResponseSink
   request: BodySink
+  upload: DataRateLimit
+  download: DataRateLimit
 }
 
 interface TunnelSession {
@@ -69,6 +72,8 @@ interface TunnelSession {
   alive: boolean
   rateTokens: number
   rateLast: number
+  upload: DataRateLimit
+  download: DataRateLimit
 }
 
 /** 返回值语义：session=路由命中且在线；"offline"=命中已配置隧道但不在线；undefined=无路由。 */
@@ -191,6 +196,8 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
       alive: true,
       rateTokens: MESSAGE_RATE_BURST,
       rateLast: Date.now(),
+      upload: new DataRateLimit(),
+      download: new DataRateLimit(),
     }
     tunnels.set(tunnel.id, session)
     log(`[omp-relay] tunnel "${tunnel.id}" connected (public entry: ${publicUrlFor(tunnel, controlHost)})`)
@@ -235,6 +242,11 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
 
   function handleTunnelMessage(session: TunnelSession, data: RawData, isBinary: boolean): void {
     if (session.ws.readyState !== WebSocket.OPEN) return
+    const rawData = toBuffer(data)
+    if (!session.download.allow(rawData.length)) {
+      disposeSession(session)
+      return
+    }
     if (isBinary) {
       const raw = toBuffer(data)
       if (raw.length > FRAME_PAYLOAD_MAX + 4) {
@@ -309,7 +321,10 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
   }
 
   function deliverBody(session: TunnelSession, connId: number, payload: Buffer): void {
-    session.conns.get(connId)?.response.write(payload)
+    const conn = session.conns.get(connId)
+    if (!conn) return
+    if (!conn.download.allow(payload.length)) { abortConnection(session, connId); return }
+    conn.response.write(payload)
   }
 
   function forgetConnection(session: TunnelSession, connId: number): VirtualConn | undefined {
@@ -363,7 +378,8 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
     const connId = nextConnId++
     const sink = new BodySink(session.ws)
     const response = new ResponseSink(res, () => abortConnection(session, connId), () => forgetConnection(session, connId))
-    const conn: VirtualConn = { kind: "request", res, headSent: false, response, request: sink }
+    const conn: VirtualConn = { kind: "request", res, headSent: false, response, request: sink,
+      upload: new DataRateLimit(4 * 1024 * 1024, 8 * 1024 * 1024), download: new DataRateLimit() }
     session.conns.set(connId, conn)
     sendControl(session, {
       type: "open",
@@ -373,7 +389,20 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
       h: withForwardedHeaders(stripHopByHopHeaders(req.headers), req),
     })
     req.on("data", (chunk: Buffer) => {
-      if (session.conns.has(connId)) sink.write(connId, chunk, req)
+      if (!session.conns.has(connId)) return
+      if (!session.upload.allow(chunk.length) || !conn.upload.allow(chunk.length)) {
+        if (res.headersSent) abortConnection(session, connId)
+        else {
+          forgetConnection(session, connId)
+          sendControl(session, { type: "abort", c: connId })
+          req.pause()
+          res.setHeader("connection", "close")
+          res.once("finish", () => req.destroy())
+          sendProblem(res, 429, "TUNNEL_RATE_LIMITED", "tunnel upload rate exceeded")
+        }
+        return
+      }
+      sink.write(connId, chunk, req)
     })
     req.on("end", () => {
       if (session.conns.has(connId)) sendControl(session, { type: "reqEnd", c: connId })
@@ -413,7 +442,8 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
       forgetConnection(session, connId)
       socket.destroy()
     })
-    const conn: VirtualConn = { kind: "upgrade", socket, headSent: false, response, request: sink }
+    const conn: VirtualConn = { kind: "upgrade", socket, headSent: false, response, request: sink,
+      upload: new DataRateLimit(4 * 1024 * 1024, 8 * 1024 * 1024), download: new DataRateLimit() }
     session.conns.set(connId, conn)
     // upgrade 的 connection/upgrade 头必须保留给 101 握手
     sendControl(session, {
@@ -423,9 +453,14 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
       u: req.url ?? "/",
       h: withForwardedHeaders(stripHopByHopHeaders(req.headers, true), req),
     })
-    if (head.length > 0) sink.write(connId, head, null)
+    if (head.length > 0) {
+      if (!session.upload.allow(head.length) || !conn.upload.allow(head.length)) { abortConnection(session, connId); return }
+      sink.write(connId, head, null)
+    }
     socket.on("data", (chunk: Buffer) => {
-      if (session.conns.has(connId)) sink.write(connId, chunk, socket)
+      if (!session.conns.has(connId)) return
+      if (!session.upload.allow(chunk.length) || !conn.upload.allow(chunk.length)) { abortConnection(session, connId); return }
+      sink.write(connId, chunk, socket)
     })
     socket.on("end", () => {
       abortConnection(session, connId)
@@ -500,7 +535,9 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
 
   function sendControl(session: TunnelSession, frame: ControlFrame): void {
     if (session.ws.readyState !== WebSocket.OPEN) return
-    session.ws.send(JSON.stringify(frame))
+    const data = JSON.stringify(frame)
+    if (!session.upload.allow(Buffer.byteLength(data))) { disposeSession(session); return }
+    session.ws.send(data)
   }
 }
 

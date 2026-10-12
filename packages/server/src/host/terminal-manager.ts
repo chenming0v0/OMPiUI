@@ -67,6 +67,8 @@ import { resolveWorkspacePath } from "./path-safety.ts"
 import { workspacePathKey } from "./workspace-store.ts"
 
 const OUTPUT_BUFFER_LIMIT = 2 * 1024 * 1024
+const REPLAY_BYTE_LIMIT = 1024 * 1024
+const PENDING_BYTE_LIMIT = 1024 * 1024
 const EXITED_SESSION_LIMIT = 25
 const TERMINAL_LIMIT = 32
 const TICKET_TTL_MS = 60_000
@@ -77,6 +79,8 @@ type TerminalEventChannel = Extract<EventChannel, `terminal.${string}`>
 type Subscriber = {
   active: boolean
   pending: string[]
+  pendingBytes: number
+  overflow?: boolean
   end?: { exitCode: number | null }
   pendingTitle?: string
   onData: (data: string) => void
@@ -299,7 +303,7 @@ export class TerminalManager {
   ): TerminalAttachment {
     const terminal = this.require(workspacePath, id)
     const end = terminal.info.cursor
-    const from = cursor === -1 ? end : cursor ?? terminal.bufferCursor
+    let from = cursor === -1 ? end : cursor ?? terminal.bufferCursor
     if (!Number.isSafeInteger(from) || from < 0) {
       throw Object.assign(new Error("terminal cursor must be a non-negative integer or -1"), { code: "INVALID_REQUEST" })
     }
@@ -310,7 +314,17 @@ export class TerminalManager {
       throw Object.assign(new Error("terminal output cursor has expired"), { code: "TERMINAL_CURSOR_EXPIRED" })
     }
     const offset = Math.max(0, from - terminal.bufferCursor)
-    const replay = offset >= terminal.output.length ? "" : terminal.output.slice(offset)
+    let replay = offset >= terminal.output.length ? "" : terminal.output.slice(offset)
+    if (Buffer.byteLength(replay) > REPLAY_BYTE_LIMIT) {
+      if (cursor !== undefined) throw Object.assign(new Error("terminal replay byte window has expired"), { code: "TERMINAL_CURSOR_EXPIRED" })
+      // 首次挂接只保留最近的字节窗口；重连游标则必须明确报告失效。
+      const bytes = Buffer.from(replay)
+      let start = bytes.length - REPLAY_BYTE_LIMIT
+      while ((bytes[start]! & 0xc0) === 0x80) start++
+      const tail = bytes.subarray(start).toString("utf8")
+      from += replay.length - tail.length
+      replay = tail
+    }
 
     // An exited terminal is a retained replay window: attach, deliver what is
     // still buffered, then report the exit. There is no live process to write to.
@@ -331,7 +345,7 @@ export class TerminalManager {
       }
     }
 
-    const subscriber: Subscriber = { active: false, pending: [], onData, onEnd, onTitle }
+    const subscriber: Subscriber = { active: false, pending: [], pendingBytes: 0, onData, onEnd, onTitle }
     const token = {}
     terminal.subscribers.set(token, subscriber)
 
@@ -341,6 +355,7 @@ export class TerminalManager {
       cursor: end,
       activate: () => {
         if (subscriber.active) return
+        if (subscriber.overflow) throw Object.assign(new Error("terminal pending output has expired"), { code: "TERMINAL_CURSOR_EXPIRED" })
         subscriber.active = true
         try {
           for (const chunk of subscriber.pending) subscriber.onData(chunk)
@@ -348,6 +363,7 @@ export class TerminalManager {
           terminal.subscribers.delete(token)
         }
         subscriber.pending.length = 0
+        subscriber.pendingBytes = 0
         if (subscriber.end) {
           try {
             subscriber.onEnd(subscriber.end)
@@ -367,6 +383,7 @@ export class TerminalManager {
       detach: () => {
         terminal.subscribers.delete(token)
         subscriber.pending.length = 0
+        subscriber.pendingBytes = 0
         subscriber.end = undefined
       },
     }
@@ -421,7 +438,7 @@ export class TerminalManager {
     terminal.titleBuffer = `${terminal.titleBuffer}${data}`.slice(-512)
     const title = terminal.customTitle ? undefined : extractTerminalTitle(terminal.titleBuffer)
     if (title) terminal.titleBuffer = ""
-    if (title) {
+    if (title && title !== terminal.info.title) {
       terminal.info.title = title
       for (const subscriber of terminal.subscribers.values()) {
         if (subscriber.active) {
@@ -439,6 +456,14 @@ export class TerminalManager {
     terminal.info.cursor += data.length
     for (const [token, subscriber] of terminal.subscribers) {
       if (!subscriber.active) {
+        subscriber.pendingBytes += Buffer.byteLength(data)
+        if (subscriber.pendingBytes > PENDING_BYTE_LIMIT || subscriber.pending.length >= 1024) {
+          subscriber.overflow = true
+          subscriber.pending.length = 0
+          subscriber.pendingBytes = 0
+          terminal.subscribers.delete(token)
+          continue
+        }
         subscriber.pending.push(data)
         continue
       }

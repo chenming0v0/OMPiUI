@@ -6,6 +6,7 @@ import {
   fetchHostNetwork,
   fetchPairInvite,
   getHostTerminalWebSocketUrl,
+  getOmpSubagentMessages,
   listActiveProviderFlows,
   manageSessionGoal,
   mintPairInvite,
@@ -61,6 +62,17 @@ describe('getHostTerminalWebSocketUrl', () => {
 })
 
 describe('transport retry and response contracts', () => {
+  it('assembles transcript pages even when a JSONL message spans pages', async () => {
+    const line = JSON.stringify({ type: 'message', message: { role: 'assistant', content: '正文😀'.repeat(1000) } })
+    nativeFetchMock.mockResolvedValueOnce(Response.json({ data: {
+      transcript: line.slice(0, 101), fromByte: 0, nextByte: 101, hasMore: true,
+    } })).mockResolvedValueOnce(Response.json({ data: {
+      transcript: line.slice(101), fromByte: 101, nextByte: 5000, hasMore: false,
+    } }))
+    const result = await getOmpSubagentMessages('s', { sessionFile: 'child.jsonl' })
+    expect(result).toMatchObject({ messages: [{ role: 'assistant', content: '正文😀'.repeat(1000) }] })
+    expect(JSON.parse(nativeFetchMock.mock.calls[1][1].body).fromByte).toBe(101)
+  })
   it('includes reference images in a goal command', async () => {
     nativeFetchMock.mockResolvedValue(Response.json({ data: { id: 'goal-command' } }))
     const images = [{ type: 'image' as const, mimeType: 'image/png', data: 'AA==' }]

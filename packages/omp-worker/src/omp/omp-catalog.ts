@@ -496,16 +496,16 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
       if (!isJsonObject(preview)) throw new Error("Invalid session preview")
       return preview[query === "state.get" ? "state" : "branch"]!
     }
+    if (query === "subagent.messages") {
+      if (typeof params.sessionFile !== "string") throw notFoundError("subagent session file required")
+      return readChildSessionPage(params.sessionFile, typeof params.fromByte === "number" ? params.fromByte : 0)
+    }
     const entries = previewEntriesFromLines(readLinesSync(summary.path), summary.id)
     if (query === "tree.get") return buildSessionTreeFromEntries(entries)
     if (query === "attachment.get") {
       const entry = entries.find(item => item.id === params.entryId)
       if (!entry) throw notFoundError("entry not found")
-      return imageAttachmentFromEntry(entry, Number(params.blockIndex))
-    }
-    if (query === "subagent.messages") {
-      if (typeof params.sessionFile !== "string") throw notFoundError("subagent session file required")
-      return { messages: await readChildSessionMessages(params.sessionFile) }
+      return imageAttachmentFromEntry(entry, Number(params.blockIndex), typeof params.offset === "number" ? params.offset : 0)
     }
     if (query === "entries.get") {
       const head = sessionHeadFromParts({ sdkVersion: OMP_SDK_VERSION, revision: summary.modified,
@@ -809,7 +809,7 @@ function notFoundError(message: string): Error {
  * 直接读文件即可。安全约束：目标必须是原生 OMP 或 WebUI 托管 sessions
  * 根内的 .jsonl（realpath 归一后校验，与 deleteSession 同款防穿越）。
  */
-export async function readChildSessionMessages(sessionFile: string): Promise<JsonObject[]> {
+async function childSessionPath(sessionFile: string): Promise<string> {
   const target = resolveUserPath(sessionFile)
   if (!target.endsWith(".jsonl")) throw notFoundError("session file not found")
   const root = path.resolve(isManagedSessionFile(target) ? managedSessionsRoot() : ompSessionRootFor(target))
@@ -833,10 +833,56 @@ export async function readChildSessionMessages(sessionFile: string): Promise<Jso
       { code: "PATH_OUTSIDE_WORKSPACE" },
     )
   }
-  const entries = previewEntriesFromLines(readLinesSync(realTarget), "")
-  return entries
-    .filter(entry => entry.type === "message" && isJsonObject(entry.message))
-    .map(entry => entry.message as JsonObject)
+  return realTarget
+}
+
+/** 以有界 UTF-8 字节页传送 JSONL，超大单行也能跨页无损续读。 */
+export async function readChildSessionPage(sessionFile: string, fromByte = 0): Promise<JsonObject> {
+  if (!Number.isSafeInteger(fromByte) || fromByte < 0) {
+    throw Object.assign(new Error("invalid transcript byte cursor"), { code: "INVALID_REQUEST" })
+  }
+  const file = await fs.open(await childSessionPath(sessionFile), "r")
+  try {
+    const { size } = await file.stat()
+    const reset = fromByte > size
+    const from = reset ? 0 : fromByte
+    const limit = 256 * 1024
+    const buffer = Buffer.alloc(Math.min(limit + 3, Math.max(0, size - from)))
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, from)
+    let end = Math.min(limit, bytesRead)
+    if (bytesRead > end) while (end > 0 && (buffer[end]! & 0xc0) === 0x80) end--
+    let transcript: string
+    try {
+      transcript = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, end))
+    } catch {
+      throw Object.assign(new Error("invalid UTF-8 transcript cursor or content"), { code: "INVALID_REQUEST" })
+    }
+    return { sessionFile, fromByte: from, nextByte: from + end, reset,
+      hasMore: from + end < size, transcript }
+  } finally {
+    await file.close()
+  }
+}
+
+export async function readChildSessionMessages(sessionFile: string): Promise<JsonObject[]> {
+  const messages: JsonObject[] = []
+  let fromByte = 0
+  let pending = ""
+  for (;;) {
+    const page = await readChildSessionPage(sessionFile, fromByte)
+    pending += String(page.transcript)
+    const lines = pending.split("\n")
+    pending = lines.pop() ?? ""
+    if (!page.hasMore && pending) { lines.push(pending); pending = "" }
+    for (const line of lines) {
+      try {
+        const entry: unknown = JSON.parse(line)
+        if (isJsonObject(entry) && entry.type === "message" && isJsonObject(entry.message)) messages.push(entry.message)
+      } catch { /* 未落完的末行留给后续读取。 */ }
+    }
+    if (!page.hasMore) return messages
+    fromByte = Number(page.nextByte)
+  }
 }
 
 function activeBranchFromEntries(entries: JsonObject[]): JsonObject[] {

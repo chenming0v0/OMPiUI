@@ -219,7 +219,8 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
   "prompts.list": async (ctx) => ctx.requireRuntime().listPrompts(),
   "agentsFiles.list": async (ctx) => ctx.requireRuntime().listAgentsFiles(),
   "attachment.get": async (ctx, p) =>
-    ctx.requireRuntime().getAttachment(P.reqString(p, "entryId"), P.reqNonNegativeInteger(p, "blockIndex")),
+    ctx.requireRuntime().getAttachment(P.reqString(p, "entryId"), P.reqNonNegativeInteger(p, "blockIndex"),
+      p.offset === undefined ? undefined : P.reqNonNegativeInteger(p, "offset")),
 
   "session.list": async (ctx, p) => ctx.catalog.listSessions(P.reqString(p, "cwd")),
   "session.listAll": async (ctx) => ctx.catalog.listAllSessions(),

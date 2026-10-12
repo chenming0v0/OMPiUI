@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import { networkInterfaces } from "node:os"
+import { gzip } from "node:zlib"
 import {
   PI_PARITY_SDK_VERSION,
   PROTOCOL_VERSION,
@@ -18,7 +19,7 @@ import { RuntimeSupervisor } from "./omp/supervisor.ts"
 import { SessionHost } from "./omp/session-host.ts"
 import { WorkspaceStore } from "./host/workspace-store.ts"
 import { WorkspaceWatcher } from "./host/workspace-watcher.ts"
-import { MAX_JSON_BODY_BYTES, pairingClientKey, requestHasAllowedOrigin, requestHasValidToken } from "./host/security.ts"
+import { MAX_JSON_BODY_BYTES, MAX_PROMPT_BODY_BYTES, pairingClientKey, requestHasAllowedOrigin, requestHasValidToken } from "./host/security.ts"
 import { resolveAuthToken } from "./host/auth-token.ts"
 import { PathSafetyError } from "./host/path-safety.ts"
 import { defaultWorkspaceRoot, HostRuntime } from "./host/command-table.ts"
@@ -38,17 +39,32 @@ const CORS_HEADERS: Record<string, string> = {
 function sendJson(res: ServerResponse, status: number, body: unknown): boolean {
   if (res.destroyed || res.writableEnded) return false
   const data = JSON.stringify(body)
-  try {
-    res.writeHead(status, {
-      "content-type": "application/json; charset=utf-8",
-      "content-length": Buffer.byteLength(data),
-      ...CORS_HEADERS,
-    })
-    res.end(data)
-    return true
-  } catch {
-    return false
+  const finish = (payload: string | Buffer, compressed = false) => {
+    if (res.destroyed || res.writableEnded) return false
+    try {
+      res.writeHead(status, {
+        "content-type": "application/json; charset=utf-8",
+        "content-length": Buffer.byteLength(payload),
+        vary: "Accept-Encoding",
+        ...(compressed ? { "content-encoding": "gzip" } : {}),
+        ...CORS_HEADERS,
+      })
+      res.end(payload)
+      return true
+    } catch {
+      return false
+    }
   }
+  const acceptsGzip = String(res.req.headers["accept-encoding"] ?? "").split(",").some(value => {
+    const [name, ...params] = value.trim().split(";")
+    const quality = params.find(param => param.trim().startsWith("q="))
+    return name === "gzip" && (!quality || Number(quality.trim().slice(2)) > 0)
+  })
+  if (acceptsGzip && Buffer.byteLength(data) >= 4096) {
+    gzip(data, (error, compressed) => { finish(error ? data : compressed, !error) })
+    return true
+  }
+  return finish(data)
 }
 
 function sendProblem(res: ServerResponse, status: number, error: unknown): boolean {
@@ -530,7 +546,7 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
 
       const piCommandMatch = p.match(/^\/api\/v1\/pi\/commands\/([^/]+)$/)
       if (piCommandMatch && method === "POST") {
-        const body = await readBody(req, scope.signal, MAX_JSON_BODY_BYTES * 24)
+        const body = await readBody(req, scope.signal, MAX_PROMPT_BODY_BYTES)
         const name = safeDecode(piCommandMatch[1]!)
         const data = await sessions.executeGlobalCommand(name, commandParams(body), { signal: scope.signal })
         return sendJson(res, 200, { data: data ?? null })
@@ -538,7 +554,7 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
 
       const piSessionCommandMatch = p.match(/^\/api\/v1\/pi\/sessions\/([^/]+)\/commands\/([^/]+)$/)
       if (piSessionCommandMatch && method === "POST") {
-        const body = await readBody(req, scope.signal, MAX_JSON_BODY_BYTES * 24)
+        const body = await readBody(req, scope.signal, MAX_PROMPT_BODY_BYTES)
         const sessionId = safeDecode(piSessionCommandMatch[1]!)
         const name = safeDecode(piSessionCommandMatch[2]!)
         const id = typeof body.id === "string" && body.id ? body.id : undefined
@@ -556,7 +572,7 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
         return sendJson(res, 200, data ?? null)
       }
       if (commandMatch && method === "POST") {
-        const body = await readBody(req, scope.signal, MAX_JSON_BODY_BYTES * 24)
+        const body = await readBody(req, scope.signal, MAX_PROMPT_BODY_BYTES)
         const data = await host.execute(safeDecode(commandMatch[1]!), commandParams(body) ?? {}, { signal: scope.signal })
         return sendJson(res, 200, { data: data ?? null })
       }

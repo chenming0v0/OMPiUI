@@ -122,7 +122,7 @@ export const PI_COMMAND_SPECS = [
   { name: "skills.list", scope: "session", description: "List loaded Pi skills", queue: "immediate", idempotent: true },
   { name: "prompts.list", scope: "session", description: "List loaded Pi prompt templates", queue: "immediate", idempotent: true },
   { name: "agentsFiles.list", scope: "session", description: "List loaded Pi AGENTS/CLAUDE context files", queue: "immediate", idempotent: true },
-  { name: "attachment.get", scope: "session", description: "Read an attachment from a Pi entry", paramsSchema: objectSchema({ entryId: STRING, blockIndex: { type: "integer", minimum: 0 } }, ["entryId", "blockIndex"]), queue: "immediate", idempotent: true },
+  { name: "attachment.get", scope: "session", description: "Read an attachment chunk from a Pi entry", paramsSchema: objectSchema({ entryId: STRING, blockIndex: { type: "integer", minimum: 0 }, offset: { type: "integer", minimum: 0 } }, ["entryId", "blockIndex"]), queue: "immediate", idempotent: true },
   { name: "session.list", scope: "global", description: "List Pi sessions for a workspace", paramsSchema: CWD_PARAMS, queue: "immediate", idempotent: true },
   { name: "session.listAll", scope: "global", description: "List all Pi sessions", queue: "immediate", idempotent: true },
   { name: "session.create", scope: "global", description: "Create a Pi session without opening an agent runtime", paramsSchema: CWD_PARAMS, queue: "serialized" },
@@ -248,7 +248,7 @@ export type PiCommandParams = CoreCommandParams & {
   "skills.list": Record<string, never>
   "prompts.list": Record<string, never>
   "agentsFiles.list": Record<string, never>
-  "attachment.get": { entryId: string; blockIndex: number }
+  "attachment.get": { entryId: string; blockIndex: number; offset?: number }
   "subagent.messages": { subagentId?: string; sessionFile?: string; fromByte?: number }
   "commands.completions": { name: string; prefix: string }
   goal: { op: "set" | "pause" | "resume" | "drop"; objective?: string; images?: ImageInput[] }

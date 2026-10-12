@@ -288,8 +288,7 @@ export async function startOmpiUiServer(
     terminalManager: app.terminals,
     onSubscribe: send => {
       const snapshot = app.sessionHost.getActivitySnapshot()
-      if (Object.keys(snapshot.sessions).length > 0) {
-        send({
+      send({
           channel: "event",
           event: {
             protocolVersion: PROTOCOL_VERSION,
@@ -300,8 +299,7 @@ export async function startOmpiUiServer(
             timestamp: new Date().toISOString(),
             payload: snapshot as never,
           },
-        })
-      }
+      })
     },
   })
 

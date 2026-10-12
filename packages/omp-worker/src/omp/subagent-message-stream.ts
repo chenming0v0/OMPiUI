@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
-import { isJsonObject, type JsonObject } from "@ompiui/protocol"
+import { isJsonObject, splitUtf8Text, type JsonObject } from "@ompiui/protocol"
 
-const CHUNK_CHARS = 4096
+const CHUNK_BYTES = 4096
 const RECOVERY_CHARS = 2048
 
 type MessageState = { id: string; sourceId?: string; text: string }
@@ -46,10 +46,12 @@ export class SubagentMessageStream {
     // 非追加式修订从零替换；普通 token 流只传上次已发送长度之后的内容。
     const offset = same && text.startsWith(previous.text) ? previous.text.length : 0
     let position = offset
-    do {
-      const end = Math.min(text.length, position + CHUNK_CHARS)
+    for (const delta of splitUtf8Text(text.slice(offset), CHUNK_BYTES).concat(text.length === offset ? [""] : [])) {
+      const end = position + delta.length
       const last = end === text.length
-      const tailOffset = Math.max(0, end - RECOVERY_CHARS)
+      let tailOffset = Math.max(0, end - RECOVERY_CHARS)
+      const tailStart = text.charCodeAt(tailOffset)
+      if (tailStart >= 0xdc00 && tailStart <= 0xdfff) tailOffset++
       this.emit({
         kind: frame.kind,
         eventId: randomUUID(),
@@ -59,13 +61,14 @@ export class SubagentMessageStream {
             type: "message_patch", messageId: id, role: message.role,
             phase: last ? phase : "message_update",
             textOffset: position, textDelta: text.slice(position, end),
-            textTailOffset: tailOffset, textTail: text.slice(tailOffset, end),
+            ...(last && (offset === 0 || phase === "message_end")
+              ? { textTailOffset: tailOffset, textTail: text.slice(tailOffset, end) } : {}),
             ...(last ? { thinking, tools } : {}),
           },
         },
       })
       position = end
-    } while (position < text.length)
+    }
     if (phase === "message_end") this.messages.delete(key)
     else this.messages.set(key, { id, sourceId: nativeId, text })
   }

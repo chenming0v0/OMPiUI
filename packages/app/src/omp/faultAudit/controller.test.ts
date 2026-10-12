@@ -15,6 +15,62 @@ vi.mock('./storage', () => ({
 }))
 
 describe('fault audit integration', () => {
+  it('elects one health probe leader across tabs and hands over on cleanup', async () => {
+    const previous = Object.getOwnPropertyDescriptor(navigator, 'locks')
+    type Waiter = { grant: () => void; signal?: AbortSignal }
+    const queue: Waiter[] = []
+    let held = false
+    const drain = () => {
+      if (held) return
+      const next = queue.shift()
+      if (next) { held = true; next.grant() }
+    }
+    Object.defineProperty(navigator, 'locks', { configurable: true, value: {
+      request: (_name: string, options: { signal?: AbortSignal }, callback: () => Promise<void>) =>
+        new Promise<void>((resolve, reject) => {
+          const waiter: Waiter = { signal: options.signal, grant: () => {
+            options.signal?.removeEventListener('abort', abort)
+            void callback().then(resolve, reject).finally(() => { held = false; drain() })
+          } }
+          const abort = () => {
+            const index = queue.indexOf(waiter)
+            if (index >= 0) queue.splice(index, 1)
+            reject(new DOMException('Aborted', 'AbortError'))
+          }
+          options.signal?.addEventListener('abort', abort, { once: true })
+          queue.push(waiter)
+          drain()
+        }),
+    } })
+    network.fetch.mockImplementation(() => Promise.resolve(Response.json({ runId: 'leader-run', version: 'test', faults: [] })))
+    const first = await import('./controller')
+    const stopFirst = first.startFaultAudit()
+    let stopSecond: (() => void) | undefined
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(network.fetch).toHaveBeenCalledTimes(1)
+      vi.resetModules()
+      const second = await import('./controller')
+      stopSecond = second.startFaultAudit()
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(network.fetch).toHaveBeenCalledTimes(2)
+      stopFirst()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(network.fetch).toHaveBeenCalledTimes(3)
+    } finally {
+      stopFirst()
+      stopSecond?.()
+      if (previous) Object.defineProperty(navigator, 'locks', previous)
+      else Reflect.deleteProperty(navigator, 'locks')
+    }
+  })
+  it('backs off failed health probes instead of repeating every five seconds', async () => {
+    network.fetch.mockRejectedValue(new TypeError('offline backend'))
+    const { startFaultAudit } = await import('./controller')
+    stop = startFaultAudit()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(network.fetch.mock.calls.filter(([url]) => String(url).endsWith('/diagnostics/status')).length).toBeLessThanOrEqual(5)
+  })
   let stop: (() => void) | undefined
   beforeEach(() => {
     vi.resetModules()
@@ -92,6 +148,7 @@ describe('fault audit integration', () => {
     expect(faultAuditStore.getSnapshot().saved?.report.unavailable).toContain('server_unreachable')
     expect(faultAuditStore.getSnapshot().saved?.report.content).not.toContain('PRIVATE_RAW_ERROR')
     online = true
+    window.dispatchEvent(new Event('online'))
     await vi.advanceTimersByTimeAsync(5000)
     expect(faultAuditStore.getSnapshot().saved?.report.complete).toBe(true)
     expect(faultAuditStore.getSnapshot().saved?.report.content).toContain('recovered backend timeline')

@@ -5,6 +5,7 @@ import { WebSocketServer, WebSocket } from "ws"
 import {
   EVENT_WS_SUBPROTOCOL,
   eventStreamKey,
+  splitUtf8Text,
   PROTOCOL_VERSION,
   type EventClientMessage,
   type EventServerMessage,
@@ -39,6 +40,7 @@ export interface EventWebSocketOptions {
   /** Called after a client (re)subscribes — push per-connection snapshots */
   onSubscribe?: (send: (message: EventServerMessage) => void) => void
   terminalManager?: TerminalManager
+  maxConnections?: number
 }
 
 export function attachEventWebSocket(server: HttpServer, options: EventWebSocketOptions) {
@@ -72,6 +74,10 @@ export function attachEventWebSocket(server: HttpServer, options: EventWebSocket
       return
     }
     const offered = req.headers["sec-websocket-protocol"]
+    if (wss.clients.size >= (options.maxConnections ?? 128)) {
+      socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+      return
+    }
     if (isEventPath && offered !== undefined && !String(offered).split(",").some(name => name.trim() === EVENT_WS_SUBPROTOCOL)) {
       // 客户端声明了其它子协议:明确拒绝,而不是 ws 默认的回显行为
       socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
@@ -176,6 +182,7 @@ function attachConnection(ws: WebSocket, eventHub: EventHub, onSubscribe?: (send
       }
       if (!Array.isArray(message.streams) || message.streams.length > 256) return
 
+      const previous = new Set(subscribed)
       subscribed.clear()
       const resync: Extract<EventServerMessage, { type: "resync_required" }>["streams"] = {}
       const seenStreams = new Set<string>()
@@ -185,6 +192,7 @@ function attachConnection(ws: WebSocket, eventHub: EventHub, onSubscribe?: (send
         if (seenStreams.has(key)) continue
         seenStreams.add(key)
         subscribed.add(key)
+        if (previous.has(key)) continue
         const cursor = message.cursors?.[key as keyof typeof message.cursors]
         const replay = eventHub.replaySince(stream, cursor)
         if (replay.resyncRequired) {
@@ -208,7 +216,7 @@ function attachConnection(ws: WebSocket, eventHub: EventHub, onSubscribe?: (send
           reason: value?.reason, sequence: value?.cursor.sequence, epoch: value?.cursor.epoch,
         })
       }
-      onSubscribe?.(message => send(ws, message))
+      if (previous.size === 0) onSubscribe?.(message => send(ws, message))
     } catch {
       /* ignore malformed client messages */
     }
@@ -228,11 +236,20 @@ function isEventStreamKind(value: string): value is EventStreamRef["kind"] {
 
 function send(ws: WebSocket, message: EventServerMessage): void {
   if (ws.readyState !== WebSocket.OPEN) return
-  if (ws.bufferedAmount > MAX_BUFFERED_BYTES) {
+  let data = JSON.stringify(message)
+  // 超大累计事件由只读增量查询恢复，不让一个快照占满 socket 队列。
+  if ('event' in message && Buffer.byteLength(data) > MAX_MESSAGE_BYTES) {
+    data = JSON.stringify({ channel: "control", type: "resync_required", streams: {
+      [eventStreamKey(message.event.stream)]: { cursor: message.event.cursor, reason: "history_expired" },
+    } })
+  }
+  if (ws.bufferedAmount + Buffer.byteLength(data) > MAX_BUFFERED_BYTES) {
     ws.close(1013, "event client too slow")
+    const timer = setTimeout(() => { if (ws.readyState !== WebSocket.CLOSED) ws.terminate() }, 1000)
+    timer.unref()
     return
   }
-  ws.send(JSON.stringify(message))
+  ws.send(data)
 }
 
 function attachTerminalConnection(
@@ -256,10 +273,19 @@ function attachTerminalConnection(
   let queuedBytes = 0
   const queue: string[] = []
   let closeAfterFlush: { code: number; reason: string } | undefined
+  let detach = () => {}
   const close = (code = 1000, reason = "") => {
     if (closed) return
     closed = true
+    queue.length = 0
+    queuedBytes = 0
+    closeAfterFlush = undefined
+    detach()
     ws.close(code, reason)
+    if (code === 1013) {
+      const timer = setTimeout(() => { if (ws.readyState !== WebSocket.CLOSED) ws.terminate() }, 1000)
+      timer.unref()
+    }
   }
   const closeWhenDrained = (code: number, reason: string) => {
     if (closed) return
@@ -331,6 +357,7 @@ function attachTerminalConnection(
   }
 
   let outputCursor = attachment.replayCursor
+  detach = attachment.detach
   let terminal
   try {
     terminal = manager.get(workspacePath, terminalId)
@@ -346,7 +373,13 @@ function attachTerminalConnection(
     sendFrame({ type: "output", cursor: outputCursor, data: chunk })
   }
   sendFrame({ type: "ready", cursor: attachment.cursor })
-  attachment.activate()
+  try {
+    if (!closed) attachment.activate()
+  } catch (error) {
+    attachment.detach()
+    sendTerminalProblem(ws, errorCode(error), error instanceof Error ? error.message : String(error))
+    close(1008, "terminal cursor expired")
+  }
 
   ws.on("message", raw => {
     if (closed) return
@@ -377,16 +410,14 @@ function attachTerminalConnection(
   })
   ws.on("close", () => {
     closed = true
+    queue.length = 0
+    queuedBytes = 0
     attachment.detach()
   })
 }
 
 function splitTerminalOutput(data: string): string[] {
-  const chunks: string[] = []
-  for (let index = 0; index < data.length; index += TERMINAL_OUTPUT_CHUNK_BYTES) {
-    chunks.push(data.slice(index, index + TERMINAL_OUTPUT_CHUNK_BYTES))
-  }
-  return chunks
+  return splitUtf8Text(data, TERMINAL_OUTPUT_CHUNK_BYTES)
 }
 
 function sendTerminalProblem(ws: WebSocket, code: string, message: string): void {

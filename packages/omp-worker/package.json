@@ -20,7 +20,8 @@
     "test": "node --import tsx --test src/**/*.test.ts"
   },
   "dependencies": {
-    "@ompiui/protocol": "0.6.21"
+    "@ompiui/protocol": "0.6.21",
+    "@streamparser/json": "0.0.26"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",

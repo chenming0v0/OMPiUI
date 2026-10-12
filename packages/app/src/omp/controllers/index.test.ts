@@ -137,9 +137,20 @@ describe('session state response ordering', () => {
     }
     vi.spyOn(transport, 'getPiBranchPage').mockReturnValueOnce(old.promise).mockResolvedValueOnce(latest)
     const first = refreshPiBranch('session-a')
-    await refreshPiBranch('session-a')
+    const second = refreshPiBranch('session-a')
     old.resolve({ ...latest, head: { ...latest.head, revision: 1 } })
-    await first
+    await Promise.all([first, second])
     expect(piBranchStore.getData('session-a')?.head.revision).toBe(2)
+  })
+
+  it('uses the cached sync cursor when a session preview is loaded again', async () => {
+    const branch = {
+      head: { sdkVersion: 'test', revision: 2, header: null, leafId: null, entryCount: 1, epoch: 'test' },
+      items: [], hasMore: false, syncCursor: 'cached-sync',
+    }
+    piBranchStore.setData('session-a', branch)
+    const preview = vi.spyOn(transport, 'previewPiSession').mockResolvedValue({ state: {}, branch })
+    await loadPiSessionData('session-a')
+    expect(preview).toHaveBeenCalledWith('session-a', expect.objectContaining({ syncCursor: 'cached-sync' }), undefined)
   })
 })

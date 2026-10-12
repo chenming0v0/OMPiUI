@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { after, before, describe, it } from "node:test"
-import { readChildSessionMessages } from "./omp-catalog.js"
+import { readChildSessionMessages, readChildSessionPage } from "./omp-catalog.js"
 
 // ompAgentDir 每次调用读 PI_CODING_AGENT_DIR：整个文件级 fixture 指向临时目录
 const root = mkdtempSync(path.join(tmpdir(), "ompiui-child-msgs-"))
@@ -53,6 +53,29 @@ after(() => {
 })
 
 describe("readChildSessionMessages", () => {
+  it("pages large Unicode JSONL lines losslessly and resets a truncated cursor", async () => {
+    const file = path.join(childDir, "Large.jsonl")
+    const message = { role: "assistant", content: "正文😀".repeat(100000) }
+    const raw = JSON.stringify({ type: "message", id: "large", message })
+    writeFileSync(file, raw)
+    let offset = 0
+    let restored = ""
+    for (;;) {
+      const page = await readChildSessionPage(file, offset)
+      assert.ok(Buffer.byteLength(String(page.transcript)) <= 256 * 1024)
+      restored += page.transcript
+      assert.equal(page.fromByte, offset)
+      assert.ok(Number(page.nextByte) > offset)
+      offset = Number(page.nextByte)
+      if (!page.hasMore) break
+    }
+    assert.equal(restored, raw)
+    assert.deepEqual(await readChildSessionMessages(file), [message])
+    writeFileSync(file, "{}")
+    const reset = await readChildSessionPage(file, offset)
+    assert.equal(reset.reset, true)
+    assert.equal(reset.fromByte, 0)
+  })
   it("reads message entries from a child session file on disk", async () => {
     const messages = await readChildSessionMessages(childFile)
     assert.equal(messages.length, 2)

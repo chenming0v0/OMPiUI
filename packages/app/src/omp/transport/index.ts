@@ -39,6 +39,7 @@ import type { SessionInfo, SessionTreeNode, Skill, PromptTemplate } from '../ven
 import type { PiBranchPage, PiConfiguredPackage, PiModelRuntimeSnapshot, PiPackageUpdate, PiProjectTrust, PiProviderAuthInfo, PiSettingsSnapshot, ResolvedPaths } from '../domain/index.js'
 import { getApiBase, getPiAuthToken, piFetch, type PiRequestInit } from '../httpClient.js'
 import { piCommandStore } from '../state/index.js'
+import { retryDelay, waitNetworkDelay } from '../networkRetry'
 import { getHttpFetch } from '../../utils/tauri'
 import { auditHttpRequest } from '../trafficAudit/http'
 import { resolveAndroidTailscaleUrl } from '../../utils/androidTailscale'
@@ -470,12 +471,37 @@ export function getPiSessionState(sessionId: string, signal?: AbortSignal): Prom
  * 读取 OMP 子代理会话转录（磁盘回填/增量续读）。session 命令跑在父会话
  * runtime 上：父会话 attach 后才可用。
  */
-export function getOmpSubagentMessages(
+export async function getOmpSubagentMessages(
   sessionId: string,
   params: { subagentId?: string; sessionFile?: string; fromByte?: number } | undefined,
   signal?: AbortSignal,
 ): Promise<JsonValue> {
-  return postPiSessionCommand(sessionId, 'subagent.messages', params, signal)
+  const messages: JsonObject[] = []
+  let pending = ''
+  let cursor = params?.fromByte ?? 0
+  const base = getApiBase()
+  for (;;) {
+    if (getApiBase() !== base) throw new DOMException('Server changed', 'AbortError')
+    const page = await postPiSessionCommand(sessionId, 'subagent.messages', { ...params, fromByte: cursor }, signal)
+    if (!page || typeof page !== 'object' || Array.isArray(page) || typeof page.transcript !== 'string') return page
+    if (page.reset) { messages.length = 0; pending = '' }
+    pending += page.transcript
+    const lines = pending.split('\n')
+    pending = lines.pop() ?? ''
+    if (!page.hasMore && pending) { lines.push(pending); pending = '' }
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line) as JsonObject
+        if (entry.type === 'message' && entry.message && typeof entry.message === 'object' && !Array.isArray(entry.message)) {
+          messages.push(entry.message)
+        }
+      } catch { /* 正在写入的末行不作为完整消息交付。 */ }
+    }
+    const next = Number(page.nextByte)
+    if (!page.hasMore) return { messages, fromByte: params?.fromByte ?? 0, nextByte: next, reset: Boolean(page.reset) }
+    if (!Number.isSafeInteger(next) || next <= cursor) throw new Error('Transcript cursor did not advance')
+    cursor = next
+  }
 }
 
 /** 列出父会话文件旁嵌套的 OMP 子代理会话（OpenCodeUI children 语义） */
@@ -756,8 +782,11 @@ export function setPiFollowUpMode(sessionId: string, mode: 'all' | 'one-at-a-tim
  */
 export async function waitHostCommand(commandId: string, signal?: AbortSignal, timeoutMs = 30_000): Promise<JsonValue> {
   const deadline = Date.now() + timeoutMs
+  let attempt = 0
   for (;;) {
-    const record = await readJson<{ command: CommandRecord }>(
+    const cached = piCommandStore.get(commandId)
+    const record = cached && ['completed', 'failed', 'cancelled', 'unknown_after_crash'].includes(cached.status)
+      ? { command: cached } : await readJson<{ command: CommandRecord }>(
       `${getApiBase()}/api/v1/host/commands/${encodeURIComponent(commandId)}`,
       { signal },
     )
@@ -775,7 +804,7 @@ export async function waitHostCommand(commandId: string, signal?: AbortSignal, t
       })
     }
     if (Date.now() > deadline) throw new Error('Command timed out')
-    await new Promise(resolve => setTimeout(resolve, 200))
+    await waitNetworkDelay(Math.min(deadline - Date.now(), retryDelay(attempt++, 250, 3000)), signal)
   }
 }
 

@@ -39,15 +39,18 @@ import {
 import type { SessionStatus } from '../types/session'
 import { BrowserDiagnostics } from './browserDiagnostics'
 import { markModelSettingsDisconnected, refreshModelSettings } from './modelSettingsSync'
+import { retryDelay } from './networkRetry'
 import { faultSocketOpened, faultSocketClosed, faultSocketUnused, reportRuntimeCrash } from './faultAudit/controller'
 import {
   loadPiSessionData,
   refreshPiBranch,
   refreshPiSessionState,
+  settlePiLiveMessage,
 } from './controllers/index.js'
 
 const PING_INTERVAL_MS = 25_000
 const RECONNECT_DELAY_MS = 1_000
+const MAX_RECONNECT_ATTEMPTS = 10
 const REFRESH_DEBOUNCE_MS = 150
 
 type PiEventPayload = {
@@ -101,6 +104,15 @@ type SessionsUpdatedPayload = {
 class PiEventStream {
   constructor() {
     queueMicrotask(() => this.ensureManagementWatch())
+    const resume = () => {
+      if (!navigator.onLine || document.visibilityState === 'hidden' || !this.hasSubscriptions() || this.ws) return
+      this.reconnectAttempts = 0
+      if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+      this.ensureSocket()
+    }
+    window.addEventListener('online', resume)
+    document.addEventListener('visibilitychange', resume)
   }
 
   private ws: PiSocket | null = null
@@ -114,19 +126,33 @@ class PiEventStream {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private branchRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private stateRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
-  private diskRefreshTimers = new Map<string, number>()
+  private diskRefreshTimers = new Map<string, { timer: number; delay: number }>()
+  private reconnectAttempts = 0
+  private stableTimer: ReturnType<typeof setTimeout> | null = null
+  private subscribeQueued = false
+  private sentStreams = new Set<string>()
 
   /** Subscribe a session stream (reference counted). */
   connect(sessionId: string): void {
     this.refCounts.set(sessionId, (this.refCounts.get(sessionId) ?? 0) + 1)
     if (this.refCounts.get(sessionId) === 1) {
-      let refreshing = false
-      this.diskRefreshTimers.set(sessionId, window.setInterval(() => {
+      const poll = { timer: 0, delay: 1500 }
+      const refresh = async () => {
+        if (this.diskRefreshTimers.get(sessionId) !== poll) return
         const state = piSessionStateStore.getState(sessionId)
-        if (refreshing || (state?.readOnly !== true && state?.diskPreview !== true)) return
-        refreshing = true
-        void refreshPiBranch(sessionId).catch(() => undefined).finally(() => { refreshing = false })
-      }, 1_500))
+        if (navigator.onLine && document.visibilityState !== 'hidden' && (state?.readOnly === true || state?.diskPreview === true)) {
+          const cursor = piBranchStore.getData(sessionId)?.syncCursor
+          try {
+            await refreshPiBranch(sessionId)
+            poll.delay = cursor !== piBranchStore.getData(sessionId)?.syncCursor ? 1500 : Math.min(10_000, poll.delay * 1.5)
+          } catch {
+            poll.delay = Math.min(30_000, poll.delay * 2)
+          }
+        }
+        if (this.diskRefreshTimers.get(sessionId) === poll) poll.timer = window.setTimeout(() => void refresh(), retryDelay(0, poll.delay, poll.delay))
+      }
+      this.diskRefreshTimers.set(sessionId, poll)
+      poll.timer = window.setTimeout(() => void refresh(), poll.delay)
       this.ensureSocket()
       if (this.ws?.readyState === PI_SOCKET_OPEN) this.sendSubscribe()
     }
@@ -137,7 +163,7 @@ class PiEventStream {
     const count = this.refCounts.get(sessionId) ?? 0
     if (count <= 1) {
       this.refCounts.delete(sessionId)
-      this.cursors.delete(eventStreamKey({ kind: 'session', id: sessionId }))
+      // 暂时关掉 pane 仍保留游标；服务端切换时由 disconnectAll 统一清理。
       this.pendingLiveMessages.delete(sessionId)
       this.diagnostics.forget(sessionId)
       this.clearRefreshTimers(sessionId)
@@ -196,6 +222,7 @@ class PiEventStream {
     this.refCounts.clear()
     this.workspaceRefCounts.clear()
     this.cursors.clear()
+    this.reconnectAttempts = 0
     this.pendingLiveMessages.clear()
     piCommandStore.clearAll()
     this.closeSocket()
@@ -213,7 +240,7 @@ class PiEventStream {
 
   private clearRefreshTimers(sessionId: string): void {
     const diskTimer = this.diskRefreshTimers.get(sessionId)
-    clearInterval(diskTimer)
+    if (diskTimer) clearTimeout(diskTimer.timer)
     this.diskRefreshTimers.delete(sessionId)
     const branchTimer = this.branchRefreshTimers.get(sessionId)
     if (branchTimer) {
@@ -229,6 +256,7 @@ class PiEventStream {
 
   private ensureSocket(): void {
     if (this.ws && this.ws.readyState !== PI_SOCKET_CLOSED && this.ws.readyState !== PI_SOCKET_CLOSING) return
+    if (this.reconnectTimer || this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS || !navigator.onLine) return
     this.openSocket()
   }
 
@@ -239,6 +267,7 @@ class PiEventStream {
     const ws = this.ws
     this.ws = null
     this.clearPing()
+    this.sentStreams.clear()
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
@@ -262,6 +291,7 @@ class PiEventStream {
       this.diagnostics.connected(this.lastCloseCode)
       this.sendSubscribe()
       notifyReconnected()
+      this.stableTimer = setTimeout(() => { this.reconnectAttempts = 0 }, 30_000)
       if (this.lastCloseCode !== undefined) refreshModelSettings()
       this.pingTimer = setInterval(() => {
         this.send({ type: 'ping', protocolVersion: PROTOCOL_VERSION })
@@ -279,14 +309,17 @@ class PiEventStream {
       faultSocketClosed(event.code)
       this.clearPing()
       this.ws = null
+      this.sentStreams.clear()
       markModelSettingsDisconnected()
       this.lastCloseCode = event.code
       if (this.hasSubscriptions()) {
         if (this.reconnectTimer) return
+        if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS || !navigator.onLine) return
+        const delay = retryDelay(this.reconnectAttempts++, RECONNECT_DELAY_MS)
         this.reconnectTimer = setTimeout(() => {
           this.reconnectTimer = null
           if (!this.ws) this.openSocket()
-        }, RECONNECT_DELAY_MS)
+        }, delay)
       }
     }
     ws.onerror = () => {
@@ -295,6 +328,15 @@ class PiEventStream {
   }
 
   private sendSubscribe(): void {
+    if (this.subscribeQueued) return
+    this.subscribeQueued = true
+    queueMicrotask(() => {
+      this.subscribeQueued = false
+      if (this.ws?.readyState === PI_SOCKET_OPEN) this.flushSubscribe()
+    })
+  }
+
+  private flushSubscribe(): void {
     const streams: EventStreamRef[] = [{ kind: 'server', id: 'server' }]
     const cursors: EventCursorMap = {}
     const serverCursor = this.cursors.get('server')
@@ -327,8 +369,9 @@ class PiEventStream {
     // 上下文用量永远不恢复。每次订阅建立都主动 pull 一次（有防抖合并），
     // 让打开/刷新会话时立即拿到正在工作的 runtime 的真实状态。
     for (const sessionId of this.refCounts.keys()) {
-      this.scheduleStateRefresh(sessionId)
+      if (!this.sentStreams.has(eventStreamKey({ kind: 'session', id: sessionId }))) this.scheduleStateRefresh(sessionId)
     }
+    this.sentStreams = new Set(streams.map(eventStreamKey))
   }
 
   private send(message: unknown): void {
@@ -559,7 +602,9 @@ class PiEventStream {
       activeSessionStore.updateStatus(sessionId, activityToSessionStatus(status))
     }
     // Sessions no longer active -> idle (clears their dot)
-    const candidates = new Set([...this.knownActiveSessions, ...this.refCounts.keys()])
+    const candidates = snapshot.delta
+      ? new Set(snapshot.removed ?? [])
+      : new Set([...this.knownActiveSessions, ...this.refCounts.keys()])
     for (const sessionId of candidates) {
       if (!(sessionId in active)) {
         this.diagnostics.record('activity', { sessionId, status: 'idle' })
@@ -571,7 +616,10 @@ class PiEventStream {
         notifySessionIdle(sessionId)
       }
     }
-    this.knownActiveSessions = new Set(Object.keys(active))
+    if (snapshot.delta) {
+      for (const id of snapshot.removed ?? []) this.knownActiveSessions.delete(id)
+      for (const id of Object.keys(active)) this.knownActiveSessions.add(id)
+    } else this.knownActiveSessions = new Set(Object.keys(active))
   }
 
   private markSessionSettled(sessionId: string): void {
@@ -579,7 +627,7 @@ class PiEventStream {
       isStreaming: false, isIdle: true, isRetrying: false, isCompacting: false,
       isBashRunning: false, hasPendingAsyncWork: false, retry: null, compaction: null,
     })
-    piBranchStore.settleLiveMessage(sessionId)
+    settlePiLiveMessage(sessionId)
     this.pendingLiveMessages.delete(sessionId)
   }
 
@@ -751,10 +799,11 @@ class PiEventStream {
     if (stream.kind === 'session') {
       // Preview includes the checkpoint for an attached runtime. External
       // histories stay disk-only; neither refresh is allowed to spawn a writer.
-      void loadPiSessionData(stream.id)
+      const refresh = piBranchStore.getData(stream.id) ? refreshPiBranch : loadPiSessionData
+      void refresh(stream.id)
         .then(() => this.diagnostics.state(stream.id, piSessionStateStore.getState(stream.id)))
         .catch(error => this.diagnostics.error('branch_error', stream.id, error))
-        .then(() => refreshPiBranch(stream.id).catch(() => undefined))
+        .then(() => this.flushPendingLiveMessage(stream.id))
       this.scheduleStateRefresh(stream.id)
     } else if (stream.kind === 'server') {
       window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
@@ -793,6 +842,8 @@ class PiEventStream {
   }
 
   private clearPing(): void {
+    if (this.stableTimer) clearTimeout(this.stableTimer)
+    this.stableTimer = null
     if (this.pingTimer) {
       clearInterval(this.pingTimer)
       this.pingTimer = null

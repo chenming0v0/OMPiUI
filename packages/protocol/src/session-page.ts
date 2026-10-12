@@ -43,7 +43,7 @@ export type BranchSyncRequest = {
 
 /**
  * Global session activity status (sessions.activity channel, server stream).
- * Full snapshot on every change: sessions present are active; absent = idle.
+ * 首次订阅发送全量快照；后续 delta 仅包含变化项及 removed 中的空闲会话。
  */
 export type SessionActivityStatus =
   | { type: "busy" }
@@ -52,4 +52,6 @@ export type SessionActivityStatus =
 
 export type SessionsActivitySnapshot = {
   sessions: Record<string, SessionActivityStatus>
+  delta?: boolean
+  removed?: string[]
 }

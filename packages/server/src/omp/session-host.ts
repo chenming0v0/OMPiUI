@@ -67,6 +67,8 @@ function idleRuntimeTtlMs(): number {
 export class SessionHost {
   private readonly runtimes = new SessionRuntimeRegistry()
   private readonly activity = new Map<string, SessionActivityStatus>()
+  private activityTimer?: NodeJS.Timeout
+  private lastActivity = new Map<string, SessionActivityStatus>()
   private readonly lastAccess = new Map<string, number>()
   private readonly materialized = new Set<string>()
   private readonly runtimeReaper: NodeJS.Timeout
@@ -793,15 +795,30 @@ export class SessionHost {
   }
 
   private publishActivity(): void {
-    this.hub.publish({ kind: "server", id: "server" }, "sessions.activity", this.getActivitySnapshot() as unknown as JsonValue)
+    if (this.activityTimer) return
+    this.activityTimer = setTimeout(() => {
+      this.activityTimer = undefined
+      const sessions: Record<string, SessionActivityStatus> = {}
+      for (const [id, status] of this.activity) {
+        if (JSON.stringify(this.lastActivity.get(id)) !== JSON.stringify(status)) sessions[id] = status
+      }
+      const removed = [...this.lastActivity.keys()].filter(id => !this.activity.has(id))
+      this.lastActivity = new Map(this.activity)
+      if (Object.keys(sessions).length || removed.length) {
+        this.hub.publish({ kind: "server", id: "server" }, "sessions.activity", { sessions, removed, delta: true } as unknown as JsonValue)
+      }
+    }, 200)
+    this.activityTimer.unref()
   }
 
   dispose(): void {
+    if (this.activityTimer) clearTimeout(this.activityTimer)
     this.recoveryController.abort()
     diagnostics.record("session.host.disposed", { sessionIds: this.listAttachedIds(), reason: "server_shutdown" })
     clearInterval(this.runtimeReaper)
     this.lastAccess.clear()
     this.activity.clear()
+    this.lastActivity.clear()
     this.materialized.clear()
   }
 

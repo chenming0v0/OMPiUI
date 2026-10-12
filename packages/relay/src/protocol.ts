@@ -27,7 +27,7 @@ export const CONTROL_MESSAGE_MAX = 256 * 1024
 /** 每条隧道的并发虚拟连接上限（Pebrel 同类限额的精神）。 */
 export const CONNECTIONS_PER_TUNNEL_MAX = 64
 
-/** 每条隧道持续消息速率上限：令牌桶容量 200、每秒回填 100。 */
+/** 每条隧道新建 HTTP/upgrade 请求速率：容量 200、每秒回填 100；数据面另按字节和帧计费。 */
 export const MESSAGE_RATE_PER_SECOND = 100
 export const MESSAGE_RATE_BURST = 200
 

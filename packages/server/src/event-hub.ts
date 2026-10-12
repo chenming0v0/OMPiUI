@@ -13,22 +13,29 @@ import {
 
 type Listener = (event: EventEnvelope) => void
 const MAX_STREAMS = 4096
+const MAX_LISTENERS = 1024
+const STREAM_HISTORY_BYTES = 2 * 1024 * 1024
+const TOTAL_HISTORY_BYTES = 32 * 1024 * 1024
 
 interface StreamState {
   stream: EventStreamRef
   epoch: string
   sequence: number
   history: EventEnvelope[]
+  sizes: number[]
+  bytes: number
 }
 
 export class EventHub {
   private readonly listeners = new Set<Listener>()
   private readonly streams = new Map<string, StreamState>()
   private readonly emptyEpoch = randomUUID()
+  private historyBytes = 0
 
   constructor(private readonly historyLimit = 256) {}
 
   subscribe(listener: Listener): () => void {
+    if (this.listeners.size >= MAX_LISTENERS) throw new Error("event subscriber limit reached")
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
   }
@@ -45,9 +52,17 @@ export class EventHub {
       channel,
       payload,
     }
+    const bytes = Buffer.byteLength(JSON.stringify(event))
     state.history.push(event)
-    if (state.history.length > this.historyLimit) {
-      state.history.splice(0, state.history.length - this.historyLimit)
+    state.sizes.push(bytes)
+    state.bytes += bytes
+    this.historyBytes += bytes
+    while (state.history.length > this.historyLimit || state.bytes > STREAM_HISTORY_BYTES) this.shiftHistory(state)
+    if (this.historyBytes > TOTAL_HISTORY_BYTES) {
+      for (const oldest of this.streams.values()) {
+        while (oldest.history.length && this.historyBytes > TOTAL_HISTORY_BYTES) this.shiftHistory(oldest)
+        if (this.historyBytes <= TOTAL_HISTORY_BYTES) break
+      }
     }
     for (const listener of this.listeners) {
       try {
@@ -101,8 +116,17 @@ export class EventHub {
     state.epoch = randomUUID()
     state.sequence = 0
     state.history.length = 0
+    this.historyBytes -= state.bytes
+    state.bytes = 0
+    state.sizes.length = 0
   }
 
+  private shiftHistory(state: StreamState): void {
+    state.history.shift()
+    const bytes = state.sizes.shift() ?? 0
+    state.bytes -= bytes
+    this.historyBytes -= bytes
+  }
 
   private getOrCreate(stream: EventStreamRef): StreamState {
     const key = eventStreamKey(stream)
@@ -116,9 +140,12 @@ export class EventHub {
     // cannot consume slots, pin entries, or evict another client's cursor.
     if (this.streams.size >= MAX_STREAMS) {
       const oldest = this.streams.keys().next().value
-      if (oldest !== undefined) this.streams.delete(oldest)
+      if (oldest !== undefined) {
+        this.historyBytes -= this.streams.get(oldest)!.bytes
+        this.streams.delete(oldest)
+      }
     }
-    const state: StreamState = { stream, epoch: randomUUID(), sequence: 0, history: [] }
+    const state: StreamState = { stream, epoch: randomUUID(), sequence: 0, history: [], sizes: [], bytes: 0 }
     this.streams.set(key, state)
     return state
   }

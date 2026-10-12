@@ -90,7 +90,8 @@ export function entriesPageFromEntries<T>(
 export function imageAttachmentFromEntry(
   entry: JsonObject,
   blockIndex: number,
-): { mimeType: string; data: string; etag: string } {
+  offset = 0,
+): JsonObject {
   const message = asRecord(entry.message)
   const content = message.content
   if (!Array.isArray(content)) throw notFound("entry has no message content")
@@ -98,10 +99,17 @@ export function imageAttachmentFromEntry(
   if (block.type !== "image" || typeof block.mimeType !== "string" || typeof block.data !== "string") {
     throw notFound("image block not found")
   }
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > block.data.length || offset % 4 !== 0) {
+    throw Object.assign(new Error("invalid attachment offset"), { code: "INVALID_REQUEST" })
+  }
+  const nextOffset = Math.min(block.data.length, offset + 256 * 1024)
   return {
     mimeType: block.mimeType,
-    data: block.data,
-    etag: `"${createHash("sha256").update(Buffer.from(block.data, "base64")).digest("hex")}"`,
+    data: block.data.slice(offset, nextOffset),
+    etag: `"${createHash("sha256").update(block.data).digest("hex")}"`,
+    nextOffset,
+    totalChars: block.data.length,
+    hasMore: nextOffset < block.data.length,
   }
 }
 
