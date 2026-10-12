@@ -63,6 +63,18 @@ export async function deletePiSession(cwd: string, sessionFile: string, signal?:
  */
 const subagentSessionLookups = new Map<string, Promise<{ id: string; directory: string }>>()
 
+/** 子会话解析缓存绑定服务器世代:切换服务器后整表作废,旧世代的在途解析不得写回新世代。 */
+let subagentLookupsGeneration = -1
+
+function currentSubagentLookups(): Map<string, Promise<{ id: string; directory: string }>> {
+  const generation = serverStore.getActiveServerGeneration()
+  if (generation !== subagentLookupsGeneration) {
+    subagentSessionLookups.clear()
+    subagentLookupsGeneration = generation
+  }
+  return subagentSessionLookups
+}
+
 /** 查看子会话只解析磁盘身份，不启动 Agent runtime，也不争用运行锁。 */
 export function openSubagentSession(
   directory: string,
@@ -72,14 +84,24 @@ export function openSubagentSession(
   const normalizedFile = sessionFile.replace(/\\/g, '/')
   const windowsPath = /^[a-z]:\//i.test(normalizedFile) || normalizedFile.startsWith('//')
   const cacheKey = windowsPath ? normalizedFile.toLowerCase() : normalizedFile
-  const cached = subagentSessionLookups.get(cacheKey)
+  const lookups = currentSubagentLookups()
+  const cached = lookups.get(cacheKey)
   if (cached) return cached
-  const lookup = resolveSubagentSession(directory, normalizedFile, signal).catch(error => {
-    // 失败不缓存：子会话文件可能稍后才落盘，下次调用重试
-    subagentSessionLookups.delete(cacheKey)
-    throw error
-  })
-  subagentSessionLookups.set(cacheKey, lookup)
+  const generation = serverStore.getActiveServerGeneration()
+  const lookup = resolveSubagentSession(directory, normalizedFile, signal)
+    .then(result => {
+      // 解析期间切换过服务器:结果属于旧服务器,不回填新世代缓存
+      if (serverStore.getActiveServerGeneration() !== generation) {
+        throw new Error('Server changed during subagent lookup')
+      }
+      return result
+    })
+    .catch(error => {
+      // 失败不缓存:子会话文件可能稍后才落盘,下次调用重试
+      if (lookups.get(cacheKey) === lookup) lookups.delete(cacheKey)
+      throw error
+    })
+  lookups.set(cacheKey, lookup)
   return lookup
 }
 

@@ -17,6 +17,7 @@ class ModelVisibilityStore {
   private hiddenModelKeys = new Set<string>()
   private listeners = new Set<Listener>()
   private snapshot: string[] = []
+  private ownerServerId = ''
 
   constructor() {
     this.reload()
@@ -34,6 +35,14 @@ class ModelVisibilityStore {
     this.listeners.forEach(listener => listener())
   }
 
+  // 写入前校验归属,避免把旧服务器的隐藏模型集合写入新服务器键
+  private ensureOwner(): boolean {
+    if (serverStore.getActiveServerId() === this.ownerServerId) return true
+    this.reload()
+    this.emit()
+    return false
+  }
+
   private commit() {
     this.syncSnapshot()
     serverStorage.setJSON(STORAGE_KEY_HIDDEN_MODELS, this.snapshot)
@@ -42,6 +51,7 @@ class ModelVisibilityStore {
 
   private reload() {
     this.hiddenModelKeys = new Set(loadHiddenModelKeys())
+    this.ownerServerId = serverStore.getActiveServerId()
     this.syncSnapshot()
   }
 
@@ -58,6 +68,7 @@ class ModelVisibilityStore {
   }
 
   setVisible(model: AnyModel | string, visible: boolean) {
+    if (!this.ensureOwner()) return
     const key = typeof model === 'string' ? model : getModelKey(model)
     let changed = false
     if (visible) {
@@ -71,6 +82,7 @@ class ModelVisibilityStore {
   }
 
   setManyVisible(models: AnyModel[], visible: boolean) {
+    if (!this.ensureOwner()) return
     let changed = false
     for (const model of models) {
       const key = getModelKey(model)

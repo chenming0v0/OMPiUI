@@ -56,6 +56,7 @@ function loadEntries(): PinnedSessionEntry[] {
 class PinnedSessionsStore {
   private entries: PinnedSessionEntry[] = []
   private listeners = new Set<() => void>()
+  private ownerServerId = serverStore.getActiveServerId()
 
   constructor() {
     this.reload()
@@ -67,6 +68,7 @@ class PinnedSessionsStore {
 
   private reload() {
     this.entries = loadEntries()
+    this.ownerServerId = serverStore.getActiveServerId()
   }
 
   isPinned(sessionId: string): boolean {
@@ -74,6 +76,7 @@ class PinnedSessionsStore {
   }
 
   pin(entry: PinnedSessionEntry) {
+    if (!this.ensureOwner()) return
     const existingIndex = this.entries.findIndex(e => e.sessionId === entry.sessionId)
     if (existingIndex !== -1) {
       const existing = this.entries[existingIndex]
@@ -93,6 +96,7 @@ class PinnedSessionsStore {
   }
 
   update(sessionId: string, patch: Partial<Omit<PinnedSessionEntry, 'sessionId'>>) {
+    if (!this.ensureOwner()) return
     const index = this.entries.findIndex(e => e.sessionId === sessionId)
     if (index === -1) return
     const next = { ...this.entries[index], ...patch }
@@ -103,11 +107,21 @@ class PinnedSessionsStore {
   }
 
   unpin(sessionId: string) {
+    if (!this.ensureOwner()) return
     const idx = this.entries.findIndex(e => e.sessionId === sessionId)
     if (idx === -1) return
     this.entries = [...this.entries.slice(0, idx), ...this.entries.slice(idx + 1)]
     this.persist()
     this.emit()
+  }
+
+  // 写入前校验归属:快照若不属于当前服务器,丢弃本次操作并按当前服务器重载,
+  // 防止 A 服务器的置顶条目被写进 B 服务器的存储键。
+  private ensureOwner(): boolean {
+    if (serverStore.getActiveServerId() === this.ownerServerId) return true
+    this.reload()
+    this.emit()
+    return false
   }
 
   private persist() {
