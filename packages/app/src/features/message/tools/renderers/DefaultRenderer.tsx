@@ -8,6 +8,7 @@ import { themeStore } from '../../../../store/themeStore'
 import { useLiveToolOutput } from '../../../../omp/liveToolOutput'
 import type { ToolRendererProps, ExtractedToolData } from '../types'
 import { AuthenticatedImage } from '../../../attachment'
+import { HistoryImage } from '../../HistoryImage'
 
 // ============================================
 // Default Tool Renderer
@@ -76,15 +77,19 @@ export function DefaultRenderer({ execution, partKey, data, onFullscreenChange }
       ) : null}
       {data.images?.length ? (
         <div className="grid grid-cols-2 gap-2">
-          {data.images.map((image, index) => (
-            <AuthenticatedImage
-              key={`${image.mimeType}-${index}`}
-              src={image.url}
-              requiresAuth={image.requiresAuth}
-              alt={`${tool} result ${index + 1}`}
-              className="max-h-64 w-full object-contain border border-border-200 bg-bg-100"
-            />
-          ))}
+          {data.images.map((image, index) =>
+            image.block ? (
+              <HistoryImage key={`${image.mimeType}-${index}`} block={image.block} id={`${partKey}:image:${index}`} />
+            ) : (
+              <AuthenticatedImage
+                key={`${image.mimeType}-${index}`}
+                src={image.url}
+                requiresAuth={image.requiresAuth}
+                alt={`${tool} result ${index + 1}`}
+                className="max-h-64 w-full object-contain border border-border-200 bg-bg-100"
+              />
+            ),
+          )}
         </div>
       ) : null}
 

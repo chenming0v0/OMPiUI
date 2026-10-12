@@ -70,15 +70,16 @@ export class RuntimeSupervisor {
 
   async catalogCommand(type: string, params?: JsonObject, options: { retry?: boolean; idempotent?: boolean; signal?: AbortSignal } = {}): Promise<JsonValue | undefined> {
     if (this.disposed) throw new Error("Runtime supervisor is disposed")
+    const host = this.ensureRuntimeHost()
     try {
-      return await this.ensureRuntimeHost().command(type, params, options.signal)
+      return await host.command(type, params, options.signal)
     } catch (error) {
       const code = errorCode(error)
       if (code !== "WORKER_RESULT_UNKNOWN" && code !== "REQUEST_ABORTED") throw error
       if (this.disposed) throw error
       if (code === "REQUEST_ABORTED" || !options.retry || !options.idempotent) throw error
-      // 命令失败（超时/进程崩溃）：崩溃时 runtimeHost 已被 onCrash 丢弃，
-      // 重试会自动孵化新进程；进程还活着时（纯超时）重试同一进程。
+      // 只有原进程已失效才重试；存活进程的超时命令可能仍在执行。
+      if (this.runtimeHost === host) throw error
       return this.ensureRuntimeHost().command(type, params, options.signal)
     }
   }

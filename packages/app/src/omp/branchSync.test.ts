@@ -7,7 +7,14 @@ import * as transport from './transport/index.js'
 
 function page(ids: string[], syncCursor?: string): PiBranchPage {
   return {
-    head: { sdkVersion: 'test', revision: ids.length, header: null, leafId: ids.at(-1) ?? null, entryCount: ids.length, epoch: `history:${ids.length}` },
+    head: {
+      sdkVersion: 'test',
+      revision: ids.length,
+      header: null,
+      leafId: ids.at(-1) ?? null,
+      entryCount: ids.length,
+      epoch: `history:${ids.length}`,
+    },
     items: ids.map(id => ({ type: 'model_change', id, parentId: null, timestamp: '', provider: 'p', modelId: 'm' })),
     hasMore: false,
     syncCursor,
@@ -25,9 +32,15 @@ describe('branch sync over HTTP', () => {
     const current = page(['old', 'a', 'b'], 'base')
     current.checkpoint = {
       position: { epoch: 'events', sequence: 10 },
-      liveMessage: { id: 'live', revision: 10, phase: 'streaming', message: {
-        role: 'assistant', content: [{ type: 'thinking', thinking: 'newer thinking' }],
-      } } as NonNullable<PiBranchPage['checkpoint']>['liveMessage'],
+      liveMessage: {
+        id: 'live',
+        revision: 10,
+        phase: 'streaming',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'thinking', thinking: 'newer thinking' }],
+        },
+      } as NonNullable<PiBranchPage['checkpoint']>['liveMessage'],
     }
     const delta = { ...page(['c'], 'next'), deltaFrom: 'base', beforeCursor: 'renewed', hasMore: true }
     const result = mergeLatestBranchPage(current, delta)
@@ -55,7 +68,8 @@ describe('branch sync over HTTP', () => {
 
   it('requests a delta only after the server supplies a baseline; older servers remain full-page reads', async () => {
     piBranchStore.setData('sync', page(['a']))
-    const fetch = vi.spyOn(transport, 'getPiBranchPage')
+    const fetch = vi
+      .spyOn(transport, 'getPiBranchPage')
       .mockResolvedValueOnce(page(['a', 'b'], 'base'))
       .mockResolvedValueOnce({ ...page(['c'], 'next'), deltaFrom: 'base' })
     await refreshPiBranch('sync')
@@ -68,14 +82,22 @@ describe('branch sync over HTTP', () => {
   it('preserves the baseline and latest head when loading older history, then renews the correct edge', async () => {
     const current = { ...page(['c', 'd'], 'base'), hasMore: true, beforeCursor: 'before-c' }
     piBranchStore.setData('sync', current)
-    vi.spyOn(transport, 'getPiBranchPage').mockResolvedValueOnce({ ...page(['b']), hasMore: true, beforeCursor: 'before-b' })
+    vi.spyOn(transport, 'getPiBranchPage')
+      .mockResolvedValueOnce({ ...page(['b']), hasMore: true, beforeCursor: 'before-b' })
       .mockResolvedValueOnce({ ...page(['e'], 'next'), deltaFrom: 'base', hasMore: true, beforeCursor: 'renewed-b' })
     await loadMorePiBranchEntries('sync')
     expect(piBranchStore.getData('sync')).toMatchObject({ syncCursor: 'base', head: current.head })
     await refreshPiBranch('sync')
-    expect(transport.getPiBranchPage).toHaveBeenLastCalledWith('sync', {
-      limit: 100, maxBytes: 2 * 1024 * 1024, syncCursor: 'base', beforeId: 'b',
-    }, undefined)
+    expect(transport.getPiBranchPage).toHaveBeenLastCalledWith(
+      'sync',
+      {
+        limit: 100,
+        maxBytes: 2 * 1024 * 1024,
+        syncCursor: 'base',
+        beforeId: 'b',
+      },
+      undefined,
+    )
     expect(piBranchStore.getData('sync')?.items.map(entry => entry.id)).toEqual(['b', 'c', 'd', 'e'])
     expect(piBranchStore.getData('sync')?.beforeCursor).toBe('renewed-b')
   })
@@ -84,10 +106,14 @@ describe('branch sync over HTTP', () => {
     piBranchStore.setData('sync', page(['a'], 'base'))
     let resolve!: (value: PiBranchPage) => void
     vi.spyOn(transport, 'getPiBranchPage')
-      .mockReturnValueOnce(new Promise(done => { resolve = done }))
+      .mockReturnValueOnce(
+        new Promise(done => {
+          resolve = done
+        }),
+      )
       .mockResolvedValueOnce({ ...page(['b', 'c'], 'newer'), deltaFrom: 'base' })
-    const first = refreshPiBranch('sync')
-    await refreshPiBranch('sync')
+    const first = refreshPiBranch('sync', new AbortController().signal)
+    await refreshPiBranch('sync', new AbortController().signal)
     resolve({ ...page(['b'], 'older'), deltaFrom: 'base' })
     await first
     expect(piBranchStore.getData('sync')?.items.map(entry => entry.id)).toEqual(['a', 'b', 'c'])
@@ -96,7 +122,8 @@ describe('branch sync over HTTP', () => {
 
   it('falls back to a full read if a delta response has an unexpected baseline', async () => {
     piBranchStore.setData('sync', page(['a'], 'base'))
-    const fetch = vi.spyOn(transport, 'getPiBranchPage')
+    const fetch = vi
+      .spyOn(transport, 'getPiBranchPage')
       .mockResolvedValueOnce({ ...page(['c'], 'next'), deltaFrom: 'different' })
       .mockResolvedValueOnce(page(['a', 'b', 'c'], 'full'))
     await refreshPiBranch('sync')

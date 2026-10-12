@@ -1,18 +1,46 @@
-import { randomUUID } from "node:crypto"
-import { homedir } from "node:os"
-import { existsSync } from "node:fs"
-import { readdir } from "node:fs/promises"
-import { open } from "node:fs/promises"
-import { dirname, join, resolve } from "node:path"
-import type { CommandEnvelope, CommandRecord, JsonObject, JsonValue, PiCapability, PiRegistrySnapshot, RegistrySnapshot, SessionActivityStatus, SessionsActivitySnapshot } from "@ompiui/protocol"
-import { isJsonObject, PI_PARITY_SDK_VERSION, PROTOCOL_VERSION, validateParams } from "@ompiui/protocol"
-import { createRegistryDescribeCapability, getCommandCapability, getDriverMode, listCommandCapabilities, type WorkerEvent } from "@ompiui/omp-worker"
-import type { EventHub } from "../event-hub.ts"
-import { logToFile } from "../logger.ts"
-import { diagnostics, diagnosticErrorCode, summarizeRunState } from "../diagnostics/recorder.ts"
-import type { RuntimeSupervisor } from "./supervisor.ts"
-import { SessionExecutor, type SubmittedCommand } from "./session-executor.ts"
-import { SessionRuntimeRegistry, type AttachedSession } from "./session-registry.ts"
+import { randomUUID } from "node:crypto";
+import { homedir } from "node:os";
+import { existsSync } from "node:fs";
+import { readdir } from "node:fs/promises";
+import { open } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import type {
+  CommandEnvelope,
+  CommandRecord,
+  JsonObject,
+  JsonValue,
+  PiCapability,
+  PiRegistrySnapshot,
+  RegistrySnapshot,
+  SessionActivityStatus,
+  SessionsActivitySnapshot,
+} from "@ompiui/protocol";
+import {
+  isJsonObject,
+  PI_PARITY_SDK_VERSION,
+  PROTOCOL_VERSION,
+  validateParams,
+} from "@ompiui/protocol";
+import {
+  createRegistryDescribeCapability,
+  getCommandCapability,
+  getDriverMode,
+  listCommandCapabilities,
+  type WorkerEvent,
+} from "@ompiui/omp-worker";
+import type { EventHub } from "../event-hub.ts";
+import { logToFile } from "../logger.ts";
+import {
+  diagnostics,
+  diagnosticErrorCode,
+  summarizeRunState,
+} from "../diagnostics/recorder.ts";
+import type { RuntimeSupervisor } from "./supervisor.ts";
+import { SessionExecutor, type SubmittedCommand } from "./session-executor.ts";
+import {
+  SessionRuntimeRegistry,
+  type AttachedSession,
+} from "./session-registry.ts";
 
 const SERVER_GLOBAL_CAPABILITIES: PiCapability[] = [
   {
@@ -24,7 +52,11 @@ const SERVER_GLOBAL_CAPABILITIES: PiCapability[] = [
       type: "object",
       additionalProperties: true,
       required: ["cwd"],
-      properties: { cwd: { type: "string" }, sessionFile: { type: "string" }, reuseFromSessionId: { type: "string" } },
+      properties: {
+        cwd: { type: "string" },
+        sessionFile: { type: "string" },
+        reuseFromSessionId: { type: "string" },
+      },
     },
     queue: "immediate",
   },
@@ -33,95 +65,155 @@ const SERVER_GLOBAL_CAPABILITIES: PiCapability[] = [
     scope: "global",
     source: "ompiui-adapter",
     description: "List Pi session ids currently attached to this PiUI server",
-    paramsSchema: { type: "object", additionalProperties: false, properties: {} },
+    paramsSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {},
+    },
     queue: "immediate",
   },
-]
+];
 
-const SERVER_SESSION_CAPABILITIES: PiCapability[] = [{
-  name: "session.close",
-  scope: "session",
-  source: "ompiui-adapter",
-  description: "Detach a Pi session runtime from PiUI",
-  paramsSchema: { type: "object", additionalProperties: false, properties: {} },
-  queue: "immediate",
-}]
+const SERVER_SESSION_CAPABILITIES: PiCapability[] = [
+  {
+    name: "session.close",
+    scope: "session",
+    source: "ompiui-adapter",
+    description: "Detach a Pi session runtime from PiUI",
+    paramsSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {},
+    },
+    queue: "immediate",
+  },
+];
 
-const DEFAULT_IDLE_RUNTIME_TTL_MS = 2 * 60_000
-const RUNTIME_REAPER_INTERVAL_MS = 30_000
-const ATTACH_BUSY_RETRIES = 12
-const ATTACH_BUSY_DELAY_MS = 100
+const DEFAULT_IDLE_RUNTIME_TTL_MS = 2 * 60_000;
+const RUNTIME_REAPER_INTERVAL_MS = 30_000;
+const ATTACH_BUSY_RETRIES = 12;
+const ATTACH_BUSY_DELAY_MS = 100;
 const DIAGNOSTIC_AGENT_EVENTS = new Set([
-  "agent_start", "agent_end", "agent_settled", "turn_start", "turn_end", "message_end",
-  "tool_execution_start", "tool_execution_end", "queue_update",
-  "auto_retry_start", "auto_retry_end", "compaction_start", "compaction_end", "goal_updated",
-])
+  "agent_start",
+  "agent_end",
+  "agent_settled",
+  "turn_start",
+  "turn_end",
+  "message_end",
+  "tool_execution_start",
+  "tool_execution_end",
+  "queue_update",
+  "auto_retry_start",
+  "auto_retry_end",
+  "compaction_start",
+  "compaction_end",
+  "goal_updated",
+]);
 
 function idleRuntimeTtlMs(): number {
-  const configured = Number(process.env.OMPIUI_SESSION_IDLE_TTL_MS)
+  const configured = Number(process.env.OMPIUI_SESSION_IDLE_TTL_MS);
   return Number.isFinite(configured) && configured >= 30_000
     ? configured
-    : DEFAULT_IDLE_RUNTIME_TTL_MS
+    : DEFAULT_IDLE_RUNTIME_TTL_MS;
 }
 
 export class SessionHost {
-  private readonly runtimes = new SessionRuntimeRegistry()
-  private readonly activity = new Map<string, SessionActivityStatus>()
-  private readonly lastAccess = new Map<string, number>()
-  private readonly materialized = new Set<string>()
-  private readonly runtimeReaper: NodeJS.Timeout
-  private readonly recoveryController = new AbortController()
-  private readonly recoveries = new Map<string, Promise<void>>()
-  readonly executor: SessionExecutor
+  private readonly runtimes = new SessionRuntimeRegistry();
+  private readonly activity = new Map<string, SessionActivityStatus>();
+  private activityTimer?: NodeJS.Timeout;
+  private lastActivity = new Map<string, SessionActivityStatus>();
+  private readonly lastAccess = new Map<string, number>();
+  private readonly materialized = new Set<string>();
+  private readonly runtimeReaper: NodeJS.Timeout;
+  private readonly recoveryController = new AbortController();
+  private readonly recoveries = new Map<string, Promise<void>>();
+  readonly executor: SessionExecutor;
 
   constructor(
     private readonly supervisor: RuntimeSupervisor,
     private readonly hub: EventHub,
   ) {
-    this.executor = new SessionExecutor(record => this.emitCommandUpdate(record))
-    this.supervisor.onEvent(event => this.routeCatalogEvent(event))
+    this.executor = new SessionExecutor((record) =>
+      this.emitCommandUpdate(record),
+    );
+    this.supervisor.onEvent((event) => this.routeCatalogEvent(event));
     this.runtimeReaper = setInterval(() => {
-      void this.reapIdleRuntimes()
-    }, RUNTIME_REAPER_INTERVAL_MS)
-    this.runtimeReaper.unref?.()
+      void this.reapIdleRuntimes();
+    }, RUNTIME_REAPER_INTERVAL_MS);
+    this.runtimeReaper.unref?.();
   }
 
-  async openSession(cwd: string, sessionFile?: string, signal?: AbortSignal, reuseFromSessionId?: string): Promise<JsonObject> {
-    if (sessionFile && getDriverMode() === "omp" && !this.runtimes.findBySessionFile(sessionFile)) {
-      const found = await this.catalogCommand("session.findByFile", { sessionFile }, { idempotent: true, signal })
+  async openSession(
+    cwd: string,
+    sessionFile?: string,
+    signal?: AbortSignal,
+    reuseFromSessionId?: string,
+  ): Promise<JsonObject> {
+    if (
+      sessionFile &&
+      getDriverMode() === "omp" &&
+      !this.runtimes.findBySessionFile(sessionFile)
+    ) {
+      const found = await this.catalogCommand(
+        "session.findByFile",
+        { sessionFile },
+        { idempotent: true, signal },
+      );
       if (!isJsonObject(found) || typeof found.id !== "string") {
-        throw Object.assign(new Error("session file not found"), { code: "SESSION_NOT_FOUND" })
+        throw Object.assign(new Error("session file not found"), {
+          code: "SESSION_NOT_FOUND",
+        });
       }
-      const preview = await this.catalogCommand("session.preview", { sessionId: found.id }, { idempotent: true, signal })
-      if (!isJsonObject(preview)) throw new Error("Invalid session preview")
-      return { sessionId: found.id, sessionFile, sessionFileReady: true, cwd: found.cwd ?? cwd, state: preview.state ?? null }
+      const preview = await this.catalogCommand(
+        "session.preview",
+        { sessionId: found.id },
+        { idempotent: true, signal },
+      );
+      if (!isJsonObject(preview)) throw new Error("Invalid session preview");
+      return {
+        sessionId: found.id,
+        sessionFile,
+        sessionFileReady: true,
+        cwd: found.cwd ?? cwd,
+        state: preview.state ?? null,
+      };
     }
     if (sessionFile && reuseFromSessionId) {
-      const switched = await this.switchAttachedSession(reuseFromSessionId, cwd, sessionFile, signal)
-      if (switched) return switched
+      const switched = await this.switchAttachedSession(
+        reuseFromSessionId,
+        cwd,
+        sessionFile,
+        signal,
+      );
+      if (switched) return switched;
     }
     if (!sessionFile) {
       // 单共享 worker 进程：runtime 常驻，open 只是进程内建 runtime，
       // 无需 warm/prewarm（旧架构里预热一个 300MB 的独立进程）。
-      return this.openSessionOnce(cwd, sessionFile, signal)
+      return this.openSessionOnce(cwd, sessionFile, signal);
     }
     // 会话文件被租约独占：另一实例正在 attach、或上一次 close/detach 的
     // 释放还没落盘时，acquire 会瞬间 SESSION_BUSY。与 ensureAttached 同
     // 策略在 flight 内退避重试，「打开子会话」这类点击不因毫秒级锁竞争
     // 直接 409。
-    return this.runtimes.openFlight(sessionFile, async openSignal => {
-      let lastError: unknown
-      for (let attempt = 0; attempt <= ATTACH_BUSY_RETRIES; attempt += 1) {
-        try {
-          return await this.openSessionOnce(cwd, sessionFile, openSignal)
-        } catch (error) {
-          lastError = error
-          if (!isSessionBusyError(error) || attempt === ATTACH_BUSY_RETRIES) throw error
-          await waitForRetry(ATTACH_BUSY_DELAY_MS, openSignal)
+    return this.runtimes.openFlight(
+      sessionFile,
+      async (openSignal) => {
+        let lastError: unknown;
+        for (let attempt = 0; attempt <= ATTACH_BUSY_RETRIES; attempt += 1) {
+          try {
+            return await this.openSessionOnce(cwd, sessionFile, openSignal);
+          } catch (error) {
+            lastError = error;
+            if (!isSessionBusyError(error) || attempt === ATTACH_BUSY_RETRIES)
+              throw error;
+            await waitForRetry(ATTACH_BUSY_DELAY_MS, openSignal);
+          }
         }
-      }
-      throw lastError
-    }, signal)
+        throw lastError;
+      },
+      signal,
+    );
   }
 
   private async switchAttachedSession(
@@ -130,225 +222,358 @@ export class SessionHost {
     sessionFile: string,
     signal?: AbortSignal,
   ): Promise<JsonObject | undefined> {
-    const source = this.runtimes.get(sourceSessionId)
-    if (!source || (source.sessionFile && pathKey(source.sessionFile) === pathKey(sessionFile))) return undefined
-    if (this.activity.has(sourceSessionId) || this.executor.hasPendingWork(sourceSessionId) || this.executor.isClosing(sourceSessionId)) {
-      return undefined
+    const source = this.runtimes.get(sourceSessionId);
+    if (
+      !source ||
+      (source.sessionFile &&
+        pathKey(source.sessionFile) === pathKey(sessionFile))
+    )
+      return undefined;
+    if (
+      this.activity.has(sourceSessionId) ||
+      this.executor.hasPendingWork(sourceSessionId) ||
+      this.executor.isClosing(sourceSessionId)
+    ) {
+      return undefined;
     }
-    if (!source.sessionFile || pathKey(dirname(source.sessionFile)) !== pathKey(dirname(sessionFile))) return undefined
+    if (
+      !source.sessionFile ||
+      pathKey(dirname(source.sessionFile)) !== pathKey(dirname(sessionFile))
+    )
+      return undefined;
 
-    const result = await source.worker.command("switchSession", { sessionPath: sessionFile, cwdOverride: cwd }, signal)
+    const result = await source.worker.command(
+      "switchSession",
+      { sessionPath: sessionFile, cwdOverride: cwd },
+      signal,
+    );
     // 静默 runtime 复用：不是用户语义的 session 替换，标记后前端不做 pane remap
-    await this.trackReplacement(source, result, { reason: "runtime-reuse" })
-    const target = this.requireAttached(source.sessionId)
-    const state = await target.worker.command("state.get", undefined, signal) as JsonObject | undefined
+    await this.trackReplacement(source, result, { reason: "runtime-reuse" });
+    const target = this.requireAttached(source.sessionId);
+    const state = (await target.worker.command(
+      "state.get",
+      undefined,
+      signal,
+    )) as JsonObject | undefined;
     return {
       sessionId: target.sessionId,
       sessionFile: target.sessionFile ?? null,
-      sessionFileReady: Boolean(target.sessionFile && existsSync(target.sessionFile)),
+      sessionFileReady: Boolean(
+        target.sessionFile && existsSync(target.sessionFile),
+      ),
       cwd: target.cwd,
       state: state ?? null,
-    }
+    };
   }
 
-  private async openSessionOnce(cwd: string, sessionFile?: string, signal?: AbortSignal): Promise<JsonObject> {
-    if (signal?.aborted) throw abortError()
+  private async openSessionOnce(
+    cwd: string,
+    sessionFile?: string,
+    signal?: AbortSignal,
+  ): Promise<JsonObject> {
+    if (signal?.aborted) throw abortError();
     // Idempotent attach: reopening an already-attached session file reuses
     // its runtime instead of spawning a second worker that would lose the
     // session lease (SESSION_BUSY 409).
     if (sessionFile) {
-      const existing = this.runtimes.findBySessionFile(sessionFile)
+      const existing = this.runtimes.findBySessionFile(sessionFile);
       if (existing) {
         if (this.executor.isClosing(existing.sessionId)) {
-          throw Object.assign(new Error("session runtime is closing"), { code: "RUNTIME_CLOSING" })
+          throw Object.assign(new Error("session runtime is closing"), {
+            code: "RUNTIME_CLOSING",
+          });
         }
-        this.touch(existing.sessionId)
-        const state = await existing.worker.command("state.get") as JsonObject | undefined
+        this.touch(existing.sessionId);
+        const state = (await existing.worker.command("state.get")) as
+          JsonObject | undefined;
         return {
           sessionId: existing.sessionId,
           sessionFile: existing.sessionFile ?? null,
-          sessionFileReady: Boolean(existing.sessionFile && existsSync(existing.sessionFile)),
+          sessionFileReady: Boolean(
+            existing.sessionFile && existsSync(existing.sessionFile),
+          ),
           cwd: existing.cwd,
           state: state ?? null,
-        }
+        };
       }
     }
-    let worker: Awaited<ReturnType<RuntimeSupervisor["open"]>> | undefined
+    let worker: Awaited<ReturnType<RuntimeSupervisor["open"]>> | undefined;
     try {
-      worker = await this.supervisor.open(cwd, sessionFile, signal)
-      const state = await worker.command("state.get", undefined, signal) as JsonObject | undefined
-      if (signal?.aborted || this.recoveryController.signal.aborted) throw abortError()
+      worker = await this.supervisor.open(cwd, sessionFile, signal);
+      const state = (await worker.command("state.get", undefined, signal)) as
+        JsonObject | undefined;
+      if (signal?.aborted || this.recoveryController.signal.aborted)
+        throw abortError();
       const session: AttachedSession = {
         sessionId: worker.getSessionId(),
         cwd: worker.getCwd() || cwd,
         sessionFile: worker.getSessionFile() ?? sessionFile,
         worker,
-      }
-      this.attach(session)
+      };
+      this.attach(session);
       return {
         sessionId: session.sessionId,
         sessionFile: session.sessionFile ?? null,
-        sessionFileReady: Boolean(session.sessionFile && existsSync(session.sessionFile)),
+        sessionFileReady: Boolean(
+          session.sessionFile && existsSync(session.sessionFile),
+        ),
         cwd: session.cwd,
         state: state ?? null,
-      }
+      };
     } catch (error) {
-      await worker?.dispose().catch(() => undefined)
-      throw error
+      await worker?.dispose().catch(() => undefined);
+      throw error;
     }
   }
 
   private attach(session: AttachedSession): void {
-    diagnostics.record("session.attached", { sessionId: session.sessionId })
-    this.executor.resetSession(session.sessionId)
-    this.runtimes.set(session)
-    this.touch(session.sessionId)
+    diagnostics.record("session.attached", { sessionId: session.sessionId });
+    this.executor.resetSession(session.sessionId);
+    this.runtimes.set(session);
+    this.touch(session.sessionId);
     // A session file that already exists is visible to the disk-scanning
     // session list; only fresh sessions need the materialized broadcast.
     if (session.sessionFile && existsSync(session.sessionFile)) {
-      this.materialized.add(session.sessionId)
+      this.materialized.add(session.sessionId);
     }
-    session.worker.onReplacementCommitted?.(replacement => this.trackReplacement(session, replacement, { leaseCommitted: true }))
-    session.worker.onEvent(event => this.routeSessionEvent(session, event))
-    session.worker.onCrash(error => {
-      if (this.runtimes.get(session.sessionId) !== session) return
-      const runtimeExit = "runtimeExit" in error && isJsonObject(error.runtimeExit) ? error.runtimeExit : undefined
-      diagnostics.record("session.crashed", {
-        sessionId: session.sessionId, errorCode: diagnosticErrorCode(error),
-        workerPid: typeof runtimeExit?.pid === "number" ? runtimeExit.pid : undefined,
-        code: typeof runtimeExit?.code === "number" ? runtimeExit.code : undefined,
-        signal: typeof runtimeExit?.signal === "string" ? runtimeExit.signal : undefined,
-        reason: typeof runtimeExit?.reason === "string" ? runtimeExit.reason : undefined,
-      }, "error")
-      const fault = diagnostics.recentFaults().at(-1)
-      this.executor.markRuntimeCrashed(session.sessionId)
-      this.runtimes.delete(session.sessionId)
-      this.activity.delete(session.sessionId)
-      this.lastAccess.delete(session.sessionId)
+    session.worker.onReplacementCommitted?.((replacement) =>
+      this.trackReplacement(session, replacement, { leaseCommitted: true }),
+    );
+    session.worker.onEvent((event) => this.routeSessionEvent(session, event));
+    session.worker.onCrash((error) => {
+      if (this.runtimes.get(session.sessionId) !== session) return;
+      const runtimeExit =
+        "runtimeExit" in error && isJsonObject(error.runtimeExit)
+          ? error.runtimeExit
+          : undefined;
+      diagnostics.record(
+        "session.crashed",
+        {
+          sessionId: session.sessionId,
+          errorCode: diagnosticErrorCode(error),
+          workerPid:
+            typeof runtimeExit?.pid === "number" ? runtimeExit.pid : undefined,
+          code:
+            typeof runtimeExit?.code === "number"
+              ? runtimeExit.code
+              : undefined,
+          signal:
+            typeof runtimeExit?.signal === "string"
+              ? runtimeExit.signal
+              : undefined,
+          reason:
+            typeof runtimeExit?.reason === "string"
+              ? runtimeExit.reason
+              : undefined,
+        },
+        "error",
+      );
+      const fault = diagnostics.recentFaults().at(-1);
+      this.executor.markRuntimeCrashed(session.sessionId);
+      this.runtimes.delete(session.sessionId);
+      this.activity.delete(session.sessionId);
+      this.lastAccess.delete(session.sessionId);
       // Dispose so the process exits and the supervisor releases the lease —
       // without this a crashed runtime orphans the session (permanent
       // SESSION_BUSY on reattach).
-      const cleanup = session.worker.dispose().catch(() => undefined)
-      const sessionFile = session.worker.getSessionFile() ?? session.sessionFile
+      const cleanup = session.worker.dispose().catch(() => undefined);
+      const sessionFile =
+        session.worker.getSessionFile() ?? session.sessionFile;
       if (sessionFile && !this.recoveryController.signal.aborted) {
         // 先释放旧 runtime 的租约，再按原身份挂接；不重放结果未知的命令。
-        const recovery = cleanup.then(async () => {
-          if (this.recoveryController.signal.aborted) return
-          await this.openSessionOnce(session.cwd, sessionFile, this.recoveryController.signal)
-          this.hub.publish({ kind: "session", id: session.sessionId }, "sessions.updated", {
-            sessionId: session.sessionId, recovered: true,
+        const recovery = cleanup
+          .then(async () => {
+            if (this.recoveryController.signal.aborted) return;
+            await this.openSessionOnce(
+              session.cwd,
+              sessionFile,
+              this.recoveryController.signal,
+            );
+            this.hub.publish(
+              { kind: "session", id: session.sessionId },
+              "sessions.updated",
+              {
+                sessionId: session.sessionId,
+                recovered: true,
+              },
+            );
           })
-        }).catch(error => {
-          const message = `[ompiui-server] runtime recovery failed for ${session.sessionId}: ${error instanceof Error ? error.message : String(error)}`
-          console.error(message)
-          logToFile(message)
-        }).finally(() => {
-          if (this.recoveries.get(session.sessionId) === recovery) this.recoveries.delete(session.sessionId)
-        })
-        this.recoveries.set(session.sessionId, recovery)
+          .catch((error) => {
+            const message = `[ompiui-server] runtime recovery failed for ${session.sessionId}: ${error instanceof Error ? error.message : String(error)}`;
+            console.error(message);
+            logToFile(message);
+          })
+          .finally(() => {
+            if (this.recoveries.get(session.sessionId) === recovery)
+              this.recoveries.delete(session.sessionId);
+          });
+        this.recoveries.set(session.sessionId, recovery);
       }
-      this.publishActivity()
+      this.publishActivity();
       const crashed = {
-        sessionId: session.sessionId, crashed: true,
-        ...(fault ? { faultId: fault.id, faultTime: fault.time, errorCode: fault.errorCode ?? "SESSION_RUNTIME_CRASHED" } : {}),
-      }
-      this.hub.publish({ kind: "session", id: session.sessionId }, "sessions.updated", crashed)
-      this.hub.publish({ kind: "server", id: "server" }, "sessions.updated", crashed)
-    })
+        sessionId: session.sessionId,
+        crashed: true,
+        ...(fault
+          ? {
+              faultId: fault.id,
+              faultTime: fault.time,
+              errorCode: fault.errorCode ?? "SESSION_RUNTIME_CRASHED",
+            }
+          : {}),
+      };
+      this.hub.publish(
+        { kind: "session", id: session.sessionId },
+        "sessions.updated",
+        crashed,
+      );
+      this.hub.publish(
+        { kind: "server", id: "server" },
+        "sessions.updated",
+        crashed,
+      );
+    });
     session.worker.onClose(() => {
-      const current = this.runtimes.get(session.sessionId)
-      if (current && current !== session) return
-      diagnostics.record("session.detached", { sessionId: session.sessionId, reason: "worker_handle_closed" })
-      const wasAttached = this.runtimes.delete(session.sessionId)
-      const hadActivity = this.activity.delete(session.sessionId)
-      this.lastAccess.delete(session.sessionId)
-      if (!wasAttached && !hadActivity) return
-      this.publishActivity()
+      const current = this.runtimes.get(session.sessionId);
+      if (current && current !== session) return;
+      diagnostics.record("session.detached", {
+        sessionId: session.sessionId,
+        reason: "worker_handle_closed",
+      });
+      const wasAttached = this.runtimes.delete(session.sessionId);
+      const hadActivity = this.activity.delete(session.sessionId);
+      this.lastAccess.delete(session.sessionId);
+      if (!wasAttached && !hadActivity) return;
+      this.publishActivity();
       this.hub.publish({ kind: "server", id: "server" }, "sessions.updated", {
         sessionId: session.sessionId,
         detached: true,
-      })
-    })
+      });
+    });
     this.hub.publish({ kind: "server", id: "server" }, "sessions.updated", {
       sessionId: session.sessionId,
       attached: true,
       cwd: session.cwd,
-    })
+    });
   }
 
-  async closeSession(sessionId: string, reason = "explicit_session_close"): Promise<void> {
-    await this.recoveries.get(sessionId)
-    const session = this.runtimes.get(sessionId)
-    if (!session) throw Object.assign(new Error("session is not attached"), { code: "SESSION_NOT_FOUND" })
+  async closeSession(
+    sessionId: string,
+    reason = "explicit_session_close",
+  ): Promise<void> {
+    await this.recoveries.get(sessionId);
+    const session = this.runtimes.get(sessionId);
+    if (!session)
+      throw Object.assign(new Error("session is not attached"), {
+        code: "SESSION_NOT_FOUND",
+      });
     diagnostics.record("session.close.requested", {
-      sessionId, reason, status: this.activity.get(sessionId)?.type ?? "idle",
-    })
-    this.lastAccess.delete(sessionId)
+      sessionId,
+      reason,
+      status: this.activity.get(sessionId)?.type ?? "idle",
+    });
+    this.lastAccess.delete(sessionId);
     await this.executor.close(sessionId, {
       interrupt: async () => {
-        await session.worker.command("abort").catch(() => undefined)
+        await session.worker.command("abort").catch(() => undefined);
       },
       dispose: async () => {
-        this.runtimes.delete(sessionId)
-        this.activity.delete(sessionId)
-        await session.worker.dispose()
-        diagnostics.record("session.close.completed", { sessionId, reason })
+        this.runtimes.delete(sessionId);
+        this.activity.delete(sessionId);
+        await session.worker.dispose();
+        diagnostics.record("session.close.completed", { sessionId, reason });
         this.hub.publish({ kind: "server", id: "server" }, "sessions.updated", {
           sessionId,
           detached: true,
-        })
+        });
       },
-    })
+    });
   }
 
   getAttached(sessionId: string): AttachedSession | undefined {
-    return this.runtimes.get(sessionId)
+    return this.runtimes.get(sessionId);
   }
 
   listAttachedIds(): string[] {
-    return [...this.runtimes.keys()]
+    return [...this.runtimes.keys()];
   }
 
   requireAttached(sessionId: string): AttachedSession {
-    const session = this.runtimes.get(sessionId)
+    const session = this.runtimes.get(sessionId);
     if (!session) {
-      throw Object.assign(new Error("session is not attached"), { code: "SESSION_NOT_FOUND" })
+      throw Object.assign(new Error("session is not attached"), {
+        code: "SESSION_NOT_FOUND",
+      });
     }
-    return session
+    return session;
   }
 
-  async sessionQuery(sessionId: string, type: string, params?: JsonObject, signal?: AbortSignal): Promise<JsonValue | undefined> {
-    return withAbort((async () => {
-      let session = this.runtimes.get(sessionId)
-      if (!session) {
-        // 草稿同步是浏览动作，不能为了 no-op 编辑器命令启动写入进程。
-        if (type === "setExtensionEditorState" && getDriverMode() === "omp") return undefined
-        // TUI 镜像命令需要运行中的 runtime;磁盘预览不得为它启动写入进程(退出时会向官方会话写 session_exit)。
-        if (type === "extensionUi.tuiInput" || type === "extensionUi.tuiResize" || type === "extensionUi.tuiRedraw") {
-          throw Object.assign(new Error("TUI mirror requires an attached runtime; disk preview is read-only"), { code: "CAPABILITY_DISABLED" })
+  async sessionQuery(
+    sessionId: string,
+    type: string,
+    params?: JsonObject,
+    signal?: AbortSignal,
+  ): Promise<JsonValue | undefined> {
+    return withAbort(
+      (async () => {
+        let session = this.runtimes.get(sessionId);
+        if (!session) {
+          // 草稿同步是浏览动作，不能为了 no-op 编辑器命令启动写入进程。
+          if (type === "setExtensionEditorState" && getDriverMode() === "omp")
+            return undefined;
+          // TUI 镜像命令需要运行中的 runtime;磁盘预览不得为它启动写入进程(退出时会向官方会话写 session_exit)。
+          if (
+            type === "extensionUi.tuiInput" ||
+            type === "extensionUi.tuiResize" ||
+            type === "extensionUi.tuiRedraw"
+          ) {
+            throw Object.assign(
+              new Error(
+                "TUI mirror requires an attached runtime; disk preview is read-only",
+              ),
+              { code: "CAPABILITY_DISABLED" },
+            );
+          }
+          const diskQueries: Record<string, true> = {
+            "state.get": true,
+            "branch.get": true,
+            "entries.get": true,
+            "tree.get": true,
+            "attachment.get": true,
+            "subagent.messages": true,
+          };
+          if (diskQueries[type]) {
+            return this.catalogCommand(
+              "session.read",
+              { sessionId, query: type, params: params ?? {} },
+              { idempotent: true, signal },
+            );
+          }
+          if (this.getSessionCapability(type)?.idempotent) {
+            throw Object.assign(
+              new Error(
+                "Runtime resources are unavailable in a disk-only session preview",
+              ),
+              { code: "CAPABILITY_DISABLED" },
+            );
+          }
+          session = await this.ensureAttached(sessionId, signal);
         }
-        const diskQueries: Record<string, true> = {
-          "state.get": true, "branch.get": true, "entries.get": true, "tree.get": true,
-          "attachment.get": true, "subagent.messages": true,
+        this.touch(session.sessionId);
+        if (this.executor.isClosing(sessionId)) {
+          throw Object.assign(new Error("session runtime is closing"), {
+            code: "RUNTIME_CLOSING",
+          });
         }
-        if (diskQueries[type]) {
-          return this.catalogCommand("session.read", { sessionId, query: type, params: params ?? {} }, { idempotent: true, signal })
+        const capability = this.getSessionCapability(type);
+        if (capability?.queue !== "immediate") {
+          throw Object.assign(new Error(`${type} is not a query command`), {
+            code: "INVALID_REQUEST",
+          });
         }
-        if (this.getSessionCapability(type)?.idempotent) {
-          throw Object.assign(new Error("Runtime resources are unavailable in a disk-only session preview"), { code: "CAPABILITY_DISABLED" })
-        }
-        session = await this.ensureAttached(sessionId, signal)
-      }
-      this.touch(session.sessionId)
-      if (this.executor.isClosing(sessionId)) {
-        throw Object.assign(new Error("session runtime is closing"), { code: "RUNTIME_CLOSING" })
-      }
-      const capability = this.getSessionCapability(type)
-      if (capability?.queue !== "immediate") {
-        throw Object.assign(new Error(`${type} is not a query command`), { code: "INVALID_REQUEST" })
-      }
-      return session.worker.command(type, params, signal)
-    })(), signal)
+        return session.worker.command(type, params, signal);
+      })(),
+      signal,
+    );
   }
 
   /**
@@ -356,70 +581,99 @@ export class SessionHost {
    * restart, or a client deep-linking to a session id), locate it on disk
    * via the global session list and attach it before failing.
    */
-  private async ensureAttached(sessionId: string, signal?: AbortSignal): Promise<AttachedSession> {
-    const existing = this.runtimes.get(sessionId)
-    if (existing) return existing
+  private async ensureAttached(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<AttachedSession> {
+    const existing = this.runtimes.get(sessionId);
+    if (existing) return existing;
     // Single-flight: concurrent queries (state.get + branch.get fire together)
     // must share one attach, or the second worker loses the session lease
     // with SESSION_BUSY.
-    return this.runtimes.attachFlight(sessionId, async (): Promise<AttachedSession> => {
-      const found = await this.findSessionOnDisk(sessionId)
-      if (!found) {
-        throw Object.assign(new Error("session is not attached"), { code: "SESSION_NOT_FOUND" })
-      }
-      let lastError: unknown
-      for (let attempt = 0; attempt <= ATTACH_BUSY_RETRIES; attempt += 1) {
-        try {
-          // 复用现有进程：目标未 attach 时，优先把同目录空闲的已 attach worker
-          // 切身份过去（switchSession），而不是新开一个——切 session 不单开。
-          // 源 worker 忙/异目录时 switch 自动失败，回落正常 open（不影响正在工作）。
-          const reusable = this.findReusableRuntime(found.sessionFile)
-          if (!reusable || !(await this.switchAttachedSession(reusable.sessionId, found.cwd, found.sessionFile, signal))) {
-            await this.openSessionOnce(found.cwd, found.sessionFile, signal)
-          }
-          return this.requireAttached(sessionId)
-        } catch (error) {
-          lastError = error
-          if (!isSessionBusyError(error) || attempt === ATTACH_BUSY_RETRIES) throw error
-          await waitForRetry(ATTACH_BUSY_DELAY_MS, signal)
-          const attached = this.runtimes.get(sessionId)
-          if (attached) return attached
+    return this.runtimes.attachFlight(
+      sessionId,
+      async (): Promise<AttachedSession> => {
+        const found = await this.findSessionOnDisk(sessionId);
+        if (!found) {
+          throw Object.assign(new Error("session is not attached"), {
+            code: "SESSION_NOT_FOUND",
+          });
         }
-      }
-      throw lastError
-    })
+        let lastError: unknown;
+        for (let attempt = 0; attempt <= ATTACH_BUSY_RETRIES; attempt += 1) {
+          try {
+            // 复用现有进程：目标未 attach 时，优先把同目录空闲的已 attach worker
+            // 切身份过去（switchSession），而不是新开一个——切 session 不单开。
+            // 源 worker 忙/异目录时 switch 自动失败，回落正常 open（不影响正在工作）。
+            const reusable = this.findReusableRuntime(found.sessionFile);
+            if (
+              !reusable ||
+              !(await this.switchAttachedSession(
+                reusable.sessionId,
+                found.cwd,
+                found.sessionFile,
+                signal,
+              ))
+            ) {
+              await this.openSessionOnce(found.cwd, found.sessionFile, signal);
+            }
+            return this.requireAttached(sessionId);
+          } catch (error) {
+            lastError = error;
+            if (!isSessionBusyError(error) || attempt === ATTACH_BUSY_RETRIES)
+              throw error;
+            await waitForRetry(ATTACH_BUSY_DELAY_MS, signal);
+            const attached = this.runtimes.get(sessionId);
+            if (attached) return attached;
+          }
+        }
+        throw lastError;
+      },
+    );
   }
 
   /**
    * 找一个可以复用的已 attach 空闲 worker：同目录、未在工作、不在关闭中。
    * 用它承载目标 session（switchSession 切身份），避免每次切 session 新开进程。
    */
-  private findReusableRuntime(sessionFile: string): AttachedSession | undefined {
-    const targetPath = pathKey(sessionFile)
-    const targetDir = pathKey(dirname(sessionFile))
+  private findReusableRuntime(
+    sessionFile: string,
+  ): AttachedSession | undefined {
+    const targetPath = pathKey(sessionFile);
+    const targetDir = pathKey(dirname(sessionFile));
     for (const session of this.runtimes.values()) {
-      if (!session.sessionFile) continue
-      if (pathKey(session.sessionFile) === targetPath) continue // 目标自己已 attach：幂等复用，不走 switch
-      if (pathKey(dirname(session.sessionFile)) !== targetDir) continue // 异目录：worker 绑定 cwd，不可切
-      if (this.activity.has(session.sessionId)) continue
-      if (this.executor.hasPendingWork(session.sessionId)) continue
-      if (this.executor.isClosing(session.sessionId)) continue
-      return session
+      if (!session.sessionFile) continue;
+      if (pathKey(session.sessionFile) === targetPath) continue; // 目标自己已 attach：幂等复用，不走 switch
+      if (pathKey(dirname(session.sessionFile)) !== targetDir) continue; // 异目录：worker 绑定 cwd，不可切
+      if (this.activity.has(session.sessionId)) continue;
+      if (this.executor.hasPendingWork(session.sessionId)) continue;
+      if (this.executor.isClosing(session.sessionId)) continue;
+      return session;
     }
-    return undefined
+    return undefined;
   }
 
-  private async findSessionOnDisk(sessionId: string): Promise<{ cwd: string; sessionFile: string } | undefined> {
+  private async findSessionOnDisk(
+    sessionId: string,
+  ): Promise<{ cwd: string; sessionFile: string } | undefined> {
     try {
-      const listed = await this.catalogCommand("session.listAll", undefined, { retry: true, idempotent: true })
+      const listed = await this.catalogCommand("session.listAll", undefined, {
+        retry: true,
+        idempotent: true,
+      });
       if (Array.isArray(listed)) {
-        const match = listed.find(item => isJsonObject(item) && item.id === sessionId)
+        const match = listed.find(
+          (item) => isJsonObject(item) && item.id === sessionId,
+        );
         if (isJsonObject(match)) {
-          const sessionFile = typeof match.path === "string"
-            ? match.path
-            : typeof match.sessionFile === "string" ? match.sessionFile : undefined
-          const cwd = typeof match.cwd === "string" ? match.cwd : undefined
-          if (sessionFile && cwd) return { cwd, sessionFile }
+          const sessionFile =
+            typeof match.path === "string"
+              ? match.path
+              : typeof match.sessionFile === "string"
+                ? match.sessionFile
+                : undefined;
+          const cwd = typeof match.cwd === "string" ? match.cwd : undefined;
+          if (sessionFile && cwd) return { cwd, sessionFile };
         }
       }
     } catch {
@@ -429,9 +683,17 @@ export class SessionHost {
     // 顶层列表没有（OMP 子代理会话嵌套在父会话目录里）→ 深度解析兜底，
     // 保证子会话重载/深链后仍能按 id attach
     try {
-      const found = await this.catalogCommand("session.findById", { sessionId }, { retry: true, idempotent: true })
-      if (isJsonObject(found) && typeof found.sessionFile === "string" && typeof found.cwd === "string") {
-        return { cwd: found.cwd, sessionFile: found.sessionFile }
+      const found = await this.catalogCommand(
+        "session.findById",
+        { sessionId },
+        { retry: true, idempotent: true },
+      );
+      if (
+        isJsonObject(found) &&
+        typeof found.sessionFile === "string" &&
+        typeof found.cwd === "string"
+      ) {
+        return { cwd: found.cwd, sessionFile: found.sessionFile };
       }
     } catch {
       // Fall through to the legacy scan.
@@ -440,22 +702,22 @@ export class SessionHost {
     // Scan the Pi sessions directory directly for `<ts>_<sessionId>.jsonl` —
     // more reliable than the catalog list, and reads cwd from the file header.
     try {
-      const root = join(homedir(), ".pi", "agent", "sessions")
-      const suffix = `_${sessionId}.jsonl`
-      const dirs = await readdir(root, { withFileTypes: true }).catch(() => [])
+      const root = join(homedir(), ".pi", "agent", "sessions");
+      const suffix = `_${sessionId}.jsonl`;
+      const dirs = await readdir(root, { withFileTypes: true }).catch(() => []);
       for (const dir of dirs) {
-        if (!dir.isDirectory()) continue
-        const files = await readdir(join(root, dir.name)).catch(() => [])
-        const match = files.find(file => file.endsWith(suffix))
-        if (!match) continue
-        const sessionFile = join(root, dir.name, match)
-        const firstLine = await readFirstLine(sessionFile)
-        const cwd = firstLine ? parseHeaderCwd(firstLine) : undefined
-        if (cwd) return { cwd, sessionFile }
+        if (!dir.isDirectory()) continue;
+        const files = await readdir(join(root, dir.name)).catch(() => []);
+        const match = files.find((file) => file.endsWith(suffix));
+        if (!match) continue;
+        const sessionFile = join(root, dir.name, match);
+        const firstLine = await readFirstLine(sessionFile);
+        const cwd = firstLine ? parseHeaderCwd(firstLine) : undefined;
+        if (cwd) return { cwd, sessionFile };
       }
-      return undefined
+      return undefined;
     } catch {
-      return undefined
+      return undefined;
     }
   }
 
@@ -464,7 +726,9 @@ export class SessionHost {
     // 编译期静态的（@ompiui/protocol 的 PI_COMMAND_SPECS），不需要 worker。
     // 否则前端 bootstrap 会被 worker 的数秒 SDK 加载卡住，触发退避重试。
     // sdkVersion 用 parity 常量兜底；worker 就绪后走真实 describeRegistry。
-    const ready = await this.supervisor.peekCatalogHandshake().catch(() => undefined)
+    const ready = await this.supervisor
+      .peekCatalogHandshake()
+      .catch(() => undefined);
     if (!ready) {
       return {
         protocolVersion: PROTOCOL_VERSION,
@@ -475,80 +739,164 @@ export class SessionHost {
           createRegistryDescribeCapability(),
           ...listCommandCapabilities("global"),
         ]),
-        sessionCommands: mergeCapabilities(SERVER_SESSION_CAPABILITIES, listCommandCapabilities("session")),
-      }
+        sessionCommands: mergeCapabilities(
+          SERVER_SESSION_CAPABILITIES,
+          listCommandCapabilities("session"),
+        ),
+      };
     }
-    const data = await this.catalogCommand("registry.describe", undefined, { retry: true, idempotent: true, signal }) as PiRegistrySnapshot | undefined
+    const data = (await this.catalogCommand("registry.describe", undefined, {
+      retry: true,
+      idempotent: true,
+      signal,
+    })) as PiRegistrySnapshot | undefined;
     if (!data || typeof data !== "object") {
-      throw Object.assign(new Error("Pi registry is unavailable"), { code: "REGISTRY_UNAVAILABLE" })
+      throw Object.assign(new Error("Pi registry is unavailable"), {
+        code: "REGISTRY_UNAVAILABLE",
+      });
     }
     return {
       ...data,
-      globalCommands: mergeCapabilities(SERVER_GLOBAL_CAPABILITIES, data.globalCommands),
-      sessionCommands: mergeCapabilities(SERVER_SESSION_CAPABILITIES, data.sessionCommands),
-    }
+      globalCommands: mergeCapabilities(
+        SERVER_GLOBAL_CAPABILITIES,
+        data.globalCommands,
+      ),
+      sessionCommands: mergeCapabilities(
+        SERVER_SESSION_CAPABILITIES,
+        data.sessionCommands,
+      ),
+    };
   }
 
-  async executeGlobalCommand(type: string, params?: JsonObject, options: { signal?: AbortSignal } = {}): Promise<JsonValue | undefined> {
+  async executeGlobalCommand(
+    type: string,
+    params?: JsonObject,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<JsonValue | undefined> {
     if (type === "session.open") {
-      const cwd = typeof params?.cwd === "string" ? params.cwd : undefined
-      if (!cwd) throw Object.assign(new Error("params.cwd must be a non-empty string"), { code: "INVALID_REQUEST" })
-      const sessionFile = typeof params?.sessionFile === "string" ? params.sessionFile : undefined
-      const reuseFromSessionId = typeof params?.reuseFromSessionId === "string" ? params.reuseFromSessionId : undefined
-      return this.openSession(cwd, sessionFile, options.signal, reuseFromSessionId)
+      const cwd = typeof params?.cwd === "string" ? params.cwd : undefined;
+      if (!cwd)
+        throw Object.assign(
+          new Error("params.cwd must be a non-empty string"),
+          { code: "INVALID_REQUEST" },
+        );
+      const sessionFile =
+        typeof params?.sessionFile === "string"
+          ? params.sessionFile
+          : undefined;
+      const reuseFromSessionId =
+        typeof params?.reuseFromSessionId === "string"
+          ? params.reuseFromSessionId
+          : undefined;
+      return this.openSession(
+        cwd,
+        sessionFile,
+        options.signal,
+        reuseFromSessionId,
+      );
     }
-    if (type === "session.attached") return this.listAttachedIds()
+    if (type === "session.attached") return this.listAttachedIds();
     if (type === "session.preview" && typeof params?.sessionId === "string") {
-      const attached = this.runtimes.get(params.sessionId)
+      validateParams(getCommandCapability(type)?.paramsSchema, params);
+      const attached = this.runtimes.get(params.sessionId);
       if (attached) {
-        this.touch(attached.sessionId)
-        const pageParams: JsonObject = {}
-        for (const key of ["cursor", "limit", "maxBytes"]) {
-          if (params[key] !== undefined) pageParams[key] = params[key]
+        this.touch(attached.sessionId);
+        const pageParams: JsonObject = {};
+        for (const key of [
+          "cursor",
+          "limit",
+          "maxBytes",
+          "syncCursor",
+          "beforeId",
+          "includeLiveMessage",
+        ]) {
+          if (params[key] !== undefined) pageParams[key] = params[key];
         }
         const [state, branch] = await Promise.all([
           attached.worker.command("state.get", undefined, options.signal),
           attached.worker.command("branch.get", pageParams, options.signal),
-        ])
-        return { state: state ?? null, branch: branch ?? null }
+        ]);
+        return { state: state ?? null, branch: branch ?? null };
       }
     }
     if (type === "session.copy") {
-      validateParams(getCommandCapability(type)?.paramsSchema, params ?? {})
-      const copied = await this.catalogCommand(type, params, { signal: options.signal })
-      if (!isJsonObject(copied) || typeof copied.cwd !== "string" || typeof copied.sessionFile !== "string") {
-        throw new Error("Invalid copied session identity")
+      validateParams(getCommandCapability(type)?.paramsSchema, params ?? {});
+      const copied = await this.catalogCommand(type, params, {
+        signal: options.signal,
+      });
+      if (
+        !isJsonObject(copied) ||
+        typeof copied.cwd !== "string" ||
+        typeof copied.sessionFile !== "string"
+      ) {
+        throw new Error("Invalid copied session identity");
       }
-      return this.openSession(copied.cwd, copied.sessionFile, options.signal)
+      return this.openSession(copied.cwd, copied.sessionFile, options.signal);
     }
     if (type === "session.delete") {
       // Detach a live runtime before the file goes away: an attached worker
       // keeps serving the session from memory and would rewrite the file on
       // its next append, resurrecting the deleted session.
-      const sessionFile = typeof params?.sessionFile === "string" ? params.sessionFile : undefined
+      const sessionFile =
+        typeof params?.sessionFile === "string"
+          ? params.sessionFile
+          : undefined;
       if (sessionFile) {
-        const live = this.runtimes.findBySessionFile(sessionFile)
-        if (live) await this.closeSession(live.sessionId, "session_delete")
+        const live = this.runtimes.findBySessionFile(sessionFile);
+        if (live) await this.closeSession(live.sessionId, "session_delete");
       }
     }
-    const capability = getCommandCapability(type)
-    if (SERVER_SESSION_CAPABILITIES.some(item => item.name === type) || capability?.scope === "session") {
-      throw Object.assign(new Error(`unknown global command: ${type}`), { code: "UNKNOWN_COMMAND" })
+    const capability = getCommandCapability(type);
+    if (
+      SERVER_SESSION_CAPABILITIES.some((item) => item.name === type) ||
+      capability?.scope === "session"
+    ) {
+      throw Object.assign(new Error(`unknown global command: ${type}`), {
+        code: "UNKNOWN_COMMAND",
+      });
     }
-    validateParams(capability?.paramsSchema, params ?? {})
-    const idempotent = type === "registry.describe" || capability?.idempotent === true
-    return this.catalogCommand(type, params, { retry: idempotent, idempotent, signal: options.signal })
+    validateParams(capability?.paramsSchema, params ?? {});
+    const idempotent =
+      type === "registry.describe" || capability?.idempotent === true;
+    return this.catalogCommand(type, params, {
+      retry: idempotent,
+      idempotent,
+      signal: options.signal,
+    });
   }
 
-  executeSessionCommand(sessionId: string, type: string, params?: JsonObject, id?: string, options: { signal?: AbortSignal } = {}): JsonValue | SubmittedCommand | Promise<JsonValue | SubmittedCommand | undefined> {
+  executeSessionCommand(
+    sessionId: string,
+    type: string,
+    params?: JsonObject,
+    id?: string,
+    options: { signal?: AbortSignal } = {},
+  ):
+    | JsonValue
+    | SubmittedCommand
+    | Promise<JsonValue | SubmittedCommand | undefined> {
     if (type === "session.close") {
-      return withAbort(this.closeSession(sessionId), options.signal).then(() => ({ ok: true }))
+      return withAbort(this.closeSession(sessionId), options.signal).then(
+        () => ({ ok: true }),
+      );
     }
-    const capability = this.getSessionCapability(type)
-    if (!capability) return this.dispatchExtensionCommand(sessionId, type, params, id, options)
-    validateParams(capability.paramsSchema, params ?? {})
-    if (capability.queue === "immediate") return this.sessionQuery(sessionId, type, params, options.signal)
-    return this.submitSessionCommand(sessionId, { id: id ?? randomUUID(), type, params })
+    const capability = this.getSessionCapability(type);
+    if (!capability)
+      return this.dispatchExtensionCommand(
+        sessionId,
+        type,
+        params,
+        id,
+        options,
+      );
+    validateParams(capability.paramsSchema, params ?? {});
+    if (capability.queue === "immediate")
+      return this.sessionQuery(sessionId, type, params, options.signal);
+    return this.submitSessionCommand(sessionId, {
+      id: id ?? randomUUID(),
+      type,
+      params,
+    });
   }
 
   /**
@@ -563,46 +911,71 @@ export class SessionHost {
     id?: string,
     options: { signal?: AbortSignal } = {},
   ): Promise<SubmittedCommand> {
-    const existing = this.runtimes.get(sessionId)
+    const existing = this.runtimes.get(sessionId);
     if (!existing) {
-      throw Object.assign(new Error(`unknown command: ${type}`), { code: "UNKNOWN_COMMAND" })
+      throw Object.assign(new Error(`unknown command: ${type}`), {
+        code: "UNKNOWN_COMMAND",
+      });
     }
-    const registry = await existing.worker.command("registry.get", undefined, options.signal) as RegistrySnapshot | undefined
-    if (!registry) throw Object.assign(new Error(`unknown command: ${type}`), { code: "UNKNOWN_COMMAND" })
-    const tool = registry.tools.find(item => item.name === type)
-    const command = registry.commands.find(item => item.name === type)
-    if (!tool && !command) throw Object.assign(new Error(`unknown command: ${type}`), { code: "UNKNOWN_COMMAND" })
+    const registry = (await existing.worker.command(
+      "registry.get",
+      undefined,
+      options.signal,
+    )) as RegistrySnapshot | undefined;
+    if (!registry)
+      throw Object.assign(new Error(`unknown command: ${type}`), {
+        code: "UNKNOWN_COMMAND",
+      });
+    const tool = registry.tools.find((item) => item.name === type);
+    const command = registry.commands.find((item) => item.name === type);
+    if (!tool && !command)
+      throw Object.assign(new Error(`unknown command: ${type}`), {
+        code: "UNKNOWN_COMMAND",
+      });
     // 工具参数 schema 来自 Pi 自己的工具定义——在 HTTP 边界校验，畸形入参直接 400。
-    if (tool?.parameters) validateParams(tool.parameters, params ?? {})
-    return this.submitSessionCommand(sessionId, { id: id ?? randomUUID(), type, params })
+    if (tool?.parameters) validateParams(tool.parameters, params ?? {});
+    return this.submitSessionCommand(sessionId, {
+      id: id ?? randomUUID(),
+      type,
+      params,
+    });
   }
 
-  submitSessionCommand(sessionId: string, envelope: Omit<CommandEnvelope, "sessionId">): SubmittedCommand | Promise<SubmittedCommand> {
-    const full: CommandEnvelope = { ...envelope, sessionId }
+  submitSessionCommand(
+    sessionId: string,
+    envelope: Omit<CommandEnvelope, "sessionId">,
+  ): SubmittedCommand | Promise<SubmittedCommand> {
+    const full: CommandEnvelope = { ...envelope, sessionId };
     const submit = (session: AttachedSession): SubmittedCommand => {
-      this.touch(session.sessionId)
+      this.touch(session.sessionId);
       return this.executor.submit(full, async () => {
-        const data = await session.worker.command(full.type, full.params)
-        await this.trackReplacement(session, data)
-        return data
-      })
-    }
-    const existing = this.runtimes.get(sessionId)
-    if (existing) return submit(existing)
-    return this.ensureAttached(sessionId).then(submit)
+        const data = await session.worker.command(full.type, full.params);
+        await this.trackReplacement(session, data);
+        return data;
+      });
+    };
+    const existing = this.runtimes.get(sessionId);
+    if (existing) return submit(existing);
+    return this.ensureAttached(sessionId).then(submit);
   }
 
   getCommand(commandId: string): CommandRecord | undefined {
-    return this.executor.get(commandId)
+    return this.executor.get(commandId);
   }
 
-  async catalogCommand(type: string, params?: JsonObject, options?: { retry?: boolean; idempotent?: boolean; signal?: AbortSignal }): Promise<JsonValue | undefined> {
-    return this.supervisor.catalogCommand(type, params, options)
+  async catalogCommand(
+    type: string,
+    params?: JsonObject,
+    options?: { retry?: boolean; idempotent?: boolean; signal?: AbortSignal },
+  ): Promise<JsonValue | undefined> {
+    return this.supervisor.catalogCommand(type, params, options);
   }
 
   private getSessionCapability(type: string): PiCapability | undefined {
-    const capability = SERVER_SESSION_CAPABILITIES.find(item => item.name === type) ?? getCommandCapability(type)
-    return capability?.scope === "session" ? capability : undefined
+    const capability =
+      SERVER_SESSION_CAPABILITIES.find((item) => item.name === type) ??
+      getCommandCapability(type);
+    return capability?.scope === "session" ? capability : undefined;
   }
 
   private async trackReplacement(
@@ -610,158 +983,271 @@ export class SessionHost {
     data: JsonValue | undefined,
     options: { leaseCommitted?: boolean; reason?: "runtime-reuse" } = {},
   ): Promise<void> {
-    if (!isJsonObject(data) || data.cancelled !== false || typeof data.targetSessionId !== "string") return
-    if (data.targetSessionId === session.sessionId) return
-    const sourceSessionId = session.sessionId
-    const targetSessionId = data.targetSessionId
-    const target = this.runtimes.get(targetSessionId)
+    if (
+      !isJsonObject(data) ||
+      data.cancelled !== false ||
+      typeof data.targetSessionId !== "string"
+    )
+      return;
+    if (data.targetSessionId === session.sessionId) return;
+    const sourceSessionId = session.sessionId;
+    const targetSessionId = data.targetSessionId;
+    const target = this.runtimes.get(targetSessionId);
     if (target && target !== session) {
-      diagnostics.record("session.replacement.failed", { sessionId: sourceSessionId, targetSessionId, reason: "target_already_attached" }, "error")
-      const error = Object.assign(new Error("replacement target session is already attached"), { code: "SESSION_BUSY" })
-      setImmediate(() => { void session.worker.dispose() })
-      throw error
+      diagnostics.record(
+        "session.replacement.failed",
+        {
+          sessionId: sourceSessionId,
+          targetSessionId,
+          reason: "target_already_attached",
+        },
+        "error",
+      );
+      const error = Object.assign(
+        new Error("replacement target session is already attached"),
+        { code: "SESSION_BUSY" },
+      );
+      setImmediate(() => {
+        void session.worker.dispose();
+      });
+      throw error;
     }
-    const targetSessionFile = Object.prototype.hasOwnProperty.call(data, "targetSessionFile")
-      ? (typeof data.targetSessionFile === "string" ? data.targetSessionFile : null)
-      : session.sessionFile
-    const targetCwd = typeof data.targetCwd === "string" ? data.targetCwd : session.cwd
+    const targetSessionFile = Object.prototype.hasOwnProperty.call(
+      data,
+      "targetSessionFile",
+    )
+      ? typeof data.targetSessionFile === "string"
+        ? data.targetSessionFile
+        : null
+      : session.sessionFile;
+    const targetCwd =
+      typeof data.targetCwd === "string" ? data.targetCwd : session.cwd;
 
     try {
       // Extension replacements have already committed their reservation in
       // supervisor.ts. Ordinary commands still need to move the lease here.
       if (!options.leaseCommitted) {
-        await this.supervisor.replaceRuntimeLease(session.worker, targetSessionFile, targetSessionId)
+        await this.supervisor.replaceRuntimeLease(
+          session.worker,
+          targetSessionFile,
+          targetSessionId,
+        );
       }
 
-      const previousLastAccess = this.lastAccess.get(sourceSessionId)
-      const previousActivity = this.activity.get(sourceSessionId)
-      const wasMaterialized = this.materialized.delete(sourceSessionId)
-      this.lastAccess.delete(sourceSessionId)
-      this.activity.delete(sourceSessionId)
-      this.runtimes.delete(sourceSessionId)
-      this.executor.resetSession(targetSessionId)
+      const previousLastAccess = this.lastAccess.get(sourceSessionId);
+      const previousActivity = this.activity.get(sourceSessionId);
+      const wasMaterialized = this.materialized.delete(sourceSessionId);
+      this.lastAccess.delete(sourceSessionId);
+      this.activity.delete(sourceSessionId);
+      this.runtimes.delete(sourceSessionId);
+      this.executor.resetSession(targetSessionId);
 
-      session.sessionId = targetSessionId
-      session.sessionFile = targetSessionFile ?? undefined
-      session.cwd = targetCwd
-      session.worker.updateSessionIdentity(session.sessionId, session.sessionFile, session.cwd)
-      if (previousLastAccess !== undefined) this.lastAccess.set(targetSessionId, previousLastAccess)
-      if (previousActivity !== undefined) this.activity.set(targetSessionId, previousActivity)
-      if (wasMaterialized) this.materialized.add(targetSessionId)
-      this.runtimes.set(session)
+      session.sessionId = targetSessionId;
+      session.sessionFile = targetSessionFile ?? undefined;
+      session.cwd = targetCwd;
+      session.worker.updateSessionIdentity(
+        session.sessionId,
+        session.sessionFile,
+        session.cwd,
+      );
+      if (previousLastAccess !== undefined)
+        this.lastAccess.set(targetSessionId, previousLastAccess);
+      if (previousActivity !== undefined)
+        this.activity.set(targetSessionId, previousActivity);
+      if (wasMaterialized) this.materialized.add(targetSessionId);
+      this.runtimes.set(session);
       diagnostics.record("session.replaced", {
-        sessionId: targetSessionId, sourceSessionId, targetSessionId,
+        sessionId: targetSessionId,
+        sourceSessionId,
+        targetSessionId,
         reason: options.reason ?? "session_replacement",
-      })
+      });
       this.hub.publish({ kind: "server", id: "server" }, "sessions.updated", {
         replaced: true,
-        sourceSessionId: typeof data.sourceSessionId === "string" ? data.sourceSessionId : sourceSessionId,
+        sourceSessionId:
+          typeof data.sourceSessionId === "string"
+            ? data.sourceSessionId
+            : sourceSessionId,
         targetSessionId,
         targetSessionFile: session.sessionFile,
         targetCwd: session.cwd,
         // runtime-reuse = ensureAttached 偷同目录空闲 runtime 的静默身份切换，
         // 区别于 fork/new/import 的用户语义替换——前端据此决定是否 remap pane
         ...(options.reason ? { reason: options.reason } : {}),
-      })
+      });
     } catch (error) {
-      diagnostics.record("session.replacement.failed", {
-        sessionId: sourceSessionId, targetSessionId, reason: "lease_commit_failed", errorCode: diagnosticErrorCode(error),
-      }, "error")
+      diagnostics.record(
+        "session.replacement.failed",
+        {
+          sessionId: sourceSessionId,
+          targetSessionId,
+          reason: "lease_commit_failed",
+          errorCode: diagnosticErrorCode(error),
+        },
+        "error",
+      );
       // The SDK has already changed identity. A failed parent-side commit
       // cannot be rolled back safely, so stop this worker before it can write.
-      setImmediate(() => { void session.worker.dispose() })
-      throw error
+      setImmediate(() => {
+        void session.worker.dispose();
+      });
+      throw error;
     }
   }
 
-  private routeSessionEvent(session: AttachedSession, event: WorkerEvent): void {
-    this.touch(session.sessionId)
+  private routeSessionEvent(
+    session: AttachedSession,
+    event: WorkerEvent,
+  ): void {
+    this.touch(session.sessionId);
     if (event.channel === "pi.event") {
-      const type = event.event.type
+      const type = event.event.type;
       if (typeof type === "string" && DIAGNOSTIC_AGENT_EVENTS.has(type)) {
-        const meta = event.event as unknown as JsonObject
-        const message = isJsonObject(meta.message) ? meta.message : undefined
-        const stopReason = typeof message?.stopReason === "string" ? message.stopReason : undefined
-        diagnostics.record("agent.event", {
-          sessionId: session.sessionId, eventType: type,
-          sequence: event.meta.sequence, epoch: event.meta.epoch,
-          toolName: typeof meta.toolName === "string" ? meta.toolName : undefined,
-          toolCallId: typeof meta.toolCallId === "string" ? meta.toolCallId : undefined,
-          status: stopReason ?? (typeof meta.isError === "boolean" ? meta.isError ? "failed" : "completed" : undefined),
-          errorCode: stopReason === "error" ? "MODEL_RESPONSE_ERROR" : undefined,
-        }, stopReason === "error" ? "error" : stopReason === "aborted" ? "warn" : "info")
+        const meta = event.event as unknown as JsonObject;
+        const message = isJsonObject(meta.message) ? meta.message : undefined;
+        const stopReason =
+          typeof message?.stopReason === "string"
+            ? message.stopReason
+            : undefined;
+        diagnostics.record(
+          "agent.event",
+          {
+            sessionId: session.sessionId,
+            eventType: type,
+            sequence: event.meta.sequence,
+            epoch: event.meta.epoch,
+            toolName:
+              typeof meta.toolName === "string" ? meta.toolName : undefined,
+            toolCallId:
+              typeof meta.toolCallId === "string" ? meta.toolCallId : undefined,
+            status:
+              stopReason ??
+              (typeof meta.isError === "boolean"
+                ? meta.isError
+                  ? "failed"
+                  : "completed"
+                : undefined),
+            errorCode:
+              stopReason === "error" ? "MODEL_RESPONSE_ERROR" : undefined,
+          },
+          stopReason === "error"
+            ? "error"
+            : stopReason === "aborted"
+              ? "warn"
+              : "info",
+        );
       }
       this.hub.publish({ kind: "session", id: session.sessionId }, "pi.event", {
         event: event.event,
         meta: event.meta,
-      })
-      return
+      });
+      return;
     }
     if (event.channel === "session.activity") {
-      this.trackActivity(session.sessionId, event.event)
-      return
+      this.trackActivity(session.sessionId, event.event);
+      return;
     }
     if (event.channel === "session.head") {
-      this.hub.publish({ kind: "session", id: session.sessionId }, "session.head", event.head)
+      this.hub.publish(
+        { kind: "session", id: session.sessionId },
+        "session.head",
+        event.head,
+      );
       // 列表 = 磁盘扫描：只有会话文件真的存在（首个条目落盘）才广播
       // materialized。head 事件来自内存 entries（setSessionName 等操作
       // 只改内存不改文件），不能当作落盘信号——否则前端重拉后磁盘还是
       // 扫不到，列表永远不出现。
-      if (!this.materialized.has(session.sessionId) && session.sessionFile && existsSync(session.sessionFile)) {
-        this.materialized.add(session.sessionId)
+      if (
+        !this.materialized.has(session.sessionId) &&
+        session.sessionFile &&
+        existsSync(session.sessionFile)
+      ) {
+        this.materialized.add(session.sessionId);
         this.hub.publish({ kind: "server", id: "server" }, "sessions.updated", {
           sessionId: session.sessionId,
           materialized: true,
-        })
+        });
       }
-      return
+      return;
     }
     if (event.channel === "extension.ui") {
-      this.hub.publish({ kind: "session", id: session.sessionId }, "extension.ui", event.event)
-      return
+      this.hub.publish(
+        { kind: "session", id: session.sessionId },
+        "extension.ui",
+        event.event,
+      );
+      return;
     }
     if (event.channel === "omp.subagent") {
-      this.hub.publish({ kind: "session", id: session.sessionId }, "omp.subagent", event.event)
+      this.hub.publish(
+        { kind: "session", id: session.sessionId },
+        "omp.subagent",
+        event.event,
+      );
       // 注册帧（lifecycle/progress）镜像到 server 流：detached 后台子代理的
       // 父会话可能没有任何 pane 打开（客户端也就没订阅该 session 流），
       // 全局 HUD 靠这条镜像维持列表。event/转录帧体量大，仍只在会话流内。
-      if (isJsonObject(event.event) && (event.event.kind === "lifecycle" || event.event.kind === "progress")) {
+      if (
+        isJsonObject(event.event) &&
+        (event.event.kind === "lifecycle" || event.event.kind === "progress")
+      ) {
         this.hub.publish({ kind: "server", id: "server" }, "omp.subagent", {
           kind: event.event.kind,
+          ...(typeof event.event.eventId === "string"
+            ? { eventId: event.event.eventId }
+            : {}),
           payload: event.event.payload ?? null,
           sessionId: session.sessionId,
-        })
+        });
       }
-      return
+      return;
     }
     if (event.channel === "registry.updated") {
-      this.hub.publish({ kind: "session", id: session.sessionId }, "registry.updated", event.event)
-      return
+      this.hub.publish(
+        { kind: "session", id: session.sessionId },
+        "registry.updated",
+        event.event,
+      );
+      return;
     }
-    this.routeCatalogEvent(event)
+    this.routeCatalogEvent(event);
   }
 
   private routeCatalogEvent(event: WorkerEvent): void {
     if (event.channel === "provider.auth") {
-      const providerId = isJsonObject(event.event) && typeof event.event.providerId === "string"
-        ? event.event.providerId
-        : "global"
-      this.hub.publish({ kind: "provider", id: providerId }, "provider.auth", event.event)
-      return
+      const providerId =
+        isJsonObject(event.event) && typeof event.event.providerId === "string"
+          ? event.event.providerId
+          : "global";
+      this.hub.publish(
+        { kind: "provider", id: providerId },
+        "provider.auth",
+        event.event,
+      );
+      return;
     }
     if (event.channel === "models.updated") {
       // models.yml 变更是全局的：发在 server 流上，前端模型选择器和管理页都订阅它
-      this.hub.publish({ kind: "server", id: "server" }, "models.updated", event.event)
-      return
+      this.hub.publish(
+        { kind: "server", id: "server" },
+        "models.updated",
+        event.event,
+      );
+      return;
     }
     if (event.channel === "packages.progress") {
-      this.hub.publish({ kind: "server", id: "server" }, "packages.progress", event.event)
-      return
+      this.hub.publish(
+        { kind: "server", id: "server" },
+        "packages.progress",
+        event.event,
+      );
+      return;
     }
     if (event.channel === "resources.updated") {
       this.hub.publish({ kind: "server", id: "server" }, "resources.updated", {
-        workspacePath: "workspacePath" in event ? event.workspacePath ?? null : null,
-      })
+        workspacePath:
+          "workspacePath" in event ? (event.workspacePath ?? null) : null,
+      });
     }
   }
 
@@ -770,54 +1256,87 @@ export class SessionHost {
    * isRetrying on the worker side) and broadcast full snapshots on change.
    */
   private trackActivity(sessionId: string, event: JsonValue | undefined): void {
-    const status = isJsonObject(event) && isJsonObject(event.status) ? event.status : null
-    const previous = this.activity.get(sessionId)
-    const next = status as SessionActivityStatus | null
-    if (next) this.touch(sessionId)
+    const status =
+      isJsonObject(event) && isJsonObject(event.status) ? event.status : null;
+    const previous = this.activity.get(sessionId);
+    const next = status as SessionActivityStatus | null;
+    if (next) this.touch(sessionId);
 
-    const changed = next === null
-      ? previous !== undefined
-      : !previous || previous.type !== next.type
-    if (next) this.activity.set(sessionId, next)
-    else this.activity.delete(sessionId)
+    const changed =
+      next === null
+        ? previous !== undefined
+        : !previous || previous.type !== next.type;
+    if (next) this.activity.set(sessionId, next);
+    else this.activity.delete(sessionId);
     if (changed) {
       diagnostics.record("session.activity", {
-        sessionId, previousStatus: previous?.type ?? "idle", status: next?.type ?? "idle",
-      })
-      this.publishActivity()
+        sessionId,
+        previousStatus: previous?.type ?? "idle",
+        status: next?.type ?? "idle",
+      });
+      this.publishActivity();
     }
   }
 
   getActivitySnapshot(): SessionsActivitySnapshot {
-    return { sessions: Object.fromEntries(this.activity) }
+    return { sessions: Object.fromEntries(this.activity) };
   }
 
   private publishActivity(): void {
-    this.hub.publish({ kind: "server", id: "server" }, "sessions.activity", this.getActivitySnapshot() as unknown as JsonValue)
+    if (this.activityTimer) return;
+    this.activityTimer = setTimeout(() => {
+      this.activityTimer = undefined;
+      const sessions: Record<string, SessionActivityStatus> = {};
+      for (const [id, status] of this.activity) {
+        if (
+          JSON.stringify(this.lastActivity.get(id)) !== JSON.stringify(status)
+        )
+          sessions[id] = status;
+      }
+      const removed = [...this.lastActivity.keys()].filter(
+        (id) => !this.activity.has(id),
+      );
+      this.lastActivity = new Map(this.activity);
+      if (Object.keys(sessions).length || removed.length) {
+        this.hub.publish(
+          { kind: "server", id: "server" },
+          "sessions.activity",
+          { sessions, removed, delta: true } as unknown as JsonValue,
+        );
+      }
+    }, 200);
+    this.activityTimer.unref();
   }
 
   dispose(): void {
-    this.recoveryController.abort()
-    diagnostics.record("session.host.disposed", { sessionIds: this.listAttachedIds(), reason: "server_shutdown" })
-    clearInterval(this.runtimeReaper)
-    this.lastAccess.clear()
-    this.activity.clear()
-    this.materialized.clear()
+    if (this.activityTimer) clearTimeout(this.activityTimer);
+    this.recoveryController.abort();
+    diagnostics.record("session.host.disposed", {
+      sessionIds: this.listAttachedIds(),
+      reason: "server_shutdown",
+    });
+    clearInterval(this.runtimeReaper);
+    this.lastAccess.clear();
+    this.activity.clear();
+    this.lastActivity.clear();
+    this.materialized.clear();
   }
 
   private touch(sessionId: string): void {
-    this.lastAccess.set(sessionId, Date.now())
+    this.lastAccess.set(sessionId, Date.now());
   }
 
   private async reapIdleRuntimes(): Promise<void> {
-    const cutoff = Date.now() - idleRuntimeTtlMs()
-    const candidates = [...this.runtimes.values()].filter(session => {
-      const last = this.lastAccess.get(session.sessionId) ?? 0
-      return last < cutoff
-        && !this.activity.has(session.sessionId)
-        && !this.executor.hasPendingWork(session.sessionId)
-        && !this.executor.isClosing(session.sessionId)
-    })
+    const cutoff = Date.now() - idleRuntimeTtlMs();
+    const candidates = [...this.runtimes.values()].filter((session) => {
+      const last = this.lastAccess.get(session.sessionId) ?? 0;
+      return (
+        last < cutoff &&
+        !this.activity.has(session.sessionId) &&
+        !this.executor.hasPendingWork(session.sessionId) &&
+        !this.executor.isClosing(session.sessionId)
+      );
+    });
 
     for (const session of candidates) {
       // 双保险：向 worker 确认确实无未完成工作再回收。activity 是事件驱动上报
@@ -833,151 +1352,196 @@ export class SessionHost {
       // session_exit(dispose) 并把在途工具写成 "Command aborted"，前端表现为整条
       // 时间线重置、回合不再继续，而模型从没拿到那次工具结果。worker 真崩/真断开
       // 由 onCrash 与心跳看门狗负责清理，不需要回收器兜底。
-      let state: JsonValue | undefined
+      let state: JsonValue | undefined;
       try {
-        state = await session.worker.command("state.get")
+        state = await session.worker.command("state.get");
       } catch (error) {
-        diagnostics.record("session.reaper.kept", {
-          sessionId: session.sessionId, reason: "state_query_failed", errorCode: diagnosticErrorCode(error),
-        }, "warn")
-        const message = `[ompiui-server] idle reaper: state.get failed for ${session.sessionId}, keeping runtime: ${error instanceof Error ? error.message : String(error)}`
-        console.error(message)
-        logToFile(message)
-        continue
+        diagnostics.record(
+          "session.reaper.kept",
+          {
+            sessionId: session.sessionId,
+            reason: "state_query_failed",
+            errorCode: diagnosticErrorCode(error),
+          },
+          "warn",
+        );
+        const message = `[ompiui-server] idle reaper: state.get failed for ${session.sessionId}, keeping runtime: ${error instanceof Error ? error.message : String(error)}`;
+        console.error(message);
+        logToFile(message);
+        continue;
       }
       if (!isJsonObject(state)) {
-        diagnostics.record("session.reaper.kept", { sessionId: session.sessionId, reason: "state_unavailable" }, "warn")
-        const message = `[ompiui-server] idle reaper: state.get returned no state for ${session.sessionId}, keeping runtime`
-        console.error(message)
-        logToFile(message)
-        continue
+        diagnostics.record(
+          "session.reaper.kept",
+          { sessionId: session.sessionId, reason: "state_unavailable" },
+          "warn",
+        );
+        const message = `[ompiui-server] idle reaper: state.get returned no state for ${session.sessionId}, keeping runtime`;
+        console.error(message);
+        logToFile(message);
+        continue;
       }
-      const stillBusy = state.isIdle === false
-        || state.isStreaming === true
-        || state.isBashRunning === true
-        || state.hasPendingAsyncWork === true
-        || Number(state.pendingMessageCount ?? 0) > 0
+      const stillBusy =
+        state.isIdle === false ||
+        state.isStreaming === true ||
+        state.isBashRunning === true ||
+        state.hasPendingAsyncWork === true ||
+        Number(state.pendingMessageCount ?? 0) > 0;
       if (stillBusy) {
         diagnostics.record("session.reaper.kept", {
-          sessionId: session.sessionId, reason: "runtime_busy", state: summarizeRunState(state),
-        })
-        this.touch(session.sessionId)
-        continue
+          sessionId: session.sessionId,
+          reason: "runtime_busy",
+          state: summarizeRunState(state),
+        });
+        this.touch(session.sessionId);
+        continue;
       }
       diagnostics.record("session.reaper.close", {
-        sessionId: session.sessionId, reason: "idle_ttl", state: summarizeRunState(state),
-      })
-      await this.closeSession(session.sessionId, "idle_ttl").catch(() => undefined)
+        sessionId: session.sessionId,
+        reason: "idle_ttl",
+        state: summarizeRunState(state),
+      });
+      await this.closeSession(session.sessionId, "idle_ttl").catch(
+        () => undefined,
+      );
       // 单共享进程下无需补 warm：worker 常驻，下次 attach 只是进程内建
       // runtime（旧架构里回收后补预热是为了避免冷启动新进程）。
     }
   }
 
   private emitCommandUpdate(record: CommandRecord): void {
-    diagnostics.record("command.status", {
-      sessionId: record.sessionId, commandId: record.id, command: record.type,
-      status: record.status, errorCode: record.error?.code,
-      durationMs: record.completedAt ? Date.parse(record.completedAt) - Date.parse(record.submittedAt) : undefined,
-    }, record.status === "failed" || record.status === "unknown_after_crash" ? "error" : "info")
+    diagnostics.record(
+      "command.status",
+      {
+        sessionId: record.sessionId,
+        commandId: record.id,
+        command: record.type,
+        status: record.status,
+        errorCode: record.error?.code,
+        durationMs: record.completedAt
+          ? Date.parse(record.completedAt) - Date.parse(record.submittedAt)
+          : undefined,
+      },
+      record.status === "failed" || record.status === "unknown_after_crash"
+        ? "error"
+        : "info",
+    );
     const stream = record.sessionId
       ? { kind: "session" as const, id: record.sessionId }
-      : { kind: "server" as const, id: "server" }
-    this.hub.publish(stream, "command.updated", record as unknown as JsonValue)
+      : { kind: "server" as const, id: "server" };
+    this.hub.publish(stream, "command.updated", record as unknown as JsonValue);
   }
 }
 
-function mergeCapabilities(local: PiCapability[], remote: PiCapability[]): PiCapability[] {
-  const merged = new Map<string, PiCapability>()
-  for (const capability of remote) merged.set(capability.name, capability)
-  for (const capability of local) merged.set(capability.name, capability)
-  return [...merged.values()]
+function mergeCapabilities(
+  local: PiCapability[],
+  remote: PiCapability[],
+): PiCapability[] {
+  const merged = new Map<string, PiCapability>();
+  for (const capability of remote) merged.set(capability.name, capability);
+  for (const capability of local) merged.set(capability.name, capability);
+  return [...merged.values()];
 }
 
 async function readFirstLine(filePath: string): Promise<string | undefined> {
   try {
-    const handle = await open(filePath, "r")
+    const handle = await open(filePath, "r");
     try {
-      const iterator = handle.readLines({ encoding: "utf8" })[Symbol.asyncIterator]()
-      const { value } = await iterator.next()
-      return value
+      const iterator = handle
+        .readLines({ encoding: "utf8" })
+        [Symbol.asyncIterator]();
+      const { value } = await iterator.next();
+      return value;
     } finally {
-      await handle.close()
+      await handle.close();
     }
   } catch {
-    return undefined
+    return undefined;
   }
 }
 
 function parseHeaderCwd(line: string): string | undefined {
   try {
-    const header = JSON.parse(line) as { cwd?: unknown }
-    return typeof header.cwd === "string" && header.cwd ? header.cwd : undefined
+    const header = JSON.parse(line) as { cwd?: unknown };
+    return typeof header.cwd === "string" && header.cwd
+      ? header.cwd
+      : undefined;
   } catch {
-    return undefined
+    return undefined;
   }
 }
 
 function withAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return operation
-  if (signal.aborted) return Promise.reject(abortError())
+  if (!signal) return operation;
+  if (signal.aborted) return Promise.reject(abortError());
   return new Promise<T>((resolve, reject) => {
-    let settled = false
-    const cleanup = () => signal.removeEventListener("abort", onAbort)
+    let settled = false;
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
     const onAbort = () => {
-      if (settled) return
-      settled = true
-      cleanup()
-      reject(abortError())
-    }
-    signal.addEventListener("abort", onAbort, { once: true })
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(abortError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
     operation.then(
-      value => {
-        if (settled) return
-        settled = true
-        cleanup()
-        resolve(value)
+      (value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(value);
       },
-      error => {
-        if (settled) return
-        settled = true
-        cleanup()
-        reject(error)
+      (error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
       },
-    )
-  })
+    );
+  });
 }
 
 function abortError(): Error {
-  return Object.assign(new Error("request aborted"), { code: "REQUEST_ABORTED" })
+  return Object.assign(new Error("request aborted"), {
+    code: "REQUEST_ABORTED",
+  });
 }
 
 function pathKey(path: string): string {
-  const resolved = resolve(path)
-  return process.platform === "win32" ? resolved.toLowerCase() : resolved
+  const resolved = resolve(path);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
 function isSessionBusyError(error: unknown): boolean {
-  return Boolean(error && typeof error === "object" && "code" in error && error.code === "SESSION_BUSY")
+  return Boolean(
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    error.code === "SESSION_BUSY",
+  );
 }
 
-async function waitForRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) throw signal.reason ?? abortError()
+async function waitForRetry(
+  delayMs: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted) throw signal.reason ?? abortError();
   await new Promise<void>((resolve, reject) => {
-    let settled = false
+    let settled = false;
     const timer = setTimeout(() => {
-      if (settled) return
-      settled = true
-      cleanup()
-      resolve()
-    }, delayMs)
-    const cleanup = () => signal?.removeEventListener("abort", onAbort)
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
+    }, delayMs);
+    const cleanup = () => signal?.removeEventListener("abort", onAbort);
     const onAbort = () => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      cleanup()
-      reject(signal?.reason ?? abortError())
-    }
-    signal?.addEventListener("abort", onAbort, { once: true })
-  })
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      cleanup();
+      reject(signal?.reason ?? abortError());
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }

@@ -36,6 +36,8 @@ import { themeStore } from '../../store/themeStore'
 import { useChatViewportSelect } from './chatViewport'
 import type { Model, Api } from '../../omp/vendor/pi-ai'
 import type { FileCapabilities } from '../../types/ui'
+import { notificationStore } from '../../store/notificationStore'
+import { attachmentBytes, assertAttachmentBudget } from './input/attachmentBudget'
 
 type ModelInfo = Model<Api>
 import { usePiCapabilities } from '../../omp/capabilities'
@@ -1292,6 +1294,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
       if (files.length === 0 || !supportsAnyFile || isSubmitting) return
 
       const nextAttachments: Attachment[] = []
+      let totalBytes = attachmentBytes(attachments)
 
       for (const rawFile of files) {
         const file = ensureFileMime(rawFile)
@@ -1300,7 +1303,9 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
         if (!isFileSupported(file.type, fileCaps)) continue
 
         try {
+          assertAttachmentBudget(file.size, totalBytes)
           const dataUrl = await readFileAsDataUrl(file)
+          totalBytes += file.size
 
           nextAttachments.push({
             id: crypto.randomUUID(),
@@ -1311,6 +1316,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
           })
         } catch (err) {
           console.warn('[InputBox] Failed to process file:', err)
+          notificationStore.push('error', t('attachmentLimitTitle'), t('attachmentLimitBody'), sessionId ?? '')
         }
       }
 
@@ -1318,7 +1324,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
         setAttachments(prev => [...prev, ...nextAttachments])
       }
     },
-    [supportsAnyFile, fileCaps, isSubmitting, setAttachments],
+    [supportsAnyFile, fileCaps, isSubmitting, setAttachments, attachments, sessionId, t],
   )
 
   // 删除附件
@@ -1516,8 +1522,10 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
       if (!isFileSupported(mime, fileCaps)) return null
 
       try {
-        const { readFile } = await import('@tauri-apps/plugin-fs')
+        const { readFile, stat } = await import('@tauri-apps/plugin-fs')
+        assertAttachmentBudget((await stat(fileInfo.path)).size, 0)
         const bytes = await readFile(fileInfo.path)
+        assertAttachmentBudget(bytes.length, 0)
         return {
           id: crypto.randomUUID(),
           type: 'file',
@@ -1527,10 +1535,11 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
         }
       } catch (err) {
         console.warn('[InputBox] Failed to read dropped file for upload:', err)
+        notificationStore.push('error', t('attachmentLimitTitle'), t('attachmentLimitBody'), sessionId ?? '')
         return null
       }
     },
-    [fileCaps],
+    [fileCaps, sessionId, t],
   )
 
   const handleTauriExternalDrop = useCallback(
@@ -1550,7 +1559,12 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
 
           const uploadAttachment = await createUploadAttachmentFromDroppedPath(droppedPath)
           if (uploadAttachment) {
-            uploadAttachments.push(uploadAttachment)
+            try {
+              assertAttachmentBudget(attachmentBytes([uploadAttachment]), attachmentBytes([...attachments, ...uploadAttachments]))
+              uploadAttachments.push(uploadAttachment)
+            } catch {
+              notificationStore.push('error', t('attachmentLimitTitle'), t('attachmentLimitBody'), sessionId ?? '')
+            }
           } else {
             mentionFiles.push(buildDraggedFileInfo(droppedPath))
           }
@@ -1565,7 +1579,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
         console.warn('[InputBox] Failed to process Tauri dropped paths:', err)
       }
     },
-    [buildDraggedFileInfo, createUploadAttachmentFromDroppedPath, externalFileDropMode, insertDraggedFiles, isSubmitting, setAttachments],
+    [buildDraggedFileInfo, createUploadAttachmentFromDroppedPath, externalFileDropMode, insertDraggedFiles, isSubmitting, setAttachments, attachments, sessionId, t],
   )
 
   const handleTauriDragDropEvent = useCallback(

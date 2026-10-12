@@ -119,7 +119,7 @@ function SubagentTask({ slot, execution, partKey, intent, targetSessionId, showA
       task: typeof slot.input.task === 'string' ? slot.input.task : undefined,
       index: slot.index,
     } : undefined), [slot.result, slot.input, slot.index])
-  const { run: persistedRun, loading: previewLoading } = usePersistedSubagentRun(
+  const { run: persistedRun, loading: previewLoading, reload: reloadPreview } = usePersistedSubagentRun(
     execution.call.id, diskResult, Boolean(liveRun), currentSessionId, shouldRenderBody,
     !slot.result ? runtimeStopped ? 'aborted' : 'running' : undefined,
   )
@@ -202,7 +202,7 @@ function SubagentTask({ slot, execution, partKey, intent, targetSessionId, showA
           <div className="pt-2 space-y-3">
             {prompt && <div className="text-[length:var(--fs-xs)] text-text-500 leading-relaxed whitespace-nowrap overflow-hidden text-ellipsis">{prompt}</div>}
             {prompt && subagentRun && <hr className="border-border-200/30" />}
-            <SubagentSessionPreview run={subagentRun} loading={previewLoading} />
+            <SubagentSessionPreview run={subagentRun} loading={previewLoading} onLoadMore={persistedRun ? reloadPreview : undefined} />
             {isCompleted && resultOutput && (
               <ContentBlock label={t('task.result')} stateKey={`message:${partKey}:task-result`} content={resultOutput} defaultCollapsed onFullscreenChange={handleContentFullscreenChange} fullscreenId={`task:${partKey}:result`} />
             )}
@@ -384,7 +384,7 @@ function usePersistedSubagentRun(
   parentSessionId: string | null | undefined,
   enabled: boolean,
   fallbackStatus?: OmpSubagentRun['status'],
-): { run?: OmpSubagentRun; loading: boolean } {
+): { run?: OmpSubagentRun; loading: boolean; reload: () => void } {
   // 只选原始值（sessionFile/cwd 字符串）：订阅整个 state 对象会让
   // 每个历史 task 行跟着父会话的每次 state 刷新重渲染
   const getParentFile = useCallback(() => {
@@ -397,31 +397,37 @@ function usePersistedSubagentRun(
     const run = buildPersistedSubagentRun(callId, result, deriveChildSessionFile(result, parentFile ?? undefined), parentSessionId)
     return run && fallbackStatus ? { ...run, status: fallbackStatus } : run
   }, [callId, hasLiveRun, parentSessionId, result, parentFile, fallbackStatus])
-  const [loaded, setLoaded] = useState<{ key: string; items: OmpSubagentTranscriptItem[] }>({ key: '', items: [] })
+  const [revision, setRevision] = useState(0)
+  const reload = useCallback(() => setRevision(value => value + 1), [])
+  const [loaded, setLoaded] = useState<{ key: string; items: OmpSubagentTranscriptItem[]; revision?: number; truncated?: boolean; hasMore?: boolean }>({ key: '', items: [] })
   useEffect(() => {
     if (!enabled || !baseRun?.sessionFile || !parentSessionId) return
     let cancelled = false
+    const controller = new AbortController()
     // 走 subagent.messages 磁盘兜底：只读这一份子会话文件。
     // 不要 open + previewSessionById——后者会 summarizeAll / 深度扫全部子会话。
-    void getOmpSubagentMessages(parentSessionId, { sessionFile: baseRun.sessionFile })
+    void getOmpSubagentMessages(parentSessionId, { sessionFile: baseRun.sessionFile }, controller.signal)
       .then(result => {
         if (cancelled) return
         const record = result && typeof result === 'object' && !Array.isArray(result)
           ? result as Record<string, unknown>
           : undefined
         const messages = Array.isArray(record?.messages) ? record.messages as unknown[] : []
-        setLoaded({ key: baseRun.id, items: transcriptItemsFromMessages(messages) })
+        setLoaded({ key: baseRun.id, items: transcriptItemsFromMessages(messages), revision,
+          truncated: Boolean(record?.truncated), hasMore: Boolean(record?.hasMore) })
       }).catch(() => {
-        if (!cancelled) setLoaded({ key: baseRun.id, items: [] })
+        if (!cancelled) setLoaded({ key: baseRun.id, items: [], revision })
       })
-    return () => { cancelled = true }
-  }, [baseRun?.id, baseRun?.sessionFile, parentSessionId, enabled])
+    return () => { cancelled = true; controller.abort() }
+  }, [baseRun?.id, baseRun?.sessionFile, parentSessionId, enabled, revision])
   return useMemo(
     () => ({
-      run: baseRun ? { ...baseRun, transcript: loaded.key === baseRun.id ? loaded.items : [] } : undefined,
-      loading: Boolean(enabled && baseRun?.sessionFile && loaded.key !== baseRun.id),
+      run: baseRun ? { ...baseRun, transcript: loaded.key === baseRun.id ? loaded.items : [],
+        historyLoaded: loaded.key === baseRun.id, historyTruncated: loaded.truncated, historyHasMore: loaded.hasMore } : undefined,
+      loading: Boolean(enabled && baseRun?.sessionFile && (loaded.key !== baseRun.id || loaded.revision !== revision)),
+      reload,
     }),
-    [baseRun, loaded, enabled],
+    [baseRun, loaded, enabled, revision, reload],
   )
 }
 

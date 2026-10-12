@@ -35,10 +35,29 @@ import type {
   TerminalInfo,
   TerminalUpdateParams,
 } from '@ompiui/protocol'
+import {
+  HOST_COMMAND_SPECS,
+  PI_COMMAND_SPECS,
+  validateParams,
+  type HostCommandSpec,
+  type PiCommandSpec,
+} from '@ompiui/protocol'
 import type { SessionInfo, SessionTreeNode, Skill, PromptTemplate } from '../vendor/pi-coding-agent'
-import type { PiBranchPage, PiConfiguredPackage, PiModelRuntimeSnapshot, PiPackageUpdate, PiProjectTrust, PiProviderAuthInfo, PiSettingsSnapshot, ResolvedPaths } from '../domain/index.js'
+import type {
+  PiBranchPage,
+  PiConfiguredPackage,
+  PiModelRuntimeSnapshot,
+  PiPackageUpdate,
+  PiProjectTrust,
+  PiProviderAuthInfo,
+  PiSettingsSnapshot,
+  ResolvedPaths,
+} from '../domain/index.js'
 import { getApiBase, getPiAuthToken, piFetch, type PiRequestInit } from '../httpClient.js'
 import { piCommandStore } from '../state/index.js'
+import { serverStore } from '../../store/serverStore'
+import { readSubagentTranscript } from '../subagentTranscript'
+import { retryDelay, waitNetworkDelay } from '../networkRetry'
 import { getHttpFetch } from '../../utils/tauri'
 import { auditHttpRequest } from '../trafficAudit/http'
 import { resolveAndroidTailscaleUrl } from '../../utils/androidTailscale'
@@ -62,6 +81,7 @@ export type PiSessionOpenResult = {
 }
 
 export type PiBranchGetParams = {
+  includeLiveMessage?: boolean
   cursor?: string
   limit?: number
   maxBytes?: number
@@ -134,9 +154,11 @@ export async function redeemPairCode(pair: string, origin: string, signal?: Abor
   const response = await auditHttpRequest(`${origin}/api/v1/host/pair/redeem`, init, () => f(url, init))
   if (!response.ok) {
     const message = await response.text().catch(() => '')
-    throw Object.assign(new Error(`pair redeem failed: ${response.status}${message ? ` ${message}` : ''}`), { status: response.status })
+    throw Object.assign(new Error(`pair redeem failed: ${response.status}${message ? ` ${message}` : ''}`), {
+      status: response.status,
+    })
   }
-  return await response.json() as PairRedeemResult
+  return (await response.json()) as PairRedeemResult
 }
 
 // 内置 Tailscale：状态 / 安装 / 发起登录
@@ -145,11 +167,19 @@ export async function fetchTailscale(signal?: AbortSignal): Promise<import('@omp
 }
 
 export async function startTailscaleInstall(): Promise<void> {
-  await readJson<{ ok: boolean }>(`${getApiBase()}/api/v1/host/tailscale/install`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+  await readJson<{ ok: boolean }>(`${getApiBase()}/api/v1/host/tailscale/install`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  })
 }
 
 export async function startTailscaleLogin(): Promise<void> {
-  await readJson<{ ok: boolean }>(`${getApiBase()}/api/v1/host/tailscale/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+  await readJson<{ ok: boolean }>(`${getApiBase()}/api/v1/host/tailscale/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  })
 }
 
 export async function disconnectTailscale(): Promise<void> {
@@ -160,18 +190,33 @@ export async function fetchPiRegistry(signal?: AbortSignal): Promise<PiRegistryS
   return readJson<PiRegistrySnapshot>(`${getApiBase()}/api/v1/pi/registry`, { signal })
 }
 
-export async function postPiGlobalCommand<T = JsonValue | undefined, K extends PiGlobalCommandName = PiGlobalCommandName>(
-  name: K,
-  params?: PiParamsFor<K>,
-  signal?: AbortSignal,
-): Promise<T extends undefined ? null : T> {
-  const body = params ? JSON.stringify(params) : '{}'
-  const response = await readJson<PiCommandResponse<T>>(`${getApiBase()}/api/v1/pi/commands/${encodeURIComponent(name)}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body,
-    signal,
-  })
+function commandBody(params: unknown, schema?: JsonObject): string {
+  validateParams(schema, params ?? {})
+  const body = JSON.stringify(params ?? {})
+  const limit = typeof schema?.maxBodyBytes === 'number' ? schema.maxBodyBytes : 24 * 1024 * 1024
+  if (new TextEncoder().encode(body).byteLength > limit) {
+    throw Object.assign(new Error('Command body exceeds its byte limit'), { code: 'FILE_TOO_LARGE' })
+  }
+  return body
+}
+
+export async function postPiGlobalCommand<
+  T = JsonValue | undefined,
+  K extends PiGlobalCommandName = PiGlobalCommandName,
+>(name: K, params?: PiParamsFor<K>, signal?: AbortSignal): Promise<T extends undefined ? null : T> {
+  const body = commandBody(
+    params,
+    (PI_COMMAND_SPECS.find(spec => spec.name === name) as PiCommandSpec | undefined)?.paramsSchema,
+  )
+  const response = await readJson<PiCommandResponse<T>>(
+    `${getApiBase()}/api/v1/pi/commands/${encodeURIComponent(name)}`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+      signal,
+    },
+  )
   if (response.command) piCommandStore.upsert(response.command)
   return (response.data !== undefined ? response.data : response.command) as T extends undefined ? null : T
 }
@@ -182,7 +227,10 @@ export async function postPiSessionCommand<T = JsonValue | undefined, K extends 
   params?: PiParamsFor<K>,
   signal?: AbortSignal,
 ): Promise<T extends undefined ? null : T> {
-  const body = params ? JSON.stringify(params) : '{}'
+  const body = commandBody(
+    params,
+    (PI_COMMAND_SPECS.find(spec => spec.name === name) as PiCommandSpec | undefined)?.paramsSchema,
+  )
   const response = await readJson<PiCommandResponse<T>>(
     `${getApiBase()}/api/v1/pi/sessions/${encodeURIComponent(sessionId)}/commands/${encodeURIComponent(name)}`,
     {
@@ -197,21 +245,31 @@ export async function postPiSessionCommand<T = JsonValue | undefined, K extends 
 }
 
 // Host commands (workspaces / files / git), POST /api/v1/host/commands/:name
-export async function postHostCommand<T = JsonValue | undefined, K extends keyof HostCommandParams = keyof HostCommandParams>(
-  name: K,
-  params?: HostCommandParams[K],
-  signal?: AbortSignal,
-): Promise<T> {
-  const response = await readJson<{ data: T }>(
-    `${getApiBase()}/api/v1/host/commands/${encodeURIComponent(name)}`,
-    {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(params ?? {}),
-      signal,
-    },
+const hostReadFlights = new Map<string, Promise<unknown>>()
+const SHARED_HOST_READS = new Set(['git.info', 'git.status', 'git.diff', 'git.fileDiff', 'files.list', 'files.read'])
+export async function postHostCommand<
+  T = JsonValue | undefined,
+  K extends keyof HostCommandParams = keyof HostCommandParams,
+>(name: K, params?: HostCommandParams[K], signal?: AbortSignal): Promise<T> {
+  const body = commandBody(
+    params,
+    (HOST_COMMAND_SPECS.find(spec => spec.name === name) as HostCommandSpec | undefined)?.paramsSchema,
   )
-  return response.data
+  const key = JSON.stringify([serverStore.getActiveServerGeneration(), name, body])
+  const share = !signal && SHARED_HOST_READS.has(name)
+  const current = share ? hostReadFlights.get(key) : undefined
+  if (current) return current as Promise<T>
+  const request = readJson<{ data: T }>(`${getApiBase()}/api/v1/host/commands/${encodeURIComponent(name)}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body,
+    signal,
+  }).then(response => response.data)
+  const flight = request.finally(() => {
+    if (hostReadFlights.get(key) === flight) hostReadFlights.delete(key)
+  })
+  if (share) hostReadFlights.set(key, flight)
+  return flight
 }
 
 // Host git commands (git.*), workspace-scoped
@@ -223,11 +281,20 @@ export function getHostGitStatus(workspacePath: string, signal?: AbortSignal): P
   return postHostCommand('git.status', { workspacePath }, signal)
 }
 
-export function getHostGitDiff(workspacePath: string, mode: GitDiffMode, signal?: AbortSignal): Promise<GitDiffResponse> {
+export function getHostGitDiff(
+  workspacePath: string,
+  mode: GitDiffMode,
+  signal?: AbortSignal,
+): Promise<GitDiffResponse> {
   return postHostCommand('git.diff', { workspacePath, mode }, signal)
 }
 
-export function getHostGitFileDiff(workspacePath: string, path: string, mode: GitDiffMode, signal?: AbortSignal): Promise<GitFileDiffResponse> {
+export function getHostGitFileDiff(
+  workspacePath: string,
+  path: string,
+  mode: GitDiffMode,
+  signal?: AbortSignal,
+): Promise<GitFileDiffResponse> {
   return postHostCommand('git.fileDiff', { workspacePath, path, mode }, signal)
 }
 
@@ -254,15 +321,28 @@ export function writeHostFile(
   return postHostCommand('files.write', { workspacePath, path, content, ...options }, signal)
 }
 
-export function createHostFileEntry(workspacePath: string, request: FileCreateRequest, signal?: AbortSignal): Promise<FileOperationResponse> {
+export function createHostFileEntry(
+  workspacePath: string,
+  request: FileCreateRequest,
+  signal?: AbortSignal,
+): Promise<FileOperationResponse> {
   return postHostCommand('files.create', { workspacePath, ...request }, signal)
 }
 
-export function moveHostFileEntry(workspacePath: string, request: FileMoveRequest, signal?: AbortSignal): Promise<FileOperationResponse> {
+export function moveHostFileEntry(
+  workspacePath: string,
+  request: FileMoveRequest,
+  signal?: AbortSignal,
+): Promise<FileOperationResponse> {
   return postHostCommand('files.move', { workspacePath, ...request }, signal)
 }
 
-export function deleteHostFileEntry(workspacePath: string, path: string, recursive = false, signal?: AbortSignal): Promise<{ ok: boolean }> {
+export function deleteHostFileEntry(
+  workspacePath: string,
+  path: string,
+  recursive = false,
+  signal?: AbortSignal,
+): Promise<{ ok: boolean }> {
   return postHostCommand('files.delete', { workspacePath, path, recursive }, signal)
 }
 
@@ -275,7 +355,12 @@ export function searchHostFilesByName(
   return postHostCommand('files.searchName', { workspacePath, query, ...options }, signal)
 }
 
-export function searchHostFilesText(workspacePath: string, query: string, limit?: number, signal?: AbortSignal): Promise<FileTextSearchResponse> {
+export function searchHostFilesText(
+  workspacePath: string,
+  query: string,
+  limit?: number,
+  signal?: AbortSignal,
+): Promise<FileTextSearchResponse> {
   return postHostCommand('files.searchText', { workspacePath, query, limit }, signal)
 }
 
@@ -305,11 +390,19 @@ export function updateHostTerminal(
   return postHostCommand('terminals.update', { workspacePath, terminalId, ...params }, signal)
 }
 
-export function removeHostTerminal(workspacePath: string, terminalId: string, signal?: AbortSignal): Promise<{ ok: boolean }> {
+export function removeHostTerminal(
+  workspacePath: string,
+  terminalId: string,
+  signal?: AbortSignal,
+): Promise<{ ok: boolean }> {
   return postHostCommand('terminals.remove', { workspacePath, terminalId }, signal)
 }
 
-export function issueHostTerminalToken(workspacePath: string, terminalId: string, signal?: AbortSignal): Promise<{ token: string; expiresIn: number }> {
+export function issueHostTerminalToken(
+  workspacePath: string,
+  terminalId: string,
+  signal?: AbortSignal,
+): Promise<{ token: string; expiresIn: number }> {
   return postHostCommand('terminals.connectToken', { workspacePath, terminalId }, signal)
 }
 
@@ -318,7 +411,8 @@ export function getHostTerminalWebSocketUrl(terminalId: string, ticket: string, 
   const url = new URL(`${base.replace(/^http/, 'ws')}/api/v1/host/terminals/${encodeURIComponent(terminalId)}/stream`)
   url.searchParams.set('ticket', ticket)
   // undefined 从最早保留的输出开始；-1 显式请求当前尾部，非负值恢复已知位置。
-  if (cursor !== undefined && Number.isSafeInteger(cursor) && cursor >= -1) url.searchParams.set('cursor', String(cursor))
+  if (cursor !== undefined && Number.isSafeInteger(cursor) && cursor >= -1)
+    url.searchParams.set('cursor', String(cursor))
   // 同源模式（无 API base）下 WebSocket 升级请求无法携带 Authorization 头，
   // 因此只要配置了 token 就必须走 query 参数，与事件流保持一致。
   const token = getPiAuthToken()
@@ -352,11 +446,20 @@ export function listActiveProviderFlows(signal?: AbortSignal): Promise<JsonValue
   return postPiGlobalCommand('providers.activeFlows', undefined, signal)
 }
 
-export function startProviderAuth(providerId: string, authType?: 'api_key' | 'oauth', signal?: AbortSignal): Promise<{ flowId: string }> {
+export function startProviderAuth(
+  providerId: string,
+  authType?: 'api_key' | 'oauth',
+  signal?: AbortSignal,
+): Promise<{ flowId: string }> {
   return postPiGlobalCommand('providers.startAuth', { providerId, authType }, signal)
 }
 
-export function respondProviderAuth(flowId: string, promptId: string, value: string, signal?: AbortSignal): Promise<JsonValue> {
+export function respondProviderAuth(
+  flowId: string,
+  promptId: string,
+  value: string,
+  signal?: AbortSignal,
+): Promise<JsonValue> {
   return postPiGlobalCommand('providers.respondAuth', { flowId, promptId, value }, signal)
 }
 
@@ -402,13 +505,23 @@ export function listPiPackages(cwd: string, signal?: AbortSignal): Promise<PiCon
 
 export function managePiPackage(
   cwd: string,
-  params: { commandId: string; action: 'install' | 'remove' | 'update'; source?: string; local?: boolean; persist?: boolean },
+  params: {
+    commandId: string
+    action: 'install' | 'remove' | 'update'
+    source?: string
+    local?: boolean
+    persist?: boolean
+  },
   signal?: AbortSignal,
 ): Promise<PiConfiguredPackage[]> {
   return postPiGlobalCommand('packages.manage', { cwd, ...params }, signal)
 }
 
-export function resolvePiPackages(cwd: string, missingAction?: 'install' | 'skip' | 'error', signal?: AbortSignal): Promise<ResolvedPaths> {
+export function resolvePiPackages(
+  cwd: string,
+  missingAction?: 'install' | 'skip' | 'error',
+  signal?: AbortSignal,
+): Promise<ResolvedPaths> {
   return postPiGlobalCommand('packages.resolve', { cwd, missingAction }, signal)
 }
 
@@ -421,11 +534,22 @@ export function resolvePiExtensionSources(
   return postPiGlobalCommand('packages.resolveSources', { cwd, sources, ...options }, signal)
 }
 
-export function changePiPackageSource(cwd: string, source: string, operation: 'add' | 'remove', local?: boolean, signal?: AbortSignal): Promise<{ changed: boolean; packages: PiConfiguredPackage[] }> {
+export function changePiPackageSource(
+  cwd: string,
+  source: string,
+  operation: 'add' | 'remove',
+  local?: boolean,
+  signal?: AbortSignal,
+): Promise<{ changed: boolean; packages: PiConfiguredPackage[] }> {
   return postPiGlobalCommand('packages.changeSource', { cwd, source, operation, local }, signal)
 }
 
-export function getPiPackageInstalledPath(cwd: string, source: string, scope?: 'user' | 'project', signal?: AbortSignal): Promise<string | null> {
+export function getPiPackageInstalledPath(
+  cwd: string,
+  source: string,
+  scope?: 'user' | 'project',
+  signal?: AbortSignal,
+): Promise<string | null> {
   return postPiGlobalCommand('packages.installedPath', { cwd, source, scope }, signal)
 }
 
@@ -444,7 +568,11 @@ export function createPiSession(cwd: string, signal?: AbortSignal): Promise<PiSe
   return postPiGlobalCommand<PiSessionCreateResult>('session.create', { cwd }, signal)
 }
 
-export function previewPiSession(sessionId: string, params: PiBranchGetParams = {}, signal?: AbortSignal): Promise<PiSessionPreviewResult> {
+export function previewPiSession(
+  sessionId: string,
+  params: PiBranchGetParams = {},
+  signal?: AbortSignal,
+): Promise<PiSessionPreviewResult> {
   return postPiGlobalCommand<PiSessionPreviewResult>('session.preview', { sessionId, ...params }, signal)
 }
 
@@ -470,12 +598,31 @@ export function getPiSessionState(sessionId: string, signal?: AbortSignal): Prom
  * 读取 OMP 子代理会话转录（磁盘回填/增量续读）。session 命令跑在父会话
  * runtime 上：父会话 attach 后才可用。
  */
-export function getOmpSubagentMessages(
+export async function getOmpSubagentMessages(
   sessionId: string,
   params: { subagentId?: string; sessionFile?: string; fromByte?: number } | undefined,
   signal?: AbortSignal,
 ): Promise<JsonValue> {
-  return postPiSessionCommand(sessionId, 'subagent.messages', params, signal)
+  const generation = serverStore.getActiveServerGeneration()
+  const key = JSON.stringify([generation, sessionId, params?.sessionFile, params?.subagentId])
+  const base = getApiBase()
+  return readSubagentTranscript(
+    key,
+    params?.fromByte,
+    async (cursor, sharedSignal) => {
+      if (getApiBase() !== base || serverStore.getActiveServerGeneration() !== generation)
+        throw new DOMException('Server changed', 'AbortError')
+      const page = await postPiSessionCommand(
+        sessionId,
+        'subagent.messages',
+        { ...params, fromByte: cursor },
+        sharedSignal,
+      )
+      if (serverStore.getActiveServerGeneration() !== generation) throw new DOMException('Server changed', 'AbortError')
+      return page
+    },
+    signal,
+  )
 }
 
 /** 列出父会话文件旁嵌套的 OMP 子代理会话（OpenCodeUI children 语义） */
@@ -488,12 +635,26 @@ export function findPiSessionByFile(sessionFile: string, signal?: AbortSignal): 
   return postPiGlobalCommand<JsonValue>('session.findByFile', { sessionFile }, signal)
 }
 
-export function getPiBranchPage(sessionId: string, params: PiBranchGetParams, signal?: AbortSignal): Promise<PiBranchPage> {
+export function getPiBranchPage(
+  sessionId: string,
+  params: PiBranchGetParams,
+  signal?: AbortSignal,
+): Promise<PiBranchPage> {
   return postPiSessionCommand(sessionId, 'branch.get', params, signal)
 }
 
-export function getPiTree(sessionId: string, signal?: AbortSignal): Promise<SessionTreeNode[]> {
-  return postPiSessionCommand(sessionId, 'tree.get', undefined, signal)
+export async function getPiTree(sessionId: string, signal?: AbortSignal): Promise<SessionTreeNode[]> {
+  const nodes = await postPiSessionCommand<SessionTreeNode[]>(sessionId, 'tree.get', undefined, signal)
+  if (nodes.some(node => node.children?.length)) return nodes
+  const byId = new Map(nodes.map(node => [node.entry.id, node]))
+  const roots: SessionTreeNode[] = []
+  for (const node of nodes) {
+    const parentId = node.entry.parentId
+    const parent = parentId ? byId.get(parentId) : undefined
+    if (parent && parent !== node) parent.children.push(node)
+    else roots.push(node)
+  }
+  return roots
 }
 
 export function getPiSessionRegistry(sessionId: string, signal?: AbortSignal): Promise<JsonValue> {
@@ -508,7 +669,10 @@ export function getPiPrompts(sessionId: string, signal?: AbortSignal): Promise<P
   return postPiSessionCommand(sessionId, 'prompts.list', undefined, signal)
 }
 
-export function getPiAgentsFiles(sessionId: string, signal?: AbortSignal): Promise<Array<{ path: string; content: string }>> {
+export function getPiAgentsFiles(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<Array<{ path: string; content: string }>> {
   return postPiSessionCommand(sessionId, 'agentsFiles.list', undefined, signal)
 }
 
@@ -529,7 +693,11 @@ export function abortPi(sessionId: string, signal?: AbortSignal): Promise<JsonVa
   return postPiSessionCommand(sessionId, 'abort', undefined, signal)
 }
 
-export function compactPi(sessionId: string, customInstructions?: string, signal?: AbortSignal): Promise<CommandRecord> {
+export function compactPi(
+  sessionId: string,
+  customInstructions?: string,
+  signal?: AbortSignal,
+): Promise<CommandRecord> {
   return postPiSessionCommand(sessionId, 'compact', customInstructions ? { customInstructions } : undefined, signal)
 }
 
@@ -545,7 +713,13 @@ export function setPiScopedModels(sessionId: string, patterns: string[], signal?
   return postPiSessionCommand(sessionId, 'setScopedModels', { patterns }, signal)
 }
 
-export function executePiBash(sessionId: string, command: string, excludeFromContext?: boolean, clientId?: string, signal?: AbortSignal): Promise<CommandRecord> {
+export function executePiBash(
+  sessionId: string,
+  command: string,
+  excludeFromContext?: boolean,
+  clientId?: string,
+  signal?: AbortSignal,
+): Promise<CommandRecord> {
   return postPiSessionCommand(sessionId, 'bash', { command, excludeFromContext, clientId }, signal)
 }
 
@@ -553,11 +727,19 @@ export function abortPiBash(sessionId: string, signal?: AbortSignal): Promise<Js
   return postPiSessionCommand(sessionId, 'abortBash', undefined, signal)
 }
 
-export function exportPiSessionHtml(sessionId: string, outputPath: string, signal?: AbortSignal): Promise<CommandRecord> {
+export function exportPiSessionHtml(
+  sessionId: string,
+  outputPath: string,
+  signal?: AbortSignal,
+): Promise<CommandRecord> {
   return postPiSessionCommand(sessionId, 'exportHtml', { outputPath }, signal)
 }
 
-export function exportPiSessionJsonl(sessionId: string, outputPath: string, signal?: AbortSignal): Promise<CommandRecord> {
+export function exportPiSessionJsonl(
+  sessionId: string,
+  outputPath: string,
+  signal?: AbortSignal,
+): Promise<CommandRecord> {
   return postPiSessionCommand(sessionId, 'exportJsonl', { outputPath }, signal)
 }
 
@@ -565,7 +747,9 @@ export function waitPiForIdle(sessionId: string, signal?: AbortSignal): Promise<
   return postPiSessionCommand(sessionId, 'waitForIdle', undefined, signal)
 }
 
-export type PiCustomMessageContent = Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }>
+export type PiCustomMessageContent = Array<
+  { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }
+>
 
 export function sendPiCustomMessage(
   sessionId: string,
@@ -582,8 +766,18 @@ export function sendPiCustomMessage(
   return postPiSessionCommand(sessionId, 'sendCustomMessage', params, signal)
 }
 
-export function appendPiCustomEntry(sessionId: string, customType: string, data: JsonValue, signal?: AbortSignal): Promise<CommandRecord> {
-  return postPiSessionCommand(sessionId, 'appendCustomEntry', { customType, data: data === undefined ? null : data }, signal)
+export function appendPiCustomEntry(
+  sessionId: string,
+  customType: string,
+  data: JsonValue,
+  signal?: AbortSignal,
+): Promise<CommandRecord> {
+  return postPiSessionCommand(
+    sessionId,
+    'appendCustomEntry',
+    { customType, data: data === undefined ? null : data },
+    signal,
+  )
 }
 
 export type PiImageInput = ImageInput
@@ -618,7 +812,12 @@ export function sendExtensionTuiInput(sessionId: string, data: string, signal?: 
   return postPiSessionCommand(sessionId, 'extensionUi.tuiInput', { data }, signal)
 }
 
-export function sendExtensionTuiResize(sessionId: string, cols: number, rows: number, signal?: AbortSignal): Promise<JsonValue> {
+export function sendExtensionTuiResize(
+  sessionId: string,
+  cols: number,
+  rows: number,
+  signal?: AbortSignal,
+): Promise<JsonValue> {
   return postPiSessionCommand(sessionId, 'extensionUi.tuiResize', { cols, rows }, signal)
 }
 
@@ -639,7 +838,12 @@ export function manageSessionGoal(
   signal?: AbortSignal,
   images?: PiImageInput[],
 ): Promise<CommandRecord> {
-  return postPiSessionCommand<CommandRecord>(sessionId, 'goal', { op, objective, ...(images ? { images } : {}) }, signal)
+  return postPiSessionCommand<CommandRecord>(
+    sessionId,
+    'goal',
+    { op, objective, ...(images ? { images } : {}) },
+    signal,
+  )
 }
 
 /**
@@ -688,16 +892,29 @@ export type PiNavigateTreeResult = {
   aborted?: boolean
 }
 
-export function navigatePiTree(sessionId: string, params: PiNavigateTreeParams, signal?: AbortSignal): Promise<CommandRecord> {
+export function navigatePiTree(
+  sessionId: string,
+  params: PiNavigateTreeParams,
+  signal?: AbortSignal,
+): Promise<CommandRecord> {
   return postPiSessionCommand(sessionId, 'navigateTree', params, signal)
 }
 
-
-export function importPiSession(sessionId: string, inputPath: string, cwdOverride?: string, signal?: AbortSignal): Promise<CommandRecord> {
+export function importPiSession(
+  sessionId: string,
+  inputPath: string,
+  cwdOverride?: string,
+  signal?: AbortSignal,
+): Promise<CommandRecord> {
   return postPiSessionCommand(sessionId, 'importSession', { inputPath, cwdOverride }, signal)
 }
 
-export function setPiLabel(sessionId: string, entryId: string, label?: string, signal?: AbortSignal): Promise<CommandRecord> {
+export function setPiLabel(
+  sessionId: string,
+  entryId: string,
+  label?: string,
+  signal?: AbortSignal,
+): Promise<CommandRecord> {
   return postPiSessionCommand(sessionId, 'setLabel', { entryId, label }, signal)
 }
 
@@ -742,11 +959,27 @@ export function sendQueuedMessage(
   return postPiSessionCommand(sessionId, 'sendQueuedMessage', params, signal)
 }
 
-export function setPiSteeringMode(sessionId: string, mode: 'all' | 'one-at-a-time', signal?: AbortSignal): Promise<JsonValue> {
+export function removeQueuedMessage(
+  sessionId: string,
+  params: { kind: 'steering' | 'followUp'; index: number },
+  signal?: AbortSignal,
+): Promise<{ text: string; images?: PiImageInput[] }> {
+  return postPiSessionCommand(sessionId, 'removeQueuedMessage', params, signal)
+}
+
+export function setPiSteeringMode(
+  sessionId: string,
+  mode: 'all' | 'one-at-a-time',
+  signal?: AbortSignal,
+): Promise<JsonValue> {
   return postPiSessionCommand(sessionId, 'setSteeringMode', { mode }, signal)
 }
 
-export function setPiFollowUpMode(sessionId: string, mode: 'all' | 'one-at-a-time', signal?: AbortSignal): Promise<JsonValue> {
+export function setPiFollowUpMode(
+  sessionId: string,
+  mode: 'all' | 'one-at-a-time',
+  signal?: AbortSignal,
+): Promise<JsonValue> {
   return postPiSessionCommand(sessionId, 'setFollowUpMode', { mode }, signal)
 }
 
@@ -756,11 +989,16 @@ export function setPiFollowUpMode(sessionId: string, mode: 'all' | 'one-at-a-tim
  */
 export async function waitHostCommand(commandId: string, signal?: AbortSignal, timeoutMs = 30_000): Promise<JsonValue> {
   const deadline = Date.now() + timeoutMs
+  let attempt = 0
   for (;;) {
-    const record = await readJson<{ command: CommandRecord }>(
-      `${getApiBase()}/api/v1/host/commands/${encodeURIComponent(commandId)}`,
-      { signal },
-    )
+    const cached = piCommandStore.get(commandId)
+    const record =
+      cached && ['completed', 'failed', 'cancelled', 'unknown_after_crash'].includes(cached.status)
+        ? { command: cached }
+        : await readJson<{ command: CommandRecord }>(
+            `${getApiBase()}/api/v1/host/commands/${encodeURIComponent(commandId)}`,
+            { signal },
+          )
     const status = record.command.status
     if (status === 'completed') return record.command.result ?? null
     if (status === 'failed') {
@@ -775,7 +1013,7 @@ export async function waitHostCommand(commandId: string, signal?: AbortSignal, t
       })
     }
     if (Date.now() > deadline) throw new Error('Command timed out')
-    await new Promise(resolve => setTimeout(resolve, 200))
+    await waitNetworkDelay(Math.min(deadline - Date.now(), retryDelay(attempt++, 250, 3000)), signal)
   }
 }
 
@@ -784,11 +1022,19 @@ export function setPiModel(sessionId: string, params: SetModelParams, signal?: A
   return postPiSessionCommand(sessionId, 'setModel', params, signal)
 }
 
-export function cyclePiModel(sessionId: string, direction?: 'forward' | 'backward', signal?: AbortSignal): Promise<CommandRecord> {
+export function cyclePiModel(
+  sessionId: string,
+  direction?: 'forward' | 'backward',
+  signal?: AbortSignal,
+): Promise<CommandRecord> {
   return postPiSessionCommand(sessionId, 'cycleModel', direction ? { direction } : undefined, signal)
 }
 
-export function setPiThinkingLevel(sessionId: string, params: SetThinkingLevelParams, signal?: AbortSignal): Promise<CommandRecord> {
+export function setPiThinkingLevel(
+  sessionId: string,
+  params: SetThinkingLevelParams,
+  signal?: AbortSignal,
+): Promise<CommandRecord> {
   return postPiSessionCommand(sessionId, 'setThinkingLevel', params, signal)
 }
 
@@ -813,5 +1059,5 @@ async function readJson<T>(url: string, init?: PiRequestInit): Promise<T> {
       code,
     })
   }
-  return await response.json() as T
+  return (await response.json()) as T
 }

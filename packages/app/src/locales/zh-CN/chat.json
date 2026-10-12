@@ -1,4 +1,6 @@
 {
+  "attachmentLimitTitle": "附件过大",
+  "attachmentLimitBody": "单个附件不能超过 5 MiB，附件总量不能超过 16 MiB。",
   "header": {
     "newChat": "新对话",
     "openSidebar": "打开侧边栏",
@@ -16,6 +18,8 @@
     "closePane": "关闭窗格"
   },
   "chatArea": {
+    "historyWindow": "正在阅读较早历史",
+    "returnToLatest": "返回最新",
     "loadingSession": "加载会话中...",
     "loadingHistory": "加载历史记录...",
     "currentTurnQueue": "等待本轮追加 · {{count}}",

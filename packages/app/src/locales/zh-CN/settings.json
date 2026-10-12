@@ -1,4 +1,5 @@
 {
+  "backendPreview": { "title": "后端预览", "thinking": "子代理思考" },
   "title": "设置",
   "closeSettings": "关闭设置",
   "version": "Pi v{{version}}",

@@ -30,3 +30,14 @@ test("IPC backpressure suspends parsing and resumes without losing results", asy
   assert.deepEqual(lines, ["pause", "final result"])
   reader.close()
 })
+
+test("oversized UTF-8 lines are discarded until a newline, then parsing resumes", () => {
+  const lines: string[] = []
+  const errors: string[] = []
+  const reader = new RpcLineReader(line => lines.push(line), () => {}, () => {}, 64, message => errors.push(message))
+  reader.push("文".repeat(360000))
+  reader.push("discarded\nvalid\n")
+  assert.deepEqual(lines, ["valid"])
+  assert.equal(errors.length, 1)
+  reader.close()
+})

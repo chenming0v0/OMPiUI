@@ -22,6 +22,7 @@ import { resolveWorkspacePath } from '../omp/workspaces'
 import { piEventStream } from '../omp/eventStream.js'
 import { useServerStore } from './useServerStore'
 import { serverStore } from '../store/serverStore'
+import { piSessionStateStore } from '../omp/state'
 
 export interface FileTreeNode extends FileNodeDto {
   /** workspace root + relative path, for drag/context actions */
@@ -93,22 +94,28 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
     let cancelled = false
     canonicalWorkspaceRef.current = null
     if (directory) {
-      void resolveWorkspacePath(directory).then(workspacePath => {
-        if (!cancelled) canonicalWorkspaceRef.current = workspacePath
-      }).catch(() => undefined)
+      void resolveWorkspacePath(directory)
+        .then(workspacePath => {
+          if (!cancelled) canonicalWorkspaceRef.current = workspacePath
+        })
+        .catch(() => undefined)
     }
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+    }
   }, [directory, activeServerGeneration])
 
   useEffect(() => {
     if (!directory) return
     let cancelled = false
     let workspacePath: string | null = null
-    void resolveWorkspacePath(directory).then(resolved => {
-      if (cancelled || !resolved) return
-      workspacePath = resolved
-      piEventStream.connectWorkspace(resolved)
-    }).catch(() => undefined)
+    void resolveWorkspacePath(directory)
+      .then(resolved => {
+        if (cancelled || !resolved) return
+        workspacePath = resolved
+        piEventStream.connectWorkspace(resolved)
+      })
+      .catch(() => undefined)
     return () => {
       cancelled = true
       if (workspacePath) piEventStream.disconnectWorkspace(workspacePath)
@@ -209,8 +216,8 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
           const normalized = normalizePath(diff.file)
           statusMap.set(normalized, {
             path: normalized,
-            added: diff.additions,
-            removed: diff.deletions,
+            added: diff.statsTruncated ? undefined : diff.additions,
+            removed: diff.statsTruncated ? undefined : diff.deletions,
             status: simplifyGitStatus(diff.status),
           })
         })
@@ -324,13 +331,16 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
     [tree, loadChildren, updateExpandedPaths],
   )
 
-  const collapsePath = useCallback((path: string) => {
-    updateExpandedPaths(prev => {
-      const next = new Set(prev)
-      next.delete(path)
-      return next
-    })
-  }, [updateExpandedPaths])
+  const collapsePath = useCallback(
+    (path: string) => {
+      updateExpandedPaths(prev => {
+        const next = new Set(prev)
+        next.delete(path)
+        return next
+      })
+    },
+    [updateExpandedPaths],
+  )
 
   // 加载文件预览
   const loadPreview = useCallback(
@@ -380,27 +390,38 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
     previewPathRef.current = null
   }, [])
 
-  const savePreview = useCallback(async (path: string, text: string, etag?: string, force = false) => {
-    if (!directory) throw new Error('No workspace is available')
-    if (activeServerGeneration !== serverStore.getActiveServerGeneration()) {
-      throw new Error(t('fileExplorer.serverChanged', { defaultValue: 'The server changed. Reopen the file before saving this draft.' }))
-    }
-    const current = previewCacheRef.current.get(path) ?? (previewPathRef.current === path ? previewContent : null)
-    if (!current || current.type !== 'text') throw new Error('Only text files can be edited')
-    const scopeId = previewScopeIdRef.current
-    const loadId = previewLoadIdRef.current
-    const saveId = Symbol()
-    previewSaveIdsRef.current.set(path, saveId)
-    const saved = await saveFile(path, {
-      ...current,
-      content: text,
-      etag: force ? undefined : etag ?? current.etag,
-    }, directory)
-    if (scopeId !== previewScopeIdRef.current || previewSaveIdsRef.current.get(path) !== saveId) return saved
-    previewCacheRef.current.set(path, saved)
-    if (previewPathRef.current === path && previewLoadIdRef.current === loadId) setPreviewContent(saved)
-    return saved
-  }, [directory, previewContent, activeServerGeneration, t])
+  const savePreview = useCallback(
+    async (path: string, text: string, etag?: string, force = false) => {
+      if (!directory) throw new Error('No workspace is available')
+      if (activeServerGeneration !== serverStore.getActiveServerGeneration()) {
+        throw new Error(
+          t('fileExplorer.serverChanged', {
+            defaultValue: 'The server changed. Reopen the file before saving this draft.',
+          }),
+        )
+      }
+      const current = previewCacheRef.current.get(path) ?? (previewPathRef.current === path ? previewContent : null)
+      if (!current || current.type !== 'text') throw new Error('Only text files can be edited')
+      const scopeId = previewScopeIdRef.current
+      const loadId = previewLoadIdRef.current
+      const saveId = Symbol()
+      previewSaveIdsRef.current.set(path, saveId)
+      const saved = await saveFile(
+        path,
+        {
+          ...current,
+          content: text,
+          etag: force ? undefined : (etag ?? current.etag),
+        },
+        directory,
+      )
+      if (scopeId !== previewScopeIdRef.current || previewSaveIdsRef.current.get(path) !== saveId) return saved
+      previewCacheRef.current.set(path, saved)
+      if (previewPathRef.current === path && previewLoadIdRef.current === loadId) setPreviewContent(saved)
+      return saved
+    },
+    [directory, previewContent, activeServerGeneration, t],
+  )
 
   // 刷新
   const refresh = useCallback(async () => {
@@ -423,26 +444,37 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
 
   useEffect(() => {
     if (!directory) return
-    const filesChanged = (event: Event) => {
-      const detail = (event as CustomEvent<{
-        workspacePath: string
-        changes: Array<{ path: string; type: 'file' | 'directory' }>
-        rescan: boolean
-      }>).detail
+    type Change = {
+      workspacePath: string
+      changes: Array<{ path: string; type: 'file' | 'directory' }>
+      rescan: boolean
+    }
+    let fileTimer: ReturnType<typeof setTimeout> | undefined
+    let gitTimer: ReturnType<typeof setTimeout> | undefined
+    let pending: Change | undefined
+    const applyFiles = (detail: Change) => {
       if (!detail) return
       if (!canonicalWorkspaceRef.current || detail.workspacePath !== canonicalWorkspaceRef.current) return
       invalidateWorkspaceFileCaches(directory)
-      previewCacheRef.current.clear()
       if (detail.rescan || detail.changes.length === 0) {
+        previewCacheRef.current.clear()
         void softRefresh()
         const previewPath = previewPathRef.current
         if (previewPath) void loadPreview(previewPath)
         return
       }
-      const parents = new Set(detail.changes.map(change => {
-        const separator = change.path.lastIndexOf('/')
-        return separator < 0 ? '' : change.path.slice(0, separator)
-      }))
+      for (const change of detail.changes) {
+        for (const path of previewCacheRef.current.keys()) {
+          if (path === change.path || (change.type === 'directory' && path.startsWith(`${change.path}/`)))
+            previewCacheRef.current.delete(path)
+        }
+      }
+      const parents = new Set(
+        detail.changes.map(change => {
+          const separator = change.path.lastIndexOf('/')
+          return separator < 0 ? '' : change.path.slice(0, separator)
+        }),
+      )
       if (parents.has('')) void loadRoot()
       for (const parent of parents) {
         if (!parent) continue
@@ -454,18 +486,43 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
       const previewPath = previewPathRef.current
       if (previewPath && detail.changes.some(change => change.path === previewPath)) void loadPreview(previewPath)
     }
+    const filesChanged = (event: Event) => {
+      const detail = (event as CustomEvent<Change>).detail
+      if (!detail || detail.workspacePath !== canonicalWorkspaceRef.current) return
+      pending = pending
+        ? {
+            ...detail,
+            rescan: pending.rescan || detail.rescan,
+            changes: [
+              ...new Map([...pending.changes, ...detail.changes].map(change => [change.path, change])).values(),
+            ],
+          }
+        : detail
+      fileTimer ??= setTimeout(() => {
+        fileTimer = undefined
+        if (pending) applyFiles(pending)
+        pending = undefined
+      }, 200)
+    }
     const gitChanged = (event: Event) => {
       const detail = (event as CustomEvent<{ workspacePath: string }>).detail
       if (!canonicalWorkspaceRef.current || detail?.workspacePath !== canonicalWorkspaceRef.current) return
-      void loadStatuses()
+      gitTimer ??= setTimeout(() => {
+        gitTimer = undefined
+        const state = sessionId ? piSessionStateStore.getState(sessionId) : null
+        if (state?.isStreaming || state?.isBashRunning) return
+        void loadStatuses()
+      }, 250)
     }
     window.addEventListener('ompiui:workspace-files-changed', filesChanged)
     window.addEventListener('ompiui:workspace-git-updated', gitChanged)
     return () => {
       window.removeEventListener('ompiui:workspace-files-changed', filesChanged)
       window.removeEventListener('ompiui:workspace-git-updated', gitChanged)
+      clearTimeout(fileTimer)
+      clearTimeout(gitTimer)
     }
-  }, [directory, expandedPaths, loadChildren, loadPreview, loadRoot, loadStatuses, softRefresh])
+  }, [directory, expandedPaths, loadChildren, loadPreview, loadRoot, loadStatuses, softRefresh, sessionId])
 
   // 初始加载
   // 初始加载文件树/状态：请求-响应模式，loading 与请求同步设置
@@ -519,7 +576,9 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
     setPreviewContent(null)
     setPreviewError(null)
     setPreviewLoading(false)
-    return () => { previewScopeIdRef.current += 1 }
+    return () => {
+      previewScopeIdRef.current += 1
+    }
   }, [directory, sessionId, activeServerGeneration])
   /* eslint-enable react-hooks/set-state-in-effect */
 

@@ -110,7 +110,10 @@ export function useSessions(options: UseSessionsOptions = {}): UseSessionsResult
           .filter((session): session is UiSession => session !== null)
         const all = linkPiSessionForks(mapped)
         const searchTerm = queryParams.search?.trim().toLowerCase()
-        const matching = filterPiSessionList(all.filter(session => matchesDirectory(session)), searchTerm ?? '')
+        const matching = filterPiSessionList(
+          all.filter(session => matchesDirectory(session)),
+          searchTerm ?? '',
+        )
         const data = matching.slice(0, currentLimitRef.current)
 
         // 检查是否是最新的请求
@@ -198,15 +201,23 @@ export function useSessions(options: UseSessionsOptions = {}): UseSessionsResult
     // pi 原生列表模型：列表 = 磁盘扫描结果（SessionManager.list/listAll）。
     // 事件只作为“该重扫了”的信号，静默全量重拉——不切换 loading、不清空
     // 列表（否则列表被 spinner 行替换、高度塌缩，整个侧边栏抖动）。
-    const refreshFromEvent = () => {
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined
+    const refresh = () => {
       if (isFetchingRef.current) {
         queuedReconnectRefreshRef.current = true
         return
       }
       void fetchSessionsRef.current({ search: searchRef.current || undefined, silent: true })
     }
+    const refreshFromEvent = () => {
+      clearTimeout(refreshTimer)
+      refreshTimer = setTimeout(refresh, 300)
+    }
     window.addEventListener('ompiui:sessions-changed', refreshFromEvent)
-    return () => window.removeEventListener('ompiui:sessions-changed', refreshFromEvent)
+    return () => {
+      clearTimeout(refreshTimer)
+      window.removeEventListener('ompiui:sessions-changed', refreshFromEvent)
+    }
   }, [enabled, matchesDirectory, pageSize])
 
   // 服务器切换:作废在途请求并立即按新服务器重拉(与 SessionContext 一致,不依赖工作区订阅)

@@ -4,6 +4,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, test } from "node:test"
+import { once } from "node:events"
+import { WebSocket } from "ws"
+import { PROTOCOL_VERSION } from "@ompiui/protocol"
 import { parseWebArgs, resolveServerConfig, startOmpiUiServer } from "./start.ts"
 import { TailscaleManager } from "./host/tailscale.ts"
 
@@ -87,6 +90,21 @@ test("one server provides the web app and authenticated API on the same port", a
     assert.equal(network.status, 200)
     assert.notEqual(port, 8787)
     assert.equal((await network.json() as { port?: number }).port, port)
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/v1/events?token=test-token`)
+    const baseline = new Promise<unknown>(resolve => {
+      ws.on("message", data => {
+        const message = JSON.parse(String(data))
+        if (message.event?.channel === "sessions.activity") resolve(message.event.payload)
+      })
+    })
+    try {
+      await once(ws, "open")
+      ws.send(JSON.stringify({ type: "subscribe", protocolVersion: PROTOCOL_VERSION,
+        streams: [{ kind: "server", id: "server" }] }))
+      assert.deepEqual(await baseline, { sessions: {} })
+    } finally {
+      ws.terminate()
+    }
   } finally {
     await running.stop()
   }

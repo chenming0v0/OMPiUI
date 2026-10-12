@@ -5,6 +5,26 @@ import type { SessionLease } from "./session-lease.ts"
 import { SessionHost } from "./session-host.ts"
 import { EventHub } from "../event-hub.ts"
 
+test("catalog timeout never replays a command on the same live worker", async () => {
+  const supervisor = new RuntimeSupervisor()
+  let commands = 0
+  const host = {
+    command: async () => {
+      commands++
+      throw Object.assign(new Error("command timed out"), { code: "WORKER_RESULT_UNKNOWN" })
+    },
+    dispose: async () => {},
+  }
+  ;(supervisor as unknown as { runtimeHost: unknown }).runtimeHost = host
+  try {
+    await assert.rejects(supervisor.catalogCommand("session.preview", { sessionId: "test" },
+      { retry: true, idempotent: true }), { code: "WORKER_RESULT_UNKNOWN" })
+    assert.equal(commands, 1)
+  } finally {
+    await supervisor.dispose()
+  }
+})
+
 test("RuntimeSupervisor retains the lease until a cancelled background open is cleaned up", async () => {
   let leases = 0
   let settled!: () => void

@@ -1,6 +1,6 @@
 {
   "name": "@ompiui/omp-worker",
-  "version": "0.6.21",
+  "version": "0.6.22",
   "private": true,
   "type": "module",
   "description": "OMPiUI worker — drives OMP (`oh-my-pi`) agent sessions over the official `omp --mode rpc` protocol",
@@ -20,7 +20,8 @@
     "test": "node --import tsx --test src/**/*.test.ts"
   },
   "dependencies": {
-    "@ompiui/protocol": "0.6.21"
+    "@ompiui/protocol": "0.6.22",
+    "@streamparser/json": "0.0.26"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",

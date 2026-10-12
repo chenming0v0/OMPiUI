@@ -1,4 +1,6 @@
 {
+  "attachmentLimitTitle": "Attachment too large",
+  "attachmentLimitBody": "Each attachment must be at most 5 MiB, with at most 16 MiB in total.",
   "header": {
     "newChat": "New Chat",
     "openSidebar": "Open sidebar",
@@ -16,6 +18,8 @@
     "closePane": "Close pane"
   },
   "chatArea": {
+    "historyWindow": "Reading earlier history",
+    "returnToLatest": "Return to latest",
     "loadingSession": "Loading session...",
     "loadingHistory": "Loading history...",
     "currentTurnQueue": "Waiting for current turn · {{count}}",

@@ -1,5 +1,6 @@
 import type { ReactNode, ComponentType } from 'react'
 import type { PiToolExecution } from '../../../omp/domain/index.js'
+import type { ImageContent } from '../../../omp/vendor/pi-ai'
 
 // ============================================
 // Tool Registry Types
@@ -30,7 +31,7 @@ export interface ExtractedToolData {
   cwd?: string
   exitCode?: number
   notice?: string
-  images?: Array<{ url: string; mimeType: string; requiresAuth?: boolean }>
+  images?: Array<{ url: string; mimeType: string; requiresAuth?: boolean; block?: ImageContent }>
 
   // Bash 截断（Pi 原生字段）
   truncated?: boolean

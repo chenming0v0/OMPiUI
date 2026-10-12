@@ -11,6 +11,34 @@ import type { WorkerSession } from "./worker-client.ts"
 import type { RuntimeSupervisor } from "./supervisor.ts"
 import { SessionHost } from "./session-host.ts"
 
+test("attached previews forward sync cursors and reject excessive page limits before querying", async t => {
+  const previous = process.env.OMPIUI_DRIVER
+  process.env.OMPIUI_DRIVER = "mock"
+  const commands: Array<{ type: string; params?: JsonObject }> = []
+  const worker = {
+    command: async (type: string, params?: JsonObject) => { commands.push({ type, params }); return {} },
+    getSessionId: () => "preview-test",
+    getSessionFile: () => undefined,
+    getCwd: () => ".",
+    onEvent: () => () => {}, onCrash: () => () => {}, onClose: () => () => {}, dispose: async () => {},
+  } as unknown as WorkerSession
+  const supervisor = { onEvent: () => () => {}, open: async () => worker } as unknown as RuntimeSupervisor
+  const host = new SessionHost(supervisor, new EventHub())
+  t.after(() => {
+    host.dispose()
+    if (previous === undefined) delete process.env.OMPIUI_DRIVER
+    else process.env.OMPIUI_DRIVER = previous
+  })
+  await host.openSession(".")
+  commands.length = 0
+  await host.executeGlobalCommand("session.preview", { sessionId: "preview-test", syncCursor: "baseline", beforeId: "entry", limit: 100 })
+  assert.deepEqual(commands.find(command => command.type === "branch.get")?.params,
+    { limit: 100, syncCursor: "baseline", beforeId: "entry" })
+  const count = commands.length
+  await assert.rejects(host.executeGlobalCommand("session.preview", { sessionId: "preview-test", limit: 201 }), { code: "INVALID_REQUEST" })
+  assert.equal(commands.length, count)
+})
+
 test("viewing an OMP terminal history and syncing a draft never opens a writer", async t => {
   const file = join(tmpdir(), `ompiui-preview-${randomUUID()}.jsonl`)
   const bytes = '{"type":"session","id":"terminal-session"}\n{"type":"message","id":"latest-tui-answer"}\n'

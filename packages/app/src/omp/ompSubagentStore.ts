@@ -1,6 +1,10 @@
 import type { JsonObject } from '@ompiui/protocol'
 import { subagentDisplayTitle } from './ompSubagentFormat'
-import { appendTranscriptEvent, transcriptItemsFromMessages, type OmpSubagentTranscriptItem } from './ompSubagentTranscript'
+import {
+  appendTranscriptEvent,
+  transcriptItemsFromMessages,
+  type OmpSubagentTranscriptItem,
+} from './ompSubagentTranscript'
 export { transcriptItemsFromMessages, type OmpSubagentTranscriptItem } from './ompSubagentTranscript'
 
 /**
@@ -57,6 +61,8 @@ export type OmpSubagentRun = {
   transcript: OmpSubagentTranscriptItem[]
   /** 已尝试过磁盘转录回填（get_subagent_messages），避免重复拉取 */
   historyLoaded?: boolean
+  historyTruncated?: boolean
+  historyHasMore?: boolean
   startedAt: number
   endedAt?: number
 }
@@ -104,7 +110,7 @@ export function selectHudRuns(snapshot: OmpSubagentSnapshot): OmpSubagentRun[] {
 }
 
 function asRecord(value: unknown): JsonObject | undefined {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : undefined
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as JsonObject) : undefined
 }
 
 function str(value: unknown): string | undefined {
@@ -143,14 +149,16 @@ function normalizeProgress(raw: unknown): OmpSubagentProgress | undefined {
   const record = asRecord(raw)
   if (!record) return undefined
   const recentTools = Array.isArray(record.recentTools)
-    ? record.recentTools.map(item => {
-      const tool = asRecord(item)
-      return {
-        tool: str(tool?.tool) ?? '',
-        args: str(tool?.args) ?? '',
-        endMs: typeof tool?.endMs === 'number' ? tool.endMs : 0,
-      }
-    }).filter(item => item.tool)
+    ? record.recentTools
+        .map(item => {
+          const tool = asRecord(item)
+          return {
+            tool: str(tool?.tool) ?? '',
+            args: str(tool?.args) ?? '',
+            endMs: typeof tool?.endMs === 'number' ? tool.endMs : 0,
+          }
+        })
+        .filter(item => item.tool)
     : []
   return {
     status: normalizeStatus(record.status),
@@ -220,7 +228,10 @@ class OmpSubagentStore {
    * 引用稳定性按查询键维护：别的 run 刷帧不会让本键的分片换引用，
    * 否则长会话里每个 TaskRenderer 都跟着每一个子代理帧重渲染（卡死根因）。
    */
-  getRunsForToolCall = (toolCallId: string | undefined, parentSessionId: string | null | undefined): OmpSubagentRun[] => {
+  getRunsForToolCall = (
+    toolCallId: string | undefined,
+    parentSessionId: string | null | undefined,
+  ): OmpSubagentRun[] => {
     if (!toolCallId) return EMPTY_RUNS
     const key = `${parentSessionId ?? ''}\u0000${toolCallId}`
     const version = this.keyVersions.get(key) ?? 0
@@ -388,7 +399,14 @@ class OmpSubagentStore {
     }
     if (!id) return
     this.upsert(sessionId, id, run => {
-      const progress = normalizeProgress(payload.progress) ?? run.progress
+      const rawProgress = asRecord(payload.progress)
+      const progress =
+        normalizeProgress(payload.progressDelta ? { ...run.progress, ...rawProgress } : rawProgress) ?? run.progress
+      if (payload.progressDelta && progress && run.progress) {
+        if (!rawProgress || !Object.hasOwn(rawProgress, 'recentOutput'))
+          progress.recentOutput = run.progress.recentOutput
+        if (!rawProgress || !Object.hasOwn(rawProgress, 'recentTools')) progress.recentTools = run.progress.recentTools
+      }
       const incomingStatus = progress?.status && progress.status !== 'pending' ? progress.status : run.status
       const status = mergeStatus(run.status, incomingStatus)
       return {
@@ -425,8 +443,10 @@ class OmpSubagentStore {
       return {
         ...run,
         transcript,
-        historyLoaded: event.phase === 'message_end' && transcript.some(item => (item.textOffset ?? 0) > 0)
-          ? false : run.historyLoaded,
+        historyLoaded:
+          event.phase === 'message_end' && transcript.some(item => (item.textOffset ?? 0) > 0)
+            ? false
+            : run.historyLoaded,
       }
     })
   }
@@ -440,10 +460,13 @@ class OmpSubagentStore {
 
   private settleRun(sessionId: string, runId: string, status: 'failed' | 'aborted'): void {
     this.upsert(sessionId, runId, current => ({
-      ...current, status, endedAt: Date.now(),
+      ...current,
+      status,
+      endedAt: Date.now(),
       progress: current.progress ? { ...current.progress, status } : undefined,
       transcript: current.transcript.map(item => ({
-        ...item, streaming: false,
+        ...item,
+        streaming: false,
         toolStatus: item.toolStatus === 'running' || item.toolStatus === 'pending' ? 'error' : item.toolStatus,
       })),
     }))
@@ -455,7 +478,12 @@ class OmpSubagentStore {
    * 非空说明实时帧已在推进（回填响应晚到的竞态），保持现状即可。
    * 刷新后只收到增量尾部的预览，待终态再用原生历史补齐。
    */
-  applyHistory(sessionId: string, runId: string, messages: unknown[]): void {
+  applyHistory(
+    sessionId: string,
+    runId: string,
+    messages: unknown[],
+    page?: { truncated: boolean; hasMore: boolean },
+  ): void {
     // 回填只作用于已存在的 run（回填不负责凭空创建）
     if (!this.runs.has(runId)) return
     this.upsert(sessionId, runId, run => {
@@ -464,8 +492,12 @@ class OmpSubagentStore {
       return {
         ...run,
         historyLoaded: !incomplete || terminal,
-        transcript: run.transcript.length > 0 && !(terminal && incomplete && messages.length > 0)
-          ? run.transcript : transcriptItemsFromMessages(messages),
+        historyTruncated: page?.truncated,
+        historyHasMore: page?.hasMore,
+        transcript:
+          run.transcript.length > 0 && !(terminal && (incomplete || run.historyLoaded) && messages.length > 0)
+            ? run.transcript
+            : transcriptItemsFromMessages(messages),
       }
     })
   }

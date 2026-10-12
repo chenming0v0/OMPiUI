@@ -3,6 +3,7 @@ import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { EventEmitter } from "node:events"
+import { JSONParser } from "@streamparser/json"
 import type { JsonObject, JsonValue } from "@ompiui/protocol"
 import { isJsonObject } from "@ompiui/protocol"
 import { runtimePolicyArgs } from "./runtime-policy.js"
@@ -65,8 +66,10 @@ const CHUNK_TIMEOUT_MS = 30_000
 /** exit 后等待 stdout 读到 EOF(close)的有界宽限;到期即按已缓冲内容收尾 */
 const EXIT_STDOUT_GRACE_MS = 1_000
 const MAX_REASSEMBLED_BYTES = 64 * 1024 * 1024
-const MAX_CHUNK_COUNT = MAX_REASSEMBLED_BYTES
-const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true })
+const MAX_CHUNK_PAYLOAD_BYTES = 256 * 1024
+const MAX_CHUNK_COUNT = 4096
+const MAX_CHUNK_ENTRIES = 32
+const MAX_TOTAL_CHUNK_BYTES = 64 * 1024 * 1024
 
 export class OmpRpcClient extends EventEmitter {
   readonly proc: ChildProcess
@@ -86,6 +89,7 @@ export class OmpRpcClient extends EventEmitter {
     timer: NodeJS.Timeout
   }>()
   private stderrBuffer: string[] = []
+  private chunkBytes = 0
   private exited = false
   private exitCode: number | null = null
   private exitSignal: NodeJS.Signals | null = null
@@ -116,6 +120,8 @@ export class OmpRpcClient extends EventEmitter {
       line => this.handleStdoutLine(line),
       () => this.proc.stdout!.pause(),
       () => this.proc.stdout!.resume(),
+      64,
+      message => this.emitProtocolError(message),
     )
     this.proc.stdout!.setEncoding("utf8")
     this.proc.stdout!.on("data", chunk => this.stdoutReader.push(chunk))
@@ -292,15 +298,26 @@ export class OmpRpcClient extends EventEmitter {
     const data = typeof frame.data === "string" ? frame.data : ""
     if (!chunkId || !Number.isSafeInteger(count) || count < 1 || count > MAX_CHUNK_COUNT) return
     if (!Number.isSafeInteger(index) || index < 0 || index >= count || !data) return
-    if (!Number.isSafeInteger(byteLength) || byteLength < 0 || byteLength > MAX_REASSEMBLED_BYTES) return
-    // 分片以原始字节保存:UTF-8 多字节字符可能跨分片边界,只能在整帧拼接后解码。
+    if (!Number.isSafeInteger(byteLength) || byteLength < 1 || byteLength > MAX_REASSEMBLED_BYTES || count > byteLength) {
+      this.abortChunk(chunkId, "invalid rpc chunk length")
+      return
+    }
+    if (data.length > Math.ceil(MAX_CHUNK_PAYLOAD_BYTES / 3) * 4) {
+      this.abortChunk(chunkId, "rpc chunk payload too large")
+      return
+    }
+    // 保留原始字节，后续由流式解码器处理跨分片的 UTF-8 字符。
     const bytes = Buffer.from(data, "base64")
-    if (bytes.byteLength === 0 || bytes.byteLength > MAX_REASSEMBLED_BYTES) {
+    if (bytes.byteLength === 0 || bytes.byteLength > MAX_CHUNK_PAYLOAD_BYTES) {
       this.abortChunk(chunkId, "invalid rpc chunk payload")
       return
     }
     let entry = this.chunks.get(chunkId)
     if (!entry) {
+      if (this.chunks.size >= MAX_CHUNK_ENTRIES || this.chunkBytes + bytes.byteLength > MAX_TOTAL_CHUNK_BYTES) {
+        this.emitProtocolError("rpc chunk buffer limit reached")
+        return
+      }
       const timer = setTimeout(() => this.abortChunk(chunkId, "rpc chunk timed out"), CHUNK_TIMEOUT_MS)
       timer.unref()
       entry = { parts: new Map(), count, byteLength, receivedBytes: 0, timer }
@@ -314,8 +331,13 @@ export class OmpRpcClient extends EventEmitter {
       this.abortChunk(chunkId, "duplicate rpc chunk index")
       return
     }
+    if (this.chunkBytes + bytes.byteLength > MAX_TOTAL_CHUNK_BYTES) {
+      this.abortChunk(chunkId, "rpc chunk total byte limit reached")
+      return
+    }
     entry.parts.set(index, bytes)
     entry.receivedBytes += bytes.byteLength
+    this.chunkBytes += bytes.byteLength
     if (entry.receivedBytes > MAX_REASSEMBLED_BYTES || (entry.byteLength > 0 && entry.receivedBytes > entry.byteLength)) {
       this.abortChunk(chunkId, "rpc chunk exceeds declared length")
       return
@@ -323,6 +345,7 @@ export class OmpRpcClient extends EventEmitter {
     if (entry.parts.size < entry.count) return
     clearTimeout(entry.timer)
     this.chunks.delete(chunkId)
+    this.chunkBytes -= entry.receivedBytes
     if (entry.byteLength > 0 && entry.receivedBytes !== entry.byteLength) {
       this.emitProtocolError(`rpc chunk ${chunkId} length mismatch: got ${entry.receivedBytes} expected ${entry.byteLength}`)
       return
@@ -336,21 +359,25 @@ export class OmpRpcClient extends EventEmitter {
       }
       ordered.push(part)
     }
-    // 整帧严格解码:非法 UTF-8 直接报错,而不是静默替换为 U+FFFD
-    let json: string
+    // 流式解析并释放已消费分片，不再物化整帧 Buffer 和 JSON 字符串。
+    let reassembled: unknown
     try {
-      json = UTF8_DECODER.decode(Buffer.concat(ordered, entry.receivedBytes))
+      const decoder = new TextDecoder("utf-8", { fatal: true })
+      const parser = new JSONParser({ paths: ["$"], stringBufferSize: 64 * 1024 })
+      parser.onValue = ({ value }) => { reassembled = value }
+      for (let index = 0; index < ordered.length; index++) {
+        parser.write(decoder.decode(ordered[index], { stream: true }))
+        entry.parts.delete(index)
+        ordered[index] = Buffer.alloc(0)
+      }
+      parser.write(decoder.decode())
+      if (!parser.isEnded) parser.end()
     } catch {
-      this.emitProtocolError(`rpc chunk ${chunkId} is not valid UTF-8`)
+      this.emitProtocolError(`rpc chunk ${chunkId} is not valid UTF-8 or JSON`)
       return
     }
-    try {
-      const reassembled = JSON.parse(json) as unknown
-      if (isJsonObject(reassembled) && typeof reassembled.type === "string") {
-        this.dispatchFrame(reassembled as OmpRpcFrame)
-      }
-    } catch {
-      this.emitProtocolError(`rpc chunk ${chunkId} is not a valid JSON frame`)
+    if (isJsonObject(reassembled) && typeof reassembled.type === "string") {
+      this.dispatchFrame(reassembled as OmpRpcFrame)
     }
   }
 
@@ -360,6 +387,7 @@ export class OmpRpcClient extends EventEmitter {
     if (!entry) return
     clearTimeout(entry.timer)
     this.chunks.delete(chunkId)
+    this.chunkBytes -= entry.receivedBytes
     this.emitProtocolError(`${reason} (${chunkId})`)
   }
 
@@ -460,6 +488,7 @@ export class OmpRpcClient extends EventEmitter {
       clearTimeout(entry.timer)
       this.chunks.delete(chunkId)
     }
+    this.chunkBytes = 0
   }
 }
 

@@ -1,4 +1,5 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useRef } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { ArrowDown } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useResponsiveMaxHeight } from '../../../../hooks/useResponsiveMaxHeight'
 import { getOmpSubagentMessages } from '../../../../omp/transport/index.js'
@@ -6,40 +7,52 @@ import { ompSubagentStore, type OmpSubagentRun, type OmpSubagentTranscriptItem }
 import { SubagentTranscriptPreview } from './SubagentTranscriptPreview'
 
 const EMPTY_TRANSCRIPT: OmpSubagentTranscriptItem[] = []
-const subagentHistoryInFlight = new Set<string>()
 
 /** 跨 pane 合并历史回填请求；落盘结果不覆盖已经推进的实时转录。 */
-function useSubagentHistoryBackfill(run: OmpSubagentRun | undefined): void {
+function useSubagentHistoryBackfill(run: OmpSubagentRun | undefined, enabled: boolean): { loading: boolean; reload: () => void } {
+  const [revision, setRevision] = useState(0)
+  const [loadedRevision, setLoadedRevision] = useState(0)
   const id = run?.id
   const sessionId = run?.sessionId
   const sessionFile = run?.sessionFile
   const historyLoaded = run?.historyLoaded
   const hasLiveTranscript = Boolean(run?.transcript.length) && (run?.status === 'running' || run?.status === 'pending')
   useEffect(() => {
-    if (!id || !sessionId || !sessionFile || historyLoaded || hasLiveTranscript || subagentHistoryInFlight.has(id)) return
-    subagentHistoryInFlight.add(id)
-    getOmpSubagentMessages(sessionId, { sessionFile })
+    if (!enabled || !id || !sessionId || !sessionFile || (historyLoaded && revision === 0) || hasLiveTranscript) return
+    const controller = new AbortController()
+    getOmpSubagentMessages(sessionId, { sessionFile }, controller.signal)
       .then(result => {
         const record =
           result && typeof result === 'object' && !Array.isArray(result)
             ? (result as Record<string, unknown>)
             : undefined
-        ompSubagentStore.applyHistory(sessionId, id, Array.isArray(record?.messages) ? record.messages : [])
+        if (controller.signal.aborted) return
+        setLoadedRevision(revision)
+        ompSubagentStore.applyHistory(sessionId, id, Array.isArray(record?.messages) ? record.messages : [],
+          { truncated: Boolean(record?.truncated), hasMore: Boolean(record?.hasMore) })
       })
-      .catch(() => ompSubagentStore.applyHistory(sessionId, id, []))
-      .finally(() => subagentHistoryInFlight.delete(id))
-  }, [id, sessionId, sessionFile, historyLoaded, hasLiveTranscript])
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setLoadedRevision(revision)
+          ompSubagentStore.applyHistory(sessionId, id, [])
+        }
+      })
+    return () => controller.abort()
+  }, [id, sessionId, sessionFile, historyLoaded, hasLiveTranscript, enabled, revision])
+  return { loading: loadedRevision !== revision, reload: () => setRevision(value => value + 1) }
 }
 
 export const SubagentSessionPreview = memo(function SubagentSessionPreview({
   run,
   loading = false,
+  onLoadMore,
 }: {
   run?: OmpSubagentRun
   loading?: boolean
+  onLoadMore?: () => void
 }) {
   const { t } = useTranslation('message')
-  useSubagentHistoryBackfill(run)
+  const history = useSubagentHistoryBackfill(run, !onLoadMore && !loading)
   const scrollRef = useRef<HTMLDivElement>(null)
   const isAtBottomRef = useRef(true)
   const maxHeight = useResponsiveMaxHeight(0.25, 120, 240)
@@ -131,6 +144,18 @@ export const SubagentSessionPreview = memo(function SubagentSessionPreview({
       >
         <SubagentTranscriptPreview items={transcript} isRunning={isRunning} />
       </div>
+      {run?.historyTruncated && (
+        <div role="status" className="flex flex-wrap items-center justify-between gap-2 border-t border-border-200/30 px-3 py-2 text-[length:var(--fs-xxs)] text-text-400">
+          <span>{t('task.partialTranscript')}</span>
+          {run.historyHasMore && (
+            <button type="button" onClick={onLoadMore ?? history.reload} disabled={loading || history.loading}
+              title={t('task.loadMoreTranscript')}
+              className="inline-flex items-center gap-1 text-text-200 disabled:opacity-50 focus-visible:outline focus-visible:outline-2">
+              <ArrowDown size={14} aria-hidden="true" />{t('task.loadMoreTranscript')}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 })

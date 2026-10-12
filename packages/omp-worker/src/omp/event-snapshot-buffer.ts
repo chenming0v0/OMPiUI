@@ -1,6 +1,7 @@
 /** 合并累计更新，但在同一运行的非更新事件之前排空，保证结果与消息边界有序。 */
 export class EventSnapshotBuffer<T> {
-  private readonly pending = new Map<string, { scope: string; event: T }>()
+  private readonly pending = new Map<string, { scope: string; event: T; bytes: number }>()
+  private bytes = 0
   private timer?: NodeJS.Timeout
 
   constructor(private readonly emit: (event: T) => void, private readonly intervalMs = 50) {}
@@ -11,8 +12,12 @@ export class EventSnapshotBuffer<T> {
       this.emit(event)
       return
     }
-    this.pending.set(`${scope}\0${update}`, { scope, event })
-    if (this.pending.size >= 256) this.flush()
+    const key = `${scope}\0${update}`
+    const bytes = Buffer.byteLength(JSON.stringify(event))
+    this.bytes -= this.pending.get(key)?.bytes ?? 0
+    this.pending.set(key, { scope, event, bytes })
+    this.bytes += bytes
+    if (this.pending.size >= 256 || this.bytes >= 1024 * 1024) this.flush()
     else if (!this.timer) {
       this.timer = setTimeout(() => this.flush(), this.intervalMs)
       this.timer.unref()
@@ -23,6 +28,7 @@ export class EventSnapshotBuffer<T> {
     for (const [key, item] of this.pending) {
       if (scope && item.scope !== scope) continue
       this.pending.delete(key)
+      this.bytes -= item.bytes
       this.emit(item.event)
     }
     if (this.pending.size === 0 && this.timer) {

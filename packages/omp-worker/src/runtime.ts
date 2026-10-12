@@ -26,7 +26,7 @@ export interface SessionRuntime {
   getEntriesPage(cursor: string | undefined, limit: number, maxBytes: number): JsonObject | Promise<JsonObject>
   getBranchPage(cursor: string | undefined, limit: number, maxBytes: number, sync?: BranchSyncRequest): JsonObject | Promise<JsonObject>
   getTree(): JsonValue | Promise<JsonValue>
-  getAttachment(entryId: string, blockIndex: number): JsonObject | Promise<JsonObject>
+  getAttachment(entryId: string, blockIndex: number, offset?: number): JsonObject | Promise<JsonObject>
   getSubagentMessages(params: { subagentId?: string; sessionFile?: string; fromByte?: number }): JsonValue | Promise<JsonValue>
   getRegistry(): RegistrySnapshot | Promise<RegistrySnapshot>
   listSkills(): JsonValue | Promise<JsonValue>
@@ -54,6 +54,7 @@ export interface SessionRuntime {
   setSteeringMode(mode: "all" | "one-at-a-time"): Promise<void>
   setFollowUpMode(mode: "all" | "one-at-a-time"): Promise<void>
   clearQueue(): Promise<JsonValue | undefined>
+  removeQueuedMessage(kind: "steering" | "followUp", index: number): Promise<JsonValue>
   /** 原子提交队列中的一条（kind=steering 本轮 / followUp 下一轮）：受理成功才出队 */
   sendQueuedMessage(kind: "steering" | "followUp", index: number): Promise<void>
 
@@ -122,7 +123,7 @@ export interface CatalogProvider {
   findSessionByFile(sessionFile: string): Promise<JsonObject | null>
   createSession(cwd: string): Promise<JsonValue>
   previewSession(cwd: string, sessionFile: string, params?: { cursor?: string; limit?: number; maxBytes?: number }): Promise<JsonValue>
-  previewSessionById(sessionId: string, params?: { cursor?: string; limit?: number; maxBytes?: number }): Promise<JsonValue>
+  previewSessionById(sessionId: string, params?: BranchSyncRequest & { cursor?: string; limit?: number; maxBytes?: number }): Promise<JsonValue>
   readSession(sessionId: string, query: string, params?: JsonObject): Promise<JsonValue>
   copySession(sessionId: string): Promise<JsonObject>
   deleteSession(cwd: string, sessionFile: string): Promise<void>

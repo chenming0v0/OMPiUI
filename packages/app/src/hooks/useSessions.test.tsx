@@ -12,12 +12,7 @@ function createDeferred<T>() {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyFn = (...args: any[]) => any
-const {
-  loadPiSessionsMock,
-  loadPiSessionsForCwdMock,
-  openPiSessionMock,
-  deletePiSessionMock,
-} = vi.hoisted(() => ({
+const { loadPiSessionsMock, loadPiSessionsForCwdMock, openPiSessionMock, deletePiSessionMock } = vi.hoisted(() => ({
   loadPiSessionsMock: vi.fn<AnyFn>(),
   loadPiSessionsForCwdMock: vi.fn<AnyFn>(),
   openPiSessionMock: vi.fn<AnyFn>(),
@@ -57,7 +52,11 @@ describe('useSessions', () => {
     deletePiSessionMock.mockReset()
     loadPiSessionsMock.mockResolvedValue([])
     loadPiSessionsForCwdMock.mockResolvedValue([])
-    openPiSessionMock.mockResolvedValue({ sessionId: 'new', sessionFile: '/sessions/new.jsonl', cwd: '/workspace/demo' })
+    openPiSessionMock.mockResolvedValue({
+      sessionId: 'new',
+      sessionFile: '/sessions/new.jsonl',
+      cwd: '/workspace/demo',
+    })
     deletePiSessionMock.mockResolvedValue(undefined)
   })
 
@@ -126,6 +125,7 @@ describe('useSessions', () => {
     loadPiSessionsForCwdMock.mockResolvedValue([makeSession('session-1')])
     await act(async () => {
       window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
+      vi.advanceTimersByTime(300)
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -167,6 +167,7 @@ describe('useSessions', () => {
 
     await act(async () => {
       window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
+      vi.advanceTimersByTime(300)
       await Promise.resolve()
     })
 
@@ -233,6 +234,7 @@ describe('useSessions', () => {
 
     await act(async () => {
       window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
+      vi.advanceTimersByTime(300)
       await Promise.resolve()
     })
 

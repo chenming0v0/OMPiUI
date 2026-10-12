@@ -23,9 +23,7 @@ import { buildPiHistoryItems, buildPiLiveItems } from './index.js'
  * from scratch — a full rebuild is O(n) but happens once per event, not per
  * token.
  */
-const historyCache = new Map<string, { itemsRef: readonly unknown[]; history: PiTimelineItem[] }>()
-
-const CACHE_LIMIT = 64
+let historyCache = new WeakMap<readonly unknown[], PiTimelineItem[]>()
 
 /**
  * Select timeline items for a session with stable references while the
@@ -44,16 +42,13 @@ export function selectPiTimelineItemsCached(
     return []
   }
 
-  const cached = historyCache.get(sessionId)
+  const cached = historyCache.get(branch.items)
   let history: PiTimelineItem[]
-  if (cached && cached.itemsRef === branch.items) {
-    history = cached.history
+  if (cached) {
+    history = cached
   } else {
     history = buildPiHistoryItems(branch)
-    historyCache.set(sessionId, { itemsRef: branch.items, history })
-    while (historyCache.size > CACHE_LIMIT) {
-      historyCache.delete(historyCache.keys().next().value!)
-    }
+    historyCache.set(branch.items, history)
   }
 
   const liveItems = buildPiLiveItems(branch)
@@ -63,5 +58,5 @@ export function selectPiTimelineItemsCached(
 
 /** Drop all cached timeline items (server switch / logout). */
 export function clearPiTimelineItemCache(): void {
-  historyCache.clear()
+  historyCache = new WeakMap()
 }

@@ -1,9 +1,14 @@
-import { fork, spawn, type ChildProcess } from "node:child_process"
-import { randomUUID } from "node:crypto"
-import { logToFile } from "../logger.ts"
-import { diagnostics, diagnosticErrorCode } from "../diagnostics/recorder.ts"
-import { traceWorkerRequest } from "../diagnostics/worker-request.ts"
-import { isJsonObject, type JsonObject, type JsonValue, type Problem } from "@ompiui/protocol"
+import { fork, spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { logToFile } from "../logger.ts";
+import { diagnostics, diagnosticErrorCode } from "../diagnostics/recorder.ts";
+import { traceWorkerRequest } from "../diagnostics/worker-request.ts";
+import {
+  isJsonObject,
+  type JsonObject,
+  type JsonValue,
+  type Problem,
+} from "@ompiui/protocol";
 import {
   OMP_WORKER_HEARTBEAT_INTERVAL_MS,
   OMP_WORKER_PROTOCOL_VERSION,
@@ -11,31 +16,31 @@ import {
   type WorkerHello,
   type WorkerHostCall,
   type WorkerMessage,
-} from "@ompiui/omp-worker"
+} from "@ompiui/omp-worker";
 
 export interface WorkerClientOptions {
-  env?: NodeJS.ProcessEnv
-  execArgv?: string[]
-  requestTimeoutMs?: number
-  handshakeTimeoutMs?: number
+  env?: NodeJS.ProcessEnv;
+  execArgv?: string[];
+  requestTimeoutMs?: number;
+  handshakeTimeoutMs?: number;
   /**
    * 是否以 self-spawn 方式孵化 worker（bun 单文件 exe）。由 bundle-entry
    * 显式传入；不再读 OMPIUI_WORKER_SELF 环境变量——那个变量会顺着子进程
    * 树泄漏到业务命令，污染 node 开发模式。
    */
-  selfSpawn?: boolean
+  selfSpawn?: boolean;
 }
 
 interface PendingRequest {
-  resolve: (data: JsonValue | undefined) => void
-  reject: (error: Error) => void
-  timer?: NodeJS.Timeout
-  removeAbort?: () => void
+  resolve: (data: JsonValue | undefined) => void;
+  reject: (error: Error) => void;
+  timer?: NodeJS.Timeout;
+  removeAbort?: () => void;
 }
 
 interface LateResponseHandlers {
-  onAbandoned: () => void
-  onLate: (ok: boolean, data: JsonValue | undefined) => void
+  onAbandoned: () => void;
+  onLate: (ok: boolean, data: JsonValue | undefined) => void;
 }
 
 /**
@@ -47,7 +52,7 @@ interface LateResponseHandlers {
  * 心跳看门狗（missLimit ≈ 60s 连续丢心跳）兜底。显式配置的超时
  * （测试注入 / OMPIUI_WORKER_REQUEST_TIMEOUT_MS）对所有命令仍然生效。
  */
-const TURN_SCOPED_COMMANDS = new Set(["prompt", "sendUserMessage", "compact"])
+const TURN_SCOPED_COMMANDS = new Set(["prompt", "sendUserMessage", "compact"]);
 
 /**
  * Spawning the SDK worker takes seconds on a loaded machine (cold boot even
@@ -55,16 +60,20 @@ const TURN_SCOPED_COMMANDS = new Set(["prompt", "sendUserMessage", "compact"])
  * via env.
  */
 function defaultHandshakeTimeoutMs(): number {
-  const fromEnv = Number(process.env.OMPIUI_WORKER_HANDSHAKE_TIMEOUT_MS)
-  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 30_000
+  const fromEnv = Number(process.env.OMPIUI_WORKER_HANDSHAKE_TIMEOUT_MS);
+  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 30_000;
 }
 
 export interface WorkerCatalog {
-  command(type: string, params?: JsonObject, signal?: AbortSignal): Promise<JsonValue | undefined>
-  getHandshake(): Promise<WorkerHello>
-  onEvent(listener: (event: WorkerEvent) => void): () => void
-  onCrash(listener: (error: Error) => void): () => void
-  dispose(): Promise<void>
+  command(
+    type: string,
+    params?: JsonObject,
+    signal?: AbortSignal,
+  ): Promise<JsonValue | undefined>;
+  getHandshake(): Promise<WorkerHello>;
+  onEvent(listener: (event: WorkerEvent) => void): () => void;
+  onCrash(listener: (error: Error) => void): () => void;
+  dispose(): Promise<void>;
 }
 
 /**
@@ -73,22 +82,31 @@ export interface WorkerCatalog {
  * 一个独立进程会让每进程 ~300MB 的 SDK 基线线性叠加。
  */
 export interface WorkerHost {
-  getHandshake(): Promise<WorkerHello>
+  getHandshake(): Promise<WorkerHello>;
   /**
    * 同步只读快照：握手已完成则返回 hello，进行中/未开始返回 undefined。
    * 永不等待、永不触发孵化——专供 health 等高频探测（见 supervisor
    * peekCatalogHandshake；等握手会把 worker 冷启动的数秒转嫁到 health 上）。
    */
-  peekHandshake(): WorkerHello | undefined
+  peekHandshake(): WorkerHello | undefined;
   /** 在共享进程内打开一个会话 runtime，返回每会话句柄 */
-  open(cwd: string, sessionFile?: string, signal?: AbortSignal, onLeaseSettled?: () => void): Promise<WorkerSession>
+  open(
+    cwd: string,
+    sessionFile?: string,
+    signal?: AbortSignal,
+    onLeaseSettled?: () => void,
+  ): Promise<WorkerSession>;
   /** 无会话归属的全局事件（provider.auth / packages.progress / resources.updated） */
-  onEvent(listener: (event: WorkerEvent) => void): () => void
-  onCrash(listener: (error: Error) => void): () => void
+  onEvent(listener: (event: WorkerEvent) => void): () => void;
+  onCrash(listener: (error: Error) => void): () => void;
   /** 全局命令（catalog 语义：registry.describe / session.listAll / packages.* 等） */
-  command(type: string, params?: JsonObject, signal?: AbortSignal): Promise<JsonValue | undefined>
+  command(
+    type: string,
+    params?: JsonObject,
+    signal?: AbortSignal,
+  ): Promise<JsonValue | undefined>;
   /** 销毁整个共享进程（关掉所有 runtime） */
-  dispose(): Promise<void>
+  dispose(): Promise<void>;
 }
 
 /**
@@ -99,8 +117,8 @@ export interface WorkerHost {
  * 要给足）。默认 12 次 × 5s ≈ 65s 才判定死亡，可用 env 调整。
  */
 function heartbeatMissLimit(): number {
-  const fromEnv = Number(process.env.OMPIUI_WORKER_HEARTBEAT_MISS_LIMIT)
-  return Number.isFinite(fromEnv) && fromEnv > 0 ? Math.floor(fromEnv) : 12
+  const fromEnv = Number(process.env.OMPIUI_WORKER_HEARTBEAT_MISS_LIMIT);
+  return Number.isFinite(fromEnv) && fromEnv > 0 ? Math.floor(fromEnv) : 12;
 }
 
 /**
@@ -111,15 +129,17 @@ function heartbeatMissLimit(): number {
 function killProcessTree(child: ChildProcess): void {
   if (process.platform === "win32" && child.pid) {
     try {
-      spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true })
-        .on("error", () => undefined)
-      return
+      spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+        stdio: "ignore",
+        windowsHide: true,
+      }).on("error", () => undefined);
+      return;
     } catch {
       /* fall through to plain kill */
     }
   }
   try {
-    child.kill("SIGKILL")
+    child.kill("SIGKILL");
   } catch {
     /* already gone */
   }
@@ -132,8 +152,8 @@ function killProcessTree(child: ChildProcess): void {
  * 每次优雅关闭都会先被 server 兜底强退收场（可能写坏 session 文件）。
  */
 function disposeTimeoutMs(): number {
-  const fromEnv = Number(process.env.OMPIUI_WORKER_DISPOSE_TIMEOUT_MS)
-  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 8_000
+  const fromEnv = Number(process.env.OMPIUI_WORKER_DISPOSE_TIMEOUT_MS);
+  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 8_000;
 }
 
 /**
@@ -141,8 +161,8 @@ function disposeTimeoutMs(): number {
  * 进程级失联由看门狗独立判断，仍在传递事件或响应时不得判死。
  */
 function requestTimeoutMs(): number {
-  const fromEnv = Number(process.env.OMPIUI_WORKER_REQUEST_TIMEOUT_MS)
-  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 60_000
+  const fromEnv = Number(process.env.OMPIUI_WORKER_REQUEST_TIMEOUT_MS);
+  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 60_000;
 }
 
 /**
@@ -150,43 +170,49 @@ function requestTimeoutMs(): number {
  * 并把事件/hostCall 按 sessionId 路由到对应的 WorkerSession 句柄。
  */
 class WorkerHostCore {
-  private readonly pending = new Map<string, PendingRequest>()
-  private readonly hostEventListeners = new Set<(event: WorkerEvent) => void>()
-  private readonly crashListeners = new Set<(error: Error) => void>()
+  private readonly pending = new Map<string, PendingRequest>();
+  private readonly hostEventListeners = new Set<(event: WorkerEvent) => void>();
+  private readonly crashListeners = new Set<(error: Error) => void>();
   /** sessionId → 句柄（runtime 替换后 key 随 updateSessionIdentity 迁移） */
-  private readonly handles = new Map<string, WorkerSession>()
-  private readonly hostCallHandlers = new Map<string, (call: WorkerHostCall) => void | Promise<void>>()
+  private readonly handles = new Map<string, WorkerSession>();
+  private readonly hostCallHandlers = new Map<
+    string,
+    (call: WorkerHostCall) => void | Promise<void>
+  >();
   /** reservationId → sessionId：commit/abort 没有会话字段，靠 reserve 时的归属路由 */
-  private readonly reservationOwners = new Map<string, string>()
+  private readonly reservationOwners = new Map<string, string>();
   /** 已放弃(超时/取消)的请求的晚到响应处理器:用于关闭孤儿 runtime 并结束租约 */
-  private readonly lateResponses = new Map<string, (ok: boolean, data: JsonValue | undefined) => void>()
-  private child: ChildProcess
-  private disposed = false
-  private exitHandled = false
-  private heartbeatTimer?: NodeJS.Timeout
-  private heartbeatMisses = 0
-  private exitError?: Error
-  private readonly ready: Promise<WorkerHello>
-  private readonly exited: Promise<void>
-  private resolveReady!: (hello: WorkerHello) => void
-  private rejectReady!: (error: Error) => void
-  private resolveExited!: () => void
-  private readySettled = false
+  private readonly lateResponses = new Map<
+    string,
+    (ok: boolean, data: JsonValue | undefined) => void
+  >();
+  private child: ChildProcess;
+  private disposed = false;
+  private exitHandled = false;
+  private heartbeatTimer?: NodeJS.Timeout;
+  private heartbeatMisses = 0;
+  private exitError?: Error;
+  private readonly ready: Promise<WorkerHello>;
+  private readonly exited: Promise<void>;
+  private resolveReady!: (hello: WorkerHello) => void;
+  private rejectReady!: (error: Error) => void;
+  private resolveExited!: () => void;
+  private readySettled = false;
   /** 握手完成后的 hello 快照（peekHandshake 用），未就绪为 undefined */
-  private readyHello?: WorkerHello
+  private readyHello?: WorkerHello;
 
   constructor(
     private readonly workerEntry: URL,
     private readonly options: WorkerClientOptions = {},
   ) {
     this.ready = new Promise<WorkerHello>((resolve, reject) => {
-      this.resolveReady = resolve
-      this.rejectReady = reject
-    })
-    this.exited = new Promise<void>(resolve => {
-      this.resolveExited = resolve
-    })
-    this.child = this.spawn()
+      this.resolveReady = resolve;
+      this.rejectReady = reject;
+    });
+    this.exited = new Promise<void>((resolve) => {
+      this.resolveExited = resolve;
+    });
+    this.child = this.spawn();
   }
 
   private spawn(): ChildProcess {
@@ -199,124 +225,164 @@ class WorkerHostCore {
     const child = this.options.selfSpawn
       ? spawnSelfWorker(this.options.env)
       : fork(this.workerEntry, {
-        env: { ...process.env, ...this.options.env },
-        execArgv: this.options.execArgv,
-        stdio: ["ignore", "inherit", "inherit", "ipc"],
-      })
+          env: { ...process.env, ...this.options.env },
+          execArgv: this.options.execArgv,
+          stdio: ["ignore", "inherit", "inherit", "ipc"],
+          serialization: process.versions.bun ? "json" : "advanced",
+        });
     const handshakeTimeout = setTimeout(() => {
-      this.settleReadyError(Object.assign(new Error("Pi worker handshake timed out"), { code: "WORKER_PROTOCOL_MISMATCH" }))
+      this.settleReadyError(
+        Object.assign(new Error("Pi worker handshake timed out"), {
+          code: "WORKER_PROTOCOL_MISMATCH",
+        }),
+      );
       // 握不上手就杀掉——否则僵尸进程占着端口，而它的 ready 已拒，
       // 再也不可用
-      killProcessTree(this.child)
-    }, this.options.handshakeTimeoutMs ?? defaultHandshakeTimeoutMs())
-    handshakeTimeout.unref()
-    this.ready.finally(() => clearTimeout(handshakeTimeout)).catch(() => undefined)
+      killProcessTree(this.child);
+    }, this.options.handshakeTimeoutMs ?? defaultHandshakeTimeoutMs());
+    handshakeTimeout.unref();
+    this.ready
+      .finally(() => clearTimeout(handshakeTimeout))
+      .catch(() => undefined);
 
-    child.on("message", (message: WorkerMessage) => this.handleMessage(message))
-    child.on("exit", (code, signal) => this.handleExit(code, signal))
-    child.on("error", error => this.handleExit(1, null, error))
-    return child
+    child.on("message", (message: WorkerMessage) =>
+      this.handleMessage(message),
+    );
+    child.on("exit", (code, signal) => this.handleExit(code, signal));
+    child.on("error", (error) => this.handleExit(1, null, error));
+    return child;
   }
 
   private handleMessage(message: WorkerMessage): void {
-    if (!message || typeof message !== "object") return
+    if (!message || typeof message !== "object") return;
     // 收到合法协议消息也证明进程仍在通信，心跳不能被繁忙的事件队列挤成误杀。
-    if (message.kind === "heartbeat" || message.kind === "response" || message.kind === "event" || message.kind === "hostCall") {
-      this.heartbeatMisses = 0
+    if (
+      message.kind === "heartbeat" ||
+      message.kind === "response" ||
+      message.kind === "event" ||
+      message.kind === "hostCall"
+    ) {
+      this.heartbeatMisses = 0;
     }
     if (message.kind === "hello") {
       if (message.workerProtocolVersion !== OMP_WORKER_PROTOCOL_VERSION) {
-        this.settleReadyError(Object.assign(
-          new Error(`OMP worker protocol ${message.workerProtocolVersion} does not match ${OMP_WORKER_PROTOCOL_VERSION}`),
-          { code: "WORKER_PROTOCOL_MISMATCH" },
-        ))
-        return
+        this.settleReadyError(
+          Object.assign(
+            new Error(
+              `OMP worker protocol ${message.workerProtocolVersion} does not match ${OMP_WORKER_PROTOCOL_VERSION}`,
+            ),
+            { code: "WORKER_PROTOCOL_MISMATCH" },
+          ),
+        );
+        return;
       }
-      this.heartbeatMisses = 0
-      this.startHeartbeatWatchdog(message.heartbeatIntervalMs || OMP_WORKER_HEARTBEAT_INTERVAL_MS)
+      this.heartbeatMisses = 0;
+      this.startHeartbeatWatchdog(
+        message.heartbeatIntervalMs || OMP_WORKER_HEARTBEAT_INTERVAL_MS,
+      );
       if (!this.readySettled) {
-        this.readySettled = true
-        this.readyHello = message
-        this.resolveReady(message)
+        this.readySettled = true;
+        this.readyHello = message;
+        this.resolveReady(message);
       }
-      return
+      return;
     }
     if (message.kind === "heartbeat") {
-      this.heartbeatMisses = 0
-      return
+      this.heartbeatMisses = 0;
+      return;
     }
     if (message.kind === "response") {
-      const pending = this.pending.get(message.id)
+      const pending = this.pending.get(message.id);
       if (!pending) {
-        const late = this.lateResponses.get(message.id)
-        this.lateResponses.delete(message.id)
-        late?.(message.ok, message.ok ? message.data : undefined)
-        return
+        const late = this.lateResponses.get(message.id);
+        this.lateResponses.delete(message.id);
+        late?.(message.ok, message.ok ? message.data : undefined);
+        return;
       }
-      this.pending.delete(message.id)
-      clearTimeout(pending.timer)
-      pending.removeAbort?.()
-      if (message.ok) pending.resolve(message.data)
-      else pending.reject(problemToError(message.error))
-      return
+      this.pending.delete(message.id);
+      clearTimeout(pending.timer);
+      pending.removeAbort?.();
+      if (message.ok) pending.resolve(message.data);
+      else pending.reject(problemToError(message.error));
+      return;
     }
     if (message.kind === "event") {
       // 带 sessionId 的事件路由到对应句柄；无归属的全局事件广播给 host 监听者
       if ("sessionId" in message && message.sessionId) {
-        const handle = this.handles.get(message.sessionId)
+        const handle = this.handles.get(message.sessionId);
         if (message.channel === "session.crashed") {
-          handle?.dispatchCrash(Object.assign(new Error(String(message.event.message ?? "OMP runtime crashed")), {
-            code: "SESSION_RUNTIME_CRASHED",
-            runtimeExit: message.event.runtimeExit,
-          }))
+          handle?.dispatchCrash(
+            Object.assign(
+              new Error(String(message.event.message ?? "OMP runtime crashed")),
+              {
+                code: "SESSION_RUNTIME_CRASHED",
+                runtimeExit: message.event.runtimeExit,
+              },
+            ),
+          );
         } else {
-          handle?.dispatchEvent(message)
+          handle?.dispatchEvent(message);
         }
       } else {
         for (const listener of this.hostEventListeners) {
           try {
-            listener(message)
+            listener(message);
           } catch {
             /* one failed listener must not break the others */
           }
         }
       }
-      return
+      return;
     }
     if (message.kind === "hostCall") {
-      void this.answerHostCall(message.id, message.generation, message.call)
-      return
+      void this.answerHostCall(message.id, message.generation, message.call);
+      return;
     }
   }
 
-  private async answerHostCall(id: string, generation: string, call: WorkerHostCall): Promise<void> {
-    let sessionId: string | undefined
+  private async answerHostCall(
+    id: string,
+    generation: string,
+    call: WorkerHostCall,
+  ): Promise<void> {
+    let sessionId: string | undefined;
     if ("sourceSessionId" in call) {
-      sessionId = call.sourceSessionId
+      sessionId = call.sourceSessionId;
     } else if (call.type === "extensionShutdown") {
-      sessionId = call.sessionId
+      sessionId = call.sessionId;
     } else {
-      sessionId = this.reservationOwners.get(call.reservationId)
+      sessionId = this.reservationOwners.get(call.reservationId);
     }
-    const handler = sessionId ? this.hostCallHandlers.get(sessionId) : undefined
+    const handler = sessionId
+      ? this.hostCallHandlers.get(sessionId)
+      : undefined;
     if (!handler) {
-      this.child.send({ kind: "hostReply", id, generation, ok: false, error: { code: "CAPABILITY_DISABLED", message: "no host call handler" } })
-      return
+      this.child.send({
+        kind: "hostReply",
+        id,
+        generation,
+        ok: false,
+        error: { code: "CAPABILITY_DISABLED", message: "no host call handler" },
+      });
+      return;
     }
     try {
-      await handler(call)
+      await handler(call);
       if (call.type === "extensionReplacement.reserve") {
-        this.reservationOwners.set(call.reservationId, call.sourceSessionId)
+        this.reservationOwners.set(call.reservationId, call.sourceSessionId);
       }
-      if (call.type === "extensionReplacement.commit" && call.replacement.cancelled === false) {
-        const handle = this.handles.get(sessionId!)
-        if (handle) await handle.dispatchReplacement(call.replacement)
-        this.reservationOwners.delete(call.reservationId)
+      if (
+        call.type === "extensionReplacement.commit" &&
+        call.replacement.cancelled === false
+      ) {
+        const handle = this.handles.get(sessionId!);
+        if (handle) await handle.dispatchReplacement(call.replacement);
+        this.reservationOwners.delete(call.reservationId);
       }
       if (call.type === "extensionReplacement.abort") {
-        this.reservationOwners.delete(call.reservationId)
+        this.reservationOwners.delete(call.reservationId);
       }
-      this.child.send({ kind: "hostReply", id, generation, ok: true })
+      this.child.send({ kind: "hostReply", id, generation, ok: true });
     } catch (error) {
       this.child.send({
         kind: "hostReply",
@@ -324,210 +390,297 @@ class WorkerHostCore {
         generation,
         ok: false,
         error: {
-          code: error && typeof error === "object" && "code" in error ? String(error.code) : "INTERNAL",
+          code:
+            error && typeof error === "object" && "code" in error
+              ? String(error.code)
+              : "INTERNAL",
           message: error instanceof Error ? error.message : String(error),
         },
-      })
+      });
     }
   }
 
   private startHeartbeatWatchdog(intervalMs: number): void {
-    if (this.heartbeatTimer) return
-    const missLimit = heartbeatMissLimit()
+    if (this.heartbeatTimer) return;
+    const missLimit = heartbeatMissLimit();
     // 心跳看门狗与 worker 心跳同频（都 5s）：相位固定错开时 misses 恒在
     // 0~1 波动，misses===1 只是「tick 早于心跳到达」的正常竞争，不是丢
     // 心跳。只有连续丢失超过 warnAt（默认 3 次 ≈ 15s）才可能是真卡死，
     // 此时记日志；累积到 missLimit（12 次 ≈ 60s）才杀进程。
-    const warnAt = Math.min(3, missLimit)
+    const warnAt = Math.min(3, missLimit);
     this.heartbeatTimer = setInterval(() => {
-      this.heartbeatMisses += 1
+      this.heartbeatMisses += 1;
       if (this.heartbeatMisses === warnAt && !this.exitHandled) {
-        diagnostics.record("worker.heartbeat.missing", { workerPid: this.child.pid, misses: this.heartbeatMisses }, "warn")
-        const message = `[omp-worker] heartbeat missing for ${this.heartbeatMisses} consecutive ticks (pid=${this.child.pid ?? "?"}); worker may be stuck`
-        console.warn(message)
-        logToFile(message)
+        diagnostics.record(
+          "worker.heartbeat.missing",
+          { workerPid: this.child.pid, misses: this.heartbeatMisses },
+          "warn",
+        );
+        const message = `[omp-worker] heartbeat missing for ${this.heartbeatMisses} consecutive ticks (pid=${this.child.pid ?? "?"}); worker may be stuck`;
+        console.warn(message);
+        logToFile(message);
       }
       if (this.heartbeatMisses > missLimit) {
-        diagnostics.record("worker.heartbeat.kill", { workerPid: this.child.pid, misses: this.heartbeatMisses, reason: "heartbeat_timeout" }, "error")
+        diagnostics.record(
+          "worker.heartbeat.kill",
+          {
+            workerPid: this.child.pid,
+            misses: this.heartbeatMisses,
+            reason: "heartbeat_timeout",
+          },
+          "error",
+        );
         // 先杀后记账：反过来会有「server 已判死并孵化新 worker，旧进程还
         // 活着」的并存窗口
-        killProcessTree(this.child)
-        this.handleExit(null, null, Object.assign(new Error("Pi worker heartbeat timed out"), {
-          code: "SESSION_RUNTIME_CRASHED",
-        }))
+        killProcessTree(this.child);
+        this.handleExit(
+          null,
+          null,
+          Object.assign(new Error("Pi worker heartbeat timed out"), {
+            code: "SESSION_RUNTIME_CRASHED",
+          }),
+        );
       }
-    }, intervalMs)
-    this.heartbeatTimer.unref()
+    }, intervalMs);
+    this.heartbeatTimer.unref();
   }
 
-  private handleExit(code: number | null, signal: NodeJS.Signals | null, error?: Error): void {
-    if (this.exitHandled) return
-    this.exitHandled = true
-    diagnostics.record("worker.exited", {
-      workerPid: this.child.pid, code: code ?? undefined, signal,
-      reason: this.disposed ? "host_dispose" : "unexpected_exit",
-      errorCode: error ? diagnosticErrorCode(error) : undefined,
-      sessionIds: [...this.handles.keys()],
-    }, this.disposed ? "info" : "error")
-    this.resolveExited()
-    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer)
-    this.exitError = error ?? (this.disposed
-      ? Object.assign(new Error("Pi worker disposed"), { code: "SESSION_RUNTIME_CRASHED" })
-      : Object.assign(new Error(`Pi worker exited unexpectedly (code ${code} signal ${signal})`), {
-        code: "SESSION_RUNTIME_CRASHED",
-      }))
+  private handleExit(
+    code: number | null,
+    signal: NodeJS.Signals | null,
+    error?: Error,
+  ): void {
+    if (this.exitHandled) return;
+    this.exitHandled = true;
+    diagnostics.record(
+      "worker.exited",
+      {
+        workerPid: this.child.pid,
+        code: code ?? undefined,
+        signal,
+        reason: this.disposed ? "host_dispose" : "unexpected_exit",
+        errorCode: error ? diagnosticErrorCode(error) : undefined,
+        sessionIds: [...this.handles.keys()],
+      },
+      this.disposed ? "info" : "error",
+    );
+    this.resolveExited();
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.exitError =
+      error ??
+      (this.disposed
+        ? Object.assign(new Error("Pi worker disposed"), {
+            code: "SESSION_RUNTIME_CRASHED",
+          })
+        : Object.assign(
+            new Error(
+              `Pi worker exited unexpectedly (code ${code} signal ${signal})`,
+            ),
+            {
+              code: "SESSION_RUNTIME_CRASHED",
+            },
+          ));
     // 崩溃/退出必须有可见记录：之前这里完全静默，用户（和日志）无法知道
     // worker 何时、为何死亡，"突然死了"无从排查。
     if (!this.disposed) {
-      const message = `[omp-worker] worker process exited unexpectedly (pid=${this.child.pid ?? "?"} code=${code} signal=${signal}): ${this.exitError.message}`
-      console.error(message)
-      logToFile(message)
+      const message = `[omp-worker] worker process exited unexpectedly (pid=${this.child.pid ?? "?"} code=${code} signal=${signal}): ${this.exitError.message}`;
+      console.error(message);
+      logToFile(message);
     } else {
-      const message = `[omp-worker] worker process stopped (pid=${this.child.pid ?? "?"})`
-      console.info(message)
-      logToFile(message)
+      const message = `[omp-worker] worker process stopped (pid=${this.child.pid ?? "?"})`;
+      console.info(message);
+      logToFile(message);
     }
-    this.settleReadyError(this.exitError)
+    this.settleReadyError(this.exitError);
     for (const pending of this.pending.values()) {
-      clearTimeout(pending.timer)
-      pending.removeAbort?.()
-      pending.reject(Object.assign(new Error("Pi worker crashed before confirming the command result"), {
-        code: "WORKER_RESULT_UNKNOWN",
-      }))
+      clearTimeout(pending.timer);
+      pending.removeAbort?.();
+      pending.reject(
+        Object.assign(
+          new Error("Pi worker crashed before confirming the command result"),
+          {
+            code: "WORKER_RESULT_UNKNOWN",
+          },
+        ),
+      );
     }
-    this.pending.clear()
+    this.pending.clear();
     // 进程已退出:晚到响应不会再到达,直接结束放弃请求的收尾
-    const lates = [...this.lateResponses.values()]
-    this.lateResponses.clear()
-    for (const late of lates) late(false, undefined)
+    const lates = [...this.lateResponses.values()];
+    this.lateResponses.clear();
+    for (const late of lates) late(false, undefined);
     // 共享进程崩溃 = 所有会话 runtime 一起失效：逐个句柄通知
-    const handles = [...this.handles.values()]
-    this.handles.clear()
-    this.hostCallHandlers.clear()
+    const handles = [...this.handles.values()];
+    this.handles.clear();
+    this.hostCallHandlers.clear();
     if (!this.disposed) {
       for (const listener of this.crashListeners) {
         try {
-          listener(this.exitError)
+          listener(this.exitError);
         } catch {
           /* ignore */
         }
       }
     }
-    for (const handle of handles) handle.dispatchCrash(this.exitError)
+    for (const handle of handles) handle.dispatchCrash(this.exitError);
   }
 
   private settleReadyError(error: Error): void {
-    if (this.readySettled) return
-    this.readySettled = true
-    this.rejectReady(error)
+    if (this.readySettled) return;
+    this.readySettled = true;
+    this.rejectReady(error);
   }
 
   getHandshake(): Promise<WorkerHello> {
-    return this.ready
+    return this.ready;
   }
 
   peekHandshake(): WorkerHello | undefined {
-    return this.readyHello
+    return this.readyHello;
   }
 
-  async open(cwd: string, sessionFile?: string, signal?: AbortSignal, onLeaseSettled?: () => void): Promise<WorkerSession> {
-    await this.ready
-    if (signal?.aborted) throw Object.assign(new Error("request aborted"), { code: "REQUEST_ABORTED" })
+  async open(
+    cwd: string,
+    sessionFile?: string,
+    signal?: AbortSignal,
+    onLeaseSettled?: () => void,
+  ): Promise<WorkerSession> {
+    await this.ready;
+    if (signal?.aborted)
+      throw Object.assign(new Error("request aborted"), {
+        code: "REQUEST_ABORTED",
+      });
     // 打开有副作用:超时/取消后保留晚到响应,由 settleLateOpen 关闭孤儿 runtime 并结束租约。
-    let abandoned = false
+    let abandoned = false;
     const data = await this.request(
-      { type: "session.open", params: { cwd, sessionFile: sessionFile ?? null } },
+      {
+        type: "session.open",
+        params: { cwd, sessionFile: sessionFile ?? null },
+      },
       signal,
       undefined,
       {
-        onAbandoned: () => { abandoned = true },
-        onLate: (ok, lateData) => this.settleLateOpen(ok, lateData, onLeaseSettled),
+        onAbandoned: () => {
+          abandoned = true;
+        },
+        onLate: (ok, lateData) =>
+          this.settleLateOpen(ok, lateData, onLeaseSettled),
       },
-    ).catch(error => {
+    ).catch((error) => {
       // 放弃的请求仍持有租约,由晚到响应或进程退出时统一释放
-      if (abandoned) Object.assign(error, { leaseHeld: true })
-      throw error
-    })
-    const opened = data as { sessionId?: string; sessionFile?: string; cwd?: string } | undefined
-    const sessionId = opened?.sessionId
+      if (abandoned) Object.assign(error, { leaseHeld: true });
+      throw error;
+    });
+    const opened = data as
+      { sessionId?: string; sessionFile?: string; cwd?: string } | undefined;
+    const sessionId = opened?.sessionId;
     if (!sessionId) {
-      throw Object.assign(new Error("Pi worker session.open returned no session id"), { code: "WORKER_RESULT_UNKNOWN" })
+      throw Object.assign(
+        new Error("Pi worker session.open returned no session id"),
+        { code: "WORKER_RESULT_UNKNOWN" },
+      );
     }
     const handle = new WorkerSession(this, {
       sessionId,
       sessionFile: opened?.sessionFile ?? sessionFile,
       cwd: opened?.cwd ?? cwd,
-    })
-    this.handles.set(handle.getSessionId(), handle)
+    });
+    this.handles.set(handle.getSessionId(), handle);
     if (signal?.aborted) {
-      await handle.dispose()
-      throw Object.assign(new Error("request aborted"), { code: "REQUEST_ABORTED" })
+      await handle.dispose();
+      throw Object.assign(new Error("request aborted"), {
+        code: "REQUEST_ABORTED",
+      });
     }
-    return handle
+    return handle;
   }
 
   /** 超时/取消后晚到的 session.open:runtime 无句柄归属则关闭,随后结束租约 */
-  private settleLateOpen(ok: boolean, data: JsonValue | undefined, onSettled?: () => void): void {
-    const sessionId = ok && isJsonObject(data) && typeof data.sessionId === "string" ? data.sessionId : undefined
+  private settleLateOpen(
+    ok: boolean,
+    data: JsonValue | undefined,
+    onSettled?: () => void,
+  ): void {
+    const sessionId =
+      ok && isJsonObject(data) && typeof data.sessionId === "string"
+        ? data.sessionId
+        : undefined;
     // 已有句柄归属的 sessionId 可能被其他请求复用,绝不关闭
     if (!sessionId || this.exitHandled || this.handles.has(sessionId)) {
-      onSettled?.()
-      return
+      onSettled?.();
+      return;
     }
-    diagnostics.record("worker.open.late_closed", {
-      workerPid: this.child.pid, sessionId, reason: "open_abandoned",
-    }, "error")
+    diagnostics.record(
+      "worker.open.late_closed",
+      {
+        workerPid: this.child.pid,
+        sessionId,
+        reason: "open_abandoned",
+      },
+      "error",
+    );
     this.request({ type: "session.close" }, undefined, sessionId)
       .catch(() => undefined)
-      .finally(() => onSettled?.())
+      .finally(() => onSettled?.());
   }
 
   /** 放弃的请求从未发送到 worker:不会有晚到响应,直接结束其收尾(租约) */
   private settleUnsentLate(id: string): void {
-    const late = this.lateResponses.get(id)
-    this.lateResponses.delete(id)
-    late?.(false, undefined)
+    const late = this.lateResponses.get(id);
+    this.lateResponses.delete(id);
+    late?.(false, undefined);
   }
   /** 迁移句柄在路由表里的 key（runtime 替换后 sessionId 变化时由句柄调用） */
-  rebindHandle(handle: WorkerSession, previousSessionId: string, nextSessionId: string): void {
+  rebindHandle(
+    handle: WorkerSession,
+    previousSessionId: string,
+    nextSessionId: string,
+  ): void {
     if (this.handles.get(previousSessionId) === handle) {
-      this.handles.delete(previousSessionId)
-      this.handles.set(nextSessionId, handle)
+      this.handles.delete(previousSessionId);
+      this.handles.set(nextSessionId, handle);
     }
-    const hostCallHandler = this.hostCallHandlers.get(previousSessionId)
+    const hostCallHandler = this.hostCallHandlers.get(previousSessionId);
     if (hostCallHandler) {
-      this.hostCallHandlers.delete(previousSessionId)
-      this.hostCallHandlers.set(nextSessionId, hostCallHandler)
+      this.hostCallHandlers.delete(previousSessionId);
+      this.hostCallHandlers.set(nextSessionId, hostCallHandler);
     }
   }
 
-  setHostCallHandler(sessionId: string, handler: (call: WorkerHostCall) => void | Promise<void>): void {
-    this.hostCallHandlers.set(sessionId, handler)
+  setHostCallHandler(
+    sessionId: string,
+    handler: (call: WorkerHostCall) => void | Promise<void>,
+  ): void {
+    this.hostCallHandlers.set(sessionId, handler);
   }
 
   /** 句柄关闭后从路由表注销（session.close 或句柄主动销毁） */
   unregisterHandle(handle: WorkerSession, sessionId: string): void {
-    if (this.handles.get(sessionId) === handle) this.handles.delete(sessionId)
-    this.hostCallHandlers.delete(sessionId)
+    if (this.handles.get(sessionId) === handle) this.handles.delete(sessionId);
+    this.hostCallHandlers.delete(sessionId);
   }
 
   /** 进程已退出/被销毁（句柄 dispose 时不再发命令） */
   isGone(): boolean {
-    return this.exitHandled
+    return this.exitHandled;
   }
 
   onEvent(listener: (event: WorkerEvent) => void): () => void {
-    this.hostEventListeners.add(listener)
-    return () => this.hostEventListeners.delete(listener)
+    this.hostEventListeners.add(listener);
+    return () => this.hostEventListeners.delete(listener);
   }
 
   onCrash(listener: (error: Error) => void): () => void {
-    this.crashListeners.add(listener)
-    return () => this.crashListeners.delete(listener)
+    this.crashListeners.add(listener);
+    return () => this.crashListeners.delete(listener);
   }
 
-  command(type: string, params?: JsonObject, signal?: AbortSignal): Promise<JsonValue | undefined> {
-    return this.request({ type, params }, signal)
+  command(
+    type: string,
+    params?: JsonObject,
+    signal?: AbortSignal,
+  ): Promise<JsonValue | undefined> {
+    return this.request({ type, params }, signal);
   }
 
   /**
@@ -539,30 +692,43 @@ class WorkerHostCore {
     sessionId?: string,
     late?: LateResponseHandlers,
   ): Promise<JsonValue | undefined> {
-    if (this.exitHandled) return Promise.reject(this.exitError ?? new Error("Pi worker is not available"))
-    const id = randomUUID()
-    const trace = traceWorkerRequest({ sessionId, requestId: id, command: command.type, workerPid: this.child.pid })
+    if (this.exitHandled)
+      return Promise.reject(
+        this.exitError ?? new Error("Pi worker is not available"),
+      );
+    const id = randomUUID();
+    const trace = traceWorkerRequest({
+      sessionId,
+      requestId: id,
+      command: command.type,
+      workerPid: this.child.pid,
+    });
     return new Promise<JsonValue | undefined>((resolve, reject) => {
       if (signal?.aborted) {
-        reject(Object.assign(new Error("request aborted"), { code: "REQUEST_ABORTED" }))
-        return
+        reject(
+          Object.assign(new Error("request aborted"), {
+            code: "REQUEST_ABORTED",
+          }),
+        );
+        return;
       }
       const timeoutMs =
         this.options.requestTimeoutMs ??
-        (TURN_SCOPED_COMMANDS.has(command.type) && !process.env.OMPIUI_WORKER_REQUEST_TIMEOUT_MS
+        (TURN_SCOPED_COMMANDS.has(command.type) &&
+        !process.env.OMPIUI_WORKER_REQUEST_TIMEOUT_MS
           ? undefined
-          : requestTimeoutMs())
+          : requestTimeoutMs());
       const timer =
         timeoutMs === undefined
           ? undefined
           : setTimeout(() => {
-              const pending = this.pending.get(id)
-              this.pending.delete(id)
+              const pending = this.pending.get(id);
+              this.pending.delete(id);
               if (pending && late) {
-                this.lateResponses.set(id, late.onLate)
-                late.onAbandoned()
+                this.lateResponses.set(id, late.onLate);
+                late.onAbandoned();
               }
-              pending?.removeAbort?.()
+              pending?.removeAbort?.();
               // 命令超时——只丢弃这一条命令并落日志，绝不杀进程。
               //
               // 重要教训：heartbeatMisses 与心跳同频竞争（watchdog 每 5s tick
@@ -573,99 +739,134 @@ class WorkerHostCore {
               // 真正的进程级卡死由心跳看门狗兜底：心跳持续丢失累积到
               // missLimit（12 次 ≈ 60s+）才杀。单条命令超时（如模型响应慢）
               // 只废弃该命令，共享进程继续服务其他会话。
-              const message = `[omp-worker] command ${command.type} timed out after ${timeoutMs}ms (misses=${this.heartbeatMisses}); discarding command, worker stays`
-              console.error(message)
-              logToFile(message)
-              diagnostics.record("worker.request.timeout", {
-                sessionId, requestId: id, command: command.type, workerPid: this.child.pid,
-                timeoutMs, misses: this.heartbeatMisses, reason: "discard_request_keep_worker",
-              }, "error")
-              reject(Object.assign(new Error(`Pi worker command timed out: ${command.type}`), {
-                code: "WORKER_RESULT_UNKNOWN",
-              }))
-            }, timeoutMs)
-      timer?.unref()
-      let pending: PendingRequest
+              const message = `[omp-worker] command ${command.type} timed out after ${timeoutMs}ms (misses=${this.heartbeatMisses}); discarding command, worker stays`;
+              console.error(message);
+              logToFile(message);
+              diagnostics.record(
+                "worker.request.timeout",
+                {
+                  sessionId,
+                  requestId: id,
+                  command: command.type,
+                  workerPid: this.child.pid,
+                  timeoutMs,
+                  misses: this.heartbeatMisses,
+                  reason: "discard_request_keep_worker",
+                },
+                "error",
+              );
+              reject(
+                Object.assign(
+                  new Error(`Pi worker command timed out: ${command.type}`),
+                  {
+                    code: "WORKER_RESULT_UNKNOWN",
+                  },
+                ),
+              );
+            }, timeoutMs);
+      timer?.unref();
+      let pending: PendingRequest;
       const onAbort = () => {
-        if (this.pending.get(id) !== pending) return
-        this.pending.delete(id)
-        clearTimeout(timer)
-        pending.removeAbort?.()
+        if (this.pending.get(id) !== pending) return;
+        this.pending.delete(id);
+        clearTimeout(timer);
+        pending.removeAbort?.();
         if (late) {
-          this.lateResponses.set(id, late.onLate)
-          late.onAbandoned()
+          this.lateResponses.set(id, late.onLate);
+          late.onAbandoned();
         }
-        reject(Object.assign(new Error("request aborted"), { code: "REQUEST_ABORTED" }))
-      }
-      pending = { resolve, reject, timer }
+        reject(
+          Object.assign(new Error("request aborted"), {
+            code: "REQUEST_ABORTED",
+          }),
+        );
+      };
+      pending = { resolve, reject, timer };
       if (signal) {
-        signal.addEventListener("abort", onAbort, { once: true })
-        pending.removeAbort = () => signal.removeEventListener("abort", onAbort)
+        signal.addEventListener("abort", onAbort, { once: true });
+        pending.removeAbort = () =>
+          signal.removeEventListener("abort", onAbort);
       }
-      this.pending.set(id, pending)
-      void this.ready.then(helloMessage => {
-        if (this.exitHandled || !this.pending.has(id) || signal?.aborted) {
-          if (this.pending.get(id) === pending) this.pending.delete(id)
-          clearTimeout(timer)
-          pending.removeAbort?.()
-          if (this.exitHandled) reject(this.exitError ?? new Error("Pi worker is not available"))
-          this.settleUnsentLate(id)
-          return
-        }
-        this.child.send({
-          kind: "request",
-          id,
-          generation: helloMessage.generation,
-          sessionId,
-          command,
-        }, error => {
-          if (!error) return
-          this.pending.delete(id)
-          clearTimeout(timer)
-          pending.removeAbort?.()
-          reject(error)
+      this.pending.set(id, pending);
+      void this.ready
+        .then((helloMessage) => {
+          if (this.exitHandled || !this.pending.has(id) || signal?.aborted) {
+            if (this.pending.get(id) === pending) this.pending.delete(id);
+            clearTimeout(timer);
+            pending.removeAbort?.();
+            if (this.exitHandled)
+              reject(this.exitError ?? new Error("Pi worker is not available"));
+            this.settleUnsentLate(id);
+            return;
+          }
+          this.child.send(
+            {
+              kind: "request",
+              id,
+              generation: helloMessage.generation,
+              sessionId,
+              command,
+            },
+            (error) => {
+              if (!error) return;
+              this.pending.delete(id);
+              clearTimeout(timer);
+              pending.removeAbort?.();
+              reject(error);
+            },
+          );
         })
-      }).catch(error => {
-        if (this.pending.get(id) !== pending) {
-          this.settleUnsentLate(id)
-          return
-        }
-        this.pending.delete(id)
-        clearTimeout(timer)
-        pending.removeAbort?.()
-        reject(error)
-      })
-    }).then(data => {
-      trace.completed(data)
-      return data
-    }, error => {
-      trace.failed(error)
-      throw error
-    })
+        .catch((error) => {
+          if (this.pending.get(id) !== pending) {
+            this.settleUnsentLate(id);
+            return;
+          }
+          this.pending.delete(id);
+          clearTimeout(timer);
+          pending.removeAbort?.();
+          reject(error);
+        });
+    }).then(
+      (data) => {
+        trace.completed(data);
+        return data;
+      },
+      (error) => {
+        trace.failed(error);
+        throw error;
+      },
+    );
   }
 
   async dispose(): Promise<void> {
-    if (this.disposed) return
-    diagnostics.record("worker.dispose", { workerPid: this.child.pid, sessionIds: [...this.handles.keys()], reason: "host_dispose" })
-    this.disposed = true
-    if (this.exitHandled) return
+    if (this.disposed) return;
+    diagnostics.record("worker.dispose", {
+      workerPid: this.child.pid,
+      sessionIds: [...this.handles.keys()],
+      reason: "host_dispose",
+    });
+    this.disposed = true;
+    if (this.exitHandled) return;
     try {
       // The worker replies only after runtime cleanup. Still wait for the
       // process exit so the parent never kills a worker between its ACK and
       // its final JSONL/provider cleanup.
-      const timeout = new Promise<void>(resolve => {
-        const timer = setTimeout(resolve, disposeTimeoutMs())
-        timer.unref()
-      })
+      const timeout = new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, disposeTimeoutMs());
+        timer.unref();
+      });
       await Promise.race([
-        this.request({ type: "dispose" }, undefined, undefined).then(() => this.exited, () => this.exited),
+        this.request({ type: "dispose" }, undefined, undefined).then(
+          () => this.exited,
+          () => this.exited,
+        ),
         this.exited,
         timeout,
-      ])
+      ]);
     } finally {
       if (!this.exitHandled) {
-        killProcessTree(this.child)
-        this.handleExit(null, "SIGKILL")
+        killProcessTree(this.child);
+        this.handleExit(null, "SIGKILL");
       }
     }
   }
@@ -676,91 +877,110 @@ class WorkerHostCore {
  * 但背后是共享进程内的一个 runtime（session.close 只关该 runtime，不杀进程）。
  */
 export class WorkerSession {
-  private readonly eventListeners = new Set<(event: WorkerEvent) => void>()
-  private readonly crashListeners = new Set<(error: Error) => void>()
-  private readonly closeListeners = new Set<() => void>()
-  private readonly replacementListeners = new Set<(replacement: JsonObject) => void | Promise<void>>()
-  private sessionId: string
-  private sessionFile?: string
-  private cwd?: string
-  private disposed = false
-  private closeNotified = false
+  private readonly eventListeners = new Set<(event: WorkerEvent) => void>();
+  private readonly crashListeners = new Set<(error: Error) => void>();
+  private readonly closeListeners = new Set<() => void>();
+  private readonly replacementListeners = new Set<
+    (replacement: JsonObject) => void | Promise<void>
+  >();
+  private sessionId: string;
+  private sessionFile?: string;
+  private cwd?: string;
+  private disposed = false;
+  private closeNotified = false;
   /** 句柄自己的 hostCall handler（注册到 core 路由表，key = 当前 sessionId） */
-  private readonly hostCallHandler: (call: WorkerHostCall) => void | Promise<void>
+  private readonly hostCallHandler: (
+    call: WorkerHostCall,
+  ) => void | Promise<void>;
 
   /** @internal 由 WorkerHostCore.open 创建 */
   constructor(
     private readonly core: WorkerHostCore,
     identity: { sessionId: string; sessionFile?: string; cwd?: string },
   ) {
-    this.sessionId = identity.sessionId
-    this.sessionFile = identity.sessionFile
-    this.cwd = identity.cwd
+    this.sessionId = identity.sessionId;
+    this.sessionFile = identity.sessionFile;
+    this.cwd = identity.cwd;
     this.hostCallHandler = async (call) => {
-      await this.hostCallHandlerImpl?.(call)
+      await this.hostCallHandlerImpl?.(call);
       // replacementListeners 由 core.answerHostCall 在 commit 成功后统一触发
       // （dispatchReplacement），这里只做原始 hostCall 应答。
-    }
+    };
   }
 
-  private hostCallHandlerImpl?: (call: WorkerHostCall) => void | Promise<void>
+  private hostCallHandlerImpl?: (call: WorkerHostCall) => void | Promise<void>;
 
-  static createHost(workerEntry: URL, options?: WorkerClientOptions): WorkerHost {
-    const core = new WorkerHostCore(workerEntry, options)
+  static createHost(
+    workerEntry: URL,
+    options?: WorkerClientOptions,
+  ): WorkerHost {
+    const core = new WorkerHostCore(workerEntry, options);
     return {
       getHandshake: () => core.getHandshake(),
       peekHandshake: () => core.peekHandshake(),
-      open: (cwd, sessionFile, signal, onLeaseSettled) => core.open(cwd, sessionFile, signal, onLeaseSettled),
-      onEvent: listener => core.onEvent(listener),
-      onCrash: listener => core.onCrash(listener),
+      open: (cwd, sessionFile, signal, onLeaseSettled) =>
+        core.open(cwd, sessionFile, signal, onLeaseSettled),
+      onEvent: (listener) => core.onEvent(listener),
+      onCrash: (listener) => core.onCrash(listener),
       command: (type, params, signal) => core.command(type, params, signal),
       dispose: () => core.dispose(),
-    }
+    };
   }
 
-  static createCatalog(workerEntry: URL, options?: WorkerClientOptions): WorkerCatalog {
-    const core = new WorkerHostCore(workerEntry, options)
+  static createCatalog(
+    workerEntry: URL,
+    options?: WorkerClientOptions,
+  ): WorkerCatalog {
+    const core = new WorkerHostCore(workerEntry, options);
     return {
       command: (type, params, signal) => core.command(type, params, signal),
       getHandshake: () => core.getHandshake(),
-      onEvent: listener => core.onEvent(listener),
-      onCrash: listener => core.onCrash(listener),
+      onEvent: (listener) => core.onEvent(listener),
+      onCrash: (listener) => core.onCrash(listener),
       dispose: () => core.dispose(),
-    }
+    };
   }
 
   getSessionId(): string {
-    return this.sessionId
+    return this.sessionId;
   }
 
   /** After a runtime replacement (fork/clone/new/import), the worker owns a
    * different session — requests must carry the new id or the worker
    * rejects them as RUNTIME_REPLACED. */
-  updateSessionIdentity(sessionId: string, sessionFile?: string | null, cwd?: string): void {
-    const previous = this.sessionId
-    this.sessionId = sessionId
-    if (sessionFile !== undefined) this.sessionFile = sessionFile ?? undefined
-    if (cwd !== undefined) this.cwd = cwd
-    this.core.rebindHandle(this, previous, sessionId)
+  updateSessionIdentity(
+    sessionId: string,
+    sessionFile?: string | null,
+    cwd?: string,
+  ): void {
+    const previous = this.sessionId;
+    this.sessionId = sessionId;
+    if (sessionFile !== undefined) this.sessionFile = sessionFile ?? undefined;
+    if (cwd !== undefined) this.cwd = cwd;
+    this.core.rebindHandle(this, previous, sessionId);
   }
 
   getSessionFile(): string | undefined {
-    return this.sessionFile
+    return this.sessionFile;
   }
 
   getCwd(): string {
-    return this.cwd ?? ""
+    return this.cwd ?? "";
   }
 
-  async command(type: string, params?: JsonObject, signal?: AbortSignal): Promise<JsonValue | undefined> {
-    return this.core.request({ type, params }, signal, this.sessionId)
+  async command(
+    type: string,
+    params?: JsonObject,
+    signal?: AbortSignal,
+  ): Promise<JsonValue | undefined> {
+    return this.core.request({ type, params }, signal, this.sessionId);
   }
 
   /** 事件分发入口（core 调用，仅本会话事件） */
   dispatchEvent(event: WorkerEvent): void {
     for (const listener of this.eventListeners) {
       try {
-        listener(event)
+        listener(event);
       } catch {
         /* one failed listener must not break the others */
       }
@@ -769,45 +989,50 @@ export class WorkerSession {
 
   /** 替换提交事件（core 在 extensionReplacement.commit 成功后调用） */
   async dispatchReplacement(replacement: JsonObject): Promise<void> {
-    for (const listener of this.replacementListeners) await listener(replacement)
+    for (const listener of this.replacementListeners)
+      await listener(replacement);
   }
 
   /** 进程崩溃（core 调用）：crash + close 都通知 */
   dispatchCrash(error: Error): void {
-    if (this.disposed) return
+    if (this.disposed) return;
     for (const listener of this.crashListeners) {
       try {
-        listener(error)
+        listener(error);
       } catch {
         /* ignore */
       }
     }
-    this.notifyClose()
+    this.notifyClose();
   }
 
   onEvent(listener: (event: WorkerEvent) => void): () => void {
-    this.eventListeners.add(listener)
-    return () => this.eventListeners.delete(listener)
+    this.eventListeners.add(listener);
+    return () => this.eventListeners.delete(listener);
   }
 
   onCrash(listener: (error: Error) => void): () => void {
-    this.crashListeners.add(listener)
-    return () => this.crashListeners.delete(listener)
+    this.crashListeners.add(listener);
+    return () => this.crashListeners.delete(listener);
   }
 
   onClose(listener: () => void): () => void {
-    this.closeListeners.add(listener)
-    return () => this.closeListeners.delete(listener)
+    this.closeListeners.add(listener);
+    return () => this.closeListeners.delete(listener);
   }
 
-  setHostCallHandler(handler: (call: WorkerHostCall) => void | Promise<void>): void {
-    this.hostCallHandlerImpl = handler
-    this.core.setHostCallHandler(this.sessionId, this.hostCallHandler)
+  setHostCallHandler(
+    handler: (call: WorkerHostCall) => void | Promise<void>,
+  ): void {
+    this.hostCallHandlerImpl = handler;
+    this.core.setHostCallHandler(this.sessionId, this.hostCallHandler);
   }
 
-  onReplacementCommitted(listener: (replacement: JsonObject) => void | Promise<void>): () => void {
-    this.replacementListeners.add(listener)
-    return () => this.replacementListeners.delete(listener)
+  onReplacementCommitted(
+    listener: (replacement: JsonObject) => void | Promise<void>,
+  ): () => void {
+    this.replacementListeners.add(listener);
+    return () => this.replacementListeners.delete(listener);
   }
 
   /**
@@ -815,24 +1040,28 @@ export class WorkerSession {
    * 幂等：进程已崩溃/已关闭时只做本地清理。
    */
   async dispose(): Promise<void> {
-    if (this.disposed) return
-    this.disposed = true
-    this.core.unregisterHandle(this, this.sessionId)
-    if (this.core.isGone()) return
+    if (this.disposed) return;
+    this.disposed = true;
+    this.core.unregisterHandle(this, this.sessionId);
+    if (this.core.isGone()) return;
     try {
-      await this.core.request({ type: "session.close" }, undefined, this.sessionId)
+      await this.core.request(
+        { type: "session.close" },
+        undefined,
+        this.sessionId,
+      );
     } catch {
       // runtime 已不可用（进程崩溃/命令失败）：本地清理即可
     }
-    this.notifyClose()
+    this.notifyClose();
   }
 
   private notifyClose(): void {
-    if (this.closeNotified) return
-    this.closeNotified = true
+    if (this.closeNotified) return;
+    this.closeNotified = true;
     for (const listener of this.closeListeners) {
       try {
-        listener()
+        listener();
       } catch {
         /* ignore */
       }
@@ -841,21 +1070,24 @@ export class WorkerSession {
 }
 
 function problemToError(problem: Problem): Error {
-  return Object.assign(new Error(problem.message), { code: problem.code, details: problem.details })
+  return Object.assign(new Error(problem.message), {
+    code: problem.code,
+    details: problem.details,
+  });
 }
 
 function spawnSelfWorker(env?: NodeJS.ProcessEnv): ChildProcess {
-  const workerBinary = env?.OMPIUI_WORKER_BIN ?? process.env.OMPIUI_WORKER_BIN
+  const workerBinary = env?.OMPIUI_WORKER_BIN ?? process.env.OMPIUI_WORKER_BIN;
   if (workerBinary) {
     return spawn(workerBinary, ["--omp-worker"], {
       env: { ...process.env, ...env },
       stdio: ["ignore", "inherit", "inherit", "ipc"],
       windowsHide: true,
-    })
+    });
   }
   return spawn(process.execPath, ["--omp-worker"], {
     env: { ...process.env, ...env },
     stdio: ["ignore", "inherit", "inherit", "ipc"],
     windowsHide: true,
-  })
+  });
 }
