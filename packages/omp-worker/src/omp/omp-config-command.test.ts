@@ -40,7 +40,7 @@ else process.stdout.write(JSON.stringify({value: JSON.parse(readFileSync(file, "
   ].join("\r\n"))
   process.env.OMPI_TEST_ROLES_FILE = state
   process.env.OMP_AGENT_DIR = path.join(root, "agent")
-  process.env.PI_CODING_AGENT_DIR = path.join(root, "wrong-agent")
+  delete process.env.PI_CODING_AGENT_DIR
   return { root, binDir, script, state, shim }
 }
 
