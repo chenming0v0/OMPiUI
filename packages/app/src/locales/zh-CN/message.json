@@ -97,7 +97,10 @@
     "stop": "Stop",
     "openSession": "打开会话",
     "waitingForResponse": "等待响应...",
-    "taskFailed": "任务失败"
+    "taskFailed": "任务失败",
+    "tools": "{{count}} 个工具",
+    "requests": "{{count}} 次请求",
+    "tokens": "{{count}} token"
   },
   "yield": {
     "completed": "任务完成",

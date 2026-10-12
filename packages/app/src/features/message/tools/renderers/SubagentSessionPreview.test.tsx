@@ -4,7 +4,12 @@ import { describe, expect, it, vi } from 'vitest'
 import type { OmpSubagentRun } from '../../../../omp/ompSubagentStore'
 import { SubagentSessionPreview } from './SubagentSessionPreview'
 
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }))
+vi.mock('react-i18next', () => ({
+  useTranslation: () => ({
+    t: (key: string, values?: { count?: number }) =>
+      values?.count === undefined ? key : `${values.count} ${key.split('.').at(-1)}`,
+  }),
+}))
 vi.mock('../../../../omp/transport/index.js', () => ({ getOmpSubagentMessages: vi.fn() }))
 
 function run(text = 'Current reply'): OmpSubagentRun {
@@ -32,10 +37,12 @@ function run(text = 'Current reply'): OmpSubagentRun {
 }
 
 describe('SubagentSessionPreview', () => {
-  it('renders a single transcript without the extra statistics or duplicate progress output', () => {
+  it('keeps live progress visible while a transcript is already rendered', () => {
     render(<SubagentSessionPreview run={run()} />)
     expect(screen.getAllByText('Current reply')).toHaveLength(1)
-    expect(screen.queryByText(/tools|tok|scout/)).not.toBeInTheDocument()
+    expect(screen.getByText('10 tools')).toBeInTheDocument()
+    expect(screen.getByText('1 requests')).toBeInTheDocument()
+    expect(screen.getByText('123 tokens')).toBeInTheDocument()
   })
 
   it('shows loading skeletons only while reading history, then an unframed waiting state', () => {

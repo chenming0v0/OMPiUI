@@ -296,6 +296,26 @@ describe('ompSubagentStore toolCall slices', () => {
     expect(after[0]?.transcript.map(item => item.text)).toEqual(['hi'])
   })
 
+  it('ignores duplicate event snapshots while keeping later updates', () => {
+    ompSubagentStore.applyLifecycle('session-a', {
+      id: 'dedupe-events', detached: false, status: 'started', agent: 'task', parentToolCallId: 'call-1', index: 0,
+    })
+    const update = {
+      id: 'dedupe-events',
+      event: { type: 'message_update', message: { role: 'assistant', content: [{ type: 'text', text: 'partial' }] } },
+    }
+    ompSubagentStore.applyEvent('session-a', update)
+    ompSubagentStore.applyEvent('session-a', update)
+    ompSubagentStore.applyEvent('session-a', {
+      id: 'dedupe-events',
+      event: { type: 'message_update', message: { role: 'assistant', content: [{ type: 'text', text: 'final' }] } },
+    })
+
+    const run = ompSubagentStore.getRunsForToolCall('call-1', 'session-a')[0]
+    expect(run?.transcript).toHaveLength(1)
+    expect(run?.transcript[0]?.text).toBe('final')
+  })
+
   it('invalidates slices on dismiss and clearSession', () => {
     ompSubagentStore.applyLifecycle('session-a', { id: 'run-1', detached: false, status: 'started', agent: 'task', parentToolCallId: 'call-1', index: 0 })
     const first = ompSubagentStore.getRunsForToolCall('call-1', 'session-a')

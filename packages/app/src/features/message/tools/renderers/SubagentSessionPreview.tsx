@@ -44,6 +44,7 @@ export const SubagentSessionPreview = memo(function SubagentSessionPreview({
   const maxHeight = useResponsiveMaxHeight(0.25, 120, 240)
   const transcript = run?.transcript ?? EMPTY_TRANSCRIPT
   const isRunning = run?.status === 'running' || run?.status === 'pending'
+  const progress = run?.progress
   const isLoading = loading || Boolean(run?.sessionFile && !run.historyLoaded && transcript.length === 0)
   const previousRunIdRef = useRef(run?.id)
   const wasRunningRef = useRef(isRunning)
@@ -77,9 +78,19 @@ export const SubagentSessionPreview = memo(function SubagentSessionPreview({
       </div>
     )
   }
+  const progressSummary = [progress?.currentTool, progress?.lastIntent, ...(progress?.recentOutput ?? [])]
+    .filter(Boolean)
+    .join('\n')
+  const hasProgressStats = Boolean(progress && (
+    progress.currentTool ||
+    progress.lastIntent ||
+    progress.toolCount > 0 ||
+    progress.requests > 0 ||
+    progress.tokens > 0
+  ))
+
   if (transcript.length === 0) {
-    const progress = run?.progress
-    const summary = [progress?.currentTool, progress?.lastIntent, ...(progress?.recentOutput ?? [])].filter(Boolean).join('\n')
+    const summary = progressSummary
     if (summary) {
       return <div role="status" className="text-[length:var(--fs-sm)] text-text-300 whitespace-pre-wrap break-words py-2">{summary}</div>
     }
@@ -87,6 +98,29 @@ export const SubagentSessionPreview = memo(function SubagentSessionPreview({
   }
   return (
     <div className="rounded-md bg-bg-100/50 border border-border-200/30 overflow-hidden">
+      {hasProgressStats && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border-200/30 px-3 py-1.5 text-[length:var(--fs-xxs)] text-text-400"
+        >
+          {progress?.currentTool && (
+            <span className="font-mono text-accent-main-100">{progress.currentTool}</span>
+          )}
+          {progress?.lastIntent && (
+            <span className="min-w-0 max-w-full truncate">{progress.lastIntent}</span>
+          )}
+          {progress && progress.toolCount > 0 && (
+            <span>{t('task.tools', { count: progress.toolCount })}</span>
+          )}
+          {progress && progress.requests > 0 && (
+            <span>{t('task.requests', { count: progress.requests })}</span>
+          )}
+          {progress && progress.tokens > 0 && (
+            <span>{t('task.tokens', { count: progress.tokens })}</span>
+          )}
+        </div>
+      )}
       <div
         ref={scrollRef}
         onScroll={handleScroll}
