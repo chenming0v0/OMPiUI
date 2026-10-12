@@ -59,13 +59,36 @@ function sendProblem(res: ServerResponse, status: number, error: unknown): boole
 async function readBody(req: IncomingMessage, signal?: AbortSignal, maxBytes = MAX_JSON_BODY_BYTES): Promise<JsonObject> {
   const chunks: Buffer[] = []
   let size = 0
-  for await (const chunk of req as AsyncIterable<Buffer>) {
-    throwIfAborted(signal)
-    size += chunk.length
-    if (size > maxBytes) throw Object.assign(new Error("request body too large"), { code: "FILE_TOO_LARGE", bodyTooLarge: true })
-    chunks.push(chunk)
-  }
-  const raw = Buffer.concat(chunks).toString("utf8")
+  throwIfAborted(signal)
+  // Do not throw out of IncomingMessage's async iterator: Node/Bun destroy
+  // the request differently, which can discard the 413 response itself.
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      req.removeListener("data", onData)
+      req.removeListener("end", onEnd)
+      req.removeListener("error", onError)
+      req.removeListener("aborted", onAbort)
+      signal?.removeEventListener("abort", onAbort)
+    }
+    const onError = (error: Error) => { cleanup(); reject(error) }
+    const onAbort = () => onError(Object.assign(new Error("request aborted"), { code: "REQUEST_ABORTED" }))
+    const onData = (chunk: Buffer) => {
+      size += chunk.length
+      if (size > maxBytes) {
+        req.pause()
+        onError(Object.assign(new Error("request body too large"), { code: "FILE_TOO_LARGE", bodyTooLarge: true }))
+        return
+      }
+      chunks.push(chunk)
+    }
+    const onEnd = () => { cleanup(); resolve() }
+    req.on("data", onData)
+    req.once("end", onEnd)
+    req.once("error", onError)
+    req.once("aborted", onAbort)
+    signal?.addEventListener("abort", onAbort, { once: true })
+  })
+  const raw = Buffer.concat(chunks, size).toString("utf8")
   let body: unknown
   try {
     body = JSON.parse(raw || "{}")
