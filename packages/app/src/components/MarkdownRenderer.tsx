@@ -88,20 +88,33 @@ function getCachedHtml(src: string, isReasoning: boolean): string {
 }
 
 /**
- * live 尾段是否可以只追加到最后一个文本节点。
- * 保守:后缀含 markdown 结构/强调/代码/链接等字符,或追加后的当前行行首可能是块标记
- * (列表 '-'/'1.'、标题 '#'、引用 '>'、分隔线 '='/'-' 等)时,回退全量 parse+morph。
- * nextSrc 为追加后的完整 live 源码。
+ * 行内语法字符。只有“边界 token”(nextSrc 末尾的非空白连续段,含后缀)含这些字符时,
+ * 追加才可能改变解析结果(实体 `&am`+`p;`、强调 `*`、链接 `[`、autolink `://`、`www.` 等),
+ * 因此只检查边界 token,而不是整段:长段落中更早出现的 `:`、`/` 不会导致每帧全量 parse。
+ */
+const LIVE_APPEND_UNSAFE_CHARS = /[`*_[\]()#>|!~\\<$:/@&;]/
+
+/**
+ * live 尾段是否可以只追加到最后一个文本节点(可证明为纯文本段落续写时才为 true,否则回退全量 parse+morph)。
+ * 条件(全部满足):
+ * 1) 后缀非空且为单行;
+ * 2) 边界 token(nextSrc 末尾非空白段,含后缀)不含行内语法字符,且不含 "www." ;
+ * 3) 当前行行首不是块级结构(缩进代码、列表、标题、引用、分隔线、表格、有序编号等)。
+ * 第 3 条只看行首,成本不随段落长度增长。
  */
 function canAppendLiveMarkdownSuffix(suffix: string, nextSrc: string): boolean {
-  if (!suffix) return false
-  // 排除会改 markdown 结构、math/code、HTML 实体(&amp; 流式中会显示为字面量),或可能形成 autolink 的字符
-  // (含 :/@ 时回退全量 parse,避免流式中链接一直是纯文本)
-  if (!/^[^\n`*_[\]()#>|!~\\<$:/@&]+$/.test(suffix)) return false
-  // 当前行行首为块级标记字符或数字(数字可能是有序列表)时,必须交给 parser 判定
+  if (!suffix || suffix.includes('\n')) return false
+  const prevSrc = nextSrc.slice(0, nextSrc.length - suffix.length)
+  // 前文以换行结束(新段落/新行开头)时,追加会把两行粘成一个词,必须全量 parse
+  if (!prevSrc || prevSrc.endsWith('\n')) return false
+  let start = nextSrc.length
+  while (start > 0 && !/\s/.test(nextSrc[start - 1]!)) start--
+  const boundary = nextSrc.slice(start)
+  if (LIVE_APPEND_UNSAFE_CHARS.test(boundary)) return false
+  if (/www\./i.test(boundary)) return false
   const lastLine = nextSrc.slice(nextSrc.lastIndexOf('\n') + 1)
-  if (/www\./i.test(lastLine)) return false
-  return !/^[ \t]*[-+*>|#=~`_\d]/.test(lastLine)
+  if (/^(?: {4}|\t)/.test(lastLine)) return false
+  return !/^[ \t]{0,3}(?:[-+*>|#=~`_]|\d)/.test(lastLine)
 }
 
 /** 最后一个 Text 是否安全承接追加（不能在 strong/em/a/code 等行内节点里） */

@@ -55,7 +55,7 @@ import { layoutStore } from '../../store/layoutStore'
 import { themeStore } from '../../store/themeStore'
 import { useSessionActiveEntry } from '../../store/activeSessionStore'
 import type { PiImageInput } from '../../omp/transport/index.js'
-import { attachmentToImage } from './attachmentToImage'
+import { attachmentToImage, imageInputToAttachment } from './attachmentToImage'
 import { piBranchStore, piSessionStateStore } from '../../omp/state/index.js'
 import { captureRedoCheckpoints, commitRedoPlan, redoPlanStore, type RedoPlan } from '../../omp/redoPlanStore'
 import { extensionUiStore, getEditorTextSource } from '../../omp/extensionUiStore'
@@ -413,21 +413,24 @@ export function PiChatPane({
   const handleQueueBackToInput = useCallback(
     async (kind: 'steering' | 'followUp', index: number) => {
       if (!sessionId) return
-      const entry = queueEntriesFor(queue, kind)[index]
-      // 编辑器草稿只能存文本:带图片的条目回填会丢图,保留队列并明确提示,不静默清队
-      if (!entry) return
-      if (entry.images?.length) {
-        notificationStore.push('error', i18n.t('chat:chatArea.queueImageEditUnsupported'), '', sessionId, currentDirectoryRef.current)
-        return
-      }
+      // 无该条目时不清空队列,避免无意义的重放
+      if (!queueEntriesFor(queue, kind)[index]) return
+      // clearQueue 失败则队列原样保留;成功后以返回的权威快照为准取条目
       const cleared = (await clearPiQueue(sessionId).catch(() => null)) as PiQueueSnapshot | null
       if (!cleared) return
-      // 回填输入框（仅文本，图片附件 API 暂未暴露）
-      setSessionEditorDraft(sessionId, entry.text)
       const restSteering = queueEntriesFor(cleared, 'steering')
       const restFollowUp = queueEntriesFor(cleared, 'followUp')
-      if (kind === 'steering') restSteering.splice(index, 1)
-      else restFollowUp.splice(index, 1)
+      const restOfKind = kind === 'steering' ? restSteering : restFollowUp
+      const entry = restOfKind[index]
+      if (!entry) {
+        await replayQueue(sessionId, restSteering, restFollowUp).catch(error => uiErrorHandler('rebuild message queue', error))
+        return
+      }
+      restOfKind.splice(index, 1)
+      // 文本与图片一并回填:图片转为输入框附件(同一 data-url 表示),发送时由 attachmentToImage 还原为原始图片块
+      setSessionEditorDraft(sessionId, entry.text, {
+        attachments: entry.images?.map(image => imageInputToAttachment(image)),
+      })
       await replayQueue(sessionId, restSteering, restFollowUp).catch(error => uiErrorHandler('rebuild message queue', error))
     },
     [queueEntriesFor, replayQueue, sessionId, queue],
@@ -1820,6 +1823,7 @@ export function PiChatPane({
             selectedVariant={thinkingLevel}
             onVariantChange={handleVariantChange}
             revertedText={editorDraft?.text ?? forkSeedText}
+            revertedAttachments={editorDraft?.attachments}
             canRedo={canRedo}
             revertSteps={revertSteps}
             onRedo={() => void handleRedoStep()}

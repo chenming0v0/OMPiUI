@@ -363,6 +363,8 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   const argCompletionMenuRef = useRef<HTMLDivElement>(null)
   const argCompletionListRef = useRef<HTMLDivElement>(null)
   const prevRevertedTextRef = useRef<string | undefined>(undefined)
+  // 纯图片条目回填时文本可能与上次相同(多为 ''),需用附件数组身份作为新回填的判据
+  const prevRevertedAttachmentsRef = useRef<Attachment[] | undefined>(undefined)
   const latestDraftRef = useRef<HistoryEntry>({ text: '', attachments: [] })
   const appendedRestoreRef = useRef<string | undefined>(undefined)
   const contentWrapRef = useRef<HTMLDivElement>(null)
@@ -420,7 +422,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   useEffect(() => {
     let frameId: number | null = null
 
-    if (revertedText !== undefined && revertedText !== prevRevertedTextRef.current) {
+    if (revertedText !== undefined && (revertedText !== prevRevertedTextRef.current || revertedAttachments !== prevRevertedAttachmentsRef.current)) {
       frameId = requestAnimationFrame(() => {
         if (restoreMode === 'append' && appendedRestoreRef.current === revertedText) return
         const current = latestDraftRef.current
@@ -454,6 +456,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
     }
 
     prevRevertedTextRef.current = revertedText
+    prevRevertedAttachmentsRef.current = revertedAttachments
     restoredTextByDraftRef.current.set(draftKey, revertedText)
 
     return () => {
