@@ -38,6 +38,14 @@ node packages/relay/dist/cli.js start      # 或 npm run relay -- start
 
 `init` 结束时会打印三行 `OMPIUI_TUNNEL_*`，下一步直接粘贴。
 
+也可以使用全屏中转管理器：
+
+```bash
+npm run tui:relay -- --config ./relay.config.json
+```
+
+没有配置时可在界面中创建；已有配置时可管理服务启停、在线隧道、路由和接入密钥。TUI 不接管另一个独立运行的中转进程，退出会停止自己启动的中转；长期运行仍使用上面的 `start` 配合 systemd 或容器。完整说明见 [终端管理界面](tui.md)。
+
 ### 1.1 TLS 方案 A：Caddy 反代（推荐，有域名）
 
 `host` 保持 `127.0.0.1`，让 Caddy 监听 443 并自动签发证书。`Caddyfile`：

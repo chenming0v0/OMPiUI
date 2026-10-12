@@ -16,11 +16,15 @@ const COMMAND_TIMEOUT_MS = Number(process.env.OMPIUI_TEST_COMMAND_TIMEOUT_MS) ||
 const commands = [
   ["run", "build", "-w", "@ompiui/protocol"],
   ["run", "build", "-w", "@ompiui/omp-worker"],
+  ["run", "build", "-w", "@ompiui/tui"],
+  ["run", "build", "-w", "@ompiui/relay"],
   ["run", "build", "-w", "@ompiui/server"],
   ["run", "test", "-w", "@ompiui/protocol"],
   ["run", "test", "-w", "@ompiui/omp-worker"],
   ["run", "test", "-w", "@ompiui/server"],
   ["run", "test", "-w", "@ompiui/admin"],
+  ["run", "test", "-w", "@ompiui/relay"],
+  ["run", "test", "-w", "@ompiui/tui"],
   ["run", "test:run", "-w", "@ompiui/app"],
 ]
 

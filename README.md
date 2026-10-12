@@ -35,6 +35,7 @@ OMPiUI 读取 OMP 的原生配置（`~/.omp/agent/models.yml`、`config.yml`）�
 - 公网入口配置 `OMPIUI_PUBLIC_BASE_URL`（反代/隧道后的对外地址），分享链接和 Origin 校验都以它为准。
 - 自建中转穿透：在任意有公网 IP 的机器上运行 `packages/relay`，服务主动拨号，NAT/防火墙后也能用，见 [docs/tunnel.md](docs/tunnel.md)。
 - 无桌面 VPS / Docker：管理平面（TUI + 独立管理 Web UI）负责后端进程、凭证与穿透配置，一键安装见 [deploy/README.md](deploy/README.md)。
+- 两套终端管理界面：`npm run tui:server` 管理后端，`npm run tui:relay -- --config <path>` 管理自建中转；使用和退出行为见 [docs/tui.md](docs/tui.md)。
 - 务必走 HTTPS：入口 token 首屏经 `?token=` 进入后立即从地址栏抹掉，之后只走 `Authorization` 头；拿到链接等于拿到这台机器。
 
 ## 常用环境变量
@@ -68,6 +69,7 @@ app (React/Vite) ⇄ HTTP+WS ⇄ server (Node) ⇄ stdio JSONL ⇄ omp --mode rp
 - `packages/protocol` — 前后端消息协议
 - `packages/relay` — 自建公网中转服务器
 - `packages/admin` — 无桌面部署的管理平面（TUI + 管理 Web UI）
+- `packages/tui` — 后端与中转共用的全屏终端界面、配置表单与命令面板
 
 走 `omp --mode rpc` 而不是进程内 SDK，是因为 RPC 面是 OMP 官方钦定的跨进程嵌入协议——server 保持纯 Node，不受 OMP 内部重构影响。
 

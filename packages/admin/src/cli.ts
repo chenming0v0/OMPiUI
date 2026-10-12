@@ -3,7 +3,6 @@ import { adminTokenPath, loadAdminConfig, loadOrCreateAdminToken } from "./confi
 import { controlOwnedBackend, type OwnerControlAction } from "./lifecycle.ts"
 import { ServiceManager } from "./manager.ts"
 import { AdminHttpServer } from "./server.ts"
-import { runTui } from "./tui.ts"
 
 interface CliOptions {
   command: string
@@ -92,7 +91,11 @@ async function main(): Promise<void> {
   if (options.command === "stop") { await controlFromOwner("stop"); return }
   if (options.command === "restart") { await controlFromOwner("restart"); return }
   if (options.command === "status") { console.log(JSON.stringify(await manager.status(), null, 2)); return }
-  if (options.command === "tui") { await runTui(manager); return }
+  if (options.command === "tui") {
+    const { runTui } = await import("./tui.ts")
+    await runTui(manager, options)
+    return
+  }
   if (options.command !== "web") throw new Error(`unknown command: ${options.command}`)
   const server = new AdminHttpServer(manager, options.token ?? loadOrCreateAdminToken())
   await server.listen(options.host ?? config.host, options.port ?? config.port)
