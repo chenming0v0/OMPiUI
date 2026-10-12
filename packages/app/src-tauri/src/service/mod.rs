@@ -548,8 +548,8 @@ pub async fn start_ompiui_service(
     state: State<'_, ServiceState>,
     env_vars: BTreeMap<String, String>,
 ) -> Result<StartServiceResult, String> {
+    let _operation = state.operations.lock().await;
     if background::enabled()? {
-        let _operation = state.operations.lock().await;
         let existing = state.started_by_us.load(Ordering::SeqCst)
             .then_some(state.child_pid.load(Ordering::SeqCst)).filter(|pid| *pid > 0);
         let (pid, url, token) = background::start(env_vars, existing).await?;
@@ -561,7 +561,7 @@ pub async fn start_ompiui_service(
         return Ok(StartServiceResult { started: true, started_by_us: true, url: Some(url), token: Some(token) });
     }
     let environment = env_vars.clone();
-    let result = launch_service(&app, &state, env_vars, false).await?;
+    let result = launch_service(&app, &state, env_vars).await?;
     if state.started_by_us.load(Ordering::SeqCst) {
         background::remember_backend(environment, state.child_pid.load(Ordering::SeqCst))?;
     }
@@ -572,18 +572,12 @@ async fn launch_service(
     app: &AppHandle,
     state: &ServiceState,
     env_vars: BTreeMap<String, String>,
-    restart: bool,
 ) -> Result<StartServiceResult, String> {
-    let _operation = state.operations.lock().await;
     state.startup.begin(Phase::Preparing);
     let result = async {
         let config = ServiceConfig::new(env_vars);
         let prepared = prepare_server_async(app).await?;
         let mut lifecycle = Some(state.lifecycle.lock().await);
-        if restart {
-            state.startup.phase(Phase::Stopping);
-            stop_ompiui_service_process(app, state).await;
-        }
         state.startup.phase(Phase::Checking);
         loop {
             match try_reuse_existing_service(app, state, &config).await? {
@@ -817,13 +811,7 @@ pub async fn restart_ompiui_service(
     env_vars: BTreeMap<String, String>,
 ) -> Result<StartServiceResult, String> {
     stop_ompiui_service(app.clone(), state.clone()).await?;
-    if background::enabled()? {
-        return start_ompiui_service(app, state, env_vars).await;
-    }
-    let environment = env_vars.clone();
-    let result = launch_service(&app, &state, env_vars, true).await?;
-    background::remember_backend(environment, state.child_pid.load(Ordering::SeqCst))?;
-    Ok(result)
+    start_ompiui_service(app, state, env_vars).await
 }
 
 #[tauri::command]
@@ -928,6 +916,7 @@ pub async fn set_ompiui_background_settings(
     crash_recovery: bool,
     env_vars: BTreeMap<String, String>,
 ) -> Result<background::BackgroundStatus, String> {
+    let _operation = state.operations.lock().await;
     let existing = state.started_by_us.load(Ordering::SeqCst)
         .then_some(state.child_pid.load(Ordering::SeqCst)).filter(|pid| *pid > 0);
     background::settings(login_start, crash_recovery, env_vars, existing).await
