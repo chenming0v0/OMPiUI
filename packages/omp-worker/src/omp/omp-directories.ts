@@ -4,12 +4,27 @@ import path from "node:path"
 import { OMP_SDK_VERSION } from "./constants.js"
 import { compareOmpVersions } from "./omp-version.js"
 
-/** 对齐官方 OMP 的 profile、PI_CODING_AGENT_DIR 和已迁移的 XDG 目录。 */
+/** 对齐官方 OMP:官方 CLI 只读取 PI_CODING_AGENT_DIR(不读 OMP_AGENT_DIR),因此它是权威变量。 */
 export function ompAgentDirectory(): string {
   const profile = process.env.OMP_PROFILE ?? process.env.PI_PROFILE
   if (profile && profile !== "default") return path.join(homedir(), ".omp", "profiles", profile, "agent")
-  const override = process.env.OMP_AGENT_DIR?.trim() || process.env.PI_CODING_AGENT_DIR?.trim()
+  const override = process.env.PI_CODING_AGENT_DIR?.trim() || process.env.OMP_AGENT_DIR?.trim()
   return override ? path.resolve(override.replace(/^~(?=[\\/]|$)/, homedir())) : path.join(homedir(), ".omp", "agent")
+}
+
+/**
+ * OMPiUI 拉起的 omp 子进程环境。OMP_AGENT_DIR 只是 OMPiUI 侧别名:仅当 PI_CODING_AGENT_DIR 未设置时
+ * 译成 PI_CODING_AGENT_DIR,保证子进程与 ompAgentDirectory() 算出同一目录。
+ */
+export function ompChildEnv(): Record<string, string> {
+  const alias = process.env.OMP_AGENT_DIR?.trim()
+  return alias && !process.env.PI_CODING_AGENT_DIR?.trim() ? { PI_CODING_AGENT_DIR: alias } : {}
+}
+
+/** 官方 CLI 的 PI_CODING_AGENT_SESSION_DIR:会话扁平落在该目录(无 cwd 子目录)。未设置返回 undefined。 */
+export function configuredSessionDirectory(): string | undefined {
+  const value = process.env.PI_CODING_AGENT_SESSION_DIR?.trim()
+  return value ? path.resolve(value.replace(/^~(?=[\\/]|$)/, homedir())) : undefined
 }
 
 export function nativeOmpSessionsRoot(): string {

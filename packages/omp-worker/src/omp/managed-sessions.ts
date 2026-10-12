@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { isJsonObject, type JsonObject } from "@ompiui/protocol"
-import { nativeOmpSessionsRoot } from "./omp-directories.js"
+import { configuredSessionDirectory, nativeOmpSessionsRoot } from "./omp-directories.js"
 
 /** 旧版 OMPiUI 会话目录；新会话使用 OMP 原生目录。 */
 export function managedSessionsRoot(): string {
@@ -11,9 +11,20 @@ export function managedSessionsRoot(): string {
   return path.join(dataDir ? path.resolve(dataDir) : path.join(homedir(), ".ompiui"), "sessions")
 }
 
-/** 与官方终端共享的 OMP 原生会话目录。 */
+/** 官方终端共享的会话根集合:配置的 PI_CODING_AGENT_SESSION_DIR(若有)与原生目录,去重。 */
+export function ompSessionRoots(): string[] {
+  const configured = configuredSessionDirectory()
+  return configured && configured !== nativeOmpSessionsRoot() ? [configured, nativeOmpSessionsRoot()] : [nativeOmpSessionsRoot()]
+}
+
+/** 新会话与 UI 默认写入的根:配置目录优先,否则原生目录。 */
 export function ompSessionsRoot(): string {
-  return nativeOmpSessionsRoot()
+  return configuredSessionDirectory() ?? nativeOmpSessionsRoot()
+}
+
+/** 文件所属的 OMP 会话根;不在任何已知根内时回退到主根(调用方另行校验)。 */
+export function ompSessionRootFor(file: string): string {
+  return ompSessionRoots().find(root => isWithinRoot(file, root)) ?? ompSessionsRoot()
 }
 
 export function managedSessionDirectory(cwd: string): string {
@@ -42,7 +53,7 @@ function isWithinRoot(file: string, root: string): boolean {
 
 /** 同时允许原生 OMP 与旧版 OMPiUI 目录，realpath 校验防止链接越界。 */
 export function isOmpSessionFile(file: string): boolean {
-  return isWithinRoot(file, ompSessionsRoot()) || isWithinRoot(file, managedSessionsRoot())
+  return ompSessionRoots().some(root => isWithinRoot(file, root)) || isWithinRoot(file, managedSessionsRoot())
 }
 
 export function assertOmpSessionFile(file: string): void {
