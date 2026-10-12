@@ -61,7 +61,7 @@ async function readBody(req: IncomingMessage, signal?: AbortSignal, maxBytes = M
   for await (const chunk of req as AsyncIterable<Buffer>) {
     throwIfAborted(signal)
     size += chunk.length
-    if (size > maxBytes) throw Object.assign(new Error("request body too large"), { code: "INVALID_REQUEST" })
+    if (size > maxBytes) throw Object.assign(new Error("request body too large"), { code: "FILE_TOO_LARGE", bodyTooLarge: true })
     chunks.push(chunk)
   }
   const raw = Buffer.concat(chunks).toString("utf8")
@@ -154,6 +154,28 @@ export function normalizePublicBaseUrl(input: string | null | undefined): string
     return parsed.origin + (parsed.pathname === "/" ? "" : parsed.pathname)
   } catch {
     return null
+  }
+}
+// 仅允许 Host 为私网/CGNAT(Tailscale)/.local 或已配置的分享主机;回环与任意公网名一律不信任
+const TRUSTED_FALLBACK_IPV4 = /^(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}|169\.254\.\d{1,3}\.\d{1,3})$/
+
+/**
+ * 配对兑换在未配置公网基址时的回退地址。协议只接受精确的 https,其它一律 http;
+ * Host 必须是可信的非回环主机,否则返回本机可达的 localBase,不把请求头原样下发。
+ */
+function pairFallbackBase(req: IncomingMessage, localBase: string, shareHost?: string): string {
+  const proto = req.headers["x-forwarded-proto"] === "https" ? "https" : "http"
+  const host = req.headers.host
+  if (typeof host !== "string") return localBase
+  try {
+    const parsed = new URL(`${proto}://${host}`)
+    if (parsed.username || parsed.password || parsed.pathname !== "/") return localBase
+    const name = parsed.hostname
+    const trusted = TRUSTED_FALLBACK_IPV4.test(name) || name.endsWith(".local") ||
+      (!!shareHost && shareHost !== "0.0.0.0" && shareHost !== "::" && name === shareHost && name !== "localhost" && name !== "127.0.0.1")
+    return trusted ? `${proto}://${parsed.host}` : localBase
+  } catch {
+    return localBase
   }
 }
 
@@ -302,10 +324,15 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
               : ["PAIR_INVALID", "invalid, expired or already used pairing code"]
           return sendProblem(res, pairErrorStatus(outcome.reason), Object.assign(new Error(message), { code }))
         }
-        // 兑换方后续就该用它已经打开的这个源（Host 是真实可达地址）
-        const host = req.headers.host ?? "127.0.0.1"
-        const proto = String(req.headers["x-forwarded-proto"] ?? "http")
-        const url = `${proto}://${host}`
+        // 生效公网入口优先(与 share 一致);未配置时才回退到请求头推导,且回退值须经协议白名单与可信主机校验
+        const address = server.address()
+        const boundPort = address && typeof address === "object" ? address.port : undefined
+        const localHost = options.share && options.share.host !== "0.0.0.0" && options.share.host !== "::"
+          ? options.share.host
+          : (firstLanAddress() ?? "127.0.0.1")
+        const localPort = options.share?.port ?? boundPort
+        const localBase = localPort ? `http://${localHost}:${localPort}` : `http://${localHost}`
+        const url = effectivePublicBaseUrl() ?? pairFallbackBase(req, localBase, options.share?.host)
         const redeemBody: PairRedeemResult = {
           url,
           token: authToken,
@@ -515,7 +542,11 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
       }
       return sendProblem(res, 404, Object.assign(new Error("not found"), { code: "NOT_FOUND" }))
     } catch (error) {
-      if (scope.signal.aborted || res.destroyed || res.writableEnded) return
+      if (res.destroyed || res.writableEnded) return
+      // 超限读取由服务端自己中断,会触发 req 'aborted' 并置位 signal;这不代表客户端断开,必须照常回 413 并关闭连接
+      const tooLarge = !!error && typeof error === "object" && "bodyTooLarge" in error && error.bodyTooLarge === true
+      if (scope.signal.aborted && !tooLarge) return
+      if (tooLarge) res.setHeader("connection", "close")
       const status = statusForError(error)
       return sendProblem(res, status, error)
     } finally {
