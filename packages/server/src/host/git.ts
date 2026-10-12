@@ -111,7 +111,9 @@ async function loadGitInfo(cwd: string, signal?: AbortSignal): Promise<GitInfoRe
   ])
   const symbolicBranch = successText(branchResult)
   const headOid = successText(oidResult)
-  const upstream = successText(upstreamResult)
+  const upstreamName = successText(upstreamResult)
+  // 仓库配置里的 ref 名可能以 '-' 开头(例如本地 ref --output=x),会被 git 当作选项;这种名字不参与比较
+  const upstream = upstreamName?.startsWith("-") ? undefined : upstreamName
   const detached = !symbolicBranch && Boolean(headOid)
   const unborn = Boolean(symbolicBranch) && !headOid
   const branch = symbolicBranch || (detached ? null : null)
@@ -122,11 +124,10 @@ async function loadGitInfo(cwd: string, signal?: AbortSignal): Promise<GitInfoRe
   let behind = 0
   if (upstream && headOid) {
     const counts = await runGit(cwd, ["rev-list", "--left-right", "--count", `${upstream}...HEAD`], { signal })
-    if (counts.code === 0) {
-      const [behindText, aheadText] = text(counts.stdout).trim().split(/\s+/)
-      behind = Number(behindText) || 0
-      ahead = Number(aheadText) || 0
-    }
+    assertGitSuccess(counts, "git rev-list")
+    const [behindText, aheadText] = text(counts.stdout).trim().split(/\s+/)
+    behind = Number(behindText) || 0
+    ahead = Number(aheadText) || 0
   }
   return {
     branch,
@@ -142,34 +143,40 @@ async function loadGitInfo(cwd: string, signal?: AbortSignal): Promise<GitInfoRe
   }
 }
 
-export function parsePorcelainStatus(stdout: string): GitStatusItem[] {
-  return stdout.includes("\0") ? parsePorcelainStatusZ(stdout) : parsePorcelainLines(stdout)
+export function parsePorcelainStatus(stdout: string, prefix = ""): GitStatusItem[] {
+  return stdout.includes("\0") ? parsePorcelainStatusZ(stdout, prefix) : parsePorcelainLines(stdout, prefix)
 }
 
-export function parsePorcelainStatusZ(stdout: string): GitStatusItem[] {
+export function parsePorcelainStatusZ(stdout: string, prefix = ""): GitStatusItem[] {
   const records = stdout.split("\0")
   const items: GitStatusItem[] = []
   for (let index = 0; index < records.length;) {
     const record = records[index++]
     if (!record || record.length < 3) continue
     const xy = record.slice(0, 2)
-    const path = normalizeGitPath(record.slice(3))
-    let oldPath: string | undefined
-    if (xy.includes("R") || xy.includes("C")) oldPath = normalizeGitPath(records[index++] ?? "")
-    if (path) items.push(statusItem(path, xy, oldPath))
+    const repoPath = normalizeGitPath(record.slice(3))
+    let oldRepoPath: string | undefined
+    if (xy.includes("R") || xy.includes("C")) oldRepoPath = normalizeGitPath(records[index++] ?? "")
+    const filePath = toWorkspaceRelative(repoPath, prefix)
+    if (!filePath) continue
+    const oldPath = oldRepoPath ? toWorkspaceRelative(oldRepoPath, prefix) : undefined
+    items.push(statusItem(filePath, xy, oldPath))
   }
   return items
 }
 
-function parsePorcelainLines(stdout: string): GitStatusItem[] {
+function parsePorcelainLines(stdout: string, prefix: string): GitStatusItem[] {
   return stdout.split(/\r?\n/).flatMap(line => {
     if (line.length < 4) return []
     const xy = line.slice(0, 2)
     const raw = line.slice(3)
     const split = (xy.includes("R") || xy.includes("C")) ? raw.lastIndexOf(" -> ") : -1
-    const oldPath = split >= 0 ? normalizeGitPath(raw.slice(0, split)) : undefined
-    const filePath = normalizeGitPath(split >= 0 ? raw.slice(split + 4) : raw)
-    return filePath ? [statusItem(filePath, xy, oldPath)] : []
+    const oldRepoPath = split >= 0 ? normalizeGitPath(raw.slice(0, split)) : undefined
+    const repoPath = normalizeGitPath(split >= 0 ? raw.slice(split + 4) : raw)
+    const filePath = repoPath ? toWorkspaceRelative(repoPath, prefix) : undefined
+    if (!filePath) return []
+    const oldPath = oldRepoPath ? toWorkspaceRelative(oldRepoPath, prefix) : undefined
+    return [statusItem(filePath, xy, oldPath)]
   })
 }
 
@@ -177,13 +184,14 @@ export function getGitStatus(cwd: string, signal?: AbortSignal): Promise<GitStat
   const load = async () => {
     const info = await getGitInfo(cwd, signal)
     if (!info.root) return { branch: null, ahead: 0, behind: 0, items: [] }
-    const result = await runGit(cwd, ["status", "--porcelain=v1", "--untracked-files=all", "-z"], { signal })
+    const prefix = await repoPrefix(cwd, signal)
+    const result = await runGit(cwd, ["status", "--porcelain=v1", "--untracked-files=all", "-z", "--", "."], { signal })
     assertGitSuccess(result, "git status")
     return {
       branch: info.branch,
       ahead: info.ahead,
       behind: info.behind,
-      items: parsePorcelainStatusZ(text(result.stdout)),
+      items: parsePorcelainStatusZ(text(result.stdout), prefix),
     }
   }
   return cachedResult(cwd, "status", signal, load)
@@ -194,7 +202,7 @@ export function getGitDiff(cwd: string, mode: GitDiffMode, signal?: AbortSignal)
     const info = await getGitInfo(cwd, signal)
     if (!info.root) return { mode, files: [] }
     const comparison = await comparisonForMode(cwd, mode, info, signal)
-    const common = ["--no-ext-diff", "--no-textconv", ...comparison.args, "--"]
+    const common = ["--no-ext-diff", "--no-textconv", "--relative", ...comparison.args, "--"]
     const [namesResult, numbersResult] = await Promise.all([
       runGit(cwd, ["diff", "--name-status", "-z", "-M", ...common], { signal }),
       runGit(cwd, ["diff", "--numstat", "-z", "-M", ...common], { signal }),
@@ -279,7 +287,7 @@ export async function getGitFileDiff(
     const comparison = await comparisonForMode(cwd, mode, info, signal)
     const paths = item.oldPath ? [item.oldPath, item.file] : [item.file]
     result = await runGit(cwd, [
-      "diff", "--patch", "--no-color", "--no-ext-diff", "--no-textconv", "-M", ...comparison.args, "--", ...paths,
+      "diff", "--patch", "--no-color", "--no-ext-diff", "--no-textconv", "--relative", "-M", ...comparison.args, "--", ...paths,
     ], { signal, maxOutputBytes: MAX_OUTPUT_BYTES })
     assertGitSuccess(result, "git file diff")
   }
@@ -418,6 +426,17 @@ function diffStatus(code: string): GitDiffItem["status"] {
 
 function normalizeGitPath(value: string): string {
   return value.replace(/\\/g, "/")
+}
+
+function toWorkspaceRelative(repoPath: string, prefix: string): string | undefined {
+  if (!prefix) return repoPath
+  return repoPath.startsWith(`${prefix}/`) ? repoPath.slice(prefix.length + 1) : undefined
+}
+
+// git 的 status/diff 路径相对仓库根;--show-prefix 给出工作区相对仓库根的前缀(根目录为空)
+async function repoPrefix(cwd: string, signal?: AbortSignal): Promise<string> {
+  const result = await runGit(cwd, ["rev-parse", "--show-prefix"], { signal })
+  return normalizeGitPath(successText(result) ?? "").replace(/\/+$/, "")
 }
 
 function safeGitEnv(): NodeJS.ProcessEnv {
