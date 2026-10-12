@@ -347,7 +347,8 @@ class OmpSubagentStore {
       transcript: [],
       startedAt: Date.now(),
     }
-    const next = fn({ ...base, transcript: [...base.transcript] })
+    const next = fn(base)
+    if (existing && next === existing) return
     this.runs.set(runId, next)
     if (existing && existing.parentToolCallId && existing.parentToolCallId !== next.parentToolCallId) {
       this.unlinkToolCall(existing)
@@ -404,11 +405,11 @@ class OmpSubagentStore {
     })
   }
 
-  applyEvent(sessionId: string, payload: JsonObject): void {
+  applyEvent(sessionId: string, payload: JsonObject, eventId?: string): void {
     const id = str(payload.id)
     const event = asRecord(payload.event)
     if (!id || !event) return
-    const fingerprint = JSON.stringify(event)
+    const fingerprint = eventId ?? JSON.stringify(event)
     const seen = this.eventFingerprints.get(id) ?? new Set<string>()
     if (seen.has(fingerprint)) return
     seen.add(fingerprint)
@@ -418,10 +419,16 @@ class OmpSubagentStore {
       if (typeof oldest === 'string') seen.delete(oldest)
     }
     this.eventFingerprints.set(id, seen)
-    this.upsert(sessionId, id, run => ({
-      ...run,
-      transcript: appendTranscriptEvent(event, run.transcript),
-    }))
+    this.upsert(sessionId, id, run => {
+      const transcript = appendTranscriptEvent(event, run.transcript)
+      if (transcript === run.transcript) return run
+      return {
+        ...run,
+        transcript,
+        historyLoaded: event.phase === 'message_end' && transcript.some(item => (item.textOffset ?? 0) > 0)
+          ? false : run.historyLoaded,
+      }
+    })
   }
 
   markSessionCrashed(sessionId: string): void {
@@ -446,15 +453,21 @@ class OmpSubagentStore {
    * 磁盘转录回填（get_subagent_messages）：导航离开/页面刷新期间错过的
    * subagent_event 帧从子会话文件补回来。只在当前转录为空时生效——
    * 非空说明实时帧已在推进（回填响应晚到的竞态），保持现状即可。
+   * 刷新后只收到增量尾部的预览，待终态再用原生历史补齐。
    */
   applyHistory(sessionId: string, runId: string, messages: unknown[]): void {
     // 回填只作用于已存在的 run（回填不负责凭空创建）
     if (!this.runs.has(runId)) return
-    this.upsert(sessionId, runId, run => ({
-      ...run,
-      historyLoaded: true,
-      transcript: run.transcript.length > 0 ? run.transcript : transcriptItemsFromMessages(messages),
-    }))
+    this.upsert(sessionId, runId, run => {
+      const incomplete = run.transcript.some(item => (item.textOffset ?? 0) > 0)
+      const terminal = isTerminalStatus(run.status)
+      return {
+        ...run,
+        historyLoaded: !incomplete || terminal,
+        transcript: run.transcript.length > 0 && !(terminal && incomplete && messages.length > 0)
+          ? run.transcript : transcriptItemsFromMessages(messages),
+      }
+    })
   }
 
   /** state.get 恢复快照（worker 从最近 lifecycle/progress 帧累计的注册表） */

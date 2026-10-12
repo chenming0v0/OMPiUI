@@ -51,7 +51,9 @@ const RECONNECT_DELAY_MS = 1_000
 const REFRESH_DEBOUNCE_MS = 150
 
 type PiEventPayload = {
-  event: AgentSessionEvent | { type: 'config_update'; model?: JsonObject; thinkingLevel?: string }
+  event: AgentSessionEvent
+    | { type: 'config_update'; model?: JsonObject; thinkingLevel?: string }
+    | { type: 'irc_message'; message: JsonObject }
   meta: EventCursor & { liveMessage?: { id: string; revision: number } }
 }
 
@@ -597,7 +599,7 @@ class PiEventStream {
         ompSubagentStore.applyProgress(sessionId, inner)
         break
       case 'event':
-        ompSubagentStore.applyEvent(sessionId, inner)
+        ompSubagentStore.applyEvent(sessionId, inner, typeof payload.eventId === 'string' ? payload.eventId : undefined)
         break
     }
   }
@@ -625,6 +627,7 @@ class PiEventStream {
         break
       case 'turn_end':
       case 'entry_appended':
+      case 'irc_message':
         this.scheduleBranchRefresh(sessionId)
         break
       case 'tool_execution_end':

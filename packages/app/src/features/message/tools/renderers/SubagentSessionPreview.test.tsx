@@ -54,6 +54,16 @@ describe('SubagentSessionPreview', () => {
     expect(screen.getByText('task.waitingForResponse')).not.toHaveClass('border')
   })
 
+  it('never hides live tool progress behind an unfinished history request', () => {
+    render(<SubagentSessionPreview loading run={{
+      ...run(), transcript: [], historyLoaded: false,
+      progress: { ...run().progress!, currentTool: 'read', lastIntent: 'Inspect source files' },
+    }} />)
+    expect(screen.queryByRole('status', { name: 'common:loading' })).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('read')
+    expect(screen.getByRole('status')).toHaveTextContent('Inspect source files')
+  })
+
   it('follows a large append when pinned but preserves position after the user scrolls up', () => {
     const { container, rerender } = render(<SubagentSessionPreview run={run()} />)
     const scroll = container.querySelector('.overflow-y-auto') as HTMLDivElement

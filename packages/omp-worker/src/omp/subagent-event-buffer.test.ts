@@ -28,7 +28,8 @@ test("ten concurrent subagents coalesce cumulative frames and preserve every bou
       const run = events.filter(event => (event.payload as JsonObject).id === `child-${index}`)
       assert.deepEqual(run.map(event => event.kind), ["lifecycle", "event", "progress", "event", "lifecycle"])
       assert.equal(((run[2]!.payload as JsonObject).progress as JsonObject).tokens, 9999)
-      assert.equal((((run[3]!.payload as JsonObject).event as JsonObject).message as JsonObject).content, `Final ${index}`)
+      assert.equal(((run[3]!.payload as JsonObject).event as JsonObject).textDelta, `Final ${index}`)
+      assert.equal(((run[3]!.payload as JsonObject).event as JsonObject).phase, "message_end")
     }
   } finally {
     buffer.dispose()

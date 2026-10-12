@@ -336,7 +336,7 @@ export class OmpRpcSession implements SessionRuntime {
         // 原生队列可能包含内部 goal/扩展消息，UI 只展示可编辑的用户队列。
         const queue = this.getUserQueueSnapshot()
         this.emitPiEvent(type === "queue_update" ? { ...frame, ...queue } : frame)
-        if (type === "agent_end" || type === "turn_end") this.scheduleEntrySync()
+        if (type === "agent_end" || type === "turn_end" || type === "irc_message") this.scheduleEntrySync()
         this.emitActivityIfChanged()
         if (type === "agent_end") this.scheduleUserQueueDrain()
         return

@@ -1,12 +1,15 @@
 import { isJsonObject, type JsonObject } from "@ompiui/protocol"
 import { EventSnapshotBuffer } from "./event-snapshot-buffer.js"
+import { SubagentMessageStream } from "./subagent-message-stream.js"
 
-/** 累计快照只保留最新一份；开始、结束和工具结果仍按原顺序立即发送。 */
+/** 累计快照只保留最新一份；消息边界和工具状态按原顺序立即发送。 */
 export class SubagentEventBuffer {
   private readonly buffer: EventSnapshotBuffer<JsonObject>
+  private readonly messages: SubagentMessageStream
 
   constructor(emit: (event: JsonObject) => void, intervalMs = 50) {
-    this.buffer = new EventSnapshotBuffer(emit, intervalMs)
+    this.messages = new SubagentMessageStream(emit)
+    this.buffer = new EventSnapshotBuffer(event => this.messages.push(event), intervalMs)
   }
 
   push(kind: string, raw: JsonObject): void {
@@ -25,5 +28,6 @@ export class SubagentEventBuffer {
 
   dispose(): void {
     this.buffer.flush()
+    this.messages.clear()
   }
 }

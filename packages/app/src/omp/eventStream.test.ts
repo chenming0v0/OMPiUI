@@ -179,6 +179,20 @@ describe('omp.subagent routing across streams', () => {
     expect(run).toBeDefined()
     expect(run?.sessionId).toBe('session-open')
   })
+
+  it('requests the canonical timeline immediately when an IRC message arrives', () => {
+    const refresh = vi.spyOn(piEventStream as unknown as { scheduleBranchRefresh(sessionId: string): void }, 'scheduleBranchRefresh')
+      .mockImplementation(() => undefined)
+    try {
+      handleEvent({
+        ...subagentEnvelope({ kind: 'session', id: 'irc-parent' }, {}),
+        channel: 'pi.event', payload: { event: { type: 'irc_message', message: { customType: 'irc:incoming' } } },
+      })
+      expect(refresh).toHaveBeenCalledWith('irc-parent')
+    } finally {
+      refresh.mockRestore()
+    }
+  })
 })
 
 describe('refresh replay hydration', () => {

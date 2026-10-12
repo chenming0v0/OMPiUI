@@ -4,7 +4,7 @@
  * - dismiss：从列表移除 + localStorage 持久化，后续帧不再恢复
  * - applySnapshot：worker state.get 注册表快照恢复（刷新/重连场景）
  */
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ompSubagentStore, selectHudRuns, transcriptItemsFromMessages } from './ompSubagentStore'
 
 const DISMISSED_KEY = 'ompiui-omp-subagent-hud-dismissed'
@@ -254,6 +254,18 @@ describe('ompSubagentStore disk backfill', () => {
     ompSubagentStore.applyHistory('session-h', 'hist-ghost', [{ role: 'user', content: 'x' }])
     expect(ompSubagentStore.getSnapshot().runs.some(item => item.id === 'hist-ghost')).toBe(false)
   })
+
+  it('backfills an incomplete reconnect preview only after the run settles', () => {
+    ompSubagentStore.applyLifecycle('s', { id: 'partial-history', status: 'started' })
+    const event = { type: 'message_patch', role: 'assistant', messageId: 'm',
+      phase: 'message_end', textOffset: 100, textDelta: 'tail', textTailOffset: 90, textTail: 'reply tail' }
+    ompSubagentStore.applyEvent('s', { id: 'partial-history', event }, 'patch-1')
+    ompSubagentStore.applyHistory('s', 'partial-history', [{ role: 'assistant', content: 'full disk reply' }])
+    expect(ompSubagentStore.runsForSession('s')[0]?.transcript[0]?.text).toBe('reply tail')
+    ompSubagentStore.applyLifecycle('s', { id: 'partial-history', status: 'completed' })
+    ompSubagentStore.applyHistory('s', 'partial-history', [{ role: 'assistant', content: 'full disk reply' }])
+    expect(ompSubagentStore.runsForSession('s')[0]?.transcript[0]?.text).toBe('full disk reply')
+  })
 })
 
 /**
@@ -296,6 +308,19 @@ describe('ompSubagentStore toolCall slices', () => {
     expect(after[0]?.transcript.map(item => item.text)).toEqual(['hi'])
   })
 
+  it('preserves transcript references across progress updates and ignores events with no rendered change', () => {
+    ompSubagentStore.applyLifecycle('s', { id: 'stable-transcript', parentToolCallId: 'call', status: 'started' })
+    ompSubagentStore.applyEvent('s', { id: 'stable-transcript', event: {
+      type: 'message_patch', messageId: 'm', role: 'assistant', phase: 'message_update', textOffset: 0, textDelta: 'Working',
+    } }, 'text')
+    const transcript = ompSubagentStore.runsForSession('s')[0]?.transcript
+    ompSubagentStore.applyProgress('s', { id: 'stable-transcript', progress: { tokens: 200 } })
+    expect(ompSubagentStore.runsForSession('s')[0]?.transcript).toBe(transcript)
+    const slice = ompSubagentStore.getRunsForToolCall('call', 's')
+    ompSubagentStore.applyEvent('s', { id: 'stable-transcript', event: { type: 'turn_start' } }, 'ignored')
+    expect(ompSubagentStore.getRunsForToolCall('call', 's')).toBe(slice)
+  })
+
   it('ignores duplicate event snapshots while keeping later updates', () => {
     ompSubagentStore.applyLifecycle('session-a', {
       id: 'dedupe-events', detached: false, status: 'started', agent: 'task', parentToolCallId: 'call-1', index: 0,
@@ -314,6 +339,28 @@ describe('ompSubagentStore toolCall slices', () => {
     const run = ompSubagentStore.getRunsForToolCall('call-1', 'session-a')[0]
     expect(run?.transcript).toHaveLength(1)
     expect(run?.transcript[0]?.text).toBe('final')
+  })
+
+  it('deduplicates chunk replay by event identity without serializing cumulative text', () => {
+    ompSubagentStore.applyLifecycle('s', { id: 'patch-replay', parentToolCallId: 'call', status: 'started' })
+    const stringify = vi.spyOn(JSON, 'stringify')
+    try {
+      const payload = { id: 'patch-replay', event: {
+        type: 'message_patch', messageId: 'm', role: 'assistant', phase: 'message_update',
+        textOffset: 0, textDelta: 'a'.repeat(100000),
+      } }
+      ompSubagentStore.applyEvent('s', payload, 'patch-1')
+      const first = ompSubagentStore.getRunsForToolCall('call', 's')
+      ompSubagentStore.applyEvent('s', payload, 'patch-1')
+      expect(ompSubagentStore.getRunsForToolCall('call', 's')).toBe(first)
+      ompSubagentStore.applyEvent('s', { id: 'patch-replay', event: {
+        ...payload.event, textOffset: 100000, textDelta: 'final', phase: 'message_end',
+      } }, 'patch-2')
+      expect(ompSubagentStore.runsForSession('s')[0]?.transcript[0]?.text).toBe(`${'a'.repeat(100000)}final`)
+      expect(stringify).not.toHaveBeenCalled()
+    } finally {
+      stringify.mockRestore()
+    }
   })
 
   it('invalidates slices on dismiss and clearSession', () => {

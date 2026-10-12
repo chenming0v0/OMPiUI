@@ -1,7 +1,7 @@
 import type { JsonObject } from '@ompiui/protocol'
 
 export type OmpSubagentTranscriptItem = {
-  kind: 'user' | 'assistant' | 'tool'
+  kind: 'user' | 'assistant' | 'tool' | 'agent'
   text: string
   messageId?: string
   toolCallId?: string
@@ -12,6 +12,9 @@ export type OmpSubagentTranscriptItem = {
   timestamp: number
   /** 消息快照仍在生成，后续 update/end 更新同一组而不是追加气泡。 */
   streaming?: boolean
+  /** 增量预览在刷新后可能从短尾部开始；终态再用原生历史补齐。 */
+  textOffset?: number
+  thinking?: string
 }
 
 const MAX_TRANSCRIPT_ITEMS = 200
@@ -95,11 +98,13 @@ function assistantSnapshot(
     type === 'message_start' ? items.map(item => (item.streaming ? { ...item, streaming: false } : item)) : items
   const streaming = type !== 'message_end'
   const text = textFromMessage(message)
+  const thinking = Array.isArray(message.content) ? message.content.map(record)
+    .filter(part => part?.type === 'thinking').map(part => string(part?.thinking) ?? '').join('\n').slice(-2048) : ''
   const textIndex = next.findIndex(item => item.kind === 'assistant' && item.messageId === messageId)
   if (textIndex >= 0) {
-    next = next.map((item, index) => (index === textIndex ? { ...item, text: text || item.text, streaming } : item))
+    next = next.map((item, index) => (index === textIndex ? { ...item, text: text || item.text, thinking, streaming } : item))
   } else if (text) {
-    next = append(next, { kind: 'assistant', text, messageId, streaming })
+    next = append(next, { kind: 'assistant', text, thinking, messageId, streaming })
   }
   if (Array.isArray(message.content)) {
     for (const raw of message.content) {
@@ -120,12 +125,45 @@ function assistantSnapshot(
     : next.map(item => (item.messageId === messageId && item.streaming ? { ...item, streaming: false } : item))
 }
 
+function messagePatch(event: JsonObject, items: OmpSubagentTranscriptItem[]): OmpSubagentTranscriptItem[] {
+  const messageId = string(event.messageId)
+  if (!messageId || (event.role !== 'assistant' && event.role !== 'user' && event.role !== 'agent')) return items
+  const index = items.findIndex(item => item.kind === event.role && item.messageId === messageId)
+  const previous = index >= 0 ? items[index] : undefined
+  const offset = typeof event.textOffset === 'number' ? event.textOffset : 0
+  const delta = string(event.textDelta) ?? ''
+  const baseOffset = offset === 0 ? 0 : previous?.textOffset ?? 0
+  const length = baseOffset + (previous?.text.length ?? 0)
+  const contiguous = offset === 0 || (offset >= baseOffset && offset <= length)
+  const text = contiguous ? (previous?.text ?? '').slice(0, offset - baseOffset) + delta
+    : string(event.textTail) ?? delta
+  const textOffset = contiguous ? baseOffset : typeof event.textTailOffset === 'number' ? event.textTailOffset : offset
+  const streaming = event.phase !== 'message_end'
+  const thinking = string(event.thinking) ?? previous?.thinking
+  const item = { kind: event.role, messageId, text, textOffset, thinking, streaming } as const
+  let next = index >= 0
+    ? items.map((part, position) => position === index ? { ...part, ...item } : part)
+    : text || thinking ? append(items, item) : items
+  if (Array.isArray(event.tools)) {
+    for (const raw of event.tools) {
+      const tool = record(raw)
+      if (!tool) continue
+      next = updateTool(next, {
+        messageId, toolCallId: string(tool.id), toolName: string(tool.name) ?? 'tool',
+        toolTitle: string(tool.title), toolStatus: 'pending', streaming,
+      })
+    }
+  }
+  return next
+}
+
 /** OMP 的累计消息快照和工具事件统一成消息组，工具开始与结束更新同一枚徽标。 */
 export function appendTranscriptEvent(
   event: JsonObject,
   items: OmpSubagentTranscriptItem[],
 ): OmpSubagentTranscriptItem[] {
   const type = string(event.type) ?? ''
+  if (type === 'message_patch') return messagePatch(event, items)
   const message = record(event.message)
   if ((type === 'message_start' || type === 'message_update' || type === 'message_end') && message) {
     if (message.role === 'assistant') return assistantSnapshot(items, message, type, string(event.messageId))
