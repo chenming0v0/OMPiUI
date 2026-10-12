@@ -105,3 +105,22 @@ test("headerless exit remnants are reported and preserved without blocking valid
   assert.equal(readFileSync(path.join(result.backup!, "exit-only.jsonl"), "utf8"), remnant)
   assert.equal(readFileSync(path.join(f.destination, "exit-only.jsonl"), "utf8"), remnant)
 })
+
+test("migration accepts a long-path header for the same Windows short-path workspace", { skip: process.platform !== "win32" }, t => {
+  fixture(t)
+  const short = `${path.parse(process.env.ProgramFiles || "C:\\Program Files").root}PROGRA~1`
+  if (!existsSync(short)) return t.skip("Windows 8.3 aliases are disabled on this volume")
+  const long = realpathSync.native(short)
+  if (short.toLowerCase() === long.toLowerCase()) return t.skip("No expanded Windows path available")
+  const source = managedSessionDirectory(short)
+  mkdirSync(source, { recursive: true })
+  const content = JSON.stringify({ type: "session", version: 3, id: "short-path", cwd: long })
+  const file = path.join(source, "short.jsonl")
+  writeFileSync(file, content)
+  const plan = planLegacySessionMigration(short, "18.10.0")
+  assert.equal(plan.sessions, 1)
+  assert.equal(existsSync(plan.destination), false)
+  const result = migrateLegacySessions(short, "18.10.0")
+  assert.equal(readFileSync(path.join(result.destination, "short.jsonl"), "utf8"), content)
+  assert.equal(readFileSync(file, "utf8"), content)
+})

@@ -132,6 +132,7 @@ const WORKSPACE_PACKAGE_NAMES = [
   '@ompiui/protocol',
   '@ompiui/relay',
   '@ompiui/admin',
+  '@ompiui/tui',
 ]
 
 function bumpPackageJson(relativePath, oldVersion) {
@@ -176,6 +177,7 @@ const packageJsonFiles = [
   'packages/protocol/package.json',
   'packages/relay/package.json',
   'packages/admin/package.json',
+  'packages/tui/package.json',
 ]
 for (const relative of packageJsonFiles) {
   bumpPackageJson(relative, oldVersion)

@@ -22,6 +22,7 @@ const USAGE = `Usage: omp-relay <command> [options]
 Commands:
   init   Generate relay.config.json with a fresh tunnel key
   start  Start the relay server
+  tui    Open the interactive relay manager
 
 Options:
   --config <path>  Config file (default: ./relay.config.json, env RELAY_CONFIG)
@@ -30,7 +31,7 @@ Options:
   -h, --help       Show this help`
 
 interface CliArgs {
-  command: "init" | "start" | "help"
+  command: "init" | "start" | "tui" | "help"
   config: string
   port?: number
   id?: string
@@ -47,7 +48,7 @@ function parseArgs(argv: string[]): CliArgs {
       command = "help"
       continue
     }
-    if (arg === "init" || arg === "start") {
+    if (arg === "init" || arg === "start" || arg === "tui") {
       command = arg
       continue
     }
@@ -82,6 +83,11 @@ async function main(): Promise<void> {
   }
   if (args.command === "help") {
     console.info(USAGE)
+    return
+  }
+  if (args.command === "tui") {
+    const { runRelayTui } = await import("./tui.ts")
+    await runRelayTui(resolve(args.config))
     return
   }
   if (args.command === "init") {

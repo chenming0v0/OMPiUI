@@ -1,5 +1,5 @@
-import { spawn, spawnSync } from "node:child_process"
-import { existsSync, promises as fs, readFileSync, readdirSync, statSync } from "node:fs"
+import { spawn } from "node:child_process"
+import { existsSync, promises as fs, readFileSync, readdirSync, realpathSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -16,6 +16,7 @@ import { assertOmpSessionFile, isManagedSessionFile, managedSessionsRoot, ompSes
 import { ompAgentDirectory } from "./omp-directories.js"
 import { sessionConfigFromBranch } from "./session-config.js"
 import { BranchPageReader } from "../runtime/branch-pages.js"
+import { resolveOmpConfigCommand, type OmpConfigCommand } from "./omp-config-command.js"
 
 /**
  * OmpCatalog —— CatalogProvider 的 OMP 实现。
@@ -297,7 +298,17 @@ function listSessionFiles(): string[] {
 }
 
 function pathKey(value: string): string {
-  const normalized = normalizeCwd(path.resolve(value))
+  const resolved = path.resolve(value)
+  let canonical = resolved
+  try {
+    // OMP 会将 Windows 短路径展开后写入会话头；按真实目录匹配同一项目。
+    canonical = process.platform === "win32"
+      ? realpathSync.native(resolved)
+      : realpathSync(resolved)
+  } catch {
+    /* 目录已删除或不可访问时保留原路径。 */
+  }
+  const normalized = normalizeCwd(canonical)
   return process.platform === "win32" ? normalized.toLowerCase() : normalized
 }
 
@@ -662,26 +673,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     return this.getSettings(cwd)
   }
 
-  private ompBinCache: string | undefined
-
-  /**
-   * 解析 omp 可执行文件的绝对路径。win32 上 spawn 不走 shell 时解析不到
-   * PATH 里的 .cmd/.exe，需要 where.exe 先定位；解析不到回落 "omp"（带 shell）。
-   */
-  private async resolveOmpBin(): Promise<string> {
-    if (this.ompBinCache !== undefined) return this.ompBinCache
-    try {
-      const probe = process.platform === "win32"
-        ? spawnSync("where.exe", ["omp"], { encoding: "utf8" })
-        : spawnSync("which", ["omp"], { encoding: "utf8" })
-      const lines = probe.status === 0 ? probe.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean) : []
-      // 优先 .exe（可脱离 shell 直接拉起），.cmd/.bat 兜底
-      this.ompBinCache = lines.find(line => /\.exe$/i.test(line)) ?? lines[0] ?? "omp"
-    } catch {
-      this.ompBinCache = "omp"
-    }
-    return this.ompBinCache
-  }
+  private configCommand: OmpConfigCommand | undefined
 
   /**
    * 跑 `omp config ...` 子命令读写全局配置（RPC 协议没有 config 面，
@@ -689,12 +681,13 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
    * 运行中的 `omp --mode rpc` 进程监听该文件并在 ~200ms 内重载）。
    */
   private async runOmpConfigCli(cliArgs: string[], timeoutMs = 60_000): Promise<string> {
-    const bin = await this.resolveOmpBin()
-    const useShell = process.platform === "win32" && bin === "omp"
+    const { command, args } = this.configCommand ??= resolveOmpConfigCommand()
     return await new Promise<string>((resolve, reject) => {
-      const child = spawn(bin, cliArgs, {
+      const child = spawn(command, [...args, ...cliArgs], {
         stdio: ["ignore", "pipe", "pipe"],
-        ...(useShell ? { shell: true } : {}),
+        env: { ...process.env, ...(process.env.OMP_AGENT_DIR ? { PI_CODING_AGENT_DIR: process.env.OMP_AGENT_DIR } : {}) },
+        shell: false,
+        windowsHide: true,
       })
       let stdout = ""
       let stderr = ""
@@ -710,7 +703,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
         clearTimeout(timer)
         reject(error)
       })
-      child.on("exit", code => {
+      child.on("close", code => {
         clearTimeout(timer)
         if (code === 0) resolve(stdout)
         else reject(new Error(`omp config exited with ${code}: ${stderr.trim().slice(0, 400) || "no stderr"}`))

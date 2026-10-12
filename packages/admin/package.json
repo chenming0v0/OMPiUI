@@ -1,6 +1,6 @@
 {
   "name": "@ompiui/admin",
-  "version": "0.6.18",
+  "version": "0.6.19",
   "private": true,
   "type": "module",
   "description": "OMPiUI headless server manager with TUI and independent web console",
@@ -15,6 +15,9 @@
   },
   "engines": {
     "node": ">=22.19.0"
+  },
+  "dependencies": {
+    "@ompiui/tui": "0.6.19"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",

@@ -27,7 +27,10 @@ export function nativeOmpSessionsRoot(): string {
 /** 对齐 OMP 18.x session-paths 的真实路径及 home/tmp/绝对路径编码；只计算，不迁移。 */
 export function nativeOmpSessionDirectory(cwd: string, ompVersion: string = OMP_SDK_VERSION): string {
   const canonical = (value: string) => existsSync(value) ? realpathSync(value) : path.resolve(value)
-  const resolved = canonical(cwd)
+  // OMP 18.4.0 起只展开工作目录的 Windows 短路径；home/tmp 仍按原拼写分类。
+  const resolved = process.platform === "win32" && compareOmpVersions(ompVersion, "18.4.0") >= 0 && existsSync(cwd)
+    ? realpathSync.native(cwd)
+    : canonical(cwd)
   const roots: Array<readonly [string, string]> = [[homedir(), "-"], [tmpdir(), "-tmp"]]
   // OMP 18.5.0 起先匹配 tmp（上游 47b1156），旧版本仍先匹配 home。
   if (compareOmpVersions(ompVersion, "18.5.0") >= 0) roots.reverse()
