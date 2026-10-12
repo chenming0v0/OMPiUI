@@ -32,28 +32,23 @@ function npmInvocation() {
   throw new Error("cannot locate npm-cli.js: run through `npm run package:desktop` or install npm next to node.exe")
 }
 
-const quoteForDisplay = arg => (/[\s"]/.test(arg) ? JSON.stringify(arg) : arg)
 
 // 全部调用目标都是真实可执行文件(node、npm-cli.js 经 node、bun、go),
 // 因此 shell:false:参数数组原样进入子进程 argv,空格与 CJK 路径不会被拆分。
 const run = (command, cmdArgs, options = {}) => {
-  console.info(`$ ${[command, ...cmdArgs].map(quoteForDisplay).join(" ")}`)
+  console.info(`$ ${[command, ...cmdArgs].map(arg => /[\s"]/.test(arg) ? JSON.stringify(arg) : arg).join(" ")}`)
   execFileSync(command, cmdArgs, { cwd: repoRoot, stdio: "inherit", shell: false, ...options })
-}
-const runNode = (cmdArgs, options) => run(process.execPath, cmdArgs, options)
-const runNpm = (cmdArgs, options) => {
-  const npm = npmInvocation()
-  run(npm.command, [...npm.prefix, ...cmdArgs], options)
 }
 
 if (!skipBuild) {
-  runNpm(["run", "build"])
+  const npm = npmInvocation()
+  run(npm.command, [...npm.prefix, "run", "build"])
 }
 mkdirSync(outDir, { recursive: true })
 const goOs = target.includes("windows") ? "windows" : target.includes("darwin") ? "darwin" : "linux"
 const goArch = target.includes("arm64") ? "arm64" : "amd64"
 const tailscaleOut = join(outDir, "tailscale")
-runNode(["scripts/build-tailscale.mjs", "--os", goOs, "--arch", goArch, "--out", tailscaleOut])
+run(process.execPath, ["scripts/build-tailscale.mjs", "--os", goOs, "--arch", goArch, "--out", tailscaleOut])
 rmSync(join(outDir, "runtime"), { recursive: true, force: true })
 rmSync(join(outDir, "piui-server.exe"), { force: true })
 rmSync(join(outDir, "piui-server"), { force: true })

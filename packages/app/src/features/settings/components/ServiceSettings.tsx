@@ -44,23 +44,29 @@ export function ServiceSettings() {
   const [background, setBackground] = useState<DesktopBackgroundStatus | null>(null)
   const [backgroundBusy, setBackgroundBusy] = useState(false)
   const [backgroundError, setBackgroundError] = useState('')
+  const backgroundRequest = useRef(0)
 
   const loadBackground = useCallback(async () => {
     if (!desktop) return
+    const request = ++backgroundRequest.current
     try {
-      setBackground(await getDesktopBackgroundStatus())
-      setBackgroundError('')
+      const next = await getDesktopBackgroundStatus()
+      if (request === backgroundRequest.current) setBackground(next)
     } catch (reason) {
-      setBackground(null)
-      setBackgroundError(redactBackgroundError(String(reason)))
+      if (request === backgroundRequest.current) {
+        setBackground(null)
+        setBackgroundError(redactBackgroundError(String(reason)))
+      }
     }
   }, [desktop])
 
   const updateBackground = useCallback(async (next: { loginStart: boolean; crashRecovery: boolean }) => {
+    const request = ++backgroundRequest.current
     setBackgroundBusy(true)
     setBackgroundError('')
     try {
-      setBackground(await setDesktopBackgroundSettings(next))
+      const saved = await setDesktopBackgroundSettings(next)
+      if (request === backgroundRequest.current) setBackground(saved)
     } catch (reason) {
       setBackgroundError(redactBackgroundError(String(reason)))
     } finally {
@@ -75,12 +81,13 @@ export function ServiceSettings() {
     try {
       const next = await refreshDesktopServiceStatus()
       setStatus(next)
+      await loadBackground()
     } catch (reason) {
       setError(String(reason))
     } finally {
       setBusy(null)
     }
-  }, [desktop])
+  }, [desktop, loadBackground])
 
   const start = useCallback(
     async (operation: 'start' | 'restart') => {
@@ -89,13 +96,14 @@ export function ServiceSettings() {
       try {
         const outcome = await (operation === 'start' ? startDesktopService() : restartDesktopService())
         setStatus(outcome.status)
+        await loadBackground()
       } catch (reason) {
         setError(String(reason))
       } finally {
         setBusy(null)
       }
     },
-    [],
+    [loadBackground],
   )
 
   const stop = useCallback(async () => {
@@ -103,12 +111,13 @@ export function ServiceSettings() {
     setError('')
     try {
       setStatus(await stopDesktopService())
+      await loadBackground()
     } catch (reason) {
       setError(String(reason))
     } finally {
       setBusy(null)
     }
-  }, [])
+  }, [loadBackground])
 
   useEffect(() => {
     const timer = window.setTimeout(() => void refresh(), 0)
@@ -116,9 +125,12 @@ export function ServiceSettings() {
   }, [refresh])
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void loadBackground(), 0)
-    return () => window.clearTimeout(timer)
-  }, [loadBackground])
+    if (!desktop || backgroundBusy || busy) return
+    const timer = window.setInterval(() => void loadBackground(), 5_000)
+    return () => window.clearInterval(timer)
+  }, [desktop, backgroundBusy, busy, loadBackground])
+
+  useEffect(() => () => { backgroundRequest.current += 1 }, [])
 
   // 环境变量变化后,把当前后台开关连同最新 envVars 写回 native,使后台启动与 GUI 使用同一份配置。
   // 首次拿到后台状态时只记录基线,不触发写入。

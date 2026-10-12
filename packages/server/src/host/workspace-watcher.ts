@@ -125,8 +125,8 @@ export class WorkspaceWatcher {
       const event = message as EventEnvelope
       const state = this.watched.get(workspacePathKey(event.stream.id))
       if (this.process !== child || !state) return
-      const revision = (event.payload as { revision: number }).revision
-      state.revision = revision
+      const payload = event.payload as { revision: number }
+      payload.revision = ++state.revision
       // Git 查询缓存属于 HTTP 进程，不能只使监听进程内的缓存失效。
       if (event.channel === "workspace.git") invalidateGitCache(event.stream.id)
       this.eventHub.publish(event.stream, event.channel, event.payload)
@@ -140,8 +140,9 @@ export class WorkspaceWatcher {
       this.process = undefined
       for (const state of this.watched.values()) {
         const root = state.root
+        state.revision += 1
         this.eventHub.publish({ kind: "workspace", id: root }, "workspace.files", {
-          workspacePath: root, revision: state.revision + 1, changes: [], rescan: true,
+          workspacePath: root, revision: state.revision, changes: [], rescan: true,
         })
       }
       // 保留 watched 记录,退避后重启子进程并对每个工作区重新下发 watch

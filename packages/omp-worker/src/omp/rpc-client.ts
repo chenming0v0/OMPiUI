@@ -65,10 +65,9 @@ export class OmpRpcError extends Error {
 const CHUNK_TIMEOUT_MS = 30_000
 /** exit 后等待 stdout 读到 EOF(close)的有界宽限;到期即按已缓冲内容收尾 */
 const EXIT_STDOUT_GRACE_MS = 1_000
-/** 与 omp 协议上限对齐:单片 256KiB 原始字节,整帧 64MiB,分片数上限由此推出 */
-const MAX_CHUNK_PAYLOAD_BYTES = 256 * 1024
 const MAX_REASSEMBLED_BYTES = 64 * 1024 * 1024
-const MAX_CHUNK_COUNT = Math.ceil(MAX_REASSEMBLED_BYTES / MAX_CHUNK_PAYLOAD_BYTES)
+const MAX_CHUNK_COUNT = MAX_REASSEMBLED_BYTES
+const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true })
 
 export class OmpRpcClient extends EventEmitter {
   readonly proc: ChildProcess
@@ -290,14 +289,14 @@ export class OmpRpcClient extends EventEmitter {
     const chunkId = typeof frame.chunkId === "string" ? frame.chunkId : ""
     const index = typeof frame.index === "number" ? frame.index : -1
     const count = typeof frame.count === "number" ? frame.count : 0
-    const byteLength = typeof frame.byteLength === "number" ? frame.byteLength : -1
+    const byteLength = typeof frame.byteLength === "number" ? frame.byteLength : 0
     const data = typeof frame.data === "string" ? frame.data : ""
-    if (!chunkId || !Number.isSafeInteger(count) || count < 2 || count > MAX_CHUNK_COUNT) return
+    if (!chunkId || !Number.isSafeInteger(count) || count < 1 || count > MAX_CHUNK_COUNT) return
     if (!Number.isSafeInteger(index) || index < 0 || index >= count || !data) return
-    if (!Number.isSafeInteger(byteLength) || byteLength < 1 || byteLength > MAX_REASSEMBLED_BYTES) return
+    if (!Number.isSafeInteger(byteLength) || byteLength < 0 || byteLength > MAX_REASSEMBLED_BYTES) return
     // 分片以原始字节保存:UTF-8 多字节字符可能跨分片边界,只能在整帧拼接后解码。
     const bytes = Buffer.from(data, "base64")
-    if (bytes.byteLength === 0 || bytes.byteLength > MAX_CHUNK_PAYLOAD_BYTES) {
+    if (bytes.byteLength === 0 || bytes.byteLength > MAX_REASSEMBLED_BYTES) {
       this.abortChunk(chunkId, "invalid rpc chunk payload")
       return
     }
@@ -318,14 +317,14 @@ export class OmpRpcClient extends EventEmitter {
     }
     entry.parts.set(index, bytes)
     entry.receivedBytes += bytes.byteLength
-    if (entry.receivedBytes > entry.byteLength) {
+    if (entry.receivedBytes > MAX_REASSEMBLED_BYTES || (entry.byteLength > 0 && entry.receivedBytes > entry.byteLength)) {
       this.abortChunk(chunkId, "rpc chunk exceeds declared length")
       return
     }
     if (entry.parts.size < entry.count) return
     clearTimeout(entry.timer)
     this.chunks.delete(chunkId)
-    if (entry.receivedBytes !== entry.byteLength) {
+    if (entry.byteLength > 0 && entry.receivedBytes !== entry.byteLength) {
       this.emitProtocolError(`rpc chunk ${chunkId} length mismatch: got ${entry.receivedBytes} expected ${entry.byteLength}`)
       return
     }
@@ -341,7 +340,7 @@ export class OmpRpcClient extends EventEmitter {
     // 整帧严格解码:非法 UTF-8 直接报错,而不是静默替换为 U+FFFD
     let json: string
     try {
-      json = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(ordered))
+      json = UTF8_DECODER.decode(Buffer.concat(ordered, entry.receivedBytes))
     } catch {
       this.emitProtocolError(`rpc chunk ${chunkId} is not valid UTF-8`)
       return

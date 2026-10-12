@@ -31,6 +31,7 @@
     "apply": "应用",
     "operationFailed": "文件操作失败",
     "saveFailed": "保存文件失败",
+    "serverChanged": "服务器已切换。请重新打开文件后再保存此草稿。", 
     "discardUnsaved": "放弃未保存的修改？",
     "reload": "重新加载",
     "overwrite": "覆盖"

@@ -154,7 +154,7 @@ export async function setDesktopBackgroundSettings(
 
 /** GUI 自动启动入口:尊重 native 持久化的用户停止与更新暂停,不把它们覆盖成运行中。 */
 export async function startDesktopServiceIfAllowed(): Promise<DesktopServiceStartOutcome | null> {
-  const background = await getDesktopBackgroundStatus().catch(() => null)
-  if (background && (background.lifecycle === 'stopped' || background.lifecycle === 'update-paused')) return null
+  const background = await getDesktopBackgroundStatus()
+  if (background.lifecycle === 'stopped' || background.lifecycle === 'update-paused') return null
   return startDesktopService()
 }

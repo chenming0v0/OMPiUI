@@ -21,8 +21,6 @@ import { diagnostics, diagnosticErrorCode } from "./diagnostics/recorder.ts"
 import { recordBrowserDiagnostic } from "./diagnostics/browser.ts"
 
 const MAX_BUFFERED_BYTES = 8 * 1024 * 1024
-// 单连接可同时保留(引用)的事件流上限,防止单个客户端用假 stream 占满事件流表
-const MAX_CONNECTION_STREAMS = 512
 // Client frames are tiny (ping/subscribe); cap to avoid buffering huge frames.
 const MAX_MESSAGE_BYTES = 1024 * 1024
 const MAX_TERMINAL_BUFFERED_BYTES = 8 * 1024 * 1024
@@ -127,12 +125,6 @@ export function closeEventWebSocket(
 
 function attachConnection(ws: WebSocket, eventHub: EventHub, onSubscribe?: (send: (message: EventServerMessage) => void) => void): void {
   const subscribed = new Set<string>()
-  const retained = new Map<string, EventStreamRef>()
-  // 连接持有的订阅引用:被订阅的流不参与淘汰,改订阅或断开时统一释放
-  const releaseAll = (): void => {
-    for (const stream of retained.values()) eventHub.release(stream)
-    retained.clear()
-  }
   const connectionId = randomUUID()
   const started = performance.now()
   let clientId: string | undefined
@@ -184,7 +176,6 @@ function attachConnection(ws: WebSocket, eventHub: EventHub, onSubscribe?: (send
       }
       if (!Array.isArray(message.streams) || message.streams.length > 256) return
 
-      releaseAll()
       subscribed.clear()
       const resync: Extract<EventServerMessage, { type: "resync_required" }>["streams"] = {}
       const seenStreams = new Set<string>()
@@ -193,12 +184,6 @@ function attachConnection(ws: WebSocket, eventHub: EventHub, onSubscribe?: (send
         const key = eventStreamKey(stream)
         if (seenStreams.has(key)) continue
         seenStreams.add(key)
-        if (!retained.has(key)) {
-          // 每连接保留的订阅流有上限:超出部分直接跳过(不订阅、不建流、不回放)
-          if (retained.size >= MAX_CONNECTION_STREAMS) continue
-          retained.set(key, stream)
-          eventHub.retain(stream)
-        }
         subscribed.add(key)
         const cursor = message.cursors?.[key as keyof typeof message.cursors]
         const replay = eventHub.replaySince(stream, cursor)
@@ -229,7 +214,6 @@ function attachConnection(ws: WebSocket, eventHub: EventHub, onSubscribe?: (send
     }
   })
   ws.on("close", (code: number) => {
-    releaseAll()
     unsubscribe()
     diagnostics.record("connection.closed", {
       connectionId, clientId, sessionIds, code, durationMs: Math.round(performance.now() - started),

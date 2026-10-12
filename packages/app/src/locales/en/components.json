@@ -31,6 +31,7 @@
     "apply": "Apply",
     "operationFailed": "File operation failed",
     "saveFailed": "Failed to save file",
+    "serverChanged": "The server changed. Reopen the file before saving this draft.",
     "discardUnsaved": "Discard unsaved changes?",
     "reload": "Reload",
     "overwrite": "Overwrite"
