@@ -44,6 +44,8 @@ test("backend settings persist without exposing the tunnel key", () => {
   const manager = new ServiceManager({ env })
   manager.updateBackendSettings({
     serverUrl: "http://127.0.0.1:9900/",
+    host: "",
+    port: "",
     tunnelUrl: "wss://relay.example.com",
     tunnelKey: "secret-key",
     tunnelId: "node-1",
