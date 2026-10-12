@@ -7,7 +7,7 @@ import { test, type TestContext } from "node:test"
 import { nativeOmpSessionDirectory } from "./omp-directories.js"
 
 function fixture(t: TestContext, tempInsideHome = false) {
-  const root = mkdtempSync(path.join(os.tmpdir(), "ompiui-directory-contract-"))
+  const root = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "ompiui-directory-contract-")))
   const home = path.join(root, "home")
   const temp = tempInsideHome ? path.join(home, "AppData", "Local", "Temp") : path.join(root, "temp")
   const agent = path.join(root, "agent")
