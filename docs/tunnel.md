@@ -17,10 +17,11 @@ OMPiUI server（你的电脑，packages/server 内嵌隧道客户端）
 
 ## 1. 部署中转（VPS）
 
-要求：Node.js ≥ 22.19。把仓库克隆到 VPS（或只拷贝 `packages/relay`），然后：
+要求：Node.js ≥ 22.19。把完整仓库克隆到 VPS，然后在仓库根目录运行（中转依赖共享终端组件，不能只拷贝 `packages/relay`）：
 
 ```bash
 npm install
+npm run build -w @ompiui/tui
 npm run build -w @ompiui/relay
 npm run relay:init -- --port 8443          # 生成 ./relay.config.json + 43 字符接入密钥
 node packages/relay/dist/cli.js start      # 或 npm run relay -- start
@@ -79,11 +80,14 @@ relay.example.com {
 ### 1.3 Docker
 
 ```dockerfile
-FROM node:22-alpine
+FROM node:22-bookworm-slim
 WORKDIR /app
-COPY packages/relay/package.json packages/relay/package.json
-COPY packages/relay/dist packages/relay/dist
-RUN cd packages/relay && npm install --omit=dev
+COPY package.json package-lock.json ./
+COPY packages ./packages
+RUN npm ci --ignore-scripts \
+    && npm run build -w @ompiui/tui \
+    && npm run build -w @ompiui/relay \
+    && npm prune --omit=dev --ignore-scripts
 CMD ["node", "packages/relay/dist/cli.js", "start", "--config", "/data/relay.config.json"]
 ```
 
