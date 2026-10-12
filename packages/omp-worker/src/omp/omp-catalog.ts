@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process"
-import { existsSync, promises as fs, readFileSync, readdirSync, statSync } from "node:fs"
+import { existsSync, promises as fs, readFileSync, readdirSync, realpathSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -297,7 +297,19 @@ function listSessionFiles(): string[] {
 }
 
 function pathKey(value: string): string {
-  const normalized = normalizeCwd(path.resolve(value))
+  const resolved = path.resolve(value)
+  let canonical = resolved
+  try {
+    // OMP 18.4+ expands Windows 8.3 paths before writing the session header.
+    // Compare the filesystem identity too, otherwise RUNNER~1 and runneradmin
+    // refer to the same project but fail the catalog's cwd filter.
+    canonical = process.platform === "win32"
+      ? realpathSync.native(resolved)
+      : realpathSync(resolved)
+  } catch {
+    /* Keep the resolved spelling for a missing or inaccessible cwd. */
+  }
+  const normalized = normalizeCwd(canonical)
   return process.platform === "win32" ? normalized.toLowerCase() : normalized
 }
 
