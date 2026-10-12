@@ -139,6 +139,21 @@ CMD ["node", "packages/relay/dist/cli.js", "start", "--config", "/data/relay.con
 
 中转断了会自动重连（500ms 起指数退避，上限 15 秒）；电脑离线期间中转对新请求返回 502 `TUNNEL_OFFLINE`，不会积压。
 
+### 2.1 直连反代部署(不经中转)
+
+如果 Caddy/nginx 直接代理到 OMPiUI 后端(没有中转、没有隧道令牌),后端看到的 TCP 对端永远是反代的地址,所有访客都会落入同一个配对限速桶。此时必须显式告诉后端哪些地址是可信反代:
+
+```bash
+OMPIUI_TRUSTED_PROXIES=127.0.0.1 node packages/server/dist/bundle-entry.js web
+# 或:--trusted-proxy 127.0.0.1
+```
+
+- `OMPIUI_TRUSTED_PROXIES` 是逗号分隔的 IP 或 CIDR 列表,默认为空(不信任任何 XFF)。只有 TCP 对端属于该列表时才采纳 `X-Forwarded-For`:从右向左剥离可信跳,取第一个非可信地址作为访客。
+- 头部中只要有任何一项不是合法 IP,整条头作废,回退为对端地址;非法的列表项会告警并跳过。
+- 不要设为 `0.0.0.0/0` 等宽网段。
+- 反代侧须覆写而不是追加:nginx 用 `proxy_set_header X-Forwarded-For $remote_addr;`;Caddy 的 `reverse_proxy` 追加到已有链末尾,后端只看可信链上最右的非可信地址,伪造前缀会被忽略。
+- 内置中转隧道的回环路径不受影响:它依赖每次启动的私有标记,与 `OMPIUI_TRUSTED_PROXIES` 无关。
+
 ## 3. 安全模型（读一遍再用）
 
 - **端到端业务鉴权不变**：所有 API/WS 仍然要求 OMPiUI 访问令牌（token），中转本身不发放权限。隧道开启不会降低服务端的鉴权要求。
@@ -146,6 +161,7 @@ CMD ["node", "packages/relay/dist/cli.js", "start", "--config", "/data/relay.con
 - **接入密钥 = 注册权**：拿到 key 的人可以把自己的机器冒充为这条隧道（中转会拒绝重复 ID，先到先得）。密钥只存 SHA-256 摘要，泄露时在 `relay.config.json` 换掉 key 并重启 omp-relay 即可吊销。
 - **拿到公网地址 + token = 拿到这台电脑**：可以读写工作区、开终端、运行命令、驱动 agent。用强 token，不用时在设置里关掉隧道（服务重启即可）。
 - 中转的并发连接（64/隧道）、帧大小（64KiB）、消息速率（100/s）有内置限额，异常流量会断开重连而不是拖垮电脑端。
+- 配对限速(`POST /api/v1/host/pair/redeem`)按客户端 IP 计数:同一来源连续 5 次失败后只锁它自己;其它来源(包括持有有效 8 位码的访客)不受影响。直连伪造 `X-Forwarded-For` 无效,因为默认不信任任何 XFF。
 
 ## 4. 工作原理（给好奇的人）
 

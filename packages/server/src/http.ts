@@ -28,6 +28,7 @@ import { listLanInterfaces } from "./host/network.ts"
 import type { TailscaleManager } from "./host/tailscale.ts"
 import { createStaticServer } from "./static.ts"
 import { FaultReportService } from "./diagnostics/fault-reports.ts"
+import type { TrustedProxies } from "@ompiui/relay"
 
 const CORS_HEADERS: Record<string, string> = {
   "access-control-allow-methods": "GET,POST,OPTIONS",
@@ -215,6 +216,8 @@ export interface CreateAppServerOptions {
   pairing?: PairingStore
   /** Per-start secret shared only with the embedded TunnelClient, not API auth. */
   tunnelForwardingToken?: string
+  /** 可信反向代理(由 start 从 OMPIUI_TRUSTED_PROXIES 解析)。缺省为空:忽略所有 XFF。 */
+  trustedProxies?: TrustedProxies
   /** 内置 Tailscale 客户端管理；缺省时 tailscale 接口不可用。 */
   tailscale?: TailscaleManager
   /** Web client build directory; when it exists the server hosts the SPA. */
@@ -308,7 +311,7 @@ export function createAppServer(options: CreateAppServerOptions = {}): AppServer
           return sendProblem(res, 501, Object.assign(new Error("sharing is unavailable"), { code: "CAPABILITY_DISABLED" }))
         }
         const body = await readBody(req, scope.signal, MAX_JSON_BODY_BYTES)
-        const clientKey = pairingClientKey(req, options.tunnelForwardingToken)
+        const clientKey = pairingClientKey(req, options.tunnelForwardingToken, options.trustedProxies)
         const outcome = options.pairing.redeem(
           {
             pair: typeof body.pair === "string" ? body.pair : undefined,

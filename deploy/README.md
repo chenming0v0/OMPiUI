@@ -58,6 +58,14 @@ docker exec ompiui node packages/admin/dist/cli.js status
 
 管理令牌：`docker exec ompiui cat /data/ompiui/admin-token`（compose 默认把 9898 只绑到宿主机回环，走 SSH 隧道访问）。
 
+## 直连反代(无中转)
+
+若用 Caddy/nginx 直接把域名反代到后端(不使用中转和隧道令牌),必须设置 `OMPIUI_TRUSTED_PROXIES`(或 `--trusted-proxy`)为反代的 IP/CIDR,例如 `127.0.0.1`。默认为空:后端忽略所有 `X-Forwarded-For`,所有访客在配对限速里共用反代地址这一个桶。
+
+- nginx:`proxy_set_header X-Forwarded-For $remote_addr;`(覆写,不要用 `$proxy_add_x_forwarded_for`)。
+- Caddy:`reverse_proxy` 默认追加到已有链末尾,后端只取可信链上最右的非可信地址,伪造前缀无效。
+- 不要把 `OMPIUI_TRUSTED_PROXIES` 设为 `0.0.0.0/0` 等宽网段。
+
 ## 凭证模型
 
 | 凭证 | 用途 | 位置 |
