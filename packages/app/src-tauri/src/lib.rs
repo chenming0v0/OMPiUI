@@ -17,6 +17,7 @@ use dir_state::OpenDirectoryState;
 use service::{
     confirm_close_app, get_ompiui_service_status, restart_ompiui_service, start_ompiui_service,
     stop_ompiui_service, get_ompiui_service_diagnostics, ServiceState,
+    get_ompiui_background_status, set_ompiui_background_settings,
 };
 
 // ============================================
@@ -275,6 +276,10 @@ fn fullscreen_state() -> &'static std::sync::Mutex<std::collections::HashMap<Str
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(desktop)]
+    if let Some(code) = service::background::handle_cli() {
+        std::process::exit(code);
+    }
     let builder = tauri::Builder::default()
         .manage(bridge::BridgeState::default())
         .plugin(tauri_plugin_dialog::init())
@@ -396,6 +401,8 @@ pub fn run() {
             restart_ompiui_service,
             get_ompiui_service_status,
             get_ompiui_service_diagnostics,
+            get_ompiui_background_status,
+            set_ompiui_background_settings,
             confirm_close_app,
             desktop_window_ready,
             open_new_window,
