@@ -27,6 +27,20 @@ export function configuredSessionDirectory(): string | undefined {
   return value ? path.resolve(value.replace(/^~(?=[\\/]|$)/, homedir())) : undefined
 }
 
+/**
+ * 显式登记的额外官方会话目录(OMPIUI_OMP_SESSION_DIRS,按系统路径分隔符分隔),用于官方 CLI `--session-dir`
+ * 等自定义目录。只读取这些登记目录,不扫描全盘;发现、打开、路径校验共用同一集合。
+ */
+export function registeredSessionDirectories(): string[] {
+  const raw = process.env.OMPIUI_OMP_SESSION_DIRS?.trim()
+  if (!raw) return []
+  return raw
+    .split(path.delimiter)
+    .map(item => item.trim())
+    .filter(Boolean)
+    .map(item => path.resolve(item.replace(/^~(?=[\\/]|$)/, homedir())))
+}
+
 export function nativeOmpSessionsRoot(): string {
   const agent = ompAgentDirectory()
   const defaultAgent = path.join(homedir(), ".omp", "agent")

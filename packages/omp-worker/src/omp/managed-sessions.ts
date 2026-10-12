@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { isJsonObject, type JsonObject } from "@ompiui/protocol"
-import { configuredSessionDirectory, nativeOmpSessionsRoot } from "./omp-directories.js"
+import { configuredSessionDirectory, nativeOmpSessionsRoot, registeredSessionDirectories } from "./omp-directories.js"
 
 /** 旧版 OMPiUI 会话目录；新会话使用 OMP 原生目录。 */
 export function managedSessionsRoot(): string {
@@ -11,10 +11,11 @@ export function managedSessionsRoot(): string {
   return path.join(dataDir ? path.resolve(dataDir) : path.join(homedir(), ".ompiui"), "sessions")
 }
 
-/** 官方终端共享的会话根集合:配置的 PI_CODING_AGENT_SESSION_DIR(若有)与原生目录,去重。 */
+/** 官方终端共享的会话根集合:配置的 PI_CODING_AGENT_SESSION_DIR、OMPIUI_OMP_SESSION_DIRS 登记目录与原生目录,去重。 */
 export function ompSessionRoots(): string[] {
   const configured = configuredSessionDirectory()
-  return configured && configured !== nativeOmpSessionsRoot() ? [configured, nativeOmpSessionsRoot()] : [nativeOmpSessionsRoot()]
+  const roots = [configured, ...registeredSessionDirectories(), nativeOmpSessionsRoot()].filter((root): root is string => Boolean(root))
+  return [...new Set(roots.map(root => path.resolve(root)))]
 }
 
 /** 新会话与 UI 默认写入的根:配置目录优先,否则原生目录。 */
@@ -75,14 +76,6 @@ export function backupOmpSession(file: string): void {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
   }
-}
-
-export function readOnlySessionError(): Error {
-  return Object.assign(new Error("This is an external OMP session. Viewing it is read-only; continue in a separate WebUI session to send messages. The original TUI session is never opened by another writer."), { code: "SESSION_READ_ONLY" })
-}
-
-export function assertManagedSessionFile(file: string): void {
-  if (!isManagedSessionFile(file)) throw readOnlySessionError()
 }
 
 /** Copy first; assign a new identity before any RPC process can open the result. */

@@ -22,7 +22,6 @@ import {
   abortPiOperation,
   abortPiCompaction,
   compactPiSession,
-  copyPiSession,
   cyclePiModel,
   cyclePiThinkingLevel,
   executePiBash,
@@ -106,46 +105,6 @@ function resolveExportOutputPath(requested: string, baseDirectory: string): stri
 
 /** fork 第一条消息的纯前端特判：不开 SDK 会话，直接落在首页预填 */
 const HOME_FORK_KEY = 'home'
-
-function ReadOnlySessionNotice({
-  copying,
-  onCopy,
-  onNewSession,
-}: {
-  copying: boolean
-  onCopy: () => void
-  onNewSession: () => void
-}) {
-  const { t } = useTranslation(['chat', 'common'])
-  return (
-    <div role="status" className="glass rounded-2xl border px-3 py-2.5">
-      <p className="text-[length:var(--fs-sm)] leading-5 text-text-300">
-        {t('inputBox.readOnlySession', {
-          defaultValue:
-            'This session is read-only. The native TUI keeps ownership of its history; continue in a new session to make changes.',
-        })}
-      </p>
-      <div className="mt-2 flex flex-wrap gap-2">
-        <button
-          type="button"
-          disabled={copying}
-          onClick={onCopy}
-          className="h-7 rounded-lg border border-border-200 px-2.5 text-[length:var(--fs-sm)] text-text-200 transition-colors hover:bg-bg-200 disabled:opacity-50"
-        >
-          {copying ? t('common:loading') : t('inputBox.copyTuiAndContinue', { defaultValue: 'Copy TUI session and continue' })}
-        </button>
-        <button
-          type="button"
-          disabled={copying}
-          onClick={onNewSession}
-          className="h-7 rounded-lg border border-border-200 px-2.5 text-[length:var(--fs-sm)] text-accent-main-100 transition-colors hover:bg-accent-main-100/10 disabled:opacity-50"
-        >
-          {t('inputBox.startNewSession', { defaultValue: 'Start new session' })}
-        </button>
-      </div>
-    </div>
-  )
-}
 
 // ============================================
 // Compact viewport shell for split panes (from ocui ChatPane).
@@ -320,16 +279,13 @@ export function PiChatPane({
   const branch = usePiBranchData(sessionId)
   const branchError = usePiBranchError(sessionId)
   const state = usePiSessionRuntimeState(sessionId)
-  const readOnly = state?.readOnly === true
-  const [isCopyingSession, setIsCopyingSession] = useState(false)
-  const copyingSessionRef = useRef(false)
   // 压缩中：优先用活动状态（worker 推送、已验证可靠），state.isCompacting 兜底
   const sessionEntry = useSessionActiveEntry(sessionId ?? '')
-  const compacting = !readOnly && (sessionEntry?.status.type === 'compacting' || state?.isCompacting === true)
+  const compacting = sessionEntry?.status.type === 'compacting' || state?.isCompacting === true
   // 兜底：session 在活跃列表中（GET /session/status 全量快照驱动，可靠）→
   // 即使 piSessionStateStore 因无事件流而 stale（如 bash 等待期），
   // 输入框发送按钮也保持「停止」状态，避免按钮变暗。
-  const sessionActive = !readOnly && Boolean(sessionEntry)
+  const sessionActive = Boolean(sessionEntry)
   const sessionUnavailableRef = useRef(false)
   const [isRetryingSession, setIsRetryingSession] = useState(false)
   // 本 pane 当前会话的实际工作区（来自会话列表或全局当前目录），用于 @ 补全根目录。
@@ -419,7 +375,7 @@ export function PiChatPane({
     return () => configureSessionEditorDraftSync(undefined)
   }, [])
 
-  const isStreaming = !readOnly && (Boolean(state?.isStreaming) || (sessionActive && !compacting))
+  const isStreaming = Boolean(state?.isStreaming) || (sessionActive && !compacting)
   // 队列既带用于展示的纯文本数组（兼容旧服务端），也带保留附件的 entries。
   // 重建队列（撤销/改投递模式/删除）必须按 entries 重放，否则图片附件丢失。
   const queue = state?.queue as PiQueueSnapshot | undefined
@@ -534,7 +490,7 @@ export function PiChatPane({
   const pendingStopsRef = useRef(new Map<string, Promise<boolean>>())
   const stoppedSessionsRef = useRef(new Set<string>())
   const handleAbort = useCallback(async () => {
-    if (!sessionId || readOnly) return
+    if (!sessionId) return
     const pending = pendingStopsRef.current.get(sessionId)
     if (pending) {
       await pending
@@ -556,7 +512,7 @@ export function PiChatPane({
     })()
     pendingStopsRef.current.set(sid, stopping)
     await stopping
-  }, [sessionId, readOnly, compacting])
+  }, [sessionId, compacting])
 
   // ── Pane controller 注册（全局快捷键/命令入口）──
   // paneControllerStore 由 OpenCodeUI 迁移保留但从未注册：App 的
@@ -1017,20 +973,19 @@ export function PiChatPane({
       }
       localComposerTextRef.current = text
       // 会话已不可用时别再往服务端同步编辑器状态（每敲一个字一个 404）
-      if (!sessionId || readOnly || sessionUnavailableRef.current) return
+      if (!sessionId || sessionUnavailableRef.current) return
       if (editorSyncTimerRef.current !== null) window.clearTimeout(editorSyncTimerRef.current)
       editorSyncTimerRef.current = window.setTimeout(() => {
         editorSyncTimerRef.current = null
         void setPiExtensionEditorState(sessionId, text).catch(() => undefined)
       }, 500)
     },
-    [sessionId, readOnly],
+    [sessionId],
   )
   const handleSend = useCallback(
     async (text: string, attachments: Attachment[], options?: { delivery?: 'steer' | 'followUp' }) => {
       let targetSessionId = sessionId
       try {
-        if (readOnly) throw new Error('This session is read-only. Continue in a new session to send messages.')
         const pendingStop = sessionId ? pendingStopsRef.current.get(sessionId) : undefined
         if (pendingStop && !(await pendingStop)) return false
         const images = attachments
@@ -1094,7 +1049,7 @@ export function PiChatPane({
         return false
       }
     },
-    [sessionId, readOnly, isStreaming, models, scheduleDelayedRefresh],
+    [sessionId, isStreaming, models, scheduleDelayedRefresh],
   )
 
   const handleSetGoal = useCallback(
@@ -1144,41 +1099,6 @@ export function PiChatPane({
     },
     [models, sessionId],
   )
-
-  const handleCopySession = useCallback(async () => {
-    if (!sessionId || copyingSessionRef.current) return
-    copyingSessionRef.current = true
-    setIsCopyingSession(true)
-    try {
-      const opened = await copyPiSession(sessionId)
-      if (!opened.sessionId) throw new Error('No session was created')
-      const directory = opened.cwd ?? inputRootPath
-      const source = allSessions.find(session => session.id === sessionId)
-      trackPiSession(opened.sessionId, directory)
-      registerSessionRef.current({
-        id: opened.sessionId,
-        directory,
-        title: source?.title || i18n.t('chat:sidebar.newChat'),
-        firstMessage: source?.firstMessage,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        path: opened.sessionFile ?? undefined,
-      })
-      // InputBox stays mounted across navigation, retaining text and attachments.
-      const draft = inputBoxRef.current?.getEditorText() ?? localComposerTextRef.current ?? ''
-      localComposerTextRef.current = draft
-      lastEditorTextRef.current = draft
-      extensionUiStore.editorCommand(opened.sessionId, { kind: 'set', text: draft })
-      void setPiExtensionEditorState(opened.sessionId, draft).catch(() => undefined)
-      onEnterSessionRef.current?.(opened.sessionId, directory)
-      window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
-    } catch (error) {
-      uiErrorHandler('copy tui session', error)
-    } finally {
-      copyingSessionRef.current = false
-      setIsCopyingSession(false)
-    }
-   }, [sessionId, inputRootPath, allSessions])
 
   // Slash command dispatch, mirroring pi TUI: frontend built-ins are handled
   // locally; everything else goes through the native prompt path, where the
@@ -1870,23 +1790,9 @@ export function PiChatPane({
             onQueueSendNow={handleQueueSendNow}
             onQueueClear={handleQueueClear}
             onQueueOpenInSideChat={handleQueueOpenInSideChat}
-            composerNotice={
-              readOnly ? (
-                <ReadOnlySessionNotice
-                  copying={isCopyingSession}
-                  onCopy={() => {
-                    void handleCopySession()
-                  }}
-                  onNewSession={() => {
-                    onNewChatRef.current?.()
-                  }}
-                />
-              ) : null
-            }
             rootPath={inputRootPath}
             onSend={handleSend}
-            submissionDisabled={readOnly || isCopyingSession}
-            onCommand={readOnly ? undefined : handleCommand}
+            onCommand={handleCommand}
             onCycleModel={direction => sessionId && void cyclePiModel(sessionId, direction).then(() => refreshPiSessionState(sessionId)).catch(() => undefined)}
             onCycleThinkingLevel={() => sessionId && void cyclePiThinkingLevel(sessionId).then(() => refreshPiSessionState(sessionId)).catch(() => undefined)}
             onOpenModelSelector={() => modelSelectorRef.current?.openMenu()}

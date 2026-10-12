@@ -17,6 +17,7 @@ export const SERVICE_ENV_EXAMPLES: EnvVar[] = [
   { key: 'OMPIUI_SDK_PATH', value: '/path/to/pi-coding-agent' },
   { key: 'PI_CODING_AGENT_DIR', value: '~/.omp/agent' },
   { key: 'PI_CODING_AGENT_SESSION_DIR', value: '~/.omp/custom-sessions' },
+  { key: 'OMPIUI_OMP_SESSION_DIRS', value: '~/omp-share/sessions' },
   { key: 'HTTPS_PROXY', value: 'http://127.0.0.1:7890' },
   { key: 'OMPIUI_HOST', value: '0.0.0.0' },
   { key: 'OMPIUI_PORT', value: '8787' },
