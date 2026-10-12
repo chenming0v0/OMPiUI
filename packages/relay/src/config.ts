@@ -8,6 +8,7 @@
 
 import { createHash, randomBytes } from "node:crypto"
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { parseTrustedProxyEntry } from "./trusted-proxy.ts"
 
 export interface RelayTunnelConfig {
   /** 隧道 ID：桌面端 x-ompiui-tunnel 头携带；也用作子域路由的标签。 */
@@ -29,6 +30,11 @@ export interface RelayConfig {
   domain?: string
   /** 可选：内置 TLS；否则建议 Caddy/nginx 在前面终结 TLS。 */
   tls?: { cert: string; key: string }
+  /**
+   * 可选:可信反代的 IP/CIDR 列表(如 127.0.0.1、10.0.0.0/8)。只有 TCP 对端
+   * 属于此列表时才采纳 X-Forwarded-For 解析访客 IP;默认空列表,永不信任 XFF。
+   */
+  trustedProxies?: string[]
   tunnels: RelayTunnelConfig[]
 }
 
@@ -119,7 +125,11 @@ export function validateRelayConfig(raw: unknown, source = "relay.config.json"):
     if (ids.has(tunnel.id)) throw new Error(`${source}: duplicate tunnel id "${tunnel.id}"`)
     ids.add(tunnel.id)
   }
-  return { port, host, publicUrl, domain, tls, tunnels }
+  const trustedProxies = body.trustedProxies === undefined ? [] : body.trustedProxies
+  if (!Array.isArray(trustedProxies) || trustedProxies.some(entry => typeof entry !== "string" || !parseTrustedProxyEntry(entry))) {
+    throw new Error(`${source}: trustedProxies must be an array of IP or CIDR strings (e.g. "127.0.0.1", "10.0.0.0/8")`)
+  }
+  return { port, host, publicUrl, domain, tls, tunnels, ...(trustedProxies.length > 0 ? { trustedProxies: trustedProxies as string[] } : {}) }
 }
 
 /** init：生成只含一条隧道的初始配置；文件已存在时拒绝覆盖。 */

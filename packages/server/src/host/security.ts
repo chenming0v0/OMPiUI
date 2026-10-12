@@ -15,9 +15,8 @@ export function pairingClientKey(req: IncomingMessage, tunnelForwardingToken?: s
 
   // The relay overwrites XFF with its public socket's single IP, never a chain.
   const forwarded = req.headers["x-forwarded-for"]
-  return typeof forwarded === "string" && isIP(forwarded)
-    ? `relay:${forwarded}`
-    : peer
+  const forwardedIp = typeof forwarded === "string" ? forwarded.trim().toLowerCase().replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/, "") : ""
+  return isIP(forwardedIp) ? `relay:${forwardedIp}` : peer
 }
 
 const LOCAL_ORIGIN = /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/i

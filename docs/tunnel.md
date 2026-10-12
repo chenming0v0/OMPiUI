@@ -59,6 +59,24 @@ relay.example.com {
 
 然后把 `relay.config.json` 加一行 `"publicUrl": "https://relay.example.com"`，重启 omp-relay——桌面端和分享链接会宣传这个地址。
 
+**反代部署必须配置可信代理**(否则所有访客在中转眼里都是 Caddy 的同一个地址,配对限速会退化为全局单桶,单个访客即可锁死所有手机的配对):
+
+```json
+{
+  "port": 8443,
+  "host": "127.0.0.1",
+  "publicUrl": "https://relay.example.com",
+  "trustedProxies": ["127.0.0.1"],
+  "tunnels": [{ "id": "ompiui", "key": "<43 字符 base64url>" }]
+}
+```
+
+- `trustedProxies` 是反代的 IP 或 CIDR 列表(如 `"127.0.0.1"`、`"10.0.0.0/8"`)。只有 TCP 对端属于该列表时,中转才采纳 `X-Forwarded-For`:从右向左剥离可信跳,取第一个非可信地址作为访客;之后中转覆写转发头,桌面端只收到解析后的访客 IP。
+- 默认为空列表:中转**永不信任**公网来源的 `X-Forwarded-For`,访客无法通过伪造该头绕过限速。
+- 头部中只要有任何一项不是合法 IP 文本,整条头作废,中转回退为对端地址(即反代自身),不据此伪装访客。
+- 不要把 `trustedProxies` 设为 `0.0.0.0/0` 或其它宽网段,否则等同于信任全部公网来源。
+- 反代的 XFF 写法:Caddy 的 `reverse_proxy` 默认把真实客户端追加到已有链末尾,中转只取可信链上最右的非可信地址,伪造前缀会被忽略。nginx 建议使用 `proxy_set_header X-Forwarded-For $remote_addr;` 直接覆写,不要用 `$proxy_add_x_forwarded_for`(会保留访客原始头)。
+
 ### 1.2 TLS 方案 B：裸 IP / 内置证书
 
 没有域名时两种做法：
