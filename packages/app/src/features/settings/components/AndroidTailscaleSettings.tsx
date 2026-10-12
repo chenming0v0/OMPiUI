@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ArrowRight, Copy, Share2 } from 'lucide-react'
+import { Copy, Share2 } from 'lucide-react'
 import {
   disconnectAndroidTailscale, getAndroidTailscaleStatus, isAndroidTailscalePlatform,
   loginAndroidTailscale, type AndroidTailscaleStatus,
@@ -10,11 +10,11 @@ import { serverStore } from '../../../store/serverStore'
 import { TailscaleControls } from './TailscaleControls'
 import { openTailscaleLogin } from '../../../utils/tailscaleLogin'
 
-export function AndroidTailscaleSettings({ onAuthenticated }: { onAuthenticated?: () => void }) {
-  return isAndroidTailscalePlatform() ? <AndroidTailscalePanel onAuthenticated={onAuthenticated} /> : null
+export function AndroidTailscaleSettings() {
+  return isAndroidTailscalePlatform() ? <AndroidTailscalePanel /> : null
 }
 
-function AndroidTailscalePanel({ onAuthenticated }: { onAuthenticated?: () => void }) {
+function AndroidTailscalePanel() {
   const { t } = useTranslation('settings')
   const [status, setStatus] = useState<AndroidTailscaleStatus | null>(null)
   const [busy, setBusy] = useState(false)
@@ -22,20 +22,14 @@ function AndroidTailscalePanel({ onAuthenticated }: { onAuthenticated?: () => vo
   const [statusError, setStatusError] = useState('')
   const [diagnosticsCopied, setDiagnosticsCopied] = useState(false)
   const waitingForAuth = useRef(false)
-  const loginRequested = useRef(false)
-  const authenticatedRef = useRef(onAuthenticated)
-  useEffect(() => { authenticatedRef.current = onAuthenticated }, [onAuthenticated])
   useEffect(() => {
     let cancelled = false
     const load = () => void getAndroidTailscaleStatus().then(next => {
       if (!cancelled) {
         setStatus(next)
         setStatusError('')
-        if (loginRequested.current && next.BackendState === 'Running') {
-          loginRequested.current = false
+        if (next.BackendState === 'Running') {
           waitingForAuth.current = false
-          authenticatedRef.current?.()
-          return
         }
         if (waitingForAuth.current && next.AuthURL) {
           waitingForAuth.current = false
@@ -58,9 +52,8 @@ function AndroidTailscalePanel({ onAuthenticated }: { onAuthenticated?: () => vo
   const login = async () => {
     const next = await loginAndroidTailscale()
     setStatus(next)
-    loginRequested.current = next.BackendState !== 'Running'
     if (next.BackendState === 'Running') {
-      authenticatedRef.current?.()
+      waitingForAuth.current = false
       return
     }
     if (next.AuthURL) await openTailscaleLogin(next.AuthURL)
@@ -79,7 +72,6 @@ function AndroidTailscalePanel({ onAuthenticated }: { onAuthenticated?: () => vo
         onDisconnect={() => run(async () => {
           await disconnectAndroidTailscale()
           waitingForAuth.current = false
-          loginRequested.current = false
           setStatus(await getAndroidTailscaleStatus())
           serverStore.checkAllHealth()
         })} />}
@@ -98,12 +90,6 @@ function AndroidTailscalePanel({ onAuthenticated }: { onAuthenticated?: () => vo
       {diagnosticsCopied && <p role="status" className="text-[length:var(--fs-xs)] text-text-300">
         {t('service.remoteTailscaleDiagnosticsCopied')}
       </p>}
-      {status?.BackendState === 'Running' && onAuthenticated && (
-        <button type="button" onClick={onAuthenticated} disabled={busy}
-          className="inline-flex min-h-11 items-center justify-self-start gap-1.5 rounded-md px-2 text-[length:var(--fs-sm)] text-accent-main-100 hover:bg-accent-main-100/10 disabled:opacity-50">
-          <ArrowRight size={15} />{t('authentication.addConnection')}
-        </button>
-      )}
     </div>
   )
 }

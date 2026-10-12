@@ -1,12 +1,17 @@
 import assert from "node:assert/strict"
+import { spawnSync } from "node:child_process"
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { setTimeout as delay } from "node:timers/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { createServer } from "node:http"
+import { fileURLToPath } from "node:url"
 import { OmpRpcSession } from "../packages/omp-worker/dist/omp/omp-session.js"
 import { OmpCatalog } from "../packages/omp-worker/dist/omp/omp-catalog.js"
 import { OmpRpcClient, unwrapResponse } from "../packages/omp-worker/dist/omp/rpc-client.js"
+import { managedSessionDirectory } from "../packages/omp-worker/dist/omp/managed-sessions.js"
+import { nativeOmpSessionDirectory } from "../packages/omp-worker/dist/omp/omp-directories.js"
+import { detectOmpVersion } from "../packages/omp-worker/dist/omp/omp-version.js"
 
 // 真实 OMP 离线验收：本地假服务提供一条回复用于落盘，不调用真实模型服务。
 const root = mkdtempSync(path.join(tmpdir(), "ompiui-session-safety-"))
@@ -68,6 +73,8 @@ function assertUnchanged(file, bytes, modified) {
 }
 
 try {
+  const ompVersion = await detectOmpVersion()
+  assert.ok(ompVersion, "Cannot determine the OMP version under test")
   // 官方 OMP 创建原生会话并保持打开，UI 只能浏览它的磁盘历史。
   terminal = new OmpRpcClient({ cwd })
   await terminal.waitForReady()
@@ -130,13 +137,52 @@ try {
   await runtime.dispose()
   runtime = undefined
   assert.ok(uiFile.startsWith(path.join(agent, "sessions")))
-  terminal = new OmpRpcClient({ cwd, args: ["--resume", uiFile] })
+  terminal = new OmpRpcClient({ cwd, args: ["--resume", uiId] })
   await terminal.waitForReady()
   assert.equal(unwrapResponse(await terminal.request({ type: "get_state" })).sessionId, uiId)
   await sendTerminalMessage(terminal, "Official terminal continues UI-created session")
   await terminal.close()
   terminal = undefined
   assert.match(readFileSync(uiFile, "utf8"), /Official terminal continues UI-created session/)
+
+  // 复现旧版私有会话：更新后继续旧路径不会自动进入官方目录。
+  terminal = new OmpRpcClient({ cwd, args: ["--session-dir", managedSessionDirectory(cwd)], applyRuntimePolicy: true })
+  await terminal.waitForReady()
+  await sendTerminalMessage(terminal, "Legacy UI session before migration")
+  const legacy = unwrapResponse(await terminal.request({ type: "get_state" }))
+  await terminal.close()
+  terminal = undefined
+  const legacyBytes = readFileSync(legacy.sessionFile)
+  // 先用官方实际创建的目录对照，发现上游编码变化时在迁移前失败。
+  assert.equal(nativeOmpSessionDirectory(cwd, ompVersion), path.dirname(uiFile), "OMP native directory contract changed")
+  const migrationRun = spawnSync(process.execPath, [
+    "--import", "tsx", fileURLToPath(new URL("./migrate-legacy-sessions.ts", import.meta.url)), "--cwd", cwd, "--apply",
+  ], { encoding: "utf8", timeout: 30_000, windowsHide: true })
+  assert.equal(migrationRun.status, 0, migrationRun.stderr || migrationRun.error?.message)
+  const migration = JSON.parse(migrationRun.stdout)
+  assert.equal(migration.ompVersion, ompVersion)
+  assert.equal(migration.destination, path.dirname(uiFile))
+  const migratedFile = path.join(migration.destination, path.basename(legacy.sessionFile))
+  assert.deepEqual(readFileSync(migratedFile), legacyBytes)
+  assert.equal((await new OmpCatalog().listSessions(cwd)).filter(item => item.id === legacy.sessionId).length, 1)
+
+  // 用 ID 恢复验证官方发现能力，而不是用绝对路径绕过官方目录查找。
+  terminal = new OmpRpcClient({ cwd, args: ["--resume", legacy.sessionId] })
+  await terminal.waitForReady()
+  assert.equal(unwrapResponse(await terminal.request({ type: "get_state" })).sessionId, legacy.sessionId)
+  await sendTerminalMessage(terminal, "Terminal continues migrated legacy session")
+  await terminal.close()
+  terminal = undefined
+  runtime = await OmpRpcSession.open(cwd, legacy.sessionFile)
+  assert.equal(runtime.getSessionId(), legacy.sessionId)
+  await runtime.sendUserMessage("UI continues migrated session through its saved old path")
+  await runtime.waitForIdle()
+  await runtime.dispose()
+  runtime = undefined
+  assert.match(readFileSync(migratedFile, "utf8"), /Terminal continues migrated legacy session/)
+  assert.match(readFileSync(migratedFile, "utf8"), /UI continues migrated session through its saved old path/)
+  assert.deepEqual(readFileSync(legacy.sessionFile), readFileSync(migratedFile))
+  console.info("PASS: legacy migration, official ID discovery, old-path continuation, one shared history")
   console.info("PASS: read-only browsing with official OMP open, unchanged bytes and mtime, bidirectional native continuation, ephemeral control, backup, no auto-resume")
 } finally {
   await runtime?.dispose()

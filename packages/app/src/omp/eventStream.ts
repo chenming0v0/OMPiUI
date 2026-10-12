@@ -618,6 +618,11 @@ class PiEventStream {
         this.updateLiveMessage(sessionId, event.message, meta)
         break
       case 'message_end':
+        if (event.message.role === 'assistant') {
+          this.updateLiveMessage(sessionId, event.message, meta, 'persisting')
+        }
+        this.scheduleBranchRefresh(sessionId)
+        break
       case 'turn_end':
       case 'entry_appended':
         this.scheduleBranchRefresh(sessionId)
@@ -694,12 +699,17 @@ class PiEventStream {
     }
   }
 
-  private updateLiveMessage(sessionId: string, message: AgentMessage, meta: PiEventPayload['meta']): void {
+  private updateLiveMessage(
+    sessionId: string,
+    message: AgentMessage,
+    meta: PiEventPayload['meta'],
+    phase: PiLiveMessage['phase'] = 'streaming',
+  ): void {
     perfMark('ompiui:event-message-update')
     const liveMessage: PiLiveMessage = {
       id: meta.liveMessage?.id ?? `live-${meta.sequence}`,
       revision: meta.liveMessage?.revision ?? meta.sequence,
-      phase: 'streaming',
+      phase,
       message,
     }
     const data = piBranchStore.getData(sessionId)

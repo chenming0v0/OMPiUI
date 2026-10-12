@@ -3,7 +3,7 @@ import { existsSync, promises as fs, readFileSync, readdirSync, statSync } from 
 import { homedir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import type { JsonObject, JsonValue } from "@ompiui/protocol"
+import type { BranchSyncRequest, JsonObject, JsonValue } from "@ompiui/protocol"
 import { goalMessagePreview, isJsonObject, requireJsonValue } from "@ompiui/protocol"
 import type { CatalogProvider } from "../runtime.js"
 import type { PackagesGateway } from "../command-table.js"
@@ -15,6 +15,7 @@ import { buildSessionTreeFromEntries } from "../runtime/session-tree.js"
 import { assertOmpSessionFile, isManagedSessionFile, managedSessionsRoot, ompSessionsRoot } from "./managed-sessions.js"
 import { ompAgentDirectory } from "./omp-directories.js"
 import { sessionConfigFromBranch } from "./session-config.js"
+import { BranchPageReader } from "../runtime/branch-pages.js"
 
 /**
  * OmpCatalog —— CatalogProvider 的 OMP 实现。
@@ -125,6 +126,29 @@ interface SessionFileSummary {
   created: string | null
   modified: number
   messageCount: number
+}
+
+type DiskBranchEntry = JsonObject & { id: string }
+
+type DiskPageParams = BranchSyncRequest & {
+  cursor?: string
+  limit?: number
+  maxBytes?: number
+}
+
+type DiskBranchCache = {
+  modified: number
+  entries: readonly DiskBranchEntry[]
+  reader: BranchPageReader<DiskBranchEntry>
+}
+
+function preserveDiskEntryReferences(
+  previous: readonly DiskBranchEntry[] | undefined,
+  next: DiskBranchEntry[],
+): readonly DiskBranchEntry[] {
+  if (!previous || next.length < previous.length) return next
+  if (!previous.every((entry, index) => entry.id === next[index]?.id)) return next
+  return [...previous, ...next.slice(previous.length)]
 }
 
 async function summarizeSessionFile(filePath: string, childTitles?: Map<string, string>): Promise<SessionFileSummary | null> {
@@ -326,6 +350,7 @@ export class OmpControlChannel {
 
 export class OmpCatalog implements CatalogProvider, PackagesGateway {
   readonly control = new OmpControlChannel()
+  private readonly diskBranchCaches = new Map<string, DiskBranchCache>()
 
   async listSessions(cwd: string): Promise<JsonValue> {
     const wanted = pathKey(cwd)
@@ -359,18 +384,33 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     return { sessionId: `pending-${Date.now()}`, sessionFile: null, cwd }
   }
 
-  async previewSession(cwd: string, sessionFile: string, params: { cursor?: string; limit?: number; maxBytes?: number } = {}): Promise<JsonValue> {
+  async previewSession(cwd: string, sessionFile: string, params: DiskPageParams = {}): Promise<JsonValue> {
     const target = resolveUserPath(sessionFile)
     const summary = await summarizeSessionFileCached(target)
     if (!summary) throw Object.assign(new Error("session file not found"), { code: "SESSION_NOT_FOUND" })
     return this.previewSummary(summary, params, await detectOmpVersion() ?? OMP_SDK_VERSION)
   }
 
-  private previewSummary(summary: SessionFileSummary, params: { cursor?: string; limit?: number; maxBytes?: number }, sdkVersion: string = OMP_SDK_VERSION): JsonValue {
+  private previewSummary(summary: SessionFileSummary, params: DiskPageParams, sdkVersion: string = OMP_SDK_VERSION): JsonValue {
     // 读取文件并解析条目（磁盘预览不走 RPC 进程）
     const raw = existsSync(summary.path) ? readLinesSync(summary.path) : []
     const entries = previewEntriesFromLines(raw, summary.id)
-    const branch = activeBranchFromEntries(entries)
+    const parsedBranch = activeBranchFromEntries(entries)
+      .filter((entry): entry is DiskBranchEntry => typeof entry.id === "string")
+    const previous = this.diskBranchCaches.get(summary.path)
+    const cache = previous?.modified === summary.modified
+      ? previous
+      : {
+          modified: summary.modified,
+          entries: preserveDiskEntryReferences(previous?.entries, parsedBranch),
+          reader: previous?.reader ?? new BranchPageReader<DiskBranchEntry>(),
+        }
+    this.diskBranchCaches.delete(summary.path)
+    this.diskBranchCaches.set(summary.path, cache)
+    while (this.diskBranchCaches.size > 32) {
+      this.diskBranchCaches.delete(this.diskBranchCaches.keys().next().value!)
+    }
+    const branch = [...cache.entries]
     const config = sessionConfigFromBranch(branch)
     const header: JsonObject = { version: 3, id: summary.id, cwd: summary.cwd, name: summary.name }
     const head = sessionHeadFromParts({
@@ -381,8 +421,10 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
       leafId: typeof branch.at(-1)?.id === "string" ? branch.at(-1)!.id as string : null,
       entryCount: entries.length,
     }, [summary.id, summary.path])
-    const page = entriesPageFromEntries(head, branch, {
+    const page = cache.reader.read(head, branch, {
       cursor: params.cursor,
+      syncCursor: params.syncCursor,
+      beforeId: params.beforeId,
       limit: params.limit ?? 100,
       maxBytes: params.maxBytes ?? 2 * 1024 * 1024,
     }, entry => entry)
@@ -431,6 +473,8 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     if (!summary) throw Object.assign(new Error("session file not found"), { code: "SESSION_NOT_FOUND" })
     const pageParams = {
       cursor: typeof params.cursor === "string" ? params.cursor : undefined,
+      syncCursor: typeof params.syncCursor === "string" ? params.syncCursor : undefined,
+      beforeId: typeof params.beforeId === "string" ? params.beforeId : undefined,
       limit: typeof params.limit === "number" ? params.limit : 100,
       maxBytes: typeof params.maxBytes === "number" ? params.maxBytes : 2 * 1024 * 1024,
     }
@@ -483,7 +527,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     }
   }
 
-  async previewSessionById(sessionId: string, params: { cursor?: string; limit?: number; maxBytes?: number } = {}): Promise<JsonValue> {
+  async previewSessionById(sessionId: string, params: DiskPageParams = {}): Promise<JsonValue> {
     const summaries = await this.summarizeAll()
     const match = summaries.find(item => item.id === sessionId)
     if (match) return this.previewSummary(match, params, await detectOmpVersion() ?? OMP_SDK_VERSION)

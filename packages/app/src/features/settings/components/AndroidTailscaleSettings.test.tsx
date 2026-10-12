@@ -80,43 +80,35 @@ describe('phone independent Tailscale enrollment', () => {
     expect(button).toBeEnabled()
   })
 
-  it('has no server connection form and does not redirect a phone that is already authenticated', async () => {
-    const completed = vi.fn()
+  it('has no server connection form or navigation button for an authenticated phone', async () => {
     mocks.status.mockResolvedValue({ enabled: true, BackendState: 'Running', TailscaleIPs: ['100.101.2.4'] })
-    render(<AndroidTailscaleSettings onAuthenticated={completed} />)
-    expect(await screen.findByRole('button', { name: 'Add server connection' })).toBeEnabled()
+    render(<AndroidTailscaleSettings />)
+    await act(async () => {})
+    expect(screen.queryByRole('button', { name: 'Add server connection' })).not.toBeInTheDocument()
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
-    expect(completed).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: 'Add server connection' }))
-    expect(completed).toHaveBeenCalledOnce()
   })
 
-  it('redirects only after the requested login reaches Running, not when the browser opens or approval is pending', async () => {
+  it('stays on authentication after login so pairing input and scanning remain available', async () => {
     vi.useFakeTimers()
-    const completed = vi.fn()
-    render(<AndroidTailscaleSettings onAuthenticated={completed} />)
+    render(<AndroidTailscaleSettings />)
     await act(async () => {})
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Log in to Tailscale' })))
     expect(mocks.open).toHaveBeenCalled()
-    expect(completed).not.toHaveBeenCalled()
     mocks.status.mockResolvedValue({ enabled: true, BackendState: 'NeedsMachineAuth' })
     await act(async () => vi.advanceTimersByTimeAsync(3_000))
-    expect(completed).not.toHaveBeenCalled()
     mocks.status.mockResolvedValue({ enabled: true, BackendState: 'Running', TailscaleIPs: ['100.101.2.4'] })
     await act(async () => vi.advanceTimersByTimeAsync(3_000))
-    expect(completed).toHaveBeenCalledOnce()
     await act(async () => vi.advanceTimersByTimeAsync(3_000))
-    expect(completed).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('button', { name: 'Add server connection' })).not.toBeInTheDocument()
   })
 
-  it('redirects when login immediately restores an authenticated identity', async () => {
-    const completed = vi.fn()
+  it('does not redirect when login immediately restores an authenticated identity', async () => {
     mocks.login.mockResolvedValue({ enabled: true, BackendState: 'Running' })
-    render(<AndroidTailscaleSettings onAuthenticated={completed} />)
+    render(<AndroidTailscaleSettings />)
     const button = await screen.findByRole('button', { name: 'Log in to Tailscale' })
     await waitFor(() => expect(button).toBeEnabled())
     await act(async () => fireEvent.click(button))
-    expect(completed).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('button', { name: 'Add server connection' })).not.toBeInTheDocument()
     expect(mocks.open).not.toHaveBeenCalled()
   })
 })

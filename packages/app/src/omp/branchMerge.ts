@@ -1,10 +1,16 @@
 import type { PiBranchPage } from './domain/index.js'
 
-function hasSameMessageContent(
+function matchesLiveMessage(
   entry: PiBranchPage['items'][number],
   live: NonNullable<NonNullable<PiBranchPage['checkpoint']>['liveMessage']>,
 ): boolean {
   if (entry.type !== 'message' || entry.message.role !== live.message.role) return false
+  if (entry.id === live.id) return true
+  // 流式参数可能还没生成完整，调用 ID 比内容比较更可靠。
+  if (entry.message.role === 'assistant' && live.message.role === 'assistant') {
+    const callIds = new Set(live.message.content.filter(block => block.type === 'toolCall').map(block => block.id))
+    if (entry.message.content.some(block => block.type === 'toolCall' && callIds.has(block.id))) return true
+  }
   if (!('content' in entry.message) || !('content' in live.message)) return false
   const a = entry.message.content
   const b = live.message.content
@@ -39,19 +45,19 @@ export function mergeLatestBranchPage(current: PiBranchPage | null, latest: PiBr
     const stableEntryIds = { ...page.client?.stableEntryIds, ...current.client?.stableEntryIds }
     const liveMessage = current.checkpoint?.liveMessage
     const persistedMatch = liveMessage
-      ? [...page.items].reverse().find(entry => hasSameMessageContent(entry, liveMessage))
+      ? [...page.items].reverse().find(entry => matchesLiveMessage(entry, liveMessage))
       : undefined
 
     if (persistedMatch && liveMessage) stableEntryIds[persistedMatch.id] = liveMessage.id
 
-    // 历史响应与流式事件独立交接，较旧的快照不能覆盖响应等待期间的新思考。
+    // 较旧快照保留新思考；同序号或更新的快照没有 live 时，旧消息已结束。
     const localPosition = current.checkpoint?.position
     const remotePosition = page.checkpoint?.position
     const sameStream = !remotePosition || localPosition?.epoch === remotePosition.epoch
     const localIsNewer = sameStream && localPosition && remotePosition
       && localPosition.sequence > remotePosition.sequence
     const checkpoint = liveMessage && !persistedMatch && sameStream
-      && (localIsNewer || !page.checkpoint?.liveMessage)
+      && (localIsNewer || !remotePosition)
       ? current.checkpoint
       : page.checkpoint
 
