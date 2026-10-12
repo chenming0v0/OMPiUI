@@ -7,7 +7,7 @@ import { test, type TestContext } from "node:test"
 import { nativeOmpSessionDirectory } from "./omp-directories.js"
 
 function fixture(t: TestContext, tempInsideHome = false) {
-  const root = mkdtempSync(path.join(os.tmpdir(), "ompiui-directory-contract-"))
+  const root = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "ompiui-directory-contract-")))
   const home = path.join(root, "home")
   const temp = tempInsideHome ? path.join(home, "AppData", "Local", "Temp") : path.join(root, "temp")
   const agent = path.join(root, "agent")
@@ -93,4 +93,19 @@ test("directory aliases are classified by their real target", t => {
   symlinkSync(cwd, alias, process.platform === "win32" ? "junction" : "dir")
   assert.equal(nativeOmpSessionDirectory(alias), path.join(f.sessions, "-项目 space"))
   assert.equal(nativeOmpSessionDirectory(alias), nativeOmpSessionDirectory(cwd))
+})
+
+test("Windows short cwd expansion follows the OMP version without changing temporary root spelling", { skip: process.platform !== "win32" }, t => {
+  const f = fixture(t)
+  const short = `${path.parse(process.env.ProgramFiles || "C:\\Program Files").root}PROGRA~1`
+  if (!existsSync(short)) return t.skip("Windows 8.3 aliases are disabled on this volume")
+  const long = realpathSync.native(short)
+  if (short.toLowerCase() === long.toLowerCase()) return t.skip("No expanded Windows path available")
+  t.mock.method(os, "homedir", () => long)
+  t.mock.method(os, "tmpdir", () => short)
+  syncBuiltinESMExports()
+  assert.equal(nativeOmpSessionDirectory(short, "18.3.5"), path.join(f.sessions, "-tmp"))
+  for (const version of ["18.4.0", "18.10.0"]) {
+    assert.equal(nativeOmpSessionDirectory(short, version), path.join(f.sessions, "-"))
+  }
 })

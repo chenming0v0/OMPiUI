@@ -35,6 +35,7 @@ jobs:
         run: |
           npm run build -w @ompiui/protocol
           npm run build -w @ompiui/omp-worker
+          npm run build -w @ompiui/tui
           npm run build -w @ompiui/relay
           npm run build -w @ompiui/server
           npm run build -w @ompiui/admin
@@ -48,6 +49,7 @@ jobs:
             packages/relay/dist
             packages/server/dist
             packages/admin/dist
+            packages/tui/dist
           if-no-files-found: error
           retention-days: 1
           compression-level: 1
@@ -75,12 +77,14 @@ jobs:
       - name: Check and test core workspaces
         if: matrix.suite == 'core'
         run: |
+          npm run typecheck -w @ompiui/tui
           npm run typecheck -w @ompiui/relay
           npm run typecheck -w @ompiui/admin
           npm run test -w @ompiui/protocol
           npm run test -w @ompiui/omp-worker
           npm run test -w @ompiui/relay
           npm run test -w @ompiui/admin
+          npm run test -w @ompiui/tui
 
       - name: Check and test server
         if: matrix.suite == 'server'

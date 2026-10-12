@@ -23,6 +23,7 @@
     "relay": "node dist/cli.js"
   },
   "dependencies": {
+    "@ompiui/tui": "0.6.18",
     "ws": "^8.21.1"
   },
   "devDependencies": {

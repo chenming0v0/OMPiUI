@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process"
-import { existsSync, promises as fs, readFileSync, readdirSync, statSync } from "node:fs"
+import { existsSync, promises as fs, readFileSync, readdirSync, realpathSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -297,7 +297,17 @@ function listSessionFiles(): string[] {
 }
 
 function pathKey(value: string): string {
-  const normalized = normalizeCwd(path.resolve(value))
+  const resolved = path.resolve(value)
+  let canonical = resolved
+  try {
+    // OMP 会将 Windows 短路径展开后写入会话头；按真实目录匹配同一项目。
+    canonical = process.platform === "win32"
+      ? realpathSync.native(resolved)
+      : realpathSync(resolved)
+  } catch {
+    /* 目录已删除或不可访问时保留原路径。 */
+  }
+  const normalized = normalizeCwd(canonical)
   return process.platform === "win32" ? normalized.toLowerCase() : normalized
 }
 

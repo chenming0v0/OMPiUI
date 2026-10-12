@@ -85,7 +85,19 @@ try {
   assert.ok(file && file.startsWith(path.join(agent, "sessions")))
   let bytes = readFileSync(file)
   let modified = statSync(file).mtimeMs
-  assert.ok((await catalog.listSessions(cwd)).some(item => item.id === id))
+  const listed = await catalog.listSessions(cwd)
+  assert.ok(listed.some(item => item.id === id), JSON.stringify({
+    message: "Official session missing from UI catalog",
+    ompVersion, cwd, id, file,
+    sessionHeader: bytes.toString("utf8").split("\n").map(line => {
+      try {
+        const entry = JSON.parse(line)
+        return entry.type === "session" ? { id: entry.id, cwd: entry.cwd } : undefined
+      } catch { return undefined }
+    }).find(Boolean),
+    sessionFiles: readdirSync(path.join(agent, "sessions"), { recursive: true }),
+    listed: listed.map(item => ({ id: item.id, cwd: item.cwd, path: item.path })),
+  }))
   await catalog.previewSessionById(id)
   for (const query of ["state.get", "branch.get", "entries.get", "tree.get"]) {
     await catalog.readSession(id, query)

@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { existsSync } from "node:fs"
 import { loadAdminConfig, readBackendToken, saveAdminConfig, type AdminConfig } from "./config.ts"
 import { removeOwnerRecord, writeOwnerRecord, type OwnerRecord } from "./lifecycle.ts"
+import { captureLines } from "./output.ts"
 
 export interface BackendSettings {
   serverUrl?: string
@@ -47,6 +48,7 @@ export class ServiceManager {
   private idleQueued = false
   private idleWaiters: Array<() => void> = []
   private owner: OwnerRecord | null = null
+  private output: ((line: string) => void) | undefined
 
   constructor(options: { config?: AdminConfig; env?: NodeJS.ProcessEnv } = {}) {
     this.env = options.env ?? process.env
@@ -54,6 +56,7 @@ export class ServiceManager {
   }
 
   getConfig(): AdminConfig { return this.config }
+  captureOutput(append: (line: string) => void): void { this.output = append }
   backendToken(): string | undefined {
     return readBackendToken(this.backendEnv())
   }
@@ -141,10 +144,14 @@ export class ServiceManager {
     const child = spawn(this.config.serverCommand, this.config.serverArgs, {
       cwd: this.config.serverCwd,
       env: this.backendEnv(),
-      stdio: "inherit",
+      stdio: this.output ? ["ignore", "pipe", "pipe"] : "inherit",
       shell: false,
     })
     this.child = child
+    if (this.output) {
+      if (child.stdout) captureLines(child.stdout, this.output)
+      if (child.stderr) captureLines(child.stderr, this.output)
+    }
     child.once("spawn", () => {
       if (this.child !== child) return
       if (epoch !== this.startEpoch) {

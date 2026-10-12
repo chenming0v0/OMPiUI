@@ -15,7 +15,12 @@ export interface LegacySessionMigration {
 }
 
 function pathKey(value: string): string {
-  const resolved = path.resolve(value)
+  let resolved = path.resolve(value)
+  try {
+    resolved = process.platform === "win32" ? realpathSync.native(resolved) : realpathSync(resolved)
+  } catch {
+    /* 缺失的目录仍按原路径比较。 */
+  }
   return process.platform === "win32" ? resolved.toLowerCase() : resolved
 }
 

@@ -48,6 +48,8 @@ export interface RunningRelay {
   port: number
   close(): Promise<void>
   onlineTunnelIds(): string[]
+  tunnelStatus(): Array<{ id: string; online: boolean; connections: number }>
+  disconnectTunnel(id: string): boolean
 }
 
 interface VirtualConn {
@@ -127,6 +129,17 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
         port,
         close: () => closeRelay(),
         onlineTunnelIds: () => [...tunnels.keys()],
+        tunnelStatus: () => config.tunnels.map(tunnel => ({
+          id: tunnel.id,
+          online: tunnels.has(tunnel.id),
+          connections: tunnels.get(tunnel.id)?.conns.size ?? 0,
+        })),
+        disconnectTunnel: id => {
+          const session = tunnels.get(id)
+          if (!session) return false
+          disposeSession(session)
+          return true
+        },
       })
     })
   })
