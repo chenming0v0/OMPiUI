@@ -1,3 +1,4 @@
+import { isJsonObject } from '@ompiui/protocol'
 import { STORAGE_KEY_NOTIFICATIONS_ENABLED } from '../constants/storage'
 import {
   exportLayoutBackup,
@@ -81,6 +82,60 @@ function importNotificationBackup(raw: unknown): void {
   importNotificationEventSettingsBackup(parsed?.events)
 }
 
+function validateBackupModules(modules: Record<string, unknown>): void {
+  const invalid: (id: string) => never = id => { throw new Error(`Invalid backup module: ${id}`) }
+  for (const [id, module] of Object.entries(modules)) {
+    if (!isJsonObject(module)) invalid(id)
+  }
+  const theme = modules.theme as Record<string, unknown>
+  if (typeof theme.presetId !== 'string' || !['light', 'dark', 'system'].includes(String(theme.colorMode)) || typeof theme.customCSS !== 'string') invalid('theme')
+  for (const [key, value] of Object.entries(theme)) {
+    if (['collapseUserMessages', 'renderUserMarkdown', 'wideMode', 'descriptiveToolSteps', 'codeWordWrap', 'immersiveMode', 'glassEffect', 'queueFollowupMessages', 'manualTerminalTitles', 'outlineCurrentHighlight', 'autoExpandExtensionsOnCommand', 'actionsOnLatestAssistantOnly', 'desktopCollapsedInputDock', 'processCollapseEnabled'].includes(key) && typeof value !== 'boolean') invalid(`theme.${key}`)
+    if (['uiFontScale', 'codeFontScale'].includes(key) && (typeof value !== 'number' || !Number.isFinite(value))) invalid(`theme.${key}`)
+  }
+  if (theme.customCSSSnippets !== undefined && (!Array.isArray(theme.customCSSSnippets) || theme.customCSSSnippets.some(item => !isJsonObject(item) || typeof item.id !== 'string' || typeof item.name !== 'string' || typeof item.css !== 'string'))) invalid('theme.customCSSSnippets')
+
+  const layout = modules.layout as Record<string, unknown>
+  if (typeof layout.sidebarExpanded !== 'boolean' || typeof layout.rightPanelWidth !== 'number' || !Number.isFinite(layout.rightPanelWidth) || typeof layout.bottomPanelHeight !== 'number' || !Number.isFinite(layout.bottomPanelHeight)) invalid('layout')
+  for (const key of ['sidebarFolderRecents', 'sidebarShowChildSessions', 'wakeLock']) {
+    if (layout[key] !== undefined && typeof layout[key] !== 'boolean') invalid(`layout.${key}`)
+  }
+  if (layout.panelLayout !== undefined && (!isJsonObject(layout.panelLayout) || layout.panelLayout.version !== 1 || !Array.isArray(layout.panelLayout.panelTabs) || !isJsonObject(layout.panelLayout.activeTabId))) invalid('layout.panelLayout')
+  if (layout.terminalLayout !== undefined && (!isJsonObject(layout.terminalLayout) || layout.terminalLayout.version !== 1 || !isJsonObject(layout.terminalLayout.directories))) invalid('layout.terminalLayout')
+
+  const servers = modules.servers as Record<string, unknown>
+  if (!Array.isArray(servers.servers) || servers.servers.length === 0 || servers.servers.some(server => !isJsonObject(server) || typeof server.id !== 'string' || !server.id || typeof server.name !== 'string' || typeof server.url !== 'string' || (server.token !== undefined && typeof server.token !== 'string') || (server.isDefault !== undefined && typeof server.isDefault !== 'boolean')) || (servers.activeServerId !== null && typeof servers.activeServerId !== 'string')) invalid('servers')
+  const perServerStorage = modules.perServerStorage as Record<string, unknown>
+  if (!isJsonObject(perServerStorage.entries) || Object.values(perServerStorage.entries).some(value => typeof value !== 'string')) invalid('perServerStorage')
+  const service = modules.service as Record<string, unknown>
+  if (typeof service.autoStart !== 'boolean' || !Array.isArray(service.envVars) || service.envVars.some(item => !isJsonObject(item) || typeof item.key !== 'string' || typeof item.value !== 'string')) invalid('service')
+  const keybindings = modules.keybindings as Record<string, unknown>
+  if (!isJsonObject(keybindings.customKeys) || Object.values(keybindings.customKeys).some(value => typeof value !== 'string')) invalid('keybindings')
+
+  const notifications = modules.notifications as Record<string, unknown>
+  if (typeof notifications.browserNotificationsEnabled !== 'boolean' || !isJsonObject(notifications.toast) || typeof notifications.toast.toastEnabled !== 'boolean' || !isJsonObject(notifications.events) || !isJsonObject(notifications.events.events)) invalid('notifications')
+  const events = (notifications.events as Record<string, unknown>).events as Record<string, unknown>
+  for (const type of ['completed', 'permission', 'question', 'error']) {
+    if (!isJsonObject(events[type]) || typeof events[type].systemEnabled !== 'boolean') invalid(`notifications.events.${type}`)
+  }
+  const sound = modules.sound as Record<string, unknown>
+  if (!isJsonObject(sound.settings) || typeof sound.settings.enabled !== 'boolean' || typeof sound.settings.currentSessionEnabled !== 'boolean' || typeof sound.settings.volume !== 'number' || !Number.isFinite(sound.settings.volume) || !isJsonObject(sound.settings.events) || !isJsonObject(sound.customAudio)) invalid('sound')
+  const sounds = (sound.settings as Record<string, unknown>).events as Record<string, unknown>
+  for (const type of ['completed', 'permission', 'question', 'error']) {
+    if (!isJsonObject(sounds[type]) || typeof sounds[type].soundId !== 'string') invalid(`sound.events.${type}`)
+  }
+  for (const audio of Object.values(sound.customAudio as Record<string, unknown>)) {
+    if (!isJsonObject(audio) || typeof audio.base64 !== 'string' || typeof audio.mimeType !== 'string' || (audio.fileName !== undefined && typeof audio.fileName !== 'string')) invalid('sound.customAudio')
+    try { atob(audio.base64 as string) } catch { invalid('sound.customAudio') }
+  }
+  const update = modules.update as Record<string, unknown>
+  if ((update.lastCheckedAt !== null && (typeof update.lastCheckedAt !== 'number' || !Number.isFinite(update.lastCheckedAt))) || (update.dismissedVersion !== null && typeof update.dismissedVersion !== 'string')) invalid('update')
+  if (update.latestRelease !== null) {
+    const release = update.latestRelease
+    if (!isJsonObject(release) || typeof release.version !== 'string' || typeof release.tagName !== 'string' || typeof release.url !== 'string' || (release.publishedAt !== null && typeof release.publishedAt !== 'string') || (release.name !== null && typeof release.name !== 'string')) invalid('update.latestRelease')
+  }
+}
+
 function normalizeBackupFile(raw: unknown): SettingsBackupFile {
   if (!raw || typeof raw !== 'object') {
     throw new Error('Invalid backup file')
@@ -114,6 +169,7 @@ function normalizeBackupFile(raw: unknown): SettingsBackupFile {
       throw new Error(`Missing backup module: ${id}`)
     }
   }
+  validateBackupModules(modules)
 
   return {
     app: 'OMPiUI',

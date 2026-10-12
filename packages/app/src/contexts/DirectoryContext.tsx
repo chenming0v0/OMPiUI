@@ -3,13 +3,11 @@
 // ============================================
 
 import { useState, useCallback, useEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react'
-import i18n from '../i18n'
 import { useRouter } from '../hooks/useRouter'
 import { normalizeToForwardSlash, getDirectoryName, isSameDirectory, serverStorage } from '../utils'
 import { layoutStore, useLayoutStore } from '../store/layoutStore'
 import { isTauri } from '../utils/tauri'
 import { DirectoryContext, type DirectoryContextValue, type SavedDirectory } from './DirectoryContext.shared'
-import { hasUnsavedFileChanges } from '../store/unsavedFileStore'
 import { serverStore } from '../store/serverStore'
 
 const STORAGE_KEY_SAVED = 'ompiui-saved-directories'
@@ -94,8 +92,7 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
   const setCurrentDirectory = useCallback(
     (directory: string | undefined) => {
       if (serverId !== getServerId()) return
-      if (directory !== urlDirectory && hasUnsavedFileChanges() && !window.confirm(i18n.t('components:fileExplorer.discardUnsaved'))) return
-      setUrlDirectory(directory)
+      if (!setUrlDirectory(directory)) return
       if (directory) {
         const lastUsedAt = Date.now()
         setProjects(previous => previous.serverId === serverId
