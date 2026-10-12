@@ -36,6 +36,7 @@
     "editQueueItem": "Edit message (back to input)",
     "openQueueInSideChat": "Open in side chat",
     "openQueueMenu": "Open queued message menu",
+    "queueImageEditUnsupported": "Queued messages with images can't be moved back to the input. Remove the image or send it from the queue.",
     "queueOptions": "Queued message actions"
   },
   "emptyState": {

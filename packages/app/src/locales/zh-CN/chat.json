@@ -36,6 +36,7 @@
     "editQueueItem": "编辑消息（回到输入框）",
     "openQueueInSideChat": "在侧边聊天中打开",
     "openQueueMenu": "打开排队消息菜单",
+    "queueImageEditUnsupported": "带图片的排队消息无法回到输入框编辑,请先清除该条或等待其发送。",
     "queueOptions": "排队消息操作"
   },
   "emptyState": {

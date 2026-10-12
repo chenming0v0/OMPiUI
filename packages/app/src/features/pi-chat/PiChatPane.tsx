@@ -414,8 +414,12 @@ export function PiChatPane({
     async (kind: 'steering' | 'followUp', index: number) => {
       if (!sessionId) return
       const entry = queueEntriesFor(queue, kind)[index]
-      // 编辑器草稿只能存文本：无文本却带附件的条目回填会静默丢图，宁可不动队列
-      if (!entry || (entry.text === '' && entry.images?.length)) return
+      // 编辑器草稿只能存文本:带图片的条目回填会丢图,保留队列并明确提示,不静默清队
+      if (!entry) return
+      if (entry.images?.length) {
+        notificationStore.push('error', i18n.t('chat:chatArea.queueImageEditUnsupported'), '', sessionId, currentDirectoryRef.current)
+        return
+      }
       const cleared = (await clearPiQueue(sessionId).catch(() => null)) as PiQueueSnapshot | null
       if (!cleared) return
       // 回填输入框（仅文本，图片附件 API 暂未暴露）
