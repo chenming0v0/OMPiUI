@@ -68,7 +68,7 @@ describe("WorkspaceWatcher", () => {
     const workspace = store.resolve(root)
     watcher.watch(workspace)
     try {
-      await new Promise(resolve => setTimeout(resolve, 250))
+      await waitFor(() => events.some(event => event.channel === "workspace.files" && (event.payload as { rescan?: boolean }).rescan))
       assert.ok(events.some(event => event.channel === "workspace.files" && (event.payload as { rescan?: boolean }).rescan))
       events.length = 0
       writeFileSync(path.join(root, "created.txt"), "hello")
