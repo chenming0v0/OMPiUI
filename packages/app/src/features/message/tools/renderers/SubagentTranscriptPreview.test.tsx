@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import type { OmpSubagentTranscriptItem } from '../../../../omp/ompSubagentStore'
 import { SubagentTranscriptPreview } from './SubagentTranscriptPreview'
@@ -10,6 +10,27 @@ function tool(toolName: string, timestamp: number, isError = false): OmpSubagent
 }
 
 describe('SubagentTranscriptPreview', () => {
+  it('shows thinking activity before the first text token arrives', () => {
+    render(<SubagentTranscriptPreview isRunning items={[{
+      kind: 'assistant', text: '', timestamp: 1, streaming: true,
+      thinking: 'Checking the stream implementation',
+    }]} />)
+    expect(screen.getByRole('status')).toHaveTextContent('Checking the stream implementation')
+  })
+
+  it('bounds a huge streamed reply in the DOM but keeps the full reply available on expansion', () => {
+    const text = 'START' + 'x'.repeat(100000) + 'LATEST'
+    const { container } = render(<SubagentTranscriptPreview isRunning items={[{
+      kind: 'assistant', text, timestamp: 1, streaming: true,
+    }]} />)
+    expect(container.textContent?.length).toBeLessThan(8100)
+    expect(container).toHaveTextContent('LATEST')
+    const button = screen.getByRole('button', { expanded: false })
+    fireEvent.click(button)
+    expect(container).toHaveTextContent(text)
+    expect(button).toHaveAttribute('aria-expanded', 'true')
+  })
+
   it('puts consecutive tools in one wrapping row without full-width item wrappers', () => {
     const { container } = render(
       <SubagentTranscriptPreview items={[tool('read', 1), tool('grep', 2), tool('bash', 3)]} isRunning={false} />,

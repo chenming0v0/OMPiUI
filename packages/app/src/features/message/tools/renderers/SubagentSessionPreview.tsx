@@ -14,8 +14,9 @@ function useSubagentHistoryBackfill(run: OmpSubagentRun | undefined): void {
   const sessionId = run?.sessionId
   const sessionFile = run?.sessionFile
   const historyLoaded = run?.historyLoaded
+  const hasLiveTranscript = Boolean(run?.transcript.length) && (run?.status === 'running' || run?.status === 'pending')
   useEffect(() => {
-    if (!id || !sessionId || !sessionFile || historyLoaded || subagentHistoryInFlight.has(id)) return
+    if (!id || !sessionId || !sessionFile || historyLoaded || hasLiveTranscript || subagentHistoryInFlight.has(id)) return
     subagentHistoryInFlight.add(id)
     getOmpSubagentMessages(sessionId, { sessionFile })
       .then(result => {
@@ -27,7 +28,7 @@ function useSubagentHistoryBackfill(run: OmpSubagentRun | undefined): void {
       })
       .catch(() => ompSubagentStore.applyHistory(sessionId, id, []))
       .finally(() => subagentHistoryInFlight.delete(id))
-  }, [id, sessionId, sessionFile, historyLoaded])
+  }, [id, sessionId, sessionFile, historyLoaded, hasLiveTranscript])
 }
 
 export const SubagentSessionPreview = memo(function SubagentSessionPreview({
@@ -65,7 +66,11 @@ export const SubagentSessionPreview = memo(function SubagentSessionPreview({
     wasRunningRef.current = isRunning
   }, [transcript, maxHeight, isLoading, isRunning, run?.id])
 
-  if (isLoading && transcript.length === 0) {
+  const progressSummary = [progress?.currentTool, progress?.lastIntent, ...(progress?.recentOutput ?? [])]
+    .filter(Boolean)
+    .join('\n')
+
+  if (isLoading && transcript.length === 0 && !progressSummary) {
     return (
       <div
         role="status"
@@ -78,9 +83,6 @@ export const SubagentSessionPreview = memo(function SubagentSessionPreview({
       </div>
     )
   }
-  const progressSummary = [progress?.currentTool, progress?.lastIntent, ...(progress?.recentOutput ?? [])]
-    .filter(Boolean)
-    .join('\n')
   const hasProgressStats = Boolean(progress && (
     progress.currentTool ||
     progress.lastIntent ||

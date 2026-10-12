@@ -1,6 +1,33 @@
-import { memo, useMemo } from 'react'
+import { memo, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { ChevronDownIcon } from '../../../../components/Icons'
 import type { OmpSubagentTranscriptItem } from '../../../../omp/ompSubagentStore'
 import { formatToolName } from '../../../../utils/formatUtils'
+
+const PreviewText = memo(function PreviewText({ text, streaming = false }: { text: string; streaming?: boolean }) {
+  const { t } = useTranslation('message')
+  const [expanded, setExpanded] = useState(false)
+  const long = text.length > 8000
+  return (
+    <>
+      <div className="whitespace-pre-wrap break-words">
+        {long && !expanded ? streaming ? `...${text.slice(-8000)}` : `${text.slice(0, 8000)}...` : text}
+      </div>
+      {long && (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-label={t(expanded ? 'showLess' : 'showMore')}
+          title={t(expanded ? 'showLess' : 'showMore')}
+          onClick={() => setExpanded(value => !value)}
+          className="flex h-6 w-6 items-center justify-center rounded-sm text-text-400 hover:bg-bg-200 bg-transparent border-none p-0"
+        >
+          <ChevronDownIcon size={12} className={expanded ? 'rotate-180' : ''} />
+        </button>
+      )}
+    </>
+  )
+})
 
 export const SubagentTranscriptPreview = memo(function SubagentTranscriptPreview({
   items,
@@ -17,8 +44,10 @@ export const SubagentTranscriptPreview = memo(function SubagentTranscriptPreview
       const sameMessage = item.messageId ? previous?.messageId === item.messageId : item.kind === 'tool'
       if (
         item.kind !== 'user' &&
+        item.kind !== 'agent' &&
         previous &&
         previous.items[0].kind !== 'user' &&
+        previous.items[0].kind !== 'agent' &&
         (sameMessage || item.kind === 'tool')
       ) {
         previous.items.push(item)
@@ -44,17 +73,26 @@ export const SubagentTranscriptPreview = memo(function SubagentTranscriptPreview
       return (
         <div key={row.key} className="flex justify-end">
           <div className="max-w-[85%] px-2.5 py-1.5 rounded-md bg-bg-300 text-text-100 text-[length:var(--fs-xs)] whitespace-pre-wrap break-words">
-            {text}
+            <PreviewText text={text} />
           </div>
         </div>
       )
     }
     const tools = row.items.filter(part => part.kind === 'tool')
+    const thinking = row.items.filter(part => part.streaming && part.thinking).at(-1)?.thinking
     return (
       <div key={row.key} className="space-y-1.5">
+        {isRunning && !text && thinking && (
+          <div role="status" className="text-[length:var(--fs-xs)] text-text-400 italic whitespace-pre-wrap break-words">
+            {thinking.slice(-500)}
+          </div>
+        )}
         {text && (
           <div className="text-[length:var(--fs-xs)] text-text-200 leading-relaxed whitespace-pre-wrap break-words">
-            {text.length > 500 && index !== rows.length - 1 ? `${text.slice(0, 500)}...` : text}
+            <PreviewText
+              text={text.length > 500 && index !== rows.length - 1 ? `${text.slice(0, 500)}...` : text}
+              streaming={isRunning && row.items.some(part => part.streaming)}
+            />
           </div>
         )}
         {tools.length > 0 && (
