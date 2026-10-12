@@ -90,10 +90,11 @@ export function openSubagentSession(
   const generation = serverStore.getActiveServerGeneration()
   const lookup = resolveSubagentSession(directory, normalizedFile, signal)
     .then(result => {
-      // 解析期间切换过服务器:结果属于旧服务器,不回填新世代缓存
+      // 解析期间切换过服务器:结果属于旧服务器,既不回填缓存也不登记运行时索引
       if (serverStore.getActiveServerGeneration() !== generation) {
         throw new Error('Server changed during subagent lookup')
       }
+      trackPiSession(result.id, result.directory)
       return result
     })
     .catch(error => {
@@ -113,7 +114,6 @@ async function resolveSubagentSession(
   const found = await transport.findPiSessionByFile(normalizedFile, signal)
   if (isJsonObject(found) && typeof found.id === 'string') {
     const cwd = typeof found.cwd === 'string' && found.cwd ? found.cwd : directory
-    trackPiSession(found.id, cwd)
     return { id: found.id, directory: cwd }
   }
   throw new Error(`Subagent session not found: ${normalizedFile}`)
