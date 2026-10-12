@@ -20,6 +20,9 @@ test("reports retained diagnostics and safe lifecycle logs, not transcripts or s
     '[2026-10-11T01:00:00.000Z] [omp-worker] heartbeat missing for 3 consecutive ticks (pid=123)',
     '[2026-10-11T01:00:00.000Z] [ompiui-server] listening https://private.example/?token=PRIVATE_TOKEN',
     '[2026-10-11T01:00:00.000Z] [ompiui-server] runtime recovery failed for s1: PRIVATE_MODEL_TEXT',
+    '[2026-10-11T01:00:00.000Z] [ompiui-server] graceful shutdown hook failed Error: save failed for session 9f2c in D:\\clients\\acme-confidential\\sessions',
+    '[2026-10-11T01:00:00.000Z] [omp-worker] command session.prompt timed out after 5000ms (misses=2); discarding command, worker stays acme-confidential',
+    '[2026-10-11T01:00:00.000Z] [ompiui-server] shutdown exceeded 5000ms; closing active HTTP connections \\\\fileserver\\profiles\\bob\\secret.txt',
     'User prompt: PRIVATE_CHAT_TEXT', 'Bearer PRIVATE_AUTH',
   ].join("\n"))
   writeFileSync(join(dir, "diagnostic-2026-10-11_abcd_000001.jsonl"), JSON.stringify({
@@ -34,10 +37,12 @@ test("reports retained diagnostics and safe lifecycle logs, not transcripts or s
   assert.ok(report.content.includes('"reason":"unexpected_exit"'))
   assert.ok(report.content.includes('"workerPid":12345'))
   assert.ok(report.content.includes('"code":1'))
-  assert.ok(report.content.includes("heartbeat missing"))
+  assert.ok(report.content.includes("[ompiui-server] graceful shutdown"))
+  assert.ok(report.content.includes("[omp-worker] command timed out"))
   assert.ok(report.content.includes("worker.exited"))
   assert.ok(report.content.includes('"isStreaming":true'))
   assert.ok(!report.content.includes("PRIVATE_"))
+  for (const leaked of ["acme-confidential", "9f2c", "D:\\\\clients", "fileserver", "secret.txt", "PRIVATE_"]) assert.ok(!report.content.includes(leaked), `must not leak ${leaked}`)
   assert.equal(report.files, 3)
 })
 

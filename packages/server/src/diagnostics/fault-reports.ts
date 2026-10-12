@@ -17,7 +17,32 @@ const SAFE_FIELDS = new Set([
   "epoch", "count", "port", "driver", "visibility", "navigation",
 ])
 const STATE_FIELDS = new Set(["isStreaming", "isIdle", "isCompacting", "isBashRunning", "hasPendingAsyncWork", "readOnly", "pendingMessageCount", "goalStatus"])
-const SAFE_SYSTEM_MESSAGE = /\[(?:omp-worker|piui-worker|ompiui-server)\]\s+(?:heartbeat missing|worker process|command [\w.]+ timed out|listening|events |terminal stream|driver=|runtime recovery failed|idle reaper:|graceful shutdown|shutting down|shutdown|worker cleanup)/i
+// 系统日志行只输出“时间戳 + 固定生命周期标签”:冒号之后的错误正文、会话 ID、绝对路径、UNC/私有地址与控制台正文一律不进入报告。
+const LOG_LINE = /^(?:\[(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\]\s+)?\[(omp-worker|piui-worker|ompiui-server)\]\s+(.*)$/
+const SAFE_LIFECYCLE_LABELS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/^heartbeat missing\b/i, "heartbeat missing"],
+  [/^worker process exited unexpectedly\b/i, "worker process exited unexpectedly"],
+  [/^worker process stopped\b/i, "worker process stopped"],
+  [/^command [\w.]+ timed out\b/i, "command timed out"],
+  [/^listening\b/i, "listening"],
+  [/^events\s/i, "events endpoint"],
+  [/^terminal stream\b/i, "terminal stream endpoint"],
+  [/^driver=/i, "driver selected"],
+  [/^runtime recovery failed for\b/i, "runtime recovery failed"],
+  [/^idle reaper:/i, "idle reaper"],
+  [/^graceful shutdown\b/i, "graceful shutdown"],
+  [/^shutting down\b/i, "shutting down"],
+  [/^shutdown\b/i, "shutdown"],
+  [/^worker cleanup\b/i, "worker cleanup"],
+]
+function safeSystemSummary(line: string): string | undefined {
+  const match = LOG_LINE.exec(line)
+  if (!match) return undefined
+  const [, time, source, rest] = match
+  const entry = SAFE_LIFECYCLE_LABELS.find(([pattern]) => pattern.test(rest ?? ""))
+  if (!entry) return undefined
+  return `${time ? `[${time}] ` : ""}[${source}] ${entry[1]}`
+}
 const MAX_REPORT_BYTES = 64 * 1024 * 1024
 const VERSION = (() => {
   try { return String(JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version) }
@@ -132,11 +157,11 @@ export class FaultReportService {
                 })
               }
               if (!append(JSON.stringify(record))) { unavailable.push(`${name}: report_size_limit`); break }
-            } else if (SAFE_SYSTEM_MESSAGE.test(line)) {
-              // 错误冒号后可能包含模型正文或命令结果，只保留可关联的生命周期摘要。
-              const summary = line.replace(/((?:runtime recovery failed for|idle reaper: state\.get failed for)[^:]+):.*/, "$1: [ERROR DETAIL OMITTED]")
-              if (!append(summary)) { unavailable.push(`${name}: report_size_limit`); break }
-            } else filtered++
+            } else {
+              const summary = safeSystemSummary(line)
+              if (!summary) filtered++
+              else if (!append(summary)) { unavailable.push(`${name}: report_size_limit`); break }
+            }
           }
         } catch {
           unavailable.push(`${name}: read_failed`)
@@ -151,8 +176,8 @@ export class FaultReportService {
       `Server run: ${diagnostics.runId}; pid: ${process.pid}`,
       `Files: ${files}; filtered unsafe or incomplete lines: ${filtered}`,
       `Unavailable: ${uniqueUnavailable.join(", ") || "none"}`,
-      "Scope: all retained diagnostic metadata and safe server/worker lifecycle summaries.",
-      "Excluded: session transcripts, tool output, tokens, cookies, private URLs and arbitrary console text.",
+      "Scope: all retained diagnostic metadata and fixed server/worker lifecycle labels.",
+      "Excluded: session transcripts, tool output, tokens, cookies, private URLs, error messages and arbitrary console text. Server/worker log lines keep only fixed lifecycle labels.",
     ].join("\n")
     return {
       report: { content: `${header}\n${sections.join("\n")}`, complete: uniqueUnavailable.length === 0, unavailable: uniqueUnavailable, files },
