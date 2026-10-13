@@ -137,6 +137,8 @@ test("real websocket subscriptions replay only newly added streams and cap conne
     assert.ok(changed);
     assert.equal(changed.eventChannel, "session.head");
     assert.equal(changed.event, undefined);
+    assert.deepEqual(changed.cursor, hub.getCursor(sessionStream));
+    assert.equal(typeof changed.eventId, "string");
     assert.equal(
       received.some((frame) => frame.type === "resync_required"),
       false,

@@ -122,6 +122,8 @@ export type EventServerMessage =
       channel: "control"
       type: "payload_omitted"
       stream: EventStreamRef
+      cursor: EventCursor
+      eventId: string
       eventChannel: EventChannel
       commandId?: string
     }

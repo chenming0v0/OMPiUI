@@ -445,17 +445,28 @@ class PiEventStream {
       }).then(({ command }) => {
         if (!this.commandRecoveryFlights.has(commandId) || serverStore.getActiveServerId() !== serverId || !isCommandRecord(command)) return
         piCommandStore.upsert(command)
+        this.cursors.set(eventStreamKey(stream), message.cursor)
         window.dispatchEvent(new CustomEvent('ompiui:command-updated', { detail: command }))
       }).catch(() => {}).finally(() => this.commandRecoveryFlights.delete(commandId))
-    } else if (eventChannel.startsWith('terminal.')) {
-      window.dispatchEvent(new CustomEvent('ompiui:terminals-changed'))
-    } else if (eventChannel === 'resources.updated') {
-      receiveResourceRevision(stream.kind === 'workspace' || stream.kind === 'resources' ? stream.id : undefined, String(Date.now()))
-    } else if (eventChannel === 'models.updated') {
-      receiveProviderAuthUpdated()
-      refreshModelSettings()
     } else {
-      this.handleResync(eventStreamKey(stream))
+      // payload_omitted 是该事件的有序确认帧。推进游标后，断线重连不会
+      // 重复回放同一个超大事件；具体业务数据由下面的快照/列表刷新补偿。
+      this.cursors.set(eventStreamKey(stream), message.cursor)
+      if (eventChannel.startsWith('terminal.')) {
+        window.dispatchEvent(new CustomEvent('ompiui:terminals-changed'))
+      } else if (eventChannel === 'omp.subagent') {
+        // 实时子代理帧过大时服务端只发送控制帧；事件本身无法恢复，
+        // 需要主动拉取权威 state（其中包含子代理快照），否则工具会永久停在旧状态。
+        if (stream.kind === 'session') this.scheduleStateRefresh(stream.id)
+        else for (const sessionId of this.refCounts.keys()) this.scheduleStateRefresh(sessionId)
+      } else if (eventChannel === 'resources.updated') {
+        receiveResourceRevision(stream.kind === 'workspace' || stream.kind === 'resources' ? stream.id : undefined, String(Date.now()))
+      } else if (eventChannel === 'models.updated') {
+        receiveProviderAuthUpdated()
+        refreshModelSettings()
+      } else {
+        this.handleResync(eventStreamKey(stream))
+      }
     }
   }
 

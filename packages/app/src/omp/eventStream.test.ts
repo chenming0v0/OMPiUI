@@ -253,24 +253,50 @@ describe('oversized event recovery', () => {
     const read = vi.spyOn(http, 'piFetch').mockImplementation(() => new Promise(resolve => { release = resolve }))
     const internal = piEventStream as unknown as { cursors: Map<string, unknown> }
     internal.cursors.set('server', { epoch: 'test', sequence: 7 })
-    const frame = { channel: 'control', type: 'payload_omitted', stream: { kind: 'server', id: 'server' }, eventChannel: 'command.updated', commandId: command.id }
+    const frame = {
+      channel: 'control', type: 'payload_omitted', stream: { kind: 'server', id: 'server' },
+      cursor: { epoch: 'test', sequence: 8 }, eventId: 'large-event', eventChannel: 'command.updated', commandId: command.id,
+    }
     raw(frame)
     raw(frame)
     expect(read).toHaveBeenCalledOnce()
     release?.(new Response(JSON.stringify({ command })))
     await vi.waitFor(() => expect(piCommandStore.get(command.id)).toEqual(command))
     expect(piCommandStore.get(command.id)).toEqual(command)
-    expect(internal.cursors.get('server')).toEqual({ epoch: 'test', sequence: 7 })
+    expect(internal.cursors.get('server')).toEqual({ epoch: 'test', sequence: 8 })
   })
 
   it('notifies terminal-list consumers even when the omitted event is not a session event', () => {
     const listener = vi.fn()
     window.addEventListener('ompiui:terminals-changed', listener)
     try {
-      raw({ channel: 'control', type: 'payload_omitted', stream: { kind: 'workspace', id: 'C:/p' }, eventChannel: 'terminal.updated' })
+      raw({
+        channel: 'control', type: 'payload_omitted', stream: { kind: 'workspace', id: 'C:/p' },
+        cursor: { epoch: 'test', sequence: 1 }, eventId: 'terminal-large', eventChannel: 'terminal.updated',
+      })
       expect(listener).toHaveBeenCalledOnce()
     } finally {
       window.removeEventListener('ompiui:terminals-changed', listener)
+    }
+  })
+
+  it('refreshes authoritative session state when a subagent event payload is omitted', () => {
+    const refresh = vi.spyOn(
+      piEventStream as unknown as { scheduleStateRefresh(sessionId: string): void },
+      'scheduleStateRefresh',
+    ).mockImplementation(() => undefined)
+    try {
+      raw({
+        channel: 'control',
+        type: 'payload_omitted',
+        stream: { kind: 'session', id: 'session-subagent' },
+        cursor: { epoch: 'test', sequence: 9 },
+        eventId: 'subagent-large',
+        eventChannel: 'omp.subagent',
+      })
+      expect(refresh).toHaveBeenCalledWith('session-subagent')
+    } finally {
+      refresh.mockRestore()
     }
   })
 })

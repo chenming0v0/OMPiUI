@@ -391,6 +391,8 @@ function send(ws: WebSocket, message: EventServerMessage): void {
       channel: "control",
       type: "payload_omitted",
       stream: event.stream,
+      cursor: event.cursor,
+      eventId: event.eventId,
       eventChannel: event.channel,
       commandId: event.channel === "command.updated" && typeof payload.id === "string" ? payload.id : undefined,
     });
@@ -404,7 +406,25 @@ function send(ws: WebSocket, message: EventServerMessage): void {
     timer.unref();
     return;
   }
-  ws.send(data);
+  // ws.bufferedAmount 在连续 send() 的同一事件循环里可能尚未反映新帧，
+  // 重连补发历史时会因此把大量事件瞬间压进底层发送队列。用额外计数覆盖
+  // 这段窗口，并在 ws 库确认交付后释放，避免“长时间无更新后突然成批到达”。
+  extraQueuedBytes.set(ws, (extraQueuedBytes.get(ws) ?? 0) + bytes);
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    const queued = extraQueuedBytes.get(ws) ?? 0;
+    const remaining = queued - bytes;
+    if (remaining > 0) extraQueuedBytes.set(ws, remaining);
+    else extraQueuedBytes.delete(ws);
+  };
+  try {
+    ws.send(data, release);
+  } catch {
+    release();
+    throw new Error("websocket send failed");
+  }
 }
 
 function canQueue(ws: WebSocket, bytes: number, limit: number): boolean {
