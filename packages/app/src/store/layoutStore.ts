@@ -101,6 +101,7 @@ const STORAGE_KEY_TERMINAL_LAYOUT = 'ompiui-terminal-layout'
 const STORAGE_KEY_RIGHT_PANEL_WIDTH = 'ompiui-right-panel-width'
 const STORAGE_KEY_BOTTOM_PANEL_HEIGHT = 'ompiui-bottom-panel-height'
 const STORAGE_KEY_VIEWPORT_SIDEBAR_WIDTH = 'ompiui-sidebar-width'
+const MAX_PERSISTED_TERMINAL_DIRECTORIES = 12
 
 // 隐私模式 / 禁用存储下 localStorage 访问会抛 SecurityError，统一静默兜底。
 function storageGet(key: string): string | null {
@@ -336,6 +337,7 @@ export class LayoutStore {
   }
   private subscribers = new Set<Subscriber>()
   private currentTerminalDirectory: string | null = null
+  private persistenceTimer: ReturnType<typeof setTimeout> | undefined
 
   private persistPanelLayout() {
     try {
@@ -441,8 +443,17 @@ export class LayoutStore {
 
   private notify() {
     this.persistPanelLayout()
-    this.persistTerminalLayout()
+    if (import.meta.env.DEV) this.persistTerminalLayout()
+    else this.scheduleTerminalPersistence()
     this.subscribers.forEach(fn => fn())
+  }
+
+  private scheduleTerminalPersistence() {
+    if (this.persistenceTimer) return
+    this.persistenceTimer = setTimeout(() => {
+      this.persistenceTimer = undefined
+      this.persistTerminalLayout()
+    }, 250)
   }
 
   private persistTerminalLayout() {
@@ -456,6 +467,7 @@ export class LayoutStore {
       layoutMap = { version: 1, directories: {} }
     }
 
+    delete layoutMap.directories[this.currentTerminalDirectory]
     layoutMap.directories[this.currentTerminalDirectory] = {
       order: {
         bottom: this.getTabsForPosition('bottom').map(tab => tab.id),
@@ -480,6 +492,8 @@ export class LayoutStore {
           ])
       )
     }
+    const directories = Object.entries(layoutMap.directories).slice(-MAX_PERSISTED_TERMINAL_DIRECTORIES)
+    layoutMap.directories = Object.fromEntries(directories)
     storageSet(STORAGE_KEY_TERMINAL_LAYOUT, JSON.stringify(layoutMap))
   }
 
@@ -1033,6 +1047,7 @@ export class LayoutStore {
       this.state.activeTabId[position] = hasSavedActive ? (savedActiveId ?? null) : (this.getTabsForPosition(position)[0]?.id ?? null)
     }
     this.notify()
+    this.persistTerminalLayout()
   }
 
   addTerminalTab(tab: TerminalTab, openPanel = true, position: PanelPosition = 'bottom') {

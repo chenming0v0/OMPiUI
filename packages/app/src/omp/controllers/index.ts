@@ -195,20 +195,29 @@ export function createPiSession(cwd: string, signal?: AbortSignal): Promise<tran
 /**
  * Load session data (state + branch) for active session.
  */
-const sessionDataFlights = new Map<string, Promise<void>>()
 const BRANCH_PAGE_LIMIT = 100
 const BRANCH_PAGE_MAX_BYTES = 2 * 1024 * 1024
+const sessionRefreshFlights = new Map<string, { promise: Promise<void>; dirty: boolean; includeLive: boolean }>()
 
 export async function loadPiSessionData(sessionId: string, signal?: AbortSignal): Promise<void> {
   const generation = serverStore.getActiveServerGeneration()
   const flightKey = `${generation}:${sessionId}`
-  const existing = sessionDataFlights.get(flightKey)
-  if (existing) return existing
-
-  const flight = loadPiSessionDataOnce(sessionId, signal).finally(() => {
-    if (sessionDataFlights.get(flightKey) === flight) sessionDataFlights.delete(flightKey)
+  const existing = sessionRefreshFlights.get(flightKey)
+  if (existing) {
+    existing.dirty = true
+    return existing.promise
+  }
+  const entry = { promise: Promise.resolve(), dirty: false, includeLive: false }
+  const flight = (async () => {
+    do {
+      entry.dirty = false
+      await loadPiSessionDataOnce(sessionId, signal)
+    } while (entry.dirty && serverStore.getActiveServerGeneration() === generation)
+  })().finally(() => {
+    if (sessionRefreshFlights.get(flightKey) === entry) sessionRefreshFlights.delete(flightKey)
   })
-  sessionDataFlights.set(flightKey, flight)
+  entry.promise = flight
+  sessionRefreshFlights.set(flightKey, entry)
   return flight
 }
 
@@ -360,7 +369,7 @@ export async function loadMorePiBranchEntries(sessionId: string, signal?: AbortS
  * Refresh branch with the latest page, merging local pagination history.
  * Used by the event stream when head revision changes.
  */
-const branchRefreshFlights = new Map<string, { promise: Promise<void>; dirty: boolean; includeLive: boolean }>()
+const branchRefreshFlights = sessionRefreshFlights
 
 export async function returnToLatestPiBranch(sessionId: string): Promise<void> {
   const generation = serverStore.getActiveServerGeneration()

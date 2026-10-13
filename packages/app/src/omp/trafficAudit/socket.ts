@@ -67,7 +67,7 @@ export function auditSocket(socket: PiSocket, url: string, serverUrl?: string): 
       if (socket.readyState !== 1) return socket.send(data)
       socket.send(data)
       const handle = recordMessage('sent', data)
-      if (handle && data.length <= 64 * 1024) {
+      if (handle && typeof data === 'string' && data.length <= 64 * 1024) {
         try {
           annotate(handle, JSON.parse(data))
         } catch {
