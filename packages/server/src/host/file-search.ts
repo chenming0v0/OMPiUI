@@ -9,9 +9,41 @@ import type {
 import type { WorkspaceRecord } from "./workspace-store.ts";
 import { resolveWorkspacePath } from "./path-safety.ts";
 import { utf8Prefix } from "@ompiui/protocol";
-import { QueryPool } from "./query-pool.ts";
+import { QueryPool, requestAborted } from "./query-pool.ts";
 
 const searchPool = new QueryPool(4);
+const searchFlights = new Map<string, Promise<FileNameSearchResponse | FileTextSearchResponse>>();
+
+function sharedSearch<T extends FileNameSearchResponse | FileTextSearchResponse>(
+  key: string,
+  signal: AbortSignal | undefined,
+  operation: (signal?: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const current = searchFlights.get(key);
+  if (current) return awaitWithAbort(current as Promise<T>, signal);
+  const flight = operation(undefined).finally(() => {
+    if (searchFlights.get(key) === flight) searchFlights.delete(key);
+  });
+  searchFlights.set(key, flight);
+  return awaitWithAbort(flight, signal);
+}
+
+function awaitWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(requestAborted());
+  return new Promise<T>((resolve, reject) => {
+    let done = false;
+    const finish = (error?: unknown, value?: T) => {
+      if (done) return;
+      done = true;
+      signal.removeEventListener("abort", abort);
+      error ? reject(error) : resolve(value as T);
+    };
+    const abort = () => finish(requestAborted());
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(value => finish(undefined, value), finish);
+  });
+}
 
 const SKIP_DIRS = new Set([
   "node_modules",
@@ -42,7 +74,8 @@ export async function searchFilesByName(
     signal?: AbortSignal;
   } = {},
 ): Promise<FileNameSearchResponse> {
-  return searchPool.run(opts.signal, () => searchFilesByNameInSlot(ws, query, opts));
+  const key = `name:${ws.canonicalRoot}\0${query}\0${opts.type ?? ""}\0${opts.limit ?? ""}`;
+  return sharedSearch(key, opts.signal, () => searchPool.run(undefined, () => searchFilesByNameInSlot(ws, query, { ...opts, signal: undefined })));
 }
 
 async function searchFilesByNameInSlot(
@@ -91,7 +124,8 @@ export async function searchWorkspaceText(
   pattern: string,
   opts: { limit?: number; signal?: AbortSignal } = {},
 ): Promise<FileTextSearchResponse> {
-  return searchPool.run(opts.signal, () => searchWorkspaceTextInSlot(ws, pattern, opts));
+  const key = `text:${ws.canonicalRoot}\0${pattern}\0${opts.limit ?? ""}`;
+  return sharedSearch(key, opts.signal, () => searchPool.run(undefined, () => searchWorkspaceTextInSlot(ws, pattern, { ...opts, signal: undefined })));
 }
 
 async function searchWorkspaceTextInSlot(
