@@ -424,21 +424,19 @@ export class TerminalManager {
       });
     }
     const offset = Math.max(0, from - terminal.bufferCursor);
-    const output = terminal.output;
-    let replay = offset >= output.length ? "" : output.slice(offset);
-    if (Buffer.byteLength(replay) > REPLAY_BYTE_LIMIT) {
+    const replayWindow = terminal.outputWindow.sliceFrom(offset, REPLAY_BYTE_LIMIT);
+    let replay = replayWindow.text;
+    const remaining = terminal.outputWindow.length - offset;
+    if (remaining > replayWindow.chars) {
       if (cursor !== undefined)
         throw Object.assign(
           new Error("terminal replay byte window has expired"),
           { code: "TERMINAL_CURSOR_EXPIRED" },
         );
       // 首次挂接只保留最近的字节窗口；重连游标则必须明确报告失效。
-      const bytes = Buffer.from(replay);
-      let start = bytes.length - REPLAY_BYTE_LIMIT;
-      while ((bytes[start]! & 0xc0) === 0x80) start++;
-      const tail = bytes.subarray(start).toString("utf8");
-      from += replay.length - tail.length;
-      replay = tail;
+      const tail = terminal.outputWindow.tail(REPLAY_BYTE_LIMIT);
+      from = terminal.info.cursor - tail.chars;
+      replay = tail.text;
     }
 
     // An exited terminal is a retained replay window: attach, deliver what is

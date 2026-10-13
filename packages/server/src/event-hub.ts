@@ -16,6 +16,7 @@ const wireFrames = new WeakMap<
   EventEnvelope,
   { data: string; bytes: number }
 >();
+const omittedFrames = new WeakMap<EventEnvelope, { data: string; bytes: number }>();
 
 export function eventWireFrame(event: EventEnvelope): {
   data: string;
@@ -26,6 +27,27 @@ export function eventWireFrame(event: EventEnvelope): {
     const data = `{"channel":"event","event":${JSON.stringify(event)}}`;
     wire = { data, bytes: Buffer.byteLength(data) };
     wireFrames.set(event, wire);
+  }
+  return wire;
+}
+
+export function omittedEventWireFrame(event: EventEnvelope): { data: string; bytes: number } {
+  let wire = omittedFrames.get(event);
+  if (!wire) {
+    const payload = event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
+      ? event.payload as Record<string, unknown>
+      : {};
+    const data = JSON.stringify({
+      channel: "control",
+      type: "payload_omitted",
+      stream: event.stream,
+      cursor: event.cursor,
+      eventId: event.eventId,
+      eventChannel: event.channel,
+      commandId: event.channel === "command.updated" && typeof payload.id === "string" ? payload.id : undefined,
+    });
+    wire = { data, bytes: Buffer.byteLength(data) };
+    omittedFrames.set(event, wire);
   }
   return wire;
 }

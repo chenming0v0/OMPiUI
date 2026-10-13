@@ -16,7 +16,7 @@ import {
   type TerminalStreamServerFrame,
 } from "@ompiui/protocol";
 import type { EventHub } from "./event-hub.ts";
-import { eventWireFrame } from "./event-hub.ts";
+import { eventWireFrame, omittedEventWireFrame } from "./event-hub.ts";
 import {
   requestHasAllowedOrigin,
   requestHasValidToken,
@@ -36,6 +36,7 @@ const MAX_MESSAGE_BYTES = 1024 * 1024;
 const MAX_OUTBOUND_MESSAGE_BYTES = 4 * 1024 * 1024;
 const allSockets = new Set<WebSocket>();
 const extraQueuedBytes = new WeakMap<WebSocket, number>();
+const subscribeGlobalBudget = new RateBudget(240, 120);
 const TOTAL_OUTBOUND_BYTES = 64 * 1024 * 1024;
 const MAX_TERMINAL_BUFFERED_BYTES = 8 * 1024 * 1024;
 const TERMINAL_PATH = /^\/api\/v1\/host\/terminals\/([^/]+)\/stream$/;
@@ -276,10 +277,8 @@ function attachConnection(
       }
       if (!Array.isArray(message.streams) || message.streams.length > 256)
         return;
-      if (!subscribeBudget.allow(1)) {
-        ws.close(1008, "subscription rate limit exceeded");
-        const timer = setTimeout(() => ws.terminate(), 1000);
-        timer.unref();
+      if (!subscribeBudget.allow(1) || !subscribeGlobalBudget.allow(1)) {
+        // 丢弃超限订阅，保留连接，让客户端按正常节奏重试而不会通过重连重置预算。
         return;
       }
 
@@ -385,18 +384,9 @@ function send(ws: WebSocket, message: EventServerMessage): void {
   let bytes = wire?.bytes ?? Buffer.byteLength(data);
   if ("event" in message && bytes > MAX_OUTBOUND_MESSAGE_BYTES) {
     // 用独立控制帧恢复原通道，不将未交付事件伪装成另一种业务事件。
-    const event = message.event;
-    const payload = isJsonObject(event.payload) ? event.payload : {};
-    data = JSON.stringify({
-      channel: "control",
-      type: "payload_omitted",
-      stream: event.stream,
-      cursor: event.cursor,
-      eventId: event.eventId,
-      eventChannel: event.channel,
-      commandId: event.channel === "command.updated" && typeof payload.id === "string" ? payload.id : undefined,
-    });
-    bytes = Buffer.byteLength(data);
+    const omitted = omittedEventWireFrame(message.event);
+    data = omitted.data;
+    bytes = omitted.bytes;
   }
   if (!canQueue(ws, bytes, MAX_BUFFERED_BYTES)) {
     ws.close(1013, "event client too slow");
