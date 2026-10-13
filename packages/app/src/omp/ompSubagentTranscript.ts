@@ -18,7 +18,16 @@ export type OmpSubagentTranscriptItem = {
 }
 
 const MAX_TRANSCRIPT_ITEMS = 200
+const MAX_TRANSCRIPT_TEXT_BYTES = 256 * 1024
 let messageSequence = 0
+
+function limitText(value: string): string {
+  if (new TextEncoder().encode(value).byteLength <= MAX_TRANSCRIPT_TEXT_BYTES) return value
+  let start = Math.max(0, value.length - MAX_TRANSCRIPT_TEXT_BYTES)
+  while (start < value.length && new TextEncoder().encode(value.slice(start)).byteLength > MAX_TRANSCRIPT_TEXT_BYTES) start += 1024
+  while (start > 0 && new TextEncoder().encode(value.slice(start - 1)).byteLength <= MAX_TRANSCRIPT_TEXT_BYTES) start -= 1
+  return value.slice(start)
+}
 
 function record(value: unknown): JsonObject | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as JsonObject) : undefined
@@ -48,7 +57,7 @@ function append(
   items: OmpSubagentTranscriptItem[],
   item: Omit<OmpSubagentTranscriptItem, 'timestamp'>,
 ): OmpSubagentTranscriptItem[] {
-  const next = [...items, { ...item, timestamp: Date.now() }]
+  const next = [...items, { ...item, text: limitText(item.text), timestamp: Date.now() }]
   const tail = next.slice(-MAX_TRANSCRIPT_ITEMS)
   const firstUser = next.find(part => part.kind === 'user')
   return firstUser && !tail.includes(firstUser) ? [firstUser, ...tail.slice(1)] : tail
@@ -143,9 +152,9 @@ function messagePatch(event: JsonObject, items: OmpSubagentTranscriptItem[]): Om
   const baseOffset = offset === 0 ? 0 : (previous?.textOffset ?? 0)
   const length = baseOffset + (previous?.text.length ?? 0)
   const contiguous = offset === 0 || (offset >= baseOffset && offset <= length)
-  const text = contiguous
+  const text = limitText(contiguous
     ? (previous?.text ?? '').slice(0, offset - baseOffset) + delta
-    : (string(event.textTail) ?? delta)
+    : (string(event.textTail) ?? delta))
   const textOffset = contiguous ? baseOffset : typeof event.textTailOffset === 'number' ? event.textTailOffset : offset
   const streaming = event.phase !== 'message_end'
   const thinking = event.thinkingEnabled === false ? undefined : (string(event.thinking) ?? previous?.thinking)

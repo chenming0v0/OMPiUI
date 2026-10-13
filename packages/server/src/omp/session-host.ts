@@ -19,6 +19,7 @@ import {
   isJsonObject,
   PI_PARITY_SDK_VERSION,
   PROTOCOL_VERSION,
+  byteString,
   validateParams,
 } from "@ompiui/protocol";
 import {
@@ -53,9 +54,9 @@ const SERVER_GLOBAL_CAPABILITIES: PiCapability[] = [
       additionalProperties: true,
       required: ["cwd"],
       properties: {
-        cwd: { type: "string" },
-        sessionFile: { type: "string" },
-        reuseFromSessionId: { type: "string" },
+        cwd: byteString(8 * 1024),
+        sessionFile: byteString(8 * 1024),
+        reuseFromSessionId: byteString(256),
       },
     },
     queue: "immediate",
@@ -774,6 +775,7 @@ export class SessionHost {
     options: { signal?: AbortSignal } = {},
   ): Promise<JsonValue | undefined> {
     if (type === "session.open") {
+      validateParams(getCommandCapability(type)?.paramsSchema ?? SERVER_GLOBAL_CAPABILITIES[0]?.paramsSchema, params ?? {});
       const cwd = typeof params?.cwd === "string" ? params.cwd : undefined;
       if (!cwd)
         throw Object.assign(

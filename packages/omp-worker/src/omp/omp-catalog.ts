@@ -1246,7 +1246,6 @@ function toSessionInfo(summary: SessionFileSummary): JsonObject {
     created: summary.created,
     modified: summary.modified,
     messageCount: summary.messageCount,
-    allMessagesText: summary.firstMessage ?? "",
   };
 }
 

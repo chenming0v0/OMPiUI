@@ -1242,11 +1242,23 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   private getSubagentsSnapshot(): JsonValue {
-    // 同步快照：从 lifecycle/progress 帧累计的注册表（前端重连恢复用）
+    // 同步快照：从 lifecycle/progress 帧累计的注册表（前端重连恢复用）。
+    // 终态条目也保留一段时间供 HUD 恢复，但总量有界，避免 state.get 随会话寿命增长。
     return [...this.subagentRuns.values()];
   }
 
   private readonly subagentRuns = new Map<string, JsonObject>();
+  private readonly MAX_SUBAGENT_RUNS = 200;
+
+  private rememberSubagent(id: string, value: JsonObject): void {
+    this.subagentRuns.set(id, value);
+    while (this.subagentRuns.size > this.MAX_SUBAGENT_RUNS) {
+      const removable = [...this.subagentRuns.entries()].find(([, item]) =>
+        item.status === "completed" || item.status === "failed" || item.status === "aborted",
+      );
+      this.subagentRuns.delete(removable?.[0] ?? this.subagentRuns.keys().next().value!);
+    }
+  }
 
   private trackSubagentFrame(kind: string, payload: JsonObject): void {
     const id = typeof payload.id === "string" ? payload.id : undefined;
@@ -1288,7 +1300,7 @@ export class OmpRpcSession implements SessionRuntime {
         merged.status = payload.progress.status;
       }
     }
-    this.subagentRuns.set(id, merged);
+    this.rememberSubagent(id, merged);
   }
 
   private resolveModelDescriptor(
@@ -2093,7 +2105,7 @@ export class OmpRpcSession implements SessionRuntime {
             : [];
       for (const item of list) {
         if (isJsonObject(item) && typeof item.id === "string") {
-          this.subagentRuns.set(item.id, {
+          this.rememberSubagent(item.id, {
             ...this.subagentRuns.get(item.id),
             ...item,
           });

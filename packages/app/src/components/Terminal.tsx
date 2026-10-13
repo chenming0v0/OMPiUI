@@ -370,6 +370,8 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
   const transportDisconnectRef = useRef<(() => void) | null>(null)
   const socketRef = useRef<PiSocket | null>(null)
   const pendingInputRef = useRef<string[]>([])
+  const pendingInputBytesRef = useRef(0)
+  const MAX_PENDING_INPUT_BYTES = 1024 * 1024
   const resizeTimeoutRef = useRef<number | null>(null)
   const mountedRef = useRef(true)
   const isPanelResizingRef = useRef(false)
@@ -406,7 +408,17 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
       const outgoing = applyStickyModifiers(data, sticky)
 
       if (transportSendRef.current) transportSendRef.current(outgoing)
-      else pendingInputRef.current.push(outgoing)
+      else {
+        const bytes = new TextEncoder().encode(outgoing).byteLength
+        while (pendingInputBytesRef.current + bytes > MAX_PENDING_INPUT_BYTES && pendingInputRef.current.length > 0) {
+          const dropped = pendingInputRef.current.shift()!
+          pendingInputBytesRef.current -= new TextEncoder().encode(dropped).byteLength
+        }
+        if (bytes <= MAX_PENDING_INPUT_BYTES) {
+          pendingInputRef.current.push(outgoing)
+          pendingInputBytesRef.current += bytes
+        }
+      }
 
       if (hasStickyModifier(sticky)) {
         clearStickyModifiers()
@@ -655,7 +667,9 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
         }
       }
       sendResize()
-      for (const data of pendingInputRef.current.splice(0)) {
+      const queued = pendingInputRef.current.splice(0)
+      pendingInputBytesRef.current = 0
+      for (const data of queued) {
         sendTerminalInput(socket, data)
       }
     }

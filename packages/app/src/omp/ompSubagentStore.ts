@@ -267,7 +267,16 @@ class OmpSubagentStore {
       this.eventFingerprints.delete(id)
     }
     this.bySession.delete(sessionId)
-    for (const key of affectedKeys) this.keyCache.delete(key)
+    for (const key of affectedKeys) {
+      this.keyCache.delete(key)
+      this.keyVersions.delete(key)
+    }
+    for (const key of this.keyCache.keys()) {
+      if (key.startsWith(`${sessionId}\u0000`)) this.keyCache.delete(key)
+    }
+    for (const key of this.keyVersions.keys()) {
+      if (key.startsWith(`${sessionId}\u0000`)) this.keyVersions.delete(key)
+    }
     this.bump()
   }
 

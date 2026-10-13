@@ -418,12 +418,17 @@ function send(ws: WebSocket, message: EventServerMessage): void {
 }
 
 function canQueue(ws: WebSocket, bytes: number, limit: number): boolean {
-  if (ws.bufferedAmount + (extraQueuedBytes.get(ws) ?? 0) + bytes > limit)
+  const own = ws.bufferedAmount + (extraQueuedBytes.get(ws) ?? 0)
+  if (own + bytes > limit)
     return false;
   let total = bytes;
   for (const socket of allSockets)
     total += socket.bufferedAmount + (extraQueuedBytes.get(socket) ?? 0);
-  return total <= TOTAL_OUTBOUND_BYTES;
+  if (total <= TOTAL_OUTBOUND_BYTES) return true;
+  // 全局预算满时按当前连接数分摊额度；慢客户端超出自己的份额才会被
+  // 1013 回收，避免几个慢连接把正常订阅者一起断掉。
+  const fairShare = Math.max(limit, Math.floor(TOTAL_OUTBOUND_BYTES / Math.max(1, allSockets.size)));
+  return own + bytes <= fairShare;
 }
 
 function attachTerminalConnection(
