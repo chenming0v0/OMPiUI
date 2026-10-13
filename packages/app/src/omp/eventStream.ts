@@ -41,6 +41,7 @@ import { BrowserDiagnostics } from './browserDiagnostics'
 import { markModelSettingsDisconnected, refreshModelSettings } from './modelSettingsSync'
 import { retryDelay } from './networkRetry'
 import { clearSubagentTranscripts } from './subagentTranscript'
+import { bashPendingStore } from './bashPendingStore'
 import { faultSocketOpened, faultSocketClosed, faultSocketUnused, reportRuntimeCrash } from './faultAudit/controller'
 import { loadPiSessionData, refreshPiBranch, refreshPiSessionState, settlePiLiveMessage } from './controllers/index.js'
 
@@ -178,6 +179,8 @@ class PiEventStream {
       this.clearRefreshTimers(sessionId)
       liveToolOutputStore.clearSession(sessionId)
       ompSubagentStore.clearSession(sessionId)
+      extensionUiStore.remove(sessionId)
+      bashPendingStore.clearSession(sessionId)
       piCommandStore.clearSession(sessionId)
       this.liveRecoveryAt.delete(sessionId)
     } else {
@@ -241,6 +244,9 @@ class PiEventStream {
     this.pendingLiveMessages.clear()
     piCommandStore.clearAll()
     ompSubagentStore.clearAll()
+    for (const sessionId of this.refCounts.keys()) extensionUiStore.remove(sessionId)
+    extensionUiStore.reset()
+    bashPendingStore.clearAll()
     liveToolOutputStore.clearAll()
     this.liveRecoveryAt.clear()
     this.liveRecoveryFlights.clear()

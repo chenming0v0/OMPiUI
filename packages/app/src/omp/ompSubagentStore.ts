@@ -252,16 +252,22 @@ class OmpSubagentStore {
   clearSession(sessionId: string): void {
     const ids = this.bySession.get(sessionId)
     if (!ids) return
+    const affectedKeys = new Set<string>()
     for (const id of ids) {
       const run = this.runs.get(id)
       if (run) {
         this.touchKey(run)
+        if (run.parentToolCallId) {
+          affectedKeys.add(`${sessionId}\u0000${run.parentToolCallId}`)
+          affectedKeys.add(`\u0000${run.parentToolCallId}`)
+        }
         this.unlinkToolCall(run)
       }
       this.runs.delete(id)
       this.eventFingerprints.delete(id)
     }
     this.bySession.delete(sessionId)
+    for (const key of affectedKeys) this.keyCache.delete(key)
     this.bump()
   }
 
