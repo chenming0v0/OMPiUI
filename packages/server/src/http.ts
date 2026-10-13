@@ -49,12 +49,14 @@ const CORS_HEADERS: Record<string, string> = {
   "access-control-allow-methods": "GET,POST,OPTIONS",
   "access-control-allow-headers": "content-type,authorization,if-match",
 };
+const MAX_PENDING_HTTP_INPUT_BYTES = 64 * 1024 * 1024;
+let pendingHttpInputBytes = 0;
 
 function sendJson(res: ServerResponse, status: number, body: unknown): boolean {
   if (res.destroyed || res.writableEnded) return false;
   // 显式撤回/清空队列可能返回已受理的完整附件，单响应预算须覆盖 24MiB 入站上限。
-  const bytes = jsonByteSize(body, 32 * 1024 * 1024);
-  const reservation = bytes <= 32 * 1024 * 1024 ? reserveHttpOutput(res, bytes) : undefined;
+  const bytes = jsonByteSize(body, 64 * 1024 * 1024);
+  const reservation = bytes <= 64 * 1024 * 1024 ? reserveHttpOutput(res, bytes) : undefined;
   if (!reservation) {
     res.writeHead(503, { "content-type": "application/json; charset=utf-8", ...CORS_HEADERS });
     res.end(JSON.stringify({ code: "RATE_LIMITED", message: "HTTP response capacity reached" }));
@@ -140,6 +142,13 @@ async function readBody(
   let size = 0;
   throwIfAborted(signal);
   const declared = Number(req.headers["content-length"]);
+  let accounted = 0;
+  const reserve = (bytes: number) => {
+    if (pendingHttpInputBytes + bytes > MAX_PENDING_HTTP_INPUT_BYTES)
+      throw Object.assign(new Error("HTTP input capacity reached"), { code: "RATE_LIMITED", bodyTooLarge: true });
+    pendingHttpInputBytes += bytes;
+    accounted += bytes;
+  };
   if (Number.isFinite(declared) && declared > maxBytes) {
     req.pause();
     throw Object.assign(new Error("request body too large"), {
@@ -147,6 +156,7 @@ async function readBody(
       bodyTooLarge: true,
     });
   }
+  if (Number.isFinite(declared) && declared > 0) reserve(declared);
   // Do not throw out of IncomingMessage's async iterator: Node/Bun destroy
   // the request differently, which can discard the 413 response itself.
   await new Promise<void>((resolve, reject) => {
@@ -168,6 +178,13 @@ async function readBody(
         }),
       );
     const onData = (chunk: Buffer) => {
+      if (!Number.isFinite(declared) || declared <= 0) {
+        try { reserve(chunk.length); } catch (error) {
+          req.pause();
+          onError(error as Error);
+          return;
+        }
+      }
       size += chunk.length;
       if (size > maxBytes) {
         req.pause();
@@ -191,19 +208,23 @@ async function readBody(
     req.once("aborted", onAbort);
     signal?.addEventListener("abort", onAbort, { once: true });
   });
-  const raw = Buffer.concat(chunks, size).toString("utf8");
-  let body: unknown;
   try {
-    body = JSON.parse(raw || "{}");
-  } catch {
-    throw Object.assign(new Error("invalid json"), { code: "INVALID_REQUEST" });
+    const raw = Buffer.concat(chunks, size).toString("utf8");
+    let body: unknown;
+    try {
+      body = JSON.parse(raw || "{}");
+    } catch {
+      throw Object.assign(new Error("invalid json"), { code: "INVALID_REQUEST" });
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      throw Object.assign(new Error("json body must be an object"), {
+        code: "INVALID_REQUEST",
+      });
+    }
+    return body as JsonObject;
+  } finally {
+    pendingHttpInputBytes = Math.max(0, pendingHttpInputBytes - accounted);
   }
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
-    throw Object.assign(new Error("json body must be an object"), {
-      code: "INVALID_REQUEST",
-    });
-  }
-  return body as JsonObject;
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {

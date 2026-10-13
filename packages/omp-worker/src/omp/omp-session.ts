@@ -1131,7 +1131,18 @@ export class OmpRpcSession implements SessionRuntime {
     return imageAttachmentFromEntry(serialized, blockIndex, offset);
   }
 
+  private stateFlight: Promise<JsonObject> | undefined;
+
   async getState(): Promise<JsonObject> {
+    if (this.stateFlight) return this.stateFlight;
+    const flight = this.buildState().finally(() => {
+      if (this.stateFlight === flight) this.stateFlight = undefined;
+    });
+    this.stateFlight = flight;
+    return flight;
+  }
+
+  private async buildState(): Promise<JsonObject> {
     const [native] = await Promise.all([
       this.fetchState(),
       this.ensureSynced(),

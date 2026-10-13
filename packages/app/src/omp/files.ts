@@ -98,7 +98,8 @@ async function fetchDirectory(path: string, directory?: string, signal?: AbortSi
     const page = await listHostFiles(workspacePath, { path: rel, limit: 2000, cursor }, signal)
     bytes += new TextEncoder().encode(JSON.stringify(page)).byteLength
     if (bytes > 4 * 1024 * 1024 || entries.length + page.entries.length > 20_000) {
-      throw new Error(`Directory listing exceeds preview limit (${page.total} entries)`)
+      entries.push({ name: '…（目录过大，已截断）', path: rel, type: 'other' })
+      break
     }
     entries.push(...page.entries)
     cursor = page.nextCursor
@@ -178,7 +179,7 @@ export async function saveFile(path: string, content: Pick<FileReadResponse, 'co
     workspacePath,
     relative,
     content.content,
-    { ifMatch: content.etag, encoding: content.encoding === 'base64' ? 'base64' : 'utf-8' },
+    { ifMatch: content.etag, encoding: content.encoding === 'base64' ? 'base64' : 'utf-8', returnContent: false },
   )
   invalidateWorkspaceFileCaches(directory)
   return saved

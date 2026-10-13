@@ -953,7 +953,19 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
    * 按 session id 解析会话文件：先查顶层扫描，再扫原生与 WebUI 托管目录
    * 下的子代理会话。顶层列表仍不包含子会话，重载/深链可按 id 读取。
    */
+  private readonly sessionLookupFlights = new Map<string, Promise<JsonObject | null>>();
+
   async findSessionById(sessionId: string): Promise<JsonObject | null> {
+    const existing = this.sessionLookupFlights.get(sessionId);
+    if (existing) return existing;
+    const flight = this.findSessionByIdOnce(sessionId).finally(() => {
+      if (this.sessionLookupFlights.get(sessionId) === flight) this.sessionLookupFlights.delete(sessionId);
+    });
+    this.sessionLookupFlights.set(sessionId, flight);
+    return flight;
+  }
+
+  private async findSessionByIdOnce(sessionId: string): Promise<JsonObject | null> {
     const indexed = sessionIdIndex.get(sessionId);
     if (indexed && isOmpSessionFile(indexed)) {
       const found = await this.findSessionByFile(indexed);

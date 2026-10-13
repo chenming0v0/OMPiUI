@@ -1,7 +1,7 @@
 import type { ServerResponse } from "node:http";
 
 let pendingBytes = 0;
-const MAX_PENDING_BYTES = 64 * 1024 * 1024;
+const MAX_PENDING_BYTES = 96 * 1024 * 1024;
 
 /** 压缩前预留正文和压缩工作区，直到响应交付或连接关闭才归还。 */
 export function reserveHttpOutput(res: ServerResponse, bytes: number): { hold(): () => void } | undefined {

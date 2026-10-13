@@ -217,6 +217,7 @@ const HOST_COMMAND_HANDLERS: Record<string, HostCommandHandler> = {
   "files.write": (ctx, params) => writeFileContent(workspace(ctx, params), reqString(params, "path"), reqStringAllowEmpty(params, "content"), {
     ifMatch: optString(params, "ifMatch"),
     encoding: fileEncoding(params) ?? "utf-8",
+    returnContent: optBoolean(params, "returnContent") !== false,
   }) as Promise<JsonValue>,
   "files.create": (ctx, params) => createWorkspaceEntry(workspace(ctx, params), reqString(params, "path"), fileType(params), {
     content: optString(params, "content"),

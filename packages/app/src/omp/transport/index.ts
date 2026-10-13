@@ -247,7 +247,7 @@ export async function postPiSessionCommand<T = JsonValue | undefined, K extends 
 
 // Host commands (workspaces / files / git), POST /api/v1/host/commands/:name
 const hostReadFlights = new Map<string, Promise<unknown>>()
-const SHARED_HOST_READS = new Set(['git.info', 'git.status', 'git.diff', 'git.fileDiff', 'files.list', 'files.read'])
+const SHARED_HOST_READS = new Set(['git.info', 'git.status', 'git.diff', 'git.fileDiff', 'files.list', 'files.read', 'files.searchName', 'files.searchText'])
 export async function postHostCommand<
   T = JsonValue | undefined,
   K extends keyof HostCommandParams = keyof HostCommandParams,
@@ -331,7 +331,7 @@ export function writeHostFile(
   workspacePath: string,
   path: string,
   content: string,
-  options?: { ifMatch?: string; encoding?: 'utf-8' | 'base64' },
+  options?: { ifMatch?: string; encoding?: 'utf-8' | 'base64'; returnContent?: boolean },
   signal?: AbortSignal,
 ): Promise<FileReadResponse> {
   return postHostCommand('files.write', { workspacePath, path, content, ...options }, signal)
@@ -667,16 +667,19 @@ export function getPiBranchPage(
 }
 
 export async function getPiTree(sessionId: string, signal?: AbortSignal): Promise<SessionTreeNode[]> {
-  const nodes: SessionTreeNode[] = []
+  const pages: SessionTreeNode[][] = []
   let cursor: string | undefined
+  let pageCount = 0
   do {
     const page = await postPiSessionCommand<SessionTreeNode[] | { items: SessionTreeNode[]; beforeCursor?: string; hasMore: boolean }>(
       sessionId, 'tree.get', { cursor, limit: 200, maxBytes: 1024 * 1024 }, signal,
     )
-    if (Array.isArray(page)) { nodes.push(...page); break }
-    nodes.unshift(...page.items)
+    if (Array.isArray(page)) { pages.push(page); break }
+    pages.push(page.items)
     cursor = page.hasMore ? page.beforeCursor : undefined
-  } while (cursor)
+    pageCount++
+  } while (cursor && pageCount < 64)
+  const nodes = pages.reverse().flat()
   if (nodes.some(node => node.children?.length)) return nodes
   const byId = new Map(nodes.map(node => [node.entry.id, { ...node, children: [] as SessionTreeNode[] }]))
   const roots: SessionTreeNode[] = []

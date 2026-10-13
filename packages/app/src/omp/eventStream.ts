@@ -136,6 +136,8 @@ class PiEventStream {
   private pendingResync = new Map<string, EventCursor | undefined>()
   private resyncTimer: ReturnType<typeof setTimeout> | null = null
   private resyncFlights = new Map<string, Promise<void>>()
+  private resyncActive = 0
+  private readonly RESYNC_CONCURRENCY = 2
 
   /** Subscribe a session stream (reference counted). */
   connect(sessionId: string): void {
@@ -477,7 +479,7 @@ class PiEventStream {
         receiveProviderAuthUpdated()
         refreshModelSettings()
       } else {
-        this.handleResync(eventStreamKey(stream))
+        this.queueResync(eventStreamKey(stream))
       }
     }
   }
@@ -973,12 +975,13 @@ class PiEventStream {
     if (current && (current.epoch !== pending.position.epoch || current.sequence >= pending.position.sequence)) return
     this.applyLiveMessage(sessionId, pending.liveMessage, pending.position)
   }
-  private handleResync(key: string, cursor?: EventCursor): void {
+  private handleResync(key: string, cursor?: EventCursor): Promise<void> {
     const stream = parseEventStreamKey(key)
-    if (!stream) return
+    if (!stream) return Promise.resolve()
     if (cursor) this.cursors.set(key, cursor)
     if (stream.kind === 'session') {
-      if (this.resyncFlights.has(stream.id)) return
+      const existing = this.resyncFlights.get(stream.id)
+      if (existing) return existing
       // Preview includes the checkpoint for an attached runtime. External
       // histories stay disk-only; neither refresh is allowed to spawn a writer.
       const refresh = piBranchStore.getData(stream.id)
@@ -993,6 +996,7 @@ class PiEventStream {
         })
       this.resyncFlights.set(stream.id, flight)
       void flight.then(() => this.scheduleStateRefresh(stream.id))
+      return flight
     } else if (stream.kind === 'server') {
       window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
     } else if (stream.kind === 'provider') {
@@ -1009,6 +1013,7 @@ class PiEventStream {
         }),
       )
     }
+    return Promise.resolve()
   }
 
   private queueResync(key: string, cursor?: EventCursor): void {
@@ -1018,8 +1023,21 @@ class PiEventStream {
       this.resyncTimer = null
       const pending = [...this.pendingResync.entries()]
       this.pendingResync.clear()
-      for (const [pendingKey, pendingCursor] of pending) this.handleResync(pendingKey, pendingCursor)
+      for (const [pendingKey, pendingCursor] of pending) this.pendingResync.set(pendingKey, pendingCursor)
+      this.drainResync()
     }, REFRESH_DEBOUNCE_MS)
+  }
+
+  private drainResync(): void {
+    while (this.resyncActive < this.RESYNC_CONCURRENCY && this.pendingResync.size > 0) {
+      const [key, cursor] = this.pendingResync.entries().next().value as [string, EventCursor | undefined]
+      this.pendingResync.delete(key)
+      this.resyncActive++
+      void this.handleResync(key, cursor).finally(() => {
+        this.resyncActive--
+        this.drainResync()
+      })
+    }
   }
 
   private scheduleBranchRefresh(sessionId: string): void {
