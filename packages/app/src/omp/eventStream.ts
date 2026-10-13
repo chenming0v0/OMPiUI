@@ -133,6 +133,9 @@ class PiEventStream {
   private liveRecoveryAt = new Map<string, number>()
   private liveRecoveryFlights = new Set<string>()
   private commandRecoveryFlights = new Set<string>()
+  private pendingResync = new Map<string, EventCursor | undefined>()
+  private resyncTimer: ReturnType<typeof setTimeout> | null = null
+  private resyncFlights = new Map<string, Promise<void>>()
 
   /** Subscribe a session stream (reference counted). */
   connect(sessionId: string): void {
@@ -251,6 +254,9 @@ class PiEventStream {
     this.liveRecoveryAt.clear()
     this.liveRecoveryFlights.clear()
     this.commandRecoveryFlights.clear()
+    this.pendingResync.clear()
+    if (this.resyncTimer) clearTimeout(this.resyncTimer)
+    this.resyncTimer = null
     this.closeSocket()
   }
 
@@ -427,7 +433,7 @@ class PiEventStream {
     }
     if ('channel' in message && message.channel === 'control' && message.type === 'resync_required') {
       for (const key of Object.keys(message.streams)) {
-        this.handleResync(key, message.streams[key as EventStreamKey]?.cursor)
+        this.queueResync(key, message.streams[key as EventStreamKey]?.cursor)
       }
       return
     }
@@ -972,16 +978,21 @@ class PiEventStream {
     if (!stream) return
     if (cursor) this.cursors.set(key, cursor)
     if (stream.kind === 'session') {
+      if (this.resyncFlights.has(stream.id)) return
       // Preview includes the checkpoint for an attached runtime. External
       // histories stay disk-only; neither refresh is allowed to spawn a writer.
       const refresh = piBranchStore.getData(stream.id)
         ? refreshPiBranch(stream.id, undefined, { includeLiveMessage: true })
         : loadPiSessionData(stream.id)
-      void refresh
+      const flight = refresh
         .then(() => this.diagnostics.state(stream.id, piSessionStateStore.getState(stream.id)))
         .catch(error => this.diagnostics.error('branch_error', stream.id, error))
         .then(() => this.flushPendingLiveMessage(stream.id))
-      this.scheduleStateRefresh(stream.id)
+        .finally(() => {
+          if (this.resyncFlights.get(stream.id) === flight) this.resyncFlights.delete(stream.id)
+        })
+      this.resyncFlights.set(stream.id, flight)
+      void flight.then(() => this.scheduleStateRefresh(stream.id))
     } else if (stream.kind === 'server') {
       window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
     } else if (stream.kind === 'provider') {
@@ -998,6 +1009,17 @@ class PiEventStream {
         }),
       )
     }
+  }
+
+  private queueResync(key: string, cursor?: EventCursor): void {
+    this.pendingResync.set(key, cursor)
+    if (this.resyncTimer) return
+    this.resyncTimer = setTimeout(() => {
+      this.resyncTimer = null
+      const pending = [...this.pendingResync.entries()]
+      this.pendingResync.clear()
+      for (const [pendingKey, pendingCursor] of pending) this.handleResync(pendingKey, pendingCursor)
+    }, REFRESH_DEBOUNCE_MS)
   }
 
   private scheduleBranchRefresh(sessionId: string): void {

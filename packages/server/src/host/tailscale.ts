@@ -36,6 +36,8 @@ export class TailscaleManager {
   private disposed = false
   private lastError: string | null = null
   private status: ReturnType<typeof mapStatusJson> = mapStatusJson(null)
+  private statusAt = 0
+  private statusFlight: Promise<TailscaleInfo> | null = null
 
   constructor(private readonly options: Options) {
     try {
@@ -91,7 +93,10 @@ export class TailscaleManager {
   }
 
   async detailStatus(): Promise<TailscaleInfo> {
-    if (this.controlUrl) {
+    const now = Date.now()
+    if (!this.controlUrl || now - this.statusAt < 1_500) return this.getStatus()
+    if (this.statusFlight) return this.statusFlight
+    this.statusFlight = (async () => {
       try {
         const response = await this.request("/status")
         this.status = mapStatusJson(await response.json())
@@ -99,8 +104,10 @@ export class TailscaleManager {
       } catch (error) {
         this.lastError = error instanceof Error ? error.message : String(error)
       }
-    }
-    return this.getStatus()
+      this.statusAt = Date.now()
+      return this.getStatus()
+    })().finally(() => { this.statusFlight = null })
+    return this.statusFlight
   }
 
   /** 后端监听成功后才提供回环上游；只恢复用户曾启用的节点。 */
@@ -122,6 +129,7 @@ export class TailscaleManager {
     if (!await this.startEmbedded()) return { ok: false, error: this.lastError ?? "内嵌 Tailscale 启动失败" }
     this.enabled = true
     this.persistEnabled()
+    this.statusAt = 0
     const current = await this.detailStatus()
     if (current.backendState !== "Running" && !current.authUrl) {
       try {
@@ -131,6 +139,7 @@ export class TailscaleManager {
         return { ok: false, error: this.lastError }
       }
     }
+    this.statusAt = 0
     await this.detailStatus()
     return { ok: true }
   }
@@ -140,6 +149,7 @@ export class TailscaleManager {
     this.persistEnabled()
     await this.stopChild()
     this.status = mapStatusJson(null)
+    this.statusAt = 0
     this.lastError = null
   }
 

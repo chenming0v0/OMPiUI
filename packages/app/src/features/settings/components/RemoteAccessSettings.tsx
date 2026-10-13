@@ -134,7 +134,9 @@ function RemoteAccessPanel() {
   // 自建中转 + 内置 Tailscale 状态轮询
   useEffect(() => {
     let cancelled = false
+    let timer: number | undefined
     const load = () => {
+      if (document.visibilityState === 'hidden') return
       void fetchHostTunnel()
         .then(next => {
           if (!cancelled) setTunnel(next)
@@ -157,10 +159,13 @@ function RemoteAccessPanel() {
         })
     }
     load()
-    const timer = window.setInterval(load, TUNNEL_POLL_MS)
+    timer = window.setInterval(load, TUNNEL_POLL_MS)
+    const resume = () => { if (document.visibilityState === 'visible') load() }
+    document.addEventListener('visibilitychange', resume)
     return () => {
       cancelled = true
-      window.clearInterval(timer)
+      if (timer !== undefined) window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', resume)
     }
   }, [])
 

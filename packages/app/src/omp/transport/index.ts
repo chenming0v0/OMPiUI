@@ -257,20 +257,35 @@ export async function postHostCommand<
     (HOST_COMMAND_SPECS.find(spec => spec.name === name) as HostCommandSpec | undefined)?.paramsSchema,
   )
   const key = JSON.stringify([serverStore.getActiveServerGeneration(), name, body])
-  const share = !signal && SHARED_HOST_READS.has(name)
+  const share = SHARED_HOST_READS.has(name)
   const current = share ? hostReadFlights.get(key) : undefined
   if (current) return current as Promise<T>
+  if (signal?.aborted) return Promise.reject(new DOMException('The operation was aborted', 'AbortError'))
   const request = readJson<{ data: T }>(`${getApiBase()}/api/v1/host/commands/${encodeURIComponent(name)}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body,
-    signal,
+    // The shared request must outlive an individual caller. Each caller gets
+    // an abortable view below, while the underlying fetch remains reusable.
+    signal: share ? undefined : signal,
   }).then(response => response.data)
   const flight = request.finally(() => {
     if (hostReadFlights.get(key) === flight) hostReadFlights.delete(key)
   })
   if (share) hostReadFlights.set(key, flight)
-  return flight
+  if (!signal || !share) return flight
+  return new Promise<T>((resolve, reject) => {
+    let done = false
+    const finish = (error?: unknown, value?: T) => {
+      if (done) return
+      done = true
+      signal.removeEventListener('abort', abort)
+      error ? reject(error) : resolve(value as T)
+    }
+    const abort = () => finish(new DOMException('The operation was aborted', 'AbortError'))
+    signal.addEventListener('abort', abort, { once: true })
+    flight.then(value => finish(undefined, value as T), finish)
+  })
 }
 
 // Host git commands (git.*), workspace-scoped
