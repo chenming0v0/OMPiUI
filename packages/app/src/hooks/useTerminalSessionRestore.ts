@@ -13,6 +13,18 @@ const RESTORE_RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000]
 
 /** workspace 解析失败时的退避重试间隔（首次会话冷启动窗口） */
 const WORKSPACE_RESOLVE_RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000, 15_000]
+const terminalListFlights = new Map<string, ReturnType<typeof listHostTerminals>>()
+
+function readTerminalList(workspacePath: string) {
+  const key = `${serverStore.getActiveServer()?.id}:${workspacePath}`
+  const current = terminalListFlights.get(key)
+  if (current) return current
+  const request = listHostTerminals(workspacePath).finally(() => {
+    if (terminalListFlights.get(key) === request) terminalListFlights.delete(key)
+  })
+  terminalListFlights.set(key, request)
+  return request
+}
 
 /**
  * 同步当前 workspace 的终端列表，并在 workspace 切换或服务端变化后重建
@@ -68,6 +80,7 @@ export function useTerminalSessionRestore(directory?: string) {
 
   useEffect(() => {
     let retryTimer: number | undefined
+    let changeTimer: number | undefined
     const restoreSessions = async (requestId: number, attempt = 0) => {
       if (!hasRestoredRef.current) setIsRestoring(true)
       try {
@@ -77,7 +90,7 @@ export function useTerminalSessionRestore(directory?: string) {
           layoutStore.syncTerminalSessions(undefined, [])
           return
         }
-        const result = await listHostTerminals(workspacePath)
+        const result = await readTerminalList(workspacePath)
         if (restoreRequestIdRef.current !== requestId) return
         layoutStore.syncTerminalSessions(workspacePath, result.terminals)
       } catch (error) {
@@ -106,8 +119,12 @@ export function useTerminalSessionRestore(directory?: string) {
     restoreTriggerRef.current = () => void restoreSessions(++restoreRequestIdRef.current)
     const onTerminalsChanged = (event: Event) => {
       const workspacePath = (event as CustomEvent<{ workspacePath?: string }>).detail?.workspacePath
-      if (!workspacePath || normalizeToForwardSlash(workspacePath) !== normalizeToForwardSlash(workspacePathRef.current ?? '')) return
-      void restoreSessions(++restoreRequestIdRef.current)
+      if (workspacePath && normalizeToForwardSlash(workspacePath) !== normalizeToForwardSlash(workspacePathRef.current ?? '')) return
+      if (changeTimer !== undefined) return
+      changeTimer = window.setTimeout(() => {
+        changeTimer = undefined
+        void restoreSessions(++restoreRequestIdRef.current)
+      }, 300)
     }
     window.addEventListener('ompiui:terminals-changed', onTerminalsChanged)
     const unsubscribe = serverStore.onServerChange(() => {
@@ -117,6 +134,7 @@ export function useTerminalSessionRestore(directory?: string) {
       restoreRequestIdRef.current += 1
       restoreTriggerRef.current = undefined
       if (retryTimer !== undefined) clearTimeout(retryTimer)
+      if (changeTimer !== undefined) clearTimeout(changeTimer)
       window.removeEventListener('ompiui:terminals-changed', onTerminalsChanged)
       unsubscribe()
     }

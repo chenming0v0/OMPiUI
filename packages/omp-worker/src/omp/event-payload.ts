@@ -6,6 +6,17 @@ import {
 } from "@ompiui/protocol";
 import { getPreviewSettings } from "./preview-settings.js";
 
+/** 状态仅展示大图元数据；原图留在运行时，显式编辑操作仍返回完整附件。 */
+export function projectStateImages(value: JsonObject): JsonObject {
+  if (!Array.isArray(value.images)) return value;
+  const images = value.images.filter(isJsonObject).map(image =>
+    typeof image.data === "string" && image.data.length > 64 * 1024
+      ? { ...image, data: "", dataOmitted: true }
+      : { ...image },
+  );
+  return { ...value, images };
+}
+
 /** 主时间线只裁剪流式更新的未消费字段；开始、结束及落盘结果保持完整。 */
 export function projectToolUpdate(event: JsonObject): JsonObject {
   if (event.type === "message_update") {
@@ -17,7 +28,19 @@ export function projectToolUpdate(event: JsonObject): JsonObject {
   const projected = { ...event };
   delete projected.args;
   if (isJsonObject(event.partialResult)) {
-    projected.partialResult = { content: event.partialResult.content };
+    const content = event.partialResult.content;
+    if (Array.isArray(content)) {
+      const blocks = content.filter(isJsonObject).filter(
+        (block) => block.type === "text" && typeof block.text === "string",
+      );
+      let text = "";
+      for (let index = blocks.length - 1; index >= 0; index--) {
+        text = utf8Suffix(String(blocks[index]!.text), 256 * 1024) + text;
+        text = utf8Suffix(text, 256 * 1024);
+        if (Buffer.byteLength(text) >= 256 * 1024) break;
+      }
+      projected.partialResult = { content: [{ type: "text", text }] };
+    } else projected.partialResult = { content };
   }
   return projected;
 }

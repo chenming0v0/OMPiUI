@@ -81,10 +81,27 @@ describe('desktop backend indicator', () => {
     expect(screen.getByText('42')).toBeInTheDocument()
     mocks.read.mockResolvedValue({ ...running, workerReady: true })
     await act(async () => {
-      vi.advanceTimersByTime(3000)
+      await vi.advanceTimersByTimeAsync(3000)
+    })
+    expect(mocks.read).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(27_000)
     })
     expect(screen.getByText('已就绪')).toBeInTheDocument()
     expect(screen.queryByText('初始化中')).toBeNull()
+  })
+
+  it('backs off sustained running-but-unready diagnostics instead of polling every second', async () => {
+    mocks.read.mockResolvedValue({ ...native, phase: 'running', reachable: false, workerReady: false })
+    render(<DesktopServiceStatus />)
+    await act(async () => {})
+    expect(mocks.read).toHaveBeenCalledTimes(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    expect(mocks.read).toHaveBeenCalledTimes(2)
+    await act(async () => { await vi.advanceTimersByTimeAsync(59_000) })
+    expect(mocks.read).toHaveBeenCalledTimes(2)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(mocks.read).toHaveBeenCalledTimes(3)
   })
 
   it('shows a launch invocation failure even when native diagnostics cannot be read', async () => {

@@ -11,6 +11,7 @@ import {
   manageSessionGoal,
   mintPairInvite,
   promptPi,
+  setPiExtensionEditorState,
   writeHostFile,
 } from './index.js'
 import { serverStore } from '../../store/serverStore'
@@ -62,6 +63,21 @@ describe('getHostTerminalWebSocketUrl', () => {
 })
 
 describe('transport retry and response contracts', () => {
+  it('coalesces slow editor uploads into the latest pending text and rejects over-limit mirrors locally', async () => {
+    let resolve!: (response: Response) => void
+    nativeFetchMock.mockImplementationOnce(() => new Promise<Response>(done => { resolve = done }))
+      .mockResolvedValueOnce(Response.json({ data: null }))
+    const first = setPiExtensionEditorState('slow-draft', 'first')
+    await vi.waitFor(() => expect(nativeFetchMock).toHaveBeenCalledTimes(1))
+    for (let i = 0; i < 100; i++) void setPiExtensionEditorState('slow-draft', `latest-${i}`)
+    resolve(Response.json({ data: null }))
+    await first
+    expect(nativeFetchMock).toHaveBeenCalledTimes(2)
+    expect(JSON.parse(nativeFetchMock.mock.calls[1][1].body).text).toBe('latest-99')
+    await setPiExtensionEditorState('slow-draft', 'latest-99')
+    await setPiExtensionEditorState('large-draft', 'x'.repeat(256 * 1024 + 1))
+    expect(nativeFetchMock).toHaveBeenCalledTimes(2)
+  })
   it('assembles transcript pages even when a JSONL message spans pages', async () => {
     const line = JSON.stringify({ type: 'message', message: { role: 'assistant', content: '正文😀'.repeat(1000) } })
     nativeFetchMock.mockResolvedValueOnce(Response.json({ data: {

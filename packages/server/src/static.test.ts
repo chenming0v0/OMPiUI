@@ -140,6 +140,25 @@ function fakeRequest(method: string) {
   return { method, headers: {} } as never;
 }
 
+test("unsupported multiple ranges fall back to the full resource while single ranges still work", async () => {
+  await withWebRootAsync(async root => {
+    const server = createStaticServer(root)!;
+    const multi = await collect(res => server.serve(
+      { method: "GET", headers: { range: "bytes=0-2,5-7" } } as never,
+      res as never, "/assets/app-a1b2c3d4.js",
+    ));
+    assert.equal(multi.status, 200);
+    assert.equal(multi.body, "console.log(1)");
+    assert.equal(multi.headers["content-range"], undefined);
+    const single = await collect(res => server.serve(
+      { method: "GET", headers: { range: "bytes=0-2" } } as never,
+      res as never, "/assets/app-a1b2c3d4.js",
+    ));
+    assert.equal(single.status, 206);
+    assert.equal(single.body, "con");
+  });
+});
+
 function fakeResponse() {
   const stream = new PassThrough();
   const res = stream as PassThrough & {

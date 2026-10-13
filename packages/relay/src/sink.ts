@@ -9,6 +9,7 @@ import { WebSocket } from "ws";
 import {
   BACKPRESSURE_HIGH_WATER,
   BACKPRESSURE_LOW_WATER,
+  FRAME_PAYLOAD_MAX,
   encodeFrameMessages,
 } from "./protocol.ts";
 
@@ -26,7 +27,7 @@ export class BodySink {
 
   constructor(
     private readonly ws: WebSocket,
-    private readonly meter?: (bytes: number, frames: number) => boolean,
+    private readonly meter?: (bytes: number, frames: number) => boolean | number,
   ) {}
 
   write(connId: number, chunk: Buffer, source: BodySource | null): void {
@@ -37,7 +38,7 @@ export class BodySink {
       bytes: 0,
       sources: new Set<BodySource>(),
     };
-    pending.chunks.push(Buffer.from(chunk));
+    pending.chunks.push(chunk);
     pending.bytes += chunk.length;
     if (source) pending.sources.add(source);
     this.pending.set(connId, pending);
@@ -66,15 +67,10 @@ export class BodySink {
         this.pending.delete(id);
         continue;
       }
-      const frames = encodeFrameMessages(
-        id,
-        Buffer.concat(pending.chunks, pending.bytes),
-      );
-      const bytes = frames.reduce(
-        (total, frame) => total + frame.length + 14,
-        0,
-      );
-      if (this.meter && !this.meter(bytes, frames.length)) {
+      const frameCount = Math.ceil(pending.bytes / FRAME_PAYLOAD_MAX);
+      const bytes = pending.bytes + frameCount * 18;
+      const allowed = this.meter?.(bytes, frameCount) ?? true;
+      if (allowed !== true) {
         for (const source of pending.sources) {
           this.paused.add(source);
           source.pause();
@@ -83,9 +79,11 @@ export class BodySink {
         this.flushTimer ??= setTimeout(() => {
           this.flushTimer = undefined;
           this.flush();
-        }, 10);
+        }, typeof allowed === "number" ? Math.max(1, allowed) : 50);
         continue;
       }
+      const frames = encodeFrameMessages(id, pending.chunks.length === 1
+        ? pending.chunks[0]! : Buffer.concat(pending.chunks, pending.bytes));
       this.pending.delete(id);
       for (const frame of frames) this.ws.send(frame, { binary: true });
       const finish = this.finishers.get(id);

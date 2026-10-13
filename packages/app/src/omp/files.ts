@@ -72,7 +72,7 @@ function toPiRelativePath(path: string, directory?: string): string {
   return p.replace(/^\//, '')
 }
 
-async function fetchDirectory(path: string, directory?: string): Promise<FileNodeDto[]> {
+async function fetchDirectory(path: string, directory?: string, signal?: AbortSignal): Promise<FileNodeDto[]> {
   const workspaceDir =
     directory && (/^[a-zA-Z]:/.test(directory) || directory.startsWith('/'))
       ? directory
@@ -92,11 +92,17 @@ async function fetchDirectory(path: string, directory?: string): Promise<FileNod
   const rel = toPiRelativePath(path, workspaceDir)
   const entries: FileNodeDto[] = []
   let cursor: string | undefined
+  let bytes = 0
   do {
-    const page = await listHostFiles(workspacePath, { path: rel, limit: 2000, cursor })
+    signal?.throwIfAborted()
+    const page = await listHostFiles(workspacePath, { path: rel, limit: 2000, cursor }, signal)
+    bytes += new TextEncoder().encode(JSON.stringify(page)).byteLength
+    if (bytes > 4 * 1024 * 1024 || entries.length + page.entries.length > 20_000) {
+      throw new Error(`Directory listing exceeds preview limit (${page.total} entries)`)
+    }
     entries.push(...page.entries)
     cursor = page.nextCursor
-  } while (cursor && entries.length < 20_000)
+  } while (cursor)
   return entries.filter(e => !e.restricted)
 }
 
@@ -117,7 +123,8 @@ export async function searchFiles(
   return result.paths
 }
 
-export async function listDirectory(path: string, directory?: string): Promise<FileNodeDto[]> {
+export async function listDirectory(path: string, directory?: string, signal?: AbortSignal): Promise<FileNodeDto[]> {
+  if (signal) return fetchDirectory(path, directory, signal)
   if (!isRootDirectoryPath(path)) {
     return fetchDirectory(path, directory)
   }
@@ -154,10 +161,10 @@ export async function prefetchRootDirectory(directory?: string): Promise<void> {
   await listDirectory('.', directory)
 }
 
-export async function getFileContent(path: string, directory?: string): Promise<FileReadResponse> {
+export async function getFileContent(path: string, directory?: string, ifNoneMatch?: string): Promise<FileReadResponse> {
   const workspacePath = await requireWorkspacePath(directory)
   const rel = toPiRelativePath(path, directory)
-  return readHostFile(workspacePath, rel)
+  return readHostFile(workspacePath, rel, undefined, ifNoneMatch)
 }
 
 export async function saveFile(path: string, content: Pick<FileReadResponse, 'content'> & Partial<FileReadResponse>, directory?: string): Promise<FileReadResponse> {

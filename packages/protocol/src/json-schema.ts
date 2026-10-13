@@ -9,7 +9,7 @@ export const STRING: JsonObject = { type: "string", maxBytes: 8 * 1024 * 1024 };
 export const BOOLEAN: JsonObject = { type: "boolean" };
 export const NUMBER: JsonObject = { type: "number" };
 export const NULL: JsonObject = { type: "null" };
-export const ANY_JSON: JsonObject = {};
+export const ANY_JSON: JsonObject = { maxJsonBytes: 256 * 1024 };
 export const STRING_ARRAY: JsonObject = {
   type: "array",
   items: byteString(4096),

@@ -59,6 +59,7 @@ export class ServiceManager {
   private idleWaiters: Array<() => void> = []
   private owner: OwnerRecord | null = null
   private output: ((line: string) => void) | undefined
+  private statusCache?: { key: string; at: number; pending: boolean; flight: Promise<ServiceStatus> }
 
   constructor(options: { config?: AdminConfig; env?: NodeJS.ProcessEnv } = {}) {
     this.env = options.env ?? process.env
@@ -350,11 +351,28 @@ export class ServiceManager {
     }
   }
 
-  async status(): Promise<ServiceStatus> {
+  status(): Promise<ServiceStatus> {
+    const key = JSON.stringify([this.config, this.lifecycle, this.child?.pid, this.exitCode, this.signal, this.error])
+    if (this.statusCache?.key === key && (this.statusCache.pending || Date.now() - this.statusCache.at < 2000)) return this.statusCache.flight
+    const flight = this.readStatus().catch(error => {
+      if (this.statusCache?.flight === flight) this.statusCache = undefined
+      throw error
+    }).finally(() => {
+      if (this.statusCache?.flight === flight) {
+        this.statusCache.pending = false
+        this.statusCache.at = Date.now()
+      }
+    })
+    this.statusCache = { key, at: Date.now(), pending: true, flight }
+    return flight
+  }
+
+  private async readStatus(): Promise<ServiceStatus> {
     const running = this.isRunning()
     const healthProbe = await this.probeBackend("/api/v1/host/health")
-    const shareProbe = healthProbe.ok ? await this.probeBackend("/api/v1/host/share") : null
-    const tunnelProbe = healthProbe.ok ? await this.probeBackend("/api/v1/host/tunnel") : null
+    const [shareProbe, tunnelProbe] = healthProbe.ok
+      ? await Promise.all([this.probeBackend("/api/v1/host/share"), this.probeBackend("/api/v1/host/tunnel")])
+      : [null, null]
     return {
       lifecycle: running ? "running" : this.lifecycle,
       pid: this.child?.pid ?? null,

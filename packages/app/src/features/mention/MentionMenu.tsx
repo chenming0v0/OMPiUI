@@ -229,7 +229,8 @@ export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(funct
   useEffect(() => {
     if (!isOpen) return
 
-    const frameId = requestAnimationFrame(() => {
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => {
       const lastSlashIndex = query.lastIndexOf('/')
 
       if (lastSlashIndex >= 0) {
@@ -247,9 +248,9 @@ export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(funct
       const requestId = ++requestIdRef.current
       setLoading(true)
 
-      searchFiles(query, { limit: 20, directory: rootPath })
+      searchFiles(query, { limit: 20, directory: rootPath, signal: controller.signal })
         .then(paths => {
-          if (requestId !== requestIdRef.current) return
+          if (controller.signal.aborted || requestId !== requestIdRef.current) return
 
           const folders: MentionItem[] = []
           const fileItems: MentionItem[] = []
@@ -272,7 +273,7 @@ export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(funct
           setSelectedIndex(0)
         })
         .catch(err => {
-          if (requestId !== requestIdRef.current) return
+          if (controller.signal.aborted || requestId !== requestIdRef.current) return
           fileErrorHandler('file search', err)
           setItems([])
         })
@@ -281,9 +282,12 @@ export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(funct
             setLoading(false)
           }
         })
-    })
+    }, query ? 200 : 0)
 
-    return () => cancelAnimationFrame(frameId)
+    return () => {
+      clearTimeout(timer)
+      controller.abort()
+    }
   }, [isOpen, query, loadDirectory, createItem, rootPath])
 
   // 暴露方法给父组件

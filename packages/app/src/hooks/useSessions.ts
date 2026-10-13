@@ -63,6 +63,7 @@ export function useSessions(options: UseSessionsOptions = {}): UseSessionsResult
   const searchTimerRef = useRef<number | null>(null)
   // 当前 limit，loadMore 时递增（与 SessionContext 保持一致）
   const currentLimitRef = useRef(pageSize)
+  const loadedSessionsRef = useRef<UiSession[] | null>(null)
   const searchRef = useRef(search)
   // 防止 onReconnected 密集触发时重复请求
   const isFetchingRef = useRef(false)
@@ -82,13 +83,12 @@ export function useSessions(options: UseSessionsOptions = {}): UseSessionsResult
   )
 
   // 获取会话列表
-  // append 仅用于控制 loading 状态：true 时用 isLoadingMore，false 时用 isLoading
-  // 数据始终全量替换（递增 limit 策略）
+  // 搜索和展开仅切片本地快照，显式刷新及磁盘事件才重新读取列表。
   const fetchSessions = useCallback(
-    async (params: SessionListParams & { append?: boolean; retryAttempt?: number; silent?: boolean } = {}) => {
+    async (params: SessionListParams & { append?: boolean; retryAttempt?: number; silent?: boolean; local?: boolean } = {}) => {
       if (!enabled) return
 
-      const { append = false, retryAttempt = 0, silent = false, ...queryParams } = params
+      const { append = false, retryAttempt = 0, silent = false, local = false, ...queryParams } = params
       const requestId = ++requestIdRef.current
       isFetchingRef.current = true
 
@@ -102,13 +102,16 @@ export function useSessions(options: UseSessionsOptions = {}): UseSessionsResult
       }
 
       try {
-        const nativeSessions = normalizedDirectory
-          ? await loadPiSessionsForCwd(normalizedDirectory)
-          : await loadPiSessions()
-        const mapped = nativeSessions
-          .map(piSessionInfoToUiSession)
-          .filter((session): session is UiSession => session !== null)
-        const all = linkPiSessionForks(mapped)
+        let all = local ? loadedSessionsRef.current : null
+        if (!all) {
+          const nativeSessions = normalizedDirectory
+            ? await loadPiSessionsForCwd(normalizedDirectory)
+            : await loadPiSessions()
+          all = linkPiSessionForks(nativeSessions.map(piSessionInfoToUiSession)
+            .filter((session): session is UiSession => session !== null))
+          if (requestId !== requestIdRef.current) return
+          loadedSessionsRef.current = all
+        }
         const searchTerm = queryParams.search?.trim().toLowerCase()
         const matching = filterPiSessionList(
           all.filter(session => matchesDirectory(session)),
@@ -180,7 +183,7 @@ export function useSessions(options: UseSessionsOptions = {}): UseSessionsResult
 
     searchTimerRef.current = window.setTimeout(
       () => {
-        fetchSessions({ search: search || undefined })
+        fetchSessions({ search: search || undefined, local: true })
       },
       search ? 300 : 0,
     ) // 有搜索词时延迟 300ms，无搜索词时立即执行
@@ -197,6 +200,7 @@ export function useSessions(options: UseSessionsOptions = {}): UseSessionsResult
 
   useEffect(() => {
     if (!enabled) return
+    loadedSessionsRef.current = null
 
     // pi 原生列表模型：列表 = 磁盘扫描结果（SessionManager.list/listAll）。
     // 事件只作为“该重扫了”的信号，静默全量重拉——不切换 loading、不清空
@@ -227,6 +231,7 @@ export function useSessions(options: UseSessionsOptions = {}): UseSessionsResult
       requestIdRef.current += 1
       isFetchingRef.current = false
       queuedReconnectRefreshRef.current = false
+      loadedSessionsRef.current = null
       if (retryTimerRef.current) {
         clearTimeout(retryTimerRef.current)
         retryTimerRef.current = null
@@ -237,7 +242,7 @@ export function useSessions(options: UseSessionsOptions = {}): UseSessionsResult
     })
   }, [enabled])
 
-  // 加载更多：递增 limit 重新拉取完整列表（与 SessionContext 一致）
+  // 加载更多只展开已加载的快照。
   const loadMore = useCallback(async () => {
     if (!enabled || isLoadingMore || !hasMore || sessions.length === 0) return
 
@@ -245,6 +250,7 @@ export function useSessions(options: UseSessionsOptions = {}): UseSessionsResult
     await fetchSessions({
       search: search || undefined,
       append: true,
+      local: true,
     })
   }, [sessions, search, hasMore, isLoadingMore, fetchSessions, enabled, pageSize])
 
@@ -298,6 +304,7 @@ export function useSessions(options: UseSessionsOptions = {}): UseSessionsResult
       if (!session?.path || !session.directory) throw new Error('Pi session file is unavailable')
       await deletePiSession(session.directory, session.path)
       pinnedSessionsStore.unpin(sessionId)
+      loadedSessionsRef.current = loadedSessionsRef.current?.filter(s => s.id !== sessionId) ?? null
       setSessions(prev => prev.filter(s => s.id !== sessionId))
       window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
     },
@@ -305,10 +312,12 @@ export function useSessions(options: UseSessionsOptions = {}): UseSessionsResult
   )
 
   const patchLocalSession = useCallback((sessionId: string, patch: Partial<UiSession>) => {
+    loadedSessionsRef.current = loadedSessionsRef.current?.map(session => session.id === sessionId ? { ...session, ...patch } : session) ?? null
     setSessions(prev => prev.map(session => (session.id === sessionId ? { ...session, ...patch } : session)))
   }, [])
 
   const removeLocalSession = useCallback((sessionId: string) => {
+    loadedSessionsRef.current = loadedSessionsRef.current?.filter(session => session.id !== sessionId) ?? null
     setSessions(prev => prev.filter(session => session.id !== sessionId))
   }, [])
 

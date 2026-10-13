@@ -12,6 +12,23 @@ vi.mock('../utils/tauri', () => ({
   getHttpFetch: () => Promise.resolve(nativeFetchMock),
 }))
 
+describe('bulk response timeout coverage', () => {
+  afterEach(() => { vi.restoreAllMocks(); nativeFetchMock.mockReset() })
+  it.each([
+    ['POST', '/api/v1/host/commands/git.diff', 300000],
+    ['POST', '/api/v1/host/commands/files.searchText', 300000],
+    ['POST', '/api/v1/pi/sessions/s/commands/subagent.messages', 300000],
+    ['GET', '/api/v1/host/commands/result-id', 300000],
+    ['POST', '/api/v1/pi/sessions/s/commands/setExtensionEditorState', 20000],
+  ])('uses the expected timeout for %s %s', async (method, path, timeout) => {
+    mocks.isTauri = false
+    const timeouts = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(new AbortController().signal)
+    nativeFetchMock.mockResolvedValue(Response.json({ data: null }))
+    await piFetch(path as string, { method: method as string, retry: false })
+    expect(timeouts).toHaveBeenCalledWith(timeout)
+  })
+})
+
 const restoreOriginalLocalServer = () => {
   const original = serverStore.getStoredServers().find(server => server.id === LOCAL_SERVER_ID)
   if (original) serverStore.updateServer(LOCAL_SERVER_ID, { url: original.url, token: original.token })

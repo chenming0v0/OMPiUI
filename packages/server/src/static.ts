@@ -121,6 +121,7 @@ export function createStaticServer(root: string): StaticServer | undefined {
     let status = 200;
     if (
       req.headers.range &&
+      !req.headers.range.includes(",") &&
       (!req.headers["if-range"] ||
         req.headers["if-range"] === headers["last-modified"])
     ) {

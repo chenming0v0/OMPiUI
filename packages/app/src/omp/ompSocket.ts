@@ -48,7 +48,8 @@ class TauriBridgeSocket implements PiSocket {
 
   private id: number | null = null
   private closedByUs = false
-  private pendingSends: string[] = []
+  private pendingSends: Array<{ data: string; bytes: number }> = []
+  private queuedBytes = 0
   private invokeFn: TauriInvoke | null = null
   private inFlight = 0
 
@@ -83,7 +84,7 @@ class TauriBridgeSocket implements PiSocket {
         return
       }
       this.id = id
-      for (const data of this.pendingSends.splice(0)) this.send(data)
+      this.pump()
     } catch {
       if (this.closedByUs || this.readyState === PI_SOCKET_CLOSED) return
       this.readyState = PI_SOCKET_CLOSED
@@ -111,30 +112,40 @@ class TauriBridgeSocket implements PiSocket {
     }
     if (this.readyState === PI_SOCKET_CLOSED) return
     this.readyState = PI_SOCKET_CLOSED
+    this.pendingSends = []
+    this.queuedBytes = 0
     this.onclose?.({ code: event.code ?? 1006, reason: event.reason })
   }
 
   send(data: string): void {
     if (this.readyState !== PI_SOCKET_OPEN) return
-    if (new TextEncoder().encode(data).byteLength > 128 * 1024 || this.pendingSends.length + this.inFlight >= 64) {
+    const bytes = new TextEncoder().encode(data).byteLength
+    if (bytes > 128 * 1024 || this.queuedBytes + bytes > 8 * 1024 * 1024 || this.pendingSends.length >= 1024) {
       this.onerror?.()
       this.close(1013, 'WebSocket bridge queue limit exceeded')
       return
     }
-    if (this.id === null || !this.invokeFn) {
-      // open 事件可能先于 invoke 返回 id 到达，先缓冲
-      this.pendingSends.push(data)
-      return
-    }
+    this.pendingSends.push({ data, bytes })
+    this.queuedBytes += bytes
+    this.pump()
+  }
+
+  private pump(): void {
+    // 顺序等待 Rust 的有界通道准入，既保留输入顺序，也避免粘贴时并发 IPC 堆积。
+    if (this.readyState !== PI_SOCKET_OPEN || this.id === null || !this.invokeFn || this.inFlight) return
+    const next = this.pendingSends.shift()
+    if (!next) return
     const id = this.id
     this.inFlight++
-    void this.invokeFn('ws_bridge_send', { id, data })
+    void this.invokeFn('ws_bridge_send', { id, data: next.data })
       .catch(() => {
         this.onerror?.()
         this.close(1013, 'WebSocket bridge send failed')
       })
       .finally(() => {
         this.inFlight--
+        this.queuedBytes = Math.max(0, this.queuedBytes - next.bytes)
+        this.pump()
       })
   }
 
@@ -142,6 +153,7 @@ class TauriBridgeSocket implements PiSocket {
     if (this.readyState === PI_SOCKET_CLOSED) return
     this.closedByUs = true
     this.pendingSends = []
+    this.queuedBytes = 0
     const id = this.id
     if (id !== null && this.invokeFn) {
       this.readyState = PI_SOCKET_CLOSING

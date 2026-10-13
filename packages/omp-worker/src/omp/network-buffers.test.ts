@@ -24,16 +24,18 @@ test("IPC byte backpressure counts in-flight bytes and resumes after flush", () 
   assert.deepEqual(pauses, [true, false])
 })
 
-test("snapshot buffers flush by bytes and preserve subsequent event ordering", () => {
+test("snapshot buffers coalesce large values and preserve subsequent event ordering", () => {
   const emitted: JsonObject[] = []
   const buffer = new EventSnapshotBuffer<JsonObject>(event => emitted.push(event))
   buffer.push("a", "snapshot", { text: "x".repeat(600000) })
   buffer.push("b", "snapshot", { text: "y".repeat(600000) })
-  assert.equal(emitted.length, 2)
+  assert.equal(emitted.length, 0)
   buffer.push("a", "snapshot", { id: "update" })
   buffer.push("a", undefined, { id: "end" })
-  assert.deepEqual(emitted.slice(2).map(event => event.id), ["update", "end"])
+  assert.deepEqual(emitted.map(event => event.id), ["update", "end"])
   buffer.flush()
+  assert.equal(emitted.length, 3)
+  assert.equal(emitted[2]!.text, "y".repeat(600000))
 })
 
 test("attachments are delivered in lossless bounded base64 pages", () => {

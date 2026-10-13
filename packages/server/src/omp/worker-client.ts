@@ -5,6 +5,7 @@ import { diagnostics, diagnosticErrorCode } from "../diagnostics/recorder.ts";
 import { traceWorkerRequest } from "../diagnostics/worker-request.ts";
 import {
   isJsonObject,
+  jsonByteSize,
   type JsonObject,
   type JsonValue,
   type Problem,
@@ -17,6 +18,7 @@ import {
   type WorkerHostCall,
   type WorkerMessage,
 } from "@ompiui/omp-worker";
+import { RequestSender } from "./request-sender.ts";
 
 export interface WorkerClientOptions {
   env?: NodeJS.ProcessEnv;
@@ -171,6 +173,8 @@ function requestTimeoutMs(): number {
  */
 class WorkerHostCore {
   private readonly pending = new Map<string, PendingRequest>();
+  private requestBytes = 0;
+  private requestSender?: RequestSender;
   private readonly hostEventListeners = new Set<(event: WorkerEvent) => void>();
   private readonly crashListeners = new Set<(error: Error) => void>();
   /** sessionId → 句柄（runtime 替换后 key 随 updateSessionIdentity 迁移） */
@@ -696,6 +700,11 @@ class WorkerHostCore {
       return Promise.reject(
         this.exitError ?? new Error("Pi worker is not available"),
       );
+    const bytes = jsonByteSize(command, 32 * 1024 * 1024) + 512;
+    if (this.requestBytes + bytes > 32 * 1024 * 1024 || this.pending.size >= 1024) {
+      return Promise.reject(Object.assign(new Error("worker request capacity reached"), { code: "RATE_LIMITED" }));
+    }
+    this.requestBytes += bytes;
     const id = randomUUID();
     const trace = traceWorkerRequest({
       sessionId,
@@ -799,22 +808,25 @@ class WorkerHostCore {
             this.settleUnsentLate(id);
             return;
           }
-          this.child.send(
-            {
+          this.requestSender ??= new RequestSender(this.child);
+          this.requestSender.send({
+            bytes,
+            active: () => this.pending.get(id) === pending && !this.exitHandled,
+            message: {
               kind: "request",
               id,
               generation: helloMessage.generation,
               sessionId,
               command,
             },
-            (error) => {
+            done: (error) => {
               if (!error) return;
               this.pending.delete(id);
               clearTimeout(timer);
               pending.removeAbort?.();
               reject(error);
             },
-          );
+          });
         })
         .catch((error) => {
           if (this.pending.get(id) !== pending) {
@@ -826,7 +838,7 @@ class WorkerHostCore {
           pending.removeAbort?.();
           reject(error);
         });
-    }).then(
+    }).finally(() => { this.requestBytes -= bytes }).then(
       (data) => {
         trace.completed(data);
         return data;

@@ -15,6 +15,7 @@ import type { PiBranchPage } from './domain/index.js'
 import { activeSessionStore } from '../store/activeSessionStore'
 import * as controllers from './controllers/index.js'
 import { buildPiLiveItems } from './selectors/index.js'
+import * as http from './httpClient.js'
 
 // 触达私有方法做白盒测试（事件驱动路径需要 WS，单测直接调 handler）
 type Handler = (payload: unknown) => void
@@ -39,6 +40,48 @@ function fakeBranchPage(sessionId: string): PiBranchPage {
     hasMore: false,
   } as PiBranchPage
 }
+
+describe('bounded live recovery and cache cleanup', () => {
+  afterEach(() => {
+    piEventStream.disconnectAll()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+  it('single-flights live recovery and backs off when large checkpoints remain omitted', async () => {
+    vi.useFakeTimers()
+    const refresh = vi.spyOn(controllers, 'refreshPiBranch').mockResolvedValue(undefined)
+    const internal = piEventStream as unknown as { recoverLiveMessage(sessionId: string): void }
+    for (let i = 0; i < 100; i++) internal.recoverLiveMessage('large')
+    expect(refresh).toHaveBeenCalledTimes(1)
+    await Promise.resolve()
+    await Promise.resolve()
+    vi.advanceTimersByTime(4999)
+    internal.recoverLiveMessage('large')
+    expect(refresh).toHaveBeenCalledTimes(1)
+    vi.advanceTimersByTime(1)
+    internal.recoverLiveMessage('large')
+    expect(refresh).toHaveBeenCalledTimes(2)
+  })
+  it('clears subagent and command data after the last consumer disconnects', () => {
+    const internal = piEventStream as unknown as { refCounts: Map<string, number> }
+    internal.refCounts.set('closed', 1)
+    ompSubagentStore.applyLifecycle('closed', { id: 'child', parentToolCallId: 'task', status: 'started' })
+    piCommandStore.upsert({ id: 'closed-command', type: 'test', sessionId: 'closed', status: 'completed', submittedAt: '2026-10-13' })
+    piEventStream.disconnect('closed')
+    expect(ompSubagentStore.getRunsForToolCall('task', 'closed')).toHaveLength(0)
+    expect(piCommandStore.get('closed-command')).toBeNull()
+  })
+  it('bounds completed command results by bytes as well as record count', () => {
+    piCommandStore.clearAll()
+    for (let i = 0; i < 300; i++) piCommandStore.upsert({
+      id: `cache-${i}`, type: 'test', status: 'completed', submittedAt: '2026-10-13', result: 'x'.repeat(128 * 1024),
+    })
+    const snapshot = piCommandStore.getSnapshot()
+    expect(snapshot.length).toBeLessThan(256)
+    expect(JSON.stringify(snapshot).length).toBeLessThanOrEqual(16 * 1024 * 1024 + 256)
+    expect(piCommandStore.get('cache-299')).not.toBeNull()
+  })
+})
 
 describe('handleSessionsUpdated replacement semantics', () => {
   let replacedEvents: unknown[] = []
@@ -191,6 +234,43 @@ describe('omp.subagent routing across streams', () => {
       expect(refresh).toHaveBeenCalledWith('irc-parent')
     } finally {
       refresh.mockRestore()
+    }
+  })
+})
+
+describe('oversized event recovery', () => {
+  afterEach(() => {
+    piEventStream.disconnectAll()
+    vi.restoreAllMocks()
+  })
+
+  const raw = (value: unknown) =>
+    (piEventStream as unknown as { handleRaw(data: string): void }).handleRaw(JSON.stringify(value))
+
+  it('recovers completed command results once without advancing the omitted event cursor', async () => {
+    const command = { id: 'large-command', type: 'branch.get', status: 'completed' as const, submittedAt: '2026-10-13', result: { text: 'complete' } }
+    let release: ((value: Response) => void) | undefined
+    const read = vi.spyOn(http, 'piFetch').mockImplementation(() => new Promise(resolve => { release = resolve }))
+    const internal = piEventStream as unknown as { cursors: Map<string, unknown> }
+    internal.cursors.set('server', { epoch: 'test', sequence: 7 })
+    const frame = { channel: 'control', type: 'payload_omitted', stream: { kind: 'server', id: 'server' }, eventChannel: 'command.updated', commandId: command.id }
+    raw(frame)
+    raw(frame)
+    expect(read).toHaveBeenCalledOnce()
+    release?.(new Response(JSON.stringify({ command })))
+    await vi.waitFor(() => expect(piCommandStore.get(command.id)).toEqual(command))
+    expect(piCommandStore.get(command.id)).toEqual(command)
+    expect(internal.cursors.get('server')).toEqual({ epoch: 'test', sequence: 7 })
+  })
+
+  it('notifies terminal-list consumers even when the omitted event is not a session event', () => {
+    const listener = vi.fn()
+    window.addEventListener('ompiui:terminals-changed', listener)
+    try {
+      raw({ channel: 'control', type: 'payload_omitted', stream: { kind: 'workspace', id: 'C:/p' }, eventChannel: 'terminal.updated' })
+      expect(listener).toHaveBeenCalledOnce()
+    } finally {
+      window.removeEventListener('ompiui:terminals-changed', listener)
     }
   })
 })

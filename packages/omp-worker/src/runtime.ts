@@ -25,7 +25,7 @@ export interface SessionRuntime {
   getState(): JsonObject | Promise<JsonObject>
   getEntriesPage(cursor: string | undefined, limit: number, maxBytes: number): JsonObject | Promise<JsonObject>
   getBranchPage(cursor: string | undefined, limit: number, maxBytes: number, sync?: BranchSyncRequest): JsonObject | Promise<JsonObject>
-  getTree(): JsonValue | Promise<JsonValue>
+  getTree(params?: { cursor?: string; limit?: number; maxBytes?: number }): JsonValue | Promise<JsonValue>
   getAttachment(entryId: string, blockIndex: number, offset?: number): JsonObject | Promise<JsonObject>
   getSubagentMessages(params: { subagentId?: string; sessionFile?: string; fromByte?: number }): JsonValue | Promise<JsonValue>
   getRegistry(): RegistrySnapshot | Promise<RegistrySnapshot>

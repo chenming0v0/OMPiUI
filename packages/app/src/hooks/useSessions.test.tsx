@@ -44,6 +44,18 @@ function makeSession(id: string, directory = '/workspace/demo') {
 }
 
 describe('useSessions', () => {
+  it('searches and reveals more loaded sessions without retransmitting the list', async () => {
+    loadPiSessionsForCwdMock.mockResolvedValue([makeSession('a'), makeSession('b'), makeSession('c')])
+    const { result } = renderHook(() => useSessions({ directory: '/workspace/demo', pageSize: 1 }))
+    await act(async () => { vi.runAllTimers(); await Promise.resolve() })
+    expect(result.current.sessions).toHaveLength(1)
+    await act(async () => { await result.current.loadMore() })
+    expect(result.current.sessions).toHaveLength(2)
+    act(() => result.current.setSearch('Message c'))
+    await act(async () => { vi.advanceTimersByTime(300); await Promise.resolve() })
+    expect(result.current.sessions.map(session => session.id)).toEqual(['c'])
+    expect(loadPiSessionsForCwdMock).toHaveBeenCalledTimes(1)
+  })
   beforeEach(() => {
     vi.useFakeTimers()
     loadPiSessionsMock.mockReset()

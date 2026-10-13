@@ -120,6 +120,13 @@ export type EventServerMessage =
   | { channel: "event"; event: EventEnvelope }
   | {
       channel: "control"
+      type: "payload_omitted"
+      stream: EventStreamRef
+      eventChannel: EventChannel
+      commandId?: string
+    }
+  | {
+      channel: "control"
       type: "resync_required"
       streams: Partial<Record<EventStreamKey, { cursor: EventCursor; reason: EventResyncReason }>>
     }

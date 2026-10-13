@@ -1,4 +1,4 @@
-import { renderHook, waitFor } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import { StrictMode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useTerminalSessionRestore } from './useTerminalSessionRestore'
@@ -148,5 +148,27 @@ describe('useTerminalSessionRestore', () => {
 
     await waitFor(() => expect(result.current.isRestoring).toBe(false))
     expect(listHostTerminalsMock).toHaveBeenCalledWith('C:/p')
+  })
+
+  it('coalesces title events and shares the request across both panels', async () => {
+    let release: ((value: { terminals: [] }) => void) | undefined
+    listHostTerminalsMock.mockImplementation(() => new Promise(resolve => { release = resolve }))
+    const first = renderHook(() => useTerminalSessionRestore('C:/shared'))
+    const second = renderHook(() => useTerminalSessionRestore('C:/shared'))
+    await waitFor(() => expect(listHostTerminalsMock).toHaveBeenCalledTimes(1))
+    await act(async () => { release?.({ terminals: [] }) })
+    vi.useFakeTimers()
+    try {
+      for (let index = 0; index < 20; index++) {
+        window.dispatchEvent(new CustomEvent('ompiui:terminals-changed', { detail: { workspacePath: 'C:/shared' } }))
+      }
+      await act(async () => { await vi.advanceTimersByTimeAsync(350) })
+      expect(listHostTerminalsMock).toHaveBeenCalledTimes(2)
+      await act(async () => { release?.({ terminals: [] }) })
+    } finally {
+      first.unmount()
+      second.unmount()
+      vi.useRealTimers()
+    }
   })
 })

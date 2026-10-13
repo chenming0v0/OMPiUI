@@ -357,7 +357,9 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
           includeLiveMessage: P.optBoolean(p, "includeLiveMessage"),
         },
       ),
-  "tree.get": async (ctx) => ctx.requireRuntime().getTree(),
+  "tree.get": async (ctx, p) => ctx.requireRuntime().getTree({
+    cursor: P.optString(p, "cursor"), limit: P.optNumber(p, "limit"), maxBytes: P.optNumber(p, "maxBytes"),
+  }),
   "registry.get": async (ctx) => ctx.requireRuntime().getRegistry(),
   "skills.list": async (ctx) => ctx.requireRuntime().listSkills(),
   "prompts.list": async (ctx) => ctx.requireRuntime().listPrompts(),

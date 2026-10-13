@@ -5,6 +5,19 @@ afterEach(clearSubagentTranscripts)
 const line = (text: string) => `${JSON.stringify({ type: 'message', message: { role: 'assistant', content: text } })}\n`
 
 describe('subagent transcript cursor cache', () => {
+  it('uses the first legacy response without fetching the same page again', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce({ transcript: line('old server'), nextByte: 100, hasMore: false })
+      .mockResolvedValueOnce({ transcript: '', nextByte: 100, hasMore: false })
+    expect(await readSubagentTranscript('legacy', undefined, fetch, undefined, 'persistent-legacy'))
+      .toMatchObject({ messages: [{ content: 'old server' }] })
+    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(fetch.mock.calls[0][2]).toMatchObject({ version: 1 })
+    await readSubagentTranscript('legacy', undefined, fetch, undefined, 'persistent-legacy')
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(fetch.mock.calls[1][0]).toBe(100)
+    expect(fetch.mock.calls[1][2]).toBeUndefined()
+  })
   it('continues from zero after the file is truncated and reset', async () => {
     const fetch = vi.fn().mockResolvedValueOnce({ transcript: line('old'), nextByte: 500, hasMore: false })
       .mockResolvedValueOnce({ transcript: line('replacement'), reset: true, nextByte: 100, hasMore: true })

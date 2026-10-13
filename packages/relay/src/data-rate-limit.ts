@@ -29,6 +29,14 @@ export class DataRateLimit {
     return this.bytes >= bytes && this.frames >= frames;
   }
 
+  delayMs(bytes: number, frames = 1): number {
+    this.refill();
+    return Math.max(1, Math.ceil(1000 * Math.max(
+      (bytes - this.bytes) / this.bytesPerSecond,
+      (frames - this.frames) / this.framesPerSecond,
+    )));
+  }
+
   private refill(): void {
     const now = this.now();
     const seconds = Math.max(0, now - this.last) / 1000;

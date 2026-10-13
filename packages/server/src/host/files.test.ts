@@ -54,6 +54,26 @@ describe("workspace files", () => {
     assert.equal((await readFileContent(workspace, " spaced .txt")).content, "exact")
   })
 
+  it("pages long directory names within the byte limit without skipping entries", async () => {
+    const { root, workspace } = fixture()
+    for (let i = 0; i < 2000; i++) writeFileSync(path.join(root, `${String(i).padStart(4, "0")}-${"x".repeat(160)}.txt`), "")
+    let cursor: string | undefined
+    const names = new Set<string>()
+    let pages = 0
+    do {
+      const page = await listFiles(workspace, "", { limit: 2000, cursor })
+      assert.ok(Buffer.byteLength(JSON.stringify(page)) <= 512 * 1024)
+      for (const entry of page.entries) {
+        assert.equal(names.has(entry.name), false)
+        names.add(entry.name)
+      }
+      cursor = page.nextCursor
+      pages++
+    } while (cursor)
+    assert.ok(pages > 1)
+    assert.equal(names.size, 2000)
+  })
+
   it("rejects a directory cursor after the directory changes", async () => {
     const { root, workspace } = fixture()
     writeFileSync(path.join(root, "a.txt"), "a")
@@ -62,6 +82,19 @@ describe("workspace files", () => {
     writeFileSync(path.join(root, "c.txt"), "c")
     await assert.rejects(listFiles(workspace, "", { limit: 1, cursor: first.nextCursor }), error =>
       (error as { code?: string }).code === "STALE_REVISION")
+  })
+
+  it("conditionally revalidates a preview without retransmitting an unchanged body", async () => {
+    const { root, workspace } = fixture()
+    writeFileSync(path.join(root, "preview.txt"), "original")
+    const first = await readFileContent(workspace, "preview.txt")
+    const unchanged = await readFileContent(workspace, "preview.txt", first.etag)
+    assert.equal(unchanged.notModified, true)
+    assert.equal(unchanged.content, "")
+    writeFileSync(path.join(root, "preview.txt"), "new")
+    const changed = await readFileContent(workspace, "preview.txt", first.etag)
+    assert.equal(changed.notModified, undefined)
+    assert.equal(changed.content, "new")
   })
 
   it("serializes concurrent ETag writes so one stale writer loses", async () => {

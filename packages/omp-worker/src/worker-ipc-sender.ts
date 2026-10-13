@@ -1,4 +1,5 @@
 import type { WorkerMessage } from "./ipc.js"
+import { jsonByteSize } from "@ompiui/protocol"
 
 type QueuedMessage = { message: WorkerMessage; bytes: number; done?: (error?: Error) => void }
 
@@ -18,7 +19,7 @@ export class WorkerIpcSender {
   ) {}
 
   send(message: WorkerMessage, done?: (error?: Error) => void): void {
-    const item = { message, done, bytes: Buffer.byteLength(JSON.stringify(message)) }
+    const item = { message, done, bytes: jsonByteSize(message, this.highWaterBytes) }
     if (message.kind === "heartbeat") {
       if (this.heartbeat) this.pendingBytes -= this.heartbeat.bytes
       this.heartbeat = item

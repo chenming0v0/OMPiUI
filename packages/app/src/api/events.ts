@@ -65,6 +65,7 @@ function syncFromStore(): void {
 }
 
 function checkActiveServerHealth(): void {
+  if (document.hidden) return
   void serverStore.checkHealth(serverStore.getActiveServerId())
 }
 
@@ -78,6 +79,9 @@ function ensureTracking(): void {
     checkActiveServerHealth()
   })
   window.setInterval(checkActiveServerHealth, HEALTH_POLL_INTERVAL_MS)
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) checkActiveServerHealth()
+  })
   syncFromStore()
   checkActiveServerHealth()
 }

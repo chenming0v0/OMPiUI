@@ -9,9 +9,8 @@ export class TextWindow {
 
   constructor(private readonly limit: number) {}
 
-  append(text: string): void {
+  append(text: string, bytes = Buffer.byteLength(text)): void {
     if (!text) return;
-    const bytes = Buffer.byteLength(text);
     this.chunks.push({ text, bytes });
     this.bytes += bytes;
     this.length += text.length;

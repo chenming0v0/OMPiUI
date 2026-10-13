@@ -47,6 +47,26 @@ describe("parsePorcelainStatus", () => {
 })
 
 describe("Git workspace API", () => {
+  it("shares an HTTP-style in-flight query while allowing one consumer to cancel", async () => {
+    const root = repository()
+    const first = new AbortController()
+    const second = new AbortController()
+    const cancelled = getGitInfo(root, first.signal)
+    const retained = getGitInfo(root, second.signal)
+    first.abort()
+    await assert.rejects(cancelled, { code: "REQUEST_ABORTED" })
+    assert.equal((await retained).root, true)
+  })
+
+  it("reports unavailable untracked statistics rather than silently claiming zero lines", async () => {
+    const root = repository()
+    const { truncateSync } = await import("node:fs")
+    const file = path.join(root, "large.txt")
+    writeFileSync(file, "x")
+    truncateSync(file, 33 * 1024 * 1024)
+    const diff = await getGitDiff(root, "git")
+    assert.equal(diff.files.find(item => item.file === "large.txt")?.statsTruncated, true)
+  })
   it("returns net worktree changes and a displayable file patch", async () => {
     const root = repository()
     writeFileSync(path.join(root, "tracked.txt"), "base\nnext\n")

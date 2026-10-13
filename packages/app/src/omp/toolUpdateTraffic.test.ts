@@ -3,6 +3,7 @@ import { piEventStream } from './eventStream'
 import * as controllers from './controllers/index.js'
 import { liveToolOutputStore } from './liveToolOutput'
 import { ompSubagentStore } from './ompSubagentStore'
+import { piSessionStateStore } from './state/index.js'
 
 afterEach(() => {
   piEventStream.disconnectAll()
@@ -10,6 +11,32 @@ afterEach(() => {
   liveToolOutputStore.delete('traffic-tool')
   vi.restoreAllMocks()
   vi.useRealTimers()
+})
+
+it('appends bash deltas without per-frame state reads and refreshes at the settled boundary', async () => {
+  vi.useFakeTimers()
+  const state = vi.spyOn(controllers, 'refreshPiSessionState').mockResolvedValue()
+  vi.spyOn(controllers, 'refreshPiBranch').mockResolvedValue()
+  const patch = vi.spyOn(piSessionStateStore, 'patchState')
+  const emit = (event: unknown) => (piEventStream as unknown as { handlePiEvent(id: string, payload: unknown): void })
+    .handlePiEvent('bash-session', { event, meta: { epoch: 'events', sequence: 1 } })
+  for (let index = 0; index < 34; index++) {
+    emit({ type: 'bash_execution_update', id: 'bash-output', delta: 'line\n' })
+    await vi.advanceTimersByTimeAsync(300)
+  }
+  expect(state).not.toHaveBeenCalled()
+  expect(patch).toHaveBeenLastCalledWith('bash-session', { isBashRunning: true, isIdle: false })
+  emit({ type: 'agent_settled' })
+  await vi.advanceTimersByTimeAsync(200)
+  expect(state).toHaveBeenCalledOnce()
+})
+
+it('configuration updates do not mark bash as running', () => {
+  const patch = vi.spyOn(piSessionStateStore, 'patchState')
+  ;(piEventStream as unknown as { handlePiEvent(id: string, payload: unknown): void })
+    .handlePiEvent('config-session', { event: { type: 'config_update', thinkingLevel: 'high' }, meta: { epoch: 'events', sequence: 1 } })
+  expect(patch).toHaveBeenCalledWith('config-session', { thinkingLevel: 'high' })
+  expect(patch).not.toHaveBeenCalledWith('config-session', expect.objectContaining({ isBashRunning: true }))
 })
 
 it('updates live tool output without polling state on every frame, then refreshes on completion', async () => {

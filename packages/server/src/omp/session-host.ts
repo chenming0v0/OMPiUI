@@ -164,18 +164,18 @@ export class SessionHost {
           code: "SESSION_NOT_FOUND",
         });
       }
-      const preview = await this.catalogCommand(
-        "session.preview",
-        { sessionId: found.id },
+      const state = await this.catalogCommand(
+        "session.read",
+        { sessionId: found.id, query: "state.get" },
         { idempotent: true, signal },
       );
-      if (!isJsonObject(preview)) throw new Error("Invalid session preview");
+      if (!isJsonObject(state)) throw new Error("Invalid session state");
       return {
         sessionId: found.id,
         sessionFile,
         sessionFileReady: true,
         cwd: found.cwd ?? cwd,
-        state: preview.state ?? null,
+        state,
       };
     }
     if (sessionFile && reuseFromSessionId) {

@@ -35,7 +35,7 @@ import {
   type LiveMessage,
   type SessionHead,
 } from "./pagination.js";
-import { buildSessionTreeFromEntries } from "./session-tree.js";
+import { buildSessionTreeFromEntries, sessionTreePage } from "./session-tree.js";
 import { copySessionFile } from "../omp/managed-sessions.js";
 
 const MOCK_SDK_VERSION = "mock";
@@ -370,7 +370,7 @@ export class MockCatalog implements CatalogProvider, PackagesGateway {
     if (query === "branch.get" || query === "entries.get")
       return preview.branch!;
     const { entries } = readJsonlFile(info.path);
-    if (query === "tree.get") return buildSessionTreeFromEntries(entries, true);
+    if (query === "tree.get") return sessionTreePage(entries, (preview.branch as unknown as EntriesPage).head, params);
     if (query === "attachment.get") {
       const entry = entries.find((item) => item.id === params.entryId);
       const content = isJsonObject(entry?.message)
@@ -717,7 +717,8 @@ export class MockPiSession implements SessionRuntime {
     );
   }
 
-  getTree(): JsonValue {
+  getTree(params?: { cursor?: string; limit?: number; maxBytes?: number }): JsonValue {
+    if (params) return sessionTreePage(this.entries, this.getHead(), params);
     return buildSessionTreeFromEntries(this.entries, true);
   }
 

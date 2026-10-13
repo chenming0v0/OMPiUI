@@ -15,7 +15,7 @@ export function piSessionInfoToUiSession(item: SessionInfo): UiSession | null {
     title: name || firstMessage || 'New chat',
     firstMessage,
     messageCount: typeof item.messageCount === 'number' ? item.messageCount : undefined,
-    searchText: firstString(item.allMessagesText),
+    searchText: firstString(item.allMessagesText, item.firstMessage),
     isNamed: Boolean(name),
     createdAt,
     updatedAt,

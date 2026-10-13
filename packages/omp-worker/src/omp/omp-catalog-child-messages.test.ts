@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { after, before, describe, it } from "node:test"
-import { readChildSessionMessages, readChildSessionPage } from "./omp-catalog.js"
+import { readChildSessionMessages, readChildSessionPage, readChildSessionPreviewPage } from "./omp-catalog.js"
 
 // ompAgentDir 每次调用读 PI_CODING_AGENT_DIR：整个文件级 fixture 指向临时目录
 const root = mkdtempSync(path.join(tmpdir(), "ompiui-child-msgs-"))
@@ -53,6 +53,16 @@ after(() => {
 })
 
 describe("readChildSessionMessages", () => {
+  it("conditionally reuses native child preview blocks through the authorized disk reader", async () => {
+    const file = path.join(childDir, "Conditional.jsonl")
+    writeFileSync(file, JSON.stringify({ type: "message", message: { role: "assistant", content: "cached native body" } }) + "\n")
+    const first = await readChildSessionPreviewPage(file, 0, { version: 1, knownBlocks: [] })
+    const blocks = first.blocks as Array<{ fromByte: number; nextByte: number; hash: string }>
+    const second = await readChildSessionPreviewPage(file, 0, { version: 1, knownBlocks: blocks })
+    assert.equal(second.syncVersion, 1)
+    assert.equal((second.blocks as Array<{ kind: string }>)[0]?.kind, "reuse")
+    assert.ok(!JSON.stringify(second).includes("cached native body"))
+  })
   it("pages large Unicode JSONL lines losslessly and resets a truncated cursor", async () => {
     const file = path.join(childDir, "Large.jsonl")
     const message = { role: "assistant", content: "正文😀".repeat(100000) }

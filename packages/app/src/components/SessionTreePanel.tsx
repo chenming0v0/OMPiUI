@@ -189,11 +189,14 @@ export const SessionTreePanel = memo(function SessionTreePanel({
 
   // Reload the tree whenever the native head moves (navigate/label/new entries)
   useEffect(() => {
-    if (mode !== 'tree') return
+    if (mode !== 'tree' || state?.isIdle === false) return
     if (headFingerprint === undefined || headFingerprint === headFingerprintRef.current) return
-    headFingerprintRef.current = headFingerprint
-    void loadNativeTree()
-  }, [headFingerprint, loadNativeTree, mode])
+    const timer = window.setTimeout(() => {
+      headFingerprintRef.current = headFingerprint
+      void loadNativeTree()
+    }, 1000)
+    return () => window.clearTimeout(timer)
+  }, [headFingerprint, loadNativeTree, mode, state?.isIdle])
 
   // 压缩是异步的：命令返回时条目还没写入，等 operation 从忙转闲再补一次重载
   const compactionBusyRef = useRef(false)

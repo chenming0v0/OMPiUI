@@ -9,6 +9,9 @@ import type {
 import type { WorkspaceRecord } from "./workspace-store.ts";
 import { resolveWorkspacePath } from "./path-safety.ts";
 import { utf8Prefix } from "@ompiui/protocol";
+import { QueryPool } from "./query-pool.ts";
+
+const searchPool = new QueryPool(4);
 
 const SKIP_DIRS = new Set([
   "node_modules",
@@ -38,6 +41,14 @@ export async function searchFilesByName(
     limit?: number;
     signal?: AbortSignal;
   } = {},
+): Promise<FileNameSearchResponse> {
+  return searchPool.run(opts.signal, () => searchFilesByNameInSlot(ws, query, opts));
+}
+
+async function searchFilesByNameInSlot(
+  ws: WorkspaceRecord,
+  query: string,
+  opts: { type?: "file" | "directory"; limit?: number; signal?: AbortSignal },
 ): Promise<FileNameSearchResponse> {
   const started = performance.now();
   const needle = query.trim().toLocaleLowerCase();
@@ -79,6 +90,14 @@ export async function searchWorkspaceText(
   ws: WorkspaceRecord,
   pattern: string,
   opts: { limit?: number; signal?: AbortSignal } = {},
+): Promise<FileTextSearchResponse> {
+  return searchPool.run(opts.signal, () => searchWorkspaceTextInSlot(ws, pattern, opts));
+}
+
+async function searchWorkspaceTextInSlot(
+  ws: WorkspaceRecord,
+  pattern: string,
+  opts: { limit?: number; signal?: AbortSignal },
 ): Promise<FileTextSearchResponse> {
   const started = performance.now();
   const needle = pattern.trim();

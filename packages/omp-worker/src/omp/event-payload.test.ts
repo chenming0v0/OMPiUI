@@ -7,7 +7,7 @@ import type { OmpRpcFrame } from "./rpc-client.js"
 
 const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value))
 
-test("task updates omit unused repeated reports without truncating live text or modifying upstream data", () => {
+test("task updates omit unused reports and bound live text without modifying upstream data", () => {
   const progress = Array.from({ length: 10 }, (_, index) => ({ id: `child-${index}`, status: "completed",
     extractedToolData: { yield: [{ report: "x".repeat(14000) }] }, tokens: 1000 }))
   const event: JsonObject = { type: "tool_execution_update", toolCallId: "task-call", toolName: "task",
@@ -25,7 +25,9 @@ test("task updates omit unused repeated reports without truncating live text or 
     assert.equal(projectToolUpdate(boundary), boundary)
   }
   const ordinary = { ...event, toolName: "bash", partialResult: { content: [{ type: "text", text: "output".repeat(50000) }] } }
-  assert.deepEqual(projectToolUpdate(ordinary).partialResult, ordinary.partialResult)
+  const tail = ((projectToolUpdate(ordinary).partialResult as JsonObject).content as JsonObject[])[0]!.text as string
+  assert.equal(Buffer.byteLength(tail), 256 * 1024)
+  assert.ok(String(ordinary.partialResult.content[0]!.text).endsWith(tail))
 })
 
 test("subagent preview preserves UI progress and tool states without duplicating canonical results", () => {

@@ -8,4 +8,5 @@ test("maps bounded and unavailable backend capabilities to actionable HTTP statu
   assert.equal(statusForError(Object.assign(new Error("dialog closed"), { code: "EXTENSION_UI_CANCELLED" })), 409)
   assert.equal(statusForError(Object.assign(new Error("tui only"), { code: "EXTENSION_UI_TUI_ONLY" })), 501)
   assert.equal(statusForError(Object.assign(new Error("sdk mismatch"), { code: "PI_SDK_VERSION_MISMATCH" })), 503)
+  assert.equal(statusForError(Object.assign(new Error("history changed"), { code: "SYNC_SNAPSHOT_EXPIRED" })), 409)
 })

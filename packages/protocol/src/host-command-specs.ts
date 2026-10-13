@@ -137,8 +137,8 @@ export const HOST_COMMAND_SPECS = [
       {
         ...WORKSPACE_PATH,
         cwd: STRING,
-        shell: STRING,
-        title: STRING,
+        shell: byteString(4096),
+        title: byteString(512),
         ...TERMINAL_SIZE,
       },
       ["workspacePath"],
@@ -169,7 +169,7 @@ export const HOST_COMMAND_SPECS = [
     domain: "terminals",
     description: "Rename or resize a terminal session",
     paramsSchema: objectSchema(
-      { ...WORKSPACE_PATH, ...TERMINAL_ID, title: STRING, ...TERMINAL_SIZE },
+      { ...WORKSPACE_PATH, ...TERMINAL_ID, title: byteString(512), ...TERMINAL_SIZE },
       ["workspacePath", "terminalId"],
     ),
     emits: ["terminal.updated"],
@@ -227,7 +227,7 @@ export const HOST_COMMAND_SPECS = [
     name: "files.read",
     domain: "files",
     description: "Read a text or small binary workspace file",
-    paramsSchema: objectSchema({ ...WORKSPACE_PATH, ...RELATIVE_PATH }, [
+    paramsSchema: objectSchema({ ...WORKSPACE_PATH, ...RELATIVE_PATH, ifNoneMatch: byteString(1024) }, [
       "workspacePath",
       "path",
     ]),
@@ -371,7 +371,7 @@ export type HostCommandParams = {
     limit?: number;
     cursor?: string;
   };
-  "files.read": { workspacePath: string; path: string };
+  "files.read": { workspacePath: string; path: string; ifNoneMatch?: string };
   "files.write": {
     workspacePath: string;
     path: string;
