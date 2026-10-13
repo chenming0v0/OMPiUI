@@ -215,6 +215,7 @@ export type SubagentMessagesParams = {
   subagentId?: string
   sessionFile?: string
   fromByte?: number
+  sync?: import("./subagent-sync.js").SubagentSyncRequest
 }
 
 export type SessionChildrenParams = {

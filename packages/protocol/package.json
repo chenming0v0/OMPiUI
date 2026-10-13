@@ -1,6 +1,6 @@
 {
   "name": "@ompiui/protocol",
-  "version": "0.6.22",
+  "version": "0.6.23",
   "private": true,
   "type": "module",
   "exports": {
@@ -23,5 +23,8 @@
   },
   "engines": {
     "node": ">=22.19.0"
+  },
+  "dependencies": {
+    "@noble/hashes": "^2.4.0"
   }
 }

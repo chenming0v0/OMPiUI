@@ -55,6 +55,7 @@ export interface StartRelayOptions {
   config: RelayConfig;
   /** 结构化日志；缺省 console.info。测试传空函数静音。 */
   log?: (line: string) => void;
+  connectionIdleTimeoutMs?: number;
 }
 
 export interface RunningRelay {
@@ -76,6 +77,8 @@ interface VirtualConn {
   request: BodySink;
   upload: DataRateLimit;
   download: DataRateLimit;
+  source: string;
+  lastActivity: number;
 }
 
 interface TunnelSession {
@@ -88,6 +91,8 @@ interface TunnelSession {
   upload: DataRateLimit;
   download: DataRateLimit;
   control: DataRateLimit;
+  controlOut: DataRateLimit;
+  idleTimer?: NodeJS.Timeout;
 }
 
 /** 返回值语义：session=路由命中且在线；"offline"=命中已配置隧道但不在线；undefined=无路由。 */
@@ -249,8 +254,16 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
       upload: new DataRateLimit(),
       download: new DataRateLimit(),
       control: new DataRateLimit(1024 * 1024, 2 * 1024 * 1024),
+      controlOut: new DataRateLimit(1024 * 1024, 2 * 1024 * 1024),
     };
     tunnels.set(tunnel.id, session);
+    const idleMs = options.connectionIdleTimeoutMs ?? 120_000;
+    session.idleTimer = setInterval(() => {
+      for (const [id, conn] of session.conns) {
+        if (Date.now() - conn.lastActivity >= idleMs) abortConnection(session, id);
+      }
+    }, Math.min(30_000, Math.max(10, idleMs / 2)));
+    session.idleTimer.unref();
     log(
       `[omp-relay] tunnel "${tunnel.id}" connected (public entry: ${publicUrlFor(tunnel, controlHost)})`,
     );
@@ -281,6 +294,7 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
   function disposeSession(session: TunnelSession): void {
     if (!tunnels.has(session.id)) return;
     tunnels.delete(session.id);
+    clearInterval(session.idleTimer);
     for (const [connId, conn] of session.conns) {
       forgetConnection(session, connId);
       conn.res?.destroy();
@@ -343,6 +357,7 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
       case "head": {
         const conn = session.conns.get(frame.c);
         if (!conn || conn.headSent) return;
+        conn.lastActivity = Date.now();
         conn.headSent = true;
         if (conn.kind === "request") {
           conn.res!.writeHead(frame.s, stripHopByHopHeaders(frame.h));
@@ -399,6 +414,7 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
   ): void {
     const conn = session.conns.get(connId);
     if (!conn) return;
+    conn.lastActivity = Date.now();
     if (!conn.download.allow(payload.length + 18)) {
       abortConnection(session, connId);
       return;
@@ -461,7 +477,7 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
       }
       return;
     }
-    if (session.conns.size >= CONNECTIONS_PER_TUNNEL_MAX) {
+    if (!hasConnectionSlot(session, req)) {
       sendProblem(
         res,
         503,
@@ -493,7 +509,7 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
         !session.upload.canAllow(bytes, frames) ||
         !conn.upload.canAllow(bytes, frames)
       )
-        return false;
+        return Math.max(session.upload.delayMs(bytes, frames), conn.upload.delayMs(bytes, frames));
       session.upload.allow(bytes, frames);
       conn.upload.allow(bytes, frames);
       return true;
@@ -511,6 +527,8 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
       request: sink,
       upload: new DataRateLimit(4 * 1024 * 1024, 8 * 1024 * 1024),
       download: new DataRateLimit(),
+      source: clientAddress(req),
+      lastActivity: Date.now(),
     };
     session.conns.set(connId, conn);
     sendControl(session, {
@@ -522,6 +540,7 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
     });
     req.on("data", (chunk: Buffer) => {
       if (!session.conns.has(connId)) return;
+      conn.lastActivity = Date.now();
       sink.write(connId, chunk, req);
     });
     req.on("end", () => {
@@ -553,7 +572,7 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
     }
     const picked = pickTunnel(hostOf(req));
     const session = typeof picked === "object" ? picked : undefined;
-    if (!session || session.conns.size >= CONNECTIONS_PER_TUNNEL_MAX) {
+    if (!session || !hasConnectionSlot(session, req)) {
       socket.end(
         "HTTP/1.1 502 Bad Gateway\r\nconnection: close\r\ncontent-length: 0\r\n\r\n",
         () => socket.destroy(),
@@ -573,7 +592,7 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
         !session.upload.canAllow(bytes, frames) ||
         !conn.upload.canAllow(bytes, frames)
       )
-        return false;
+        return Math.max(session.upload.delayMs(bytes, frames), conn.upload.delayMs(bytes, frames));
       session.upload.allow(bytes, frames);
       conn.upload.allow(bytes, frames);
       return true;
@@ -594,6 +613,8 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
       request: sink,
       upload: new DataRateLimit(4 * 1024 * 1024, 8 * 1024 * 1024),
       download: new DataRateLimit(),
+      source: clientAddress(req),
+      lastActivity: Date.now(),
     };
     session.conns.set(connId, conn);
     // upgrade 的 connection/upgrade 头必须保留给 101 握手
@@ -609,6 +630,7 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
     }
     socket.on("data", (chunk: Buffer) => {
       if (!session.conns.has(connId)) return;
+      conn.lastActivity = Date.now();
       sink.write(connId, chunk, socket);
     });
     socket.on("end", () => {
@@ -707,13 +729,34 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
     return result;
   }
 
+  function clientAddress(req: IncomingMessage): string {
+    const peer = req.socket.remoteAddress;
+    return (isTrustedProxy(peer, trustedProxies)
+      ? resolveForwardedClient(req.headers["x-forwarded-for"], trustedProxies) ?? peer : peer) ?? "unknown";
+  }
+
+  function hasConnectionSlot(session: TunnelSession, req: IncomingMessage): boolean {
+    if (session.conns.size >= CONNECTIONS_PER_TUNNEL_MAX) return false;
+    const source = clientAddress(req);
+    let count = 0;
+    for (const conn of session.conns.values()) if (conn.source === source) count++;
+    return count < CONNECTIONS_PER_TUNNEL_MAX / 2;
+  }
+
   function sendControl(session: TunnelSession, frame: ControlFrame): void {
     if (session.ws.readyState !== WebSocket.OPEN) return;
     const send = () => {
       if (session.ws.readyState !== WebSocket.OPEN) return;
       const data = JSON.stringify(frame);
-      if (!session.control.allow(Buffer.byteLength(data) + 14)) {
-        disposeSession(session);
+      if (!session.controlOut.allow(Buffer.byteLength(data) + 14)) {
+        if ("c" in frame) {
+          const conn = forgetConnection(session, frame.c);
+          if (conn?.res && !conn.res.headersSent) sendProblem(conn.res, 429, "TUNNEL_RATE_LIMITED", "control capacity reached");
+          else conn?.res?.destroy();
+          conn?.socket?.destroy();
+          // 小型清理帧必须仍可交付，否则对端请求会滞留到空闲超时。
+          session.ws.send(JSON.stringify({ type: "abort", c: frame.c }));
+        }
         return;
       }
       session.ws.send(data);

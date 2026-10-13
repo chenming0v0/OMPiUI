@@ -63,7 +63,7 @@ export function mergeLatestBranchPage(current: PiBranchPage | null, latest: PiBr
       (localIsNewer || !remotePosition || page.checkpoint?.liveMessageOmitted)
         ? localIsNewer || !remotePosition
           ? current.checkpoint
-          : { ...current.checkpoint!, position: remotePosition }
+          : { ...current.checkpoint!, position: remotePosition, liveMessageOmitted: page.checkpoint?.liveMessageOmitted }
         : page.checkpoint
 
     if (checkpoint === page.checkpoint && Object.keys(stableEntryIds).length === 0) return page

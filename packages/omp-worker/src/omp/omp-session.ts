@@ -9,17 +9,18 @@ import type {
   RegistrySnapshot,
   SessionActivityStatus,
 } from "@ompiui/protocol";
-import { formatGoalMessage, isJsonObject } from "@ompiui/protocol";
+import { formatGoalMessage, isJsonObject, utf8Prefix } from "@ompiui/protocol";
 import {
   entriesPageFromEntries,
   imageAttachmentFromEntry,
+  projectEntryAttachments,
   sessionHeadFromParts,
   type BranchCheckpoint,
   type EntriesPage,
   type LiveMessage,
   type SessionHead,
 } from "../runtime/pagination.js";
-import { buildSessionTreeFromEntries } from "../runtime/session-tree.js";
+import { buildSessionTreeFromEntries, sessionTreePage } from "../runtime/session-tree.js";
 import type { PiEventMeta, SessionRuntime, Unsubscribe } from "../runtime.js";
 import {
   normalizeCwd,
@@ -43,7 +44,7 @@ import { assertOmpSessionFile, backupOmpSession } from "./managed-sessions.js";
 import { SubagentEventBuffer } from "./subagent-event-buffer.js";
 import { EventSnapshotBuffer } from "./event-snapshot-buffer.js";
 import { BranchPageReader } from "../runtime/branch-pages.js";
-import { projectSubagentPayload, projectToolUpdate } from "./event-payload.js";
+import { projectStateImages, projectSubagentPayload, projectToolUpdate } from "./event-payload.js";
 import { MainMessageStream } from "./main-message-stream.js";
 import { getPreviewSettings } from "./preview-settings.js";
 import { projectPreviewMessage } from "./subagent-preview.js";
@@ -549,6 +550,9 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   private emitPiEvent(event: JsonObject): void {
+    if (event.type === "goal_updated" && isJsonObject(event.goal)) {
+      event = { ...event, goal: projectStateImages(event.goal) };
+    }
     const update =
       event.type === "message_update"
         ? "message"
@@ -698,12 +702,12 @@ export class OmpRpcSession implements SessionRuntime {
     }
   }
 
-  private getUserQueueSnapshot() {
+  private getUserQueueSnapshot(includeImages = false) {
     return {
       steering: this.userQueue.steering.map((item) => item.text),
       followUp: this.userQueue.followUp.map((item) => item.text),
-      steeringEntries: structuredClone(this.userQueue.steering),
-      followUpEntries: structuredClone(this.userQueue.followUp),
+      steeringEntries: this.userQueue.steering.map(item => includeImages ? structuredClone(item) : projectStateImages({ ...item } as JsonObject)),
+      followUpEntries: this.userQueue.followUp.map(item => includeImages ? structuredClone(item) : projectStateImages({ ...item } as JsonObject)),
     };
   }
 
@@ -1022,8 +1026,8 @@ export class OmpRpcSession implements SessionRuntime {
     const header: JsonObject = {
       version: 3,
       id: this.sessionId,
-      cwd: this.cwd,
-      name: this.sessionName,
+      cwd: utf8Prefix(this.cwd, 4096),
+      name: utf8Prefix(this.sessionName ?? "", 1024),
     };
     return sessionHeadFromParts(
       {
@@ -1088,8 +1092,9 @@ export class OmpRpcSession implements SessionRuntime {
     );
   }
 
-  async getTree(): Promise<JsonValue> {
+  async getTree(params?: { cursor?: string; limit?: number; maxBytes?: number }): Promise<JsonValue> {
     await this.ensureSynced();
+    if (params) return sessionTreePage(this.entries as unknown as JsonObject[], this.getHead(), params);
     // SDK getTree() 语义：整棵树（含所有分支）的嵌套 { entry, children }，
     // 前端 sessionTreeGraph 按该形状消费（issue #10）
     return buildSessionTreeFromEntries(
@@ -1104,7 +1109,9 @@ export class OmpRpcSession implements SessionRuntime {
     offset = 0,
   ): Promise<JsonObject> {
     await this.ensureSynced();
-    const entry = this.entries.find((item) => item.id === entryId);
+    const pending = this.submittedMessages.find(item => item.id === entryId);
+    const entry = this.entries.find((item) => item.id === entryId) ??
+      (pending ? { id: pending.id, message: pending.message } : undefined);
     if (!entry)
       throw Object.assign(new Error("entry not found"), { code: "NOT_FOUND" });
     const serialized = entry as unknown as JsonObject;
@@ -1208,7 +1215,7 @@ export class OmpRpcSession implements SessionRuntime {
         .filter((item) => item.accepted)
         .map((item) => ({
           id: item.id,
-          message: structuredClone(item.message),
+          message: projectEntryAttachments({ id: item.id, message: item.message }, head).message,
         })),
       pendingExtensionUiRequests: this.extensionUi.listPending(),
       extensionUiState: this.extensionUi.getStateMirror(),
@@ -1230,7 +1237,7 @@ export class OmpRpcSession implements SessionRuntime {
       subagents: this.getSubagentsSnapshot(),
       todoPhases: Array.isArray(native.todoPhases) ? native.todoPhases : [],
       // goal 运行时快照（前端目标栏用；worker 侧注册表，见 manageGoal）
-      goal: this.goal,
+      goal: isJsonObject(this.goal) ? projectStateImages(this.goal) : this.goal,
     };
   }
 
@@ -1825,7 +1832,7 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async clearQueue(): Promise<JsonValue | undefined> {
-    const cleared = this.getUserQueueSnapshot();
+    const cleared = this.getUserQueueSnapshot(true);
     this.userQueue = { steering: [], followUp: [] };
     this.emitUserQueueSnapshot();
     return cleared;
@@ -2098,16 +2105,13 @@ export class OmpRpcSession implements SessionRuntime {
     }
   }
 
-  async getSubagentMessages(params: {
-    subagentId?: string;
-    sessionFile?: string;
-    fromByte?: number;
-  }): Promise<JsonValue> {
+  async getSubagentMessages(params: import("@ompiui/protocol").SubagentMessagesParams): Promise<JsonValue> {
     if (params.sessionFile) {
       try {
         return await readChildSessionPreviewPage(
           params.sessionFile,
           params.fromByte ?? 0,
+          params.sync,
         );
       } catch (error) {
         if ((error as { code?: string }).code !== "NOT_FOUND") throw error;
@@ -2142,6 +2146,7 @@ export class OmpRpcSession implements SessionRuntime {
         return readChildSessionPreviewPage(
           params.sessionFile,
           params.fromByte ?? 0,
+          params.sync,
         );
       }
       throw error;

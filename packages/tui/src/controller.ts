@@ -21,6 +21,7 @@ export class ConsoleController {
   private operation: Promise<boolean> | undefined;
   private timer: NodeJS.Timeout | undefined;
   private disposed = false;
+  private failures = 0;
 
   constructor(private readonly adapter: ConsoleAdapter) {}
 
@@ -39,10 +40,17 @@ export class ConsoleController {
 
   async start(): Promise<void> {
     await this.refresh();
-    if (!this.disposed)
-      this.timer = setInterval(() => {
-        if (!this.state.busy) void this.refresh();
-      }, 2_000);
+    this.scheduleRefresh();
+  }
+
+  private scheduleRefresh(): void {
+    clearTimeout(this.timer);
+    if (this.disposed) return;
+    this.timer = setTimeout(() => {
+      if (this.state.busy) { this.scheduleRefresh(); return }
+      void this.refresh().finally(() => this.scheduleRefresh());
+    }, Math.min(60_000, 10_000 * 2 ** Math.min(this.failures, 3)));
+    this.timer.unref();
   }
 
   refresh(): Promise<void> {
@@ -51,9 +59,11 @@ export class ConsoleController {
     this.reading = this.adapter
       .read()
       .then((data) => {
-        if (!this.disposed) this.update({ data });
+        this.failures = data.tone === "danger" ? this.failures + 1 : 0;
+        if (!this.disposed) this.update({ data, error: null });
       })
       .catch((error) => {
+        this.failures++;
         if (!this.disposed)
           this.update({
             error: redact(
@@ -115,7 +125,7 @@ export class ConsoleController {
   shutdown(): Promise<void> {
     if (this.closing) return this.closing;
     this.disposed = true;
-    clearInterval(this.timer);
+    clearTimeout(this.timer);
     // 先等当前操作收尾，再清理它可能启动的进程；等待刷新的操作不再执行。
     this.closing = (async () => {
       await this.operation;

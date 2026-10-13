@@ -5,13 +5,13 @@ import { WebSocketServer, WebSocket } from "ws";
 import {
   EVENT_WS_SUBPROTOCOL,
   eventStreamKey,
-  splitUtf8Text,
   PROTOCOL_VERSION,
   type EventClientMessage,
   type EventServerMessage,
   type EventStreamRef,
   TERMINAL_STREAM_PROTOCOL_VERSION,
   isJsonObject,
+  isErrorCode,
   type TerminalStreamClientFrame,
   type TerminalStreamServerFrame,
 } from "@ompiui/protocol";
@@ -27,6 +27,8 @@ import { resolveAuthToken } from "./host/auth-token.ts";
 import type { TerminalManager } from "./host/terminal-manager.ts";
 import { diagnostics, diagnosticErrorCode } from "./diagnostics/recorder.ts";
 import { recordBrowserDiagnostic } from "./diagnostics/browser.ts";
+import { RateBudget } from "./rate-budget.ts";
+import { splitTerminalOutput } from "./terminal-output.ts";
 
 const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 // Client frames are tiny (ping/subscribe); cap to avoid buffering huge frames.
@@ -36,7 +38,6 @@ const allSockets = new Set<WebSocket>();
 const extraQueuedBytes = new WeakMap<WebSocket, number>();
 const TOTAL_OUTBOUND_BYTES = 64 * 1024 * 1024;
 const MAX_TERMINAL_BUFFERED_BYTES = 8 * 1024 * 1024;
-const TERMINAL_OUTPUT_CHUNK_BYTES = 32 * 1024;
 const TERMINAL_PATH = /^\/api\/v1\/host\/terminals\/([^/]+)\/stream$/;
 
 export interface EventWebSocketOptions {
@@ -105,8 +106,12 @@ export function attachEventWebSocket(
     }
     const offered = req.headers["sec-websocket-protocol"];
     if (wss.clients.size >= (options.maxConnections ?? 128)) {
+      const timer = setTimeout(() => socket.destroy(), 1000);
+      timer.unref();
+      socket.once("close", () => clearTimeout(timer));
       socket.end(
         "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+        () => socket.destroy(),
       );
       return;
     }
@@ -198,6 +203,7 @@ function attachConnection(
   let sessionIds: string[] = [];
   let diagnosticWindow = Date.now();
   let diagnosticCount = 0;
+  const subscribeBudget = new RateBudget(12, 4);
   diagnostics.record("connection.opened", { connectionId });
   ws.on("error", (error) =>
     diagnostics.record(
@@ -234,6 +240,7 @@ function attachConnection(
   });
 
   ws.on("message", (raw) => {
+    if (ws.readyState !== WebSocket.OPEN) return;
     try {
       const message = JSON.parse(String(raw)) as EventClientMessage;
       if (message.type === "diagnostic") {
@@ -269,6 +276,12 @@ function attachConnection(
       }
       if (!Array.isArray(message.streams) || message.streams.length > 256)
         return;
+      if (!subscribeBudget.allow(1)) {
+        ws.close(1008, "subscription rate limit exceeded");
+        const timer = setTimeout(() => ws.terminate(), 1000);
+        timer.unref();
+        return;
+      }
 
       const previous = new Set(subscribed);
       subscribed.clear();
@@ -276,12 +289,15 @@ function attachConnection(
         EventServerMessage,
         { type: "resync_required" }
       >["streams"] = {};
-      const seenStreams = new Set<string>();
+      const seenStreams = new Map<string, EventStreamRef>();
       for (const stream of message.streams) {
-        if (!stream.id || !isEventStreamKind(stream.kind)) continue;
+        if (
+          !stream || typeof stream.id !== "string" || !stream.id ||
+          Buffer.byteLength(stream.id) > 1024 || !isEventStreamKind(stream.kind)
+        ) continue;
         const key = eventStreamKey(stream);
         if (seenStreams.has(key)) continue;
-        seenStreams.add(key);
+        seenStreams.set(key, stream);
         subscribed.add(key);
         if (previous.has(key)) continue;
         const cursor = message.cursors?.[key as keyof typeof message.cursors];
@@ -303,11 +319,8 @@ function attachConnection(
           streams: resync,
         });
       }
-      sessionIds = message.streams
-        .filter(
-          (stream) =>
-            stream.kind === "session" && typeof stream.id === "string",
-        )
+      sessionIds = [...seenStreams.values()]
+        .filter((stream) => stream.kind === "session")
         .map((stream) => stream.id);
       diagnostics.record("connection.subscribed", {
         connectionId,
@@ -315,10 +328,10 @@ function attachConnection(
         sessionIds,
         count: subscribed.size,
       });
-      for (const [key, value] of Object.entries(resync)) {
-        const stream = message.streams.find(
-          (stream) => eventStreamKey(stream) === key,
-        );
+      const resyncEntries = Object.entries(resync);
+      if (resyncEntries.length) {
+        const [key, value] = resyncEntries[0]!;
+        const stream = seenStreams.get(key);
         diagnostics.record("connection.resync", {
           connectionId,
           clientId,
@@ -326,6 +339,11 @@ function attachConnection(
           reason: value?.reason,
           sequence: value?.cursor.sequence,
           epoch: value?.cursor.epoch,
+          count: resyncEntries.length,
+          sessionIds: resyncEntries
+            .map(([key]) => seenStreams.get(key))
+            .filter((stream) => stream?.kind === "session")
+            .map((stream) => stream!.id),
         });
       }
       if (previous.size === 0) onSubscribe?.((message) => send(ws, message));
@@ -362,23 +380,19 @@ function isEventStreamKind(value: string): value is EventStreamRef["kind"] {
 
 function send(ws: WebSocket, message: EventServerMessage): void {
   if (ws.readyState !== WebSocket.OPEN) return;
-  let wire = "event" in message ? eventWireFrame(message.event) : undefined;
+  const wire = "event" in message ? eventWireFrame(message.event) : undefined;
   let data = wire?.data ?? JSON.stringify(message);
   let bytes = wire?.bytes ?? Buffer.byteLength(data);
   if ("event" in message && bytes > MAX_OUTBOUND_MESSAGE_BYTES) {
-    // 正文由只读分页恢复；不伪造 history_expired，也不消费未交付正文的游标。
+    // 用独立控制帧恢复原通道，不将未交付事件伪装成另一种业务事件。
     const event = message.event;
     const payload = isJsonObject(event.payload) ? event.payload : {};
     data = JSON.stringify({
-      channel: "event",
-      event: {
-        ...event,
-        channel: "pi.event",
-        payload: {
-          event: { type: "entry_appended", truncated: true },
-          meta: payload.meta,
-        },
-      },
+      channel: "control",
+      type: "payload_omitted",
+      stream: event.stream,
+      eventChannel: event.channel,
+      commandId: event.channel === "command.updated" && typeof payload.id === "string" ? payload.id : undefined,
     });
     bytes = Buffer.byteLength(data);
   }
@@ -425,7 +439,7 @@ function attachTerminalConnection(
   let closed = false;
   let writing = false;
   let queuedBytes = 0;
-  const queue: string[] = [];
+  const queue: Array<{ data: string; bytes: number }> = [];
   let closeAfterFlush: { code: number; reason: string } | undefined;
   let detach = () => {};
   let outputParts: string[] = [];
@@ -467,10 +481,10 @@ function attachTerminalConnection(
       }
       return;
     }
-    queuedBytes -= Buffer.byteLength(next);
+    queuedBytes -= next.bytes;
     extraQueuedBytes.set(ws, queuedBytes + outputBytes);
     writing = true;
-    ws.send(next, (error) => {
+    ws.send(next.data, (error) => {
       writing = false;
       if (error) {
         close(1011, "terminal stream failed");
@@ -482,19 +496,22 @@ function attachTerminalConnection(
   const sendFrame = (frame: TerminalStreamServerFrame) => {
     if (closed || ws.readyState !== WebSocket.OPEN) return;
     const data = JSON.stringify(frame);
-    if (!canQueue(ws, Buffer.byteLength(data), MAX_TERMINAL_BUFFERED_BYTES)) {
+    const bytes = Buffer.byteLength(data);
+    if (!canQueue(ws, bytes, MAX_TERMINAL_BUFFERED_BYTES)) {
       close(1013, "terminal client too slow");
       return;
     }
-    queuedBytes += Buffer.byteLength(data);
+    queuedBytes += bytes;
     if (queuedBytes > MAX_TERMINAL_BUFFERED_BYTES) {
       close(1013, "terminal client too slow");
       return;
     }
-    queue.push(data);
+    queue.push({ data, bytes });
     extraQueuedBytes.set(ws, queuedBytes + outputBytes);
     pump();
   };
+  const problem = (code: string, message: string) =>
+    sendFrame({ type: "problem", problem: { code: isErrorCode(code) ? code : "INTERNAL", message } });
   const flushOutput = () => {
     clearTimeout(outputTimer);
     outputTimer = undefined;
@@ -514,15 +531,15 @@ function attachTerminalConnection(
       workspacePath,
       terminalId,
       cursor,
-      (data) => {
+      (data, bytes = Buffer.byteLength(data)) => {
         if (
-          !canQueue(ws, Buffer.byteLength(data), MAX_TERMINAL_BUFFERED_BYTES)
+          !canQueue(ws, bytes, MAX_TERMINAL_BUFFERED_BYTES)
         ) {
           close(1013, "terminal client too slow");
           return;
         }
         outputParts.push(data);
-        outputBytes += Buffer.byteLength(data);
+        outputBytes += bytes;
         extraQueuedBytes.set(ws, queuedBytes + outputBytes);
         if (outputBytes >= 32 * 1024) flushOutput();
         else outputTimer ??= setTimeout(flushOutput, 16);
@@ -543,12 +560,11 @@ function attachTerminalConnection(
     );
   } catch (error) {
     const code = errorCode(error);
-    sendTerminalProblem(
-      ws,
+    problem(
       code,
       error instanceof Error ? error.message : String(error),
     );
-    close(code === "TERMINAL_CURSOR_EXPIRED" ? 1008 : 1000, code);
+    closeWhenDrained(code === "TERMINAL_CURSOR_EXPIRED" ? 1008 : 1000, code);
     return;
   }
 
@@ -559,12 +575,11 @@ function attachTerminalConnection(
     terminal = manager.get(workspacePath, terminalId);
   } catch (error) {
     attachment.detach();
-    sendTerminalProblem(
-      ws,
+    problem(
       errorCode(error),
       error instanceof Error ? error.message : String(error),
     );
-    close(1000, "terminal not found");
+    closeWhenDrained(1000, "terminal not found");
     return;
   }
   sendFrame({
@@ -582,22 +597,25 @@ function attachTerminalConnection(
     if (!closed) attachment.activate();
   } catch (error) {
     attachment.detach();
-    sendTerminalProblem(
-      ws,
+    problem(
       errorCode(error),
       error instanceof Error ? error.message : String(error),
     );
-    close(1008, "terminal cursor expired");
+    closeWhenDrained(1008, "terminal cursor expired");
   }
 
+  const frameBudget = new RateBudget(240, 120);
   ws.on("message", (raw) => {
     if (closed) return;
+    if (!frameBudget.allow(1)) {
+      close(1013, "terminal input rate limit exceeded");
+      return;
+    }
     let frame: TerminalStreamClientFrame;
     try {
       frame = JSON.parse(String(raw)) as TerminalStreamClientFrame;
     } catch {
-      sendTerminalProblem(
-        ws,
+      problem(
         "INVALID_REQUEST",
         "invalid terminal stream frame",
       );
@@ -629,18 +647,18 @@ function attachTerminalConnection(
           t: Date.now(),
         });
       } else {
-        sendTerminalProblem(
-          ws,
+        problem(
           "INVALID_REQUEST",
           "invalid terminal stream frame",
         );
       }
     } catch (error) {
-      sendTerminalProblem(
-        ws,
-        errorCode(error),
+      const code = errorCode(error);
+      problem(
+        code,
         error instanceof Error ? error.message : String(error),
       );
+      if (code === "RATE_LIMITED") closeWhenDrained(1013, "terminal input budget exceeded");
     }
   });
   ws.on("close", () => {
@@ -655,18 +673,20 @@ function attachTerminalConnection(
   });
 }
 
-function splitTerminalOutput(data: string): string[] {
-  // JSON 控制字符最多膨胀六倍，保守限制线上帧而不改变现有协议。
-  return splitUtf8Text(data, Math.floor(TERMINAL_OUTPUT_CHUNK_BYTES / 6));
-}
-
 function sendTerminalProblem(
   ws: WebSocket,
   code: string,
   message: string,
 ): void {
   if (ws.readyState !== WebSocket.OPEN) return;
-  ws.send(JSON.stringify({ type: "problem", problem: { code, message } }));
+  const data = JSON.stringify({ type: "problem", problem: { code, message } });
+  if (!canQueue(ws, Buffer.byteLength(data), MAX_TERMINAL_BUFFERED_BYTES)) {
+    ws.close(1013, "terminal client too slow");
+    const timer = setTimeout(() => ws.terminate(), 1000);
+    timer.unref();
+    return;
+  }
+  ws.send(data);
 }
 
 function errorCode(error: unknown): string {

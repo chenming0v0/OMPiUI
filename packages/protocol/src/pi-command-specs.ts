@@ -1,5 +1,5 @@
 import type { JsonObject } from "./json.js";
-import type { CoreCommandParams, ImageInput } from "./commands.js";
+import type { CoreCommandParams, ImageInput, SubagentMessagesParams } from "./commands.js";
 import type { BranchSyncRequest } from "./session-page.js";
 import type {
   PiCapability,
@@ -41,6 +41,20 @@ export type PiCommandSpec = {
   cancellable?: boolean;
   idempotent?: boolean;
 };
+
+const SUBAGENT_SYNC_SCHEMA = objectSchema({
+  version: { const: 1 },
+  snapshot: byteString(128),
+  knownBlocks: {
+    type: "array",
+    maxItems: 32,
+    items: objectSchema({
+      fromByte: { type: "integer", minimum: 0 },
+      nextByte: { type: "integer", minimum: 0 },
+      hash: byteString(80),
+    }, ["fromByte", "nextByte", "hash"]),
+  },
+}, ["version", "knownBlocks"]);
 
 export function piSpecToCapability(spec: PiCommandSpec): PiCapability {
   const {
@@ -184,7 +198,7 @@ export const PI_COMMAND_SPECS = [
     name: "setSessionName",
     scope: "session",
     description: "Set the current Pi session name",
-    paramsSchema: objectSchema({ name: STRING }, ["name"]),
+    paramsSchema: objectSchema({ name: byteString(1024) }, ["name"]),
     queue: "serialized",
   },
   {
@@ -343,7 +357,7 @@ export const PI_COMMAND_SPECS = [
     source: "pi-extension",
     description: "Invoke a registered Pi tool by name",
     paramsSchema: objectSchema(
-      { name: STRING, arguments: objectSchema({}, [], true) },
+      { name: byteString(1024), arguments: { ...objectSchema({}, [], true), maxJsonBytes: 8 * 1024 * 1024 } },
       ["name"],
     ),
     queue: "serialized",
@@ -473,7 +487,7 @@ export const PI_COMMAND_SPECS = [
     scope: "session",
     description: "Respond to a pending Pi extension UI request",
     paramsSchema: objectSchema(
-      { requestId: STRING, response: objectSchema({}, [], true) },
+      { requestId: STRING, response: { ...objectSchema({}, [], true), maxJsonBytes: 1024 * 1024 } },
       ["requestId"],
     ),
     queue: "immediate",
@@ -482,7 +496,7 @@ export const PI_COMMAND_SPECS = [
     name: "setExtensionEditorState",
     scope: "session",
     description: "Set Pi extension editor state",
-    paramsSchema: objectSchema({ text: STRING }, ["text"]),
+    paramsSchema: objectSchema({ text: byteString(256 * 1024) }, ["text"]),
     queue: "immediate",
   },
   {
@@ -528,6 +542,7 @@ export const PI_COMMAND_SPECS = [
         subagentId: STRING,
         sessionFile: STRING,
         fromByte: { type: "integer", minimum: 0 },
+        sync: SUBAGENT_SYNC_SCHEMA,
       },
       [],
     ),
@@ -558,6 +573,7 @@ export const PI_COMMAND_SPECS = [
     name: "tree.get",
     scope: "session",
     description: "Read the Pi session tree",
+    paramsSchema: pageParams(),
     queue: "immediate",
     idempotent: true,
   },
@@ -668,7 +684,20 @@ export const PI_COMMAND_SPECS = [
             "subagent.messages",
           ],
         },
-        params: objectSchema({}, [], true),
+        params: {
+          ...pageParams({
+            syncCursor: byteString(4096),
+            beforeId: byteString(4096),
+            includeLiveMessage: BOOLEAN,
+            entryId: byteString(4096),
+            blockIndex: { type: "integer", minimum: 0 },
+            offset: { type: "integer", minimum: 0 },
+            sessionFile: byteString(4096),
+            fromByte: { type: "integer", minimum: 0 },
+            sync: SUBAGENT_SYNC_SCHEMA,
+          }),
+          maxJsonBytes: 64 * 1024,
+        },
       },
       ["sessionId", "query"],
     ),
@@ -739,7 +768,7 @@ export const PI_COMMAND_SPECS = [
     scope: "global",
     description: "Patch Pi settings for a workspace",
     paramsSchema: objectSchema(
-      { cwd: STRING, patch: objectSchema({}, [], true) },
+      { cwd: STRING, patch: { ...objectSchema({}, [], true), maxJsonBytes: 1024 * 1024 } },
       ["cwd"],
     ),
     queue: "serialized",
@@ -845,7 +874,7 @@ export const PI_COMMAND_SPECS = [
     name: "modelRuntime.refresh",
     scope: "global",
     description: "Refresh model runtime state",
-    paramsSchema: objectSchema({ options: objectSchema({}, [], true) }),
+    paramsSchema: objectSchema({ options: { ...objectSchema({}, [], true), maxJsonBytes: 1024 * 1024 } }),
     queue: "serialized",
   },
   {
@@ -859,7 +888,7 @@ export const PI_COMMAND_SPECS = [
     name: "modelRoles.set",
     scope: "global",
     description: "Write OMP model role assignments (whole record)",
-    paramsSchema: objectSchema({ roles: objectSchema({}, [], true) }, [
+    paramsSchema: objectSchema({ roles: { ...objectSchema({}, [], true), maxJsonBytes: 1024 * 1024 } }, [
       "roles",
     ]),
     queue: "serialized",
@@ -1037,17 +1066,13 @@ export type PiCommandParams = CoreCommandParams & {
   "state.get": Record<string, never>;
   "entries.get": PiPageParams;
   "branch.get": PiPageParams & BranchSyncRequest;
-  "tree.get": Record<string, never>;
+  "tree.get": PiPageParams;
   "registry.get": Record<string, never>;
   "skills.list": Record<string, never>;
   "prompts.list": Record<string, never>;
   "agentsFiles.list": Record<string, never>;
   "attachment.get": { entryId: string; blockIndex: number; offset?: number };
-  "subagent.messages": {
-    subagentId?: string;
-    sessionFile?: string;
-    fromByte?: number;
-  };
+  "subagent.messages": SubagentMessagesParams;
   "commands.completions": { name: string; prefix: string };
   goal: {
     op: "set" | "pause" | "resume" | "drop";

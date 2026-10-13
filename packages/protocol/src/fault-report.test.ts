@@ -60,3 +60,13 @@ test("upload is credential-free, validates the returned link and resumes after a
   await assert.rejects(uploadFaultReport("x", (async () =>
     new Response(JSON.stringify({ success: true, id: "safe", url: "https://attacker.example/safe" }))) as typeof fetch), /INVALID_RESPONSE/)
 })
+
+test("form-encoded parts respect the actual request body budget", () => {
+  const content = '{"text":"中文🙂 +%&"}\n'.repeat(30)
+  const parts = splitFaultReport(content, 128, 24_000, true)
+  assert.equal(parts.join(""), content)
+  assert.ok(parts.length > 1)
+  for (const part of parts) {
+    assert.ok(Buffer.byteLength(new URLSearchParams({ content: part }).toString()) <= 128)
+  }
+})

@@ -13,6 +13,7 @@ import type {
   GitStatusResponse,
 } from "@ompiui/protocol";
 import { normalizeRelativePath } from "./path-safety.ts";
+import { mapConcurrent, QueryPool } from "./query-pool.ts";
 
 const TIMEOUT_MS = 15_000;
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
@@ -20,6 +21,9 @@ const CACHE_MS = 250;
 const MAX_CONCURRENT_GIT = 4;
 const cache = new Map<string, { expiresAt: number; value: Promise<unknown> }>();
 const completedCache = new Map<string, { expiresAt: number; value: unknown }>();
+const queryFlights = new Map<string, { controller: AbortController; users: number; settled: boolean; value: Promise<unknown> }>();
+const statPool = new QueryPool(8);
+const untrackedCache = new Map<string, { size: number; modified: number; result: { additions: number; deletions: number; binary: boolean } }>();
 let activeGitCommands = 0;
 const gitWaiters: Array<() => void> = [];
 
@@ -150,7 +154,7 @@ export function getGitInfo(
   cwd: string,
   signal?: AbortSignal,
 ): Promise<GitInfoResponse> {
-  return cachedResult(cwd, "info", signal, () => loadGitInfo(cwd, signal));
+  return cachedResult(cwd, "info", signal, shared => loadGitInfo(cwd, shared));
 }
 
 async function loadGitInfo(
@@ -274,14 +278,15 @@ function parsePorcelainLines(stdout: string, prefix: string): GitStatusItem[] {
 export function getGitStatus(
   cwd: string,
   signal?: AbortSignal,
+  onlyPath?: string,
 ): Promise<GitStatusResponse> {
-  const load = async () => {
+  const load = async (signal: AbortSignal) => {
     const info = await getGitInfo(cwd, signal);
     if (!info.root) return { branch: null, ahead: 0, behind: 0, items: [] };
     const prefix = await repoPrefix(cwd, signal);
     const result = await runGit(
       cwd,
-      ["status", "--porcelain=v1", "--untracked-files=all", "-z", "--", "."],
+      ["status", "--porcelain=v1", "--untracked-files=all", "-z", "--", onlyPath ?? "."],
       { signal },
     );
     assertGitSuccess(result, "git status");
@@ -292,7 +297,7 @@ export function getGitStatus(
       items: parsePorcelainStatusZ(text(result.stdout), prefix),
     };
   };
-  return cachedResult(cwd, "status", signal, load);
+  return cachedResult(cwd, `status:${onlyPath ?? "*"}`, signal, load);
 }
 
 export function getGitDiff(
@@ -301,13 +306,13 @@ export function getGitDiff(
   signal?: AbortSignal,
   onlyPath?: string,
 ): Promise<GitDiffResponse> {
-  const load = async () => {
+  const load = async (signal: AbortSignal) => {
     const info = await getGitInfo(cwd, signal);
     if (!info.root) return { mode, files: [] };
     const comparison = await comparisonForMode(cwd, mode, info, signal);
     const status =
       onlyPath && mode !== "branch"
-        ? await getGitStatus(cwd, signal)
+        ? await getGitStatus(cwd, signal, onlyPath)
         : undefined;
     const oldPath = status?.items.find(
       (item) => item.path === onlyPath,
@@ -332,7 +337,7 @@ export function getGitDiff(
       text(numbersResult.stdout),
     );
     if (mode === "git") {
-      const status = await getGitStatus(cwd, signal);
+      const status = await getGitStatus(cwd, signal, onlyPath);
       const missing = status.items.filter(
         (item) =>
           item.status === "untracked" &&
@@ -340,12 +345,12 @@ export function getGitDiff(
           !files.some((file) => file.file === item.path),
       );
       const budget = { remaining: MAX_UNTRACKED_STAT_BYTES };
-      const extras = await Promise.all(
-        missing.map(async (item) => ({
+      const extras = await mapConcurrent(
+        missing, 8, async (item) => ({
           file: item.path,
           status: "untracked" as const,
-          ...(await countUntrackedStats(cwd, item.path, signal, budget)),
-        })),
+          ...(await statPool.run(signal, () => countUntrackedStats(cwd, item.path, signal, budget))),
+        }),
       );
       files.push(...extras);
     }
@@ -384,6 +389,8 @@ async function countUntrackedStats(
     if (signal?.aborted) throw cancelledError();
     const absolute = path.join(cwd, relative);
     const stat = await fs.stat(absolute);
+    const cachedStat = untrackedCache.get(absolute);
+    if (cachedStat?.size === stat.size && cachedStat.modified === stat.mtimeMs) return cachedStat.result;
     if (
       !stat.isFile() ||
       stat.size > MAX_UNTRACKED_STAT_BYTES ||
@@ -425,14 +432,18 @@ async function countUntrackedStats(
       stream.destroy();
     }
     if (bytes && last !== 0x0a) lines += 1;
-    return { additions: lines, deletions: 0, binary: false };
+    const result = { additions: lines, deletions: 0, binary: false };
+    untrackedCache.delete(absolute);
+    untrackedCache.set(absolute, { size: stat.size, modified: stat.mtimeMs, result });
+    if (untrackedCache.size > 4096) untrackedCache.delete(untrackedCache.keys().next().value!);
+    return result;
   } catch (error) {
     if (
       signal?.aborted ||
       (error as { code?: string }).code === "REQUEST_ABORTED"
     )
       throw cancelledError();
-    return { additions: 0, deletions: 0, binary: false };
+    return { additions: 0, deletions: 0, binary: false, statsTruncated: true };
   }
 }
 
@@ -475,8 +486,9 @@ export async function getGitFileDiff(
     if (result.code !== 0 && result.code !== 1)
       assertGitSuccess(result, "git diff --no-index");
   } else {
-    const info = await getGitInfo(cwd, signal);
-    const comparison = await comparisonForMode(cwd, mode, info, signal);
+    const args = mode === "staged" || (mode === "git" && !diff.baseRef)
+      ? ["--cached"] : mode === "unstaged" ? []
+      : mode === "branch" && diff.baseCommit ? [`${diff.baseCommit}..HEAD`] : ["HEAD"];
     const paths = item.oldPath ? [item.oldPath, item.file] : [item.file];
     result = await runGit(
       cwd,
@@ -488,7 +500,7 @@ export async function getGitFileDiff(
         "--no-textconv",
         "--relative",
         "-M",
-        ...comparison.args,
+        ...args,
         "--",
         ...paths,
       ],
@@ -511,11 +523,13 @@ export async function getGitFileDiff(
 export function invalidateGitCache(cwd?: string): void {
   if (!cwd) {
     cache.clear();
+    queryFlights.clear();
     completedCache.clear();
     return;
   }
   const prefix = `${path.resolve(cwd)}\0`;
   for (const key of cache.keys()) if (key.startsWith(prefix)) cache.delete(key);
+  for (const key of queryFlights.keys()) if (key.startsWith(prefix)) queryFlights.delete(key);
   for (const key of completedCache.keys())
     if (key.startsWith(prefix)) completedCache.delete(key);
 }
@@ -785,18 +799,49 @@ function cachedResult<T>(
   cwd: string,
   operation: string,
   signal: AbortSignal | undefined,
-  load: () => Promise<T>,
+  load: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
+  if (signal?.aborted) return Promise.reject(cancelledError());
   const key = `${path.resolve(cwd)}\0${operation}`;
   const completed = completedCache.get(key);
   if (completed && completed.expiresAt > Date.now())
     return Promise.resolve(completed.value as T);
-  const store = () =>
-    load().then((value) => {
-      completedCache.set(key, { expiresAt: Date.now() + CACHE_MS, value });
+  let flight = queryFlights.get(key);
+  if (!flight) {
+    const controller = new AbortController();
+    flight = { controller, users: 0, settled: false, value: Promise.resolve() };
+    const owned = flight;
+    owned.value = Promise.resolve().then(() => load(controller.signal)).then(value => {
+      if (queryFlights.get(key) === owned) {
+        completedCache.set(key, { expiresAt: Date.now() + CACHE_MS, value });
+        if (completedCache.size > 256) completedCache.delete(completedCache.keys().next().value!);
+      }
       return value;
+    }).finally(() => {
+      owned.settled = true;
+      if (queryFlights.get(key) === owned) queryFlights.delete(key);
     });
-  return signal ? store() : cached(cwd, operation, store);
+    queryFlights.set(key, flight);
+  }
+  const owned = flight;
+  owned.users++;
+  return new Promise<T>((resolve, reject) => {
+    let done = false;
+    const finish = (error?: unknown, value?: unknown) => {
+      if (done) return;
+      done = true;
+      signal?.removeEventListener("abort", abort);
+      if (--owned.users === 0 && !owned.settled) {
+        if (queryFlights.get(key) === owned) queryFlights.delete(key);
+        owned.controller.abort();
+      }
+      if (error) reject(error);
+      else resolve(value as T);
+    };
+    const abort = () => finish(cancelledError());
+    signal?.addEventListener("abort", abort, { once: true });
+    owned.value.then(value => finish(undefined, value), error => finish(error));
+  });
 }
 
 async function withGitSlot<T>(

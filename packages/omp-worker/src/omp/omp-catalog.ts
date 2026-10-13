@@ -31,7 +31,7 @@ import {
 import { OmpRpcClient, unwrapResponse } from "./rpc-client.js";
 import { detectOmpVersion } from "./omp-version.js";
 import { OMP_SDK_VERSION } from "./constants.js";
-import { buildSessionTreeFromEntries } from "../runtime/session-tree.js";
+import { sessionTreePage } from "../runtime/session-tree.js";
 import {
   assertOmpSessionFile,
   isManagedSessionFile,
@@ -49,6 +49,8 @@ import {
 } from "./omp-config-command.js";
 import { scanJsonl, mapLimited, type JsonlPosition } from "./jsonl-reader.js";
 import { readSubagentPreview } from "./subagent-preview.js";
+import { readSubagentSync } from "./subagent-sync.js";
+import type { SubagentSyncRequest } from "@ompiui/protocol";
 
 /**
  * OmpCatalog —— CatalogProvider 的 OMP 实现。
@@ -795,10 +797,14 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
       return readChildSessionPreviewPage(
         params.sessionFile,
         typeof params.fromByte === "number" ? params.fromByte : 0,
+        params.sync as SubagentSyncRequest | undefined,
       );
     }
     const entries = (await this.diskEntries(summary)).allEntries;
-    if (query === "tree.get") return buildSessionTreeFromEntries(entries, true);
+    if (query === "tree.get") return sessionTreePage(entries, sessionHeadFromParts({
+      sdkVersion: OMP_SDK_VERSION, revision: summary.modified, header: { id: summary.id },
+      leafId: null, entryCount: entries.length,
+    }, [summary.id, summary.path]), pageParams);
     if (query === "attachment.get") {
       const entry = entries.find((item) => item.id === params.entryId);
       if (!entry) throw notFoundError("entry not found");
@@ -1346,8 +1352,12 @@ export async function readChildSessionPage(
 export async function readChildSessionPreviewPage(
   sessionFile: string,
   fromByte = 0,
+  sync?: SubagentSyncRequest,
 ): Promise<JsonObject> {
-  return readSubagentPreview(await childSessionPath(sessionFile), fromByte);
+  const filePath = await childSessionPath(sessionFile);
+  return sync
+    ? readSubagentSync(filePath, fromByte, sync)
+    : readSubagentPreview(filePath, fromByte);
 }
 
 export async function readChildSessionMessages(

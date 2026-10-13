@@ -11,6 +11,7 @@ import {
   PROTOCOL_VERSION,
   hostCommandBodyLimit,
   isErrorCode,
+  jsonByteSize,
   problem,
   problemFromError,
   type HealthResponse,
@@ -42,6 +43,7 @@ import type { TailscaleManager } from "./host/tailscale.ts";
 import { createStaticServer } from "./static.ts";
 import { FaultReportService } from "./diagnostics/fault-reports.ts";
 import type { TrustedProxies } from "@ompiui/relay";
+import { reserveHttpOutput, writeHttpOutput } from "./http-output.ts";
 
 const CORS_HEADERS: Record<string, string> = {
   "access-control-allow-methods": "GET,POST,OPTIONS",
@@ -50,6 +52,14 @@ const CORS_HEADERS: Record<string, string> = {
 
 function sendJson(res: ServerResponse, status: number, body: unknown): boolean {
   if (res.destroyed || res.writableEnded) return false;
+  // 显式撤回/清空队列可能返回已受理的完整附件，单响应预算须覆盖 24MiB 入站上限。
+  const bytes = jsonByteSize(body, 32 * 1024 * 1024);
+  const reservation = bytes <= 32 * 1024 * 1024 ? reserveHttpOutput(res, bytes) : undefined;
+  if (!reservation) {
+    res.writeHead(503, { "content-type": "application/json; charset=utf-8", ...CORS_HEADERS });
+    res.end(JSON.stringify({ code: "RATE_LIMITED", message: "HTTP response capacity reached" }));
+    return false;
+  }
   const data = JSON.stringify(body);
   const finish = (payload: string | Buffer, compressed = false) => {
     if (res.destroyed || res.writableEnded) return false;
@@ -82,7 +92,7 @@ function sendJson(res: ServerResponse, status: number, body: unknown): boolean {
         req.once("error", finish);
         res.once("close", cleanup);
         req.resume();
-      } else res.end(payload);
+      } else writeHttpOutput(res, payload);
       return true;
     } catch {
       return false;
@@ -98,8 +108,10 @@ function sendJson(res: ServerResponse, status: number, body: unknown): boolean {
       );
     });
   if (acceptsGzip && Buffer.byteLength(data) >= 4096) {
+    const encodingDone = reservation.hold();
     gzip(data, (error, compressed) => {
       finish(error ? data : compressed, !error);
+      encodingDone();
     });
     return true;
   }
@@ -571,9 +583,13 @@ export function createAppServer(
         });
       }
       if (method === "GET" && p === "/api/v1/host/diagnostics/report") {
-        const client = pairingClientKey(req);
+        const client = pairingClientKey(req, options.tunnelForwardingToken, options.trustedProxies);
+        const now = Date.now();
+        for (const [key, time] of reportClients) {
+          if (now - time >= 30_000) reportClients.delete(key);
+        }
         const last = reportClients.get(client) ?? 0;
-        if (Date.now() - last < 30_000)
+        if (now - last < 30_000 || reportClients.size >= 256)
           return sendProblem(
             res,
             429,
@@ -581,9 +597,7 @@ export function createAppServer(
               code: "RATE_LIMITED",
             }),
           );
-        reportClients.set(client, Date.now());
-        if (reportClients.size > 256)
-          reportClients.delete(reportClients.keys().next().value!);
+        reportClients.set(client, now);
         return sendJson(res, 200, (await faultReports.collect()).report);
       }
 
@@ -1038,6 +1052,7 @@ export function statusForError(error: unknown): number {
     case "RUNTIME_CLOSING":
     case "WORKSPACE_REPLACED":
     case "STALE_REVISION":
+    case "SYNC_SNAPSHOT_EXPIRED":
       return 409;
     case "CAPABILITY_DISABLED":
       return 501;

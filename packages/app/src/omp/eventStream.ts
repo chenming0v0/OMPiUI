@@ -14,7 +14,7 @@ import {
 } from '@ompiui/protocol'
 import type { AgentMessage, AgentSessionEvent, PiLiveMessage } from './domain/index.js'
 import type { ProviderAuthEvent, SessionsActivitySnapshot, SessionActivityStatus } from '@ompiui/protocol'
-import { getApiBase, getPiAuthToken } from './httpClient.js'
+import { getApiBase, getPiAuthToken, piFetch } from './httpClient.js'
 import { openPiSocket, PI_SOCKET_CLOSED, PI_SOCKET_CLOSING, PI_SOCKET_OPEN, type PiSocket } from './ompSocket'
 import { piBranchStore, piCommandStore, piSessionStateStore } from './state/index.js'
 import { extensionUiStore } from './extensionUiStore'
@@ -129,6 +129,9 @@ class PiEventStream {
   private subscribeQueued = false
   private sentStreams = new Set<string>()
   private subagentSeen = new Set<string>()
+  private liveRecoveryAt = new Map<string, number>()
+  private liveRecoveryFlights = new Set<string>()
+  private commandRecoveryFlights = new Set<string>()
 
   /** Subscribe a session stream (reference counted). */
   connect(sessionId: string): void {
@@ -174,6 +177,9 @@ class PiEventStream {
       this.diagnostics.forget(sessionId)
       this.clearRefreshTimers(sessionId)
       liveToolOutputStore.clearSession(sessionId)
+      ompSubagentStore.clearSession(sessionId)
+      piCommandStore.clearSession(sessionId)
+      this.liveRecoveryAt.delete(sessionId)
     } else {
       this.refCounts.set(sessionId, count - 1)
       return
@@ -234,6 +240,11 @@ class PiEventStream {
     this.reconnectAttempts = 0
     this.pendingLiveMessages.clear()
     piCommandStore.clearAll()
+    ompSubagentStore.clearAll()
+    liveToolOutputStore.clearAll()
+    this.liveRecoveryAt.clear()
+    this.liveRecoveryFlights.clear()
+    this.commandRecoveryFlights.clear()
     this.closeSocket()
   }
 
@@ -400,6 +411,10 @@ class PiEventStream {
       return
     }
     annotateTraffic?.(message)
+    if ('channel' in message && message.channel === 'control' && message.type === 'payload_omitted') {
+      this.handleOmittedPayload(message)
+      return
+    }
     if ('channel' in message && message.channel === 'event') {
       this.handleEvent(message.event)
       return
@@ -413,6 +428,34 @@ class PiEventStream {
     if ('channel' in message && message.channel === 'control' && message.type === 'problem') {
       this.closeSocket('protocol_problem')
       window.dispatchEvent(new CustomEvent('ompiui:event-stream-error', { detail: message.problem }))
+    }
+  }
+
+  private handleOmittedPayload(message: Extract<EventServerMessage, { type: 'payload_omitted' }>): void {
+    const { stream, eventChannel, commandId } = message
+    if (eventChannel === 'command.updated' && commandId) {
+      if (this.commandRecoveryFlights.has(commandId)) return
+      const serverId = serverStore.getActiveServerId()
+      this.commandRecoveryFlights.add(commandId)
+      void piFetch(
+        `${getApiBase()}/api/v1/host/commands/${encodeURIComponent(commandId)}`,
+      ).then(async response => {
+        if (!response.ok) throw new Error(`Command recovery failed: ${response.status}`)
+        return response.json() as Promise<{ command: CommandRecord }>
+      }).then(({ command }) => {
+        if (!this.commandRecoveryFlights.has(commandId) || serverStore.getActiveServerId() !== serverId || !isCommandRecord(command)) return
+        piCommandStore.upsert(command)
+        window.dispatchEvent(new CustomEvent('ompiui:command-updated', { detail: command }))
+      }).catch(() => {}).finally(() => this.commandRecoveryFlights.delete(commandId))
+    } else if (eventChannel.startsWith('terminal.')) {
+      window.dispatchEvent(new CustomEvent('ompiui:terminals-changed'))
+    } else if (eventChannel === 'resources.updated') {
+      receiveResourceRevision(stream.kind === 'workspace' || stream.kind === 'resources' ? stream.id : undefined, String(Date.now()))
+    } else if (eventChannel === 'models.updated') {
+      receiveProviderAuthUpdated()
+      refreshModelSettings()
+    } else {
+      this.handleResync(eventStreamKey(stream))
     }
   }
 
@@ -540,6 +583,9 @@ class PiEventStream {
       piBranchStore.clear(payload.sourceSessionId)
       piSessionStateStore.clear(payload.sourceSessionId)
       piCommandStore.clearSession(payload.sourceSessionId)
+      ompSubagentStore.clearSession(payload.sourceSessionId)
+      liveToolOutputStore.clearSession(payload.sourceSessionId)
+      this.liveRecoveryAt.delete(payload.sourceSessionId)
       window.dispatchEvent(new CustomEvent('ompiui:session-replaced', { detail: payload }))
     }
     // 事件驱动刷新：SessionContext/useSessions 订阅 ompiui:sessions-changed 会
@@ -719,7 +765,7 @@ class PiEventStream {
         if (typeof patch.delta === 'string') {
           const offset = Number(patch.offset)
           if (offset > before.length) {
-            void refreshPiBranch(sessionId, undefined, { includeLiveMessage: true }).catch(() => {})
+            this.recoverLiveMessage(sessionId)
             return
           }
           Object.defineProperty(args, patch.argument, {
@@ -742,7 +788,7 @@ class PiEventStream {
         const text = typeof previousText === 'string' ? previousText : ''
         const offset = Number(patch.offset)
         if (offset > text.length) {
-          void refreshPiBranch(sessionId, undefined, { includeLiveMessage: true }).catch(() => {})
+          this.recoverLiveMessage(sessionId)
           return
         }
         content[index] = { ...block, [patch.field]: text.slice(0, offset) + patch.delta } as never
@@ -808,7 +854,7 @@ class PiEventStream {
         ) {
           liveToolOutputStore.append(event.id, sessionId, event.delta)
         }
-        this.scheduleStateRefresh(sessionId)
+        piSessionStateStore.patchState(sessionId, { isBashRunning: true, isIdle: false })
         break
       }
       case 'agent_settled':
@@ -946,6 +992,15 @@ class PiEventStream {
         .catch(error => this.diagnostics.error('branch_error', sessionId, error))
     }, REFRESH_DEBOUNCE_MS)
     this.branchRefreshTimers.set(sessionId, timer)
+  }
+
+  private recoverLiveMessage(sessionId: string): void {
+    if (this.liveRecoveryFlights.has(sessionId) || Date.now() < (this.liveRecoveryAt.get(sessionId) ?? 0)) return
+    this.liveRecoveryAt.set(sessionId, Date.now() + 5000)
+    this.liveRecoveryFlights.add(sessionId)
+    void refreshPiBranch(sessionId, undefined, { includeLiveMessage: true })
+      .catch(() => {})
+      .finally(() => this.liveRecoveryFlights.delete(sessionId))
   }
 
   private scheduleStateRefresh(sessionId: string): void {

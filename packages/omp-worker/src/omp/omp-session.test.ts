@@ -105,6 +105,25 @@ describe("OmpRpcSession native subagent progress", () => {
 })
 
 describe("OmpRpcSession immediate queued delivery", () => {
+  it("projects large queue images and pending attachments without losing explicit edits", async t => {
+    const { session, frame } = await sessionFixture(t)
+    frame({ type: "agent_start" })
+    const data = "A".repeat(1024 * 1024)
+    await session.sendUserMessage("large queue image", [image(data)], "followUp")
+    const state = await session.getState()
+    assert.ok(JSON.stringify(state).length < 10000)
+    const restored = await session.removeQueuedMessage("followUp", 0)
+    assert.equal(((restored as JsonObject).images as JsonObject[])[0]!.data, data)
+    await session.sendUserMessage("pending image", [image(data)], "followUp")
+    await session.sendQueuedMessage("followUp", 0)
+    const pending = (await session.getState()).submittedMessages as JsonObject[]
+    assert.ok(JSON.stringify(pending).length < 10000)
+    const content = (pending[0]!.message as JsonObject).content as JsonObject[]
+    assert.equal((content[1]!.attachment as JsonObject).entryId, pending[0]!.id)
+    const chunk = await session.getAttachment(String(pending[0]!.id), 1)
+    assert.equal(chunk.data, data.slice(0, 256 * 1024))
+    assert.equal(chunk.hasMore, true)
+  })
   it("submits only the selected message with images before the current turn ends", async t => {
     const { session, frame, commands, entries } = await sessionFixture(t)
     frame({ type: "agent_start" })

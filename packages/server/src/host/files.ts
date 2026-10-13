@@ -23,6 +23,7 @@ import type {
 import { PathSafetyError, resolveWorkspacePath } from "./path-safety.ts";
 import { workspacePathKey, type WorkspaceRecord } from "./workspace-store.ts";
 import { acquireWorkspaceMutationLock } from "./workspace-lock.ts";
+import { mapConcurrent } from "./query-pool.ts";
 
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 const MAX_BINARY_BYTES = 8 * 1024 * 1024;
@@ -87,18 +88,23 @@ export async function listFiles(
     throw staleRevision();
   const offset = cursor.offset;
   const page = names.slice(offset, offset + limit);
-  const entries = (
-    await Promise.all(
-      page.map((name) => describeEntry(ws, resolved.relative, name)),
-    )
-  )
-    .filter((entry): entry is FileNodeDto => entry !== null)
-    .sort((a, b) => {
+  const described = await mapConcurrent(page, 32, name => describeEntry(ws, resolved.relative, name));
+  const entries: FileNodeDto[] = [];
+  let bytes = 8192;
+  let consumed = 0;
+  for (const entry of described) {
+    const cost = entry ? Buffer.byteLength(JSON.stringify(entry)) + 1 : 0;
+    if (bytes + cost > 512 * 1024) break;
+    consumed++;
+    bytes += cost;
+    if (entry) entries.push(entry);
+  }
+  entries.sort((a, b) => {
       if (a.type === "directory" && b.type !== "directory") return -1;
       if (a.type !== "directory" && b.type === "directory") return 1;
       return a.name.localeCompare(b.name);
     });
-  const nextOffset = offset + page.length;
+  const nextOffset = offset + consumed;
   return {
     path: resolved.relative,
     entries,
@@ -114,6 +120,7 @@ export async function listFiles(
 export async function readFileContent(
   ws: WorkspaceRecord,
   relativePath: string,
+  ifNoneMatch?: string,
 ): Promise<FileReadResponse> {
   assertWorkspaceCurrent(ws);
   const resolved = resolveWorkspacePath(ws.canonicalRoot, relativePath);
@@ -147,14 +154,17 @@ export async function readFileContent(
     const binary = isBinary(buffer);
     if (!binary && buffer.length > MAX_TEXT_BYTES)
       throw fileTooLarge("text file too large for remote preview");
+    const revision = etag(buffer);
+    const notModified = ifNoneMatch === revision;
     return {
       path: resolved.relative,
-      content: binary ? buffer.toString("base64") : buffer.toString("utf8"),
+      content: notModified ? "" : binary ? buffer.toString("base64") : buffer.toString("utf8"),
       encoding: binary ? "base64" : "utf-8",
       type: binary ? "binary" : "text",
       mimeType: mimeType(relativePath, binary),
       size: buffer.length,
-      etag: etag(buffer),
+      etag: revision,
+      ...(notModified ? { notModified: true } : {}),
     };
   } finally {
     await handle.close();

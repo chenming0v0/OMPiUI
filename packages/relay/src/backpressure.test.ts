@@ -9,6 +9,7 @@ import { generateTunnelKey } from "./config.ts"
 import { CONNECTIONS_PER_TUNNEL_MAX, CONTROL_PATH, encodeFrameMessages, serializeRawHead, type ControlFrame } from "./protocol.ts"
 import { startRelay } from "./relay.ts"
 import { RESPONSE_BUFFER_MAX } from "./response-sink.ts"
+import { DataRateLimit } from "./data-rate-limit.ts"
 
 // Exercise the real relay/control WebSocket with deterministic Node writable
 // backpressure at the public HTTP/upgrade boundary. No OS socket-buffer timing.
@@ -34,9 +35,9 @@ class Visitor extends Duplex {
   }
 }
 
-async function harness(t: TestContext) {
+async function harness(t: TestContext, connectionIdleTimeoutMs?: number) {
   const key = generateTunnelKey()
-  const relay = await startRelay({ config: { port: 0, tunnels: [{ id: "test", key }] }, log: () => {} })
+  const relay = await startRelay({ config: { port: 0, tunnels: [{ id: "test", key }] }, log: () => {}, connectionIdleTimeoutMs })
   t.after(() => relay.close())
   const ws = new WebSocket(`ws://127.0.0.1:${relay.port}${CONTROL_PATH}?tunnel=test`, {
     headers: { authorization: `Bearer ${key}` },
@@ -66,8 +67,9 @@ async function harness(t: TestContext) {
   const body = (c: number, chunk: Buffer) => {
     for (const frame of encodeFrameMessages(c, chunk)) ws.send(frame)
   }
-  async function open(kind: "request" | "upgrade", slow = true) {
+  async function open(kind: "request" | "upgrade", slow = true, source?: string) {
     const req = new IncomingMessage(new Socket())
+    if (source) Object.defineProperty(req.socket, "remoteAddress", { value: source })
     req.url = "/stream"
     req.method = "GET"
     const output = new Visitor(slow)
@@ -103,7 +105,7 @@ test("ended but undrained responses still count toward the per-tunnel connection
   const h = await harness(t)
   const outputs: Visitor[] = []
   for (let i = 0; i < CONNECTIONS_PER_TUNNEL_MAX; i++) {
-    const { output, c } = await h.open("request")
+    const { output, c } = await h.open("request", true, `10.0.0.${i % 2}`)
     outputs.push(output)
     h.head("request", c)
     h.body(c, Buffer.from("blocked"))
@@ -125,6 +127,52 @@ test("ended but undrained responses still count toward the per-tunnel connection
   const finished = once(last, "finish")
   last.release()
   await finished
+  await h.fastRoundtrip()
+})
+
+test("idle connection slots are reclaimed without disconnecting the tunnel", { timeout: 10_000 }, async t => {
+  const h = await harness(t, 100)
+  const { output, c } = await h.open("request")
+  const aborted = h.take("abort", c)
+  await aborted
+  assert.equal(output.destroyed, true)
+  assert.equal(h.relay.tunnelStatus()[0]!.connections, 0)
+  await h.fastRoundtrip()
+})
+
+test("a single source leaves capacity for other visitors", { timeout: 10_000 }, async t => {
+  const h = await harness(t)
+  for (let i = 0; i < CONNECTIONS_PER_TUNNEL_MAX / 2; i++) await h.open("request", true, "10.0.0.1")
+  const req = new IncomingMessage(new Socket())
+  Object.defineProperty(req.socket, "remoteAddress", { value: "10.0.0.1" })
+  req.url = "/over-source-limit"
+  const output = new Visitor(false)
+  t.after(() => { req.socket.destroy(); output.destroy() })
+  const finished = once(output, "finish")
+  h.relay.server.emit("request", req, output)
+  await finished
+  assert.equal(output.status, 503)
+  await h.fastRoundtrip()
+  assert.equal(h.relay.onlineTunnelIds()[0], "test")
+})
+
+test("exhausted visitor control quota rejects only that request, not the tunnel", { timeout: 10_000 }, async t => {
+  const h = await harness(t)
+  const req = new IncomingMessage(new Socket())
+  req.url = "/quota"
+  const output = new Visitor(false)
+  t.after(() => { req.socket.destroy(); output.destroy() })
+  const allow = DataRateLimit.prototype.allow
+  try {
+    DataRateLimit.prototype.allow = () => false
+    const finished = once(output, "finish")
+    h.relay.server.emit("request", req, output)
+    await finished
+    assert.equal(output.status, 429)
+    assert.deepEqual(h.relay.onlineTunnelIds(), ["test"])
+  } finally {
+    DataRateLimit.prototype.allow = allow
+  }
   await h.fastRoundtrip()
 })
 

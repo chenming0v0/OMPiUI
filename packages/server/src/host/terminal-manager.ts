@@ -82,6 +82,7 @@ import type {
 import { resolveWorkspacePath } from "./path-safety.ts";
 import { workspacePathKey } from "./workspace-store.ts";
 import { TextWindow } from "./text-window.ts";
+import { RateBudget } from "../rate-budget.ts";
 
 const OUTPUT_BUFFER_LIMIT = 2 * 1024 * 1024;
 const REPLAY_BYTE_LIMIT = 1024 * 1024;
@@ -89,18 +90,19 @@ const PENDING_BYTE_LIMIT = 1024 * 1024;
 const EXITED_SESSION_LIMIT = 25;
 const TERMINAL_LIMIT = 32;
 const TICKET_TTL_MS = 60_000;
+const MAX_TICKETS = 1024;
 const execFileAsync = promisify(execFile);
 
 type TerminalEventChannel = Extract<EventChannel, `terminal.${string}`>;
 
 type Subscriber = {
   active: boolean;
-  pending: string[];
+  pending: Array<{ data: string; bytes: number }>;
   pendingBytes: number;
   overflow?: boolean;
   end?: { exitCode: number | null };
   pendingTitle?: string;
-  onData: (data: string) => void;
+  onData: (data: string, bytes: number) => void;
   onEnd: (event: { exitCode: number | null }) => void;
   onTitle: (title: string) => void;
 };
@@ -111,6 +113,8 @@ type ActiveTerminal = {
   process: PtyProcess;
   customTitle?: string;
   titleBuffer: string;
+  titleTimer?: NodeJS.Timeout;
+  inputBudget?: RateBudget;
   output: string;
   outputBytes: number;
   outputWindow: TextWindow;
@@ -213,9 +217,11 @@ export class TerminalManager {
   ): Promise<TerminalInfo> {
     const cwd = await this.resolveCwd(workspacePath, params.cwd);
     const shell = resolveShell(params.shell);
+    requireByteLimit(shell, 4096, "shell");
     const size = terminalSize(params.rows, params.cols);
     const id = `term_${randomUUID()}`;
     const customTitle = params.title?.trim() || undefined;
+    if (customTitle) requireByteLimit(customTitle, 512, "title");
     const title = customTitle || path.basename(shell) || "Terminal";
     const environment = {
       ...process.env,
@@ -288,11 +294,14 @@ export class TerminalManager {
     let changed = false;
     if (params.title !== undefined) {
       const title = params.title.trim();
+      requireByteLimit(title, 512, "title");
       if (!title)
         throw Object.assign(new Error("params.title must not be empty"), {
           code: "INVALID_REQUEST",
         });
       if (title !== terminal.info.title) {
+        clearTimeout(terminal.titleTimer);
+        terminal.titleTimer = undefined;
         changed = true;
         terminal.info.title = title;
         terminal.customTitle = title;
@@ -339,11 +348,18 @@ export class TerminalManager {
     id: string,
   ): { token: string; expiresIn: number } {
     const terminal = this.require(workspacePath, id);
+    const now = Date.now();
+    for (const [token, record] of this.tickets) {
+      if (record.expiresAt <= now) this.tickets.delete(token);
+    }
+    if (this.tickets.size >= MAX_TICKETS) {
+      throw Object.assign(new Error("terminal ticket limit reached"), { code: "RATE_LIMITED" });
+    }
     const token = randomUUID();
     this.tickets.set(token, {
       terminalId: id,
       workspacePath: terminal.workspacePath,
-      expiresAt: Date.now() + TICKET_TTL_MS,
+      expiresAt: now + TICKET_TTL_MS,
     });
     return { token, expiresIn: TICKET_TTL_MS / 1000 };
   }
@@ -352,7 +368,7 @@ export class TerminalManager {
     const record = this.tickets.get(token);
     if (!record) return undefined;
     this.tickets.delete(token);
-    if (record.expiresAt < Date.now() || record.terminalId !== id)
+    if (record.expiresAt <= Date.now() || record.terminalId !== id)
       return undefined;
     const terminal = this.terminals.get(id);
     if (!terminal) return undefined;
@@ -366,6 +382,17 @@ export class TerminalManager {
         code: "TERMINAL_EXITED",
       });
     }
+    const bytes = Buffer.byteLength(data);
+    terminal.inputBudget ??= new RateBudget(4 * 1024 * 1024, 1024 * 1024);
+    // Node PTY 的写入管道有可观测水位；Bun PTY 为同步写入，没有该队列。
+    const process = terminal.process as PtyProcess & {
+      _socket?: { writableLength: number };
+      _agent?: { inSocket?: { writableLength: number } };
+    };
+    const pendingBytes = process._agent?.inSocket?.writableLength ?? process._socket?.writableLength ?? 0;
+    if (pendingBytes + bytes > 1024 * 1024 || !terminal.inputBudget.allow(bytes)) {
+      throw Object.assign(new Error("terminal input budget exceeded"), { code: "RATE_LIMITED" });
+    }
     terminal.process.write(data);
   }
 
@@ -373,7 +400,7 @@ export class TerminalManager {
     workspacePath: string,
     id: string,
     cursor: number | undefined,
-    onData: (data: string) => void,
+    onData: (data: string, bytes: number) => void,
     onEnd: (event: { exitCode: number | null }) => void,
     onTitle: (title: string) => void = () => {},
   ): TerminalAttachment {
@@ -457,7 +484,7 @@ export class TerminalManager {
           );
         subscriber.active = true;
         try {
-          for (const chunk of subscriber.pending) subscriber.onData(chunk);
+          for (const chunk of subscriber.pending) subscriber.onData(chunk.data, chunk.bytes);
         } catch {
           terminal.subscribers.delete(token);
         }
@@ -552,30 +579,29 @@ export class TerminalManager {
   }
 
   private handleData(terminal: ActiveTerminal, data: string): void {
-    terminal.titleBuffer = `${terminal.titleBuffer}${data}`.slice(-512);
+    const bytes = Buffer.byteLength(data);
+    if (!terminal.customTitle) {
+      // 普通输出不拼接标题缓冲；仅追踪 OSC 起始或跨块的 ESC。
+      if (terminal.titleBuffer || data.includes("\x1b]") || data.endsWith("\x1b")) {
+        terminal.titleBuffer = (terminal.titleBuffer + data).slice(-512);
+      }
+    }
     const title = terminal.customTitle
       ? undefined
       : extractTerminalTitle(terminal.titleBuffer);
     if (title) terminal.titleBuffer = "";
+    else if (!terminal.titleBuffer.includes("\x1b]")) {
+      terminal.titleBuffer = terminal.titleBuffer.endsWith("\x1b") ? "\x1b" : "";
+    }
     if (title && title !== terminal.info.title) {
       terminal.info.title = title;
-      for (const subscriber of terminal.subscribers.values()) {
-        if (subscriber.active) {
-          try {
-            subscriber.onTitle(title);
-          } catch {
-            // A disconnected client must not affect the terminal process.
-          }
-        } else {
-          subscriber.pendingTitle = title;
-        }
-      }
-      this.publish(terminal, "terminal.updated");
+      terminal.titleTimer ??= setTimeout(() => this.flushTitle(terminal), 250);
+      terminal.titleTimer.unref();
     }
     terminal.info.cursor += data.length;
     for (const [token, subscriber] of terminal.subscribers) {
       if (!subscriber.active) {
-        subscriber.pendingBytes += Buffer.byteLength(data);
+        subscriber.pendingBytes += bytes;
         if (
           subscriber.pendingBytes > PENDING_BYTE_LIMIT ||
           subscriber.pending.length >= 1024
@@ -586,21 +612,22 @@ export class TerminalManager {
           terminal.subscribers.delete(token);
           continue;
         }
-        subscriber.pending.push(data);
+        subscriber.pending.push({ data, bytes });
         continue;
       }
       try {
-        subscriber.onData(data);
+        subscriber.onData(data, bytes);
       } catch {
         terminal.subscribers.delete(token);
       }
     }
-    terminal.outputWindow.append(data);
+    terminal.outputWindow.append(data, bytes);
     terminal.bufferCursor = terminal.info.cursor - terminal.outputWindow.length;
   }
 
   private handleExit(terminal: ActiveTerminal, exitCode: number): void {
     if (terminal.info.status === "exited") return;
+    this.flushTitle(terminal);
     terminal.info.status = "exited";
     terminal.info.exitCode = exitCode;
     const end = { exitCode };
@@ -625,6 +652,7 @@ export class TerminalManager {
   }
 
   private removeTerminal(terminal: ActiveTerminal, publish = true): void {
+    clearTimeout(terminal.titleTimer);
     this.terminals.delete(terminal.info.id);
     const index = this.exitedOrder.indexOf(terminal.info.id);
     if (index >= 0) this.exitedOrder.splice(index, 1);
@@ -656,6 +684,23 @@ export class TerminalManager {
     }
   }
 
+  private flushTitle(terminal: ActiveTerminal): void {
+    if (!terminal.titleTimer) return;
+    clearTimeout(terminal.titleTimer);
+    terminal.titleTimer = undefined;
+    for (const subscriber of terminal.subscribers.values()) {
+      if (!subscriber.active) subscriber.pendingTitle = terminal.info.title;
+      else {
+        try {
+          subscriber.onTitle(terminal.info.title);
+        } catch {
+          // 单个客户端回调失败不影响其他订阅者。
+        }
+      }
+    }
+    this.publish(terminal, "terminal.updated");
+  }
+
   private publish(
     terminal: ActiveTerminal,
     channel: TerminalEventChannel,
@@ -663,6 +708,12 @@ export class TerminalManager {
     this.options.publish?.(terminal.workspacePath, channel, {
       ...terminal.info,
     });
+  }
+}
+
+function requireByteLimit(value: string, maxBytes: number, field: string): void {
+  if (Buffer.byteLength(value) > maxBytes) {
+    throw Object.assign(new Error(`terminal ${field} exceeds ${maxBytes} bytes`), { code: "INVALID_REQUEST" });
   }
 }
 

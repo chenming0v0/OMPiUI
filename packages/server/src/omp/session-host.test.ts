@@ -51,7 +51,6 @@ test("viewing an OMP terminal history and syncing a draft never opens a writer",
     open: async () => { opens++; throw new Error("Browsing must not start a writer") },
     catalogCommand: async (type: string) => {
       if (type === "session.findByFile") return { id: "terminal-session", cwd: ".", sessionFile: file }
-      if (type === "session.preview") return { state: { diskPreview: true, readOnly: false } }
       if (type === "session.read") return { diskPreview: true, readOnly: false }
       throw new Error(`Unexpected catalog command ${type}`)
     },
@@ -70,6 +69,9 @@ test("viewing an OMP terminal history and syncing a draft never opens a writer",
   await host.sessionQuery("terminal-session", "tree.get")
   await host.sessionQuery("terminal-session", "attachment.get", { entryId: "image", blockIndex: 0 })
   await host.sessionQuery("terminal-session", "subagent.messages", { sessionFile: file })
+  await host.sessionQuery("terminal-session", "subagent.messages", {
+    sessionFile: file, fromByte: 0, sync: { version: 1, knownBlocks: [] },
+  })
   await host.sessionQuery("terminal-session", "setExtensionEditorState", { text: "draft" })
   assert.equal(opens, 0)
   assert.equal(readFileSync(file, "utf8"), bytes)
@@ -106,9 +108,12 @@ test("an explicit message attaches a previewed OMP session using its latest hist
       openedBytes = readFileSync(file, "utf8")
       return worker
     },
-    catalogCommand: async (type: string) => {
+    catalogCommand: async (type: string, params?: JsonObject) => {
       if (type === "session.findByFile") return { id: "terminal-session", cwd: ".", sessionFile: file }
-      if (type === "session.preview") return { state: { diskPreview: true, readOnly: false } }
+      if (type === "session.read") {
+        assert.equal(params?.query, "state.get")
+        return { diskPreview: true, readOnly: false }
+      }
       if (type === "session.listAll") return [{ id: "terminal-session", cwd: ".", path: file }]
       throw new Error(`Unexpected catalog command ${type}`)
     },

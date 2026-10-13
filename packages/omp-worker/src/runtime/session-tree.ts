@@ -4,6 +4,24 @@ import {
   type JsonObject,
   type JsonValue,
 } from "@ompiui/protocol";
+import { entriesPageFromEntries, type SessionHead } from "./pagination.js";
+
+const treePages = new WeakMap<readonly JsonObject[], { revision: number; nodes: JsonObject[] }>();
+
+export function sessionTreePage(
+  entries: readonly JsonObject[],
+  head: SessionHead,
+  params: { cursor?: string; limit?: number; maxBytes?: number } = {},
+): JsonObject {
+  let cached = treePages.get(entries);
+  if (!cached || cached.revision !== head.revision) {
+    cached = { revision: head.revision, nodes: buildSessionTreeFromEntries(entries, true).map(node => ({ ...node, id: node.entry.id })) };
+    treePages.set(entries, cached);
+  }
+  return entriesPageFromEntries(head, cached.nodes, {
+    cursor: params.cursor, limit: params.limit ?? 200, maxBytes: params.maxBytes ?? 1024 * 1024,
+  }, node => node) as unknown as JsonObject;
+}
 
 /**
  * tree.get 的响应形状 —— 对齐 Pi SDK 的 SessionTreeNode（{ entry, children,

@@ -13,6 +13,7 @@ import '@xterm/xterm/css/xterm.css'
 import type { TerminalStreamServerFrame } from '@ompiui/protocol'
 import { getHostTerminalWebSocketUrl, issueHostTerminalToken } from '../omp/transport/index.js'
 import { openPiSocket, PI_SOCKET_OPEN, type PiSocket } from '../omp/ompSocket'
+import { sendTerminalInput } from '../omp/terminalInput'
 import { useTheme } from '../hooks'
 import { layoutStore, useLayoutStore } from '../store/layoutStore'
 import { useInputCapabilities } from '../hooks/useInputCapabilities'
@@ -650,12 +651,12 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
       layoutStore.updateTerminalTab(terminalId, { status: 'connected' })
       transportSendRef.current = data => {
         if (socket.readyState === PI_SOCKET_OPEN) {
-          socket.send(JSON.stringify({ type: 'input', data }))
+          sendTerminalInput(socket, data)
         }
       }
       sendResize()
       for (const data of pendingInputRef.current.splice(0)) {
-        socket.send(JSON.stringify({ type: 'input', data }))
+        sendTerminalInput(socket, data)
       }
     }
 

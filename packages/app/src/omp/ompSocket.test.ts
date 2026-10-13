@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { openPiSocket, PI_SOCKET_CLOSED, PI_SOCKET_OPEN } from './ompSocket'
+import { sendTerminalInput } from './terminalInput'
 
 const { invokeMock, bridgeState } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
@@ -47,5 +48,34 @@ describe('PiSocket Tauri bridge', () => {
     bridgeState.channel?.onmessage?.({ type: 'close', code: 1000, reason: 'done' })
     expect(socket.readyState).toBe(PI_SOCKET_CLOSED)
     expect(onClose).toHaveBeenCalledWith({ code: 1000, reason: 'done' })
+  })
+
+  it('serializes queued sends so a large paste survives bridge backpressure in order', async () => {
+    const sent: string[] = []
+    let release: (() => void) | undefined
+    invokeMock.mockImplementation((command: string, args: { data: string }) => {
+      if (command === 'ws_bridge_connect') return Promise.resolve(8)
+      if (command === 'ws_bridge_send') {
+        sent.push(args.data)
+        return new Promise<void>(resolve => { release = resolve })
+      }
+      return Promise.resolve()
+    })
+    const socket = openPiSocket('ws://127.0.0.1:8787/api/v1/host/terminals/test/stream')
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith('ws_bridge_connect', expect.any(Object)))
+    bridgeState.channel?.onmessage?.({ type: 'open' })
+    const text = 'x'.repeat(5 * 1024 * 1024)
+    sendTerminalInput(socket, text)
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    expect(socket.readyState).toBe(PI_SOCKET_OPEN)
+    const frameCount = Math.ceil(text.length / (64 * 1024 - 128))
+    for (let index = 1; index < frameCount; index++) {
+      release?.()
+      await vi.waitFor(() => expect(sent).toHaveLength(index + 1), { interval: 1 })
+    }
+    release?.()
+    expect(sent.map(data => JSON.parse(data).data).join('')).toBe(text)
+    expect(socket.readyState).toBe(PI_SOCKET_OPEN)
+    socket.close()
   })
 })

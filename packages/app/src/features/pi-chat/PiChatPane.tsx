@@ -75,6 +75,7 @@ import {
   clearSessionEditorDraft,
   configureSessionEditorDraftSync,
   setSessionEditorDraft,
+  syncSessionEditorDraft,
   useSessionEditorDraft,
 } from '../../omp/sessionEditorDraftStore'
 import { isSessionBusyError, isSessionNotFoundError, uiErrorHandler } from '../../utils'
@@ -406,8 +407,7 @@ export function PiChatPane({
   // 树面板写 draft store，这里消费并同步到 worker 编辑器状态
   const editorDraft = useSessionEditorDraft(sessionId)
   useEffect(() => {
-    configureSessionEditorDraftSync((sid, text) => setPiExtensionEditorState(sid, text).catch(() => undefined))
-    return () => configureSessionEditorDraftSync(undefined)
+    return configureSessionEditorDraftSync((sid, text) => setPiExtensionEditorState(sid, text).catch(() => undefined))
   }, [])
 
   const isStreaming = Boolean(state?.isStreaming) || (sessionActive && !compacting)
@@ -962,7 +962,6 @@ export function PiChatPane({
     inputBoxRef.current?.setEditorText(extensionState.editorText)
   }, [extensionState, sessionId])
 
-  const editorSyncTimerRef = useRef<number | null>(null)
   const refreshTimerRefs = useRef(new Set<number>())
   const scheduleDelayedRefresh = useCallback((sid: string) => {
     const timer = window.setTimeout(() => {
@@ -976,10 +975,6 @@ export function PiChatPane({
   useEffect(() => {
     const timerRefs = refreshTimerRefs.current
     return () => {
-      if (editorSyncTimerRef.current !== null) {
-        window.clearTimeout(editorSyncTimerRef.current)
-        editorSyncTimerRef.current = null
-      }
       for (const timer of timerRefs) window.clearTimeout(timer)
       timerRefs.clear()
     }
@@ -996,11 +991,7 @@ export function PiChatPane({
       localComposerTextRef.current = text
       // 会话已不可用时别再往服务端同步编辑器状态（每敲一个字一个 404）
       if (!sessionId || sessionUnavailableRef.current) return
-      if (editorSyncTimerRef.current !== null) window.clearTimeout(editorSyncTimerRef.current)
-      editorSyncTimerRef.current = window.setTimeout(() => {
-        editorSyncTimerRef.current = null
-        void setPiExtensionEditorState(sessionId, text).catch(() => undefined)
-      }, 500)
+      syncSessionEditorDraft(sessionId, text)
     },
     [sessionId],
   )
@@ -1050,10 +1041,6 @@ export function PiChatPane({
         // Until then InputBox retains both the text and its attachments.
         await sendPiUserMessage(sid, text, images.length ? images : undefined, deliverAs)
         stoppedSessionsRef.current.delete(sid)
-        if (editorSyncTimerRef.current !== null) {
-          window.clearTimeout(editorSyncTimerRef.current)
-          editorSyncTimerRef.current = null
-        }
         const currentText = inputBoxRef.current?.getEditorText() ?? localComposerTextRef.current ?? text
         const remainingText = currentText === text ? '' : currentText
         localComposerTextRef.current = remainingText
@@ -1199,10 +1186,7 @@ export function PiChatPane({
       // 同步防抖并清空 worker 的扩展编辑器状态——否则 500ms 后旧文本被写回
       // worker，下一次 extensionUiStore 刷新经 editor bridge 回填输入框
       // （表现为发送 /permission 这类命令后输入框又被旧文本填回）。
-      if (editorSyncTimerRef.current !== null) {
-        window.clearTimeout(editorSyncTimerRef.current)
-        editorSyncTimerRef.current = null
-      }
+      clearSessionEditorDraft(sid)
       void setPiExtensionEditorState(sid, '').catch(() => undefined)
 
       if (command === 'compact') {

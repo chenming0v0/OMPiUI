@@ -23,6 +23,7 @@ import { piEventStream } from '../omp/eventStream.js'
 import { useServerStore } from './useServerStore'
 import { serverStore } from '../store/serverStore'
 import { piSessionStateStore } from '../omp/state'
+import { FilePreviewCache } from '../omp/filePreviewCache'
 
 export interface FileTreeNode extends FileNodeDto {
   /** workspace root + relative path, for drag/context actions */
@@ -135,7 +136,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
   const [previewContent, setPreviewContent] = useState<FileReadResponse | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewError, setPreviewError] = useState<string | null>(null)
-  const previewCacheRef = useRef<Map<string, FileReadResponse>>(new Map())
+  const previewCacheRef = useRef(new FilePreviewCache())
   const previewLoadIdRef = useRef(0)
   const previewPathRef = useRef<string | null>(null)
   const previewScopeIdRef = useRef(0)
@@ -149,6 +150,15 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
   const loadedDirectoryRef = useRef<string | undefined>(undefined)
   const childLoadIdsRef = useRef<Map<string, number>>(new Map())
   const statusLoadIdRef = useRef(0)
+  const directoryLoadsRef = useRef(new Map<string, AbortController>())
+  const refreshFlightRef = useRef<Promise<void> | null>(null)
+  useEffect(() => {
+    const loads = directoryLoadsRef.current
+    return () => {
+      for (const controller of loads.values()) controller.abort()
+      loads.clear()
+    }
+  }, [directory, activeServerGeneration])
 
   // 加载根目录
   const loadRoot = useCallback(async () => {
@@ -162,11 +172,14 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
     }
 
     const loadId = ++loadIdRef.current
+    directoryLoadsRef.current.get('')?.abort()
+    const controller = new AbortController()
+    directoryLoadsRef.current.set('', controller)
     setIsLoading(true)
     setError(null)
 
     try {
-      const nodes = await listDirectory('', directory)
+      const nodes = await listDirectory('', directory, controller.signal)
 
       // 检查请求是否过时
       if (loadId !== loadIdRef.current) return
@@ -237,6 +250,9 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
       if (!directory) return
 
       const loadKey = `${directory}\0${parentPath}`
+      directoryLoadsRef.current.get(loadKey)?.abort()
+      const controller = new AbortController()
+      directoryLoadsRef.current.set(loadKey, controller)
       const loadId = (childLoadIdsRef.current.get(loadKey) ?? 0) + 1
       childLoadIdsRef.current.set(loadKey, loadId)
 
@@ -252,7 +268,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
       )
 
       try {
-        const nodes = await listDirectory(parentPath, directory)
+        const nodes = await listDirectory(parentPath, directory, controller.signal)
         if (!isCurrentLoad()) return
 
         const sorted = sortNodes(nodes)
@@ -365,7 +381,9 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
       }
 
       try {
-        const content = await getFileContent(path, directory)
+        const previous = previewCacheRef.current.peek(path)
+        const response = await getFileContent(path, directory, previous?.etag)
+        const content = response.notModified && previous ? previous : response
         if (loadId !== previewLoadIdRef.current || generation !== serverStore.getActiveServerGeneration()) return
         previewCacheRef.current.set(path, content)
         setPreviewContent(content)
@@ -435,8 +453,12 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
   }, [directory, loadRoot, loadStatuses])
 
   // 软刷新：重新加载根目录和状态，但保留展开路径和预览
-  const softRefresh = useCallback(async () => {
-    await Promise.all([loadRoot(), loadStatuses()])
+  const softRefresh = useCallback(() => {
+    if (refreshFlightRef.current) return refreshFlightRef.current
+    const flight = Promise.all([loadRoot(), loadStatuses()]).then(() => undefined)
+      .finally(() => { if (refreshFlightRef.current === flight) refreshFlightRef.current = null })
+    refreshFlightRef.current = flight
+    return flight
   }, [loadRoot, loadStatuses])
 
   // 自动刷新：session idle / 窗口聚焦 / SSE 重连
@@ -457,7 +479,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
       if (!canonicalWorkspaceRef.current || detail.workspacePath !== canonicalWorkspaceRef.current) return
       invalidateWorkspaceFileCaches(directory)
       if (detail.rescan || detail.changes.length === 0) {
-        previewCacheRef.current.clear()
+        previewCacheRef.current.invalidateAll()
         void softRefresh()
         const previewPath = previewPathRef.current
         if (previewPath) void loadPreview(previewPath)
@@ -502,7 +524,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
         fileTimer = undefined
         if (pending) applyFiles(pending)
         pending = undefined
-      }, 200)
+      }, pending.rescan ? 1500 : 500)
     }
     const gitChanged = (event: Event) => {
       const detail = (event as CustomEvent<{ workspacePath: string }>).detail

@@ -115,9 +115,9 @@ export async function piFetch(input: string, init?: PiRequestInit): Promise<Resp
     }
     const bodyBytes = typeof requestInit.body === 'string' ? new TextEncoder().encode(requestInit.body).byteLength : 0
     const bulkRead =
-      /(?:branch\.get|entries\.get|tree\.get|state\.get|session\.preview|session\.read|files\.read|diagnostics\/report)/.test(
+      /(?:branch\.get|entries\.get|tree\.get|state\.get|session\.preview|session\.read|session\.list|files\.read|files\.search|git\.diff|git\.fileDiff|subagent\.messages|diagnostics\/report)/.test(
         input,
-      )
+      ) || (method === 'GET' && /\/api\/v1\/host\/commands\/[^/]+(?:\?|$)/.test(input))
     const timeout = AbortSignal.timeout(
       timeoutMs ??
         Math.min(

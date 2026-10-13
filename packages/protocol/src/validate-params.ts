@@ -1,4 +1,5 @@
 import type { JsonObject } from "./json.js";
+import { jsonByteSize } from "./json-byte-size.js";
 
 /**
  * 协议 paramsSchema 子集的运行时校验器（type/enum/const/required/properties/
@@ -26,6 +27,11 @@ function validateValue(
   path: string,
   problems: string[],
 ): void {
+  if (typeof schema.maxJsonBytes === "number" &&
+      jsonByteSize(value, schema.maxJsonBytes) > schema.maxJsonBytes) {
+    problems.push(`${path} exceeds JSON byte limit`);
+    return;
+  }
   if (schema.const !== undefined && value !== schema.const) {
     problems.push(`${path} must be ${JSON.stringify(schema.const)}`);
     return;

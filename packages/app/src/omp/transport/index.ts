@@ -39,6 +39,7 @@ import {
   HOST_COMMAND_SPECS,
   PI_COMMAND_SPECS,
   validateParams,
+  subagentDigest,
   type HostCommandSpec,
   type PiCommandSpec,
 } from '@ompiui/protocol'
@@ -307,8 +308,8 @@ export function listHostFiles(
   return postHostCommand('files.list', { workspacePath, ...params }, signal)
 }
 
-export function readHostFile(workspacePath: string, path: string, signal?: AbortSignal): Promise<FileReadResponse> {
-  return postHostCommand('files.read', { workspacePath, path }, signal)
+export function readHostFile(workspacePath: string, path: string, signal?: AbortSignal, ifNoneMatch?: string): Promise<FileReadResponse> {
+  return postHostCommand('files.read', { workspacePath, path, ifNoneMatch }, signal)
 }
 
 export function writeHostFile(
@@ -595,8 +596,8 @@ export function getPiSessionState(sessionId: string, signal?: AbortSignal): Prom
 }
 
 /**
- * 读取 OMP 子代理会话转录（磁盘回填/增量续读）。session 命令跑在父会话
- * runtime 上：父会话 attach 后才可用。
+ * 读取 OMP 子代理历史；只读路由不启动父会话 runtime。
+ * 持久缓存按服务器、凭据身份和会话文件隔离。
  */
 export async function getOmpSubagentMessages(
   sessionId: string,
@@ -606,22 +607,29 @@ export async function getOmpSubagentMessages(
   const generation = serverStore.getActiveServerGeneration()
   const key = JSON.stringify([generation, sessionId, params?.sessionFile, params?.subagentId])
   const base = getApiBase()
+  const server = serverStore.getActiveServer()
+  const persistentKey = JSON.stringify([
+    server?.id ?? '', base || window.location.origin,
+    subagentDigest(getPiAuthToken() ?? ''),
+    params?.sessionFile ?? [sessionId, params?.subagentId],
+  ])
   return readSubagentTranscript(
     key,
     params?.fromByte,
-    async (cursor, sharedSignal) => {
+    async (cursor, sharedSignal, sync) => {
       if (getApiBase() !== base || serverStore.getActiveServerGeneration() !== generation)
         throw new DOMException('Server changed', 'AbortError')
       const page = await postPiSessionCommand(
         sessionId,
         'subagent.messages',
-        { ...params, fromByte: cursor },
+        { ...params, fromByte: cursor, ...(sync && params?.sessionFile ? { sync } : {}) },
         sharedSignal,
       )
       if (serverStore.getActiveServerGeneration() !== generation) throw new DOMException('Server changed', 'AbortError')
       return page
     },
     signal,
+    params?.sessionFile ? persistentKey : undefined,
   )
 }
 
@@ -644,11 +652,20 @@ export function getPiBranchPage(
 }
 
 export async function getPiTree(sessionId: string, signal?: AbortSignal): Promise<SessionTreeNode[]> {
-  const nodes = await postPiSessionCommand<SessionTreeNode[]>(sessionId, 'tree.get', undefined, signal)
+  const nodes: SessionTreeNode[] = []
+  let cursor: string | undefined
+  do {
+    const page = await postPiSessionCommand<SessionTreeNode[] | { items: SessionTreeNode[]; beforeCursor?: string; hasMore: boolean }>(
+      sessionId, 'tree.get', { cursor, limit: 200, maxBytes: 1024 * 1024 }, signal,
+    )
+    if (Array.isArray(page)) { nodes.push(...page); break }
+    nodes.unshift(...page.items)
+    cursor = page.hasMore ? page.beforeCursor : undefined
+  } while (cursor)
   if (nodes.some(node => node.children?.length)) return nodes
-  const byId = new Map(nodes.map(node => [node.entry.id, node]))
+  const byId = new Map(nodes.map(node => [node.entry.id, { ...node, children: [] as SessionTreeNode[] }]))
   const roots: SessionTreeNode[] = []
-  for (const node of nodes) {
+  for (const node of byId.values()) {
     const parentId = node.entry.parentId
     const parent = parentId ? byId.get(parentId) : undefined
     if (parent && parent !== node) parent.children.push(node)
@@ -803,8 +820,38 @@ export function respondPiExtensionUi(
   return postPiSessionCommand(sessionId, 'respondExtensionUi', { requestId, response }, signal)
 }
 
+const editorSyncs = new Map<string, { text: string; active: boolean; flight: Promise<JsonValue> }>()
+serverStore.onServerChange(() => editorSyncs.clear())
+
 export function setPiExtensionEditorState(sessionId: string, text: string, signal?: AbortSignal): Promise<JsonValue> {
-  return postPiSessionCommand(sessionId, 'setExtensionEditorState', { text }, signal)
+  // 超限草稿仍留在本地，不为恢复镜像反复上传大段日志。
+  if (text.length > 256 * 1024 || new TextEncoder().encode(text).byteLength > 256 * 1024) return Promise.resolve(null)
+  const previous = editorSyncs.get(sessionId)
+  if (previous?.text === text) return previous.flight
+  if (previous?.active) {
+    previous.text = text
+    return previous.flight
+  }
+  const entry = { text, active: true, flight: Promise.resolve(null) as Promise<JsonValue> }
+  const flight = Promise.resolve().then(async () => {
+    let result: JsonValue = null
+    while (editorSyncs.get(sessionId) === entry) {
+      const latest = entry.text
+      result = await postPiSessionCommand<JsonValue>(sessionId, 'setExtensionEditorState', { text: latest }, signal)
+      if (entry.text === latest) break
+    }
+    entry.active = false
+    return result
+  })
+    .catch(error => {
+      if (editorSyncs.get(sessionId)?.flight === flight) editorSyncs.delete(sessionId)
+      throw error
+    })
+  editorSyncs.delete(sessionId)
+  entry.flight = flight
+  editorSyncs.set(sessionId, entry)
+  if (editorSyncs.size > 64) editorSyncs.delete(editorSyncs.keys().next().value!)
+  return flight
 }
 
 // Extension TUI mirror commands (offscreen pi-tui hosted by the worker)

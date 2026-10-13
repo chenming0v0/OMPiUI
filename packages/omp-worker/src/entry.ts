@@ -120,14 +120,18 @@ const pendingHostCalls = new Map<string, {
 
 function subscribeRuntimeEvents(current: SessionRuntime): Array<() => void> {
   const unsubs: Array<() => void> = []
-  unsubs.push(current.onPiEvent((event, meta) => send({
+  unsubs.push(current.onPiEvent((event, meta) => {
+    if (event.type === "available_commands_update") {
+      void queueRegistryChangeCheck(current, "available_commands_update").catch(error => console.error("[omp-worker] registry refresh failed", error));
+    }
+    send({
     kind: "event",
     generation: workerGeneration,
     sessionId: current.getSessionId(),
     channel: "pi.event",
     event,
     meta,
-  })))
+  })}))
   unsubs.push(current.onHead(head => send({
     kind: "event",
     generation: workerGeneration,
@@ -337,19 +341,15 @@ async function execute(command: { type: string; params?: JsonObject; sessionId?:
       registryDigests.set(currentId, digest)
     }
   }
-  if (current && shouldCheckRegistryAfter(command.type)) {
-    await queueRegistryChangeCheck(current, `command:${command.type}`)
+  if (current && shouldCheckRegistryAfter(command.type, params)) {
+    void queueRegistryChangeCheck(current, `command:${command.type}`).catch(error => console.error("[omp-worker] registry refresh failed", error))
   }
   return result
 }
 
-const REGISTRY_READ_COMMANDS = new Set(["state.get", "entries.get", "branch.get", "tree.get", "registry.get", "attachment.get", "waitForIdle"])
-
-function shouldCheckRegistryAfter(type: string): boolean {
-  if (type.startsWith("session.") || type.startsWith("models.") || type.startsWith("settings.") ||
-    type.startsWith("trust.") || type.startsWith("providers.") || type.startsWith("modelRuntime.") ||
-    type.startsWith("packages.")) return false
-  return !REGISTRY_READ_COMMANDS.has(type)
+function shouldCheckRegistryAfter(type: string, params: JsonObject): boolean {
+  if (type === "prompt" || type === "sendUserMessage") return typeof params.text === "string" && params.text.trimStart().startsWith("/")
+  return ["invokeTool", "invokeCommand", "refreshResources", "setModel", "newSession", "switchSession", "fork"].includes(type)
 }
 
 function describeRegistry(): PiRegistrySnapshot {

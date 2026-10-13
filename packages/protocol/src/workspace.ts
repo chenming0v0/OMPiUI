@@ -45,6 +45,7 @@ export type FileReadResponse = {
   mimeType: string
   size: number
   etag: string
+  notModified?: boolean
 }
 
 export type FileWriteRequest = {

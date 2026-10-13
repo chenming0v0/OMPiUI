@@ -43,6 +43,17 @@ test("WorkerSession fulfills a command on a healthy worker", async () => {
   }
 })
 
+test("oversized in-flight payloads are rejected without terminating the shared worker", async () => {
+  const catalog = startCatalog("hello-ok", { requestTimeoutMs: 5000 })
+  try {
+    await catalog.getHandshake()
+    await assert.rejects(catalog.command("state.get", { text: "x".repeat(32 * 1024 * 1024) }), { code: "RATE_LIMITED" })
+    assert.deepEqual(await catalog.command("state.get"), { fixture: "ok" })
+  } finally {
+    await catalog.dispose()
+  }
+})
+
 test("RPC flood reproduces watchdog termination; batching keeps the same work alive", async () => {
   const blocked = startCatalog("flood-blocking", { requestTimeoutMs: 5000 })
   const batched = startCatalog("flood-yielding", { requestTimeoutMs: 5000 })

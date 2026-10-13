@@ -9,6 +9,7 @@ import { piModelsStore } from './state/piModelsStore'
 import * as controllers from './controllers/index'
 import { piModelRolesStore } from './state/piModelRolesStore'
 import * as rolesController from './controllers/modelRoles'
+import { activeSessionStore } from '../store/activeSessionStore'
 
 vi.mock('../api/events', () => ({
   subscribeToConnectionState: vi.fn(),
@@ -135,11 +136,11 @@ describe('backend generation reset clears subagent state', () => {
   })
 
   it('installs the shared reset listener only once', () => {
-    const clear = vi.spyOn(ompSubagentStore, 'clearAll')
+    const reset = vi.spyOn(activeSessionStore, 'reset')
     installPiBackendServerSwitch()
     installPiBackendServerSwitch()
     serverStore.setActiveServer(remoteId)
-    expect(clear).toHaveBeenCalledTimes(1)
+    expect(reset).toHaveBeenCalledTimes(1)
   })
 
   it('marks models disconnected on socket loss and revalidates on reconnect', async () => {

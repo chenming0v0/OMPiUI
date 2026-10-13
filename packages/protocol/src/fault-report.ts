@@ -37,8 +37,18 @@ export function redactDiagnosticText(text: string): string {
 const encoder = new TextEncoder()
 
 /** 按 UTF-8 字节和行数双重分片，保留全部内容及超长单行，不交给平台截断。 */
-export function splitFaultReport(content: string, maxBytes = 9 * 1024 * 1024, maxLines = 24_000): string[] {
+export function splitFaultReport(content: string, maxBytes = 9 * 1024 * 1024, maxLines = 24_000, formEncoded = false): string[] {
   if (maxBytes < 4 || maxLines < 1) throw new Error("Invalid report limits")
+  const budget = maxBytes - (formEncoded ? 8 : 0)
+  if (budget < 12 && formEncoded) throw new Error("Invalid encoded report limit")
+  const measure = (text: string) => {
+    if (!formEncoded) return encoder.encode(text).byteLength
+    let size = 0
+    for (const char of text) {
+      size += /^[a-zA-Z0-9*._ -]$/.test(char) ? 1 : encoder.encode(char).byteLength * 3
+    }
+    return size
+  }
   const parts: string[] = []
   let current = ""
   let bytes = 0
@@ -50,9 +60,9 @@ export function splitFaultReport(content: string, maxBytes = 9 * 1024 * 1024, ma
     lines = 0
   }
   for (const line of content.match(/[^\n]*\n|[^\n]+$/g) ?? []) {
-    const size = encoder.encode(line).byteLength
-    if (size <= maxBytes) {
-      if (bytes + size > maxBytes || lines >= maxLines) flush()
+    const size = measure(line)
+    if (size <= budget) {
+      if (bytes + size > budget || lines >= maxLines) flush()
       current += line
       bytes += size
       lines++
@@ -60,8 +70,8 @@ export function splitFaultReport(content: string, maxBytes = 9 * 1024 * 1024, ma
     }
     flush()
     for (const char of line) {
-      const size = encoder.encode(char).byteLength
-      if (bytes + size > maxBytes) flush()
+      const size = measure(char)
+      if (bytes + size > budget) flush()
       current += char
       bytes += size
     }
@@ -79,7 +89,7 @@ export async function uploadFaultReport(
   previous: FaultUploadProgress = { links: [], total: 0 },
   onProgress: (progress: FaultUploadProgress) => void = () => {},
 ): Promise<FaultUploadProgress> {
-  const parts = splitFaultReport(content)
+  const parts = splitFaultReport(content, 9 * 1024 * 1024, 24_000, true)
   const links = [...previous.links]
   if (links.length > parts.length) throw new Error("Report changed; upload cannot be resumed")
   const publish = async (text: string): Promise<string> => {

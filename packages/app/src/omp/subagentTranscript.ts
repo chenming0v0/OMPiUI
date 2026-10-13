@@ -1,4 +1,6 @@
 import type { JsonObject, JsonValue } from '@ompiui/protocol'
+import { clearSubagentBlockMemory } from './subagentBlockCache'
+import { readSyncedSubagentHistory, type FetchSubagentPage } from './subagentSync'
 
 const BYTE_LIMIT = 8 * 1024 * 1024
 const MESSAGE_LIMIT = 2000
@@ -14,18 +16,22 @@ type Flight = { controller: AbortController; promise: Promise<JsonValue>; users:
 const cache = new Map<string, Transcript>()
 const flights = new Map<string, Flight>()
 const encoder = new TextEncoder()
+const legacyKeys = new Set<string>()
 
 export function clearSubagentTranscripts(): void {
   for (const flight of flights.values()) flight.controller.abort()
   flights.clear()
   cache.clear()
+  clearSubagentBlockMemory()
+  legacyKeys.clear()
 }
 
 export function readSubagentTranscript(
   key: string,
   fromByte: number | undefined,
-  fetchPage: (cursor: number, signal: AbortSignal) => Promise<JsonValue>,
+  fetchPage: FetchSubagentPage,
   signal?: AbortSignal,
+  persistentKey?: string,
 ): Promise<JsonValue> {
   signal?.throwIfAborted()
   const flightKey = JSON.stringify([key, fromByte])
@@ -34,7 +40,28 @@ export function readSubagentTranscript(
     const controller = new AbortController()
     flight = { controller, users: 0, promise: Promise.resolve(null) }
     const current = flight
-    current.promise = readPages(key, fromByte, fetchPage, controller.signal).finally(() => {
+    const read =
+      persistentKey && !legacyKeys.has(key)
+        ? readSyncedSubagentHistory(persistentKey, fromByte, fetchPage, controller.signal).catch(error => {
+            if (!['SYNC_UNSUPPORTED', 'INVALID_REQUEST', 'INVALID_PARAMS'].includes(error?.code)) throw error
+            legacyKeys.add(key)
+            let first = error.legacyPage as JsonValue | undefined
+            return readPages(
+              key,
+              fromByte,
+              (cursor, signal) => {
+                if (first !== undefined && cursor === error.legacyCursor) {
+                  const page = first
+                  first = undefined
+                  return Promise.resolve(page)
+                }
+                return fetchPage(cursor, signal)
+              },
+              controller.signal,
+            )
+          })
+        : readPages(key, fromByte, fetchPage, controller.signal)
+    current.promise = read.finally(() => {
       if (flights.get(flightKey) === current) flights.delete(flightKey)
     })
     flights.set(flightKey, current)

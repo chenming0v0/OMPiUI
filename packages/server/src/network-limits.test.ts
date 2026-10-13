@@ -10,6 +10,8 @@ import { attachEventWebSocket, closeEventWebSocket } from "./ws.ts";
 import { createAppServer } from "./http.ts";
 import { MAX_PROMPT_BODY_BYTES } from "./host/security.ts";
 import type { TerminalManager } from "./host/terminal-manager.ts";
+import { diagnostics, type DiagnosticFields } from "./diagnostics/recorder.ts";
+import { FaultReportService } from "./diagnostics/fault-reports.ts";
 
 test("event history bounds bytes globally and per stream, retaining correct expired-cursor semantics", () => {
   const hub = new EventHub();
@@ -70,6 +72,7 @@ test("real websocket subscriptions replay only newly added streams and cap conne
   const received: Array<{
     type?: string;
     event?: { stream: { id: string }; channel?: string };
+    eventChannel?: string;
   }> = [];
   ws.on("message", (data) => received.push(JSON.parse(String(data))));
   const serverStream = { kind: "server" as const, id: "server" };
@@ -130,10 +133,10 @@ test("real websocket subscriptions replay only newly added streams and cap conne
       text: "x".repeat(5 * 1024 * 1024),
     });
     await subscribe([serverStream, sessionStream]);
-    const changed = received.find(
-      (frame) => frame.event?.channel === "pi.event",
-    );
+    const changed = received.find((frame) => frame.type === "payload_omitted");
     assert.ok(changed);
+    assert.equal(changed.eventChannel, "session.head");
+    assert.equal(changed.event, undefined);
     assert.equal(
       received.some((frame) => frame.type === "resync_required"),
       false,
@@ -144,6 +147,61 @@ test("real websocket subscriptions replay only newly added streams and cap conne
       closeEventWebSocket(wss, () => resolve()),
     );
     await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("subscribe storms are bounded and resync diagnostics are aggregated", async t => {
+  const records: Array<{ event: string; fields: DiagnosticFields }> = [];
+  t.mock.method(diagnostics, "record", (event: string, fields: DiagnosticFields = {}) => records.push({ event, fields }));
+  const server = createServer();
+  const wss = attachEventWebSocket(server, { eventHub: new EventHub(), authToken: null });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const ws = new WebSocket(`ws://127.0.0.1:${(server.address() as { port: number }).port}/api/v1/events`);
+  try {
+    await once(ws, "open");
+    const closed = once(ws, "close");
+    const streams = Array.from({ length: 256 }, (_, index) => ({ kind: "session", id: String(index) }));
+    for (let index = 0; index < 20; index++) {
+      ws.send(JSON.stringify({ type: "subscribe", protocolVersion: PROTOCOL_VERSION, streams, cursors: {} }));
+    }
+    const [code] = await closed;
+    assert.equal(code, 1008);
+    assert.ok(records.filter(record => record.event === "connection.subscribed").length <= 12);
+    const resync = records.filter(record => record.event === "connection.resync");
+    assert.equal(resync.length, 1);
+    assert.equal(resync[0]!.fields.count, 256);
+  } finally {
+    ws.terminate();
+    await new Promise<void>(resolve => closeEventWebSocket(wss, () => resolve()));
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
+test("terminal malformed-frame floods close rather than enqueue unbounded problem replies", async () => {
+  const server = createServer();
+  const manager = {
+    consumeConnectToken: () => "/workspace",
+    attach: () => ({ replay: "", replayCursor: 0, cursor: 0, activate() {}, detach() {} }),
+    get: () => ({ id: "t", cursor: 0, status: "running" }),
+  } as unknown as TerminalManager;
+  const wss = attachEventWebSocket(server, { eventHub: new EventHub(), authToken: null, terminalManager: manager });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const ws = new WebSocket(`ws://127.0.0.1:${(server.address() as { port: number }).port}/api/v1/host/terminals/t/stream?ticket=test`);
+  let problems = 0;
+  ws.on("message", data => { if (JSON.parse(String(data)).type === "problem") problems++; });
+  try {
+    await once(ws, "open");
+    const closed = once(ws, "close");
+    for (let index = 0; index < 300; index++) ws.send("{");
+    const [code] = await closed;
+    assert.equal(code, 1013);
+    assert.ok(problems <= 240);
+  } finally {
+    ws.terminate();
+    await new Promise<void>(resolve => closeEventWebSocket(wss, () => resolve()));
+    await new Promise<void>(resolve => server.close(() => resolve()));
   }
 });
 
@@ -271,6 +329,37 @@ test("HTTP compresses negotiated JSON and all three command routes reject bodies
       assert.equal(response.status, 413);
       assert.equal(response.connection, "close");
     }
+  } finally {
+    await app.dispose();
+    if (previous === undefined) delete process.env.OMPIUI_DRIVER;
+    else process.env.OMPIUI_DRIVER = previous;
+  }
+});
+
+test("diagnostic report limits distinguish trusted tunnel clients and reject untrusted XFF rotation", async t => {
+  const collect = t.mock.method(FaultReportService.prototype, "collect", async () => ({
+    report: { content: "diagnostic fixture" },
+  } as Awaited<ReturnType<FaultReportService["collect"]>>));
+  const previous = process.env.OMPIUI_DRIVER;
+  process.env.OMPIUI_DRIVER = "mock";
+  const app = createAppServer({ authToken: null, tunnelForwardingToken: "internal-test" });
+  app.server.listen(0, "127.0.0.1");
+  await once(app.server, "listening");
+  const port = (app.server.address() as { port: number }).port;
+  const get = async (ip: string, marker = "internal-test") => {
+    const response = await fetch(`http://127.0.0.1:${port}/api/v1/host/diagnostics/report`, {
+      headers: { "x-forwarded-for": ip, "x-ompiui-internal-tunnel": marker },
+    });
+    await response.text();
+    return response.status;
+  };
+  try {
+    assert.equal(await get("203.0.113.1"), 200);
+    assert.equal(await get("203.0.113.2"), 200);
+    assert.equal(await get("203.0.113.1"), 429);
+    assert.equal(await get("203.0.113.3", "invalid"), 200);
+    assert.equal(await get("203.0.113.4", "invalid"), 429);
+    assert.equal(collect.mock.callCount(), 3);
   } finally {
     await app.dispose();
     if (previous === undefined) delete process.env.OMPIUI_DRIVER;

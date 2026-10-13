@@ -20,6 +20,31 @@ test("admin token is generated once and stored privately", () => {
   assert.equal(readFileSync(adminTokenPath(env), "utf8").trim(), first)
 })
 
+test("concurrent status and credential reads share one bounded backend probe", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ompiui-admin-status-")); roots.push(root)
+  const calls = new Map<string, number>()
+  const backend = createServer((request, response) => {
+    const route = request.url ?? ""
+    calls.set(route, (calls.get(route) ?? 0) + 1)
+    response.setHeader("content-type", "application/json")
+    response.end('{"ok":true}')
+  })
+  await new Promise<void>(resolve => backend.listen(0, "127.0.0.1", resolve))
+  const env = { ...process.env, OMPIUI_DATA_DIR: root, OMPIUI_ADMIN_DATA_DIR: root, OMPIUI_AUTH_TOKEN: "backend" }
+  const config = { ...loadAdminConfig(env), serverUrl: `http://127.0.0.1:${(backend.address() as AddressInfo).port}` }
+  const manager = new ServiceManager({ config, env })
+  try {
+    const [first, second] = await Promise.all([manager.status(), manager.status()])
+    assert.equal(first, second)
+    await manager.status()
+    assert.deepEqual([...calls.values()], [1, 1, 1])
+    assert.equal(manager.isRunning(), false)
+  } finally {
+    backend.closeAllConnections()
+    await new Promise<void>(resolve => backend.close(() => resolve()))
+  }
+})
+
 test("management API requires its own bearer token", async () => {
   const root = mkdtempSync(join(tmpdir(), "ompiui-admin-http-")); roots.push(root)
   const env = { ...process.env, OMPIUI_DATA_DIR: root, OMPIUI_ADMIN_DATA_DIR: root }

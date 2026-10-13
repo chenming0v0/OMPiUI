@@ -16,6 +16,7 @@ import {
   type IncomingMessage,
 } from "node:http";
 import type { Duplex } from "node:stream";
+import type { Socket } from "node:net";
 import { WebSocket } from "ws";
 import type { TunnelStatus } from "@ompiui/protocol";
 import { TUNNEL_FORWARDING_HEADER } from "../host/security.ts";
@@ -25,6 +26,7 @@ import {
   CLOSE_UNAUTHORIZED,
   CONTROL_PATH,
   CONTROL_MESSAGE_MAX,
+  CONNECTIONS_PER_TUNNEL_MAX,
   FRAME_PAYLOAD_MAX,
   HEARTBEAT_INTERVAL_MS,
   RECONNECT_BASE_MS,
@@ -90,6 +92,8 @@ export class TunnelClient {
   private heartbeat: NodeJS.Timeout | null = null;
   private alive = true;
   private readonly conns = new Map<number, TunnelConn>();
+  private controlRate = new DataRateLimit(1024 * 1024, 2 * 1024 * 1024);
+  private openRate = new DataRateLimit(1024 * 1024, 2 * 1024 * 1024, 100, 200);
   private readonly download = new DataRateLimit();
 
   constructor(options: TunnelClientOptions) {
@@ -283,6 +287,7 @@ export class TunnelClient {
       ws.terminate();
       return;
     }
+    if (!this.controlRate.allow(raw.length + 14)) { ws.terminate(); return }
     const frame = JSON.parse(raw.toString("utf8")) as ControlFrame;
     switch (frame.type) {
       case "ready": {
@@ -341,6 +346,10 @@ export class TunnelClient {
     if (this.conns.has(frame.c)) return;
     const ws = this.ws;
     if (!ws) return;
+    if (this.conns.size >= CONNECTIONS_PER_TUNNEL_MAX || !this.openRate.allow(1)) {
+      this.sendControl({ type: "fail", c: frame.c, e: "local request capacity reached" });
+      return;
+    }
     const headers = { ...frame.h };
     // Public clients can supply any spelling of this header. Never replay it,
     // even when this TunnelClient has no internal forwarding credentials.
@@ -358,7 +367,7 @@ export class TunnelClient {
       upload: new DataRateLimit(4 * 1024 * 1024, 8 * 1024 * 1024),
     };
     const sink = new BodySink(ws, (bytes, frames) =>
-      this.download.allow(bytes, frames),
+      this.download.allow(bytes, frames) || this.download.delayMs(bytes, frames),
     );
     conn.sink = sink;
     this.conns.set(frame.c, conn);
@@ -401,6 +410,7 @@ export class TunnelClient {
       },
     );
     conn.req = req;
+    req.setTimeout(120_000, () => this.abortInput(frame.c));
     if (!isUpgrade)
       conn.input = new ResponseSink(
         req,
@@ -408,6 +418,7 @@ export class TunnelClient {
         () => {},
       );
     req.on("upgrade", (res: IncomingMessage, socket: Duplex, head: Buffer) => {
+      (socket as Socket).setTimeout(120_000, () => this.abortInput(frame.c));
       conn.socket = socket;
       conn.req = undefined;
       conn.input = new ResponseSink(
