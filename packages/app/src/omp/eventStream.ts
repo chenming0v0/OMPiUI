@@ -479,7 +479,8 @@ class PiEventStream {
         receiveProviderAuthUpdated()
         refreshModelSettings()
       } else {
-        this.queueResync(eventStreamKey(stream))
+        if (stream.kind === 'session') this.scheduleBranchRefresh(stream.id)
+        else this.queueResync(eventStreamKey(stream))
       }
     }
   }

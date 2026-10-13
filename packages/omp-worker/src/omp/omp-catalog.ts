@@ -976,6 +976,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     const top = await this.summarizeAll();
     const hit = top.find((item) => item.id === sessionId);
     if (hit) return { id: hit.id, cwd: hit.cwd, sessionFile: hit.path };
+    const candidates: string[] = [];
     for (const root of [...ompSessionRoots(), managedSessionsRoot()]) {
       if (!existsSync(root)) continue;
       let projects: string[] = [];
@@ -1003,22 +1004,16 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
           } catch {
             continue;
           }
-          for (const name of names) {
-            const filePath = path.join(childDir, name);
-            const header = await sessionFileId(filePath);
-            if (header !== sessionId) continue;
-            const summary = await summarizeSessionFileCached(filePath);
-            if (summary && summary.id === sessionId) {
-              return {
-                id: summary.id,
-                cwd: summary.cwd,
-                sessionFile: summary.path,
-              };
-            }
-          }
+          for (const name of names) candidates.push(path.join(childDir, name));
         }
       }
     }
+    const matches = await mapLimited(candidates, async filePath => {
+      const header = await sessionFileId(filePath);
+      return header === sessionId ? summarizeSessionFileCached(filePath) : null;
+    });
+    const match = matches.find(item => item?.id === sessionId);
+    if (match) return { id: match.id, cwd: match.cwd, sessionFile: match.path };
     return null;
   }
 
