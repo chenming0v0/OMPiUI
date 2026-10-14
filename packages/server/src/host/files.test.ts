@@ -1,8 +1,8 @@
 import assert from "node:assert/strict"
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { afterEach, describe, it } from "node:test"
+import { after, afterEach, describe, it } from "node:test"
 import {
   createWorkspaceEntry,
   deleteWorkspaceEntry,
@@ -11,9 +11,19 @@ import {
   readFileContent,
   writeFileContent,
 } from "./files.ts"
-import type { WorkspaceRecord } from "./workspace-store.ts"
+import { WorkspaceStore, type WorkspaceRecord } from "./workspace-store.ts"
+import { acquireWorkspaceMutationLock } from "./workspace-lock.ts"
+import { HostRuntime } from "./command-table.ts"
 
 const roots: string[] = []
+const previousDataDir = process.env.OMPIUI_DATA_DIR
+const dataDir = mkdtempSync(path.join(tmpdir(), "ompiui-file-locks-"))
+process.env.OMPIUI_DATA_DIR = dataDir
+after(() => {
+  if (previousDataDir === undefined) delete process.env.OMPIUI_DATA_DIR
+  else process.env.OMPIUI_DATA_DIR = previousDataDir
+  rmSync(dataDir, { recursive: true, force: true })
+})
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
@@ -109,6 +119,155 @@ describe("workspace files", () => {
     const rejected = results.find(result => result.status === "rejected") as PromiseRejectedResult
     assert.equal((rejected.reason as { code?: string }).code, "STALE_REVISION")
     assert.ok(["first", "second"].includes(readFileSync(path.join(root, "shared.txt"), "utf8")))
+  })
+
+  it("bounds queued upload bytes, refunds cancellation and leaves other workspaces usable", async () => {
+    const blocked = fixture()
+    const healthy = fixture()
+    const lock = await acquireWorkspaceMutationLock(blocked.root)
+    const content = Buffer.alloc(8 * 1024 * 1024).toString("base64")
+    const controller = new AbortController()
+    const replacement = new AbortController()
+    const first = writeFileContent(blocked.workspace, "first.txt", "first")
+    const waiting = createWorkspaceEntry(blocked.workspace, "cancelled.bin", "file", {
+      content, encoding: "base64", signal: controller.signal,
+    })
+    const pending: Promise<unknown>[] = [first, waiting]
+    for (const promise of pending) void promise.catch(() => undefined)
+    try {
+      await assert.rejects(writeFileContent(blocked.workspace, "overflow.bin", content, {
+        encoding: "base64", returnContent: false,
+      }), { code: "RATE_LIMITED" })
+      await writeFileContent(healthy.workspace, "healthy.txt", "available")
+      assert.equal(readFileSync(path.join(healthy.root, "healthy.txt"), "utf8"), "available")
+
+      controller.abort()
+      await assert.rejects(waiting, { code: "REQUEST_ABORTED" })
+      const admitted = writeFileContent(blocked.workspace, "replacement.bin", content, {
+        encoding: "base64", returnContent: false, signal: replacement.signal,
+      })
+      pending.push(admitted)
+      replacement.abort()
+      await assert.rejects(admitted, { code: "REQUEST_ABORTED" })
+      lock.release()
+      await first
+      assert.deepEqual(readdirSync(blocked.root), ["first.txt"])
+      assert.equal(readFileSync(path.join(blocked.root, "first.txt"), "utf8"), "first")
+    } finally {
+      controller.abort()
+      replacement.abort()
+      lock.release()
+      await Promise.allSettled(pending)
+    }
+  })
+
+  it("bounds aggregate upload bytes across workspaces and refunds cancelled lock waiters", async () => {
+    const workspaces = [fixture(), fixture(), fixture()]
+    const locks = await Promise.all(workspaces.map(item => acquireWorkspaceMutationLock(item.root)))
+    const controllers = workspaces.map(() => new AbortController())
+    const content = Buffer.alloc(8 * 1024 * 1024).toString("base64")
+    const pending = workspaces.slice(0, 2).map((item, index) => writeFileContent(item.workspace, "waiting.bin", content, {
+      encoding: "base64", returnContent: false, signal: controllers[index]!.signal,
+    }))
+    for (const promise of pending) void promise.catch(() => undefined)
+    try {
+      await assert.rejects(writeFileContent(workspaces[2]!.workspace, "overflow.bin", content, {
+        encoding: "base64", returnContent: false,
+      }), { code: "RATE_LIMITED" })
+      controllers[0]!.abort()
+      await assert.rejects(pending[0], { code: "REQUEST_ABORTED" })
+      const admitted = writeFileContent(workspaces[2]!.workspace, "replacement.bin", content, {
+        encoding: "base64", returnContent: false, signal: controllers[2]!.signal,
+      })
+      pending.push(admitted)
+      controllers[2]!.abort()
+      await assert.rejects(admitted, { code: "REQUEST_ABORTED" })
+    } finally {
+      for (const controller of controllers) controller.abort()
+      for (const lock of locks) lock.release()
+      await Promise.allSettled(pending)
+    }
+    for (const item of workspaces) assert.deepEqual(readdirSync(item.root), [])
+  })
+
+  it("bounds both per-workspace and global mutation counts even for empty uploads", async () => {
+    const workspaces = Array.from({ length: 5 }, () => fixture())
+    const locks = await Promise.all(workspaces.map(item => acquireWorkspaceMutationLock(item.root)))
+    const pending: Array<{ controller: AbortController; promise: Promise<unknown> }> = []
+    try {
+      for (let index = 0; index < 4; index++) {
+        for (let item = 0; item < 32; item++) {
+          const controller = new AbortController()
+          const promise = writeFileContent(workspaces[index]!.workspace, `queued-${item}.txt`, "", { signal: controller.signal })
+          void promise.catch(() => undefined)
+          pending.push({ controller, promise })
+        }
+        if (index === 0) {
+          await assert.rejects(writeFileContent(workspaces[0]!.workspace, "overflow.txt", ""), { code: "RATE_LIMITED" })
+        }
+      }
+      await assert.rejects(writeFileContent(workspaces[4]!.workspace, "global-overflow.txt", ""), { code: "RATE_LIMITED" })
+      pending[0]!.controller.abort()
+      await assert.rejects(pending[0]!.promise, { code: "REQUEST_ABORTED" })
+      const controller = new AbortController()
+      const promise = writeFileContent(workspaces[4]!.workspace, "replacement.txt", "", { signal: controller.signal })
+      pending.push({ controller, promise })
+      controller.abort()
+      await assert.rejects(promise, { code: "REQUEST_ABORTED" })
+    } finally {
+      for (const item of pending) item.controller.abort()
+      for (const lock of locks) lock.release()
+      await Promise.allSettled(pending.map(item => item.promise))
+    }
+    for (const item of workspaces) assert.deepEqual(readdirSync(item.root), [])
+    await writeFileContent(workspaces[0]!.workspace, "recovered.txt", "recovered")
+    assert.equal(readFileSync(path.join(workspaces[0]!.root, "recovered.txt"), "utf8"), "recovered")
+  })
+
+  it("cancels every host file mutation before execution without delayed writes after unlocking", async () => {
+    const { root, workspace } = fixture()
+    writeFileSync(path.join(root, "existing.txt"), "original")
+    const store = new WorkspaceStore()
+    store.resolve(root)
+    const runtime = new HostRuntime({ store } as never)
+    const controller = new AbortController()
+    const options = { signal: controller.signal }
+    const lock = await acquireWorkspaceMutationLock(root)
+    const pending = [
+      runtime.execute("files.write", { workspacePath: root, path: "existing.txt", content: "changed" }, options),
+      runtime.execute("files.create", { workspacePath: root, path: "created.txt", type: "file", content: "created" }, options),
+      runtime.execute("files.move", { workspacePath: root, from: "existing.txt", to: "moved.txt" }, options),
+      runtime.execute("files.delete", { workspacePath: root, path: "existing.txt" }, options),
+    ]
+    const settled = Promise.allSettled(pending)
+    try {
+      controller.abort()
+      for (const result of await settled) {
+        assert.equal(result.status, "rejected")
+        if (result.status === "rejected") assert.equal(result.reason.code, "REQUEST_ABORTED")
+      }
+    } finally {
+      lock.release()
+      await settled
+    }
+    await writeFileContent(workspace, "barrier.txt", "complete")
+    assert.equal(readFileSync(path.join(root, "existing.txt"), "utf8"), "original")
+    assert.equal(existsSync(path.join(root, "created.txt")), false)
+    assert.equal(existsSync(path.join(root, "moved.txt")), false)
+  })
+
+  it("refunds upload reservations after filesystem failures and successful writes", async () => {
+    const { root, workspace } = fixture()
+    const content = Buffer.alloc(8 * 1024 * 1024, 7).toString("base64")
+    for (let index = 0; index < 2; index++) {
+      await assert.rejects(writeFileContent(workspace, `${"x".repeat(300)}-${index}.bin`, content, {
+        encoding: "base64", returnContent: false,
+      }), error => ["ENAMETOOLONG", "ENOENT", "EINVAL"].includes((error as NodeJS.ErrnoException).code ?? ""))
+    }
+    const first = await writeFileContent(workspace, "saved.bin", content, { encoding: "base64", returnContent: false })
+    const second = await writeFileContent(workspace, "saved.bin", content, { encoding: "base64", returnContent: false, ifMatch: first.etag })
+    assert.equal(second.etag, first.etag)
+    assert.deepEqual(readFileSync(path.join(root, "saved.bin")), Buffer.alloc(8 * 1024 * 1024, 7))
   })
 
   it("creates, moves, and deletes files and directories", async () => {

@@ -4,7 +4,7 @@ import { ompiuiDataDir } from "./auth-token.ts"
 
 export async function acquireWorkspaceMutationLock(
   root: string,
-  options: { namespace?: string; staleMs?: number; timeoutMs?: number } = {},
+  options: { namespace?: string; staleMs?: number; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<DirectoryLock> {
   return acquireDirectoryLock(
     options.namespace ?? path.join(ompiuiDataDir(), "workspace-locks"),

@@ -23,13 +23,22 @@ import type {
 import { PathSafetyError, resolveWorkspacePath } from "./path-safety.ts";
 import { workspacePathKey, type WorkspaceRecord } from "./workspace-store.ts";
 import { acquireWorkspaceMutationLock } from "./workspace-lock.ts";
-import { mapConcurrent } from "./query-pool.ts";
+import { mapConcurrent, QueryPool, requestAborted } from "./query-pool.ts";
 
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 const MAX_BINARY_BYTES = 8 * 1024 * 1024;
 const DEFAULT_DIR_ENTRIES = 1000;
 const MAX_DIR_ENTRIES = 2000;
-const fileLocks = new Map<string, Promise<void>>();
+const MAX_PENDING_MUTATION_BYTES = 64 * 1024 * 1024;
+const MAX_WORKSPACE_MUTATION_BYTES = 32 * 1024 * 1024;
+const MAX_PENDING_MUTATIONS = 128;
+const MAX_WORKSPACE_MUTATIONS = 32;
+const workspaceMutations = new Map<
+  string,
+  { pool: QueryPool; bytes: number; count: number }
+>();
+let pendingMutationBytes = 0;
+let pendingMutations = 0;
 const directoryPages = new Map<
   string,
   { modified: number; at: number; names: string[]; fingerprint: string }
@@ -180,18 +189,15 @@ export async function writeFileContent(
     encoding?: "utf-8" | "base64";
     returnContent?: boolean;
     createOnly?: boolean;
+    signal?: AbortSignal;
   } = {},
 ): Promise<FileReadResponse> {
-  const key = path.join(
-    ws.canonicalRoot,
-    ...relativePath.replace(/\\/g, "/").split("/"),
+  return withWorkspaceMutation(
+    ws,
+    2 * (content.length + relativePath.length + (opts.ifMatch?.length ?? 0)),
+    opts.signal,
+    () => writeFileContentLocked(ws, relativePath, content, opts),
   );
-  return withWorkspaceMutation(ws, () => {
-    assertWorkspaceCurrent(ws);
-    return withFileLock(key, () =>
-      writeFileContentLocked(ws, relativePath, content, opts),
-    );
-  });
 }
 
 async function writeFileContentLocked(
@@ -282,18 +288,15 @@ export async function createWorkspaceEntry(
     content?: string;
     encoding?: "utf-8" | "base64";
     overwrite?: boolean;
+    signal?: AbortSignal;
   } = {},
 ): Promise<FileOperationResponse | FileReadResponse> {
-  const key = path.join(
-    ws.canonicalRoot,
-    ...relativePath.replace(/\\/g, "/").split("/"),
+  return withWorkspaceMutation(
+    ws,
+    2 * (relativePath.length + (opts.content?.length ?? 0)),
+    opts.signal,
+    () => createWorkspaceEntryLocked(ws, relativePath, type, opts),
   );
-  return withWorkspaceMutation(ws, () => {
-    assertWorkspaceCurrent(ws);
-    return withFileLock(key, () =>
-      createWorkspaceEntryLocked(ws, relativePath, type, opts),
-    );
-  });
 }
 
 async function createWorkspaceEntryLocked(
@@ -332,18 +335,14 @@ export async function moveWorkspaceEntry(
   from: string,
   to: string,
   overwrite = false,
+  signal?: AbortSignal,
 ): Promise<FileOperationResponse> {
-  const keys = [from, to]
-    .map((relative) =>
-      path.join(ws.canonicalRoot, ...relative.replace(/\\/g, "/").split("/")),
-    )
-    .sort();
-  return withWorkspaceMutation(ws, () => {
-    assertWorkspaceCurrent(ws);
-    return withFileLocks(keys, () =>
-      moveWorkspaceEntryLocked(ws, from, to, overwrite),
-    );
-  });
+  return withWorkspaceMutation(
+    ws,
+    2 * (from.length + to.length),
+    signal,
+    () => moveWorkspaceEntryLocked(ws, from, to, overwrite),
+  );
 }
 
 async function moveWorkspaceEntryLocked(
@@ -426,17 +425,14 @@ export async function deleteWorkspaceEntry(
   ws: WorkspaceRecord,
   relativePath: string,
   recursive = false,
+  signal?: AbortSignal,
 ): Promise<void> {
-  const key = path.join(
-    ws.canonicalRoot,
-    ...relativePath.replace(/\\/g, "/").split("/"),
+  return withWorkspaceMutation(
+    ws,
+    2 * relativePath.length,
+    signal,
+    () => deleteWorkspaceEntryLocked(ws, relativePath, recursive),
   );
-  return withWorkspaceMutation(ws, () => {
-    assertWorkspaceCurrent(ws);
-    return withFileLock(key, () =>
-      deleteWorkspaceEntryLocked(ws, relativePath, recursive),
-    );
-  });
 }
 
 async function deleteWorkspaceEntryLocked(
@@ -649,48 +645,57 @@ function sameFile(
   return left.dev === right.dev && left.ino === right.ino;
 }
 
-async function withFileLock<T>(
-  key: string,
-  operation: () => Promise<T>,
-): Promise<T> {
-  const previous = fileLocks.get(key) ?? Promise.resolve();
-  let release!: () => void;
-  const current = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const queued = previous.then(() => current);
-  fileLocks.set(key, queued);
-  await previous;
-  try {
-    return await operation();
-  } finally {
-    release();
-    if (fileLocks.get(key) === queued) fileLocks.delete(key);
-  }
-}
-
-function withFileLocks<T>(
-  keys: string[],
-  operation: () => Promise<T>,
-): Promise<T> {
-  const unique = [...new Set(keys)];
-  const acquire = (index: number): Promise<T> =>
-    index >= unique.length
-      ? operation()
-      : withFileLock(unique[index]!, () => acquire(index + 1));
-  return acquire(0);
-}
-
-function withWorkspaceMutation<T>(
+async function withWorkspaceMutation<T>(
   ws: WorkspaceRecord,
+  retainedStringBytes: number,
+  signal: AbortSignal | undefined,
   operation: () => Promise<T>,
 ): Promise<T> {
-  return withFileLock(`${ws.canonicalRoot}\0workspace-mutation`, async () => {
-    const lock = await acquireWorkspaceMutationLock(ws.canonicalRoot);
-    try {
-      return await operation();
-    } finally {
-      lock.release();
-    }
-  });
+  if (signal?.aborted) throw requestAborted();
+  const key = workspacePathKey(ws.canonicalRoot);
+  const current = workspaceMutations.get(key);
+  // Charge UTF-16 storage, including encoded upload content, while queued or
+  // running. Counts also bound the request/Promise overhead of empty mutations.
+  const bytes = retainedStringBytes + 2 * ws.canonicalRoot.length;
+  if (
+    pendingMutationBytes + bytes > MAX_PENDING_MUTATION_BYTES ||
+    pendingMutations >= MAX_PENDING_MUTATIONS ||
+    (current?.bytes ?? 0) + bytes > MAX_WORKSPACE_MUTATION_BYTES ||
+    (current?.count ?? 0) >= MAX_WORKSPACE_MUTATIONS
+  ) {
+    throw Object.assign(new Error("workspace mutation capacity reached"), {
+      code: "RATE_LIMITED",
+      retryable: true,
+    });
+  }
+  const queue = current ?? {
+    pool: new QueryPool(1, MAX_WORKSPACE_MUTATIONS - 1),
+    bytes: 0,
+    count: 0,
+  };
+  if (!current) workspaceMutations.set(key, queue);
+  queue.bytes += bytes;
+  queue.count++;
+  pendingMutationBytes += bytes;
+  pendingMutations++;
+  try {
+    return await queue.pool.run(signal, async () => {
+      const lock = await acquireWorkspaceMutationLock(ws.canonicalRoot, { signal });
+      try {
+        if (signal?.aborted) throw requestAborted();
+        assertWorkspaceCurrent(ws);
+        // Cancellation only applies before execution; do not report a committed
+        // write as cancelled or let the next mutation race an in-flight write.
+        return await operation();
+      } finally {
+        lock.release();
+      }
+    });
+  } finally {
+    queue.bytes -= bytes;
+    queue.count--;
+    pendingMutationBytes -= bytes;
+    pendingMutations--;
+    if (queue.count === 0) workspaceMutations.delete(key);
+  }
 }

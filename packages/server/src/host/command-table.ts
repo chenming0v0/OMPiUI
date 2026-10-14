@@ -218,15 +218,17 @@ const HOST_COMMAND_HANDLERS: Record<string, HostCommandHandler> = {
     ifMatch: optString(params, "ifMatch"),
     encoding: fileEncoding(params) ?? "utf-8",
     returnContent: optBoolean(params, "returnContent") !== false,
+    signal: ctx.signal,
   }) as Promise<JsonValue>,
   "files.create": (ctx, params) => createWorkspaceEntry(workspace(ctx, params), reqString(params, "path"), fileType(params), {
     content: optString(params, "content"),
     encoding: fileEncoding(params) ?? "utf-8",
     overwrite: optBoolean(params, "overwrite") === true,
+    signal: ctx.signal,
   }) as Promise<JsonValue>,
-  "files.move": (ctx, params) => moveWorkspaceEntry(workspace(ctx, params), reqString(params, "from"), reqString(params, "to"), optBoolean(params, "overwrite") === true) as Promise<JsonValue>,
+  "files.move": (ctx, params) => moveWorkspaceEntry(workspace(ctx, params), reqString(params, "from"), reqString(params, "to"), optBoolean(params, "overwrite") === true, ctx.signal) as Promise<JsonValue>,
   "files.delete": async (ctx, params) => {
-    await deleteWorkspaceEntry(workspace(ctx, params), reqString(params, "path"), optBoolean(params, "recursive") === true)
+    await deleteWorkspaceEntry(workspace(ctx, params), reqString(params, "path"), optBoolean(params, "recursive") === true, ctx.signal)
     return { ok: true }
   },
   "files.searchName": (ctx, params) => searchFilesByName(workspace(ctx, params), reqString(params, "query"), {
