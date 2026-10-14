@@ -88,6 +88,77 @@ describe('mergeLatestBranchPage', () => {
     expect(merged.beforeCursor).toBe('cursor-at-old')
   })
 
+  it('keeps windowed history and render identities when a matching delta contains no new entries', () => {
+    const current = page(['old', 'a', 'b'], {
+      syncCursor: 'base',
+      hasMore: true,
+      beforeCursor: 'cursor-at-old',
+      client: { historyWindowed: true, stableEntryIds: { b: 'live-b' } },
+    })
+    const latest = page([], {
+      head: current.head,
+      syncCursor: 'base',
+      deltaFrom: 'base',
+      hasMore: true,
+      beforeCursor: 'renewed-old',
+      checkpoint: { position: { epoch: 'events', sequence: 2 } },
+    })
+
+    const merged = mergeLatestBranchPage(current, latest)
+
+    expect(merged.items).toEqual(current.items)
+    expect(merged.client).toEqual(current.client)
+    expect(merged.beforeCursor).toBe('renewed-old')
+    expect(merged.hasMore).toBe(true)
+    expect(merged.checkpoint).toBe(latest.checkpoint)
+    expect(merged.deltaFrom).toBeUndefined()
+  })
+
+  it('appends a matching delta to windowed history without requiring the local leaf in the delta', () => {
+    const current = page(['old', 'a', 'b'], {
+      syncCursor: 'base',
+      hasMore: true,
+      client: { historyWindowed: true },
+    })
+    const latest = page(['c'], {
+      head: { ...current.head, epoch: 'epoch-2' },
+      syncCursor: 'next',
+      deltaFrom: 'base',
+      beforeCursor: 'renewed-old',
+      hasMore: true,
+    })
+
+    const merged = mergeLatestBranchPage(current, latest)
+
+    expect(merged.items.map(item => item.id)).toEqual(['old', 'a', 'b', 'c'])
+    expect(merged.client?.historyWindowed).toBe(true)
+    expect(merged.head).toBe(latest.head)
+    expect(merged.syncCursor).toBe('next')
+    expect(merged.beforeCursor).toBe('renewed-old')
+    expect(merged.deltaFrom).toBeUndefined()
+  })
+
+  it('ignores a mismatched delta while browsing windowed history', () => {
+    const current = page(['old', 'a', 'b'], {
+      syncCursor: 'base',
+      client: { historyWindowed: true },
+    })
+    const latest = page([], { syncCursor: 'next', deltaFrom: 'different-baseline' })
+
+    expect(mergeLatestBranchPage(current, latest)).toBe(current)
+  })
+
+  it('still replaces windowed history when a full snapshot moves to another branch', () => {
+    const current = page(['old', 'a', 'b'], {
+      syncCursor: 'base',
+      hasMore: true,
+      client: { historyWindowed: true },
+    })
+    const latest = page(['a', 'fork'], { syncCursor: 'next' })
+
+    expect(mergeLatestBranchPage(current, latest)).toBe(latest)
+  })
+
   it('drops local history when branch structure changed (no overlap)', () => {
     const current = page(['a', 'b', 'c'], { hasMore: true, beforeCursor: 'old-cursor' })
     const latest = page(['x', 'y', 'z'])

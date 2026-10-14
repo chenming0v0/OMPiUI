@@ -102,6 +102,45 @@ describe('branch sync over HTTP', () => {
     expect(piBranchStore.getData('sync')?.beforeCursor).toBe('renewed-b')
   })
 
+  it('keeps the 400-entry reading window through repeated empty syncs and later pagination', async () => {
+    const ids = Array.from({ length: 400 }, (_, index) => `entry-${index}`)
+    piBranchStore.setData('sync', { ...page(ids, 'base'), hasMore: true })
+    const fetch = vi.spyOn(transport, 'getPiBranchPage')
+      .mockResolvedValueOnce({ ...page(['older']), hasMore: true, beforeCursor: 'before-older' })
+      .mockResolvedValueOnce({
+        ...page([], 'base'), deltaFrom: 'base', hasMore: true, beforeCursor: 'renewed-older',
+      })
+      .mockResolvedValueOnce({
+        ...page([], 'base'), deltaFrom: 'base', hasMore: true, beforeCursor: 'renewed-older-again',
+      })
+      .mockResolvedValueOnce(page(['oldest']))
+
+    await loadMorePiBranchEntries('sync')
+    const windowed = piBranchStore.getData('sync')!
+    expect(windowed.items).toHaveLength(400)
+    expect(windowed.items[0].id).toBe('older')
+    expect(windowed.items.at(-1)?.id).toBe('entry-398')
+    expect(windowed.client?.historyWindowed).toBe(true)
+
+    await refreshPiBranch('sync')
+    await refreshPiBranch('sync')
+    const synced = piBranchStore.getData('sync')!
+    expect(synced.items).toEqual(windowed.items)
+    expect(synced.client?.historyWindowed).toBe(true)
+    expect(synced.hasMore).toBe(true)
+    expect(synced.beforeCursor).toBe('renewed-older-again')
+    expect(fetch.mock.calls[1]?.[1]).toMatchObject({ beforeId: 'older', syncCursor: 'base' })
+    expect(fetch.mock.calls[2]?.[1]).toMatchObject({ beforeId: 'older', syncCursor: 'base' })
+
+    await loadMorePiBranchEntries('sync')
+    const paged = piBranchStore.getData('sync')!
+    expect(paged.items).toHaveLength(400)
+    expect(paged.items.slice(0, 2).map(item => item.id)).toEqual(['oldest', 'older'])
+    expect(paged.hasMore).toBe(false)
+    expect(paged.syncCursor).toBe('base')
+    expect(fetch.mock.calls[3]?.[1]).toMatchObject({ beforeId: 'older' })
+  })
+
   it('ignores stale concurrent responses instead of appending entries twice', async () => {
     piBranchStore.setData('sync', page(['a'], 'base'))
     let resolve!: (value: PiBranchPage) => void
