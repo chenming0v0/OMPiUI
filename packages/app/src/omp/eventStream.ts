@@ -996,7 +996,9 @@ class PiEventStream {
           if (this.resyncFlights.get(stream.id) === flight) this.resyncFlights.delete(stream.id)
         })
       this.resyncFlights.set(stream.id, flight)
-      void flight.then(() => this.scheduleStateRefresh(stream.id))
+      // 状态刷新不能挂在 branch 请求之后：branch 慢或挂起时，实时消息的
+      // streaming→persisting 收敛会被无限推迟（恢复顺序契约要求 state 可以先落地）。
+      this.scheduleStateRefresh(stream.id)
       return flight
     } else if (stream.kind === 'server') {
       window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))

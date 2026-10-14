@@ -3,14 +3,17 @@ import test from "node:test";
 import { once } from "node:events";
 import { Writable } from "node:stream";
 import type { ServerResponse } from "node:http";
-import { reserveHttpOutput, writeHttpOutput } from "./http-output.ts";
+import { MAX_PENDING_BYTES, reserveHttpOutput, writeHttpOutput } from "./http-output.ts";
+
+// 每次预留按 `bytes * 2` 计入全局预算，取 MAX/4 的正文正好各占一半额度。
+const HALF_CEILING_BYTES = MAX_PENDING_BYTES / 4;
 
 test("HTTP output has a global byte ceiling and releases reservations on finish and close", () => {
   const outputs = Array.from({ length: 3 }, () => new Writable({ write(_data, _encoding, done) { done() } }));
   const response = (index: number) => outputs[index]! as unknown as ServerResponse;
   try {
-    assert.ok(reserveHttpOutput(response(0), 16 * 1024 * 1024));
-    assert.ok(reserveHttpOutput(response(1), 16 * 1024 * 1024));
+    assert.ok(reserveHttpOutput(response(0), HALF_CEILING_BYTES));
+    assert.ok(reserveHttpOutput(response(1), HALF_CEILING_BYTES));
     assert.equal(reserveHttpOutput(response(2), 1), undefined);
     outputs[0]!.emit("finish");
     assert.ok(reserveHttpOutput(response(2), 1));
@@ -24,10 +27,10 @@ test("a closed response retains its budget until compression finishes", () => {
   const outputs = Array.from({ length: 3 }, () => new Writable({ write(_data, _encoding, done) { done() } }));
   const response = (index: number) => outputs[index]! as unknown as ServerResponse;
   try {
-    const first = reserveHttpOutput(response(0), 16 * 1024 * 1024)!;
+    const first = reserveHttpOutput(response(0), HALF_CEILING_BYTES)!;
     const done = first.hold();
     outputs[0]!.emit("close");
-    assert.ok(reserveHttpOutput(response(1), 16 * 1024 * 1024));
+    assert.ok(reserveHttpOutput(response(1), HALF_CEILING_BYTES));
     assert.equal(reserveHttpOutput(response(2), 1), undefined);
     done();
     assert.ok(reserveHttpOutput(response(2), 1));
