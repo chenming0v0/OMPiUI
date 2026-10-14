@@ -62,6 +62,36 @@ describe('bounded live recovery and cache cleanup', () => {
     internal.recoverLiveMessage('large')
     expect(refresh).toHaveBeenCalledTimes(2)
   })
+  it('drops in-flight resync work when the backend changes', async () => {
+    vi.useFakeTimers()
+    const requests = Array.from({ length: 3 }, () => {
+      let resolve!: () => void
+      const promise = new Promise<void>(done => { resolve = done })
+      return { promise, resolve }
+    })
+    const pending = [...requests]
+    const refresh = vi.spyOn(controllers, 'refreshPiBranch').mockImplementation(() => {
+      const next = pending.shift()
+      if (!next) throw new Error('unexpected refresh')
+      return next.promise
+    })
+    for (const sessionId of ['old-a', 'old-b']) piBranchStore.setData(sessionId, fakeBranchPage(sessionId))
+    const internal = piEventStream as unknown as { queueResync(key: string): void }
+
+    internal.queueResync('session:old-a')
+    internal.queueResync('session:old-b')
+    await vi.advanceTimersByTimeAsync(150)
+    expect(refresh).toHaveBeenCalledTimes(2)
+
+    piEventStream.disconnectAll()
+    piBranchStore.setData('new', fakeBranchPage('new'))
+    internal.queueResync('session:new')
+    await vi.advanceTimersByTimeAsync(150)
+    expect(refresh).toHaveBeenCalledTimes(3)
+
+    for (const request of requests) request.resolve()
+    await Promise.resolve()
+  })
   it('clears subagent and command data after the last consumer disconnects', () => {
     const internal = piEventStream as unknown as { refCounts: Map<string, number> }
     internal.refCounts.set('closed', 1)
