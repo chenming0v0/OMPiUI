@@ -100,24 +100,16 @@ function getReleaseBaseTag() {
     }).trim()
   }
 
-  // 基线优先取 HEAD 可达的最近 stable tag，并且必须低于本次版本。
+  // 先按版本选择最近的 stable tag；main 的发布合并提交通常不在 dev 历史中，
+  // 若优先找 HEAD 可达的 tag，会误选更早的版本并重复收录旧提交。
   const isBaseCandidate = tag => stableTagRe.test(tag) && tag !== tagName && compareStableTagToVersion(tag, version) < 0
-  let lastStableTag = listVersionSortedTags('--merged HEAD').find(isBaseCandidate)
-  if (!lastStableTag) {
-    // 本仓库的 tag 打在 main 上，而 main 从不并回 dev：在 dev 上发版时 stable
-    // tag 一律不可达，--merged HEAD 会把它整个过滤掉，旧实现在此抛错后被外层
-    // catch 吞掉，于是把整仓历史当成本次条目倒进 CHANGELOG。不可达只是
-    // --merged 这一层筛选失败，git log <tag>..HEAD 取的仍是「本分支自上次发版
-    // 以来的提交」，正是想要的区间，因此退回按版本排序取最新的 stable tag，
-    // 并响亮提示操作者把 main 并回来。
-    lastStableTag = listVersionSortedTags('').find(isBaseCandidate)
-    if (lastStableTag) {
-      console.warn(`  CHANGELOG base tag ${lastStableTag} is not reachable from HEAD; using it by version order.`)
-      console.warn('  Merge main back into this branch after each release so the range stays reachable.')
-    }
-  }
+  const lastStableTag = listVersionSortedTags('').find(isBaseCandidate)
   if (!lastStableTag) {
     throw new Error('No previous stable tag found')
+  }
+  if (!listVersionSortedTags('--merged HEAD').includes(lastStableTag)) {
+    // tag 不可达并不妨碍 git log <tag>..HEAD 选出当前分支新增的提交。
+    console.warn(`  CHANGELOG base tag ${lastStableTag} is not reachable from HEAD; using it by version order.`)
   }
 
   console.log(`  CHANGELOG base tag      ${lastStableTag}`)
