@@ -7,12 +7,22 @@ export class RateBudget {
     this.available = burst;
   }
 
-  allow(bytes: number): boolean {
-    const now = Date.now();
-    this.available = Math.min(this.burst, this.available + Math.max(0, now - this.updated) * this.perSecond / 1000);
-    this.updated = now;
-    if (bytes > this.available) return false;
-    this.available -= bytes;
+  allow(amount: number): boolean {
+    if (this.retryAfterMs(amount) !== 0) return false;
+    this.available -= amount;
     return true;
+  }
+
+  /** Inspect all participating buckets before consuming any of them. */
+  retryAfterMs(amount: number): number {
+    const now = Date.now();
+    this.available = Math.min(
+      this.burst,
+      this.available + Math.max(0, now - this.updated) * this.perSecond / 1000,
+    );
+    this.updated = Math.max(this.updated, now);
+    if (amount > this.burst) return Infinity;
+    if (amount <= this.available) return 0;
+    return Math.ceil((amount - this.available) * 1000 / this.perSecond);
   }
 }

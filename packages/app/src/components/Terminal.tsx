@@ -13,7 +13,7 @@ import '@xterm/xterm/css/xterm.css'
 import type { TerminalStreamServerFrame } from '@ompiui/protocol'
 import { getHostTerminalWebSocketUrl, issueHostTerminalToken } from '../omp/transport/index.js'
 import { openPiSocket, PI_SOCKET_OPEN, type PiSocket } from '../omp/ompSocket'
-import { sendTerminalInput } from '../omp/terminalInput'
+import { TerminalInputQueue, type TerminalInputState } from '../omp/terminalInput'
 import { useTheme } from '../hooks'
 import { layoutStore, useLayoutStore } from '../store/layoutStore'
 import { useInputCapabilities } from '../hooks/useInputCapabilities'
@@ -366,12 +366,10 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
   // 服务端 ring 丢弃过的会话最早可用位置大于 0，写死 0 会永久返回
   // TERMINAL_CURSOR_EXPIRED，形成无法恢复的重连循环。
   const cursorRef = useRef<number | undefined>(undefined)
-  const transportSendRef = useRef<((data: string) => void) | null>(null)
-  const transportDisconnectRef = useRef<(() => void) | null>(null)
   const socketRef = useRef<PiSocket | null>(null)
-  const pendingInputRef = useRef<string[]>([])
-  const pendingInputBytesRef = useRef(0)
-  const MAX_PENDING_INPUT_BYTES = 1024 * 1024
+  const inputQueueRef = useRef<TerminalInputQueue | null>(null)
+  const [inputState, setInputState] = useState<TerminalInputState>('ready')
+  const [inputNotice, setInputNotice] = useState<string | null>(null)
   const resizeTimeoutRef = useRef<number | null>(null)
   const mountedRef = useRef(true)
   const isPanelResizingRef = useRef(false)
@@ -407,17 +405,13 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
       const sticky = stickyModifiersRef.current
       const outgoing = applyStickyModifiers(data, sticky)
 
-      if (transportSendRef.current) transportSendRef.current(outgoing)
-      else {
-        const bytes = new TextEncoder().encode(outgoing).byteLength
-        while (pendingInputBytesRef.current + bytes > MAX_PENDING_INPUT_BYTES && pendingInputRef.current.length > 0) {
-          const dropped = pendingInputRef.current.shift()!
-          pendingInputBytesRef.current -= new TextEncoder().encode(dropped).byteLength
-        }
-        if (bytes <= MAX_PENDING_INPUT_BYTES) {
-          pendingInputRef.current.push(outgoing)
-          pendingInputBytesRef.current += bytes
-        }
+      const result = inputQueueRef.current?.enqueue(outgoing) ?? 'closed'
+      if (result === 'full') {
+        setInputNotice('This input was not sent: pending input is limited to 1 MiB. Wait for it to drain, or paste a smaller amount.')
+      } else if (result === 'closed') {
+        setInputNotice('Terminal input is not ready. This input was not sent.')
+      } else if (result === 'queued') {
+        setInputNotice(null)
       }
 
       if (hasStickyModifier(sticky)) {
@@ -477,7 +471,6 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
     let wsConnectTimeout: number | null = null
     let disposeData: { dispose: () => void } | null = null
     const terminalWorkspacePath = workspacePath
-    const pendingInput = pendingInputRef.current
 
     const touchUi = preferTouchUi
     const theme = getTerminalTheme(isDarkMode())
@@ -625,6 +618,12 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
 
     terminalRef.current = terminal
     fitAddonRef.current = fitAddon
+    const input = new TerminalInputQueue(state => {
+      if (effectActive && mountedRef.current) setInputState(state)
+    })
+    inputQueueRef.current = input
+    setInputState(input.state)
+    setInputNotice(null)
     disposeData = terminal.onData(sendTerminalData)
 
     // 连接 WebSocket（带自动重连）
@@ -633,11 +632,6 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
     const MAX_RECONNECT_DELAY = 30000 // 最大 30s
     const BASE_RECONNECT_DELAY = 1000 // 起始 1s
     let intentionalClose = false // 标记主动关闭
-
-    const resetTransport = () => {
-      transportSendRef.current = null
-      transportDisconnectRef.current = null
-    }
 
     const sendResize = () => {
       const socket = socketRef.current
@@ -661,23 +655,13 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
       if (socketRef.current !== socket) return
       reconnectAttempt = 0
       layoutStore.updateTerminalTab(terminalId, { status: 'connected' })
-      transportSendRef.current = data => {
-        if (socket.readyState === PI_SOCKET_OPEN) {
-          sendTerminalInput(socket, data)
-        }
-      }
       sendResize()
-      const queued = pendingInputRef.current.splice(0)
-      pendingInputBytesRef.current = 0
-      for (const data of queued) {
-        sendTerminalInput(socket, data)
-      }
     }
 
     const handleDisconnected = ({ socket, code, reason }: { socket?: PiSocket; code?: number; reason?: string }) => {
       if (!effectActive) return
       if (socket && socketRef.current !== socket) return
-      resetTransport()
+      if (socket) input.disconnect(socket)
       if (!socket || socketRef.current === socket) socketRef.current = null
       if (!mountedRef.current) return
 
@@ -718,7 +702,7 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
         if (!mountedRef.current || !effectActive) return
         const socket = openPiSocket(getHostTerminalWebSocketUrl(terminalId, ticket.token, cursor))
         socketRef.current = socket
-        transportDisconnectRef.current = () => socket.close()
+        let supportsInputAcknowledgements = false
 
         socket.onopen = () => handleConnected(socket)
 
@@ -734,6 +718,7 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
           const frame = parseServerFrame(value)
           if (!frame) return
           if (frame.type === 'hello') {
+            supportsInputAcknowledgements = frame.inputAck === true
             const current = layoutStore.getState().panelTabs.find(tab => tab.id === terminalId)
             layoutStore.updateTerminalTab(terminalId, {
               title: manualTerminalTitlesRef.current && current?.customTitle ? current.customTitle : frame.terminal.title,
@@ -754,6 +739,9 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
             // 重连时取较大值，避免服务端把游标报回到更早位置导致重复输出。
             cursorRef.current = cursorRef.current === undefined ? frame.cursor : Math.max(cursorRef.current, frame.cursor)
             layoutStore.updateTerminalTab(terminalId, { status: 'connected' })
+            input.connect(socket, supportsInputAcknowledgements)
+          } else if (frame.type === 'input_ack') {
+            input.acknowledge(socket, frame)
           } else if (frame.type === 'exit') {
             cursorRef.current = frame.cursor
             layoutStore.updateTerminalTab(terminalId, {
@@ -775,12 +763,21 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
                 reconnectTimer = null
               }
               reconnectAttempt = 0
+              input.disconnect(socket)
               socketRef.current = null
               socket.close(1000, 'cursor expired')
               reconnectTimer = window.setTimeout(() => {
                 reconnectTimer = null
                 if (mountedRef.current && effectActive) void connectTransport()
               }, 0)
+              return
+            }
+            if (frame.problem.code === 'RATE_LIMITED') {
+              // Older peers may still close for throttling. Never mark a live
+              // terminal as exited, or replay an input whose ACK was lost.
+              terminal.write(`\r\n\x1b[90m[${frame.problem.message}; reconnecting]\x1b[0m\r\n`)
+              input.disconnect(socket)
+              socket.close(4008, 'RATE_LIMITED')
               return
             }
             // 其余问题（如 TERMINAL_NOT_FOUND）说明该终端已不可用，停止重连
@@ -846,14 +843,14 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
         // ignore snapshot persistence failures
       }
 
-      transportDisconnectRef.current?.()
+      input.dispose()
+      inputQueueRef.current = null
+      socketRef.current?.close()
       socketRef.current = null
-      pendingInput.length = 0
       disposeData?.dispose()
       textarea?.removeEventListener('blur', handleTextareaBlur)
       terminalElement?.removeEventListener('mouseup', handleSelectionCopy)
       terminalElement?.removeEventListener('contextmenu', handleContextMenuPaste)
-      resetTransport()
       // 显式 dispose addons
       fitAddon.dispose()
       serializeAddon.dispose()
@@ -1147,7 +1144,7 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
         }
       `}</style>
       <div
-        className={`${preferTouchUi ? 'flex flex-col' : ''} h-full w-full`}
+        className="flex h-full w-full flex-col"
         style={{
           visibility: isActive ? 'visible' : 'hidden',
           position: isActive ? 'relative' : 'absolute',
@@ -1155,9 +1152,52 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
           inset: isActive ? undefined : 0
         }}
       >
+        {(inputState !== 'ready' || inputNotice) && (
+          <div role="alert" className="shrink-0 border-b border-border-200 bg-bg-200 px-3 py-2 text-sm text-text-100">
+            <p>
+              {inputState === 'interrupted'
+                ? 'Input confirmation was interrupted. Unconfirmed and unsent text is paused; some of it may already have executed. Inspect it before re-entering anything.'
+                : inputState === 'unsupported'
+                  ? 'This server does not support acknowledged terminal input. Update the server to type safely; terminal output remains available.'
+                  : inputNotice}
+            </p>
+            {inputState === 'interrupted' && (
+              <div className="mt-1 flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  className="underline"
+                  onClick={() => {
+                    const text = inputQueueRef.current?.pendingText
+                    if (text === undefined) return
+                    void copyTextToClipboard(text)
+                      .then(() => setInputNotice('Copied unconfirmed and unsent text. Inspect it for already executed input before pasting.'))
+                      .catch(() => setInputNotice('Could not copy pending input. The text is still retained here.'))
+                  }}
+                >
+                  Copy pending text
+                </button>
+                <button
+                  type="button"
+                  className="underline"
+                  onClick={() => {
+                    inputQueueRef.current?.discardInterruptedInput()
+                    setInputNotice(null)
+                    focusTerminal()
+                  }}
+                >
+                  Discard pending text and resume
+                </button>
+              </div>
+            )}
+            {inputState !== 'ready' && inputNotice && <p className="mt-1">{inputNotice}</p>}
+            {inputState === 'ready' && (
+              <button type="button" className="mt-1 underline" onClick={() => setInputNotice(null)}>Dismiss</button>
+            )}
+          </div>
+        )}
         <div
           ref={containerRef}
-          className={`${preferTouchUi ? 'flex-1 min-h-0' : 'h-full'} w-full bg-bg-100 ${preferTouchUi ? 'no-scrollbar' : ''} ${preferTouchUi ? (isTouchScrolling ? 'scrollbar-active' : 'scrollbar-idle') : ''}`}
+          className={`min-h-0 flex-1 w-full bg-bg-100 ${preferTouchUi ? 'no-scrollbar' : ''} ${preferTouchUi ? (isTouchScrolling ? 'scrollbar-active' : 'scrollbar-idle') : ''}`}
           style={{
             padding: preferTouchUi ? '0' : '4px 0 0 4px',
             touchAction: touchCapable ? 'pan-y' : 'auto'

@@ -7,6 +7,8 @@ import {
   eventStreamKey,
   PROTOCOL_VERSION,
   type EventClientMessage,
+  type EventCursor,
+  type EventEnvelope,
   type EventServerMessage,
   type EventStreamRef,
   TERMINAL_STREAM_PROTOCOL_VERSION,
@@ -29,16 +31,18 @@ import { diagnostics, diagnosticErrorCode } from "./diagnostics/recorder.ts";
 import { recordBrowserDiagnostic } from "./diagnostics/browser.ts";
 import { RateBudget } from "./rate-budget.ts";
 import { splitTerminalOutput } from "./terminal-output.ts";
+import { WebSocketSendBudget, type SendAdmission } from "./ws-send-budget.ts";
+import { WebSocketIngressBudget } from "./ws-ingress-budget.ts";
 
-const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
-// Client frames are tiny (ping/subscribe); cap to avoid buffering huge frames.
+// Preserve the aggregate-payload cap as well as the raw pre-parse rate budget.
 const MAX_MESSAGE_BYTES = 1024 * 1024;
 const MAX_OUTBOUND_MESSAGE_BYTES = 4 * 1024 * 1024;
-const allSockets = new Set<WebSocket>();
-const extraQueuedBytes = new WeakMap<WebSocket, number>();
+const sendBudget = new WebSocketSendBudget<WebSocket>();
+const discardConnectionQueues = new WeakMap<WebSocket, () => void>();
+const deliveryTimers = new WeakMap<WebSocket, { pending: number; timer: NodeJS.Timeout }>();
 const subscribeGlobalBudget = new RateBudget(240, 120);
-const TOTAL_OUTBOUND_BYTES = 64 * 1024 * 1024;
-const MAX_TERMINAL_BUFFERED_BYTES = 8 * 1024 * 1024;
+const ingressGlobalFrames = new RateBudget(4096, 2048);
+const ingressGlobalBytes = new RateBudget(32 * 1024 * 1024, 16 * 1024 * 1024);
 const TERMINAL_PATH = /^\/api\/v1\/host\/terminals\/([^/]+)\/stream$/;
 
 export interface EventWebSocketOptions {
@@ -63,6 +67,7 @@ export function attachEventWebSocket(
   const wss = new WebSocketServer({
     noServer: true,
     maxPayload: MAX_MESSAGE_BYTES,
+    autoPong: false,
     // 只协商本服务声明的子协议;未声明子协议的客户端照常握手(不带协议头)
     handleProtocols: (protocols) =>
       protocols.has(EVENT_WS_SUBPROTOCOL) ? EVENT_WS_SUBPROTOCOL : false,
@@ -158,11 +163,32 @@ export function attachEventWebSocket(
   });
 
   wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
-    allSockets.add(ws);
-    ws.on("close", () => {
-      allSockets.delete(ws);
-      extraQueuedBytes.delete(ws);
+    sendBudget.register(ws, () => {
+      discardConnectionQueues.get(ws)?.();
+      closeSocket(ws, 1013, "websocket output budget exceeded");
     });
+    ws.on("close", () => {
+      discardConnectionQueues.get(ws)?.();
+      discardConnectionQueues.delete(ws);
+      sendBudget.remove(ws);
+      clearTimeout(deliveryTimers.get(ws)?.timer);
+      deliveryTimers.delete(ws);
+    });
+    const ingress = new WebSocketIngressBudget(ingressGlobalFrames, ingressGlobalBytes);
+    const admit = (bytes: number) => {
+      if (ws.readyState !== WebSocket.OPEN) return false;
+      if (ingress.allow(bytes)) return true;
+      discardConnectionQueues.get(ws)?.();
+      closeSocket(ws, 1013, "websocket input rate limit exceeded");
+      return false;
+    };
+    ws.on("ping", (data) => {
+      if (!admit(data.byteLength)) return;
+      const bytes = data.byteLength + 10;
+      if (reserveWire(ws, bytes) === "accepted")
+        sendReserved(ws, bytes, (done) => ws.pong(data, undefined, done));
+    });
+    ws.on("pong", (data) => { admit(data.byteLength); });
     // Without an error listener, ws emits 'error' synchronously on receiver
     // errors (oversized frames, bad UTF-8, invalid opcodes) and Node throws,
     // crashing the whole process. Swallow per-socket errors; close handles the rest.
@@ -175,10 +201,11 @@ export function attachEventWebSocket(
         terminal.terminalId,
         terminal.workspacePath,
         req,
+        admit,
       );
       return;
     }
-    attachConnection(ws, eventHub, options.onSubscribe);
+    attachConnection(ws, eventHub, admit, options.onSubscribe);
   });
 
   return wss;
@@ -192,179 +219,312 @@ export function closeEventWebSocket(
   wss.close(callback);
 }
 
+interface SubscriptionState {
+  stream: EventStreamRef;
+  cursor?: EventCursor;
+  dirty: boolean;
+}
+
+type ResyncStreams = Extract<EventServerMessage, { type: "resync_required" }>["streams"];
+
 function attachConnection(
   ws: WebSocket,
   eventHub: EventHub,
+  admit: (bytes: number) => boolean,
   onSubscribe?: (send: (message: EventServerMessage) => void) => void,
 ): void {
-  const subscribed = new Set<string>();
+  const subscribed = new Map<string, SubscriptionState>();
   const connectionId = randomUUID();
   const started = performance.now();
+  const subscribeBudget = new RateBudget(12, 4);
+  const malformedBudget = new RateBudget(16, 1);
   let clientId: string | undefined;
   let sessionIds: string[] = [];
   let diagnosticWindow = Date.now();
   let diagnosticCount = 0;
-  const subscribeBudget = new RateBudget(12, 4);
-  diagnostics.record("connection.opened", { connectionId });
-  ws.on("error", (error) =>
-    diagnostics.record(
-      "connection.error",
-      {
-        connectionId,
-        clientId,
-        sessionIds,
-        errorCode: diagnosticErrorCode(error),
-      },
-      "warn",
-    ),
-  );
-  send(ws, {
-    type: "hello",
-    protocolVersion: PROTOCOL_VERSION,
-    service: "ompiui-server",
-    subprotocol: EVENT_WS_SUBPROTOCOL,
-  });
+  let closed = false;
+  let pendingSubscription: Map<string, SubscriptionState> | undefined;
+  let subscribeTimer: NodeJS.Timeout | undefined;
+  let replayTask: NodeJS.Immediate | undefined;
+  let pendingSends = 0;
+  let helloPending = true;
+  let snapshotPending = false;
+  let pendingPongs = 0;
+  let resync: ResyncStreams = {};
+
+  const schedulePump = () => {
+    if (closed || pendingSends || replayTask) return;
+    replayTask = setImmediate(() => {
+      replayTask = undefined;
+      pump();
+    });
+  };
+  const stopWaiting = sendBudget.whenAvailable(schedulePump);
+  const writeFrame = (message: EventServerMessage): boolean => {
+    pendingSends++;
+    const admission = send(ws, message, () => {
+      pendingSends--;
+      schedulePump();
+    });
+    if (admission === "accepted") return true;
+    pendingSends--;
+    return false;
+  };
+  const suppressed = (event: EventEnvelope) =>
+    event.stream.kind === "server" &&
+    event.channel === "omp.subagent" &&
+    isJsonObject(event.payload) &&
+    typeof event.payload.sessionId === "string" &&
+    subscribed.has(eventStreamKey({ kind: "session", id: event.payload.sessionId }));
+
+  const requireResync = (key: string, state: SubscriptionState, reason: "missing_cursor" | "epoch_mismatch" | "future_cursor" | "history_expired") => {
+    const cursor = eventHub.getCursor(state.stream);
+    resync[key as keyof ResyncStreams] = { cursor, reason };
+    state.cursor = cursor;
+    state.dirty = false;
+  };
+  const sendResync = () => {
+    const entries = Object.entries(resync);
+    if (!entries.length) return true;
+    if (!writeFrame({ channel: "control", type: "resync_required", streams: resync }))
+      return false;
+    const [key, value] = entries[0]!;
+    const stream = subscribed.get(key)?.stream;
+    diagnostics.record("connection.resync", {
+      connectionId, clientId,
+      sessionId: stream?.kind === "session" ? stream.id : undefined,
+      reason: value?.reason,
+      sequence: value?.cursor.sequence,
+      epoch: value?.cursor.epoch,
+      count: entries.length,
+      sessionIds: entries.flatMap(([key]) => {
+        const stream = subscribed.get(key)?.stream;
+        return stream?.kind === "session" ? [stream.id] : [];
+      }),
+    });
+    resync = {};
+    return true;
+  };
+
+  // The hub, not a per-socket copy of all retained history, backs this pump.
+  // Cursors advance only for admitted frames; callbacks yield between bounded
+  // batches. Live publications join the same cursor path while replay is active.
+  const pump = () => {
+    if (closed || ws.readyState !== WebSocket.OPEN || pendingSends) return;
+    if (helloPending) {
+      if (!writeFrame({ type: "hello", protocolVersion: PROTOCOL_VERSION,
+        service: "ompiui-server", subprotocol: EVENT_WS_SUBPROTOCOL })) return;
+      helloPending = false;
+    }
+    if (!sendResync()) return;
+    let batchBytes = 0;
+    let batchFrames = 0;
+    for (const [key, state] of subscribed) {
+      if (!state.dirty) continue;
+      const replay = eventHub.replaySince(state.stream, state.cursor);
+      if (replay.resyncRequired) {
+        requireResync(key, state, replay.reason ?? "missing_cursor");
+        continue;
+      }
+      let complete = true;
+      for (const event of replay.events) {
+        if (batchFrames >= 64 || batchBytes >= 256 * 1024) {
+          complete = false;
+          break;
+        }
+        if (!suppressed(event)) {
+          if (!writeFrame({ channel: "event", event })) return;
+          batchBytes += eventWireFrame(event).bytes;
+          batchFrames++;
+        }
+        state.cursor = event.cursor;
+      }
+      state.dirty = !complete;
+      if (!complete) break;
+    }
+    if (!sendResync()) return;
+    while (pendingPongs > 0) {
+      if (!writeFrame({ type: "pong", protocolVersion: PROTOCOL_VERSION, t: Date.now() }))
+        return;
+      pendingPongs--;
+    }
+    if (snapshotPending && ![...subscribed.values()].some((state) => state.dirty)) {
+      snapshotPending = false;
+      onSubscribe?.((message) => {
+        if (!writeFrame(message)) snapshotPending = true;
+      });
+    }
+  };
+
+  const applyPendingSubscription = () => {
+    clearTimeout(subscribeTimer);
+    subscribeTimer = undefined;
+    if (closed || !pendingSubscription) return;
+    const delay = Math.max(subscribeBudget.retryAfterMs(1), subscribeGlobalBudget.retryAfterMs(1));
+    if (delay > 0) {
+      subscribeTimer = setTimeout(applyPendingSubscription, delay);
+      subscribeTimer.unref();
+      return;
+    }
+    subscribeBudget.allow(1);
+    subscribeGlobalBudget.allow(1);
+    const desired = pendingSubscription;
+    pendingSubscription = undefined;
+    const previouslyEmpty = subscribed.size === 0;
+    for (const key of subscribed.keys()) {
+      if (!desired.has(key)) {
+        subscribed.delete(key);
+        delete resync[key as keyof ResyncStreams];
+      }
+    }
+    for (const [key, state] of desired) {
+      if (!subscribed.has(key)) subscribed.set(key, state);
+    }
+    sessionIds = [...subscribed.values()]
+      .filter(({ stream }) => stream.kind === "session")
+      .map(({ stream }) => stream.id);
+    diagnostics.record("connection.subscribed", {
+      connectionId, clientId, sessionIds, count: subscribed.size,
+    });
+    if (previouslyEmpty) snapshotPending = true;
+    schedulePump();
+  };
 
   const unsubscribe = eventHub.subscribe((event) => {
-    if (
-      event.stream.kind === "server" &&
-      event.channel === "omp.subagent" &&
-      isJsonObject(event.payload) &&
-      typeof event.payload.sessionId === "string" &&
-      subscribed.has(
-        eventStreamKey({ kind: "session", id: event.payload.sessionId }),
-      )
-    )
+    const state = subscribed.get(eventStreamKey(event.stream));
+    if (closed || !state) return;
+    if (suppressed(event)) {
+      if (!state.dirty) state.cursor = event.cursor;
       return;
-    if (subscribed.has(eventStreamKey(event.stream)))
-      send(ws, { channel: "event", event });
-  });
-
-  ws.on("message", (raw) => {
-    if (ws.readyState !== WebSocket.OPEN) return;
-    try {
-      const message = JSON.parse(String(raw)) as EventClientMessage;
-      if (message.type === "diagnostic") {
-        if (message.protocolVersion !== PROTOCOL_VERSION) return;
-        if (Date.now() - diagnosticWindow >= 60_000) {
-          diagnosticWindow = Date.now();
-          diagnosticCount = 0;
-        }
-        // 客户端记录只供诊断，不进入业务事件流，并限制写盘频率。
-        if (++diagnosticCount <= 120) {
-          clientId =
-            recordBrowserDiagnostic(message, connectionId, sessionIds) ??
-            clientId;
-        }
-        return;
-      }
-      if (message.type === "ping") {
-        if (message.protocolVersion !== PROTOCOL_VERSION) {
-          rejectProtocol(ws);
-          return;
-        }
-        send(ws, {
-          type: "pong",
-          protocolVersion: PROTOCOL_VERSION,
-          t: Date.now(),
-        });
-        return;
-      }
-      if (message.type !== "subscribe") return;
-      if (message.protocolVersion !== PROTOCOL_VERSION) {
-        rejectProtocol(ws);
-        return;
-      }
-      if (!Array.isArray(message.streams) || message.streams.length > 256)
-        return;
-      if (!subscribeBudget.allow(1) || !subscribeGlobalBudget.allow(1)) {
-        // 丢弃超限订阅，保留连接，让客户端按正常节奏重试而不会通过重连重置预算。
-        return;
-      }
-
-      const previous = new Set(subscribed);
-      subscribed.clear();
-      const resync: Extract<
-        EventServerMessage,
-        { type: "resync_required" }
-      >["streams"] = {};
-      const seenStreams = new Map<string, EventStreamRef>();
-      for (const stream of message.streams) {
-        if (
-          !stream || typeof stream.id !== "string" || !stream.id ||
-          Buffer.byteLength(stream.id) > 1024 || !isEventStreamKind(stream.kind)
-        ) continue;
-        const key = eventStreamKey(stream);
-        if (seenStreams.has(key)) continue;
-        seenStreams.set(key, stream);
-        subscribed.add(key);
-        if (previous.has(key)) continue;
-        const cursor = message.cursors?.[key as keyof typeof message.cursors];
-        const replay = eventHub.replaySince(stream, cursor);
-        if (replay.resyncRequired) {
-          resync[key] = {
-            cursor: eventHub.getCursor(stream),
-            reason: replay.reason ?? "missing_cursor",
-          };
-          continue;
-        }
-        for (const event of replay.events)
-          send(ws, { channel: "event", event });
-      }
-      if (Object.keys(resync).length > 0) {
-        send(ws, {
-          channel: "control",
-          type: "resync_required",
-          streams: resync,
-        });
-      }
-      sessionIds = [...seenStreams.values()]
-        .filter((stream) => stream.kind === "session")
-        .map((stream) => stream.id);
-      diagnostics.record("connection.subscribed", {
-        connectionId,
-        clientId,
-        sessionIds,
-        count: subscribed.size,
-      });
-      const resyncEntries = Object.entries(resync);
-      if (resyncEntries.length) {
-        const [key, value] = resyncEntries[0]!;
-        const stream = seenStreams.get(key);
-        diagnostics.record("connection.resync", {
-          connectionId,
-          clientId,
-          sessionId: stream?.kind === "session" ? stream.id : undefined,
-          reason: value?.reason,
-          sequence: value?.cursor.sequence,
-          epoch: value?.cursor.epoch,
-          count: resyncEntries.length,
-          sessionIds: resyncEntries
-            .map(([key]) => seenStreams.get(key))
-            .filter((stream) => stream?.kind === "session")
-            .map((stream) => stream!.id),
-        });
-      }
-      if (previous.size === 0) onSubscribe?.((message) => send(ws, message));
-    } catch {
-      /* ignore malformed client messages */
     }
+    // An up-to-date live stream can be sent directly, including a large event
+    // that the hub cannot retain. Otherwise only its cursor work is retained.
+    if (!state.dirty && !helloPending && !Object.keys(resync).length &&
+        (!pendingSends || eventWireFrame(event).bytes > 2 * 1024 * 1024) &&
+        writeFrame({ channel: "event", event })) {
+      state.cursor = event.cursor;
+    }
+    state.dirty = true;
+    schedulePump();
+  });
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    clearTimeout(subscribeTimer);
+    if (replayTask) clearImmediate(replayTask);
+    pendingSubscription = undefined;
+    subscribed.clear();
+    resync = {};
+    stopWaiting();
+    unsubscribe();
+  };
+  discardConnectionQueues.set(ws, cleanup);
+  diagnostics.record("connection.opened", { connectionId });
+  ws.on("error", (error) => diagnostics.record("connection.error", {
+    connectionId, clientId, sessionIds, errorCode: diagnosticErrorCode(error),
+  }, "warn"));
+  const invalidFrame = () => {
+    if (!malformedBudget.allow(1)) {
+      cleanup();
+      closeSocket(ws, 1008, "invalid event frames");
+    }
+  };
+  ws.on("message", (raw) => {
+    const bytes = rawBytes(raw);
+    if (closed || !admit(bytes)) return;
+    let message: EventClientMessage;
+    try {
+      message = JSON.parse(String(raw)) as EventClientMessage;
+    } catch {
+      invalidFrame();
+      return;
+    }
+    if (!isJsonObject(message)) { invalidFrame(); return; }
+    if (message.type === "diagnostic") {
+      if (bytes > 16 * 1024 || !validDiagnosticShape(message)) {
+        cleanup();
+        closeSocket(ws, 1008, "invalid diagnostic frame");
+        return;
+      }
+      if (message.protocolVersion !== PROTOCOL_VERSION) { rejectProtocol(ws); return; }
+      if (Date.now() - diagnosticWindow >= 60_000) {
+        diagnosticWindow = Date.now();
+        diagnosticCount = 0;
+      }
+      if (++diagnosticCount <= 120)
+        clientId = recordBrowserDiagnostic(message, connectionId, sessionIds) ?? clientId;
+      return;
+    }
+    if (message.type === "ping") {
+      if (bytes > 256 || Object.keys(message).length !== 2) {
+        cleanup();
+        closeSocket(ws, 1008, "invalid ping frame");
+        return;
+      }
+      if (message.protocolVersion !== PROTOCOL_VERSION) { rejectProtocol(ws); return; }
+      pendingPongs++;
+      schedulePump();
+      return;
+    }
+    if (message.type !== "subscribe") { invalidFrame(); return; }
+    if (message.protocolVersion !== PROTOCOL_VERSION) { rejectProtocol(ws); return; }
+    const desired = readSubscription(message);
+    if (!desired) { invalidFrame(); return; }
+    // A subscribe describes replacement state, not a disposable notification.
+    // Keep just the latest validated target, including under shared pressure.
+    pendingSubscription = desired;
+    applyPendingSubscription();
   });
   ws.on("close", (code: number) => {
-    unsubscribe();
-    diagnostics.record(
-      "connection.closed",
-      {
-        connectionId,
-        clientId,
-        sessionIds,
-        code,
-        durationMs: Math.round(performance.now() - started),
-        reason: code === 1006 ? "abnormal_disconnect" : "socket_closed",
-      },
-      code === 1006 ? "warn" : "info",
-    );
+    cleanup();
+    diagnostics.record("connection.closed", {
+      connectionId, clientId, sessionIds, code,
+      durationMs: Math.round(performance.now() - started),
+      reason: code === 1006 ? "abnormal_disconnect" : "socket_closed",
+    }, code === 1006 ? "warn" : "info");
   });
+  pump();
+}
+
+function readSubscription(message: Extract<EventClientMessage, { type: "subscribe" }>): Map<string, SubscriptionState> | undefined {
+  if (!Array.isArray(message.streams) || message.streams.length > 256) return;
+  const desired = new Map<string, SubscriptionState>();
+  for (const stream of message.streams) {
+    if (!stream || typeof stream.id !== "string" || !stream.id ||
+        Buffer.byteLength(stream.id) > 1024 || !isEventStreamKind(stream.kind)) continue;
+    const ref: EventStreamRef = { kind: stream.kind, id: stream.id };
+    const key = eventStreamKey(ref);
+    if (desired.has(key)) continue;
+    const value = message.cursors?.[key];
+    const cursor = value && typeof value.epoch === "string" &&
+      value.epoch.length <= 128 && Number.isSafeInteger(value.sequence) && value.sequence >= 0
+      ? { epoch: value.epoch, sequence: value.sequence } : undefined;
+    desired.set(key, { stream: ref, cursor, dirty: true });
+  }
+  return desired;
+}
+
+const DIAGNOSTIC_FIELDS: Record<string, true> = {
+  type: true, protocolVersion: true, event: true, clientId: true, sessionId: true,
+  state: true, status: true, errorCode: true, visibility: true, navigation: true,
+  code: true, reason: true,
+};
+
+function validDiagnosticShape(message: object): boolean {
+  return Object.entries(message).every(([key, value]) =>
+    Object.hasOwn(DIAGNOSTIC_FIELDS, key) &&
+    (key === "state"
+      ? isJsonObject(value) && Buffer.byteLength(JSON.stringify(value)) <= 16 * 1024
+      : key === "protocolVersion" || key === "code"
+      ? typeof value === "number" && Number.isFinite(value)
+      : typeof value === "string" && Buffer.byteLength(value) <= 1024));
+}
+
+function rawBytes(raw: WebSocket.RawData): number {
+  if (!Array.isArray(raw)) return raw.byteLength;
+  let bytes = 0;
+  for (const part of raw) bytes += part.byteLength;
+  return bytes;
 }
 
 function isEventStreamKind(value: string): value is EventStreamRef["kind"] {
@@ -377,58 +537,79 @@ function isEventStreamKind(value: string): value is EventStreamRef["kind"] {
   );
 }
 
-function send(ws: WebSocket, message: EventServerMessage): void {
-  if (ws.readyState !== WebSocket.OPEN) return;
+function send(ws: WebSocket, message: EventServerMessage, delivered?: () => void): SendAdmission {
+  if (ws.readyState !== WebSocket.OPEN) return "connection_full";
   const wire = "event" in message ? eventWireFrame(message.event) : undefined;
   let data = wire?.data ?? JSON.stringify(message);
   let bytes = wire?.bytes ?? Buffer.byteLength(data);
   if ("event" in message && bytes > MAX_OUTBOUND_MESSAGE_BYTES) {
-    // 用独立控制帧恢复原通道，不将未交付事件伪装成另一种业务事件。
     const omitted = omittedEventWireFrame(message.event);
     data = omitted.data;
     bytes = omitted.bytes;
   }
-  if (!canQueue(ws, bytes, MAX_BUFFERED_BYTES)) {
-    ws.close(1013, "event client too slow");
-    const timer = setTimeout(() => {
-      if (ws.readyState !== WebSocket.CLOSED) ws.terminate();
-    }, 1000);
-    timer.unref();
-    return;
-  }
-  // ws.bufferedAmount 在连续 send() 的同一事件循环里可能尚未反映新帧，
-  // 重连补发历史时会因此把大量事件瞬间压进底层发送队列。用额外计数覆盖
-  // 这段窗口，并在 ws 库确认交付后释放，避免“长时间无更新后突然成批到达”。
-  extraQueuedBytes.set(ws, (extraQueuedBytes.get(ws) ?? 0) + bytes);
-  let released = false;
-  const release = () => {
-    if (released) return;
-    released = true;
-    const queued = extraQueuedBytes.get(ws) ?? 0;
-    const remaining = queued - bytes;
-    if (remaining > 0) extraQueuedBytes.set(ws, remaining);
-    else extraQueuedBytes.delete(ws);
-  };
-  try {
-    ws.send(data, release);
-  } catch {
-    release();
-    throw new Error("websocket send failed");
-  }
+  bytes += 10; // The largest unmasked WS frame header is part of the budget.
+  const admission = reserveWire(ws, bytes);
+  if (admission === "accepted")
+    sendReserved(ws, bytes, (done) => ws.send(data, done), delivered);
+  return admission;
 }
 
-function canQueue(ws: WebSocket, bytes: number, limit: number): boolean {
-  const own = ws.bufferedAmount + (extraQueuedBytes.get(ws) ?? 0)
-  if (own + bytes > limit)
-    return false;
-  let total = bytes;
-  for (const socket of allSockets)
-    total += socket.bufferedAmount + (extraQueuedBytes.get(socket) ?? 0);
-  if (total <= TOTAL_OUTBOUND_BYTES) return true;
-  // 全局预算满时按当前连接数分摊额度；慢客户端超出自己的份额才会被
-  // 1013 回收，避免几个慢连接把正常订阅者一起断掉。
-  const fairShare = Math.max(limit, Math.floor(TOTAL_OUTBOUND_BYTES / Math.max(1, allSockets.size)));
-  return own + bytes <= fairShare;
+function reserveWire(ws: WebSocket, bytes: number): SendAdmission {
+  let admission = sendBudget.reserve(ws, bytes);
+  if (admission === "global_full") {
+    sendBudget.reclaimFor(ws, bytes);
+    admission = sendBudget.reserve(ws, bytes);
+  }
+  return admission;
+}
+
+function sendReserved(
+  ws: WebSocket,
+  bytes: number,
+  write: (done: (error?: Error) => void) => void,
+  delivered?: () => void,
+): void {
+  sendBudget.sending(ws, bytes);
+  const stalled = () => {
+    discardConnectionQueues.get(ws)?.();
+    closeSocket(ws, 1013, "websocket client too slow");
+  };
+  let state = deliveryTimers.get(ws);
+  if (!state) {
+    const timer = setTimeout(stalled, 5000);
+    timer.unref();
+    state = { pending: 0, timer };
+    deliveryTimers.set(ws, state);
+  }
+  state.pending++;
+  let released = false;
+  const done = (error?: Error) => {
+    if (released) return;
+    released = true;
+    sendBudget.release(ws, bytes, true);
+    state.pending--;
+    if (!state.pending) {
+      clearTimeout(state.timer);
+      deliveryTimers.delete(ws);
+    } else state.timer.refresh();
+    if (error) {
+      discardConnectionQueues.get(ws)?.();
+      closeSocket(ws, 1011, "websocket send failed");
+    }
+    delivered?.();
+  };
+  try { write(done); }
+  catch (error) { done(error instanceof Error ? error : new Error(String(error))); }
+}
+
+function closeSocket(ws: WebSocket, code: number, reason: string): void {
+  if (ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) return;
+  ws.close(code, reason);
+  const timer = setTimeout(() => {
+    if (ws.readyState !== WebSocket.CLOSED) ws.terminate();
+  }, 1000);
+  timer.unref();
+  ws.once("close", () => clearTimeout(timer));
 }
 
 function attachTerminalConnection(
@@ -437,271 +618,308 @@ function attachTerminalConnection(
   terminalId: string,
   workspacePath: string,
   req: IncomingMessage,
+  admit: (bytes: number) => boolean,
 ): void {
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   const cursorValue = url.searchParams.get("cursor");
   const cursor = cursorValue === null ? undefined : Number(cursorValue);
   if (cursor !== undefined && (!Number.isSafeInteger(cursor) || cursor < -1)) {
-    sendTerminalProblem(
-      ws,
-      "INVALID_REQUEST",
-      "terminal cursor must be an integer >= -1",
-    );
-    ws.close(1008, "invalid cursor");
+    sendTerminalProblem(ws, "INVALID_REQUEST", "terminal cursor must be an integer >= -1");
+    closeSocket(ws, 1008, "invalid cursor");
     return;
   }
 
   let closed = false;
   let writing = false;
-  let queuedBytes = 0;
+  let pumping = false;
   const queue: Array<{ data: string; bytes: number }> = [];
   let closeAfterFlush: { code: number; reason: string } | undefined;
-  let detach = () => {};
+  let attachment: ReturnType<TerminalManager["attach"]> | undefined;
+  let outputCursor: number | undefined;
+  let recovering = true;
+  let helloPending = true;
+  let readyPending = true;
   let outputParts: string[] = [];
   let outputBytes = 0;
   let outputTimer: NodeJS.Timeout | undefined;
-  const close = (code = 1000, reason = "") => {
+  let workTask: NodeJS.Immediate | undefined;
+  let pendingProblem: Extract<TerminalStreamServerFrame, { type: "problem" }> | undefined;
+  let pendingAck: Extract<TerminalStreamServerFrame, { type: "input_ack" }> | undefined;
+  let pendingTitle: string | undefined;
+  let pendingExit: { exitCode: number | null } | undefined;
+  let pendingPongs = 0;
+  let lastInputId = 0;
+  let lastInputData: string | undefined;
+  const scheduleWork = () => {
+    if (closed || workTask) return;
+    workTask = setImmediate(() => {
+      workTask = undefined;
+      if (recovering && !closeAfterFlush) resumeOutput();
+      pump();
+    });
+  };
+  const stopWaiting = sendBudget.whenAvailable(scheduleWork);
+  const cleanup = () => {
     if (closed) return;
     closed = true;
-    queue.length = 0;
-    queuedBytes = 0;
-    extraQueuedBytes.delete(ws);
     clearTimeout(outputTimer);
+    clearImmediate(workTask);
     outputParts = [];
     outputBytes = 0;
-    closeAfterFlush = undefined;
-    detach();
-    ws.close(code, reason);
-    if (code === 1013) {
-      const timer = setTimeout(() => {
-        if (ws.readyState !== WebSocket.CLOSED) ws.terminate();
-      }, 1000);
-      timer.unref();
-    }
+    queue.length = 0;
+    pendingProblem = undefined;
+    pendingAck = undefined;
+    pendingTitle = undefined;
+    pendingExit = undefined;
+    lastInputData = undefined;
+    stopWaiting();
+    attachment?.detach();
+    sendBudget.discardQueued(ws);
+  };
+  discardConnectionQueues.set(ws, cleanup);
+  ws.on("close", cleanup);
+  const close = (code: number, reason: string) => {
+    cleanup();
+    closeSocket(ws, code, reason);
   };
   const closeWhenDrained = (code: number, reason: string) => {
     if (closed) return;
     closeAfterFlush = { code, reason };
+    attachment?.detach();
     pump();
+  };
+  const sendFrame = (frame: TerminalStreamServerFrame): boolean => {
+    if (closed || ws.readyState !== WebSocket.OPEN) return false;
+    const data = JSON.stringify(frame);
+    const bytes = Buffer.byteLength(data) + 10;
+    const admission = reserveWire(ws, bytes);
+    if (admission === "connection_full") {
+      close(1013, "terminal client too slow");
+      return false;
+    }
+    if (admission === "global_full") return false;
+    queue.push({ data, bytes });
+    pump();
+    return true;
   };
   const pump = () => {
-    if (closed || writing) return;
-    const next = queue.shift();
-    if (!next) {
-      queuedBytes = 0;
-      if (closeAfterFlush) {
-        const pending = closeAfterFlush;
-        closeAfterFlush = undefined;
-        close(pending.code, pending.reason);
+    if (closed || writing || pumping) return;
+    pumping = true;
+    try {
+      if (pendingAck && sendFrame(pendingAck)) pendingAck = undefined;
+      if (pendingProblem && sendFrame(pendingProblem)) pendingProblem = undefined;
+      if (!recovering && pendingTitle !== undefined &&
+          sendFrame({ type: "title", title: pendingTitle })) pendingTitle = undefined;
+      if (!recovering && pendingExit &&
+          sendFrame({ type: "exit", cursor: outputCursor!, exitCode: pendingExit.exitCode })) {
+        pendingExit = undefined;
+        closeAfterFlush = { code: 1001, reason: "terminal exited" };
       }
-      return;
-    }
-    queuedBytes -= next.bytes;
-    extraQueuedBytes.set(ws, queuedBytes + outputBytes);
-    writing = true;
-    ws.send(next.data, (error) => {
-      writing = false;
-      if (error) {
-        close(1011, "terminal stream failed");
+      while (pendingPongs > 0) {
+        if (!sendFrame({ type: "pong", protocolVersion: TERMINAL_STREAM_PROTOCOL_VERSION, t: Date.now() })) break;
+        pendingPongs--;
+      }
+      const next = queue.shift();
+      if (!next) {
+        if (closeAfterFlush && !pendingAck && !pendingProblem && !pendingExit) {
+          const pending = closeAfterFlush;
+          close(pending.code, pending.reason);
+        }
         return;
       }
-      pump();
-    });
+      writing = true;
+      sendReserved(ws, next.bytes, (done) => ws.send(next.data, done), () => {
+        writing = false;
+        scheduleWork();
+      });
+    } finally {
+      pumping = false;
+    }
   };
-  const sendFrame = (frame: TerminalStreamServerFrame) => {
-    if (closed || ws.readyState !== WebSocket.OPEN) return;
-    const data = JSON.stringify(frame);
-    const bytes = Buffer.byteLength(data);
-    if (!canQueue(ws, bytes, MAX_TERMINAL_BUFFERED_BYTES)) {
-      close(1013, "terminal client too slow");
-      return;
-    }
-    queuedBytes += bytes;
-    if (queuedBytes > MAX_TERMINAL_BUFFERED_BYTES) {
-      close(1013, "terminal client too slow");
-      return;
-    }
-    queue.push({ data, bytes });
-    extraQueuedBytes.set(ws, queuedBytes + outputBytes);
+  const problem = (code: string, message: string) => {
+    pendingProblem = { type: "problem", problem: { code: isErrorCode(code) ? code : "INTERNAL", message } };
     pump();
   };
-  const problem = (code: string, message: string) =>
-    sendFrame({ type: "problem", problem: { code: isErrorCode(code) ? code : "INTERNAL", message } });
+  const suspendOutput = () => {
+    recovering = true;
+    attachment?.detach();
+    clearTimeout(outputTimer);
+    outputTimer = undefined;
+    outputParts = [];
+    const bytes = outputBytes;
+    outputBytes = 0;
+    sendBudget.release(ws, bytes);
+  };
   const flushOutput = () => {
     clearTimeout(outputTimer);
     outputTimer = undefined;
+    if (closed || recovering) return;
     const data = outputParts.join("");
     outputParts = [];
+    const bytes = outputBytes;
     outputBytes = 0;
-    extraQueuedBytes.set(ws, queuedBytes);
+    sendBudget.release(ws, bytes);
     for (const chunk of splitTerminalOutput(data)) {
-      outputCursor += chunk.length;
-      sendFrame({ type: "output", cursor: outputCursor, data: chunk });
+      const nextCursor = outputCursor! + chunk.length;
+      if (!sendFrame({ type: "output", cursor: nextCursor, data: chunk })) {
+        if (!closed) suspendOutput();
+        return;
+      }
+      outputCursor = nextCursor;
+    }
+  };
+  const onOutput = (data: string, bytes = Buffer.byteLength(data)) => {
+    if (closed || recovering) return;
+    const admission = reserveWire(ws, bytes);
+    if (admission === "connection_full") {
+      close(1013, "terminal client too slow");
+      return;
+    }
+    if (admission === "global_full") {
+      suspendOutput();
+      return;
+    }
+    outputParts.push(data);
+    outputBytes += bytes;
+    if (outputBytes >= 32 * 1024) flushOutput();
+    else outputTimer ??= setTimeout(flushOutput, 16);
+  };
+  const onExit = (event: { exitCode: number | null }) => {
+    if (closed) return;
+    flushOutput();
+    pendingExit = event;
+    pump();
+  };
+  const onTitle = (title: string) => {
+    if (closed) return;
+    flushOutput();
+    pendingTitle = title;
+    pump();
+  };
+  const resumeOutput = () => {
+    if (closed || closeAfterFlush || !recovering) return;
+    try {
+      // Under aggregate pressure, retain a cursor instead of an unaccounted
+      // output queue. Reattach from the last admitted character; expiration is
+      // an explicit protocol error, never a silently skipped terminal suffix.
+      attachment = manager.attach(workspacePath, terminalId,
+        outputCursor ?? cursor, onOutput, onExit, onTitle);
+      outputCursor = attachment.replayCursor;
+      if (helloPending) {
+        if (!sendFrame({ type: "hello", protocolVersion: TERMINAL_STREAM_PROTOCOL_VERSION,
+          inputAck: true, terminal: manager.get(workspacePath, terminalId), cursor: attachment.cursor })) {
+          if (!closed) suspendOutput();
+          return;
+        }
+        helloPending = false;
+      }
+      for (const chunk of splitTerminalOutput(attachment.replay)) {
+        const nextCursor: number = outputCursor! + chunk.length;
+        if (!sendFrame({ type: "output", cursor: nextCursor, data: chunk })) {
+          if (!closed) suspendOutput();
+          return;
+        }
+        outputCursor = nextCursor;
+      }
+      if (readyPending) {
+        if (!sendFrame({ type: "ready", cursor: attachment.cursor })) {
+          if (!closed) suspendOutput();
+          return;
+        }
+        readyPending = false;
+      }
+      recovering = false;
+      if (!closed) attachment.activate();
+    } catch (error) {
+      attachment?.detach();
+      const code = errorCode(error);
+      problem(code, error instanceof Error ? error.message : String(error));
+      closeWhenDrained(code === "TERMINAL_CURSOR_EXPIRED" ? 1008 : 1000, code);
     }
   };
 
-  let attachment: ReturnType<TerminalManager["attach"]>;
-  try {
-    attachment = manager.attach(
-      workspacePath,
-      terminalId,
-      cursor,
-      (data, bytes = Buffer.byteLength(data)) => {
-        if (
-          !canQueue(ws, bytes, MAX_TERMINAL_BUFFERED_BYTES)
-        ) {
-          close(1013, "terminal client too slow");
-          return;
-        }
-        outputParts.push(data);
-        outputBytes += bytes;
-        extraQueuedBytes.set(ws, queuedBytes + outputBytes);
-        if (outputBytes >= 32 * 1024) flushOutput();
-        else outputTimer ??= setTimeout(flushOutput, 16);
-      },
-      (event) => {
-        flushOutput();
-        sendFrame({
-          type: "exit",
-          cursor: outputCursor,
-          exitCode: event.exitCode,
-        });
-        closeWhenDrained(1001, "terminal exited");
-      },
-      (title) => {
-        flushOutput();
-        sendFrame({ type: "title", title });
-      },
-    );
-  } catch (error) {
-    const code = errorCode(error);
-    problem(
-      code,
-      error instanceof Error ? error.message : String(error),
-    );
-    closeWhenDrained(code === "TERMINAL_CURSOR_EXPIRED" ? 1008 : 1000, code);
-    return;
-  }
-
-  let outputCursor = attachment.replayCursor;
-  detach = attachment.detach;
-  let terminal;
-  try {
-    terminal = manager.get(workspacePath, terminalId);
-  } catch (error) {
-    attachment.detach();
-    problem(
-      errorCode(error),
-      error instanceof Error ? error.message : String(error),
-    );
-    closeWhenDrained(1000, "terminal not found");
-    return;
-  }
-  sendFrame({
-    type: "hello",
-    protocolVersion: TERMINAL_STREAM_PROTOCOL_VERSION,
-    terminal,
-    cursor: attachment.cursor,
-  });
-  for (const chunk of splitTerminalOutput(attachment.replay)) {
-    outputCursor += chunk.length;
-    sendFrame({ type: "output", cursor: outputCursor, data: chunk });
-  }
-  sendFrame({ type: "ready", cursor: attachment.cursor });
-  try {
-    if (!closed) attachment.activate();
-  } catch (error) {
-    attachment.detach();
-    problem(
-      errorCode(error),
-      error instanceof Error ? error.message : String(error),
-    );
-    closeWhenDrained(1008, "terminal cursor expired");
-  }
-
-  const frameBudget = new RateBudget(240, 120);
   ws.on("message", (raw) => {
-    if (closed) return;
-    if (!frameBudget.allow(1)) {
-      close(1013, "terminal input rate limit exceeded");
-      return;
-    }
+    const bytes = rawBytes(raw);
+    if (closed || !admit(bytes)) return;
     let frame: TerminalStreamClientFrame;
-    try {
-      frame = JSON.parse(String(raw)) as TerminalStreamClientFrame;
-    } catch {
-      problem(
-        "INVALID_REQUEST",
-        "invalid terminal stream frame",
-      );
-      return;
-    }
+    try { frame = JSON.parse(String(raw)) as TerminalStreamClientFrame; }
+    catch { problem("INVALID_REQUEST", "invalid terminal stream frame"); return; }
+    if (!isJsonObject(frame)) { problem("INVALID_REQUEST", "invalid terminal stream frame"); return; }
     try {
       if (frame.type === "input" && typeof frame.data === "string") {
-        manager.write(workspacePath, terminalId, frame.data);
-      } else if (
-        frame.type === "resize" &&
-        Number.isSafeInteger(frame.rows) &&
-        frame.rows >= 1 &&
-        frame.rows <= 500 &&
-        Number.isSafeInteger(frame.cols) &&
-        frame.cols >= 1 &&
-        frame.cols <= 500
-      ) {
-        manager.update(workspacePath, terminalId, {
-          rows: frame.rows,
-          cols: frame.cols,
-        });
-      } else if (
-        frame.type === "ping" &&
-        frame.protocolVersion === TERMINAL_STREAM_PROTOCOL_VERSION
-      ) {
-        sendFrame({
-          type: "pong",
-          protocolVersion: TERMINAL_STREAM_PROTOCOL_VERSION,
-          t: Date.now(),
-        });
-      } else {
-        problem(
-          "INVALID_REQUEST",
-          "invalid terminal stream frame",
-        );
-      }
+        if (frame.inputId === undefined) {
+          manager.write(workspacePath, terminalId, frame.data);
+          return;
+        }
+        const inputId = frame.inputId;
+        if (!Number.isSafeInteger(inputId) || inputId < 1 ||
+            bytes > 64 * 1024 || Buffer.byteLength(frame.data) > 32 * 1024 || pendingAck ||
+            (inputId !== lastInputId + 1 && inputId !== lastInputId) ||
+            (inputId === lastInputId && frame.data !== lastInputData)) {
+          problem("INVALID_REQUEST", "invalid terminal input sequence");
+          closeWhenDrained(1008, "invalid terminal input sequence");
+          return;
+        }
+        // Reserve the bounded ACK before touching the PTY. A shared-budget
+        // refusal below is definitely not written and can safely be retried.
+        const ackBytes = 128;
+        const admission = reserveWire(ws, ackBytes);
+        if (admission === "connection_full") { close(1013, "terminal client too slow"); return; }
+        if (admission === "global_full") {
+          pendingAck = inputId === lastInputId
+            ? { type: "input_ack", inputId, accepted: true }
+            : { type: "input_ack", inputId, accepted: false, retryAfterMs: 50 };
+          scheduleWork();
+          return;
+        }
+        let accepted = inputId === lastInputId;
+        try {
+          if (!accepted) {
+            manager.write(workspacePath, terminalId, frame.data);
+            lastInputId = inputId;
+            lastInputData = frame.data;
+            accepted = true;
+          }
+        } catch (error) {
+          if (errorCode(error) !== "RATE_LIMITED") {
+            sendBudget.release(ws, ackBytes);
+            throw error;
+          }
+        }
+        const ack = accepted
+          ? { type: "input_ack", inputId, accepted: true }
+          : { type: "input_ack", inputId, accepted: false, retryAfterMs: 50 };
+        const data = JSON.stringify(ack);
+        const wireBytes = Buffer.byteLength(data) + 10;
+        sendBudget.release(ws, ackBytes - wireBytes);
+        queue.push({ data, bytes: wireBytes });
+        pump();
+      } else if (frame.type === "resize" &&
+          Number.isSafeInteger(frame.rows) && frame.rows >= 1 && frame.rows <= 500 &&
+          Number.isSafeInteger(frame.cols) && frame.cols >= 1 && frame.cols <= 500) {
+        manager.update(workspacePath, terminalId, { rows: frame.rows, cols: frame.cols });
+      } else if (frame.type === "ping" && frame.protocolVersion === TERMINAL_STREAM_PROTOCOL_VERSION) {
+        pendingPongs++;
+        pump();
+      } else problem("INVALID_REQUEST", "invalid terminal stream frame");
     } catch (error) {
       const code = errorCode(error);
-      problem(
-        code,
-        error instanceof Error ? error.message : String(error),
-      );
-      if (code === "RATE_LIMITED") closeWhenDrained(1013, "terminal input budget exceeded");
+      problem(code, error instanceof Error ? error.message : String(error));
+      // An unexpected PTY error has unknown acceptance; never advertise a safe
+      // retry. Old untagged clients retain the explicit close-on-rate-limit path.
+      if (frame.type === "input")
+        closeWhenDrained(code === "RATE_LIMITED" ? 1013 : 1011, "terminal input interrupted");
     }
   });
-  ws.on("close", () => {
-    closed = true;
-    clearTimeout(outputTimer);
-    outputParts = [];
-    outputBytes = 0;
-    extraQueuedBytes.delete(ws);
-    queue.length = 0;
-    queuedBytes = 0;
-    attachment.detach();
-  });
+  resumeOutput();
 }
 
-function sendTerminalProblem(
-  ws: WebSocket,
-  code: string,
-  message: string,
-): void {
+function sendTerminalProblem(ws: WebSocket, code: string, message: string): void {
   if (ws.readyState !== WebSocket.OPEN) return;
   const data = JSON.stringify({ type: "problem", problem: { code, message } });
-  if (!canQueue(ws, Buffer.byteLength(data), MAX_TERMINAL_BUFFERED_BYTES)) {
-    ws.close(1013, "terminal client too slow");
-    const timer = setTimeout(() => ws.terminate(), 1000);
-    timer.unref();
-    return;
-  }
-  ws.send(data);
+  const bytes = Buffer.byteLength(data) + 10;
+  if (reserveWire(ws, bytes) === "accepted")
+    sendReserved(ws, bytes, (done) => ws.send(data, done));
 }
 
 function errorCode(error: unknown): string {
