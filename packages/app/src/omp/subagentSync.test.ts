@@ -221,6 +221,30 @@ describe('persistent conditional child history', () => {
     expect(fetch.mock.calls.map(call => call[0])).toEqual([0, 100, 100])
   })
 
+  it.each([
+    { boundary: 'requests', payloadBytes: 32, expireAt: 32 },
+    { boundary: 'bytes', payloadBytes: 250000, expireAt: 15 },
+  ])('keeps the total $boundary budget across a snapshot restart', async ({ boundary, payloadBytes, expireAt }) => {
+    let requests = 0
+    let receivedBytes = 0
+    let generation = 0
+    const fetch = async (cursor: number) => {
+      if (++requests === expireAt) {
+        generation++
+        throw Object.assign(new Error('changed'), { code: 'SYNC_SNAPSHOT_EXPIRED' })
+      }
+      const body = block(`${generation}:` + 'x'.repeat(payloadBytes), cursor, cursor + 100)
+      const page = { ...response([body], undefined, `snapshot-${generation}`), hasMore: true }
+      receivedBytes += new TextEncoder().encode(JSON.stringify(page)).byteLength
+      return page
+    }
+    const result = await readSyncedSubagentHistory('bounded', undefined, fetch, new AbortController().signal)
+    expect(result).toMatchObject({ reset: true, hasMore: true })
+    expect(requests).toBeLessThanOrEqual(64)
+    expect(receivedBytes).toBeLessThanOrEqual(8 * 1024 * 1024)
+    if (boundary === 'requests') expect(requests).toBe(64)
+  })
+
   it('rejects a corrupt network body', async () => {
     const damaged = block('original')
     damaged.messages[0].content = 'corrupt'
