@@ -146,7 +146,7 @@ export function createStaticServer(root: string): StaticServer | undefined {
           res.end();
           return true;
         }
-        pipeline(async function* (options = {}) {
+        pipeline(async function* (options: { signal?: AbortSignal } = {}) {
           const signal = options.signal!;
           for (let index = 0; index < parts.length; index++) {
             signal.throwIfAborted();
