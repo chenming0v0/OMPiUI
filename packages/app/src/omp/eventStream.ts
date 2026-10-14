@@ -137,6 +137,7 @@ class PiEventStream {
   private resyncTimer: ReturnType<typeof setTimeout> | null = null
   private resyncFlights = new Map<string, Promise<void>>()
   private resyncActive = 0
+  private resyncGeneration = 0
   private readonly RESYNC_CONCURRENCY = 2
 
   /** Subscribe a session stream (reference counted). */
@@ -256,9 +257,12 @@ class PiEventStream {
     this.liveRecoveryAt.clear()
     this.liveRecoveryFlights.clear()
     this.commandRecoveryFlights.clear()
+    this.resyncGeneration++
     this.pendingResync.clear()
     if (this.resyncTimer) clearTimeout(this.resyncTimer)
     this.resyncTimer = null
+    this.resyncFlights.clear()
+    this.resyncActive = 0
     this.closeSocket()
   }
 
@@ -983,15 +987,23 @@ class PiEventStream {
     if (stream.kind === 'session') {
       const existing = this.resyncFlights.get(stream.id)
       if (existing) return existing
+      const generation = this.resyncGeneration
       // Preview includes the checkpoint for an attached runtime. External
       // histories stay disk-only; neither refresh is allowed to spawn a writer.
       const refresh = piBranchStore.getData(stream.id)
         ? refreshPiBranch(stream.id, undefined, { includeLiveMessage: true })
         : loadPiSessionData(stream.id)
       const flight = refresh
-        .then(() => this.diagnostics.state(stream.id, piSessionStateStore.getState(stream.id)))
-        .catch(error => this.diagnostics.error('branch_error', stream.id, error))
-        .then(() => this.flushPendingLiveMessage(stream.id))
+        .then(() => {
+          if (this.resyncGeneration !== generation) return
+          return this.diagnostics.state(stream.id, piSessionStateStore.getState(stream.id))
+        })
+        .catch(error => {
+          if (this.resyncGeneration === generation) return this.diagnostics.error('branch_error', stream.id, error)
+        })
+        .then(() => {
+          if (this.resyncGeneration === generation) this.flushPendingLiveMessage(stream.id)
+        })
         .finally(() => {
           if (this.resyncFlights.get(stream.id) === flight) this.resyncFlights.delete(stream.id)
         })
@@ -1032,11 +1044,13 @@ class PiEventStream {
   }
 
   private drainResync(): void {
+    const generation = this.resyncGeneration
     while (this.resyncActive < this.RESYNC_CONCURRENCY && this.pendingResync.size > 0) {
       const [key, cursor] = this.pendingResync.entries().next().value as [string, EventCursor | undefined]
       this.pendingResync.delete(key)
       this.resyncActive++
       void this.handleResync(key, cursor).finally(() => {
+        if (this.resyncGeneration !== generation) return
         this.resyncActive--
         this.drainResync()
       })
