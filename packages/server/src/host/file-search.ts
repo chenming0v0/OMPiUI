@@ -82,8 +82,8 @@ const MAX_QUERY_BYTES = 64 * 1024;
 const MAX_RESULT_BYTES = 2 * 1024 * 1024;
 const MAX_LINE_BYTES = 8192;
 const MAX_SUBMATCHES = 200;
-// Reserve the full envelope with upper bounds for counters and integer duration.
-// JSON's longest finite nonnegative integer representation is 23 bytes.
+// 按计数器和整数耗时的最大长度预留完整封装；
+// JSON 中有限非负整数的最长表示为 23 字节。
 const MAX_RESULT_STATS: FileSearchStats = {
   visited: MAX_VISIT,
   scannedFiles: MAX_VISIT,

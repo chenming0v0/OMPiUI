@@ -5,7 +5,7 @@ import { workspacePathKey } from "./host/workspace-store.ts"
 type PendingEvent = { event: EventEnvelope; bytes: number }
 type PendingWorkspace = { files?: PendingEvent; git?: PendingEvent }
 
-/** One IPC write in flight; a stalled parent retains at most two invalidations per watched root. */
+/** 同时只发送一条 IPC；父进程阻塞时每个监听根最多保留两条失效通知。 */
 export class WorkspaceWatchSender {
   private readonly watched = new Set<string>()
   private readonly pending = new Map<string, PendingWorkspace>()
@@ -58,8 +58,8 @@ export class WorkspaceWatchSender {
       this.pendingBytes -= previous.bytes
       pending[field] = undefined
     }
-    // A second batch can include create/delete transitions that cannot be represented
-    // by keeping only the last path update. A rescan preserves their final state.
+    // 第二批可能包含创建或删除变化，单独保留最后一个路径更新无法表达；
+    // 重新扫描可保留最终状态。
     let item = field === "files" && previous ? this.rescan(event) : this.measure(event)
     if (item.bytes > this.maxMessageBytes && field === "files") item = this.rescan(event)
     if (this.pendingBytes + item.bytes > this.maxPendingBytes) {
@@ -67,8 +67,8 @@ export class WorkspaceWatchSender {
       this.compactPendingFiles()
     }
     if (item.bytes > this.maxMessageBytes || this.pendingBytes + item.bytes > this.maxPendingBytes) {
-      // The parent republishes files+Git invalidations when this child exits. Never
-      // silently discard a root whose minimum invalidation itself cannot fit.
+      // 子进程退出后父进程会重新发布文件与 Git 失效通知；
+      // 即使最小通知也超额时，不能静默丢弃对应监听根。
       this.fail(new Error("workspace watcher IPC invalidation exceeds its byte budget"))
       return
     }
@@ -90,7 +90,7 @@ export class WorkspaceWatchSender {
   }
 
   private rescan(event: EventEnvelope): PendingEvent {
-    // These payloads are created in-process by WorkspaceWatcher, not received from IPC.
+    // 这些载荷由进程内 WorkspaceWatcher 创建，并非来自 IPC。
     const payload = event.payload
     if (!isJsonObject(payload) || typeof payload.revision !== "number") throw new Error("invalid workspace watcher payload")
     return this.measure({

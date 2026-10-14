@@ -385,8 +385,8 @@ describe("TunnelClient against a live relay", () => {
   it("normal upgrade EOF drains the complete tail before releasing the slow visitor", { timeout: 10_000 }, async t => {
     const h = await upgradeHarness(t, true)
     if (!h.local.closed) await once(h.local, "close")
-    // The local close and a later HTTP response place an observable barrier
-    // after the producer's EOF without guessing at socket/timer scheduling.
+    // 本地关闭与随后的 HTTP 响应在生产者 EOF 后建立可观察的屏障，
+    // 无须猜测 socket 或定时器的调度顺序。
     const other = await request(`http://127.0.0.1:${h.relay.port}/other`)
     assert.equal(other.body.toString(), "unrelated")
     assert.equal(h.output.destroyed, false)

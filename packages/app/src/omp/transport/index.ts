@@ -311,8 +311,8 @@ export async function postHostCommand<
       if (!release()) return
       reject(signal?.reason ?? new DOMException('The operation was aborted', 'AbortError'))
       if (shared.consumers === 0 && !shared.settled) {
-        // Remove before aborting so a later caller can start a fresh flight,
-        // even while the abandoned fetch is still settling its rejection.
+        // 先移除共享请求再中止，使后续调用立即启动新请求；
+        // 废弃的请求仍可能正在结算拒绝。
         if (hostReadFlights.get(key) === shared) hostReadFlights.delete(key)
         shared.controller.abort()
       }

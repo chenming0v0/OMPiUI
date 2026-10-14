@@ -773,8 +773,8 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
               return
             }
             if (frame.problem.code === 'RATE_LIMITED') {
-              // Older peers may still close for throttling. Never mark a live
-              // terminal as exited, or replay an input whose ACK was lost.
+              // 旧版对端仍可能因限流关闭连接；不能把活跃终端标为退出，
+              // 也不能重放确认已丢失、执行结果未知的输入。
               terminal.write(`\r\n\x1b[90m[${frame.problem.message}; reconnecting]\x1b[0m\r\n`)
               input.disconnect(socket)
               socket.close(4008, 'RATE_LIMITED')

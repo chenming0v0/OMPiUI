@@ -59,7 +59,7 @@ impl InboundFlow {
                 if self.ledger.lock().expect("bridge inbound state poisoned").can_receive() {
                     return;
                 }
-                // notify_one retains a permit if an ACK arrives before this await.
+                // 若 ACK 先于等待到达，notify_one 会保留一次唤醒许可。
                 self.released.notified().await;
             }
         }).await
@@ -137,14 +137,14 @@ impl BridgeState {
             .expect("bridge state poisoned")
             .get(key)
             .map(|connection| Arc::clone(&connection.inbound));
-        // An ACK already in IPC may outlive the connection's close event.
+        // 已进入 IPC 的 ACK 可能晚于连接关闭事件到达。
         if let Some(inbound) = inbound {
             inbound.acknowledge(sequence)?;
         }
         Ok(())
     }
 
-    /// Close uses a separate signal so a full send queue cannot prevent cleanup.
+    /// 关闭使用独立信号，避免发送队列满时阻断清理。
     pub fn disconnect_window(&self, window_label: &str) {
         self.connections
             .lock()
@@ -276,7 +276,7 @@ pub async fn ws_bridge_connect(
             let _ = tokio::time::timeout(Duration::from_secs(15), writer.send(Message::Close(Some(frame)))).await;
             close
         };
-        // Ending either half cancels the other, including an ACK-blocked reader.
+        // 任一方向结束都会取消另一方向，包括等待 ACK 的读取端。
         futures_util::pin_mut!(read_loop, write_loop);
         let close = match select(read_loop, write_loop).await {
             Either::Left((close, _)) | Either::Right((close, _)) => close,

@@ -13,7 +13,7 @@ export class RateBudget {
     return true;
   }
 
-  /** Inspect all participating buckets before consuming any of them. */
+  /** 消耗额度前先检查所有参与的额度桶。 */
   retryAfterMs(amount: number): number {
     const now = Date.now();
     this.available = Math.min(

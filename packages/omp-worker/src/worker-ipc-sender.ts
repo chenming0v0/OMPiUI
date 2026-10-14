@@ -20,7 +20,7 @@ function capacityError(): Error {
   return Object.assign(new Error("worker IPC output capacity reached"), { code: "RATE_LIMITED" })
 }
 
-/** Hard limits include in-flight writes and capacity reserved before response production. */
+/** 硬上限包含发送中的消息及生成响应前预留的容量。 */
 export class WorkerIpcSender {
   private readonly queue: QueuedMessage[] = []
   private readonly control: QueuedMessage[] = []
@@ -51,7 +51,7 @@ export class WorkerIpcSender {
     this.enqueue(message, false, done)
   }
 
-  /** The small reserved lane is for protocol errors and final crash/dispose notices, not data pages. */
+  /** 小型预留通道只承载协议错误与最终崩溃或释放通知，不承载数据页。 */
   sendControl(message: WorkerMessage, done?: (error?: Error) => void): void {
     this.enqueue(message, true, done)
   }
@@ -117,8 +117,8 @@ export class WorkerIpcSender {
       }),
       cancel: () => {
         const item = reservation.item
-        // Executing producers keep their reservation until they settle. Releasing it
-        // on cancellation would admit an unbounded number of still-running reads.
+        // 正在执行的生产者结算前持续占用预留；若取消时提前退款，
+        // 仍在运行的读取任务就可能无限增加。
         if (!item || item === this.sending || item.completed) return
         const index = this.queue.indexOf(item)
         if (index < 0) return
@@ -187,7 +187,7 @@ export class WorkerIpcSender {
 
   private capacityChanged(): void {
     this.drain()
-    // Admissions get first use of newly available capacity before stdout resumes.
+    // 新释放的容量先供待准入任务使用，然后再恢复 stdout。
     for (const listener of this.writableListeners) listener()
     this.updateBackpressure()
   }

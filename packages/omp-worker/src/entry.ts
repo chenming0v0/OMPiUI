@@ -76,9 +76,9 @@ function send(message: WorkerMessage): void {
       failWorkerIpc(error)
       return
     }
-    // Stdout is paused before the hard cap. If an already-decoded oversized
-    // frame still exceeds it, fail only its session and report that terminal
-    // state through reserved control capacity, rather than losing events silently.
+    // 达到硬上限前先暂停 stdout；若已解码的大帧仍超额，
+    // 仅使对应会话失败，并通过预留的控制容量报告终态，
+    // 不能静默丢失事件。
     failedOutputSessions.add(sessionId)
     ipcSender.sendControl({
       kind: "event", generation: workerGeneration, sessionId, channel: "session.crashed",

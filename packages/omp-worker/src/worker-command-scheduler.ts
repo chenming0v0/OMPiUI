@@ -8,8 +8,8 @@ export interface SchedulerCommand {
   sessionId?: string
 }
 
-// Native turn/control acknowledgements must not wait behind a large disk page.
-// Their response budget is reserved as well, including errors and delivery time.
+// 原生回合与控制确认不能被大磁盘页阻塞；
+// 其响应连同错误与交付时间也须预留额度。
 const SMALL_RESPONSES: Record<string, true> = {
   prompt: true, steer: true, followUp: true, sendUserMessage: true,
   abort: true, abortBash: true, abortCompaction: true, abortBranchSummary: true, abortRetry: true,
@@ -38,7 +38,7 @@ export type WorkerCommandScheduler = ((request: WorkerRequest) => Promise<void>)
   close: (cleanup: () => Promise<void>, drainTimeoutMs?: number) => Promise<void>
 }
 
-/** SDK concurrency stays native; only output-capacity admission is queued, before execution. */
+/** 保留 SDK 原有并发，仅在执行前排队等待出站容量。 */
 export function createWorkerCommandScheduler(
   execute: (command: SchedulerCommand) => Promise<JsonValue | undefined | void>,
   sender: WorkerIpcSender,
@@ -77,8 +77,8 @@ export function createWorkerCommandScheduler(
       if (job.cancelled) return
       response = { kind: "response", id: job.request.id, generation, ok: false, error: problemFromError(error) }
     }
-    // The reservation is held until process.send's callback, not just until a
-    // cached/disk producer finishes. There is no waiting queue of produced pages.
+    // 预留持续到 process.send 回调，而非缓存或磁盘读取结束；
+    // 已生成的页面不另设等待队列。
     await reservation.send(response)
   }
 
@@ -165,7 +165,7 @@ export function createWorkerCommandScheduler(
     finish(job)
   }
   schedule.cancelAll = (): void => {
-    // Cancel queued jobs first without allowing a freed slot to execute another.
+    // 优先取消排队任务，避免空出的槽位先执行另一任务。
     pumping = true
     try {
       for (const id of requests.keys()) schedule.cancel(id)

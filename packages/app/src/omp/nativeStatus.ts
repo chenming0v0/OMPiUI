@@ -19,7 +19,7 @@ export type PiNativeStatus = {
   registry?: PiRegistrySnapshot
   missingCoreCommands: string[]
   error?: string
-  /** False for credentials or an incompatible endpoint; automatic probes must stop. */
+  /** 凭据错误或端点不兼容时为 false，必须停止自动探测。 */
   retryable?: boolean
   checkedAt?: number
 }
@@ -46,8 +46,8 @@ export async function refreshPiNativeStatus(signal?: AbortSignal): Promise<PiNat
       fetchHostHealth(signal).then(validateHealth),
       fetchPiRegistry(signal).then(validateRegistry),
     ])
-    // A fast transient failure must not hide a terminal verdict from the other
-    // endpoint, or leave that request running into the next probe round.
+    // 一端的快速瞬态失败不能遮蔽另一端的终态结果，
+    // 也不能让旧请求延续到下一轮探测。
     if (healthResult.status === 'rejected' && !isRetryableNativeError(healthResult.reason)) throw healthResult.reason
     if (registryResult.status === 'rejected') throw registryResult.reason
     if (healthResult.status === 'rejected') throw healthResult.reason
@@ -114,8 +114,8 @@ function isUnauthorized(error: unknown): boolean {
 function isRetryableNativeError(error: unknown): boolean {
   if (error instanceof UnexpectedBackendError || error instanceof SyntaxError) return false
   const status = httpStatus(error)
-  // Request timeout, Too Early and rate limiting remain transient. Other 4xx
-  // responses on these fixed read endpoints need a configuration/protocol fix.
+  // 超时、Too Early 和限流仍属瞬态；固定只读端点的其他 4xx
+  // 需要修正配置或协议，不能无限重试。
   return status === undefined || status < 400 || status >= 500 || status === 408 || status === 425 || status === 429
 }
 

@@ -654,8 +654,8 @@ async function withWorkspaceMutation<T>(
   if (signal?.aborted) throw requestAborted();
   const key = workspacePathKey(ws.canonicalRoot);
   const current = workspaceMutations.get(key);
-  // Charge UTF-16 storage, including encoded upload content, while queued or
-  // running. Counts also bound the request/Promise overhead of empty mutations.
+  // 排队或执行期间计量 UTF-16 存储，包括编码后的上传内容；
+  // 任务数上限同时约束空写入请求和 Promise 的额外开销。
   const bytes = retainedStringBytes + 2 * ws.canonicalRoot.length;
   if (
     pendingMutationBytes + bytes > MAX_PENDING_MUTATION_BYTES ||
@@ -684,8 +684,8 @@ async function withWorkspaceMutation<T>(
       try {
         if (signal?.aborted) throw requestAborted();
         assertWorkspaceCurrent(ws);
-        // Cancellation only applies before execution; do not report a committed
-        // write as cancelled or let the next mutation race an in-flight write.
+        // 取消仅适用于执行前；已提交的写入不能误报为取消，
+        // 后续修改也不能与执行中的写入竞争。
         return await operation();
       } finally {
         lock.release();

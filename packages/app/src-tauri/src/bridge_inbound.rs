@@ -1,8 +1,8 @@
-//! Counts only messages that the WebView has not acknowledged consuming.
+//! 仅计量 WebView 尚未确认消费的消息。
 
 use std::collections::VecDeque;
 
-// Match the server's legal outbound event size, not its much smaller client frames.
+// 对齐服务端合法的出站事件大小，而不是较小的客户端帧上限。
 pub(super) const MAX_INBOUND_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 pub(super) const MAX_INBOUND_BYTES: usize = 8 * 1024 * 1024;
 pub(super) const MAX_INBOUND_MESSAGES: usize = 1024;
@@ -16,8 +16,8 @@ pub(super) struct InboundLedger {
 }
 
 impl InboundLedger {
-    // Reserve room for the next complete message before reading it. Otherwise a
-    // blocked reader would hold an extra, unaccounted-for 4 MiB message.
+    // 读取前先为下一条完整消息预留容量，避免阻塞的读取端额外持有
+    // 一条未计量的 4 MiB 消息。
     pub(super) fn can_receive(&self) -> bool {
         self.pending.len() < MAX_INBOUND_MESSAGES
             && self.bytes <= MAX_INBOUND_BYTES - MAX_INBOUND_MESSAGE_BYTES

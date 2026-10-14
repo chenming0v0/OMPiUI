@@ -45,7 +45,7 @@ let retryCycle: BackendRetryCycle | null = null
 let bootstrapController: AbortController | null = null
 let serverSwitchInstalled = false
 
-/** Initial startup or an explicit retry starts a fresh, bounded recovery cycle. */
+/** 初次启动或显式重试开启一轮新的有界恢复。 */
 export function initializePiBackend(): Promise<PiBackendBootstrapResult> {
   if (initialization) return initialization
   resetBackendRetry()
@@ -88,8 +88,8 @@ function startBackendInitialization(): Promise<PiBackendBootstrapResult> {
   initialization = initializePiBackendOnce(cycle, controller.signal).finally(() => {
     initialization = null
     bootstrapController = null
-    // A config switch or pause/resume may arrive before the old probe settles.
-    // Only this completion releases the next round; events never create a second flight.
+    // 配置切换或暂停恢复可能早于旧探测结算；
+    // 只有本轮结束才释放下一轮，事件不会并行启动另一轮。
     if (retryCycle !== cycle || controller.signal.aborted) void startBackendInitialization()
   })
   return initialization
@@ -180,8 +180,8 @@ export function installPiBackendServerSwitch(): void {
       eligible = true
       const cycle = retryCycle
       if (!cycle || cycle.state === "online" || cycle.state === "terminal") return
-      // A genuine return from hidden/offline may restart an exhausted transient
-      // cycle. Duplicate online/visibility events cannot reset its budget.
+      // 页面或网络真正恢复后可重启已耗尽的瞬态探测；
+      // 重复的在线与可见事件不能重置预算。
       if (cycle.state === "exhausted" || !hasRetryBudget(cycle)) resetBackendRetry()
       clearBackendRetryTimer()
       void startBackendInitialization()
@@ -206,8 +206,8 @@ function scheduleBackendRetry(cycle: BackendRetryCycle): void {
   }
   if (typeof window === "undefined" || !canProbeBackend()) return
   const elapsed = Date.now() - (cycle.startedAt ?? Date.now())
-  // Keep only the cold-start window fast, then use the shared jittered backoff.
-  // Both elapsed time and round count cap one uninterrupted recovery cycle.
+  // 仅冷启动窗口保持快速探测，之后使用共享的抖动退避。
+  // 单轮连续恢复同时受耗时与轮次限制。
   const delay = elapsed < FAST_RETRY_WINDOW_MS ? 1_000 : retryDelay(cycle.backoffAttempt++, 2_000, 30_000)
   if (elapsed + delay >= MAX_BOOTSTRAP_WINDOW_MS) {
     cycle.state = "exhausted"

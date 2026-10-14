@@ -10,7 +10,7 @@ interface Reservation {
   reclaim: () => void;
 }
 
-/** Application queues and sends share one reservation until delivery or close. */
+/** 应用消息的排队和发送共用一份预留，直到交付或关闭。 */
 export class WebSocketSendBudget<Socket extends BufferedSocket> {
   private readonly sockets = new Map<Socket, Reservation>();
   private readonly waiters = new Set<() => void>();
@@ -46,7 +46,7 @@ export class WebSocketSendBudget<Socket extends BufferedSocket> {
     return "accepted";
   }
 
-  /** Transfer, rather than release, a reservation when ws.send starts. */
+  /** ws.send 开始时转移预留，而不是释放额度。 */
   sending(socket: Socket, bytes: number): void {
     const entry = this.sockets.get(socket);
     if (!entry) return;
@@ -75,10 +75,9 @@ export class WebSocketSendBudget<Socket extends BufferedSocket> {
   }
 
   /**
-   * Only reclaim a larger application backlog, never a healthy requester or
-   * delivery callbacks that have not had an event-loop turn yet. Reclamation
-   * must actually release queued data before reserve() can admit more bytes.
-   * Socket-owned bytes remain charged until their callbacks/close arrive.
+   * 仅回收较大的应用积压，不能回收健康的请求者或尚未经过
+   * 一轮事件循环的交付回调。reserve() 准入更多字节前，
+   * 回收必须实际释放排队数据；socket 持有的字节直到回调或关闭才退款。
    */
   reclaimFor(socket: Socket, bytes: number): void {
     const tried = new Set<Socket>();

@@ -34,7 +34,7 @@ import { splitTerminalOutput } from "./terminal-output.ts";
 import { WebSocketSendBudget, type SendAdmission } from "./ws-send-budget.ts";
 import { WebSocketIngressBudget } from "./ws-ingress-budget.ts";
 
-// Preserve the aggregate-payload cap as well as the raw pre-parse rate budget.
+// 除解析前的原始帧速率预算外，仍保留聚合载荷上限。
 const MAX_MESSAGE_BYTES = 1024 * 1024;
 const MAX_OUTBOUND_MESSAGE_BYTES = 4 * 1024 * 1024;
 const sendBudget = new WebSocketSendBudget<WebSocket>();
@@ -306,9 +306,9 @@ function attachConnection(
     return true;
   };
 
-  // The hub, not a per-socket copy of all retained history, backs this pump.
-  // Cursors advance only for admitted frames; callbacks yield between bounded
-  // batches. Live publications join the same cursor path while replay is active.
+  // 此发送循环由 hub 支撑，不为每个 socket 复制全部历史。
+  // 游标仅随已准入的帧前进；有界批次之间由回调让出执行权。
+  // 回放期间的实时发布也沿同一游标路径发送。
   const pump = () => {
     if (closed || ws.readyState !== WebSocket.OPEN || pendingSends) return;
     if (helloPending) {
@@ -397,8 +397,8 @@ function attachConnection(
       if (!state.dirty) state.cursor = event.cursor;
       return;
     }
-    // An up-to-date live stream can be sent directly, including a large event
-    // that the hub cannot retain. Otherwise only its cursor work is retained.
+    // 游标已追上时可直接发送实时事件，包括 hub 无法保留的大事件；
+    // 否则只保留游标工作，不复制事件正文。
     if (!state.dirty && !helloPending && !Object.keys(resync).length &&
         (!pendingSends || eventWireFrame(event).bytes > 2 * 1024 * 1024) &&
         writeFrame({ channel: "event", event })) {
@@ -470,8 +470,8 @@ function attachConnection(
     if (message.protocolVersion !== PROTOCOL_VERSION) { rejectProtocol(ws); return; }
     const desired = readSubscription(message);
     if (!desired) { invalidFrame(); return; }
-    // A subscribe describes replacement state, not a disposable notification.
-    // Keep just the latest validated target, including under shared pressure.
+    // subscribe 表示替换后的目标状态，而非可丢弃的通知；
+    // 即使共享预算紧张，也要保留最新的已校验目标。
     pendingSubscription = desired;
     applyPendingSubscription();
   });
@@ -799,9 +799,9 @@ function attachTerminalConnection(
   const resumeOutput = () => {
     if (closed || closeAfterFlush || !recovering) return;
     try {
-      // Under aggregate pressure, retain a cursor instead of an unaccounted
-      // output queue. Reattach from the last admitted character; expiration is
-      // an explicit protocol error, never a silently skipped terminal suffix.
+      // 总额度紧张时保留游标，而不是另建未计量的输出队列；
+      // 从最后准入的字符续接，游标过期则显式返回协议错误，
+      // 绝不静默跳过终端输出尾部。
       attachment = manager.attach(workspacePath, terminalId,
         outputCursor ?? cursor, onOutput, onExit, onTitle);
       outputCursor = attachment.replayCursor;
@@ -860,8 +860,8 @@ function attachTerminalConnection(
           closeWhenDrained(1008, "invalid terminal input sequence");
           return;
         }
-        // Reserve the bounded ACK before touching the PTY. A shared-budget
-        // refusal below is definitely not written and can safely be retried.
+        // 操作 PTY 前先预留有界 ACK；下面的共享预算拒绝
+        // 确定尚未写入，因此可安全重试。
         const ackBytes = 128;
         const admission = reserveWire(ws, ackBytes);
         if (admission === "connection_full") { close(1013, "terminal client too slow"); return; }
@@ -905,8 +905,8 @@ function attachTerminalConnection(
     } catch (error) {
       const code = errorCode(error);
       problem(code, error instanceof Error ? error.message : String(error));
-      // An unexpected PTY error has unknown acceptance; never advertise a safe
-      // retry. Old untagged clients retain the explicit close-on-rate-limit path.
+      // 意外 PTY 错误无法确认是否受理，不能宣称可安全重试；
+      // 旧版无标识客户端仍沿用限流时明确关闭的路径。
       if (frame.type === "input")
         closeWhenDrained(code === "RATE_LIMITED" ? 1013 : 1011, "terminal input interrupted");
     }

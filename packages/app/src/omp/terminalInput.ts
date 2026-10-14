@@ -22,7 +22,7 @@ export function sendTerminalInput(socket: PiSocket, text: string): void {
   }
 }
 
-/** Retains input until the PTY explicitly accepts it. Only explicit refusal is retryable. */
+/** 保留输入直到 PTY 明确受理；只有明确拒绝才可重试。 */
 export class TerminalInputQueue {
   private readonly chunks: InputChunk[] = []
   private socket: PiSocket | null = null
@@ -45,14 +45,14 @@ export class TerminalInputQueue {
   get state(): TerminalInputState { return this.currentState }
   get pendingBytes(): number { return this.queuedBytes }
 
-  /** Includes the possibly executed head after an interrupted acknowledgement. Never auto-replayed. */
+  /** 包含确认中断前可能已执行的前缀，绝不自动重放。 */
   get pendingText(): string { return this.chunks.map(chunk => chunk.data).join('') }
 
   enqueue(text: string): TerminalInputEnqueueResult {
     if (this.disposed) return 'closed'
     if (this.currentState !== 'ready') return this.currentState
     const remaining = MAX_PENDING_TERMINAL_INPUT_BYTES - this.queuedBytes
-    // Admission is atomic for the entire paste; never evict older queued input.
+    // 整段粘贴原子入队，绝不挤掉更早排队的输入。
     if (text.length > remaining) return 'full'
     const bytes = encoder.encode(text).byteLength
     if (bytes > remaining) return 'full'
@@ -93,8 +93,8 @@ export class TerminalInputQueue {
     this.socket = null
     this.clearTimer()
     if (this.awaitingAcknowledgement) {
-      // The peer may have executed this frame before its ACK was lost. Keep all
-      // remaining text for explicit user recovery, rather than replaying it.
+      // 对端可能已执行本帧，只是确认丢失；保留剩余文本供用户显式恢复，
+      // 不自动重放结果未知的内容。
       this.setState('interrupted')
     } else if (this.chunks[0]) {
       this.chunks[0].inputId = undefined

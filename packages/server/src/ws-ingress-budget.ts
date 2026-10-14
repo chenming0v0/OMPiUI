@@ -9,7 +9,7 @@ export class WebSocketIngressBudget {
     private readonly sharedBytes: RateBudget,
   ) {}
 
-  /** Call on raw application AND RFC control frames, before decoding JSON. */
+  /** 解码 JSON 前对原始应用帧及 RFC 控制帧均调用此方法。 */
   allow(bytes: number): boolean {
     if (
       this.frames.retryAfterMs(1) !== 0 ||

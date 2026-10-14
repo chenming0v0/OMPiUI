@@ -278,7 +278,7 @@ describe('HTTP network retry safety', () => {
       return Promise.resolve(new Response(stream, { headers: { 'content-type': 'application/json' } }))
     })
     const response = await piFetch('/write', { method: 'POST', body: '{}' })
-    // Returning headers must not pre-buffer the body or require a second POST.
+    // 收到响应头不能预先缓存正文，也不能要求再次发送 POST。
     expect(response.bodyUsed).toBe(false)
     const rejected = expect(response.json()).rejects.toMatchObject({ name: 'AbortError' })
     abortInFlightPiRequests()

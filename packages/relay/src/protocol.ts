@@ -96,7 +96,7 @@ export function stripHopByHopHeaders(
   return result
 }
 
-/** Find a free u32 ID without changing the active connection tables. */
+/** 不改动活跃连接表，查找可用的 u32 ID。 */
 export function allocateConnectionId(nextId: number, isActive: (id: number) => boolean): number {
   const first = nextId >>> 0
   let id = first

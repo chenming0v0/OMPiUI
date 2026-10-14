@@ -51,7 +51,7 @@ describe("frame codec", () => {
     assert.deepEqual([last, wrapped, skipped], [0xffffffff, 0, 2])
 
     for (const c of [last, wrapped, skipped]) {
-      // The receiver registers the JSON ID, then looks up every binary frame.
+      // 接收端先登记 JSON 中的 ID，再按此查找每个二进制帧。
       const open = JSON.parse(JSON.stringify({ type: "open", c })) as { c: number }
       for (const fill of [0x55, 0x44]) {
         const peer = new Map<number, Buffer[]>([[open.c, []]])

@@ -32,7 +32,7 @@ export class BodySink {
     private readonly meter?: (bytes: number, frames: number) => boolean | number,
   ) {}
 
-  /** Keep the source and any upgrade head behind the connection's open frame. */
+  /** 在连接的 open 帧发送前阻止来源和 upgrade 首部发送。 */
   hold(source: BodySource): void {
     if (this.disposed) return;
     this.held = true;
@@ -42,7 +42,7 @@ export class BodySink {
     }
   }
 
-  /** Called once open has entered this WebSocket's ordered send queue. */
+  /** open 进入此 WebSocket 的有序发送队列后调用。 */
   release(): void {
     if (this.disposed || !this.held) return;
     this.held = false;

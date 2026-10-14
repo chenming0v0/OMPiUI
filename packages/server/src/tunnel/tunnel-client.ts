@@ -455,8 +455,8 @@ export class TunnelClient {
       socket.on("end", () => {
         if (!isCurrent() || ended) return;
         ended = true;
-        // The input side's close listener must not discard response bytes still
-        // waiting for the shared data quota after a normal readable EOF.
+        // 正常可读 EOF 后，输入端的 close 监听器不能丢弃
+        // 仍在等待共享数据额度的响应字节。
         conn.input?.dispose();
         this.sendControl({ type: "end", c: frame.c }, () => {
           finish();

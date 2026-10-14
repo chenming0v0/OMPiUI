@@ -110,8 +110,8 @@ class TauriBridgeSocket implements PiSocket {
       try {
         this.onmessage?.({ data: event.data })
       } finally {
-        // Channel.send only enqueues IPC. Receipt credit is returned after the
-        // JavaScript consumer has actually handled this message, not on send.
+        // Channel.send 只将消息加入 IPC 队列；JavaScript 消费者处理完成后
+        // 才归还额度，而非发送时归还。
         this.consumedSequence = event.sequence
         this.scheduleAcknowledgement()
       }
@@ -154,7 +154,7 @@ class TauriBridgeSocket implements PiSocket {
       })
       .finally(() => {
         this.acknowledgementInFlight = false
-        // Coalesce concurrent receipts; never create one IPC promise per frame.
+        // 合并并发确认，避免每帧创建 IPC 请求。
         this.acknowledgeConsumed()
       })
   }

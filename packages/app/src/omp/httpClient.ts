@@ -7,8 +7,8 @@ import { auditHttpRequest } from './trafficAudit/http'
 const DEFAULT_BASE = 'http://127.0.0.1:8787'
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000
 
-// Keep the server generation's signal alive through response-body consumption,
-// not just until fetch resolves with headers. No response buffering is needed.
+// 服务器代次信号必须持续到正文消费结束，而非只持续到收到响应头；
+// 无须预先缓存响应正文。
 let serverRequests = new AbortController()
 
 export function abortInFlightPiRequests(): void {

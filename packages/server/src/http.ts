@@ -164,8 +164,8 @@ export async function readBody(
       });
     }
     if (Number.isFinite(declared) && declared > 0) reserve(declared);
-    // Do not throw out of IncomingMessage's async iterator: Node/Bun destroy
-    // the request differently, which can discard the 413 response itself.
+    // 不从 IncomingMessage 异步迭代器抛出异常：Node 与 Bun
+    // 销毁请求的方式不同，可能导致 413 响应本身被丢弃。
     await new Promise<void>((resolve, reject) => {
       const cleanup = () => {
         req.removeListener("data", onData);
