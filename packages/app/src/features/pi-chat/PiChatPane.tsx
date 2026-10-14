@@ -1807,6 +1807,7 @@ export function PiChatPane({
                 isCompacting={compacting}
                 loadState="loaded"
                 hasMoreHistory={Boolean(branch?.hasMore)}
+                historyStartId={branch?.items[0]?.id}
                 onLoadMore={handleLoadMore}
                 bottomPadding={inputBoxHeight}
                 onVisibleMessageIdsChange={handleVisibleIdsChange}

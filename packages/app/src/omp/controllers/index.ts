@@ -224,8 +224,22 @@ export function createPiSession(cwd: string, signal?: AbortSignal): Promise<tran
  * Load session data (state + branch) for active session.
  */
 const BRANCH_PAGE_LIMIT = 100
-const BRANCH_PAGE_MAX_BYTES = 2 * 1024 * 1024
+const BRANCH_PAGE_MAX_BYTES = 128 * 1024
+const BRANCH_LARGE_ENTRY_MAX_BYTES = 4 * 1024 * 1024
 const sessionRefreshFlights = new Map<string, { promise: Promise<void>; dirty: boolean; includeLive: boolean }>()
+
+/** 普通历史使用小页；单条正文超限时扩大预算，不把原生记录截断或跳过。 */
+async function readHistoryPage<T>(read: (maxBytes: number) => Promise<T>, initialBytes = BRANCH_PAGE_MAX_BYTES): Promise<T> {
+  let maxBytes = initialBytes
+  for (;;) {
+    try {
+      return await read(maxBytes)
+    } catch (error) {
+      if ((error as { code?: string })?.code !== 'FILE_TOO_LARGE' || maxBytes >= BRANCH_LARGE_ENTRY_MAX_BYTES) throw error
+      maxBytes = Math.min(maxBytes * 2, BRANCH_LARGE_ENTRY_MAX_BYTES)
+    }
+  }
+}
 
 export async function loadPiSessionData(sessionId: string, signal?: AbortSignal): Promise<void> {
   const generation = serverStore.getActiveServerGeneration()
@@ -257,15 +271,15 @@ async function loadPiSessionDataOnce(sessionId: string, signal?: AbortSignal): P
     const current = piBranchStore.getData(sessionId)
     const preview = await retryUnavailable(
       () =>
-        transport.previewPiSession(
+        readHistoryPage(maxBytes => transport.previewPiSession(
           sessionId,
           {
             limit: BRANCH_PAGE_LIMIT,
-            maxBytes: BRANCH_PAGE_MAX_BYTES,
+            maxBytes,
             ...(current?.syncCursor ? { syncCursor: current.syncCursor, beforeId: current.items[0]?.id } : {}),
           },
           signal,
-        ),
+        )),
       signal,
       true,
     )
@@ -348,15 +362,17 @@ export async function loadMorePiBranchEntries(sessionId: string, signal?: AbortS
   const serverGeneration = serverStore.getActiveServerGeneration()
 
   try {
-    const olderPage = await transport.getPiBranchPage(
+    const olderPage = await readHistoryPage(maxBytes => transport.getPiBranchPage(
       sessionId,
-      { beforeId: currentBranch.items[0].id, limit: BRANCH_PAGE_LIMIT, maxBytes: BRANCH_PAGE_MAX_BYTES },
+      { beforeId: currentBranch.items[0].id, limit: BRANCH_PAGE_LIMIT, maxBytes },
       signal,
-    )
+    ))
 
+    const latest = piBranchStore.getData(sessionId)
     if (
       serverStore.getActiveServerGeneration() !== serverGeneration ||
-      piBranchStore.getData(sessionId) !== currentBranch
+      !latest ||
+      !currentBranch.items.every((entry, index) => latest.items[index]?.id === entry.id)
     )
       return
 
@@ -366,11 +382,11 @@ export async function loadMorePiBranchEntries(sessionId: string, signal?: AbortS
       windowBranch(
         {
           ...olderPage,
-          head: currentBranch.head,
-          syncCursor: currentBranch.syncCursor,
-          checkpoint: currentBranch.checkpoint,
-          client: currentBranch.client,
-          items: [...olderPage.items, ...currentBranch.items],
+          head: latest.head,
+          syncCursor: latest.syncCursor,
+          checkpoint: latest.checkpoint,
+          client: latest.client,
+          items: [...olderPage.items, ...latest.items],
         },
         true,
       ),
@@ -378,10 +394,16 @@ export async function loadMorePiBranchEntries(sessionId: string, signal?: AbortS
   } catch (error) {
     const code = (error as { code?: string })?.code
     if (code === 'INVALID_REQUEST' || code === 'STALE_CURSOR') {
+      const latest = piBranchStore.getData(sessionId)
+      if (
+        serverStore.getActiveServerGeneration() !== serverGeneration ||
+        !latest ||
+        !currentBranch.items.every((entry, index) => latest.items[index]?.id === entry.id)
+      ) return
       // 光标已失效（worker 重启后密钥变化，或会话被替换/重载）。停掉分页并
       // 重载首页拿新光标，否则每次滚动都会拿同一个坏光标重试、无限刷 400。
       piBranchStore.setData(sessionId, {
-        ...currentBranch,
+        ...latest,
         beforeCursor: undefined,
         hasMore: false,
       })
@@ -402,10 +424,10 @@ const branchRefreshFlights = sessionRefreshFlights
 export async function returnToLatestPiBranch(sessionId: string): Promise<void> {
   const generation = serverStore.getActiveServerGeneration()
   const version = piBranchStore.beginRequest(sessionId)
-  const latest = await transport.getPiBranchPage(sessionId, {
+  const latest = await readHistoryPage(maxBytes => transport.getPiBranchPage(sessionId, {
     limit: BRANCH_PAGE_LIMIT,
-    maxBytes: BRANCH_PAGE_MAX_BYTES,
-  })
+    maxBytes,
+  }))
   if (serverStore.getActiveServerGeneration() !== generation) return
   piBranchStore.setDataIfCurrent(sessionId, latest, version)
 }
@@ -458,22 +480,23 @@ async function refreshPiBranchOnce(sessionId: string, signal?: AbortSignal, incl
   const version = piBranchStore.beginRequest(sessionId)
   const current = piBranchStore.getData(sessionId)
   const params = { limit: BRANCH_PAGE_LIMIT, maxBytes: includeLive ? 4 * 1024 * 1024 : BRANCH_PAGE_MAX_BYTES }
-  let latest = await transport.getPiBranchPage(
+  let latest = await readHistoryPage(maxBytes => transport.getPiBranchPage(
     sessionId,
     {
       ...params,
+      maxBytes,
       ...(includeLive ? { includeLiveMessage: true } : {}),
       ...(current?.syncCursor ? { syncCursor: current.syncCursor, beforeId: current.items[0]?.id } : {}),
     },
     signal,
-  )
+  ), params.maxBytes)
   if (
     serverStore.getActiveServerGeneration() !== serverGeneration ||
     !piBranchStore.isRequestCurrent(sessionId, version)
   )
     return
   if (latest.deltaFrom && latest.deltaFrom !== piBranchStore.getData(sessionId)?.syncCursor) {
-    latest = await transport.getPiBranchPage(sessionId, params, signal)
+    latest = await readHistoryPage(maxBytes => transport.getPiBranchPage(sessionId, { ...params, maxBytes }, signal), params.maxBytes)
   }
   if (serverStore.getActiveServerGeneration() !== serverGeneration) return
   piBranchStore.setDataIfCurrent(sessionId, mergeLatestBranchPage(piBranchStore.getData(sessionId), latest), version)

@@ -22,6 +22,8 @@
     "returnToLatest": "Return to latest",
     "loadingSession": "Loading session...",
     "loadingHistory": "Loading history...",
+    "historyLoadFailed": "Unable to load history",
+    "retryHistory": "Retry loading history",
     "currentTurnQueue": "Waiting for current turn · {{count}}",
     "nextTurnQueue": "Waiting for next turn · {{count}}",
     "dropFolderToAddProject": "Add as project",

@@ -22,6 +22,8 @@
     "returnToLatest": "返回最新",
     "loadingSession": "加载会话中...",
     "loadingHistory": "加载历史记录...",
+    "historyLoadFailed": "历史记录加载失败",
+    "retryHistory": "重新加载历史记录",
     "currentTurnQueue": "等待本轮追加 · {{count}}",
     "nextTurnQueue": "等待下一轮 · {{count}}",
     "dropFolderToAddProject": "添加为项目",

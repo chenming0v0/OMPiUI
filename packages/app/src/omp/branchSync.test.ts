@@ -73,7 +73,7 @@ describe('branch sync over HTTP', () => {
       .mockResolvedValueOnce(page(['a', 'b'], 'base'))
       .mockResolvedValueOnce({ ...page(['c'], 'next'), deltaFrom: 'base' })
     await refreshPiBranch('sync')
-    expect(fetch.mock.calls[0]?.[1]).toEqual({ limit: 100, maxBytes: 2 * 1024 * 1024 })
+    expect(fetch.mock.calls[0]?.[1]).toEqual({ limit: 100, maxBytes: 128 * 1024 })
     await refreshPiBranch('sync')
     expect(fetch.mock.calls[1]?.[1]).toMatchObject({ syncCursor: 'base', beforeId: 'a' })
     expect(piBranchStore.getData('sync')?.items.map(entry => entry.id)).toEqual(['a', 'b', 'c'])
@@ -92,7 +92,7 @@ describe('branch sync over HTTP', () => {
       'sync',
       {
         limit: 100,
-        maxBytes: 2 * 1024 * 1024,
+        maxBytes: 128 * 1024,
         syncCursor: 'base',
         beforeId: 'b',
       },
@@ -128,7 +128,62 @@ describe('branch sync over HTTP', () => {
       .mockResolvedValueOnce(page(['a', 'b', 'c'], 'full'))
     await refreshPiBranch('sync')
     expect(fetch).toHaveBeenCalledTimes(2)
-    expect(fetch.mock.calls[1]?.[1]).toEqual({ limit: 100, maxBytes: 2 * 1024 * 1024 })
+    expect(fetch.mock.calls[1]?.[1]).toEqual({ limit: 100, maxBytes: 128 * 1024 })
     expect(piBranchStore.getData('sync')?.items.map(entry => entry.id)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('merges an older page despite streaming checkpoints and keeps the newest live message', async () => {
+    const current = { ...page(['c', 'd'], 'base'), hasMore: true }
+    piBranchStore.setData('sync', current)
+    let resolve!: (value: PiBranchPage) => void
+    vi.spyOn(transport, 'getPiBranchPage').mockReturnValueOnce(new Promise(done => { resolve = done }))
+    const loading = loadMorePiBranchEntries('sync')
+    const checkpoint = { position: { epoch: 'events', sequence: 50 } }
+    piBranchStore.setLiveCheckpoint('sync', checkpoint)
+    resolve({ ...page(['a', 'b']), hasMore: false })
+    await loading
+    const result = piBranchStore.getData('sync')
+    expect(result?.items.map(entry => entry.id)).toEqual(['a', 'b', 'c', 'd'])
+    expect(result?.checkpoint).toBe(checkpoint)
+    expect(result?.head).toBe(current.head)
+    expect(result?.hasMore).toBe(false)
+  })
+
+  it('preserves entries appended by a refresh while older history is loading', async () => {
+    piBranchStore.setData('sync', { ...page(['c', 'd'], 'base'), hasMore: true })
+    let resolve!: (value: PiBranchPage) => void
+    vi.spyOn(transport, 'getPiBranchPage').mockReturnValueOnce(new Promise(done => { resolve = done }))
+    const loading = loadMorePiBranchEntries('sync')
+    const latest = { ...page(['c', 'd', 'e'], 'new-base'), hasMore: true }
+    piBranchStore.setData('sync', latest)
+    resolve(page(['a', 'b']))
+    await loading
+    expect(piBranchStore.getData('sync')?.items.map(entry => entry.id)).toEqual(['a', 'b', 'c', 'd', 'e'])
+    expect(piBranchStore.getData('sync')?.syncCursor).toBe('new-base')
+    expect(piBranchStore.getData('sync')?.head).toBe(latest.head)
+  })
+
+  it('does not insert an old page after branch navigation', async () => {
+    piBranchStore.setData('sync', { ...page(['c', 'd']), hasMore: true })
+    let resolve!: (value: PiBranchPage) => void
+    vi.spyOn(transport, 'getPiBranchPage').mockReturnValueOnce(new Promise(done => { resolve = done }))
+    const loading = loadMorePiBranchEntries('sync')
+    const navigated = page(['c', 'fork'])
+    piBranchStore.setData('sync', navigated)
+    resolve(page(['a', 'b']))
+    await loading
+    expect(piBranchStore.getData('sync')).toBe(navigated)
+  })
+
+  it('enlarges only oversized-entry pages instead of skipping history', async () => {
+    piBranchStore.setData('sync', { ...page(['c']), hasMore: true })
+    const fetch = vi.spyOn(transport, 'getPiBranchPage')
+      .mockRejectedValueOnce({ code: 'FILE_TOO_LARGE' })
+      .mockRejectedValueOnce({ code: 'FILE_TOO_LARGE' })
+      .mockResolvedValueOnce(page(['b']))
+    await loadMorePiBranchEntries('sync')
+    expect(fetch.mock.calls.map(call => call[1].maxBytes)).toEqual([128, 256, 512].map(kb => kb * 1024))
+    expect(fetch.mock.calls.every(call => call[1].beforeId === 'c')).toBe(true)
+    expect(piBranchStore.getData('sync')?.items.map(entry => entry.id)).toEqual(['b', 'c'])
   })
 })

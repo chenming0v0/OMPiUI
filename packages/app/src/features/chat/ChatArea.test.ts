@@ -154,6 +154,26 @@ function createTextPart(id: string, messageID: string, text: string): Part {
   }
 }
 
+describe('history prepend boundaries', () => {
+  it('keeps already displayed assistants flat when their earlier user is loaded', () => {
+    const first = createAssistantItem('a1', [createToolCall('t1')])
+    const second = createAssistantItem('a2', [createTextBlock('done')])
+    const options = {
+      turnDurationMap: new Map<string, number>(), sessionIsStreaming: false,
+      messageHasProcess: () => true, messageHasFinal: () => true,
+    }
+    const previous = buildProcessTimeline([first, second], options)
+    const user = createUserItem('u0', 0)
+    const next = buildProcessTimeline([user, first, second], {
+      ...options, standaloneAssistantKeys: new Set(previous.map(row => row.key)),
+    })
+    expect(next.map(row => row.key)).toEqual(['u0', 'a1', 'a2'])
+    expect(next.slice(1).every(row => row.kind === 'message')).toBe(true)
+    const cold = buildProcessTimeline([user, first, second], options)
+    expect(cold.map(row => row.key)).toEqual(['u0', 'process-shell:u0'])
+  })
+})
+
 describe('buildVisibleTimelineEntries', () => {
   beforeEach(() => clearVisibleTimelineMergeCache())
 
@@ -212,6 +232,19 @@ describe('buildVisibleTimelineEntries', () => {
     expect(next[0].item.entryId).toBe('assistant-older')
     expect(next[0].sourceIds).toEqual(['assistant-older', 'assistant-1', 'assistant-2'])
     expect((next[0].item as PiAssistantMessageItem).blocks).toHaveLength(3)
+  })
+
+  it('keeps the displayed tool chain boundary when older tools are prepended', () => {
+    const first = createAssistantItem('assistant-1', [createToolCall('tool-1')])
+    const second = createAssistantItem('assistant-2', [createToolCall('tool-2')])
+    const previous = buildVisibleTimelineEntries([first, second])
+    const older = createAssistantItem('assistant-older', [createToolCall('tool-older')])
+    const boundaries = new Set([first.entryId])
+    const next = buildVisibleTimelineEntries([older, first, second], boundaries)
+    expect(next).toHaveLength(2)
+    expect(next[1].item).toBe(previous[0].item)
+    expect(next[1].sourceIds).toEqual(['assistant-1', 'assistant-2'])
+    expect(buildVisibleTimelineEntries([older, first, second], boundaries)[1].item).toBe(previous[0].item)
   })
 
   it('keeps aborted assistant messages that already have renderable blocks', () => {

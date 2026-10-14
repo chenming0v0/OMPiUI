@@ -873,6 +873,8 @@ export function buildProcessTimeline(
     messageHasFinal: (item: PiAssistantMessageItem) => boolean
     /** 用户消息入场生长是否完成；缺省视为已完成（历史消息 / 测试） */
     isUserEntryReady?: (userMessageId: string) => boolean
+    /** 已显示的页首助手保持平铺，补到用户消息时不突然收起正在阅读的内容。 */
+    standaloneAssistantKeys?: ReadonlySet<string>
   },
 ): ProcessTimelineItem[] {
   const {
@@ -881,6 +883,7 @@ export function buildProcessTimeline(
     messageHasProcess,
     messageHasFinal,
     isUserEntryReady = () => true,
+    standaloneAssistantKeys,
   } = options
   const items: ProcessTimelineItem[] = []
 
@@ -907,7 +910,8 @@ export function buildProcessTimeline(
       segments.push({ kind: 'message', key: itemRenderKey(item), item })
       continue
     }
-    if (!current) {
+    if (!current || standaloneAssistantKeys?.has(itemRenderKey(item))) {
+      current = null
       // 历史续段 / 页首无 user：直接平铺，不挂壳
       segments.push({ kind: 'message', key: itemRenderKey(item), item })
       continue
