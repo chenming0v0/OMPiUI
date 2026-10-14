@@ -3,6 +3,7 @@ import { describe, it } from "node:test"
 import {
   CONTROL_PATH,
   FRAME_PAYLOAD_MAX,
+  allocateConnectionId,
   decodeFrameMessage,
   encodeFrameMessages,
   relayProblemBody,
@@ -35,6 +36,41 @@ describe("frame codec", () => {
   it("rejects malformed frames", () => {
     assert.equal(decodeFrameMessage(Buffer.alloc(3)), null)
     assert.equal(decodeFrameMessage(Buffer.alloc(FRAME_PAYLOAD_MAX + 5)), null)
+  })
+
+  it("keeps control/data IDs aligned across u32 rollover, active IDs and reuse", () => {
+    const firstTunnel = new Map<number, Buffer[]>()
+    const secondTunnel = new Map<number, Buffer[]>([[1, []]])
+    const isActive = (id: number) => firstTunnel.has(id) || secondTunnel.has(id)
+    const last = allocateConnectionId(0xffffffff, isActive)
+    firstTunnel.set(last, [])
+    const wrapped = allocateConnectionId((last + 1) >>> 0, isActive)
+    firstTunnel.set(wrapped, [])
+    const skipped = allocateConnectionId(last, isActive)
+    firstTunnel.set(skipped, [])
+    assert.deepEqual([last, wrapped, skipped], [0xffffffff, 0, 2])
+
+    for (const c of [last, wrapped, skipped]) {
+      // The receiver registers the JSON ID, then looks up every binary frame.
+      const open = JSON.parse(JSON.stringify({ type: "open", c })) as { c: number }
+      for (const fill of [0x55, 0x44]) {
+        const peer = new Map<number, Buffer[]>([[open.c, []]])
+        const payload = Buffer.alloc(FRAME_PAYLOAD_MAX + 1, fill)
+        for (const message of encodeFrameMessages(c, payload)) {
+          const decoded = decodeFrameMessage(message)!
+          const received = peer.get(decoded.connId)
+          assert.ok(received, "the body must address the registered control ID")
+          received.push(decoded.payload)
+        }
+        assert.deepEqual(Buffer.concat(peer.get(c)!), payload)
+      }
+    }
+
+    firstTunnel.delete(wrapped)
+    assert.equal(allocateConnectionId(0, isActive), wrapped)
+    assert.equal(firstTunnel.has(last), true)
+    assert.equal(secondTunnel.has(1), true)
+    assert.throws(() => encodeFrameMessages(0x100000000, Buffer.from("x")), RangeError)
   })
 })
 

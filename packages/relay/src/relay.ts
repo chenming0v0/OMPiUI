@@ -33,6 +33,7 @@ import {
   MESSAGE_RATE_BURST,
   MESSAGE_RATE_PER_SECOND,
   WIRE_VERSION,
+  allocateConnectionId,
   decodeFrameMessage,
   relayProblemBody,
   serializeRawHead,
@@ -547,7 +548,7 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
     req: IncomingMessage,
     res: ServerResponse,
   ): void {
-    const connId = nextConnId++;
+    const connId = allocateConnId();
     const sink = new BodySink(session.ws, (bytes, frames) => {
       if (
         !session.upload.canAllow(bytes, frames) ||
@@ -640,7 +641,7 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
       );
       return;
     }
-    const connId = nextConnId++;
+    const connId = allocateConnId();
     const sink = new BodySink(session.ws, (bytes, frames) => {
       if (
         !session.upload.canAllow(bytes, frames) ||
@@ -807,6 +808,19 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
     let count = 0;
     for (const conn of session.conns.values()) if (conn.source === source) count++;
     return count < CONNECTIONS_PER_TUNNEL_MAX / 2;
+  }
+
+  function isConnectionIdActive(id: number): boolean {
+    for (const session of tunnels.values()) {
+      if (session.conns.has(id)) return true;
+    }
+    return false;
+  }
+
+  function allocateConnId(): number {
+    const id = allocateConnectionId(nextConnId, isConnectionIdActive);
+    nextConnId = (id + 1) >>> 0;
+    return id;
   }
 
   function sendControl(session: TunnelSession, frame: ControlFrame): void {
