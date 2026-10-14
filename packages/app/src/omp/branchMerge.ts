@@ -75,11 +75,19 @@ export function mergeLatestBranchPage(current: PiBranchPage | null, latest: PiBr
   }
 
   if (current.client?.historyWindowed) {
+    const latestIds = new Set(latest.items.map(item => item.id))
+    const localLeaf = current.items[current.items.length - 1]
+    if (localLeaf && !latestIds.has(localLeaf.id)) return withClientState(latest)
+    const olderKept = current.items.filter(item => !latestIds.has(item.id))
     return withClientState({
-      ...current,
+      ...latest,
+      items: [...olderKept, ...latest.items],
       head: latest.head,
       checkpoint: latest.checkpoint,
       syncCursor: latest.syncCursor,
+      beforeCursor: current.beforeCursor ?? latest.beforeCursor,
+      hasMore: current.hasMore || latest.hasMore,
+      client: { ...latest.client, historyWindowed: true },
     })
   }
 

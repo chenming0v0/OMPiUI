@@ -24,7 +24,7 @@ import type { PiBranchPage } from '../domain/index.js'
  * templates, skills) from the runtime registry.
  */
 export async function loadPiSlashCommands(sessionId: string, signal?: AbortSignal): Promise<CommandDescriptor[]> {
-  const registry = (await transport.getPiSessionRegistry(sessionId, signal)) as RegistrySnapshot | undefined
+  const registry = await loadSessionRegistryCached(sessionId, signal)
   return registry?.commands ?? []
 }
 
@@ -32,7 +32,7 @@ export async function loadPiSlashCommands(sessionId: string, signal?: AbortSigna
  * Load a session's native tool descriptors from the runtime registry.
  */
 export async function loadPiSessionTools(sessionId: string, signal?: AbortSignal): Promise<ToolDescriptor[]> {
-  const registry = (await transport.getPiSessionRegistry(sessionId, signal)) as RegistrySnapshot | undefined
+  const registry = await loadSessionRegistryCached(sessionId, signal)
   return registry?.tools ?? []
 }
 
@@ -59,6 +59,34 @@ export async function loadPiSessionsForCwd(cwd: string, signal?: AbortSignal): P
 }
 
 const listFlights = new Map<string, Promise<SessionInfo[]>>()
+const registryCache = new Map<string, { generation: number; expiresAt: number; value: RegistrySnapshot | undefined }>()
+const registryFlights = new Map<string, Promise<RegistrySnapshot | undefined>>()
+const REGISTRY_CACHE_TTL_MS = 2_000
+
+function loadSessionRegistryCached(sessionId: string, signal?: AbortSignal): Promise<RegistrySnapshot | undefined> {
+  const generation = serverStore.getActiveServerGeneration()
+  const key = `${generation}:${sessionId}`
+  const cached = registryCache.get(key)
+  if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.value)
+  if (signal) return loadSessionRegistryOnce(sessionId, signal)
+  const existing = registryFlights.get(key)
+  if (existing) return existing
+  const flight = loadSessionRegistryOnce(sessionId).finally(() => {
+    if (registryFlights.get(key) === flight) registryFlights.delete(key)
+  })
+  registryFlights.set(key, flight)
+  return flight
+}
+
+async function loadSessionRegistryOnce(sessionId: string, signal?: AbortSignal): Promise<RegistrySnapshot | undefined> {
+  const generation = serverStore.getActiveServerGeneration()
+  const value = (await transport.getPiSessionRegistry(sessionId, signal)) as RegistrySnapshot | undefined
+  if (serverStore.getActiveServerGeneration() === generation) {
+    registryCache.set(`${generation}:${sessionId}`, { generation, expiresAt: Date.now() + REGISTRY_CACHE_TTL_MS, value })
+  }
+  return value
+}
+
 function sharedSessionList(
   key: string,
   load: () => Promise<SessionInfo[]>,
@@ -195,20 +223,29 @@ export function createPiSession(cwd: string, signal?: AbortSignal): Promise<tran
 /**
  * Load session data (state + branch) for active session.
  */
-const sessionDataFlights = new Map<string, Promise<void>>()
 const BRANCH_PAGE_LIMIT = 100
 const BRANCH_PAGE_MAX_BYTES = 2 * 1024 * 1024
+const sessionRefreshFlights = new Map<string, { promise: Promise<void>; dirty: boolean; includeLive: boolean }>()
 
 export async function loadPiSessionData(sessionId: string, signal?: AbortSignal): Promise<void> {
   const generation = serverStore.getActiveServerGeneration()
   const flightKey = `${generation}:${sessionId}`
-  const existing = sessionDataFlights.get(flightKey)
-  if (existing) return existing
-
-  const flight = loadPiSessionDataOnce(sessionId, signal).finally(() => {
-    if (sessionDataFlights.get(flightKey) === flight) sessionDataFlights.delete(flightKey)
+  const existing = sessionRefreshFlights.get(flightKey)
+  if (existing) {
+    existing.dirty = true
+    return existing.promise
+  }
+  const entry = { promise: Promise.resolve(), dirty: false, includeLive: false }
+  const flight = (async () => {
+    do {
+      entry.dirty = false
+      await loadPiSessionDataOnce(sessionId, signal)
+    } while (entry.dirty && serverStore.getActiveServerGeneration() === generation)
+  })().finally(() => {
+    if (sessionRefreshFlights.get(flightKey) === entry) sessionRefreshFlights.delete(flightKey)
   })
-  sessionDataFlights.set(flightKey, flight)
+  entry.promise = flight
+  sessionRefreshFlights.set(flightKey, entry)
   return flight
 }
 
@@ -360,7 +397,7 @@ export async function loadMorePiBranchEntries(sessionId: string, signal?: AbortS
  * Refresh branch with the latest page, merging local pagination history.
  * Used by the event stream when head revision changes.
  */
-const branchRefreshFlights = new Map<string, { promise: Promise<void>; dirty: boolean; includeLive: boolean }>()
+const branchRefreshFlights = sessionRefreshFlights
 
 export async function returnToLatestPiBranch(sessionId: string): Promise<void> {
   const generation = serverStore.getActiveServerGeneration()
@@ -526,7 +563,7 @@ export async function loadPiSessionRegistry(
   sessionId: string,
   signal?: AbortSignal,
 ): Promise<RegistrySnapshot | undefined> {
-  return (await transport.getPiSessionRegistry(sessionId, signal)) as RegistrySnapshot | undefined
+  return loadSessionRegistryCached(sessionId, signal)
 }
 
 /** Submit a serialized session command and wait for its result. */

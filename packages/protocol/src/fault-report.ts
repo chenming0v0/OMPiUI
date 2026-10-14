@@ -44,8 +44,8 @@ export function splitFaultReport(content: string, maxBytes = 9 * 1024 * 1024, ma
   const measure = (text: string) => {
     if (!formEncoded) return encoder.encode(text).byteLength
     let size = 0
-    for (const char of text) {
-      size += /^[a-zA-Z0-9*._ -]$/.test(char) ? 1 : encoder.encode(char).byteLength * 3
+    for (const byte of encoder.encode(text)) {
+      size += byte >= 0x30 && byte <= 0x39 || byte >= 0x41 && byte <= 0x5a || byte >= 0x61 && byte <= 0x7a || byte === 0x2a || byte === 0x2e || byte === 0x5f || byte === 0x2d || byte === 0x20 ? 1 : 3
     }
     return size
   }

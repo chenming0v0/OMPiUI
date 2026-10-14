@@ -19,6 +19,8 @@ export type OmpExtensionUiEvent =
   | { type: "editor"; sessionId: string; command: { kind: "set" | "paste"; text: string } }
 
 const MAX_STATE_MIRROR_PATCHES = 500
+const MAX_WIDGET_LINES = 512
+const MAX_WIDGET_BYTES = 64 * 1024
 
 interface PendingDialog {
   request: ExtensionUiDialogRequest
@@ -70,7 +72,18 @@ export class OmpExtensionUiBridge {
         return
       }
       case "setWidget": {
-        const lines = Array.isArray(frame.lines) ? frame.lines.map(String) : []
+        const lines: string[] = []
+        let bytes = 0
+        if (Array.isArray(frame.lines)) {
+          for (const rawLine of frame.lines) {
+            if (lines.length >= MAX_WIDGET_LINES) break
+            const line = String(rawLine)
+            const lineBytes = Buffer.byteLength(line, "utf8")
+            if (bytes + lineBytes > MAX_WIDGET_BYTES) break
+            lines.push(line)
+            bytes += lineBytes
+          }
+        }
         this.pushState({
           kind: "widget",
           key: typeof frame.key === "string" ? frame.key : ompId || randomUUID(),

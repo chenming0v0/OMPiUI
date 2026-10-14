@@ -178,6 +178,7 @@ export async function writeFileContent(
   opts: {
     ifMatch?: string;
     encoding?: "utf-8" | "base64";
+    returnContent?: boolean;
     createOnly?: boolean;
   } = {},
 ): Promise<FileReadResponse> {
@@ -200,6 +201,7 @@ async function writeFileContentLocked(
   opts: {
     ifMatch?: string;
     encoding?: "utf-8" | "base64";
+    returnContent?: boolean;
     createOnly?: boolean;
   },
 ): Promise<FileReadResponse> {
@@ -260,7 +262,16 @@ async function writeFileContentLocked(
   } finally {
     await unlink(temporary).catch(() => undefined);
   }
-  return readFileContent(ws, relativePath);
+  const binary = opts.encoding === "base64";
+  return {
+    path: resolved.relative,
+    content: opts.returnContent === false ? "" : (binary ? buffer.toString("base64") : buffer.toString("utf8")),
+    encoding: binary ? "base64" : "utf-8",
+    type: binary ? "binary" : "text",
+    mimeType: mimeType(relativePath, binary),
+    size: buffer.length,
+    etag: etag(buffer),
+  };
 }
 
 export async function createWorkspaceEntry(

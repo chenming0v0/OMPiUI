@@ -78,6 +78,7 @@ function fileContentParams(
           ...WORKSPACE_PATH,
           ...RELATIVE_PATH,
           ...extra,
+          returnContent: BOOLEAN,
           content: byteString(2 * 1024 * 1024),
           encoding: { enum: ["utf-8"] },
         },
@@ -88,6 +89,7 @@ function fileContentParams(
           ...WORKSPACE_PATH,
           ...RELATIVE_PATH,
           ...extra,
+          returnContent: BOOLEAN,
           content: {
             type: "string",
             maxLength: Math.ceil((8 * 1024 * 1024) / 3) * 4,

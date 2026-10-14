@@ -953,7 +953,19 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
    * 按 session id 解析会话文件：先查顶层扫描，再扫原生与 WebUI 托管目录
    * 下的子代理会话。顶层列表仍不包含子会话，重载/深链可按 id 读取。
    */
+  private readonly sessionLookupFlights = new Map<string, Promise<JsonObject | null>>();
+
   async findSessionById(sessionId: string): Promise<JsonObject | null> {
+    const existing = this.sessionLookupFlights.get(sessionId);
+    if (existing) return existing;
+    const flight = this.findSessionByIdOnce(sessionId).finally(() => {
+      if (this.sessionLookupFlights.get(sessionId) === flight) this.sessionLookupFlights.delete(sessionId);
+    });
+    this.sessionLookupFlights.set(sessionId, flight);
+    return flight;
+  }
+
+  private async findSessionByIdOnce(sessionId: string): Promise<JsonObject | null> {
     const indexed = sessionIdIndex.get(sessionId);
     if (indexed && isOmpSessionFile(indexed)) {
       const found = await this.findSessionByFile(indexed);
@@ -964,6 +976,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     const top = await this.summarizeAll();
     const hit = top.find((item) => item.id === sessionId);
     if (hit) return { id: hit.id, cwd: hit.cwd, sessionFile: hit.path };
+    const candidates: string[] = [];
     for (const root of [...ompSessionRoots(), managedSessionsRoot()]) {
       if (!existsSync(root)) continue;
       let projects: string[] = [];
@@ -991,22 +1004,16 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
           } catch {
             continue;
           }
-          for (const name of names) {
-            const filePath = path.join(childDir, name);
-            const header = await sessionFileId(filePath);
-            if (header !== sessionId) continue;
-            const summary = await summarizeSessionFileCached(filePath);
-            if (summary && summary.id === sessionId) {
-              return {
-                id: summary.id,
-                cwd: summary.cwd,
-                sessionFile: summary.path,
-              };
-            }
-          }
+          for (const name of names) candidates.push(path.join(childDir, name));
         }
       }
     }
+    const matches = await mapLimited(candidates, async filePath => {
+      const header = await sessionFileId(filePath);
+      return header === sessionId ? summarizeSessionFileCached(filePath) : null;
+    });
+    const match = matches.find(item => item?.id === sessionId);
+    if (match) return { id: match.id, cwd: match.cwd, sessionFile: match.path };
     return null;
   }
 
@@ -1246,7 +1253,6 @@ function toSessionInfo(summary: SessionFileSummary): JsonObject {
     created: summary.created,
     modified: summary.modified,
     messageCount: summary.messageCount,
-    allMessagesText: summary.firstMessage ?? "",
   };
 }
 

@@ -121,10 +121,54 @@ export function createStaticServer(root: string): StaticServer | undefined {
     let status = 200;
     if (
       req.headers.range &&
-      !req.headers.range.includes(",") &&
       (!req.headers["if-range"] ||
         req.headers["if-range"] === headers["last-modified"])
     ) {
+      if (req.headers.range.includes(",")) {
+        const ranges = req.headers.range.slice("bytes=".length).split(",").map(part => {
+          const match = /^(\d*)-(\d*)$/.exec(part.trim());
+          if (!match || (!match[1] && !match[2])) return undefined;
+          const start = match[1] ? Number(match[1]) : Math.max(0, stat.size - Number(match[2]));
+          const end = match[2] ? Math.min(stat.size - 1, Number(match[2])) : stat.size - 1;
+          return start <= end && start < stat.size ? { start, end } : undefined;
+        });
+        if (ranges.length === 0 || ranges.some(range => !range) || ranges.length > 16) {
+          res.writeHead(416, { ...headers, "content-range": `bytes */${stat.size}` });
+          res.end();
+          return true;
+        }
+        const boundary = `ompiui-${Math.random().toString(16).slice(2)}`;
+        const parts = ranges as Array<{ start: number; end: number }>;
+        const partHeaders = parts.map(range => `--${boundary}\r\nContent-Type: ${contentType(path)}\r\nContent-Range: bytes ${range.start}-${range.end}/${stat.size}\r\n\r\n`);
+        const length = parts.reduce((total, range, index) => total + Buffer.byteLength(partHeaders[index]!) + range.end - range.start + 1 + 2, 0) + Buffer.byteLength(`--${boundary}--\r\n`);
+        res.writeHead(206, { ...headers, "content-type": `multipart/byteranges; boundary=${boundary}`, "content-length": length });
+        if (headOnly) {
+          res.end();
+          return true;
+        }
+        let index = 0;
+        const next = () => {
+          if (index >= parts.length) {
+            res.end(`--${boundary}--\r\n`);
+            return;
+          }
+          const range = parts[index]!;
+          res.write(partHeaders[index]!);
+          const stream = createReadStream(path, { start: range.start, end: range.end });
+          stream.on("data", chunk => {
+            if (!res.write(chunk)) stream.pause();
+          });
+          res.once("drain", () => stream.resume());
+          stream.once("error", error => res.destroy(error));
+          stream.once("end", () => {
+            res.write("\r\n");
+            index++;
+            next();
+          });
+        };
+        next();
+        return true;
+      }
       const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range);
       if (!range || (!range[1] && !range[2])) {
         res.writeHead(416, {

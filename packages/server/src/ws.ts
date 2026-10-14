@@ -16,7 +16,7 @@ import {
   type TerminalStreamServerFrame,
 } from "@ompiui/protocol";
 import type { EventHub } from "./event-hub.ts";
-import { eventWireFrame } from "./event-hub.ts";
+import { eventWireFrame, omittedEventWireFrame } from "./event-hub.ts";
 import {
   requestHasAllowedOrigin,
   requestHasValidToken,
@@ -36,6 +36,7 @@ const MAX_MESSAGE_BYTES = 1024 * 1024;
 const MAX_OUTBOUND_MESSAGE_BYTES = 4 * 1024 * 1024;
 const allSockets = new Set<WebSocket>();
 const extraQueuedBytes = new WeakMap<WebSocket, number>();
+const subscribeGlobalBudget = new RateBudget(240, 120);
 const TOTAL_OUTBOUND_BYTES = 64 * 1024 * 1024;
 const MAX_TERMINAL_BUFFERED_BYTES = 8 * 1024 * 1024;
 const TERMINAL_PATH = /^\/api\/v1\/host\/terminals\/([^/]+)\/stream$/;
@@ -276,10 +277,8 @@ function attachConnection(
       }
       if (!Array.isArray(message.streams) || message.streams.length > 256)
         return;
-      if (!subscribeBudget.allow(1)) {
-        ws.close(1008, "subscription rate limit exceeded");
-        const timer = setTimeout(() => ws.terminate(), 1000);
-        timer.unref();
+      if (!subscribeBudget.allow(1) || !subscribeGlobalBudget.allow(1)) {
+        // 丢弃超限订阅，保留连接，让客户端按正常节奏重试而不会通过重连重置预算。
         return;
       }
 
@@ -385,16 +384,9 @@ function send(ws: WebSocket, message: EventServerMessage): void {
   let bytes = wire?.bytes ?? Buffer.byteLength(data);
   if ("event" in message && bytes > MAX_OUTBOUND_MESSAGE_BYTES) {
     // 用独立控制帧恢复原通道，不将未交付事件伪装成另一种业务事件。
-    const event = message.event;
-    const payload = isJsonObject(event.payload) ? event.payload : {};
-    data = JSON.stringify({
-      channel: "control",
-      type: "payload_omitted",
-      stream: event.stream,
-      eventChannel: event.channel,
-      commandId: event.channel === "command.updated" && typeof payload.id === "string" ? payload.id : undefined,
-    });
-    bytes = Buffer.byteLength(data);
+    const omitted = omittedEventWireFrame(message.event);
+    data = omitted.data;
+    bytes = omitted.bytes;
   }
   if (!canQueue(ws, bytes, MAX_BUFFERED_BYTES)) {
     ws.close(1013, "event client too slow");
@@ -404,16 +396,39 @@ function send(ws: WebSocket, message: EventServerMessage): void {
     timer.unref();
     return;
   }
-  ws.send(data);
+  // ws.bufferedAmount 在连续 send() 的同一事件循环里可能尚未反映新帧，
+  // 重连补发历史时会因此把大量事件瞬间压进底层发送队列。用额外计数覆盖
+  // 这段窗口，并在 ws 库确认交付后释放，避免“长时间无更新后突然成批到达”。
+  extraQueuedBytes.set(ws, (extraQueuedBytes.get(ws) ?? 0) + bytes);
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    const queued = extraQueuedBytes.get(ws) ?? 0;
+    const remaining = queued - bytes;
+    if (remaining > 0) extraQueuedBytes.set(ws, remaining);
+    else extraQueuedBytes.delete(ws);
+  };
+  try {
+    ws.send(data, release);
+  } catch {
+    release();
+    throw new Error("websocket send failed");
+  }
 }
 
 function canQueue(ws: WebSocket, bytes: number, limit: number): boolean {
-  if (ws.bufferedAmount + (extraQueuedBytes.get(ws) ?? 0) + bytes > limit)
+  const own = ws.bufferedAmount + (extraQueuedBytes.get(ws) ?? 0)
+  if (own + bytes > limit)
     return false;
   let total = bytes;
   for (const socket of allSockets)
     total += socket.bufferedAmount + (extraQueuedBytes.get(socket) ?? 0);
-  return total <= TOTAL_OUTBOUND_BYTES;
+  if (total <= TOTAL_OUTBOUND_BYTES) return true;
+  // 全局预算满时按当前连接数分摊额度；慢客户端超出自己的份额才会被
+  // 1013 回收，避免几个慢连接把正常订阅者一起断掉。
+  const fairShare = Math.max(limit, Math.floor(TOTAL_OUTBOUND_BYTES / Math.max(1, allSockets.size)));
+  return own + bytes <= fairShare;
 }
 
 function attachTerminalConnection(

@@ -41,4 +41,54 @@ export class TextWindow {
       .map((chunk) => chunk.text)
       .join("");
   }
+
+  sliceFrom(offsetChars: number, maxBytes: number): { text: string; chars: number } {
+    let skip = Math.max(0, offsetChars);
+    const parts: string[] = [];
+    let bytes = 0;
+    let chars = 0;
+    for (let index = this.head; index < this.chunks.length; index++) {
+      const chunk = this.chunks[index]!;
+      if (skip >= chunk.text.length) {
+        skip -= chunk.text.length;
+        continue;
+      }
+      let text = skip ? chunk.text.slice(skip) : chunk.text;
+      skip = 0;
+      const available = maxBytes - bytes;
+      if (Buffer.byteLength(text) > available) {
+        const encoded = Buffer.from(text);
+        let end = Math.max(0, available);
+        while (end > 0 && (encoded[end]! & 0xc0) === 0x80) end--;
+        text = encoded.subarray(0, end).toString("utf8");
+      }
+      if (!text) break;
+      parts.push(text);
+      bytes += Buffer.byteLength(text);
+      chars += text.length;
+      if (bytes >= maxBytes) break;
+    }
+    return { text: parts.join(""), chars };
+  }
+
+  tail(maxBytes: number): { text: string; chars: number } {
+    let remaining = maxBytes;
+    const parts: string[] = [];
+    for (let index = this.chunks.length - 1; index >= this.head && remaining > 0; index--) {
+      const chunk = this.chunks[index]!;
+      if (chunk.bytes <= remaining) {
+        parts.push(chunk.text);
+        remaining -= chunk.bytes;
+        continue;
+      }
+      const bytes = Buffer.from(chunk.text);
+      let start = Math.max(0, bytes.length - remaining);
+      while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) start++;
+      parts.push(bytes.subarray(start).toString("utf8"));
+      remaining = 0;
+    }
+    parts.reverse();
+    const text = parts.join("");
+    return { text, chars: text.length };
+  }
 }

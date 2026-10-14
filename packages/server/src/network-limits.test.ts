@@ -73,6 +73,8 @@ test("real websocket subscriptions replay only newly added streams and cap conne
     type?: string;
     event?: { stream: { id: string }; channel?: string };
     eventChannel?: string;
+    cursor?: unknown;
+    eventId?: string;
   }> = [];
   ws.on("message", (data) => received.push(JSON.parse(String(data))));
   const serverStream = { kind: "server" as const, id: "server" };
@@ -137,6 +139,8 @@ test("real websocket subscriptions replay only newly added streams and cap conne
     assert.ok(changed);
     assert.equal(changed.eventChannel, "session.head");
     assert.equal(changed.event, undefined);
+    assert.deepEqual(changed.cursor, hub.getCursor(sessionStream));
+    assert.equal(typeof changed.eventId, "string");
     assert.equal(
       received.some((frame) => frame.type === "resync_required"),
       false,
@@ -150,7 +154,7 @@ test("real websocket subscriptions replay only newly added streams and cap conne
   }
 });
 
-test("subscribe storms are bounded and resync diagnostics are aggregated", async t => {
+test("subscribe storms are bounded without disconnecting the client", async t => {
   const records: Array<{ event: string; fields: DiagnosticFields }> = [];
   t.mock.method(diagnostics, "record", (event: string, fields: DiagnosticFields = {}) => records.push({ event, fields }));
   const server = createServer();
@@ -160,13 +164,12 @@ test("subscribe storms are bounded and resync diagnostics are aggregated", async
   const ws = new WebSocket(`ws://127.0.0.1:${(server.address() as { port: number }).port}/api/v1/events`);
   try {
     await once(ws, "open");
-    const closed = once(ws, "close");
     const streams = Array.from({ length: 256 }, (_, index) => ({ kind: "session", id: String(index) }));
     for (let index = 0; index < 20; index++) {
       ws.send(JSON.stringify({ type: "subscribe", protocolVersion: PROTOCOL_VERSION, streams, cursors: {} }));
     }
-    const [code] = await closed;
-    assert.equal(code, 1008);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(ws.readyState, WebSocket.OPEN);
     assert.ok(records.filter(record => record.event === "connection.subscribed").length <= 12);
     const resync = records.filter(record => record.event === "connection.resync");
     assert.equal(resync.length, 1);

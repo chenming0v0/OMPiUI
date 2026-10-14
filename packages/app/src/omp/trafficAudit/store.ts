@@ -61,8 +61,8 @@ export function emptyTrafficTotals(): TrafficTotals {
 }
 
 export class TrafficAuditStore {
-  private enabled = true
-  private previews = false
+  private enabled: boolean
+  private previews: boolean
   private previewGeneration = 0
   private startedAt = Date.now()
   private dropped = 0
@@ -73,11 +73,32 @@ export class TrafficAuditStore {
   private listeners = new Set<() => void>()
   private timer: ReturnType<typeof setTimeout> | undefined
   private snapshot: TrafficSnapshot | undefined
+  private endpointCache = new Map<string, { url: string; server: string; path: string }>()
 
   private readonly limit: number
 
-  constructor(limit = TRAFFIC_RECORD_LIMIT) {
+  constructor(limit = TRAFFIC_RECORD_LIMIT, persistSettings = false) {
     this.limit = limit
+    this.enabled = persistSettings ? this.loadBoolean('ompiui-traffic-audit-enabled', !import.meta.env.PROD) : true
+    this.previews = persistSettings ? this.loadBoolean('ompiui-traffic-audit-previews', false) : false
+  }
+
+  private loadBoolean(key: string, fallback: boolean): boolean {
+    let value: string | null = null
+    try {
+      value = localStorage.getItem(key)
+    } catch {
+      // 存储不可用时使用环境默认值。
+    }
+    return value === null ? fallback : value === 'true'
+  }
+
+  private saveBoolean(key: string, value: boolean): void {
+    try {
+      localStorage.setItem(key, String(value))
+    } catch {
+      // 配额不足或存储不可用，忽略。
+    }
   }
 
   isEnabled(): boolean {
@@ -125,11 +146,13 @@ export class TrafficAuditStore {
 
   setEnabled(enabled: boolean): void {
     this.enabled = enabled
+    this.saveBoolean('ompiui-traffic-audit-enabled', enabled)
     this.changed(true)
   }
 
   setPreviews(previews: boolean): void {
     this.previews = previews
+    this.saveBoolean('ompiui-traffic-audit-previews', previews)
     if (!previews) {
       this.previewGeneration++
       for (const [id, record] of this.records) {
@@ -155,8 +178,13 @@ export class TrafficAuditStore {
     serverUrl?: string,
   ): TrafficHandle | undefined {
     if (!this.enabled) return
-    const endpoint = redactTrafficUrl(input)
-    const server = serverUrl ? redactTrafficUrl(serverUrl).server : endpoint.server
+    let endpoint = this.endpointCache.get(input)
+    if (!endpoint) {
+      endpoint = redactTrafficUrl(input)
+      if (this.endpointCache.size >= 256) this.endpointCache.delete(this.endpointCache.keys().next().value!)
+      this.endpointCache.set(input, endpoint)
+    }
+    const server = serverUrl ? (this.endpointCache.get(serverUrl)?.server ?? redactTrafficUrl(serverUrl).server) : endpoint.server
     const record: TrafficRecord = { ...endpoint, ...data, server, id: this.nextId++, timestamp: Date.now() }
     this.records.set(record.id, record)
     if (this.records.size > this.limit) {
@@ -205,4 +233,4 @@ export class TrafficAuditStore {
   }
 }
 
-export const trafficAuditStore = new TrafficAuditStore()
+export const trafficAuditStore = new TrafficAuditStore(TRAFFIC_RECORD_LIMIT, true)

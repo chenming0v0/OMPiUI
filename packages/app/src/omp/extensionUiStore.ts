@@ -17,6 +17,7 @@ type EditorTextSource = 'none' | 'mirror' | 'extension'
 
 const editorTextSourceBySession = new Map<string, EditorTextSource>()
 const settledRequestsBySession = new Map<string, Set<string>>()
+const MAX_SETTLED_REQUESTS_PER_SESSION = 1024
 
 const emptyState = (): ExtensionUiState => ({
   revision: 0,
@@ -110,6 +111,11 @@ export const extensionUiStore = {
     const snapshot = existing(sessionId)
     const settled = settledRequestsBySession.get(sessionId) ?? new Set<string>()
     settled.add(settledKey(requestId, snapshot.workerGeneration))
+    while (settled.size > MAX_SETTLED_REQUESTS_PER_SESSION) {
+      const oldest = settled.values().next().value
+      if (oldest === undefined) break
+      settled.delete(oldest)
+    }
     settledRequestsBySession.set(sessionId, settled)
     update(sessionId, { ...snapshot, pending: snapshot.pending.filter(item => item.requestId !== requestId) })
   },

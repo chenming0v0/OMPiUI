@@ -84,6 +84,8 @@ impl BridgeState {
 /// 会永远 pending——前端没有 open 也没有 close 事件，终端 tab 永远停在
 /// connecting（黄色）。超时后报错，前端的断线重连逻辑会接管。
 const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_INBOUND_MESSAGE_BYTES: usize = 128 * 1024;
+const MAX_INBOUND_BYTES: usize = 8 * 1024 * 1024;
 
 #[tauri::command]
 pub async fn ws_bridge_connect(
@@ -143,9 +145,15 @@ pub async fn ws_bridge_connect(
     tauri::async_runtime::spawn(async move {
         // 1006 = abnormal closure，没有收到 close 帧时的兜底
         let mut close_payload = json!({ "type": "close", "code": 1006u32, "reason": "" });
+        let mut inbound_bytes = 0usize;
+        let mut inbound_frames = 0usize;
         while let Some(frame) = reader.next().await {
             match frame {
                 Ok(Message::Text(text)) => {
+                    let bytes = text.len();
+                    if bytes > MAX_INBOUND_MESSAGE_BYTES || inbound_bytes.saturating_add(bytes) > MAX_INBOUND_BYTES { break; }
+                    inbound_bytes += bytes;
+                    inbound_frames += 1;
                     // WS Text 帧本身就是完整 UTF-8，直接透传
                     if on_event
                         .send(json!({ "type": "message", "data": text.to_string() }))
@@ -155,6 +163,9 @@ pub async fn ws_bridge_connect(
                     }
                 }
                 Ok(Message::Binary(bytes)) => {
+                    if bytes.len() > MAX_INBOUND_MESSAGE_BYTES || inbound_bytes.saturating_add(bytes.len()) > MAX_INBOUND_BYTES { break; }
+                    inbound_bytes += bytes.len();
+                    inbound_frames += 1;
                     // Binary 帧是完整消息（如 base64 附件），单帧转换即可
                     let data = String::from_utf8_lossy(&bytes).to_string();
                     if on_event

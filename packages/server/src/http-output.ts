@@ -1,7 +1,11 @@
 import type { ServerResponse } from "node:http";
 
 let pendingBytes = 0;
-const MAX_PENDING_BYTES = 64 * 1024 * 1024;
+/**
+ * 全局待交付正文预算。单响应正文上限 64 MiB，预留按 `bytes * 2` 计
+ * （正文 + 压缩工作区），因此这里必须 ≥ 128 MiB，否则合法大响应会被过早拒绝。
+ */
+export const MAX_PENDING_BYTES = 128 * 1024 * 1024;
 
 /** 压缩前预留正文和压缩工作区，直到响应交付或连接关闭才归还。 */
 export function reserveHttpOutput(res: ServerResponse, bytes: number): { hold(): () => void } | undefined {

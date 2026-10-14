@@ -75,6 +75,19 @@ describe('mergeLatestBranchPage', () => {
     expect(merged.items.map(i => i.id)).toEqual(['a', 'b', 'c', 'd'])
   })
 
+  it('keeps paged history while merging newly arrived latest items', () => {
+    const current = page(['old', 'a', 'b'], {
+      hasMore: true,
+      beforeCursor: 'cursor-at-old',
+      client: { historyWindowed: true },
+    })
+    const latest = page(['a', 'b', 'c'])
+    const merged = mergeLatestBranchPage(current, latest)
+    expect(merged.items.map(i => i.id)).toEqual(['old', 'a', 'b', 'c'])
+    expect(merged.client?.historyWindowed).toBe(true)
+    expect(merged.beforeCursor).toBe('cursor-at-old')
+  })
+
   it('drops local history when branch structure changed (no overlap)', () => {
     const current = page(['a', 'b', 'c'], { hasMore: true, beforeCursor: 'old-cursor' })
     const latest = page(['x', 'y', 'z'])

@@ -24,7 +24,9 @@ function AndroidTailscalePanel() {
   const waitingForAuth = useRef(false)
   useEffect(() => {
     let cancelled = false
-    const load = () => void getAndroidTailscaleStatus().then(next => {
+    const load = () => {
+      if (document.visibilityState === 'hidden') return
+      void getAndroidTailscaleStatus().then(next => {
       if (!cancelled) {
         setStatus(next)
         setStatusError('')
@@ -36,12 +38,15 @@ function AndroidTailscalePanel() {
           void openTailscaleLogin(next.AuthURL).catch(err => setError(err instanceof Error ? err.message : String(err)))
         }
       }
-    }).catch(err => {
+      }).catch(err => {
       if (!cancelled) setStatusError(err instanceof Error ? err.message : String(err))
-    })
+      })
+    }
     load()
     const timer = window.setInterval(load, 3_000)
-    return () => { cancelled = true; window.clearInterval(timer) }
+    const resume = () => { if (document.visibilityState === 'visible') load() }
+    document.addEventListener('visibilitychange', resume)
+    return () => { cancelled = true; window.clearInterval(timer); document.removeEventListener('visibilitychange', resume) }
   }, [])
 
   const run = (action: () => Promise<void>) => {

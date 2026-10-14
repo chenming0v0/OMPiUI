@@ -1,5 +1,20 @@
 import { isJsonObject, splitUtf8Text, type JsonObject } from "@ompiui/protocol";
 
+function jsonEqual(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== typeof b || a === null || b === null) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((item, index) => jsonEqual(item, b[index]));
+  }
+  if (typeof a !== "object" || typeof b !== "object") return false;
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  if (keys.length !== Object.keys(right).length) return false;
+  return keys.every(key => Object.hasOwn(right, key) && jsonEqual(left[key], right[key]));
+}
+
 /** 在快照合并之后计算主消息块增量，消息开始/结束仍为恢复边界。 */
 export class MainMessageStream {
   private previous?: JsonObject;
@@ -70,7 +85,7 @@ export class MainMessageStream {
               });
               offset += delta.length;
             }
-          } else if (JSON.stringify(value) !== JSON.stringify(previous)) {
+          } else if (!jsonEqual(value, previous)) {
             send({
               type: "message_patch",
               metadata,
@@ -87,7 +102,7 @@ export class MainMessageStream {
         continue;
       }
       if (!field) {
-        if (JSON.stringify(block) !== JSON.stringify(old)) {
+        if (!jsonEqual(block, old)) {
           send({ type: "message_patch", metadata, index, block });
         }
         continue;

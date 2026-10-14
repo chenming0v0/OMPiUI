@@ -22,6 +22,9 @@ export interface PendingBash {
 
 const pendings: PendingBash[] = []
 const listeners = new Set<() => void>()
+const MAX_PENDING = 256
+const MAX_PENDING_BYTES = 1024 * 1024
+const MAX_PENDING_AGE_MS = 30 * 60 * 1000
 
 function notify(): void {
   for (const listener of listeners) listener()
@@ -45,6 +48,15 @@ function collectRealBashEntries(items: PiTimelineItem[]): Array<{ command: strin
 export const bashPendingStore = {
   add(sessionId: string, clientId: string, command: string): void {
     pendings.push({ sessionId, clientId, command, createdAt: Date.now() })
+    const cutoff = Date.now() - MAX_PENDING_AGE_MS
+    let bytes = 0
+    for (let i = pendings.length - 1; i >= 0; i -= 1) {
+      const pending = pendings[i]!
+      bytes += pending.command.length * 2
+      if (pending.createdAt < cutoff || i < pendings.length - MAX_PENDING || bytes > MAX_PENDING_BYTES) {
+        pendings.splice(i, 1)
+      }
+    }
     notify()
   },
 
@@ -52,6 +64,19 @@ export const bashPendingStore = {
     const index = pendings.findIndex(pending => pending.clientId === clientId)
     if (index === -1) return
     pendings.splice(index, 1)
+    notify()
+  },
+
+  clearSession(sessionId: string): void {
+    const kept = pendings.filter(pending => pending.sessionId !== sessionId)
+    if (kept.length === pendings.length) return
+    pendings.splice(0, pendings.length, ...kept)
+    notify()
+  },
+
+  clearAll(): void {
+    if (pendings.length === 0) return
+    pendings.length = 0
     notify()
   },
 

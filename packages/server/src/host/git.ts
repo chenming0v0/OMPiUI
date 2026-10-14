@@ -458,12 +458,14 @@ export async function getGitFileDiff(
     throw Object.assign(new Error("file path required"), {
       code: "INVALID_REQUEST",
     });
-  const diff = await getGitDiff(cwd, mode, signal, relative);
-  const item = diff.files.find((candidate) => candidate.file === relative);
-  if (!item)
-    throw Object.assign(new Error("file is not part of this diff"), {
-      code: "NOT_FOUND",
-    });
+  const info = await getGitInfo(cwd, signal);
+  if (!info.root) throw Object.assign(new Error("not a git repository"), { code: "NOT_FOUND" });
+  const comparison = await comparisonForMode(cwd, mode, info, signal);
+  const status = mode === "git" ? await getGitStatus(cwd, signal, relative) : undefined;
+  const statusItem = status?.items.find(item => item.path === relative);
+  const item: GitDiffItem = statusItem?.status === "untracked"
+    ? { file: relative, status: "untracked", additions: 0, deletions: 0, binary: false }
+    : { file: relative, oldPath: statusItem?.oldPath, status: (statusItem?.status ?? "modified") as GitDiffItem["status"], additions: 0, deletions: 0, binary: false };
   let result: GitResult;
   if (item.status === "untracked") {
     result = await runGit(
@@ -486,9 +488,9 @@ export async function getGitFileDiff(
     if (result.code !== 0 && result.code !== 1)
       assertGitSuccess(result, "git diff --no-index");
   } else {
-    const args = mode === "staged" || (mode === "git" && !diff.baseRef)
+    const args = mode === "staged" || (mode === "git" && !comparison.baseRef)
       ? ["--cached"] : mode === "unstaged" ? []
-      : mode === "branch" && diff.baseCommit ? [`${diff.baseCommit}..HEAD`] : ["HEAD"];
+      : mode === "branch" && comparison.baseCommit ? [`${comparison.baseCommit}..HEAD`] : ["HEAD"];
     const paths = item.oldPath ? [item.oldPath, item.file] : [item.file];
     result = await runGit(
       cwd,

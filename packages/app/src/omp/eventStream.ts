@@ -41,6 +41,7 @@ import { BrowserDiagnostics } from './browserDiagnostics'
 import { markModelSettingsDisconnected, refreshModelSettings } from './modelSettingsSync'
 import { retryDelay } from './networkRetry'
 import { clearSubagentTranscripts } from './subagentTranscript'
+import { bashPendingStore } from './bashPendingStore'
 import { faultSocketOpened, faultSocketClosed, faultSocketUnused, reportRuntimeCrash } from './faultAudit/controller'
 import { loadPiSessionData, refreshPiBranch, refreshPiSessionState, settlePiLiveMessage } from './controllers/index.js'
 
@@ -132,6 +133,11 @@ class PiEventStream {
   private liveRecoveryAt = new Map<string, number>()
   private liveRecoveryFlights = new Set<string>()
   private commandRecoveryFlights = new Set<string>()
+  private pendingResync = new Map<string, EventCursor | undefined>()
+  private resyncTimer: ReturnType<typeof setTimeout> | null = null
+  private resyncFlights = new Map<string, Promise<void>>()
+  private resyncActive = 0
+  private readonly RESYNC_CONCURRENCY = 2
 
   /** Subscribe a session stream (reference counted). */
   connect(sessionId: string): void {
@@ -178,6 +184,8 @@ class PiEventStream {
       this.clearRefreshTimers(sessionId)
       liveToolOutputStore.clearSession(sessionId)
       ompSubagentStore.clearSession(sessionId)
+      extensionUiStore.remove(sessionId)
+      bashPendingStore.clearSession(sessionId)
       piCommandStore.clearSession(sessionId)
       this.liveRecoveryAt.delete(sessionId)
     } else {
@@ -241,10 +249,16 @@ class PiEventStream {
     this.pendingLiveMessages.clear()
     piCommandStore.clearAll()
     ompSubagentStore.clearAll()
+    for (const sessionId of this.refCounts.keys()) extensionUiStore.remove(sessionId)
+    extensionUiStore.reset()
+    bashPendingStore.clearAll()
     liveToolOutputStore.clearAll()
     this.liveRecoveryAt.clear()
     this.liveRecoveryFlights.clear()
     this.commandRecoveryFlights.clear()
+    this.pendingResync.clear()
+    if (this.resyncTimer) clearTimeout(this.resyncTimer)
+    this.resyncTimer = null
     this.closeSocket()
   }
 
@@ -421,7 +435,7 @@ class PiEventStream {
     }
     if ('channel' in message && message.channel === 'control' && message.type === 'resync_required') {
       for (const key of Object.keys(message.streams)) {
-        this.handleResync(key, message.streams[key as EventStreamKey]?.cursor)
+        this.queueResync(key, message.streams[key as EventStreamKey]?.cursor)
       }
       return
     }
@@ -445,17 +459,29 @@ class PiEventStream {
       }).then(({ command }) => {
         if (!this.commandRecoveryFlights.has(commandId) || serverStore.getActiveServerId() !== serverId || !isCommandRecord(command)) return
         piCommandStore.upsert(command)
+        this.cursors.set(eventStreamKey(stream), message.cursor)
         window.dispatchEvent(new CustomEvent('ompiui:command-updated', { detail: command }))
       }).catch(() => {}).finally(() => this.commandRecoveryFlights.delete(commandId))
-    } else if (eventChannel.startsWith('terminal.')) {
-      window.dispatchEvent(new CustomEvent('ompiui:terminals-changed'))
-    } else if (eventChannel === 'resources.updated') {
-      receiveResourceRevision(stream.kind === 'workspace' || stream.kind === 'resources' ? stream.id : undefined, String(Date.now()))
-    } else if (eventChannel === 'models.updated') {
-      receiveProviderAuthUpdated()
-      refreshModelSettings()
     } else {
-      this.handleResync(eventStreamKey(stream))
+      // payload_omitted 是该事件的有序确认帧。推进游标后，断线重连不会
+      // 重复回放同一个超大事件；具体业务数据由下面的快照/列表刷新补偿。
+      this.cursors.set(eventStreamKey(stream), message.cursor)
+      if (eventChannel.startsWith('terminal.')) {
+        window.dispatchEvent(new CustomEvent('ompiui:terminals-changed'))
+      } else if (eventChannel === 'omp.subagent') {
+        // 实时子代理帧过大时服务端只发送控制帧；事件本身无法恢复，
+        // 需要主动拉取权威 state（其中包含子代理快照），否则工具会永久停在旧状态。
+        if (stream.kind === 'session') this.scheduleStateRefresh(stream.id)
+        else for (const sessionId of this.refCounts.keys()) this.scheduleStateRefresh(sessionId)
+      } else if (eventChannel === 'resources.updated') {
+        receiveResourceRevision(stream.kind === 'workspace' || stream.kind === 'resources' ? stream.id : undefined, String(Date.now()))
+      } else if (eventChannel === 'models.updated') {
+        receiveProviderAuthUpdated()
+        refreshModelSettings()
+      } else {
+        if (stream.kind === 'session') this.scheduleBranchRefresh(stream.id)
+        else this.queueResync(eventStreamKey(stream))
+      }
     }
   }
 
@@ -950,21 +976,30 @@ class PiEventStream {
     if (current && (current.epoch !== pending.position.epoch || current.sequence >= pending.position.sequence)) return
     this.applyLiveMessage(sessionId, pending.liveMessage, pending.position)
   }
-  private handleResync(key: string, cursor?: EventCursor): void {
+  private handleResync(key: string, cursor?: EventCursor): Promise<void> {
     const stream = parseEventStreamKey(key)
-    if (!stream) return
+    if (!stream) return Promise.resolve()
     if (cursor) this.cursors.set(key, cursor)
     if (stream.kind === 'session') {
+      const existing = this.resyncFlights.get(stream.id)
+      if (existing) return existing
       // Preview includes the checkpoint for an attached runtime. External
       // histories stay disk-only; neither refresh is allowed to spawn a writer.
       const refresh = piBranchStore.getData(stream.id)
         ? refreshPiBranch(stream.id, undefined, { includeLiveMessage: true })
         : loadPiSessionData(stream.id)
-      void refresh
+      const flight = refresh
         .then(() => this.diagnostics.state(stream.id, piSessionStateStore.getState(stream.id)))
         .catch(error => this.diagnostics.error('branch_error', stream.id, error))
         .then(() => this.flushPendingLiveMessage(stream.id))
+        .finally(() => {
+          if (this.resyncFlights.get(stream.id) === flight) this.resyncFlights.delete(stream.id)
+        })
+      this.resyncFlights.set(stream.id, flight)
+      // 状态刷新不能挂在 branch 请求之后：branch 慢或挂起时，实时消息的
+      // streaming→persisting 收敛会被无限推迟（恢复顺序契约要求 state 可以先落地）。
       this.scheduleStateRefresh(stream.id)
+      return flight
     } else if (stream.kind === 'server') {
       window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
     } else if (stream.kind === 'provider') {
@@ -980,6 +1015,31 @@ class PiEventStream {
           detail: { workspacePath: stream.id },
         }),
       )
+    }
+    return Promise.resolve()
+  }
+
+  private queueResync(key: string, cursor?: EventCursor): void {
+    this.pendingResync.set(key, cursor)
+    if (this.resyncTimer) return
+    this.resyncTimer = setTimeout(() => {
+      this.resyncTimer = null
+      const pending = [...this.pendingResync.entries()]
+      this.pendingResync.clear()
+      for (const [pendingKey, pendingCursor] of pending) this.pendingResync.set(pendingKey, pendingCursor)
+      this.drainResync()
+    }, REFRESH_DEBOUNCE_MS)
+  }
+
+  private drainResync(): void {
+    while (this.resyncActive < this.RESYNC_CONCURRENCY && this.pendingResync.size > 0) {
+      const [key, cursor] = this.pendingResync.entries().next().value as [string, EventCursor | undefined]
+      this.pendingResync.delete(key)
+      this.resyncActive++
+      void this.handleResync(key, cursor).finally(() => {
+        this.resyncActive--
+        this.drainResync()
+      })
     }
   }
 
