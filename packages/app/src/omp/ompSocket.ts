@@ -33,7 +33,7 @@ export interface PiSocket {
 
 type BridgeEvent =
   | { type: 'open' }
-  | { type: 'message'; data: string }
+  | { type: 'message'; sequence: number; data: string }
   | { type: 'close'; code?: number; reason?: string }
   | { type: 'error'; message?: string }
 
@@ -52,6 +52,10 @@ class TauriBridgeSocket implements PiSocket {
   private queuedBytes = 0
   private invokeFn: TauriInvoke | null = null
   private inFlight = 0
+  private consumedSequence = 0
+  private acknowledgedSequence = 0
+  private acknowledgementInFlight = false
+  private acknowledgementScheduled = false
 
   constructor(url: string) {
     void this.connect(url)
@@ -84,6 +88,7 @@ class TauriBridgeSocket implements PiSocket {
         return
       }
       this.id = id
+      this.acknowledgeConsumed()
       this.pump()
     } catch {
       if (this.closedByUs || this.readyState === PI_SOCKET_CLOSED) return
@@ -102,7 +107,14 @@ class TauriBridgeSocket implements PiSocket {
     }
     if (event.type === 'message') {
       if (this.readyState !== PI_SOCKET_OPEN) return
-      this.onmessage?.({ data: event.data })
+      try {
+        this.onmessage?.({ data: event.data })
+      } finally {
+        // Channel.send only enqueues IPC. Receipt credit is returned after the
+        // JavaScript consumer has actually handled this message, not on send.
+        this.consumedSequence = event.sequence
+        this.scheduleAcknowledgement()
+      }
       return
     }
     if (event.type === 'error') {
@@ -115,6 +127,36 @@ class TauriBridgeSocket implements PiSocket {
     this.pendingSends = []
     this.queuedBytes = 0
     this.onclose?.({ code: event.code ?? 1006, reason: event.reason })
+  }
+
+  private scheduleAcknowledgement(): void {
+    if (this.acknowledgementScheduled) return
+    this.acknowledgementScheduled = true
+    queueMicrotask(() => {
+      this.acknowledgementScheduled = false
+      this.acknowledgeConsumed()
+    })
+  }
+
+  private acknowledgeConsumed(): void {
+    if (
+      this.readyState !== PI_SOCKET_OPEN || this.id === null || !this.invokeFn ||
+      this.acknowledgementInFlight || this.consumedSequence <= this.acknowledgedSequence
+    ) return
+    const sequence = this.consumedSequence
+    this.acknowledgementInFlight = true
+    void this.invokeFn('ws_bridge_ack', { id: this.id, sequence })
+      .then(() => { this.acknowledgedSequence = sequence })
+      .catch(() => {
+        if (this.readyState !== PI_SOCKET_OPEN) return
+        this.onerror?.()
+        this.close(1011, 'WebSocket bridge acknowledgement failed')
+      })
+      .finally(() => {
+        this.acknowledgementInFlight = false
+        // Coalesce concurrent receipts; never create one IPC promise per frame.
+        this.acknowledgeConsumed()
+      })
   }
 
   send(data: string): void {
