@@ -26,11 +26,11 @@ import {
   assistantHasProcessContent,
 } from '../message'
 import { MessageErrorView } from '../message/parts'
-import { SpinnerIcon } from '../../components/Icons'
+import { RetryIcon, SpinnerIcon } from '../../components/Icons'
 import type { MessageError } from '../../types/message'
 import type { PiTimelineItem } from '../../omp/domain/index.js'
 import { RetryStatusInline, type RetryStatusInlineData } from './RetryStatusInline'
-import { buildVisibleTimelineEntries, getVisibleTimelineForkTargetId } from './chatAreaVisibility'
+import { buildVisibleTimelineEntries, getVisibleTimelineForkTargetId, type VisibleTimelineEntry } from './chatAreaVisibility'
 import { AT_BOTTOM_THRESHOLD_PX } from '../../constants'
 import { useChatViewportSelect } from './chatViewport'
 import {
@@ -45,6 +45,8 @@ import { useTheme } from '../../hooks/useTheme'
 import { getStreamingHotIndexes, getTimelineRowYClass, mergeVirtualRangeIndexes } from './chatAreaUtils'
 import { useAutoScroll } from './virtual/useAutoScroll'
 import { useEmptyWorkingShellGate } from './virtual/useEmptyWorkingShellGate'
+import { HistoryPrefetchScheduler } from './virtual/historyPrefetchScheduler'
+import type { HistoryPrefetchMode } from '../../omp/historyPagePrefetch'
 import { perfMark, perfRecordRender, isPerfEnabled } from '../../utils/perf'
 
 const ROW_ESTIMATE = 60
@@ -54,8 +56,6 @@ const PROCESS_SHELL_HEADER = 36
 const EMPTY_WORKING_SHELL_EXTRA_DELAY_MS = 500
 const DEFAULT_BOTTOM_SPACER = 256
 const SESSION_CACHE_LIMIT = 16
-/** 加载历史的指示器最小时长（ms）：本地快速加载时避免一闪而过 */
-const MIN_LOADING_MS = 300
 
 /** 内容等价判断：流式 chunk 只换数组引用时，复用旧 Map/Set 引用，
  *  否则 VirtualRow 的 memo 比较（含这三个引用）会被击穿，历史行跟着重渲染。 */
@@ -111,7 +111,10 @@ interface ChatAreaProps {
   connectionError?: MessageError
   onOpenSettings?: () => void
   hasMoreHistory?: boolean
+  /** 原始分页边界，工具结果和元数据也计入进展。 */
+  historyStartId?: string
   onLoadMore?: () => void | Promise<void>
+  onPrefetchHistory?: (mode: HistoryPrefetchMode, signal: AbortSignal) => Promise<boolean>
   onUndo?: (entryId: string) => void
   onFork?: (entryId: string, forkMessageId?: string) => void | Promise<void>
   canUndo?: boolean
@@ -352,7 +355,7 @@ export const ChatArea = memo(
         turnLatestAssistantIds: turnLatestAssistantIdsProp,
         sessionId, isStreaming = false, isCompacting = false,
         loadState = 'idle', loadError, connectionError, onOpenSettings,
-        hasMoreHistory = false, onLoadMore, onUndo, onFork, canUndo,
+        hasMoreHistory = false, historyStartId, onLoadMore, onPrefetchHistory, onUndo, onFork, canUndo,
         registerMessage, retryStatus = null, bottomPadding = 0,
         onVisibleMessageIdsChange, onAtBottomChange,
       },
@@ -369,7 +372,21 @@ export const ChatArea = memo(
       const maxWidthClass = isWideMode ? 'max-w-[95%] xl:max-w-6xl' : 'max-w-2xl'
 
       // ── 派生数据 ──
-      const entries = useMemo(() => buildVisibleTimelineEntries(items), [items])
+      const visibilityRef = useRef<{
+        firstId?: string
+        entries: VisibleTimelineEntry[]
+        mergeBoundaries: Set<string>
+      }>({ entries: [], mergeBoundaries: new Set() })
+      const entries = useMemo(() => {
+        const previous = visibilityRef.current
+        if (previous.firstId && items.findIndex(item => item.entryId === previous.firstId) > 0) {
+          const boundaryId = previous.entries[0]?.item.entryId
+          if (boundaryId) previous.mergeBoundaries.add(boundaryId)
+        }
+        const next = buildVisibleTimelineEntries(items, previous.mergeBoundaries)
+        visibilityRef.current = { ...previous, firstId: items[0]?.entryId, entries: next }
+        return next
+      }, [items])
       const visibleItems = useMemo(() => entries.map(e => e.item), [entries])
       const forkMapRef = useRef<Map<string, string | undefined> | null>(null)
       const forkMap = useMemo(() => {
@@ -413,6 +430,17 @@ export const ChatArea = memo(
       }>({ processCollapseEnabled })
       const timeline = useMemo<ProcessTimelineItem[]>(() => {
         perfMark('ompiui:build-timeline')
+        const previous =
+          previousTimelineRef.current.processCollapseEnabled === processCollapseEnabled
+            ? previousTimelineRef.current.items
+            : undefined
+        const standaloneAssistantKeys = new Set(
+          previous?.flatMap(row =>
+            row.kind === 'message' && row.item.kind === 'assistant_message' && !row.key.startsWith('process-shell:')
+              ? [row.key]
+              : [],
+          ),
+        )
         const next = !processCollapseEnabled
           ? visibleItems.map(item => ({
               kind: 'message' as const,
@@ -425,11 +453,8 @@ export const ChatArea = memo(
               messageHasProcess: assistantHasProcessContent,
               messageHasFinal: assistantHasFinalContent,
               isUserEntryReady: emptyShellGate.isReady,
+              standaloneAssistantKeys,
             })
-        const previous =
-          previousTimelineRef.current.processCollapseEnabled === processCollapseEnabled
-            ? previousTimelineRef.current.items
-            : undefined
         const reused = reuseProcessTimelineItems(previous, next)
         previousTimelineRef.current = { processCollapseEnabled, items: reused }
         perfMark('ompiui:build-timeline:end')
@@ -464,6 +489,8 @@ export const ChatArea = memo(
       const contentRef = useRef<HTMLDivElement | null>(null)
       const sessionIdRef = useRef(sessionId); sessionIdRef.current = sessionId
       const onLoadMoreRef = useRef(onLoadMore); onLoadMoreRef.current = onLoadMore
+      const onPrefetchHistoryRef = useRef(onPrefetchHistory); onPrefetchHistoryRef.current = onPrefetchHistory
+      const historyPrefetchSchedulerRef = useRef<HistoryPrefetchScheduler | undefined>(undefined)
       const onVisibleIdsRef = useRef(onVisibleMessageIdsChange); onVisibleIdsRef.current = onVisibleMessageIdsChange
       const onAtBottomRef = useRef(onAtBottomChange); onAtBottomRef.current = onAtBottomChange
       const hasMoreRef = useRef(hasMoreHistory); hasMoreRef.current = hasMoreHistory
@@ -471,7 +498,14 @@ export const ChatArea = memo(
       const thresholdRef = useRef(atBottomThreshold); thresholdRef.current = atBottomThreshold
 
       const [isLoadingMore, setIsLoadingMore] = useState(false)
+      const [historyLoadFailed, setHistoryLoadFailed] = useState(false)
+      const historyLoadFailedRef = useRef(false)
       const loadingMoreRef = useRef(false)
+      const historyFirstId = historyStartId ?? items[0]?.entryId
+      const historyFirstIdRef = useRef(historyFirstId)
+      historyFirstIdRef.current = historyFirstId
+      const requestedHistoryFirstId = useRef<string | undefined>(undefined)
+      const disposedRef = useRef(false)
 
       // ── 自动滚动 ──
       // userScrolled 判定用小阈值（10px），和 UI 回底按钮的 60/150 阈值分开。
@@ -658,7 +692,7 @@ export const ChatArea = memo(
       }
 
       // ── 历史加载（prepend 锚点） ──
-      const prependAnchor = useRef<{ key: string; offset: number } | undefined>(undefined)
+      const prependAnchor = useRef<{ key: string; offset: number; scrollTop: number } | undefined>(undefined)
       const prependFrame = useRef<number | undefined>(undefined)
       const prependLoading = useRef(false)
 
@@ -677,7 +711,11 @@ export const ChatArea = memo(
           .filter(x => x.rect.bottom > view.top && x.rect.top < view.bottom)
           .sort((a, b) => a.rect.top - b.rect.top)[0]
         if (anchor?.el.dataset.timelineKey) {
-          prependAnchor.current = { key: anchor.el.dataset.timelineKey, offset: anchor.rect.top - view.top }
+          prependAnchor.current = {
+            key: anchor.el.dataset.timelineKey,
+            offset: anchor.rect.top - view.top,
+            scrollTop: root.scrollTop,
+          }
         }
       }, [])
 
@@ -690,15 +728,24 @@ export const ChatArea = memo(
           prependFrame.current = undefined
           const a = prependAnchor.current
           if (!a) return
+          // 内容重排才需要补偿；手势、惯性或虚拟列表已移动滚动位置时不再拉回。
+          if (Math.abs(root.scrollTop - a.scrollTop) > 0.5) {
+            clearPrepend()
+            return
+          }
           const el = root.querySelector<HTMLElement>(`[data-timeline-key="${CSS.escape(a.key)}"]`)
           const delta = el ? el.getBoundingClientRect().top - root.getBoundingClientRect().top - a.offset : undefined
-          if (delta !== undefined && Math.abs(delta) > 0.5) { root.scrollTop += delta; stable = 0 }
+          if (delta !== undefined && Math.abs(delta) > 0.5) {
+            root.scrollTop += delta
+            a.scrollTop = root.scrollTop
+            stable = 0
+          }
           else stable++
           if (++frames >= 180 || stable >= 30) { if (!prependLoading.current) prependAnchor.current = undefined; return }
           prependFrame.current = requestAnimationFrame(apply)
         }
-        prependFrame.current = requestAnimationFrame(apply)
-      }, [])
+        apply()
+      }, [clearPrepend])
 
       const capturePrepend = useCallback(() => {
         prependLoading.current = true
@@ -711,23 +758,31 @@ export const ChatArea = memo(
       }, [applyPrependAnchor])
 
       const loadMore = useCallback(() => {
+        if (loadingMoreRef.current || !hasMoreRef.current || !onLoadMoreRef.current) return
         capturePrepend()
+        historyLoadFailedRef.current = false
+        setHistoryLoadFailed(false)
+        requestedHistoryFirstId.current = historyFirstIdRef.current
         setIsLoadingMore(true); loadingMoreRef.current = true
-        const startedAt = performance.now()
         Promise.resolve()
           .then(() => onLoadMoreRef.current?.())
-          .catch(() => {})
+          .catch(() => {
+            if (disposedRef.current) return
+            historyLoadFailedRef.current = true
+            setHistoryLoadFailed(true)
+          })
           .finally(() => {
-            // 先恢复 prepend 锚点（数据已插入），spinner 再显示最小时长，
-            // 避免本地快速加载时指示器一闪而过、用户看不到加载反馈
+            if (disposedRef.current) return
             restorePrepend(true)
-            const elapsed = performance.now() - startedAt
-            const delay = Math.max(0, MIN_LOADING_MS - elapsed)
-            window.setTimeout(() => {
-              setIsLoadingMore(false); loadingMoreRef.current = false
-            }, delay)
+            // 请求完成即释放分页锁，加载提示不能阻塞下一页。
+            loadingMoreRef.current = false
+            setIsLoadingMore(false)
           })
       }, [capturePrepend, restorePrepend])
+
+      useLayoutEffect(() => {
+        if (prependAnchor.current) applyPrependAnchor()
+      }, [timeline, applyPrependAnchor])
 
       // fill: 内容不足以填满视口时自动加载
       const fillFrame = useRef<number | undefined>(undefined)
@@ -736,9 +791,12 @@ export const ChatArea = memo(
         fillFrame.current = requestAnimationFrame(() => {
           fillFrame.current = undefined
           if (!sessionIdRef.current || loadStateRef.current !== 'loaded') return
-          if (userScrolledRef.current || loadingMoreRef.current) return
+          if (userScrolledRef.current || loadingMoreRef.current || historyLoadFailedRef.current) return
+          if (requestedHistoryFirstId.current && requestedHistoryFirstId.current === historyFirstIdRef.current) return
           const el = scrollRef.current
-          if (el && el.scrollHeight > el.clientHeight + 1) return
+          const messageHeight = contentRef.current?.offsetHeight ?? 0
+          const topPadding = el ? parseFloat(getComputedStyle(el).paddingTop) || 0 : 0
+          if (el && messageHeight + topPadding > el.clientHeight + 1) return
           if (!hasMoreRef.current) return
           void loadMore()
         })
@@ -767,10 +825,23 @@ export const ChatArea = memo(
         if (max - el.scrollTop >= 2) el.scrollTop = max
       }, [autoMarkAuto])
 
+      const prefetchHistory = useCallback(() => {
+        const root = scrollRef.current
+        if (
+          !root || !userScrolledRef.current || !hasMoreRef.current ||
+          historyLoadFailedRef.current || loadStateRef.current !== 'loaded' ||
+          root.scrollTop >= Math.max(600, root.clientHeight * 2)
+        ) return
+        historyPrefetchSchedulerRef.current?.boost()
+      }, [userScrolledRef])
+
       // ── 事件处理 ──
       const onScroll = useCallback(() => {
+        // 包括松手后的惯性滚动；先更新离底状态，首次到顶也能触发分页。
+        autoHandleScroll()
         if (prependLoading.current) updatePrependAnchor()
         computeScrollState()
+        prefetchHistory()
         if (
           userScrolledRef.current
           && (scrollRef.current?.scrollTop ?? 0) < 200
@@ -779,17 +850,15 @@ export const ChatArea = memo(
         ) {
           void loadMore()
         }
-        // 始终走 handleScroll：滚动条/键盘也能离底；程序贴底靠 markAuto 过滤
-        autoHandleScroll()
-      }, [updatePrependAnchor, computeScrollState, autoHandleScroll, loadMore, userScrolledRef])
+      }, [updatePrependAnchor, computeScrollState, autoHandleScroll, loadMore, userScrolledRef, prefetchHistory])
 
       const onWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
-        if (!prependLoading.current) clearPrepend()
+        clearPrepend()
         autoHandleWheel(e.nativeEvent)
       }, [autoHandleWheel, clearPrepend])
 
       const onTouchStart = useCallback(() => {
-        if (!prependLoading.current) clearPrepend()
+        clearPrepend()
       }, [clearPrepend])
 
       // ── Effects（parent key remount 后，这里只处理本实例生命周期） ──
@@ -868,7 +937,49 @@ export const ChatArea = memo(
       useEffect(() => {
         if (!sessionId || loadState !== 'loaded' || isLoadingMore || auto.userScrolled || !hasMoreHistory) return
         fill()
-      }, [sessionId, loadState, isLoadingMore, auto.userScrolled, hasMoreHistory, fill])
+      }, [sessionId, loadState, isLoadingMore, auto.userScrolled, hasMoreHistory, timeline.length, fill])
+
+      // 小页可能只包含工具结果或元数据；有分页进展且仍在顶部时继续读，失败不自旋重试。
+      useEffect(() => {
+        if (
+          isLoadingMore || historyLoadFailed || !auto.userScrolled || !hasMoreHistory ||
+          !requestedHistoryFirstId.current ||
+          requestedHistoryFirstId.current === historyFirstId ||
+          (scrollRef.current?.scrollTop ?? 0) >= 200
+        ) return
+        void loadMore()
+      }, [historyFirstId, isLoadingMore, historyLoadFailed, auto.userScrolled, hasMoreHistory, loadMore])
+
+      useEffect(() => {
+        prefetchHistory()
+      }, [historyFirstId, auto.userScrolled, hasMoreHistory, prefetchHistory])
+
+      const hasHistoryPrefetch = Boolean(onPrefetchHistory)
+      useEffect(() => {
+        if (!sessionId || loadState !== 'loaded' || !hasMoreHistory || !hasHistoryPrefetch) return
+        const scheduler = new HistoryPrefetchScheduler((mode, signal) =>
+          onPrefetchHistoryRef.current?.(mode, signal) ?? Promise.resolve(false),
+        )
+        historyPrefetchSchedulerRef.current = scheduler
+        const updateVisibility = () => {
+          if (document.hidden) scheduler.pause()
+          else scheduler.resume()
+        }
+        updateVisibility()
+        document.addEventListener('visibilitychange', updateVisibility)
+        return () => {
+          scheduler.stop()
+          historyPrefetchSchedulerRef.current = undefined
+          document.removeEventListener('visibilitychange', updateVisibility)
+        }
+      }, [sessionId, loadState, hasMoreHistory, hasHistoryPrefetch])
+
+      useEffect(() => {
+        disposedRef.current = false
+        return () => {
+          disposedRef.current = true
+        }
+      }, [])
 
       // unmount：snapshot 写回 cache（对齐 oc onCleanup）
       useLayoutEffect(() => {
@@ -1014,6 +1125,36 @@ export const ChatArea = memo(
             </div>
           )}
 
+          {(isLoadingMore || historyLoadFailed) && (
+            <div
+              className="pointer-events-none absolute inset-x-0 z-10 flex h-7 items-center justify-center"
+              style={{ top: 'calc(3.25rem + var(--app-safe-top, 0px))' }}
+              role="status"
+            >
+              <div className="flex items-center gap-2 text-text-400 text-[length:var(--fs-sm)]">
+                {isLoadingMore ? (
+                  <>
+                    <span className="w-3.5 h-3.5 border-2 border-text-400/30 border-t-text-400 rounded-full animate-spin" />
+                    {t('chatArea.loadingHistory')}
+                  </>
+                ) : (
+                  <>
+                    {t('chatArea.historyLoadFailed')}
+                    <button
+                      type="button"
+                      className="pointer-events-auto inline-flex h-6 w-6 shrink-0 items-center justify-center rounded hover:bg-bg-200"
+                      aria-label={t('chatArea.retryHistory')}
+                      title={t('chatArea.retryHistory')}
+                      onClick={loadMore}
+                    >
+                      <RetryIcon size={14} />
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
           <div
             ref={setScrollRoot}
             data-chat-scroll-root="true"
@@ -1027,15 +1168,6 @@ export const ChatArea = memo(
             onScroll={onScroll}
             onClick={autoHandleInteraction}
           >
-            {visibleItems.length > 0 && isLoadingMore && (
-              <div className="flex justify-center py-3" aria-live="polite">
-                <div className="flex items-center gap-2 text-text-400 text-[length:var(--fs-sm)]">
-                  <span className="w-3.5 h-3.5 border-2 border-text-400/30 border-t-text-400 rounded-full animate-spin" />
-                  {t('chatArea.loadingHistory')}
-                </div>
-              </div>
-            )}
-
             <div ref={setVirtualContent} style={{ position: 'relative', width: '100%' }}>
               {virtualItems.map(virtualItem => {
                 // virtual-core 的 measurementsCache 允许空洞（见上方 overrides），

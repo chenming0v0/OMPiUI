@@ -11,8 +11,8 @@
  *   relay→desktop 是请求体，desktop→relay 是响应体。
  * - 每条 WebSocket message 恰好是一个隧道帧（发送方负责按 64KiB 切块）。
  *
- * 客户端侧的镜像实现见 packages/server/src/tunnel/protocol.ts——两处常量
- * 必须一致，靠 ready.v 握手兜底版本漂移。
+ * 两端直接复用本模块；ready.v 握手兜底部署版本漂移。
+ * end 表示正常 EOF（HTTP/upgrade 均需 drain），close/abort/fail 表示取消。
  */
 
 /** 控制通道升级路径（公网侧其余路径全部视为访客流量）。 */
@@ -96,10 +96,21 @@ export function stripHopByHopHeaders(
   return result
 }
 
+/** 不改动活跃连接表，查找可用的 u32 ID。 */
+export function allocateConnectionId(nextId: number, isActive: (id: number) => boolean): number {
+  const first = nextId >>> 0
+  let id = first
+  do {
+    if (!isActive(id)) return id
+    id = (id + 1) >>> 0
+  } while (id !== first)
+  throw new RangeError("all tunnel connection IDs are in use")
+}
+
 /** [u32 BE connId][payload] 编码为一条 ws 二进制消息。 */
 export function encodeFrameHeader(connId: number): Buffer {
   const header = Buffer.allocUnsafe(4)
-  header.writeUInt32BE(connId >>> 0, 0)
+  header.writeUInt32BE(connId, 0)
   return header
 }
 

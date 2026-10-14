@@ -4,9 +4,9 @@ import { IncomingMessage } from "node:http"
 import { Socket } from "node:net"
 import { Duplex } from "node:stream"
 import { test, type TestContext } from "node:test"
-import { WebSocket } from "ws"
+import { WebSocket, WebSocketServer } from "ws"
 import { generateTunnelKey } from "./config.ts"
-import { CONNECTIONS_PER_TUNNEL_MAX, CONTROL_PATH, encodeFrameMessages, serializeRawHead, type ControlFrame } from "./protocol.ts"
+import { BACKPRESSURE_HIGH_WATER, CONNECTIONS_PER_TUNNEL_MAX, CONTROL_PATH, FRAME_PAYLOAD_MAX, decodeFrameMessage, encodeFrameMessages, serializeRawHead, type ControlFrame } from "./protocol.ts"
 import { startRelay } from "./relay.ts"
 import { RESPONSE_BUFFER_MAX } from "./response-sink.ts"
 import { DataRateLimit } from "./data-rate-limit.ts"
@@ -44,10 +44,18 @@ async function harness(t: TestContext, connectionIdleTimeoutMs?: number) {
   })
   t.after(() => ws.terminate())
   const frames: ControlFrame[] = []
+  const received: Array<ControlFrame | { type: "body"; c: number; payload: Buffer }> = []
   const waiters = new Set<() => void>()
   ws.on("message", (data, isBinary) => {
-    if (isBinary) return
-    frames.push(JSON.parse(data.toString()) as ControlFrame)
+    if (isBinary) {
+      const frame = decodeFrameMessage(data as Buffer)
+      assert.ok(frame)
+      received.push({ type: "body", c: frame.connId, payload: frame.payload })
+    } else {
+      const frame = JSON.parse(data.toString()) as ControlFrame
+      frames.push(frame)
+      received.push(frame)
+    }
     for (const notify of [...waiters]) notify()
   })
   function take<T extends ControlFrame["type"]>(type: T, connId?: number): Promise<Extract<ControlFrame, { type: T }>> {
@@ -62,12 +70,19 @@ async function harness(t: TestContext, connectionIdleTimeoutMs?: number) {
       check()
     })
   }
+  async function takeBody(c: number, bytes: number): Promise<Buffer> {
+    while (true) {
+      const parts = received.flatMap(frame => frame.type === "body" && frame.c === c ? [frame.payload] : [])
+      if (parts.reduce((total, part) => total + part.length, 0) >= bytes) return Buffer.concat(parts)
+      await once(ws, "message")
+    }
+  }
   await take("ready")
   const send = (frame: ControlFrame) => ws.send(JSON.stringify(frame))
   const body = (c: number, chunk: Buffer) => {
     for (const frame of encodeFrameMessages(c, chunk)) ws.send(frame)
   }
-  async function open(kind: "request" | "upgrade", slow = true, source?: string) {
+  function begin(kind: "request" | "upgrade", slow = true, source?: string, initialHead = Buffer.alloc(0)) {
     const req = new IncomingMessage(new Socket())
     if (source) Object.defineProperty(req.socket, "remoteAddress", { value: source })
     req.url = "/stream"
@@ -77,13 +92,17 @@ async function harness(t: TestContext, connectionIdleTimeoutMs?: number) {
     t.after(() => { req.socket.destroy(); output.destroy() })
     if (kind === "request") {
       relay.server.emit("request", req, output)
-      req.emit("end")
     } else {
       req.headers = { connection: "upgrade", upgrade: "websocket" }
-      relay.server.emit("upgrade", req, output, Buffer.alloc(0))
+      relay.server.emit("upgrade", req, output, initialHead)
     }
+    return { req, output }
+  }
+  async function open(kind: "request" | "upgrade", slow = true, source?: string) {
+    const { req, output } = begin(kind, slow, source)
+    if (kind === "request") req.emit("end")
     const frame = await take("open")
-    return { output, c: frame.c }
+    return { req, output, c: frame.c }
   }
   function head(kind: "request" | "upgrade", c: number) {
     send({ type: "head", c, s: kind === "request" ? 200 : 101, h: {} })
@@ -98,8 +117,117 @@ async function harness(t: TestContext, connectionIdleTimeoutMs?: number) {
     assert.equal(output.status, 200)
     assert.equal(Buffer.concat(output.chunks).toString(), "unrelated")
   }
-  return { relay, ws, frames, take, send, body, open, head, fastRoundtrip }
+  return { relay, ws, frames, received, take, takeBody, send, body, begin, open, head, fastRoundtrip }
 }
+
+async function pressureHarness(t: TestContext) {
+  let control: WebSocket | undefined
+  const handleUpgrade = WebSocketServer.prototype.handleUpgrade
+  const capture = t.mock.method(WebSocketServer.prototype, "handleUpgrade", function (
+    this: WebSocketServer, ...args: Parameters<WebSocketServer["handleUpgrade"]>
+  ) {
+    const [req, socket, head, callback] = args
+    handleUpgrade.call(this, req, socket, head, (ws, request) => {
+      control = ws
+      callback(ws, request)
+    })
+  })
+  const h = await harness(t).finally(() => capture.mock.restore())
+  assert.ok(control)
+  let bufferedAmount = 0
+  Object.defineProperty(control, "bufferedAmount", { configurable: true, get: () => bufferedAmount })
+  t.after(() => { Reflect.deleteProperty(control!, "bufferedAmount") })
+  return { ...h, setBufferedAmount(value: number) { bufferedAmount = value } }
+}
+
+for (const kind of ["request", "upgrade"] as const) {
+  test(`${kind}: open precedes streamed head/body at either side of the control high-water mark`, { timeout: 10_000 }, async t => {
+    const h = await pressureHarness(t)
+    for (const delta of [-1, 0, 1]) {
+      for (const size of [1, 32 * 1024, FRAME_PAYLOAD_MAX + 1]) {
+        const before = h.received.length
+        h.setBufferedAmount(BACKPRESSURE_HIGH_WATER + delta)
+        if (delta > 0) t.mock.timers.enable({ apis: ["setTimeout"] })
+        const initialHead = kind === "upgrade" ? Buffer.alloc(size, 0x41) : Buffer.alloc(0)
+        const payload = Buffer.alloc(size, 0x42)
+        const { req, output } = h.begin(kind, false, undefined, initialHead)
+        const source = kind === "request" ? req : output
+        source.push(payload)
+        if (kind === "request") {
+          req.complete = true
+          source.push(null)
+        }
+        const opened = h.take("open")
+        if (delta > 0) {
+          t.mock.timers.tick(30)
+          const pong = once(h.ws, "pong")
+          h.ws.ping()
+          await pong
+          assert.equal(source.isPaused(), true)
+          assert.deepEqual(h.received.slice(before), [])
+        } else await opened
+        h.setBufferedAmount(0)
+        if (delta > 0) {
+          t.mock.timers.tick(25)
+          t.mock.timers.reset()
+        }
+        const { c } = await opened
+        assert.deepEqual(await h.takeBody(c, initialHead.length + payload.length), Buffer.concat([initialHead, payload]))
+        if (kind === "request") await h.take("reqEnd", c)
+        const sequence = h.received.slice(before).filter(frame => "c" in frame && frame.c === c)
+        assert.equal(sequence[0]!.type, "open")
+        for (const frame of sequence) if (frame.type === "body") assert.ok(frame.payload.length <= FRAME_PAYLOAD_MAX)
+        if (kind === "request") assert.equal(sequence.at(-1)!.type, "reqEnd")
+        const finished = once(output, "finish")
+        h.head(kind, c)
+        h.body(c, Buffer.from("accepted"))
+        h.send({ type: "end", c })
+        await finished
+      }
+    }
+  })
+
+  test(`${kind}: cancelling a queued open releases its source and never creates a ghost connection`, { timeout: 10_000 }, async t => {
+    const h = await pressureHarness(t)
+    h.setBufferedAmount(BACKPRESSURE_HIGH_WATER + 1)
+    const { req, output } = h.begin(kind, false, undefined, Buffer.alloc(FRAME_PAYLOAD_MAX + 1))
+    const source = kind === "request" ? req : output
+    source.push(Buffer.from("cancelled body"))
+    const closed = once(output, "close")
+    source.destroy()
+    await closed
+    assert.equal(h.relay.tunnelStatus()[0]!.connections, 0)
+    assert.equal(source.listenerCount("data"), 0)
+    assert.equal(output.listenerCount("drain"), 0)
+    h.setBufferedAmount(0)
+    await h.fastRoundtrip()
+    assert.deepEqual(h.received.map(frame => frame.type), ["ready", "open", "reqEnd"])
+  })
+}
+
+test("a queued open does not stall an already-open upload or response", { timeout: 10_000 }, async t => {
+  const h = await pressureHarness(t)
+  const active = h.begin("request", false)
+  const { c } = await h.take("open")
+  h.setBufferedAmount(BACKPRESSURE_HIGH_WATER + 1)
+  const waiting = h.begin("upgrade", false, undefined, Buffer.from("new head"))
+  active.req.push(Buffer.from("existing upload"))
+  assert.equal((await h.takeBody(c, 15)).toString(), "existing upload")
+  assert.equal(h.received.filter(frame => frame.type === "open").length, 1)
+  const finished = once(active.output, "finish")
+  h.head("request", c)
+  h.body(c, Buffer.from("existing response"))
+  h.send({ type: "end", c })
+  await finished
+  assert.equal(Buffer.concat(active.output.chunks).toString(), "existing response")
+  h.setBufferedAmount(0)
+  const next = await h.take("open")
+  assert.equal((await h.takeBody(next.c, 8)).toString(), "new head")
+  const nextFinished = once(waiting.output, "finish")
+  h.head("upgrade", next.c)
+  h.send({ type: "end", c: next.c })
+  await nextFinished
+})
 
 test("ended but undrained responses still count toward the per-tunnel connection bound", { timeout: 10_000 }, async t => {
   const h = await harness(t)

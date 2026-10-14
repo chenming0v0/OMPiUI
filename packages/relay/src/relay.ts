@@ -33,6 +33,7 @@ import {
   MESSAGE_RATE_BURST,
   MESSAGE_RATE_PER_SECOND,
   WIRE_VERSION,
+  allocateConnectionId,
   decodeFrameMessage,
   relayProblemBody,
   serializeRawHead,
@@ -74,6 +75,7 @@ interface VirtualConn {
   kind: "request" | "upgrade";
   res?: ServerResponse;
   socket?: Duplex;
+  openSent: boolean;
   headSent: boolean;
   response: ResponseSink;
   request: BodySink;
@@ -338,6 +340,9 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
       conn.socket?.destroy();
     }
     session.conns.clear();
+    session.controlQueue.length = 0;
+    session.controlQueuedBytes = 0;
+    session.controlFlushTimer = undefined;
     try {
       session.ws.terminate();
     } catch {
@@ -469,6 +474,17 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
     const conn = session.conns.get(connId);
     if (!conn) return;
     session.conns.delete(connId);
+    for (let index = session.controlQueue.length - 1; index >= 0; index--) {
+      const item = session.controlQueue[index]!;
+      if ("c" in item.frame && item.frame.c === connId) {
+        session.controlQueue.splice(index, 1);
+        session.controlQueuedBytes -= item.bytes;
+      }
+    }
+    if (session.controlQueue.length === 0) {
+      clearTimeout(session.controlFlushTimer);
+      session.controlFlushTimer = undefined;
+    }
     conn.response.dispose();
     conn.request.dispose();
     clearTimeout(conn.pendingTimer);
@@ -481,7 +497,7 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
     conn.requestStream?.pause();
     conn.requestStream?.removeAllListeners("data");
     conn.requestStream?.destroy();
-    sendControl(session, {
+    if (conn.openSent) sendControl(session, {
       type: conn.kind === "request" ? "abort" : "close",
       c: connId,
     });
@@ -547,7 +563,7 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
     req: IncomingMessage,
     res: ServerResponse,
   ): void {
-    const connId = nextConnId++;
+    const connId = allocateConnId();
     const sink = new BodySink(session.ws, (bytes, frames) => {
       if (
         !session.upload.canAllow(bytes, frames) ||
@@ -566,6 +582,7 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
     const conn: VirtualConn = {
       kind: "request",
       res,
+      openSent: false,
       headSent: false,
       response,
       request: sink,
@@ -583,27 +600,21 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
     session.conns.set(connId, conn);
     conn.pendingTimer = setTimeout(() => abortConnection(session, connId), PENDING_CONNECTION_TTL_MS);
     conn.pendingTimer.unref();
-    sendControl(session, {
-      type: "open",
-      c: connId,
-      m: req.method ?? "GET",
-      u: req.url ?? "/",
-      h: withForwardedHeaders(stripHopByHopHeaders(req.headers), req),
-    });
+    sink.hold(req);
     req.on("data", (chunk: Buffer) => {
-      if (!session.conns.has(connId)) return;
+      if (session.conns.get(connId) !== conn) return;
       if (!activateConnection(session, conn)) return;
       conn.lastActivity = Date.now();
       conn.progressBytes += chunk.length;
       sink.write(connId, chunk, req);
     });
     req.on("end", () => {
-      if (session.conns.has(connId))
+      if (session.conns.get(connId) === conn)
         sendControl(session, { type: "reqEnd", c: connId });
     });
     const abort = () => {
       // 访客中途断开：通知桌面端终止上游请求，避免本地连接悬挂
-      abortConnection(session, connId);
+      if (session.conns.get(connId) === conn) abortConnection(session, connId);
     };
     req.on("aborted", abort);
     req.on("error", abort);
@@ -611,6 +622,13 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
     res.on("close", () => {
       if (res.writableEnded) return;
       abort();
+    });
+    sendControl(session, {
+      type: "open",
+      c: connId,
+      m: req.method ?? "GET",
+      u: req.url ?? "/",
+      h: withForwardedHeaders(stripHopByHopHeaders(req.headers), req),
     });
   }
 
@@ -640,7 +658,7 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
       );
       return;
     }
-    const connId = nextConnId++;
+    const connId = allocateConnId();
     const sink = new BodySink(session.ws, (bytes, frames) => {
       if (
         !session.upload.canAllow(bytes, frames) ||
@@ -662,6 +680,7 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
     const conn: VirtualConn = {
       kind: "upgrade",
       socket,
+      openSent: false,
       headSent: false,
       response,
       request: sink,
@@ -679,6 +698,28 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
     session.conns.set(connId, conn);
     conn.pendingTimer = setTimeout(() => abortConnection(session, connId), PENDING_CONNECTION_TTL_MS);
     conn.pendingTimer.unref();
+    sink.hold(socket);
+    if (head.length > 0) {
+      sink.write(connId, head, socket);
+    }
+    socket.on("data", (chunk: Buffer) => {
+      if (session.conns.get(connId) !== conn) return;
+      if (!activateConnection(session, conn)) return;
+      conn.lastActivity = Date.now();
+      conn.progressBytes += chunk.length;
+      sink.write(connId, chunk, socket);
+    });
+    const abort = () => {
+      if (session.conns.get(connId) === conn) abortConnection(session, connId);
+    };
+    socket.on("end", () => {
+      abort();
+      socket.destroy();
+    });
+    socket.on("error", () => {
+      // 由 close 统一清理
+    });
+    socket.on("close", abort);
     // upgrade 的 connection/upgrade 头必须保留给 101 握手
     sendControl(session, {
       type: "open",
@@ -687,27 +728,6 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
       u: req.url ?? "/",
       h: withForwardedHeaders(stripHopByHopHeaders(req.headers, true), req),
     });
-    if (head.length > 0) {
-      sink.write(connId, head, null);
-    }
-    socket.on("data", (chunk: Buffer) => {
-      if (!session.conns.has(connId)) return;
-      if (!activateConnection(session, conn)) return;
-      conn.lastActivity = Date.now();
-      conn.progressBytes += chunk.length;
-      sink.write(connId, chunk, socket);
-    });
-    socket.on("end", () => {
-      abortConnection(session, connId);
-      socket.destroy();
-    });
-    socket.on("error", () => {
-      // 由 close 统一清理
-    });
-    socket.on("close", () => {
-      abortConnection(session, connId);
-    });
-    socket.resume();
   }
 
   // ---------- 路由 / 工具 ----------
@@ -809,6 +829,19 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
     return count < CONNECTIONS_PER_TUNNEL_MAX / 2;
   }
 
+  function isConnectionIdActive(id: number): boolean {
+    for (const session of tunnels.values()) {
+      if (session.conns.has(id)) return true;
+    }
+    return false;
+  }
+
+  function allocateConnId(): number {
+    const id = allocateConnectionId(nextConnId, isConnectionIdActive);
+    nextConnId = (id + 1) >>> 0;
+    return id;
+  }
+
   function sendControl(session: TunnelSession, frame: ControlFrame): void {
     if (session.ws.readyState !== WebSocket.OPEN) return;
     const send = () => enqueueControl(session, frame);
@@ -845,7 +878,7 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
         if (conn?.res && !conn.res.headersSent) sendProblem(conn.res, 429, "TUNNEL_RATE_LIMITED", "control capacity reached");
         else conn?.res?.destroy();
         conn?.socket?.destroy();
-        enqueueControl(session, { type: "abort", c: frame.c });
+        if (conn?.openSent) enqueueControl(session, { type: "abort", c: frame.c });
       }
       return;
     }
@@ -875,7 +908,7 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
             if (conn?.res && !conn.res.headersSent) sendProblem(conn.res, 429, "TUNNEL_RATE_LIMITED", "control capacity reached");
             else conn?.res?.destroy();
             conn?.socket?.destroy();
-            enqueueControl(session, { type: "abort", c: item.frame.c });
+            if (conn?.openSent) enqueueControl(session, { type: "abort", c: item.frame.c });
           }
           continue;
         }
@@ -888,6 +921,13 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
       session.ws.send(item.data, () => {
         if (session.ws.bufferedAmount <= BACKPRESSURE_LOW_WATER) flushControl(session);
       });
+      if (item.frame.type === "open") {
+        const conn = session.conns.get(item.frame.c);
+        if (conn) {
+          conn.openSent = true;
+          conn.request.release();
+        }
+      }
     }
     if (session.controlQueue.length > 0) {
       session.controlFlushTimer = setTimeout(() => flushControl(session), 25);

@@ -129,7 +129,7 @@ export function createStaticServer(root: string): StaticServer | undefined {
           const match = /^(\d*)-(\d*)$/.exec(part.trim());
           if (!match || (!match[1] && !match[2])) return undefined;
           const start = match[1] ? Number(match[1]) : Math.max(0, stat.size - Number(match[2]));
-          const end = match[2] ? Math.min(stat.size - 1, Number(match[2])) : stat.size - 1;
+          const end = match[1] && match[2] ? Math.min(stat.size - 1, Number(match[2])) : stat.size - 1;
           return start <= end && start < stat.size ? { start, end } : undefined;
         });
         if (ranges.length === 0 || ranges.some(range => !range) || ranges.length > 16) {
@@ -146,27 +146,26 @@ export function createStaticServer(root: string): StaticServer | undefined {
           res.end();
           return true;
         }
-        let index = 0;
-        const next = () => {
-          if (index >= parts.length) {
-            res.end(`--${boundary}--\r\n`);
-            return;
+        pipeline(async function* (options: { signal?: AbortSignal } = {}) {
+          const signal = options.signal!;
+          for (let index = 0; index < parts.length; index++) {
+            signal.throwIfAborted();
+            yield partHeaders[index]!;
+            signal.throwIfAborted();
+            const range = parts[index]!;
+            const source = createReadStream(path, { start: range.start, end: range.end, signal });
+            try {
+              yield* source;
+            } finally {
+              source.destroy();
+            }
+            yield "\r\n";
           }
-          const range = parts[index]!;
-          res.write(partHeaders[index]!);
-          const stream = createReadStream(path, { start: range.start, end: range.end });
-          stream.on("data", chunk => {
-            if (!res.write(chunk)) stream.pause();
-          });
-          res.once("drain", () => stream.resume());
-          stream.once("error", error => res.destroy(error));
-          stream.once("end", () => {
-            res.write("\r\n");
-            index++;
-            next();
-          });
-        };
-        next();
+          signal.throwIfAborted();
+          yield `--${boundary}--\r\n`;
+        }, res, error => {
+          if (error) res.destroy(error);
+        });
         return true;
       }
       const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range);

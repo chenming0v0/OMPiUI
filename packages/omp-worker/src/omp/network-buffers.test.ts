@@ -17,8 +17,8 @@ test("UTF-8 chunks stay within their byte budget and round-trip mixed text", () 
 test("IPC byte backpressure counts in-flight bytes and resumes after flush", () => {
   const callbacks: Array<(error?: Error) => void> = []
   const pauses: boolean[] = []
-  const sender = new WorkerIpcSender((_message, done) => callbacks.push(done), value => pauses.push(value), 100, 256)
-  sender.send({ kind: "event", event: { text: "x".repeat(300) } } as unknown as WorkerMessage)
+  const sender = new WorkerIpcSender((_message, done) => callbacks.push(done), value => pauses.push(value), 100, 512)
+  sender.send({ kind: "event", event: { text: "x".repeat(220) } } as unknown as WorkerMessage)
   assert.deepEqual(pauses, [true])
   callbacks.shift()!()
   assert.deepEqual(pauses, [true, false])

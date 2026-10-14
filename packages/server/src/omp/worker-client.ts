@@ -18,7 +18,7 @@ import {
   type WorkerHostCall,
   type WorkerMessage,
 } from "@ompiui/omp-worker";
-import { RequestSender } from "./request-sender.ts";
+import { RequestSender, type RequestSendHandle } from "./request-sender.ts";
 
 export interface WorkerClientOptions {
   env?: NodeJS.ProcessEnv;
@@ -190,6 +190,8 @@ class WorkerHostCore {
     string,
     (ok: boolean, data: JsonValue | undefined) => void
   >();
+  /** 孤儿 runtime 的 close 未确认时仍持有租约，只能由确认关闭或进程退出结算。 */
+  private readonly lateOpenClosures = new Set<() => void>();
   private child: ChildProcess;
   private disposed = false;
   private exitHandled = false;
@@ -509,10 +511,12 @@ class WorkerHostCore {
       );
     }
     this.pending.clear();
+    this.requestSender?.close(this.exitError);
     // 进程已退出:晚到响应不会再到达,直接结束放弃请求的收尾
     const lates = [...this.lateResponses.values()];
     this.lateResponses.clear();
     for (const late of lates) late(false, undefined);
+    for (const settle of this.lateOpenClosures) settle();
     // 共享进程崩溃 = 所有会话 runtime 一起失效：逐个句柄通知
     const handles = [...this.handles.values()];
     this.handles.clear();
@@ -549,11 +553,6 @@ class WorkerHostCore {
     signal?: AbortSignal,
     onLeaseSettled?: () => void,
   ): Promise<WorkerSession> {
-    await this.ready;
-    if (signal?.aborted)
-      throw Object.assign(new Error("request aborted"), {
-        code: "REQUEST_ABORTED",
-      });
     // 打开有副作用:超时/取消后保留晚到响应,由 settleLateOpen 关闭孤儿 runtime 并结束租约。
     let abandoned = false;
     const data = await this.request(
@@ -571,7 +570,7 @@ class WorkerHostCore {
           this.settleLateOpen(ok, lateData, onLeaseSettled),
       },
     ).catch((error) => {
-      // 放弃的请求仍持有租约,由晚到响应或进程退出时统一释放
+      // 租约结算已交给 host（确定未发送时可能已完成），supervisor 不得再释放一次。
       if (abandoned) Object.assign(error, { leaseHeld: true });
       throw error;
     });
@@ -623,9 +622,20 @@ class WorkerHostCore {
       },
       "error",
     );
-    this.request({ type: "session.close" }, undefined, sessionId)
-      .catch(() => undefined)
-      .finally(() => onSettled?.());
+    const settled = () => {
+      if (!this.lateOpenClosures.delete(settled)) return;
+      onSettled?.();
+    };
+    this.lateOpenClosures.add(settled);
+    this.request({ type: "session.close" }, undefined, sessionId, {
+      onAbandoned: () => undefined,
+      onLate: (closed) => {
+        if (closed || this.exitHandled) settled();
+      },
+    }).then(settled, () => {
+      // 关闭失败/超时不等于 runtime 已停止，继续持有租约直到迟到成功或退出。
+      if (this.exitHandled) settled();
+    });
   }
 
   /** 放弃的请求从未发送到 worker:不会有晚到响应,直接结束其收尾(租约) */
@@ -721,6 +731,31 @@ class WorkerHostCore {
         );
         return;
       }
+      let sendHandle: RequestSendHandle | undefined;
+      let generation: string | undefined;
+      const abandon = (attempted = sendHandle?.attempted === true) => {
+        if (late) {
+          this.lateResponses.set(id, late.onLate);
+          late.onAbandoned();
+        }
+        if (!attempted) {
+          sendHandle?.cancel();
+          this.settleUnsentLate(id);
+        } else if (!late && command.type !== "session.open" && command.type !== "session.close" && generation) {
+          // 仅取消 worker 尚未执行的普通请求；已执行命令不撤销、不重放。
+          this.requestSender?.send({
+            message: { kind: "cancel", id, generation },
+            bytes: 256,
+            active: () => !this.exitHandled,
+            done: ({ error }) => {
+              if (!error || this.exitHandled) return;
+              diagnostics.record("worker.request.cancel_failed", {
+                requestId: id, workerPid: this.child.pid, errorCode: diagnosticErrorCode(error),
+              }, "error");
+            },
+          });
+        }
+      };
       const timeoutMs =
         this.options.requestTimeoutMs ??
         (TURN_SCOPED_COMMANDS.has(command.type) &&
@@ -732,12 +767,10 @@ class WorkerHostCore {
           ? undefined
           : setTimeout(() => {
               const pending = this.pending.get(id);
+              if (!pending) return;
               this.pending.delete(id);
-              if (pending && late) {
-                this.lateResponses.set(id, late.onLate);
-                late.onAbandoned();
-              }
-              pending?.removeAbort?.();
+              pending.removeAbort?.();
+              abandon();
               // 命令超时——只丢弃这一条命令并落日志，绝不杀进程。
               //
               // 重要教训：heartbeatMisses 与心跳同频竞争（watchdog 每 5s tick
@@ -780,10 +813,7 @@ class WorkerHostCore {
         this.pending.delete(id);
         clearTimeout(timer);
         pending.removeAbort?.();
-        if (late) {
-          this.lateResponses.set(id, late.onLate);
-          late.onAbandoned();
-        }
+        abandon();
         reject(
           Object.assign(new Error("request aborted"), {
             code: "REQUEST_ABORTED",
@@ -809,7 +839,8 @@ class WorkerHostCore {
             return;
           }
           this.requestSender ??= new RequestSender(this.child);
-          this.requestSender.send({
+          generation = helloMessage.generation;
+          sendHandle = this.requestSender.send({
             bytes,
             active: () => this.pending.get(id) === pending && !this.exitHandled,
             message: {
@@ -819,16 +850,23 @@ class WorkerHostCore {
               sessionId,
               command,
             },
-            done: (error) => {
-              if (!error) return;
+            done: ({ state, error }) => {
+              if (state === "unsent") this.settleUnsentLate(id);
+              if (!error || this.pending.get(id) !== pending) return;
               this.pending.delete(id);
               clearTimeout(timer);
               pending.removeAbort?.();
-              reject(error);
+              if (state === "attempted" && !this.exitHandled) {
+                abandon(true);
+                reject(Object.assign(new Error("Pi worker IPC failed before confirming the command result", { cause: error }), {
+                  code: "WORKER_RESULT_UNKNOWN",
+                }));
+              } else {
+                reject(error);
+              }
             },
           });
-        })
-        .catch((error) => {
+        }, (error) => {
           if (this.pending.get(id) !== pending) {
             this.settleUnsentLate(id);
             return;

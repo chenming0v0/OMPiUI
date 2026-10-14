@@ -1,5 +1,6 @@
 import {
   isJsonObject,
+  jsonByteSize,
   subagentBlockHash,
   type JsonObject,
   type JsonValue,
@@ -10,8 +11,9 @@ import {
 import { loadSubagentBlocks, saveSubagentBlocks } from './subagentBlockCache'
 
 const BYTE_LIMIT = 8 * 1024 * 1024
+const PAGE_BYTE_LIMIT = 256 * 1024
+const REQUEST_LIMIT = 64
 const MESSAGE_LIMIT = 2000
-const encoder = new TextEncoder()
 export type FetchSubagentPage = (cursor: number, signal: AbortSignal, sync?: SubagentSyncRequest) => Promise<JsonValue>
 
 export async function readSyncedSubagentHistory(
@@ -31,20 +33,24 @@ export async function readSyncedSubagentHistory(
     }
   }
   const validSaved = Boolean(saved?.blocks.length && available.size === saved.blocks.length)
-  let continuing = Boolean(validSaved && saved?.hasMore)
+  const resuming = Boolean(validSaved && saved?.hasMore)
   const retainedWindow = Boolean(validSaved && saved!.blocks[0].fromByte > 0)
-  let cursor = continuing ? saved!.nextByte : retainedWindow ? saved!.blocks[0].fromByte : (fromByte ?? 0)
-  let snapshot = continuing || retainedWindow ? saved!.snapshot : undefined
-  let projection = continuing || retainedWindow ? saved!.projection : ''
-  let blocks = continuing ? [...saved!.blocks] : []
+  let continuing = resuming || retainedWindow
+  let windowStart = retainedWindow ? saved!.blocks[0].fromByte : (fromByte ?? 0)
+  let cursor = resuming ? saved!.nextByte : windowStart
+  // 跨轮刷新从保留窗口建立新快照；只有尚未读完的分页才携带旧快照。
+  let snapshot = resuming ? saved!.snapshot : undefined
+  let projection = resuming ? saved!.projection : ''
+  let blocks = resuming ? [...saved!.blocks] : []
   let downloaded = 0
   let pages = 0
   let restarts = 0
   let hasMore = false
   let reset = false
   let windowed = retainedWindow
-  let bytes = blocks.reduce((sum, block) => sum + encoder.encode(JSON.stringify(block.messages)).byteLength, 0)
+  let bytes = blocks.reduce((sum, block) => sum + jsonByteSize(block.messages, BYTE_LIMIT), 0)
   let messageCount = blocks.reduce((sum, block) => sum + block.messages.length, 0)
+  const canRequest = () => pages < REQUEST_LIMIT && downloaded <= BYTE_LIMIT - PAGE_BYTE_LIMIT
   do {
     signal.throwIfAborted()
     const knownBlocks = [...available.values()]
@@ -54,16 +60,21 @@ export async function readSyncedSubagentHistory(
       .map(({ fromByte, nextByte, hash }) => ({ fromByte, nextByte, hash }))
     let raw: JsonValue
     try {
+      pages++
       raw = await fetchPage(cursor, signal, { version: 1, snapshot, knownBlocks })
     } catch (error) {
-      if ((error as { code?: string }).code !== 'SYNC_SNAPSHOT_EXPIRED' || restarts++ >= 2) throw error
-      cursor = fromByte ?? 0
+      if (
+        !error || typeof error !== 'object' || !('code' in error) || error.code !== 'SYNC_SNAPSHOT_EXPIRED' ||
+        restarts++ >= 2 ||
+        !canRequest()
+      ) throw error
+      // 丢弃快照中的正文，但保留窗口起点和哈希；新快照必须重新验证每个块。
+      cursor = blocks[0]?.fromByte ?? windowStart
+      windowStart = cursor
       snapshot = undefined
       blocks = []
-      downloaded = bytes = pages = messageCount = 0
-      continuing = false
+      bytes = messageCount = 0
       reset = true
-      windowed = false
       hasMore = true
       continue
     }
@@ -75,6 +86,11 @@ export async function readSyncedSubagentHistory(
         legacyCursor: cursor,
       })
     }
+    const pageBytes = jsonByteSize(raw, PAGE_BYTE_LIMIT)
+    if (pageBytes > PAGE_BYTE_LIMIT)
+      throw Object.assign(new Error('Subagent sync page exceeds 256 KiB'), { code: 'FILE_TOO_LARGE' })
+    // 包括复用引用、封装及重启前已经收到的页；重试不能重新获得一轮预算。
+    downloaded += pageBytes
     const page = raw as unknown as SubagentSyncPage
     if (
       !Array.isArray(page.blocks) ||
@@ -91,6 +107,8 @@ export async function readSyncedSubagentHistory(
       blocks = []
       bytes = messageCount = 0
       cursor = page.fromByte
+      windowStart = cursor
+      continuing = false
       reset = true
       windowed = false
     }
@@ -119,15 +137,14 @@ export async function readSyncedSubagentHistory(
       position = block.nextByte
     }
     if (missing) {
-      if (restarts++ >= 2) throw new Error('Subagent reuse block unavailable')
+      if (restarts++ >= 2 || !canRequest()) throw new Error('Subagent reuse block unavailable')
       hasMore = true
       continue
     }
     if (page.fromByte !== cursor || position !== page.nextByte || (page.hasMore && page.nextByte <= cursor))
       throw new Error('Transcript cursor did not advance')
     for (const block of resolved) {
-      const size = encoder.encode(JSON.stringify(block.messages)).byteLength
-      if (page.blocks.find(ref => ref.fromByte === block.fromByte)?.kind === 'data') downloaded += size
+      const size = jsonByteSize(block.messages, BYTE_LIMIT)
       blocks.push(block)
       available.set(block.fromByte, block)
       bytes += size
@@ -135,20 +152,18 @@ export async function readSyncedSubagentHistory(
     }
     cursor = page.nextByte
     hasMore = page.hasMore
-    pages++
-    // 续页允许读取新内容后再淘汰最旧块，避免每次“加载更多”都从头下载。
+    // 续页和保留窗口刷新都淘汰最旧块，以便在原有预算内读到新增尾部。
     if (continuing) {
       while (blocks.length > 1 && (bytes > BYTE_LIMIT || messageCount > MESSAGE_LIMIT)) {
         const removed = blocks.shift()!
         windowed = true
-        bytes -= encoder.encode(JSON.stringify(removed.messages)).byteLength
+        bytes -= jsonByteSize(removed.messages, BYTE_LIMIT)
         messageCount -= removed.messages.length
       }
     }
   } while (
     hasMore &&
-    downloaded < BYTE_LIMIT &&
-    pages < 64 &&
+    canRequest() &&
     (continuing || (bytes < BYTE_LIMIT && messageCount < MESSAGE_LIMIT))
   )
   signal.throwIfAborted()

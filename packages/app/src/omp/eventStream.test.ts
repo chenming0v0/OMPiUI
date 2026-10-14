@@ -16,6 +16,7 @@ import { activeSessionStore } from '../store/activeSessionStore'
 import * as controllers from './controllers/index.js'
 import { buildPiLiveItems } from './selectors/index.js'
 import * as http from './httpClient.js'
+import { serverStore } from '../store/serverStore'
 
 // 触达私有方法做白盒测试（事件驱动路径需要 WS，单测直接调 handler）
 type Handler = (payload: unknown) => void
@@ -277,11 +278,16 @@ describe('oversized event recovery', () => {
   const raw = (value: unknown) =>
     (piEventStream as unknown as { handleRaw(data: string): void }).handleRaw(JSON.stringify(value))
 
-  it('recovers completed command results once without advancing the omitted event cursor', async () => {
+  it('recovers a command once without rewinding newer consumed events or the next subscription', async () => {
     const command = { id: 'large-command', type: 'branch.get', status: 'completed' as const, submittedAt: '2026-10-13', result: { text: 'complete' } }
-    let release: ((value: Response) => void) | undefined
-    const read = vi.spyOn(http, 'piFetch').mockImplementation(() => new Promise(resolve => { release = resolve }))
-    const internal = piEventStream as unknown as { cursors: Map<string, unknown> }
+    const pending = Promise.withResolvers<Response>()
+    const read = vi.spyOn(http, 'piFetch').mockReturnValue(pending.promise)
+    const internal = piEventStream as unknown as {
+      cursors: Map<string, unknown>
+      send(message: unknown): void
+      flushSubscribe(): void
+    }
+    const send = vi.spyOn(internal, 'send').mockImplementation(() => {})
     internal.cursors.set('server', { epoch: 'test', sequence: 7 })
     const frame = {
       channel: 'control', type: 'payload_omitted', stream: { kind: 'server', id: 'server' },
@@ -289,11 +295,12 @@ describe('oversized event recovery', () => {
     }
     raw(frame)
     raw(frame)
+    handleEvent({ stream: frame.stream, cursor: { epoch: 'test', sequence: 9 }, channel: 'registry.updated', payload: {} })
     expect(read).toHaveBeenCalledOnce()
-    release?.(new Response(JSON.stringify({ command })))
+    pending.resolve(new Response(JSON.stringify({ command })))
     await vi.waitFor(() => expect(piCommandStore.get(command.id)).toEqual(command))
-    expect(piCommandStore.get(command.id)).toEqual(command)
-    expect(internal.cursors.get('server')).toEqual({ epoch: 'test', sequence: 8 })
+    internal.flushSubscribe()
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ cursors: { server: { epoch: 'test', sequence: 9 } } }))
   })
 
   it('notifies terminal-list consumers even when the omitted event is not a session event', () => {
@@ -328,6 +335,102 @@ describe('oversized event recovery', () => {
     } finally {
       refresh.mockRestore()
     }
+  })
+})
+
+describe('ordered recovery cursors', () => {
+  // 注入已解码的内存帧，并观察重连会发送的订阅；不建立真实 socket。
+  const internal = piEventStream as unknown as {
+    handleRaw(raw: string): void
+    send(message: unknown): void
+    flushSubscribe(): void
+  }
+  const raw = (frame: unknown) => internal.handleRaw(JSON.stringify(frame))
+  const omitted = (epoch: string, sequence: number) => ({
+    channel: 'control', type: 'payload_omitted', stream: { kind: 'server', id: 'server' },
+    cursor: { epoch, sequence }, eventId: `command-${sequence}`, eventChannel: 'command.updated', commandId: 'recovered-command',
+  })
+  const command = {
+    id: 'recovered-command', type: 'branch.get', status: 'completed', submittedAt: '2026-10-14', result: 'current',
+  }
+
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => {
+    piEventStream.disconnectAll()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it.each([{ epoch: 'old', sequence: 11 }, { epoch: 'new', sequence: 1 }])(
+    'keeps $epoch:$sequence through a delayed resync while still refreshing the missing snapshot',
+    async cursor => {
+      const send = vi.spyOn(internal, 'send').mockImplementation(() => {})
+      const changed = vi.fn()
+      window.addEventListener('ompiui:sessions-changed', changed)
+      try {
+        raw({ channel: 'control', type: 'resync_required', streams: { server: { cursor: { epoch: 'old', sequence: 10 } } } })
+        handleEvent({ stream: { kind: 'server', id: 'server' }, cursor, channel: 'registry.updated', payload: {} })
+        await vi.advanceTimersByTimeAsync(150)
+        internal.flushSubscribe()
+        expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ cursors: { server: cursor } }))
+        expect(changed).toHaveBeenCalledOnce()
+      } finally {
+        window.removeEventListener('ompiui:sessions-changed', changed)
+      }
+    },
+  )
+
+  it('retries a failed command snapshot on resubscription without replaying later events', async () => {
+    const send = vi.spyOn(internal, 'send').mockImplementation(() => {})
+    const read = vi.spyOn(http, 'piFetch')
+      .mockRejectedValueOnce(new TypeError('Offline'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ command })))
+    raw(omitted('old', 10))
+    handleEvent({ stream: { kind: 'server', id: 'server' }, cursor: { epoch: 'old', sequence: 11 }, channel: 'registry.updated', payload: {} })
+    await vi.advanceTimersByTimeAsync(0)
+    internal.flushSubscribe()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(read).toHaveBeenCalledTimes(2)
+    expect(piCommandStore.get(command.id)?.result).toBe('current')
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ cursors: { server: { epoch: 'old', sequence: 11 } } }))
+  })
+
+  it.each(['epoch', 'backend'] as const)('does not let a previous %s recovery overwrite or detach its replacement', async change => {
+    const old = Promise.withResolvers<Response>()
+    const current = Promise.withResolvers<Response>()
+    const read = vi.spyOn(http, 'piFetch').mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise)
+    const send = vi.spyOn(internal, 'send').mockImplementation(() => {})
+    let generation = 1
+    vi.spyOn(serverStore, 'getActiveServerGeneration').mockImplementation(() => generation)
+    raw(omitted('old', 10))
+    if (change === 'backend') {
+      generation++
+      piEventStream.handleServerChange()
+    }
+    const epoch = change === 'epoch' ? 'new' : 'old'
+    const frame = omitted(epoch, 1)
+    raw(frame)
+    expect(read.mock.calls[0]?.[1]?.signal?.aborted).toBe(true)
+    old.resolve(new Response(JSON.stringify({ command: { ...command, result: 'stale' } })))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(piCommandStore.get(command.id)).toBeNull()
+    raw(frame)
+    expect(read).toHaveBeenCalledTimes(2)
+    current.resolve(new Response(JSON.stringify({ command })))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(piCommandStore.get(command.id)?.result).toBe('current')
+    internal.flushSubscribe()
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ cursors: { server: { epoch, sequence: 1 } } }))
+  })
+
+  it('keeps a newer complete command event when an older HTTP snapshot finally resolves', async () => {
+    const pending = Promise.withResolvers<Response>()
+    vi.spyOn(http, 'piFetch').mockReturnValue(pending.promise)
+    raw(omitted('old', 10))
+    handleEvent({ stream: { kind: 'server', id: 'server' }, cursor: { epoch: 'old', sequence: 11 }, channel: 'command.updated', payload: command })
+    pending.resolve(new Response(JSON.stringify({ command: { ...command, status: 'running', result: 'stale' } })))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(piCommandStore.get(command.id)).toMatchObject({ status: 'completed', result: 'current' })
   })
 })
 

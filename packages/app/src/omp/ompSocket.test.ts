@@ -42,8 +42,12 @@ describe('PiSocket Tauri bridge', () => {
 
     socket.send('hello')
     await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith('ws_bridge_send', { id: 7, data: 'hello' }))
-    bridgeState.channel?.onmessage?.({ type: 'message', data: 'reply' })
+    onMessage.mockImplementationOnce(() => {
+      expect(invokeMock).not.toHaveBeenCalledWith('ws_bridge_ack', expect.any(Object))
+    })
+    bridgeState.channel?.onmessage?.({ type: 'message', sequence: 1, data: 'reply' })
     expect(onMessage).toHaveBeenCalledWith({ data: 'reply' })
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith('ws_bridge_ack', { id: 7, sequence: 1 }))
 
     bridgeState.channel?.onmessage?.({ type: 'close', code: 1000, reason: 'done' })
     expect(socket.readyState).toBe(PI_SOCKET_CLOSED)

@@ -1,6 +1,6 @@
 {
   "name": "@ompiui/server",
-  "version": "0.6.25",
+  "version": "0.6.26",
   "private": true,
   "type": "module",
   "bin": {
@@ -15,13 +15,13 @@
     "start": "node dist/bundle-entry.js web",
     "omp-worker": "node --import tsx src/bundle-entry.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test src/**/*.test.ts"
+    "test": "node --import tsx --test --test-concurrency=2 src/**/*.test.ts"
   },
   "dependencies": {
     "@lydell/node-pty": "^1.2.0-beta.14",
-    "@ompiui/omp-worker": "0.6.25",
-    "@ompiui/protocol": "0.6.25",
-    "@ompiui/relay": "0.6.25",
+    "@ompiui/omp-worker": "0.6.26",
+    "@ompiui/protocol": "0.6.26",
+    "@ompiui/relay": "0.6.26",
     "bun-pty": "^0.4.8",
     "chokidar": "^4.0.3",
     "ws": "^8.21.1"

@@ -1,10 +1,13 @@
 import assert from "node:assert/strict"
-import { createServer, request as httpRequest, type IncomingHttpHeaders, type Server } from "node:http"
+import { createServer, IncomingMessage, request as httpRequest, type IncomingHttpHeaders, type Server } from "node:http"
 import { randomBytes } from "node:crypto"
-import { after, describe, it } from "node:test"
+import { once } from "node:events"
+import { Socket } from "node:net"
+import { Duplex } from "node:stream"
+import { after, describe, it, type TestContext } from "node:test"
 import { WebSocket, WebSocketServer } from "ws"
 import type { TunnelStatus } from "@ompiui/protocol"
-import { CLOSE_UNAUTHORIZED, startRelay, WIRE_VERSION, type RunningRelay } from "@ompiui/relay"
+import { CLOSE_UNAUTHORIZED, serializeRawHead, startRelay, WIRE_VERSION, type RunningRelay } from "@ompiui/relay"
 import { TunnelClient } from "./tunnel-client.ts"
 import { createAppServer } from "../http.ts"
 import { MAX_PAIRING_FAILURES, PairingStore } from "../host/pairing.ts"
@@ -51,6 +54,58 @@ async function waitForStatus(client: TunnelClient, state: TunnelStatus["state"],
     await new Promise(resolve => setTimeout(resolve, 10))
   }
   throw new Error(`expected ${state}: ${JSON.stringify(client.getStatus())}`)
+}
+
+class SlowUpgradeVisitor extends Duplex {
+  readonly chunks: Buffer[] = []
+  pending?: () => void
+
+  constructor() { super({ highWaterMark: 1 }) }
+  override _read(): void {}
+  override _write(chunk: Buffer, _encoding: BufferEncoding, callback: () => void): void {
+    this.chunks.push(Buffer.from(chunk))
+    this.pending = callback
+    this.emit("written")
+  }
+  release(): void {
+    const callback = this.pending
+    this.pending = undefined
+    assert.ok(callback, "expected a blocked visitor write")
+    callback()
+  }
+}
+
+async function upgradeHarness(t: TestContext, eof: boolean) {
+  let local: Socket | undefined
+  const upstream = createServer((_req, res) => res.end("unrelated"))
+  upstream.on("upgrade", (_req, socket) => {
+    local = socket as Socket
+    socket.on("error", noop)
+    // 消费模拟上游的可读端，确保远端 destroy 产生的半关闭能触发 end。
+    socket.resume()
+    const response = "HTTP/1.1 101 Switching Protocols\r\nconnection: upgrade\r\nupgrade: raw\r\n\r\nAB"
+    if (eof) socket.end(response)
+    else socket.write(response)
+  })
+  const localPort = await listen(upstream)
+  t.after(async () => { local?.destroy(); await closeQuietly(upstream) })
+  const relay = await startRelay({ config: { port: 0, tunnels: [{ id: "ompiui", key: KEY }] }, log: noop })
+  t.after(() => closeQuietly(relay))
+  const client = new TunnelClient({ relayUrl: `ws://127.0.0.1:${relay.port}`, key: KEY, localPort }).start()
+  t.after(() => client.stop())
+  await waitForStatus(client, "connected")
+  const req = new IncomingMessage(new Socket())
+  req.url = "/raw"
+  req.method = "GET"
+  req.headers = { connection: "upgrade", upgrade: "raw" }
+  const output = new SlowUpgradeVisitor()
+  output.on("error", noop)
+  t.after(() => { req.socket.destroy(); output.destroy() })
+  const written = once(output, "written")
+  relay.server.emit("upgrade", req, output, Buffer.alloc(0))
+  await written
+  assert.ok(local)
+  return { relay, client, output, local }
 }
 
 describe("TunnelClient against a live relay", () => {
@@ -326,4 +381,44 @@ describe("TunnelClient against a live relay", () => {
     const replaced = await waitForStatus(client, "reconnecting", 2)
     assert.match(replaced.lastError ?? "", /relay rejected the tunnel key/)
   })
+
+  it("normal upgrade EOF drains the complete tail before releasing the slow visitor", { timeout: 10_000 }, async t => {
+    const h = await upgradeHarness(t, true)
+    if (!h.local.closed) await once(h.local, "close")
+    // 本地关闭与随后的 HTTP 响应在生产者 EOF 后建立可观察的屏障，
+    // 无须猜测 socket 或定时器的调度顺序。
+    const other = await request(`http://127.0.0.1:${h.relay.port}/other`)
+    assert.equal(other.body.toString(), "unrelated")
+    assert.equal(h.output.destroyed, false)
+    assert.equal(h.output.writableEnded, false)
+    assert.equal(h.relay.tunnelStatus()[0]!.connections, 1)
+    const finished = once(h.output, "finish")
+    while (h.output.pending) h.output.release()
+    await finished
+    const expected = Buffer.concat([serializeRawHead(101, { connection: "upgrade", upgrade: "raw" }), Buffer.from("AB")])
+    assert.deepEqual(Buffer.concat(h.output.chunks), expected)
+    assert.equal(h.output.listenerCount("drain"), 0)
+    assert.equal(h.relay.tunnelStatus()[0]!.connections, 0)
+  })
+
+  for (const cause of ["upstream reset", "visitor cancel"] as const) {
+    it(`${cause} promptly discards only that upgrade's queued response`, { timeout: 10_000 }, async t => {
+      const h = await upgradeHarness(t, false)
+      // end 只表示对端不再发送数据；半关闭时本地仍可写，不能把它误等成 close。
+      const localEnded = once(h.local, "end")
+      const localClosed = once(h.local, "close")
+      const closed = once(h.output, "close")
+      if (cause === "upstream reset") h.local.resetAndDestroy()
+      else h.output.destroy()
+      await closed
+      if (cause === "upstream reset") await localClosed
+      else await localEnded
+      assert.equal(h.output.listenerCount("drain"), 0)
+      const other = await request(`http://127.0.0.1:${h.relay.port}/other`)
+      assert.equal(other.status, 200)
+      assert.equal(other.body.toString(), "unrelated")
+      assert.equal(h.client.getStatus().state, "connected")
+      assert.equal(h.relay.tunnelStatus()[0]!.connections, 0)
+    })
+  }
 })

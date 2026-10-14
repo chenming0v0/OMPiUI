@@ -36,7 +36,7 @@ export type TerminalUpdateParams = {
 }
 
 export type TerminalStreamClientFrame =
-  | { type: "input"; data: string }
+  | { type: "input"; data: string; inputId?: number }
   | { type: "resize"; rows: number; cols: number }
   | { type: "ping"; protocolVersion: typeof TERMINAL_STREAM_PROTOCOL_VERSION }
 
@@ -46,10 +46,13 @@ export type TerminalStreamServerFrame =
       protocolVersion: typeof TERMINAL_STREAM_PROTOCOL_VERSION
       terminal: TerminalInfo
       cursor: number
+      inputAck?: true
     }
   | { type: "output"; cursor: number; data: string }
   | { type: "title"; title: string }
   | { type: "ready"; cursor: number }
+  | { type: "input_ack"; inputId: number; accepted: true }
+  | { type: "input_ack"; inputId: number; accepted: false; retryAfterMs: number }
   | { type: "exit"; cursor: number; exitCode: number | null }
   | { type: "pong"; protocolVersion: typeof TERMINAL_STREAM_PROTOCOL_VERSION; t: number }
   | { type: "problem"; problem: Problem }

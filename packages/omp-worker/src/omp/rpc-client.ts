@@ -8,6 +8,7 @@ import type { JsonObject, JsonValue } from "@ompiui/protocol"
 import { isJsonObject } from "@ompiui/protocol"
 import { runtimePolicyArgs } from "./runtime-policy.js"
 import { RpcLineReader } from "./rpc-line-reader.js"
+import { OmpStdinSender, type StdinWriteHandle } from "./stdin-sender.js"
 
 /**
  * 可选的 OMP 兼容配置覆盖：`~/.ompiui/omp-compat.yml` 存在时以 `--config`
@@ -56,7 +57,7 @@ export interface OmpRpcResponse {
 }
 
 export class OmpRpcError extends Error {
-  constructor(message: string, readonly code?: string) {
+  constructor(message: string, readonly code?: string, readonly delivery?: "unsent" | "unknown") {
     super(message)
     this.name = "OmpRpcError"
   }
@@ -74,12 +75,14 @@ const MAX_TOTAL_CHUNK_BYTES = 64 * 1024 * 1024
 export class OmpRpcClient extends EventEmitter {
   readonly proc: ChildProcess
   private readonly stdoutReader: RpcLineReader
+  private stdinSender?: OmpStdinSender
   private nextId = 0
   private readonly pending = new Map<string, {
     commandType: string
     resolve: (response: OmpRpcResponse) => void
     reject: (error: Error) => void
     timer: NodeJS.Timeout
+    write?: StdinWriteHandle
   }>()
   private readonly chunks = new Map<string, {
     parts: Map<number, Buffer>
@@ -116,6 +119,7 @@ export class OmpRpcClient extends EventEmitter {
       shell: process.platform === "win32" && !/\.exe$/i.test(bin),
       windowsHide: true,
     })
+    this.getStdinSender()
     this.stdoutReader = new RpcLineReader(
       line => this.handleStdoutLine(line),
       () => this.proc.stdout!.pause(),
@@ -159,6 +163,7 @@ export class OmpRpcClient extends EventEmitter {
     let exitGrace: NodeJS.Timeout | undefined
     this.proc.on("exit", (code, signal) => {
       if (this.exited || exitGrace) return
+      this.stdinSender?.close(new OmpRpcError("omp RPC process exited", "OMP_EXITED"))
       exitGrace = setTimeout(() => finalizeExit(code, signal), EXIT_STDOUT_GRACE_MS)
       exitGrace.unref()
     })
@@ -396,42 +401,68 @@ export class OmpRpcClient extends EventEmitter {
     if (this.stderrBuffer.length > 200) this.stderrBuffer.splice(0, this.stderrBuffer.length - 200)
   }
 
+  private getStdinSender(): OmpStdinSender {
+    return this.stdinSender ??= new OmpStdinSender(this.proc.stdin!, error => {
+      if (this.exited) return
+      this.exitError = new OmpRpcError(`omp RPC stdin failed: ${error.message}; command result unknown`, "OMP_STDIN_ERROR", "unknown")
+      this.emitProtocolError(this.exitError.message)
+      this.failAllPending()
+      // JSONL 可能只写出一部分，断开的 stdin 不能继续发送或安全重放。
+      this.kill("stdin_error")
+    })
+  }
+
   async request<T extends JsonValue = JsonValue>(command: JsonObject, timeoutMs = 60_000): Promise<OmpRpcResponse & { data?: T }> {
     const id = `req_${++this.nextId}`
     const commandType = typeof command.type === "string" ? command.type : ""
     const full: JsonObject = { id, ...command }
     return new Promise((resolve, reject) => {
       if (this.exited) {
-        reject(new OmpRpcError("omp RPC process has exited", "OMP_EXITED"))
+        reject(new OmpRpcError("omp RPC process has exited", "OMP_EXITED", "unsent"))
         return
       }
       const timer = setTimeout(() => {
+        if (this.pending.get(id) !== pending) return
         this.pending.delete(id)
-        reject(new OmpRpcError(`omp RPC command timed out: ${String(command.type)}`, "OMP_TIMEOUT"))
+        const sent = pending.write?.sent === true
+        pending.write?.cancel()
+        reject(new OmpRpcError(
+          `omp RPC command timed out: ${commandType}${sent ? "; command result unknown" : "; cancelled before stdin write"}`,
+          "OMP_TIMEOUT", sent ? "unknown" : "unsent",
+        ))
       }, timeoutMs)
       timer.unref()
-      this.pending.set(id, {
+      const pending = {
         commandType,
         resolve: resolve as (response: OmpRpcResponse) => void,
         reject,
         timer,
-      })
-      try {
-        this.proc.stdin!.write(JSON.stringify(full) + "\n")
-      } catch (error) {
+        write: undefined as StdinWriteHandle | undefined,
+      }
+      this.pending.set(id, pending)
+      const writeDone = (error: Error | undefined, sent: boolean): void => {
+        if (!error || this.pending.get(id) !== pending) return
         this.pending.delete(id)
         clearTimeout(timer)
-        reject(error instanceof Error ? error : new Error(String(error)))
+        const code = "code" in error && typeof error.code === "string" ? error.code : "OMP_STDIN_ERROR"
+        reject(new OmpRpcError(
+          `omp RPC stdin write failed: ${error.message}${sent ? "; command result unknown" : "; command not sent"}`,
+          code, sent ? "unknown" : "unsent",
+        ))
+      }
+      try {
+        pending.write = this.getStdinSender().write(JSON.stringify(full) + "\n", writeDone)
+      } catch (error) {
+        writeDone(error instanceof Error ? error : new Error(String(error)), false)
       }
     })
   }
 
   send(command: JsonObject): void {
-    try {
-      this.proc.stdin!.write(JSON.stringify(command) + "\n")
-    } catch {
-      /* 通道已断 */
-    }
+    if (this.exited) throw new OmpRpcError("omp RPC process has exited", "OMP_EXITED", "unsent")
+    this.getStdinSender().write(JSON.stringify(command) + "\n", (error, sent) => {
+      if (error) this.emitProtocolError(`stdin ${sent ? "write failed (result unknown)" : "command not sent"}: ${error.message}`)
+    })
   }
 
   writeExtensionUiResponse(response: JsonObject): void {
@@ -441,7 +472,7 @@ export class OmpRpcClient extends EventEmitter {
   async close(): Promise<void> {
     this.exitReason = "host_dispose"
     try {
-      this.proc.stdin!.end()
+      this.getStdinSender().end()
     } catch {
       /* already closed */
     }
@@ -454,6 +485,7 @@ export class OmpRpcClient extends EventEmitter {
 
   kill(reason = "forced_stop"): void {
     this.exitReason = reason
+    this.stdinSender?.close(new OmpRpcError("omp RPC process stopping", "OMP_EXITED"))
     try {
       if (process.platform === "win32" && this.proc.pid) {
         spawn("taskkill", ["/pid", String(this.proc.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true })
@@ -470,7 +502,7 @@ export class OmpRpcClient extends EventEmitter {
   private takePendingByCommand(command: string): { reject: (error: Error) => void; timer: NodeJS.Timeout } | undefined {
     if (!command) return undefined
     for (const [id, pending] of this.pending) {
-      if (pending.commandType !== command) continue
+      if (pending.commandType !== command || !pending.write?.sent) continue
       this.pending.delete(id)
       clearTimeout(pending.timer)
       return pending
@@ -479,9 +511,15 @@ export class OmpRpcClient extends EventEmitter {
   }
 
   private failAllPending(): void {
+    const error = this.exitError ?? new OmpRpcError("omp RPC process exited", "OMP_EXITED")
+    this.stdinSender?.close(error)
     for (const [id, pending] of this.pending) {
       clearTimeout(pending.timer)
-      pending.reject(this.exitError ?? new OmpRpcError("omp RPC process exited", "OMP_EXITED"))
+      const sent = pending.write?.sent === true
+      pending.reject(new OmpRpcError(
+        `${error.message}${sent ? "; command result unknown" : "; command not sent"}`,
+        error instanceof OmpRpcError ? error.code : "OMP_EXITED", sent ? "unknown" : "unsent",
+      ))
       this.pending.delete(id)
     }
     for (const [chunkId, entry] of this.chunks) {

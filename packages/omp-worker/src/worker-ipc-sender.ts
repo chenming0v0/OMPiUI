@@ -1,15 +1,44 @@
-import type { WorkerMessage } from "./ipc.js"
+import type { WorkerMessage, WorkerResponse } from "./ipc.js"
 import { jsonByteSize } from "@ompiui/protocol"
 
-type QueuedMessage = { message: WorkerMessage; bytes: number; done?: (error?: Error) => void }
+type QueuedMessage = {
+  message: WorkerMessage
+  bytes: number
+  done?: (error?: Error) => void
+  completed?: boolean
+}
 
-/** 只允许一个 IPC 发送在途；排队过多时暂停 RPC 输入，不让序列化队列无限增长。 */
+export interface WorkerResponseReservation {
+  send: (message: WorkerResponse) => Promise<void>
+  cancel: () => void
+  release: () => void
+}
+
+type Reservation = { bytes: number; item?: QueuedMessage; released: boolean }
+
+function capacityError(): Error {
+  return Object.assign(new Error("worker IPC output capacity reached"), { code: "RATE_LIMITED" })
+}
+
+/** 硬上限包含发送中的消息及生成响应前预留的容量。 */
 export class WorkerIpcSender {
   private readonly queue: QueuedMessage[] = []
+  private readonly control: QueuedMessage[] = []
+  private readonly reservations = new Set<Reservation>()
+  private readonly writableListeners = new Set<() => void>()
   private heartbeat?: QueuedMessage
-  private sending = false
+  private sending?: QueuedMessage
   private paused = false
   private pendingBytes = 0
+  private pendingCount = 0
+  private reservedBytes = 0
+  private reservedCount = 0
+  private closed?: Error
+
+  get isPaused(): boolean { return this.paused }
+  get responseByteLimit(): number { return this.highWaterBytes - this.controlBytes }
+  private get controlBytes(): number { return Math.min(64 * 1024, Math.max(64, Math.floor(this.highWaterBytes / 8))) }
+  private get normalCountLimit(): number { return Math.max(1, this.highWaterMark * 2) }
 
   constructor(
     private readonly transmit: (message: WorkerMessage, done: (error?: Error) => void) => void,
@@ -19,41 +48,177 @@ export class WorkerIpcSender {
   ) {}
 
   send(message: WorkerMessage, done?: (error?: Error) => void): void {
-    const item = { message, done, bytes: jsonByteSize(message, this.highWaterBytes) }
-    if (message.kind === "heartbeat") {
-      if (this.heartbeat) this.pendingBytes -= this.heartbeat.bytes
-      this.heartbeat = item
-    } else this.queue.push(item)
-    this.pendingBytes += item.bytes
+    this.enqueue(message, false, done)
+  }
+
+  /** 小型预留通道只承载协议错误与最终崩溃或释放通知，不承载数据页。 */
+  sendControl(message: WorkerMessage, done?: (error?: Error) => void): void {
+    this.enqueue(message, true, done)
+  }
+
+  onWritable(listener: () => void): () => void {
+    this.writableListeners.add(listener)
+    return () => this.writableListeners.delete(listener)
+  }
+
+  tryReserveResponse(bytes: number, priority = false): WorkerResponseReservation | undefined {
+    if (this.closed || bytes > this.responseByteLimit ||
+      this.pendingBytes + this.reservedBytes + bytes > this.responseByteLimit ||
+      this.pendingCount + this.reservedCount >= this.normalCountLimit ||
+      (!priority && this.reservations.size >= Math.max(1, Math.floor(this.normalCountLimit / 2)))) return undefined
+    const reservation: Reservation = { bytes, released: false }
+    this.reservations.add(reservation)
+    this.reservedBytes += bytes
+    this.reservedCount++
+    this.updateBackpressure()
+    const release = () => {
+      if (reservation.released || reservation.item) return
+      reservation.released = true
+      this.reservations.delete(reservation)
+      this.reservedBytes -= bytes
+      this.reservedCount--
+      this.capacityChanged()
+    }
+    return {
+      send: message => new Promise<void>((resolve, reject) => {
+        if (reservation.released || reservation.item || this.closed) {
+          reject(this.closed ?? new Error("worker response reservation already consumed"))
+          return
+        }
+        let size = jsonByteSize(message, bytes)
+        if (size > bytes) {
+          message = {
+            kind: "response", id: message.id, generation: message.generation, ok: false,
+            error: { code: "FILE_TOO_LARGE", message: "Worker response exceeds its IPC byte budget; request a smaller page" },
+          }
+          size = jsonByteSize(message, bytes)
+        }
+        if (size > bytes) {
+          reject(capacityError())
+          return
+        }
+        const item: QueuedMessage = {
+          message, bytes: size,
+          done: error => {
+            reservation.released = true
+            this.reservations.delete(reservation)
+            if (error) reject(error)
+            else resolve()
+          },
+        }
+        reservation.item = item
+        this.reservedBytes -= bytes
+        this.reservedCount--
+        this.pendingBytes += size
+        this.pendingCount++
+        this.queue.push(item)
+        this.updateBackpressure()
+        this.drain()
+      }),
+      cancel: () => {
+        const item = reservation.item
+        // 正在执行的生产者结算前持续占用预留；若取消时提前退款，
+        // 仍在运行的读取任务就可能无限增加。
+        if (!item || item === this.sending || item.completed) return
+        const index = this.queue.indexOf(item)
+        if (index < 0) return
+        this.queue.splice(index, 1)
+        this.finish(item, Object.assign(new Error("worker request cancelled"), { code: "REQUEST_ABORTED" }))
+        this.capacityChanged()
+      },
+      release,
+    }
+  }
+
+  close(error: Error): void {
+    if (this.closed) return
+    this.closed = error
+    for (const item of this.queue.splice(0)) this.finish(item, error)
+    for (const item of this.control.splice(0)) this.finish(item, error)
+    if (this.heartbeat) this.finish(this.heartbeat, error)
+    if (this.sending) this.finish(this.sending, error)
+    this.heartbeat = undefined
+    this.sending = undefined
+    for (const reservation of this.reservations) reservation.released = true
+    this.reservations.clear()
+    this.reservedBytes = 0
+    this.reservedCount = 0
+    this.writableListeners.clear()
+  }
+
+  private enqueue(message: WorkerMessage, control: boolean, done?: (error?: Error) => void): void {
+    if (this.closed) {
+      if (done) done(this.closed)
+      else throw this.closed
+      return
+    }
+    const heartbeat = message.kind === "heartbeat"
+    const limit = control || heartbeat ? this.controlBytes : this.responseByteLimit
+    const bytes = jsonByteSize(message, limit)
+    const previous = heartbeat ? this.heartbeat : undefined
+    if (bytes > limit ||
+      this.pendingBytes + this.reservedBytes - (previous?.bytes ?? 0) + bytes > (control || heartbeat ? this.highWaterBytes : this.responseByteLimit) ||
+      this.pendingCount + this.reservedCount - (previous ? 1 : 0) >= (control || heartbeat ? this.highWaterMark * 2 : this.normalCountLimit)) {
+      const error = capacityError()
+      if (done) done(error)
+      else throw error
+      return
+    }
+    const item: QueuedMessage = { message, bytes, done }
+    if (previous) {
+      this.finish(previous, Object.assign(new Error("heartbeat replaced by a newer timestamp"), { code: "IPC_HEARTBEAT_SUPERSEDED" }))
+    }
+    if (heartbeat) this.heartbeat = item
+    else if (control) this.control.push(item)
+    else this.queue.push(item)
+    this.pendingBytes += bytes
+    this.pendingCount++
     this.updateBackpressure()
     this.drain()
   }
 
+  private finish(item: QueuedMessage, error?: Error): void {
+    if (item.completed) return
+    item.completed = true
+    this.pendingBytes -= item.bytes
+    this.pendingCount--
+    item.done?.(error)
+  }
+
+  private capacityChanged(): void {
+    this.drain()
+    // 新释放的容量先供待准入任务使用，然后再恢复 stdout。
+    for (const listener of this.writableListeners) listener()
+    this.updateBackpressure()
+  }
+
   private updateBackpressure(): void {
-    const paused = this.paused
-      ? this.queue.length > this.highWaterMark / 2 || this.pendingBytes > this.highWaterBytes / 2
-      : this.queue.length >= this.highWaterMark || this.pendingBytes >= this.highWaterBytes
+    const byteLimit = Math.max(1, this.responseByteLimit - this.reservedBytes)
+    const countLimit = Math.max(1, this.normalCountLimit - this.reservedCount)
+    const fraction = this.paused ? 0.25 : 0.5
+    const paused = this.pendingCount > 0 &&
+      (this.pendingCount >= countLimit * fraction || this.pendingBytes >= byteLimit * fraction)
     if (paused === this.paused) return
     this.paused = paused
     this.backpressure(paused)
   }
 
   private drain(): void {
-    if (this.sending) return
-    const item = this.heartbeat ?? this.queue.shift()
-    if (!item) {
-      this.updateBackpressure()
-      return
-    }
+    if (this.closed || this.sending) return
+    const item = this.heartbeat ?? this.control.shift() ?? this.queue.shift()
+    if (!item) return
     if (item === this.heartbeat) this.heartbeat = undefined
-    this.sending = true
-    this.transmit(item.message, error => {
-      this.sending = false
-      this.pendingBytes -= item.bytes
-      item.done?.(error)
-      // 背压释放可能同步读取更多帧；先让已有队列推进。
-      this.drain()
-      this.updateBackpressure()
-    })
+    this.sending = item
+    const done = (error?: Error) => {
+      if (item.completed) return
+      this.sending = undefined
+      this.finish(item, error)
+      this.capacityChanged()
+    }
+    try {
+      this.transmit(item.message, done)
+    } catch (error) {
+      done(error instanceof Error ? error : new Error(String(error)))
+    }
   }
 }

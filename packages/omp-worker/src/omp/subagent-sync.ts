@@ -3,6 +3,7 @@ import type { FileHandle } from "node:fs/promises";
 import type { Stats } from "node:fs";
 import {
   isJsonObject,
+  jsonByteSize,
   subagentBlockHash,
   subagentDigest,
   type JsonObject,
@@ -12,10 +13,13 @@ import {
 } from "@ompiui/protocol";
 import { jsonlEntries } from "./jsonl-reader.js";
 import { getPreviewSettings } from "./preview-settings.js";
-import { projectPreviewMessage } from "./subagent-preview.js";
+import {
+  projectPreviewMessage,
+  SUBAGENT_PREVIEW_BYTES,
+  type ProjectedPreviewMessage,
+} from "./subagent-preview.js";
 
 const BLOCK_BYTES = 256 * 1024;
-const RESPONSE_BYTES = 256 * 1024;
 const CACHE_BYTES = 32 * 1024 * 1024;
 const cache = new Map<
   string,
@@ -53,10 +57,11 @@ async function readBlock(
   size: number,
   projection: string,
   thinking: boolean,
+  messageBytes: number,
 ): Promise<{ block: SubagentDataBlock; bytes: number; incomplete: boolean }> {
   const messages: JsonObject[] = [];
   let nextByte = fromByte;
-  let bytes = 0;
+  let bytes = 2;
   let previewTruncated = false;
   let incomplete = false;
   for await (const line of jsonlEntries(file, fromByte, size)) {
@@ -70,9 +75,26 @@ async function readBlock(
       line.entry.type === "message" &&
       isJsonObject(line.entry.message)
     ) {
-      const projected = projectPreviewMessage(line.entry.message, thinking);
-      const length = Buffer.byteLength(JSON.stringify(projected.message));
-      if (messages.length && bytes + length > RESPONSE_BYTES) break;
+      let projected: ProjectedPreviewMessage;
+      try {
+        projected = projectPreviewMessage(line.entry.message, thinking, {
+          fromByte: nextByte,
+          nextByte: nextByte + line.bytes,
+        });
+      } catch (error) {
+        if (!messages.length || !(error instanceof Error) ||
+            !("code" in error) || error.code !== "FILE_TOO_LARGE") throw error;
+        break;
+      }
+      const length = jsonByteSize(projected.message, messageBytes) + (messages.length ? 1 : 0);
+      if (bytes + length > messageBytes) {
+        if (!messages.length)
+          throw Object.assign(new Error("Subagent preview entry exceeds 256 KiB"), {
+            code: "FILE_TOO_LARGE",
+            details: { fromByte: nextByte, nextByte: nextByte + line.bytes, limitBytes: SUBAGENT_PREVIEW_BYTES },
+          });
+        break;
+      }
       messages.push(projected.message);
       bytes += length;
       previewTruncated ||= projected.truncated;
@@ -81,9 +103,10 @@ async function readBlock(
     if (nextByte - fromByte >= BLOCK_BYTES || messages.length >= 200) break;
   }
   const body = { fromByte, nextByte, messages, previewTruncated };
+  const block: SubagentDataBlock = { ...body, kind: "data", hash: subagentBlockHash(projection, body) };
   return {
-    block: { ...body, kind: "data", hash: subagentBlockHash(projection, body) },
-    bytes,
+    block,
+    bytes: jsonByteSize(block, SUBAGENT_PREVIEW_BYTES),
     incomplete,
   };
 }
@@ -99,7 +122,7 @@ export async function readSubagentSync(
       code: "INVALID_REQUEST",
     });
   const settings = getPreviewSettings();
-  const projection = `subagent-preview-v1:thinking-${settings.subagentThinking ? "on" : "off"}`;
+  const projection = `subagent-preview-v2:thinking-${settings.subagentThinking ? "on" : "off"}`;
   const file = await open(filePath, "r");
   try {
     const stat = await file.stat();
@@ -109,7 +132,18 @@ export async function readSubagentSync(
     let position = reset ? 0 : fromByte;
     const start = position;
     const blocks: SubagentSyncPage["blocks"] = [];
-    let sentBytes = 0;
+    // 为完整页和块封装预留空间；使用最大游标宽度以保持追加前后的块边界稳定。
+    const envelopeBytes = jsonByteSize({
+      syncVersion: 1, snapshot, projection, blocks: [],
+      fromByte: Number.MAX_SAFE_INTEGER, nextByte: Number.MAX_SAFE_INTEGER,
+      reset: false, hasMore: false,
+    }, SUBAGENT_PREVIEW_BYTES);
+    const blockEnvelopeBytes = jsonByteSize({
+      kind: "data", hash: snapshot, messages: [], previewTruncated: false,
+      fromByte: Number.MAX_SAFE_INTEGER, nextByte: Number.MAX_SAFE_INTEGER,
+    }, SUBAGENT_PREVIEW_BYTES);
+    const messageBytes = SUBAGENT_PREVIEW_BYTES - envelopeBytes - blockEnvelopeBytes + 2;
+    let sentBytes = envelopeBytes;
     let incomplete = false;
     const known = new Map(
       sync.knownBlocks.map((block) => [block.fromByte, block]),
@@ -118,13 +152,20 @@ export async function readSubagentSync(
       const key = `${snapshot}:${position}`;
       let cached = cache.get(key);
       if (!cached) {
-        cached = await readBlock(
-          file,
-          position,
-          stat.size,
-          projection,
-          settings.subagentThinking,
-        );
+        try {
+          cached = await readBlock(
+            file,
+            position,
+            stat.size,
+            projection,
+            settings.subagentThinking,
+            messageBytes,
+          );
+        } catch (error) {
+          if (!blocks.length || !(error instanceof Error) ||
+              !("code" in error) || error.code !== "FILE_TOO_LARGE") throw error;
+          break;
+        }
         cachedBytes -= cache.get(key)?.bytes ?? 0;
         cache.set(key, cached);
         cachedBytes += cached.bytes;
@@ -148,22 +189,29 @@ export async function readSubagentSync(
       const match = known.get(position);
       const reuse =
         match?.nextByte === block.nextByte && match.hash === block.hash;
-      if (!reuse && sentBytes && sentBytes + bytes > RESPONSE_BYTES) break;
-      blocks.push(
-        reuse
-          ? {
-              kind: "reuse",
-              fromByte: block.fromByte,
-              nextByte: block.nextByte,
-              hash: block.hash,
-              previewTruncated: block.previewTruncated,
-            }
-          : block,
-      );
-      sentBytes += reuse ? 0 : bytes;
+      const ref = reuse
+        ? {
+            kind: "reuse" as const,
+            fromByte: block.fromByte,
+            nextByte: block.nextByte,
+            hash: block.hash,
+            previewTruncated: block.previewTruncated,
+          }
+        : block;
+      const length = (reuse ? jsonByteSize(ref, SUBAGENT_PREVIEW_BYTES) : bytes) + (blocks.length ? 1 : 0);
+      if (sentBytes + length > SUBAGENT_PREVIEW_BYTES) {
+        if (!blocks.length)
+          throw Object.assign(new Error("Subagent preview block exceeds 256 KiB"), {
+            code: "FILE_TOO_LARGE",
+            details: { fromByte: block.fromByte, nextByte: block.nextByte, limitBytes: SUBAGENT_PREVIEW_BYTES },
+          });
+        break;
+      }
+      blocks.push(ref);
+      sentBytes += length;
       position = block.nextByte;
       incomplete = cached.incomplete;
-      if (incomplete || sentBytes >= RESPONSE_BYTES) break;
+      if (incomplete || sentBytes >= SUBAGENT_PREVIEW_BYTES) break;
     }
     if (snapshotFor(filePath, await file.stat(), projection) !== snapshot)
       throw expired();

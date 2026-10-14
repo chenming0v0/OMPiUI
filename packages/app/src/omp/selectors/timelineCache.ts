@@ -18,12 +18,28 @@ import { buildPiHistoryItems, buildPiLiveItems } from './index.js'
  * chunk from the checkpoint — caching it too would freeze the streaming text
  * (the "content pops out only at the end" bug), because updateLiveMessage
  * keeps `items` identity while updating `checkpoint.liveMessage`.
- * When `items` is a different array (branch.get refresh merged entries,
- * prepend loaded older history, tool results paired), the history is rebuilt
- * from scratch — a full rebuild is O(n) but happens once per event, not per
- * token.
+ * 分页后按原生条目引用复用未变的渲染对象；工具结果补齐时只替换对应助手。
  */
-let historyCache = new WeakMap<readonly unknown[], PiTimelineItem[]>()
+let historyCache = new WeakMap<readonly unknown[], {
+  items: PiTimelineItem[]
+  stableEntryIds: NonNullable<PiBranchPage['client']>['stableEntryIds']
+}>()
+let entryCache = new WeakMap<object, PiTimelineItem>()
+
+function reuseHistoryItem(item: PiTimelineItem): PiTimelineItem {
+  if (item.kind === 'bash_execution_group') return item
+  const previous = entryCache.get(item.rawEntry)
+  if (previous?.kind === item.kind && previous.renderKey === item.renderKey) {
+    if (previous.kind !== 'assistant_message' || item.kind !== 'assistant_message') return previous
+    const ids = Object.keys(item.toolResults)
+    if (
+      ids.length === Object.keys(previous.toolResults).length &&
+      ids.every(id => previous.toolResults[id] === item.toolResults[id])
+    ) return previous
+  }
+  entryCache.set(item.rawEntry, item)
+  return item
+}
 
 /**
  * Select timeline items for a session with stable references while the
@@ -44,11 +60,11 @@ export function selectPiTimelineItemsCached(
 
   const cached = historyCache.get(branch.items)
   let history: PiTimelineItem[]
-  if (cached) {
-    history = cached
+  if (cached && cached.stableEntryIds === branch.client?.stableEntryIds) {
+    history = cached.items
   } else {
-    history = buildPiHistoryItems(branch)
-    historyCache.set(branch.items, history)
+    history = buildPiHistoryItems(branch).map(reuseHistoryItem)
+    historyCache.set(branch.items, { items: history, stableEntryIds: branch.client?.stableEntryIds })
   }
 
   const liveItems = buildPiLiveItems(branch)
@@ -59,4 +75,5 @@ export function selectPiTimelineItemsCached(
 /** Drop all cached timeline items (server switch / logout). */
 export function clearPiTimelineItemCache(): void {
   historyCache = new WeakMap()
+  entryCache = new WeakMap()
 }

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { mkdir, rm, stat, utimes, writeFile } from "node:fs/promises"
 import { readFileSync, rmSync } from "node:fs"
 import path from "node:path"
+import { setTimeout as delay } from "node:timers/promises"
 
 const DEFAULT_STALE_MS = 60_000
 const DEFAULT_TIMEOUT_MS = 15_000
@@ -13,16 +14,23 @@ export interface DirectoryLock {
 export async function acquireDirectoryLock(
   root: string,
   key: string,
-  options: { staleMs?: number; timeoutMs?: number; busyCode?: "SESSION_BUSY" | "WORKSPACE_BUSY" } = {},
+  options: { staleMs?: number; timeoutMs?: number; busyCode?: "SESSION_BUSY" | "WORKSPACE_BUSY"; signal?: AbortSignal } = {},
 ): Promise<DirectoryLock> {
   const staleMs = options.staleMs ?? DEFAULT_STALE_MS
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const lockRoot = path.resolve(root)
   const lockPath = path.join(lockRoot, `${createHash("sha256").update(key).digest("hex")}.lock`)
   const deadline = Date.now() + timeoutMs
+  const checkCancelled = () => {
+    if (options.signal?.aborted) {
+      throw Object.assign(new Error("lock acquisition cancelled"), { code: "REQUEST_ABORTED" })
+    }
+  }
 
+  checkCancelled()
   await mkdir(lockRoot, { recursive: true })
   while (true) {
+    checkCancelled()
     const token = randomUUID()
     let created = false
     try {
@@ -35,6 +43,7 @@ export async function acquireDirectoryLock(
       )
       const heartbeatPath = path.join(lockPath, "heartbeat")
       await writeFile(heartbeatPath, "", { flag: "wx", mode: 0o600 })
+      checkCancelled()
       const timer = setInterval(() => {
         const now = new Date()
         void utimes(heartbeatPath, now, now).catch(() => undefined)
@@ -71,7 +80,12 @@ export async function acquireDirectoryLock(
           retryable: true,
         })
       }
-      await new Promise(resolve => setTimeout(resolve, 25))
+      try {
+        await delay(25, undefined, { signal: options.signal })
+      } catch (error) {
+        checkCancelled()
+        throw error
+      }
     }
   }
 }

@@ -8,40 +8,58 @@ import type {
 } from "@ompiui/protocol";
 import type { WorkspaceRecord } from "./workspace-store.ts";
 import { resolveWorkspacePath } from "./path-safety.ts";
-import { utf8Prefix } from "@ompiui/protocol";
+import { jsonByteSize, utf8Prefix } from "@ompiui/protocol";
 import { QueryPool, requestAborted } from "./query-pool.ts";
 
 const searchPool = new QueryPool(4);
-const searchFlights = new Map<string, Promise<FileNameSearchResponse | FileTextSearchResponse>>();
+type SearchFlight = {
+  controller: AbortController;
+  users: number;
+  settled: boolean;
+  value: Promise<FileNameSearchResponse | FileTextSearchResponse>;
+};
+const searchFlights = new Map<string, SearchFlight>();
 
 function sharedSearch<T extends FileNameSearchResponse | FileTextSearchResponse>(
   key: string,
   signal: AbortSignal | undefined,
-  operation: (signal?: AbortSignal) => Promise<T>,
+  operation: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
-  const current = searchFlights.get(key);
-  if (current) return awaitWithAbort(current as Promise<T>, signal);
-  const flight = operation(undefined).finally(() => {
-    if (searchFlights.get(key) === flight) searchFlights.delete(key);
-  });
-  searchFlights.set(key, flight);
-  return awaitWithAbort(flight, signal);
-}
-
-function awaitWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return promise;
-  if (signal.aborted) return Promise.reject(requestAborted());
+  if (signal?.aborted) return Promise.reject(requestAborted());
+  let flight = searchFlights.get(key);
+  if (!flight) {
+    const controller = new AbortController();
+    const owned: SearchFlight = {
+      controller,
+      users: 0,
+      settled: false,
+      value: Promise.resolve().then(() => operation(controller.signal)).finally(() => {
+        owned.settled = true;
+        if (searchFlights.get(key) === owned) searchFlights.delete(key);
+      }),
+    };
+    searchFlights.set(key, owned);
+    flight = owned;
+  }
+  const owned = flight;
+  owned.users++;
   return new Promise<T>((resolve, reject) => {
     let done = false;
-    const finish = (error?: unknown, value?: T) => {
+    const finish = (error?: unknown, value?: FileNameSearchResponse | FileTextSearchResponse) => {
       if (done) return;
       done = true;
-      signal.removeEventListener("abort", abort);
-      error ? reject(error) : resolve(value as T);
+      signal?.removeEventListener("abort", abort);
+      if (--owned.users === 0 && !owned.settled) {
+        if (searchFlights.get(key) === owned) searchFlights.delete(key);
+        owned.controller.abort();
+      }
+      if (error) reject(error);
+      else resolve(value as T);
     };
     const abort = () => finish(requestAborted());
-    signal.addEventListener("abort", abort, { once: true });
-    promise.then(value => finish(undefined, value), finish);
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+    owned.value.then(value => finish(undefined, value), error => finish(error));
   });
 }
 
@@ -64,6 +82,16 @@ const MAX_QUERY_BYTES = 64 * 1024;
 const MAX_RESULT_BYTES = 2 * 1024 * 1024;
 const MAX_LINE_BYTES = 8192;
 const MAX_SUBMATCHES = 200;
+// 按计数器和整数耗时的最大长度预留完整封装；
+// JSON 中有限非负整数的最长表示为 23 字节。
+const MAX_RESULT_STATS: FileSearchStats = {
+  visited: MAX_VISIT,
+  scannedFiles: MAX_VISIT,
+  scannedBytes: MAX_TEXT_TOTAL_BYTES,
+  durationMs: Number.MAX_VALUE,
+  truncated: false,
+  limitReason: "results",
+};
 
 export async function searchFilesByName(
   ws: WorkspaceRecord,
@@ -75,7 +103,9 @@ export async function searchFilesByName(
   } = {},
 ): Promise<FileNameSearchResponse> {
   const key = `name:${ws.canonicalRoot}\0${query}\0${opts.type ?? ""}\0${opts.limit ?? ""}`;
-  return sharedSearch(key, opts.signal, () => searchPool.run(undefined, () => searchFilesByNameInSlot(ws, query, { ...opts, signal: undefined })));
+  return sharedSearch(key, opts.signal, signal =>
+    searchPool.run(signal, () => searchFilesByNameInSlot(ws, query, { ...opts, signal })),
+  );
 }
 
 async function searchFilesByNameInSlot(
@@ -125,7 +155,9 @@ export async function searchWorkspaceText(
   opts: { limit?: number; signal?: AbortSignal } = {},
 ): Promise<FileTextSearchResponse> {
   const key = `text:${ws.canonicalRoot}\0${pattern}\0${opts.limit ?? ""}`;
-  return sharedSearch(key, opts.signal, () => searchPool.run(undefined, () => searchWorkspaceTextInSlot(ws, pattern, { ...opts, signal: undefined })));
+  return sharedSearch(key, opts.signal, signal =>
+    searchPool.run(signal, () => searchWorkspaceTextInSlot(ws, pattern, { ...opts, signal })),
+  );
 }
 
 async function searchWorkspaceTextInSlot(
@@ -134,15 +166,19 @@ async function searchWorkspaceTextInSlot(
   opts: { limit?: number; signal?: AbortSignal },
 ): Promise<FileTextSearchResponse> {
   const started = performance.now();
+  assertQuerySize(pattern);
   const needle = pattern.trim();
-  assertQuerySize(needle);
   const limit = boundedLimit(opts.limit);
   const matcher = needle ? new RegExp(escapeRegExp(needle), "giu") : undefined;
   const matches: WorkspaceTextSearchMatch[] = [];
   let visited = 0;
   let scannedFiles = 0;
   let scannedBytes = 0;
-  let resultBytes = 0;
+  const resultBudget = {
+    remaining: MAX_RESULT_BYTES - jsonByteSize({
+      data: { query: pattern, matches: [], stats: MAX_RESULT_STATS },
+    }, MAX_RESULT_BYTES),
+  };
   let limitReason: FileSearchStats["limitReason"];
   if (needle) {
     await walkWorkspace(ws, opts.signal, async (entry) => {
@@ -165,8 +201,10 @@ async function searchWorkspaceTextInSlot(
         safeAbsolute = resolved.absolute;
         fileStat = await stat(safeAbsolute);
       } catch {
+        throwIfAborted(opts.signal);
         return true;
       }
+      throwIfAborted(opts.signal);
       if (!fileStat.isFile() || fileStat.size > MAX_TEXT_FILE_BYTES)
         return true;
       if (scannedBytes + fileStat.size > MAX_TEXT_TOTAL_BYTES) {
@@ -175,10 +213,12 @@ async function searchWorkspaceTextInSlot(
       }
       let buffer: Buffer;
       try {
-        buffer = await readFile(safeAbsolute);
+        buffer = await readFile(safeAbsolute, { signal: opts.signal });
       } catch {
+        throwIfAborted(opts.signal);
         return true;
       }
+      throwIfAborted(opts.signal);
       if (
         buffer.length > MAX_TEXT_FILE_BYTES ||
         scannedBytes + buffer.length > MAX_TEXT_TOTAL_BYTES
@@ -200,17 +240,15 @@ async function searchWorkspaceTextInSlot(
       }
       scannedFiles++;
       scannedBytes += buffer.length;
-      const before = matches.length;
       const clipped = collectTextMatches(
         buffer.toString("utf8"),
         entry.relative,
         matcher!,
         matches,
         limit,
+        resultBudget,
       );
-      for (const match of matches.slice(before))
-        resultBytes += Buffer.byteLength(JSON.stringify(match));
-      if (clipped || resultBytes >= MAX_RESULT_BYTES) {
+      if (clipped) {
         limitReason = "bytes";
         return false;
       }
@@ -256,8 +294,10 @@ async function walkWorkspace(
     try {
       entries = await readdir(absoluteDirectory, { withFileTypes: true });
     } catch {
+      throwIfAborted(signal);
       continue;
     }
+    throwIfAborted(signal);
     entries.sort((a, b) => a.name.localeCompare(b.name));
     const childDirectories: string[] = [];
     for (const entry of entries) {
@@ -289,6 +329,7 @@ function collectTextMatches(
   matcher: RegExp,
   results: WorkspaceTextSearchMatch[],
   limit: number,
+  budget: { remaining: number },
 ): boolean {
   let clipped = false;
   let charOffset = 0;
@@ -323,13 +364,17 @@ function collectTextMatches(
       }
     }
     if (submatches.length > 0) {
-      results.push({
+      const candidate: WorkspaceTextSearchMatch = {
         path: { text: relativePath },
         lines: { text: line },
         line_number: lineNumber,
         absolute_offset: byteOffset,
         submatches,
-      });
+      };
+      const bytes = jsonByteSize(candidate, budget.remaining) + (results.length > 0 ? 1 : 0);
+      if (bytes > budget.remaining) return true;
+      results.push(candidate);
+      budget.remaining -= bytes;
     }
     if (newline < 0) break;
     const consumed = content.slice(charOffset, newline + 1);

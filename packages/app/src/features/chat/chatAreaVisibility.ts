@@ -98,7 +98,10 @@ function storeMerge(first: PiTimelineItem, chain: readonly object[], merged: PiA
   }
 }
 
-export function buildVisibleTimelineEntries(items: PiTimelineItem[]): VisibleTimelineEntry[] {
+export function buildVisibleTimelineEntries(
+  items: PiTimelineItem[],
+  mergeBoundaries?: ReadonlySet<string>,
+): VisibleTimelineEntry[] {
   // 防御性去重：保证输入无重复 ID
   const seenIds = new Set<string>()
   const unique: PiTimelineItem[] = []
@@ -123,7 +126,7 @@ export function buildVisibleTimelineEntries(items: PiTimelineItem[]): VisibleTim
     const sourceIds = [item.entryId]
     let j = i + 1
 
-    while (j < filtered.length && startsWithTool(filtered[j])) {
+    while (j < filtered.length && !mergeBoundaries?.has(filtered[j].entryId) && startsWithTool(filtered[j])) {
       sourceIds.push(filtered[j].entryId)
       j++
       if (!endsWithTool(filtered[j - 1])) break

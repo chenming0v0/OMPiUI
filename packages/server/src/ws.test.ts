@@ -410,15 +410,19 @@ describe("event websocket", () => {
     );
     ws.on("message", (data) => frames.push(JSON.parse(String(data))));
     await waitFor(() => frames.some((frame) => frame.type === "ready"));
+    assert.equal(frames[0]?.inputAck, true);
     ws.send(
       JSON.stringify({
         type: "input",
+        inputId: 1,
         data:
           process.platform === "win32"
             ? "echo ompiui-ws\r\n"
             : "printf ompiui-ws\\n",
       }),
     );
+    await waitFor(() => frames.some((frame) => frame.type === "input_ack" && frame.inputId === 1));
+    assert.equal(frames.find((frame) => frame.type === "input_ack" && frame.inputId === 1)?.accepted, true);
     await waitFor(() =>
       frames.some(
         (frame) => frame.type === "output" && frame.data.includes("ompiui-ws"),
@@ -427,9 +431,11 @@ describe("event websocket", () => {
     ws.send(
       JSON.stringify({
         type: "input",
+        inputId: 2,
         data: process.platform === "win32" ? "exit\r\n" : "exit\n",
       }),
     );
+    await waitFor(() => frames.some((frame) => frame.type === "input_ack" && frame.inputId === 2));
     await waitFor(() => frames.some((frame) => frame.type === "exit"));
     assert.equal(frames[0]?.type, "hello");
     assert.equal(frames[1]?.type, "ready");

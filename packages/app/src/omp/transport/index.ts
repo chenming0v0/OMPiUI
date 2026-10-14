@@ -246,46 +246,83 @@ export async function postPiSessionCommand<T = JsonValue | undefined, K extends 
 }
 
 // Host commands (workspaces / files / git), POST /api/v1/host/commands/:name
-const hostReadFlights = new Map<string, Promise<unknown>>()
-const SHARED_HOST_READS = new Set(['git.info', 'git.status', 'git.diff', 'git.fileDiff', 'files.list', 'files.read', 'files.searchName', 'files.searchText'])
+type HostReadFlight = {
+  promise: Promise<unknown>
+  controller: AbortController
+  consumers: number
+  settled: boolean
+}
+const hostReadFlights = new Map<string, HostReadFlight>()
+const SHARED_HOST_READS: Partial<Record<keyof HostCommandParams, true>> = {
+  'git.info': true,
+  'git.status': true,
+  'git.diff': true,
+  'git.fileDiff': true,
+  'files.list': true,
+  'files.read': true,
+  'files.searchName': true,
+  'files.searchText': true,
+}
 export async function postHostCommand<
   T = JsonValue | undefined,
   K extends keyof HostCommandParams = keyof HostCommandParams,
 >(name: K, params?: HostCommandParams[K], signal?: AbortSignal): Promise<T> {
+  signal?.throwIfAborted()
   const body = commandBody(
     params,
     (HOST_COMMAND_SPECS.find(spec => spec.name === name) as HostCommandSpec | undefined)?.paramsSchema,
   )
   const key = JSON.stringify([serverStore.getActiveServerGeneration(), name, body])
-  const share = SHARED_HOST_READS.has(name)
-  const current = share ? hostReadFlights.get(key) : undefined
-  if (current) return current as Promise<T>
-  if (signal?.aborted) return Promise.reject(new DOMException('The operation was aborted', 'AbortError'))
-  const request = readJson<{ data: T }>(`${getApiBase()}/api/v1/host/commands/${encodeURIComponent(name)}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body,
-    // The shared request must outlive an individual caller. Each caller gets
-    // an abortable view below, while the underlying fetch remains reusable.
-    signal: share ? undefined : signal,
-  }).then(response => response.data)
-  const flight = request.finally(() => {
-    if (hostReadFlights.get(key) === flight) hostReadFlights.delete(key)
-  })
-  if (share) hostReadFlights.set(key, flight)
-  if (!signal || !share) return flight
+  const share = SHARED_HOST_READS[name] === true
+  let flight = share ? hostReadFlights.get(key) : undefined
+  if (!flight) {
+    const controller = share ? new AbortController() : undefined
+    const request = readJson<{ data: T }>(`${getApiBase()}/api/v1/host/commands/${encodeURIComponent(name)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+      signal: controller?.signal ?? signal,
+    }).then(response => response.data)
+    if (!controller) return request
+    const created: HostReadFlight = {
+      controller,
+      consumers: 0,
+      settled: false,
+      promise: request.finally(() => {
+        created.settled = true
+        if (hostReadFlights.get(key) === created) hostReadFlights.delete(key)
+      }),
+    }
+    hostReadFlights.set(key, created)
+    flight = created
+  }
+  const shared = flight
+  shared.consumers += 1
   return new Promise<T>((resolve, reject) => {
     let done = false
-    const finish = (error?: unknown, value?: T) => {
-      if (done) return
+    const release = () => {
+      if (done) return false
       done = true
-      signal.removeEventListener('abort', abort)
-      if (error) reject(error)
-      else resolve(value as T)
+      signal?.removeEventListener('abort', abort)
+      shared.consumers -= 1
+      return true
     }
-    const abort = () => finish(new DOMException('The operation was aborted', 'AbortError'))
-    signal.addEventListener('abort', abort, { once: true })
-    flight.then(value => finish(undefined, value as T), finish)
+    const abort = () => {
+      if (!release()) return
+      reject(signal?.reason ?? new DOMException('The operation was aborted', 'AbortError'))
+      if (shared.consumers === 0 && !shared.settled) {
+        // 先移除共享请求再中止，使后续调用立即启动新请求；
+        // 废弃的请求仍可能正在结算拒绝。
+        if (hostReadFlights.get(key) === shared) hostReadFlights.delete(key)
+        shared.controller.abort()
+      }
+    }
+    if (signal?.aborted) abort()
+    else signal?.addEventListener('abort', abort, { once: true })
+    shared.promise.then(
+      value => { if (release()) resolve(value as T) },
+      error => { if (release()) reject(error) },
+    )
   })
 }
 

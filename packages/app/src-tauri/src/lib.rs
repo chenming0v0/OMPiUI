@@ -410,6 +410,7 @@ pub fn run() {
             commands::utils::get_dropped_paths_info,
             bridge::ws_bridge_connect,
             bridge::ws_bridge_send,
+            bridge::ws_bridge_ack,
             bridge::ws_bridge_close,
         ]);
 
@@ -422,6 +423,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             bridge::ws_bridge_connect,
             bridge::ws_bridge_send,
+            bridge::ws_bridge_ack,
             bridge::ws_bridge_close,
         ]);
 

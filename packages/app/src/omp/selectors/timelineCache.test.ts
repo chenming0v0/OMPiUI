@@ -114,8 +114,41 @@ describe('selectPiTimelineItemsCached streaming (items identity)', () => {
     const next = selectPiTimelineItemsCached('s1', page2)
     expect(next).not.toBe(old)
     expect(next.length).toBe(2)
+    expect(next[0]).toBe(old[0])
   })
 
+  it('keeps existing render objects when an older page is prepended', () => {
+    const previous = selectPiTimelineItemsCached('s1', branch([user2, assistant1]))
+    const next = selectPiTimelineItemsCached('s1', branch([user1, user2, assistant1]))
+    expect(next.slice(1)).toEqual(previous)
+    expect(next[1]).toBe(previous[0])
+    expect(next[2]).toBe(previous[1])
+  })
+
+  it('replaces only the assistant whose tool result was added', () => {
+    const call = { type: 'toolCall' as const, id: 'call-1', name: 'bash', arguments: { command: 'pwd' } }
+    const assistant = rawEntry('a-tool', 3, 'assistant')
+    if (assistant.message.role !== 'assistant') throw new Error('Expected assistant fixture')
+    assistant.message = { ...assistant.message, content: [call] }
+    const result: SessionMessageEntry = {
+      type: 'message', id: 'result', parentId: assistant.id, timestamp: new Date(4).toISOString(),
+      message: { role: 'toolResult', toolCallId: call.id, toolName: 'bash', content: [{ type: 'text', text: '/workspace' }], isError: false, timestamp: 4 },
+    }
+    const previous = selectPiTimelineItemsCached('s1', branch([user1, assistant]))
+    const next = selectPiTimelineItemsCached('s1', branch([user1, assistant, result]))
+    expect(next[0]).toBe(previous[0])
+    expect(next[1]).not.toBe(previous[1])
+    expect(previous[1]).toMatchObject({ toolResults: {} })
+    expect(next[1]).toMatchObject({ toolResults: { 'call-1': result.message } })
+  })
+
+  it('refreshes render keys when client identities change without changing the items array', () => {
+    const page = branch([user1])
+    const previous = selectPiTimelineItemsCached('s1', page)
+    const next = selectPiTimelineItemsCached('s1', { ...page, client: { stableEntryIds: { u1: 'live-user' } } })
+    expect(next[0]).not.toBe(previous[0])
+    expect(next[0].renderKey).toBe('live-user')
+  })
   it('updates the live assistant message content across chunks without touching history', () => {
     const items = [user1]
     const page1 = branch(items)

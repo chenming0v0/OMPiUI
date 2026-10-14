@@ -372,7 +372,12 @@ export class TunnelClient {
     conn.sink = sink;
     this.conns.set(frame.c, conn);
 
+    const isCurrent = () => this.conns.get(frame.c) === conn;
+    const abort = () => {
+      if (isCurrent()) this.abortInput(frame.c);
+    };
     const finish = () => {
+      if (!isCurrent()) return;
       this.conns.delete(frame.c);
       sink.dispose();
       conn.input?.dispose();
@@ -388,6 +393,10 @@ export class TunnelClient {
         headers,
       },
       (res) => {
+        if (!isCurrent()) {
+          res.destroy();
+          return;
+        }
         // 升级请求被上游以普通响应拒绝时走这里，按常规响应回传
         this.sendControl({
           type: "head",
@@ -397,9 +406,11 @@ export class TunnelClient {
         });
         res.on("data", (chunk: Buffer) => sink.write(frame.c, chunk, res));
         res.on("end", () => {
+          if (!isCurrent()) return;
           this.sendControl({ type: "end", c: frame.c }, finish);
         });
         res.on("error", () => {
+          if (!isCurrent()) return;
           this.sendControl({
             type: "fail",
             c: frame.c,
@@ -410,20 +421,23 @@ export class TunnelClient {
       },
     );
     conn.req = req;
-    req.setTimeout(120_000, () => this.abortInput(frame.c));
+    req.setTimeout(120_000, abort);
     if (!isUpgrade)
       conn.input = new ResponseSink(
         req,
-        () => this.abortInput(frame.c),
+        abort,
         () => {},
       );
     req.on("upgrade", (res: IncomingMessage, socket: Duplex, head: Buffer) => {
-      (socket as Socket).setTimeout(120_000, () => this.abortInput(frame.c));
+      if (!isCurrent()) {
+        socket.destroy();
+        return;
+      }
+      (socket as Socket).setTimeout(120_000, abort);
       conn.socket = socket;
-      conn.req = undefined;
       conn.input = new ResponseSink(
         socket,
-        () => this.abortInput(frame.c),
+        abort,
         () => {},
       );
       this.sendControl({
@@ -437,14 +451,25 @@ export class TunnelClient {
       conn.preUpgradeBytes = 0;
       if (head.length > 0) sink.write(frame.c, head, null);
       socket.on("data", (chunk: Buffer) => sink.write(frame.c, chunk, socket));
+      let ended = false;
+      socket.on("end", () => {
+        if (!isCurrent() || ended) return;
+        ended = true;
+        // 正常可读 EOF 后，输入端的 close 监听器不能丢弃
+        // 仍在等待共享数据额度的响应字节。
+        conn.input?.dispose();
+        this.sendControl({ type: "end", c: frame.c }, () => {
+          finish();
+          socket.destroy();
+        });
+      });
       socket.on("close", () => {
-        this.sendControl({ type: "close", c: frame.c }, finish);
+        if (!ended) abort();
       });
-      socket.on("error", () => {
-        // 由 close 统一清理
-      });
+      socket.on("error", abort);
     });
     req.on("error", (error: NodeJS.ErrnoException) => {
+      if (!isCurrent()) return;
       this.sendControl({
         type: "fail",
         c: frame.c,
@@ -463,7 +488,7 @@ export class TunnelClient {
       after?.();
     };
     const sink =
-      "c" in frame && (frame.type === "end" || frame.type === "close")
+      frame.type === "end"
         ? this.conns.get(frame.c)?.sink
         : undefined;
     if (sink && "c" in frame) sink.finish(frame.c, send);
