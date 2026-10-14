@@ -280,7 +280,8 @@ export async function postHostCommand<
       if (done) return
       done = true
       signal.removeEventListener('abort', abort)
-      error ? reject(error) : resolve(value as T)
+      if (error) reject(error)
+      else resolve(value as T)
     }
     const abort = () => finish(new DOMException('The operation was aborted', 'AbortError'))
     signal.addEventListener('abort', abort, { once: true })
