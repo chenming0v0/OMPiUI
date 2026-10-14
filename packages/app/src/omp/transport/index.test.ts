@@ -11,6 +11,7 @@ import {
   manageSessionGoal,
   mintPairInvite,
   promptPi,
+  readHostFile,
   setPiExtensionEditorState,
   writeHostFile,
 } from './index.js'
@@ -63,6 +64,38 @@ describe('getHostTerminalWebSocketUrl', () => {
 })
 
 describe('transport retry and response contracts', () => {
+  it('keeps a shared host read for remaining callers and cancels it after the last caller leaves', async () => {
+    const requests: Array<{ signal: AbortSignal; resolve: (response: Response) => void }> = []
+    nativeFetchMock.mockImplementation((_url: string, init: RequestInit) => new Promise<Response>((resolve, reject) => {
+      const signal = init.signal!
+      requests.push({ signal, resolve })
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+    }))
+
+    const firstController = new AbortController()
+    const secondController = new AbortController()
+    const first = readHostFile('/workspace', 'same.txt', firstController.signal)
+    const second = readHostFile('/workspace', 'same.txt', secondController.signal)
+    await vi.waitFor(() => expect(requests).toHaveLength(1))
+    firstController.abort()
+    await expect(first).rejects.toMatchObject({ name: 'AbortError' })
+    expect(requests[0]!.signal.aborted).toBe(false)
+    requests[0]!.resolve(Response.json({ data: { content: 'still needed' } }))
+    await expect(second).resolves.toEqual({ content: 'still needed' })
+
+    const abandonedController = new AbortController()
+    const abandoned = readHostFile('/workspace', 'same.txt', abandonedController.signal)
+    await vi.waitFor(() => expect(requests).toHaveLength(2))
+    abandonedController.abort()
+    await expect(abandoned).rejects.toMatchObject({ name: 'AbortError' })
+    expect(requests[1]!.signal.aborted).toBe(true)
+
+    const replacement = readHostFile('/workspace', 'same.txt')
+    await vi.waitFor(() => expect(requests).toHaveLength(3))
+    requests[2]!.resolve(Response.json({ data: { content: 'fresh' } }))
+    await expect(replacement).resolves.toEqual({ content: 'fresh' })
+  })
+
   it('coalesces slow editor uploads into the latest pending text and rejects over-limit mirrors locally', async () => {
     let resolve!: (response: Response) => void
     nativeFetchMock.mockImplementationOnce(() => new Promise<Response>(done => { resolve = done }))
