@@ -73,8 +73,8 @@ function sendJson(res: ServerResponse, status: number, body: unknown): boolean {
         ...(compressed ? { "content-encoding": "gzip" } : {}),
         ...CORS_HEADERS,
       });
-      if (status === 413 && !res.req.complete) {
-        // 先交付错误正文，再结束仍有上传字节的连接，避免 RST 吞掉 413。
+      if ((status === 413 || status === 503) && !res.req.complete) {
+        // 先交付拒绝正文，再结束仍有上传字节的连接，避免 RST 吞掉错误响应。
         res.write(payload);
         const req = res.req;
         const cleanup = () => {
@@ -133,7 +133,7 @@ function sendProblem(
   );
 }
 
-async function readBody(
+export async function readBody(
   req: IncomingMessage,
   signal?: AbortSignal,
   maxBytes = MAX_JSON_BODY_BYTES,
@@ -144,71 +144,77 @@ async function readBody(
   const declared = Number(req.headers["content-length"]);
   let accounted = 0;
   const reserve = (bytes: number) => {
-    if (pendingHttpInputBytes + bytes > MAX_PENDING_HTTP_INPUT_BYTES)
-      throw Object.assign(new Error("HTTP input capacity reached"), { code: "RATE_LIMITED", bodyTooLarge: true });
+    if (pendingHttpInputBytes + bytes > MAX_PENDING_HTTP_INPUT_BYTES) {
+      req.pause();
+      throw Object.assign(new Error("HTTP input capacity reached"), {
+        code: "RATE_LIMITED",
+        bodyTooLarge: true,
+        retryable: true,
+      });
+    }
     pendingHttpInputBytes += bytes;
     accounted += bytes;
   };
-  if (Number.isFinite(declared) && declared > maxBytes) {
-    req.pause();
-    throw Object.assign(new Error("request body too large"), {
-      code: "FILE_TOO_LARGE",
-      bodyTooLarge: true,
-    });
-  }
-  if (Number.isFinite(declared) && declared > 0) reserve(declared);
-  // Do not throw out of IncomingMessage's async iterator: Node/Bun destroy
-  // the request differently, which can discard the 413 response itself.
-  await new Promise<void>((resolve, reject) => {
-    const cleanup = () => {
-      req.removeListener("data", onData);
-      req.removeListener("end", onEnd);
-      req.removeListener("error", onError);
-      req.removeListener("aborted", onAbort);
-      signal?.removeEventListener("abort", onAbort);
-    };
-    const onError = (error: Error) => {
-      cleanup();
-      reject(error);
-    };
-    const onAbort = () =>
-      onError(
-        Object.assign(new Error("request aborted"), {
-          code: "REQUEST_ABORTED",
-        }),
-      );
-    const onData = (chunk: Buffer) => {
-      if (!Number.isFinite(declared) || declared <= 0) {
-        try { reserve(chunk.length); } catch (error) {
-          req.pause();
+  try {
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      req.pause();
+      throw Object.assign(new Error("request body too large"), {
+        code: "FILE_TOO_LARGE",
+        bodyTooLarge: true,
+      });
+    }
+    if (Number.isFinite(declared) && declared > 0) reserve(declared);
+    // Do not throw out of IncomingMessage's async iterator: Node/Bun destroy
+    // the request differently, which can discard the 413 response itself.
+    await new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        req.removeListener("data", onData);
+        req.removeListener("end", onEnd);
+        req.removeListener("error", onError);
+        req.removeListener("aborted", onAbort);
+        signal?.removeEventListener("abort", onAbort);
+      };
+      const onError = (error: Error) => {
+        req.pause();
+        cleanup();
+        reject(error);
+      };
+      const onAbort = () =>
+        onError(
+          Object.assign(new Error("request aborted"), {
+            code: "REQUEST_ABORTED",
+          }),
+        );
+      const onData = (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > maxBytes) {
+          onError(
+            Object.assign(new Error("request body too large"), {
+              code: "FILE_TOO_LARGE",
+              bodyTooLarge: true,
+            }),
+          );
+          return;
+        }
+        try {
+          if (size > accounted) reserve(size - accounted);
+        } catch (error) {
           onError(error as Error);
           return;
         }
-      }
-      size += chunk.length;
-      if (size > maxBytes) {
-        req.pause();
-        onError(
-          Object.assign(new Error("request body too large"), {
-            code: "FILE_TOO_LARGE",
-            bodyTooLarge: true,
-          }),
-        );
-        return;
-      }
-      chunks.push(chunk);
-    };
-    const onEnd = () => {
-      cleanup();
-      resolve();
-    };
-    req.on("data", onData);
-    req.once("end", onEnd);
-    req.once("error", onError);
-    req.once("aborted", onAbort);
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
-  try {
+        chunks.push(chunk);
+      };
+      const onEnd = () => {
+        cleanup();
+        resolve();
+      };
+      req.on("data", onData);
+      req.once("end", onEnd);
+      req.once("error", onError);
+      req.once("aborted", onAbort);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
+    });
     const raw = Buffer.concat(chunks, size).toString("utf8");
     let body: unknown;
     try {
@@ -223,7 +229,7 @@ async function readBody(
     }
     return body as JsonObject;
   } finally {
-    pendingHttpInputBytes = Math.max(0, pendingHttpInputBytes - accounted);
+    pendingHttpInputBytes -= accounted;
   }
 }
 
@@ -917,7 +923,7 @@ export function createAppServer(
       );
     } catch (error) {
       if (res.destroyed || res.writableEnded) return;
-      // 超限读取由服务端自己中断,会触发 req 'aborted' 并置位 signal;这不代表客户端断开,必须照常回 413 并关闭连接
+      // 主动拒绝读取仍须交付 413/503 并关闭连接，不能当作客户端取消而吞掉响应。
       const tooLarge =
         !!error &&
         typeof error === "object" &&
@@ -1057,6 +1063,7 @@ export function statusForError(error: unknown): number {
     case "HOST_CALL_TIMEOUT":
       return 504;
     case "REGISTRY_UNAVAILABLE":
+    case "RATE_LIMITED":
     case "DRIVER_UNAVAILABLE":
     case "WORKER_RESULT_UNKNOWN":
       return 503;
