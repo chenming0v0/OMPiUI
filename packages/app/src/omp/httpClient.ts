@@ -7,15 +7,14 @@ import { auditHttpRequest } from './trafficAudit/http'
 const DEFAULT_BASE = 'http://127.0.0.1:8787'
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000
 
-// 请求代次 + 在途请求注册表：server 切换/重连时一锅端中止，旧 server 的响应
-// 不可能回来污染新 server 的状态（参考原 UI 基线的 generation 模式）。
-let requestGeneration = 0
-const inflightControllers = new Set<AbortController>()
+// Keep the server generation's signal alive through response-body consumption,
+// not just until fetch resolves with headers. No response buffering is needed.
+let serverRequests = new AbortController()
 
 export function abortInFlightPiRequests(): void {
-  requestGeneration += 1
-  for (const controller of inflightControllers) controller.abort()
-  inflightControllers.clear()
+  const previous = serverRequests
+  serverRequests = new AbortController()
+  previous.abort()
 }
 
 // 网络错误也可能发生在 server 已提交写操作之后，不能据此重放写请求。
@@ -102,64 +101,58 @@ export function getPiAuthToken(): string | undefined {
 
 export async function piFetch(input: string, init?: PiRequestInit): Promise<Response> {
   const { retry = true, timeoutMs, ...requestInit } = init ?? {}
+  requestInit.signal?.throwIfAborted()
   const method = (requestInit.method ?? 'GET').toUpperCase()
   const canRetry = retry && (method === 'GET' || method === 'HEAD')
-  const generation = requestGeneration
+  const generationSignal = serverRequests.signal
   const auditServer = serverStore.getActiveServer()?.url
-  const inflight = new AbortController()
-  inflightControllers.add(inflight)
-  try {
-    const fetchImpl = await getHttpFetch()
-    if (generation !== requestGeneration) {
-      throw new DOMException('Stale OMPiUI request: server changed', 'AbortError')
-    }
-    const bodyBytes = typeof requestInit.body === 'string' ? new TextEncoder().encode(requestInit.body).byteLength : 0
-    const bulkRead =
-      /(?:branch\.get|entries\.get|tree\.get|state\.get|session\.preview|session\.read|session\.list|files\.read|files\.search|git\.diff|git\.fileDiff|subagent\.messages|diagnostics\/report)/.test(
-        input,
-      ) || (method === 'GET' && /\/api\/v1\/host\/commands\/[^/]+(?:\?|$)/.test(input))
-    const timeout = AbortSignal.timeout(
-      timeoutMs ??
-        Math.min(
-          300_000,
-          Math.max(
-            bulkRead ? 300_000 : DEFAULT_REQUEST_TIMEOUT_MS,
-            DEFAULT_REQUEST_TIMEOUT_MS + Math.ceil(bodyBytes / (128 * 1024)) * 1000,
-          ),
+  const fetchImpl = await getHttpFetch()
+  generationSignal.throwIfAborted()
+  requestInit.signal?.throwIfAborted()
+  const bodyBytes = typeof requestInit.body === 'string' ? new TextEncoder().encode(requestInit.body).byteLength : 0
+  const bulkRead =
+    /(?:branch\.get|entries\.get|tree\.get|state\.get|session\.preview|session\.read|session\.list|files\.read|files\.search|git\.diff|git\.fileDiff|subagent\.messages|diagnostics\/report)/.test(
+      input,
+    ) || (method === 'GET' && /\/api\/v1\/host\/commands\/[^/]+(?:\?|$)/.test(input))
+  const timeout = AbortSignal.timeout(
+    timeoutMs ??
+      Math.min(
+        300_000,
+        Math.max(
+          bulkRead ? 300_000 : DEFAULT_REQUEST_TIMEOUT_MS,
+          DEFAULT_REQUEST_TIMEOUT_MS + Math.ceil(bodyBytes / (128 * 1024)) * 1000,
         ),
-    )
-    const signals = [inflight.signal, timeout]
-    if (init?.signal) signals.push(init.signal)
-    const signal = AbortSignal.any(signals)
-    const headers = piHeaders(init?.headers)
+      ),
+  )
+  const signals = [generationSignal, timeout]
+  if (requestInit.signal) signals.push(requestInit.signal)
+  const signal = AbortSignal.any(signals)
+  const headers = piHeaders(requestInit.headers)
 
-    let lastError: unknown
-    for (let attempt = 0; attempt <= NETWORK_RETRY_DELAYS_MS.length; attempt++) {
-      signal.throwIfAborted()
-      try {
-        return await auditHttpRequest(
-          input,
-          { ...requestInit, signal },
-          async () => {
-            const resolved = await resolveAndroidTailscaleUrl(input)
-            signal.throwIfAborted()
-            return fetchImpl(resolved, { ...requestInit, signal, headers })
-          },
-          input.startsWith('/') ? auditServer : undefined,
-          attempt + 1,
-        )
-      } catch (error) {
-        if (!canRetry || signal.aborted || isAbortError(error) || !isNetworkLevelError(error)) throw error
-        lastError = error
-        const delay = NETWORK_RETRY_DELAYS_MS[attempt]
-        if (delay === undefined) break
-        await waitForNetworkRetry(delay, signal)
-      }
+  let lastError: unknown
+  for (let attempt = 0; attempt <= NETWORK_RETRY_DELAYS_MS.length; attempt++) {
+    signal.throwIfAborted()
+    try {
+      return await auditHttpRequest(
+        input,
+        { ...requestInit, signal },
+        async () => {
+          const resolved = await resolveAndroidTailscaleUrl(input)
+          signal.throwIfAborted()
+          return fetchImpl(resolved, { ...requestInit, signal, headers })
+        },
+        input.startsWith('/') ? auditServer : undefined,
+        attempt + 1,
+      )
+    } catch (error) {
+      if (!canRetry || signal.aborted || isAbortError(error) || !isNetworkLevelError(error)) throw error
+      lastError = error
+      const delay = NETWORK_RETRY_DELAYS_MS[attempt]
+      if (delay === undefined) break
+      await waitForNetworkRetry(delay, signal)
     }
-    throw lastError
-  } finally {
-    inflightControllers.delete(inflight)
   }
+  throw lastError
 }
 
 export async function isPiServerUp(): Promise<boolean> {

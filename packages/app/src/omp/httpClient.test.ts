@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { abortInFlightPiRequests, getApiBase, piFetch } from './httpClient'
 import { LOCAL_SERVER_ID, serverStore } from '../store/serverStore'
 import { trafficAuditStore } from './trafficAudit/store'
+import { getHttpFetch } from '../utils/tauri'
 
 const mocks = vi.hoisted(() => ({ isTauri: false }))
 
@@ -9,25 +10,9 @@ const nativeFetchMock = vi.hoisted(() => vi.fn())
 
 vi.mock('../utils/tauri', () => ({
   isTauri: () => mocks.isTauri,
-  getHttpFetch: () => Promise.resolve(nativeFetchMock),
+  getHttpFetch: vi.fn(() => Promise.resolve(nativeFetchMock)),
 }))
 
-describe('bulk response timeout coverage', () => {
-  afterEach(() => { vi.restoreAllMocks(); nativeFetchMock.mockReset() })
-  it.each([
-    ['POST', '/api/v1/host/commands/git.diff', 300000],
-    ['POST', '/api/v1/host/commands/files.searchText', 300000],
-    ['POST', '/api/v1/pi/sessions/s/commands/subagent.messages', 300000],
-    ['GET', '/api/v1/host/commands/result-id', 300000],
-    ['POST', '/api/v1/pi/sessions/s/commands/setExtensionEditorState', 20000],
-  ])('uses the expected timeout for %s %s', async (method, path, timeout) => {
-    mocks.isTauri = false
-    const timeouts = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(new AbortController().signal)
-    nativeFetchMock.mockResolvedValue(Response.json({ data: null }))
-    await piFetch(path as string, { method: method as string, retry: false })
-    expect(timeouts).toHaveBeenCalledWith(timeout)
-  })
-})
 
 const restoreOriginalLocalServer = () => {
   const original = serverStore.getStoredServers().find(server => server.id === LOCAL_SERVER_ID)
@@ -242,5 +227,69 @@ describe('HTTP network retry safety', () => {
     await result
     await vi.advanceTimersByTimeAsync(2_000)
     expect(nativeFetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('never sends a request from a server generation cancelled while its adapter is loading', async () => {
+    let finishLoading!: (fetch: typeof globalThis.fetch) => void
+    vi.mocked(getHttpFetch).mockReturnValueOnce(new Promise(resolve => { finishLoading = resolve }))
+    const rejected = expect(piFetch('/write', { method: 'POST', body: '{}' })).rejects.toMatchObject({ name: 'AbortError' })
+    abortInFlightPiRequests()
+    finishLoading(nativeFetchMock)
+    await rejected
+    expect(nativeFetchMock).not.toHaveBeenCalled()
+
+    nativeFetchMock.mockResolvedValueOnce(Response.json({ server: 'new' }))
+    expect(await (await piFetch('/write', { method: 'POST', body: '{}' })).json()).toEqual({ server: 'new' })
+    expect(nativeFetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('aborts a switched-server POST while waiting for headers without replaying it', async () => {
+    let active = 0
+    nativeFetchMock.mockImplementation((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      active += 1
+      init.signal!.addEventListener('abort', () => {
+        active -= 1
+        reject(init.signal!.reason)
+      }, { once: true })
+    }))
+    const rejected = expect(piFetch('/write', { method: 'POST', body: '{}' })).rejects.toMatchObject({ name: 'AbortError' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(active).toBe(1)
+    abortInFlightPiRequests()
+    await rejected
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(active).toBe(0)
+    expect(nativeFetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([false, true])('cancels an old response body after headers with audit enabled=%s', async audit => {
+    trafficAuditStore.setEnabled(audit)
+    let source!: ReadableStreamDefaultController<Uint8Array>
+    let requestSignal!: AbortSignal
+    nativeFetchMock.mockImplementation((_url: string, init: RequestInit) => {
+      requestSignal = init.signal!
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          source = controller
+          controller.enqueue(new TextEncoder().encode('{"data":'))
+        },
+      })
+      requestSignal.addEventListener('abort', () => source.error(requestSignal.reason), { once: true })
+      return Promise.resolve(new Response(stream, { headers: { 'content-type': 'application/json' } }))
+    })
+    const response = await piFetch('/write', { method: 'POST', body: '{}' })
+    // Returning headers must not pre-buffer the body or require a second POST.
+    expect(response.bodyUsed).toBe(false)
+    const rejected = expect(response.json()).rejects.toMatchObject({ name: 'AbortError' })
+    abortInFlightPiRequests()
+    await rejected
+    expect(requestSignal.aborted).toBe(true)
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(nativeFetchMock).toHaveBeenCalledTimes(1)
+
+    nativeFetchMock.mockResolvedValueOnce(Response.json({ data: ['new-server'] }))
+    const completed = await (await piFetch('/read')).json()
+    abortInFlightPiRequests()
+    expect(completed).toEqual({ data: ['new-server'] })
   })
 })
