@@ -45,6 +45,8 @@ import { useTheme } from '../../hooks/useTheme'
 import { getStreamingHotIndexes, getTimelineRowYClass, mergeVirtualRangeIndexes } from './chatAreaUtils'
 import { useAutoScroll } from './virtual/useAutoScroll'
 import { useEmptyWorkingShellGate } from './virtual/useEmptyWorkingShellGate'
+import { HistoryPrefetchScheduler } from './virtual/historyPrefetchScheduler'
+import type { HistoryPrefetchMode } from '../../omp/historyPagePrefetch'
 import { perfMark, perfRecordRender, isPerfEnabled } from '../../utils/perf'
 
 const ROW_ESTIMATE = 60
@@ -54,8 +56,6 @@ const PROCESS_SHELL_HEADER = 36
 const EMPTY_WORKING_SHELL_EXTRA_DELAY_MS = 500
 const DEFAULT_BOTTOM_SPACER = 256
 const SESSION_CACHE_LIMIT = 16
-/** 加载历史的指示器最小时长（ms）：本地快速加载时避免一闪而过 */
-const MIN_LOADING_MS = 300
 
 /** 内容等价判断：流式 chunk 只换数组引用时，复用旧 Map/Set 引用，
  *  否则 VirtualRow 的 memo 比较（含这三个引用）会被击穿，历史行跟着重渲染。 */
@@ -114,6 +114,7 @@ interface ChatAreaProps {
   /** 原始分页边界，工具结果和元数据也计入进展。 */
   historyStartId?: string
   onLoadMore?: () => void | Promise<void>
+  onPrefetchHistory?: (mode: HistoryPrefetchMode, signal: AbortSignal) => Promise<boolean>
   onUndo?: (entryId: string) => void
   onFork?: (entryId: string, forkMessageId?: string) => void | Promise<void>
   canUndo?: boolean
@@ -354,7 +355,7 @@ export const ChatArea = memo(
         turnLatestAssistantIds: turnLatestAssistantIdsProp,
         sessionId, isStreaming = false, isCompacting = false,
         loadState = 'idle', loadError, connectionError, onOpenSettings,
-        hasMoreHistory = false, historyStartId, onLoadMore, onUndo, onFork, canUndo,
+        hasMoreHistory = false, historyStartId, onLoadMore, onPrefetchHistory, onUndo, onFork, canUndo,
         registerMessage, retryStatus = null, bottomPadding = 0,
         onVisibleMessageIdsChange, onAtBottomChange,
       },
@@ -488,6 +489,8 @@ export const ChatArea = memo(
       const contentRef = useRef<HTMLDivElement | null>(null)
       const sessionIdRef = useRef(sessionId); sessionIdRef.current = sessionId
       const onLoadMoreRef = useRef(onLoadMore); onLoadMoreRef.current = onLoadMore
+      const onPrefetchHistoryRef = useRef(onPrefetchHistory); onPrefetchHistoryRef.current = onPrefetchHistory
+      const historyPrefetchSchedulerRef = useRef<HistoryPrefetchScheduler | undefined>(undefined)
       const onVisibleIdsRef = useRef(onVisibleMessageIdsChange); onVisibleIdsRef.current = onVisibleMessageIdsChange
       const onAtBottomRef = useRef(onAtBottomChange); onAtBottomRef.current = onAtBottomChange
       const hasMoreRef = useRef(hasMoreHistory); hasMoreRef.current = hasMoreHistory
@@ -502,7 +505,6 @@ export const ChatArea = memo(
       const historyFirstIdRef = useRef(historyFirstId)
       historyFirstIdRef.current = historyFirstId
       const requestedHistoryFirstId = useRef<string | undefined>(undefined)
-      const loadingDelayRef = useRef<number | undefined>(undefined)
       const disposedRef = useRef(false)
 
       // ── 自动滚动 ──
@@ -690,7 +692,7 @@ export const ChatArea = memo(
       }
 
       // ── 历史加载（prepend 锚点） ──
-      const prependAnchor = useRef<{ key: string; offset: number } | undefined>(undefined)
+      const prependAnchor = useRef<{ key: string; offset: number; scrollTop: number } | undefined>(undefined)
       const prependFrame = useRef<number | undefined>(undefined)
       const prependLoading = useRef(false)
 
@@ -709,7 +711,11 @@ export const ChatArea = memo(
           .filter(x => x.rect.bottom > view.top && x.rect.top < view.bottom)
           .sort((a, b) => a.rect.top - b.rect.top)[0]
         if (anchor?.el.dataset.timelineKey) {
-          prependAnchor.current = { key: anchor.el.dataset.timelineKey, offset: anchor.rect.top - view.top }
+          prependAnchor.current = {
+            key: anchor.el.dataset.timelineKey,
+            offset: anchor.rect.top - view.top,
+            scrollTop: root.scrollTop,
+          }
         }
       }, [])
 
@@ -722,15 +728,24 @@ export const ChatArea = memo(
           prependFrame.current = undefined
           const a = prependAnchor.current
           if (!a) return
+          // 内容重排才需要补偿；手势、惯性或虚拟列表已移动滚动位置时不再拉回。
+          if (Math.abs(root.scrollTop - a.scrollTop) > 0.5) {
+            clearPrepend()
+            return
+          }
           const el = root.querySelector<HTMLElement>(`[data-timeline-key="${CSS.escape(a.key)}"]`)
           const delta = el ? el.getBoundingClientRect().top - root.getBoundingClientRect().top - a.offset : undefined
-          if (delta !== undefined && Math.abs(delta) > 0.5) { root.scrollTop += delta; stable = 0 }
+          if (delta !== undefined && Math.abs(delta) > 0.5) {
+            root.scrollTop += delta
+            a.scrollTop = root.scrollTop
+            stable = 0
+          }
           else stable++
           if (++frames >= 180 || stable >= 30) { if (!prependLoading.current) prependAnchor.current = undefined; return }
           prependFrame.current = requestAnimationFrame(apply)
         }
         apply()
-      }, [])
+      }, [clearPrepend])
 
       const capturePrepend = useCallback(() => {
         prependLoading.current = true
@@ -749,7 +764,6 @@ export const ChatArea = memo(
         setHistoryLoadFailed(false)
         requestedHistoryFirstId.current = historyFirstIdRef.current
         setIsLoadingMore(true); loadingMoreRef.current = true
-        const startedAt = performance.now()
         Promise.resolve()
           .then(() => onLoadMoreRef.current?.())
           .catch(() => {
@@ -759,15 +773,10 @@ export const ChatArea = memo(
           })
           .finally(() => {
             if (disposedRef.current) return
-            // 先恢复 prepend 锚点（数据已插入），spinner 再显示最小时长，
-            // 避免本地快速加载时指示器一闪而过、用户看不到加载反馈
             restorePrepend(true)
-            const elapsed = performance.now() - startedAt
-            const delay = Math.max(0, MIN_LOADING_MS - elapsed)
-            loadingDelayRef.current = window.setTimeout(() => {
-              loadingDelayRef.current = undefined
-              setIsLoadingMore(false); loadingMoreRef.current = false
-            }, delay)
+            // 请求完成即释放分页锁，加载提示不能阻塞下一页。
+            loadingMoreRef.current = false
+            setIsLoadingMore(false)
           })
       }, [capturePrepend, restorePrepend])
 
@@ -816,10 +825,23 @@ export const ChatArea = memo(
         if (max - el.scrollTop >= 2) el.scrollTop = max
       }, [autoMarkAuto])
 
+      const prefetchHistory = useCallback(() => {
+        const root = scrollRef.current
+        if (
+          !root || !userScrolledRef.current || !hasMoreRef.current ||
+          historyLoadFailedRef.current || loadStateRef.current !== 'loaded' ||
+          root.scrollTop >= Math.max(600, root.clientHeight * 2)
+        ) return
+        historyPrefetchSchedulerRef.current?.boost()
+      }, [userScrolledRef])
+
       // ── 事件处理 ──
       const onScroll = useCallback(() => {
+        // 包括松手后的惯性滚动；先更新离底状态，首次到顶也能触发分页。
+        autoHandleScroll()
         if (prependLoading.current) updatePrependAnchor()
         computeScrollState()
+        prefetchHistory()
         if (
           userScrolledRef.current
           && (scrollRef.current?.scrollTop ?? 0) < 200
@@ -828,17 +850,15 @@ export const ChatArea = memo(
         ) {
           void loadMore()
         }
-        // 始终走 handleScroll：滚动条/键盘也能离底；程序贴底靠 markAuto 过滤
-        autoHandleScroll()
-      }, [updatePrependAnchor, computeScrollState, autoHandleScroll, loadMore, userScrolledRef])
+      }, [updatePrependAnchor, computeScrollState, autoHandleScroll, loadMore, userScrolledRef, prefetchHistory])
 
       const onWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
-        if (!prependLoading.current) clearPrepend()
+        clearPrepend()
         autoHandleWheel(e.nativeEvent)
       }, [autoHandleWheel, clearPrepend])
 
       const onTouchStart = useCallback(() => {
-        if (!prependLoading.current) clearPrepend()
+        clearPrepend()
       }, [clearPrepend])
 
       // ── Effects（parent key remount 后，这里只处理本实例生命周期） ──
@@ -931,10 +951,33 @@ export const ChatArea = memo(
       }, [historyFirstId, isLoadingMore, historyLoadFailed, auto.userScrolled, hasMoreHistory, loadMore])
 
       useEffect(() => {
+        prefetchHistory()
+      }, [historyFirstId, auto.userScrolled, hasMoreHistory, prefetchHistory])
+
+      const hasHistoryPrefetch = Boolean(onPrefetchHistory)
+      useEffect(() => {
+        if (!sessionId || loadState !== 'loaded' || !hasMoreHistory || !hasHistoryPrefetch) return
+        const scheduler = new HistoryPrefetchScheduler((mode, signal) =>
+          onPrefetchHistoryRef.current?.(mode, signal) ?? Promise.resolve(false),
+        )
+        historyPrefetchSchedulerRef.current = scheduler
+        const updateVisibility = () => {
+          if (document.hidden) scheduler.pause()
+          else scheduler.resume()
+        }
+        updateVisibility()
+        document.addEventListener('visibilitychange', updateVisibility)
+        return () => {
+          scheduler.stop()
+          historyPrefetchSchedulerRef.current = undefined
+          document.removeEventListener('visibilitychange', updateVisibility)
+        }
+      }, [sessionId, loadState, hasMoreHistory, hasHistoryPrefetch])
+
+      useEffect(() => {
         disposedRef.current = false
         return () => {
           disposedRef.current = true
-          if (loadingDelayRef.current !== undefined) window.clearTimeout(loadingDelayRef.current)
         }
       }, [])
 

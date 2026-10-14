@@ -16,6 +16,7 @@ import { ProjectTrustPrompt } from './ProjectTrustPrompt'
 import { OutlineIndex } from '../../components/OutlineIndex'
 import { buildOutlineSourceEntries } from '../../components/outlineIndexModel'
 import { selectPiTimelineItemsCached } from '../../omp/selectors/timelineCache.js'
+import type { HistoryPrefetchMode } from '../../omp/historyPagePrefetch'
 import { appendSubmittedUserMessages } from '../../omp/selectors/submittedMessages.js'
 import { piEventStream } from '../../omp/eventStream.js'
 import { bashPendingStore } from '../../omp/bashPendingStore'
@@ -30,6 +31,7 @@ import {
   forkPiSession,
   importPiSession,
   loadMorePiBranchEntries,
+  prefetchPiBranchEntries,
   loadPiSessionRegistry,
   logoutPiProvider,
   refreshPiBranch,
@@ -744,6 +746,9 @@ export function PiChatPane({
   // 加载更早历史：稳定引用（ChatArea memo），避免每次渲染新建箭头函数
   const handleLoadMore = useCallback(() => {
     return sessionId ? loadMorePiBranchEntries(sessionId) : undefined
+  }, [sessionId])
+  const handlePrefetchHistory = useCallback((mode: HistoryPrefetchMode, signal: AbortSignal) => {
+    return sessionId ? prefetchPiBranchEntries(sessionId, mode, signal) : Promise.resolve(false)
   }, [sessionId])
   const latestSessionRef = useRef(sessionId)
   useEffect(() => {
@@ -1809,6 +1814,7 @@ export function PiChatPane({
                 hasMoreHistory={Boolean(branch?.hasMore)}
                 historyStartId={branch?.items[0]?.id}
                 onLoadMore={handleLoadMore}
+                onPrefetchHistory={handlePrefetchHistory}
                 bottomPadding={inputBoxHeight}
                 onVisibleMessageIdsChange={handleVisibleIdsChange}
                 onAtBottomChange={setIsAtBottom}

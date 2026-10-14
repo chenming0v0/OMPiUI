@@ -14,6 +14,7 @@ import * as transport from '../transport/index.js'
 import { piSessionInfoStore, piBranchStore, piSessionStateStore, piModelsStore } from '../state/index.js'
 import { mergeLatestBranchPage } from '../branchMerge.js'
 import { windowBranch } from '../branchWindow'
+import { historyPagePrefetch, HISTORY_PREFETCH_MAX_PAGES, type HistoryPrefetchMode } from '../historyPagePrefetch'
 import { serverStore } from '../../store/serverStore'
 import { ompSubagentStore } from '../ompSubagentStore'
 import { trackPiSession } from '../ompSessionIndex'
@@ -345,6 +346,46 @@ async function retryUnavailable<T>(operation: () => Promise<T>, signal?: AbortSi
 }
 
 /**
+ * 快速模式补足两页；空闲模式越过已缓存页，每次再向前预取一页。
+ */
+export async function prefetchPiBranchEntries(
+  sessionId: string,
+  mode: HistoryPrefetchMode = 'fast',
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const currentBranch = piBranchStore.getData(sessionId)
+  const anchor = currentBranch?.items[0]
+  if (!currentBranch?.hasMore || !anchor) return false
+  const generation = serverStore.getActiveServerGeneration()
+  const read = (beforeId: string) => readHistoryPage(maxBytes => transport.getPiBranchPage(
+    sessionId, { beforeId, limit: BRANCH_PAGE_LIMIT, maxBytes },
+  ))
+  try {
+    let boundary = anchor
+    for (let depth = 0; depth < HISTORY_PREFETCH_MAX_PAGES; depth++) {
+      const latest = piBranchStore.getData(sessionId)
+      if (
+        signal?.aborted || serverStore.getActiveServerGeneration() !== generation ||
+        !latest?.hasMore || !latest.items.some(entry => entry === anchor)
+      ) return false
+      const cached = historyPagePrefetch.peek(sessionId, generation, boundary)
+      if (!cached && !historyPagePrefetch.canPrefetch(sessionId, generation)) return false
+      const page = await (cached ?? historyPagePrefetch.prefetch(sessionId, generation, boundary, () => read(boundary.id)))
+      const next = page.items[0]
+      if (!page.hasMore || !next || next.id === boundary.id) return false
+      boundary = next
+      if ((mode === 'idle' && !cached) || (mode === 'fast' && depth === 1)) {
+        return !signal?.aborted && historyPagePrefetch.canPrefetch(sessionId, generation)
+      }
+    }
+    return false
+  } catch {
+    // 预取失败不打断阅读；前台加载仍按原有错误提示与重试流程处理。
+    return false
+  }
+}
+
+/**
  * Load more branch entries (pagination).
  * Pages grow backwards: beforeCursor anchors the oldest entry of the current
  * page, so older items must be PREPENDED. checkpoint only exists on the
@@ -362,11 +403,14 @@ export async function loadMorePiBranchEntries(sessionId: string, signal?: AbortS
   const serverGeneration = serverStore.getActiveServerGeneration()
 
   try {
-    const olderPage = await readHistoryPage(maxBytes => transport.getPiBranchPage(
+    const read = () => readHistoryPage(maxBytes => transport.getPiBranchPage(
       sessionId,
       { beforeId: currentBranch.items[0].id, limit: BRANCH_PAGE_LIMIT, maxBytes },
       signal,
     ))
+    const olderPage = await (signal
+      ? read()
+      : historyPagePrefetch.take(sessionId, serverGeneration, currentBranch.items[0], read))
 
     const latest = piBranchStore.getData(sessionId)
     if (
