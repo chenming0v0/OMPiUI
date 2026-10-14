@@ -58,6 +58,13 @@ type PiEventPayload = {
   meta: EventCursor & { liveMessage?: { id: string; revision: number } }
 }
 
+type CommandRecovery = {
+  key: string
+  cursor: EventCursor
+  generation: number
+  controller?: AbortController
+}
+
 type PiExtensionUiEvent =
   | { type: 'requested'; request: import('@ompiui/protocol').ExtensionUiDialogRequest }
   | { type: 'settled'; requestId: string; sessionId: string }
@@ -132,8 +139,8 @@ class PiEventStream {
   private subagentSeen = new Set<string>()
   private liveRecoveryAt = new Map<string, number>()
   private liveRecoveryFlights = new Set<string>()
-  private commandRecoveryFlights = new Set<string>()
-  private pendingResync = new Map<string, EventCursor | undefined>()
+  private commandRecoveries = new Map<string, CommandRecovery>()
+  private pendingResync = new Set<string>()
   private resyncTimer: ReturnType<typeof setTimeout> | null = null
   private resyncFlights = new Map<string, Promise<void>>()
   private resyncActive = 0
@@ -256,7 +263,8 @@ class PiEventStream {
     liveToolOutputStore.clearAll()
     this.liveRecoveryAt.clear()
     this.liveRecoveryFlights.clear()
-    this.commandRecoveryFlights.clear()
+    for (const recovery of this.commandRecoveries.values()) recovery.controller?.abort()
+    this.commandRecoveries.clear()
     this.resyncGeneration++
     this.pendingResync.clear()
     if (this.resyncTimer) clearTimeout(this.resyncTimer)
@@ -413,6 +421,9 @@ class PiEventStream {
         this.scheduleStateRefresh(sessionId)
     }
     this.sentStreams = new Set(streams.map(eventStreamKey))
+    for (const [commandId, recovery] of this.commandRecoveries) {
+      if (this.sentStreams.has(recovery.key)) this.recoverCommand(commandId, recovery)
+    }
   }
 
   private send(message: unknown): void {
@@ -451,25 +462,20 @@ class PiEventStream {
 
   private handleOmittedPayload(message: Extract<EventServerMessage, { type: 'payload_omitted' }>): void {
     const { stream, eventChannel, commandId } = message
+    const key = eventStreamKey(stream)
+    // 有序控制帧确认传输进度；HTTP 恢复的成败不能回退游标。
+    this.advanceCursor(key, message.cursor)
     if (eventChannel === 'command.updated' && commandId) {
-      if (this.commandRecoveryFlights.has(commandId)) return
-      const serverId = serverStore.getActiveServerId()
-      this.commandRecoveryFlights.add(commandId)
-      void piFetch(
-        `${getApiBase()}/api/v1/host/commands/${encodeURIComponent(commandId)}`,
-      ).then(async response => {
-        if (!response.ok) throw new Error(`Command recovery failed: ${response.status}`)
-        return response.json() as Promise<{ command: CommandRecord }>
-      }).then(({ command }) => {
-        if (!this.commandRecoveryFlights.has(commandId) || serverStore.getActiveServerId() !== serverId || !isCommandRecord(command)) return
-        piCommandStore.upsert(command)
-        this.cursors.set(eventStreamKey(stream), message.cursor)
-        window.dispatchEvent(new CustomEvent('ompiui:command-updated', { detail: command }))
-      }).catch(() => {}).finally(() => this.commandRecoveryFlights.delete(commandId))
+      let recovery = this.commandRecoveries.get(commandId)
+      if (!recovery || recovery.key !== key || recovery.cursor.epoch !== message.cursor.epoch) {
+        recovery?.controller?.abort()
+        recovery = { key, cursor: message.cursor, generation: serverStore.getActiveServerGeneration() }
+        this.commandRecoveries.set(commandId, recovery)
+      } else if (message.cursor.sequence > recovery.cursor.sequence) {
+        recovery.cursor = message.cursor
+      }
+      this.recoverCommand(commandId, recovery)
     } else {
-      // payload_omitted 是该事件的有序确认帧。推进游标后，断线重连不会
-      // 重复回放同一个超大事件；具体业务数据由下面的快照/列表刷新补偿。
-      this.cursors.set(eventStreamKey(stream), message.cursor)
       if (eventChannel.startsWith('terminal.')) {
         window.dispatchEvent(new CustomEvent('ompiui:terminals-changed'))
       } else if (eventChannel === 'omp.subagent') {
@@ -489,9 +495,56 @@ class PiEventStream {
     }
   }
 
+  private recoverCommand(commandId: string, recovery: CommandRecovery): void {
+    if (recovery.controller) return
+    const controller = new AbortController()
+    const cursor = recovery.cursor
+    recovery.controller = controller
+    void piFetch(
+      `${getApiBase()}/api/v1/host/commands/${encodeURIComponent(commandId)}`,
+      { signal: controller.signal },
+    ).then(async response => {
+      if (!response.ok) throw new Error(`Command recovery failed: ${response.status}`)
+      const body: unknown = await response.json()
+      if (!isJsonObject(body) || !isCommandRecord(body.command) || body.command.id !== commandId) {
+        throw new Error('Invalid command recovery response')
+      }
+      return body.command
+    }).then(command => {
+      if (
+        this.commandRecoveries.get(commandId) !== recovery || controller.signal.aborted ||
+        serverStore.getActiveServerGeneration() !== recovery.generation ||
+        this.cursors.get(recovery.key)?.epoch !== cursor.epoch || recovery.cursor !== cursor
+      ) return
+      this.commandRecoveries.delete(commandId)
+      piCommandStore.upsert(command)
+      window.dispatchEvent(new CustomEvent('ompiui:command-updated', { detail: command }))
+    }).catch(() => {
+      // 保留业务恢复项，下一次订阅重试 HTTP；不借旧传输游标重放已消费事件。
+    }).finally(() => {
+      if (recovery.controller !== controller) return
+      recovery.controller = undefined
+      if (this.commandRecoveries.get(commandId) === recovery && recovery.cursor !== cursor) {
+        this.recoverCommand(commandId, recovery)
+      }
+    })
+  }
+
+  private advanceCursor(key: string, cursor: EventCursor): void {
+    const previous = this.cursors.get(key)
+    if (previous?.epoch === cursor.epoch && previous.sequence >= cursor.sequence) return
+    this.cursors.set(key, cursor)
+    if (!previous || previous.epoch === cursor.epoch) return
+    for (const [commandId, recovery] of this.commandRecoveries) {
+      if (recovery.key !== key) continue
+      this.commandRecoveries.delete(commandId)
+      recovery.controller?.abort()
+    }
+  }
+
   private handleEvent(envelope: EventEnvelope): void {
     const sessionId = envelope.stream.kind === 'session' ? envelope.stream.id : null
-    this.cursors.set(eventStreamKey(envelope.stream), envelope.cursor)
+    this.advanceCursor(eventStreamKey(envelope.stream), envelope.cursor)
     switch (envelope.channel) {
       case 'pi.event':
         if (sessionId) this.handlePiEvent(sessionId, envelope.payload as unknown as PiEventPayload)
@@ -513,6 +566,8 @@ class PiEventStream {
         break
       case 'command.updated':
         if (isCommandRecord(envelope.payload)) {
+          this.commandRecoveries.get(envelope.payload.id)?.controller?.abort()
+          this.commandRecoveries.delete(envelope.payload.id)
           piCommandStore.upsert(envelope.payload)
           window.dispatchEvent(new CustomEvent('ompiui:command-updated', { detail: envelope.payload }))
         }
@@ -980,10 +1035,9 @@ class PiEventStream {
     if (current && (current.epoch !== pending.position.epoch || current.sequence >= pending.position.sequence)) return
     this.applyLiveMessage(sessionId, pending.liveMessage, pending.position)
   }
-  private handleResync(key: string, cursor?: EventCursor): Promise<void> {
+  private handleResync(key: string): Promise<void> {
     const stream = parseEventStreamKey(key)
     if (!stream) return Promise.resolve()
-    if (cursor) this.cursors.set(key, cursor)
     if (stream.kind === 'session') {
       const existing = this.resyncFlights.get(stream.id)
       if (existing) return existing
@@ -1032,13 +1086,11 @@ class PiEventStream {
   }
 
   private queueResync(key: string, cursor?: EventCursor): void {
-    this.pendingResync.set(key, cursor)
+    if (cursor) this.advanceCursor(key, cursor)
+    this.pendingResync.add(key)
     if (this.resyncTimer) return
     this.resyncTimer = setTimeout(() => {
       this.resyncTimer = null
-      const pending = [...this.pendingResync.entries()]
-      this.pendingResync.clear()
-      for (const [pendingKey, pendingCursor] of pending) this.pendingResync.set(pendingKey, pendingCursor)
       this.drainResync()
     }, REFRESH_DEBOUNCE_MS)
   }
@@ -1046,10 +1098,10 @@ class PiEventStream {
   private drainResync(): void {
     const generation = this.resyncGeneration
     while (this.resyncActive < this.RESYNC_CONCURRENCY && this.pendingResync.size > 0) {
-      const [key, cursor] = this.pendingResync.entries().next().value as [string, EventCursor | undefined]
+      const key = this.pendingResync.values().next().value!
       this.pendingResync.delete(key)
       this.resyncActive++
-      void this.handleResync(key, cursor).finally(() => {
+      void this.handleResync(key).finally(() => {
         if (this.resyncGeneration !== generation) return
         this.resyncActive--
         this.drainResync()
