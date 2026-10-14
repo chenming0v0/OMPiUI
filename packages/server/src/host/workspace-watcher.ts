@@ -12,7 +12,7 @@ import { workspacePathKey, type WorkspaceRecord } from "./workspace-store.ts"
 
 const FLUSH_DELAY_MS = 80
 const MAX_CHANGES_PER_EVENT = 512
-const MAX_WATCHED_WORKSPACES = 32
+export const MAX_WATCHED_WORKSPACES = 32
 // 避开启动请求洪峰；Bun 的扫描与监听另在子进程执行，延迟本身不能防止卡顿。
 const WATCH_STARTUP_DELAY_MS = 3_000
 const MAX_RESTART_ATTEMPTS = 5
@@ -144,6 +144,10 @@ export class WorkspaceWatcher {
         this.eventHub.publish({ kind: "workspace", id: root }, "workspace.files", {
           workspacePath: root, revision: state.revision, changes: [], rescan: true,
         })
+        invalidateGitCache(root)
+        this.eventHub.publish({ kind: "workspace", id: root }, "workspace.git", {
+          workspacePath: root, revision: state.revision,
+        })
       }
       // 保留 watched 记录,退避后重启子进程并对每个工作区重新下发 watch
       this.scheduleRestart()
@@ -222,8 +226,13 @@ export class WorkspaceWatcher {
       const change = toChange(event, relative)
       if (!change) return
       state.gitDirty = true
-      if (state.pending.size < MAX_CHANGES_PER_EVENT) state.pending.set(relative, change)
-      else state.rescan = true
+      if (!state.rescan) {
+        if (state.pending.has(relative) || state.pending.size < MAX_CHANGES_PER_EVENT) state.pending.set(relative, change)
+        else {
+          state.pending.clear()
+          state.rescan = true
+        }
+      }
       this.schedule(workspace, state)
     })
     state.watcher.on("ready", () => {
@@ -292,25 +301,21 @@ export class WorkspaceWatcher {
     if (state.timer) clearTimeout(state.timer)
     if (state.startupTimer) clearTimeout(state.startupTimer)
     this.watched.delete(key)
+    state.pending.clear()
     this.process?.send({ type: "unwatch", root: workspace.canonicalRoot }, () => undefined)
     void Promise.all([state.watcher?.close(), state.gitWatcher?.close()]).catch(() => undefined)
   }
 
   private evictOldest(): void {
-    const oldest = [...this.watched.entries()].sort((a, b) => a[1].lastAccessedAt - b[1].lastAccessedAt)[0]
-    if (!oldest) return
-    const [key, state] = oldest
-    if (state.timer) clearTimeout(state.timer)
-    if (state.startupTimer) clearTimeout(state.startupTimer)
-    this.watched.delete(key)
-    this.process?.send({ type: "unwatch", root: state.root }, () => undefined)
-    void Promise.all([state.watcher?.close(), state.gitWatcher?.close()]).catch(() => undefined)
+    const oldest = [...this.watched.values()].sort((a, b) => a.lastAccessedAt - b.lastAccessedAt)[0]
+    if (oldest) this.unwatch(oldest.record)
   }
 
   private schedule(workspace: WorkspaceRecord, state: WatchedWorkspace): void {
-    if (state.timer) return
+    if (state.timer || this.watched.get(workspacePathKey(workspace.canonicalRoot)) !== state) return
     state.timer = setTimeout(() => {
       state.timer = undefined
+      if (this.watched.get(workspacePathKey(workspace.canonicalRoot)) !== state) return
       state.revision++
       if (state.pending.size > 0 || state.rescan) {
         this.eventHub.publish(
