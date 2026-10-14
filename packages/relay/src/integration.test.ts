@@ -98,7 +98,16 @@ class MiniDesktop {
       this.sendControl({ type: "head", c: frame.c, s: res.statusCode ?? 101, h: stripHopByHopHeaders(res.headers, true) })
       if (head.length > 0) this.sendBody(frame.c, head)
       socket.on("data", (chunk: Buffer) => this.sendBody(frame.c, chunk))
-      socket.on("close", () => this.sendControl({ type: "close", c: frame.c }))
+      socket.on("end", () => {
+        if (!this.conns.has(frame.c)) return
+        this.sendControl({ type: "end", c: frame.c })
+        this.conns.delete(frame.c)
+      })
+      socket.on("close", () => {
+        if (!this.conns.has(frame.c)) return
+        this.sendControl({ type: "close", c: frame.c })
+        this.conns.delete(frame.c)
+      })
       socket.on("error", noop)
     })
     req.on("error", (error: NodeJS.ErrnoException) => {
