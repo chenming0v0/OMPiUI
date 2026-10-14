@@ -56,13 +56,46 @@ const ipcSender = new WorkerIpcSender((message, done) => {
   }
 })
 
-function send(message: WorkerMessage): void {
-  ipcSender.send(message)
+const failedOutputSessions = new Set<string>()
+
+function failWorkerIpc(error: Error): void {
+  if (fatalExitStarted) return
+  fatalExitStarted = true
+  console.error(`[omp-worker] IPC delivery failed: ${error.message}`)
+  ipcSender.close(error)
+  schedule.cancelAll()
+  void fatalExit(1)
 }
 
-/** 等 IPC flush 完再回调（用于退出前的最后一条消息）；通道不可用时立即回调 */
-function sendWithCallback(message: WorkerMessage, callback: () => void): void {
-  ipcSender.send(message, callback)
+function send(message: WorkerMessage): void {
+  const sessionId = message.kind === "event" && "sessionId" in message ? message.sessionId : undefined
+  if (sessionId && failedOutputSessions.has(sessionId)) return
+  ipcSender.send(message, error => {
+    if (!error || ("code" in error && error.code === "IPC_HEARTBEAT_SUPERSEDED")) return
+    if (!sessionId || !process.connected) {
+      failWorkerIpc(error)
+      return
+    }
+    // Stdout is paused before the hard cap. If an already-decoded oversized
+    // frame still exceeds it, fail only its session and report that terminal
+    // state through reserved control capacity, rather than losing events silently.
+    failedOutputSessions.add(sessionId)
+    ipcSender.sendControl({
+      kind: "event", generation: workerGeneration, sessionId, channel: "session.crashed",
+      event: { message: error.message, code: "WORKER_OUTPUT_LIMIT" },
+    }, failure => { if (failure) failWorkerIpc(failure) })
+    void closeRuntime(sessionId).catch(failure => console.error("[omp-worker] output failure cleanup failed", failure))
+      .finally(() => failedOutputSessions.delete(sessionId))
+  })
+}
+
+function sendControl(message: WorkerMessage): void {
+  ipcSender.sendControl(message, error => { if (error) failWorkerIpc(error) })
+}
+
+/** 等 IPC flush 完再回调；失败必须传给退出路径，不能冒充已交付。 */
+function sendWithCallback(message: WorkerMessage, callback: (error?: Error) => void): void {
+  ipcSender.sendControl(message, callback)
 }
 
 const ompBin = process.env.OMPI_OMP_BIN?.trim() || undefined
@@ -196,6 +229,7 @@ async function openRuntime(params: JsonObject): Promise<JsonValue> {
   const sessionId = opened.getSessionId()
   const unsubs = subscribeRuntimeEvents(opened)
   runtimes.set(sessionId, opened)
+  if (opened instanceof OmpRpcSession) opened.setOutputPaused(ipcSender.isPaused)
   try {
     await setRuntimeRegistryBaseline(sessionId, opened)
     const state = await opened.getState()
@@ -363,7 +397,7 @@ function describeRegistry(): PiRegistrySnapshot {
   }
 }
 
-const schedule = createWorkerCommandScheduler(async command => execute(command))
+const schedule = createWorkerCommandScheduler(execute, ipcSender, workerGeneration)
 
 async function cleanupWorker(): Promise<void> {
   clearInterval(heartbeatTimer)
@@ -425,9 +459,6 @@ process.on("uncaughtException", (error) => {
   void fatalExit(1)
 })
 
-function toResponseData(data: JsonValue | undefined | void): JsonValue | undefined {
-  return data === undefined ? undefined : data as JsonValue
-}
 
 process.on("message", (value: unknown) => {
   const message = value as WorkerParentMessage
@@ -444,7 +475,7 @@ process.on("message", (value: unknown) => {
   const request = message as WorkerRequest
   if (!request || request.kind !== "request" || typeof request.id !== "string") return
   if (request.generation !== workerGeneration) {
-    send({
+    sendControl({
       kind: "response",
       id: request.id,
       generation: workerGeneration,
@@ -454,7 +485,7 @@ process.on("message", (value: unknown) => {
     return
   }
   if (!request.command || typeof request.command.type !== "string") {
-    send({
+    sendControl({
       kind: "response",
       id: request.id,
       generation: workerGeneration,
@@ -466,7 +497,7 @@ process.on("message", (value: unknown) => {
   if (request.command.type === "dispose") {
     void schedule.close(cleanupWorker).then(
       () => {
-        sendWithCallback({ kind: "response", id: request.id, generation: workerGeneration, ok: true }, () => process.exit(0))
+        sendWithCallback({ kind: "response", id: request.id, generation: workerGeneration, ok: true }, error => process.exit(error ? 1 : 0))
         setTimeout(() => process.exit(0), 1_000).unref()
       },
       error => {
@@ -482,40 +513,17 @@ process.on("message", (value: unknown) => {
     )
     return
   }
-  if (request.command.type === "session.close") {
-    void schedule({ ...request.command, sessionId: request.sessionId }).then(
-      () => {
-        send({ kind: "response", id: request.id, generation: workerGeneration, ok: true })
-      },
-      error => {
-        send({
-          kind: "response",
-          id: request.id,
-          generation: workerGeneration,
-          ok: false,
-          error: problemFromError(error),
-        })
-      },
-    )
-    return
-  }
-  void schedule({ ...request.command, sessionId: request.sessionId }).then(
-    data => {
-      send({ kind: "response", id: request.id, generation: workerGeneration, ok: true, data: toResponseData(data) })
-    },
-    error => {
-      send({
-        kind: "response",
-        id: request.id,
-        generation: workerGeneration,
-        ok: false,
-        error: problemFromError(error),
-      })
-    },
-  )
+  void schedule(request).catch(error => {
+    sendControl({
+      kind: "response", id: request.id, generation: workerGeneration, ok: false,
+      error: problemFromError(error),
+    })
+  })
 })
 
 process.on("disconnect", () => {
+  ipcSender.close(new Error("OMPiUI host disconnected"))
+  schedule.cancelAll()
   clearInterval(heartbeatTimer)
   for (const pending of pendingHostCalls.values()) {
     clearTimeout(pending.timer)
