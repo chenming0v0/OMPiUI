@@ -230,13 +230,22 @@ const BRANCH_LARGE_ENTRY_MAX_BYTES = 4 * 1024 * 1024
 const sessionRefreshFlights = new Map<string, { promise: Promise<void>; dirty: boolean; includeLive: boolean }>()
 
 /** 普通历史使用小页；单条正文超限时扩大预算，不把原生记录截断或跳过。 */
-async function readHistoryPage<T>(read: (maxBytes: number) => Promise<T>, initialBytes = BRANCH_PAGE_MAX_BYTES): Promise<T> {
+async function readHistoryPage<T>(
+  read: (maxBytes: number) => Promise<T>,
+  initialBytes = BRANCH_PAGE_MAX_BYTES,
+  signal?: AbortSignal,
+): Promise<T> {
   let maxBytes = initialBytes
   for (;;) {
+    signal?.throwIfAborted()
     try {
-      return await read(maxBytes)
+      const page = await read(maxBytes)
+      signal?.throwIfAborted()
+      return page
     } catch (error) {
-      if ((error as { code?: string })?.code !== 'FILE_TOO_LARGE' || maxBytes >= BRANCH_LARGE_ENTRY_MAX_BYTES) throw error
+      signal?.throwIfAborted()
+      if (!error || typeof error !== 'object' || !('code' in error) ||
+        error.code !== 'FILE_TOO_LARGE' || maxBytes >= BRANCH_LARGE_ENTRY_MAX_BYTES) throw error
       maxBytes = Math.min(maxBytes * 2, BRANCH_LARGE_ENTRY_MAX_BYTES)
     }
   }
@@ -280,7 +289,7 @@ async function loadPiSessionDataOnce(sessionId: string, signal?: AbortSignal): P
             ...(current?.syncCursor ? { syncCursor: current.syncCursor, beforeId: current.items[0]?.id } : {}),
           },
           signal,
-        )),
+        ), undefined, signal),
       signal,
       true,
     )
@@ -345,6 +354,13 @@ async function retryUnavailable<T>(operation: () => Promise<T>, signal?: AbortSi
   throw lastError
 }
 
+// 已完成的预取也随原生历史替换释放；checkpoint 更新复用同一 items，不打断阅读。
+piBranchStore.subscribe(() => historyPagePrefetch.prune(sessionId => {
+  const branch = piBranchStore.getData(sessionId)
+  return branch?.hasMore ? branch.items : undefined
+}))
+serverStore.onServerChange(() => historyPagePrefetch.clear())
+
 /**
  * 快速模式补足两页；空闲模式越过已缓存页，每次再向前预取一页。
  */
@@ -353,13 +369,15 @@ export async function prefetchPiBranchEntries(
   mode: HistoryPrefetchMode = 'fast',
   signal?: AbortSignal,
 ): Promise<boolean> {
+  if (signal?.aborted) return false
   const currentBranch = piBranchStore.getData(sessionId)
   const anchor = currentBranch?.items[0]
   if (!currentBranch?.hasMore || !anchor) return false
   const generation = serverStore.getActiveServerGeneration()
-  const read = (beforeId: string) => readHistoryPage(maxBytes => transport.getPiBranchPage(
-    sessionId, { beforeId, limit: BRANCH_PAGE_LIMIT, maxBytes },
-  ))
+  historyPagePrefetch.track(sessionId, generation, currentBranch.items)
+  const read = (beforeId: string, sharedSignal: AbortSignal) => readHistoryPage(maxBytes => transport.getPiBranchPage(
+    sessionId, { beforeId, limit: BRANCH_PAGE_LIMIT, maxBytes }, sharedSignal,
+  ), undefined, sharedSignal)
   try {
     let boundary = anchor
     for (let depth = 0; depth < HISTORY_PREFETCH_MAX_PAGES; depth++) {
@@ -368,9 +386,11 @@ export async function prefetchPiBranchEntries(
         signal?.aborted || serverStore.getActiveServerGeneration() !== generation ||
         !latest?.hasMore || !latest.items.some(entry => entry === anchor)
       ) return false
-      const cached = historyPagePrefetch.peek(sessionId, generation, boundary)
+      const cached = historyPagePrefetch.has(sessionId, generation, boundary)
       if (!cached && !historyPagePrefetch.canPrefetch(sessionId, generation)) return false
-      const page = await (cached ?? historyPagePrefetch.prefetch(sessionId, generation, boundary, () => read(boundary.id)))
+      const page = await historyPagePrefetch.prefetch(
+        sessionId, generation, boundary, sharedSignal => read(boundary.id, sharedSignal), signal,
+      )
       const next = page.items[0]
       if (!page.hasMore || !next || next.id === boundary.id) return false
       boundary = next
@@ -392,6 +412,7 @@ export async function prefetchPiBranchEntries(
  * first (latest) page — preserve it when merging older pages.
  */
 export async function loadMorePiBranchEntries(sessionId: string, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted()
   const currentBranch = piBranchStore.getData(sessionId)
   if (!currentBranch) {
     throw new Error('No branch data loaded')
@@ -401,16 +422,28 @@ export async function loadMorePiBranchEntries(sessionId: string, signal?: AbortS
     return // No more data
   }
   const serverGeneration = serverStore.getActiveServerGeneration()
+  const navigation = new AbortController()
+  const currentHistory = () => {
+    const latest = piBranchStore.getData(sessionId)
+    return serverStore.getActiveServerGeneration() === serverGeneration && latest &&
+      currentBranch.items.every((entry, index) => latest.items[index]?.id === entry.id)
+  }
+  const unsubscribe = piBranchStore.subscribe(() => {
+    if (!currentHistory()) navigation.abort()
+  })
+  const consumerSignal = signal ? AbortSignal.any([signal, navigation.signal]) : navigation.signal
+  historyPagePrefetch.track(sessionId, serverGeneration, currentBranch.items)
 
   try {
-    const read = () => readHistoryPage(maxBytes => transport.getPiBranchPage(
+    const read = (sharedSignal: AbortSignal) => readHistoryPage(maxBytes => transport.getPiBranchPage(
       sessionId,
       { beforeId: currentBranch.items[0].id, limit: BRANCH_PAGE_LIMIT, maxBytes },
-      signal,
-    ))
-    const olderPage = await (signal
-      ? read()
-      : historyPagePrefetch.take(sessionId, serverGeneration, currentBranch.items[0], read))
+      sharedSignal,
+    ), undefined, sharedSignal)
+    const olderPage = await historyPagePrefetch.take(
+      sessionId, serverGeneration, currentBranch.items[0], read, consumerSignal,
+    )
+    signal?.throwIfAborted()
 
     const latest = piBranchStore.getData(sessionId)
     if (
@@ -436,6 +469,8 @@ export async function loadMorePiBranchEntries(sessionId: string, signal?: AbortS
       ),
     )
   } catch (error) {
+    signal?.throwIfAborted()
+    if (!currentHistory()) return
     const code = (error as { code?: string })?.code
     if (code === 'INVALID_REQUEST' || code === 'STALE_CURSOR') {
       const latest = piBranchStore.getData(sessionId)
@@ -456,6 +491,8 @@ export async function loadMorePiBranchEntries(sessionId: string, signal?: AbortS
     }
     console.error('Failed to load more branch entries:', error)
     throw error
+  } finally {
+    unsubscribe()
   }
 }
 
@@ -533,14 +570,14 @@ async function refreshPiBranchOnce(sessionId: string, signal?: AbortSignal, incl
       ...(current?.syncCursor ? { syncCursor: current.syncCursor, beforeId: current.items[0]?.id } : {}),
     },
     signal,
-  ), params.maxBytes)
+  ), params.maxBytes, signal)
   if (
     serverStore.getActiveServerGeneration() !== serverGeneration ||
     !piBranchStore.isRequestCurrent(sessionId, version)
   )
     return
   if (latest.deltaFrom && latest.deltaFrom !== piBranchStore.getData(sessionId)?.syncCursor) {
-    latest = await readHistoryPage(maxBytes => transport.getPiBranchPage(sessionId, { ...params, maxBytes }, signal), params.maxBytes)
+    latest = await readHistoryPage(maxBytes => transport.getPiBranchPage(sessionId, { ...params, maxBytes }, signal), params.maxBytes, signal)
   }
   if (serverStore.getActiveServerGeneration() !== serverGeneration) return
   piBranchStore.setDataIfCurrent(sessionId, mergeLatestBranchPage(piBranchStore.getData(sessionId), latest), version)
