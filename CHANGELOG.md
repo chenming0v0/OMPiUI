@@ -12,7 +12,8 @@
 - fix: HTTP 增加输入与输出全局预算，合法大响应不再被过早拒绝；诊断报告的 form 编码按实际字节计量；文件写入支持不回显正文。
 - fix: Tauri 入站桥消息限长；流量审计补齐生产开关、脱敏缓存、预览生命周期与 WebSocket 消息记录；终端布局持久化改为去抖写入并限制目录历史数量。
 - fix: 静态资源支持受限 multipart Range 响应并保留单区间兼容；有界历史分页合并保留已加载的更早条目与 `historyWindowed` 游标，不因新到的最新页丢失分页状态。
-- verification: 按 `npm run validate` 执行类型检查、lint、测试与生产构建；各提交附带的定向验证记录见提交信息。安装包实机升级与线上负载不以源码验证或发布构建冒充验收。
+- fix: 发版前修复本批引入的两处回归：`e6735b8` 把状态刷新挂到 branch 恢复请求之后，branch 慢或挂起时实时消息的 `streaming→persisting` 收敛会被无限推迟，现改回立即调度；`http-output` 全局预算已按 128 MiB 上调，测试改为从模块常量推导额度，不再钉死旧数值。
+- verification: 类型检查、lint 与生产构建由 CI 执行；本批回归在 CI 暴露后按单文件复现并修复（app `recoveryOrdering`、server `http-output`）。安装包实机升级与线上负载不以源码验证或发布构建冒充验收。
 - chore: 根包、全部 workspace、互依赖、npm 锁文件及 Tauri/Cargo 统一为 `0.6.24`；事件协议版本仍为 2（`ompiui.events.v2`），官方会话目录与文件格式不变。
 
 ## [v0.6.23] - 2026-10-13
