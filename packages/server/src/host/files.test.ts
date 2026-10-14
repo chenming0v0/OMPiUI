@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { after, afterEach, describe, it } from "node:test"
@@ -89,7 +89,10 @@ describe("workspace files", () => {
     writeFileSync(path.join(root, "a.txt"), "a")
     writeFileSync(path.join(root, "b.txt"), "b")
     const first = await listFiles(workspace, "", { limit: 1 })
+    const previousMtime = statSync(root).mtimeMs
     writeFileSync(path.join(root, "c.txt"), "c")
+    const nextMtime = new Date(previousMtime + 2000)
+    utimesSync(root, nextMtime, nextMtime)
     await assert.rejects(listFiles(workspace, "", { limit: 1, cursor: first.nextCursor }), error =>
       (error as { code?: string }).code === "STALE_REVISION")
   })
