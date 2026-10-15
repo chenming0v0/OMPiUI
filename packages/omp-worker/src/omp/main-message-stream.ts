@@ -62,6 +62,16 @@ export class MainMessageStream {
       if (block.type === "toolCall" && isJsonObject(block.arguments)) {
         const oldArgs = old && isJsonObject(old.arguments) ? old.arguments : {};
         const { arguments: _arguments, ...header } = block;
+        // 空参数也必须保留工具块，避免接收端缺少中间下标或保留旧参数。
+        if (Object.keys(block.arguments).length === 0 && !jsonEqual(block, old)) {
+          send({
+            type: "message_patch",
+            metadata,
+            index,
+            block,
+            blockCount: message.content.length,
+          });
+        }
         for (const [argument, value] of Object.entries(block.arguments)) {
           const previous = oldArgs[argument];
           if (typeof value === "string") {
