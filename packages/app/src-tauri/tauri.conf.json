@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "OMPiUI",
-  "version": "0.6.26",
+  "version": "0.6.27",
   "identifier": "com.ompiui.app",
   "build": {
     "frontendDist": "../dist",
