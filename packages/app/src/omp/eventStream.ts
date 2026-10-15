@@ -837,6 +837,11 @@ class PiEventStream {
           ? [...currentMessage.content]
           : []
       const index = Number(patch.index)
+      // 缺少前序块时先恢复快照，不能把带空位的数组交给聊天渲染。
+      if (index > content.length) {
+        this.recoverLiveMessage(sessionId)
+        return
+      }
       const block = patch.block
       if (patch.field === 'arguments' && typeof patch.argument === 'string') {
         const previous = isJsonObject(content[index]) ? content[index] : undefined
@@ -878,7 +883,8 @@ class PiEventStream {
         }
         content[index] = { ...block, [patch.field]: text.slice(0, offset) + patch.delta } as never
       } else content[index] = block as never
-      if (typeof patch.blockCount === 'number') content.length = patch.blockCount
+      // 总块数包含尚未到达的后续帧，只用于裁剪，不能提前扩长数组。
+      if (typeof patch.blockCount === 'number' && patch.blockCount < content.length) content.length = patch.blockCount
       this.updateLiveMessage(
         sessionId,
         { ...(patch.metadata as JsonObject), content } as unknown as AgentMessage,
