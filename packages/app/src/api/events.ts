@@ -43,16 +43,26 @@ let tracking = false
 let serverSwitchPending = false
 // Last real auth rejection (401). Reconnect/offline churn must not erase it.
 let lastAuthError: string | undefined
+let eventStreamState: { generation: number; state: ConnectionState; attempt: number } | undefined
+
+export function setEventStreamState(state: ConnectionState | 'unused', attempt = 0): void {
+  eventStreamState = state === 'unused' ? undefined : {
+    generation: serverStore.getActiveServerGeneration(), state, attempt,
+  }
+  syncFromStore()
+}
 
 function syncFromStore(): void {
   const health = serverStore.getHealth(serverStore.getActiveServerId())
   const previousState = connectionInfo.state
-  const nextState = mapHealthToState(health)
+  const socket = eventStreamState?.generation === serverStore.getActiveServerGeneration() ? eventStreamState : undefined
+  const nextState = health?.status === 'online' && socket ? socket.state : mapHealthToState(health)
   if (health?.status === 'unauthorized') lastAuthError = health.error ?? lastAuthError
   else if (!health || health.status === 'online') lastAuthError = undefined
   connectionInfo = {
     ...connectionInfo,
     state: nextState,
+    reconnectAttempt: socket?.attempt ?? 0,
     error: lastAuthError ?? health?.error,
     lastEventTime: health?.lastCheck ?? connectionInfo.lastEventTime,
   }
