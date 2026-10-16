@@ -5,6 +5,7 @@ import {
 import { getHttpFetch } from '../../utils/tauri'
 import { desktopDiagnosticsStore } from '../../store/desktopDiagnosticsStore'
 import { readFullSavedFault, readSavedFault, saveFault, type SavedFault } from './storage'
+import { auditHttpRequest } from '../trafficAudit/http'
 
 export type ClientFaultEvent = {
   time: string
@@ -128,7 +129,11 @@ export class FaultAuditStore {
     return this.current.saved.notice.id
   }
 
-  finishCollection(id: string, report?: FaultReport): void {
+  cancelCollection(id: string): void {
+    if (this.current.saved?.notice.id === id) this.update({ collecting: false })
+  }
+
+  finishCollection(id: string, report?: FaultReport, unavailable = 'server_unreachable'): void {
     if (this.current.saved?.notice.id !== id) return
     const saved = this.current.saved
     const next = report ? {
@@ -141,7 +146,7 @@ export class FaultAuditStore {
       upload: { links: [], total: 0 },
     } : {
       ...saved,
-      report: { ...saved.report, complete: false, unavailable: [...new Set([...saved.report.unavailable, 'server_unreachable'])] },
+      report: { ...saved.report, complete: false, unavailable: [...new Set([...saved.report.unavailable, unavailable])] },
     }
     this.update({ saved: next, collecting: false })
     saveFault(next)
@@ -168,7 +173,12 @@ export class FaultAuditStore {
     this.update({ uploading: true, error: undefined })
     try {
       const send = fetchImpl ?? await getHttpFetch()
-      await uploadFaultReport(saved.report.content, send, saved.upload, (upload: FaultUploadProgress) => {
+      const auditedSend: typeof fetch = (input, init) => auditHttpRequest(
+        String(input),
+        init,
+        () => send(input, init),
+      )
+      await uploadFaultReport(saved.report.content, auditedSend, saved.upload, (upload: FaultUploadProgress) => {
         if (this.current.saved?.notice.id !== saved.notice.id) return
         const next = { ...this.current.saved, upload }
         this.update({ saved: next })

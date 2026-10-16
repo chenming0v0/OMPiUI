@@ -126,6 +126,40 @@ describe('fault audit integration', () => {
     expect(network.fetch.mock.calls.every(([url]) => !String(url).includes('mclo.gs'))).toBe(true)
   })
 
+  it('keeps hidden-page faults local and only collects after the page becomes visible', async () => {
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    network.fetch.mockResolvedValue(Response.json({ content: 'visible report', complete: true, files: 1, unavailable: [] }))
+    try {
+      const { reportRuntimeCrash, collectFaultReport } = await import('./controller')
+      const { faultAuditStore } = await import('./store')
+      reportRuntimeCrash('hidden-session')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(network.fetch).not.toHaveBeenCalled()
+      expect(faultAuditStore.getSnapshot().saved).toBeDefined()
+      visibility.mockReturnValue('visible')
+      await collectFaultReport(false, true)
+      expect(network.fetch).toHaveBeenCalledTimes(1)
+      expect(faultAuditStore.getSnapshot().saved?.report.complete).toBe(true)
+    } finally { visibility.mockRestore() }
+  })
+
+  it('does not classify report rate limiting as backend unreachability or retry it immediately', async () => {
+    network.fetch.mockResolvedValueOnce(Response.json({}, { status: 429 }))
+      .mockResolvedValue(Response.json({ content: 'recovered', complete: true, files: 1, unavailable: [] }))
+    const { reportRuntimeCrash, collectFaultReport } = await import('./controller')
+    const { faultAuditStore } = await import('./store')
+    reportRuntimeCrash('rate-limited-report')
+    await vi.waitFor(() => expect(faultAuditStore.getSnapshot().collecting).toBe(false))
+    expect(faultAuditStore.getSnapshot().saved?.report.unavailable).toContain('server_rate_limited')
+    expect(faultAuditStore.getSnapshot().saved?.report.unavailable).not.toContain('server_unreachable')
+    await collectFaultReport(false, true)
+    expect(network.fetch).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(30_001)
+    await collectFaultReport(false, true)
+    expect(network.fetch).toHaveBeenCalledTimes(2)
+    expect(faultAuditStore.getSnapshot().saved?.report.complete).toBe(true)
+  })
+
   it('treats a healthy legacy backend as connected instead of reporting the audit endpoint 404', async () => {
     network.fetch.mockImplementation((url: string) =>
       Promise.resolve(

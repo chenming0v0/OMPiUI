@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { FaultAuditStore } from './store'
 import type { FaultNotice } from '@ompiui/protocol'
 import { desktopDiagnosticsStore } from '../../store/desktopDiagnosticsStore'
+import { trafficAuditStore } from '../trafficAudit/store'
 
 const persistence = vi.hoisted(() => ({ save: vi.fn(), read: vi.fn() }))
 vi.mock('./storage', () => ({
@@ -14,6 +15,32 @@ const fault: FaultNotice = { id: 'crash-1', kind: 'runtime_crashed', time: '2026
 
 describe('local fault reports', () => {
   beforeEach(() => vi.clearAllMocks())
+  it('audits encoded third-party uploads without backend credentials or retained previews', async () => {
+    trafficAuditStore.setEnabled(true)
+    trafficAuditStore.setPreviews(false)
+    trafficAuditStore.clear()
+    try {
+      const store = new FaultAuditStore(false)
+      store.detect(fault, 'server-a')
+      store.finishCollection(store.beginCollection()!, { content: '中文'.repeat(4096), complete: true, unavailable: [], files: 1 })
+      let sentBytes = 0
+      const responseBody = JSON.stringify({ success: true, id: 'audited', url: 'https://mclo.gs/audited' })
+      await store.upload(async (input, init) => {
+        expect(String(input)).toBe('https://api.mclo.gs/1/log')
+        expect(init?.credentials).toBe('omit')
+        expect(init?.redirect).toBe('error')
+        expect(new Headers(init?.headers).has('authorization')).toBe(false)
+        sentBytes += new TextEncoder().encode(String(init?.body)).byteLength
+        return new Response(responseBody)
+      })
+      const [record] = trafficAuditStore.getSnapshot().records
+      expect(record).toMatchObject({
+        sentBytes, receivedBytes: new TextEncoder().encode(responseBody).byteLength,
+        status: 'complete', requestPreview: undefined, responsePreview: undefined,
+      })
+      expect(trafficAuditStore.getSnapshot().records).toHaveLength(1)
+    } finally { trafficAuditStore.setEnabled(false) }
+  })
   it('keeps client metadata offline without secrets, chat bodies, raw errors or URLs', () => {
     const store = new FaultAuditStore(false)
     store.record('state', {
