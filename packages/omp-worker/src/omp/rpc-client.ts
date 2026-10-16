@@ -143,37 +143,49 @@ export class OmpRpcClient extends EventEmitter {
       this.exitError = error
       this.exitReason = "spawn_error"
     })
-    // 子进程退出记账不能依赖 stdout 排空:背压暂停时 stdout 不被读取,EOF 与 close
-    // 都不会到达,finish 回调也永远不执行。exit 是主路径,close 作为兜底;二者共用幂等收尾。
+    // 等 stdout close 或 exit 后的短宽限期，再按 IPC 背压排空已缓冲帧。
+    let exitFinalizing = false
     const finalizeExit = (code: number | null, signal: NodeJS.Signals | null): void => {
-      if (this.exited) return
-      // flushForExit 只交付退出前已缓冲的完整行,不等待 IPC 恢复,因此有界
-      this.stdoutReader.flushForExit()
-      this.stdoutReader.close()
-      this.exited = true
-      this.exitCode = code
-      this.exitSignal = signal
-      const tail = this.stderrBuffer.join("").trim()
-      if (!this.exitError) {
-        this.exitError = new Error(
-          `omp RPC process exited (code=${code ?? "null"} signal=${signal ?? "null"})${tail ? `: ${tail.slice(-2000)}` : ""}`,
-        )
+      if (this.exited || exitFinalizing) return
+      exitFinalizing = true
+      let finalized = false
+      let drainTimeout: NodeJS.Timeout
+      const finish = () => {
+        if (finalized) return
+        finalized = true
+        clearTimeout(drainTimeout)
+        this.stdoutReader.close()
+        this.exited = true
+        this.exitCode = code
+        this.exitSignal = signal
+        const tail = this.stderrBuffer.join("").trim()
+        if (!this.exitError) {
+          this.exitError = new Error(
+            `omp RPC process exited (code=${code ?? "null"} signal=${signal ?? "null"})${tail ? `: ${tail.slice(-2000)}` : ""}`,
+          )
+        }
+        this.failAllPending()
+        this.emit("exit", code, signal)
+        this.exitWaiterResolve?.()
       }
-      this.failAllPending()
-      this.emit("exit", code, signal)
-      this.exitWaiterResolve?.()
+      drainTimeout = setTimeout(() => {
+        this.emitProtocolError("stdout exit drain timed out under IPC backpressure")
+        finish()
+      }, EXIT_STDOUT_GRACE_MS)
+      drainTimeout.unref()
+      this.stdoutReader.finish(finish)
     }
-    // exit 后给 stdout 一个很短的有界宽限等待 close,让管道中的最终输出先被读完;
-    // 若 stdout 因背压暂停而读不到 EOF,宽限到期后直接收尾(只交付已缓冲行),不会永久卡住。
+    // exit 后给 stdout 一个很短的有界宽限等待 close，让管道中的最终输出先被读完。
     let exitGrace: NodeJS.Timeout | undefined
     this.proc.on("exit", (code, signal) => {
-      if (this.exited || exitGrace) return
+      if (this.exited || exitFinalizing || exitGrace) return
       this.stdinSender?.close(new OmpRpcError("omp RPC process exited", "OMP_EXITED"))
       exitGrace = setTimeout(() => finalizeExit(code, signal), EXIT_STDOUT_GRACE_MS)
       exitGrace.unref()
     })
     this.proc.on("close", (code, signal) => {
       if (exitGrace) clearTimeout(exitGrace)
+      exitGrace = undefined
       finalizeExit(code, signal)
     })
     this.exitWaiter = new Promise(resolve => {

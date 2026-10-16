@@ -152,7 +152,7 @@ export function createWorkerCommandScheduler(
       responseBytes: priority
         ? controlResponseBytes
         : LARGE_RESPONSE_COMMANDS[request.command.type]
-          ? sender.responseByteLimit
+          ? sender.responseReservationLimit
           : responseBytes,
       cancelled: false, promise, resolve, reject,
     }

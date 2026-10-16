@@ -28,5 +28,19 @@ it('acknowledges consumed xterm output, coalesces callbacks and never snapshots 
   output.write('discarded', 26, true)
   output.dispose()
   consumed[3]()
-  expect(cursor).toHaveBeenLastCalledWith(17)
+  expect(cursor).toHaveBeenLastCalledWith(26)
+})
+
+it('waits for writes already handed to xterm before reconnect can resume from its cursor', async () => {
+  const consumed: Array<() => void> = []
+  const cursor = vi.fn()
+  const output = createTerminalOutputConsumer((_data, done) => consumed.push(done), cursor, vi.fn(), () => true)
+  output.write('queued output', 42, true)
+  let drained = false
+  const drain = output.drain().then(() => { drained = true })
+  expect(drained).toBe(false)
+  consumed[0]!()
+  await drain
+  expect(drained).toBe(true)
+  expect(cursor).toHaveBeenCalledWith(42)
 })

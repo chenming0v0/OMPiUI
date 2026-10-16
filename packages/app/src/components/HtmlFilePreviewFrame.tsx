@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useTheme } from '../hooks/useTheme'
 import { createSandboxedHtmlDocument } from './htmlSandbox'
 import { resolveHtmlPreviewResources } from './htmlPreviewResources'
@@ -22,10 +23,12 @@ export function HtmlFilePreviewFrame({
   const resourceKey = `${directory ?? ''}\0${filePath ?? ''}\0${html}`
   const [resolution, setResolution] = useState<{ key: string; html: string } | null>(null)
   const resizeId = useId()
+  const { t } = useTranslation('components')
   const { resolvedTheme } = useTheme()
   const theme = resolvedTheme === 'dark' ? 'dark' : 'light'
   const [initialTheme] = useState<'light' | 'dark'>(theme)
   const effectiveHtml = filePath ? (resolution?.key === resourceKey ? resolution.html : null) : html
+  const resourcesTruncated = effectiveHtml?.includes('data-ompiui-resources-truncated="true"') ?? false
   const srcDoc = useMemo(
     () =>
       effectiveHtml &&
@@ -72,15 +75,22 @@ export function HtmlFilePreviewFrame({
 
   // File previews are explicitly opened workspace content; sandboxing isolates them from the app origin.
   return (
-    <iframe
-      ref={frameRef}
-      title={title}
-      sandbox="allow-scripts"
-      referrerPolicy="no-referrer"
-      srcDoc={srcDoc}
-      onLoad={sendTheme}
-      style={{ colorScheme: theme, touchAction: 'pan-x pan-y' }}
-      className={`block h-full min-h-0 w-full border-0 bg-transparent ${isResizing ? 'pointer-events-none' : ''}`}
-    />
+    <div className="flex h-full min-h-0 flex-col">
+      {resourcesTruncated && (
+        <div role="status" className="shrink-0 border-b border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-text-200">
+          {t('htmlPreview.resourcesTruncated')}
+        </div>
+      )}
+      <iframe
+        ref={frameRef}
+        title={title}
+        sandbox="allow-scripts"
+        referrerPolicy="no-referrer"
+        srcDoc={srcDoc}
+        onLoad={sendTheme}
+        style={{ colorScheme: theme, touchAction: 'pan-x pan-y' }}
+        className={`block min-h-0 w-full flex-1 border-0 bg-transparent ${isResizing ? 'pointer-events-none' : ''}`}
+      />
+    </div>
   )
 }
