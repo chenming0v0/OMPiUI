@@ -33,6 +33,7 @@ import { RateBudget } from "./rate-budget.ts";
 import { splitTerminalOutput } from "./terminal-output.ts";
 import { WebSocketSendBudget, type SendAdmission } from "./ws-send-budget.ts";
 import { WebSocketIngressBudget } from "./ws-ingress-budget.ts";
+import { TerminalOutputFlow } from "./terminal-output-flow.ts";
 
 // 除解析前的原始帧速率预算外，仍保留聚合载荷上限。
 const MAX_MESSAGE_BYTES = 1024 * 1024;
@@ -67,6 +68,8 @@ export function attachEventWebSocket(
   const wss = new WebSocketServer({
     noServer: true,
     maxPayload: MAX_MESSAGE_BYTES,
+    // 浏览器业务消息使用单帧，禁止 continuation 重组绕过入站帧率预算。
+    maxFragments: 1,
     autoPong: false,
     // 只协商本服务声明的子协议;未声明子协议的客户端照常握手(不带协议头)
     handleProtocols: (protocols) =>
@@ -319,8 +322,11 @@ function attachConnection(
     if (!sendResync()) return;
     let batchBytes = 0;
     let batchFrames = 0;
-    for (const [key, state] of subscribed) {
+    for (const [key, state] of [...subscribed]) {
       if (!state.dirty) continue;
+      // 每批从下一条待重放流开始，热流未追平时也不能独占批次。
+      subscribed.delete(key);
+      subscribed.set(key, state);
       const replay = eventHub.replaySince(state.stream, state.cursor);
       if (replay.resyncRequired) {
         requireResync(key, state, replay.reason ?? "missing_cursor");
@@ -547,6 +553,7 @@ function send(ws: WebSocket, message: EventServerMessage, delivered?: () => void
     data = omitted.data;
     bytes = omitted.bytes;
   }
+  if (bytes > MAX_OUTBOUND_MESSAGE_BYTES) return "connection_full";
   bytes += 10; // The largest unmasked WS frame header is part of the budget.
   const admission = reserveWire(ws, bytes);
   if (admission === "accepted")
@@ -623,6 +630,8 @@ function attachTerminalConnection(
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   const cursorValue = url.searchParams.get("cursor");
   const cursor = cursorValue === null ? undefined : Number(cursorValue);
+  const outputAck = url.searchParams.get("protocolVersion") === String(TERMINAL_STREAM_PROTOCOL_VERSION);
+  const outputFlow = new TerminalOutputFlow(outputAck);
   if (cursor !== undefined && (!Number.isSafeInteger(cursor) || cursor < -1)) {
     sendTerminalProblem(ws, "INVALID_REQUEST", "terminal cursor must be an integer >= -1");
     closeSocket(ws, 1008, "invalid cursor");
@@ -642,6 +651,9 @@ function attachTerminalConnection(
   let outputParts: string[] = [];
   let outputBytes = 0;
   let outputTimer: NodeJS.Timeout | undefined;
+  let outputResumeTimer: NodeJS.Timeout | undefined;
+  let outputAckTimer: NodeJS.Timeout | undefined;
+  let outputBlockedOnAck = false;
   let workTask: NodeJS.Immediate | undefined;
   let pendingProblem: Extract<TerminalStreamServerFrame, { type: "problem" }> | undefined;
   let pendingAck: Extract<TerminalStreamServerFrame, { type: "input_ack" }> | undefined;
@@ -663,6 +675,8 @@ function attachTerminalConnection(
     if (closed) return;
     closed = true;
     clearTimeout(outputTimer);
+    clearTimeout(outputResumeTimer);
+    clearTimeout(outputAckTimer);
     clearImmediate(workTask);
     outputParts = [];
     outputBytes = 0;
@@ -692,12 +706,35 @@ function attachTerminalConnection(
     if (closed || ws.readyState !== WebSocket.OPEN) return false;
     const data = JSON.stringify(frame);
     const bytes = Buffer.byteLength(data) + 10;
+    if (frame.type === "output") {
+      const delay = outputFlow.retryAfterMs(bytes);
+      if (delay > 0) {
+        if (Number.isFinite(delay)) {
+          outputResumeTimer ??= setTimeout(() => {
+            outputResumeTimer = undefined;
+            scheduleWork();
+          }, delay);
+          outputResumeTimer.unref();
+        } else {
+          outputBlockedOnAck = true;
+          outputAckTimer ??= setTimeout(() => close(1013, "terminal output acknowledgement stalled"), 5000);
+          outputAckTimer.unref();
+        }
+        return false;
+      }
+    }
     const admission = reserveWire(ws, bytes);
     if (admission === "connection_full") {
       close(1013, "terminal client too slow");
       return false;
     }
     if (admission === "global_full") return false;
+    if (frame.type === "output") {
+      outputFlow.sent(frame.cursor, bytes);
+      if (outputAck)
+        outputAckTimer ??= setTimeout(() => close(1013, "terminal output acknowledgement stalled"), 5000);
+      outputAckTimer?.unref();
+    }
     queue.push({ data, bytes });
     pump();
     return true;
@@ -710,7 +747,7 @@ function attachTerminalConnection(
       if (pendingProblem && sendFrame(pendingProblem)) pendingProblem = undefined;
       if (!recovering && pendingTitle !== undefined &&
           sendFrame({ type: "title", title: pendingTitle })) pendingTitle = undefined;
-      if (!recovering && pendingExit &&
+      if (!recovering && !outputFlow.hasPendingAcknowledgements && pendingExit &&
           sendFrame({ type: "exit", cursor: outputCursor!, exitCode: pendingExit.exitCode })) {
         pendingExit = undefined;
         closeAfterFlush = { code: 1001, reason: "terminal exited" };
@@ -797,7 +834,7 @@ function attachTerminalConnection(
     pump();
   };
   const resumeOutput = () => {
-    if (closed || closeAfterFlush || !recovering) return;
+    if (closed || closeAfterFlush || !recovering || outputResumeTimer || outputBlockedOnAck) return;
     try {
       // 总额度紧张时保留游标，而不是另建未计量的输出队列；
       // 从最后准入的字符续接，游标过期则显式返回协议错误，
@@ -807,7 +844,8 @@ function attachTerminalConnection(
       outputCursor = attachment.replayCursor;
       if (helloPending) {
         if (!sendFrame({ type: "hello", protocolVersion: TERMINAL_STREAM_PROTOCOL_VERSION,
-          inputAck: true, terminal: manager.get(workspacePath, terminalId), cursor: attachment.cursor })) {
+          inputAck: true, ...(outputAck ? { outputAck: true } : {}),
+          terminal: manager.get(workspacePath, terminalId), cursor: attachment.cursor })) {
           if (!closed) suspendOutput();
           return;
         }
@@ -894,11 +932,25 @@ function attachTerminalConnection(
         sendBudget.release(ws, ackBytes - wireBytes);
         queue.push({ data, bytes: wireBytes });
         pump();
+      } else if (frame.type === "output_ack") {
+        if (!outputFlow.acknowledge(frame.cursor)) {
+          problem("INVALID_REQUEST", "invalid terminal output acknowledgement");
+          closeWhenDrained(1008, "invalid terminal output acknowledgement");
+          return;
+        }
+        outputBlockedOnAck = false;
+        clearTimeout(outputAckTimer);
+        outputAckTimer = undefined;
+        if (outputFlow.hasPendingAcknowledgements) {
+          outputAckTimer = setTimeout(() => close(1013, "terminal output acknowledgement stalled"), 5000);
+          outputAckTimer.unref();
+        }
+        scheduleWork();
       } else if (frame.type === "resize" &&
           Number.isSafeInteger(frame.rows) && frame.rows >= 1 && frame.rows <= 500 &&
           Number.isSafeInteger(frame.cols) && frame.cols >= 1 && frame.cols <= 500) {
         manager.update(workspacePath, terminalId, { rows: frame.rows, cols: frame.cols });
-      } else if (frame.type === "ping" && frame.protocolVersion === TERMINAL_STREAM_PROTOCOL_VERSION) {
+      } else if (frame.type === "ping" && (frame.protocolVersion === TERMINAL_STREAM_PROTOCOL_VERSION || frame.protocolVersion === 1)) {
         pendingPongs++;
         pump();
       } else problem("INVALID_REQUEST", "invalid terminal stream frame");

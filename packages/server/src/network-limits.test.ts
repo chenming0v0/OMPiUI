@@ -53,6 +53,36 @@ test("event subscribers have a finite ceiling and release slots on unsubscribe",
   for (const unsubscribe of subscribers) unsubscribe();
 });
 
+test("event replay rotates past a hot stream before draining its entire backlog", { timeout: 5000 }, async () => {
+  const server = createServer();
+  const hub = new EventHub();
+  const wss = attachEventWebSocket(server, { eventHub: hub, authToken: null });
+  const streams = [{ kind: "session" as const, id: "hot" }, { kind: "session" as const, id: "other" }];
+  const cursors = hub.getCursorMap(streams);
+  for (let index = 0; index < 128; index++) hub.publish(streams[0]!, "session.head", { body: "x".repeat(8192) });
+  hub.publish(streams[1]!, "session.head", {});
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const ws = new WebSocket(`ws://127.0.0.1:${(server.address() as { port: number }).port}/api/v1/events`);
+  const received: string[] = [];
+  const other = new Promise<void>(resolve => ws.on("message", data => {
+    const frame = JSON.parse(String(data));
+    if (!frame.event) return;
+    received.push(frame.event.stream.id);
+    if (frame.event.stream.id === "other") resolve();
+  }));
+  try {
+    await once(ws, "open");
+    ws.send(JSON.stringify({ type: "subscribe", protocolVersion: PROTOCOL_VERSION, streams, cursors }));
+    await other;
+    assert.ok(received.indexOf("other") <= 64, "a hot backlog must yield within a replay batch");
+  } finally {
+    ws.terminate();
+    await new Promise<void>(resolve => closeEventWebSocket(wss, () => resolve()));
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
 test("real websocket subscriptions replay only newly added streams and cap connections", async () => {
   const server = createServer();
   const hub = new EventHub();
@@ -141,6 +171,16 @@ test("real websocket subscriptions replay only newly added streams and cap conne
     assert.equal(changed.event, undefined);
     assert.deepEqual(changed.cursor, hub.getCursor(sessionStream));
     assert.equal(typeof changed.eventId, "string");
+    hub.publish(sessionStream, "command.updated", {
+      id: "x".repeat(5 * 1024 * 1024), status: "completed",
+    });
+    await subscribe([serverStream, sessionStream]);
+    const omittedCommand = received.find((frame) =>
+      frame.type === "payload_omitted" && frame.eventChannel === "command.updated",
+    );
+    assert.ok(omittedCommand);
+    assert.equal("commandId" in omittedCommand, false);
+    assert.ok(Buffer.byteLength(JSON.stringify(omittedCommand)) < 4096);
     assert.equal(
       received.some((frame) => frame.type === "resync_required"),
       false,
@@ -181,6 +221,37 @@ test("subscribe storms are bounded without disconnecting the client", async t =>
   }
 });
 
+for (const terminal of [false, true]) {
+  test(`${terminal ? "terminal" : "event"} websocket rejects fragmented input before business dispatch`, { timeout: 5000 }, async () => {
+    const server = createServer();
+    let inputs = 0;
+    const manager = {
+      consumeConnectToken: () => "/workspace",
+      attach: () => ({ replay: "", replayCursor: 0, cursor: 0, activate() {}, detach() {} }),
+      get: () => ({ id: "t", cursor: 0, status: "running" }),
+      write: () => { inputs++; },
+    } as unknown as TerminalManager;
+    const wss = attachEventWebSocket(server, { eventHub: new EventHub(), authToken: null, terminalManager: manager });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const route = terminal ? "/api/v1/host/terminals/t/stream?ticket=test" : "/api/v1/events";
+    const ws = new WebSocket(`ws://127.0.0.1:${(server.address() as { port: number }).port}${route}`);
+    try {
+      await once(ws, "open");
+      const closed = once(ws, "close");
+      ws.send('{"type":"', { fin: false });
+      ws.send('ping"}', { fin: true });
+      const [code] = await closed;
+      assert.equal(code, 1008);
+      assert.equal(inputs, 0);
+    } finally {
+      ws.terminate();
+      await new Promise<void>(resolve => closeEventWebSocket(wss, () => resolve()));
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+}
+
 test("terminal malformed-frame floods close rather than enqueue unbounded problem replies", async () => {
   const server = createServer();
   const manager = {
@@ -208,16 +279,17 @@ test("terminal malformed-frame floods close rather than enqueue unbounded proble
   }
 });
 
-test("terminal overflow closes with 1013 without pumping the discarded queue", async () => {
+test("terminal output pauses at the render window and resumes losslessly after consumed cursor acknowledgements", { timeout: 5000 }, async () => {
   const server = createServer();
   let detached = false;
   let activated = false;
+  const source = "x".repeat(1024 * 1024);
   const manager = {
     consumeConnectToken: () => "/workspace",
-    attach: () => ({
-      replay: "x".repeat(10 * 1024 * 1024),
-      replayCursor: 0,
-      cursor: 10 * 1024 * 1024,
+    attach: (_workspace: string, _id: string, cursor = 0) => ({
+      replay: source.slice(cursor),
+      replayCursor: cursor,
+      cursor: source.length,
       activate: () => {
         activated = true;
       },
@@ -225,7 +297,7 @@ test("terminal overflow closes with 1013 without pumping the discarded queue", a
         detached = true;
       },
     }),
-    get: () => ({ id: "t", cursor: 10 * 1024 * 1024, status: "running" }),
+    get: () => ({ id: "t", cursor: source.length, status: "running" }),
   } as unknown as TerminalManager;
   const wss = attachEventWebSocket(server, {
     eventHub: new EventHub(),
@@ -236,18 +308,44 @@ test("terminal overflow closes with 1013 without pumping the discarded queue", a
   await once(server, "listening");
   const port = (server.address() as { port: number }).port;
   const ws = new WebSocket(
-    `ws://127.0.0.1:${port}/api/v1/host/terminals/t/stream?ticket=test`,
+    `ws://127.0.0.1:${port}/api/v1/host/terminals/t/stream?ticket=test&protocolVersion=2`,
   );
-  let outputFrames = 0;
+  let restored = "";
+  let consumedCursor = 0;
+  let ready = false;
+  let outputAck = false;
   ws.on("message", (data) => {
-    if (JSON.parse(String(data)).type === "output") outputFrames++;
+    const frame = JSON.parse(String(data));
+    if (frame.type === "hello") outputAck = frame.outputAck === true;
+    if (frame.type === "ready") ready = true;
+    if (frame.type === "output") {
+      assert.equal(frame.cursor, restored.length + frame.data.length);
+      restored += frame.data;
+      consumedCursor = frame.cursor;
+    }
   });
   try {
-    const [code] = await once(ws, "close");
-    assert.equal(code, 1013);
+    await once(ws, "open");
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(outputAck, true);
+    assert.ok(restored.length > 0 && restored.length <= 256 * 1024);
+    const pausedAt = restored.length;
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(restored.length, pausedAt);
     assert.equal(detached, true);
     assert.equal(activated, false);
-    assert.ok(outputFrames <= 1);
+    assert.equal(ready, false);
+    for (let attempt = 0; !ready && attempt < 20; attempt++) {
+      ws.send(JSON.stringify({ type: "output_ack", cursor: consumedCursor }));
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal(ready, true);
+    assert.equal(activated, true);
+    assert.equal(restored, source);
+    assert.equal(ws.readyState, WebSocket.OPEN);
+    const closed = once(ws, "close");
+    ws.send(JSON.stringify({ type: "output_ack", cursor: source.length + 1 }));
+    assert.equal((await closed)[0], 1008);
   } finally {
     ws.terminate();
     await new Promise<void>((resolve) =>
@@ -336,6 +434,28 @@ test("HTTP compresses negotiated JSON and all three command routes reject bodies
     await app.dispose();
     if (previous === undefined) delete process.env.OMPIUI_DRIVER;
     else process.env.OMPIUI_DRIVER = previous;
+  }
+});
+
+test("HTTP rejects oversized command ids before cold attachment or command retention", async () => {
+  const app = createAppServer({ authToken: null });
+  app.server.listen(0, "127.0.0.1");
+  await once(app.server, "listening");
+  const port = (app.server.address() as { port: number }).port;
+  try {
+    for (const id of ["x".repeat(1025), "中".repeat(342)]) {
+      const response = await fetch(`http://127.0.0.1:${port}/api/v1/pi/sessions/cold/commands/prompt`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id, params: { text: "must not execute" } }),
+      });
+      assert.equal(response.status, 400);
+      assert.equal((await response.json() as { code: string }).code, "INVALID_REQUEST");
+      assert.equal(app.sessionHost.getCommand(id), undefined);
+      assert.deepEqual(app.sessionHost.listAttachedIds(), []);
+    }
+  } finally {
+    await app.dispose();
   }
 });
 

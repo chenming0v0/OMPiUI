@@ -229,6 +229,42 @@ test("a queued open does not stall an already-open upload or response", { timeou
   await nextFinished
 })
 
+test("an ended response stops further upload while retaining its response drain", { timeout: 10_000 }, async t => {
+  const h = await harness(t)
+  const { req, output } = h.begin("request", true)
+  const { c } = await h.take("open")
+  h.head("request", c)
+  h.body(c, Buffer.from("complete response"))
+  h.send({ type: "end", c })
+  if (!output.pending) await once(output, "written")
+  // 另一请求的回执作为屏障，确保前一条 end 已经被 relay 消费。
+  await h.fastRoundtrip()
+  const before = h.received.filter(frame => frame.type === "body" && frame.c === c).length
+  req.emit("data", Buffer.alloc(256 * 1024))
+  req.emit("end")
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(h.received.filter(frame => frame.type === "body" && frame.c === c).length, before)
+  assert.equal(h.received.some(frame => frame.type === "reqEnd" && frame.c === c), false)
+  assert.equal(output.destroyed, false)
+  const finished = once(output, "finish")
+  while (output.pending) output.release()
+  await finished
+  assert.equal(Buffer.concat(output.chunks).toString(), "complete response")
+})
+
+test("fragmented tunnel messages are rejected before complete-message accounting", { timeout: 10_000 }, async t => {
+  const h = await harness(t)
+  const { c } = await h.open("request", false)
+  h.head("request", c)
+  const frame = Buffer.alloc(64)
+  frame.writeUInt32BE(c)
+  const closed = once(h.ws, "close")
+  h.ws.send(frame.subarray(0, 16), { binary: true, fin: false })
+  h.ws.send(frame.subarray(16), { binary: true, fin: true })
+  const [code] = await closed
+  assert.equal(code, 1008)
+})
+
 test("ended but undrained responses still count toward the per-tunnel connection bound", { timeout: 10_000 }, async t => {
   const h = await harness(t)
   const outputs: Visitor[] = []
@@ -266,6 +302,38 @@ test("idle connection slots are reclaimed without disconnecting the tunnel", { t
   assert.equal(output.destroyed, true)
   assert.equal(h.relay.tunnelStatus()[0]!.connections, 0)
   await h.fastRoundtrip()
+})
+
+test("healthy low-traffic upgrades survive progress windows while stalled HTTP still expires", { timeout: 10_000 }, async t => {
+  const intervals: Array<() => void> = []
+  const setInterval = globalThis.setInterval
+  const capture = t.mock.method(globalThis, "setInterval", (callback: () => void, delay?: number) => {
+    intervals.push(callback)
+    return setInterval(callback, delay)
+  })
+  const h = await harness(t).finally(() => capture.mock.restore())
+  // 首先创建 relay 心跳，再在控制连接建立时创建虚拟连接扫描。
+  const scan = intervals.at(-1)!
+  assert.ok(intervals.length >= 2)
+  let now = Date.now()
+  t.mock.method(Date, "now", () => now)
+  const { output, c } = await h.open("upgrade", false)
+  h.head("upgrade", c)
+  for (let window = 0; window < 3; window++) {
+    now += 60_001
+    h.body(c, Buffer.from("p"))
+    await h.fastRoundtrip()
+    scan()
+    assert.equal(output.destroyed, false)
+    assert.equal(h.ws.readyState, WebSocket.OPEN)
+  }
+  const stalled = h.begin("request", false, "198.51.100.2")
+  const opened = await h.take("open")
+  stalled.req.emit("data", Buffer.from("x"))
+  now += 60_001
+  scan()
+  await h.take("abort", opened.c)
+  assert.equal(stalled.output.destroyed, true)
 })
 
 test("a single source leaves capacity for other visitors", { timeout: 10_000 }, async t => {

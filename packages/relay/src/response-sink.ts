@@ -6,6 +6,7 @@ export const RESPONSE_BUFFER_MAX = 1024 * 1024
 export const RESPONSE_QUEUE_MAX = 1024
 
 export class ResponseSink {
+  get hasPendingData(): boolean { return this.queuedBytes > 0 || this.blocked || this.output.writableLength > 0 }
   private queue: Buffer[] = []
   private queuedBytes = 0
   private blocked = false

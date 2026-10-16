@@ -8,6 +8,8 @@ process.env.OMPIUI_WORKER_HANDSHAKE_TIMEOUT_MS ??= "60000"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { connect } from "node:net"
+import { once } from "node:events"
 import { createAppServer, type AppServer } from "./http.ts"
 import { PI_PARITY_SDK_VERSION } from "@ompiui/protocol"
 import { MAX_PAIRING_FAILURES, PairingStore } from "./host/pairing.ts"
@@ -52,6 +54,38 @@ describe("http api", () => {
   after(async () => {
     for (const cleanup of cleanups.splice(0)) await cleanup()
   })
+
+  for (const mode of ["source", "anonymous-pool"] as const) {
+    it(`slow anonymous pairing has bounded ${mode} admission without blocking authenticated reads`, { timeout: 5000 }, async () => {
+      const app = createAppServer({
+        authToken: "test-token", pairing: new PairingStore(), tunnelForwardingToken: "private-test-hop",
+      })
+      const port = await listen(app)
+      const sockets = Array.from({ length: mode === "source" ? 3 : 5 }, () => connect(port, "127.0.0.1"))
+      try {
+        const refused = Promise.race(sockets.map(socket => once(socket, "data")))
+        await Promise.all(sockets.map(async (socket, index) => {
+          await once(socket, "connect")
+          socket.write([
+            "POST /api/v1/host/pair/redeem HTTP/1.1", `Host: 127.0.0.1:${port}`,
+            "Content-Type: application/json", "Content-Length: 1048576",
+            `${TUNNEL_FORWARDING_HEADER}: private-test-hop`,
+            `X-Forwarded-For: 198.51.100.${mode === "source" ? 1 : index + 1}`,
+            "", "{",
+          ].join("\r\n"))
+        }))
+        const [raw] = await refused
+        assert.match(String(raw), mode === "source" ? /^HTTP\/1.1 429/ : /^HTTP\/1.1 503/)
+        const authenticated = await request(port, "POST", "/api/v1/host/commands/not-a-command", {
+          token: "test-token", body: {},
+        })
+        assert.equal(authenticated.status, 404)
+      } finally {
+        sockets.forEach(socket => socket.destroy())
+        await app.dispose()
+      }
+    })
+  }
 
   it("rejects requests without a token and accepts a valid one", async () => {
     const app = createAppServer({ authToken: "test-token" })

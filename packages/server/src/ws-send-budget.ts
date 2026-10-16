@@ -55,6 +55,7 @@ export class WebSocketSendBudget<Socket extends BufferedSocket> {
   }
 
   release(socket: Socket, bytes: number, sent = false): void {
+    if (bytes <= 0) return;
     const entry = this.sockets.get(socket);
     if (!entry) return;
     if (sent) entry.sending = Math.max(0, entry.sending - bytes);
@@ -64,14 +65,13 @@ export class WebSocketSendBudget<Socket extends BufferedSocket> {
 
   discardQueued(socket: Socket): void {
     const entry = this.sockets.get(socket);
-    if (!entry) return;
+    if (!entry || entry.queued === 0) return;
     entry.queued = 0;
     this.wake();
   }
 
   remove(socket: Socket): void {
-    this.sockets.delete(socket);
-    this.wake();
+    if (this.sockets.delete(socket)) this.wake();
   }
 
   /**

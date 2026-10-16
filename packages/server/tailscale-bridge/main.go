@@ -75,9 +75,10 @@ func main() {
 		if err != nil {
 			log.Fatalf("tailnet listen: %v", err)
 		}
-		proxy := gateway.Proxy(target, (&net.Dialer{}).DialContext, true)
+		proxy := gateway.Proxy(target, (&net.Dialer{}).DialContext, true, os.Getenv("OMPIUI_BRIDGE_FORWARDING_TOKEN"))
+		proxyServer := proxyHTTPServer(proxy)
 		go func() {
-			if err := http.Serve(proxyListener, proxy); err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
+			if err := proxyServer.Serve(proxyListener); err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
 				log.Printf("tailnet proxy stopped: %v", err)
 			}
 		}()
@@ -130,6 +131,10 @@ func main() {
 		_ = proxyListener.Close()
 	}
 	_ = ts.Close()
+}
+
+func proxyHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{ReadHeaderTimeout: 10 * time.Second, Handler: handler}
 }
 
 func controlHandler(ts *tsnet.Server, shutdown func()) http.Handler {

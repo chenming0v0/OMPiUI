@@ -13,7 +13,7 @@ import (
 type DialFunc func(context.Context, string, string) (net.Conn, error)
 
 // 原生网络层只改变连接路径，HTTP 和 WebSocket 共用同一转发入口。
-func Proxy(target *url.URL, dial DialFunc, preserveHost bool) http.Handler {
+func Proxy(target *url.URL, dial DialFunc, preserveHost bool, forwardingToken ...string) http.Handler {
 	transport := &http.Transport{
 		DialContext:           dial,
 		ForceAttemptHTTP2:     false,
@@ -32,6 +32,13 @@ func Proxy(target *url.URL, dial DialFunc, preserveHost bool) http.Handler {
 			r.Out.Header.Del("x-ompiui-internal-tunnel")
 			r.Out.Header.Del("x-forwarded-proto")
 			r.SetXForwarded()
+			if len(forwardingToken) > 0 && forwardingToken[0] != "" {
+				host, _, err := net.SplitHostPort(r.In.RemoteAddr)
+				if err == nil && net.ParseIP(host) != nil {
+					r.Out.Header.Set("x-forwarded-for", host)
+					r.Out.Header.Set("x-ompiui-internal-tunnel", forwardingToken[0])
+				}
+			}
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
 			http.Error(w, "Tailscale connection unavailable", http.StatusBadGateway)

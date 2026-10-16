@@ -50,7 +50,8 @@ const CORS_HEADERS: Record<string, string> = {
   "access-control-allow-headers": "content-type,authorization,if-match",
 };
 const MAX_PENDING_HTTP_INPUT_BYTES = 64 * 1024 * 1024;
-let pendingHttpInputBytes = 0;
+const businessInput = { bytes: 0, limit: MAX_PENDING_HTTP_INPUT_BYTES };
+const pairingInput = { bytes: 0, limit: 4 * 1024 * 1024 };
 
 function sendJson(res: ServerResponse, status: number, body: unknown): boolean {
   if (res.destroyed || res.writableEnded) return false;
@@ -137,6 +138,7 @@ export async function readBody(
   req: IncomingMessage,
   signal?: AbortSignal,
   maxBytes = MAX_JSON_BODY_BYTES,
+  pool = businessInput,
 ): Promise<JsonObject> {
   const chunks: Buffer[] = [];
   let size = 0;
@@ -144,7 +146,7 @@ export async function readBody(
   const declared = Number(req.headers["content-length"]);
   let accounted = 0;
   const reserve = (bytes: number) => {
-    if (pendingHttpInputBytes + bytes > MAX_PENDING_HTTP_INPUT_BYTES) {
+    if (pool.bytes + bytes > pool.limit) {
       req.pause();
       throw Object.assign(new Error("HTTP input capacity reached"), {
         code: "RATE_LIMITED",
@@ -152,7 +154,7 @@ export async function readBody(
         retryable: true,
       });
     }
-    pendingHttpInputBytes += bytes;
+    pool.bytes += bytes;
     accounted += bytes;
   };
   try {
@@ -229,7 +231,7 @@ export async function readBody(
     }
     return body as JsonObject;
   } finally {
-    pendingHttpInputBytes -= accounted;
+    pool.bytes -= accounted;
   }
 }
 
@@ -461,6 +463,8 @@ export function createAppServer(
   // 配置了公网入口时，其 Origin 一并放行（反向代理/隧道改写 Host 的场景）
   const allowedOrigin = effectivePublicBaseUrl;
   let disposal: Promise<void> | undefined;
+  const pairingReads = new Map<string, number>();
+  let pairingReadCount = 0;
 
   const closeHttpServer = (): Promise<void> => {
     if (!server.listening) return Promise.resolve();
@@ -534,12 +538,35 @@ export function createAppServer(
             }),
           );
         }
-        const body = await readBody(req, scope.signal, MAX_JSON_BODY_BYTES);
         const clientKey = pairingClientKey(
           req,
           options.tunnelForwardingToken,
           options.trustedProxies,
         );
+        const pairingRateLimited = options.pairing.isRateLimited(clientKey);
+        if (pairingRateLimited ||
+          (pairingReads.get(clientKey) ?? 0) >= 2 || pairingReadCount >= 32) {
+          req.pause();
+          res.setHeader("connection", "close");
+          return sendProblem(res, 429, Object.assign(new Error(pairingRateLimited
+            ? "too many failed attempts; try again later" : "too many pending pairing attempts"), { code: "PAIR_RATE_LIMITED" }));
+        }
+        pairingReadCount++;
+        pairingReads.set(clientKey, (pairingReads.get(clientKey) ?? 0) + 1);
+        let body: JsonObject;
+        const bodyDeadline = AbortSignal.timeout(15_000);
+        try {
+          body = await readBody(req, AbortSignal.any([scope.signal, bodyDeadline]), MAX_JSON_BODY_BYTES, pairingInput);
+        } catch (error) {
+          if (!bodyDeadline.aborted || scope.signal.aborted) throw error;
+          res.setHeader("connection", "close");
+          return sendProblem(res, 408, Object.assign(new Error("pairing body read timed out"), { code: "REQUEST_ABORTED" }));
+        } finally {
+          pairingReadCount--;
+          const remaining = (pairingReads.get(clientKey) ?? 1) - 1;
+          if (remaining) pairingReads.set(clientKey, remaining);
+          else pairingReads.delete(clientKey);
+        }
         const outcome = options.pairing.redeem(
           {
             pair: typeof body.pair === "string" ? body.pair : undefined,
