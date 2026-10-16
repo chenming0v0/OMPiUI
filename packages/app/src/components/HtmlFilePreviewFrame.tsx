@@ -39,7 +39,8 @@ export function HtmlFilePreviewFrame({
   useEffect(() => {
     if (!filePath) return
     let active = true
-    resolveHtmlPreviewResources(html, filePath, directory).then(
+    const controller = new AbortController()
+    resolveHtmlPreviewResources(html, filePath, directory, controller.signal).then(
       resolved => {
         if (active) setResolution({ key: resourceKey, html: resolved })
       },
@@ -49,6 +50,7 @@ export function HtmlFilePreviewFrame({
     )
     return () => {
       active = false
+      controller.abort()
     }
   }, [directory, filePath, html, resourceKey])
 

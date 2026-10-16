@@ -194,6 +194,26 @@ test("range responses preserve multipart, suffix, HEAD, and cache metadata", asy
   });
 });
 
+test("redundant ranges transfer each byte once and ignore unsatisfiable members", async () => {
+  await withWebRootAsync(async root => {
+    const server = createStaticServer(root)!
+    const read = (range: string) => collect(res => server.serve(
+      { method: "GET", headers: { range } } as never, res as never, "/assets/app-a1b2c3d4.js",
+    ))
+    const repeated = await read(`bytes=${Array(16).fill("0-").join(",")}`)
+    assert.equal(repeated.status, 206)
+    assert.equal(repeated.body.match(/Content-Range:/g)?.length, 1)
+    assert.equal(repeated.body.match(/console.log\(1\)/g)?.length, 1)
+    const overlaps = await read("bytes=0-5,3-8,7-10")
+    assert.equal(overlaps.body.match(/Content-Range:/g)?.length, 1)
+    assert.match(overlaps.body, /Content-Range: bytes 0-10\/14/)
+    const partial = await read("bytes=99999-,0-0")
+    assert.equal(partial.status, 206)
+    assert.match(partial.body, /Content-Range: bytes 0-0\/14/)
+    assert.equal((await read("other=0-1,2-3")).status, 416)
+  })
+})
+
 test("multipart ranges survive repeated backpressure and close their file sources on disconnect", { timeout: 10_000 }, async t => {
   await withWebRootAsync(async root => {
     const bytes = Buffer.alloc(512 * 1024, "x");

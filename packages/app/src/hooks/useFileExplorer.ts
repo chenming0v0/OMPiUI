@@ -137,6 +137,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewError, setPreviewError] = useState<string | null>(null)
   const previewCacheRef = useRef(new FilePreviewCache())
+  const previewControllerRef = useRef<AbortController | null>(null)
   const previewLoadIdRef = useRef(0)
   const previewPathRef = useRef<string | null>(null)
   const previewScopeIdRef = useRef(0)
@@ -167,8 +168,6 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
       loadedDirectoryRef.current = directory
       setTree([])
       setFileStatus(new Map())
-      previewCacheRef.current.clear()
-      setPreviewContent(null)
     }
 
     const loadId = ++loadIdRef.current
@@ -362,6 +361,9 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
   const loadPreview = useCallback(
     async (path: string) => {
       if (!directory) return
+      previewControllerRef.current?.abort()
+      const controller = new AbortController()
+      previewControllerRef.current = controller
       const generation = activeServerGeneration
 
       const loadId = ++previewLoadIdRef.current
@@ -373,6 +375,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
 
       const cached = previewCacheRef.current.get(path)
       if (cached) {
+        previewControllerRef.current = null
         if (loadId === previewLoadIdRef.current) {
           setPreviewContent(cached)
           setPreviewLoading(false)
@@ -382,16 +385,17 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
 
       try {
         const previous = previewCacheRef.current.peek(path)
-        const response = await getFileContent(path, directory, previous?.etag)
+        const response = await getFileContent(path, directory, previous?.etag, controller.signal)
         const content = response.notModified && previous ? previous : response
         if (loadId !== previewLoadIdRef.current || generation !== serverStore.getActiveServerGeneration()) return
         previewCacheRef.current.set(path, content)
         setPreviewContent(content)
       } catch (e) {
-        if (loadId !== previewLoadIdRef.current) return
+        if (loadId !== previewLoadIdRef.current || controller.signal.aborted) return
         setPreviewError(e instanceof Error ? e.message : t('fileExplorer.failedToLoadFile'))
         setPreviewContent(null)
       } finally {
+        if (previewControllerRef.current === controller) previewControllerRef.current = null
         if (loadId === previewLoadIdRef.current) {
           setPreviewLoading(false)
         }
@@ -401,6 +405,8 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
   )
 
   const clearPreview = useCallback(() => {
+    previewControllerRef.current?.abort()
+    previewControllerRef.current = null
     previewLoadIdRef.current += 1
     setPreviewContent(null)
     setPreviewError(null)
@@ -448,9 +454,9 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
     }
     setExpandedPaths(new Set())
     previewCacheRef.current.clear()
-    setPreviewContent(null)
+    clearPreview()
     await Promise.all([loadRoot(), loadStatuses()])
-  }, [directory, loadRoot, loadStatuses])
+  }, [directory, loadRoot, loadStatuses, clearPreview])
 
   // 软刷新：重新加载根目录和状态，但保留展开路径和预览
   const softRefresh = useCallback(() => {
@@ -488,7 +494,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
       for (const change of detail.changes) {
         for (const path of previewCacheRef.current.keys()) {
           if (path === change.path || (change.type === 'directory' && path.startsWith(`${change.path}/`)))
-            previewCacheRef.current.delete(path)
+            previewCacheRef.current.invalidate(path)
         }
       }
       const parents = new Set(
@@ -590,6 +596,8 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
   // 目录/会话变化时重置预览状态（含缓存 ref 清理，无法用渲染期调整表达）
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
+    previewControllerRef.current?.abort()
+    previewControllerRef.current = null
     previewScopeIdRef.current += 1
     previewSaveIdsRef.current.clear()
     previewCacheRef.current.clear()
@@ -599,6 +607,8 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
     setPreviewError(null)
     setPreviewLoading(false)
     return () => {
+      previewControllerRef.current?.abort()
+      previewControllerRef.current = null
       previewScopeIdRef.current += 1
     }
   }, [directory, sessionId, activeServerGeneration])

@@ -1,6 +1,6 @@
-import { getFileContent } from '../omp/files'
 import type { FileReadResponse } from '@ompiui/protocol'
 import { buildDataUrl, buildTextDataUrl, decodeBase64Text, isBinaryContent } from '../utils/mimeUtils'
+import { createHtmlResourceBudget } from './htmlPreviewResourceBudget'
 
 const ABSOLUTE_RESOURCE_PATTERN = /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i
 
@@ -88,6 +88,7 @@ function fileContentToDataUrl(content: FileReadResponse, path: string): string {
 }
 
 type ResourceKind = 'media' | 'script' | 'style'
+type DataUrl = (content: FileReadResponse, path: string) => string | null
 
 function isPotentiallyAllowedPath(path: string, kind: ResourceKind): boolean {
   const extension = path.split('.').pop()?.toLowerCase() ?? ''
@@ -133,6 +134,7 @@ async function replaceCssUrls(
   cssPath: string,
   directory: string | undefined,
   load: (path: string, kind: ResourceKind) => Promise<FileReadResponse | null>,
+  dataUrl: DataUrl,
 ): Promise<string> {
   const pattern = /url\(\s*(?:(['"])(.*?)\1|([^)]*?))\s*\)/gi
   const matches = Array.from(css.matchAll(pattern))
@@ -144,7 +146,8 @@ async function replaceCssUrls(
       const path = resolveHtmlResourcePath(cssPath, reference, directory)
       if (!path) return match[0]
       const content = await load(path, 'media')
-      return content ? `url("${fileContentToDataUrl(content, path)}")` : match[0]
+      const url = content && dataUrl(content, path)
+      return url ? `url("${url}")` : match[0]
     }),
   )
 
@@ -163,6 +166,7 @@ async function replaceSrcset(
   htmlPath: string,
   directory: string | undefined,
   load: (path: string, kind: ResourceKind) => Promise<FileReadResponse | null>,
+  dataUrl: DataUrl,
 ): Promise<string> {
   const candidates = srcset.split(',')
   return (
@@ -175,7 +179,8 @@ async function replaceSrcset(
         const path = resolveHtmlResourcePath(htmlPath, reference, directory)
         if (!path) return candidate
         const content = await load(path, 'media')
-        return content ? `${fileContentToDataUrl(content, path)}${descriptor}` : candidate
+        const url = content && dataUrl(content, path)
+        return url ? `${url}${descriptor}` : candidate
       }),
     )
   ).join(',')
@@ -185,19 +190,17 @@ export async function resolveHtmlPreviewResources(
   html: string,
   htmlPath: string,
   directory?: string,
+  signal?: AbortSignal,
 ): Promise<string> {
   const parsed = new DOMParser().parseFromString(html, 'text/html')
-  const requests = new Map<string, Promise<FileReadResponse | null>>()
-  const loadRaw = (path: string) => {
-    const cached = requests.get(path)
-    if (cached) return cached
-    const request = getFileContent(path, directory).catch(() => null)
-    requests.set(path, request)
-    return request
+  const budget = createHtmlResourceBudget(directory, signal)
+  const dataUrl: DataUrl = (content, path) => {
+    const value = fileContentToDataUrl(content, path)
+    return budget.inline(value) ? value : null
   }
   const load = async (path: string, kind: ResourceKind) => {
     if (!isPotentiallyAllowedPath(path, kind)) return null
-    const content = await loadRaw(path)
+    const content = await budget.read(path)
     return content && isAllowedResource(content, path, kind) ? content : null
   }
 
@@ -212,13 +215,16 @@ export async function resolveHtmlPreviewResources(
       const source = fileContentToText(content)
       const isModule = script.getAttribute('type')?.trim().toLowerCase() === 'module'
       if (isModule && hasUnresolvedModuleImports(source)) {
+        if (!budget.inline(source)) return
         script.removeAttribute('src')
         script.setAttribute('type', 'application/x-ompiui-unresolved-module')
         script.setAttribute('data-ompiui-unresolved-src', path)
         script.textContent = source.replace(/<\/script/gi, '<\\/script')
         return
       }
-      script.setAttribute('src', fileContentToDataUrl(content, path))
+      const url = dataUrl(content, path)
+      if (!url) return
+      script.setAttribute('src', url)
       script.removeAttribute('integrity')
       script.removeAttribute('crossorigin')
       script.textContent = ''
@@ -231,17 +237,20 @@ export async function resolveHtmlPreviewResources(
       if (!path) return
       const content = await load(path, 'style')
       if (!content) return
+      const source = fileContentToText(content)
+      if (!budget.inline(source)) return
       const style = parsed.createElement('style')
       style.setAttribute('data-ompiui-resolved-css', '')
       if (link.media) style.media = link.media
-      style.textContent = (await replaceCssUrls(fileContentToText(content), path, directory, load)).replace(/<\/style/gi, '<\\/style')
+      const css = (await replaceCssUrls(source, path, directory, load, dataUrl)).replace(/<\/style/gi, '<\\/style')
+      style.textContent = css
       link.replaceWith(style)
     }),
   )
 
   await Promise.all(
     Array.from(parsed.querySelectorAll<HTMLStyleElement>('style:not([data-ompiui-resolved-css])')).map(async style => {
-      style.textContent = await replaceCssUrls(style.textContent ?? '', htmlPath, directory, load)
+      style.textContent = await replaceCssUrls(style.textContent ?? '', htmlPath, directory, load, dataUrl)
     }),
   )
 
@@ -260,7 +269,8 @@ export async function resolveHtmlPreviewResources(
         const path = resolveHtmlResourcePath(htmlPath, element.getAttribute(attribute) ?? '', directory)
         if (!path) return
         const content = await load(path, 'media')
-        if (content) element.setAttribute(attribute, fileContentToDataUrl(content, path))
+        const url = content && dataUrl(content, path)
+        if (url) element.setAttribute(attribute, url)
       }),
     ),
   )
@@ -268,16 +278,18 @@ export async function resolveHtmlPreviewResources(
   await Promise.all(
     Array.from(parsed.querySelectorAll<HTMLElement>('[style]')).map(async element => {
       const style = element.getAttribute('style')
-      if (style) element.setAttribute('style', await replaceCssUrls(style, htmlPath, directory, load))
+      if (style) element.setAttribute('style', await replaceCssUrls(style, htmlPath, directory, load, dataUrl))
     }),
   )
 
   await Promise.all(
     Array.from(parsed.querySelectorAll<HTMLElement>('[srcset]')).map(async element => {
       const srcset = element.getAttribute('srcset')
-      if (srcset) element.setAttribute('srcset', await replaceSrcset(srcset, htmlPath, directory, load))
+      if (srcset) element.setAttribute('srcset', await replaceSrcset(srcset, htmlPath, directory, load, dataUrl))
     }),
   )
 
+  signal?.throwIfAborted()
+  if (budget.truncated) parsed.documentElement.setAttribute('data-ompiui-resources-truncated', 'true')
   return `<!doctype html>${parsed.documentElement.outerHTML}`
 }

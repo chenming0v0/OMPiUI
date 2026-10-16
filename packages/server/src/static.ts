@@ -125,20 +125,35 @@ export function createStaticServer(root: string): StaticServer | undefined {
         req.headers["if-range"] === headers["last-modified"])
     ) {
       if (req.headers.range.includes(",")) {
-        const ranges = req.headers.range.slice("bytes=".length).split(",").map(part => {
+        const rawRanges = req.headers.range.slice("bytes=".length).split(",");
+        let malformed = !req.headers.range.startsWith("bytes=");
+        const ranges = rawRanges.map(part => {
           const match = /^(\d*)-(\d*)$/.exec(part.trim());
-          if (!match || (!match[1] && !match[2])) return undefined;
+          if (!match || (!match[1] && !match[2])) {
+            malformed = true;
+            return undefined;
+          }
           const start = match[1] ? Number(match[1]) : Math.max(0, stat.size - Number(match[2]));
           const end = match[1] && match[2] ? Math.min(stat.size - 1, Number(match[2])) : stat.size - 1;
           return start <= end && start < stat.size ? { start, end } : undefined;
-        });
-        if (ranges.length === 0 || ranges.some(range => !range) || ranges.length > 16) {
+        }).filter((range): range is { start: number; end: number } => !!range);
+        if (malformed || ranges.length === 0 || rawRanges.length > 16) {
           res.writeHead(416, { ...headers, "content-range": `bytes */${stat.size}` });
           res.end();
           return true;
         }
         const boundary = `ompiui-${Math.random().toString(16).slice(2)}`;
-        const parts = ranges as Array<{ start: number; end: number }>;
+        const parts = ranges
+          .sort((a, b) => a.start - b.start)
+          .reduce<Array<{ start: number; end: number }>>((merged, range) => {
+            const previous = merged.at(-1);
+            if (previous && range.start <= previous.end) {
+              previous.end = Math.max(previous.end, range.end);
+            } else {
+              merged.push({ ...range });
+            }
+            return merged;
+          }, []);
         const partHeaders = parts.map(range => `--${boundary}\r\nContent-Type: ${contentType(path)}\r\nContent-Range: bytes ${range.start}-${range.end}/${stat.size}\r\n\r\n`);
         const length = parts.reduce((total, range, index) => total + Buffer.byteLength(partHeaders[index]!) + range.end - range.start + 1 + 2, 0) + Buffer.byteLength(`--${boundary}--\r\n`);
         res.writeHead(206, { ...headers, "content-type": `multipart/byteranges; boundary=${boundary}`, "content-length": length });

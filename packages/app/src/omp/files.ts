@@ -162,10 +162,14 @@ export async function prefetchRootDirectory(directory?: string): Promise<void> {
   await listDirectory('.', directory)
 }
 
-export async function getFileContent(path: string, directory?: string, ifNoneMatch?: string): Promise<FileReadResponse> {
+export async function getFileContent(path: string, directory?: string, ifNoneMatch?: string, signal?: AbortSignal, maxBytes?: number): Promise<FileReadResponse> {
+  const generation = serverStore.getActiveServerGeneration()
+  signal?.throwIfAborted()
   const workspacePath = await requireWorkspacePath(directory)
+  signal?.throwIfAborted()
+  if (generation !== serverStore.getActiveServerGeneration()) throw new DOMException('The server changed', 'AbortError')
   const rel = toPiRelativePath(path, directory)
-  return readHostFile(workspacePath, rel, undefined, ifNoneMatch)
+  return readHostFile(workspacePath, rel, signal, ifNoneMatch, maxBytes)
 }
 
 export async function saveFile(path: string, content: Pick<FileReadResponse, 'content'> & Partial<FileReadResponse>, directory?: string): Promise<FileReadResponse> {
@@ -182,7 +186,7 @@ export async function saveFile(path: string, content: Pick<FileReadResponse, 'co
     { ifMatch: content.etag, encoding: content.encoding === 'base64' ? 'base64' : 'utf-8', returnContent: false },
   )
   invalidateWorkspaceFileCaches(directory)
-  return saved
+  return { ...saved, content: content.content }
 }
 
 export async function createFile(path: string, directory?: string, content = ''): Promise<void> {

@@ -110,6 +110,17 @@ describe("workspace files", () => {
     assert.equal(changed.content, "new")
   })
 
+  it("rejects a file above the caller's encoded response budget before returning its body", async () => {
+    const { root, workspace } = fixture()
+    writeFileSync(path.join(root, "escaped.svg"), "\x1b".repeat(1000))
+    const content = await readFileContent(workspace, "escaped.svg")
+    const bytes = Buffer.byteLength(JSON.stringify(content))
+    assert.ok(bytes > content.size)
+    await assert.rejects(readFileContent(workspace, "escaped.svg", undefined, bytes - 1),
+      error => (error as { code?: string }).code === "FILE_TOO_LARGE")
+    assert.deepEqual(await readFileContent(workspace, "escaped.svg", undefined, bytes), content)
+  })
+
   it("serializes concurrent ETag writes so one stale writer loses", async () => {
     const { root, workspace } = fixture()
     writeFileSync(path.join(root, "shared.txt"), "base")
