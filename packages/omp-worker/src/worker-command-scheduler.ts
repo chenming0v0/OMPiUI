@@ -30,6 +30,7 @@ interface ScheduledRequest {
   responseBytes: number
   priority: boolean
   cancelled: boolean
+  finished?: boolean
   error?: Error
   reservation?: WorkerResponseReservation
   promise: Promise<void>
@@ -52,9 +53,10 @@ export function createWorkerCommandScheduler(
 ): WorkerCommandScheduler {
   const requests = new Map<string, ScheduledRequest>()
   const lanes = new Map<string, ScheduledRequest[]>()
+  const executing = new Set<ScheduledRequest>()
   const maxPending = limits.maxPending ?? 1024
   const maxPendingBytes = limits.maxPendingBytes ?? 32 * 1024 * 1024
-  const responseBytes = Math.min(limits.responseBytes ?? RESPONSE_BYTES, sender.responseByteLimit)
+  const responseBytes = Math.min(limits.responseBytes ?? RESPONSE_BYTES, sender.responseReservationLimit)
   const controlResponseBytes = Math.min(CONTROL_RESPONSE_BYTES, responseBytes)
   let pendingBytes = 0
   let closing = false
@@ -63,6 +65,8 @@ export function createWorkerCommandScheduler(
   let closePromise: Promise<void> | undefined
 
   const finish = (job: ScheduledRequest, error?: unknown) => {
+    if (job.finished) return
+    job.finished = true
     job.reservation?.release()
     requests.delete(job.request.id)
     pendingBytes -= job.bytes
@@ -94,6 +98,8 @@ export function createWorkerCommandScheduler(
   const startFromLane = (lane: string, queue: ScheduledRequest[]): boolean => {
     for (let index = 0; index < queue.length; index++) {
       const job = queue[index]!
+      // 取消只退还响应预算；底层尚未结束的执行仍占独立槽位。
+      if (executing.size >= (job.priority ? 64 : 32)) continue
       const reservation = sender.tryReserveResponse(job.responseBytes, job.priority)
       if (!reservation) continue
       queue.splice(index, 1)
@@ -101,7 +107,11 @@ export function createWorkerCommandScheduler(
       if (queue.length) lanes.set(lane, queue)
       lastLane = lane
       job.reservation = reservation
-      void run(job, reservation).then(() => finish(job), error => finish(job, error))
+      executing.add(job)
+      void run(job, reservation).then(
+        () => { executing.delete(job); finish(job); pump() },
+        error => { executing.delete(job); finish(job, error); pump() },
+      )
       return true
     }
     return false
@@ -171,6 +181,7 @@ export function createWorkerCommandScheduler(
     job.cancelled = true
     if (job.reservation) {
       job.reservation.cancel()
+      finish(job)
       return
     }
     const queue = lanes.get(job.lane)!

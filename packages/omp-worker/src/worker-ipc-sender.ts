@@ -126,9 +126,8 @@ export class WorkerIpcSender {
       }),
       cancel: () => {
         const item = reservation.item
-        // 正在执行的生产者结算前持续占用预留；若取消时提前退款，
-        // 仍在运行的读取任务就可能无限增加。
-        if (!item || item === this.sending || item.completed) return
+        if (!item) { release(); return }
+        if (item === this.sending || item.completed) return
         const index = this.queue.indexOf(item)
         if (index < 0) return
         this.queue.splice(index, 1)

@@ -4,6 +4,8 @@ import { HistoryPagePrefetch, historyPagePrefetch } from './historyPagePrefetch'
 import { loadMorePiBranchEntries, prefetchPiBranchEntries } from './controllers'
 import { piBranchStore } from './state'
 import * as transport from './transport'
+import * as http from './httpClient'
+import { serverStore } from '../store/serverStore'
 
 function page(ids: string[], hasMore = false): PiBranchPage {
   return {
@@ -24,6 +26,34 @@ afterEach(() => {
 })
 
 describe('history page prefetch', () => {
+  it('prefetches only references and hydrates a large entry only when the user reads it', async () => {
+    const entry = { id: 'large', type: 'message', message: { role: 'toolResult', content: [{ type: 'text', text: 'x'.repeat(9 * 1024 * 1024) }] } }
+    const content = JSON.stringify(entry)
+    const rawPage = {
+      ...page([]),
+      items: [{ id: 'large', type: 'ompiui.entry_ref', contentRef: { etag: 'etag', totalChars: content.length } }],
+    } as unknown as PiBranchPage
+    const fetch = vi.spyOn(http, 'piFetch').mockImplementation(async (url, init) => {
+      if (url.endsWith('/branch.get')) return new Response(JSON.stringify({ data: rawPage }))
+      if (!url.endsWith('/session.read')) throw new Error(`Unexpected request ${url}`)
+      const { params: { offset } } = JSON.parse(String(init?.body))
+      const nextOffset = Math.min(content.length, offset + 64 * 1024)
+      return new Response(JSON.stringify({ data: {
+        entryId: 'large', etag: 'etag', totalChars: content.length, offset,
+        content: content.slice(offset, nextOffset), nextOffset,
+      } }))
+    })
+    const current = page(['newer'], true)
+    piBranchStore.setData('large-history', current)
+    await prefetchPiBranchEntries('large-history', 'idle')
+    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(historyPagePrefetch.canPrefetch('large-history', serverStore.getActiveServerGeneration())).toBe(true)
+    expect(piBranchStore.getData('large-history')).toBe(current)
+    await loadMorePiBranchEntries('large-history')
+    expect(piBranchStore.getData('large-history')?.items[0]).toEqual(entry)
+    expect(fetch.mock.calls.filter(([url]) => url.endsWith('/branch.get'))).toHaveLength(1)
+    expect(fetch.mock.calls.filter(([url]) => url.endsWith('/session.read')).length).toBeGreaterThan(100)
+  })
   it('stops three idle panes from evicting and redownloading each other while preserving foreground reads', async () => {
     const sessions = ['idle-a', 'idle-b', 'idle-c']
     for (const id of sessions) piBranchStore.setData(id, page(['100'], true))

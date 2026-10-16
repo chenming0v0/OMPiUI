@@ -55,6 +55,17 @@ describe('Tauri HTTP transport', () => {
     const headers = nativeFetchMock.mock.calls[0]?.[1]?.headers as Headers
     expect(headers.get('authorization')).toBe('Bearer mobile-token')
   })
+
+  it.each(['manage', 'resolve', 'resolveSources', 'checkUpdates'])('gives packages.%s more time than the server command budget', async command => {
+    nativeFetchMock.mockResolvedValueOnce(new Response('{}'))
+    const timeout = vi.spyOn(AbortSignal, 'timeout')
+    try {
+      await piFetch(`/api/v1/host/commands/packages.${command}`, { method: 'POST', body: '{}' })
+      expect(timeout.mock.calls[0]?.[0]).toBeGreaterThan(60_000)
+    } finally {
+      timeout.mockRestore()
+    }
+  })
 })
 
 describe('browser HTTP transport', () => {

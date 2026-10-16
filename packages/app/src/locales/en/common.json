@@ -1,4 +1,6 @@
 {
+  "eventStreamError": "Live connection unavailable",
+  "eventStreamRecovery": "Refresh the page or update the server. Reconnecting automatically.",
   "loading": "Loading...",
   "cancel": "Cancel",
   "close": "Close",

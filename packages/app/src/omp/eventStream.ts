@@ -21,6 +21,7 @@ import { extensionUiStore } from './extensionUiStore'
 import { extensionTuiStore } from './extensionTuiStore'
 import { commandFeedbackStore } from './commandFeedbackStore'
 import { notificationStore } from '../store/notificationStore'
+import i18n from '../i18n'
 import { liveToolOutputStore, extractToolExecutionText } from './liveToolOutput'
 import { ompSubagentStore } from './ompSubagentStore'
 import { activeSessionStore } from '../store/activeSessionStore'
@@ -125,6 +126,7 @@ class PiEventStream {
   private ws: PiSocket | null = null
   private readonly diagnostics = new BrowserDiagnostics(message => this.send(message))
   private lastCloseCode: number | undefined
+  private lastProblemCode: string | undefined
   private refCounts = new Map<string, number>()
   private workspaceRefCounts = new Map<string, number>()
   private cursors = new Map<string, EventCursor>()
@@ -323,6 +325,7 @@ class PiEventStream {
   }
 
   private closeSocket(reason = 'unsubscribe'): void {
+    if (reason !== 'protocol_problem') this.lastProblemCode = undefined
     if (!this.hasSubscriptions()) {
       this.resyncGeneration++
       this.pendingResync.clear()
@@ -374,6 +377,7 @@ class PiEventStream {
       notifyReconnected()
       this.stableTimer = setTimeout(() => {
         this.reconnectAttempts = 0
+        this.lastProblemCode = undefined
       }, 30_000)
       if (this.lastCloseCode !== undefined) refreshModelSettings()
       this.pingTimer = setInterval(() => {
@@ -396,21 +400,22 @@ class PiEventStream {
       this.sentStreams.clear()
       markModelSettingsDisconnected()
       this.lastCloseCode = event.code
-      if (this.hasSubscriptions()) {
-        if (this.reconnectTimer) return
-        if (!navigator.onLine || document.visibilityState === 'hidden') return
-        const delay = this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS
-          ? retryDelay(0, RECONNECT_PROBE_MS, RECONNECT_PROBE_MS)
-          : retryDelay(this.reconnectAttempts++, RECONNECT_DELAY_MS)
-        this.reconnectTimer = setTimeout(() => {
-          this.reconnectTimer = null
-          if (!this.ws && this.hasSubscriptions() && navigator.onLine && document.visibilityState !== 'hidden') this.openSocket()
-        }, delay)
-      }
+      this.scheduleReconnect()
     }
     ws.onerror = () => {
       // close follows; reconnect handled there
     }
+  }
+
+  private scheduleReconnect(): void {
+    if (!this.hasSubscriptions() || this.reconnectTimer || !navigator.onLine || document.visibilityState === 'hidden') return
+    const delay = this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS
+      ? retryDelay(0, RECONNECT_PROBE_MS, RECONNECT_PROBE_MS)
+      : retryDelay(this.reconnectAttempts++, RECONNECT_DELAY_MS)
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null
+      if (!this.ws && this.hasSubscriptions() && navigator.onLine && document.visibilityState !== 'hidden') this.openSocket()
+    }, delay)
   }
 
   private sendSubscribe(): void {
@@ -494,6 +499,14 @@ class PiEventStream {
     }
     if ('channel' in message && message.channel === 'control' && message.type === 'problem') {
       this.closeSocket('protocol_problem')
+      this.lastCloseCode = 1002
+      this.reconnectAttempts = MAX_RECONNECT_ATTEMPTS
+      this.scheduleReconnect()
+      if (this.lastProblemCode !== message.problem.code) {
+        this.lastProblemCode = message.problem.code
+        notificationStore.push('error', i18n.t('common:eventStreamError'),
+          `${message.problem.code}: ${i18n.t('common:eventStreamRecovery')}`, '')
+      }
       window.dispatchEvent(new CustomEvent('ompiui:event-stream-error', { detail: message.problem }))
     }
   }

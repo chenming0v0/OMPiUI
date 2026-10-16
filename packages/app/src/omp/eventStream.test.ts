@@ -17,6 +17,7 @@ import * as controllers from './controllers/index.js'
 import { buildPiLiveItems } from './selectors/index.js'
 import * as http from './httpClient.js'
 import { serverStore } from '../store/serverStore'
+import { notificationStore } from '../store/notificationStore'
 
 // 触达私有方法做白盒测试（事件驱动路径需要 WS，单测直接调 handler）
 type Handler = (payload: unknown) => void
@@ -62,6 +63,28 @@ describe('bounded live recovery and cache cleanup', () => {
     vi.advanceTimersByTime(1)
     internal.recoverLiveMessage('large')
     expect(refresh).toHaveBeenCalledTimes(2)
+  })
+  it('probes after protocol problems without visibility changes and notifies once per failure', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(true)
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    const internal = piEventStream as unknown as {
+      refCounts: Map<string, number>
+      handleRaw(raw: string): void
+      openSocket(): void
+    }
+    internal.refCounts.set('protocol', 1)
+    const open = vi.spyOn(internal, 'openSocket').mockImplementation(() => {})
+    const notify = vi.spyOn(notificationStore, 'push').mockImplementation(() => {})
+    const problem = JSON.stringify({ channel: 'control', type: 'problem', problem: { code: 'PROTOCOL_VERSION_MISMATCH', message: 'outdated' } })
+    internal.handleRaw(problem)
+    expect(notify).toHaveBeenCalledWith('error', expect.any(String), expect.stringContaining('PROTOCOL_VERSION_MISMATCH'), '')
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(open).toHaveBeenCalledTimes(1)
+    internal.handleRaw(problem)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(open).toHaveBeenCalledTimes(2)
+    expect(notify).toHaveBeenCalledTimes(1)
   })
   it('drops in-flight resync work when the backend changes', async () => {
     vi.useFakeTimers()
@@ -522,7 +545,9 @@ describe('session configuration and stop synchronization', () => {
       isStreaming: false, isIdle: true, isRetrying: false, isCompacting: false,
     })
     expect(activeSessionStore.getBusySessionsSnapshot()).toHaveLength(0)
-    expect(piSessionStateStore.isRequestCurrent('session-stop', old)).toBe(false)
+    expect(piSessionStateStore.isRequestCurrent('session-stop', old)).toBe(true)
+    expect(piSessionStateStore.setStateIfCurrent('session-stop', { isStreaming: true, isIdle: false, queue: [] }, old)).toBe(true)
+    expect(piSessionStateStore.getState('session-stop')).toMatchObject({ isStreaming: false, isIdle: true, queue: [] })
     expect(controllers.refreshPiSessionState).not.toHaveBeenCalled()
   })
 

@@ -90,8 +90,10 @@ class PiSessionStateStore {
 
   patchState(sessionId: string, patch: JsonObject): void {
     const entry = this.entry(sessionId)
-    entry.requestVersion = ++this.nextVersion
+    // 快照与事件按字段合并；重复忙状态不触发订阅，也不作废在途读取。
     entry.pendingPatch = { ...entry.pendingPatch, ...patch }
+    if (entry.state && !entry.error && !entry.loading &&
+      Object.keys(patch).every(key => Object.is(entry.state?.[key], patch[key]))) return
     entry.state = { ...entry.state, ...patch }
     entry.error = null
     entry.loading = false

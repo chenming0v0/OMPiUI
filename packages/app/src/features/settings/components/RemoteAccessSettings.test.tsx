@@ -61,7 +61,35 @@ beforeEach(async () => {
   serviceStore.setEnvVars([{ key: 'OMPIUI_PORT', value: '7777' }])
 })
 
-afterEach(async () => { cleanup(); await i18n.changeLanguage('en') })
+afterEach(async () => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); await i18n.changeLanguage('en') })
+
+describe('pairing invitation polling', () => {
+  it('pauses while hidden, resumes once, and stops permanently after redemption', async () => {
+    vi.useFakeTimers()
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    await act(async () => { render(<RemoteAccessSettings />) })
+    visibility.mockReturnValue('hidden')
+    await act(async () => { await vi.advanceTimersByTimeAsync(12_000) })
+    expect(mocks.poll).not.toHaveBeenCalled()
+    mocks.poll.mockResolvedValue({ ...invite(), redeemed: true })
+    visibility.mockReturnValue('visible')
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')) })
+    expect(mocks.poll).toHaveBeenCalledTimes(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(12_000) })
+    expect(mocks.poll).toHaveBeenCalledTimes(1)
+  })
+
+  it('never polls an expired invite and restarts only after a new invite is minted', async () => {
+    vi.useFakeTimers()
+    mocks.mint.mockResolvedValueOnce({ ...invite(), expiresAt: Date.now() + 2000 })
+    await act(async () => { render(<RemoteAccessSettings />) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(12_000) })
+    expect(mocks.poll).not.toHaveBeenCalled()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'New code' })) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(mocks.poll).toHaveBeenCalledTimes(1)
+  })
+})
 
 describe('RemoteAccessSettings authoritative addresses', () => {
   it.each(['127.0.0.1', '::1', '::ffff:127.0.0.1', '192.168.50.99'])('blocks a LAN QR when the listener does not serve the selected adapter: %s', async host => {

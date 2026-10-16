@@ -45,3 +45,43 @@ test("a blocked large response leaves control capacity and does not start anothe
   await first
   await schedule.close(async () => {})
 })
+
+test("cancelling an executing command refunds response capacity without sending its late result", async () => {
+  const delivered: WorkerMessage[] = []
+  const sender = new WorkerIpcSender((message, done) => { delivered.push(message); done() }, () => {})
+  let complete!: () => void
+  const schedule = createWorkerCommandScheduler(() => new Promise<void>(resolve => { complete = resolve }), sender, "generation")
+  const pending = schedule(request("cancelled", "bash"))
+  assert.equal(sender.tryReserveResponse(sender.responseReservationLimit), undefined)
+  schedule.cancel("cancelled")
+  await pending
+  const reservation = sender.tryReserveResponse(sender.responseReservationLimit)
+  assert.ok(reservation)
+  sender.send({ kind: "event", generation: "generation", sessionId: "other", channel: "test", event: {} })
+  reservation.release()
+  complete()
+  await nextTurn()
+  assert.deepEqual(delivered.map(message => message.kind), ["event"])
+  await schedule.close(async () => {})
+})
+
+test("cancelled producers retain bounded execution slots independently of response reservations", async () => {
+  const sender = new WorkerIpcSender((_message, done) => done(), () => {})
+  const completes: Array<() => void> = []
+  const schedule = createWorkerCommandScheduler(() => new Promise<void>(resolve => completes.push(resolve)), sender, "generation")
+  for (let i = 0; i < 32; i++) {
+    const pending = schedule(request(`slow-${i}`, "bash"))
+    schedule.cancel(`slow-${i}`)
+    await pending
+  }
+  const waiting = schedule(request("waiting", "branch.get"))
+  assert.equal(completes.length, 32)
+  completes[0]!()
+  await nextTurn()
+  assert.equal(completes.length, 33)
+  schedule.cancel("waiting")
+  await waiting
+  for (const complete of completes) complete()
+  await nextTurn()
+  await schedule.close(async () => {})
+})

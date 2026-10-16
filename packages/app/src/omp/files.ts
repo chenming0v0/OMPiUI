@@ -26,11 +26,17 @@ import { resolveWorkspacePath } from './workspaces'
 
 const ROOT_DIRECTORY_CACHE_TTL_MS = 1500
 const rootDirectoryCache = new Map<string, { data: FileNodeDto[]; expiresAt: number }>()
-const rootDirectoryInflight = new Map<string, Promise<FileNodeDto[]>>()
+type DirectoryFlight = {
+  promise: Promise<FileNodeDto[]>
+  controller: AbortController
+  users: number
+  settled: boolean
+}
+const rootDirectoryInflight = new Map<string, DirectoryFlight>()
 const rootDirectoryGeneration = new Map<string, number>()
 
 function getRootDirectoryCacheKey(directory?: string): string {
-  return `${serverStore.getActiveServerId()}:${directory?.replace(/\\/g, '/').replace(/\/+$/, '') ?? ''}`
+  return `${serverStore.getActiveServerGeneration()}:${serverStore.getActiveServerId()}:${directory?.replace(/\\/g, '/').replace(/\/+$/, '') ?? ''}`
 }
 
 async function requireWorkspacePath(directory?: string): Promise<string> {
@@ -72,13 +78,14 @@ function toPiRelativePath(path: string, directory?: string): string {
   return p.replace(/^\//, '')
 }
 
+function directoryWorkspace(path: string, directory?: string): string | undefined {
+  if (directory && (/^[a-zA-Z]:/.test(directory) || directory.startsWith('/'))) return directory
+  if (path && (/^[a-zA-Z]:/.test(path) || path.startsWith('/'))) return path
+  return directory
+}
+
 async function fetchDirectory(path: string, directory?: string, signal?: AbortSignal): Promise<FileNodeDto[]> {
-  const workspaceDir =
-    directory && (/^[a-zA-Z]:/.test(directory) || directory.startsWith('/'))
-      ? directory
-      : path && (/^[a-zA-Z]:/.test(path) || path.startsWith('/'))
-        ? path
-        : directory
+  const workspaceDir = directoryWorkspace(path, directory)
   const isAbsolute = Boolean(workspaceDir && (/^[a-zA-Z]:[\\/]/.test(workspaceDir) || workspaceDir.startsWith('/')))
   // Browsing a directory must not register it as a watched workspace:
   // requireWorkspacePath -> resolveWorkspacePath fires workspaces.open (spawns a
@@ -125,37 +132,66 @@ export async function searchFiles(
 }
 
 export async function listDirectory(path: string, directory?: string, signal?: AbortSignal): Promise<FileNodeDto[]> {
-  if (signal) return fetchDirectory(path, directory, signal)
-  if (!isRootDirectoryPath(path)) {
-    return fetchDirectory(path, directory)
-  }
-
-  const key = getRootDirectoryCacheKey(directory)
+  signal?.throwIfAborted()
+  const workspaceDir = directoryWorkspace(path, directory)
+  const workspaceKey = getRootDirectoryCacheKey(workspaceDir)
+  const key = `${workspaceKey}\0${toPiRelativePath(path, workspaceDir)}`
   const now = Date.now()
   const cached = rootDirectoryCache.get(key)
   if (cached && cached.expiresAt > now) {
     return cached.data
   }
 
-  const inflight = rootDirectoryInflight.get(key)
-  if (inflight) {
-    return inflight
+  let inflight = rootDirectoryInflight.get(key)
+  if (!inflight) {
+    const generation = rootDirectoryGeneration.get(workspaceKey) ?? 0
+    const serverGeneration = serverStore.getActiveServerGeneration()
+    const controller = new AbortController()
+    const created: DirectoryFlight = {
+      controller, users: 0, settled: false,
+      promise: fetchDirectory(path === '' ? '.' : path, directory, controller.signal)
+        .then(data => {
+          if (!controller.signal.aborted && serverStore.getActiveServerGeneration() === serverGeneration &&
+            (rootDirectoryGeneration.get(workspaceKey) ?? 0) === generation) {
+            rootDirectoryCache.set(key, { data, expiresAt: Date.now() + ROOT_DIRECTORY_CACHE_TTL_MS })
+            while (rootDirectoryCache.size > 128) rootDirectoryCache.delete(rootDirectoryCache.keys().next().value!)
+          }
+          return data
+        })
+        .finally(() => {
+          created.settled = true
+          if (rootDirectoryInflight.get(key) === created) rootDirectoryInflight.delete(key)
+        }),
+    }
+    rootDirectoryInflight.set(key, created)
+    inflight = created
   }
-
-  const generation = rootDirectoryGeneration.get(key) ?? 0
-  const request = fetchDirectory(path === '' ? '.' : path, directory)
-    .then(data => {
-      if ((rootDirectoryGeneration.get(key) ?? 0) === generation) {
-        rootDirectoryCache.set(key, { data, expiresAt: Date.now() + ROOT_DIRECTORY_CACHE_TTL_MS })
+  const shared = inflight
+  shared.users++
+  return new Promise<FileNodeDto[]>((resolve, reject) => {
+    let done = false
+    const release = () => {
+      if (done) return false
+      done = true
+      signal?.removeEventListener('abort', abort)
+      shared.users--
+      return true
+    }
+    const abort = () => {
+      if (!release()) return
+      reject(signal?.reason)
+      if (!shared.users && !shared.settled) {
+        if (rootDirectoryInflight.get(key) === shared) rootDirectoryInflight.delete(key)
+        shared.controller.abort()
       }
-      return data
-    })
-    .finally(() => {
-      if (rootDirectoryInflight.get(key) === request) rootDirectoryInflight.delete(key)
-    })
-
-  rootDirectoryInflight.set(key, request)
-  return request
+    }
+    signal?.addEventListener('abort', abort, { once: true })
+    shared.promise.then(
+      data => { if (release()) resolve(data) },
+      error => { if (release()) reject(error) },
+    )
+    if (signal?.aborted) abort()
+  })
 }
 
 export async function prefetchRootDirectory(directory?: string): Promise<void> {
@@ -230,13 +266,16 @@ export function simplifyGitStatus(status: GitFileStatus): 'added' | 'modified' |
 
 export function invalidateWorkspaceFileCaches(directory?: string): void {
   const key = getRootDirectoryCacheKey(directory)
-  rootDirectoryCache.delete(key)
-  rootDirectoryInflight.delete(key)
+  for (const cached of rootDirectoryCache.keys()) if (cached.startsWith(`${key}\0`)) rootDirectoryCache.delete(cached)
+  for (const pending of rootDirectoryInflight.keys()) if (pending.startsWith(`${key}\0`)) rootDirectoryInflight.delete(pending)
   rootDirectoryGeneration.set(key, (rootDirectoryGeneration.get(key) ?? 0) + 1)
 }
 
 export function clearAllWorkspaceFileCaches(): void {
-  const keys = new Set([...rootDirectoryCache.keys(), ...rootDirectoryInflight.keys(), ...rootDirectoryGeneration.keys()])
+  const keys = new Set([
+    ...[...rootDirectoryCache.keys(), ...rootDirectoryInflight.keys()].map(key => key.split('\0')[0]),
+    ...rootDirectoryGeneration.keys(),
+  ])
   for (const key of keys) {
     rootDirectoryGeneration.set(key, (rootDirectoryGeneration.get(key) ?? 0) + 1)
   }

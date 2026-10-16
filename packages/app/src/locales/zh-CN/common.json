@@ -1,4 +1,6 @@
 {
+  "eventStreamError": "实时连接不可用",
+  "eventStreamRecovery": "请刷新页面或更新服务端，连接将自动重试。",
   "loading": "加载中...",
   "cancel": "取消",
   "close": "关闭",

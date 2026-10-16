@@ -385,7 +385,7 @@ export async function prefetchPiBranchEntries(
   const generation = serverStore.getActiveServerGeneration()
   if (!historyPagePrefetch.track(sessionId, generation, currentBranch.items, true)) return false
   const read = (beforeId: string, sharedSignal: AbortSignal) => readHistoryPage(maxBytes => transport.getPiBranchPage(
-    sessionId, { beforeId, limit: BRANCH_PAGE_LIMIT, maxBytes }, sharedSignal,
+    sessionId, { beforeId, limit: BRANCH_PAGE_LIMIT, maxBytes }, sharedSignal, false,
   ), undefined, sharedSignal)
   try {
     let boundary = anchor
@@ -448,10 +448,12 @@ export async function loadMorePiBranchEntries(sessionId: string, signal?: AbortS
       sessionId,
       { beforeId: currentBranch.items[0].id, limit: BRANCH_PAGE_LIMIT, maxBytes },
       sharedSignal,
+      false,
     ), undefined, sharedSignal)
-    const olderPage = await historyPagePrefetch.take(
+    const rawPage = await historyPagePrefetch.take(
       sessionId, serverGeneration, currentBranch.items[0], read, consumerSignal,
     )
+    const olderPage = await transport.hydratePiBranchPage(sessionId, rawPage, consumerSignal, serverGeneration)
     signal?.throwIfAborted()
 
     const latest = piBranchStore.getData(sessionId)
@@ -606,11 +608,12 @@ async function refreshPiBranchOnce(sessionId: string, signal?: AbortSignal, incl
 export async function refreshPiSessionState(sessionId: string, signal?: AbortSignal): Promise<void> {
   const serverGeneration = serverStore.getActiveServerGeneration()
   const requestVersion = piSessionStateStore.beginRequest(sessionId)
-  const state = await transport.getPiSessionState(sessionId, signal)
+  const snapshot = await transport.getPiSessionState(sessionId, signal)
   if (serverStore.getActiveServerGeneration() !== serverGeneration) return
   const currentRequest = piSessionStateStore.isRequestCurrent(sessionId, requestVersion)
-  if (!piSessionStateStore.setStateIfCurrent(sessionId, state as JsonObject, requestVersion)) return
+  if (!piSessionStateStore.setStateIfCurrent(sessionId, snapshot as JsonObject, requestVersion)) return
   if (!currentRequest) return
+  const state = piSessionStateStore.getState(sessionId)
   // worker 的子代理注册表快照并入全局 store：页面刷新 / 重连后 HUD 与
   // TaskRenderer 内联视图据此恢复（运行中的随后由 progress 帧继续推进）
   if (isJsonObject(state)) {

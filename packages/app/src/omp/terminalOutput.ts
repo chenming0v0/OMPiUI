@@ -9,7 +9,7 @@ export function createTerminalOutputConsumer(
   let disposed = false
   let ackCursor: number | undefined
   let timer: ReturnType<typeof setTimeout> | undefined
-  let drainWaiters: Array<() => void> = []
+  const drainWaiters: Array<() => void> = []
   return {
     write(data: string, cursor: number, acknowledge: boolean): void {
       pending++

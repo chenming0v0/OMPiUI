@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ExtensionUiDialogRequest, JsonObject } from '@ompiui/protocol'
 import { extensionUiStore } from '../extensionUiStore.js'
 import { extensionTuiStore } from '../extensionTuiStore.js'
@@ -165,6 +165,21 @@ describe('piSessionStateStore pending dialog recovery', () => {
 
 describe('piSessionStateStore request versions', () => {
   afterEach(() => piSessionStateStore.clearAll())
+
+  it('coalesces bash chunks while merging an in-flight authoritative snapshot', () => {
+    piSessionStateStore.setState('session-1', { model: { id: 'model' }, isIdle: true })
+    const version = piSessionStateStore.beginRequest('session-1')
+    const notified = vi.fn()
+    const unsubscribe = piSessionStateStore.subscribe(notified)
+    for (let i = 0; i < 20; i++) piSessionStateStore.patchState('session-1', { isBashRunning: true, isIdle: false })
+    expect(notified).toHaveBeenCalledTimes(1)
+    expect(piSessionStateStore.setStateIfCurrent('session-1', {
+      model: { id: 'model' }, isIdle: true, queue: ['new'], subagents: [],
+    }, version)).toBe(true)
+    expect(piSessionStateStore.getState('session-1')).toMatchObject({ isIdle: false, isBashRunning: true, queue: ['new'] })
+    expect(notified).toHaveBeenCalledTimes(2)
+    unsubscribe()
+  })
 
   it('does not restore state from a response belonging to a cleared session', () => {
     const version = piSessionStateStore.beginRequest('session-1')
