@@ -2,6 +2,8 @@ import type { Writable } from "node:stream"
 
 // Per virtual connection, including Node's writable buffer. Never pause the
 // shared control WebSocket: one slow visitor must not stall other streams.
+// 硬上限 + 超限 abort 是有意契约（慢消费者独占溢出即断开，见 backpressure.test.ts），
+// 不是"缺少背压/可无限灌入"；上游背压在 sink.ts 的 bufferedAmount 水位。
 export const RESPONSE_BUFFER_MAX = 1024 * 1024
 export const RESPONSE_QUEUE_MAX = 1024
 

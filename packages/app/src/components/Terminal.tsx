@@ -845,6 +845,8 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
         resizeTimeoutRef.current = null
       }
 
+      // 这里是本地布局快照（写入 localStorage），不计入线路字节；
+      // 不要把它与终端 WS 的上下行流量混在一起统计。
       try {
         layoutStore.updateTerminalSnapshot(terminalId, {
           buffer: serializeAddon.serialize(),

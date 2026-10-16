@@ -85,6 +85,8 @@ export async function listFiles(
       (total, page) => total + page.names.length,
       0,
     );
+    // break 的语义是"已达标"：不达标就一直逐出到 ≤32 项且名字总长 ≤100000；
+    // continue 只豁免正在服务的那一份（mtime+5s TTL 后重建）。缓存有界，不要按"无法驱逐"上报。
     for (const [key, page] of directoryPages) {
       if (directoryPages.size <= 32 && namesCount <= 100000) break;
       if (key === resolved.absolute) continue;
@@ -274,6 +276,8 @@ async function writeFileContentLocked(
     await unlink(temporary).catch(() => undefined);
   }
   const binary = opts.encoding === "base64";
+  // 默认回显正文是给外部 API 的语义；app 的写路径显式传 returnContent:false
+  // （packages/app/src/omp/files.ts），因此不是"每次保存双倍流量"，不要按默认值上报。
   return {
     path: resolved.relative,
     content: opts.returnContent === false ? "" : (binary ? buffer.toString("base64") : buffer.toString("utf8")),

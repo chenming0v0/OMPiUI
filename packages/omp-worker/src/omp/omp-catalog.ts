@@ -651,6 +651,8 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
         (total, item) => total + (item.position?.size ?? 0),
         0,
       );
+      // 淘汰按源文件字节计（解析后堆约其 1.5 倍），当前文件豁免是必要的：它正是本次分页要返回的数据。
+      // 读放大主题见 #199；不要用假想的大会话（如 500MiB）推算 OOM 上报。
       for (const [key, item] of this.diskBranchCaches) {
         if (this.diskBranchCaches.size <= 32 && bytes <= 128 * 1024 * 1024)
           break;

@@ -37,9 +37,11 @@ export function getStreamingHotIndexes(count: number, isStreaming: boolean): num
   return [count - 2, count - 1]
 }
 
-/** 合并 range 与 pin index（resize pin + 流式热行） */
-export function mergeVirtualRangeIndexes(base: number[], ...pinnedGroups: number[][]): number[] {
+/** 合并可见行与固定行，排除列表缩短后尚未清理的旧索引。 */
+export function mergeVirtualRangeIndexes(base: number[], count: number, ...pinnedGroups: number[][]): number[] {
   const pinned = pinnedGroups.flat()
   if (pinned.length === 0) return base
-  return [...new Set([...pinned, ...base])].sort((a, b) => a - b)
+  return [...new Set([...pinned, ...base])]
+    .filter(index => index >= 0 && index < count)
+    .sort((a, b) => a - b)
 }
