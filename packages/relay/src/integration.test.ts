@@ -35,7 +35,9 @@ class MiniDesktop {
         authorization: `Bearer ${options.key}`,
         "x-ompiui-tunnel": options.tunnelId ?? "ompiui",
       },
+      autoPong: false,
     })
+    this.ws.on("ping", data => this.ws.pong(data))
     this.ready = new Promise((resolve, reject) => {
       this.ws.on("message", (data: RawData, isBinary: boolean) => {
         try {

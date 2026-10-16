@@ -159,10 +159,20 @@ export class TunnelClient {
       },
       handshakeTimeout: 10_000,
       maxPayload: Math.max(CONTROL_MESSAGE_MAX, FRAME_PAYLOAD_MAX + 4),
+      autoPong: false,
     });
     this.ws = ws;
     ws.on("pong", () => {
       this.alive = true;
+    });
+    ws.on("ping", data => {
+      const bytes = data.length + 14;
+      if (ws.bufferedAmount + bytes > RESPONSE_BUFFER_MAX || !this.controlRate.canAllow(bytes, 1)) {
+        ws.terminate();
+        return;
+      }
+      this.controlRate.allow(bytes, 1);
+      ws.pong(data);
     });
     ws.on("message", (data, isBinary) => {
       try {

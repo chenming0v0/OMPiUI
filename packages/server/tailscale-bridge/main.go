@@ -78,7 +78,7 @@ func main() {
 		proxy := gateway.Proxy(target, (&net.Dialer{}).DialContext, true, os.Getenv("OMPIUI_BRIDGE_FORWARDING_TOKEN"))
 		proxyServer := proxyHTTPServer(proxy)
 		go func() {
-			if err := proxyServer.Serve(proxyListener); err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
+			if err := proxyServer.Serve(gateway.WithIdleTimeout(proxyListener, gateway.IdleTimeout)); err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
 				log.Printf("tailnet proxy stopped: %v", err)
 			}
 		}()
@@ -98,6 +98,7 @@ func main() {
 	handler := controlHandler(ts, shutdown)
 	controlServer := &http.Server{
 		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       gateway.IdleTimeout,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+token)) != 1 {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -134,7 +135,7 @@ func main() {
 }
 
 func proxyHTTPServer(handler http.Handler) *http.Server {
-	return &http.Server{ReadHeaderTimeout: 10 * time.Second, Handler: handler}
+	return &http.Server{ReadHeaderTimeout: 10 * time.Second, IdleTimeout: gateway.IdleTimeout, Handler: handler}
 }
 
 func controlHandler(ts *tsnet.Server, shutdown func()) http.Handler {

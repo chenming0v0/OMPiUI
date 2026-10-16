@@ -3,6 +3,9 @@
     "placeholder": "输入命令...",
     "noCommandsFound": "未找到命令"
   },
+  "htmlPreview": {
+    "resourcesTruncated": "部分本地资源因预览预算限制未能载入。"
+  },
   "fileExplorer": {
     "selectProject": "选择项目以浏览文件",
     "searchFiles": "搜索文件内容",

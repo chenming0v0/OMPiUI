@@ -632,7 +632,7 @@ export async function previewPiSession(
 ): Promise<PiSessionPreviewResult> {
   const generation = serverStore.getActiveServerGeneration()
   const result = await postPiGlobalCommand<PiSessionPreviewResult>('session.preview', { sessionId, ...params }, signal)
-  return { ...result, branch: await hydrateBranchContent(sessionId, result.branch, signal, generation) }
+  return { ...result, branch: await hydratePiBranchPage(sessionId, result.branch, signal, generation) }
 }
 
 export function openPiSession(params: PiSessionOpenParams, signal?: AbortSignal): Promise<PiSessionOpenResult> {
@@ -705,13 +705,14 @@ export async function getPiBranchPage(
   sessionId: string,
   params: PiBranchGetParams,
   signal?: AbortSignal,
+  hydrate = true,
 ): Promise<PiBranchPage> {
   const generation = serverStore.getActiveServerGeneration()
   const page = await postPiSessionCommand<PiBranchPage>(sessionId, 'branch.get', params, signal)
-  return hydrateBranchContent(sessionId, page, signal, generation)
+  return hydrate ? hydratePiBranchPage(sessionId, page, signal, generation) : page
 }
 
-function hydrateBranchContent(sessionId: string, page: PiBranchPage, signal: AbortSignal | undefined, generation: number): Promise<PiBranchPage> {
+export function hydratePiBranchPage(sessionId: string, page: PiBranchPage, signal?: AbortSignal, generation = serverStore.getActiveServerGeneration()): Promise<PiBranchPage> {
   if (serverStore.getActiveServerGeneration() !== generation) return Promise.reject(new DOMException('Server changed', 'AbortError'))
   return hydrateEntryContent(page, (entryId, offset, etag) => {
     if (serverStore.getActiveServerGeneration() !== generation) throw new DOMException('Server changed', 'AbortError')

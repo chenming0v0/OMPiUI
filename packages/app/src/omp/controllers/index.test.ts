@@ -78,6 +78,22 @@ describe('session state response ordering', () => {
     expect(piSessionStateStore.getState('session-a')).toMatchObject({ isStreaming: false, isIdle: true })
   })
 
+  it('reconciles subagent snapshots despite repeated bash chunks during the read', async () => {
+    const pending = deferred<JsonObject>()
+    vi.spyOn(transport, 'getPiSessionState').mockReturnValueOnce(pending.promise)
+    const apply = vi.spyOn(ompSubagentStore, 'applySnapshot')
+    piSessionStateStore.setState('session-a', {
+      model: { id: 'model' }, thinkingLevel: 'high', isBashRunning: true, isIdle: false,
+    })
+    const reading = refreshPiSessionState('session-a')
+    for (let i = 0; i < 20; i++) piSessionStateStore.patchState('session-a', { isBashRunning: true, isIdle: false })
+    piSessionStateStore.patchState('session-a', { isBashRunning: false, isIdle: true })
+    pending.resolve({ isBashRunning: true, isIdle: false, subagents: [], queue: [] })
+    await reading
+    expect(piSessionStateStore.getState('session-a')).toMatchObject({ isBashRunning: false, isIdle: true, queue: [] })
+    expect(apply).toHaveBeenCalledWith('session-a', [], true)
+  })
+
   it('keeps parallel session reads independent', async () => {
     vi.spyOn(transport, 'getPiSessionState')
       .mockResolvedValueOnce({ thinkingLevel: 'high' })

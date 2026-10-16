@@ -45,3 +45,25 @@ test("IPC waits for flush, pauses producers, prioritizes heartbeats and preserve
   assert.deepEqual(paused, [true, false])
   assert.equal(finished, true)
 })
+
+test("large response reservations leave room for downgraded worker events", () => {
+  const delivered: WorkerMessage[] = []
+  const callbacks: Array<(error?: Error) => void> = []
+  const sender = new WorkerIpcSender((message, done) => {
+    delivered.push(message)
+    callbacks.push(done)
+  }, () => {})
+  const first = sender.tryReserveResponse(4_160_000)
+  assert.ok(first)
+  assert.equal(sender.tryReserveResponse(4_160_000), undefined)
+  sender.send({
+    kind: "event",
+    generation: "test",
+    sessionId: "session",
+    channel: "payload.omitted",
+    event: { type: "event.omitted", reason: "byte_budget" },
+  })
+  assert.equal(delivered[0]?.kind, "event")
+  first.release()
+  callbacks[0]!()
+})

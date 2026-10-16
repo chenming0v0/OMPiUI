@@ -368,6 +368,7 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
   // 服务端 ring 丢弃过的会话最早可用位置大于 0，写死 0 会永久返回
   // TERMINAL_CURSOR_EXPIRED，形成无法恢复的重连循环。
   const cursorRef = useRef<number | undefined>(undefined)
+  const outputDrainRef = useRef<Promise<void>>(Promise.resolve())
   const socketRef = useRef<PiSocket | null>(null)
   const inputQueueRef = useRef<TerminalInputQueue | null>(null)
   const [inputState, setInputState] = useState<TerminalInputState>('ready')
@@ -700,6 +701,8 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
       const liveTab = layoutStore.getState().panelTabs.find(tab => tab.id === terminalId && tab.type === 'terminal')
       if (!liveTab) return
 
+      await outputDrainRef.current
+      if (!mountedRef.current || !effectActive) return
       fitAddon.fit()
       const cursor = cursorRef.current
 
@@ -713,8 +716,11 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
         const output = createTerminalOutputConsumer(
           (data, consumed) => terminal.write(data, consumed),
           consumed => { cursorRef.current = Math.max(cursorRef.current ?? 0, consumed) },
-          consumed => socket.send(JSON.stringify({ type: 'output_ack', cursor: consumed })),
-          () => mountedRef.current && effectActive && socketRef.current === socket && socket.readyState === PI_SOCKET_OPEN,
+          consumed => {
+            if (socketRef.current === socket && socket.readyState === PI_SOCKET_OPEN)
+              socket.send(JSON.stringify({ type: 'output_ack', cursor: consumed }))
+          },
+          () => mountedRef.current && effectActive,
         )
 
         socket.onopen = () => handleConnected(socket)
@@ -801,6 +807,7 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
         }
 
         socket.onclose = e => {
+          outputDrainRef.current = output.drain()
           output.dispose()
           handleDisconnected({ socket, code: e.code, reason: e.reason })
         }

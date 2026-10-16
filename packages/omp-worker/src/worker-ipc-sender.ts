@@ -1,6 +1,8 @@
 import type { WorkerMessage, WorkerResponse } from "./ipc.js"
 import { jsonByteSize } from "@ompiui/protocol"
 
+const RESERVED_EVENT_BYTES = 256 * 1024
+
 type QueuedMessage = {
   message: WorkerMessage
   bytes: number
@@ -39,6 +41,10 @@ export class WorkerIpcSender {
 
   get isPaused(): boolean { return this.paused }
   get responseByteLimit(): number { return this.highWaterBytes - this.controlBytes }
+  private get reservedEventBytes(): number {
+    return Math.min(RESERVED_EVENT_BYTES, Math.floor(this.responseByteLimit / 8))
+  }
+  get responseReservationLimit(): number { return this.responseByteLimit - this.reservedEventBytes }
   private get controlBytes(): number { return Math.min(64 * 1024, Math.max(64, Math.floor(this.highWaterBytes / 8))) }
   private get normalCountLimit(): number { return Math.max(1, this.highWaterMark * 2) }
   private get controlCountLimit(): number { return Math.max(2, this.highWaterMark) }
@@ -66,7 +72,7 @@ export class WorkerIpcSender {
 
   tryReserveResponse(bytes: number, priority = false): WorkerResponseReservation | undefined {
     if (this.closed || bytes > this.responseByteLimit ||
-      this.pendingBytes + this.reservedBytes + bytes > this.responseByteLimit ||
+      this.pendingBytes + this.reservedBytes + bytes > this.responseReservationLimit ||
       this.normalPendingCount + this.reservedCount >= this.normalCountLimit ||
       (!priority && this.reservations.size >= Math.max(1, Math.floor(this.normalCountLimit / 2)))) return undefined
     const reservation: Reservation = { bytes, released: false }
@@ -120,9 +126,8 @@ export class WorkerIpcSender {
       }),
       cancel: () => {
         const item = reservation.item
-        // 正在执行的生产者结算前持续占用预留；若取消时提前退款，
-        // 仍在运行的读取任务就可能无限增加。
-        if (!item || item === this.sending || item.completed) return
+        if (!item) { release(); return }
+        if (item === this.sending || item.completed) return
         const index = this.queue.indexOf(item)
         if (index < 0) return
         this.queue.splice(index, 1)

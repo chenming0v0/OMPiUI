@@ -103,4 +103,13 @@ describe('HtmlFilePreviewFrame', () => {
     })
     await waitFor(() => expect(screen.getByTitle('second.html').getAttribute('srcdoc')).toContain('Resolved second'))
   })
+
+  it('shows a warning when the resolved document reports omitted local resources', async () => {
+    resolveHtmlPreviewResources.mockResolvedValue(
+      '<html data-ompiui-resources-truncated="true"><body>Preview</body></html>',
+    )
+    render(<HtmlFilePreviewFrame html="<body>Preview</body>" title="index.html" filePath="index.html" />)
+
+    expect((await screen.findByRole('status')).textContent).toMatch(/resources|资源/i)
+  })
 })

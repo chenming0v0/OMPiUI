@@ -137,8 +137,20 @@ async function pressureHarness(t: TestContext) {
   let bufferedAmount = 0
   Object.defineProperty(control, "bufferedAmount", { configurable: true, get: () => bufferedAmount })
   t.after(() => { Reflect.deleteProperty(control!, "bufferedAmount") })
-  return { ...h, setBufferedAmount(value: number) { bufferedAmount = value } }
+  return { ...h, control, setBufferedAmount(value: number) { bufferedAmount = value } }
 }
+
+test("control ping replies obey output backpressure without affecting healthy pings", { timeout: 10_000 }, async t => {
+  const h = await pressureHarness(t)
+  const pong = once(h.ws, "pong")
+  h.ws.ping("healthy")
+  assert.equal((await pong)[0].toString(), "healthy")
+  const closed = once(h.ws, "close")
+  h.setBufferedAmount(BACKPRESSURE_HIGH_WATER + 1)
+  h.ws.ping("blocked")
+  await closed
+  assert.equal(h.relay.tunnelStatus()[0]!.online, false)
+})
 
 for (const kind of ["request", "upgrade"] as const) {
   test(`${kind}: open precedes streamed head/body at either side of the control high-water mark`, { timeout: 10_000 }, async t => {
@@ -160,9 +172,10 @@ for (const kind of ["request", "upgrade"] as const) {
         const opened = h.take("open")
         if (delta > 0) {
           t.mock.timers.tick(30)
-          const pong = once(h.ws, "pong")
-          h.ws.ping()
-          await pong
+          // 只观察入站屏障，不要求超出出站高水位时继续发送 pong。
+          const received = once(h.control, "pong")
+          h.ws.pong()
+          await received
           assert.equal(source.isPaused(), true)
           assert.deepEqual(h.received.slice(before), [])
         } else await opened

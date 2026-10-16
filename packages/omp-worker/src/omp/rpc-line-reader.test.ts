@@ -41,3 +41,21 @@ test("oversized UTF-8 lines are discarded until a newline, then parsing resumes"
   assert.equal(errors.length, 1)
   reader.close()
 })
+
+test("exit drain preserves batching and waits for IPC backpressure to clear", async () => {
+  const lines: string[] = []
+  const reader = new RpcLineReader(line => lines.push(line), () => {}, () => {}, 2)
+  reader.setPaused(true)
+  reader.push("first\nsecond\nthird\n")
+  let finished = false
+  reader.finish(() => { finished = true })
+  assert.deepEqual(lines, [])
+  assert.equal(finished, false)
+  reader.setPaused(false)
+  await new Promise<void>(resolve => {
+    const poll = () => finished ? resolve() : setImmediate(poll)
+    poll()
+  })
+  assert.deepEqual(lines, ["first", "second", "third"])
+  reader.close()
+})

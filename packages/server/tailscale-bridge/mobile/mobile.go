@@ -112,11 +112,12 @@ func OpenRoute(origin string) (string, error) {
 	}
 	server := &http.Server{
 		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       gateway.IdleTimeout,
 		Handler:           gateway.Proxy(target, node.Dial, false),
 	}
 	result := "http://" + listener.Addr().String()
 	routes[key] = route{server: server, url: result}
-	go server.Serve(listener)
+	go server.Serve(gateway.WithIdleTimeout(listener, gateway.IdleTimeout))
 	return result, nil
 }
 

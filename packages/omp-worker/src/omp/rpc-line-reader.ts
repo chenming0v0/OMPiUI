@@ -95,23 +95,6 @@ export class RpcLineReader {
     if (text) this.consume(text);
   }
 
-  /**
-   * 子进程已退出:不再等待 IPC 背压释放。只交付退出前已读入缓冲的完整行
-   * (有界,不会等待更多输出),丢弃不完整的尾行。
-   */
-  flushForExit(): void {
-    if (this.closed) return;
-    clearImmediate(this.scheduled);
-    this.scheduled = undefined;
-    this.paused = false;
-    this.finished = undefined;
-    while (this.head < this.lines.length) this.deliver();
-    this.lines = [];
-    this.head = 0;
-    this.tail = "";
-    this.tailBytes = 0;
-  }
-
   close(): void {
     this.closed = true;
     if (this.scheduled) clearImmediate(this.scheduled);

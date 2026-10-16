@@ -109,21 +109,32 @@ function RemoteAccessPanel() {
   }, [inviteRefresh])
 
   const inviteId = invite?.id ?? null
+  const expired = invite !== null && now >= invite.expiresAt
+  const inviteActive = Boolean(invite && !expired && !invite.redeemed)
+  const inviteExpiresAt = invite?.expiresAt
   useEffect(() => {
-    if (!inviteId) return
+    if (!inviteId || !inviteActive) return
     let cancelled = false
-    const timer = window.setInterval(() => {
+    let pending = false
+    const poll = () => {
+      if (cancelled || pending || document.visibilityState === 'hidden' ||
+        (inviteExpiresAt !== undefined && Date.now() >= inviteExpiresAt)) return
+      pending = true
       void fetchPairInvite(inviteId)
         .then(next => {
           if (!cancelled) setInvite(previous => (previous && previous.id === next.id ? next : previous))
         })
         .catch(() => undefined)
-    }, PAIR_POLL_MS)
+        .finally(() => { pending = false })
+    }
+    const timer = window.setInterval(poll, PAIR_POLL_MS)
+    document.addEventListener('visibilitychange', poll)
     return () => {
       cancelled = true
       window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', poll)
     }
-  }, [inviteId])
+  }, [inviteId, inviteActive, inviteExpiresAt])
 
   // 秒级倒计时
   useEffect(() => {
@@ -188,7 +199,6 @@ function RemoteAccessPanel() {
     : tab === 'tailscale' ? (tailscale?.backendState === 'Running' ? tailscale.url : null)
     : lanBase
 
-  const expired = invite !== null && now >= invite.expiresAt
   const pairUrl = invite && !expired && !invite.redeemed && base ? `${base}/?pair=${encodeURIComponent(invite.pair)}` : null
   const pairPending = (!invite && !inviteGone) || (tab === 'lan' ? networkLoading : tunnel === undefined)
   const tailscaleNeedsLogin = tab === 'tailscale' && tailscale !== null

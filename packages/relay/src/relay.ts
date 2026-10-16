@@ -144,6 +144,7 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
   const wss = new WebSocketServer({
     noServer: true,
     maxPayload: CONTROL_MESSAGE_MAX,
+    autoPong: false,
     // 隧道协议要求每条消息恰好一帧，拒绝 continuation 重组绕过计量。
     maxFragments: 1,
   });
@@ -318,6 +319,17 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
     });
     ws.on("pong", () => {
       session.alive = true;
+    });
+    ws.on("ping", data => {
+      const bytes = data.length + 14;
+      if (ws.bufferedAmount + bytes > BACKPRESSURE_HIGH_WATER ||
+        !session.control.canAllow(bytes, 1) || !session.controlOut.canAllow(bytes, 1)) {
+        ws.terminate();
+        return;
+      }
+      session.control.allow(bytes, 1);
+      session.controlOut.allow(bytes, 1);
+      ws.pong(data);
     });
     ws.on("message", (data: RawData, isBinary: boolean) => {
       try {

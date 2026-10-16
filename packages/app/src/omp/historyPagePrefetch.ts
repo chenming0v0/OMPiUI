@@ -74,6 +74,7 @@ export class HistoryPagePrefetch {
     if (background && this.evictedViews.has(items)) return false
     if (!background) this.evictedViews.delete(items)
     const buffer = this.buffer(sessionId, generation)
+    if (!background) buffer.budgetBlocked = false
     buffer.visibleAnchor = items[0]
     buffer.visibleItems = items
     return true

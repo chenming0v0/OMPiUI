@@ -3,6 +3,9 @@
     "placeholder": "Type a command...",
     "noCommandsFound": "No commands found"
   },
+  "htmlPreview": {
+    "resourcesTruncated": "Some local resources could not be loaded because the preview reached its resource budget."
+  },
   "fileExplorer": {
     "selectProject": "Select a project to browse files",
     "searchFiles": "Search files",

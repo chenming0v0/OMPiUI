@@ -119,7 +119,9 @@ export async function piFetch(input: string, init?: PiRequestInit): Promise<Resp
       Math.min(
         300_000,
         Math.max(
-          bulkRead ? 300_000 : DEFAULT_REQUEST_TIMEOUT_MS,
+          bulkRead ? 300_000 :
+            /\/commands\/packages\.(?:manage|resolve|resolveSources|checkUpdates)(?:\?|$)/.test(input)
+              ? 90_000 : DEFAULT_REQUEST_TIMEOUT_MS,
           DEFAULT_REQUEST_TIMEOUT_MS + Math.ceil(bodyBytes / (128 * 1024)) * 1000,
         ),
       ),
