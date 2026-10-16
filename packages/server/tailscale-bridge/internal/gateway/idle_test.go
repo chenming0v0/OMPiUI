@@ -46,7 +46,7 @@ func TestHijackedConnectionHasIdleDeadlineAndKeepsHeartbeats(t *testing.T) {
 		t.Fatal(err)
 	}
 	idleClosed := make(chan error, 1)
-	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := &http.Server{ConnState: IdleConnState, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, buffer, err := w.(http.Hijacker).Hijack()
 		if err != nil {
 			idleClosed <- err

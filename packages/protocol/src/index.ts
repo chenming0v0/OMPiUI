@@ -17,6 +17,7 @@ export * from "./subagent-sync.js"
 export * from "./provider-auth.js"
 export * from "./terminal.js"
 export * from "./goal-message.js"
+export * from "./image-budget.js"
 export * from "./utf8.js"
 
 export type HealthResponse = {

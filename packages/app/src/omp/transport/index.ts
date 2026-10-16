@@ -957,7 +957,7 @@ export function manageSessionGoal(
   op: 'set' | 'pause' | 'resume' | 'drop',
   objective?: string,
   signal?: AbortSignal,
-  images?: PiImageInput[],
+  images?: import('@ompiui/protocol').GoalImageInput[],
 ): Promise<CommandRecord> {
   return postPiSessionCommand<CommandRecord>(
     sessionId,
@@ -1086,6 +1086,15 @@ export function removeQueuedMessage(
   signal?: AbortSignal,
 ): Promise<{ text: string; images?: PiImageInput[] }> {
   return postPiSessionCommand(sessionId, 'removeQueuedMessage', params, signal)
+}
+
+/** 直接删除仅返回确认；取回编辑仍使用 removeQueuedMessage 的完整结果。 */
+export function discardQueuedMessage(
+  sessionId: string,
+  params: { kind: 'steering' | 'followUp'; index: number },
+  signal?: AbortSignal,
+): Promise<{ removed: true }> {
+  return postPiSessionCommand(sessionId, 'removeQueuedMessage', { ...params, returnContent: false }, signal)
 }
 
 export function setPiSteeringMode(

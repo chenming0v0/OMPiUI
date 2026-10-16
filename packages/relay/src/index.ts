@@ -6,6 +6,7 @@
 
 export * from "./protocol.ts";
 export { BodySink, type BodySource } from "./sink.ts";
+export { createPongSender } from "./pong.ts";
 export { ResponseSink, RESPONSE_BUFFER_MAX } from "./response-sink.ts";
 export { DataRateLimit } from "./data-rate-limit.ts";
 export {

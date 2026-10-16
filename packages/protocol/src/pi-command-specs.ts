@@ -13,6 +13,7 @@ import {
   EMPTY_PARAMS,
   IMAGE_INPUT,
   IMAGES,
+  GOAL_IMAGES,
   STRING,
   STRING_ARRAY,
   nullable,
@@ -269,6 +270,7 @@ export const PI_COMMAND_SPECS = [
       {
         kind: { enum: ["steering", "followUp"] },
         index: { type: "integer", minimum: 0 },
+        returnContent: BOOLEAN,
       },
       ["kind", "index"],
     ),
@@ -379,7 +381,7 @@ export const PI_COMMAND_SPECS = [
       {
         op: { enum: ["set", "pause", "resume", "drop"] },
         objective: STRING,
-        images: IMAGES,
+        images: GOAL_IMAGES,
       },
       ["op"],
     ),
@@ -1064,7 +1066,7 @@ export type PiPageParams = {
 export type PiCommandParams = CoreCommandParams & {
   "preview.settings.get": Record<string, never>;
   "preview.settings.set": { subagentThinking: boolean };
-  removeQueuedMessage: { kind: "steering" | "followUp"; index: number };
+  removeQueuedMessage: { kind: "steering" | "followUp"; index: number; returnContent?: boolean };
   "state.get": Record<string, never>;
   "entries.get": PiPageParams;
   "branch.get": PiPageParams & BranchSyncRequest;
@@ -1079,7 +1081,7 @@ export type PiCommandParams = CoreCommandParams & {
   goal: {
     op: "set" | "pause" | "resume" | "drop";
     objective?: string;
-    images?: ImageInput[];
+    images?: import("./image-budget.js").GoalImageInput[];
   };
   "session.list": { cwd: string };
   "session.listAll": Record<string, never>;

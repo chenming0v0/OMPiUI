@@ -33,6 +33,7 @@ import {
   RECONNECT_MAX_MS,
   WIRE_VERSION,
   BodySink,
+  createPongSender,
   ResponseSink,
   RESPONSE_BUFFER_MAX,
   DataRateLimit,
@@ -165,14 +166,15 @@ export class TunnelClient {
     ws.on("pong", () => {
       this.alive = true;
     });
+    const sendPong = createPongSender(ws);
     ws.on("ping", data => {
       const bytes = data.length + 14;
-      if (ws.bufferedAmount + bytes > RESPONSE_BUFFER_MAX || !this.controlRate.canAllow(bytes, 1)) {
+      if (!this.controlRate.canAllow(bytes, 1)) {
         ws.terminate();
         return;
       }
       this.controlRate.allow(bytes, 1);
-      ws.pong(data);
+      sendPong(data);
     });
     ws.on("message", (data, isBinary) => {
       try {

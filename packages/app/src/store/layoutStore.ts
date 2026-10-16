@@ -28,6 +28,7 @@ export interface PanelTab {
   buffer?: string
   scrollY?: number
   cursor?: number
+  finalCursor?: number
   rows?: number
   cols?: number
   status?: 'connecting' | 'connected' | 'disconnected' | 'exited'
@@ -44,6 +45,7 @@ export interface TerminalTab {
   buffer?: string
   scrollY?: number
   cursor?: number
+  finalCursor?: number
   rows?: number
   cols?: number
 }
@@ -161,6 +163,7 @@ interface PersistedTerminalSessionState {
   buffer?: string
   scrollY?: number
   cursor?: number
+  finalCursor?: number
   rows?: number
   cols?: number
 }
@@ -266,6 +269,7 @@ function sanitizePersistedTerminalLayoutMap(raw: unknown): PersistedTerminalLayo
           buffer: typeof data.buffer === 'string' ? data.buffer : undefined,
           scrollY: typeof data.scrollY === 'number' ? data.scrollY : undefined,
           cursor: typeof data.cursor === 'number' ? data.cursor : undefined,
+          finalCursor: typeof data.finalCursor === 'number' ? data.finalCursor : undefined,
           rows: typeof data.rows === 'number' ? data.rows : undefined,
           cols: typeof data.cols === 'number' ? data.cols : undefined
         }
@@ -299,6 +303,7 @@ function buildTerminalPanelTab(tab: TerminalTab, position: PanelPosition, existi
     buffer: existing?.buffer ?? tab.buffer,
     scrollY: existing?.scrollY ?? tab.scrollY,
     cursor: existing?.cursor ?? tab.cursor,
+    finalCursor: tab.finalCursor,
     rows: existing?.rows ?? tab.rows,
     cols: existing?.cols ?? tab.cols,
     status: tab.status
@@ -486,6 +491,7 @@ export class LayoutStore {
               buffer: tab.buffer,
               scrollY: tab.scrollY,
               cursor: tab.cursor,
+              finalCursor: tab.finalCursor,
               rows: tab.rows,
               cols: tab.cols
             }
@@ -979,6 +985,7 @@ export class LayoutStore {
           buffer,
           scrollY: saved?.scrollY ?? previous?.scrollY,
           cursor,
+          finalCursor: session.status === 'running' ? undefined : session.cursor,
           rows: saved?.rows ?? previous?.rows,
           cols: saved?.cols ?? previous?.cols
         }

@@ -37,7 +37,7 @@ import { useChatViewportSelect } from './chatViewport'
 import type { Model, Api } from '../../omp/vendor/pi-ai'
 import type { FileCapabilities } from '../../types/ui'
 import { notificationStore } from '../../store/notificationStore'
-import { attachmentBytes, assertAttachmentBudget } from './input/attachmentBudget'
+import { attachmentBytes, assertAttachmentBudget, assertAttachmentsBudget, mergeAttachmentsWithinBudget } from './input/attachmentBudget'
 
 type ModelInfo = Model<Api>
 import { usePiCapabilities } from '../../omp/capabilities'
@@ -665,6 +665,12 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
 
   const handleSend = useCallback(() => {
     if (!canSend || isSubmitting) return
+    try {
+      assertAttachmentsBudget(attachments)
+    } catch {
+      notificationStore.push('error', t('attachmentLimitTitle'), t('attachmentLimitBody'), sessionId ?? '')
+      return
+    }
 
     // 检测 command attachment
     const commandAttachment = attachments.find(a => a.type === 'command')
@@ -710,6 +716,8 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
     setText,
     setAttachments,
     text,
+    sessionId,
+    t,
   ])
 
   // 更新 @ 查询文本（用于进入/退出文件夹）
@@ -1288,6 +1296,17 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   }, [])
 
 
+  const appendFileAttachments = useCallback((added: Attachment[]) => {
+    setAttachments(previous => {
+      try {
+        return mergeAttachmentsWithinBudget(previous, added)
+      } catch {
+        queueMicrotask(() => notificationStore.push('error', t('attachmentLimitTitle'), t('attachmentLimitBody'), sessionId ?? ''))
+        return previous
+      }
+    })
+  }, [setAttachments, sessionId, t])
+
   // 通用文件上传 — 根据模型能力判断是否接受
   const handleFilesSelected = useCallback(
     async (files: File[]) => {
@@ -1321,10 +1340,10 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
       }
 
       if (nextAttachments.length > 0) {
-        setAttachments(prev => [...prev, ...nextAttachments])
+        appendFileAttachments(nextAttachments)
       }
     },
-    [supportsAnyFile, fileCaps, isSubmitting, setAttachments, attachments, sessionId, t],
+    [supportsAnyFile, fileCaps, isSubmitting, appendFileAttachments, attachments, sessionId, t],
   )
 
   // 删除附件
@@ -1571,7 +1590,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
         }
 
         if (uploadAttachments.length > 0) {
-          setAttachments(prev => [...prev, ...uploadAttachments])
+          appendFileAttachments(uploadAttachments)
         }
 
         insertDraggedFiles(mentionFiles)
@@ -1579,7 +1598,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
         console.warn('[InputBox] Failed to process Tauri dropped paths:', err)
       }
     },
-    [buildDraggedFileInfo, createUploadAttachmentFromDroppedPath, externalFileDropMode, insertDraggedFiles, isSubmitting, setAttachments, attachments, sessionId, t],
+    [buildDraggedFileInfo, createUploadAttachmentFromDroppedPath, externalFileDropMode, insertDraggedFiles, isSubmitting, appendFileAttachments, attachments, sessionId, t],
   )
 
   const handleTauriDragDropEvent = useCallback(

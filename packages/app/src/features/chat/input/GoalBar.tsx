@@ -24,6 +24,9 @@ import { piSessionStateStore } from '../../../omp/state/index.js'
 import { manageSessionGoal, waitHostCommand, type PiImageInput } from '../../../omp/transport/index.js'
 import type { SessionGoalSnapshot } from '../../../omp/vendor/pi-coding-agent'
 import { useGoalImagePaste } from './useGoalImagePaste'
+import { assertGoalImageBudget, goalImageInput, type GoalDraftImage } from './goalImages'
+
+type GoalSnapshot = Omit<SessionGoalSnapshot, 'images'> & { images: GoalDraftImage[] }
 
 interface GoalBarProps {
   sessionId?: string | null
@@ -41,7 +44,7 @@ const GOAL_STATUS_KEYS: Record<string, string> = {
 }
 
 /** 防御式解析 state.goal / goal_updated 事件里的 goal 快照（外来 JSON） */
-function parseGoal(raw: unknown): SessionGoalSnapshot | null {
+function parseGoal(raw: unknown): GoalSnapshot | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
   const value = raw as Record<string, unknown>
   if (typeof value.objective !== 'string' || value.objective.trim() === '') return null
@@ -50,7 +53,10 @@ function parseGoal(raw: unknown): SessionGoalSnapshot | null {
   return {
     id: typeof value.id === 'string' ? value.id : '',
     objective: value.objective,
-    images: Array.isArray(value.images) ? value.images as PiImageInput[] : [],
+    images: Array.isArray(value.images) ? (value.images as GoalDraftImage[]).map((image, imageIndex) => ({
+      ...image,
+      ...(image.dataOmitted && typeof value.id === 'string' ? { reference: { goalId: value.id, imageIndex } } : {}),
+    })) : [],
     status: typeof value.status === 'string' ? value.status : 'active',
     tokenBudget: typeof value.tokenBudget === 'number' ? value.tokenBudget : undefined,
     tokensUsed: typeof value.tokensUsed === 'number' ? value.tokensUsed : 0,
@@ -60,15 +66,15 @@ function parseGoal(raw: unknown): SessionGoalSnapshot | null {
   }
 }
 
-function useSessionGoal(sessionId: string | null | undefined): SessionGoalSnapshot | null {
+function useSessionGoal(sessionId: string | null | undefined): GoalSnapshot | null {
   // useSyncExternalStore 要求 getSnapshot 返回稳定引用：state 对象没变时
   // 必须复用上次解析结果，否则每次调用都产出新对象 → 无限重渲染崩溃
-  const cacheRef = useRef<{ raw: unknown; out: SessionGoalSnapshot | null }>({ raw: undefined, out: null })
+  const cacheRef = useRef<{ raw: unknown; out: GoalSnapshot | null }>({ raw: undefined, out: null })
   const subscribe = useCallback(
     (onStoreChange: () => void) => piSessionStateStore.subscribe(onStoreChange),
     [],
   )
-  const getSnapshot = useCallback((): SessionGoalSnapshot | null => {
+  const getSnapshot = useCallback((): GoalSnapshot | null => {
     const raw = sessionId ? piSessionStateStore.getState(sessionId)?.goal : undefined
     const cache = cacheRef.current
     if (cache.raw === raw) return cache.out
@@ -110,7 +116,7 @@ function GoalEditor({
   supportsImages,
   saveError,
 }: {
-  goal: SessionGoalSnapshot | null
+  goal: GoalSnapshot | null
   draft: string
   onDraftChange: (value: string) => void
   onSave: () => void
@@ -119,8 +125,8 @@ function GoalEditor({
   isCompact: boolean
   sessionId?: string | null
   isSaving: boolean
-  images: PiImageInput[]
-  setImages: Dispatch<SetStateAction<PiImageInput[]>>
+  images: GoalDraftImage[]
+  setImages: Dispatch<SetStateAction<GoalDraftImage[]>>
   supportsImages: boolean
   saveError: boolean
 }) {
@@ -182,7 +188,9 @@ function GoalEditor({
           <div className="flex flex-wrap gap-2 px-2 pb-2">
             {images.map((image, index) => (
               <div key={index} className="relative rounded-lg border border-border-200 p-1">
-                <img src={`data:${image.mimeType};base64,${image.data}`} alt={t('goalBar.imageAlt', { index: index + 1 })} className="h-20 w-20 rounded-md object-contain" />
+                {image.dataOmitted
+                  ? <span className="flex h-20 w-20 items-center justify-center text-[length:var(--fs-xs)]">{t('goalBar.imageAlt', { index: index + 1 })}</span>
+                  : <img src={`data:${image.mimeType};base64,${image.data}`} alt={t('goalBar.imageAlt', { index: index + 1 })} className="h-20 w-20 rounded-md object-contain" />}
                 <button type="button" disabled={isSaving} aria-label={t('goalBar.removeImage', { index: index + 1 })}
                   className="absolute -right-1 -top-1 rounded-full bg-bg-100 p-1 text-text-300 hover:text-text-100"
                   onClick={() => setImages(previous => previous.filter((_, i) => i !== index))}>
@@ -267,7 +275,7 @@ export const GoalBar = memo(function GoalBar({ sessionId, isCompact, onSetGoal, 
   const [editorOpen, setEditorOpen] = useState(false)
   const [draft, setDraft] = useState('')
   const [isSaving, setIsSaving] = useState(false)
-  const [images, setImages] = useState<PiImageInput[]>([])
+  const [images, setImages] = useState<GoalDraftImage[]>([])
   const [saveError, setSaveError] = useState(false)
   const [now, setNow] = useState(() => Date.now())
   const rootRef = useRef<HTMLDivElement>(null)
@@ -302,10 +310,10 @@ export const GoalBar = memo(function GoalBar({ sessionId, isCompact, onSetGoal, 
   // goal 操作走 worker 侧的 `goal` 命令：确定性变更 + worker 合成 goal_updated
   // 事件 → eventStream 刷新 state → 本组件经 piSessionStateStore 拿到新快照
   const runGoalOp = useCallback(
-    async (op: 'set' | 'pause' | 'resume' | 'drop', objective?: string, goalImages?: PiImageInput[]): Promise<boolean> => {
+    async (op: 'set' | 'pause' | 'resume' | 'drop', objective?: string, goalImages?: GoalDraftImage[]): Promise<boolean> => {
       if (!sessionId) return false
       try {
-        const command = await manageSessionGoal(sessionId, op, objective, undefined, goalImages)
+        const command = await manageSessionGoal(sessionId, op, objective, undefined, goalImages?.map(goalImageInput))
         await waitHostCommand(command.id)
         return true
       } catch {
@@ -322,6 +330,7 @@ export const GoalBar = memo(function GoalBar({ sessionId, isCompact, onSetGoal, 
     setSaveError(false)
     let saved = false
     try {
+      assertGoalImageBudget(images)
       saved = sessionId
         ? await runGoalOp('set', text, images)
         : onSetGoal ? (await onSetGoal(text, images)) !== false : false

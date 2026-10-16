@@ -1,5 +1,6 @@
 import type { JsonObject } from "./json.js";
 import { jsonByteSize } from "./json-byte-size.js";
+import { assertImageBudget } from "./image-budget.js";
 
 /**
  * 协议 paramsSchema 子集的运行时校验器（type/enum/const/required/properties/
@@ -123,6 +124,15 @@ function validateValue(
         return;
       }
       const items = schema.items;
+      if (schema.imageBudget === true) {
+        try {
+          // 引用的原图由运行时解析后再次校验；这里先限制实际上传的数据。
+          assertImageBudget(value.filter((item): item is { data: string } =>
+            item !== null && typeof item === "object" && typeof item.data === "string"));
+        } catch (error) {
+          problems.push(`${path}: ${(error as Error).message}`);
+        }
+      }
       if (items && typeof items === "object" && !Array.isArray(items)) {
         value.forEach((item, index) =>
           validateValue(

@@ -32,6 +32,7 @@ export class TerminalInputQueue {
   private awaitingAcknowledgement = false
   private nextSendAt = 0
   private retryAt = 0
+  private rejectionDelay = 50
   private timer: number | undefined
   private disposed = false
   private currentState: TerminalInputState = 'ready'
@@ -123,8 +124,10 @@ export class TerminalInputQueue {
       this.chunks.shift()
       this.queuedBytes -= head.bytes
       this.retryAt = 0
+      this.rejectionDelay = 50
     } else {
-      this.retryAt = Date.now() + frame.retryAfterMs
+      this.retryAt = Date.now() + Math.max(frame.retryAfterMs, this.rejectionDelay)
+      this.rejectionDelay = Math.min(5_000, this.rejectionDelay * 2)
     }
     this.pump()
   }

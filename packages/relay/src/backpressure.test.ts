@@ -140,16 +140,18 @@ async function pressureHarness(t: TestContext) {
   return { ...h, control, setBufferedAmount(value: number) { bufferedAmount = value } }
 }
 
-test("control ping replies obey output backpressure without affecting healthy pings", { timeout: 10_000 }, async t => {
+test("control ping reserves bounded output during data backpressure without disconnecting the tunnel", { timeout: 10_000 }, async t => {
   const h = await pressureHarness(t)
   const pong = once(h.ws, "pong")
   h.ws.ping("healthy")
   assert.equal((await pong)[0].toString(), "healthy")
-  const closed = once(h.ws, "close")
+  const congestedPong = once(h.ws, "pong")
   h.setBufferedAmount(BACKPRESSURE_HIGH_WATER + 1)
   h.ws.ping("blocked")
-  await closed
-  assert.equal(h.relay.tunnelStatus()[0]!.online, false)
+  assert.equal((await congestedPong)[0].toString(), "blocked")
+  assert.equal(h.relay.tunnelStatus()[0]!.online, true)
+  h.setBufferedAmount(0)
+  await h.fastRoundtrip()
 })
 
 for (const kind of ["request", "upgrade"] as const) {

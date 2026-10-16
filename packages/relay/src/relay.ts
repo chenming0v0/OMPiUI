@@ -46,6 +46,7 @@ import {
   resolveForwardedClient,
 } from "./trusted-proxy.ts";
 import { BodySink } from "./sink.ts";
+import { createPongSender } from "./pong.ts";
 import { DataRateLimit } from "./data-rate-limit.ts";
 import { ResponseSink } from "./response-sink.ts";
 import {
@@ -320,16 +321,16 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
     ws.on("pong", () => {
       session.alive = true;
     });
+    const sendPong = createPongSender(ws);
     ws.on("ping", data => {
       const bytes = data.length + 14;
-      if (ws.bufferedAmount + bytes > BACKPRESSURE_HIGH_WATER ||
-        !session.control.canAllow(bytes, 1) || !session.controlOut.canAllow(bytes, 1)) {
+      if (!session.control.canAllow(bytes, 1) || !session.controlOut.canAllow(bytes, 1)) {
         ws.terminate();
         return;
       }
       session.control.allow(bytes, 1);
       session.controlOut.allow(bytes, 1);
-      ws.pong(data);
+      sendPong(data);
     });
     ws.on("message", (data: RawData, isBinary: boolean) => {
       try {

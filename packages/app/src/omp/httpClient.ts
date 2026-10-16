@@ -28,6 +28,8 @@ export type PiRequestInit = RequestInit & {
 }
 
 function isNetworkLevelError(error: unknown): boolean {
+  // plugin-http 将 reqwest 传输失败序列化为字符串；权限和取消字符串不能重试。
+  if (typeof error === 'string') return /^error sending request for url\b/i.test(error)
   if (!(error instanceof Error)) return false
   if (error.name === 'AbortError' || error.name === 'TimeoutError') return false
   if (error instanceof TypeError) return true

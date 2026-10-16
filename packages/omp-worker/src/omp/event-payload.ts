@@ -5,13 +5,14 @@ import {
   type JsonObject,
 } from "@ompiui/protocol";
 import { getPreviewSettings } from "./preview-settings.js";
+import { base64Bytes } from "@ompiui/protocol";
 
 /** 状态仅展示大图元数据；原图留在运行时，显式编辑操作仍返回完整附件。 */
 export function projectStateImages(value: JsonObject): JsonObject {
   if (!Array.isArray(value.images)) return value;
   const images = value.images.filter(isJsonObject).map(image =>
     typeof image.data === "string" && image.data.length > 64 * 1024
-      ? { ...image, data: "", dataOmitted: true }
+      ? { ...image, data: "", dataOmitted: true, byteLength: base64Bytes(image.data) }
       : { ...image },
   );
   return { ...value, images };

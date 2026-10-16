@@ -46,6 +46,15 @@ export const IMAGES: JsonObject = {
   type: "array",
   items: IMAGE_INPUT,
   maxItems: 16,
+  imageBudget: true,
+};
+
+export const GOAL_IMAGES: JsonObject = {
+  ...IMAGES,
+  items: { anyOf: [IMAGE_INPUT, objectSchema({
+    goalId: byteString(128),
+    imageIndex: { type: "integer", minimum: 0, maximum: 15 },
+  }, ["goalId", "imageIndex"])] },
 };
 
 export function pageParams(extra: JsonObject = {}): JsonObject {

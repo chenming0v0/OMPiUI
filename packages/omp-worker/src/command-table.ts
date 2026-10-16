@@ -177,7 +177,7 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
       });
     return ctx
       .requireRuntime()
-      .removeQueuedMessage(kind, P.reqNonNegativeInteger(p, "index"), ctx.maxResultBytes);
+      .removeQueuedMessage(kind, P.reqNonNegativeInteger(p, "index"), ctx.maxResultBytes, P.optBoolean(p, "returnContent"));
   },
   sendQueuedMessage: async (ctx, p) => {
     const kind = P.optEnum(p, "kind", ["steering", "followUp"] as const);
@@ -240,7 +240,7 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
       .manageGoal({
         op,
         objective: P.optString(p, "objective"),
-        images: P.optImages(p),
+        images: p.images as import("@ompiui/protocol").GoalImageInput[] | undefined,
       });
     return { ok: true };
   },
@@ -336,6 +336,7 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
       subagentId: P.optString(p, "subagentId") || undefined,
       sessionFile: P.optString(p, "sessionFile") || undefined,
       fromByte: P.optNumber(p, "fromByte") ?? undefined,
+      sync: P.optObject(p, "sync") as import("@ompiui/protocol").SubagentSyncRequest | undefined,
     }),
   "entries.get": async (ctx, p) =>
     ctx

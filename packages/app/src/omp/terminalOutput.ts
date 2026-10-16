@@ -1,3 +1,11 @@
+/** 进程退出不代表本地已消费尾部；只有最终游标与配对快照一致才免回放。 */
+export function terminalNeedsReplay(tab?: { status?: string; buffer?: string; cursor?: number; finalCursor?: number }): boolean {
+  return tab?.status !== 'exited' || !(
+    Number.isSafeInteger(tab.finalCursor) && tab.finalCursor! >= 0 &&
+    tab.cursor === tab.finalCursor && (Boolean(tab.buffer) || tab.finalCursor === 0)
+  )
+}
+
 /** 只有 xterm 解析完成的游标才可确认或写入恢复快照。 */
 export function createTerminalOutputConsumer(
   write: (data: string, consumed: () => void) => void,

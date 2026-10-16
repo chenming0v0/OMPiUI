@@ -26,6 +26,9 @@ export class BodySink {
   >();
   private finishers = new Map<number, () => void>();
   private held = false;
+  // open 已经发出但 socket 随后越过高水位时，允许已建立连接完成一帧。
+  // 额度只是一帧，避免排队中的新 open 把既有数据流永久卡住。
+  private activeBurstAvailable = false;
   private disposed = false;
 
   constructor(
@@ -47,6 +50,7 @@ export class BodySink {
   release(): void {
     if (this.disposed || !this.held) return;
     this.held = false;
+    this.activeBurstAvailable = true;
     this.flush();
     this.resumeSources();
     if (this.paused.size > 0) this.ensureTimer();
@@ -97,25 +101,34 @@ export class BodySink {
         this.dispose();
         return;
       }
-      const frameCount = Math.ceil(pending.bytes / FRAME_PAYLOAD_MAX);
-      const bytes = pending.bytes + frameCount * 18;
-      const allowed = this.meter?.(bytes, frameCount) ?? true;
-      if (allowed !== true) {
-        for (const source of pending.sources) {
-          this.paused.add(source);
-          source.pause();
+      while (pending.bytes > 0) {
+        const payloadBytes = Math.min(pending.bytes, FRAME_PAYLOAD_MAX);
+        const bytes = payloadBytes + 18;
+        // 所有来源共享 socket 的发送前水位；已建立连接只允许一帧有界突发。
+        const overHighWater = this.ws.bufferedAmount + bytes > BACKPRESSURE_HIGH_WATER;
+        const allowed = overHighWater && !this.activeBurstAvailable
+          ? 10 : this.meter?.(bytes, 1) ?? true;
+        if (allowed !== true) {
+          for (const source of pending.sources) {
+            this.paused.add(source);
+            source.pause();
+          }
+          this.ensureTimer();
+          this.flushTimer ??= setTimeout(() => {
+            this.flushTimer = undefined;
+            this.flush();
+          }, typeof allowed === "number" ? Math.max(1, allowed) : 50);
+          break;
         }
-        this.ensureTimer();
-        this.flushTimer ??= setTimeout(() => {
-          this.flushTimer = undefined;
-          this.flush();
-        }, typeof allowed === "number" ? Math.max(1, allowed) : 50);
-        continue;
+        const combined = pending.chunks.length === 1
+          ? pending.chunks[0]! : Buffer.concat(pending.chunks, pending.bytes);
+        const frames = encodeFrameMessages(id, combined.subarray(0, payloadBytes));
+        pending.bytes -= payloadBytes;
+        pending.chunks = pending.bytes ? [combined.subarray(payloadBytes)] : [];
+        for (const frame of frames) this.ws.send(frame, { binary: true });
+        if (overHighWater) this.activeBurstAvailable = false;
       }
-      const frames = encodeFrameMessages(id, pending.chunks.length === 1
-        ? pending.chunks[0]! : Buffer.concat(pending.chunks, pending.bytes));
-      this.pending.delete(id);
-      for (const frame of frames) this.ws.send(frame, { binary: true });
+      if (pending.bytes === 0) this.pending.delete(id);
     }
     for (const [id, finish] of this.finishers) {
       if (connId !== undefined && id !== connId) continue;
@@ -149,11 +162,13 @@ export class BodySink {
       }
     }
     this.paused.clear();
+    this.activeBurstAvailable = false;
   }
 
   private resumeSources(): void {
     if (this.disposed || this.held || this.pending.size > 0 ||
       this.ws.bufferedAmount > BACKPRESSURE_LOW_WATER) return;
+    this.activeBurstAvailable = true;
     clearInterval(this.timer);
     this.timer = undefined;
     if (this.paused.size === 0) return;

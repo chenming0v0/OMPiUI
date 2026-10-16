@@ -157,6 +157,29 @@ describe('HTTP network retry safety', () => {
     expect(nativeFetchMock).toHaveBeenCalledTimes(3)
   })
 
+  it.each(['GET', 'HEAD'])('retries native string transport failures for %s', async method => {
+    const response = new Response('{}')
+    nativeFetchMock.mockRejectedValueOnce('error sending request for url (http://localhost/api)')
+      .mockResolvedValueOnce(response)
+    const request = piFetch('/read', { method })
+    await vi.advanceTimersByTimeAsync(300)
+    expect(await request).toBe(response)
+    expect(nativeFetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([
+    ['GET', 'http.fetch not allowed. Permissions associated with this command: http:allow-fetch'],
+    ['GET', 'request aborted'],
+    ['GET', 'connection permission denied'],
+    ['POST', 'error sending request for url (http://localhost/api)'],
+  ])('does not replay %s for native rejection %s', async (method, error) => {
+    nativeFetchMock.mockRejectedValue(error)
+    const result = expect(piFetch('/read', { method })).rejects.toBe(error)
+    await vi.advanceTimersByTimeAsync(2_000)
+    await result
+    expect(nativeFetchMock).toHaveBeenCalledTimes(1)
+  })
+
   it('audits every retry as a separate request with the final consumed response size', async () => {
     nativeFetchMock
       .mockRejectedValueOnce(new TypeError('Failed to fetch'))

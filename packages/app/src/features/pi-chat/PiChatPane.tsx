@@ -57,6 +57,7 @@ import {
   invokePiCommand,
   manageSessionGoal,
   removeQueuedMessage,
+  discardQueuedMessage,
   sendQueuedMessage,
   waitHostCommand,
 } from '../../omp/transport/index.js'
@@ -457,7 +458,7 @@ export function PiChatPane({
     async (kind: 'steering' | 'followUp', index: number) => {
       if (!sessionId) return
       try {
-        await removeQueuedMessage(sessionId, { kind, index })
+        await discardQueuedMessage(sessionId, { kind, index })
         await refreshPiSessionState(sessionId)
       } catch (error) {
         uiErrorHandler('remove queued message', error)
