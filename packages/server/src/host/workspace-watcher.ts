@@ -9,6 +9,7 @@ type WorkspaceFileChange = { path: string; kind: "created" | "changed" | "delete
 import type { EventHub } from "../event-hub.ts"
 import { invalidateGitCache } from "./git.ts"
 import { workspacePathKey, type WorkspaceRecord } from "./workspace-store.ts"
+import { WorkspaceWatchControl } from "../workspace-watch-control.ts"
 
 const FLUSH_DELAY_MS = 80
 const MAX_CHANGES_PER_EVENT = 512
@@ -44,6 +45,7 @@ interface WatchedWorkspace {
 export class WorkspaceWatcher {
   private readonly watched = new Map<string, WatchedWorkspace>()
   private process?: ChildProcess
+  private control?: WorkspaceWatchControl
   private restartTimer?: NodeJS.Timeout
   private restartAttempts = 0
   private processStartedAt = 0
@@ -61,6 +63,8 @@ export class WorkspaceWatcher {
     if (this.process) {
       const child = this.process
       this.process = undefined
+      this.control?.dispose()
+      this.control = undefined
       this.watched.clear()
       const exited = once(child, "exit")
       child.send({ type: "dispose" }, () => undefined)
@@ -102,7 +106,8 @@ export class WorkspaceWatcher {
     }
     this.watched.set(key, state)
     if (this.isolate) {
-      this.ensureProcess().send({ type: "watch", workspace }, () => undefined)
+      this.ensureProcess()
+      this.control?.sync([...this.watched.values()].map(item => item.root))
       return
     }
     state.startupTimer = setTimeout(() => {
@@ -120,6 +125,14 @@ export class WorkspaceWatcher {
       : fork(new URL(import.meta.url.endsWith(".ts") ? "../workspace-watch-process.ts" : "../workspace-watch-process.js", import.meta.url),
         { stdio: ["ignore", "inherit", "inherit", "ipc"], windowsHide: true })
     this.process = child
+    this.control = new WorkspaceWatchControl(
+      (message, done) => { child.send(message, error => done(error ?? undefined)) },
+      { maxWatchDirectories: this.maxWatchDirectories, startupDelayMs: this.startupDelayMs },
+      error => {
+        console.error(`[ompiui-server] workspace watch control failed: ${error.message}`)
+        child.kill("SIGKILL")
+      },
+    )
     this.processStartedAt = Date.now()
     child.on("message", (message: unknown) => {
       const event = message as EventEnvelope
@@ -138,6 +151,8 @@ export class WorkspaceWatcher {
       if (this.process !== child) return
       if (Date.now() - this.processStartedAt >= RESTART_STABLE_MS) this.restartAttempts = 0
       this.process = undefined
+      this.control?.dispose()
+      this.control = undefined
       for (const state of this.watched.values()) {
         const root = state.root
         state.revision += 1
@@ -152,7 +167,6 @@ export class WorkspaceWatcher {
       // 保留 watched 记录,退避后重启子进程并对每个工作区重新下发 watch
       this.scheduleRestart()
     })
-    child.send({ type: "configure", maxWatchDirectories: this.maxWatchDirectories, startupDelayMs: this.startupDelayMs }, () => undefined)
     child.unref()
     child.channel?.unref?.()
     return child
@@ -173,10 +187,8 @@ export class WorkspaceWatcher {
     this.restartTimer = setTimeout(() => {
       this.restartTimer = undefined
       if (this.watched.size === 0) return
-      const child = this.ensureProcess()
-      for (const state of this.watched.values()) {
-        child.send({ type: "watch", workspace: state.record }, () => undefined)
-      }
+      this.ensureProcess()
+      this.control?.sync([...this.watched.values()].map(state => state.root))
     }, delay)
     this.restartTimer.unref?.()
   }
@@ -302,7 +314,7 @@ export class WorkspaceWatcher {
     if (state.startupTimer) clearTimeout(state.startupTimer)
     this.watched.delete(key)
     state.pending.clear()
-    this.process?.send({ type: "unwatch", root: workspace.canonicalRoot }, () => undefined)
+    this.control?.sync([...this.watched.values()].map(item => item.root))
     void Promise.all([state.watcher?.close(), state.gitWatcher?.close()]).catch(() => undefined)
   }
 
