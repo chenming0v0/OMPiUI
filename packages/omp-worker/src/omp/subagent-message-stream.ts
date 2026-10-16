@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { isJsonObject, splitUtf8Text, type JsonObject } from "@ompiui/protocol";
+import { isJsonObject, jsonByteSize, splitUtf8Text, type JsonObject } from "@ompiui/protocol";
 import { getPreviewSettings } from "./preview-settings.js";
+import { PausableFrameQueue } from "./pausable-frame-queue.js";
 
 const CHUNK_BYTES = 4096;
 const RECOVERY_CHARS = 2048;
@@ -10,10 +11,13 @@ type MessageState = {
   sourceId?: string;
   text: string;
   tools: string;
+  thinking?: string;
+  thinkingEnabled: boolean;
 };
 
 /** 合并快照后再计算增量；短尾部供新订阅者恢复预览，不重发累计正文。 */
 export class SubagentMessageStream {
+  private readonly delivery: PausableFrameQueue<JsonObject>;
   private readonly messages = new Map<string, MessageState>();
   private readonly progress = new Map<
     string,
@@ -21,12 +25,18 @@ export class SubagentMessageStream {
   >();
 
   constructor(
-    private readonly emit: (event: JsonObject) => void,
+    emit: (event: JsonObject) => void,
     private readonly thinkingEnabled: () => boolean = () =>
       getPreviewSettings().subagentThinking,
-  ) {}
+  ) { this.delivery = new PausableFrameQueue(emit); }
 
   push(frame: JsonObject): void {
+    this.delivery.push(this.frames(frame), () => jsonByteSize(frame, 64 * 1024 * 1024));
+  }
+
+  setPaused(paused: boolean): void { this.delivery.setPaused(paused); }
+
+  private *frames(frame: JsonObject): Generator<JsonObject> {
     const payload = isJsonObject(frame.payload) ? frame.payload : undefined;
     const event = isJsonObject(payload?.event) ? payload.event : undefined;
     const message = isJsonObject(event?.message) ? event.message : undefined;
@@ -51,11 +61,11 @@ export class SubagentMessageStream {
         fullAt: full ? Date.now() : previous!.fullAt,
       });
       if (Object.keys(delta).length)
-        this.emit({
+        yield {
           ...frame,
           eventId: randomUUID(),
           payload: { ...payload, progress: delta, progressDelta: !full },
-        });
+        };
       return;
     }
     const phase = event?.type === "irc_message" ? "message_end" : event?.type;
@@ -70,7 +80,7 @@ export class SubagentMessageStream {
         phase !== "message_update" &&
         phase !== "message_end")
     ) {
-      this.emit({ ...frame, eventId: randomUUID() });
+      yield { ...frame, eventId: randomUUID() };
       if (
         frame.kind === "lifecycle" &&
         (payload?.status === "completed" ||
@@ -122,12 +132,14 @@ export class SubagentMessageStream {
       : undefined;
     const tools = content.filter((block) => block.type === "toolCall");
     const toolSnapshot = JSON.stringify(tools);
+    const toolsChanged = !same || toolSnapshot !== previous.tools;
+    const thinkingChanged = !same || thinking !== previous.thinking || thinkingEnabled !== previous.thinkingEnabled;
     if (
       same &&
       phase === "message_update" &&
-      !thinkingEnabled &&
       text === previous.text &&
-      toolSnapshot === previous.tools
+      !toolsChanged &&
+      !thinkingChanged
     )
       return;
     // 非追加式修订从零替换；普通 token 流只传上次已发送长度之后的内容。
@@ -142,7 +154,7 @@ export class SubagentMessageStream {
       let tailOffset = Math.max(0, end - RECOVERY_CHARS);
       const tailStart = text.charCodeAt(tailOffset);
       if (tailStart >= 0xdc00 && tailStart <= 0xdfff) tailOffset++;
-      this.emit({
+      yield {
         kind: frame.kind,
         eventId: randomUUID(),
         payload: {
@@ -162,14 +174,13 @@ export class SubagentMessageStream {
               : {}),
             ...(last
               ? {
-                  ...(thinking !== undefined ? { thinking } : {}),
-                  thinkingEnabled,
-                  tools,
+                  ...(thinkingChanged || phase === "message_end" ? { thinking, thinkingEnabled } : {}),
+                  ...(toolsChanged || phase === "message_end" ? { tools } : {}),
                 }
               : {}),
           },
         },
-      });
+      };
       position = end;
     }
     if (phase === "message_end") this.messages.delete(key);
@@ -179,10 +190,13 @@ export class SubagentMessageStream {
         sourceId: nativeId,
         text,
         tools: toolSnapshot,
+        thinking,
+        thinkingEnabled,
       });
   }
 
   clear(): void {
+    this.delivery.clear();
     this.messages.clear();
     this.progress.clear();
   }

@@ -9,13 +9,17 @@ type Harness = {
   stderrBuffer: string[]
   handleChunk(frame: object): void
   failAllPending(): void
+  setOutputPaused(paused: boolean): void
   on(event: string, listener: (frame: { text: string }) => void): void
 }
 
 function harness(): Harness {
   const client = Object.create(OmpRpcClient.prototype)
   EventEmitter.call(client)
-  return Object.assign(client, { chunks: new Map(), chunkBytes: 0, pending: new Map(), stderrBuffer: [] })
+  return Object.assign(client, {
+    chunks: new Map(), chunkBytes: 0, pending: new Map(), stderrBuffer: [],
+    stdoutReader: { setPaused() {} },
+  })
 }
 
 function chunk(id: string, index: number, count: number, byteLength: number, data: Buffer) {
@@ -61,7 +65,7 @@ test("RPC chunk entry limit and process cleanup release every retained byte", ()
   const rpc = harness()
   for (let id = 0; id < 33; id++) rpc.handleChunk(chunk(String(id), 0, 2, 2, Buffer.from("x")))
   assert.equal(rpc.chunks.size, 32)
-  assert.equal(rpc.chunkBytes, 32)
+  assert.equal(rpc.chunkBytes, 32 + Array.from({ length: 32 }, (_, id) => String(id).length).reduce((a, b) => a + b, 0))
   rpc.failAllPending()
   assert.equal(rpc.chunks.size, 0)
   assert.equal(rpc.chunkBytes, 0)
@@ -85,4 +89,44 @@ test("RPC duplicate and invalid UTF-8 sequences release their byte accounting", 
   assert.equal(rpc.chunks.size, 0)
   assert.match(rpc.stderrBuffer.join(""), /duplicate/)
   assert.match(rpc.stderrBuffer.join(""), /UTF-8/)
+})
+
+test("RPC chunks bound identifiers, count their bytes and reject nested envelopes", () => {
+  const rpc = harness()
+  rpc.handleChunk(chunk("x".repeat(131072), 0, 2, 2, Buffer.from("x")))
+  assert.equal(rpc.chunkBytes, 0)
+  assert.equal(rpc.chunks.size, 0)
+  assert.ok(rpc.stderrBuffer.join("").length < 512)
+  const nested = Buffer.from(JSON.stringify(chunk("nested", 0, 2, 2, Buffer.from("x"))))
+  rpc.handleChunk(chunk("outer", 0, 1, nested.length, nested))
+  assert.equal(rpc.chunkBytes, 0)
+  assert.equal(rpc.chunks.size, 0)
+  assert.match(rpc.stderrBuffer.join(""), /nested/)
+})
+
+test("local IPC pauses suspend chunk expiry but preserve the remaining timeout", t => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"] })
+  const rpc = harness()
+  const bytes = Buffer.from(JSON.stringify({ type: "message", text: "complete" }))
+  let received = ""
+  rpc.on("frame", frame => { received = frame.text })
+  rpc.handleChunk(chunk("paused", 0, 2, bytes.length, bytes.subarray(0, 5)))
+  t.mock.timers.tick(20_000)
+  rpc.setOutputPaused(true)
+  t.mock.timers.tick(60_000)
+  assert.equal(rpc.chunks.size, 1)
+  rpc.setOutputPaused(false)
+  t.mock.timers.tick(9_999)
+  rpc.handleChunk(chunk("paused", 1, 2, bytes.length, bytes.subarray(5)))
+  assert.equal(received, "complete")
+  assert.equal(rpc.chunkBytes, 0)
+  rpc.handleChunk(chunk("expires", 0, 2, 2, Buffer.from("x")))
+  t.mock.timers.tick(20_000)
+  rpc.setOutputPaused(true)
+  t.mock.timers.tick(60_000)
+  rpc.setOutputPaused(false)
+  t.mock.timers.tick(10_001)
+  assert.equal(rpc.chunks.size, 0)
+  assert.equal(rpc.chunkBytes, 0)
+  assert.match(rpc.stderrBuffer.join(""), /timed out/)
 })

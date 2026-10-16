@@ -1,4 +1,5 @@
-import { isJsonObject, splitUtf8Text, type JsonObject } from "@ompiui/protocol";
+import { isJsonObject, jsonByteSize, splitUtf8Text, type JsonObject } from "@ompiui/protocol";
+import { PausableFrameQueue } from "./pausable-frame-queue.js";
 
 function jsonEqual(a: unknown, b: unknown): boolean {
   if (Object.is(a, b)) return true;
@@ -18,15 +19,23 @@ function jsonEqual(a: unknown, b: unknown): boolean {
 /** 在快照合并之后计算主消息块增量，消息开始/结束仍为恢复边界。 */
 export class MainMessageStream {
   private previous?: JsonObject;
+  private readonly delivery: PausableFrameQueue<{ event: JsonObject; live?: { id: string; revision: number } }>;
 
   constructor(
-    private readonly emit: (
+    emit: (
       event: JsonObject,
       live?: { id: string; revision: number },
     ) => void,
-  ) {}
+  ) { this.delivery = new PausableFrameQueue(frame => emit(frame.event, frame.live)); }
 
   push(event: JsonObject, live?: { id: string; revision: number }): void {
+    this.delivery.push(this.frames(event, live), () => jsonByteSize(event, 64 * 1024 * 1024));
+  }
+
+  setPaused(paused: boolean): void { this.delivery.setPaused(paused); }
+  clear(): void { this.delivery.clear(); this.previous = undefined; }
+
+  private *frames(event: JsonObject, live?: { id: string; revision: number }): Generator<{ event: JsonObject; live?: { id: string; revision: number } }> {
     const message = isJsonObject(event.message) ? event.message : undefined;
     if (
       event.type !== "message_update" ||
@@ -36,20 +45,26 @@ export class MainMessageStream {
     ) {
       if (event.type === "message_start") this.previous = message;
       if (event.type === "message_end") this.previous = undefined;
-      this.emit(event, live);
+      yield { event, live };
       return;
     }
+    let pending: JsonObject | undefined;
+    for (const patch of this.patches(message)) {
+      if (pending) yield { event: pending, live };
+      pending = patch;
+    }
+    if (pending) yield { event: { ...pending, complete: true }, live };
+    this.previous = message;
+  }
+
+  private *patches(message: JsonObject): Generator<JsonObject> {
+    const content = Array.isArray(message.content) ? message.content : [];
     const oldContent = Array.isArray(this.previous?.content)
       ? this.previous.content
       : [];
     const { content: _content, ...metadata } = message;
-    let pending: JsonObject | undefined;
-    const send = (patch: JsonObject) => {
-      if (pending) this.emit(pending, live);
-      pending = patch;
-    };
-    for (let index = 0; index < message.content.length; index++) {
-      const block = message.content[index];
+    for (let index = 0; index < content.length; index++) {
+      const block = content[index];
       if (!isJsonObject(block)) continue;
       const oldBlock = oldContent[index];
       const old = isJsonObject(oldBlock) ? oldBlock : undefined;
@@ -64,13 +79,13 @@ export class MainMessageStream {
         const { arguments: _arguments, ...header } = block;
         // 空参数也必须保留工具块，避免接收端缺少中间下标或保留旧参数。
         if (Object.keys(block.arguments).length === 0 && !jsonEqual(block, old)) {
-          send({
+          yield {
             type: "message_patch",
             metadata,
             index,
             block,
-            blockCount: message.content.length,
-          });
+            blockCount: content.length,
+          };
         }
         for (const [argument, value] of Object.entries(block.arguments)) {
           const previous = oldArgs[argument];
@@ -81,7 +96,7 @@ export class MainMessageStream {
               value.slice(offset),
               16 * 1024,
             ).concat(offset === value.length ? [""] : [])) {
-              send({
+              yield {
                 type: "message_patch",
                 metadata,
                 index,
@@ -91,12 +106,12 @@ export class MainMessageStream {
                 offset,
                 delta,
                 argumentKeys: Object.keys(block.arguments),
-                blockCount: message.content.length,
-              });
+                blockCount: content.length,
+              };
               offset += delta.length;
             }
           } else if (!jsonEqual(value, previous)) {
-            send({
+            yield {
               type: "message_patch",
               metadata,
               index,
@@ -105,15 +120,15 @@ export class MainMessageStream {
               argument,
               value,
               argumentKeys: Object.keys(block.arguments),
-              blockCount: message.content.length,
-            });
+              blockCount: content.length,
+            };
           }
         }
         continue;
       }
       if (!field) {
         if (!jsonEqual(block, old)) {
-          send({ type: "message_patch", metadata, index, block });
+          yield { type: "message_patch", metadata, index, block };
         }
         continue;
       }
@@ -129,7 +144,7 @@ export class MainMessageStream {
       for (const delta of splitUtf8Text(text.slice(offset), 16 * 1024).concat(
         offset === text.length ? [""] : [],
       )) {
-        send({
+        yield {
           type: "message_patch",
           metadata,
           index,
@@ -137,13 +152,10 @@ export class MainMessageStream {
           field,
           offset,
           delta,
-          blockCount: message.content.length,
-        });
+          blockCount: content.length,
+        };
         offset += delta.length;
       }
     }
-    const final = pending as JsonObject | undefined;
-    if (final) this.emit({ ...final, complete: true }, live);
-    this.previous = message;
   }
 }

@@ -28,6 +28,7 @@ import {
 } from "./ipc.js"
 import type { SessionRuntime } from "./runtime.js"
 import { WorkerIpcSender } from "./worker-ipc-sender.js"
+import { boundedWorkerEvent } from "./worker-event-budget.js"
 import * as P from "./params.js"
 
 const workerGeneration = randomUUID()
@@ -68,6 +69,7 @@ function failWorkerIpc(error: Error): void {
 }
 
 function send(message: WorkerMessage): void {
+  message = boundedWorkerEvent(message, ipcSender.responseByteLimit)
   const sessionId = message.kind === "event" && "sessionId" in message ? message.sessionId : undefined
   if (sessionId && failedOutputSessions.has(sessionId)) return
   ipcSender.send(message, error => {
@@ -316,7 +318,7 @@ function sortJson(value: JsonValue): JsonValue {
   )
 }
 
-async function execute(command: { type: string; params?: JsonObject; sessionId?: string }): Promise<JsonValue | undefined | void> {
+async function execute(command: { type: string; params?: JsonObject; sessionId?: string; maxResultBytes?: number }): Promise<JsonValue | undefined | void> {
   const params = command.params ?? {}
   if (command.type === "registry.describe") return describeRegistry()
   if (command.type === "session.open") return openRuntime(params)
@@ -331,6 +333,7 @@ async function execute(command: { type: string; params?: JsonObject; sessionId?:
     throw Object.assign(new Error("OMP runtime no longer owns the requested session"), { code: "RUNTIME_REPLACED" })
   }
   const commandCtx: CommandContext = {
+    maxResultBytes: command.maxResultBytes,
     get runtime() {
       return current
     },
@@ -462,6 +465,10 @@ process.on("uncaughtException", (error) => {
 
 process.on("message", (value: unknown) => {
   const message = value as WorkerParentMessage
+  if (message?.kind === "cancel") {
+    if (message.generation === workerGeneration && typeof message.id === "string") schedule.cancel(message.id)
+    return
+  }
   if (message?.kind === "hostReply") {
     const reply = message as WorkerHostReply
     const pending = pendingHostCalls.get(reply.id)

@@ -6,6 +6,7 @@ export interface SchedulerCommand {
   type: string
   params?: JsonObject
   sessionId?: string
+  maxResultBytes?: number
 }
 
 // 原生回合与控制确认不能被大磁盘页阻塞；
@@ -17,6 +18,10 @@ const SMALL_RESPONSES: Record<string, true> = {
 }
 const RESPONSE_BYTES = 4 * 1024 * 1024 + 64 * 1024
 const CONTROL_RESPONSE_BYTES = 64 * 1024
+const LARGE_RESPONSE_COMMANDS: Record<string, true> = {
+  removeQueuedMessage: true,
+  clearQueue: true,
+}
 
 interface ScheduledRequest {
   request: WorkerRequest
@@ -70,7 +75,11 @@ export function createWorkerCommandScheduler(
     let response: WorkerResponse
     try {
       if (job.error) throw job.error
-      const data = await execute({ ...job.request.command, sessionId: job.request.sessionId })
+      const envelopeBytes = jsonByteSize({ kind: "response", id: job.request.id, generation, ok: true, data: null }, job.responseBytes) - 4
+      const data = await execute({
+        ...job.request.command, sessionId: job.request.sessionId,
+        maxResultBytes: Math.max(0, job.responseBytes - envelopeBytes),
+      })
       if (job.cancelled) return
       response = { kind: "response", id: job.request.id, generation, ok: true, data: data === undefined ? undefined : data }
     } catch (error) {
@@ -139,7 +148,12 @@ export function createWorkerCommandScheduler(
     let reject!: (error: unknown) => void
     const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no })
     const job: ScheduledRequest = {
-      request, lane, bytes, priority, responseBytes: priority ? controlResponseBytes : responseBytes,
+      request, lane, bytes, priority,
+      responseBytes: priority
+        ? controlResponseBytes
+        : LARGE_RESPONSE_COMMANDS[request.command.type]
+          ? sender.responseByteLimit
+          : responseBytes,
       cancelled: false, promise, resolve, reject,
     }
     pendingBytes += bytes

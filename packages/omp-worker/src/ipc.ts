@@ -35,6 +35,7 @@ export type WorkerResponse =
   | { kind: "response"; id: string; generation: string; ok: false; error: Problem }
 
 export type WorkerEvent =
+  | { kind: "event"; generation: string; sessionId?: string; channel: "payload.omitted"; event: JsonObject }
   | {
       kind: "event"
       generation: string
@@ -88,4 +89,10 @@ export interface WorkerHeartbeat {
 }
 
 export type WorkerMessage = WorkerHello | WorkerResponse | WorkerEvent | WorkerHeartbeat | WorkerHostCallMessage
-export type WorkerParentMessage = WorkerRequest | WorkerHostReply
+export interface WorkerCancel {
+  kind: "cancel"
+  id: string
+  generation: string
+}
+
+export type WorkerParentMessage = WorkerRequest | WorkerHostReply | WorkerCancel
