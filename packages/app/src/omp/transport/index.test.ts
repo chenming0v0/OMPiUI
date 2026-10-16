@@ -14,6 +14,7 @@ import {
   readHostFile,
   setPiExtensionEditorState,
   writeHostFile,
+  waitHostCommand,
 } from './index.js'
 import { serverStore } from '../../store/serverStore'
 
@@ -64,6 +65,25 @@ describe('getHostTerminalWebSocketUrl', () => {
 })
 
 describe('transport retry and response contracts', () => {
+  it.each(['headers', 'body'])('applies the command deadline while waiting for %s', async phase => {
+    nativeFetchMock.mockImplementation((_url: string, init: RequestInit) => {
+      const signal = init.signal!
+      if (phase === 'headers') return new Promise<Response>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+      })
+      const body = new ReadableStream({
+        start(controller) {
+          signal.addEventListener('abort', () => controller.error(signal.reason), { once: true })
+        },
+      })
+      return Promise.resolve(new Response(body))
+    })
+    const failed = expect(waitHostCommand(`deadline-${phase}`, undefined, 50)).rejects.toThrow('Command timed out')
+    await vi.advanceTimersByTimeAsync(50)
+    await failed
+    expect(nativeFetchMock).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps a shared host read for remaining callers and cancels it after the last caller leaves', async () => {
     const requests: Array<{ signal: AbortSignal; resolve: (response: Response) => void }> = []
     nativeFetchMock.mockImplementation((_url: string, init: RequestInit) => new Promise<Response>((resolve, reject) => {

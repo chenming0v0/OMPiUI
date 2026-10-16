@@ -40,14 +40,16 @@ import type { SessionStatus } from '../types/session'
 import { BrowserDiagnostics } from './browserDiagnostics'
 import { markModelSettingsDisconnected, refreshModelSettings } from './modelSettingsSync'
 import { retryDelay } from './networkRetry'
+import { setEventStreamState } from '../api/events'
 import { clearSubagentTranscripts } from './subagentTranscript'
 import { bashPendingStore } from './bashPendingStore'
-import { faultSocketOpened, faultSocketClosed, faultSocketUnused, reportRuntimeCrash } from './faultAudit/controller'
+import { faultSocketOpened, faultSocketClosed, faultSocketUnused, reportRuntimeCrash, recordClientDiagnostic } from './faultAudit/controller'
 import { loadPiSessionData, refreshPiBranch, refreshPiSessionState, settlePiLiveMessage } from './controllers/index.js'
 
 const PING_INTERVAL_MS = 25_000
 const RECONNECT_DELAY_MS = 1_000
 const MAX_RECONNECT_ATTEMPTS = 10
+const RECONNECT_PROBE_MS = 60_000
 const REFRESH_DEBOUNCE_MS = 150
 
 type PiEventPayload = {
@@ -143,6 +145,9 @@ class PiEventStream {
   private pendingResync = new Set<string>()
   private resyncTimer: ReturnType<typeof setTimeout> | null = null
   private resyncFlights = new Map<string, Promise<void>>()
+  private resyncControllers = new Map<string, AbortController>()
+  private incompleteResync = new Set<string>()
+  private resyncRetries = new Map<string, { attempts: number; timer?: ReturnType<typeof setTimeout> }>()
   private resyncActive = 0
   private resyncGeneration = 0
   private readonly RESYNC_CONCURRENCY = 2
@@ -185,6 +190,13 @@ class PiEventStream {
     const count = this.refCounts.get(sessionId) ?? 0
     if (count <= 1) {
       this.refCounts.delete(sessionId)
+      const resyncKey = eventStreamKey({ kind: 'session', id: sessionId })
+      this.pendingResync.delete(resyncKey)
+      this.incompleteResync.delete(resyncKey)
+      this.clearResyncRetry(resyncKey)
+      this.resyncControllers.get(sessionId)?.abort()
+      this.resyncControllers.delete(sessionId)
+      this.resyncFlights.delete(sessionId)
       piBranchStore.release(sessionId)
       // 暂时关掉 pane 仍保留游标；服务端切换时由 disconnectAll 统一清理。
       this.pendingLiveMessages.delete(sessionId)
@@ -266,6 +278,10 @@ class PiEventStream {
     for (const recovery of this.commandRecoveries.values()) recovery.controller?.abort()
     this.commandRecoveries.clear()
     this.resyncGeneration++
+    for (const controller of this.resyncControllers.values()) controller.abort()
+    this.resyncControllers.clear()
+    this.incompleteResync.clear()
+    for (const key of this.resyncRetries.keys()) this.clearResyncRetry(key)
     this.pendingResync.clear()
     if (this.resyncTimer) clearTimeout(this.resyncTimer)
     this.resyncTimer = null
@@ -302,13 +318,26 @@ class PiEventStream {
 
   private ensureSocket(): void {
     if (this.ws && this.ws.readyState !== PI_SOCKET_CLOSED && this.ws.readyState !== PI_SOCKET_CLOSING) return
-    if (this.reconnectTimer || this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS || !navigator.onLine) return
+    if (this.reconnectTimer || !navigator.onLine) return
     this.openSocket()
   }
 
   private closeSocket(reason = 'unsubscribe'): void {
+    if (!this.hasSubscriptions()) {
+      this.resyncGeneration++
+      this.pendingResync.clear()
+      if (this.resyncTimer) clearTimeout(this.resyncTimer)
+      this.resyncTimer = null
+      for (const controller of this.resyncControllers.values()) controller.abort()
+      this.resyncControllers.clear()
+      this.resyncFlights.clear()
+      this.resyncActive = 0
+      this.incompleteResync.clear()
+      for (const key of this.resyncRetries.keys()) this.clearResyncRetry(key)
+    }
     if (reason === 'protocol_problem') faultSocketClosed(1002)
     else faultSocketUnused()
+    setEventStreamState(reason === 'protocol_problem' ? 'error' : 'unused')
     this.diagnostics.record('disconnect', { reason })
     const ws = this.ws
     this.ws = null
@@ -324,6 +353,7 @@ class PiEventStream {
   }
 
   private openSocket(): void {
+    setEventStreamState('connecting', this.reconnectAttempts)
     const url = new URL(wsEventsUrl())
     const token = getPiAuthToken()
     if (token) url.searchParams.set('token', token)
@@ -334,8 +364,13 @@ class PiEventStream {
     ws.onopen = () => {
       if (this.ws !== ws) return
       faultSocketOpened()
+      setEventStreamState('connected')
       this.diagnostics.connected(this.lastCloseCode)
       this.sendSubscribe()
+      for (const key of this.incompleteResync) {
+        this.clearResyncRetry(key)
+        this.queueResync(key)
+      }
       notifyReconnected()
       this.stableTimer = setTimeout(() => {
         this.reconnectAttempts = 0
@@ -355,6 +390,7 @@ class PiEventStream {
     ws.onclose = event => {
       if (this.ws !== ws) return
       faultSocketClosed(event.code)
+      setEventStreamState('disconnected', this.reconnectAttempts)
       this.clearPing()
       this.ws = null
       this.sentStreams.clear()
@@ -362,11 +398,13 @@ class PiEventStream {
       this.lastCloseCode = event.code
       if (this.hasSubscriptions()) {
         if (this.reconnectTimer) return
-        if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS || !navigator.onLine) return
-        const delay = retryDelay(this.reconnectAttempts++, RECONNECT_DELAY_MS)
+        if (!navigator.onLine || document.visibilityState === 'hidden') return
+        const delay = this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS
+          ? retryDelay(0, RECONNECT_PROBE_MS, RECONNECT_PROBE_MS)
+          : retryDelay(this.reconnectAttempts++, RECONNECT_DELAY_MS)
         this.reconnectTimer = setTimeout(() => {
           this.reconnectTimer = null
-          if (!this.ws) this.openSocket()
+          if (!this.ws && this.hasSubscriptions() && navigator.onLine && document.visibilityState !== 'hidden') this.openSocket()
         }, delay)
       }
     }
@@ -546,6 +584,11 @@ class PiEventStream {
     const sessionId = envelope.stream.kind === 'session' ? envelope.stream.id : null
     this.advanceCursor(eventStreamKey(envelope.stream), envelope.cursor)
     switch (envelope.channel) {
+      case 'payload.omitted':
+        recordClientDiagnostic('worker_payload_omitted', { sessionId, errorCode: 'WORKER_EVENT_TOO_LARGE' })
+        this.queueResync(eventStreamKey(envelope.stream))
+        if (!sessionId && isJsonObject(envelope.payload) && envelope.payload.channel === 'models.updated') refreshModelSettings()
+        break
       case 'pi.event':
         if (sessionId) this.handlePiEvent(sessionId, envelope.payload as unknown as PiEventPayload)
         break
@@ -1044,28 +1087,38 @@ class PiEventStream {
   private handleResync(key: string): Promise<void> {
     const stream = parseEventStreamKey(key)
     if (!stream) return Promise.resolve()
+    if (stream.kind !== 'session') this.incompleteResync.delete(key)
     if (stream.kind === 'session') {
       const existing = this.resyncFlights.get(stream.id)
       if (existing) return existing
       const generation = this.resyncGeneration
+      const controller = new AbortController()
+      this.resyncControllers.set(stream.id, controller)
       // Preview includes the checkpoint for an attached runtime. External
       // histories stay disk-only; neither refresh is allowed to spawn a writer.
       const refresh = piBranchStore.getData(stream.id)
-        ? refreshPiBranch(stream.id, undefined, { includeLiveMessage: true })
-        : loadPiSessionData(stream.id)
+        ? refreshPiBranch(stream.id, controller.signal, { includeLiveMessage: true })
+        : loadPiSessionData(stream.id, controller.signal)
       const flight = refresh
         .then(() => {
-          if (this.resyncGeneration !== generation) return
+          if (this.resyncGeneration !== generation || controller.signal.aborted) return
+          this.incompleteResync.delete(key)
+          this.clearResyncRetry(key)
           return this.diagnostics.state(stream.id, piSessionStateStore.getState(stream.id))
         })
         .catch(error => {
-          if (this.resyncGeneration === generation) return this.diagnostics.error('branch_error', stream.id, error)
+          if (this.resyncGeneration !== generation || controller.signal.aborted) return
+          this.incompleteResync.add(key)
+          this.retryResync(key, generation)
+          return this.diagnostics.error('branch_error', stream.id, error)
         })
         .then(() => {
-          if (this.resyncGeneration === generation) this.flushPendingLiveMessage(stream.id)
+          if (this.resyncGeneration === generation && !controller.signal.aborted && !this.incompleteResync.has(key))
+            this.flushPendingLiveMessage(stream.id)
         })
         .finally(() => {
           if (this.resyncFlights.get(stream.id) === flight) this.resyncFlights.delete(stream.id)
+          if (this.resyncControllers.get(stream.id) === controller) this.resyncControllers.delete(stream.id)
         })
       this.resyncFlights.set(stream.id, flight)
       // 状态刷新不能挂在 branch 请求之后：branch 慢或挂起时，实时消息的
@@ -1093,12 +1146,29 @@ class PiEventStream {
 
   private queueResync(key: string, cursor?: EventCursor): void {
     if (cursor) this.advanceCursor(key, cursor)
+    this.incompleteResync.add(key)
     this.pendingResync.add(key)
     if (this.resyncTimer) return
     this.resyncTimer = setTimeout(() => {
       this.resyncTimer = null
       this.drainResync()
     }, REFRESH_DEBOUNCE_MS)
+  }
+
+  private clearResyncRetry(key: string): void {
+    clearTimeout(this.resyncRetries.get(key)?.timer)
+    this.resyncRetries.delete(key)
+  }
+
+  private retryResync(key: string, generation: number): void {
+    const retry = this.resyncRetries.get(key) ?? { attempts: 0 }
+    if (retry.timer || retry.attempts >= 3) return
+    retry.attempts++
+    retry.timer = setTimeout(() => {
+      retry.timer = undefined
+      if (this.resyncGeneration === generation && this.incompleteResync.has(key)) this.queueResync(key)
+    }, 1000 * 2 ** (retry.attempts - 1))
+    this.resyncRetries.set(key, retry)
   }
 
   private drainResync(): void {

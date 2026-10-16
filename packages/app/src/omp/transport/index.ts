@@ -61,6 +61,8 @@ import { readSubagentTranscript } from '../subagentTranscript'
 import { retryDelay, waitNetworkDelay } from '../networkRetry'
 import { getHttpFetch } from '../../utils/tauri'
 import { auditHttpRequest } from '../trafficAudit/http'
+import { hydrateEntryContent } from '../entryContent'
+import { TERMINAL_STREAM_PROTOCOL_VERSION } from '@ompiui/protocol'
 import { resolveAndroidTailscaleUrl } from '../../utils/androidTailscale'
 import type { HostNetworkInfo, PairInviteInfo, PairRedeemResult, TunnelStatus } from '@ompiui/protocol'
 
@@ -361,8 +363,8 @@ export function listHostFiles(
   return postHostCommand('files.list', { workspacePath, ...params }, signal)
 }
 
-export function readHostFile(workspacePath: string, path: string, signal?: AbortSignal, ifNoneMatch?: string): Promise<FileReadResponse> {
-  return postHostCommand('files.read', { workspacePath, path, ifNoneMatch }, signal)
+export function readHostFile(workspacePath: string, path: string, signal?: AbortSignal, ifNoneMatch?: string, maxBytes?: number): Promise<FileReadResponse> {
+  return postHostCommand('files.read', { workspacePath, path, ifNoneMatch, maxBytes }, signal)
 }
 
 export function writeHostFile(
@@ -464,6 +466,7 @@ export function getHostTerminalWebSocketUrl(terminalId: string, ticket: string, 
   const base = getApiBase() || (typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:8787')
   const url = new URL(`${base.replace(/^http/, 'ws')}/api/v1/host/terminals/${encodeURIComponent(terminalId)}/stream`)
   url.searchParams.set('ticket', ticket)
+  url.searchParams.set('protocolVersion', String(TERMINAL_STREAM_PROTOCOL_VERSION))
   // undefined 从最早保留的输出开始；-1 显式请求当前尾部，非负值恢复已知位置。
   if (cursor !== undefined && Number.isSafeInteger(cursor) && cursor >= -1)
     url.searchParams.set('cursor', String(cursor))
@@ -622,12 +625,14 @@ export function createPiSession(cwd: string, signal?: AbortSignal): Promise<PiSe
   return postPiGlobalCommand<PiSessionCreateResult>('session.create', { cwd }, signal)
 }
 
-export function previewPiSession(
+export async function previewPiSession(
   sessionId: string,
   params: PiBranchGetParams = {},
   signal?: AbortSignal,
 ): Promise<PiSessionPreviewResult> {
-  return postPiGlobalCommand<PiSessionPreviewResult>('session.preview', { sessionId, ...params }, signal)
+  const generation = serverStore.getActiveServerGeneration()
+  const result = await postPiGlobalCommand<PiSessionPreviewResult>('session.preview', { sessionId, ...params }, signal)
+  return { ...result, branch: await hydrateBranchContent(sessionId, result.branch, signal, generation) }
 }
 
 export function openPiSession(params: PiSessionOpenParams, signal?: AbortSignal): Promise<PiSessionOpenResult> {
@@ -696,12 +701,24 @@ export function findPiSessionByFile(sessionFile: string, signal?: AbortSignal): 
   return postPiGlobalCommand<JsonValue>('session.findByFile', { sessionFile }, signal)
 }
 
-export function getPiBranchPage(
+export async function getPiBranchPage(
   sessionId: string,
   params: PiBranchGetParams,
   signal?: AbortSignal,
 ): Promise<PiBranchPage> {
-  return postPiSessionCommand(sessionId, 'branch.get', params, signal)
+  const generation = serverStore.getActiveServerGeneration()
+  const page = await postPiSessionCommand<PiBranchPage>(sessionId, 'branch.get', params, signal)
+  return hydrateBranchContent(sessionId, page, signal, generation)
+}
+
+function hydrateBranchContent(sessionId: string, page: PiBranchPage, signal: AbortSignal | undefined, generation: number): Promise<PiBranchPage> {
+  if (serverStore.getActiveServerGeneration() !== generation) return Promise.reject(new DOMException('Server changed', 'AbortError'))
+  return hydrateEntryContent(page, (entryId, offset, etag) => {
+    if (serverStore.getActiveServerGeneration() !== generation) throw new DOMException('Server changed', 'AbortError')
+    return postPiGlobalCommand<JsonObject>('session.read', {
+      sessionId, query: 'entry.get', params: { entryId, offset, etag },
+    }, signal)
+  }, signal)
 }
 
 export async function getPiTree(sessionId: string, signal?: AbortSignal): Promise<SessionTreeNode[]> {
@@ -1092,31 +1109,42 @@ export function setPiFollowUpMode(
  */
 export async function waitHostCommand(commandId: string, signal?: AbortSignal, timeoutMs = 30_000): Promise<JsonValue> {
   const deadline = Date.now() + timeoutMs
+  const timeoutController = new AbortController()
+  const timeoutTimer = setTimeout(() => timeoutController.abort(new Error('Command timed out')), timeoutMs)
   let attempt = 0
-  for (;;) {
-    const cached = piCommandStore.get(commandId)
-    const record =
-      cached && ['completed', 'failed', 'cancelled', 'unknown_after_crash'].includes(cached.status)
-        ? { command: cached }
-        : await readJson<{ command: CommandRecord }>(
-            `${getApiBase()}/api/v1/host/commands/${encodeURIComponent(commandId)}`,
-            { signal },
-          )
-    const status = record.command.status
-    if (status === 'completed') return record.command.result ?? null
-    if (status === 'failed') {
-      throw Object.assign(new Error(record.command.error?.message ?? 'Command failed'), {
-        code: record.command.error?.code,
-      })
+  try {
+    for (;;) {
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) throw new Error('Command timed out')
+      const pollSignal = signal ? AbortSignal.any([signal, timeoutController.signal]) : timeoutController.signal
+      const cached = piCommandStore.get(commandId)
+      const record =
+        cached && ['completed', 'failed', 'cancelled', 'unknown_after_crash'].includes(cached.status)
+          ? { command: cached }
+          : await readJson<{ command: CommandRecord }>(
+              `${getApiBase()}/api/v1/host/commands/${encodeURIComponent(commandId)}`,
+              { signal: pollSignal, timeoutMs: remaining },
+            )
+      const status = record.command.status
+      if (status === 'completed') return record.command.result ?? null
+      if (status === 'failed') {
+        throw Object.assign(new Error(record.command.error?.message ?? 'Command failed'), {
+          code: record.command.error?.code,
+        })
+      }
+      if (status === 'cancelled' || status === 'unknown_after_crash') {
+        throw Object.assign(new Error(record.command.error?.message ?? `Command ${status}`), {
+          code: record.command.error?.code ?? 'SESSION_RUNTIME_CRASHED',
+          retryable: record.command.error?.retryable,
+        })
+      }
+      await waitNetworkDelay(Math.min(remaining, retryDelay(attempt++, 250, 3000)), pollSignal)
     }
-    if (status === 'cancelled' || status === 'unknown_after_crash') {
-      throw Object.assign(new Error(record.command.error?.message ?? `Command ${status}`), {
-        code: record.command.error?.code ?? 'SESSION_RUNTIME_CRASHED',
-        retryable: record.command.error?.retryable,
-      })
-    }
-    if (Date.now() > deadline) throw new Error('Command timed out')
-    await waitNetworkDelay(Math.min(deadline - Date.now(), retryDelay(attempt++, 250, 3000)), signal)
+  } catch (error) {
+    if (timeoutController.signal.aborted && !signal?.aborted) throw new Error('Command timed out')
+    throw error
+  } finally {
+    clearTimeout(timeoutTimer)
   }
 }
 
