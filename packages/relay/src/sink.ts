@@ -16,6 +16,7 @@ import {
 export type BodySource = { pause(): void; resume(): void };
 
 export class BodySink {
+  get hasPendingData(): boolean { return this.pending.size > 0 }
   private paused = new Set<BodySource>();
   private timer?: NodeJS.Timeout;
   private flushTimer?: NodeJS.Timeout;

@@ -1,6 +1,6 @@
 import type { Problem } from "./problem.js"
 
-export const TERMINAL_STREAM_PROTOCOL_VERSION = 1 as const
+export const TERMINAL_STREAM_PROTOCOL_VERSION = 2 as const
 
 export type TerminalStatus = "running" | "exited"
 
@@ -38,7 +38,8 @@ export type TerminalUpdateParams = {
 export type TerminalStreamClientFrame =
   | { type: "input"; data: string; inputId?: number }
   | { type: "resize"; rows: number; cols: number }
-  | { type: "ping"; protocolVersion: typeof TERMINAL_STREAM_PROTOCOL_VERSION }
+  | { type: "output_ack"; cursor: number }
+  | { type: "ping"; protocolVersion: typeof TERMINAL_STREAM_PROTOCOL_VERSION | 1 }
 
 export type TerminalStreamServerFrame =
   | {
@@ -47,6 +48,7 @@ export type TerminalStreamServerFrame =
       terminal: TerminalInfo
       cursor: number
       inputAck?: true
+      outputAck?: true
     }
   | { type: "output"; cursor: number; data: string }
   | { type: "title"; title: string }

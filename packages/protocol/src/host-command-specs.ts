@@ -229,7 +229,9 @@ export const HOST_COMMAND_SPECS = [
     name: "files.read",
     domain: "files",
     description: "Read a text or small binary workspace file",
-    paramsSchema: objectSchema({ ...WORKSPACE_PATH, ...RELATIVE_PATH, ifNoneMatch: byteString(1024) }, [
+    paramsSchema: objectSchema({ ...WORKSPACE_PATH, ...RELATIVE_PATH, ifNoneMatch: byteString(1024),
+      maxBytes: { type: "integer", minimum: 1, maximum: 8 * 1024 * 1024 },
+    }, [
       "workspacePath",
       "path",
     ]),
@@ -373,7 +375,7 @@ export type HostCommandParams = {
     limit?: number;
     cursor?: string;
   };
-  "files.read": { workspacePath: string; path: string; ifNoneMatch?: string };
+  "files.read": { workspacePath: string; path: string; ifNoneMatch?: string; maxBytes?: number };
   "files.write": {
     workspacePath: string;
     path: string;

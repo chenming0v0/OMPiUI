@@ -27,7 +27,9 @@ import {
   entriesPageFromEntries,
   imageAttachmentFromEntry,
   sessionHeadFromParts,
+  projectEntryAttachments,
 } from "../runtime/pagination.js";
+import { entryContentChunk } from "../runtime/entry-content.js";
 import { OmpRpcClient, unwrapResponse } from "./rpc-client.js";
 import { detectOmpVersion } from "./omp-version.js";
 import { OMP_SDK_VERSION } from "./constants.js";
@@ -801,6 +803,17 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
       );
     }
     const entries = (await this.diskEntries(summary)).allEntries;
+    if (query === "entry.get") {
+      const entry = entries.find(item => item.id === params.entryId);
+      if (!entry) throw notFoundError("entry not found");
+      const head = sessionHeadFromParts({
+        sdkVersion: OMP_SDK_VERSION, revision: summary.modified, header: { id: summary.id },
+        leafId: null, entryCount: entries.length,
+      });
+      return entryContentChunk(entry, projectEntryAttachments(entry, head),
+        typeof params.offset === "number" ? params.offset : 0,
+        typeof params.etag === "string" ? params.etag : undefined);
+    }
     if (query === "tree.get") return sessionTreePage(entries, sessionHeadFromParts({
       sdkVersion: OMP_SDK_VERSION, revision: summary.modified, header: { id: summary.id },
       leafId: null, entryCount: entries.length,

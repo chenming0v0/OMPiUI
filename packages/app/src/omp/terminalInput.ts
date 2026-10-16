@@ -35,6 +35,7 @@ export class TerminalInputQueue {
   private timer: number | undefined
   private disposed = false
   private currentState: TerminalInputState = 'ready'
+  private readonly listeners = new Set<(state: TerminalInputState) => void>()
 
   private readonly onStateChange?: (state: TerminalInputState) => void
 
@@ -44,6 +45,10 @@ export class TerminalInputQueue {
 
   get state(): TerminalInputState { return this.currentState }
   get pendingBytes(): number { return this.queuedBytes }
+  subscribe(listener: (state: TerminalInputState) => void): () => void {
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
 
   /** 包含确认中断前可能已执行的前缀，绝不自动重放。 */
   get pendingText(): string { return this.chunks.map(chunk => chunk.data).join('') }
@@ -138,12 +143,14 @@ export class TerminalInputQueue {
     this.chunks.length = 0
     this.queuedBytes = 0
     this.awaitingAcknowledgement = false
+    this.listeners.clear()
   }
 
   private setState(state: TerminalInputState): void {
     if (this.currentState === state) return
     this.currentState = state
     this.onStateChange?.(state)
+    for (const listener of this.listeners) listener(state)
   }
 
   private clearTimer(): void {
@@ -166,14 +173,20 @@ export class TerminalInputQueue {
       return
     }
     head.inputId ??= this.nextInputId++
+    const frame = JSON.stringify({ type: 'input', inputId: head.inputId, data: head.data })
+    const wireBytes = encoder.encode(frame).byteLength
     this.awaitingAcknowledgement = true
-    this.nextSendAt = now + Math.max(1000 / INPUT_FRAMES_PER_SECOND, head.bytes * 1000 / INPUT_BYTES_PER_SECOND)
+    this.nextSendAt = now + Math.max(
+      1000 / INPUT_FRAMES_PER_SECOND,
+      head.bytes * 1000 / INPUT_BYTES_PER_SECOND,
+      wireBytes * 1000 / INPUT_BYTES_PER_SECOND,
+    )
     this.timer = window.setTimeout(() => {
       this.disconnect(socket)
       socket.close(4008, 'Terminal input acknowledgement timed out')
     }, INPUT_ACK_TIMEOUT_MS)
     try {
-      socket.send(JSON.stringify({ type: 'input', inputId: head.inputId, data: head.data }))
+      socket.send(frame)
     } catch {
       this.disconnect(socket)
       socket.close(4008, 'Terminal input delivery interrupted')

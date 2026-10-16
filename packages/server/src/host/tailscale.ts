@@ -20,6 +20,7 @@ export function mapStatusJson(raw: unknown) {
 
 type Options = {
   dataDir: string
+  forwardingToken?: string
   log?: (line: string) => void
   embeddedBridgePath?: string
   launch?: (binary: string, args: string[], token: string) => ChildProcess
@@ -201,7 +202,10 @@ export class TailscaleManager {
       try {
         child = this.options.launch?.(binary, args, this.controlToken) ?? spawn(binary, args, {
           stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
-          env: { ...process.env, OMPIUI_BRIDGE_TOKEN: this.controlToken },
+          env: {
+            ...process.env, OMPIUI_BRIDGE_TOKEN: this.controlToken,
+            OMPIUI_BRIDGE_FORWARDING_TOKEN: this.options.forwardingToken ?? "",
+          },
         })
       } catch (error) {
         this.lastError = String(error)

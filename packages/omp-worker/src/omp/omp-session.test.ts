@@ -8,6 +8,9 @@ import { parseGoalMessage } from "@ompiui/protocol"
 import { OmpExtensionUiBridge } from "./omp-extension-ui.js"
 import { OmpRpcSession } from "./omp-session.js"
 import type { OmpRpcFrame } from "./rpc-client.js"
+import { WorkerIpcSender } from "../worker-ipc-sender.js"
+import { createWorkerCommandScheduler } from "../worker-command-scheduler.js"
+import type { WorkerResponse } from "../ipc.js"
 
 type QueueEntry = { text: string; images?: ImageInput[] }
 type QueueSnapshot = {
@@ -105,6 +108,38 @@ describe("OmpRpcSession native subagent progress", () => {
 })
 
 describe("OmpRpcSession immediate queued delivery", () => {
+  it("returns a legal large attachment through IPC and refuses larger results before removing queue data", async t => {
+    const { session, frame } = await sessionFixture(t)
+    frame({ type: "agent_start" })
+    const largeImage = image("A".repeat(5 * 1024 * 1024))
+    await session.sendUserMessage("neighbor", undefined, "followUp")
+    await session.sendUserMessage("large", [largeImage], "followUp")
+    const responses: WorkerResponse[] = []
+    const sender = new WorkerIpcSender((message, done) => {
+      if (message.kind === "response") responses.push(message)
+      done()
+    }, () => {})
+    const schedule = createWorkerCommandScheduler(async command => command.type === "clearQueue"
+      ? session.clearQueue(command.maxResultBytes)
+      : session.removeQueuedMessage("followUp", 1, command.maxResultBytes), sender, "test")
+    const run = (id: string, type: string) => schedule({ kind: "request", id, generation: "test", command: { type } })
+    await run("large", "removeQueuedMessage")
+    const result = responses.at(-1)!
+    assert.equal(result.ok, true)
+    if (result.ok) assert.equal(((result.data as JsonObject).images as JsonObject[])[0]?.data, largeImage.data)
+    await session.sendUserMessage("over-limit", [largeImage, largeImage], "followUp")
+    await run("rejected", "removeQueuedMessage")
+    const rejected = responses.at(-1)!
+    assert.equal(rejected.ok, false)
+    if (!rejected.ok) assert.equal(rejected.error.code, "FILE_TOO_LARGE")
+    assert.deepEqual(((await session.getState()).queue as QueueSnapshot).followUp, ["neighbor", "over-limit"])
+    await run("clear-rejected", "clearQueue")
+    assert.equal(responses.at(-1)!.ok, false)
+    assert.deepEqual(((await session.getState()).queue as QueueSnapshot).followUp, ["neighbor", "over-limit"])
+    await assert.rejects(session.removeQueuedMessage("followUp", 1, 1024), { code: "FILE_TOO_LARGE" })
+    assert.deepEqual(((await session.getState()).queue as QueueSnapshot).followUp, ["neighbor", "over-limit"])
+    await schedule.close(async () => {})
+  })
   it("projects large queue images and pending attachments without losing explicit edits", async t => {
     const { session, frame } = await sessionFixture(t)
     frame({ type: "agent_start" })

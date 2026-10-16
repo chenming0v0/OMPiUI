@@ -102,9 +102,11 @@ export async function searchFilesByName(
     signal?: AbortSignal;
   } = {},
 ): Promise<FileNameSearchResponse> {
-  const key = `name:${ws.canonicalRoot}\0${query}\0${opts.type ?? ""}\0${opts.limit ?? ""}`;
+  const normalizedQuery = query.trim();
+  assertQuerySize(normalizedQuery);
+  const key = `name:${ws.canonicalRoot}\0${normalizedQuery}\0${opts.type ?? ""}\0${opts.limit ?? ""}`;
   return sharedSearch(key, opts.signal, signal =>
-    searchPool.run(signal, () => searchFilesByNameInSlot(ws, query, { ...opts, signal })),
+    searchPool.run(signal, () => searchFilesByNameInSlot(ws, normalizedQuery, { ...opts, signal })),
   );
 }
 

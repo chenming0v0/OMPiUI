@@ -31,6 +31,10 @@ export class FilePreviewCache {
     this.entries.delete(path)
   }
   keys() { return this.entries.keys() }
+  invalidate(path: string): void {
+    const item = this.entries.get(path)
+    if (item) item.stale = true
+  }
   invalidateAll(): void { for (const item of this.entries.values()) item.stale = true }
   clear(): void { this.entries.clear(); this.bytes = 0 }
 }

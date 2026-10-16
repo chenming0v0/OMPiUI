@@ -4,6 +4,7 @@ import { jsonByteSize } from "@ompiui/protocol"
 type QueuedMessage = {
   message: WorkerMessage
   bytes: number
+  control?: boolean
   done?: (error?: Error) => void
   completed?: boolean
 }
@@ -30,7 +31,8 @@ export class WorkerIpcSender {
   private sending?: QueuedMessage
   private paused = false
   private pendingBytes = 0
-  private pendingCount = 0
+  private normalPendingCount = 0
+  private controlPendingCount = 0
   private reservedBytes = 0
   private reservedCount = 0
   private closed?: Error
@@ -39,6 +41,7 @@ export class WorkerIpcSender {
   get responseByteLimit(): number { return this.highWaterBytes - this.controlBytes }
   private get controlBytes(): number { return Math.min(64 * 1024, Math.max(64, Math.floor(this.highWaterBytes / 8))) }
   private get normalCountLimit(): number { return Math.max(1, this.highWaterMark * 2) }
+  private get controlCountLimit(): number { return Math.max(2, this.highWaterMark) }
 
   constructor(
     private readonly transmit: (message: WorkerMessage, done: (error?: Error) => void) => void,
@@ -64,7 +67,7 @@ export class WorkerIpcSender {
   tryReserveResponse(bytes: number, priority = false): WorkerResponseReservation | undefined {
     if (this.closed || bytes > this.responseByteLimit ||
       this.pendingBytes + this.reservedBytes + bytes > this.responseByteLimit ||
-      this.pendingCount + this.reservedCount >= this.normalCountLimit ||
+      this.normalPendingCount + this.reservedCount >= this.normalCountLimit ||
       (!priority && this.reservations.size >= Math.max(1, Math.floor(this.normalCountLimit / 2)))) return undefined
     const reservation: Reservation = { bytes, released: false }
     this.reservations.add(reservation)
@@ -98,7 +101,7 @@ export class WorkerIpcSender {
           return
         }
         const item: QueuedMessage = {
-          message, bytes: size,
+          message, bytes: size, control: false,
           done: error => {
             reservation.released = true
             this.reservations.delete(reservation)
@@ -110,7 +113,7 @@ export class WorkerIpcSender {
         this.reservedBytes -= bytes
         this.reservedCount--
         this.pendingBytes += size
-        this.pendingCount++
+        this.normalPendingCount++
         this.queue.push(item)
         this.updateBackpressure()
         this.drain()
@@ -158,13 +161,15 @@ export class WorkerIpcSender {
     const previous = heartbeat ? this.heartbeat : undefined
     if (bytes > limit ||
       this.pendingBytes + this.reservedBytes - (previous?.bytes ?? 0) + bytes > (control || heartbeat ? this.highWaterBytes : this.responseByteLimit) ||
-      this.pendingCount + this.reservedCount - (previous ? 1 : 0) >= (control || heartbeat ? this.highWaterMark * 2 : this.normalCountLimit)) {
+      (control || heartbeat
+        ? this.controlPendingCount - (previous ? 1 : 0) >= this.controlCountLimit
+        : this.normalPendingCount + this.reservedCount >= this.normalCountLimit)) {
       const error = capacityError()
       if (done) done(error)
       else throw error
       return
     }
-    const item: QueuedMessage = { message, bytes, done }
+    const item: QueuedMessage = { message, bytes, control: control || heartbeat, done }
     if (previous) {
       this.finish(previous, Object.assign(new Error("heartbeat replaced by a newer timestamp"), { code: "IPC_HEARTBEAT_SUPERSEDED" }))
     }
@@ -172,7 +177,8 @@ export class WorkerIpcSender {
     else if (control) this.control.push(item)
     else this.queue.push(item)
     this.pendingBytes += bytes
-    this.pendingCount++
+    if (item.control) this.controlPendingCount++
+    else this.normalPendingCount++
     this.updateBackpressure()
     this.drain()
   }
@@ -181,7 +187,8 @@ export class WorkerIpcSender {
     if (item.completed) return
     item.completed = true
     this.pendingBytes -= item.bytes
-    this.pendingCount--
+    if (item.control) this.controlPendingCount--
+    else this.normalPendingCount--
     item.done?.(error)
   }
 
@@ -196,8 +203,8 @@ export class WorkerIpcSender {
     const byteLimit = Math.max(1, this.responseByteLimit - this.reservedBytes)
     const countLimit = Math.max(1, this.normalCountLimit - this.reservedCount)
     const fraction = this.paused ? 0.25 : 0.5
-    const paused = this.pendingCount > 0 &&
-      (this.pendingCount >= countLimit * fraction || this.pendingBytes >= byteLimit * fraction)
+    const paused = this.normalPendingCount > 0 &&
+      (this.normalPendingCount >= countLimit * fraction || this.pendingBytes >= byteLimit * fraction)
     if (paused === this.paused) return
     this.paused = paused
     this.backpressure(paused)

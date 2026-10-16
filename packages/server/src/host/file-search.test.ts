@@ -38,6 +38,13 @@ describe("searchFilesByName", () => {
     assert.equal(stats.truncated, false)
   })
 
+  it("normalizes whitespace before admission and never echoes an unbounded raw query", async () => {
+    const result = await searchFilesByName(ws, `${" ".repeat(64 * 1024)}hello  `)
+    assert.equal(result.query, "hello")
+    assert.ok(result.paths.includes("src/hello.ts"))
+    await assert.rejects(searchFilesByName(ws, "x".repeat(64 * 1024 + 1)))
+  })
+
   it("finds text with line metadata and skips binary files", async () => {
     const { matches: hits, stats } = await searchWorkspaceText(ws, "piui")
 

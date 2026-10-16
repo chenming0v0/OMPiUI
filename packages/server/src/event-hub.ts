@@ -44,7 +44,8 @@ export function omittedEventWireFrame(event: EventEnvelope): { data: string; byt
       cursor: event.cursor,
       eventId: event.eventId,
       eventChannel: event.channel,
-      commandId: event.channel === "command.updated" && typeof payload.id === "string" ? payload.id : undefined,
+      commandId: event.channel === "command.updated" && typeof payload.id === "string" &&
+        Buffer.byteLength(payload.id) <= 1024 ? payload.id : undefined,
     });
     wire = { data, bytes: Buffer.byteLength(data) };
     omittedFrames.set(event, wire);

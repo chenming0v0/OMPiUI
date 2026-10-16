@@ -14,6 +14,7 @@ interface DialogProps {
   width?: string | number
   className?: string
   showCloseButton?: boolean
+  showCloseButtonOnMobile?: boolean
   /** 跳过默认的 header 和 content 包裹，children 直接作为面板内容 */
   rawContent?: boolean
   /** 允许触摸设备点击遮罩关闭，默认关闭以避免误触 */
@@ -29,6 +30,7 @@ export function Dialog({
   width = 400,
   className = '',
   showCloseButton = true,
+  showCloseButtonOnMobile = false,
   rawContent = false,
   allowTouchBackdropClose = false,
 }: DialogProps) {
@@ -363,7 +365,7 @@ export function Dialog({
                       type="button"
                       onClick={requestClose}
                       aria-label={t('common:close')}
-                      className="hidden md:block p-2 text-text-400 hover:text-text-200 hover:bg-bg-100 rounded-md transition-colors"
+                      className={`${showCloseButtonOnMobile ? 'flex h-11 w-11 items-center justify-center' : 'hidden md:block'} shrink-0 p-2 text-text-400 hover:text-text-200 hover:bg-bg-100 rounded-md transition-colors`}
                       title={t('common:close')}
                     >
                       <CloseIcon size={18} />

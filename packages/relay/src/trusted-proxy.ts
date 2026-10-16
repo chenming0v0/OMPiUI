@@ -109,15 +109,15 @@ export function isTrustedProxy(peer: string | undefined, trusted: TrustedProxies
 }
 
 /**
- * 从 X-Forwarded-For 取访客 IP:整条头必须全部是合法 IP;从右向左跳过可信代理,
+ * 从 X-Forwarded-For 右侧跳过可信代理，只验证确定来源所需的地址；
  * 返回第一个非可信地址。无法确定时返回 null(调用方使用对端地址)。
  */
 export function resolveForwardedClient(header: string | string[] | undefined, trusted: TrustedProxies): string | null {
   if (typeof header !== "string") return null
   const hops = header.split(",").map(part => normalizeIp(part))
-  if (hops.some(hop => !parseIp(hop))) return null
   for (let index = hops.length - 1; index >= 0; index--) {
     const hop = hops[index]!
+    if (!parseIp(hop)) return null
     if (!isTrustedProxy(hop, trusted)) return hop
   }
   return null

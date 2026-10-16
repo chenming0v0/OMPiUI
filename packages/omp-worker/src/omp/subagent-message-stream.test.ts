@@ -46,6 +46,29 @@ test("growing messages send only new text while keeping a bounded recovery tail"
   assert.ok(JSON.stringify(frames).length < 400000, "wire volume must not grow with cumulative snapshots")
 })
 
+test("text deltas do not repeat unchanged tools or thinking, while final recovery remains complete", () => {
+  const frames: JsonObject[] = []
+  const stream = new SubagentMessageStream(frame => frames.push(frame), () => true)
+  const tools = Array.from({ length: 6 }, (_, index) => ({
+    type: "toolCall", id: `tool-${index}`, name: "read", arguments: { path: "x".repeat(400) },
+  }))
+  const push = (type: string, text: string) => stream.push({ kind: "event", payload: { id: "a", event: {
+    type, message: { role: "assistant", content: [{ type: "text", text }, { type: "thinking", thinking: "plan" }, ...tools] },
+  } } })
+  for (let index = 1; index <= 30; index++) push("message_update", "x".repeat(index * 300))
+  assert.equal(frames.filter(frame => inner(frame).tools !== undefined).length, 1)
+  assert.equal(frames.filter(frame => inner(frame).thinking !== undefined).length, 1)
+  assert.ok(Buffer.byteLength(JSON.stringify(frames)) < 20000)
+  push("message_update", "x".repeat(9000))
+  assert.equal(frames.length, 30)
+  tools.push({ type: "toolCall", id: "new", name: "read", arguments: { path: "changed" } })
+  push("message_update", "x".repeat(9000))
+  assert.equal((inner(frames.at(-1)!).tools as unknown[]).length, 7)
+  push("message_end", "x".repeat(9000))
+  assert.equal((inner(frames.at(-1)!).tools as unknown[]).length, 7)
+  assert.equal(inner(frames.at(-1)!).thinking, "plan")
+})
+
 test("message revisions replace text and concurrent children never share state", () => {
   const frames: JsonObject[] = []
   const stream = new SubagentMessageStream(frame => frames.push(frame))

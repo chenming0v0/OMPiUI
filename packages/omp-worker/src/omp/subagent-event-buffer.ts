@@ -26,6 +26,8 @@ export class SubagentEventBuffer {
     this.buffer.push(id ?? "", id ? update : undefined, event)
   }
 
+  setPaused(paused: boolean): void { this.messages.setPaused(paused) }
+
   dispose(): void {
     this.buffer.flush()
     this.messages.clear()

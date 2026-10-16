@@ -24,6 +24,21 @@ afterEach(() => {
 })
 
 describe('history page prefetch', () => {
+  it('stops three idle panes from evicting and redownloading each other while preserving foreground reads', async () => {
+    const sessions = ['idle-a', 'idle-b', 'idle-c']
+    for (const id of sessions) piBranchStore.setData(id, page(['100'], true))
+    const fetch = vi.spyOn(transport, 'getPiBranchPage').mockImplementation(async (_id, params) =>
+      page([String(Number(params.beforeId) - 1)], true))
+    for (let round = 0; round < 20; round++)
+      for (const id of sessions) await prefetchPiBranchEntries(id, 'idle')
+    const settledCalls = fetch.mock.calls.length
+    expect(settledCalls).toBeLessThanOrEqual(33)
+    for (let round = 0; round < 5; round++)
+      for (const id of sessions) await prefetchPiBranchEntries(id, 'idle')
+    expect(fetch).toHaveBeenCalledTimes(settledCalls)
+    await loadMorePiBranchEntries('idle-a')
+    expect(piBranchStore.getData('idle-a')?.items[0].id).toBe('99')
+  })
   it('buffers two pages without changing the visible branch and consumes both without another request', async () => {
     const current = page(['c', 'd'], true)
     piBranchStore.setData('prefetch', current)

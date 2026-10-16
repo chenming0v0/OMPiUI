@@ -11,6 +11,7 @@ import type {
   LiveMessage,
   SessionHead,
 } from "@ompiui/protocol";
+import { entryContentReference } from "./entry-content.js";
 
 export type { BranchCheckpoint, EntriesPage, LiveMessage, SessionHead };
 
@@ -54,6 +55,24 @@ export function entriesPageFromEntries<T>(
     maxBytes: number;
     checkpoint?: BranchCheckpoint;
   },
+  serialize: (entry: T) => JsonObject,
+): EntriesPage {
+  try {
+    return buildEntriesPage(head, entries, options, serialize);
+  } catch (error) {
+    if (!options.checkpoint?.liveMessage || !error || typeof error !== "object" ||
+      !("code" in error) || error.code !== "FILE_TOO_LARGE") throw error;
+    return buildEntriesPage(head, entries, {
+      ...options,
+      checkpoint: { ...options.checkpoint, liveMessage: undefined, liveMessageOmitted: true },
+    }, serialize);
+  }
+}
+
+function buildEntriesPage<T>(
+  head: SessionHead,
+  entries: readonly T[],
+  options: { cursor?: string; limit: number; maxBytes: number; checkpoint?: BranchCheckpoint },
   serialize: (entry: T) => JsonObject,
 ): EntriesPage {
   if (
@@ -102,13 +121,20 @@ export function entriesPageFromEntries<T>(
   let itemsBytes = 0;
   let index = before - 1;
   while (index >= 0 && selected.length < options.limit) {
-    const item = projectEntryAttachments(serialize(entries[index]!), head);
+    const source = serialize(entries[index]!);
+    let item = projectEntryAttachments(source, head);
     if (typeof item.id !== "string") {
       throw Object.assign(new Error("Pi session entry id is not a string"), {
         code: "NATIVE_DATA_NOT_JSON",
       });
     }
-    const itemBytes = Buffer.byteLength(JSON.stringify(item));
+    let itemBytes = Buffer.byteLength(JSON.stringify(item));
+    const referenced = itemBytes > 4 * 1024 * 1024 - 64 * 1024;
+    if (referenced) {
+      if (selected.length) break;
+      item = entryContentReference(source, item);
+      itemBytes = Buffer.byteLength(JSON.stringify(item));
+    }
     // base64url 的长度可直接计量；最终页才计算一次 HMAC。
     const cursorPayloadBytes =
       index > 0
@@ -139,6 +165,7 @@ export function entriesPageFromEntries<T>(
     selected.push(item);
     itemsBytes += itemBytes + (selected.length > 1 ? 1 : 0);
     index -= 1;
+    if (referenced) break;
   }
   const start = index + 1;
   selected.reverse();

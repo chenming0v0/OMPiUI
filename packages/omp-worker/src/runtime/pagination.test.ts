@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process"
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import { afterEach, describe, it } from "node:test"
 
 const roots: string[] = []
@@ -14,7 +14,7 @@ afterEach(() => {
 const paginationEntry = fileURLToPath(new URL("./pagination.ts", import.meta.url))
 
 function childScript(mode: "sign" | "verify"): string {
-  const paginationImport = JSON.stringify(paginationEntry)
+  const paginationImport = JSON.stringify(pathToFileURL(paginationEntry).href)
   if (mode === "sign") {
     return `
       import { entriesPageFromEntries, sessionHeadFromParts } from ${paginationImport}
@@ -58,7 +58,7 @@ function childScript(mode: "sign" | "verify"): string {
 function runChild(mode: "sign" | "verify", env: Record<string, string>): string {
   const root = mkdtempSync(path.join(tmpdir(), "ompiui-cursor-"))
   roots.push(root)
-  const script = path.join(root, `${mode}.ts`)
+  const script = path.join(root, `${mode}.mts`)
   writeFileSync(script, childScript(mode))
   return execFileSync(process.execPath, ["--import", "tsx", script], {
     env: { ...process.env, ...env },

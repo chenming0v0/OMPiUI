@@ -21,12 +21,13 @@ const MAX_TRANSCRIPT_ITEMS = 200
 const MAX_TRANSCRIPT_TEXT_BYTES = 256 * 1024
 let messageSequence = 0
 
-function limitText(value: string): string {
-  if (new TextEncoder().encode(value).byteLength <= MAX_TRANSCRIPT_TEXT_BYTES) return value
+function limitText(value: string): { text: string; dropped: number } {
+  if (new TextEncoder().encode(value).byteLength <= MAX_TRANSCRIPT_TEXT_BYTES) return { text: value, dropped: 0 }
   let start = Math.max(0, value.length - MAX_TRANSCRIPT_TEXT_BYTES)
   while (start < value.length && new TextEncoder().encode(value.slice(start)).byteLength > MAX_TRANSCRIPT_TEXT_BYTES) start += 1024
   while (start > 0 && new TextEncoder().encode(value.slice(start - 1)).byteLength <= MAX_TRANSCRIPT_TEXT_BYTES) start -= 1
-  return value.slice(start)
+  if (start < value.length && value.charCodeAt(start) >= 0xdc00 && value.charCodeAt(start) <= 0xdfff) start += 1
+  return { text: value.slice(start), dropped: start }
 }
 
 function record(value: unknown): JsonObject | undefined {
@@ -57,7 +58,7 @@ function append(
   items: OmpSubagentTranscriptItem[],
   item: Omit<OmpSubagentTranscriptItem, 'timestamp'>,
 ): OmpSubagentTranscriptItem[] {
-  const next = [...items, { ...item, text: limitText(item.text), timestamp: Date.now() }]
+  const next = [...items, { ...item, text: limitText(item.text).text, timestamp: Date.now() }]
   const tail = next.slice(-MAX_TRANSCRIPT_ITEMS)
   const firstUser = next.find(part => part.kind === 'user')
   return firstUser && !tail.includes(firstUser) ? [firstUser, ...tail.slice(1)] : tail
@@ -152,10 +153,14 @@ function messagePatch(event: JsonObject, items: OmpSubagentTranscriptItem[]): Om
   const baseOffset = offset === 0 ? 0 : (previous?.textOffset ?? 0)
   const length = baseOffset + (previous?.text.length ?? 0)
   const contiguous = offset === 0 || (offset >= baseOffset && offset <= length)
-  const text = limitText(contiguous
+  const candidate = contiguous
     ? (previous?.text ?? '').slice(0, offset - baseOffset) + delta
-    : (string(event.textTail) ?? delta))
-  const textOffset = contiguous ? baseOffset : typeof event.textTailOffset === 'number' ? event.textTailOffset : offset
+    : (string(event.textTail) ?? delta)
+  const limited = limitText(candidate)
+  const text = limited.text
+  const textOffset = contiguous
+    ? baseOffset + limited.dropped
+    : (typeof event.textTailOffset === 'number' ? event.textTailOffset : offset) + limited.dropped
   const streaming = event.phase !== 'message_end'
   const thinking = event.thinkingEnabled === false ? undefined : (string(event.thinking) ?? previous?.thinking)
   const item = { kind: event.role, messageId, text, textOffset, thinking, streaming } as const

@@ -95,3 +95,25 @@ func TestLoopbackURL(t *testing.T) {
 		}
 	}
 }
+
+func TestTrustedLocalForwardingOverwritesVisitorIdentity(t *testing.T) {
+	var marker, forwarded string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		marker = r.Header.Get("x-ompiui-internal-tunnel")
+		forwarded = r.Header.Get("x-forwarded-for")
+		w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	target, _ := url.Parse(upstream.URL)
+	proxy := Proxy(target, (&net.Dialer{}).DialContext, true, "private-start-identity")
+	for _, ip := range []string{"100.64.1.1", "100.64.1.2"} {
+		req := httptest.NewRequest("GET", "http://tailnet.test/api/v1/host/pair/redeem", nil)
+		req.RemoteAddr = net.JoinHostPort(ip, "12345")
+		req.Header.Set("x-ompiui-internal-tunnel", "spoofed")
+		req.Header.Set("x-forwarded-for", "6.6.6.6")
+		proxy.ServeHTTP(httptest.NewRecorder(), req)
+		if marker != "private-start-identity" || forwarded != ip {
+			t.Fatalf("lost authenticated client identity: marker=%q forwarded=%q", marker, forwarded)
+		}
+	}
+}

@@ -13,6 +13,7 @@ import { activeSessionStore } from '../store/activeSessionStore'
 
 vi.mock('../api/events', () => ({
   subscribeToConnectionState: vi.fn(),
+  setEventStreamState: vi.fn(),
 }))
 
 vi.mock('./ompSocket', () => ({

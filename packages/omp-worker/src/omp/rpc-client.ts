@@ -71,6 +71,7 @@ const MAX_CHUNK_PAYLOAD_BYTES = 256 * 1024
 const MAX_CHUNK_COUNT = 4096
 const MAX_CHUNK_ENTRIES = 32
 const MAX_TOTAL_CHUNK_BYTES = 64 * 1024 * 1024
+const MAX_CHUNK_ID_BYTES = 256
 
 export class OmpRpcClient extends EventEmitter {
   readonly proc: ChildProcess
@@ -89,10 +90,14 @@ export class OmpRpcClient extends EventEmitter {
     count: number
     byteLength: number
     receivedBytes: number
-    timer: NodeJS.Timeout
+    metadataBytes: number
+    createdAt: number
+    deadline: number
+    timer?: NodeJS.Timeout
   }>()
   private stderrBuffer: string[] = []
   private chunkBytes = 0
+  private outputPausedAt?: number
   private exited = false
   private exitCode: number | null = null
   private exitSignal: NodeJS.Signals | null = null
@@ -181,6 +186,18 @@ export class OmpRpcClient extends EventEmitter {
   }
 
   setOutputPaused(paused: boolean): void {
+    if (paused && this.outputPausedAt === undefined) {
+      this.outputPausedAt = Date.now()
+      for (const entry of this.chunks.values()) clearTimeout(entry.timer)
+    } else if (!paused && this.outputPausedAt !== undefined) {
+      const now = Date.now()
+      for (const [id, entry] of this.chunks) {
+        entry.deadline += now - Math.max(entry.createdAt, this.outputPausedAt)
+        entry.timer = setTimeout(() => this.abortChunk(id, "rpc chunk timed out"), Math.max(1, entry.deadline - now))
+        entry.timer.unref()
+      }
+      this.outputPausedAt = undefined
+    }
     this.stdoutReader.setPaused(paused)
   }
 
@@ -301,6 +318,10 @@ export class OmpRpcClient extends EventEmitter {
     const count = typeof frame.count === "number" ? frame.count : 0
     const byteLength = typeof frame.byteLength === "number" ? frame.byteLength : 0
     const data = typeof frame.data === "string" ? frame.data : ""
+    if (Buffer.byteLength(chunkId) > MAX_CHUNK_ID_BYTES) {
+      this.emitProtocolError("rpc chunk id exceeds metadata limit")
+      return
+    }
     if (!chunkId || !Number.isSafeInteger(count) || count < 1 || count > MAX_CHUNK_COUNT) return
     if (!Number.isSafeInteger(index) || index < 0 || index >= count || !data) return
     if (!Number.isSafeInteger(byteLength) || byteLength < 1 || byteLength > MAX_REASSEMBLED_BYTES || count > byteLength) {
@@ -319,14 +340,18 @@ export class OmpRpcClient extends EventEmitter {
     }
     let entry = this.chunks.get(chunkId)
     if (!entry) {
-      if (this.chunks.size >= MAX_CHUNK_ENTRIES || this.chunkBytes + bytes.byteLength > MAX_TOTAL_CHUNK_BYTES) {
+      const metadataBytes = Buffer.byteLength(chunkId)
+      if (this.chunks.size >= MAX_CHUNK_ENTRIES || this.chunkBytes + metadataBytes + bytes.byteLength > MAX_TOTAL_CHUNK_BYTES) {
         this.emitProtocolError("rpc chunk buffer limit reached")
         return
       }
-      const timer = setTimeout(() => this.abortChunk(chunkId, "rpc chunk timed out"), CHUNK_TIMEOUT_MS)
-      timer.unref()
-      entry = { parts: new Map(), count, byteLength, receivedBytes: 0, timer }
+      const timer = this.outputPausedAt === undefined
+        ? setTimeout(() => this.abortChunk(chunkId, "rpc chunk timed out"), CHUNK_TIMEOUT_MS) : undefined
+      timer?.unref()
+      const createdAt = Date.now()
+      entry = { parts: new Map(), count, byteLength, receivedBytes: 0, metadataBytes, createdAt, deadline: createdAt + CHUNK_TIMEOUT_MS, timer }
       this.chunks.set(chunkId, entry)
+      this.chunkBytes += metadataBytes
     }
     if (entry.count !== count || entry.byteLength !== byteLength) {
       this.abortChunk(chunkId, "rpc chunk metadata mismatch")
@@ -350,7 +375,7 @@ export class OmpRpcClient extends EventEmitter {
     if (entry.parts.size < entry.count) return
     clearTimeout(entry.timer)
     this.chunks.delete(chunkId)
-    this.chunkBytes -= entry.receivedBytes
+    this.chunkBytes -= entry.receivedBytes + entry.metadataBytes
     if (entry.byteLength > 0 && entry.receivedBytes !== entry.byteLength) {
       this.emitProtocolError(`rpc chunk ${chunkId} length mismatch: got ${entry.receivedBytes} expected ${entry.byteLength}`)
       return
@@ -381,7 +406,9 @@ export class OmpRpcClient extends EventEmitter {
       this.emitProtocolError(`rpc chunk ${chunkId} is not valid UTF-8 or JSON`)
       return
     }
-    if (isJsonObject(reassembled) && typeof reassembled.type === "string") {
+    if (isJsonObject(reassembled) && reassembled.type === "rpc_chunk") {
+      this.emitProtocolError("nested rpc chunks are not supported")
+    } else if (isJsonObject(reassembled) && typeof reassembled.type === "string") {
       this.dispatchFrame(reassembled as OmpRpcFrame)
     }
   }
@@ -392,8 +419,8 @@ export class OmpRpcClient extends EventEmitter {
     if (!entry) return
     clearTimeout(entry.timer)
     this.chunks.delete(chunkId)
-    this.chunkBytes -= entry.receivedBytes
-    this.emitProtocolError(`${reason} (${chunkId})`)
+    this.chunkBytes -= entry.receivedBytes + entry.metadataBytes
+    this.emitProtocolError(`${reason} (${chunkId.slice(0, 128)})`)
   }
 
   private emitProtocolError(message: string): void {

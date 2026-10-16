@@ -93,6 +93,7 @@ export class TunnelClient {
   private alive = true;
   private readonly conns = new Map<number, TunnelConn>();
   private controlRate = new DataRateLimit(1024 * 1024, 2 * 1024 * 1024);
+  private cleanupControlRate = new DataRateLimit(64 * 1024, 128 * 1024);
   private openRate = new DataRateLimit(1024 * 1024, 2 * 1024 * 1024, 100, 200);
   private readonly download = new DataRateLimit();
 
@@ -287,8 +288,9 @@ export class TunnelClient {
       ws.terminate();
       return;
     }
-    if (!this.controlRate.allow(raw.length + 14)) { ws.terminate(); return }
     const frame = JSON.parse(raw.toString("utf8")) as ControlFrame;
+    const controlRate = frame.type === "abort" || frame.type === "close" ? this.cleanupControlRate : this.controlRate;
+    if (!controlRate.allow(raw.length + 14)) { ws.terminate(); return }
     switch (frame.type) {
       case "ready": {
         if (frame.v !== WIRE_VERSION) {
@@ -384,6 +386,7 @@ export class TunnelClient {
       conn.preUpgrade = [];
       conn.preUpgradeBytes = 0;
     };
+    let responseEnded = false;
     const req = httpRequest(
       {
         host: this.localHost,
@@ -407,6 +410,10 @@ export class TunnelClient {
         res.on("data", (chunk: Buffer) => sink.write(frame.c, chunk, res));
         res.on("end", () => {
           if (!isCurrent()) return;
+          responseEnded = true;
+          // 完整响应已收到，上传方向正常关闭不能销毁待排空的响应尾部。
+          conn.input?.dispose();
+          req.setTimeout(0);
           this.sendControl({ type: "end", c: frame.c }, finish);
         });
         res.on("error", () => {
@@ -469,7 +476,7 @@ export class TunnelClient {
       socket.on("error", abort);
     });
     req.on("error", (error: NodeJS.ErrnoException) => {
-      if (!isCurrent()) return;
+      if (!isCurrent() || responseEnded) return;
       this.sendControl({
         type: "fail",
         c: frame.c,

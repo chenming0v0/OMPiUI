@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { assertResultBudget } from "./result-budget.js";
 import {
   existsSync,
   mkdirSync,
@@ -31,10 +32,12 @@ import {
   beforeEntryCursor,
   imageAttachmentFromEntry,
   sessionHeadFromParts,
+  projectEntryAttachments,
   type EntriesPage,
   type LiveMessage,
   type SessionHead,
 } from "./pagination.js";
+import { entryContentChunk } from "./entry-content.js";
 import { buildSessionTreeFromEntries, sessionTreePage } from "./session-tree.js";
 import { copySessionFile } from "../omp/managed-sessions.js";
 
@@ -370,6 +373,14 @@ export class MockCatalog implements CatalogProvider, PackagesGateway {
     if (query === "branch.get" || query === "entries.get")
       return preview.branch!;
     const { entries } = readJsonlFile(info.path);
+    if (query === "entry.get") {
+      const entry = entries.find(item => item.id === params.entryId);
+      if (!entry) throw Object.assign(new Error("entry not found"), { code: "NOT_FOUND" });
+      const head = (preview.branch as unknown as EntriesPage).head;
+      return entryContentChunk(entry, projectEntryAttachments(entry, head),
+        typeof params.offset === "number" ? params.offset : 0,
+        typeof params.etag === "string" ? params.etag : undefined);
+    }
     if (query === "tree.get") return sessionTreePage(entries, (preview.branch as unknown as EntriesPage).head, params);
     if (query === "attachment.get") {
       const entry = entries.find((item) => item.id === params.entryId);
@@ -1077,6 +1088,7 @@ export class MockPiSession implements SessionRuntime {
   async removeQueuedMessage(
     kind: "steering" | "followUp",
     index: number,
+    maxResultBytes?: number,
   ): Promise<JsonValue> {
     const queue = kind === "steering" ? this.steeringQueue : this.followUpQueue;
     const entry = queue[index];
@@ -1084,6 +1096,7 @@ export class MockPiSession implements SessionRuntime {
       throw Object.assign(new Error("queued message not found"), {
         code: "NOT_FOUND",
       });
+    assertResultBudget(entry, maxResultBytes);
     queue.splice(index, 1);
     this.emitEvent({ type: "queue_update", ...this.getQueueSnapshot() });
     return entry as unknown as JsonValue;
@@ -1256,8 +1269,9 @@ export class MockPiSession implements SessionRuntime {
     this.followUpMode = mode;
   }
 
-  async clearQueue(): Promise<JsonValue | undefined> {
+  async clearQueue(maxResultBytes?: number): Promise<JsonValue | undefined> {
     const cleared = this.getQueueSnapshot();
+    assertResultBudget(cleared, maxResultBytes);
     this.steeringQueue = [];
     this.followUpQueue = [];
     this.emitEvent({ type: "queue_update", ...this.getQueueSnapshot() });

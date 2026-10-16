@@ -85,6 +85,7 @@ interface VirtualConn {
   lastActivity: number;
   counted: boolean;
   requestStream?: IncomingMessage | Duplex;
+  uploadEnded: boolean;
   pendingTimer?: NodeJS.Timeout;
   createdAt: number;
   progressBytes: number;
@@ -143,6 +144,8 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
   const wss = new WebSocketServer({
     noServer: true,
     maxPayload: CONTROL_MESSAGE_MAX,
+    // 隧道协议要求每条消息恰好一帧，拒绝 continuation 重组绕过计量。
+    maxFragments: 1,
   });
 
   server.on("request", handleRequest);
@@ -293,7 +296,9 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
           const progressed = conn.progressBytes - conn.progressSampleBytes;
           conn.progressSampleAt = now;
           conn.progressSampleBytes = conn.progressBytes;
-          if (progressed < MIN_PROGRESS_BYTES) {
+          const healthyUpgrade = conn.kind === "upgrade" && conn.headSent &&
+            !conn.request.hasPendingData && !conn.response.hasPendingData;
+          if (progressed < MIN_PROGRESS_BYTES && !healthyUpgrade) {
             abortConnection(session, id);
             continue;
           }
@@ -415,6 +420,9 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
       case "end": {
         const conn = session.conns.get(frame.c);
         if (!conn) return;
+        conn.uploadEnded = true;
+        conn.request.dispose();
+        conn.requestStream?.pause();
         // Keep the connection counted until all queued bytes have drained.
         conn.response.end();
         return;
@@ -581,6 +589,7 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
     );
     const conn: VirtualConn = {
       kind: "request",
+      uploadEnded: false,
       res,
       openSent: false,
       headSent: false,
@@ -602,14 +611,14 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
     conn.pendingTimer.unref();
     sink.hold(req);
     req.on("data", (chunk: Buffer) => {
-      if (session.conns.get(connId) !== conn) return;
+      if (session.conns.get(connId) !== conn || conn.uploadEnded) return;
       if (!activateConnection(session, conn)) return;
       conn.lastActivity = Date.now();
       conn.progressBytes += chunk.length;
       sink.write(connId, chunk, req);
     });
     req.on("end", () => {
-      if (session.conns.get(connId) === conn)
+      if (session.conns.get(connId) === conn && !conn.uploadEnded)
         sendControl(session, { type: "reqEnd", c: connId });
     });
     const abort = () => {
@@ -679,6 +688,7 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
     );
     const conn: VirtualConn = {
       kind: "upgrade",
+      uploadEnded: false,
       socket,
       openSent: false,
       headSent: false,
@@ -703,7 +713,7 @@ export function startRelay(options: StartRelayOptions): Promise<RunningRelay> {
       sink.write(connId, head, socket);
     }
     socket.on("data", (chunk: Buffer) => {
-      if (session.conns.get(connId) !== conn) return;
+      if (session.conns.get(connId) !== conn || conn.uploadEnded) return;
       if (!activateConnection(session, conn)) return;
       conn.lastActivity = Date.now();
       conn.progressBytes += chunk.length;

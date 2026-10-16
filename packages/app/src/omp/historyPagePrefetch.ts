@@ -31,6 +31,7 @@ const encoder = new TextEncoder()
 export class HistoryPagePrefetch {
   private readonly buffers = new Map<string, Buffer>()
   private readonly flights = new Set<Request>()
+  private evictedViews = new WeakSet<HistoryEntry[]>()
 
   private buffer(sessionId: string, generation: number): Buffer {
     const key = JSON.stringify([generation, sessionId])
@@ -43,6 +44,7 @@ export class HistoryPagePrefetch {
       const oldestKey = this.buffers.keys().next().value!
       const oldest = this.buffers.get(oldestKey)!
       this.buffers.delete(oldestKey)
+      if (oldest.visibleItems) this.evictedViews.add(oldest.visibleItems)
       this.reset(oldest)
     }
     return buffer
@@ -68,10 +70,13 @@ export class HistoryPagePrefetch {
     buffer.budgetBlocked = false
   }
 
-  track(sessionId: string, generation: number, items: HistoryEntry[]): void {
+  track(sessionId: string, generation: number, items: HistoryEntry[], background = false): boolean {
+    if (background && this.evictedViews.has(items)) return false
+    if (!background) this.evictedViews.delete(items)
     const buffer = this.buffer(sessionId, generation)
     buffer.visibleAnchor = items[0]
     buffer.visibleItems = items
+    return true
   }
 
   prune(getItems: (sessionId: string) => HistoryEntry[] | undefined): void {
@@ -227,6 +232,7 @@ export class HistoryPagePrefetch {
   }
 
   clear(): void {
+    this.evictedViews = new WeakSet()
     for (const request of this.flights.values()) request.controller.abort()
     this.flights.clear()
     for (const buffer of this.buffers.values()) this.reset(buffer)

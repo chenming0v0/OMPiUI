@@ -679,6 +679,7 @@ export const PI_COMMAND_SPECS = [
             "state.get",
             "branch.get",
             "entries.get",
+            "entry.get",
             "tree.get",
             "attachment.get",
             "subagent.messages",
@@ -690,6 +691,7 @@ export const PI_COMMAND_SPECS = [
             beforeId: byteString(4096),
             includeLiveMessage: BOOLEAN,
             entryId: byteString(4096),
+            etag: byteString(128),
             blockIndex: { type: "integer", minimum: 0 },
             offset: { type: "integer", minimum: 0 },
             sessionFile: byteString(4096),
@@ -1089,6 +1091,7 @@ export type PiCommandParams = CoreCommandParams & {
       | "state.get"
       | "branch.get"
       | "entries.get"
+      | "entry.get"
       | "tree.get"
       | "attachment.get"
       | "subagent.messages";

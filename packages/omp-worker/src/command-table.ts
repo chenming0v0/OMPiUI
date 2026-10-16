@@ -65,6 +65,7 @@ export interface PackagesGateway {
 }
 
 export interface CommandContext {
+  maxResultBytes?: number;
   runtime: SessionRuntime | undefined;
   driver?: "omp" | "mock";
   catalog: CatalogProvider;
@@ -167,7 +168,7 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
       .requireRuntime()
       .setFollowUpMode(P.optEnum(p, "mode", QUEUE_MODES) ?? "one-at-a-time");
   },
-  clearQueue: async (ctx) => ctx.requireRuntime().clearQueue(),
+  clearQueue: async (ctx) => ctx.requireRuntime().clearQueue(ctx.maxResultBytes),
   removeQueuedMessage: async (ctx, p) => {
     const kind = P.optEnum(p, "kind", ["steering", "followUp"] as const);
     if (!kind)
@@ -176,7 +177,7 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
       });
     return ctx
       .requireRuntime()
-      .removeQueuedMessage(kind, P.reqNonNegativeInteger(p, "index"));
+      .removeQueuedMessage(kind, P.reqNonNegativeInteger(p, "index"), ctx.maxResultBytes);
   },
   sendQueuedMessage: async (ctx, p) => {
     const kind = P.optEnum(p, "kind", ["steering", "followUp"] as const);

@@ -20,6 +20,7 @@ import type {
   FileOperationResponse,
   FileReadResponse,
 } from "@ompiui/protocol";
+import { jsonByteSize } from "@ompiui/protocol";
 import { PathSafetyError, resolveWorkspacePath } from "./path-safety.ts";
 import { workspacePathKey, type WorkspaceRecord } from "./workspace-store.ts";
 import { acquireWorkspaceMutationLock } from "./workspace-lock.ts";
@@ -130,6 +131,7 @@ export async function readFileContent(
   ws: WorkspaceRecord,
   relativePath: string,
   ifNoneMatch?: string,
+  maxBytes?: number,
 ): Promise<FileReadResponse> {
   assertWorkspaceCurrent(ws);
   const resolved = resolveWorkspacePath(ws.canonicalRoot, relativePath);
@@ -142,7 +144,7 @@ export async function readFileContent(
     const opened = await handle.stat();
     if (!opened.isFile())
       throw new PathSafetyError("INVALID_REQUEST", "not a file");
-    if (opened.size > MAX_BINARY_BYTES)
+    if (opened.size > Math.min(MAX_BINARY_BYTES, maxBytes ?? MAX_BINARY_BYTES))
       throw fileTooLarge("file too large for remote preview");
     const buffer = await handle.readFile();
     if (buffer.length > MAX_BINARY_BYTES)
@@ -165,7 +167,7 @@ export async function readFileContent(
       throw fileTooLarge("text file too large for remote preview");
     const revision = etag(buffer);
     const notModified = ifNoneMatch === revision;
-    return {
+    const result: FileReadResponse = {
       path: resolved.relative,
       content: notModified ? "" : binary ? buffer.toString("base64") : buffer.toString("utf8"),
       encoding: binary ? "base64" : "utf-8",
@@ -175,6 +177,9 @@ export async function readFileContent(
       etag: revision,
       ...(notModified ? { notModified: true } : {}),
     };
+    if (maxBytes !== undefined && jsonByteSize(result, maxBytes) > maxBytes)
+      throw fileTooLarge("encoded file exceeds the preview resource budget");
+    return result;
   } finally {
     await handle.close();
   }

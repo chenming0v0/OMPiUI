@@ -235,15 +235,18 @@ async function readHistoryPage<T>(
   initialBytes = BRANCH_PAGE_MAX_BYTES,
   signal?: AbortSignal,
 ): Promise<T> {
+  const generation = serverStore.getActiveServerGeneration()
   let maxBytes = initialBytes
   for (;;) {
     signal?.throwIfAborted()
+    if (serverStore.getActiveServerGeneration() !== generation) throw new DOMException('Server changed', 'AbortError')
     try {
       const page = await read(maxBytes)
       signal?.throwIfAborted()
       return page
     } catch (error) {
       signal?.throwIfAborted()
+      if (serverStore.getActiveServerGeneration() !== generation) throw new DOMException('Server changed', 'AbortError')
       if (!error || typeof error !== 'object' || !('code' in error) ||
         error.code !== 'FILE_TOO_LARGE' || maxBytes >= BRANCH_LARGE_ENTRY_MAX_BYTES) throw error
       maxBytes = Math.min(maxBytes * 2, BRANCH_LARGE_ENTRY_MAX_BYTES)
@@ -341,12 +344,18 @@ async function waitForRetry(delayMs: number, signal?: AbortSignal): Promise<void
 }
 
 async function retryUnavailable<T>(operation: () => Promise<T>, signal?: AbortSignal, retryBusy = false): Promise<T> {
+  const generation = serverStore.getActiveServerGeneration()
   let lastError: unknown
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    signal?.throwIfAborted()
+    if (serverStore.getActiveServerGeneration() !== generation)
+      throw new DOMException('The server changed before retry', 'AbortError')
     try {
       return await operation()
     } catch (error) {
       lastError = error
+      if (serverStore.getActiveServerGeneration() !== generation)
+        throw new DOMException('The server changed before retry', 'AbortError')
       if ((!isTransientServerError(error) && !(retryBusy && isSessionBusyError(error))) || attempt === 2) throw error
       await waitForRetry(250 * 2 ** attempt, signal)
     }
@@ -374,7 +383,7 @@ export async function prefetchPiBranchEntries(
   const anchor = currentBranch?.items[0]
   if (!currentBranch?.hasMore || !anchor) return false
   const generation = serverStore.getActiveServerGeneration()
-  historyPagePrefetch.track(sessionId, generation, currentBranch.items)
+  if (!historyPagePrefetch.track(sessionId, generation, currentBranch.items, true)) return false
   const read = (beforeId: string, sharedSignal: AbortSignal) => readHistoryPage(maxBytes => transport.getPiBranchPage(
     sessionId, { beforeId, limit: BRANCH_PAGE_LIMIT, maxBytes }, sharedSignal,
   ), undefined, sharedSignal)
@@ -518,7 +527,13 @@ export function refreshPiBranch(
   signal?: AbortSignal,
   options: { includeLiveMessage?: boolean } = {},
 ): Promise<void> {
-  if (signal) return refreshPiBranchOnce(sessionId, signal, options.includeLiveMessage)
+  if (signal) return (async () => {
+    const invalidatedBySettlement = await refreshPiBranchOnce(sessionId, signal, options.includeLiveMessage)
+    if (invalidatedBySettlement) {
+      signal.throwIfAborted()
+      await refreshPiBranchOnce(sessionId, signal, options.includeLiveMessage)
+    }
+  })()
   const generation = serverStore.getActiveServerGeneration()
   const key = `${serverStore.getActiveServerGeneration()}:${sessionId}`
   const existing = branchRefreshFlights.get(key)
@@ -556,7 +571,7 @@ export function settlePiLiveMessage(sessionId: string): void {
   }
 }
 
-async function refreshPiBranchOnce(sessionId: string, signal?: AbortSignal, includeLive = false): Promise<void> {
+async function refreshPiBranchOnce(sessionId: string, signal?: AbortSignal, includeLive = false): Promise<boolean | void> {
   const serverGeneration = serverStore.getActiveServerGeneration()
   const version = piBranchStore.beginRequest(sessionId)
   const current = piBranchStore.getData(sessionId)
@@ -571,11 +586,12 @@ async function refreshPiBranchOnce(sessionId: string, signal?: AbortSignal, incl
     },
     signal,
   ), params.maxBytes, signal)
-  if (
-    serverStore.getActiveServerGeneration() !== serverGeneration ||
-    !piBranchStore.isRequestCurrent(sessionId, version)
-  )
-    return
+  if (serverStore.getActiveServerGeneration() !== serverGeneration) return
+  if (!piBranchStore.isRequestCurrent(sessionId, version)) {
+    const settled = piBranchStore.getData(sessionId)?.checkpoint?.liveMessage
+    return current?.checkpoint?.liveMessage?.phase === 'streaming' &&
+      settled?.id === current.checkpoint.liveMessage.id && settled?.phase === 'persisting'
+  }
   if (latest.deltaFrom && latest.deltaFrom !== piBranchStore.getData(sessionId)?.syncCursor) {
     latest = await readHistoryPage(maxBytes => transport.getPiBranchPage(sessionId, { ...params, maxBytes }, signal), params.maxBytes, signal)
   }

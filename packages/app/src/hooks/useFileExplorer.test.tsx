@@ -204,6 +204,43 @@ describe('useFileExplorer change scope', () => {
     expect(listDirectory.mock.calls.filter(call => call[0] === 'src').length).toBeGreaterThanOrEqual(2)
   })
 
+  it.each(['close', 'switch', 'unmount'] as const)('cancels the abandoned preview on %s', async action => {
+    let signal!: AbortSignal
+    getFileContent.mockImplementationOnce((_path, _directory, _etag, value: AbortSignal) => {
+      signal = value
+      return new Promise((_resolve, reject) => {
+        value.addEventListener('abort', () => reject(value.reason), { once: true })
+      })
+    })
+    const { result, unmount } = renderHook(() => useFileExplorer({ directory: '/repo', autoLoad: false }))
+    let loading!: Promise<void>
+    act(() => { loading = result.current.loadPreview('a.ts') })
+    expect(signal.aborted).toBe(false)
+    if (action === 'unmount') unmount()
+    else if (action === 'close') act(() => result.current.clearPreview())
+    else await act(() => result.current.loadPreview('b.ts'))
+    await act(async () => { await loading })
+    expect(signal.aborted).toBe(true)
+    if (action === 'switch') expect(result.current.previewContent?.content).toBe('test')
+    else if (action === 'close') expect(result.current.previewContent).toBeNull()
+  })
+
+  it('revalidates a saved body with its new ETag when its watcher notification arrives', async () => {
+    getFileContent.mockResolvedValueOnce({ type: 'text', content: 'before', etag: 'old' })
+      .mockResolvedValueOnce({ type: 'text', content: '', etag: 'new', notModified: true })
+    saveFile.mockResolvedValueOnce({ type: 'text', content: 'submitted', etag: 'new' })
+    const { result } = renderHook(() => useFileExplorer({ directory: '/repo', autoLoad: false }))
+    await act(() => result.current.loadPreview('a.ts'))
+    await act(() => result.current.savePreview('a.ts', 'submitted'))
+    expect(result.current.previewContent?.content).toBe('submitted')
+    act(() => window.dispatchEvent(new CustomEvent('ompiui:workspace-files-changed', {
+      detail: { workspacePath: '/repo', changes: [{ path: 'a.ts', type: 'file' }], rescan: false },
+    })))
+    await waitFor(() => expect(getFileContent).toHaveBeenCalledTimes(2))
+    expect(getFileContent).toHaveBeenLastCalledWith('a.ts', '/repo', 'new', expect.any(AbortSignal))
+    expect(result.current.previewContent?.content).toBe('submitted')
+  })
+
   it.each(['directory', 'session'] as const)('does not publish a save into a new %s with the same file path', async scope => {
     let resolveSave!: (value: unknown) => void
     saveFile.mockReturnValueOnce(new Promise(resolve => { resolveSave = resolve }))

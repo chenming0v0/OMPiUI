@@ -42,7 +42,7 @@ export function FaultReportDialog() {
           <FileWarning size={16} aria-hidden="true" />{t('reopen')}
         </button>
       )}
-      <Dialog isOpen={saved.open} onClose={() => faultAuditStore.dismiss()} title={t('title')} width={560}>
+      <Dialog isOpen={saved.open} onClose={() => faultAuditStore.dismiss()} title={t('title')} width={560} showCloseButtonOnMobile>
         <div className="min-w-0 space-y-4 text-[length:var(--fs-sm)]">
           <div className="flex items-start gap-3">
             <AlertTriangle size={22} className="shrink-0 text-danger-100" aria-hidden="true" />

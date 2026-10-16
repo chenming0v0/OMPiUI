@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { resolveHtmlPreviewResources, resolveHtmlResourcePath } from './htmlPreviewResources'
+import { MAX_HTML_INLINE_BYTES, MAX_HTML_INLINE_RESOURCES } from './htmlPreviewResourceBudget'
 
 const getFileContent = vi.hoisted(() => vi.fn())
 
@@ -40,7 +41,7 @@ describe('htmlPreviewResources', () => {
     )
     const parsed = new DOMParser().parseFromString(html, 'text/html')
 
-    expect(getFileContent).toHaveBeenCalledWith('pages/app.js', 'C:/workspace')
+    expect(getFileContent).toHaveBeenCalledWith('pages/app.js', 'C:/workspace', undefined, undefined, expect.any(Number))
     expect(parsed.querySelector('link[rel="stylesheet"]')).toBeNull()
     expect(parsed.querySelector('style')?.textContent).toContain('data:image/png;base64,iVBORw==')
     expect(parsed.querySelector('script')?.getAttribute('src')).toMatch(/^data:text\/javascript/)
@@ -124,7 +125,50 @@ describe('htmlPreviewResources', () => {
       'C:/repo',
     )
 
-    expect(getFileContent).toHaveBeenCalledWith('pages/img/logo.png', 'C:/repo')
+    expect(getFileContent).toHaveBeenCalledWith('pages/img/logo.png', 'C:/repo', undefined, undefined, expect.any(Number))
     expect(html).toContain('data:image/png;base64,iVBORw==')
+  })
+
+  it('bounds resource requests across CSS, media and srcset while leaving the document readable', async () => {
+    getFileContent.mockResolvedValue({ type: 'binary', encoding: 'base64', content: 'AA==' })
+    const html = await resolveHtmlPreviewResources(
+      `<style>.x{background:url("css.png")}</style><p>Report</p>` +
+      Array.from({ length: 500 }, (_, index) => `<img src="${index}.png" srcset="candidate-${index}.png 2x">`).join(''),
+      'index.html',
+    )
+    expect(getFileContent).toHaveBeenCalledTimes(MAX_HTML_INLINE_RESOURCES)
+    expect(html).toContain('<p>Report</p>')
+    expect(html).toContain('data-ompiui-resources-truncated="true"')
+    expect(html).toContain('candidate-499.png')
+  })
+
+  it('bounds cumulative encoded downloads and repeated inline copies independently', async () => {
+    let downloaded = 0
+    const content = { type: 'binary', encoding: 'base64', content: 'A'.repeat(512 * 1024) }
+    getFileContent.mockImplementation(async (_path, _directory, _etag, _signal, maxBytes) => {
+      const bytes = new TextEncoder().encode(JSON.stringify(content)).byteLength
+      if (bytes > maxBytes) throw Object.assign(new Error('too large'), { code: 'FILE_TOO_LARGE' })
+      downloaded += bytes
+      return content
+    })
+    const html = await resolveHtmlPreviewResources(
+      Array.from({ length: 64 }, (_, index) => `<img src="${index < 32 ? 'same' : index}.png">`).join(''),
+      'index.html',
+    )
+    expect(downloaded).toBeLessThanOrEqual(MAX_HTML_INLINE_BYTES)
+    expect(new TextEncoder().encode(html).byteLength).toBeLessThan(MAX_HTML_INLINE_BYTES + 4096)
+    expect(html).toContain('data-ompiui-resources-truncated="true"')
+  })
+
+  it('cancels the active resource and never starts its queued siblings', async () => {
+    const controller = new AbortController()
+    getFileContent.mockImplementation((_path, _directory, _etag, signal: AbortSignal) =>
+      new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })),
+    )
+    const resolved = resolveHtmlPreviewResources('<img src="a.png"><img src="b.png">', 'index.html', undefined, controller.signal)
+    await vi.waitFor(() => expect(getFileContent).toHaveBeenCalledTimes(1))
+    controller.abort()
+    await expect(resolved).rejects.toMatchObject({ name: 'AbortError' })
+    expect(getFileContent).toHaveBeenCalledTimes(1)
   })
 })

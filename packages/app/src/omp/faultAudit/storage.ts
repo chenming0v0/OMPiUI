@@ -15,7 +15,7 @@ const DATABASE = 'ompiui-fault-reports'
 let writes = Promise.resolve()
 let storedContent: string | undefined
 
-async function database(): Promise<IDBDatabase> {
+export async function database(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DATABASE, 1)
     request.onupgradeneeded = () => request.result.createObjectStore('reports')

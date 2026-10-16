@@ -3,11 +3,14 @@ import { serverStore } from '../../store/serverStore'
 import { getApiBase, piFetch } from '../httpClient'
 import { faultAuditStore } from './store'
 import { FaultMonitor, type ConnectionMemory } from './monitor'
+import { sharedFaultReport } from './shared-report'
 
 const MEMORY_KEY = 'ompiui-fault-connections'
 let monitor: FaultMonitor | undefined
 let stopMonitoring: (() => void) | undefined
 let resumeProbe: (() => void) | undefined
+let mayCollectAutomatically = () => true
+const reportRetryAt = new Map<string, number>()
 
 function serverId(): string {
   return serverStore.getActiveServer()?.id ?? 'default'
@@ -32,18 +35,31 @@ function saveMemory(id: string, memory: ConnectionMemory): void {
   }
 }
 
-export async function collectFaultReport(replaceUploaded = false): Promise<void> {
+export async function collectFaultReport(replaceUploaded = false, automatic = false): Promise<void> {
+  if (automatic && (!navigator.onLine || document.visibilityState === 'hidden')) return
   const saved = faultAuditStore.getSnapshot().saved
   if (!saved || saved.serverId !== serverId()) return
   const id = faultAuditStore.beginCollection(replaceUploaded)
   if (!id) return
   const generation = serverStore.getActiveServerGeneration()
+  const key = JSON.stringify([getApiBase(), saved.serverId, saved.notice.id])
+  if (!replaceUploaded && Date.now() < (reportRetryAt.get(key) ?? 0)) {
+    faultAuditStore.cancelCollection(id)
+    return
+  }
   try {
+    const signal = AbortSignal.timeout(120_000)
+    const report = await sharedFaultReport(key, async () => {
     const response = await piFetch(`${getApiBase()}/api/v1/host/diagnostics/report`, {
       retry: false,
-      signal: AbortSignal.timeout(120_000),
+      signal,
       timeoutMs: 120_000,
     })
+    if (response.status === 429) {
+      reportRetryAt.clear()
+      reportRetryAt.set(key, Date.now() + 30_000)
+      throw new Error('REPORT_RATE_LIMITED')
+    }
     if (!response.ok) throw new Error('REPORT_UNAVAILABLE')
     const raw: unknown = await response.json()
     if (
@@ -55,9 +71,18 @@ export async function collectFaultReport(replaceUploaded = false): Promise<void>
     )
       throw new Error('REPORT_INVALID')
     if (serverStore.getActiveServerGeneration() !== generation) throw new Error('SERVER_CHANGED')
-    faultAuditStore.finishCollection(id, raw as unknown as FaultReport)
-  } catch {
-    faultAuditStore.finishCollection(id)
+    return raw as unknown as FaultReport
+    }, {
+      force: replaceUploaded, allowNetwork: !automatic || mayCollectAutomatically(), signal,
+      isCurrent: () => serverStore.getActiveServerGeneration() === generation,
+    })
+    if (serverStore.getActiveServerGeneration() !== generation) { faultAuditStore.cancelCollection(id); return }
+    if (report) faultAuditStore.finishCollection(id, report)
+    else faultAuditStore.cancelCollection(id)
+  } catch (error) {
+    if (serverStore.getActiveServerGeneration() !== generation) { faultAuditStore.cancelCollection(id); return }
+    faultAuditStore.finishCollection(id, undefined,
+      error instanceof Error && error.message === 'REPORT_RATE_LIMITED' ? 'server_rate_limited' : 'server_unreachable')
   }
 }
 
@@ -73,7 +98,7 @@ export function reportRuntimeCrash(sessionId: string, faultId?: string, time?: s
 
 function detect(notice: FaultNotice): void {
   if (!faultAuditStore.detect(notice, serverId())) return
-  void collectFaultReport()
+  void collectFaultReport(false, true)
   if (notice.sessionId && (notice.kind === 'runtime_crashed' || notice.kind === 'server_restarted')) {
     const sessionId = notice.sessionId
     const generation = serverStore.getActiveServerGeneration()
@@ -118,18 +143,20 @@ export function startFaultAudit(): () => void {
   let failures = 0
   let nextProbeAt = 0
   let leader = !navigator.locks
+  mayCollectAutomatically = () => leader && !stopped
   let leaseController: AbortController | undefined
   let releaseLease: (() => void) | undefined
   const channel = typeof BroadcastChannel === 'undefined' ? undefined : new BroadcastChannel('ompiui-health')
   const key = () => `${getApiBase()}:${serverId()}`
   const recoverReport = () => {
+    if (document.visibilityState === 'hidden' || !navigator.onLine) return
     const saved = faultAuditStore.getSnapshot().saved
     if (
       saved?.serverId === serverId() &&
-      saved.report.unavailable.includes('server_unreachable') &&
+      saved.report.unavailable.some(reason => ['server_unreachable', 'server_logs_not_collected', 'server_rate_limited'].includes(reason)) &&
       saved.upload.links.length === 0
     ) {
-      void collectFaultReport()
+      void collectFaultReport(false, true)
     }
   }
   if (channel)
@@ -270,6 +297,7 @@ export function startFaultAudit(): () => void {
   void probe()
   stopMonitoring = () => {
     stopped = true
+    mayCollectAutomatically = () => false
     if (resumeProbe === online) resumeProbe = undefined
     release()
     channel?.close()

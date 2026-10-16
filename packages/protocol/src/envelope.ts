@@ -43,6 +43,7 @@ export type EventCursor = {
 }
 
 export type EventChannel =
+  | "payload.omitted"
   | "pi.event"
   | "omp.subagent"
   | "session.head"

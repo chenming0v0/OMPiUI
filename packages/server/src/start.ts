@@ -249,7 +249,7 @@ export async function startOmpiUiServer(
   let tunnelClient: TunnelClient | undefined
   // Never persist, expose in status, or send to the relay/worker. Authenticate
   // only the embedded client's local forwarding hop for this server lifetime.
-  const tunnelForwardingToken = config.tunnel ? randomBytes(32).toString("hex") : undefined
+  const tunnelForwardingToken = randomBytes(32).toString("hex")
   const getTunnelStatus = (): TunnelStatus | null => {
     if (tunnelClient) return tunnelClient.getStatus()
     if (!config.tunnel) return null
@@ -265,7 +265,10 @@ export async function startOmpiUiServer(
   }
   // 手机远程：一次性配对 + 内置 Tailscale（与 server 同生命周期）
   const pairing = new PairingStore()
-  const tailscale = new TailscaleManager({ dataDir: dataRoot(), log: line => { console.info(line); logToFile(line) } })
+  const tailscale = new TailscaleManager({
+    dataDir: dataRoot(), forwardingToken: tunnelForwardingToken,
+    log: line => { console.info(line); logToFile(line) },
+  })
   const app = createAppServer({
     authToken,
     share: { host: config.host, port: config.port, publicBaseUrl: config.publicBaseUrl },
