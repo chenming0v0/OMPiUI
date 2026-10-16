@@ -606,7 +606,7 @@ export const ChatArea = memo(
         directDomUpdatesMode: 'position',
         rangeExtractor: (range) => {
           const indexes = defaultRangeExtractor({ ...range, overscan: renderOverscan })
-          return mergeVirtualRangeIndexes(indexes, resizePinnedRef.current, hotPinnedRef.current)
+          return mergeVirtualRangeIndexes(indexes, range.count, resizePinnedRef.current, hotPinnedRef.current)
         },
       })
 

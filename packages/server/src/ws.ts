@@ -71,6 +71,8 @@ export function attachEventWebSocket(
     // 浏览器业务消息使用单帧，禁止 continuation 重组绕过入站帧率预算。
     maxFragments: 1,
     autoPong: false,
+    // 服务端不主动 ping：保活靠客户端每 25s 的应用层 ping，半开连接由 sendReserved 的
+    // 5s 停滞看门狗在第一条事件上回收。不要按"没有心跳 ⇒ 连接永不回收"上报。
     // 只协商本服务声明的子协议;未声明子协议的客户端照常握手(不带协议头)
     handleProtocols: (protocols) =>
       protocols.has(EVENT_WS_SUBPROTOCOL) ? EVENT_WS_SUBPROTOCOL : false,

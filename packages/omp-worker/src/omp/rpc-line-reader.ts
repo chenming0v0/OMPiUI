@@ -1,3 +1,5 @@
+// 上限按 UTF-8 载荷字节计，不含队列项开销。真实 RPC 行是 100B~2KB 的 JSON 帧，
+// 项开销最多几倍；禁止用"1 字节行"推算放大后上报。
 const MAX_LINE_BYTES = 1024 * 1024;
 const MAX_BUFFER_BYTES = 8 * 1024 * 1024;
 

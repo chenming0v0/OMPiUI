@@ -1,4 +1,8 @@
-/** 数据面同时按帧数和字节计费，独立于新建请求的配额。 */
+/**
+ * 数据面同时按帧数和字节计费，独立于新建请求的配额。
+ * 帧桶 2000/s 与字节桶 16MiB/s 的匹配前提是发送侧批量（BodySink 累积到 32KiB 或 256 块才 flush），
+ * 线上帧典型 32KiB ⇒ 字节桶先 bind。不要用"协议允许的最小帧"推算断连阈值。
+ */
 export class DataRateLimit {
   private bytes: number;
   private frames: number;

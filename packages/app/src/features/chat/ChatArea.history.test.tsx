@@ -81,6 +81,38 @@ async function scrollUp(root: HTMLElement) {
 }
 
 describe('ChatArea history pagination', () => {
+  it('drops stale resize pins when the timeline shrinks before the pin frame expires', async () => {
+    const items = Array.from({ length: 50 }, (_, index) => assistant(`resize-trim-${index}`))
+    const props = { items, sessionId: 'resize-trim-dom', loadState: 'loaded' as const }
+    const view = render(<ChatArea {...props} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(64) })
+    const root = view.container.querySelector<HTMLElement>('[data-chat-scroll-root]')!
+    expect(root.querySelector('[data-timeline-key="resize-trim-49"]')).not.toBeNull()
+
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      if (this.dataset.chatScrollRoot) return 600
+      if (this.dataset.timelineKey === 'resize-trim-49') return 1000
+      return parseFloat(this.style.height) || 60
+    })
+    const expanded = [...items.slice(0, -1), assistant('resize-trim-49')]
+    view.rerender(<ChatArea {...props} items={expanded} />)
+
+    view.rerender(<ChatArea {...props} items={items.slice(0, 10)} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(64) })
+    expect(root.querySelector('[data-timeline-key="resize-trim-9"]')).not.toBeNull()
+    expect(root.querySelector('[data-timeline-key="resize-trim-49"]')).toBeNull()
+    for (const row of root.querySelectorAll<HTMLElement>('[data-index]')) {
+      expect(Number(row.dataset.index)).toBeLessThan(10)
+      expect(Number.isFinite(parseFloat(row.style.top))).toBe(true)
+    }
+
+    view.rerender(<ChatArea {...props} items={[]} />)
+    expect(root.querySelector('[data-index]')).toBeNull()
+    view.rerender(<ChatArea {...props} items={items} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(64) })
+    expect(root.querySelector('[data-timeline-key="resize-trim-49"]')).not.toBeNull()
+  })
+
   it('prefetches near the top during touch inertia before foreground pagination is needed', async () => {
     const items = Array.from({ length: 50 }, (_, index) => assistant(`prefetch-inertia-${index}`))
     const prefetch = vi.fn()

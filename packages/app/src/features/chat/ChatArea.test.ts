@@ -346,8 +346,15 @@ describe('streaming virtual range helpers', () => {
   })
 
   it('merges pinned indexes into the virtual range without duplicates', () => {
-    expect(mergeVirtualRangeIndexes([1, 2, 3], [], [])).toEqual([1, 2, 3])
-    expect(mergeVirtualRangeIndexes([1, 2, 3], [8, 9], [3, 9])).toEqual([1, 2, 3, 8, 9])
+    expect(mergeVirtualRangeIndexes([1, 2, 3], 10, [], [])).toEqual([1, 2, 3])
+    expect(mergeVirtualRangeIndexes([1, 2, 3], 10, [8, 9], [3, 9])).toEqual([1, 2, 3, 8, 9])
+  })
+
+  it('excludes stale resize pins after the timeline shrinks but retains valid pins', () => {
+    expect(mergeVirtualRangeIndexes([0, 1, 2], 5, [3, 8, 9], [3, 4]))
+      .toEqual([0, 1, 2, 3, 4])
+    expect(mergeVirtualRangeIndexes([], 0, [3, 8, 9], []))
+      .toEqual([])
   })
 })
 

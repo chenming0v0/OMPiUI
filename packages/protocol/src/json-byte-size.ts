@@ -1,4 +1,8 @@
-/** 有界计量 JSON 字节，不创建整份序列化字符串；超过预算即返回 budget + 1。 */
+/**
+ * 有界计量 JSON 字节，不创建整份序列化字符串；超过预算即返回 budget + 1。
+ * 不实现 toJSON：线上载荷是 JsonValue（无 Date/Map/Set），Buffer 方向为高估。
+ * 不要用"Date 少计 13 倍"这类离线语义差异推断预算会被击穿。
+ */
 export function jsonByteSize(value: unknown, budget: number): number {
   let bytes = 0;
   const add = (size: number) => {
