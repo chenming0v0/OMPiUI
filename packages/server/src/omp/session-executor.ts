@@ -3,6 +3,12 @@ import type { CommandEnvelope, CommandRecord, CommandStatus, JsonValue } from "@
 
 const MAX_RETAINED_COMMANDS = 512
 
+export function assertCommandId(id: string): void {
+  if (typeof id !== "string" || !id || Buffer.byteLength(id) > 1024) {
+    throw Object.assign(new Error("command id must contain 1 to 1024 UTF-8 bytes"), { code: "INVALID_REQUEST" })
+  }
+}
+
 interface CommandEntry {
   record: CommandRecord
   promise: Promise<JsonValue | undefined>
@@ -28,6 +34,7 @@ export class SessionExecutor {
     envelope: CommandEnvelope,
     run: () => Promise<JsonValue | undefined>,
   ): SubmittedCommand {
+    assertCommandId(envelope.id)
     if (envelope.sessionId && (this.closing.has(envelope.sessionId) || this.closed.has(envelope.sessionId))) {
       throw Object.assign(new Error("session runtime is closing"), { code: "RUNTIME_CLOSING" })
     }

@@ -286,3 +286,29 @@ test("ordinary cancelled requests notify the worker without replaying the comman
   f.child.reply(request, { late: true })
   assert.equal(f.child.sent.filter(message => message.command?.type === "state.get").length, 1)
 })
+
+test("pre-hello cancellation releases command bodies instead of retaining them in ready callbacks", {
+  skip: typeof global.gc !== "function",
+}, async t => {
+  const f = fixture(t, { ready: false })
+  const bodies: Array<WeakRef<object>> = []
+  for (let index = 0; index < 12; index++) {
+    let params: { cwd: string; patch: { text: string } } | undefined = {
+      cwd: ".", patch: { text: `${index}:${"x".repeat(512 * 1024)}` },
+    }
+    bodies.push(new WeakRef(params))
+    const controller = new AbortController()
+    const pending = f.supervisor.catalogCommand("settings.patch", params, { signal: controller.signal })
+    params = undefined
+    const rejected = assert.rejects(pending, { code: "REQUEST_ABORTED" })
+    controller.abort()
+    await rejected
+  }
+  for (let cycle = 0; cycle < 3; cycle++) { await nextTurn(); global.gc!() }
+  assert.ok(bodies.every(body => body.deref() === undefined), "cancelled payload objects must be collectable before hello")
+  assert.deepEqual(f.child.sent, [])
+  f.hello()
+  await f.ready
+  await nextTurn()
+  assert.deepEqual(f.child.sent, [])
+})

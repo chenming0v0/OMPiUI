@@ -21,6 +21,7 @@ import {
   PROTOCOL_VERSION,
   byteString,
   validateParams,
+  jsonByteSize,
 } from "@ompiui/protocol";
 import {
   createRegistryDescribeCapability,
@@ -37,7 +38,7 @@ import {
   summarizeRunState,
 } from "../diagnostics/recorder.ts";
 import type { RuntimeSupervisor } from "./supervisor.ts";
-import { SessionExecutor, type SubmittedCommand } from "./session-executor.ts";
+import { assertCommandId, SessionExecutor, type SubmittedCommand } from "./session-executor.ts";
 import {
   SessionRuntimeRegistry,
   type AttachedSession,
@@ -129,6 +130,8 @@ export class SessionHost {
   private readonly recoveryController = new AbortController();
   private readonly recoveries = new Map<string, Promise<void>>();
   readonly executor: SessionExecutor;
+  private pendingAttachBytes = 0;
+  private pendingAttachCommands = 0;
 
   constructor(
     private readonly supervisor: RuntimeSupervisor,
@@ -586,6 +589,7 @@ export class SessionHost {
     sessionId: string,
     signal?: AbortSignal,
   ): Promise<AttachedSession> {
+    if (signal?.aborted) throw abortError();
     const existing = this.runtimes.get(sessionId);
     if (existing) return existing;
     // Single-flight: concurrent queries (state.get + branch.get fire together)
@@ -593,8 +597,9 @@ export class SessionHost {
     // with SESSION_BUSY.
     return this.runtimes.attachFlight(
       sessionId,
-      async (): Promise<AttachedSession> => {
+      async (attachSignal): Promise<AttachedSession> => {
         const found = await this.findSessionOnDisk(sessionId);
+        if (attachSignal.aborted) throw abortError();
         if (!found) {
           throw Object.assign(new Error("session is not attached"), {
             code: "SESSION_NOT_FOUND",
@@ -613,23 +618,24 @@ export class SessionHost {
                 reusable.sessionId,
                 found.cwd,
                 found.sessionFile,
-                signal,
+                attachSignal,
               ))
             ) {
-              await this.openSessionOnce(found.cwd, found.sessionFile, signal);
+              await this.openSessionOnce(found.cwd, found.sessionFile, attachSignal);
             }
             return this.requireAttached(sessionId);
           } catch (error) {
             lastError = error;
             if (!isSessionBusyError(error) || attempt === ATTACH_BUSY_RETRIES)
               throw error;
-            await waitForRetry(ATTACH_BUSY_DELAY_MS, signal);
+            await waitForRetry(ATTACH_BUSY_DELAY_MS, attachSignal);
             const attached = this.runtimes.get(sessionId);
             if (attached) return attached;
           }
         }
         throw lastError;
       },
+      signal,
     );
   }
 
@@ -877,6 +883,8 @@ export class SessionHost {
     | JsonValue
     | SubmittedCommand
     | Promise<JsonValue | SubmittedCommand | undefined> {
+    if (id !== undefined) assertCommandId(id);
+    if (options.signal?.aborted) throw abortError();
     if (type === "session.close") {
       return withAbort(this.closeSession(sessionId), options.signal).then(
         () => ({ ok: true }),
@@ -898,7 +906,7 @@ export class SessionHost {
       id: id ?? randomUUID(),
       type,
       params,
-    });
+    }, options);
   }
 
   /**
@@ -940,15 +948,19 @@ export class SessionHost {
       id: id ?? randomUUID(),
       type,
       params,
-    });
+    }, options);
   }
 
   submitSessionCommand(
     sessionId: string,
     envelope: Omit<CommandEnvelope, "sessionId">,
+    options: { signal?: AbortSignal } = {},
   ): SubmittedCommand | Promise<SubmittedCommand> {
+    assertCommandId(envelope.id);
+    if (options.signal?.aborted) throw abortError();
     const full: CommandEnvelope = { ...envelope, sessionId };
     const submit = (session: AttachedSession): SubmittedCommand => {
+      if (options.signal?.aborted) throw abortError();
       this.touch(session.sessionId);
       return this.executor.submit(full, async () => {
         const data = await session.worker.command(full.type, full.params);
@@ -958,7 +970,15 @@ export class SessionHost {
     };
     const existing = this.runtimes.get(sessionId);
     if (existing) return submit(existing);
-    return this.ensureAttached(sessionId).then(submit);
+    const bytes = jsonByteSize(full, 32 * 1024 * 1024) + 512;
+    if (this.pendingAttachCommands >= 128 || this.pendingAttachBytes + bytes > 32 * 1024 * 1024)
+      throw Object.assign(new Error("cold session command capacity reached"), { code: "RATE_LIMITED" });
+    this.pendingAttachCommands++;
+    this.pendingAttachBytes += bytes;
+    return this.ensureAttached(sessionId, options.signal).then(submit).finally(() => {
+      this.pendingAttachCommands--;
+      this.pendingAttachBytes -= bytes;
+    });
   }
 
   getCommand(commandId: string): CommandRecord | undefined {
@@ -1102,6 +1122,13 @@ export class SessionHost {
     event: WorkerEvent,
   ): void {
     this.touch(session.sessionId);
+    if (event.channel === "payload.omitted") {
+      diagnostics.record("worker.payload_omitted", {
+        sessionId: session.sessionId, eventType: String(event.event.channel), count: Number(event.event.originalBytes),
+      }, "warn");
+      this.hub.publish({ kind: "session", id: session.sessionId }, "payload.omitted", event.event);
+      return;
+    }
     if (event.channel === "pi.event") {
       const type = event.event.type;
       if (typeof type === "string" && DIAGNOSTIC_AGENT_EVENTS.has(type)) {
@@ -1216,6 +1243,11 @@ export class SessionHost {
   }
 
   private routeCatalogEvent(event: WorkerEvent): void {
+    if (event.channel === "payload.omitted") {
+      diagnostics.record("worker.payload_omitted", { eventType: String(event.event.channel), count: Number(event.event.originalBytes) }, "warn");
+      this.hub.publish({ kind: "server", id: "server" }, "payload.omitted", event.event);
+      return;
+    }
     if (event.channel === "provider.auth") {
       const providerId =
         isJsonObject(event.event) && typeof event.event.providerId === "string"

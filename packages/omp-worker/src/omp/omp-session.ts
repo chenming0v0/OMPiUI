@@ -22,6 +22,7 @@ import {
 } from "../runtime/pagination.js";
 import { buildSessionTreeFromEntries, sessionTreePage } from "../runtime/session-tree.js";
 import type { PiEventMeta, SessionRuntime, Unsubscribe } from "../runtime.js";
+import { assertResultBudget } from "../runtime/result-budget.js";
 import {
   normalizeCwd,
   readChildSessionPreviewPage,
@@ -176,6 +177,7 @@ export class OmpRpcSession implements SessionRuntime {
   }>((buffered) => this.messageStream.push(buffered.event, buffered.live));
   private readonly crashListeners = new Set<(error: Error) => void>();
   private readonly closeListeners = new Set<() => void>();
+  private outputPaused = false;
 
   // 历史条目（append 顺序）+ 活跃分支缓存
   private entries: EntryRecord[] = [];
@@ -1854,8 +1856,9 @@ export class OmpRpcSession implements SessionRuntime {
     await this.client.request({ type: "set_follow_up_mode", mode }, 30_000);
   }
 
-  async clearQueue(): Promise<JsonValue | undefined> {
+  async clearQueue(maxResultBytes?: number): Promise<JsonValue | undefined> {
     const cleared = this.getUserQueueSnapshot(true);
+    assertResultBudget(cleared, maxResultBytes);
     this.userQueue = { steering: [], followUp: [] };
     this.emitUserQueueSnapshot();
     return cleared;
@@ -1864,6 +1867,7 @@ export class OmpRpcSession implements SessionRuntime {
   async removeQueuedMessage(
     kind: "steering" | "followUp",
     index: number,
+    maxResultBytes?: number,
   ): Promise<JsonValue> {
     if (this.queueSubmissionInFlight || this.userQueueDrain) {
       throw Object.assign(new Error("A queued message is being submitted"), {
@@ -1875,6 +1879,7 @@ export class OmpRpcSession implements SessionRuntime {
       throw Object.assign(new Error("queued message not found"), {
         code: "NOT_FOUND",
       });
+    assertResultBudget(entry, maxResultBytes);
     this.userQueue[kind].splice(index, 1);
     this.emitUserQueueSnapshot();
     return entry as unknown as JsonValue;
@@ -2098,7 +2103,10 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   setOutputPaused(paused: boolean): void {
-    this.client.setOutputPaused?.(paused);
+    this.outputPaused = paused;
+    this.messageStream.setPaused(this.outputPaused);
+    this.subagentEvents.setPaused(this.outputPaused);
+    this.client.setOutputPaused?.(this.outputPaused);
   }
 
   async listSubagents(): Promise<JsonValue> {
@@ -2242,6 +2250,7 @@ export class OmpRpcSession implements SessionRuntime {
     this.extensionUi.cancelAll("runtime_disposed");
     this.piEvents.flush();
     this.piEventListeners.clear();
+    this.messageStream.clear();
     this.headListeners.clear();
     this.activityListeners.clear();
     this.subagentEvents.dispose();

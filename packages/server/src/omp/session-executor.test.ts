@@ -7,6 +7,19 @@ function envelope(id: string, sessionId: string | undefined, type: string, param
   return { id, sessionId, type, params }
 }
 
+test("command ids are rejected before execution or retention using their UTF-8 size", () => {
+  const executor = new SessionExecutor()
+  let executed = 0
+  for (const id of ["", "x".repeat(1025), "中".repeat(342)]) {
+    assert.throws(() => executor.submit(envelope(id, "s", "prompt"), async () => {
+      executed++
+      return null
+    }), { code: "INVALID_REQUEST" })
+    assert.equal(executor.get(id), undefined)
+  }
+  assert.equal(executed, 0)
+})
+
 test("SessionExecutor runs session commands immediately without lanes", async () => {
   const executor = new SessionExecutor()
   const order: string[] = []

@@ -13,14 +13,16 @@ function sessionFileKey(sessionFile: string): string {
   return process.platform === "win32" ? normalized.toLowerCase() : normalized
 }
 
+type RuntimeFlight = {
+  promise: Promise<unknown>
+  controller: AbortController
+  waiters: number
+}
+
 export class SessionRuntimeRegistry {
   private readonly sessions = new Map<string, AttachedSession>()
-  private readonly openFlights = new Map<string, {
-    promise: Promise<unknown>
-    controller: AbortController
-    waiters: number
-  }>()
-  private readonly attachFlights = new Map<string, Promise<AttachedSession>>()
+  private readonly openFlights = new Map<string, RuntimeFlight>()
+  private readonly attachFlights = new Map<string, RuntimeFlight>()
 
   get(sessionId: string): AttachedSession | undefined {
     return this.sessions.get(sessionId)
@@ -48,22 +50,38 @@ export class SessionRuntimeRegistry {
   }
 
   async openFlight<T>(sessionFile: string, operation: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
-    const key = sessionFileKey(sessionFile)
-    let flight = this.openFlights.get(key)
+    return this.shareFlight(this.openFlights, sessionFileKey(sessionFile), operation, signal)
+  }
+
+  private async shareFlight<T>(
+    flights: Map<string, RuntimeFlight>, key: string,
+    operation: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal,
+  ): Promise<T> {
+    if (signal?.aborted) throw Object.assign(new Error("request aborted"), { code: "REQUEST_ABORTED" })
+    let flight = flights.get(key)
     if (flight?.controller.signal.aborted) {
       // 上一次打开仍可能在清理 runtime；完成前不能重试并争用它的租约。
-      await flight.promise.catch(() => undefined)
-      return this.openFlight(sessionFile, operation, signal)
+      await new Promise<void>((resolve, reject) => {
+        const finish = () => { signal?.removeEventListener("abort", abort); resolve() }
+        const abort = () => {
+          signal?.removeEventListener("abort", abort)
+          reject(Object.assign(new Error("request aborted"), { code: "REQUEST_ABORTED" }))
+        }
+        signal?.addEventListener("abort", abort, { once: true })
+        void flight!.promise.then(finish, finish)
+        if (signal?.aborted) abort()
+      })
+      return this.shareFlight(flights, key, operation, signal)
     }
     if (!flight) {
       const controller = new AbortController()
       const promise = Promise.resolve().then(() => operation(controller.signal))
       flight = { promise, controller, waiters: 0 }
-      this.openFlights.set(key, flight)
+      flights.set(key, flight)
       const current = flight
       void promise.then(
-        () => { if (this.openFlights.get(key) === current) this.openFlights.delete(key) },
-        () => { if (this.openFlights.get(key) === current) this.openFlights.delete(key) },
+        () => { if (flights.get(key) === current) flights.delete(key) },
+        () => { if (flights.get(key) === current) flights.delete(key) },
       )
     }
     flight.waiters += 1
@@ -95,15 +113,7 @@ export class SessionRuntimeRegistry {
     })
   }
 
-  async attachFlight(sessionId: string, operation: () => Promise<AttachedSession>): Promise<AttachedSession> {
-    const existing = this.attachFlights.get(sessionId)
-    if (existing) return existing
-    const flight = operation()
-    this.attachFlights.set(sessionId, flight)
-    try {
-      return await flight
-    } finally {
-      if (this.attachFlights.get(sessionId) === flight) this.attachFlights.delete(sessionId)
-    }
+  async attachFlight(sessionId: string, operation: (signal: AbortSignal) => Promise<AttachedSession>, signal?: AbortSignal): Promise<AttachedSession> {
+    return this.shareFlight(this.attachFlights, sessionId, operation, signal)
   }
 }

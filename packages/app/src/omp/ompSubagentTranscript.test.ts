@@ -11,6 +11,25 @@ function feed(events: JsonObject[]): OmpSubagentTranscriptItem[] {
 }
 
 describe('subagent message groups', () => {
+  it.each(['x'.repeat(4096), '😀'.repeat(1024)])('advances absolute offsets when clipping continuous preview case %#', delta => {
+    let items: OmpSubagentTranscriptItem[] = []
+    let full = ''
+    for (let index = 0; index < 70; index++) {
+      const offset = full.length
+      full += delta
+      items = appendTranscriptEvent({
+        type: 'message_patch', messageId: 'long', role: 'assistant',
+        phase: 'message_update', textOffset: offset, textDelta: delta,
+      }, items)
+      const item = items[0]
+      expect((item.textOffset ?? 0) + item.text.length).toBe(full.length)
+      expect(full.endsWith(item.text)).toBe(true)
+      expect(new TextEncoder().encode(item.text).byteLength).toBeLessThanOrEqual(256 * 1024)
+      expect(item.text).not.toContain('\ufffd')
+      expect(item.text.length).toBe(Math.min(full.length, delta.length * 64))
+    }
+  })
+
   it('reassembles streamed patches, replacements and message boundaries without duplicating rows', () => {
     const patch = (offset: number, text: string, phase = 'message_update'): JsonObject => ({
       type: 'message_patch', messageId: 'stream-1', role: 'assistant', phase,

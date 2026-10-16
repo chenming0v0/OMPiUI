@@ -715,11 +715,13 @@ class WorkerHostCore {
       return Promise.reject(Object.assign(new Error("worker request capacity reached"), { code: "RATE_LIMITED" }));
     }
     this.requestBytes += bytes;
+    const commandType = command.type;
+    let queuedCommand: typeof command | undefined = { ...command };
     const id = randomUUID();
     const trace = traceWorkerRequest({
       sessionId,
       requestId: id,
-      command: command.type,
+      command: commandType,
       workerPid: this.child.pid,
     });
     return new Promise<JsonValue | undefined>((resolve, reject) => {
@@ -741,7 +743,7 @@ class WorkerHostCore {
         if (!attempted) {
           sendHandle?.cancel();
           this.settleUnsentLate(id);
-        } else if (!late && command.type !== "session.open" && command.type !== "session.close" && generation) {
+        } else if (!late && commandType !== "session.open" && commandType !== "session.close" && generation) {
           // 仅取消 worker 尚未执行的普通请求；已执行命令不撤销、不重放。
           this.requestSender?.send({
             message: { kind: "cancel", id, generation },
@@ -758,7 +760,7 @@ class WorkerHostCore {
       };
       const timeoutMs =
         this.options.requestTimeoutMs ??
-        (TURN_SCOPED_COMMANDS.has(command.type) &&
+        (TURN_SCOPED_COMMANDS.has(commandType) &&
         !process.env.OMPIUI_WORKER_REQUEST_TIMEOUT_MS
           ? undefined
           : requestTimeoutMs());
@@ -781,7 +783,7 @@ class WorkerHostCore {
               // 真正的进程级卡死由心跳看门狗兜底：心跳持续丢失累积到
               // missLimit（12 次 ≈ 60s+）才杀。单条命令超时（如模型响应慢）
               // 只废弃该命令，共享进程继续服务其他会话。
-              const message = `[omp-worker] command ${command.type} timed out after ${timeoutMs}ms (misses=${this.heartbeatMisses}); discarding command, worker stays`;
+              const message = `[omp-worker] command ${commandType} timed out after ${timeoutMs}ms (misses=${this.heartbeatMisses}); discarding command, worker stays`;
               console.error(message);
               logToFile(message);
               diagnostics.record(
@@ -789,7 +791,7 @@ class WorkerHostCore {
                 {
                   sessionId,
                   requestId: id,
-                  command: command.type,
+                  command: commandType,
                   workerPid: this.child.pid,
                   timeoutMs,
                   misses: this.heartbeatMisses,
@@ -799,7 +801,7 @@ class WorkerHostCore {
               );
               reject(
                 Object.assign(
-                  new Error(`Pi worker command timed out: ${command.type}`),
+                  new Error(`Pi worker command timed out: ${commandType}`),
                   {
                     code: "WORKER_RESULT_UNKNOWN",
                   },
@@ -829,7 +831,7 @@ class WorkerHostCore {
       this.pending.set(id, pending);
       void this.ready
         .then((helloMessage) => {
-          if (this.exitHandled || !this.pending.has(id) || signal?.aborted) {
+          if (this.exitHandled || !this.pending.has(id) || signal?.aborted || !queuedCommand) {
             if (this.pending.get(id) === pending) this.pending.delete(id);
             clearTimeout(timer);
             pending.removeAbort?.();
@@ -838,6 +840,8 @@ class WorkerHostCore {
             this.settleUnsentLate(id);
             return;
           }
+          const outgoingCommand = queuedCommand;
+          queuedCommand = undefined;
           this.requestSender ??= new RequestSender(this.child);
           generation = helloMessage.generation;
           sendHandle = this.requestSender.send({
@@ -848,7 +852,7 @@ class WorkerHostCore {
               id,
               generation: helloMessage.generation,
               sessionId,
-              command,
+              command: outgoingCommand,
             },
             done: ({ state, error }) => {
               if (state === "unsent") this.settleUnsentLate(id);
@@ -876,7 +880,10 @@ class WorkerHostCore {
           pending.removeAbort?.();
           reject(error);
         });
-    }).finally(() => { this.requestBytes -= bytes }).then(
+    }).finally(() => {
+      queuedCommand = undefined;
+      this.requestBytes -= bytes;
+    }).then(
       (data) => {
         trace.completed(data);
         return data;

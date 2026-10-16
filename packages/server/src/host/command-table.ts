@@ -213,7 +213,8 @@ const HOST_COMMAND_HANDLERS: Record<string, HostCommandHandler> = {
     limit: optLimit(params, "limit", 500, 5000),
     cursor: optString(params, "cursor"),
   }) as Promise<JsonValue>,
-  "files.read": (ctx, params) => readFileContent(workspace(ctx, params), reqString(params, "path"), optString(params, "ifNoneMatch")) as Promise<JsonValue>,
+  "files.read": (ctx, params) => readFileContent(workspace(ctx, params), reqString(params, "path"),
+    optString(params, "ifNoneMatch"), typeof params.maxBytes === "number" ? params.maxBytes : undefined) as Promise<JsonValue>,
   "files.write": (ctx, params) => writeFileContent(workspace(ctx, params), reqString(params, "path"), reqStringAllowEmpty(params, "content"), {
     ifMatch: optString(params, "ifMatch"),
     encoding: fileEncoding(params) ?? "utf-8",
