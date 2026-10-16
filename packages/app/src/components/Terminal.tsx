@@ -13,7 +13,9 @@ import '@xterm/xterm/css/xterm.css'
 import type { TerminalStreamServerFrame } from '@ompiui/protocol'
 import { getHostTerminalWebSocketUrl, issueHostTerminalToken } from '../omp/transport/index.js'
 import { openPiSocket, PI_SOCKET_OPEN, type PiSocket } from '../omp/ompSocket'
-import { TerminalInputQueue, type TerminalInputState } from '../omp/terminalInput'
+import { type TerminalInputQueue, type TerminalInputState } from '../omp/terminalInput'
+import { getTerminalInputQueue } from '../omp/terminalInputStore'
+import { createTerminalOutputConsumer } from '../omp/terminalOutput'
 import { useTheme } from '../hooks'
 import { layoutStore, useLayoutStore } from '../store/layoutStore'
 import { useInputCapabilities } from '../hooks/useInputCapabilities'
@@ -618,12 +620,16 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
 
     terminalRef.current = terminal
     fitAddonRef.current = fitAddon
-    const input = new TerminalInputQueue(state => {
+    const input = getTerminalInputQueue(terminalId)
+    const unsubscribeInput = input.subscribe(state => {
       if (effectActive && mountedRef.current) setInputState(state)
     })
     inputQueueRef.current = input
-    setInputState(input.state)
-    setInputNotice(null)
+    queueMicrotask(() => {
+      if (!effectActive || !mountedRef.current) return
+      setInputState(input.state)
+      setInputNotice(null)
+    })
     disposeData = terminal.onData(sendTerminalData)
 
     // 连接 WebSocket（带自动重连）
@@ -703,6 +709,13 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
         const socket = openPiSocket(getHostTerminalWebSocketUrl(terminalId, ticket.token, cursor))
         socketRef.current = socket
         let supportsInputAcknowledgements = false
+        let supportsOutputAcknowledgements = false
+        const output = createTerminalOutputConsumer(
+          (data, consumed) => terminal.write(data, consumed),
+          consumed => { cursorRef.current = Math.max(cursorRef.current ?? 0, consumed) },
+          consumed => socket.send(JSON.stringify({ type: 'output_ack', cursor: consumed })),
+          () => mountedRef.current && effectActive && socketRef.current === socket && socket.readyState === PI_SOCKET_OPEN,
+        )
 
         socket.onopen = () => handleConnected(socket)
 
@@ -719,6 +732,7 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
           if (!frame) return
           if (frame.type === 'hello') {
             supportsInputAcknowledgements = frame.inputAck === true
+            supportsOutputAcknowledgements = frame.outputAck === true
             const current = layoutStore.getState().panelTabs.find(tab => tab.id === terminalId)
             layoutStore.updateTerminalTab(terminalId, {
               title: manualTerminalTitlesRef.current && current?.customTitle ? current.customTitle : frame.terminal.title,
@@ -727,8 +741,7 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
               cwd: frame.terminal.cwd
             })
           } else if (frame.type === 'output') {
-            terminal.write(frame.data)
-            cursorRef.current = frame.cursor
+            output.write(frame.data, frame.cursor, supportsOutputAcknowledgements)
           } else if (frame.type === 'title') {
             layoutStore.updateTerminalTab(terminalId, {
               shellTitle: frame.title,
@@ -737,7 +750,7 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
           } else if (frame.type === 'ready') {
             // 首连（未带 cursor）时 ready.cursor 就是已重放到的位置；带 cursor
             // 重连时取较大值，避免服务端把游标报回到更早位置导致重复输出。
-            cursorRef.current = cursorRef.current === undefined ? frame.cursor : Math.max(cursorRef.current, frame.cursor)
+            output.ready(frame.cursor)
             layoutStore.updateTerminalTab(terminalId, { status: 'connected' })
             input.connect(socket, supportsInputAcknowledgements)
           } else if (frame.type === 'input_ack') {
@@ -788,6 +801,7 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
         }
 
         socket.onclose = e => {
+          output.dispose()
           handleDisconnected({ socket, code: e.code, reason: e.reason })
         }
 
@@ -843,7 +857,8 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
         // ignore snapshot persistence failures
       }
 
-      input.dispose()
+      unsubscribeInput()
+      if (socketRef.current) input.disconnect(socketRef.current)
       inputQueueRef.current = null
       socketRef.current?.close()
       socketRef.current = null

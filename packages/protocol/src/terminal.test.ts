@@ -12,5 +12,5 @@ test("terminal stream frames keep the cursor and protocol version explicit", () 
 
   assert.equal(input.type, "input")
   assert.equal(output.cursor, 42)
-  assert.equal(TERMINAL_STREAM_PROTOCOL_VERSION, 1)
+  assert.equal(TERMINAL_STREAM_PROTOCOL_VERSION, 2)
 })
