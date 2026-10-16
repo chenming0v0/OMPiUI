@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { resolveGoalImages } from "../runtime/goal-images.js";
 import { copyFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import type {
@@ -1505,11 +1506,7 @@ export class OmpRpcSession implements SessionRuntime {
    * 自动暂停。状态经 state.get 的 goal 字段 + 合成 goal_updated 事件到达
    * 前端目标栏。goal 只随 worker 进程存活（RPC 无自定义条目可持久化）。
    */
-  async manageGoal(params: {
-    op: "set" | "pause" | "resume" | "drop";
-    objective?: string;
-    images?: ImageInput[];
-  }): Promise<JsonObject> {
+  async manageGoal(params: import("@ompiui/protocol").PiCommandParams["goal"]): Promise<JsonObject> {
     const now = Date.now();
     if (params.op === "set") {
       const objective = (params.objective ?? "").trim();
@@ -1519,10 +1516,11 @@ export class OmpRpcSession implements SessionRuntime {
           { code: "INVALID_REQUEST" },
         );
       }
+      const images = resolveGoalImages(params.images ?? [], this.goal);
       this.goal = {
         id: randomUUID(),
         objective,
-        images: structuredClone(params.images ?? []),
+        images,
         status: "active",
         tokensUsed: 0,
         timeUsedSeconds: 0,
@@ -1531,7 +1529,7 @@ export class OmpRpcSession implements SessionRuntime {
       };
       this.goalContinuations = 0;
       this.goalAnnouncementPending = true;
-      this.goalImages = structuredClone(params.images ?? []);
+      this.goalImages = structuredClone(images);
     } else if (isJsonObject(this.goal)) {
       const goal = { ...this.goal };
       if (params.op === "pause") {
@@ -1868,6 +1866,7 @@ export class OmpRpcSession implements SessionRuntime {
     kind: "steering" | "followUp",
     index: number,
     maxResultBytes?: number,
+    returnContent = true,
   ): Promise<JsonValue> {
     if (this.queueSubmissionInFlight || this.userQueueDrain) {
       throw Object.assign(new Error("A queued message is being submitted"), {
@@ -1879,10 +1878,11 @@ export class OmpRpcSession implements SessionRuntime {
       throw Object.assign(new Error("queued message not found"), {
         code: "NOT_FOUND",
       });
-    assertResultBudget(entry, maxResultBytes);
+    const result = returnContent ? entry : { removed: true };
+    assertResultBudget(result, maxResultBytes);
     this.userQueue[kind].splice(index, 1);
     this.emitUserQueueSnapshot();
-    return entry as unknown as JsonValue;
+    return result as unknown as JsonValue;
   }
 
   async compact(customInstructions?: string): Promise<JsonValue | undefined> {

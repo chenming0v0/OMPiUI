@@ -4,6 +4,37 @@ import { WebSocket } from "ws";
 import { BodySink } from "./sink.ts";
 import { decodeFrameMessage } from "./protocol.ts";
 
+test("concurrent sinks share admission before sending and drain large chunks in order", async () => {
+  const frames: Buffer[] = [];
+  const socket = {
+    readyState: WebSocket.OPEN, bufferedAmount: 1024 * 1024 - 32786,
+    send(data: Buffer) { frames.push(data); this.bufferedAmount += data.length + 14; },
+  };
+  const sinks = Array.from({ length: 4 }, () => new BodySink(socket as unknown as WebSocket));
+  const source = { pause() {}, resume() {} };
+  try {
+    sinks.forEach((sink, index) => sink.write(index + 1, Buffer.alloc(32768, index), source));
+    assert.equal(frames.length, 1);
+    assert.ok(socket.bufferedAmount <= 1024 * 1024);
+    socket.bufferedAmount = 0;
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(frames.length, 4);
+    assert.deepEqual(frames.map(frame => decodeFrameMessage(frame)!.connId).sort(), [1, 2, 3, 4]);
+    socket.bufferedAmount = 0;
+    const data = Buffer.alloc(2 * 1024 * 1024, 7);
+    sinks[0]!.write(5, data, source);
+    let ended = false;
+    sinks[0]!.finish(5, () => { ended = true; });
+    for (let i = 0; i < 5 && !ended; i++) {
+      assert.ok(socket.bufferedAmount <= 1024 * 1024);
+      socket.bufferedAmount = 0;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    assert.equal(ended, true);
+    assert.deepEqual(Buffer.concat(frames.map(frame => decodeFrameMessage(frame)!).filter(frame => frame.connId === 5).map(frame => frame.payload)), data);
+  } finally { sinks.forEach(sink => sink.dispose()); }
+});
+
 test("rate-limited batches pause the source and send the end marker only after the body", async () => {
   const frames: Buffer[] = [];
   const order: string[] = [];

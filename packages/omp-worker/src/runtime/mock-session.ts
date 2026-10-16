@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { resolveGoalImages } from "./goal-images.js";
 import { assertResultBudget } from "./result-budget.js";
 import {
   existsSync,
@@ -1089,6 +1090,7 @@ export class MockPiSession implements SessionRuntime {
     kind: "steering" | "followUp",
     index: number,
     maxResultBytes?: number,
+    returnContent = true,
   ): Promise<JsonValue> {
     const queue = kind === "steering" ? this.steeringQueue : this.followUpQueue;
     const entry = queue[index];
@@ -1096,10 +1098,11 @@ export class MockPiSession implements SessionRuntime {
       throw Object.assign(new Error("queued message not found"), {
         code: "NOT_FOUND",
       });
-    assertResultBudget(entry, maxResultBytes);
+    const result = returnContent ? entry : { removed: true };
+    assertResultBudget(result, maxResultBytes);
     queue.splice(index, 1);
     this.emitEvent({ type: "queue_update", ...this.getQueueSnapshot() });
-    return entry as unknown as JsonValue;
+    return result as unknown as JsonValue;
   }
 
   async abort(): Promise<JsonValue | undefined> {
@@ -1360,11 +1363,7 @@ export class MockPiSession implements SessionRuntime {
   }
 
   // mock 无续跑循环：只维护目标注册表本身，前端状态栏可联调
-  async manageGoal(params: {
-    op: "set" | "pause" | "resume" | "drop";
-    objective?: string;
-    images?: ImageInput[];
-  }): Promise<JsonObject> {
+  async manageGoal(params: import("@ompiui/protocol").PiCommandParams["goal"]): Promise<JsonObject> {
     const now = Date.now();
     if (params.op === "set") {
       const objective = (params.objective ?? "").trim();
@@ -1374,10 +1373,11 @@ export class MockPiSession implements SessionRuntime {
           { code: "INVALID_REQUEST" },
         );
       }
+      const images = resolveGoalImages(params.images ?? [], this.goal);
       this.goal = {
         id: randomUUID(),
         objective,
-        images: structuredClone(params.images ?? []),
+        images,
         status: "active",
         tokensUsed: 0,
         timeUsedSeconds: 0,

@@ -17,6 +17,40 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
+it('backs off sustained PTY rejection without losing input and resets after acceptance', () => {
+  vi.useFakeTimers()
+  const input = new TerminalInputQueue()
+  const frames: Array<{ inputId: number; data: string }> = []
+  let reject = true
+  const socket = {
+    readyState: PI_SOCKET_OPEN, close: vi.fn(),
+    send(data: string) {
+      const frame = JSON.parse(data)
+      frames.push(frame)
+      input.acknowledge(socket, reject
+        ? { type: 'input_ack', inputId: frame.inputId, accepted: false, retryAfterMs: 50 }
+        : { type: 'input_ack', inputId: frame.inputId, accepted: true })
+    },
+  } as unknown as PiSocket
+  input.connect(socket, true)
+  const text = 'x'.repeat(32768)
+  input.enqueue(text)
+  vi.advanceTimersByTime(60_000)
+  expect(frames.length).toBeLessThan(25)
+  expect(frames.every(frame => frame.data === text && frame.inputId === 1)).toBe(true)
+  expect(input.pendingText).toBe(text)
+  reject = false
+  vi.advanceTimersByTime(5_000)
+  expect(input.pendingBytes).toBe(0)
+  const count = frames.length
+  reject = true
+  input.enqueue('next')
+  vi.advanceTimersByTime(50)
+  expect(frames.length).toBe(count + 2)
+  expect(socket.close).not.toHaveBeenCalled()
+  input.dispose()
+})
+
 it('shapes consecutive control-character pastes within the real server wire budget', async () => {
   const { RateBudget } = await vi.importActual<{
     RateBudget: new (burst: number, rate: number) => unknown

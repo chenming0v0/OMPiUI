@@ -27,7 +27,7 @@ export interface SessionRuntime {
   getBranchPage(cursor: string | undefined, limit: number, maxBytes: number, sync?: BranchSyncRequest): JsonObject | Promise<JsonObject>
   getTree(params?: { cursor?: string; limit?: number; maxBytes?: number }): JsonValue | Promise<JsonValue>
   getAttachment(entryId: string, blockIndex: number, offset?: number): JsonObject | Promise<JsonObject>
-  getSubagentMessages(params: { subagentId?: string; sessionFile?: string; fromByte?: number }): JsonValue | Promise<JsonValue>
+  getSubagentMessages(params: import("@ompiui/protocol").SubagentMessagesParams): JsonValue | Promise<JsonValue>
   getRegistry(): RegistrySnapshot | Promise<RegistrySnapshot>
   listSkills(): JsonValue | Promise<JsonValue>
   listPrompts(): JsonValue | Promise<JsonValue>
@@ -54,7 +54,7 @@ export interface SessionRuntime {
   setSteeringMode(mode: "all" | "one-at-a-time"): Promise<void>
   setFollowUpMode(mode: "all" | "one-at-a-time"): Promise<void>
   clearQueue(maxResultBytes?: number): Promise<JsonValue | undefined>
-  removeQueuedMessage(kind: "steering" | "followUp", index: number, maxResultBytes?: number): Promise<JsonValue>
+  removeQueuedMessage(kind: "steering" | "followUp", index: number, maxResultBytes?: number, returnContent?: boolean): Promise<JsonValue>
   /** 原子提交队列中的一条（kind=steering 本轮 / followUp 下一轮）：受理成功才出队 */
   sendQueuedMessage(kind: "steering" | "followUp", index: number): Promise<void>
 
@@ -74,7 +74,7 @@ export interface SessionRuntime {
   getCommandCompletions(name: string, prefix: string): Promise<JsonValue | undefined>
 
   /** OMPiUI 轻量 goal 运行时（`goal` 命令落点）：set/pause/resume/drop + 续跑循环 */
-  manageGoal(params: { op: "set" | "pause" | "resume" | "drop"; objective?: string; images?: ImageInput[] }): Promise<JsonObject>
+  manageGoal(params: import("@ompiui/protocol").PiCommandParams["goal"]): Promise<JsonObject>
 
   navigateTree(
     entryId: string,

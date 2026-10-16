@@ -15,7 +15,7 @@ import { getHostTerminalWebSocketUrl, issueHostTerminalToken } from '../omp/tran
 import { openPiSocket, PI_SOCKET_OPEN, type PiSocket } from '../omp/ompSocket'
 import { type TerminalInputQueue, type TerminalInputState } from '../omp/terminalInput'
 import { getTerminalInputQueue } from '../omp/terminalInputStore'
-import { createTerminalOutputConsumer } from '../omp/terminalOutput'
+import { createTerminalOutputConsumer, terminalNeedsReplay } from '../omp/terminalOutput'
 import { useTheme } from '../hooks'
 import { layoutStore, useLayoutStore } from '../store/layoutStore'
 import { useInputCapabilities } from '../hooks/useInputCapabilities'
@@ -466,7 +466,9 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
       typeof freshTab?.rows === 'number' && Number.isSafeInteger(freshTab.rows) && freshTab.rows > 0 ? freshTab.rows : undefined
 
     const restoreSize = effectBuffer && effectCols && effectRows ? { cols: effectCols, rows: effectRows } : undefined
-    const shouldConnect = freshTab?.status !== 'exited'
+    const shouldConnect = terminalNeedsReplay(freshTab)
+    let finalCursor = freshTab?.finalCursor
+    let exitedReplayAttempts = 0
 
     mountedRef.current = true
     cursorRef.current = effectCursor
@@ -641,6 +643,7 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
     let intentionalClose = false // 标记主动关闭
 
     const sendResize = () => {
+      if (finalCursor !== undefined) return
       const socket = socketRef.current
       if (socket && socket.readyState === PI_SOCKET_OPEN) {
         socket.send(
@@ -661,7 +664,7 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
       if (!mountedRef.current || !effectActive) return
       if (socketRef.current !== socket) return
       reconnectAttempt = 0
-      layoutStore.updateTerminalTab(terminalId, { status: 'connected' })
+      layoutStore.updateTerminalTab(terminalId, { status: finalCursor === undefined ? 'connected' : 'exited' })
       sendResize()
     }
 
@@ -673,8 +676,8 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
       if (!mountedRef.current) return
 
       const current = layoutStore.getState().panelTabs.find(tab => tab.id === terminalId)
-      if (current?.status === 'exited') return
-      layoutStore.updateTerminalTab(terminalId, { status: 'disconnected' })
+      if (finalCursor !== undefined && cursorRef.current === finalCursor) return
+      if (current?.status !== 'exited') layoutStore.updateTerminalTab(terminalId, { status: 'disconnected' })
 
       if (intentionalClose || code === 1000) {
         terminal.write('\r\n\x1b[90m[Connection closed]\x1b[0m\r\n')
@@ -703,6 +706,9 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
 
       await outputDrainRef.current
       if (!mountedRef.current || !effectActive) return
+      if (finalCursor !== undefined && cursorRef.current === finalCursor) return
+      // 已退出终端只做有界只读补读；失效会话留待用户重新打开时再查询。
+      if ((finalCursor !== undefined || liveTab.status === 'exited') && ++exitedReplayAttempts > 3) return
       fitAddon.fit()
       const cursor = cursorRef.current
 
@@ -737,6 +743,7 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
           const frame = parseServerFrame(value)
           if (!frame) return
           if (frame.type === 'hello') {
+            finalCursor = frame.terminal.status === 'exited' ? frame.terminal.cursor : undefined
             supportsInputAcknowledgements = frame.inputAck === true
             supportsOutputAcknowledgements = frame.outputAck === true
             const current = layoutStore.getState().panelTabs.find(tab => tab.id === terminalId)
@@ -744,7 +751,9 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
               title: manualTerminalTitlesRef.current && current?.customTitle ? current.customTitle : frame.terminal.title,
               shellTitle: frame.terminal.title,
               shell: frame.terminal.shell,
-              cwd: frame.terminal.cwd
+              cwd: frame.terminal.cwd,
+              finalCursor,
+              status: finalCursor === undefined ? 'connected' : 'exited',
             })
           } else if (frame.type === 'output') {
             output.write(frame.data, frame.cursor, supportsOutputAcknowledgements)
@@ -757,19 +766,29 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
             // 首连（未带 cursor）时 ready.cursor 就是已重放到的位置；带 cursor
             // 重连时取较大值，避免服务端把游标报回到更早位置导致重复输出。
             output.ready(frame.cursor)
-            layoutStore.updateTerminalTab(terminalId, { status: 'connected' })
-            input.connect(socket, supportsInputAcknowledgements)
+            if (finalCursor === undefined) {
+              layoutStore.updateTerminalTab(terminalId, { status: 'connected' })
+              input.connect(socket, supportsInputAcknowledgements)
+            }
           } else if (frame.type === 'input_ack') {
             input.acknowledge(socket, frame)
           } else if (frame.type === 'exit') {
-            cursorRef.current = frame.cursor
+            finalCursor = frame.cursor
+            input.disconnect(socket)
             layoutStore.updateTerminalTab(terminalId, {
               status: 'exited',
-              cursor: frame.cursor
+              finalCursor: frame.cursor
             })
-            if (socketRef.current?.readyState === PI_SOCKET_OPEN) {
-              socketRef.current.close(1000, 'terminal exited')
-            }
+            void output.drain().then(() => {
+              if (!mountedRef.current || !effectActive) return
+              // exit 在输出之后到达，但 xterm 的解析回调可能尚未执行。
+              cursorRef.current = frame.cursor
+              layoutStore.updateTerminalSnapshot(terminalId, {
+                buffer: serializeAddon.serialize(), cursor: frame.cursor,
+                scrollY: terminal.buffer.active.viewportY, rows: terminal.rows, cols: terminal.cols,
+              })
+              if (socketRef.current === socket && socket.readyState === PI_SOCKET_OPEN) socket.close(1000, 'terminal exited')
+            })
           } else if (frame.type === 'problem') {
             if (frame.problem.code === 'TERMINAL_CURSOR_EXPIRED') {
               // cursor 已失效（ring 丢弃过、或会话被重建）。重连时必须省略

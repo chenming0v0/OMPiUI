@@ -18,7 +18,8 @@ func Proxy(target *url.URL, dial DialFunc, preserveHost bool, forwardingToken ..
 		DialContext:           dial,
 		ForceAttemptHTTP2:     false,
 		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
+		// 覆盖服务端 packages 命令的 60 秒预算，并保留响应传输余量。
+		ResponseHeaderTimeout: 90 * time.Second,
 	}
 	return &httputil.ReverseProxy{
 		Transport: transport,

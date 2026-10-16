@@ -135,7 +135,7 @@ func main() {
 }
 
 func proxyHTTPServer(handler http.Handler) *http.Server {
-	return &http.Server{ReadHeaderTimeout: 10 * time.Second, IdleTimeout: gateway.IdleTimeout, Handler: handler}
+	return &http.Server{ReadHeaderTimeout: 10 * time.Second, IdleTimeout: gateway.IdleTimeout, ConnState: gateway.IdleConnState, Handler: handler}
 }
 
 func controlHandler(ts *tsnet.Server, shutdown func()) http.Handler {
