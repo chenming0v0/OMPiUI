@@ -34,6 +34,7 @@
   "save": "Save locally",
   "refresh": "Collect missing logs",
   "later": "Later",
+  "dontShowAgain": "Don't show this error again",
   "uploadFailed": "Upload failed. The report and successful links remain on this device. Retry or save locally.",
   "copyFailed": "Copy failed. Select and copy the link manually."
 }
