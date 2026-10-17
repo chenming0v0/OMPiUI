@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process"
+import { resolveOmpCommand } from "./omp-command.js"
 
 /**
  * OMP 版本探测与最低版本门禁。
@@ -45,6 +46,16 @@ export function ompTooOldError(version: string): Error {
 const detected = new Map<string, string | null>()
 
 /**
+ * 版本探测与 RPC 客户端共用入口解析：npm shim 只用于定位入口脚本，脚本由
+ * shebang 指定的解释器执行。不能用 `shell: true` —— 它把命令拼成一行交给
+ * cmd.exe，带空格的路径会被拆成多段参数（CI 的 `omp npm config` 就探测不到版本）。
+ */
+function versionInvocation(bin?: string): { command: string; args: string[] } {
+  const invocation = resolveOmpCommand(bin?.trim() || "omp")
+  return { command: invocation.command, args: [...invocation.args, "--version"] }
+}
+
+/**
  * 同步探测（worker 启动时跑一次）：hello/registry 直接带真实版本，
  * 不用等首次会话打开。失败/无法解析返回 null —— 只影响展示，
  * 会话打开时另有异步探测兜底。
@@ -54,11 +65,12 @@ export function detectOmpVersionSync(bin?: string, timeoutMs = 5_000): string | 
   if (detected.has(key)) return detected.get(key) ?? null
   let version: string | null = null
   try {
-    // omp 是外部 CLI，参数是固定 flag；win32 上 shell:true 才能解析 PATH 里的 .cmd
-    const probe = spawnSync(key, ["--version"], {
+    // omp 是外部 CLI，参数是固定 flag，直接以 argv 拉起解析后的入口。
+    const invocation = versionInvocation(key)
+    const probe = spawnSync(invocation.command, invocation.args, {
       encoding: "utf8",
       timeout: timeoutMs,
-      shell: process.platform === "win32",
+      shell: false,
       windowsHide: true,
     })
     version = parseOmpVersion(`${probe.stdout ?? ""}\n${probe.stderr ?? ""}`)
@@ -77,9 +89,10 @@ export function detectOmpVersion(bin?: string, timeoutMs = 10_000): Promise<stri
   return new Promise<string | null>(resolve => {
     let child: ReturnType<typeof spawn>
     try {
-      child = spawn(key, ["--version"], {
+      const invocation = versionInvocation(key)
+      child = spawn(invocation.command, invocation.args, {
         stdio: ["ignore", "pipe", "pipe"],
-        shell: process.platform === "win32",
+        shell: false,
         windowsHide: true,
       })
     } catch {
