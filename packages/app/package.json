@@ -1,7 +1,7 @@
 {
   "name": "@ompiui/app",
   "version": "0.6.31",
-  "description": "Pi coding agent client UI",
+  "description": "OMP coding agent client UI",
   "license": "GPL-3.0-only",
   "type": "module",
   "scripts": {
@@ -15,7 +15,7 @@
     "format:check": "prettier . --check",
     "test": "vitest",
     "test:run": "vitest run",
-    "test:pi": "vitest run src/pi",
+    "test:omp": "vitest run src/omp",
     "validate": "npm run typecheck && npm run lint && npm run test:run && npm run build",
     "release:prepare": "node scripts/prepare-release.mjs",
     "check": "npm run lint && npm run test:run && npm run build",

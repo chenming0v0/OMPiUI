@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SettingsBackupFile } from './settingsBackup'
 
 describe('settingsBackup', () => {
+  // Static imports would initialize store singletons before each test seeds or restores storage.
   beforeEach(() => {
     localStorage.clear()
     sessionStorage.clear()
@@ -17,14 +18,11 @@ describe('settingsBackup', () => {
     localStorage.setItem('ompiui:toast-enabled', 'false')
     localStorage.setItem('ompiui-srv:local:last-directory', '/workspace/project')
     localStorage.setItem('ompiui-srv:local:auto-approve-enabled', 'true')
-    localStorage.setItem('ompiui-service-env-vars', JSON.stringify([{ key: 'OMPIUI_USE_SYSTEM_PI', value: '1' }]))
+    localStorage.setItem('ompiui-service-env-vars', JSON.stringify([{ key: 'OMPI_OMP_BIN', value: '/opt/omp/bin/omp' }]))
 
     const { exportSettingsBackup } = await import('./settingsBackup')
     const { data } = await exportSettingsBackup()
-    const backup = JSON.parse(new TextDecoder().decode(data)) as {
-      schemaVersion: number
-      modules: Record<string, unknown>
-    }
+    const backup: SettingsBackupFile = JSON.parse(new TextDecoder().decode(data))
 
     expect(backup.schemaVersion).toBe(4)
     expect((backup.modules.theme as { presetId: string }).presetId).toBe('claude')
@@ -35,7 +33,7 @@ describe('settingsBackup', () => {
     expect(
       (backup.modules.perServerStorage as { entries: Record<string, string> }).entries['ompiui-srv:local:last-directory'],
     ).toBe('/workspace/project')
-    expect((backup.modules.service as { envVars: Array<{ key: string }> }).envVars[0]?.key).toBe('OMPIUI_USE_SYSTEM_PI')
+    expect(backup.modules.service.envVars).toEqual([{ key: 'OMPI_OMP_BIN', value: '/opt/omp/bin/omp' }])
   })
 
   it('restores settings from legacy module snapshots', async () => {
@@ -133,16 +131,38 @@ describe('settingsBackup', () => {
     }
   })
 
-  it('still accepts the PiUI app name in schema 4 backups', async () => {
+  it.each(['OMPiUI', 'PiUI'])('imports %s backups without reviving retired SDK settings', async app => {
     const { exportSettingsBackup, importSettingsBackup } = await import('./settingsBackup')
     const { data } = await exportSettingsBackup()
     const backup = JSON.parse(new TextDecoder().decode(data))
-    backup.app = 'PiUI'
+    const retained = [
+      { key: 'OMPI_OMP_BIN', value: 'C:/Program Files/omp/omp.exe' },
+      { key: 'PI_CODING_AGENT_DIR', value: 'D:/omp/agent' },
+      { key: 'HTTPS_PROXY', value: 'http://127.0.0.1:7890' },
+    ]
+    backup.app = app
     backup.modules.perServerStorage.entries = { 'ompiui-srv:local:last-directory': '/legacy' }
+    backup.modules.service = {
+      autoStart: false,
+      envVars: [
+        { key: 'OMPIUI_USE_SYSTEM_PI', value: '1' },
+        { key: 'OMPIUI_SDK_PATH', value: '/old/pi-sdk' },
+        { key: 'PIUI_USE_SYSTEM_PI', value: '1' },
+        { key: 'PIUI_SDK_PATH', value: '/older/pi-sdk' },
+        ...retained,
+        { key: 'PIUI_PUBLIC_BASE_URL', value: 'https://panel.example.com' },
+      ],
+    }
 
     await importSettingsBackup(new File([JSON.stringify(backup)], 'legacy.json'))
 
+    const expected = [...retained, { key: 'OMPIUI_PUBLIC_BASE_URL', value: 'https://panel.example.com' }]
     expect(localStorage.getItem('ompiui-srv:local:last-directory')).toBe('/legacy')
+    expect(localStorage.getItem('ompiui-auto-start-service')).toBe('false')
+    expect(JSON.parse(localStorage.getItem('ompiui-service-env-vars')!)).toEqual(expected)
+
+    const { data: reexported } = await exportSettingsBackup()
+    expect(JSON.parse(new TextDecoder().decode(reexported)).modules.service.envVars).toEqual(expected)
   })
 
   it('does not expand the existing credential export policy to arbitrary storage', async () => {

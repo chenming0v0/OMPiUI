@@ -1,17 +1,13 @@
 import type { EventCursor, JsonObject, JsonValue, Problem } from "@ompiui/protocol"
 
-export const OMP_WORKER_PROTOCOL_VERSION = 3 as const
+export const OMP_WORKER_PROTOCOL_VERSION = 4 as const
 export const OMP_WORKER_HEARTBEAT_INTERVAL_MS = 5_000
 
 export interface WorkerHello {
   kind: "hello"
   workerProtocolVersion: number
-  piSdkVersion: string
-  piSdkVerified: boolean
-  /** Present when an external SDK failed to load and the worker fell back to
-   * the bundled SDK; the server surfaces it through health so the UI can
-   * report why the user-installed Pi is not in use. */
-  piSdkFallback?: { source: string; message: string }
+  /** 实际探测到的 CLI 版本；mock 驱动或版本探测失败时为 null。 */
+  ompVersion: string | null
   generation: string
   processId: number
   heartbeatIntervalMs: number

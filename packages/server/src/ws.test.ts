@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, describe, it } from "node:test";
 
-// Parallel test files each spawn SDK workers; the default handshake budget
+// Parallel test files each spawn OMP workers; the default handshake budget
 // is too tight when several spawn at once on a loaded machine.
 process.env.OMPIUI_WORKER_HANDSHAKE_TIMEOUT_MS ??= "60000";
 
@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   EVENT_WS_SUBPROTOCOL,
+  PROTOCOL_VERSION,
   eventStreamKey,
   type EventEnvelope,
 } from "@ompiui/protocol";
@@ -121,7 +122,7 @@ describe("event websocket", () => {
     ws.send(
       JSON.stringify({
         type: "subscribe",
-        protocolVersion: 2,
+        protocolVersion: PROTOCOL_VERSION,
         streams: [
           { kind: "server", id: "server" },
           { kind: "session", id: sessionId },

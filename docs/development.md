@@ -26,6 +26,10 @@ app (React/Vite) <-> HTTP + WebSocket <-> server (Node)
 
 OMPiUI 通过官方 `omp --mode rpc` 跨进程调用 OMP，而不是在 Node 服务中嵌入 Agent SDK。OMP 负责执行编程任务；OMPiUI 负责界面、连接和运行时协调。
 
+桌面端同样使用宿主机安装的官方 `omp`，不捆绑 Agent SDK，也不存在宿主机／内置 Pi SDK 切换。默认从 `PATH` 查找 `omp`；需要指定版本或安装位置时，在本机服务的环境变量中设置 `OMPI_OMP_BIN` 为 CLI 可执行文件路径，然后重启本地服务。旧 `OMPIUI_USE_SYSTEM_PI`、`OMPIUI_SDK_PATH` 已失效，桌面设置加载与备份导入会移除它们（包括旧 `PIUI_` 前缀），不会把 SDK 目录误转换为可执行文件路径。官方 OMP 仍使用的 `PI_CODING_AGENT_DIR` 等变量不属于迁移残留。
+
+健康检查以 `ompVersion: string | null` 返回已启动 worker 探测到的 CLI 版本；未有握手、mock 驱动或探测失败时为 `null`，不再返回 Pi SDK 的 verified/fallback 字段，也不以基线版本冒充实测版本。读取健康检查不会启动 Agent 会话。此元数据切换使用 OMPiUI 协议 3 / `ompiui.events.v3`、worker 协议 4，前端、服务端与 worker 必须配套升级；官方 OMP RPC 协商版本 2 和原生会话文件不变。
+
 OMP 原生模型与凭据配置来自 `~/.omp/agent/models.yml`、`config.yml`。会话目录必须与官方终端保持互通；浏览和刷新不能触发 Agent 或写入历史，约束见根目录 [AGENTS.md](../AGENTS.md)。
 
 ## TUI 实现
@@ -46,6 +50,7 @@ OMP 原生模型与凭据配置来自 `~/.omp/agent/models.yml`、`config.yml`�
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `OMPIUI_DRIVER` | `omp` | `omp` 执行真实任务；`mock` 用于隔离验证 |
+| `OMPI_OMP_BIN` | `PATH` 中的 `omp` | 官方 OMP CLI 可执行文件路径（如 `C:/Tools/omp.exe`）；不是 SDK 包目录 |
 | `OMPIUI_HOST` / `OMPIUI_PORT` | `127.0.0.1` / `8787` | 后端监听地址与端口 |
 | `OMPIUI_PUBLIC_BASE_URL` | 空 | 反向代理或隧道后的公网基址 |
 | `OMPIUI_AUTH_TOKEN` | 自动生成 | 后端 Bearer token，默认持久化到 `~/.ompiui/auth-token` |

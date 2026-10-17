@@ -22,7 +22,7 @@ export function assertRuntimeTargetBindings(impls: RuntimeTargetImplementations 
   if (missingTargets.length > 0) {
     throw Object.assign(
       new Error(`session commands without a runtime target:\n- ${missingTargets.join("\n- ")}`),
-      { code: "PI_SDK_INCOMPATIBLE" },
+      { code: "OMP_RUNTIME_INCOMPATIBLE" },
     )
   }
   const missing: string[] = []
@@ -37,7 +37,7 @@ export function assertRuntimeTargetBindings(impls: RuntimeTargetImplementations 
   if (missing.length > 0) {
     throw Object.assign(
       new Error(`session runtime targets are not implemented by a driver:\n- ${missing.join("\n- ")}`),
-      { code: "PI_SDK_INCOMPATIBLE" },
+      { code: "OMP_RUNTIME_INCOMPATIBLE" },
     )
   }
 }

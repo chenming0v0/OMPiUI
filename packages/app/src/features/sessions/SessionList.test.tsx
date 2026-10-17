@@ -73,7 +73,7 @@ describe('SessionListItem', () => {
     expect(markSessionNotificationsReadMock).toHaveBeenCalledWith('session-1', 'completed')
   }, 15_000)
 
-  it('hides rename when the Pi backend does not support session metadata updates', () => {
+  it('hides rename when the OMP backend does not support session metadata updates', () => {
     render(
       <SessionListItem
         session={session}
@@ -105,9 +105,9 @@ describe('SessionListItem', () => {
     expect(screen.queryByText('Parent session')).not.toBeInTheDocument()
   })
 
-  it('shows durable delete only when the Pi capability is enabled', () => {
+  it('shows durable delete only when the OMP capability is enabled', () => {
     const onDelete = vi.fn()
-    piNativeStatusForTest({ sessionCommands: [{ name: 'session.delete', scope: 'session', source: 'pi-sdk' }] })
+    piNativeStatusForTest({ sessionCommands: [{ name: 'session.delete', scope: 'session', source: 'omp-rpc' }] })
     render(
       <SessionListItem
         session={session}

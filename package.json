@@ -17,7 +17,6 @@
     "admin": "npm run admin -w @ompiui/admin --",
     "tui:server": "npm run admin -- tui",
     "tui:relay": "npm run relay -- tui",
-    "dev:server:pi": "node scripts/dev-server-omp.mjs",
     "dev:host": "npm run dev -w @ompiui/server",
     "dev:app": "npm run dev -w @ompiui/app",
     "build": "npm run build -w @ompiui/protocol && npm run build -w @ompiui/omp-worker && npm run build -w @ompiui/tui && npm run build -w @ompiui/relay && npm run build -w @ompiui/server && npm run build -w @ompiui/admin && npm run build -w @ompiui/app",

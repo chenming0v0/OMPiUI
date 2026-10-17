@@ -1,4 +1,5 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent"
+import { Box, Container, Text } from "@oh-my-pi/pi-tui"
 
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
@@ -87,7 +88,6 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("ui-test-tui", {
     description: "Mount a component widget and a custom() panel (extension TUI mirror)",
     handler: async (_args, ctx) => {
-      const { Box, Container, Text } = await import("@earendil-works/pi-tui")
       ctx.ui.setWidget("tui-panel", (tui, theme) => {
         const container = new Container()
         container.addChild(new Text(theme.fg("accent", "TUI component widget"), 1, 0))

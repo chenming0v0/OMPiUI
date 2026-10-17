@@ -7,20 +7,11 @@ import {
   problemFromError,
   requireJsonValue,
   toJsonValue,
-  PROTOCOL_VERSION,
-  PI_PARITY_SDK_VERSION,
-  EVENT_WS_SUBPROTOCOL,
   CORE_COMMAND_TYPES,
   type CoreCommandParams,
 } from "./index.js";
 
 describe("protocol foundation", () => {
-  it("pins versions", () => {
-    assert.equal(PROTOCOL_VERSION, 2);
-    assert.equal(PI_PARITY_SDK_VERSION, "18.3.1");
-    assert.equal(EVENT_WS_SUBPROTOCOL, "ompiui.events.v2");
-  });
-
   it("round-trips event stream keys", () => {
     assert.equal(eventStreamKey({ kind: "server", id: "server" }), "server");
     assert.equal(

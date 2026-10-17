@@ -24,9 +24,8 @@ export type HealthResponse = {
   ok: true
   protocolVersion: typeof import("./version.js").PROTOCOL_VERSION
   service: "ompiui-server"
-  piSdkVersion: string
-  piSdkVerified?: boolean
-  piSdkFallback?: { source: string; message: string } | null
+  /** 实际探测到的 OMP CLI 版本；无握手或尚未探测到版本时为 null。 */
+  ompVersion: string | null
   processId?: number
   /** 只读握手快照；不代表任何会话运行时已被启动。 */
   workerReady?: boolean

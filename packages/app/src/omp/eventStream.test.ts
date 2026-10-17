@@ -8,6 +8,7 @@
  *   会把所有绑定源 session 的 pane 切走（分屏串扰）。
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
+import { PROTOCOL_VERSION } from '@ompiui/protocol'
 import { piEventStream } from './eventStream'
 import { piBranchStore, piSessionStateStore, piCommandStore } from './state/index.js'
 import { ompSubagentStore } from './ompSubagentStore'
@@ -244,7 +245,7 @@ describe('omp.subagent routing across streams', () => {
 
   function subagentEnvelope(stream: { kind: 'session' | 'server'; id: string }, payload: unknown) {
     return {
-      protocolVersion: 2,
+      protocolVersion: PROTOCOL_VERSION,
       stream,
       cursor: { epoch: 'test-epoch', sequence: 1 },
       eventId: 'event-1',

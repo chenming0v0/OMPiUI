@@ -124,7 +124,7 @@ export const SlashCommandMenu = forwardRef<SlashCommandMenuHandle, SlashCommandM
     }
   }, [isOpen])
 
-  // 加载命令列表：Pi TUI 内置命令（始终展示）+ 会话 registry 的扩展命令
+  // 加载命令列表：前端内置命令（始终展示）+ OMP registry 的扩展命令
   useEffect(() => {
     if (!isOpen) return
 
@@ -141,7 +141,7 @@ export const SlashCommandMenu = forwardRef<SlashCommandMenuHandle, SlashCommandM
       loadPiSlashCommands(sessionId)
         .then(descriptors => {
           if (requestId !== requestIdRef.current) return
-          // 内置命令名由前端本地处理，同名 registry 命令（含 pi-sdk 内置命令
+          // 内置命令名由前端本地处理，同名 registry 命令（含 OMP RPC 内置命令
           // 的镜像）直接跳过，避免重复项。仅补充扩展命令。
           const frontendNames = new Set(frontend.map(cmd => cmd.name))
           const sessionCommands: Command[] = descriptors

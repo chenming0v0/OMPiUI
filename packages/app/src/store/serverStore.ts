@@ -28,7 +28,7 @@ export interface ServerHealth {
   lastCheck?: number // 上次检查时间戳
   error?: string // 错误信息
   details?: string // 原始诊断信息
-  version?: string // 服务器版本
+  version?: string // 实际探测到的 OMP CLI 版本
 }
 
 export interface ServerSettingsBackup {
@@ -592,7 +592,7 @@ class ServerStore {
           status: 'online',
           latency,
           lastCheck: Date.now(),
-          version: typeof data.piSdkVersion === 'string' ? data.piSdkVersion : undefined,
+          version: typeof data.ompVersion === 'string' ? data.ompVersion : undefined,
           details,
         }
         return commitHealth(health)

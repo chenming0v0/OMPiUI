@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto"
 import { readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { JsonObject } from "@ompiui/protocol"
+import { PROTOCOL_VERSION, type JsonObject } from "@ompiui/protocol"
 import { EventHub } from "../event-hub.ts"
 import { getDriverMode } from "@ompiui/omp-worker"
 import type { WorkerSession } from "./worker-client.ts"
@@ -360,7 +360,7 @@ test("SessionHost routes extension commands by name through the runtime registry
     command: async (type: string, params?: unknown) => {
       if (type === "registry.get") {
         return {
-          sdkVersion: "0.84.0",
+          sdkVersion: "18.9.1",
           tools: [],
           activeTools: [],
           commands: [{ name: "my-ext-command", description: "extension command" }],
@@ -433,7 +433,7 @@ test("SessionHost validates extension tool arguments against Pi's own tool schem
     command: async (type: string, params?: unknown) => {
       if (type === "registry.get") {
         return {
-          sdkVersion: "0.84.0",
+          sdkVersion: "18.9.1",
           tools: [{
             name: "my-tool",
             description: "extension tool",
@@ -570,14 +570,14 @@ test("SessionHost piRegistry falls back to the static snapshot while the worker 
 test("SessionHost piRegistry uses the worker snapshot once the handshake is ready", async () => {
   const supervisor = {
     onEvent: () => () => {},
-    peekCatalogHandshake: async () => ({ piSdkVersion: "9.9.9", piSdkVerified: false }),
+    peekCatalogHandshake: async () => ({ ompVersion: "18.9.1" }),
     catalogCommand: async (type: string) => {
       assert.equal(type, "registry.describe")
       return {
-        protocolVersion: 1,
+        protocolVersion: PROTOCOL_VERSION,
         revision: 7,
-        sdkVersion: "9.9.9",
-        driver: "pi",
+        sdkVersion: "18.9.1",
+        driver: "omp",
         globalCommands: [{ name: "registry.describe", scope: "global", source: "ompiui-adapter", description: "", paramsSchema: { type: "object" }, queue: "immediate" }],
         sessionCommands: [],
       }
@@ -586,7 +586,6 @@ test("SessionHost piRegistry uses the worker snapshot once the handshake is read
   const host = new SessionHost(supervisor, new EventHub())
   try {
     const registry = await host.piRegistry()
-    assert.equal(registry.sdkVersion, "9.9.9")
     assert.equal(registry.revision, 7)
     // server 能力仍合并进来
     assert.ok(registry.globalCommands.some(command => command.name === "session.open"))

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { WebSocket } from "ws";
+import { PROTOCOL_VERSION } from "@ompiui/protocol";
 import { EventHub } from "../event-hub.ts";
 import { attachEventWebSocket, closeEventWebSocket } from "../ws.ts";
 import { diagnostics, type DiagnosticFields } from "./recorder.ts";
@@ -38,7 +39,7 @@ test("refresh reconnect records correlated subscription/resync/state without dis
     socket.send(
       JSON.stringify({
         type: "subscribe",
-        protocolVersion: 2,
+        protocolVersion: PROTOCOL_VERSION,
         streams: [{ kind: "session", id: "s1" }],
         cursors: {},
       }),
@@ -60,7 +61,7 @@ test("refresh reconnect records correlated subscription/resync/state without dis
   second.socket.send(
     JSON.stringify({
       type: "diagnostic",
-      protocolVersion: 2,
+      protocolVersion: PROTOCOL_VERSION,
       event: "connected",
       clientId: "reload-page",
       navigation: "reload",
@@ -69,7 +70,7 @@ test("refresh reconnect records correlated subscription/resync/state without dis
   second.socket.send(
     JSON.stringify({
       type: "diagnostic",
-      protocolVersion: 2,
+      protocolVersion: PROTOCOL_VERSION,
       event: "state",
       clientId: "reload-page",
       sessionId: "s1",
@@ -107,7 +108,7 @@ test("refresh reconnect records correlated subscription/resync/state without dis
   second.socket.send(
     JSON.stringify({
       type: "diagnostic",
-      protocolVersion: 2,
+      protocolVersion: PROTOCOL_VERSION,
       event: "state",
       clientId: "reload-page",
       sessionId: "s2",
@@ -118,14 +119,14 @@ test("refresh reconnect records correlated subscription/resync/state without dis
     second.socket.send(
       JSON.stringify({
         type: "diagnostic",
-        protocolVersion: 2,
+        protocolVersion: PROTOCOL_VERSION,
         event: "visibility",
         clientId: "reload-page",
         visibility: "hidden",
       }),
     );
   }
-  second.socket.send(JSON.stringify({ type: "ping", protocolVersion: 2 }));
+  second.socket.send(JSON.stringify({ type: "ping", protocolVersion: PROTOCOL_VERSION }));
   await waitFor(() => second.frames.some((frame) => frame.type === "pong"));
   assert.ok(
     records.filter((record) => record.event === "browser.visibility").length <=

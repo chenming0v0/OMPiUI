@@ -14,7 +14,7 @@ export interface ServiceSettingsBackup {
 }
 
 export const SERVICE_ENV_EXAMPLES: EnvVar[] = [
-  { key: 'OMPIUI_SDK_PATH', value: '/path/to/pi-coding-agent' },
+  { key: 'OMPI_OMP_BIN', value: '/path/to/omp' },
   { key: 'PI_CODING_AGENT_DIR', value: '~/.omp/agent' },
   { key: 'PI_CODING_AGENT_SESSION_DIR', value: '~/.omp/custom-sessions' },
   { key: 'OMPIUI_OMP_SESSION_DIRS', value: '~/omp-share/sessions' },
@@ -26,11 +26,36 @@ export const SERVICE_ENV_EXAMPLES: EnvVar[] = [
 
 interface ServiceStoreSnapshot {
   autoStart: boolean
-  useSystemPiSdk: boolean
   envVars: EnvVar[]
   running: boolean
   startedByUs: boolean
   starting: boolean
+}
+
+function normalizeStoredEnvVars(raw: unknown): EnvVar[] {
+  if (!Array.isArray(raw)) return []
+  // 改名前存量条目里的 PIUI_ 前缀跟随环境变量更名（PIUI_EMBEDDED 是与
+  // omp CLI 的既有约定，不在此列）；重名时保留先出现的。
+  return raw
+    .filter(
+      (item: unknown): item is EnvVar =>
+        !!item &&
+        typeof item === 'object' &&
+        'key' in item &&
+        typeof item.key === 'string' &&
+        'value' in item &&
+        typeof item.value === 'string',
+    )
+    // 旧 SDK 路径是目录，不可迁移为 OMPI_OMP_BIN 的可执行文件路径。
+    .filter(item => !/^(?:OMPIUI|PIUI)_(?:USE_SYSTEM_PI|SDK_PATH)$/i.test(item.key.trim()))
+    .map(item => ({
+      key:
+        item.key === 'PIUI_EMBEDDED' || !item.key.startsWith('PIUI_')
+          ? item.key
+          : `OMPIUI_${item.key.slice('PIUI_'.length)}`,
+      value: item.value,
+    }))
+    .filter((item, index, all) => all.findIndex(other => other.key === item.key) === index)
 }
 
 class ServiceStore {
@@ -51,21 +76,17 @@ class ServiceStore {
     }
     try {
       const raw = localStorage.getItem(STORAGE_KEY_ENV_VARS)
-      const parsed = raw ? JSON.parse(raw) : []
-      // 改名前存量条目里的 PIUI_ 前缀跟随环境变量更名（PIUI_EMBEDDED 是与
-      // omp CLI 的既有约定，不在此列）；重名时保留先出现的
-      this._envVars = Array.isArray(parsed)
-        ? parsed
-            .filter(item => item && typeof item.key === 'string' && typeof item.value === 'string')
-            .map(item => ({
-              key:
-                item.key === 'PIUI_EMBEDDED' || !item.key.startsWith('PIUI_')
-                  ? item.key
-                  : `OMPIUI_${item.key.slice('PIUI_'.length)}`,
-              value: item.value,
-            }))
-            .filter((item, index, all) => all.findIndex(other => other.key === item.key) === index)
-        : []
+      this._envVars = normalizeStoredEnvVars(raw ? JSON.parse(raw) : [])
+      if (raw !== null) {
+        const normalized = JSON.stringify(this._envVars)
+        if (raw !== normalized) {
+          try {
+            localStorage.setItem(STORAGE_KEY_ENV_VARS, normalized)
+          } catch {
+            // Keep the usable settings even when storage cannot be updated.
+          }
+        }
+      }
     } catch {
       this._envVars = []
     }
@@ -78,12 +99,6 @@ class ServiceStore {
 
   get envVars() {
     return this._envVars
-  }
-
-  get useSystemPiSdk() {
-    return this._envVars.some(
-      item => item.key.trim().toUpperCase() === 'OMPIUI_USE_SYSTEM_PI' && item.value.trim() === '1',
-    )
   }
 
   get envVarsRecord(): Record<string, string> {
@@ -110,12 +125,6 @@ class ServiceStore {
       // Storage can be unavailable in restricted webviews.
     }
     this.notify()
-  }
-
-  setUseSystemPiSdk(value: boolean) {
-    const envVars = this._envVars.filter(item => item.key.trim().toUpperCase() !== 'OMPIUI_USE_SYSTEM_PI')
-    if (value) envVars.push({ key: 'OMPIUI_USE_SYSTEM_PI', value: '1' })
-    this.setEnvVars(envVars)
   }
 
   upsertEnvVar(key: string, value: string) {
@@ -152,7 +161,6 @@ class ServiceStore {
   private buildSnapshot(): ServiceStoreSnapshot {
     return {
       autoStart: this._autoStart,
-      useSystemPiSdk: this.useSystemPiSdk,
       envVars: this._envVars,
       running: this._running,
       startedByUs: this._startedByUs,
@@ -177,17 +185,7 @@ export function exportServiceSettingsBackup(): ServiceSettingsBackup {
 
 export function importServiceSettingsBackup(raw: unknown): void {
   const parsed = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : undefined
-  const envVars = Array.isArray(parsed?.envVars)
-    ? parsed.envVars
-        .filter(
-          (item): item is EnvVar =>
-            !!item &&
-            typeof item === 'object' &&
-            typeof (item as Record<string, unknown>).key === 'string' &&
-            typeof (item as Record<string, unknown>).value === 'string',
-        )
-        .map(item => ({ key: item.key, value: item.value }))
-    : []
+  const envVars = normalizeStoredEnvVars(parsed?.envVars)
 
   serviceStore.setAutoStart(parsed?.autoStart !== false)
   serviceStore.setEnvVars(envVars)

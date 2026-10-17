@@ -114,7 +114,7 @@ export const HOST_COMMAND_SPECS = [
   {
     name: "commands.get",
     domain: "commands",
-    description: "Read a queued Pi command lifecycle record by id",
+    description: "Read a queued OMP command lifecycle record by id",
     paramsSchema: objectSchema({ id: STRING }, ["id"]),
     idempotent: true,
   },
