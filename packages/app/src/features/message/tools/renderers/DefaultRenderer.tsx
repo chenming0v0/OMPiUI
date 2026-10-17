@@ -7,7 +7,7 @@ import { getMaterialIconUrl } from '../../../../utils/materialIcons'
 import { themeStore } from '../../../../store/themeStore'
 import { useLiveToolOutput } from '../../../../omp/liveToolOutput'
 import type { ToolRendererProps, ExtractedToolData } from '../types'
-import { AuthenticatedImage } from '../../../attachment'
+import { AttachmentItem } from '../../../attachment'
 import { HistoryImage } from '../../HistoryImage'
 
 // ============================================
@@ -76,17 +76,24 @@ export function DefaultRenderer({ execution, partKey, data, onFullscreenChange }
         </div>
       ) : null}
       {data.images?.length ? (
-        <div className="grid grid-cols-2 gap-2">
+        <div className="flex flex-wrap items-start gap-2">
           {data.images.map((image, index) =>
             image.block ? (
-              <HistoryImage key={`${image.mimeType}-${index}`} block={image.block} id={`${partKey}:image:${index}`} />
+              <HistoryImage key={`${image.mimeType}-${index}`} block={image.block} id={`${partKey}:image:${index}`} onFullscreenChange={onFullscreenChange} />
             ) : (
-              <AuthenticatedImage
+              <AttachmentItem
                 key={`${image.mimeType}-${index}`}
-                src={image.url}
-                requiresAuth={image.requiresAuth}
-                alt={`${tool} result ${index + 1}`}
-                className="max-h-64 w-full object-contain border border-border-200 bg-bg-100"
+                attachment={{
+                  id: `${partKey}:image:${index}`,
+                  type: 'file',
+                  displayName: data.filePath?.split(/[\\/]/).pop() || `${tool}-${index + 1}.${image.mimeType.split('/')[1] || 'png'}`,
+                  url: image.url,
+                  mime: image.mimeType,
+                  requiresAuth: image.requiresAuth,
+                }}
+                expandable
+                size="sm"
+                onFullscreenChange={onFullscreenChange}
               />
             ),
           )}

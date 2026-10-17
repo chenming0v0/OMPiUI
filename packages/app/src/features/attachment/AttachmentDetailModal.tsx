@@ -93,12 +93,13 @@ export const AttachmentDetailModal = memo(function AttachmentDetailModal({
     return {
       id: `attachment:${attachment.id ?? attachment.displayName}`,
       zIndex: DESKTOP_FULLSCREEN_LAYER_Z_INDEX,
+      backdrop: !!isImage,
       title: titleNode,
       headerRight: headerRightNode,
       onClose,
       content:
         isImage && hasUrl ? (
-          <ZoomableImage url={attachment.url!} alt={attachment.displayName} />
+          <ZoomableImage key={attachment.url} url={attachment.url!} alt={attachment.displayName} />
         ) : hasContent ? (
           <CodePreview code={attachment.content!} language={detectLanguage(attachment.displayName) || 'text'} />
         ) : (
@@ -170,7 +171,6 @@ function DownloadButton({ attachment }: { attachment: Attachment }) {
 function ZoomableImage({ url, alt }: { url: string; alt: string }) {
   const { t } = useTranslation(['commands', 'common'])
   const containerRef = useRef<HTMLDivElement>(null)
-  const imgRef = useRef<HTMLImageElement>(null)
 
   const [scale, setScale] = useState(1)
   const [translate, setTranslate] = useState({ x: 0, y: 0 })
@@ -236,7 +236,7 @@ function ZoomableImage({ url, alt }: { url: string; alt: string }) {
   )
 
   const handleWheel = useCallback(
-    (e: React.WheelEvent) => {
+    (e: WheelEvent) => {
       e.preventDefault()
       e.stopPropagation()
       const cur = stateRef.current
@@ -246,6 +246,13 @@ function ZoomableImage({ url, alt }: { url: string; alt: string }) {
     },
     [zoomToPoint],
   )
+
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    container.addEventListener('wheel', handleWheel, { passive: false })
+    return () => container.removeEventListener('wheel', handleWheel)
+  }, [handleWheel])
 
   const zoomIn = useCallback(() => {
     setScale(prev => clamp(prev + ZOOM_STEP, MIN_SCALE, MAX_SCALE))
@@ -422,7 +429,6 @@ function ZoomableImage({ url, alt }: { url: string; alt: string }) {
         ref={containerRef}
         className="flex-1 min-h-0 overflow-hidden relative"
         style={{ touchAction: 'none', cursor: isDragging ? 'grabbing' : 'grab' }}
-        onWheel={handleWheel}
         onMouseDown={handleMouseDown}
         onDoubleClick={handleDoubleClick}
       >
@@ -435,7 +441,6 @@ function ZoomableImage({ url, alt }: { url: string; alt: string }) {
           }}
         >
           <img
-            ref={imgRef}
             src={url}
             alt={alt}
             onLoad={() => setImgLoaded(true)}
