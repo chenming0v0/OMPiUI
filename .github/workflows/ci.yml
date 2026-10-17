@@ -161,6 +161,9 @@ jobs:
         with:
           bun-version: 1.3.14
 
+      - name: Verify Windows entry resolution under Bun
+        run: bun test packages/omp-worker/src/omp/omp-config-command.test.ts packages/omp-worker/src/omp/rpc-launch.test.ts
+
       # 固定 issue #79 的真实 npm 版本，覆盖 Node 与打包 Bun 后端。
       - name: Install npm OMP and verify model role configuration
         shell: pwsh
@@ -170,15 +173,28 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Cannot install npm OMP fixture' }
           $shim = Join-Path $prefix 'node_modules/.bin/omp.cmd'
           $cli = Join-Path $prefix 'node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js'
-          node scripts/verify-model-roles.mjs $shim $cli
+          $env:PATH = "$(Join-Path $prefix 'node_modules/.bin');$env:PATH"
+          node scripts/verify-model-roles.mjs omp $shim $cli
           if ($LASTEXITCODE -ne 0) { throw 'Node model role round trip failed' }
-          bun scripts/verify-model-roles.mjs $shim $cli
+          bun scripts/verify-model-roles.mjs omp $shim $cli
           if ($LASTEXITCODE -ne 0) { throw 'Bun model role round trip failed' }
           $compiled = Join-Path $env:RUNNER_TEMP 'verify-model-roles.exe'
           bun build scripts/verify-model-roles.mjs --compile --outfile $compiled
           if ($LASTEXITCODE -ne 0) { throw 'Cannot compile Bun configuration fixture' }
-          & $compiled $shim $cli
+          & $compiled omp $shim $cli
           if ($LASTEXITCODE -ne 0) { throw 'Compiled Bun model role round trip failed' }
+          node scripts/verify-omp-rpc-entry.mjs omp $shim $cli
+          if ($LASTEXITCODE -ne 0) { throw 'Node RPC entry verification failed' }
+          bun scripts/verify-omp-rpc-entry.mjs omp $shim $cli
+          if ($LASTEXITCODE -ne 0) { throw 'Bun RPC entry verification failed' }
+          $rpcCompiled = Join-Path $env:RUNNER_TEMP 'verify-omp-rpc-entry.exe'
+          bun build scripts/verify-omp-rpc-entry.mjs --compile --outfile $rpcCompiled
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot compile Bun RPC entry fixture' }
+          & $rpcCompiled omp $shim $cli
+          if ($LASTEXITCODE -ne 0) { throw 'Compiled Bun RPC entry verification failed' }
+          $env:OMPI_OMP_BIN = $shim
+          node scripts/verify-session-safety.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'npm OMP session interoperability failed' }
 
   test-app:
     name: test app ${{ matrix.platform }} ${{ matrix.shard }}/4
