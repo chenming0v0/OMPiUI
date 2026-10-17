@@ -1,5 +1,6 @@
-## [Unreleased]
+## [v0.6.32] - 2026-10-17
 
+- fix: Windows 下配置命令与 RPC 客户端共用 OMP 入口解析；npm shim 只用于定位入口脚本，脚本交给 shebang 指定的 Bun/Node 解释器执行，含空格和 `&` 的会话路径保持单个 argv，JSON 参数不再经过 cmd.exe 重解析。Windows 环境键统一大写，PATH 只剩 POSIX shim 时明确报错。
 - fix: 聊天虚拟列表在生成测量行前按当前行数和测量缓存校验索引，阻止过期范围把空项送入 directDomUpdates 后触发 `Cannot read properties of undefined (reading 'start')`；正常范围保留缓存引用，不增加数组复制。补充缩短、清空和恢复的回归覆盖，并在真实聊天组件中注入过期索引验证 todo 更新、折叠和滚动。
 - fix: 对齐官方 OMP 扩展 UI 的 widget/status 字段，按稳定组件标识更新并正确移除，修复扩展面板出现请求 ID、空白卡片堆积和状态文字丢失；面板只显示可读内容，过滤终端颜色控制码和空输出，补齐中英文提示。
 - ui: 模型 Read 等工具返回的图片改为紧凑缩略图，点击即可在遮罩层放大查看；保留原图清晰度，支持缩放、拖动和关闭，不增加标注或编辑功能。统一内嵌、历史和需认证图片的预览入口，查看期间阻止工具自动收起，非图片附件行为不变。
@@ -10,6 +11,8 @@
 - fix: 移除失效的“使用宿主机 Pi SDK”开关及旧 SDK 环境配置，改为说明官方 `omp --mode rpc` 与 `OMPI_OMP_BIN`；保留官方 OMP 的 `PI_CODING_AGENT_*` 配置。
 - refactor: 健康检查和 worker 握手统一为实际 `ompVersion`（未知为 `null`），删除伪 SDK 验证／回退元数据，能力来源统一为 OMP RPC／扩展；前后端协议升至 3、worker 协议升至 4，需配套升级，官方 OMP RPC 和会话格式不变。
 - chore: 修正 OMP 开发／测试入口、扩展夹具依赖及运行时架构说明；保留 PiUI 类型溯源，不再将本地类型声明描述为正在使用 Pi SDK。
+- test: Windows 入口解析断言按规范路径比较，新增 script／npm-shim／path-shim／环境变量／Bun 运行时 shim 五种入口的启动回归与真实 RPC 入口验收；临时目录为 8.3 短名（CI 的 `RUNNER~1`）时不再因路径拼写差异误报。
+- chore: 根包、全部 workspace、互依赖、npm 锁文件及 Tauri/Cargo 统一为 `0.6.32`；官方 OMP 会话目录与格式不变。
 
 ## [v0.6.31] - 2026-10-17
 
