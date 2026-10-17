@@ -42,7 +42,7 @@ import {
   type StableChatPage,
 } from './chatPageModel'
 import { useTheme } from '../../hooks/useTheme'
-import { getStreamingHotIndexes, getTimelineRowYClass, mergeVirtualRangeIndexes } from './chatAreaUtils'
+import { getStreamingHotIndexes, getTimelineRowYClass, guardVirtualizerRange, mergeVirtualRangeIndexes } from './chatAreaUtils'
 import { useAutoScroll } from './virtual/useAutoScroll'
 import { useEmptyWorkingShellGate } from './virtual/useEmptyWorkingShellGate'
 import { HistoryPrefetchScheduler } from './virtual/historyPrefetchScheduler'
@@ -613,6 +613,7 @@ export const ChatArea = memo(
       // 一次性 overrides（resizeItem + shouldAdjust）——对齐 oc
       const overridesApplied = useRef(false)
       if (!overridesApplied.current) {
+        guardVirtualizerRange(virtualizer)
         // virtual-core 未在公开类型中暴露的内部字段，按需声明（仅此块内使用）
         type VirtualizerInternals = {
           measurementsCache: (VirtualItem | undefined)[]
