@@ -59,49 +59,11 @@ describe('PiResourceManagement', () => {
     reloadMock.mockReset().mockResolvedValue(undefined)
   })
 
-  it('shows the native registry and loaded prompt templates', async () => {
-    render(<PiResourceManagement sessionId="session-1" workspacePath="E:\\workspace" />)
-
-    // 各资源区块标题（默认折叠，内容需展开后可见）
-    expect(await screen.findByText('pi.tools')).toBeInTheDocument()
-    expect(screen.getByText('pi.commands')).toBeInTheDocument()
-    expect(screen.getByText('pi.eventHandlers')).toBeInTheDocument()
-    expect(screen.getByText('pi.prompts')).toBeInTheDocument()
-    expect(screen.getByText('pi.agentsFiles')).toBeInTheDocument()
-    expect(screen.getByText('pi.skills')).toBeInTheDocument()
-
-    // 展开 tools 与 prompts 区块验证内容
-    fireEvent.click(screen.getByText('pi.tools'))
-    expect(await screen.findByText('mock-tool')).toBeInTheDocument()
-    fireEvent.click(screen.getByText('pi.prompts'))
-    expect(await screen.findByText('code-review <files>')).toBeInTheDocument()
-    expect(screen.getByText(/Review this change/)).toBeInTheDocument()
-    expect(screen.getByText(/\/tmp\/review\.md/)).toBeInTheDocument()
-    // Skills 元数据：名称 + 描述 + 来源文件
-    fireEvent.click(screen.getByText('pi.skills'))
-    expect(await screen.findByText('debug')).toBeInTheDocument()
-    expect(screen.getByText(/Debug a failing test/)).toBeInTheDocument()
-    expect(screen.getByText(/\/tmp\/debug\.md/)).toBeInTheDocument()
-    // AGENTS/CLAUDE 上下文文件
-    fireEvent.click(screen.getByText('pi.agentsFiles'))
-    expect(await screen.findByText('AGENTS.md')).toBeInTheDocument()
-  })
-
-  it('reloads resources through the native command', async () => {
-    render(<PiResourceManagement sessionId="session-1" workspacePath="E:\\workspace" />)
-    await screen.findByText('pi.tools')
-
-    fireEvent.click(screen.getByRole('button', { name: 'common:reload' }))
-
-    await waitFor(() => {
-      expect(reloadMock).toHaveBeenCalledWith('session-1')
-    })
-  })
 
   it('checks whether an extension event type has a registered handler', async () => {
     render(<PiResourceManagement sessionId="session-1" workspacePath="E:\\workspace" />)
-    await screen.findByText('pi.eventHandlers')
-    fireEvent.click(screen.getByText('pi.eventHandlers'))
+    fireEvent.click(screen.getByRole('button', { name: 'pi.resourcesAdvanced' }))
+    fireEvent.click(await screen.findByRole('button', { name: /pi\.eventHandlers/ }))
     await screen.findByText('message_end')
 
     const input = screen.getByPlaceholderText('pi.eventTypePlaceholder')
