@@ -9,7 +9,11 @@ import { AttachmentItem } from '../attachment'
 
 type ImageReference = { sessionId?: string; entryId: string; blockIndex: number }
 
-export const HistoryImage = memo(function HistoryImage({ block, id }: { block: ImageContent; id: string }) {
+export const HistoryImage = memo(function HistoryImage({ block, id, onFullscreenChange }: {
+  block: ImageContent
+  id: string
+  onFullscreenChange?: (isOpen: boolean) => void
+}) {
   const { currentSessionId } = useSessionNavigation()
   const reference = (block as ImageContent & { attachment?: ImageReference }).attachment
   const [data, setData] = useState('')
@@ -71,7 +75,7 @@ export const HistoryImage = memo(function HistoryImage({ block, id }: { block: I
     }
   }
   if (!reference || data)
-    return <AttachmentItem attachment={attachment} expandable size="sm" defaultExpanded={Boolean(reference)} />
+    return <AttachmentItem attachment={attachment} expandable size="sm" onFullscreenChange={onFullscreenChange} />
   return (
     <div className="min-w-0 max-w-full">
       <button

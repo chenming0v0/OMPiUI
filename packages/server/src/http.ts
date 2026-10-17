@@ -7,7 +7,6 @@ import {
 import { networkInterfaces } from "node:os";
 import { gzip } from "node:zlib";
 import {
-  PI_PARITY_SDK_VERSION,
   PROTOCOL_VERSION,
   hostCommandBodyLimit,
   isErrorCode,
@@ -656,10 +655,9 @@ export function createAppServer(
       }
 
       if (method === "GET" && p === "/api/v1/host/health") {
-        // health 是高频只读探测：只读 worker 握手的同步快照（未就绪返回
-        // undefined，回退 parity 常量），绝不在请求路径上孵化/等待 worker
-        // ——worker 冷启动动辄数秒，等握手会把「活着」的服务误判为不可达。
-        // worker 由启动时的后台预热负责孵化。
+        // health 是高频只读探测：只读现有 worker 握手快照。没有握手或
+        // 实际版本未知时返回 null，绝不在请求路径上孵化/等待 worker。
+        // worker 就绪不代表已打开会话，也不代表已验证 OMP 运行时兼容性。
         const handshake = await supervisor
           .peekCatalogHandshake()
           .catch(() => undefined);
@@ -667,9 +665,7 @@ export function createAppServer(
           ok: true,
           protocolVersion: PROTOCOL_VERSION,
           service: "ompiui-server",
-          piSdkVersion: handshake?.piSdkVersion ?? PI_PARITY_SDK_VERSION,
-          piSdkVerified: handshake?.piSdkVerified,
-          piSdkFallback: handshake?.piSdkFallback ?? null,
+          ompVersion: handshake?.ompVersion ?? null,
           processId: process.pid,
           workerReady: !!handshake,
           startedAt: Math.round(Date.now() - process.uptime() * 1000),
@@ -1085,8 +1081,6 @@ export function statusForError(error: unknown): number {
       return 409;
     case "EXTENSION_UI_TUI_ONLY":
       return 501;
-    case "PI_SDK_VERSION_MISMATCH":
-      return 503;
     case "HOST_CALL_TIMEOUT":
       return 504;
     case "REGISTRY_UNAVAILABLE":

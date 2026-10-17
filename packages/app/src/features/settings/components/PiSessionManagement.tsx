@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState, memo } from 'react'
+import { useCallback, useEffect, useId, useMemo, useState, memo, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
+import { ArrowRightLeft, Brain, Download, MessageSquareText, Plus, Puzzle, RefreshCw, Terminal, TriangleAlert } from 'lucide-react'
 import type { SessionInfo } from '../../../omp/vendor/pi-coding-agent'
 import type { JsonObject, JsonValue } from '@ompiui/protocol'
 import { Button } from '../../../components/ui/Button'
@@ -29,6 +30,7 @@ function record(value: JsonValue | undefined): JsonObject {
 export function PiSessionManagement({ sessionId, workspacePath }: { sessionId: string | null; workspacePath: string }) {
   const { t } = useTranslation(['settings', 'common'])
   const state = usePiSessionRuntimeState(sessionId)
+  const sessionChoiceName = useId()
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [targetSessionPath, setTargetSessionPath] = useState('')
   const [scopedModels, setScopedModels] = useState('')
@@ -50,6 +52,7 @@ export function PiSessionManagement({ sessionId, workspacePath }: { sessionId: s
     () => (Array.isArray(state?.scopedModels) ? state.scopedModels.map(String) : []),
     [state],
   )
+  const otherSessions = useMemo(() => sessions.filter(item => item.id !== sessionId), [sessions, sessionId])
 
   const load = useCallback(async () => {
     try {
@@ -107,103 +110,213 @@ export function PiSessionManagement({ sessionId, workspacePath }: { sessionId: s
 
   const stateLabel = state?.isStreaming ? t('pi.stateStreaming') : state ? t('pi.stateIdle') : t('pi.stateLoading')
   const modelLabel = typeof model.provider === 'string' ? `${model.provider}/${String(model.modelId ?? '')}` : t('pi.noModel')
+  const thinkingLevel = String(state?.thinkingLevel ?? '')
+  const thinkingLabel = thinkingLevel
+    ? t(`pi.thinkingLevels.${thinkingLevel}`, { defaultValue: thinkingLevel })
+    : t('pi.sessionValueUnknown')
+  const selectedSession = otherSessions.find(item => item.path === targetSessionPath)
+  const selectedSessionLabel = selectedSession?.name || selectedSession?.firstMessage || selectedSession?.id || targetSessionPath
 
   return (
-    <SettingsSection title={t('pi.sessionTitle')} description={t('pi.sessionDescription')}>
-      {error ? <p role="alert" className="text-[length:var(--fs-xs)] text-danger-100">{error}</p> : null}
-      <p className="text-[length:var(--fs-xs)] text-text-400">
-        {t('pi.sessionState', { state: stateLabel, model: modelLabel, thinking: String(state?.thinkingLevel ?? 'unknown') })}
-      </p>
+    <SettingsSection
+      title={t('pi.sessionTitle')}
+      description={t('pi.sessionDescription')}
+      status={(
+        <span role="status" className="inline-flex items-center gap-1.5 rounded-full bg-bg-200 px-2 py-0.5 text-[length:var(--fs-xs)] font-medium text-text-300">
+          <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${state?.isStreaming ? 'bg-accent-main-100' : 'bg-text-400'}`} />
+          {stateLabel}
+        </span>
+      )}
+    >
+      {error ? <p role="alert" className="min-w-0 whitespace-pre-wrap text-[length:var(--fs-xs)] text-danger-100 [overflow-wrap:anywhere]">{error}</p> : null}
 
-      <div className="flex flex-wrap gap-2">
-        <Button size="sm" variant="secondary" disabled={busy !== null} onClick={() => void run('new', async () => {
-          const result = await newPiSessionFrom(sessionId)
-          if (!result.cancelled && result.targetSessionId) enterSession(result.targetSessionId, result.targetCwd ?? undefined)
-        })}>{t('pi.newNativeSession')}</Button>
-        <Button size="sm" variant="secondary" disabled={busy !== null} onClick={() => void run('cycle-model', () => cyclePiModel(sessionId))}>{t('pi.nextModel')}</Button>
-        <Button size="sm" variant="secondary" disabled={busy !== null} onClick={() => void run('cycle-thinking', () => cyclePiThinkingLevel(sessionId))}>{t('pi.cycleThinking')}</Button>
-        <Button size="sm" variant="secondary" disabled={busy !== null} onClick={() => void run('idle', () => waitForPiIdle(sessionId))}>{t('pi.waitForIdle')}</Button>
-      </div>
-
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-        <SettingsSelect
-          ariaLabel={t('pi.switchSession')}
-          value={targetSessionPath}
-          onChange={setTargetSessionPath}
-          options={sessions.filter(item => item.id !== sessionId).map(item => ({ value: item.path, label: item.name || item.firstMessage || item.id }))}
-        />
-        <Button size="sm" disabled={busy !== null || !targetSessionPath} onClick={() => void run('switch', async () => {
-          const opened = await openPiSession(workspacePath, targetSessionPath)
-          if (opened.sessionId) enterSession(opened.sessionId, opened.cwd ?? undefined)
-        })}>{t('pi.switchSession')}</Button>
-      </div>
-
-      <div className="flex flex-wrap gap-2">
-        <input className={`${settingsFieldClass} min-w-44 flex-1`} value={userMessage} placeholder={t('pi.userMessagePlaceholder')} onChange={event => setUserMessage(event.target.value)} />
-        <SettingsSelect
-          ariaLabel={t('pi.nextTurn')}
-          value={deliveryMode}
-          onChange={setDeliveryMode}
-          options={[
-            { value: '' as const, label: t('pi.nextTurn') },
-            { value: 'steer' as const, label: t('pi.steer') },
-            { value: 'followUp' as const, label: t('pi.followUp') },
-          ]}
-        />
-        <Button size="sm" disabled={busy !== null || !userMessage.trim()} onClick={() => void run('user-message', async () => { await sendPiUserMessage(sessionId, userMessage.trim(), undefined, deliveryMode || undefined); setUserMessage('') })}>{t('common:send')}</Button>
-      </div>
-
-      <div className="flex flex-wrap gap-2">
-        <input className={`${settingsFieldClass} min-w-44 flex-1`} value={promptText} placeholder={t('pi.promptPlaceholder')} onChange={event => setPromptText(event.target.value)} />
-        <Button size="sm" disabled={busy !== null || !promptText.trim()} onClick={() => void run('prompt', async () => {
-          await sendPiPrompt(sessionId, promptText.trim())
-          setPromptText('')
-        })}>{t('pi.prompt')}</Button>
-      </div>
-
-      <SettingsSubgroup title={t('pi.scopedModelsLabel')}>
-        <textarea rows={3} className={`${settingsFieldAreaClass} font-mono`} value={scopedModels} onChange={event => setScopedModels(event.target.value)} />
-        <div>
-          <Button size="sm" disabled={busy !== null} onClick={() => void run('scoped-models', () => setPiScopedModels(sessionId, scopedModels.split(/\r?\n/).map(item => item.trim()).filter(Boolean)))}>{t('pi.applyModelScope')}</Button>
+      <dl className="grid min-w-0 gap-4 sm:grid-cols-2">
+        <div className="min-w-0">
+          <dt className="text-[length:var(--fs-xs)] text-text-400">{t('pi.sessionCurrentModel')}</dt>
+          <dd className="mt-1 min-w-0">
+            <p className="text-[length:var(--fs-sm)] font-medium leading-relaxed text-text-100 [overflow-wrap:anywhere]">{modelLabel}</p>
+            <Button size="sm" variant="secondary" className="mt-2 min-h-8" isLoading={busy === 'cycle-model'} disabled={busy !== null} onClick={() => void run('cycle-model', () => cyclePiModel(sessionId))}>
+              <RefreshCw size={14} aria-hidden="true" />
+              {t('pi.nextModel')}
+            </Button>
+          </dd>
         </div>
-      </SettingsSubgroup>
-
-      <SettingsSubgroup title={t('pi.bashGroup')}>
-        <div className="flex flex-wrap gap-2">
-          <input className={`${settingsFieldClass} min-w-44 flex-1`} value={bashCommand} placeholder={t('pi.bashPlaceholder')} onChange={event => setBashCommand(event.target.value)} />
-          <Button size="sm" disabled={busy !== null || !bashCommand.trim()} onClick={() => void run('bash', async () => setBashResult(await executePiBash(sessionId, bashCommand.trim(), bashExcludeFromContext)))}>{t('pi.runBash')}</Button>
-          <Button size="sm" variant="danger" disabled={busy !== null} onClick={() => void run('abort-bash', () => abortPiBashExecution(sessionId))}>{t('pi.abortBash')}</Button>
+        <div className="min-w-0">
+          <dt className="text-[length:var(--fs-xs)] text-text-400">{t('pi.thinking')}</dt>
+          <dd className="mt-1 min-w-0">
+            <p className="text-[length:var(--fs-sm)] font-medium leading-relaxed text-text-100 [overflow-wrap:anywhere]">{thinkingLabel}</p>
+            <Button size="sm" variant="secondary" className="mt-2 min-h-8" isLoading={busy === 'cycle-thinking'} disabled={busy !== null} onClick={() => void run('cycle-thinking', () => cyclePiThinkingLevel(sessionId))}>
+              <Brain size={14} aria-hidden="true" />
+              {t('pi.cycleThinking')}
+            </Button>
+          </dd>
         </div>
-        <div className="flex items-center gap-2">
-          <Toggle enabled={bashExcludeFromContext} onChange={() => setBashExcludeFromContext(value => !value)} ariaLabel={t('pi.excludeBash')} />
-          <span className="text-[length:var(--fs-xs)] text-text-300">{t('pi.excludeBash')}</span>
-        </div>
-        {bashResult !== undefined ? <ResultValue value={bashResult} /> : null}
-      </SettingsSubgroup>
+      </dl>
 
-      <div className="flex flex-wrap gap-2">
-        <input className={`${settingsFieldClass} min-w-44 flex-1`} value={exportPath} placeholder={t('pi.outputPath')} onChange={event => setExportPath(event.target.value)} />
-        <Button size="sm" variant="secondary" disabled={busy !== null || !exportPath.trim()} onClick={() => void run('export-html', async () => setExportResult(await exportPiSession(sessionId, 'html', exportPath.trim())))}>{t('pi.exportHtml')}</Button>
-        <Button size="sm" variant="secondary" disabled={busy !== null || !exportPath.trim()} onClick={() => void run('export-jsonl', async () => setExportResult(await exportPiSession(sessionId, 'jsonl', exportPath.trim())))}>{t('pi.exportJsonl')}</Button>
-      </div>
-      {exportResult !== undefined ? <p className="break-all text-[length:var(--fs-xs)] text-text-300">{formatValue(exportResult)}</p> : null}
-      <SettingsDisclosure title={t('pi.extensionHostCommands')}>
-        <div className="space-y-2">
-          <input className={settingsFieldClass} value={customType} placeholder={t('pi.customType')} onChange={event => setCustomType(event.target.value)} />
-          <textarea rows={3} className={`${settingsFieldAreaClass} font-mono`} value={customPayload} onChange={event => setCustomPayload(event.target.value)} />
-          <div className="flex gap-2">
-            <Button size="sm" variant="secondary" disabled={busy !== null || !customType.trim()} onClick={() => void run('custom-message', async () => { const value = parseJson(); const content = [{ type: 'text' as const, text: typeof value === 'string' ? value : JSON.stringify(value) }]; await sendPiCustomMessage(sessionId, { customType: customType.trim(), content, display: true }) })}>{t('pi.sendCustomMessage')}</Button>
-            <Button size="sm" variant="secondary" disabled={busy !== null || !customType.trim()} onClick={() => void run('custom-entry', () => appendPiCustomEntry(sessionId, customType.trim(), parseJson()))}>{t('pi.appendCustomEntry')}</Button>
+      <SessionCommandGroup icon={<ArrowRightLeft size={16} />} title={t('pi.sessionControls')} description={t('pi.sessionControlsDescription')}>
+        <SettingsSubgroup title={t('pi.scopedModelsLabel')} description={t('pi.scopedModelsDescription')}>
+          <textarea aria-label={t('pi.scopedModelsLabel')} rows={3} className={`${settingsFieldAreaClass} font-mono`} value={scopedModels} onChange={event => setScopedModels(event.target.value)} />
+          <Button size="sm" className="min-h-8" isLoading={busy === 'scoped-models'} disabled={busy !== null} onClick={() => void run('scoped-models', () => setPiScopedModels(sessionId, scopedModels.split(/\r?\n/).map(item => item.trim()).filter(Boolean)))}>{t('pi.applyModelScope')}</Button>
+        </SettingsSubgroup>
+
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="min-w-0 flex-1 basis-48 text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('pi.waitForIdleDescription')}</p>
+          <Button size="sm" variant="secondary" className="min-h-8" isLoading={busy === 'idle'} disabled={busy !== null} onClick={() => void run('idle', () => waitForPiIdle(sessionId))}>{t('pi.waitForIdle')}</Button>
+        </div>
+
+        <SettingsSubgroup title={t('pi.sessionChangeTitle')} description={t('pi.sessionChangeDescription')} className="border-t border-border-200/60 pt-4">
+          <fieldset className="min-w-0">
+            <legend className="mb-2 text-[length:var(--fs-xs)] font-medium text-text-200">{t('pi.savedSessions')}</legend>
+            {otherSessions.length > 0 ? (
+              <div className="max-h-48 space-y-1 overflow-auto overscroll-contain rounded-lg bg-bg-200/40 p-1 custom-scrollbar">
+                {otherSessions.map(item => (
+                  <label key={item.path} className={`flex min-w-0 cursor-pointer items-start gap-2.5 rounded-md px-2 py-2 text-[length:var(--fs-sm)] leading-relaxed transition-colors hover:bg-bg-200 ${targetSessionPath === item.path ? 'bg-bg-200 text-text-100' : 'text-text-300'}`}>
+                    <input type="radio" name={sessionChoiceName} value={item.path} checked={targetSessionPath === item.path} onChange={() => setTargetSessionPath(item.path)} className="mt-1 shrink-0 accent-accent-main-100" />
+                    <span className="min-w-0 flex-1 whitespace-pre-wrap [overflow-wrap:anywhere]">{item.name || item.firstMessage || item.id}</span>
+                  </label>
+                ))}
+              </div>
+            ) : <p className="text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('pi.noOtherSessions')}</p>}
+          </fieldset>
+          {targetSessionPath ? (
+            <p className="min-w-0 text-[length:var(--fs-xs)] leading-relaxed">
+              <span className="block text-text-400">{t('pi.sessionSelected')}</span>
+              <span className="block whitespace-pre-wrap text-text-200 [overflow-wrap:anywhere]">{selectedSessionLabel}</span>
+            </p>
+          ) : null}
+          <Button size="sm" variant="secondary" className="min-h-8 w-full sm:w-auto" isLoading={busy === 'switch'} disabled={busy !== null || !targetSessionPath} onClick={() => void run('switch', async () => {
+            const opened = await openPiSession(workspacePath, targetSessionPath)
+            if (opened.sessionId) enterSession(opened.sessionId, opened.cwd ?? undefined)
+          })}>{t('pi.switchSession')}</Button>
+
+          <div className="space-y-3 border-t border-border-200/60 pt-4">
+            <p className="flex items-start gap-2 text-[length:var(--fs-xs)] leading-relaxed text-danger-100">
+              <TriangleAlert size={15} aria-hidden="true" className="mt-0.5 shrink-0" />
+              <span className="min-w-0">{t('pi.newNativeSessionDescription')}</span>
+            </p>
+            <Button size="sm" variant="danger" className="min-h-8 w-full sm:w-auto" isLoading={busy === 'new'} disabled={busy !== null} onClick={() => void run('new', async () => {
+              const result = await newPiSessionFrom(sessionId)
+              if (!result.cancelled && result.targetSessionId) enterSession(result.targetSessionId, result.targetCwd ?? undefined)
+            })}>
+              <Plus size={14} aria-hidden="true" />
+              {t('pi.newNativeSession')}
+            </Button>
           </div>
+        </SettingsSubgroup>
+      </SessionCommandGroup>
+
+      <SessionCommandGroup icon={<MessageSquareText size={16} />} title={t('pi.sessionMessages')} description={t('pi.sessionMessagesDescription')}>
+        <SettingsSubgroup title={t('pi.sessionUserMessage')} description={t('pi.sessionDeliveryDescription')}>
+          <textarea aria-label={t('pi.sessionUserMessage')} rows={3} className={settingsFieldAreaClass} value={userMessage} placeholder={t('pi.userMessagePlaceholder')} onChange={event => setUserMessage(event.target.value)} />
+          <div className="grid min-w-0 gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+            <div className="min-w-0 space-y-1.5">
+              <p className="text-[length:var(--fs-xs)] font-medium text-text-200">{t('pi.sessionDeliveryMode')}</p>
+              <SettingsSelect
+                ariaLabel={t('pi.sessionDeliveryMode')}
+                value={deliveryMode}
+                onChange={setDeliveryMode}
+                options={[
+                  { value: '' as const, label: t('pi.nextTurn') },
+                  { value: 'steer' as const, label: t('pi.steer') },
+                  { value: 'followUp' as const, label: t('pi.followUp') },
+                ]}
+              />
+            </div>
+            <Button size="sm" className="min-h-8" isLoading={busy === 'user-message'} disabled={busy !== null || !userMessage.trim()} onClick={() => void run('user-message', async () => { await sendPiUserMessage(sessionId, userMessage.trim(), undefined, deliveryMode || undefined); setUserMessage('') })}>{t('common:send')}</Button>
+          </div>
+        </SettingsSubgroup>
+
+        <SettingsSubgroup title={t('pi.sessionPromptTitle')} description={t('pi.sessionPromptDescription')} className="border-t border-border-200/60 pt-4">
+          <textarea aria-label={t('pi.sessionPromptTitle')} rows={3} className={settingsFieldAreaClass} value={promptText} placeholder={t('pi.promptPlaceholder')} onChange={event => setPromptText(event.target.value)} />
+          <Button size="sm" variant="secondary" className="min-h-8" isLoading={busy === 'prompt'} disabled={busy !== null || !promptText.trim()} onClick={() => void run('prompt', async () => {
+            await sendPiPrompt(sessionId, promptText.trim())
+            setPromptText('')
+          })}>{t('pi.prompt')}</Button>
+        </SettingsSubgroup>
+      </SessionCommandGroup>
+
+      <SessionCommandGroup icon={<Terminal size={16} />} title={t('pi.bashGroup')} description={t('pi.sessionBashDescription')}>
+        <label className="block space-y-1.5">
+          <span className="text-[length:var(--fs-xs)] font-medium text-text-200">{t('pi.sessionBashCommand')}</span>
+          <input className={`${settingsFieldClass} font-mono`} value={bashCommand} placeholder={t('pi.bashPlaceholder')} onChange={event => setBashCommand(event.target.value)} />
+        </label>
+        <div className="flex items-start gap-3">
+          <span className="mt-0.5 shrink-0"><Toggle enabled={bashExcludeFromContext} onChange={() => setBashExcludeFromContext(value => !value)} ariaLabel={t('pi.excludeBash')} /></span>
+          <span className="min-w-0 text-[length:var(--fs-xs)] leading-relaxed text-text-300">{t('pi.excludeBash')}</span>
         </div>
-      </SettingsDisclosure>
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+          <Button size="sm" className="min-h-8" isLoading={busy === 'bash'} disabled={busy !== null || !bashCommand.trim()} onClick={() => void run('bash', async () => setBashResult(await executePiBash(sessionId, bashCommand.trim(), bashExcludeFromContext)))}>{t('pi.runBash')}</Button>
+          <Button size="sm" variant="secondary" className="min-h-8" isLoading={busy === 'abort-bash'} disabled={busy !== null} onClick={() => void run('abort-bash', () => abortPiBashExecution(sessionId))}>{t('pi.abortBash')}</Button>
+        </div>
+        {bashResult !== undefined ? (
+          <div className="min-w-0 space-y-1.5" role="status">
+            <p className="text-[length:var(--fs-xs)] text-text-400">{t('pi.sessionCommandResult')}</p>
+            <ResultValue value={bashResult} />
+          </div>
+        ) : null}
+      </SessionCommandGroup>
+
+      <SessionCommandGroup icon={<Download size={16} />} title={t('pi.sessionExport')} description={t('pi.sessionExportDescription')}>
+        <label className="block space-y-1.5">
+          <span className="text-[length:var(--fs-xs)] font-medium text-text-200">{t('pi.outputPath')}</span>
+          <input className={settingsFieldClass} value={exportPath} placeholder={t('pi.outputPath')} onChange={event => setExportPath(event.target.value)} />
+        </label>
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+          <Button size="sm" variant="secondary" className="min-h-8" isLoading={busy === 'export-html'} disabled={busy !== null || !exportPath.trim()} onClick={() => void run('export-html', async () => setExportResult(await exportPiSession(sessionId, 'html', exportPath.trim())))}>{t('pi.exportHtml')}</Button>
+          <Button size="sm" variant="secondary" className="min-h-8" isLoading={busy === 'export-jsonl'} disabled={busy !== null || !exportPath.trim()} onClick={() => void run('export-jsonl', async () => setExportResult(await exportPiSession(sessionId, 'jsonl', exportPath.trim())))}>{t('pi.exportJsonl')}</Button>
+        </div>
+        {exportResult !== undefined ? (
+          <div className="min-w-0 space-y-1.5" role="status">
+            <p className="text-[length:var(--fs-xs)] text-text-400">{t('pi.sessionCommandResult')}</p>
+            <p className="whitespace-pre-wrap text-[length:var(--fs-xs)] leading-relaxed text-text-300 [overflow-wrap:anywhere]">{formatValue(exportResult)}</p>
+          </div>
+        ) : null}
+      </SessionCommandGroup>
+
+      <SessionCommandGroup icon={<Puzzle size={16} />} title={t('pi.extensionHostCommands')} description={t('pi.extensionHostCommandsDescription')}>
+        <label className="block space-y-1.5">
+          <span className="text-[length:var(--fs-xs)] font-medium text-text-200">{t('pi.customType')}</span>
+          <input className={settingsFieldClass} value={customType} placeholder={t('pi.customType')} onChange={event => setCustomType(event.target.value)} />
+        </label>
+        <label className="block space-y-1.5">
+          <span className="text-[length:var(--fs-xs)] font-medium text-text-200">{t('pi.sessionCustomPayload')}</span>
+          <textarea rows={4} className={`${settingsFieldAreaClass} font-mono`} value={customPayload} onChange={event => setCustomPayload(event.target.value)} />
+        </label>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="min-w-0 flex-1 basis-48 text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('pi.sendCustomMessageDescription')}</p>
+          <Button size="sm" variant="secondary" className="min-h-8" isLoading={busy === 'custom-message'} disabled={busy !== null || !customType.trim()} onClick={() => void run('custom-message', async () => { const value = parseJson(); const content = [{ type: 'text' as const, text: typeof value === 'string' ? value : JSON.stringify(value) }]; await sendPiCustomMessage(sessionId, { customType: customType.trim(), content, display: true }) })}>{t('pi.sendCustomMessage')}</Button>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="min-w-0 flex-1 basis-48 text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('pi.appendCustomEntryDescription')}</p>
+          <Button size="sm" variant="secondary" className="min-h-8" isLoading={busy === 'custom-entry'} disabled={busy !== null || !customType.trim()} onClick={() => void run('custom-entry', () => appendPiCustomEntry(sessionId, customType.trim(), parseJson()))}>{t('pi.appendCustomEntry')}</Button>
+        </div>
+      </SessionCommandGroup>
     </SettingsSection>
+  )
+}
+
+function SessionCommandGroup({ icon, title, description, children }: { icon: ReactNode; title: string; description: string; children: ReactNode }) {
+  return (
+    <SettingsDisclosure
+      className="border-t border-border-200/60 pt-4 [&>button]:w-full [&>button]:items-start [&>button]:gap-2.5 [&>button]:text-left [&>button>span]:min-w-0 [&>button>span]:flex-1 [&>button>svg]:mt-1"
+      title={(
+        <span className="flex min-w-0 items-start gap-2.5">
+          <span aria-hidden="true" className="mt-0.5 shrink-0 text-text-400">{icon}</span>
+          <span className="min-w-0">
+            <span className="block text-[length:var(--fs-sm)] font-medium text-text-100">{title}</span>
+            <span className="mt-0.5 block text-[length:var(--fs-xs)] font-normal leading-relaxed text-text-400">{description}</span>
+          </span>
+        </span>
+      )}
+    >
+      <div className="min-w-0 space-y-5 pt-2">{children}</div>
+    </SettingsDisclosure>
   )
 }
 
 const ResultValue = memo(function ResultValue({ value }: { value: unknown }) {
   return (
-    <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-bg-200/40 p-2 text-[length:var(--fs-xs)] text-text-300">{formatValue(value)}</pre>
+    <pre className="min-w-0 max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-bg-200/40 p-2 text-[length:var(--fs-xs)] text-text-300 [overflow-wrap:anywhere]">{formatValue(value)}</pre>
   )
 })
 

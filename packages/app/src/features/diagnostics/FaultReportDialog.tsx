@@ -23,7 +23,7 @@ export function FaultReportDialog() {
     const timer = setTimeout(() => { setConsent(false); setCopied(false) }, 0)
     return () => clearTimeout(timer)
   }, [id, saved?.report.content])
-  if (!saved) return null
+  if (!saved || snapshot.promptsDisabled) return null
   const busy = snapshot.collecting || snapshot.uploading
   const share = saved.upload.indexUrl ?? saved.upload.links.join('\n')
   const fullReportAvailable = !saved.report.unavailable.includes('full_report_in_indexeddb')
@@ -104,6 +104,7 @@ export function FaultReportDialog() {
               <RefreshCw size={16} aria-hidden="true" />{t('refresh')}
             </Button>
             <Button type="button" variant="ghost" onClick={() => faultAuditStore.dismiss()} className="h-10">{t('later')}</Button>
+            <Button type="button" variant="ghost" onClick={() => faultAuditStore.disablePrompts()} className="h-10">{t('dontShowAgain')}</Button>
           </div>
         </div>
       </Dialog>

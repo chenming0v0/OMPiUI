@@ -25,8 +25,7 @@ test("peekHandshake is a non-blocking snapshot: undefined while booting, hello a
     assert.equal(host.peekHandshake(), undefined)
     assert.ok(Date.now() - started < 100, "peekHandshake must not wait for the handshake")
     const hello = await host.getHandshake()
-    assert.equal(hello.piSdkVersion, "0.84.0")
-    assert.equal(host.peekHandshake()?.piSdkVersion, "0.84.0")
+    assert.equal(host.peekHandshake(), hello)
   } finally {
     await host.dispose()
   }
@@ -35,8 +34,6 @@ test("peekHandshake is a non-blocking snapshot: undefined while booting, hello a
 test("WorkerSession fulfills a command on a healthy worker", async () => {
   const catalog = startCatalog("hello-ok")
   try {
-    const hello = await catalog.getHandshake()
-    assert.equal(hello.piSdkVersion, "0.84.0")
     assert.deepEqual(await catalog.command("state.get"), { fixture: "ok" })
   } finally {
     await catalog.dispose()

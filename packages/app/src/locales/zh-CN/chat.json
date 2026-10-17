@@ -33,7 +33,7 @@
     "sessionLoadFailed": "会话加载失败",
     "sessionLoadFailedDesc": "服务端暂时无法读取这个会话，请重试。",
     "sessionBusy": "会话正在使用中",
-    "sessionBusyDesc": "另一个 Pi runtime 正在使用这个会话，请关闭其他实例后重试。",
+    "sessionBusyDesc": "这个会话当前正在使用中，请稍后重试。",
     "backToHome": "返回首页",
     "openServerSettings": "打开服务器设置",
     "compacting": "正在压缩上下文…",

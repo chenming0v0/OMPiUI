@@ -24,9 +24,9 @@ export interface RuntimeLeaseManager {
 }
 
 /**
- * 运行时监督者：所有 pi runtime（catalog 全局命令 + 每个会话的 runtime）
- * 共享**一个** worker 进程。pi SDK 原生支持单进程多 runtime——每会话一个
- * 独立进程会让 ~300MB 的 SDK 基线（bun 打包的完整依赖）线性叠加。
+ * 运行时监督者：catalog 与会话适配器共享一个 OMPiUI worker 进程。
+ * 每个主动打开的会话由适配器管理独立的 `omp --mode rpc` 子进程；
+ * worker 本身不加载 Agent SDK。
  *
  * 进程崩溃 = 全部会话失效（worker 侧有 uncaughtException 兜底只记录不退出），
  * 由 session-host 逐个清理，前端自愈重新 attach。
@@ -89,7 +89,7 @@ export class RuntimeSupervisor {
     return () => this.eventListeners.delete(listener)
   }
 
-  /** 共享 worker 进程的握手（真实 SDK 版本、verified、回退标记），供 health 上报。 */
+  /** 共享 worker 握手，包含探测到的 OMP CLI 版本及进程生命周期信息。 */
   getCatalogHandshake(): Promise<WorkerHello> {
     if (this.disposed) return Promise.reject(new Error("Runtime supervisor is disposed"))
     return this.ensureRuntimeHost().getHandshake()

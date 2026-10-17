@@ -10,6 +10,7 @@ export interface FullscreenLayer {
   showHeader?: FullscreenViewerProps['showHeader']
   zIndex?: FullscreenViewerProps['zIndex']
   deferContent?: FullscreenViewerProps['deferContent']
+  backdrop?: FullscreenViewerProps['backdrop']
   onClose?: () => void
 }
 

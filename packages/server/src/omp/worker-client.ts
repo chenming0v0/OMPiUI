@@ -79,9 +79,8 @@ export interface WorkerCatalog {
 }
 
 /**
- * 共享 runtime 进程句柄。一个进程承载所有会话 runtime + 全局 catalog
- * 命令——pi SDK 原生支持单进程多 runtime（共享 ModelRuntime），每个会话
- * 一个独立进程会让每进程 ~300MB 的 SDK 基线线性叠加。
+ * 共享 OMPiUI worker 进程句柄，承载全局 catalog 与各会话的 RPC 适配器。
+ * 真正的 Agent 运行在适配器管理的独立 `omp --mode rpc` 子进程中。
  */
 export interface WorkerHost {
   getHandshake(): Promise<WorkerHello>;

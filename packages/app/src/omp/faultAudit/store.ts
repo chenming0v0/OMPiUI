@@ -18,10 +18,17 @@ export type ClientFaultEvent = {
 
 export type FaultAuditSnapshot = {
   saved?: SavedFault
+  promptsDisabled: boolean
   collecting: boolean
   uploading: boolean
   error?: string
   history: ClientFaultEvent[]
+}
+
+const PROMPTS_DISABLED_KEY = 'ompiui-fault-prompts-disabled'
+function readPromptsDisabled(): boolean {
+  try { return localStorage.getItem(PROMPTS_DISABLED_KEY) === 'true' }
+  catch { return false }
 }
 
 const SAFE_STATE = ['isStreaming', 'isIdle', 'isCompacting', 'isBashRunning', 'hasPendingAsyncWork', 'readOnly', 'pendingMessageCount', 'goalStatus']
@@ -40,7 +47,12 @@ export class FaultAuditStore {
   private discardedClientEvents = 0
 
   constructor(restore = true) {
-    this.current = { saved: restore ? readSavedFault() : undefined, collecting: false, uploading: false, history: [] }
+    const promptsDisabled = restore && readPromptsDisabled()
+    const saved = restore ? readSavedFault() : undefined
+    this.current = {
+      saved: saved && promptsDisabled ? { ...saved, open: false } : saved,
+      promptsDisabled, collecting: false, uploading: false, history: [],
+    }
     const initial = this.current.saved
     if (restore) void readFullSavedFault().then(saved => {
       if (saved && this.current.saved === initial && saved.notice.id === initial?.notice.id &&
@@ -93,7 +105,7 @@ export class FaultAuditStore {
     const safeNotice: FaultNotice = { ...notice, errorCode: safeText(notice.errorCode), sessionId: safeText(notice.sessionId) }
     const client = this.clientContent(safeNotice)
     const next: SavedFault = {
-      notice: safeNotice, serverId, open: true,
+      notice: safeNotice, serverId, open: !this.current.promptsDisabled,
       reportRevision: reportRevision(),
       report: { content: client, complete: false, unavailable: ['server_logs_not_collected'], files: 0 },
       upload: { links: [], total: 0 },
@@ -152,6 +164,14 @@ export class FaultAuditStore {
     saveFault(next)
   }
 
+  disablePrompts(): void {
+    try { localStorage.setItem(PROMPTS_DISABLED_KEY, 'true') }
+    catch { /* 本地存储不可用时，当前页面仍立即停止提示。 */ }
+    const saved = this.current.saved ? { ...this.current.saved, open: false } : undefined
+    this.update({ promptsDisabled: true, saved })
+    if (saved) saveFault(saved)
+  }
+
   dismiss(): void {
     if (!this.current.saved) return
     const saved = { ...this.current.saved, open: false }
@@ -159,7 +179,7 @@ export class FaultAuditStore {
     saveFault(saved)
   }
   reopen(): void {
-    if (!this.current.saved) return
+    if (!this.current.saved || this.current.promptsDisabled) return
     const saved = { ...this.current.saved, open: true }
     this.update({ saved })
     saveFault(saved)

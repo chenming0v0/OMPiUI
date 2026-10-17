@@ -43,7 +43,7 @@ function run(name, args, env = {}) {
   return child
 }
 
-run("server", ["run", "dev:server:pi"])
+run("server", ["run", "dev:server:omp"])
 run("app", ["run", "dev:app"])
 
 process.on("SIGINT", () => shutdown(0))

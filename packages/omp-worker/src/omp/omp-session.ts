@@ -54,8 +54,8 @@ import { projectPreviewMessage } from "./subagent-preview.js";
 /**
  * OmpRpcSession —— SessionRuntime 契约的 OMP 实现。
  *
- * 与 RealPiSession（进程内 Pi SDK）不同，这里每个会话 runtime 对应一个
- * `omp --mode rpc` 子进程，通过官方 RPC 协议（docs/rpc.md）驱动：
+ * 每个会话 runtime 对应一个 `omp --mode rpc` 子进程，
+ * 通过官方 RPC 协议（docs/rpc.md）驱动，不在 worker 内加载 Agent SDK：
  *
  * - 事件：子进程 stdout 上的 AgentSessionEvent 帧原样转发为 pi.event，
  *   仅做 OMP↔Pi 命名适配（auto_compaction_* → compaction_*、
@@ -623,8 +623,7 @@ export class OmpRpcSession implements SessionRuntime {
       phase: frame.type === "message_end" ? "persisting" : "streaming",
     };
     if (frame.type === "message_end") {
-      // 持久化交接：branch refresh 完成后清除 live 行（message_end 的
-      // microtask 语义与 RealPiSession 对齐）
+      // 持久化交接：在 microtask 中刷新 branch，完成后再清除 live 行。
       queueMicrotask(() => {
         if (this.closed) return;
         void this.syncEntriesNow()
@@ -855,7 +854,7 @@ export class OmpRpcSession implements SessionRuntime {
     const streaming =
       this.liveMessage?.phase === "streaming" || this.lastActivity.streaming;
     // 流式状态的权威判断依赖 get_state 的 isStreaming；事件驱动下用
-    // agent_start/agent_end 推导（与 RealPiSession 读 SDK 同步状态等价）
+    // agent_start/agent_end 推导。
     let status: SessionActivityStatus | null = null;
     if (
       this.retryShadow.phase === "waiting" ||
@@ -1203,7 +1202,7 @@ export class OmpRpcSession implements SessionRuntime {
       // 上游 get_state 的两个「还会被唤醒」信号，宿主回收空闲 runtime 时依赖：
       // hasPendingAsyncWork 覆盖后台 bash / async task / eval 尚未回灌的长尾，
       // isSettled 是 session_settled 的同一谓词。isBashRunning 在 OMP RPC 下
-      // 恒为 false（那是 pi SDK 的用户 bang-bash 语义），后台作业只能靠这里透出。
+      // 恒为 false；后台作业通过 hasPendingAsyncWork 透出。
       hasPendingAsyncWork: Boolean(native.hasPendingAsyncWork),
       isBashRunning: false,
       hasPendingBashMessages: false,

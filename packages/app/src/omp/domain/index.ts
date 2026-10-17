@@ -1,9 +1,7 @@
 /**
- * Pi domain types - re-exported from the vendored SDK type modules
- * (src/pi/vendor/*, structural copies of the @earendil-works declarations).
- *
- * These types are the single source of truth for Pi data structures.
- * Never manually duplicate or transform these types.
+ * OMPiUI domain types, re-exported from src/omp/vendor.
+ * Those local declarations originated in PiUI and describe the UI-facing
+ * message/session shapes adapted from OMP RPC. They do not load a Pi SDK.
  */
 
 // Session entries and metadata
@@ -390,17 +388,4 @@ export type PiCommandLifecycle = {
 export type PiEventCursor = {
   epoch: string
   sequence: number
-}
-
-/**
- * Pi registry state for capability tracking.
- */
-export type PiRegistryState = {
-  revision: number
-  sdkVersion: string
-  driver: 'mock' | 'pi'
-  globalCommands: string[]
-  sessionCommands: string[]
-  loadState: 'idle' | 'loading' | 'loaded' | 'error'
-  error?: Error
 }

@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcess } from "node:child_process"
+import { spawn, type ChildProcess } from "node:child_process"
 import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -9,6 +9,7 @@ import { isJsonObject } from "@ompiui/protocol"
 import { runtimePolicyArgs } from "./runtime-policy.js"
 import { RpcLineReader } from "./rpc-line-reader.js"
 import { OmpStdinSender, type StdinWriteHandle } from "./stdin-sender.js"
+import { ompCommandEnvironment, resolveOmpCommand } from "./omp-command.js"
 
 /**
  * 可选的 OMP 兼容配置覆盖：`~/.ompiui/omp-compat.yml` 存在时以 `--config`
@@ -109,19 +110,15 @@ export class OmpRpcClient extends EventEmitter {
   constructor(readonly options: OmpRpcClientOptions) {
     super()
     this.setMaxListeners(100)
-    // 优先直接执行原生二进制，避免包含空格的会话路径被 cmd 拆成多个参数。
-    let bin = options.bin?.trim() || "omp"
-    if (process.platform === "win32") {
-      const located = spawnSync("where.exe", [bin], { encoding: "utf8", windowsHide: true })
-      const candidates = located.status === 0 ? located.stdout.trim().split(/\r?\n/) : []
-      bin = candidates.find(candidate => /\.exe$/i.test(candidate)) ?? candidates[0] ?? bin
-    }
-    const args = ["--mode", "rpc", ...ompCompatConfigArgs(), ...(options.args ?? []), ...(options.applyRuntimePolicy ? runtimePolicyArgs() : [])]
-    this.proc = spawn(bin, args, {
+    const env = ompCommandEnvironment(options.env)
+    // 与配置命令共用入口解析，脚本由解释器执行，不经过 shell 或 Windows 文件关联。
+    const invocation = resolveOmpCommand(options.bin ?? env.OMPI_OMP_BIN, env)
+    const args = [...invocation.args, "--mode", "rpc", ...ompCompatConfigArgs(), ...(options.args ?? []), ...(options.applyRuntimePolicy ? runtimePolicyArgs() : [])]
+    this.proc = spawn(invocation.command, args, {
       cwd: options.cwd,
-      env: { ...process.env, ...options.env },
+      env,
       stdio: ["pipe", "pipe", "pipe"],
-      shell: process.platform === "win32" && !/\.exe$/i.test(bin),
+      shell: false,
       windowsHide: true,
     })
     this.getStdinSender()

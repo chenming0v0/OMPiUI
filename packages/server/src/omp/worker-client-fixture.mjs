@@ -7,7 +7,7 @@
 //   wrong-protocol    — hello with a bumped protocol version, then idle
 //   slow-command      — hello + heartbeats, but never replies to requests
 //                       (simulates a healthy worker stuck on one command)
-//   slow-hello        — hello delayed ~400ms (simulates SDK cold boot), then
+//   slow-hello        — hello delayed ~400ms (simulates worker cold boot), then
 //                       heartbeats + request replies as in hello-ok
 //
 // Heartbeat cadence comes from OMPIUI_FIXTURE_HEARTBEAT_MS (default 20ms) so the
@@ -27,8 +27,7 @@ const send = (message) => process.send?.(message)
 const hello = () => send({
   kind: "hello",
   workerProtocolVersion: mode === "wrong-protocol" ? OMP_WORKER_PROTOCOL_VERSION + 1 : OMP_WORKER_PROTOCOL_VERSION,
-  piSdkVersion: "0.84.0",
-  piSdkVerified: true,
+  ompVersion: "18.9.1",
   generation,
   processId: process.pid,
   heartbeatIntervalMs,

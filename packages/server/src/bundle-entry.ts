@@ -1,10 +1,9 @@
 /**
- * Public executable entry. The first argument is the mode selector; all other
- * arguments are left untouched for the native Pi CLI.
+ * Public executable entry for the web server and its worker subprocesses.
  */
 const { dirname, join } = await import("node:path")
 const { existsSync } = await import("node:fs")
-// 原生/运行时模块（node-pty、jiti）从 exe 旁的 node_modules 按绝对路径加载；
+// 原生模块（PTY）从 exe 旁的 node_modules 按绝对路径加载；
 // 旁边没有（安装目录里只有 zip）时退回 Tauri 壳解压到应用数据目录的位置
 const execDir = dirname(process.execPath)
 const launchDir = process.cwd()
@@ -39,9 +38,7 @@ if (isWeb && !process.env.OMPIUI_NATIVE_MODULES) {
 if (isWatcher) {
   await import("./workspace-watch-process.ts")
 } else if (isWorker) {
-  // 用相对路径指向已构建的 worker 产物：Bun 打包时包名（workspace）内的
-  // 动态 import SDK 不会内联（Cannot find module），相对路径能正确打包。
-  // 指向 dist 而非 src，避免 tsc rootDir 把 omp-worker 源文件拉进 server 编译。
+  // workspace entry 导出指向 dist，避免 server 编译时将 worker 源码拉入 rootDir。
   await import("@ompiui/omp-worker/entry")
 } else if (isWeb) {
   // Bun builds cannot fork a TypeScript entry, so the server respawns this

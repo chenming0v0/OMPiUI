@@ -1,11 +1,9 @@
-/* eslint-disable @typescript-eslint/no-explicit-any -- faithful copies of the SDK declarations */
+/* eslint-disable @typescript-eslint/no-explicit-any -- upstream-derived wire declarations */
 /**
- * Vendored type definitions from `@earendil-works/pi-ai` (v0.84.2).
- *
- * The app only ever consumed the SDK's *types* (the agent runtime lives in the
- * OMP worker, not here), so the dependency was stripped and the declarations
- * the UI actually renders are kept here as the source of truth. Shapes mirror
- * the SDK declarations verbatim; if the wire format changes, update them here.
+ * UI-facing model/message declarations, originally copied from
+ * `@earendil-works/pi-ai` v0.84.2 and adapted for OMP RPC.
+ * Local types only, not a Pi SDK dependency. Keep them aligned with the
+ * OMPiUI worker's projections rather than assuming complete SDK parity.
  */
 
 // ---------------------------------------------------------------------------

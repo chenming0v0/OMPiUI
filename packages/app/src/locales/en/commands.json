@@ -119,6 +119,7 @@
     "agentLabel": "Agent",
     "desc": "Desc",
     "viewDetail": "View detail",
+    "openImage": "Enlarge {{name}}",
     "copyContent": "Copy content",
     "saveToFile": "Save to file",
     "noPreview": "No preview available",

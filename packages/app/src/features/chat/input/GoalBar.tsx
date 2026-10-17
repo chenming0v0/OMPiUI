@@ -371,7 +371,7 @@ export const GoalBar = memo(function GoalBar({ sessionId, isCompact, onSetGoal, 
   const canOperate = !!sessionId || !!onSetGoal
 
   return (
-    <div ref={rootRef} className="relative z-0 mx-4 -mb-8 pb-8 rounded-2xl glass-alt border border-border-200/60" data-goal-bar>
+    <div ref={rootRef} className="relative z-0 min-w-0 mx-4 -mb-8 pb-8 rounded-2xl glass-alt border border-border-200/60" data-goal-bar>
       <div data-composer-queue className="max-h-[min(200px,25dvh)] overflow-y-auto custom-scrollbar rounded-t-2xl">
         {queuedMessages}
       </div>
@@ -397,18 +397,20 @@ export const GoalBar = memo(function GoalBar({ sessionId, isCompact, onSetGoal, 
           <button
             type="button"
             onClick={openEditor}
-            title={goal.objective}
+            title={`${t(statusKey)}: ${goal.objective}`}
             disabled={!canOperate}
-            className="flex items-center gap-2 min-w-0 flex-1 text-left disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center gap-2 min-w-0 flex-1 overflow-hidden text-left disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <span className="shrink-0 text-text-300">{t(statusKey)}</span>
-            <span className="truncate text-text-100">{goal.objective}</span>
-            {elapsedLabel && <span className="shrink-0 text-text-500">• {elapsedLabel}</span>}
+            <span className={isCompact ? 'sr-only' : 'shrink-0 text-text-300'}>{t(statusKey)}</span>
+            {/* 全局 truncate 使用 overflow: clip，flex 子项仍需显式允许收缩。 */}
+            <span className="min-w-0 flex-1 truncate text-text-100">{goal.objective}</span>
+            {elapsedLabel && <span className="shrink-0 whitespace-nowrap text-text-500">• {elapsedLabel}</span>}
           </button>
           {/* 只有可暂停/可恢复的状态才显示切换按钮；complete/dropped 无意义 */}
           {(goal.status === 'active' || goal.status === 'paused' || goal.status === 'budget-limited') && (
             <IconButton
               size="sm"
+              className="shrink-0"
               aria-label={t(goal.status === 'paused' || goal.status === 'budget-limited' ? 'goalBar.resume' : 'goalBar.pause')}
               onClick={handleTogglePause}
               disabled={!canOperate}
@@ -416,10 +418,10 @@ export const GoalBar = memo(function GoalBar({ sessionId, isCompact, onSetGoal, 
               {goal.status === 'paused' || goal.status === 'budget-limited' ? <PlayIcon size={14} /> : <PauseIcon size={14} />}
             </IconButton>
           )}
-          <IconButton size="sm" aria-label={t('goalBar.editGoal')} onClick={openEditor} disabled={!canOperate}>
+          <IconButton size="sm" className="shrink-0" aria-label={t('goalBar.editGoal')} onClick={openEditor} disabled={!canOperate}>
             <ExpandIcon size={14} />
           </IconButton>
-          <IconButton size="sm" aria-label={t('goalBar.drop')} onClick={handleDrop} disabled={!canOperate}>
+          <IconButton size="sm" className="shrink-0" aria-label={t('goalBar.drop')} onClick={handleDrop} disabled={!canOperate}>
             <TrashIcon size={14} />
           </IconButton>
         </div>

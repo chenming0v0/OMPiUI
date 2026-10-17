@@ -103,9 +103,9 @@ function sendWithCallback(message: WorkerMessage, callback: (error?: Error) => v
 const ompBin = process.env.OMPI_OMP_BIN?.trim() || undefined
 const ompSessionOptions: OmpSessionOptions = { bin: ompBin }
 
-// omp driver 下启动时同步探测一次真实版本（issue #5）：hello/registry 带
-// 实际版本而不是标定值。探测失败只影响展示；会话打开另有异步探测 + 门禁。
-if (driver === "omp") detectOmpVersionSync(ompBin)
+// omp driver 下启动时同步探测一次真实版本（issue #5）。探测失败不冒充
+// 已知版本；会话打开另有异步探测 + 门禁，hello 不声称已验证运行时。
+const ompVersion = driver === "omp" ? detectOmpVersionSync(ompBin) : null
 
 const catalog = driver === "omp" ? new OmpCatalog() : new MockCatalog()
 const providerAuth = new OmpProviderAuth(async () => {
@@ -558,8 +558,7 @@ if (ompBin) {
 send({
   kind: "hello",
   workerProtocolVersion: OMP_WORKER_PROTOCOL_VERSION,
-  piSdkVersion: detectedOmpVersion(OMP_SDK_VERSION, ompBin),
-  piSdkVerified: true,
+  ompVersion,
   generation: workerGeneration,
   processId: process.pid,
   heartbeatIntervalMs: OMP_WORKER_HEARTBEAT_INTERVAL_MS,

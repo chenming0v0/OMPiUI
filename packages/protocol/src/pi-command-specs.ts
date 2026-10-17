@@ -23,16 +23,16 @@ import {
 } from "./json-schema.js";
 
 /**
- * Pi 命令声明表——worker/server/app 三端的单一事实源。
+ * OMP RPC 命令声明表——worker/server/app 三端的单一事实源。
  * worker 把 handler 绑定到这里的声明上（缺/多 handler 直接启动失败），
  * server 用它做命令路由和能力合并，app 的 transport 类型从这里派生。
- * Pi SDK 新增能力时只改这一个文件 + worker 的 handler。
+ * OMP RPC 新增能力时更新这里的声明与 worker 的 handler。
  */
 export type PiCommandSpec = {
   name: string;
   scope: PiCapabilityScope;
   description: string;
-  /** 缺省 "pi-sdk"；扩展逃生门（invokeTool/invokeCommand）标 "pi-extension" */
+  /** 缺省 "omp-rpc"；扩展逃生门（invokeTool/invokeCommand）标 "omp-extension" */
   source?: PiCapabilitySource;
   /** 缺省空对象 schema */
   paramsSchema?: JsonObject;
@@ -74,7 +74,7 @@ export function piSpecToCapability(spec: PiCommandSpec): PiCapability {
     name,
     scope,
     description,
-    source: source ?? "pi-sdk",
+    source: source ?? "omp-rpc",
     paramsSchema: paramsSchema ?? EMPTY_PARAMS,
     queue,
     ...(replacement ? { replacement } : {}),
@@ -116,7 +116,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "prompt",
     scope: "session",
-    description: "Send a user prompt to the current Pi session",
+    description: "Send a user prompt to the current OMP session",
     paramsSchema: PROMPT_PARAMS,
     queue: "serialized",
     streaming: true,
@@ -125,14 +125,14 @@ export const PI_COMMAND_SPECS = [
   {
     name: "steer",
     scope: "session",
-    description: "Queue steering text for the current Pi session",
+    description: "Queue steering text for the current OMP session",
     paramsSchema: TEXT_IMAGES_PARAMS,
     queue: "immediate",
   },
   {
     name: "followUp",
     scope: "session",
-    description: "Queue a follow-up message for the current Pi session",
+    description: "Queue a follow-up message for the current OMP session",
     paramsSchema: TEXT_IMAGES_PARAMS,
     queue: "immediate",
   },
@@ -153,13 +153,13 @@ export const PI_COMMAND_SPECS = [
   {
     name: "abort",
     scope: "session",
-    description: "Abort the current Pi turn",
+    description: "Abort the current OMP turn",
     queue: "immediate",
   },
   {
     name: "newSession",
     scope: "session",
-    description: "Create a new Pi session from the current runtime",
+    description: "Create a new OMP session from the current runtime",
     paramsSchema: objectSchema({ parentSession: STRING }),
     queue: "serialized",
     replacement: true,
@@ -167,7 +167,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "switchSession",
     scope: "session",
-    description: "Switch the runtime to another Pi session file",
+    description: "Switch the runtime to another OMP session file",
     paramsSchema: objectSchema({ sessionPath: STRING, cwdOverride: STRING }, [
       "sessionPath",
     ]),
@@ -177,7 +177,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "fork",
     scope: "session",
-    description: "Fork the current Pi session at an entry",
+    description: "Fork the current OMP session at an entry",
     paramsSchema: objectSchema(
       { entryId: STRING, position: { enum: ["before", "at"] } },
       ["entryId"],
@@ -188,7 +188,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "importSession",
     scope: "session",
-    description: "Import a Pi session file",
+    description: "Import an OMP session file",
     paramsSchema: objectSchema({ inputPath: STRING, cwdOverride: STRING }, [
       "inputPath",
     ]),
@@ -198,14 +198,14 @@ export const PI_COMMAND_SPECS = [
   {
     name: "setSessionName",
     scope: "session",
-    description: "Set the current Pi session name",
+    description: "Set the current OMP session name",
     paramsSchema: objectSchema({ name: byteString(1024) }, ["name"]),
     queue: "serialized",
   },
   {
     name: "setModel",
     scope: "session",
-    description: "Set provider and model for the current Pi session",
+    description: "Set provider and model for the current OMP session",
     paramsSchema: objectSchema({ provider: STRING, modelId: STRING }, [
       "provider",
       "modelId",
@@ -292,7 +292,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "compact",
     scope: "session",
-    description: "Start Pi compaction",
+    description: "Start OMP compaction",
     paramsSchema: objectSchema({ customInstructions: STRING }),
     queue: "serialized",
     cancellable: true,
@@ -332,7 +332,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "bash",
     scope: "session",
-    description: "Run a bash command through the Pi runtime",
+    description: "Run a bash command through OMP RPC",
     paramsSchema: objectSchema(
       { command: STRING, excludeFromContext: BOOLEAN, clientId: STRING },
       ["command"],
@@ -349,15 +349,15 @@ export const PI_COMMAND_SPECS = [
   {
     name: "setActiveTools",
     scope: "session",
-    description: "Set active Pi tools",
+    description: "Set active OMP tools",
     paramsSchema: objectSchema({ toolNames: STRING_ARRAY }),
     queue: "serialized",
   },
   {
     name: "invokeTool",
     scope: "session",
-    source: "pi-extension",
-    description: "Invoke a registered Pi tool by name",
+    source: "omp-extension",
+    description: "Invoke a registered OMP tool by name",
     paramsSchema: objectSchema(
       { name: byteString(1024), arguments: { ...objectSchema({}, [], true), maxJsonBytes: 8 * 1024 * 1024 } },
       ["name"],
@@ -367,8 +367,8 @@ export const PI_COMMAND_SPECS = [
   {
     name: "invokeCommand",
     scope: "session",
-    source: "pi-extension",
-    description: "Invoke a registered Pi slash command by name",
+    source: "omp-extension",
+    description: "Invoke a registered OMP slash command by name",
     paramsSchema: objectSchema({ name: STRING, args: STRING }, ["name"]),
     queue: "serialized",
   },
@@ -399,7 +399,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "navigateTree",
     scope: "session",
-    description: "Navigate the Pi session tree",
+    description: "Navigate the OMP session tree",
     paramsSchema: objectSchema(
       {
         entryId: STRING,
@@ -424,7 +424,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "sendCustomMessage",
     scope: "session",
-    description: "Send a custom Pi message",
+    description: "Send a custom OMP message",
     paramsSchema: objectSchema(
       {
         customType: STRING,
@@ -452,7 +452,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "appendCustomEntry",
     scope: "session",
-    description: "Append a custom Pi entry",
+    description: "Append a custom OMP entry",
     paramsSchema: objectSchema({ customType: STRING, data: ANY_JSON }, [
       "customType",
     ]),
@@ -475,19 +475,19 @@ export const PI_COMMAND_SPECS = [
   {
     name: "waitForIdle",
     scope: "session",
-    description: "Wait until the Pi runtime is idle",
+    description: "Wait until the OMP runtime is idle",
     queue: "serialized",
   },
   {
     name: "reload",
     scope: "session",
-    description: "Reload Pi runtime resources",
+    description: "Reload OMP runtime resources",
     queue: "serialized",
   },
   {
     name: "respondExtensionUi",
     scope: "session",
-    description: "Respond to a pending Pi extension UI request",
+    description: "Respond to a pending OMP extension UI request",
     paramsSchema: objectSchema(
       { requestId: STRING, response: { ...objectSchema({}, [], true), maxJsonBytes: 1024 * 1024 } },
       ["requestId"],
@@ -497,7 +497,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "setExtensionEditorState",
     scope: "session",
-    description: "Set Pi extension editor state",
+    description: "Set OMP extension editor state",
     paramsSchema: objectSchema({ text: byteString(256 * 1024) }, ["text"]),
     queue: "immediate",
   },
@@ -530,7 +530,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "state.get",
     scope: "session",
-    description: "Read current Pi session state",
+    description: "Read current OMP session state",
     queue: "immediate",
     idempotent: true,
   },
@@ -554,7 +554,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "entries.get",
     scope: "session",
-    description: "Read a page of Pi session entries",
+    description: "Read a page of OMP session entries",
     paramsSchema: pageParams(),
     queue: "immediate",
     idempotent: true,
@@ -562,7 +562,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "branch.get",
     scope: "session",
-    description: "Read a page of the active Pi branch",
+    description: "Read a page of the active OMP branch",
     paramsSchema: pageParams({
       syncCursor: STRING,
       beforeId: STRING,
@@ -574,7 +574,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "tree.get",
     scope: "session",
-    description: "Read the Pi session tree",
+    description: "Read the OMP session tree",
     paramsSchema: pageParams(),
     queue: "immediate",
     idempotent: true,
@@ -589,28 +589,28 @@ export const PI_COMMAND_SPECS = [
   {
     name: "skills.list",
     scope: "session",
-    description: "List loaded Pi skills",
+    description: "List loaded OMP skills",
     queue: "immediate",
     idempotent: true,
   },
   {
     name: "prompts.list",
     scope: "session",
-    description: "List loaded Pi prompt templates",
+    description: "List loaded OMP prompt templates",
     queue: "immediate",
     idempotent: true,
   },
   {
     name: "agentsFiles.list",
     scope: "session",
-    description: "List loaded Pi AGENTS/CLAUDE context files",
+    description: "List loaded OMP AGENTS/CLAUDE context files",
     queue: "immediate",
     idempotent: true,
   },
   {
     name: "attachment.get",
     scope: "session",
-    description: "Read an attachment chunk from a Pi entry",
+    description: "Read an attachment chunk from an OMP entry",
     paramsSchema: objectSchema(
       {
         entryId: STRING,
@@ -625,7 +625,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "session.list",
     scope: "global",
-    description: "List Pi sessions for a workspace",
+    description: "List OMP sessions for a workspace",
     paramsSchema: CWD_PARAMS,
     queue: "immediate",
     idempotent: true,
@@ -633,7 +633,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "session.listAll",
     scope: "global",
-    description: "List all Pi sessions",
+    description: "List all OMP sessions",
     queue: "immediate",
     idempotent: true,
   },
@@ -656,14 +656,14 @@ export const PI_COMMAND_SPECS = [
   {
     name: "session.create",
     scope: "global",
-    description: "Create a Pi session without opening an agent runtime",
+    description: "Create an OMP session without opening an agent runtime",
     paramsSchema: CWD_PARAMS,
     queue: "serialized",
   },
   {
     name: "session.preview",
     scope: "global",
-    description: "Read a Pi session without opening an agent runtime",
+    description: "Read an OMP session without opening an agent runtime",
     paramsSchema: SESSION_PREVIEW_PARAMS,
     queue: "immediate",
     idempotent: true,
@@ -745,7 +745,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "session.delete",
     scope: "global",
-    description: "Delete a Pi session file",
+    description: "Delete an OMP session file",
     paramsSchema: objectSchema({ cwd: STRING, sessionFile: STRING }, [
       "cwd",
       "sessionFile",
@@ -755,14 +755,14 @@ export const PI_COMMAND_SPECS = [
   {
     name: "models.list",
     scope: "global",
-    description: "List Pi models",
+    description: "List OMP models",
     queue: "immediate",
     idempotent: true,
   },
   {
     name: "settings.get",
     scope: "global",
-    description: "Read Pi settings for a workspace",
+    description: "Read OMP settings for a workspace",
     paramsSchema: CWD_PARAMS,
     queue: "immediate",
     idempotent: true,
@@ -770,7 +770,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "settings.patch",
     scope: "global",
-    description: "Patch Pi settings for a workspace",
+    description: "Patch OMP settings for a workspace",
     paramsSchema: objectSchema(
       { cwd: STRING, patch: { ...objectSchema({}, [], true), maxJsonBytes: 1024 * 1024 } },
       ["cwd"],
@@ -780,7 +780,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "trust.get",
     scope: "global",
-    description: "Read Pi project trust state",
+    description: "Read OMP project trust state",
     paramsSchema: CWD_PARAMS,
     queue: "immediate",
     idempotent: true,
@@ -788,7 +788,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "trust.set",
     scope: "global",
-    description: "Set Pi project trust state",
+    description: "Set OMP project trust state",
     paramsSchema: objectSchema({ cwd: STRING, decision: nullable(BOOLEAN) }, [
       "cwd",
       "decision",
@@ -798,7 +798,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "providers.list",
     scope: "global",
-    description: "List Pi providers",
+    description: "List OMP providers",
     queue: "immediate",
     idempotent: true,
   },
@@ -847,7 +847,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "modelRuntime.inspect",
     scope: "global",
-    description: "Inspect the Pi model runtime",
+    description: "Inspect the OMP model runtime",
     queue: "immediate",
     idempotent: true,
   },
@@ -900,7 +900,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "packages.list",
     scope: "global",
-    description: "List configured Pi packages",
+    description: "List configured OMP packages",
     paramsSchema: CWD_PARAMS,
     queue: "immediate",
     idempotent: true,
@@ -908,7 +908,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "packages.manage",
     scope: "global",
-    description: "Install, remove, or update Pi packages",
+    description: "Install, remove, or update OMP packages",
     paramsSchema: objectSchema(
       {
         cwd: STRING,
@@ -925,7 +925,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "packages.resolve",
     scope: "global",
-    description: "Resolve Pi packages for a workspace",
+    description: "Resolve OMP packages for a workspace",
     paramsSchema: objectSchema(
       { cwd: STRING, missingAction: { enum: ["install", "skip", "error"] } },
       ["cwd"],
@@ -935,7 +935,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "packages.resolveSources",
     scope: "global",
-    description: "Resolve explicit Pi package sources",
+    description: "Resolve explicit OMP package sources",
     paramsSchema: objectSchema(
       {
         cwd: STRING,
@@ -950,7 +950,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "packages.changeSource",
     scope: "global",
-    description: "Add or remove a Pi package source",
+    description: "Add or remove an OMP package source",
     paramsSchema: objectSchema(
       {
         cwd: STRING,
@@ -965,7 +965,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "packages.installedPath",
     scope: "global",
-    description: "Read installed Pi package path",
+    description: "Read installed OMP package path",
     paramsSchema: objectSchema(
       { cwd: STRING, source: STRING, scope: { enum: ["user", "project"] } },
       ["cwd", "source"],
@@ -976,7 +976,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "packages.checkUpdates",
     scope: "global",
-    description: "Check Pi package updates",
+    description: "Check OMP package updates",
     paramsSchema: CWD_PARAMS,
     queue: "serialized",
   },

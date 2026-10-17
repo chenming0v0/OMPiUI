@@ -944,7 +944,7 @@ mod tests {
             None,
             &BTreeMap::from([
                 ("OMPIUI_PORT".to_string(), "9000".to_string()),
-                ("OMPIUI_USE_SYSTEM_PI".to_string(), "1".to_string()),
+                ("OMPI_OMP_BIN".to_string(), "/opt/omp/bin/omp".to_string()),
             ]),
         );
 
@@ -961,8 +961,8 @@ mod tests {
             Some("omp")
         );
         assert_eq!(
-            environment.get("OMPIUI_USE_SYSTEM_PI").map(String::as_str),
-            Some("1")
+            environment.get("OMPI_OMP_BIN").map(String::as_str),
+            Some("/opt/omp/bin/omp")
         );
     }
 

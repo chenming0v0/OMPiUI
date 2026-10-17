@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { PROTOCOL_VERSION } from '@ompiui/protocol'
 
 function jsonResponse(body: unknown, init?: ResponseInit) {
   return new Response(JSON.stringify(body), {
@@ -145,7 +146,7 @@ describe('serverStore health check', () => {
       'ompiui-servers',
       JSON.stringify([{ id: 'local', name: 'Local', url: '/api', isDefault: true }]),
     )
-    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: 2 }))
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: PROTOCOL_VERSION, ompVersion: null }))
     const { serverStore } = await import('./serverStore')
 
     await serverStore.checkHealth('local')
@@ -154,7 +155,7 @@ describe('serverStore health check', () => {
   })
 
   it('checks the local default server same-origin through the dev proxy', async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: 2 }))
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: PROTOCOL_VERSION, ompVersion: null }))
     const { serverStore } = await import('./serverStore')
 
     await serverStore.checkHealth('local')
@@ -169,7 +170,7 @@ describe('serverStore health check', () => {
         { id: 'local', name: 'LAN', url: 'http://192.168.1.5:8787', token: 'lan-token', isDefault: true },
       ]),
     )
-    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: 2 }))
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: PROTOCOL_VERSION, ompVersion: null }))
     const { serverStore } = await import('./serverStore')
 
     await serverStore.checkHealth('local')
@@ -179,16 +180,21 @@ describe('serverStore health check', () => {
     expect(new Headers(init.headers).get('authorization')).toBe('Bearer lan-token')
   })
 
-  it('marks a valid OMPiUI health response as online', async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(
-      jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: 2, piSdkVersion: '0.81.1' }),
-    )
+  it('keeps a reachable server online without retaining an unavailable worker version', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: PROTOCOL_VERSION, ompVersion: '18.9.1' }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: PROTOCOL_VERSION, ompVersion: null }))
     const { serverStore } = await import('./serverStore')
 
     const health = await serverStore.checkHealth('local')
 
     expect(health.status).toBe('online')
-    expect(health.version).toBe('0.81.1')
+    expect(health.version).toBe('18.9.1')
+
+    const coldHealth = await serverStore.checkHealth('local')
+    expect(coldHealth.status).toBe('online')
+    expect(coldHealth.version).toBeUndefined()
+    expect(serverStore.getHealth('local')?.version).toBeUndefined()
   })
 
   it('rejects HTML responses even when the status is 200', async () => {
@@ -230,7 +236,7 @@ describe('serverStore health check', () => {
     vi.mocked(fetch)
       .mockImplementationOnce(() => staleResponse.promise)
       .mockResolvedValueOnce(
-        jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: 2, piSdkVersion: '0.81.1' }),
+        jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: PROTOCOL_VERSION, ompVersion: '18.9.1' }),
       )
 
     const { serverStore } = await import('./serverStore')

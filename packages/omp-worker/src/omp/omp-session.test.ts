@@ -241,7 +241,7 @@ describe("OmpRpcSession extension identity after replacement", () => {
       const events: JsonObject[] = []
       session.onExtensionUi(event => events.push(event))
       frame({ type: "extension_ui_request", method: "input", id: "old-dialog", title: "Old" })
-      frame({ type: "extension_ui_request", method: "setStatus", key: "old", text: "Old state" })
+      frame({ type: "extension_ui_request", method: "setStatus", statusKey: "old", statusText: "Old state" })
       events.length = 0
 
       let emitted = false
@@ -250,7 +250,7 @@ describe("OmpRpcSession extension identity after replacement", () => {
         emitted = true
         frame({ type: "extension_ui_request", method: "select", id: "new-dialog", title: "New", options: ["yes"] })
         frame({ type: "extension_ui_request", method: "notify", message: "New notification" })
-        frame({ type: "extension_ui_request", method: "setStatus", key: "new", text: "New state" })
+        frame({ type: "extension_ui_request", method: "setStatus", statusKey: "new", statusText: "New state" })
         frame({ type: "extension_ui_request", method: "set_editor_text", text: "New editor" })
       }
 

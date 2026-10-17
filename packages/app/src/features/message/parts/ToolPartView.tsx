@@ -64,7 +64,7 @@ export const ToolPartView = memo(function ToolPartView({
   const taskStopped = useTaskRuntimeStopped(toolName === 'task')
   const status = result ? (result.isError ? 'error' : 'completed') : taskStopped ? 'error' : 'pending'
   // title 显示工具调用实质（命令/路径/模式），而不是重复工具名——
-  // pi SDK 的工具调用事件只有 toolName + args，没有工具描述字段；
+  // OMP RPC 的工具调用事件只有 toolName + args，没有工具描述字段；
   // formatToolName(toolName) 已展示工具名，title 再显示同名就是冗余。
   const title = extractToolTitle(toolName, execution)
 
@@ -491,7 +491,7 @@ const ToolBody = memo(function ToolBody({
 
 /**
  * 从工具调用参数提取有信息量的 title（header 副标题）。
- * pi SDK 调用事件不携带工具描述（只有 toolName + args），工具定义的
+ * OMP RPC 调用事件不携带工具描述（只有 toolName + args），工具定义的
  * label/description 也不随调用下发，因此按内置工具提取实质内容：
  * bash→命令、read/write/edit/ls→路径、grep/find→模式；
  * 自定义工具 fallback 到 agent 可能传入的 description 参数。

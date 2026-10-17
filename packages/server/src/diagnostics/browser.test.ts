@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { recordBrowserDiagnostic } from "./browser.ts";
 import { diagnostics } from "./recorder.ts";
-import type { BrowserDiagnosticMessage } from "@ompiui/protocol";
+import { PROTOCOL_VERSION, type BrowserDiagnosticMessage } from "@ompiui/protocol";
 
 test("browser diagnostics accept only known events for subscribed sessions", (t) => {
   const calls: unknown[][] = [];
@@ -11,7 +11,7 @@ test("browser diagnostics accept only known events for subscribed sessions", (t)
   });
   const base: BrowserDiagnosticMessage = {
     type: "diagnostic",
-    protocolVersion: 2,
+    protocolVersion: PROTOCOL_VERSION,
     clientId: "page-1",
     event: "state",
     sessionId: "session-1",

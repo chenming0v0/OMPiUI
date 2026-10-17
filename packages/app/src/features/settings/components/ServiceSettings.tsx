@@ -30,7 +30,7 @@ export function ServiceSettings() {
   const { t } = useTranslation(['settings', 'common'])
   const desktop = isTauri() && !isTauriMobile()
   const { activeServer, activeServerGeneration } = useServerStore()
-  const { autoStart, useSystemPiSdk, envVars, running, startedByUs, starting } = useServiceStore()
+  const { autoStart, envVars, running, startedByUs, starting } = useServiceStore()
   const [status, setStatus] = useState<DesktopServiceStatus | null>(null)
   const [shells, setShells] = useState<TerminalShell[]>([])
   const [selectedShell, setSelectedShell] = useState('')
@@ -428,13 +428,9 @@ export function ServiceSettings() {
       )}
       {backgroundError && <p className="break-all text-[length:var(--fs-xs)] text-danger-100">{backgroundError}</p>}
 
-      <SettingRow
-        label={t('service.useSystemPiSdk')}
-        description={t('service.useSystemPiSdkDesc')}
-        onClick={() => serviceStore.setUseSystemPiSdk(!useSystemPiSdk)}
-      >
-        <Toggle enabled={useSystemPiSdk} onChange={() => serviceStore.setUseSystemPiSdk(!useSystemPiSdk)} />
-      </SettingRow>
+      <SettingField label={t('service.ompRuntime')}>
+        <p className="text-[length:var(--fs-xs)] leading-relaxed text-text-300">{t('service.ompRuntimeDesc')}</p>
+      </SettingField>
 
       <SettingRow
         label={t('service.serviceStatus')}

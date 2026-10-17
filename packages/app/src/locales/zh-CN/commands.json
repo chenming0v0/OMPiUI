@@ -119,6 +119,7 @@
     "agentLabel": "Agent",
     "desc": "描述",
     "viewDetail": "查看详情",
+    "openImage": "放大查看 {{name}}",
     "copyContent": "复制内容",
     "saveToFile": "保存到文件",
     "noPreview": "无法预览",

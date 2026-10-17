@@ -1,12 +1,10 @@
-/* eslint-disable @typescript-eslint/no-explicit-any -- faithful copies of the SDK declarations */
+/* eslint-disable @typescript-eslint/no-explicit-any -- upstream-derived wire declarations */
 /**
- * Vendored type definitions from `@earendil-works/pi-agent-core` (v0.84.2).
+ * UI-facing agent declarations, originally copied from
+ * `@earendil-works/pi-agent-core` v0.84.2 and adapted for OMP RPC.
+ * Local types only: the Agent runs in a separate `omp --mode rpc` process.
  *
- * The app only ever consumed the SDK's *types* (the agent runtime lives in the
- * OMP worker, not here), so the dependency was stripped and the declarations
- * the UI actually renders are kept here as the source of truth.
- *
- * In the SDK, `AgentMessage` is `Message | CustomAgentMessages[keyof ...]`
+ * In the original SDK, `AgentMessage` is `Message | CustomAgentMessages[keyof ...]`
  * where the coding agent contributes the extra roles via declaration merging.
  * Here that augmentation is inlined directly into the union.
  */

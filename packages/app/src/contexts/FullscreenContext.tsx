@@ -78,6 +78,7 @@ export function FullscreenProvider({ children }: { children: ReactNode }) {
           showHeader={layer.showHeader}
           zIndex={layer.zIndex}
           deferContent={layer.deferContent}
+          backdrop={layer.backdrop}
         >
           {layer.content}
         </FullscreenViewer>

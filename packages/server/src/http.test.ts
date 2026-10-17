@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { after, describe, it } from "node:test"
 
-// Parallel test files each spawn SDK workers; the default handshake budget
+// Parallel test files each spawn OMP workers; the default handshake budget
 // is too tight when several spawn at once on a loaded machine.
 process.env.OMPIUI_WORKER_HANDSHAKE_TIMEOUT_MS ??= "60000"
 
@@ -11,7 +11,7 @@ import path from "node:path"
 import { connect } from "node:net"
 import { once } from "node:events"
 import { createAppServer, type AppServer } from "./http.ts"
-import { PI_PARITY_SDK_VERSION } from "@ompiui/protocol"
+import { RuntimeSupervisor } from "./omp/supervisor.ts"
 import { MAX_PAIRING_FAILURES, PairingStore } from "./host/pairing.ts"
 import { TUNNEL_FORWARDING_HEADER } from "./host/security.ts"
 import { FaultReportService } from "./diagnostics/fault-reports.ts"
@@ -398,55 +398,32 @@ describe("http api", () => {
     assert.equal(removedShortcut.status, 404)
   })
 
-  it("reports the real SDK version and fallback state through health", async () => {
-    const hello = {
-      kind: "hello" as const,
-      workerProtocolVersion: 3,
-      piSdkVersion: "9.9.9",
-      piSdkVerified: false,
-      piSdkFallback: { source: "global", message: "incompatible contract: missing createAgentSessionRuntime" },
-      generation: "gen-1",
-      processId: 123,
-      heartbeatIntervalMs: 5000,
-    }
-    const supervisor = {
-      onEvent: () => () => {},
-      prewarm: async () => {},
-      peekCatalogHandshake: async () => hello,
-      getCatalogHandshake: async () => { throw new Error("health must not start or wait for a worker") },
-      dispose: async () => {},
-    } as unknown as import("./omp/supervisor.ts").RuntimeSupervisor
+  it("health stays read-only and clears the CLI version when the worker is unavailable", async () => {
+    const supervisor = new RuntimeSupervisor({
+      workerEntry: new URL("./omp/worker-client-fixture.mjs", import.meta.url),
+      worker: { env: { OMPIUI_FIXTURE_MODE: "hello-ok" }, execArgv: ["--import", "tsx"] },
+    })
     const app = createAppServer({ authToken: "test-token", supervisor })
     const port = await listen(app)
     cleanups.push(() => app.dispose())
 
-    const health = await request(port, "GET", "/api/v1/host/health", { token: "test-token" })
-    assert.equal(health.status, 200)
-    assert.equal(health.json.piSdkVersion, "9.9.9")
-    assert.equal(health.json.piSdkVerified, false)
-    assert.equal(health.json.workerReady, true)
-    assert.ok(typeof health.json.startedAt === "number" && health.json.startedAt <= Date.now())
-    assert.deepEqual(health.json.piSdkFallback, { source: "global", message: "incompatible contract: missing createAgentSessionRuntime" })
-  })
+    const cold = await request(port, "GET", "/api/v1/host/health", { token: "test-token" })
+    assert.equal(cold.status, 200)
+    assert.equal(cold.json.ompVersion, null)
+    assert.equal(cold.json.workerReady, false)
+    assert.equal(await supervisor.peekCatalogHandshake(), undefined)
 
-  it("health falls back to the parity constants when the catalog handshake is unavailable", async () => {
-    const supervisor = {
-      onEvent: () => () => {},
-      prewarm: async () => {},
-      peekCatalogHandshake: async () => { throw new Error("worker crashed") },
-      getCatalogHandshake: async () => { throw new Error("worker crashed") },
-      dispose: async () => {},
-    } as unknown as import("./omp/supervisor.ts").RuntimeSupervisor
-    const app = createAppServer({ authToken: "test-token", supervisor })
-    const port = await listen(app)
-    cleanups.push(() => app.dispose())
+    const hello = await supervisor.getCatalogHandshake()
+    const ready = await request(port, "GET", "/api/v1/host/health", { token: "test-token" })
+    assert.equal(ready.status, 200)
+    assert.equal(ready.json.ompVersion, hello.ompVersion)
+    assert.equal(ready.json.workerReady, true)
 
-    const health = await request(port, "GET", "/api/v1/host/health", { token: "test-token" })
-    assert.equal(health.status, 200)
-    assert.equal(health.json.piSdkVersion, PI_PARITY_SDK_VERSION)
-    assert.equal(health.json.piSdkVerified, undefined)
-    assert.equal(health.json.workerReady, false)
-    assert.equal(health.json.piSdkFallback, null)
+    await supervisor.dispose()
+    const stopped = await request(port, "GET", "/api/v1/host/health", { token: "test-token" })
+    assert.equal(stopped.status, 200)
+    assert.equal(stopped.json.ompVersion, null)
+    assert.equal(stopped.json.workerReady, false)
   })
 
   it("routes extension commands and tools natively through the runtime registry (mock driver)", async () => {

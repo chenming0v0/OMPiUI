@@ -56,6 +56,17 @@
     "loadingPanel": "Loading panel...",
     "noActiveSession": "No active session"
   },
+  "extensionsPanel": {
+    "empty": "No extension output for this session",
+    "dialogs": "Pending Interactions",
+    "commandFeedback": "Command Feedback",
+    "clear": "Clear",
+    "tui": "Extension TUI",
+    "title": "Title",
+    "working": "Working",
+    "statuses": "Status",
+    "widgets": "Extension Output"
+  },
   "bottomPanel": {
     "loadingPanel": "Loading panel..."
   },

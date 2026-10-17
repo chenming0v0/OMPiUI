@@ -16,7 +16,7 @@ interface AttachmentItemProps {
   size?: 'sm' | 'md'
   expandable?: boolean
   className?: string
-  defaultExpanded?: boolean
+  onFullscreenChange?: (isOpen: boolean) => void
 }
 
 function AttachmentItemComponent({
@@ -25,19 +25,26 @@ function AttachmentItemComponent({
   size = 'md',
   expandable = false,
   className,
-  defaultExpanded = false,
+  onFullscreenChange,
 }: AttachmentItemProps) {
   const { t } = useTranslation(['commands', 'common'])
-  const [isExpanded, setIsExpanded] = useState(defaultExpanded)
+  const [isExpanded, setIsExpanded] = useState(false)
   const [imageError, setImageError] = useState(false)
   const [isModalOpen, setIsModalOpen] = useState(false)
+  const isImagePreview = expandable && !!attachment.url && !!attachment.mime?.startsWith('image/')
   const shouldRenderBody = useDelayedRender(isExpanded)
   const resolvedUrl = useAuthenticatedObjectUrl(
     attachment.url,
     attachment.requiresAuth,
-    shouldRenderBody || isModalOpen,
+    isImagePreview || shouldRenderBody || isModalOpen,
   )
   const renderedAttachment = attachment.requiresAuth ? { ...attachment, url: resolvedUrl } : attachment
+
+  useEffect(() => {
+    if (!isModalOpen) return
+    onFullscreenChange?.(true)
+    return () => onFullscreenChange?.(false)
+  }, [isModalOpen, onFullscreenChange])
 
   const { Icon, colorClass } = getAttachmentIcon(attachment)
   const canExpand = expandable && hasExpandableContent(attachment)
@@ -56,6 +63,61 @@ function AttachmentItemComponent({
   // 不用 w-auto（无法过渡），用 w-full（百分比 → 计算像素 → 可过渡）
   const collapsedWidth = className ? '' : 'w-[140px]'
   const expandedWidth = 'w-full min-w-[140px] max-w-[440px]'
+
+  if (isImagePreview) {
+    return (
+      <div className={`relative min-w-0 max-w-full ${className || 'w-40'}`}>
+        <button
+          type="button"
+          onClick={() => setIsModalOpen(true)}
+          aria-label={t('attachment.openImage', { name: attachment.displayName })}
+          aria-haspopup="dialog"
+          title={t('attachment.openImage', { name: attachment.displayName })}
+          className="group flex w-full min-w-0 cursor-zoom-in flex-col overflow-hidden rounded-lg border border-border-300/60 bg-bg-100/50 text-left transition-colors hover:border-text-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-main-100"
+        >
+          <span className="relative flex h-28 w-full items-center justify-center overflow-hidden bg-bg-200/50 p-1.5">
+            {resolvedUrl && !imageError ? (
+              <img
+                key={resolvedUrl}
+                src={resolvedUrl}
+                alt={attachment.displayName}
+                loading="lazy"
+                decoding="async"
+                onLoad={() => setImageError(false)}
+                onError={() => setImageError(true)}
+                className="h-full w-full object-contain"
+              />
+            ) : (
+              <span className="px-2 text-[length:var(--fs-xs)] text-text-400">
+                {imageError ? t('attachment.failedToLoadImage') : t('common:loading')}
+              </span>
+            )}
+            <span aria-hidden="true" className="absolute bottom-1.5 right-1.5 rounded bg-bg-100/90 p-1 text-text-200 opacity-70 transition-opacity group-hover:opacity-100">
+              <ExpandIcon size={12} />
+            </span>
+          </span>
+          <span className="w-full truncate px-2 py-1 text-[length:var(--fs-xs)] text-text-300">
+            {attachment.displayName}
+          </span>
+        </button>
+        {onRemove && (
+          <button
+            type="button"
+            onClick={() => onRemove(attachment.id)}
+            className="absolute right-1 top-1 rounded bg-bg-100/90 p-1 text-text-300 hover:text-text-100"
+            aria-label={t('attachment.removeAttachment')}
+          >
+            <CloseIcon />
+          </button>
+        )}
+        <AttachmentDetailModal
+          attachment={renderedAttachment}
+          isOpen={isModalOpen}
+          onClose={() => setIsModalOpen(false)}
+        />
+      </div>
+    )
+  }
 
   return (
     <div
@@ -127,8 +189,6 @@ function AttachmentItemComponent({
             {shouldRenderBody && (
               <ExpandedContent
                 attachment={renderedAttachment}
-                imageError={imageError}
-                onImageError={() => setImageError(true)}
                 onOpenDetail={() => setIsModalOpen(true)}
               />
             )}
@@ -148,8 +208,6 @@ function AttachmentItemComponent({
 
 interface ExpandedContentProps {
   attachment: Attachment
-  imageError: boolean
-  onImageError: () => void
   onOpenDetail: () => void
 }
 
@@ -175,29 +233,15 @@ function MetaRow({
   )
 }
 
-function ExpandedContent({ attachment, imageError, onImageError, onOpenDetail }: ExpandedContentProps) {
+function ExpandedContent({ attachment, onOpenDetail }: ExpandedContentProps) {
   const { t } = useTranslation(['commands', 'common'])
   const { type, url, content, relativePath, mime, agentName, agentDescription } = attachment
-  const isImage = mime?.startsWith('image/')
   const hasContent = !!content
-  const hasDownloadable = hasContent || (!!isImage && !!url)
 
   // Content Area
   let contentNode = null
 
-  if (isImage && url && !imageError) {
-    contentNode = (
-      <div className="p-2">
-        <img
-          src={url}
-          alt={attachment.displayName}
-          onError={onImageError}
-          loading="lazy"
-          className="max-h-64 w-full rounded object-contain bg-bg-300/50"
-        />
-      </div>
-    )
-  } else if (content) {
+  if (content) {
     contentNode = (
       <div className="max-h-64 overflow-auto custom-scrollbar">
         <pre className="p-2 text-[length:var(--fs-sm)] font-mono text-text-300 whitespace-pre-wrap break-all">
@@ -215,14 +259,13 @@ function ExpandedContent({ attachment, imageError, onImageError, onOpenDetail }:
       <ActionBar
         attachment={attachment}
         hasContent={hasContent}
-        hasDownloadable={hasDownloadable}
         onOpenDetail={onOpenDetail}
         showBorderTop={!!contentNode}
       />
 
       {/* 元信息 */}
       <div
-        className={`p-2 text-[length:var(--fs-sm)] space-y-1 text-text-300 bg-bg-100/50 ${contentNode || hasContent || hasDownloadable ? 'border-t border-border-300' : ''}`}
+        className={`p-2 text-[length:var(--fs-sm)] space-y-1 text-text-300 bg-bg-100/50 ${hasContent ? 'border-t border-border-300' : ''}`}
       >
         {type === 'text' && <MetaRow label={t('attachment.category')} value={t('attachment.context')} />}
 
@@ -230,7 +273,7 @@ function ExpandedContent({ attachment, imageError, onImageError, onOpenDetail }:
         <MetaRow
           label={t('attachment.source')}
           value={
-            url && !(url.startsWith('data:') && isImage && !imageError)
+            url
               ? url.startsWith('file:///')
                 ? decodeURIComponent(url.replace(/^file:\/\/\/?/, ''))
                 : url
@@ -289,12 +332,11 @@ function ExpandedContent({ attachment, imageError, onImageError, onOpenDetail }:
 interface ActionBarProps {
   attachment: Attachment
   hasContent: boolean
-  hasDownloadable: boolean
   onOpenDetail: () => void
   showBorderTop: boolean
 }
 
-function ActionBar({ attachment, hasContent, hasDownloadable, onOpenDetail, showBorderTop }: ActionBarProps) {
+function ActionBar({ attachment, hasContent, onOpenDetail, showBorderTop }: ActionBarProps) {
   const { t } = useTranslation(['commands', 'common'])
   const [copied, setCopied] = useState(false)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -324,16 +366,8 @@ function ActionBar({ attachment, hasContent, hasDownloadable, onOpenDetail, show
   const handleDownload = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation()
-      const isImage = attachment.mime?.startsWith('image/')
-      const fileName = attachment.displayName || (isImage ? 'image' : 'attachment.txt')
-
-      if (isImage && attachment.url) {
-        // 图片：从 data URI 或 URL fetch 后保存
-        fetch(attachment.url)
-          .then(res => res.arrayBuffer())
-          .then(buf => saveData(new Uint8Array(buf), fileName, attachment.mime || 'image/png'))
-          .catch(err => console.warn('[AttachmentItem] save image failed:', err))
-      } else if (attachment.content) {
+      const fileName = attachment.displayName || 'attachment.txt'
+      if (attachment.content) {
         saveData(new TextEncoder().encode(attachment.content), fileName, 'text/plain;charset=utf-8')
       }
     },
@@ -348,7 +382,7 @@ function ActionBar({ attachment, hasContent, hasDownloadable, onOpenDetail, show
     [onOpenDetail],
   )
 
-  if (!hasContent && !hasDownloadable) return null
+  if (!hasContent) return null
 
   const btnBase =
     'inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[length:var(--fs-xxs)] transition-colors duration-150'
@@ -377,7 +411,7 @@ function ActionBar({ attachment, hasContent, hasDownloadable, onOpenDetail, show
         </button>
       )}
 
-      {hasDownloadable && (
+      {hasContent && (
         <button
           onClick={handleDownload}
           className={`${btnBase} text-text-400 hover:text-text-200 hover:bg-bg-300/50`}

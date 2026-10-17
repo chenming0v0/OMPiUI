@@ -17,7 +17,7 @@ import type {
 } from "@ompiui/protocol";
 import {
   isJsonObject,
-  PI_PARITY_SDK_VERSION,
+  OMP_RUNTIME_BASELINE_VERSION,
   PROTOCOL_VERSION,
   byteString,
   validateParams,
@@ -49,7 +49,7 @@ const SERVER_GLOBAL_CAPABILITIES: PiCapability[] = [
     name: "session.open",
     scope: "global",
     source: "ompiui-adapter",
-    description: "Attach or create a Pi session runtime",
+    description: "Attach or create an OMP session runtime",
     paramsSchema: {
       type: "object",
       additionalProperties: true,
@@ -66,7 +66,7 @@ const SERVER_GLOBAL_CAPABILITIES: PiCapability[] = [
     name: "session.attached",
     scope: "global",
     source: "ompiui-adapter",
-    description: "List Pi session ids currently attached to this PiUI server",
+    description: "List OMP session ids currently attached to this OMPiUI server",
     paramsSchema: {
       type: "object",
       additionalProperties: false,
@@ -81,7 +81,7 @@ const SERVER_SESSION_CAPABILITIES: PiCapability[] = [
     name: "session.close",
     scope: "session",
     source: "ompiui-adapter",
-    description: "Detach a Pi session runtime from PiUI",
+    description: "Detach an OMP session runtime from OMPiUI",
     paramsSchema: {
       type: "object",
       additionalProperties: false,
@@ -729,10 +729,10 @@ export class SessionHost {
   }
 
   async piRegistry(signal?: AbortSignal): Promise<PiRegistrySnapshot> {
-    // worker 未就绪（冷启动 SDK 加载中）时立即返回静态快照：命令能力表是
-    // 编译期静态的（@ompiui/protocol 的 PI_COMMAND_SPECS），不需要 worker。
-    // 否则前端 bootstrap 会被 worker 的数秒 SDK 加载卡住，触发退避重试。
-    // sdkVersion 用 parity 常量兜底；worker 就绪后走真实 describeRegistry。
+    // worker 未就绪时立即返回静态快照：命令能力表来自编译期的
+    // PI_COMMAND_SPECS，不需要启动 worker 或 OMP CLI。
+    // 历史 sdkVersion 字段使用 OMP 兼容基线；它不是已安装 CLI 的版本。
+    // worker 就绪后走真实 describeRegistry。
     const ready = await this.supervisor
       .peekCatalogHandshake()
       .catch(() => undefined);
@@ -740,7 +740,7 @@ export class SessionHost {
       return {
         protocolVersion: PROTOCOL_VERSION,
         revision: 1,
-        sdkVersion: PI_PARITY_SDK_VERSION,
+        sdkVersion: OMP_RUNTIME_BASELINE_VERSION,
         driver: getDriverMode(),
         globalCommands: mergeCapabilities(SERVER_GLOBAL_CAPABILITIES, [
           createRegistryDescribeCapability(),
@@ -758,7 +758,7 @@ export class SessionHost {
       signal,
     })) as PiRegistrySnapshot | undefined;
     if (!data || typeof data !== "object") {
-      throw Object.assign(new Error("Pi registry is unavailable"), {
+      throw Object.assign(new Error("OMP registry is unavailable"), {
         code: "REGISTRY_UNAVAILABLE",
       });
     }
@@ -910,8 +910,8 @@ export class SessionHost {
   }
 
   /**
-   * 静态命令表未命中：对照该会话 Pi 运行时自己的注册表（loader.getExtensions
-   * 的结果）原生路由扩展命令/工具——PiUI 不做第二份镜像。注册过才提交执行；
+   * 静态命令表未命中：对照 OMP RPC 适配器报告的会话注册表路由扩展
+   * 命令/工具；只有已注册的能力才提交执行。
    * 冷会话（未 attach）不因一个未知命令而孵化 worker。
    */
   private async dispatchExtensionCommand(
@@ -942,7 +942,7 @@ export class SessionHost {
       throw Object.assign(new Error(`unknown command: ${type}`), {
         code: "UNKNOWN_COMMAND",
       });
-    // 工具参数 schema 来自 Pi 自己的工具定义——在 HTTP 边界校验，畸形入参直接 400。
+    // 工具参数 schema 来自 OMP 工具定义——在 HTTP 边界校验，畸形入参直接 400。
     if (tool?.parameters) validateParams(tool.parameters, params ?? {});
     return this.submitSessionCommand(sessionId, {
       id: id ?? randomUUID(),
@@ -1108,7 +1108,7 @@ export class SessionHost {
         },
         "error",
       );
-      // The SDK has already changed identity. A failed parent-side commit
+      // The session runtime has already changed identity. A failed parent-side commit
       // cannot be rolled back safely, so stop this worker before it can write.
       setImmediate(() => {
         void session.worker.dispose();
@@ -1286,8 +1286,7 @@ export class SessionHost {
   }
 
   /**
-   * Aggregate worker-reported activity status (derived from SDK isStreaming/
-   * isRetrying on the worker side) and broadcast full snapshots on change.
+   * Aggregate worker-reported activity status and broadcast full snapshots on change.
    */
   private trackActivity(sessionId: string, event: JsonValue | undefined): void {
     const status =
@@ -1374,7 +1373,7 @@ export class SessionHost {
 
     for (const session of candidates) {
       // 双保险：向 worker 确认确实无未完成工作再回收。activity 是事件驱动上报
-      // （可能有延迟/遗漏），state.get 是 SDK 同步真相源——isIdle（会话确实无事）、
+      // （可能有延迟/遗漏），state.get 返回 worker 的 OMP 运行状态——isIdle（会话确实无事）、
       // isStreaming（agent run 活跃，工具执行期间同样为真）、hasPendingAsyncWork
       // （后台 bash / async task / eval 的结果还没回灌）、pendingMessageCount
       // （队列里还有消息）任一成立都跳过。

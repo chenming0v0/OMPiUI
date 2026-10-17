@@ -68,27 +68,32 @@ export class OmpExtensionUiBridge {
         return
       }
       case "setStatus": {
-        this.pushState({ kind: "status", key: typeof frame.key === "string" ? frame.key : ompId, text: typeof frame.text === "string" ? frame.text : undefined })
+        if (typeof frame.statusKey !== "string") return
+        this.pushState({ kind: "status", key: frame.statusKey, text: typeof frame.statusText === "string" ? frame.statusText : undefined })
         return
       }
       case "setWidget": {
+        if (typeof frame.widgetKey !== "string") return
+        if (frame.widgetLines === undefined) {
+          this.pushState({ kind: "widget", key: frame.widgetKey })
+          return
+        }
+        if (!Array.isArray(frame.widgetLines)) return
         const lines: string[] = []
         let bytes = 0
-        if (Array.isArray(frame.lines)) {
-          for (const rawLine of frame.lines) {
-            if (lines.length >= MAX_WIDGET_LINES) break
-            const line = String(rawLine)
-            const lineBytes = Buffer.byteLength(line, "utf8")
-            if (bytes + lineBytes > MAX_WIDGET_BYTES) break
-            lines.push(line)
-            bytes += lineBytes
-          }
+        for (const rawLine of frame.widgetLines) {
+          if (lines.length >= MAX_WIDGET_LINES) break
+          const line = String(rawLine)
+          const lineBytes = Buffer.byteLength(line, "utf8")
+          if (bytes + lineBytes > MAX_WIDGET_BYTES) break
+          lines.push(line)
+          bytes += lineBytes
         }
         this.pushState({
           kind: "widget",
-          key: typeof frame.key === "string" ? frame.key : ompId || randomUUID(),
+          key: frame.widgetKey,
           lines,
-          placement: frame.placement === "aboveEditor" ? "aboveEditor" : "belowEditor",
+          placement: frame.widgetPlacement === "belowEditor" ? "belowEditor" : "aboveEditor",
         })
         return
       }

@@ -1,3 +1,4 @@
+import type { Virtualizer } from '@tanstack/virtual-core'
 import type { ProcessTimelineItem } from './chatPageModel'
 
 /** 回合边界 / 用户消息：上下各 12px */
@@ -44,4 +45,29 @@ export function mergeVirtualRangeIndexes(base: number[], count: number, ...pinne
   return [...new Set([...pinned, ...base])]
     .filter(index => index >= 0 && index < count)
     .sort((a, b) => a - b)
+}
+
+/** Validate against the current measurements, before virtual-core materializes rows.
+ * A render-only filter is too late: directDomUpdates reads each row's start first.
+ */
+export function guardVirtualizerRange<TScroll extends Element, TItem extends Element>(
+  virtualizer: Virtualizer<TScroll, TItem>,
+): void {
+  const getVirtualIndexes = virtualizer.getVirtualIndexes
+  virtualizer.getVirtualIndexes = Object.assign(() => {
+    const indexes = getVirtualIndexes()
+    const measurements = virtualizer.measurementsCache
+    const count = Math.min(virtualizer.options.count, measurements.length)
+    let valid: number[] | undefined
+    for (let i = 0; i < indexes.length; i++) {
+      const index = indexes[i]
+      if (Number.isInteger(index) && index >= 0 && index < count && measurements[index] !== undefined) {
+        valid?.push(index)
+      } else {
+        valid ??= indexes.slice(0, i)
+      }
+    }
+    // Keep the memoized reference, and allocate nothing, on the normal path.
+    return valid ?? indexes
+  }, { updateDeps: getVirtualIndexes.updateDeps })
 }

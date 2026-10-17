@@ -1,12 +1,10 @@
-/* eslint-disable @typescript-eslint/no-explicit-any -- faithful copies of the SDK declarations */
+/* eslint-disable @typescript-eslint/no-explicit-any -- upstream-derived wire declarations */
 /**
- * Vendored type definitions from `@earendil-works/pi-coding-agent` (v0.84.2).
- *
- * The app only ever consumed the SDK's *types* (the agent runtime lives in the
- * OMP worker via `omp --mode rpc`, not here), so the dependency was stripped
- * and the declarations the UI actually renders are kept here as the source of
- * truth. Shapes mirror the SDK declarations verbatim; if the wire format
- * changes, update them here.
+ * UI-facing session declarations, originally copied from
+ * `@earendil-works/pi-coding-agent` v0.84.2 and adapted for OMP RPC.
+ * These are local types only, not a Pi SDK dependency or runtime.
+ * Keep them aligned with the OMPiUI worker's message/session projections;
+ * they are not a complete declaration of the current OMP SDK.
  */
 
 import type { AgentEvent, AgentMessage, ThinkingLevel } from './pi-agent-core'

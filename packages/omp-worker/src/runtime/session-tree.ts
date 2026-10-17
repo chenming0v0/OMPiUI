@@ -24,8 +24,8 @@ export function sessionTreePage(
 }
 
 /**
- * tree.get 的响应形状 —— 对齐 Pi SDK 的 SessionTreeNode（{ entry, children,
- * label?, labelTimestamp? }）。前端 sessionTreeGraph 按 SDK 形状消费，
+ * tree.get 的响应形状 —— OMPiUI 的 SessionTreeNode（{ entry, children,
+ * label?, labelTimestamp? }）。前端 sessionTreeGraph 按此形状消费，
  * worker 的扁平 { id, parentId, ... } 条目在这里组装成嵌套树（issue #10）。
  */
 export interface SessionTreeNodePayload {

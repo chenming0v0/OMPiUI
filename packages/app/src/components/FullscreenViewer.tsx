@@ -42,6 +42,8 @@ export interface FullscreenViewerProps {
   zIndex?: number
   /** 延后一帧挂载 children，避免重内容阻塞全屏打开动画 */
   deferContent?: boolean
+  /** 透出并模糊背景，供图片等轻量预览使用。 */
+  backdrop?: boolean
 }
 
 // ============================================
@@ -58,6 +60,7 @@ export const FullscreenViewer = memo(function FullscreenViewer({
   showHeader = true,
   zIndex,
   deferContent = false,
+  backdrop = false,
 }: FullscreenViewerProps) {
   const { t } = useTranslation('common')
   const isDesktopChrome = usesCustomDesktopTitlebar()
@@ -67,9 +70,12 @@ export const FullscreenViewer = memo(function FullscreenViewer({
       isOpen={isOpen}
       onClose={onClose}
       zIndex={zIndex ?? DESKTOP_FULLSCREEN_LAYER_Z_INDEX}
-      style={isDesktopChrome ? { top: `calc(var(--safe-area-inset-top) + ${DESKTOP_TITLEBAR_HEIGHT}px)` } : undefined}
+      style={{
+        ...(isDesktopChrome ? { top: `calc(var(--safe-area-inset-top) + ${DESKTOP_TITLEBAR_HEIGHT}px)` } : {}),
+        ...(backdrop ? { background: 'transparent' } : {}),
+      }}
     >
-      <div className="w-full h-full flex flex-col bg-bg-100">
+      <div className={`w-full h-full flex flex-col ${backdrop ? 'bg-bg-100/85 backdrop-blur-sm' : 'bg-bg-100'}`}>
         {showHeader && (
           <div data-testid="fullscreen-viewer-header" className="flex items-center h-11 px-4 border-b border-border-100/40 shrink-0 gap-3">
             {/* Left: title area */}

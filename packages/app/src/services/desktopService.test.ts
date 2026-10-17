@@ -6,7 +6,7 @@ const { invokeMock, applyLocalServerConfigMock, serviceStoreMock } = vi.hoisted(
   invokeMock: vi.fn(),
   applyLocalServerConfigMock: vi.fn(),
   serviceStoreMock: {
-    envVarsRecord: { OMPIUI_USE_SYSTEM_PI: '1' },
+    envVarsRecord: { OMPI_OMP_BIN: '/opt/omp/bin/omp' },
     setRunning: vi.fn(),
     setStartedByUs: vi.fn(),
     setStarting: vi.fn(),
@@ -22,7 +22,7 @@ const runningStatus = {
   startedByUs: true,
   pid: 42,
   url: 'http://127.0.0.1:8787',
-  environment: { OMPIUI_USE_SYSTEM_PI: '1' },
+  environment: { OMPI_OMP_BIN: '/opt/omp/bin/omp' },
 }
 
 describe('desktopService', () => {
@@ -48,10 +48,10 @@ describe('desktopService', () => {
 
     expect(outcome.status).toEqual(runningStatus)
     expect(invokeMock).toHaveBeenNthCalledWith(1, 'start_ompiui_service', {
-      envVars: { OMPIUI_USE_SYSTEM_PI: '1' },
+      envVars: { OMPI_OMP_BIN: '/opt/omp/bin/omp' },
     })
     expect(invokeMock).toHaveBeenNthCalledWith(2, 'get_ompiui_service_status', {
-      envVars: { OMPIUI_USE_SYSTEM_PI: '1' },
+      envVars: { OMPI_OMP_BIN: '/opt/omp/bin/omp' },
     })
     expect(applyLocalServerConfigMock).toHaveBeenCalledWith('http://127.0.0.1:8787', 'token')
   })
@@ -61,7 +61,7 @@ describe('desktopService', () => {
 
     await expect(restartDesktopService()).rejects.toThrow(/usable URL and auth token/)
     expect(invokeMock).toHaveBeenCalledWith('restart_ompiui_service', {
-      envVars: { OMPIUI_USE_SYSTEM_PI: '1' },
+      envVars: { OMPI_OMP_BIN: '/opt/omp/bin/omp' },
     })
     expect(applyLocalServerConfigMock).not.toHaveBeenCalled()
   })
@@ -73,7 +73,7 @@ describe('desktopService', () => {
     await expect(stopDesktopService()).resolves.toEqual(stoppedStatus)
     expect(invokeMock).toHaveBeenNthCalledWith(1, 'stop_ompiui_service')
     expect(invokeMock).toHaveBeenNthCalledWith(2, 'get_ompiui_service_status', {
-      envVars: { OMPIUI_USE_SYSTEM_PI: '1' },
+      envVars: { OMPI_OMP_BIN: '/opt/omp/bin/omp' },
     })
   })
 
