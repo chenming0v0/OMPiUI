@@ -56,6 +56,17 @@
     "loadingPanel": "加载面板中...",
     "noActiveSession": "没有活跃会话"
   },
+  "extensionsPanel": {
+    "empty": "此会话暂无扩展输出",
+    "dialogs": "待处理交互",
+    "commandFeedback": "命令反馈",
+    "clear": "清空",
+    "tui": "扩展终端",
+    "title": "标题",
+    "working": "正在处理",
+    "statuses": "状态",
+    "widgets": "扩展内容"
+  },
   "bottomPanel": {
     "loadingPanel": "加载面板中..."
   },

@@ -5,6 +5,7 @@ import { extensionTuiStore } from '../omp/extensionTuiStore'
 import { commandFeedbackStore, type CommandFeedbackEntry, type CommandFeedbackStatus } from '../omp/commandFeedbackStore'
 import { ExtensionUiDialogCard } from '../features/chat/ExtensionUiDialogCard'
 import { ExtensionTuiView } from './ExtensionTuiView'
+import { stripAnsi } from '../utils/ansiUtils'
 
 const feedbackStatusConfig: Record<CommandFeedbackStatus, { label: string; className: string }> = {
   ok: { label: 'ok', className: 'text-success-100 bg-success-100/10' },
@@ -44,11 +45,15 @@ export function ExtensionsPanel({ sessionId }: { sessionId: string | null }) {
     return <div className="flex items-center justify-center h-full text-text-400 text-[length:var(--fs-sm)]">{t('rightPanel.noActiveSession')}</div>
   }
 
-  const statuses = state ? Object.entries(state.statuses) : []
-  const widgets = state ? Object.entries(state.widgets) : []
+  const statuses = Object.entries(state?.statuses ?? {})
+    .map(([key, value]) => ({ key, text: stripAnsi(value) }))
+    .filter(status => status.text.trim())
+  const widgets = Object.entries(state?.widgets ?? {})
+    .map(([key, widget]) => ({ key, text: stripAnsi(widget.lines.join('\n')) }))
+    .filter(widget => widget.text.trim())
   const hasWorking = Boolean(state?.workingMessage || state?.workingIndicator || state?.title)
 
-  if (!state && pending.length === 0 && panels.length === 0 && feedback.length === 0) {
+  if (!hasWorking && statuses.length === 0 && widgets.length === 0 && pending.length === 0 && panels.length === 0 && feedback.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-text-400 text-[length:var(--fs-sm)] px-4 text-center">
         {t('extensionsPanel.empty', 'No extension state')}
@@ -94,12 +99,7 @@ export function ExtensionsPanel({ sessionId }: { sessionId: string | null }) {
       {/* Offscreen extension TUI mirror (component widgets / custom() / footer / header) */}
       {panels.length > 0 && (
         <section>
-          <SectionLabel>
-            {t('extensionsPanel.tui', 'Extension TUI')}
-            <span className="ml-1 text-text-500/60">
-              ({panels.map(panel => panel.key).join(', ')})
-            </span>
-          </SectionLabel>
+          <SectionLabel>{t('extensionsPanel.tui', 'Extension TUI')}</SectionLabel>
           <div className="rounded-md border border-border-200/60 bg-bg-000/60 overflow-hidden">
             <ExtensionTuiView sessionId={sessionId} className="w-full min-h-24 max-h-[60vh] px-1.5 py-1" />
           </div>
@@ -127,26 +127,27 @@ export function ExtensionsPanel({ sessionId }: { sessionId: string | null }) {
         <section>
           <SectionLabel>{t('extensionsPanel.statuses', 'Status')}</SectionLabel>
           <div className="flex flex-col gap-1">
-            {statuses.map(([key, value]) => (
-              <div key={key} className="text-[length:var(--fs-sm)] text-text-200">
-                <span className="text-text-500">{key}:</span> {value}
+            {statuses.map(({ key, text }) => (
+              <div key={key} className="whitespace-pre-wrap break-words text-[length:var(--fs-sm)] text-text-200">
+                {text}
               </div>
             ))}
           </div>
         </section>
       )}
 
-      {widgets.map(([key, widget]) => (
-        <section key={key}>
-          <SectionLabel>
-            {key}
-            <span className="ml-1 text-text-500/60">({widget.placement})</span>
-          </SectionLabel>
-          <pre className="whitespace-pre-wrap rounded-md bg-bg-200/40 px-3 py-2 text-[length:var(--fs-sm)] text-text-200 font-mono">
-            {widget.lines.join('\n')}
-          </pre>
+      {widgets.length > 0 && (
+        <section>
+          <SectionLabel>{t('extensionsPanel.widgets', 'Extension Output')}</SectionLabel>
+          <div className="flex flex-col gap-2">
+            {widgets.map(({ key, text }) => (
+              <pre key={key} className="whitespace-pre-wrap break-words rounded-md bg-bg-200/40 px-3 py-2 text-[length:var(--fs-sm)] text-text-200 font-mono">
+                {text}
+              </pre>
+            ))}
+          </div>
         </section>
-      ))}
+      )}
     </div>
   )
 }
