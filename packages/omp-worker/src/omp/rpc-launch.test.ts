@@ -1,10 +1,28 @@
 import assert from "node:assert/strict"
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { resolveOmpCommand } from "./omp-command.js"
 import { OmpRpcClient } from "./rpc-client.js"
+
+/**
+ * Windows 临时目录可能带 8.3 短名（CI 的 TEMP 是 RUNNER~1），而 where.exe 返回规范长路径。
+ * 入口解析只承诺同一个可执行文件与脚本，不承诺拼写，比较前统一成规范路径。
+ */
+function canonicalPath(value: string): string {
+  let resolved: string
+  try {
+    resolved = realpathSync.native(value)
+  } catch {
+    resolved = path.resolve(value)
+  }
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved
+}
+
+function canonicalInvocation(invocation: { command: string; args: string[] }): { command: string; args: string[] } {
+  return { command: canonicalPath(invocation.command), args: invocation.args.map(canonicalPath) }
+}
 
 for (const entry of ["script", "environment-script", "npm-shim", "path-shim", "runtime-shim"] as const) {
   test(`RPC launches through ${entry} without shell interpretation`, {
@@ -51,7 +69,7 @@ lines.on("line", line => {
       OMPI_OMP_BIN: entry === "environment-script" ? script : undefined,
     }
     const bin = entry === "script" ? script : entry === "path-shim" || entry === "environment-script" ? undefined : shim
-    assert.deepEqual(resolveOmpCommand(bin ?? env.OMPI_OMP_BIN, env), { command: runtime, args: [script] })
+    assert.deepEqual(canonicalInvocation(resolveOmpCommand(bin ?? env.OMPI_OMP_BIN, env)), canonicalInvocation({ command: runtime, args: [script] }))
     const session = path.join(root, "session & percent%value! space.jsonl")
     const extra = ["--session", session, "--settings", '{"name":"quoted & value"}']
     client = new OmpRpcClient({ cwd: root, bin, args: extra, env })
@@ -59,7 +77,7 @@ lines.on("line", line => {
     const data = result.data as { args: string[]; cwd: string; marker: string }
     assert.deepEqual(data.args.slice(0, 2), ["--mode", "rpc"])
     assert.deepEqual(data.args.slice(-extra.length), extra)
-    assert.equal(data.cwd, root)
+    assert.equal(canonicalPath(data.cwd), canonicalPath(root))
     assert.equal(data.marker, env.OMPI_LAUNCH_MARKER)
   })
 }
@@ -85,8 +103,8 @@ test("Windows still prefers a native OMP over npm shims", {
   writeFileSync(executable, "")
   writeFileSync(path.join(root, "omp"), "#!/bin/sh\nexit 99\n")
   writeFileSync(path.join(root, "omp.cmd"), "@echo off\r\nexit /b 99\r\n")
-  assert.deepEqual(resolveOmpCommand("omp", {
+  assert.deepEqual(canonicalInvocation(resolveOmpCommand("omp", {
     ...process.env,
     PATH: [root, path.join(process.env.SystemRoot!, "System32")].join(path.delimiter),
-  }), { command: executable, args: [] })
+  })), canonicalInvocation({ command: executable, args: [] }))
 })
