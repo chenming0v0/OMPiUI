@@ -11,6 +11,12 @@ import {
 } from "./files.ts"
 import { searchFilesByName, searchWorkspaceText } from "./file-search.ts"
 import { getGitDiff, getGitFileDiff, getGitInfo, getGitStatus } from "./git.ts"
+import {
+  deleteModelProvider,
+  fetchModelProviderModels,
+  readModelProvidersSnapshot,
+  saveModelProvider,
+} from "./models-config.ts"
 import type { WorkspaceStore, WorkspaceRecord } from "./workspace-store.ts"
 import type { WorkspaceWatcher } from "./workspace-watcher.ts"
 import type { TerminalManager } from "./terminal-manager.ts"
@@ -245,6 +251,26 @@ const HOST_COMMAND_HANDLERS: Record<string, HostCommandHandler> = {
   "git.status": (ctx, params) => getGitStatus(workspace(ctx, params).canonicalRoot, ctx.signal) as Promise<JsonValue>,
   "git.diff": (ctx, params) => getGitDiff(workspace(ctx, params).canonicalRoot, gitMode(params), ctx.signal) as Promise<JsonValue>,
   "git.fileDiff": (ctx, params) => getGitFileDiff(workspace(ctx, params).canonicalRoot, gitMode(params), reqString(params, "path"), ctx.signal) as Promise<JsonValue>,
+  "models.providers.get": () => readModelProvidersSnapshot().then(requireJsonValue),
+  "models.providers.save": (_ctx, params) => {
+    const provider = params.provider
+    if (provider === null || typeof provider !== "object" || Array.isArray(provider)) {
+      throw Object.assign(new Error("params.provider must be an object"), { code: "INVALID_REQUEST" })
+    }
+    return saveModelProvider(provider).then(requireJsonValue)
+  },
+  "models.providers.delete": (_ctx, params) => deleteModelProvider(reqString(params, "providerId")).then(requireJsonValue),
+  "models.providers.fetch": (_ctx, params) => {
+    const fetchParams: JsonObject = {}
+    for (const key of ["baseUrl", "api", "apiKey"] as const) {
+      const value = params[key]
+      if (typeof value === "string") fetchParams[key] = value
+    }
+    if (Array.isArray(params.knownModelIds)) {
+      fetchParams.knownModelIds = params.knownModelIds.filter((item): item is string => typeof item === "string")
+    }
+    return fetchModelProviderModels(fetchParams).then(requireJsonValue)
+  },
 }
 
 export const HOST_CAPABILITIES: RegisteredHostCapability[] = HOST_COMMAND_SPECS.map(spec => {

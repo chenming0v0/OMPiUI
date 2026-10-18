@@ -24,7 +24,8 @@
     "@ompiui/relay": "0.6.32",
     "bun-pty": "^0.4.8",
     "chokidar": "^4.0.3",
-    "ws": "^8.21.1"
+    "ws": "^8.21.1",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",

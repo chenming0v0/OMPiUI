@@ -348,6 +348,60 @@ export const HOST_COMMAND_SPECS = [
     ),
     idempotent: true,
   },
+  {
+    name: "models.providers.get",
+    domain: "models",
+    description: "Read custom model providers from ~/.omp/agent/models.yml",
+    idempotent: true,
+  },
+  {
+    name: "models.providers.save",
+    domain: "models",
+    description: "Create or update one custom model provider in models.yml",
+    paramsSchema: {
+      ...objectSchema(
+        {
+          provider: {
+            ...objectSchema({}, [], true),
+            maxJsonBytes: 512 * 1024,
+          },
+        },
+        ["provider"],
+      ),
+      maxBodyBytes: 1024 * 1024,
+    },
+    queue: "serialized",
+  },
+  {
+    name: "models.providers.delete",
+    domain: "models",
+    description: "Remove one custom model provider from models.yml",
+    paramsSchema: objectSchema({ providerId: STRING }, ["providerId"]),
+    queue: "serialized",
+  },
+  {
+    name: "models.providers.fetch",
+    domain: "models",
+    description:
+      "Fetch the upstream model id list for a custom provider without writing config",
+    paramsSchema: {
+      ...objectSchema(
+        {
+          baseUrl: STRING,
+          api: STRING,
+          apiKey: STRING,
+          knownModelIds: {
+            type: "array",
+            items: STRING,
+            maxItems: 5000,
+          },
+        },
+        ["baseUrl", "api"],
+      ),
+      maxBodyBytes: 1024 * 1024,
+    },
+    idempotent: true,
+  },
 ] as const satisfies readonly HostCommandSpec[];
 
 export type HostCommandName = (typeof HOST_COMMAND_SPECS)[number]["name"];
@@ -397,6 +451,15 @@ export type HostCommandParams = {
   "git.status": { workspacePath: string };
   "git.diff": { workspacePath: string; mode?: GitDiffMode };
   "git.fileDiff": { workspacePath: string; path: string; mode?: GitDiffMode };
+  "models.providers.get": Record<string, never>;
+  "models.providers.save": { provider: Record<string, unknown> };
+  "models.providers.delete": { providerId: string };
+  "models.providers.fetch": {
+    baseUrl: string;
+    api: string;
+    apiKey?: string;
+    knownModelIds?: string[];
+  };
 };
 
 // 编译期防漂移：参数映射表的键必须与声明表的命令名完全一致

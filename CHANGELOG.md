@@ -1,3 +1,8 @@
+## [Unreleased]
+
+- feat: 设置新增「供应商」页（位于「模型」与「Agent」之间），直接读写 `~/.omp/agent/models.yml` 的自定义供应商与模型；支持按上游 `/models` 拉取并区分新获取/上游已删除、编辑上下文窗口/输入类型/推理等级与参数映射、新增/编辑/删除供应商和模型。保存走 server host 命令，原子写入并保留 `.bak` 备份，未知字段原样保留；界面沿用 OMPiUI 设计系统。
+- test: 补充 models.yml 读取/合并/改 id/删除/备份/上游拉取与失败回退，以及供应商设置、模型选择、模型配置弹窗的回归覆盖。
+
 ## [v0.6.32] - 2026-10-17
 
 - fix: Windows 下配置命令与 RPC 客户端共用 OMP 入口解析；npm shim 只用于定位入口脚本，脚本交给 shebang 指定的 Bun/Node 解释器执行，含空格和 `&` 的会话路径保持单个 argv，JSON 参数不再经过 cmd.exe 重解析。Windows 环境键统一大写，PATH 只剩 POSIX shim 时明确报错。

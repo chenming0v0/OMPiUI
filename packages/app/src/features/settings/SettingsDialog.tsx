@@ -13,6 +13,7 @@ import {
   BellIcon,
   MessageSquareIcon,
   LayersIcon,
+  PlugIcon,
   QuestionIcon,
   CogIcon,
 } from '../../components/Icons'
@@ -23,6 +24,7 @@ import { AppearanceSettings } from './components/AppearanceSettings'
 import { AboutSettings } from './components/AboutSettings'
 import { ChatSettings } from './components/ChatSettings'
 import { ModelsSettings } from './components/ModelsSettings'
+import { ProvidersSettings } from './components/modelProviders/ProvidersSettings'
 import { NotificationSettings } from './components/NotificationSettings'
 import { ServersSettings } from './components/ServersSettings'
 import { WorkspaceSettings } from './components/WorkspaceSettings'
@@ -44,6 +46,7 @@ export type SettingsTab =
   | 'appearance'
   | 'chat'
   | 'models'
+  | 'providers'
   | 'notifications'
   | 'config'
   | 'servers'
@@ -72,6 +75,7 @@ const TAB_ICONS: Record<SettingsTab, React.ReactNode> = {
   agent: <AgentIcon size={15} />,
   chat: <MessageSquareIcon size={15} />,
   models: <CpuIcon size={15} />,
+  providers: <PlugIcon size={15} />,
   appearance: <SunIcon size={15} />,
   workspace: <LayersIcon size={15} />,
   notifications: <BellIcon size={15} />,
@@ -86,6 +90,7 @@ const TAB_IDS: SettingsTab[] = [
   'traffic',
   'service',
   'models',
+  'providers',
   'agent',
   'chat',
   'workspace',
@@ -104,6 +109,7 @@ const TAB_LABEL_KEYS: Record<SettingsTab, string> = {
   agent: 'tabs.agent',
   chat: 'tabs.chat',
   models: 'tabs.models',
+  providers: 'tabs.providers',
   appearance: 'tabs.appearance',
   workspace: 'tabs.workspace',
   notifications: 'tabs.notifications',
@@ -113,7 +119,7 @@ const TAB_LABEL_KEYS: Record<SettingsTab, string> = {
 }
 
 const GROUP_DEFS: { labelKey: string; tabs: SettingsTab[] }[] = [
-  { labelKey: 'groups.core', tabs: ['servers', 'traffic', 'models', 'agent', 'chat', 'workspace', 'appearance', 'notifications'] },
+  { labelKey: 'groups.core', tabs: ['servers', 'traffic', 'models', 'providers', 'agent', 'chat', 'workspace', 'appearance', 'notifications'] },
   { labelKey: 'groups.advanced', tabs: ['authentication', 'service', 'config', 'keybindings', 'about'] },
 ]
 
@@ -134,6 +140,8 @@ function TabContent({ tab, onPaired }: {
       return <ChatSettings />
     case 'models':
       return <ModelsSettings />
+    case 'providers':
+      return <ProvidersSettings />
     case 'notifications':
       return <NotificationSettings />
     case 'config':
