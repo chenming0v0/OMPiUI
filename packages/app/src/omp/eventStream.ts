@@ -539,6 +539,8 @@ class PiEventStream {
       } else if (eventChannel === 'models.updated') {
         receiveProviderAuthUpdated()
         refreshModelSettings()
+        // 供应商设置页直接持有 draft 副本，必须重读，否则过期草稿会把外部改动写回。
+        window.dispatchEvent(new CustomEvent('ompiui:models-updated'))
       } else {
         if (stream.kind === 'session') this.scheduleBranchRefresh(stream.id)
         else this.queueResync(eventStreamKey(stream))
@@ -650,6 +652,8 @@ class PiEventStream {
         // store 直接刷新（有 flight 去重），不依赖某个组件恰好挂载
         receiveProviderAuthUpdated()
         refreshModelSettings()
+        // 供应商设置页直接持有 draft 副本，必须重读，否则过期草稿会把外部改动写回。
+        window.dispatchEvent(new CustomEvent('ompiui:models-updated'))
         break
       }
       case 'packages.progress':

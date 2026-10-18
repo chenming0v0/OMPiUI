@@ -47,6 +47,9 @@ import type { SessionInfo, SessionTreeNode, Skill, PromptTemplate } from '../ven
 import type {
   PiBranchPage,
   PiConfiguredPackage,
+  PiModelProviderConfig,
+  PiModelProviderFetchResult,
+  PiModelProvidersSnapshot,
   PiModelRuntimeSnapshot,
   PiPackageUpdate,
   PiProjectTrust,
@@ -418,6 +421,32 @@ export function searchHostFilesText(
   signal?: AbortSignal,
 ): Promise<FileTextSearchResponse> {
   return postHostCommand('files.searchText', { workspacePath, query, limit }, signal)
+}
+
+// Custom model providers (`~/.omp/agent/models.yml`), host-scoped OMP config.
+export function listModelProviders(signal?: AbortSignal): Promise<PiModelProvidersSnapshot> {
+  return postHostCommand<PiModelProvidersSnapshot>('models.providers.get', {}, signal)
+}
+
+export function saveModelProvider(
+  provider: PiModelProviderConfig,
+  signal?: AbortSignal,
+): Promise<PiModelProvidersSnapshot> {
+  return postHostCommand<PiModelProvidersSnapshot>('models.providers.save', { provider }, signal)
+}
+
+export function deleteModelProvider(
+  providerId: string,
+  signal?: AbortSignal,
+): Promise<PiModelProvidersSnapshot> {
+  return postHostCommand<PiModelProvidersSnapshot>('models.providers.delete', { providerId }, signal)
+}
+
+export function fetchModelProviderModels(
+  params: { baseUrl: string; api: string; apiKey?: string; knownModelIds?: string[] },
+  signal?: AbortSignal,
+): Promise<PiModelProviderFetchResult> {
+  return postHostCommand<PiModelProviderFetchResult>('models.providers.fetch', params, signal)
 }
 
 // Host terminal commands. Terminal output itself uses a dedicated WebSocket stream.

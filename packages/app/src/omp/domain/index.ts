@@ -313,6 +313,62 @@ export type PiModelRuntimeSnapshot = {
   error?: string | null
 }
 
+/** One custom model definition inside `~/.omp/agent/models.yml` → `providers.<id>.models[]`. */
+export type PiModelProviderModelConfig = {
+  id: string
+  /** 编辑已有模型时记录原 id；服务端据此合并不在编辑器里暴露的字段（cost/compat 等）。 */
+  originalId?: string
+  name?: string
+  api?: string
+  baseUrl?: string
+  contextWindow?: number
+  maxTokens?: number
+  reasoning?: boolean
+  input?: Array<'text' | 'image'>
+  thinking?: {
+    mode?: string
+    efforts?: string[]
+    defaultLevel?: string
+    effortMap?: Record<string, string>
+  }
+  cost?: {
+    input?: number
+    output?: number
+    cacheRead?: number
+    cacheWrite?: number
+  }
+}
+
+/** One custom provider (`~/.omp/agent/models.yml` → `providers.<id>`). */
+export type PiModelProviderConfig = {
+  id: string
+  name: string
+  api: string
+  baseUrl: string
+  apiKey: string
+  authHeader?: boolean
+  models: PiModelProviderModelConfig[]
+}
+
+/** `models.providers.get` / `models.providers.save` / `models.providers.delete` result. */
+export type PiModelProvidersSnapshot = {
+  /** Absolute path of the models.yml file the server read or wrote. */
+  path: string
+  /** False when the file does not exist yet (still saveable). */
+  exists: boolean
+  /** False for the mock driver or other runtimes without a config file. */
+  supported: boolean
+  providers: PiModelProviderConfig[]
+  error?: string
+}
+
+/** `models.providers.fetch` result — upstream ids plus configured ids missing upstream. */
+export type PiModelProviderFetchResult = {
+  models: string[]
+  removed: string[]
+  total: number
+}
+
 // SDK package shapes (core/package-manager). ResolvedPaths/ResolvedResource
 // are publicly exported; ConfiguredPackage/PackageUpdate are not, so they
 // are mirrored here from the SDK declarations.

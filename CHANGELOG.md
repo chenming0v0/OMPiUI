@@ -1,3 +1,12 @@
+## [v0.6.33] - 2026-10-18
+
+- feat: 设置新增「供应商」页（位于「模型」与「Agent」之间），直接读写官方 `~/.omp/agent/models.yml` 的自定义供应商与模型；支持按上游 `/models` 拉取并区分新获取/上游已删除、编辑上下文窗口/输入类型/推理等级与参数映射、新增/编辑/删除供应商和模型。保存走 server host 命令，原子写入并保留 `.bak` 备份，未知字段原样保留；界面沿用 OMPiUI 设计系统。
+- feat: host 命令新增 `models` 域（`models.providers.get/save/delete/fetch`）：读取失败以错误字段返回而不抛错，写入串行化并原子替换；上游拉取带 15 秒超时与 2MB 上限，读取与拉取都不修改配置。
+- fix: 供应商里改模型 ID 时把原 ID 一并提交，服务端按原 ID 合并，保留界面上没有暴露的 `cost`/`compat` 等字段；设置页订阅 `models.updated`，`models.yml` 被 omp CLI 改写后重读并取消待执行的防抖保存，避免过期草稿覆盖外部改动。
+- test: 补充 models.yml 读取/合并/改 id/删除/备份/上游拉取与失败回退，以及供应商设置、模型选择、模型配置弹窗的回归覆盖。
+- verification: `npm run validate` 通过：typecheck、lint、后端测试、前端全量测试与生产构建均成功；修复追加供应商映射、外部变更重读与测试隔离的定向回归；安装包与实机升级以发布工作流和设备验收为准。
+- chore: 根包、全部 workspace、互依赖、npm 锁文件及 Tauri/Cargo 统一为 `0.6.33`；官方 OMP 会话目录与格式不变。
+
 ## [v0.6.32] - 2026-10-17
 
 - fix: Windows 下配置命令与 RPC 客户端共用 OMP 入口解析；npm shim 只用于定位入口脚本，脚本交给 shebang 指定的 Bun/Node 解释器执行，含空格和 `&` 的会话路径保持单个 argv，JSON 参数不再经过 cmd.exe 重解析。Windows 环境键统一大写，PATH 只剩 POSIX shim 时明确报错。

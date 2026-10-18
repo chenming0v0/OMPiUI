@@ -67,7 +67,7 @@ export type PiRegistrySnapshot = {
   sessionCommands: PiCapability[]
 }
 
-export type HostCapabilityDomain = "server" | "commands" | "workspaces" | "files" | "git" | "terminals"
+export type HostCapabilityDomain = "server" | "commands" | "workspaces" | "files" | "git" | "terminals" | "models"
 
 export type HostCapabilityQueue = "immediate" | "serialized"
 

@@ -42,6 +42,13 @@ export const SETTINGS_SEARCH_DEFINITIONS: SettingsSearchDefinition[] = [
   ...definitions('traffic', ['tabs.traffic', 'traffic.recording', 'traffic.previews', 'traffic.requests']),
   ...definitions('service', ['service.title', 'service.ompRuntime', 'service.envVars', 'service.environment']),
   ...definitions('models', ['models.rolesTitle', 'models.visibility']),
+  ...definitions('providers', [
+    'providers.title',
+    'providers.addProvider',
+    'providers.modelsTitle',
+    'providers.apiFormat',
+    'providers.fetchModels',
+  ]),
   ...definitions('agent', [
     'agent.behavior',
     'agent.toolInteraction',
