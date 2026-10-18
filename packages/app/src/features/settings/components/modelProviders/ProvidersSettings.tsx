@@ -264,6 +264,16 @@ export function ProvidersSettings() {
     }
   }, [load, activeServerGeneration])
 
+  // models.yml 会被 omp CLI / 终端登录改写。收到 models.updated 后重读文件，
+  // 同时取消待执行的防抖保存，避免过期草稿把外部改动覆盖回去。
+  useEffect(() => {
+    const onModelsUpdated = () => {
+      void load('refresh')
+    }
+    window.addEventListener('ompiui:models-updated', onModelsUpdated)
+    return () => window.removeEventListener('ompiui:models-updated', onModelsUpdated)
+  }, [load])
+
   const persistNow = useCallback((draft: ProviderDraft) => {
     latestDraftsRef.current.set(draft.id, draft)
     const seq = (saveSeqRef.current.get(draft.id) ?? 0) + 1

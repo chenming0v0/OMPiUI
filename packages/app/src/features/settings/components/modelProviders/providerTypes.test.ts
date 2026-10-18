@@ -95,6 +95,20 @@ describe('providerTypes', () => {
     expect(restored.models[0]!.thinkingMode).toBe('effort')
   })
 
+  it('keeps originalId so a renamed model keeps its unexposed models.yml fields', () => {
+    const draft: ProviderDraft = {
+      id: 'demo',
+      name: 'Demo',
+      api: 'openai-completions',
+      baseUrl: 'https://relay.test/v1',
+      apiKey: '',
+      models: [{ ...blankModelDraft('demo-large-v2'), originalId: 'demo-large' }],
+    }
+    const config = providerDraftToConfig(draft)
+    expect(config.models[0]).toMatchObject({ id: 'demo-large-v2', originalId: 'demo-large' })
+    expect(providerDraftFromConfig(config).models[0]!.originalId).toBe('demo-large-v2')
+  })
+
   it('validates duplicate ids and invalid numbers', () => {
     const sibling = { ...blankModelDraft('dup'), originalId: 'dup' }
     expect(validateModelDraft(blankModelDraft(''), [])).toBe('idRequired')

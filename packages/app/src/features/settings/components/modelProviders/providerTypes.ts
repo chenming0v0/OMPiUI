@@ -152,6 +152,7 @@ export function providerDraftToConfig(draft: ProviderDraft): PiModelProviderConf
 function modelDraftToConfig(model: ModelDraft): PiModelProviderModelConfig {
   const config: PiModelProviderModelConfig = {
     id: model.id.trim(),
+    ...(model.originalId ? { originalId: model.originalId } : {}),
     name: model.name.trim() || model.id.trim(),
     contextWindow: Math.max(1, Math.round(model.contextWindow)),
     maxTokens: Math.max(1, Math.round(model.maxTokens)),

@@ -13,6 +13,7 @@ import {
 
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR
 const previousProfile = process.env.OMP_PROFILE
+const previousPiProfile = process.env.PI_PROFILE
 let roots: string[] = []
 
 function useTempAgentDir(): string {
@@ -21,6 +22,7 @@ function useTempAgentDir(): string {
   roots.push(root)
   process.env.PI_CODING_AGENT_DIR = agentDir
   delete process.env.OMP_PROFILE
+  delete process.env.PI_PROFILE
   mkdirSync(agentDir, { recursive: true })
   return agentDir
 }
@@ -65,6 +67,8 @@ afterEach(() => {
   else process.env.PI_CODING_AGENT_DIR = previousAgentDir
   if (previousProfile === undefined) delete process.env.OMP_PROFILE
   else process.env.OMP_PROFILE = previousProfile
+  if (previousPiProfile === undefined) delete process.env.PI_PROFILE
+  else process.env.PI_PROFILE = previousPiProfile
 })
 
 describe("models.yml provider config", () => {

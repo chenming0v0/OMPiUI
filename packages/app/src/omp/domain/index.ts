@@ -316,6 +316,8 @@ export type PiModelRuntimeSnapshot = {
 /** One custom model definition inside `~/.omp/agent/models.yml` → `providers.<id>.models[]`. */
 export type PiModelProviderModelConfig = {
   id: string
+  /** 编辑已有模型时记录原 id；服务端据此合并不在编辑器里暴露的字段（cost/compat 等）。 */
+  originalId?: string
   name?: string
   api?: string
   baseUrl?: string
