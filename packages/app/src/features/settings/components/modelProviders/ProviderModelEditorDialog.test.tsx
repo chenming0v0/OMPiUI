@@ -1,8 +1,13 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ComponentProps } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { blankModelDraft } from './providerTypes'
 import { ProviderModelEditorDialog } from './ProviderModelEditorDialog'
+import { lookupModelsDevModel } from '../../../../omp/transport/index.js'
+
+vi.mock('../../../../omp/transport/index.js', () => ({
+  lookupModelsDevModel: vi.fn().mockResolvedValue({ found: false }),
+}))
 
 function renderEditor(overrides: Partial<ComponentProps<typeof ProviderModelEditorDialog>> = {}) {
   const onSave = vi.fn()
@@ -22,12 +27,18 @@ function renderEditor(overrides: Partial<ComponentProps<typeof ProviderModelEdit
 }
 
 describe('ProviderModelEditorDialog', () => {
-  it('applies smart defaults from the model id and saves the draft', () => {
+  beforeEach(() => {
+    vi.mocked(lookupModelsDevModel).mockClear()
+  })
+
+  it('starts with smart config enabled, applies defaults and looks up model metadata', async () => {
     const { onSave } = renderEditor()
     fireEvent.change(screen.getByLabelText('Model ID'), { target: { value: 'claude-opus-4-6' } })
-    fireEvent.click(screen.getByRole('switch', { name: 'Smart config' }))
     expect(screen.getByLabelText(/Context window/)).toHaveValue(1_000_000)
     expect(screen.getByLabelText(/Max output tokens/)).toHaveValue(128_000)
+    await waitFor(() =>
+      expect(lookupModelsDevModel).toHaveBeenCalledWith({ modelId: 'claude-opus-4-6' }, expect.any(AbortSignal)),
+    )
 
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     expect(onSave).toHaveBeenCalledTimes(1)
@@ -37,6 +48,15 @@ describe('ProviderModelEditorDialog', () => {
       maxTokens: 128_000,
       reasoning: true,
     })
+  })
+
+  it('does not look up model metadata while smart config is disabled', async () => {
+    renderEditor()
+    fireEvent.click(screen.getByRole('switch', { name: 'Smart config' }))
+    fireEvent.change(screen.getByLabelText('Model ID'), { target: { value: 'claude-opus-4-6' } })
+    expect(screen.getByLabelText(/Context window/)).toHaveValue(128_000)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(lookupModelsDevModel).not.toHaveBeenCalled()
   })
 
   it('rejects a duplicate model id instead of saving', () => {

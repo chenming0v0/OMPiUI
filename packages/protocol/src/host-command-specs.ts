@@ -402,6 +402,20 @@ export const HOST_COMMAND_SPECS = [
     },
     idempotent: true,
   },
+  {
+    name: "models.dev.lookup",
+    domain: "models",
+    description: "Look up model capabilities from the public models.dev catalog",
+    paramsSchema: objectSchema(
+      {
+        modelId: STRING,
+        providerHint: STRING,
+        api: STRING,
+      },
+      ["modelId"],
+    ),
+    idempotent: true,
+  },
 ] as const satisfies readonly HostCommandSpec[];
 
 export type HostCommandName = (typeof HOST_COMMAND_SPECS)[number]["name"];
@@ -459,6 +473,11 @@ export type HostCommandParams = {
     api: string;
     apiKey?: string;
     knownModelIds?: string[];
+  };
+  "models.dev.lookup": {
+    modelId: string;
+    providerHint?: string;
+    api?: string;
   };
 };
 

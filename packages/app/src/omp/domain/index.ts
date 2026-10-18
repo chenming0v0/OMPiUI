@@ -369,6 +369,23 @@ export type PiModelProviderFetchResult = {
   total: number
 }
 
+/** 模型编辑器使用的可选 models.dev 能力匹配结果。 */
+export type PiModelsDevLookupResult = {
+  found: boolean
+  provider?: string
+  modelId?: string
+  name?: string
+  contextWindow?: number
+  maxTokens?: number
+  reasoning?: boolean
+  input?: Array<'text' | 'image'>
+  thinking?: {
+    mode?: 'effort' | 'anthropic-budget-effort' | 'budget'
+    efforts?: string[]
+    defaultLevel?: string
+  }
+}
+
 // SDK package shapes (core/package-manager). ResolvedPaths/ResolvedResource
 // are publicly exported; ConfiguredPackage/PackageUpdate are not, so they
 // are mirrored here from the SDK declarations.

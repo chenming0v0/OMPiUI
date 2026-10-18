@@ -1,4 +1,8 @@
-import type { PiModelProviderConfig, PiModelProviderModelConfig } from '../../../../omp/domain/index.js'
+import type {
+  PiModelProviderConfig,
+  PiModelProviderModelConfig,
+  PiModelsDevLookupResult,
+} from '../../../../omp/domain/index.js'
 
 /**
  * 「供应商」设置页的编辑态类型与纯函数。
@@ -208,6 +212,25 @@ export function inferModelDefaults(id: string): Partial<ModelDraft> {
     return { contextWindow: 400_000, maxTokens: 128_000, reasoning: true, ...vision }
   }
   return { contextWindow: DEFAULT_CONTEXT_WINDOW, maxTokens: DEFAULT_MAX_TOKENS }
+}
+
+/** 将 models.dev 的能力字段转换为 OMP 模型编辑器字段。 */
+export function modelDraftDefaultsFromModelsDev(result: PiModelsDevLookupResult): Partial<ModelDraft> {
+  if (!result.found) return {}
+  const patch: Partial<ModelDraft> = {}
+  if (result.name) patch.name = result.name
+  if (result.contextWindow) patch.contextWindow = result.contextWindow
+  if (result.maxTokens) patch.maxTokens = result.maxTokens
+  if (result.reasoning !== undefined) patch.reasoning = result.reasoning
+  if (result.input && result.input.length > 0) patch.input = [...result.input]
+  if (result.thinking) {
+    if (result.thinking.mode) patch.thinkingMode = result.thinking.mode
+    if (result.thinking.efforts && result.thinking.efforts.length > 0) {
+      patch.efforts = [...result.thinking.efforts]
+    }
+    if (result.thinking.defaultLevel) patch.defaultLevel = result.thinking.defaultLevel
+  }
+  return patch
 }
 
 /** 供应商 ID 用于 models.yml 的 key：小写、保留字母数字和 -_.，其余折叠为 -。 */

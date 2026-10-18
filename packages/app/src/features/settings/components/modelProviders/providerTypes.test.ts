@@ -3,6 +3,7 @@ import {
   blankModelDraft,
   groupModelIds,
   inferModelDefaults,
+  modelDraftDefaultsFromModelsDev,
   providerDraftFromConfig,
   providerDraftToConfig,
   validateModelDraft,
@@ -58,6 +59,29 @@ describe('providerTypes', () => {
       reasoning: true,
     })
     expect(inferModelDefaults('totally-unknown').contextWindow).toBe(128_000)
+  })
+
+  it('maps models.dev capabilities into an editable model draft', () => {
+    expect(
+      modelDraftDefaultsFromModelsDev({
+        found: true,
+        name: 'GPT Test',
+        contextWindow: 400_000,
+        maxTokens: 128_000,
+        reasoning: true,
+        input: ['text', 'image'],
+        thinking: { mode: 'effort', efforts: ['low', 'high'], defaultLevel: 'high' },
+      }),
+    ).toEqual({
+      name: 'GPT Test',
+      contextWindow: 400_000,
+      maxTokens: 128_000,
+      reasoning: true,
+      input: ['text', 'image'],
+      thinkingMode: 'effort',
+      efforts: ['low', 'high'],
+      defaultLevel: 'high',
+    })
   })
 
   it('round-trips a draft and omits thinking when reasoning is disabled', () => {

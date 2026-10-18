@@ -17,6 +17,7 @@ import {
   readModelProvidersSnapshot,
   saveModelProvider,
 } from "./models-config.ts"
+import { lookupModelsDevModel } from "./models-dev.ts"
 import type { WorkspaceStore, WorkspaceRecord } from "./workspace-store.ts"
 import type { WorkspaceWatcher } from "./workspace-watcher.ts"
 import type { TerminalManager } from "./terminal-manager.ts"
@@ -271,6 +272,12 @@ const HOST_COMMAND_HANDLERS: Record<string, HostCommandHandler> = {
     }
     return fetchModelProviderModels(fetchParams).then(requireJsonValue)
   },
+  "models.dev.lookup": (_ctx, params) =>
+    lookupModelsDevModel({
+      modelId: reqString(params, "modelId"),
+      providerHint: optString(params, "providerHint"),
+      api: optString(params, "api"),
+    }).then(requireJsonValue),
 }
 
 export const HOST_CAPABILITIES: RegisteredHostCapability[] = HOST_COMMAND_SPECS.map(spec => {

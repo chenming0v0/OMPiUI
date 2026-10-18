@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Dialog } from '../../../../components/ui/Dialog'
 import { Button } from '../../../../components/ui/Button'
@@ -8,14 +8,18 @@ import {
   THINKING_MODE_OPTIONS,
   blankModelDraft,
   inferModelDefaults,
+  modelDraftDefaultsFromModelsDev,
   validateModelDraft,
   type ModelDraft,
 } from './providerTypes'
 import { SettingsSelect, settingsFieldAreaClass, settingsFieldClass } from '../SettingsUI'
+import { lookupModelsDevModel } from '../../../../omp/transport/index.js'
 
 export type ProviderModelEditorDialogProps = {
   isOpen: boolean
+  providerId?: string
   providerName: string
+  providerApi?: string
   /** null = 新增 */
   model: ModelDraft | null
   /** 当前供应商已有的其它模型（重复 id 校验用，可包含 model 本身） */
@@ -70,7 +74,9 @@ const fieldLabelClass = 'text-[length:var(--fs-xs)] font-medium text-text-300'
 
 export function ProviderModelEditorDialog({
   isOpen,
+  providerId,
   providerName,
+  providerApi,
   model,
   siblings,
   queueIndex,
@@ -85,23 +91,35 @@ export function ProviderModelEditorDialog({
   const [error, setError] = useState<ReturnType<typeof validateModelDraft>>(null)
   const [jsonError, setJsonError] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(true)
-  const [smartConfig, setSmartConfig] = useState(false)
+  const [smartConfig, setSmartConfig] = useState(true)
+  const [smartConfigState, setSmartConfigState] = useState<'idle' | 'loading' | 'matched' | 'fallback'>('idle')
   const [customLevel, setCustomLevel] = useState('')
   const [customLevelOpen, setCustomLevelOpen] = useState(false)
   const nameInputRef = useRef<HTMLInputElement>(null)
+  const lookupSequenceRef = useRef(0)
+  const lookupAbortRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
-    if (!isOpen) return
+    if (!isOpen) {
+      lookupAbortRef.current?.abort()
+      lookupSequenceRef.current += 1
+      return
+    }
     const next = model ? cloneDraft(model) : blankModelDraft()
-    setDraft(next)
+    setDraft(next.id.trim() ? { ...next, ...inferModelDefaults(next.id) } : next)
     setInitial(cloneDraft(next))
     setEffortMapText(effortMapToText(next.effortMap))
     setError(null)
     setJsonError(false)
-    setSmartConfig(false)
+    setSmartConfig(true)
+    setSmartConfigState('idle')
     setCustomLevel('')
     setCustomLevelOpen(false)
     setAdvancedOpen(true)
+    return () => {
+      lookupAbortRef.current?.abort()
+      lookupSequenceRef.current += 1
+    }
   }, [isOpen, model])
 
   useEffect(() => {
@@ -146,18 +164,60 @@ export function ProviderModelEditorDialog({
     setCustomLevelOpen(false)
   }
 
-  const applySmartConfig = (id: string) => {
-    if (!draft || !smartConfig) return
-    const inferred = inferModelDefaults(id)
-    setDraft(current => (current ? { ...current, ...inferred } : current))
-  }
+  const applySmartConfig = useCallback((id: string) => {
+    lookupAbortRef.current?.abort()
+    const controller = new AbortController()
+    lookupAbortRef.current = controller
+    const sequence = ++lookupSequenceRef.current
+    setSmartConfigState('loading')
+    void lookupModelsDevModel(
+      {
+        modelId: id,
+        ...(providerId ? { providerHint: providerId } : {}),
+        ...(providerApi ? { api: providerApi } : {}),
+      },
+      controller.signal,
+    )
+      .then(result => {
+        if (sequence !== lookupSequenceRef.current || controller.signal.aborted) return
+        if (!result.found) {
+          setSmartConfigState('fallback')
+          return
+        }
+        const remote = modelDraftDefaultsFromModelsDev(result)
+        setDraft(current => {
+          if (!current) return current
+          const next = { ...current, ...remote }
+          if (current.name.trim() === current.id.trim() || !current.name.trim()) {
+            next.name = remote.name ?? current.name
+          }
+          return next
+        })
+        setSmartConfigState('matched')
+      })
+      .catch(() => {
+        if (sequence === lookupSequenceRef.current && !controller.signal.aborted) setSmartConfigState('fallback')
+      })
+  }, [providerId, providerApi])
+
+  useEffect(() => {
+    if (!isOpen || !smartConfig || !draft?.id.trim()) {
+      lookupAbortRef.current?.abort()
+      lookupSequenceRef.current += 1
+      return
+    }
+    applySmartConfig(draft.id)
+    return () => {
+      lookupAbortRef.current?.abort()
+      lookupSequenceRef.current += 1
+    }
+  }, [isOpen, smartConfig, draft?.id, applySmartConfig])
 
   const handleModelIdChange = (value: string) => {
     if (!draft) return
     const next = { ...draft, id: value, name: draft.name === draft.id ? value : draft.name }
-    setDraft(next)
+    setDraft(smartConfig ? { ...next, ...inferModelDefaults(value) } : next)
     setError(null)
-    applySmartConfig(value)
   }
 
   const handleSave = () => {
@@ -178,11 +238,14 @@ export function ProviderModelEditorDialog({
 
   const handleReset = () => {
     if (!initial) return
+    lookupAbortRef.current?.abort()
+    lookupSequenceRef.current += 1
     setDraft(cloneDraft(initial))
     setEffortMapText(effortMapToText(initial.effortMap))
     setError(null)
     setJsonError(false)
-    setSmartConfig(false)
+    setSmartConfig(true)
+    setSmartConfigState('idle')
   }
 
   if (!draft) return null
@@ -231,7 +294,14 @@ export function ProviderModelEditorDialog({
           <div className="flex items-center justify-between gap-4 rounded-lg bg-bg-200/40 px-3 py-2.5">
             <div className="min-w-0">
               <div className="text-[length:var(--fs-md)] font-medium text-text-100">{t('providers.smartConfig')}</div>
-              <div className="mt-0.5 text-[length:var(--fs-xs)] text-text-400">{t('providers.smartConfigHint')}</div>
+              <div className="mt-0.5 text-[length:var(--fs-xs)] text-text-400">
+                {t('providers.smartConfigHint')}
+                {smartConfigState === 'loading' && <span className="ml-1">{t('providers.smartConfigLoading')}</span>}
+                {smartConfigState === 'matched' && (
+                  <span className="ml-1 text-success-100">{t('providers.smartConfigMatched')}</span>
+                )}
+                {smartConfigState === 'fallback' && <span className="ml-1">{t('providers.smartConfigFallback')}</span>}
+              </div>
             </div>
             <button
               type="button"
@@ -241,9 +311,13 @@ export function ProviderModelEditorDialog({
               onClick={() => {
                 const next = !smartConfig
                 setSmartConfig(next)
-                if (next) {
-                  const inferred = inferModelDefaults(draft.id)
-                  setDraft(current => (current ? { ...current, ...inferred } : current))
+                if (!next) {
+                  lookupAbortRef.current?.abort()
+                  setSmartConfigState('idle')
+                } else {
+                  setDraft(current =>
+                    current ? { ...current, ...inferModelDefaults(current.id) } : current,
+                  )
                 }
               }}
               className={`relative shrink-0 rounded-full transition-colors ${smartConfig ? 'bg-accent-main-100' : 'bg-bg-300'}`}
