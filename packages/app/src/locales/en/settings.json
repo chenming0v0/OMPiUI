@@ -897,7 +897,10 @@
     "editorEditTitle": "Edit model configuration",
     "editorHint": "{{provider}} · {{index}} / {{total}}",
     "smartConfig": "Smart config",
-    "smartConfigHint": "Infer context, output limit and input types from the model ID",
+    "smartConfigHint": "Fill model capabilities from models.dev, with a local fallback",
+    "smartConfigLoading": "Looking up…",
+    "smartConfigMatched": "models.dev match applied",
+    "smartConfigFallback": "using local defaults",
     "smartApplied": "Recommended values applied from the model ID",
     "modelId": "Model ID",
     "modelIdPlaceholder": "e.g. claude-opus-4-6",
@@ -933,10 +936,13 @@
     "apiFormatAnthropic": "Anthropic Messages",
     "apiFormatOpenai": "Chat Completions",
     "apiFormatResponses": "Responses",
+    "apiFormatGoogle": "Google Generative AI",
     "thinkingModeEffort": "effort",
     "thinkingModeAdaptive": "anthropic-adaptive",
     "thinkingModeBudgetEffort": "anthropic-budget-effort",
     "thinkingModeBudget": "budget",
-    "thinkingModeGoogle": "google-level"
+    "thinkingModeGoogle": "google-level",
+    "noReasoningLevels": "The model supports reasoning but lists no configurable levels.",
+    "configureReasoning": "Configure manually"
   }
 }

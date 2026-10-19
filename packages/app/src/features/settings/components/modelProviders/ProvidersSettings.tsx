@@ -914,7 +914,9 @@ export function ProvidersSettings() {
 
       <ProviderModelEditorDialog
         isOpen={editor !== null}
+        providerId={editor?.providerId}
         providerName={editor ? (drafts.find(draft => draft.id === editor.providerId)?.name ?? '') : ''}
+        providerApi={editor ? (drafts.find(draft => draft.id === editor.providerId)?.api ?? '') : ''}
         model={editor?.model ?? null}
         siblings={editor ? (drafts.find(draft => draft.id === editor.providerId)?.models ?? []) : []}
         queueIndex={editor?.queueIndex}

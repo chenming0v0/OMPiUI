@@ -50,6 +50,7 @@ import type {
   PiModelProviderConfig,
   PiModelProviderFetchResult,
   PiModelProvidersSnapshot,
+  PiModelsDevLookupResult,
   PiModelRuntimeSnapshot,
   PiPackageUpdate,
   PiProjectTrust,
@@ -447,6 +448,13 @@ export function fetchModelProviderModels(
   signal?: AbortSignal,
 ): Promise<PiModelProviderFetchResult> {
   return postHostCommand<PiModelProviderFetchResult>('models.providers.fetch', params, signal)
+}
+
+export function lookupModelsDevModel(
+  params: { modelId: string; providerHint?: string; api?: string },
+  signal?: AbortSignal,
+): Promise<PiModelsDevLookupResult> {
+  return postHostCommand<PiModelsDevLookupResult>('models.dev.lookup', params, signal)
 }
 
 // Host terminal commands. Terminal output itself uses a dedicated WebSocket stream.

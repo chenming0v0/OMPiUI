@@ -46,6 +46,7 @@ import { clearSubagentTranscripts } from './subagentTranscript'
 import { bashPendingStore } from './bashPendingStore'
 import { faultSocketOpened, faultSocketClosed, faultSocketUnused, reportRuntimeCrash, recordClientDiagnostic } from './faultAudit/controller'
 import { loadPiSessionData, refreshPiBranch, refreshPiSessionState, settlePiLiveMessage } from './controllers/index.js'
+import { SessionActivityWatchdog } from './sessionActivityWatchdog.js'
 
 const PING_INTERVAL_MS = 25_000
 const RECONNECT_DELAY_MS = 1_000
@@ -132,6 +133,13 @@ class PiEventStream {
   private cursors = new Map<string, EventCursor>()
   private pendingLiveMessages = new Map<string, { liveMessage: PiLiveMessage; position: EventCursor }>()
   private pingTimer: ReturnType<typeof setInterval> | null = null
+  private readonly activityWatchdog = new SessionActivityWatchdog(
+    () => this.refCounts.keys(),
+    async (sessionId, signal) => {
+      await refreshPiSessionState(sessionId, signal)
+      this.reconcileActivityFromState(sessionId)
+    },
+  )
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private branchRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private stateRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -159,6 +167,7 @@ class PiEventStream {
     piBranchStore.retain(sessionId)
     this.refCounts.set(sessionId, (this.refCounts.get(sessionId) ?? 0) + 1)
     if (this.refCounts.get(sessionId) === 1) {
+      this.activityWatchdog.start()
       const poll = { timer: 0, delay: 1500 }
       const refresh = async () => {
         if (this.diskRefreshTimers.get(sessionId) !== poll) return
@@ -210,6 +219,7 @@ class PiEventStream {
       bashPendingStore.clearSession(sessionId)
       piCommandStore.clearSession(sessionId)
       this.liveRecoveryAt.delete(sessionId)
+      if (this.refCounts.size === 0) this.activityWatchdog.stop()
     } else {
       this.refCounts.set(sessionId, count - 1)
       return
@@ -262,6 +272,7 @@ class PiEventStream {
     this.diagnostics.record('disconnect', { reason: 'server_switch_or_reset' })
     for (const sessionId of this.refCounts.keys()) this.clearRefreshTimers(sessionId)
     this.refCounts.clear()
+    this.activityWatchdog.stop()
     piBranchStore.clearAll()
     clearSubagentTranscripts()
     this.subagentSeen.clear()
@@ -835,6 +846,7 @@ class PiEventStream {
   }
 
   private markSessionSettled(sessionId: string): void {
+    this.activityWatchdog.cancel(sessionId)
     piSessionStateStore.patchState(sessionId, {
       isStreaming: false,
       isIdle: true,
@@ -847,6 +859,27 @@ class PiEventStream {
     })
     settlePiLiveMessage(sessionId)
     this.pendingLiveMessages.delete(sessionId)
+  }
+
+  private reconcileActivityFromState(sessionId: string): void {
+    const state = piSessionStateStore.getState(sessionId)
+    if (!state) return
+    const active =
+      state.isStreaming === true ||
+      state.isCompacting === true ||
+      state.isRetrying === true ||
+      state.isBashRunning === true ||
+      state.hasPendingAsyncWork === true
+    if (active) {
+      activeSessionStore.updateStatus(sessionId, state.isCompacting ? { type: 'compacting' } : { type: 'busy' })
+      this.knownActiveSessions.add(sessionId)
+      return
+    }
+    if (state.isIdle === true || this.knownActiveSessions.has(sessionId)) {
+      this.markSessionSettled(sessionId)
+      activeSessionStore.updateStatus(sessionId, { type: 'idle' })
+      this.knownActiveSessions.delete(sessionId)
+    }
   }
 
   private knownActiveSessions = new Set<string>()

@@ -1,4 +1,8 @@
-import type { PiModelProviderConfig, PiModelProviderModelConfig } from '../../../../omp/domain/index.js'
+import type {
+  PiModelProviderConfig,
+  PiModelProviderModelConfig,
+  PiModelsDevLookupResult,
+} from '../../../../omp/domain/index.js'
 
 /**
  * 「供应商」设置页的编辑态类型与纯函数。
@@ -9,14 +13,10 @@ import type { PiModelProviderConfig, PiModelProviderModelConfig } from '../../..
  * models.yml 真正支持的配置。
  */
 
-export type ProviderApiFormat = 'anthropic-messages' | 'openai-completions' | 'openai-responses'
+export type ProviderApiFormat =
+  'anthropic-messages' | 'openai-completions' | 'openai-responses' | 'google-generative-ai'
 
-export type ThinkingMode =
-  | 'effort'
-  | 'anthropic-adaptive'
-  | 'anthropic-budget-effort'
-  | 'budget'
-  | 'google-level'
+export type ThinkingMode = 'effort' | 'anthropic-adaptive' | 'anthropic-budget-effort' | 'budget' | 'google-level'
 
 export type ModelDraft = {
   /** 编辑已有模型时记录原 id，保存时服务端据此合并（允许改 id）。 */
@@ -28,6 +28,8 @@ export type ModelDraft = {
   reasoning: boolean
   input: Array<'text' | 'image'>
   thinkingMode: ThinkingMode
+  /** false 表示模型目录没有提供可安全声明的推理等级。 */
+  thinkingConfigured: boolean
   efforts: string[]
   defaultLevel: string
   /** 推理等级 → 上游参数值的映射（models.yml `thinking.effortMap`）。 */
@@ -64,6 +66,7 @@ export const API_FORMAT_OPTIONS: Array<{
   { value: 'anthropic-messages', labelKey: 'providers.apiFormatAnthropic', path: '/v1/messages' },
   { value: 'openai-completions', labelKey: 'providers.apiFormatOpenai', path: '/chat/completions' },
   { value: 'openai-responses', labelKey: 'providers.apiFormatResponses', path: '/responses' },
+  { value: 'google-generative-ai', labelKey: 'providers.apiFormatGoogle', path: '/models/{model}:generateContent' },
 ]
 
 export const THINKING_MODE_OPTIONS: Array<{ value: ThinkingMode; labelKey: string }> = [
@@ -73,6 +76,12 @@ export const THINKING_MODE_OPTIONS: Array<{ value: ThinkingMode; labelKey: strin
   { value: 'budget', labelKey: 'providers.thinkingModeBudget' },
   { value: 'google-level', labelKey: 'providers.thinkingModeGoogle' },
 ]
+
+export function inferThinkingModeForApi(api: string | undefined): ThinkingMode {
+  if (api === 'anthropic-messages') return 'anthropic-adaptive'
+  if (api === 'google-generative-ai') return 'google-level'
+  return 'effort'
+}
 
 export function apiFormatToLabelKey(api: string): string {
   return API_FORMAT_OPTIONS.find(option => option.value === api)?.labelKey ?? 'providers.apiFormatOpenai'
@@ -91,6 +100,7 @@ export function blankModelDraft(id = ''): ModelDraft {
     reasoning: false,
     input: ['text', 'image'],
     thinkingMode: 'effort',
+    thinkingConfigured: false,
     efforts: [...DEFAULT_EFFORTS],
     defaultLevel: 'high',
     effortMap: {},
@@ -108,7 +118,9 @@ export function modelDraftFromConfig(model: PiModelProviderModelConfig): ModelDr
     reasoning: model.reasoning ?? Boolean(thinking),
     input: Array.isArray(model.input) && model.input.length > 0 ? [...model.input] : ['text', 'image'],
     thinkingMode: normalizeThinkingMode(thinking?.mode),
-    efforts: Array.isArray(thinking?.efforts) && thinking.efforts.length > 0 ? [...thinking.efforts] : [...DEFAULT_EFFORTS],
+    thinkingConfigured: Boolean(thinking),
+    efforts:
+      Array.isArray(thinking?.efforts) && thinking.efforts.length > 0 ? [...thinking.efforts] : [...DEFAULT_EFFORTS],
     defaultLevel: thinking?.defaultLevel ?? 'high',
     effortMap: { ...(thinking?.effortMap ?? {}) },
   }
@@ -131,12 +143,10 @@ export function providerDraftFromConfig(provider: PiModelProviderConfig): Provid
 }
 
 function normalizeApiFormat(api: string | undefined): ProviderApiFormat {
-  return API_FORMAT_OPTIONS.some(option => option.value === api)
-    ? (api as ProviderApiFormat)
-    : 'openai-completions'
+  return API_FORMAT_OPTIONS.some(option => option.value === api) ? (api as ProviderApiFormat) : 'openai-completions'
 }
 
-/** 编辑态 → models.yml 写入载荷；空 effortMap / 非推理模型不写多余字段。 */
+/** 编辑态 → 写入载荷；空映射显式传递以清除旧值，服务端不写入空字段。 */
 export function providerDraftToConfig(draft: ProviderDraft): PiModelProviderConfig {
   return {
     id: draft.id,
@@ -159,13 +169,15 @@ function modelDraftToConfig(model: ModelDraft): PiModelProviderModelConfig {
     reasoning: model.reasoning,
     input: model.input.length > 0 ? [...model.input] : ['text'],
   }
-  if (model.reasoning) {
+  if (model.reasoning && model.thinkingConfigured) {
     config.thinking = {
       mode: model.thinkingMode,
       efforts: [...model.efforts],
       defaultLevel: model.defaultLevel,
-      ...(Object.keys(model.effortMap).length > 0 ? { effortMap: { ...model.effortMap } } : {}),
+      effortMap: { ...model.effortMap },
     }
+  } else if (model.reasoning) {
+    config.thinking = null
   }
   return config
 }
@@ -204,10 +216,42 @@ export function inferModelDefaults(id: string): Partial<ModelDraft> {
   if (normalized.includes('kimi') || normalized.includes('moonshot')) {
     return { contextWindow: 256_000, maxTokens: 32_768, reasoning: true, ...vision }
   }
-  if (normalized.includes('gpt') || normalized.startsWith('o1') || normalized.startsWith('o3') || normalized.startsWith('o4')) {
+  if (
+    normalized.includes('gpt') ||
+    normalized.startsWith('o1') ||
+    normalized.startsWith('o3') ||
+    normalized.startsWith('o4')
+  ) {
     return { contextWindow: 400_000, maxTokens: 128_000, reasoning: true, ...vision }
   }
   return { contextWindow: DEFAULT_CONTEXT_WINDOW, maxTokens: DEFAULT_MAX_TOKENS }
+}
+
+/** 将 models.dev 的能力字段转换为 OMP 模型编辑器字段。 */
+export function modelDraftDefaultsFromModelsDev(result: PiModelsDevLookupResult, api?: string): Partial<ModelDraft> {
+  if (!result.found) return {}
+  const patch: Partial<ModelDraft> = {}
+  if (result.name) patch.name = result.name
+  if (result.contextWindow) patch.contextWindow = result.contextWindow
+  if (result.maxTokens) patch.maxTokens = result.maxTokens
+  if (result.reasoning !== undefined) patch.reasoning = result.reasoning
+  if (result.input && result.input.length > 0) patch.input = [...result.input]
+  if (result.thinking === null) {
+    patch.thinkingMode = inferThinkingModeForApi(api)
+    patch.thinkingConfigured = false
+    patch.efforts = []
+    patch.defaultLevel = ''
+    patch.effortMap = {}
+  } else if (result.thinking) {
+    patch.effortMap = {}
+    if (result.thinking.mode) patch.thinkingMode = result.thinking.mode
+    if (result.thinking.efforts && result.thinking.efforts.length > 0) {
+      patch.efforts = [...result.thinking.efforts]
+    }
+    if (result.thinking.defaultLevel) patch.defaultLevel = result.thinking.defaultLevel
+    patch.thinkingConfigured = true
+  }
+  return patch
 }
 
 /** 供应商 ID 用于 models.yml 的 key：小写、保留字母数字和 -_.，其余折叠为 -。 */
@@ -256,7 +300,8 @@ const FAMILY_MATCHERS: Array<{ group: string; test: (id: string) => boolean }> =
   { group: 'Moonshot', test: id => id.includes('kimi') || id.includes('moonshot') },
   {
     group: 'Mistral',
-    test: id => ['mistral', 'codestral', 'devstral', 'pixtral', 'ministral', 'magistral'].some(token => id.includes(token)),
+    test: id =>
+      ['mistral', 'codestral', 'devstral', 'pixtral', 'ministral', 'magistral'].some(token => id.includes(token)),
   },
   { group: 'Llama', test: id => id.includes('llama') },
   { group: 'Cohere', test: id => id.includes('command') || id.includes('aya') || id.includes('c4ai') },

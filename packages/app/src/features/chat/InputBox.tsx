@@ -168,6 +168,7 @@ export interface InputBoxProps extends ComposerQueueProps {
   sessionActive?: boolean
   /** 上下文压缩进行中：发送按钮变为停止按钮（取消压缩） */
   isCompacting?: boolean
+  isStopping?: boolean
   variants?: string[]
   selectedVariant?: string
   onVariantChange?: (variant: string | undefined) => void
@@ -228,6 +229,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   isStreaming,
   sessionActive,
   isCompacting = false,
+  isStopping = false,
   variants = [],
   selectedVariant,
   onVariantChange,
@@ -1947,6 +1949,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
                       isStreaming={isStreaming}
                       sessionActive={sessionActive}
                       isCompacting={isCompacting}
+                      isStopping={isStopping}
                       isSending={isSubmitting}
                       onAbort={onAbort}
                       deliveryMode={deliveryMode}

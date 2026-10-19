@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ChevronDownIcon, SendIcon, StopIcon, PaperclipIcon, ThinkingIcon } from '../../../components/Icons'
+import { ChevronDownIcon, SendIcon, StopIcon, PaperclipIcon, ThinkingIcon, SpinnerIcon } from '../../../components/Icons'
 import { DropdownMenu, MenuItem, IconButton, AnimatedPresence } from '../../../components/ui'
 import { ModelSelector, type ModelSelectorHandle } from '../ModelSelector'
 import { useChatViewportSelect } from '../chatViewport'
@@ -24,6 +24,7 @@ interface InputToolbarProps {
   /** 上下文压缩进行中：发送按钮变为停止按钮（取消压缩） */
   isCompacting?: boolean
   isSending?: boolean
+  isStopping?: boolean
   onAbort?: () => void
   deliveryMode?: 'steer' | 'followUp'
   onDeliveryModeChange?: (mode: 'steer' | 'followUp') => void
@@ -53,6 +54,7 @@ export function InputToolbar({
   sessionActive,
   isCompacting = false,
   isSending = false,
+  isStopping = false,
   onAbort,
   deliveryMode = 'followUp',
   onDeliveryModeChange,
@@ -429,23 +431,26 @@ export function InputToolbar({
             </IconButton>
           </>
         </AnimatedPresence>
-        {/* 停止按钮条件：输入框为空（不可发送）且（压缩中 / 流式中 / 会话活跃）。
-            只要输入框有内容（canSend），就显示发送按钮——停止按钮只在
-            没有可发送内容时出现（中止压缩/生成）。 */}
-        {(!canSend && (isCompacting || isStreaming || sessionActive)) && !isSending ? (
-          <IconButton aria-label={t('inputToolbar.stopGeneration')} variant="solid" onClick={onAbort}>
-            <StopIcon />
+        {(isCompacting || isStreaming || sessionActive || isStopping) && (
+          <IconButton
+            aria-label={t('inputToolbar.stopGeneration')}
+            variant="solid"
+            disabled={isStopping}
+            onClick={onAbort}
+          >
+            {isStopping ? <SpinnerIcon className="animate-spin" /> : <StopIcon />}
           </IconButton>
-        ) : (
+        )}
+        {canSend || !isStreaming && !sessionActive && !isCompacting && !isStopping ? (
           <IconButton
             aria-label={isSending ? t('inputToolbar.sendingMessage') : t('inputToolbar.sendMessage')}
             variant="solid"
             disabled={!canSend || isSending}
             onClick={onSend}
           >
-            <SendIcon />
+            {isSending ? <SpinnerIcon className="animate-spin" /> : <SendIcon />}
           </IconButton>
-        )}
+        ) : null}
       </div>
     </div>
   )

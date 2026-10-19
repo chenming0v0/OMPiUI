@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   blankModelDraft,
   groupModelIds,
+  inferThinkingModeForApi,
   inferModelDefaults,
+  modelDraftDefaultsFromModelsDev,
   providerDraftFromConfig,
   providerDraftToConfig,
   validateModelDraft,
@@ -58,6 +60,100 @@ describe('providerTypes', () => {
       reasoning: true,
     })
     expect(inferModelDefaults('totally-unknown').contextWindow).toBe(128_000)
+  })
+
+  it('maps models.dev capabilities into an editable model draft', () => {
+    expect(
+      modelDraftDefaultsFromModelsDev({
+        found: true,
+        name: 'GPT Test',
+        contextWindow: 400_000,
+        maxTokens: 128_000,
+        reasoning: true,
+        input: ['text', 'image'],
+        thinking: { mode: 'effort', efforts: ['low', 'high'], defaultLevel: 'high' },
+      }),
+    ).toMatchObject({
+      name: 'GPT Test',
+      contextWindow: 400_000,
+      maxTokens: 128_000,
+      reasoning: true,
+      input: ['text', 'image'],
+      thinkingMode: 'effort',
+      efforts: ['low', 'high'],
+      defaultLevel: 'high',
+      thinkingConfigured: true,
+    })
+  })
+
+  it('uses exact preset efforts and keeps reasoning-only models level-free', () => {
+    expect(
+      modelDraftDefaultsFromModelsDev({
+        found: true,
+        reasoning: true,
+        thinking: { mode: 'anthropic-adaptive', efforts: ['low', 'medium', 'high', 'max'], defaultLevel: 'high' },
+      }),
+    ).toMatchObject({
+      reasoning: true,
+      thinkingConfigured: true,
+      thinkingMode: 'anthropic-adaptive',
+      efforts: ['low', 'medium', 'high', 'max'],
+      defaultLevel: 'high',
+    })
+
+    expect(
+      modelDraftDefaultsFromModelsDev({ found: true, reasoning: true, thinking: null }, 'google-generative-ai'),
+    ).toMatchObject({
+      reasoning: true,
+      thinkingConfigured: false,
+      thinkingMode: 'google-level',
+      efforts: [],
+      defaultLevel: '',
+    })
+  })
+
+  it('infers provider-native OMP thinking modes', () => {
+    expect(inferThinkingModeForApi('anthropic-messages')).toBe('anthropic-adaptive')
+    expect(inferThinkingModeForApi('google-generative-ai')).toBe('google-level')
+    expect(inferThinkingModeForApi('openai-responses')).toBe('effort')
+  })
+
+  it('does not serialize invented effort levels for a reasoning-only model', () => {
+    const draft: ProviderDraft = {
+      id: 'demo',
+      name: 'Demo',
+      api: 'openai-completions',
+      baseUrl: 'https://relay.test/v1',
+      apiKey: '',
+      models: [
+        {
+          ...blankModelDraft('glm-reasoner'),
+          reasoning: true,
+          thinkingConfigured: false,
+        },
+      ],
+    }
+    expect(providerDraftToConfig(draft).models[0]).toMatchObject({
+      reasoning: true,
+    })
+    expect(providerDraftToConfig(draft).models[0]!.thinking).toBeNull()
+  })
+
+  it('sends an empty parameter map explicitly to clear an existing mapping', () => {
+    const draft = providerDraftFromConfig({
+      id: 'demo',
+      name: 'Demo',
+      api: 'openai-responses',
+      baseUrl: 'https://relay.test/v1',
+      apiKey: '',
+      models: [{
+        id: 'gpt-test',
+        reasoning: true,
+        thinking: { mode: 'effort', efforts: ['high'], effortMap: { high: 'old-value' } },
+      }],
+    })
+    draft.models[0]!.effortMap = {}
+    expect(providerDraftToConfig(draft).models[0]!.thinking?.effortMap).toEqual({})
   })
 
   it('round-trips a draft and omits thinking when reasoning is disabled', () => {

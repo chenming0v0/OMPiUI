@@ -330,7 +330,7 @@ export type PiModelProviderModelConfig = {
     efforts?: string[]
     defaultLevel?: string
     effortMap?: Record<string, string>
-  }
+  } | null
   cost?: {
     input?: number
     output?: number
@@ -367,6 +367,23 @@ export type PiModelProviderFetchResult = {
   models: string[]
   removed: string[]
   total: number
+}
+
+/** 模型编辑器使用的可选 models.dev 能力匹配结果。 */
+export type PiModelsDevLookupResult = {
+  found: boolean
+  provider?: string
+  modelId?: string
+  name?: string
+  contextWindow?: number
+  maxTokens?: number
+  reasoning?: boolean
+  input?: Array<'text' | 'image'>
+  thinking?: {
+    mode?: 'effort' | 'anthropic-adaptive' | 'anthropic-budget-effort' | 'budget' | 'google-level'
+    efforts?: string[]
+    defaultLevel?: string
+  } | null
 }
 
 // SDK package shapes (core/package-manager). ResolvedPaths/ResolvedResource

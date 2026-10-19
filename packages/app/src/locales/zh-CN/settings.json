@@ -897,7 +897,10 @@
     "editorEditTitle": "编辑模型配置",
     "editorHint": "{{provider}} · {{index}} / {{total}}",
     "smartConfig": "智能配置",
-    "smartConfigHint": "根据模型 ID 自动推断上下文、输出上限和输入类型",
+    "smartConfigHint": "从 models.dev 自动填入模型能力，查不到时使用本地兜底",
+    "smartConfigLoading": "正在查询…",
+    "smartConfigMatched": "已应用 models.dev 数据",
+    "smartConfigFallback": "已使用本地默认值",
     "smartApplied": "已根据模型 ID 填入推荐参数",
     "modelId": "模型 ID",
     "modelIdPlaceholder": "例如：claude-opus-4-6",
@@ -933,10 +936,13 @@
     "apiFormatAnthropic": "Anthropic Messages",
     "apiFormatOpenai": "Chat Completions",
     "apiFormatResponses": "Responses",
+    "apiFormatGoogle": "Google Generative AI",
     "thinkingModeEffort": "effort",
     "thinkingModeAdaptive": "anthropic-adaptive",
     "thinkingModeBudgetEffort": "anthropic-budget-effort",
     "thinkingModeBudget": "budget",
-    "thinkingModeGoogle": "google-level"
+    "thinkingModeGoogle": "google-level",
+    "noReasoningLevels": "模型支持推理，但目录未提供可配置的推理等级。",
+    "configureReasoning": "手动配置"
   }
 }

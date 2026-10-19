@@ -194,7 +194,7 @@ describe('InputToolbar file selection', () => {
     expect(screen.queryByRole('button', { name: /send|发送/i })).toBeNull()
   })
 
-  it('switches back to Send once the user types content (canSend) even if session is active', () => {
+  it('keeps Stop available and also shows Send once the user types content while active', () => {
     const onSend = vi.fn()
     render(
       <InputToolbar
@@ -208,7 +208,7 @@ describe('InputToolbar file selection', () => {
     )
 
     expect(screen.getByRole('button', { name: /send|发送/i })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /stop|停止/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /stop|停止/i })).toBeInTheDocument()
   })
 
   it('shows Send once the user types content (canSend) while compacting', () => {
@@ -224,9 +224,9 @@ describe('InputToolbar file selection', () => {
       />,
     )
 
-    // 压缩中但只要输入框有内容就是发送按钮（停止按钮只在空输入时出现）
+    // 压缩中仍保留停止按钮，同时允许发送已输入的内容
     expect(screen.getByRole('button', { name: /send|发送/i })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /stop|停止/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /stop|停止/i })).toBeInTheDocument()
   })
 
   it('shows Stop while compacting and the input is empty', () => {
@@ -243,5 +243,43 @@ describe('InputToolbar file selection', () => {
 
     expect(screen.getByRole('button', { name: /stop|停止/i })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /send|发送/i })).toBeNull()
+  })
+
+  it('keeps Stop clickable while Send is awaiting acceptance', () => {
+    const onAbort = vi.fn()
+    render(
+      <InputToolbar
+        fileCapabilities={{ image: false, pdf: false, audio: false, video: false }}
+        onFilesSelected={vi.fn()}
+        isStreaming
+        isSending
+        canSend
+        onSend={vi.fn()}
+        onAbort={onAbort}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /stop|停止/i }))
+    expect(onAbort).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: /sending|发送中/i })).toBeDisabled()
+  })
+
+  it('shows an in-progress stop state and prevents duplicate stop clicks', () => {
+    const onAbort = vi.fn()
+    render(
+      <InputToolbar
+        fileCapabilities={{ image: false, pdf: false, audio: false, video: false }}
+        onFilesSelected={vi.fn()}
+        isStopping
+        canSend={false}
+        onSend={vi.fn()}
+        onAbort={onAbort}
+      />,
+    )
+
+    const stop = screen.getByRole('button', { name: /stop|停止/i })
+    expect(stop).toBeDisabled()
+    fireEvent.click(stop)
+    expect(onAbort).not.toHaveBeenCalled()
   })
 })
