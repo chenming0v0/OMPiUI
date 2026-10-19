@@ -496,6 +496,8 @@ export function PiChatPane({
 
   const pendingStopsRef = useRef(new Map<string, Promise<boolean>>())
   const stoppedSessionsRef = useRef(new Set<string>())
+  const [stoppingSessionId, setStoppingSessionId] = useState<string | null>(null)
+  const isStopping = stoppingSessionId === sessionId
   const handleAbort = useCallback(async () => {
     if (!sessionId) return
     const pending = pendingStopsRef.current.get(sessionId)
@@ -505,15 +507,17 @@ export function PiChatPane({
     }
     const sid = sessionId
     const stopping = (async () => {
+      setStoppingSessionId(sid)
       try {
         await (compacting ? abortPiCompaction(sid) : abortPiOperation(sid))
         stoppedSessionsRef.current.add(sid)
-        await Promise.all([refreshPiBranch(sid), refreshPiSessionState(sid)])
+        void Promise.all([refreshPiBranch(sid), refreshPiSessionState(sid)]).catch(() => undefined)
         return true
       } catch (error) {
         uiErrorHandler('stop operation', error)
         return false
       } finally {
+        setStoppingSessionId(current => current === sid ? null : current)
         pendingStopsRef.current.delete(sid)
       }
     })()
@@ -1874,6 +1878,7 @@ export function PiChatPane({
             isStreaming={isStreaming}
             sessionActive={sessionActive}
             isCompacting={compacting}
+            isStopping={isStopping}
             isAtBottom={isAtBottom}
             showScrollToBottom={!isAtBottom}
             onScrollToBottom={() => chatAreaRef.current?.scrollToBottom()}

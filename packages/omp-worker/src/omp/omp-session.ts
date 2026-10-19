@@ -1697,8 +1697,10 @@ export class OmpRpcSession implements SessionRuntime {
       this.liveMessage = undefined;
       this.emitUserQueueSnapshot();
       this.emitActivityIfChanged();
-      await this.syncEntriesNow();
       this.emitPiEvent({ type: "agent_settled" });
+      // 停止确认必须先到达 UI；历史同步只负责补齐落盘内容，后台执行不能
+      // 阻塞“已停止”的交互反馈。
+      void this.syncEntriesNow().catch(() => undefined);
       return toJson(result) ?? undefined;
     })();
     this.abortInFlight = flight;

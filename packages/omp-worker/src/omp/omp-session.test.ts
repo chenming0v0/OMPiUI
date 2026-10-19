@@ -108,6 +108,20 @@ describe("OmpRpcSession native subagent progress", () => {
 })
 
 describe("OmpRpcSession immediate queued delivery", () => {
+  it("acknowledges abort before the asynchronous history sync finishes", async t => {
+    const { session, frame } = await sessionFixture(t)
+    const internal = session as unknown as { syncEntriesNow(): Promise<void> }
+    frame({ type: "agent_start" })
+    let finishSync!: () => void
+    internal.syncEntriesNow = () => new Promise<void>(resolve => { finishSync = resolve })
+    const events: JsonObject[] = []
+    session.onPiEvent(event => events.push(event))
+
+    await session.abort()
+    assert.ok(events.some(event => event.type === "agent_settled"))
+    finishSync()
+  })
+
   it("returns a legal large attachment through IPC and refuses larger results before removing queue data", async t => {
     const { session, frame } = await sessionFixture(t)
     frame({ type: "agent_start" })
