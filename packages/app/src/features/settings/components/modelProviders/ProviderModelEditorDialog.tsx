@@ -7,6 +7,7 @@ import {
   DEFAULT_EFFORTS,
   THINKING_MODE_OPTIONS,
   blankModelDraft,
+  inferThinkingModeForApi,
   inferModelDefaults,
   modelDraftDefaultsFromModelsDev,
   validateModelDraft,
@@ -106,12 +107,17 @@ export function ProviderModelEditorDialog({
       return
     }
     const next = model ? cloneDraft(model) : blankModelDraft()
-    setDraft(next.id.trim() ? { ...next, ...inferModelDefaults(next.id) } : next)
+    const autoConfigure = !next.originalId
+    setDraft({
+      ...next,
+      ...(autoConfigure && next.id.trim() ? inferModelDefaults(next.id) : {}),
+      ...(!next.thinkingConfigured ? { thinkingMode: inferThinkingModeForApi(providerApi) } : {}),
+    })
     setInitial(cloneDraft(next))
     setEffortMapText(effortMapToText(next.effortMap))
     setError(null)
     setJsonError(false)
-    setSmartConfig(true)
+    setSmartConfig(autoConfigure)
     setSmartConfigState('idle')
     setCustomLevel('')
     setCustomLevelOpen(false)
@@ -120,7 +126,7 @@ export function ProviderModelEditorDialog({
       lookupAbortRef.current?.abort()
       lookupSequenceRef.current += 1
     }
-  }, [isOpen, model])
+  }, [isOpen, model, providerApi])
 
   useEffect(() => {
     if (!isOpen) return
@@ -134,7 +140,23 @@ export function ProviderModelEditorDialog({
   }, [draft, t])
 
   const update = (patch: Partial<ModelDraft>) => {
-    setDraft(current => (current ? { ...current, ...patch } : current))
+    if (Object.keys(patch).some(key => key !== 'name')) {
+      lookupAbortRef.current?.abort()
+      lookupSequenceRef.current += 1
+      setSmartConfig(false)
+      setSmartConfigState('idle')
+    }
+    const configKeys: Array<keyof ModelDraft> = ['thinkingMode', 'efforts', 'defaultLevel', 'effortMap']
+    const configChanged = configKeys.some(key => key in patch)
+    setDraft(current =>
+      current
+        ? {
+            ...current,
+            ...patch,
+            ...(configChanged ? { thinkingConfigured: true } : {}),
+          }
+        : current,
+    )
     setError(null)
   }
 
@@ -164,41 +186,45 @@ export function ProviderModelEditorDialog({
     setCustomLevelOpen(false)
   }
 
-  const applySmartConfig = useCallback((id: string) => {
-    lookupAbortRef.current?.abort()
-    const controller = new AbortController()
-    lookupAbortRef.current = controller
-    const sequence = ++lookupSequenceRef.current
-    setSmartConfigState('loading')
-    void lookupModelsDevModel(
-      {
-        modelId: id,
-        ...(providerId ? { providerHint: providerId } : {}),
-        ...(providerApi ? { api: providerApi } : {}),
-      },
-      controller.signal,
-    )
-      .then(result => {
-        if (sequence !== lookupSequenceRef.current || controller.signal.aborted) return
-        if (!result.found) {
-          setSmartConfigState('fallback')
-          return
-        }
-        const remote = modelDraftDefaultsFromModelsDev(result)
-        setDraft(current => {
-          if (!current) return current
-          const next = { ...current, ...remote }
-          if (current.name.trim() === current.id.trim() || !current.name.trim()) {
-            next.name = remote.name ?? current.name
+  const applySmartConfig = useCallback(
+    (id: string) => {
+      lookupAbortRef.current?.abort()
+      const controller = new AbortController()
+      lookupAbortRef.current = controller
+      const sequence = ++lookupSequenceRef.current
+      setSmartConfigState('loading')
+      void lookupModelsDevModel(
+        {
+          modelId: id,
+          ...(providerId ? { providerHint: providerId } : {}),
+          ...(providerApi ? { api: providerApi } : {}),
+        },
+        controller.signal,
+      )
+        .then(result => {
+          if (sequence !== lookupSequenceRef.current || controller.signal.aborted) return
+          if (!result.found) {
+            setSmartConfigState('fallback')
+            return
           }
-          return next
+          const remote = modelDraftDefaultsFromModelsDev(result, providerApi)
+          setEffortMapText(effortMapToText(remote.effortMap ?? {}))
+          setDraft(current => {
+            if (!current) return current
+            const next = { ...current, ...remote, name: current.name }
+            if (current.name.trim() === current.id.trim() || !current.name.trim()) {
+              next.name = remote.name ?? current.name
+            }
+            return next
+          })
+          setSmartConfigState('matched')
         })
-        setSmartConfigState('matched')
-      })
-      .catch(() => {
-        if (sequence === lookupSequenceRef.current && !controller.signal.aborted) setSmartConfigState('fallback')
-      })
-  }, [providerId, providerApi])
+        .catch(() => {
+          if (sequence === lookupSequenceRef.current && !controller.signal.aborted) setSmartConfigState('fallback')
+        })
+    },
+    [providerId, providerApi],
+  )
 
   useEffect(() => {
     if (!isOpen || !smartConfig || !draft?.id.trim()) {
@@ -215,8 +241,21 @@ export function ProviderModelEditorDialog({
 
   const handleModelIdChange = (value: string) => {
     if (!draft) return
-    const next = { ...draft, id: value, name: draft.name === draft.id ? value : draft.name }
-    setDraft(smartConfig ? { ...next, ...inferModelDefaults(value) } : next)
+    lookupAbortRef.current?.abort()
+    lookupSequenceRef.current += 1
+    setSmartConfigState('idle')
+    const next = {
+      ...(smartConfig ? blankModelDraft(value) : draft),
+      originalId: draft.originalId,
+      id: value,
+      name: draft.name === draft.id ? value : draft.name,
+    }
+    setDraft(
+      smartConfig
+        ? { ...next, ...inferModelDefaults(value), thinkingMode: inferThinkingModeForApi(providerApi) }
+        : next,
+    )
+    if (smartConfig) setEffortMapText('')
     setError(null)
   }
 
@@ -244,7 +283,7 @@ export function ProviderModelEditorDialog({
     setEffortMapText(effortMapToText(initial.effortMap))
     setError(null)
     setJsonError(false)
-    setSmartConfig(true)
+    setSmartConfig(false)
     setSmartConfigState('idle')
   }
 
@@ -276,7 +315,11 @@ export function ProviderModelEditorDialog({
           <div className="min-w-0">
             <div className="text-[length:var(--fs-xxs)] font-medium uppercase tracking-wider text-text-400">
               {providerName}
-              {progress !== undefined && <span className="ml-1.5 text-text-500">{progress} / {queueTotal}</span>}
+              {progress !== undefined && (
+                <span className="ml-1.5 text-text-500">
+                  {progress} / {queueTotal}
+                </span>
+              )}
             </div>
             <h2 className="mt-0.5 text-[length:var(--fs-lg)] font-semibold text-text-100">{title}</h2>
           </div>
@@ -315,9 +358,7 @@ export function ProviderModelEditorDialog({
                   lookupAbortRef.current?.abort()
                   setSmartConfigState('idle')
                 } else {
-                  setDraft(current =>
-                    current ? { ...current, ...inferModelDefaults(current.id) } : current,
-                  )
+                  setDraft(current => (current ? { ...current, ...inferModelDefaults(current.id) } : current))
                 }
               }}
               className={`relative shrink-0 rounded-full transition-colors ${smartConfig ? 'bg-accent-main-100' : 'bg-bg-300'}`}
@@ -433,148 +474,193 @@ export function ProviderModelEditorDialog({
                   <div className="flex items-center justify-between gap-4">
                     <div>
                       <div className={fieldLabelClass}>{t('providers.reasoning')}</div>
-                      <div className="mt-0.5 text-[length:var(--fs-xs)] text-text-400">{t('providers.reasoningHint')}</div>
+                      <div className="mt-0.5 text-[length:var(--fs-xs)] text-text-400">
+                        {t('providers.reasoningHint')}
+                      </div>
                     </div>
                     <button
                       type="button"
                       role="switch"
                       aria-checked={draft.reasoning}
                       aria-label={t('providers.reasoning')}
-                      onClick={() => update({ reasoning: !draft.reasoning })}
+                      onClick={() =>
+                        update({
+                          reasoning: !draft.reasoning,
+                          ...(!draft.reasoning && !draft.thinkingConfigured
+                            ? {
+                                thinkingConfigured: true,
+                                thinkingMode: inferThinkingModeForApi(providerApi),
+                                efforts: [...DEFAULT_EFFORTS],
+                                defaultLevel: 'high',
+                              }
+                            : {}),
+                        })
+                      }
                       className={`relative shrink-0 rounded-full transition-colors ${draft.reasoning ? 'bg-accent-main-100' : 'bg-bg-300'}`}
                       style={{ width: 36, height: 20 }}
                     >
                       <span
                         className="absolute left-[2px] top-[2px] rounded-full bg-white transition-transform"
-                        style={{ width: 16, height: 16, transform: draft.reasoning ? 'translateX(16px)' : 'translateX(0)' }}
+                        style={{
+                          width: 16,
+                          height: 16,
+                          transform: draft.reasoning ? 'translateX(16px)' : 'translateX(0)',
+                        }}
                       />
                     </button>
                   </div>
 
                   <div className={reasoningDisabled ? 'pointer-events-none opacity-50' : ''}>
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <div>
-                        <div className={fieldLabelClass}>{t('providers.reasoningMode')}</div>
-                        <div className="mt-1">
-                          <SettingsSelect
-                            value={draft.thinkingMode}
-                            ariaLabel={t('providers.reasoningMode')}
-                            options={THINKING_MODE_OPTIONS.map(option => ({
-                              value: option.value,
-                              label: t(option.labelKey),
-                            }))}
-                            onChange={value => update({ thinkingMode: value })}
-                          />
+                    {!draft.thinkingConfigured && draft.reasoning ? (
+                      <div className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-bg-200/40 px-3 py-2.5">
+                        <div className="text-[length:var(--fs-xs)] text-text-400">
+                          {t('providers.noReasoningLevels')}
                         </div>
-                      </div>
-                      <div>
-                        <div className={fieldLabelClass}>{t('providers.defaultLevel')}</div>
-                        <div className="mt-1">
-                          <SettingsSelect
-                            value={draft.defaultLevel}
-                            ariaLabel={t('providers.defaultLevel')}
-                            options={(draft.efforts.length > 0 ? draft.efforts : DEFAULT_EFFORTS).map(level => ({
-                              value: level,
-                              label: level,
-                            }))}
-                            onChange={value => update({ defaultLevel: value })}
-                          />
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="mt-3">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className={fieldLabelClass}>{t('providers.reasoningLevels')}</div>
-                        <button
-                          type="button"
-                          onClick={() => setCustomLevelOpen(value => !value)}
-                          className="inline-flex h-6 items-center gap-1 rounded px-1.5 text-[length:var(--fs-xxs)] text-text-400 transition-colors hover:bg-bg-200 hover:text-text-100"
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() =>
+                            update({
+                              thinkingConfigured: true,
+                              thinkingMode: inferThinkingModeForApi(providerApi),
+                              efforts: [...DEFAULT_EFFORTS],
+                              defaultLevel: 'high',
+                            })
+                          }
                         >
-                          <PlusIcon size={12} />
-                          {t('providers.addLevel')}
-                        </button>
+                          {t('providers.configureReasoning')}
+                        </Button>
                       </div>
-                      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                        {(draft.efforts.length > 0 ? draft.efforts : DEFAULT_EFFORTS).map(level => {
-                          const active = draft.efforts.includes(level)
-                          return (
+                    ) : (
+                      <>
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <div>
+                            <div className={fieldLabelClass}>{t('providers.reasoningMode')}</div>
+                            <div className="mt-1">
+                              <SettingsSelect
+                                value={draft.thinkingMode}
+                                ariaLabel={t('providers.reasoningMode')}
+                                options={THINKING_MODE_OPTIONS.map(option => ({
+                                  value: option.value,
+                                  label: t(option.labelKey),
+                                }))}
+                                onChange={value => update({ thinkingMode: value })}
+                              />
+                            </div>
+                          </div>
+                          <div>
+                            <div className={fieldLabelClass}>{t('providers.defaultLevel')}</div>
+                            <div className="mt-1">
+                              <SettingsSelect
+                                value={draft.defaultLevel}
+                                ariaLabel={t('providers.defaultLevel')}
+                                options={(draft.efforts.length > 0 ? draft.efforts : DEFAULT_EFFORTS).map(level => ({
+                                  value: level,
+                                  label: level,
+                                }))}
+                                onChange={value => update({ defaultLevel: value })}
+                              />
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="mt-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className={fieldLabelClass}>{t('providers.reasoningLevels')}</div>
                             <button
-                              key={level}
                               type="button"
-                              aria-pressed={active}
-                              onClick={() => toggleEffort(level)}
-                              className={chipClass(active)}
+                              onClick={() => setCustomLevelOpen(value => !value)}
+                              className="inline-flex h-6 items-center gap-1 rounded px-1.5 text-[length:var(--fs-xxs)] text-text-400 transition-colors hover:bg-bg-200 hover:text-text-100"
                             >
-                              {level}
+                              <PlusIcon size={12} />
+                              {t('providers.addLevel')}
                             </button>
-                          )
-                        })}
-                        {customLevelOpen && (
-                          <span className="inline-flex items-center gap-1">
-                            <input
-                              autoFocus
-                              value={customLevel}
-                              onChange={event => setCustomLevel(event.target.value)}
-                              onKeyDown={event => {
-                                if (event.key === 'Enter') {
-                                  event.preventDefault()
-                                  addCustomLevel()
-                                }
-                                if (event.key === 'Escape') setCustomLevelOpen(false)
-                              }}
-                              placeholder={t('providers.customLevelPlaceholder')}
-                              className={`${settingsFieldClass} h-7 w-28`}
-                            />
-                            <Button size="sm" variant="secondary" onClick={addCustomLevel}>
-                              {t('providers.add')}
-                            </Button>
-                          </span>
-                        )}
-                      </div>
-                      <div className="mt-1 text-[length:var(--fs-xxs)] text-text-500">
-                        {t('providers.reasoningLevelsHint')}
-                      </div>
-                    </div>
-
-                    <div className="mt-3">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className={fieldLabelClass}>{t('providers.reasoningParams')}</div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const map = parseEffortMap(effortMapText)
-                            if (map === null) {
-                              setJsonError(true)
-                              return
-                            }
-                            setEffortMapText(effortMapToText(map))
-                            setJsonError(false)
-                          }}
-                          className="inline-flex h-6 items-center rounded px-1.5 text-[length:var(--fs-xxs)] text-text-400 transition-colors hover:bg-bg-200 hover:text-text-100"
-                        >
-                          {t('providers.formatJson')}
-                        </button>
-                      </div>
-                      <textarea
-                        value={effortMapText}
-                        onChange={event => {
-                          setEffortMapText(event.target.value)
-                          setJsonError(false)
-                        }}
-                        rows={5}
-                        spellCheck={false}
-                        placeholder={t('providers.reasoningParamsPlaceholder')}
-                        aria-label={t('providers.reasoningParams')}
-                        className={`${settingsFieldAreaClass} mt-1.5 font-mono`}
-                      />
-                      <div className="mt-1 text-[length:var(--fs-xxs)] text-text-500">{t('providers.reasoningParamsHint')}</div>
-                      {jsonError && (
-                        <div className="mt-1 text-[length:var(--fs-xs)] text-danger-100" role="alert">
-                          {t('providers.invalidJson')}
+                          </div>
+                          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                            {(draft.efforts.length > 0 ? draft.efforts : DEFAULT_EFFORTS).map(level => {
+                              const active = draft.efforts.includes(level)
+                              return (
+                                <button
+                                  key={level}
+                                  type="button"
+                                  aria-pressed={active}
+                                  onClick={() => toggleEffort(level)}
+                                  className={chipClass(active)}
+                                >
+                                  {level}
+                                </button>
+                              )
+                            })}
+                            {customLevelOpen && (
+                              <span className="inline-flex items-center gap-1">
+                                <input
+                                  autoFocus
+                                  value={customLevel}
+                                  onChange={event => setCustomLevel(event.target.value)}
+                                  onKeyDown={event => {
+                                    if (event.key === 'Enter') {
+                                      event.preventDefault()
+                                      addCustomLevel()
+                                    }
+                                    if (event.key === 'Escape') setCustomLevelOpen(false)
+                                  }}
+                                  placeholder={t('providers.customLevelPlaceholder')}
+                                  className={`${settingsFieldClass} h-7 w-28`}
+                                />
+                                <Button size="sm" variant="secondary" onClick={addCustomLevel}>
+                                  {t('providers.add')}
+                                </Button>
+                              </span>
+                            )}
+                          </div>
+                          <div className="mt-1 text-[length:var(--fs-xxs)] text-text-500">
+                            {t('providers.reasoningLevelsHint')}
+                          </div>
                         </div>
-                      )}
-                    </div>
+
+                        <div className="mt-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className={fieldLabelClass}>{t('providers.reasoningParams')}</div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const map = parseEffortMap(effortMapText)
+                                if (map === null) {
+                                  setJsonError(true)
+                                  return
+                                }
+                                setEffortMapText(effortMapToText(map))
+                                setJsonError(false)
+                              }}
+                              className="inline-flex h-6 items-center rounded px-1.5 text-[length:var(--fs-xxs)] text-text-400 transition-colors hover:bg-bg-200 hover:text-text-100"
+                            >
+                              {t('providers.formatJson')}
+                            </button>
+                          </div>
+                          <textarea
+                            value={effortMapText}
+                            onChange={event => {
+                              update({ thinkingConfigured: true })
+                              setEffortMapText(event.target.value)
+                              setJsonError(false)
+                            }}
+                            rows={5}
+                            spellCheck={false}
+                            placeholder={t('providers.reasoningParamsPlaceholder')}
+                            aria-label={t('providers.reasoningParams')}
+                            className={`${settingsFieldAreaClass} mt-1.5 font-mono`}
+                          />
+                          <div className="mt-1 text-[length:var(--fs-xxs)] text-text-500">
+                            {t('providers.reasoningParamsHint')}
+                          </div>
+                          {jsonError && (
+                            <div className="mt-1 text-[length:var(--fs-xs)] text-danger-100" role="alert">
+                              {t('providers.invalidJson')}
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
               )}
@@ -600,7 +686,7 @@ export function ProviderModelEditorDialog({
             <Button variant="secondary" size="sm" onClick={onClose}>
               {t('providers.cancel')}
             </Button>
-            <Button variant="primary" size="sm" onClick={handleSave}>
+            <Button variant="primary" size="sm" onClick={handleSave} disabled={smartConfigState === 'loading'}>
               {t('providers.save')}
             </Button>
           </div>

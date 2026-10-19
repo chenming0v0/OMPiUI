@@ -936,10 +936,13 @@
     "apiFormatAnthropic": "Anthropic Messages",
     "apiFormatOpenai": "Chat Completions",
     "apiFormatResponses": "Responses",
+    "apiFormatGoogle": "Google Generative AI",
     "thinkingModeEffort": "effort",
     "thinkingModeAdaptive": "anthropic-adaptive",
     "thinkingModeBudgetEffort": "anthropic-budget-effort",
     "thinkingModeBudget": "budget",
-    "thinkingModeGoogle": "google-level"
+    "thinkingModeGoogle": "google-level",
+    "noReasoningLevels": "模型支持推理，但目录未提供可配置的推理等级。",
+    "configureReasoning": "手动配置"
   }
 }

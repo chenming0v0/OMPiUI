@@ -55,7 +55,7 @@ describe("models.dev lookup", () => {
     });
   });
 
-  it("maps Anthropic budget reasoning and returns misses without throwing", async () => {
+  it("does not invent effort levels for budget-only reasoning metadata", async () => {
     globalThis.fetch = async () =>
       new Response(
         JSON.stringify({
@@ -79,11 +79,151 @@ describe("models.dev lookup", () => {
       providerHint: "anthropic",
       api: "anthropic-messages",
     });
-    assert.equal(result.thinking?.mode, "anthropic-budget-effort");
+    assert.equal(result.reasoning, true);
+    assert.equal(result.thinking, null);
     assert.equal(
       (await lookupModelsDevModel({ modelId: "missing-model" })).found,
       false,
     );
+  });
+
+  it("maps provider presets to OMP-native thinking modes and exact effort sets", async () => {
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          anthropic: {
+            id: "anthropic",
+            models: {
+              "claude-opus-4-6": {
+                reasoning: true,
+                reasoning_options: [
+                  { type: "effort", values: ["low", "medium", "high", "max"] },
+                  { type: "budget_tokens", min: 1024 },
+                ],
+              },
+            },
+          },
+          openai: {
+            id: "openai",
+            models: {
+              "gpt-test": {
+                reasoning: true,
+                reasoning_options: [
+                  {
+                    type: "effort",
+                    values: ["none", "low", "medium", "high", "xhigh"],
+                  },
+                ],
+              },
+            },
+          },
+          deepseek: {
+            id: "deepseek",
+            models: {
+              "deepseek-test": {
+                reasoning: true,
+                reasoning_options: [
+                  { type: "effort", values: ["low", "high", "max"] },
+                ],
+              },
+            },
+          },
+          moonshot: {
+            id: "moonshot",
+            models: {
+              "kimi-test": {
+                reasoning: true,
+                reasoning_options: [
+                  { type: "effort", values: ["low", "high", "max"] },
+                ],
+              },
+            },
+          },
+          zai: {
+            id: "zai",
+            models: {
+              "glm-test": {
+                reasoning: true,
+                reasoning_options: [{ type: "toggle" }],
+              },
+            },
+          },
+          google: {
+            id: "google",
+            models: {
+              "gemini-test": {
+                reasoning: true,
+                reasoning_options: [
+                  { type: "effort", values: ["low", "medium", "high"] },
+                ],
+              },
+            },
+          },
+          xai: {
+            id: "xai",
+            models: {
+              "grok-test": {
+                reasoning: true,
+                reasoning_options: [
+                  {
+                    type: "effort",
+                    values: ["low", "medium", "high", "xhigh"],
+                  },
+                ],
+              },
+            },
+          },
+          minimax: {
+            id: "minimax",
+            models: {
+              "MiniMax-M3": { reasoning: true, reasoning_options: [] },
+            },
+          },
+        }),
+        { status: 200 },
+      );
+
+    const lookups = [
+      [
+        "claude-opus-4-6",
+        "anthropic-messages",
+        "anthropic-adaptive",
+        ["low", "medium", "high", "max"],
+      ],
+      [
+        "gpt-test",
+        "openai-responses",
+        "effort",
+        ["low", "medium", "high", "xhigh"],
+      ],
+      ["deepseek-test", "openai-completions", "effort", ["low", "high", "max"]],
+      ["kimi-test", "openai-completions", "effort", ["low", "high", "max"]],
+      ["glm-test", "openai-completions", null, null],
+      [
+        "gemini-test",
+        "google-generative-ai",
+        "google-level",
+        ["low", "medium", "high"],
+      ],
+      [
+        "grok-test",
+        "openai-responses",
+        "effort",
+        ["low", "medium", "high", "xhigh"],
+      ],
+      ["MiniMax-M3", "openai-completions", null, null],
+    ] as const;
+
+    for (const [modelId, api, mode, efforts] of lookups) {
+      const result = await lookupModelsDevModel({ modelId, api });
+      if (mode === null) {
+        assert.equal(result.reasoning, true, modelId);
+        assert.equal(result.thinking, null, modelId);
+      } else {
+        assert.equal(result.thinking?.mode, mode, modelId);
+        assert.deepEqual(result.thinking?.efforts, efforts, modelId);
+      }
+    }
   });
 
   it("matches a model ID fragment and prefers an exact match", async () => {
@@ -122,5 +262,24 @@ describe("models.dev lookup", () => {
     });
     assert.equal(exact.modelId, "gpt-6-luna-preview");
     assert.equal(exact.contextWindow, 200_000);
+  });
+
+  it("prefers original provider metadata for custom relays but honors an explicit provider", async () => {
+    const model = (efforts: string[]) => ({
+      reasoning: true,
+      reasoning_options: [{ type: "effort", values: efforts }],
+    });
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({
+        requesty: { models: { "gpt-5.4": model(["low", "high", "max"]) } },
+        openai: { models: { "gpt-5.4": model(["none", "low", "high", "xhigh"]) } },
+      }));
+
+    const original = await lookupModelsDevModel({ modelId: "gpt-5.4", providerHint: "my-relay" });
+    assert.equal(original.provider, "openai");
+    assert.deepEqual(original.thinking?.efforts, ["low", "high", "xhigh"]);
+    const explicit = await lookupModelsDevModel({ modelId: "gpt-5.4", providerHint: "requesty" });
+    assert.equal(explicit.provider, "requesty");
+    assert.deepEqual(explicit.thinking?.efforts, ["low", "high", "max"]);
   });
 });

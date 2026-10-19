@@ -330,7 +330,7 @@ export type PiModelProviderModelConfig = {
     efforts?: string[]
     defaultLevel?: string
     effortMap?: Record<string, string>
-  }
+  } | null
   cost?: {
     input?: number
     output?: number
@@ -380,10 +380,10 @@ export type PiModelsDevLookupResult = {
   reasoning?: boolean
   input?: Array<'text' | 'image'>
   thinking?: {
-    mode?: 'effort' | 'anthropic-budget-effort' | 'budget'
+    mode?: 'effort' | 'anthropic-adaptive' | 'anthropic-budget-effort' | 'budget' | 'google-level'
     efforts?: string[]
     defaultLevel?: string
-  }
+  } | null
 }
 
 // SDK package shapes (core/package-manager). ResolvedPaths/ResolvedResource

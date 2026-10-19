@@ -936,10 +936,13 @@
     "apiFormatAnthropic": "Anthropic Messages",
     "apiFormatOpenai": "Chat Completions",
     "apiFormatResponses": "Responses",
+    "apiFormatGoogle": "Google Generative AI",
     "thinkingModeEffort": "effort",
     "thinkingModeAdaptive": "anthropic-adaptive",
     "thinkingModeBudgetEffort": "anthropic-budget-effort",
     "thinkingModeBudget": "budget",
-    "thinkingModeGoogle": "google-level"
+    "thinkingModeGoogle": "google-level",
+    "noReasoningLevels": "The model supports reasoning but lists no configurable levels.",
+    "configureReasoning": "Configure manually"
   }
 }

@@ -17,10 +17,15 @@ export type ModelsDevLookupResult = {
   reasoning?: boolean;
   input?: Array<"text" | "image">;
   thinking?: {
-    mode?: "effort" | "anthropic-budget-effort" | "budget";
+    mode?:
+      | "effort"
+      | "anthropic-adaptive"
+      | "anthropic-budget-effort"
+      | "budget"
+      | "google-level";
     efforts?: string[];
     defaultLevel?: string;
-  };
+  } | null;
 };
 
 type ModelsDevProvider = {
@@ -134,6 +139,17 @@ function findModel(
   providerHint: string | undefined,
 ): { provider: ModelsDevProvider; model: JsonRecord; id: string } | undefined {
   const normalizedId = normalizeModelId(modelId);
+  const owner = [
+    ["anthropic", /claude/],
+    ["openai", /gpt|^o[134]/],
+    ["deepseek", /deepseek/],
+    ["moonshotai", /kimi|moonshot/],
+    ["zai", /glm/],
+    ["google", /gemini/],
+    ["xai", /grok/],
+    ["minimax", /minimax/],
+  ] as const;
+  const ownerId = owner.find(([, pattern]) => pattern.test(normalizedId))?.[0];
   const preferred = providerHint
     ? providers.filter((provider) => providerMatches(provider, providerHint))
     : [];
@@ -182,7 +198,11 @@ function findModel(
         model: modelRecord,
         id,
         score: exact ? 1_000_000 + normalizedId.length : matchLength,
-        providerPriority: preferred.includes(provider) ? 1 : 0,
+        providerPriority: preferred.includes(provider)
+          ? 2
+          : provider.id === ownerId
+            ? 1
+            : 0,
       });
     }
   }
@@ -201,32 +221,34 @@ function findModel(
 function thinkingFromModel(
   model: JsonRecord,
   api: string | undefined,
-): ModelsDevLookupResult["thinking"] {
+): NonNullable<ModelsDevLookupResult["thinking"]> | null {
   const options = Array.isArray(model.reasoning_options)
     ? model.reasoning_options.filter(isRecord)
     : [];
   const effortOption = options.find((option) => option.type === "effort");
   if (effortOption && Array.isArray(effortOption.values)) {
+    const allowedEfforts = ["minimal", "low", "medium", "high", "xhigh", "max"];
     const efforts = effortOption.values.filter(
       (value): value is string =>
-        typeof value === "string" && value.trim().length > 0,
+        typeof value === "string" && allowedEfforts.includes(value),
     );
     if (efforts.length > 0) {
-      const defaultLevel = efforts.includes("high")
+      const orderedEfforts = allowedEfforts.filter((level) =>
+        efforts.includes(level),
+      );
+      const defaultLevel = orderedEfforts.includes("high")
         ? "high"
-        : efforts[efforts.length - 1];
-      return { mode: "effort", efforts, defaultLevel };
+        : orderedEfforts[0];
+      const mode =
+        api === "anthropic-messages"
+          ? "anthropic-adaptive"
+          : api === "google-generative-ai"
+            ? "google-level"
+            : "effort";
+      return { mode, efforts: orderedEfforts, defaultLevel };
     }
   }
-  const budgetOption = options.find(
-    (option) => option.type === "budget_tokens",
-  );
-  if (budgetOption) {
-    return {
-      mode: api === "anthropic-messages" ? "anthropic-budget-effort" : "budget",
-    };
-  }
-  return undefined;
+  return null;
 }
 
 export async function lookupModelsDevModel(params: {
@@ -263,8 +285,11 @@ export async function lookupModelsDevModel(params: {
       : {}),
     ...(input.length > 0 ? { input: [...new Set(input)] } : {}),
   };
-  const thinking = thinkingFromModel(model, params.api);
-  if (thinking) result.thinking = thinking;
+  if (typeof model.reasoning === "boolean") {
+    result.thinking = model.reasoning
+      ? thinkingFromModel(model, params.api)
+      : null;
+  }
   return result;
 }
 
