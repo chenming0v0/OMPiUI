@@ -43,6 +43,10 @@ import {
 } from './providerTypes'
 import { ProviderModelEditorDialog } from './ProviderModelEditorDialog'
 import { ProviderModelPickerDialog } from './ProviderModelPickerDialog'
+import { refreshModelSettings } from '../../../../omp/modelSettingsSync'
+import { loadPiModels } from '../../../../omp/controllers/index.js'
+import { usePiModels } from '../../../../omp/hooks/index.js'
+import { ModelSyncStatus } from '../ModelSyncStatus'
 
 type SaveState = 'idle' | 'saving' | 'error'
 
@@ -197,6 +201,7 @@ function AddProviderDialog({
 export function ProvidersSettings() {
   const { t } = useTranslation('settings')
   const { activeServerGeneration } = useServerStore()
+  const { syncStatus } = usePiModels()
 
   const [snapshot, setSnapshot] = useState<PiModelProvidersSnapshot | null>(null)
   const [drafts, setDrafts] = useState<ProviderDraft[]>([])
@@ -243,6 +248,7 @@ export function ProvidersSettings() {
     if (mode === 'refresh') setRefreshing(true)
     else setLoading(true)
     setLoadError(null)
+    void loadPiModels().catch(() => undefined)
     try {
       const next = await listModelProviders()
       setSnapshot(next)
@@ -287,6 +293,7 @@ export function ProvidersSettings() {
     const flight = saveModelProvider(providerDraftToConfig(draft))
       .then(() => {
         if (saveSeqRef.current.get(draft.id) !== seq) return
+        refreshModelSettings()
         setSaveStates(state => ({ ...state, [draft.id]: 'idle' }))
       })
       .catch(error => {
@@ -419,7 +426,7 @@ export function ProvidersSettings() {
 
   if (loading) {
     return (
-      <SettingsSection title={t('providers.title')} description={t('providers.description')}>
+      <SettingsSection title={t('providers.title')} status={<ModelSyncStatus status={syncStatus} />}>
         <div className="flex items-center justify-center gap-2 py-14 text-[length:var(--fs-sm)] text-text-400">
           <SpinnerIcon size={16} className="animate-spin" />
           {t('providers.loading')}
@@ -430,7 +437,7 @@ export function ProvidersSettings() {
 
   if (snapshot && !snapshot.supported) {
     return (
-      <SettingsSection title={t('providers.title')} description={t('providers.description')}>
+      <SettingsSection title={t('providers.title')} status={<ModelSyncStatus status={syncStatus} />}>
         <div className="py-10 text-center text-[length:var(--fs-sm)] text-text-400">{t('providers.unsupported')}</div>
       </SettingsSection>
     )
@@ -440,7 +447,7 @@ export function ProvidersSettings() {
     <>
       <SettingsSection
         title={t('providers.title')}
-        description={t('providers.description')}
+        status={<ModelSyncStatus status={syncStatus} />}
         actions={
           <>
             <button
@@ -530,15 +537,6 @@ export function ProvidersSettings() {
                           <div className="mt-0.5 truncate pl-[22px] text-[length:var(--fs-xxs)] text-text-500">
                             {summary.apiPath} · {t('providers.modelsCount', { count: summary.modelCount })}
                           </div>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setPickerProviderId(draft.id)}
-                          title={t('providers.fetchModels')}
-                          aria-label={t('providers.fetchModels')}
-                          className="mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-400 opacity-0 transition-all hover:bg-bg-300 hover:text-text-100 group-hover:opacity-100 focus-visible:opacity-100"
-                        >
-                          <DownloadIcon size={13} />
                         </button>
                       </div>
                     )
@@ -942,6 +940,7 @@ export function ProvidersSettings() {
             await inflightRef.current.get(target.id)?.catch(() => undefined)
             try {
               const next = await deleteModelProvider(target.id)
+              refreshModelSettings()
               setSnapshot(next)
               const remaining = draftsRef.current.filter(draft => draft.id !== target.id)
               draftsRef.current = remaining

@@ -520,19 +520,25 @@ export class OmpControlChannel {
         args: ["--no-session"],
         env: { PIUI_EMBEDDED: "1" },
       });
-      await client.waitForReady(30_000);
-      await client.request({ type: "negotiate_protocol", protocolVersion: 2 });
+      try {
+        await client.waitForReady(30_000);
+        unwrapResponse(await client.request({ type: "negotiate_protocol", protocolVersion: 2 }));
+      } catch (error) {
+        await client.close().catch(() => undefined);
+        throw error;
+      }
       client.on("exit", () => {
         if (this.client === client) this.client = undefined;
       });
       this.client = client;
       return client;
     })();
+    const starting = this.starting;
     try {
-      return await this.starting;
-    } catch (error) {
-      this.starting = undefined;
-      throw error;
+      return await starting;
+    } finally {
+      // 只合并启动中的请求，不能永久缓存已退出的控制进程。
+      if (this.starting === starting) this.starting = undefined;
     }
   }
 
