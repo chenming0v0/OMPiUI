@@ -44,6 +44,7 @@ import {
 import { ProviderModelEditorDialog } from './ProviderModelEditorDialog'
 import { ProviderModelPickerDialog } from './ProviderModelPickerDialog'
 import { refreshModelSettings } from '../../../../omp/modelSettingsSync'
+import { loadPiModels } from '../../../../omp/controllers/index.js'
 import { usePiModels } from '../../../../omp/hooks/index.js'
 import { ModelSyncStatus } from '../ModelSyncStatus'
 
@@ -247,6 +248,7 @@ export function ProvidersSettings() {
     if (mode === 'refresh') setRefreshing(true)
     else setLoading(true)
     setLoadError(null)
+    void loadPiModels().catch(() => undefined)
     try {
       const next = await listModelProviders()
       setSnapshot(next)
