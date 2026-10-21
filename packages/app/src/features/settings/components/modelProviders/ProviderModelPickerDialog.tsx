@@ -13,6 +13,9 @@ import {
 import { fetchModelProviderModels } from '../../../../omp/transport/index.js'
 import { groupModelIds, type ProviderDraft } from './providerTypes'
 import { settingsFieldClass } from '../SettingsUI'
+import { useIsMobile } from '../../../../hooks'
+import { MobileProviderModelPicker } from './MobileProviderModelPicker'
+import './mobileProviders.css'
 
 export type ProviderModelPickerDialogProps = {
   isOpen: boolean
@@ -22,6 +25,8 @@ export type ProviderModelPickerDialogProps = {
   onAddModels: (ids: string[]) => void
   /** 用户确认移除的本地模型 id */
   onRemoveModels: (ids: string[]) => void
+  saveError?: string
+  onRetrySave?: () => void
 }
 
 type PickerTab = 'new' | 'removed'
@@ -47,8 +52,11 @@ export function ProviderModelPickerDialog({
   onClose,
   onAddModels,
   onRemoveModels,
+  saveError,
+  onRetrySave,
 }: ProviderModelPickerDialogProps) {
   const { t } = useTranslation('settings')
+  const isMobile = useIsMobile()
   const [tab, setTab] = useState<PickerTab>('new')
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(false)
@@ -61,7 +69,8 @@ export function ProviderModelPickerDialog({
   const [reloadToken, setReloadToken] = useState(0)
 
   const configuredIds = useMemo(() => new Set(provider.models.map(model => model.id)), [provider.models])
-  const knownModelKey = provider.models.map(model => model.id).join('\u0000')
+  // 移动端逐行增删时保留已拉取的列表和筛选，不重复请求上游。
+  const knownModelKey = isMobile ? '' : provider.models.map(model => model.id).join('\u0000')
   const newIds = useMemo(() => upstream.filter(id => !configuredIds.has(id)), [upstream, configuredIds])
   const baseUrl = provider.baseUrl.trim()
   const hasKey = provider.apiKey.trim().length > 0
@@ -174,10 +183,27 @@ export function ProviderModelPickerDialog({
       onClose={onClose}
       title={t('providers.pickerTitle', { name: provider.name })}
       ariaLabel={t('providers.pickerTitle', { name: provider.name })}
-      width="min(96vw, 680px)"
+      width={isMobile ? '100%' : 'min(96vw, 680px)'}
+      className={isMobile ? 'provider-model-sheet' : ''}
       showCloseButton={false}
       rawContent
     >
+      {isMobile ? (
+        <MobileProviderModelPicker
+          provider={provider}
+          upstream={upstream}
+          loading={loading}
+          error={error}
+          query={query}
+          onQuery={setQuery}
+          onRetry={() => setReloadToken(token => token + 1)}
+          onClose={onClose}
+          onAdd={onAddModels}
+          onRemove={onRemoveModels}
+          saveError={saveError}
+          onRetrySave={onRetrySave}
+        />
+      ) : (
       <div className="flex min-h-0 flex-1 flex-col max-h-[min(86vh,760px)]">
         <header className="shrink-0 border-b border-border-200/60 px-5 py-3.5">
           <div className="flex items-start justify-between gap-3">
@@ -369,6 +395,7 @@ export function ProviderModelPickerDialog({
           </div>
         </footer>
       </div>
+      )}
     </Dialog>
   )
 }

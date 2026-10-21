@@ -47,6 +47,8 @@ import { refreshModelSettings } from '../../../../omp/modelSettingsSync'
 import { loadPiModels } from '../../../../omp/controllers/index.js'
 import { usePiModels } from '../../../../omp/hooks/index.js'
 import { ModelSyncStatus } from '../ModelSyncStatus'
+import { useIsMobile } from '../../../../hooks'
+import { MobileProvidersSettings } from './MobileProvidersSettings'
 
 type SaveState = 'idle' | 'saving' | 'error'
 
@@ -200,6 +202,8 @@ function AddProviderDialog({
 
 export function ProvidersSettings() {
   const { t } = useTranslation('settings')
+  const isMobile = useIsMobile()
+  const [mobileDetailOpen, setMobileDetailOpen] = useState(false)
   const { activeServerGeneration } = useServerStore()
   const { syncStatus } = usePiModels()
 
@@ -373,6 +377,7 @@ export function ProvidersSettings() {
         .map(id => ({ ...blankModelDraft(id), ...inferModelDefaults(id) }))
       if (added.length === 0) return
       commit({ ...current, models: [...current.models, ...added] }, 'immediate')
+      if (isMobile) return
       setPickerProviderId(null)
       if (added.length > 0) {
         setEditor({
@@ -384,7 +389,7 @@ export function ProvidersSettings() {
         })
       }
     },
-    [commit],
+    [commit, isMobile],
   )
 
   const saveEditorModel = useCallback(
@@ -445,6 +450,33 @@ export function ProvidersSettings() {
 
   return (
     <>
+      {isMobile ? (
+        <MobileProvidersSettings
+          providers={drafts}
+          selected={selected}
+          detailOpen={mobileDetailOpen}
+          refreshing={refreshing}
+          loadError={loadError}
+          saveState={saveStatus}
+          saveError={saveError}
+          syncStatus={syncStatus}
+          onSelect={id => { setSelectedId(id); setMobileDetailOpen(true) }}
+          onBack={() => setMobileDetailOpen(false)}
+          onRefresh={() => void load('refresh')}
+          onAddProvider={() => setAddOpen(true)}
+          onUpdate={updateSelected}
+          onFetch={() => { if (selected) setPickerProviderId(selected.id) }}
+          onEdit={model => {
+            if (selected) setEditor({ providerId: selected.id, model, queue: [], queueIndex: 0, queueTotal: 1 })
+          }}
+          onDeleteModel={model => {
+            if (selected) setPendingDeleteModel({ providerId: selected.id, modelId: model.id })
+          }}
+          onDeleteProvider={() => setPendingDeleteProvider(selected)}
+          onClearModels={() => setPendingClearProvider(selected)}
+          onRetrySave={() => { if (selected) retrySave(selected.id) }}
+        />
+      ) : (
       <SettingsSection
         title={t('providers.title')}
         status={<ModelSyncStatus status={syncStatus} />}
@@ -543,14 +575,6 @@ export function ProvidersSettings() {
                   })}
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setAddOpen(true)}
-                className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-border-200/70 px-2 py-1.5 text-[length:var(--fs-xs)] text-text-400 transition-colors hover:border-border-300 hover:text-text-100"
-              >
-                <PlusIcon size={12} />
-                {t('providers.addProvider')}
-              </button>
             </aside>
 
             <div className="min-w-0">
@@ -873,6 +897,7 @@ export function ProvidersSettings() {
           </span>
         </div>
       </SettingsSection>
+      )}
 
       <AddProviderDialog
         isOpen={addOpen}
@@ -883,6 +908,7 @@ export function ProvidersSettings() {
           draftsRef.current = [...draftsRef.current, draft]
           setDrafts(draftsRef.current)
           setSelectedId(draft.id)
+          setMobileDetailOpen(true)
           scheduleSave(draft, 'immediate')
         }}
       />
@@ -894,6 +920,8 @@ export function ProvidersSettings() {
           <ProviderModelPickerDialog
             isOpen
             provider={provider}
+            saveError={saveErrors[provider.id]}
+            onRetrySave={() => retrySave(provider.id)}
             onClose={() => setPickerProviderId(null)}
             onAddModels={ids => addModels(provider.id, ids)}
             onRemoveModels={ids => {
@@ -904,7 +932,7 @@ export function ProvidersSettings() {
                   'immediate',
                 )
               }
-              setPickerProviderId(null)
+              if (!isMobile) setPickerProviderId(null)
             }}
           />
         )
@@ -945,6 +973,7 @@ export function ProvidersSettings() {
               const remaining = draftsRef.current.filter(draft => draft.id !== target.id)
               draftsRef.current = remaining
               setDrafts(remaining)
+              setMobileDetailOpen(false)
               setSelectedId(current => (current === target.id ? (remaining[0]?.id ?? '') : current))
             } catch (error) {
               setSaveErrors(state => ({ ...state, [target.id]: errorMessage(error) }))

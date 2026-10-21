@@ -1,0 +1,32 @@
+@media (max-width: 767px) {
+  .dialog-safe-region:has(> .provider-mobile-page),
+  .dialog-safe-region:has(> .provider-model-sheet) {
+    padding: 0;
+  }
+
+  .provider-mobile-page,
+  :root[data-glass] .provider-mobile-page {
+    height: 100%;
+    border: 0;
+    border-radius: 0;
+    background: hsl(var(--bg-100));
+    backdrop-filter: none;
+  }
+
+  .provider-mobile-page > .cursor-grab {
+    display: none;
+  }
+
+  .dialog-safe-region:has(> .provider-model-sheet) {
+    align-items: flex-end;
+  }
+
+  .provider-model-sheet,
+  :root[data-glass] .provider-model-sheet {
+    height: 91%;
+    border: 0;
+    border-radius: 20px 20px 0 0;
+    background: hsl(var(--bg-100));
+    backdrop-filter: none;
+  }
+}
