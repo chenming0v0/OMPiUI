@@ -148,12 +148,13 @@ export type PiAssistantMessageItem = {
   blocks: (TextContent | ThinkingContent | ToolCall)[]
   /** Tool results paired by toolCallId; empty while a call has no result yet */
   toolResults: Record<string, ToolResultMessage>
-  /** Per-call source timestamps when consecutive assistant entries are merged for display. */
-  toolCallTimestamps?: Record<string, number>
+  /** Execution evidence keyed by call id; message timestamps are never tool starts. */
+  toolExecutions?: Record<string, PiToolExecutionState>
   /** True for the live streaming message (not yet persisted as an entry) */
   isStreaming?: boolean
   renderKey?: string
 }
+
 
 export type PiBashExecutionItem = {
   kind: 'bash_execution'
@@ -175,14 +176,32 @@ export type PiBashExecutionGroupItem = {
   items: PiBashExecutionItem[]
 }
 
-/**
- * One tool execution: the call plus its result (absent while pending).
- * The neutral contract for the tool rendering chain.
- */
-export type PiToolExecution = {
-  call: ToolCall
-  result?: ToolResultMessage
+/** Per-call execution evidence from persisted starts or the live event stream. */
+export type PiToolExecutionState = {
   startedAt?: number
+  /** Updates prove execution without inventing a start time when the start frame was missed. */
+  isRunning?: boolean
+  result?: ToolResultMessage
+  call?: ToolCall
+  completedAt?: number
+  /** Authoritative interruption/crash evidence; never inferred from elapsed time. */
+  error?: string
+  interruption?: 'failed' | 'cancelled' | 'unknown'
+  endedAt?: number
+}
+
+/** One tool call plus its authoritative result and execution evidence. */
+export type PiToolExecution = PiToolExecutionState & {
+  call: ToolCall
+}
+
+export function getToolExecutionStatus(execution: PiToolExecution): 'pending' | 'running' | 'completed' | 'error' {
+  if (execution.result) {
+    return execution.result.isError ? 'error' : 'completed'
+  }
+  if (execution.error) return 'error'
+  if (execution.completedAt !== undefined) return 'completed'
+  return (execution.isRunning ?? execution.startedAt !== undefined) ? 'running' : 'pending'
 }
 
 export type PiCompactionItem = {
@@ -380,7 +399,6 @@ export type PiConfiguredPackage = {
   shadowedBy?: 'project'
 }
 
-
 export type PiMarketplaceSource = {
   name: string
   source: string
@@ -388,12 +406,10 @@ export type PiMarketplaceSource = {
   catalogPath: string
 }
 
-
 export type PiPackagesSnapshot = {
   packages: PiConfiguredPackage[]
   marketplaces: PiMarketplaceSource[]
 }
-
 
 export type OmpPackageResource = {
   path: string
@@ -402,7 +418,6 @@ export type OmpPackageResource = {
   scope: 'user' | 'project'
   source: string
 }
-
 
 export type OmpResolvedPackageResources = {
   extensions: OmpPackageResource[]
@@ -438,6 +453,7 @@ export type PiBranchPage = Omit<EntriesPage, 'items' | 'checkpoint'> & {
   client?: {
     stableEntryIds?: Record<string, string>
     historyWindowed?: boolean
+    toolExecutions?: Record<string, PiToolExecutionState>
   }
 }
 

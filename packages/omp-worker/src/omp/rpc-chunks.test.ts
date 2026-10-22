@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import { EventEmitter } from "node:events"
 import test from "node:test"
 import { OmpRpcClient } from "./rpc-client.js"
+import { RuntimeBridgeTransport } from "./runtime-bridge.js"
 
 type Harness = {
   chunks: Map<string, { timer: NodeJS.Timeout; receivedBytes: number }>
@@ -18,6 +19,7 @@ function harness(): Harness {
   EventEmitter.call(client)
   return Object.assign(client, {
     chunks: new Map(), chunkBytes: 0, pending: new Map(), stderrBuffer: [],
+    runtimeBridge: new RuntimeBridgeTransport(),
     stdoutReader: { setPaused() {} },
   })
 }

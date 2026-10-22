@@ -3,7 +3,7 @@
 // 显示所有可用 Skill，支持查看详情
 // ============================================
 
-import { memo, useState, useEffect, useCallback } from 'react'
+import { memo, useState, useEffect, useCallback, useRef, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   TeachIcon,
@@ -17,6 +17,7 @@ import {
 import type { Skill } from '../omp/vendor/pi-coding-agent'
 import { getPiSkills } from '../omp/transport/index.js'
 import { apiErrorHandler } from '../utils'
+import { serverStore } from '../store/serverStore'
 
 // ============================================
 // SkillPanel Component
@@ -29,28 +30,43 @@ interface SkillPanelProps {
 
 export const SkillPanel = memo(function SkillPanel({ isResizing: _isResizing, sessionId }: SkillPanelProps) {
   const { t } = useTranslation(['components', 'common'])
-  const [skills, setSkills] = useState<Skill[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const generation = useSyncExternalStore(listener => serverStore.subscribe(listener), () => serverStore.getActiveServerGeneration(), () => serverStore.getActiveServerGeneration())
+  const scope = JSON.stringify([generation, sessionId])
+  const currentScope = useRef(scope)
+  currentScope.current = scope
+  const request = useRef<AbortController | null>(null)
+  const [snapshot, setSnapshot] = useState<{ scope: string; skills: Skill[]; loading: boolean; error: string | null } | null>(null)
+  const visible = snapshot?.scope === scope ? snapshot : null
+  const skills = visible?.skills ?? []
+  const loading = visible?.loading ?? true
+  const error = visible?.error ?? null
   const [filter, setFilter] = useState('')
 
   const loadSkills = useCallback(async () => {
+    request.current?.abort()
+    const controller = new AbortController()
+    request.current = controller
+    setSnapshot({ scope, skills: [], loading: true, error: null })
     try {
-      setLoading(true)
-      setError(null)
-      const data = sessionId ? await getPiSkills(sessionId) : []
-      setSkills(data)
+      if (!sessionId) throw new Error(t('rightPanel.noActiveSession'))
+      const data = await getPiSkills(sessionId, controller.signal)
+      if (!Array.isArray(data)) throw new Error(t('skillPanel.failedToLoad'))
+      if (!controller.signal.aborted && currentScope.current === scope) setSnapshot({ scope, skills: data, loading: false, error: null })
     } catch (err) {
+      if (controller.signal.aborted || currentScope.current !== scope) return
       apiErrorHandler('load skills', err)
-      setError(t('skillPanel.failedToLoad'))
-    } finally {
-      setLoading(false)
+      setSnapshot({ scope, skills: [], loading: false, error: err instanceof Error ? err.message : String(err) })
     }
-  }, [sessionId, t])
+  }, [scope, sessionId, t])
 
   useEffect(() => {
-    loadSkills()
-  }, [loadSkills])
+    void loadSkills()
+    const updated = (event: Event) => {
+      if ((event as CustomEvent<{ sessionId?: string }>).detail?.sessionId === sessionId) void loadSkills()
+    }
+    window.addEventListener('ompiui:registry-updated', updated)
+    return () => { request.current?.abort(); window.removeEventListener('ompiui:registry-updated', updated) }
+  }, [loadSkills, sessionId])
 
   // Filter skills
   const normalizedFilter = filter.toLowerCase()
@@ -66,7 +82,7 @@ export const SkillPanel = memo(function SkillPanel({ isResizing: _isResizing, se
       <div className="relative flex h-10 items-center justify-between px-3">
           <div className="flex h-6 min-w-0 items-center gap-1.5 text-text-100 text-[length:var(--fs-xs)] font-medium">
           <span>{t('skillPanel.title')}</span>
-          {!loading && <span className="inline-flex h-4 items-center text-[length:var(--fs-xs)] leading-none text-text-400">({skills.length})</span>}
+          {!loading && !error && <span className="inline-flex h-4 items-center text-[length:var(--fs-xs)] leading-none text-text-400">({skills.length})</span>}
         </div>
         <button
           type="button"
@@ -164,7 +180,7 @@ const SkillItem = memo(function SkillItem({ skill }: { skill: Skill }) {
         <div className="mx-2 mb-2 ml-7 rounded-md border border-border-200/40 bg-bg-100/50 px-3 py-2">
           <div className="text-[length:var(--fs-sm)] text-text-500 mb-2 font-mono break-all">{skill.filePath}</div>
           <div className="bg-bg-200/50 rounded-md p-2 overflow-x-auto">
-            <pre className="text-[length:var(--fs-sm)] text-text-200 font-mono whitespace-pre-wrap break-words">{JSON.stringify({ baseDir: skill.baseDir, disableModelInvocation: skill.disableModelInvocation, sourceInfo: skill.sourceInfo }, null, 2)}</pre>
+            <pre className="text-[length:var(--fs-sm)] text-text-200 font-mono whitespace-pre-wrap break-words">{JSON.stringify({ baseDir: skill.baseDir, disableModelInvocation: skill.disableModelInvocation ?? skill.hide, source: skill.source, sourceInfo: skill.sourceInfo }, null, 2)}</pre>
           </div>
         </div>
       )}

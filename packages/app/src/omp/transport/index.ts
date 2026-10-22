@@ -46,7 +46,8 @@ import {
 import type { SessionInfo, SessionTreeNode, Skill, PromptTemplate } from '../vendor/pi-coding-agent'
 import type {
   PiBranchPage,
-  PiConfiguredPackage,
+  PiPackagesSnapshot,
+  OmpResolvedPackageResources,
   PiModelProviderConfig,
   PiModelProviderFetchResult,
   PiModelProvidersSnapshot,
@@ -56,7 +57,6 @@ import type {
   PiProjectTrust,
   PiProviderAuthInfo,
   PiSettingsSnapshot,
-  ResolvedPaths,
 } from '../domain/index.js'
 import { getApiBase, getPiAuthToken, piFetch, type PiRequestInit } from '../httpClient.js'
 import { piCommandStore } from '../state/index.js'
@@ -1022,6 +1022,10 @@ export type PiForkResult = {
   targetSessionFile?: string | null
   targetCwd?: string
   cancelled?: boolean
+  aborted?: boolean
+  selectedText?: string | null
+  selectedImages?: PiImageInput[]
+  projectionError?: string
   [key: string]: JsonValue | undefined
 }
 
@@ -1037,14 +1041,15 @@ export type PiNavigateTreeParams = {
   entryId: string
   summarize?: boolean
   customInstructions?: string
-  replaceInstructions?: boolean
-  label?: string
 }
 
 export type PiNavigateTreeResult = {
   editorText?: string | null
+  editorImages?: PiImageInput[]
   cancelled?: boolean
   aborted?: boolean
+  noOp?: boolean
+  projectionError?: string
 }
 
 export function navigatePiTree(
@@ -1116,7 +1121,7 @@ export function sendQueuedMessage(
 
 export function removeQueuedMessage(
   sessionId: string,
-  params: { kind: 'steering' | 'followUp'; index: number },
+  params: { kind: 'steering' | 'followUp'; index: number; entryId: string },
   signal?: AbortSignal,
 ): Promise<{ text: string; images?: PiImageInput[] }> {
   return postPiSessionCommand(sessionId, 'removeQueuedMessage', params, signal)
@@ -1125,7 +1130,7 @@ export function removeQueuedMessage(
 /** 直接删除仅返回确认；取回编辑仍使用 removeQueuedMessage 的完整结果。 */
 export function discardQueuedMessage(
   sessionId: string,
-  params: { kind: 'steering' | 'followUp'; index: number },
+  params: { kind: 'steering' | 'followUp'; index: number; entryId: string },
   signal?: AbortSignal,
 ): Promise<{ removed: true }> {
   return postPiSessionCommand(sessionId, 'removeQueuedMessage', { ...params, returnContent: false }, signal)

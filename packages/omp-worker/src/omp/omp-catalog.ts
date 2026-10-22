@@ -1194,6 +1194,8 @@ export class OmpCatalog implements CatalogProvider {
     return this.getProjectTrust(cwd);
   }
 
+
+
   async dispose(): Promise<void> {
     await this.control.close();
   }

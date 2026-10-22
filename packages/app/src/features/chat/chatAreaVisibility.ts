@@ -148,11 +148,7 @@ export function buildVisibleTimelineEntries(
           isStreaming: last.isStreaming,
           blocks: [...first.blocks, ...mergedItems.flatMap(m => m.blocks)],
           toolResults: Object.assign({}, first.toolResults, ...mergedItems.map(m => m.toolResults)),
-          toolCallTimestamps: Object.fromEntries(chain.flatMap(m =>
-            m.blocks.flatMap(block => block.type === 'toolCall'
-              ? [[block.id, m.toolCallTimestamps?.[block.id] ?? m.timestamp]]
-              : []),
-          )),
+          toolExecutions: Object.assign({}, ...chain.map(m => m.toolExecutions)),
         }
         storeMerge(first, chain, merged)
       }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionEntry } from './vendor/pi-coding-agent'
-import type { PiBranchPage, PiBashExecutionGroupItem, PiTimelineItem } from './domain/index.js'
+import { getToolExecutionStatus, type PiBranchPage, type PiBashExecutionGroupItem, type PiTimelineItem, type PiAssistantMessageItem } from './domain/index.js'
 import { selectPiTimelineItems } from './selectors/index.js'
 
 function bashEntry(id: string, command: string): SessionEntry {
@@ -225,4 +225,48 @@ describe('selectPiTimelineItems live/persisted key handover', () => {
       isStreaming: phase === 'streaming',
     })
   })
+})
+
+describe('tool execution history', () => {
+  it.each([undefined, 'not-a-time'])('restores a persisted started call without inventing timing for %s', startedAt => {
+    const call = { type: 'toolCall' as const, id: 'started-without-time', name: 'bash', arguments: {} }
+    const assistant = { type: 'message', id: 'assistant', parentId: null, timestamp: new Date(100).toISOString(), message: { role: 'assistant', content: [call], timestamp: 100 } } as SessionEntry
+    const start = { type: 'custom', id: 'start', parentId: 'assistant', timestamp: new Date(200).toISOString(), customType: 'tool_execution_start', data: { toolCallId: call.id, startedAt } } as SessionEntry
+    const item = selectPiTimelineItems(page([assistant, start]))[0] as PiAssistantMessageItem
+    expect(getToolExecutionStatus({ ...item.toolExecutions?.[call.id], call })).toBe('running')
+    expect(item.toolExecutions?.[call.id].startedAt).toBeUndefined()
+  })
+
+  it('restores only the started call in a four-tool batch and gives persisted results precedence', () => {
+    const timestamp = Date.parse('2026-10-21T16:57:18Z')
+    const blocks = ['bash', 'todo', 'read', 'write'].map(name => ({ type: 'toolCall' as const, id: `${name}-call`, name, arguments: {} }))
+    const assistant = {
+      type: 'message', id: 'batch', parentId: null, timestamp: new Date(timestamp - 10_000).toISOString(),
+      message: { role: 'assistant', content: blocks, timestamp: timestamp - 10_000 },
+    } as SessionEntry
+    const start: SessionEntry = { type: 'custom', id: 'bash-start', parentId: assistant.id,
+      timestamp: new Date(timestamp + 100).toISOString(), customType: 'tool_execution_start',
+      data: { toolCallId: 'bash-call', startedAt: new Date(timestamp).toISOString() } }
+    const restored = selectPiTimelineItems(page([assistant, start]))[0] as PiAssistantMessageItem
+    const executions = blocks.map(call => ({ ...restored.toolExecutions?.[call.id], call, result: restored.toolResults[call.id] }))
+    expect(executions.map(getToolExecutionStatus)).toEqual(['running', 'pending', 'pending', 'pending'])
+    expect(executions.map(execution => execution.startedAt)).toEqual([timestamp, undefined, undefined, undefined])
+    if (assistant.type !== 'message' || assistant.message.role !== 'assistant') throw new Error('Expected assistant fixture')
+    const liveBranch = page([start])
+    liveBranch.checkpoint = { position: { epoch: 'events', sequence: 2 },
+      liveMessage: { id: 'live-batch', revision: 1, phase: 'persisting', message: assistant.message } }
+    const liveItem = selectPiTimelineItems(liveBranch)[0] as PiAssistantMessageItem
+    expect(blocks.map(call => getToolExecutionStatus({ ...liveItem.toolExecutions?.[call.id], call }))).toEqual(['running', 'pending', 'pending', 'pending'])
+    const result = { type: 'message', id: 'bash-result', parentId: start.id, timestamp: new Date(timestamp + 2_000).toISOString(),
+      message: { role: 'toolResult', toolCallId: 'bash-call', toolName: 'bash', content: [{ type: 'text', text: 'finished' }], isError: true, timestamp: timestamp + 2_000 },
+    } as SessionEntry
+    const settledBranch = page([assistant, start, result])
+    settledBranch.client = { toolExecutions: { 'bash-call': { startedAt: timestamp - 1_000, isRunning: true } } }
+    const settled = selectPiTimelineItems(settledBranch)[0] as PiAssistantMessageItem
+    expect(getToolExecutionStatus({ ...settled.toolExecutions?.['bash-call'], call: blocks[0], result: settled.toolResults['bash-call'] })).toBe('error')
+    expect(settled.toolExecutions?.['bash-call'].startedAt).toBe(timestamp)
+    const old = selectPiTimelineItems(page([assistant]))[0] as PiAssistantMessageItem
+    expect(blocks.map(call => getToolExecutionStatus({ ...old.toolExecutions?.[call.id], call }))).toEqual(['pending', 'pending', 'pending', 'pending'])
+  })
+
 })

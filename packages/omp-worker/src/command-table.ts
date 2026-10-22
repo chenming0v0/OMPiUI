@@ -172,7 +172,7 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
       });
     return ctx
       .requireRuntime()
-      .removeQueuedMessage(kind, P.reqNonNegativeInteger(p, "index"), ctx.maxResultBytes, P.optBoolean(p, "returnContent"));
+      .removeQueuedMessage(kind, P.reqNonNegativeInteger(p, "index"), P.reqString(p, "entryId"), ctx.maxResultBytes, P.optBoolean(p, "returnContent"));
   },
   sendQueuedMessage: async (ctx, p) => {
     const kind = P.optEnum(p, "kind", ["steering", "followUp"] as const);
@@ -184,7 +184,7 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
     }
     await ctx
       .requireRuntime()
-      .sendQueuedMessage(kind, P.reqNonNegativeInteger(p, "index"));
+      .sendQueuedMessage(kind, P.reqNonNegativeInteger(p, "index"), P.reqString(p, "entryId"), ctx.maxResultBytes);
   },
 
   compact: async (ctx, p) =>
@@ -251,8 +251,6 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
     ctx.requireRuntime().navigateTree(P.reqString(p, "entryId"), {
       summarize: P.optBoolean(p, "summarize"),
       customInstructions: P.optString(p, "customInstructions"),
-      replaceInstructions: P.optBoolean(p, "replaceInstructions"),
-      label: P.optString(p, "label"),
     }),
   setLabel: async (ctx, p) => {
     await ctx

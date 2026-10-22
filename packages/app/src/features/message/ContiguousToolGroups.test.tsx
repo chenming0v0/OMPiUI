@@ -1,10 +1,12 @@
 import type { ComponentProps } from 'react'
 import { ToolGroup } from './parts/ToolGroup'
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MessageRenderer } from './MessageRenderer'
 import { buildVisibleTimelineEntries } from '../chat/chatAreaVisibility'
 import type { PiAssistantMessageItem } from '../../omp/domain/index.js'
+import { FullscreenProvider } from '../../contexts'
+const toolTheme = vi.hoisted(() => ({ descriptiveToolSteps: false }))
 
 vi.mock('motion/mini', () => ({ animate: () => Promise.resolve() }))
 vi.mock('react-i18next', () => ({
@@ -27,7 +29,7 @@ vi.mock('../../hooks/useInputCapabilities', () => ({
 vi.mock('../../hooks/useTheme', () => ({
   useTheme: () => ({
     stepFinishDisplay: {}, actionsOnLatestAssistantOnly: true,
-    descriptiveToolSteps: false, immersiveMode: false, processCollapseEnabled: true,
+    descriptiveToolSteps: toolTheme.descriptiveToolSteps, immersiveMode: false, processCollapseEnabled: true,
   }),
 }))
 vi.mock('./parts', () => ({
@@ -70,6 +72,7 @@ function fixture() {
 }
 
 describe('contiguous assistant tool groups', () => {
+  beforeEach(() => { toolTheme.descriptiveToolSteps = false })
   it('renders one settled six-tool group including a failed Eval, then starts a new reasoning segment', () => {
     const entries = buildVisibleTimelineEntries(fixture())
     render(<>{entries.map(({ item }) => <MessageRenderer key={item.entryId} item={item} processContentScope="inline" />)}</>)
@@ -80,7 +83,7 @@ describe('contiguous assistant tool groups', () => {
     expect(screen.getByText('Evaluating tool functionality')).toBeInTheDocument()
   })
 
-  it('retains every result and source timestamp while reusing unchanged virtual identities', () => {
+  it('retains every result while reusing unchanged virtual identities', () => {
     const sources = fixture()
     const first = buildVisibleTimelineEntries(sources)
     const repeated = buildVisibleTimelineEntries([...sources])
@@ -91,9 +94,20 @@ describe('contiguous assistant tool groups', () => {
       .toEqual(['read-1', 'read-2', 'read-3', 'edit', 'eval-failed', 'eval-completed'])
     expect(merged.toolResults['eval-failed']).toBe(sources[1].toolResults['eval-failed'])
     expect(merged.toolResults['eval-completed']).toBe(sources[2].toolResults['eval-completed'])
-    expect(merged.toolCallTimestamps).toEqual({
-      'read-1': 100, 'read-2': 100, 'read-3': 100, edit: 100, 'eval-failed': 200, 'eval-completed': 300,
-    })
+  })
+  it('retains independent execution states and durations when adjacent assistants merge', () => {
+    const first = assistant('merged-running', [call('merged-bash', 'bash')], 1)
+    const second = assistant('merged-queued', [call('merged-read', 'read')], 2)
+    first.toolResults = {}
+    second.toolResults = {}
+    first.toolExecutions = { 'merged-bash': { startedAt: Date.now() - 2_000 } }
+    const merged = buildVisibleTimelineEntries([first, second])[0].item
+    render(<FullscreenProvider><MessageRenderer item={merged} processContentScope="inline" /></FullscreenProvider>)
+    fireEvent.click(screen.getByRole('button', { name: /^0\/2/ }))
+    const running = screen.getByText('toolPart.running').parentElement!
+    expect(running.querySelector('.tabular-nums')).not.toBeNull()
+    const queued = screen.getByText('toolPart.pending').parentElement!
+    expect(queued.querySelector('.tabular-nums')).toBeNull()
   })
 
   it('keeps the group key and transitions the progress count as the final Eval result arrives', () => {
@@ -107,6 +121,40 @@ describe('contiguous assistant tool groups', () => {
     expect(settled.item.entryId).toBe(live.item.entryId)
     rerender(<MessageRenderer item={settled.item} processContentScope="inline" />)
     expect(screen.getByRole('button', { name: /^6\/6/ })).toBeInTheDocument()
+  })
+  it('describes only the executing tool as active while queued categories remain waiting', () => {
+    toolTheme.descriptiveToolSteps = true
+    const item = assistant('descriptive-batch', [call('descriptive-bash', 'bash'), call('descriptive-read', 'read')], 1)
+    item.toolResults = {}
+    item.toolExecutions = { 'descriptive-bash': { startedAt: Date.now() - 2_000 } }
+    render(<MessageRenderer item={item} processContentScope="inline" />)
+    const summary = screen.getByRole('button', { name: /toolSteps.executeActive/ })
+    expect(summary).toHaveTextContent('toolSteps.pending')
+    expect(summary).not.toHaveTextContent('toolSteps.readActive')
+    expect(summary.querySelectorAll('.reasoning-shimmer-text')).toHaveLength(1)
+  })
+
+  it.each([false, true])('counts interrupted ordinary tools as terminal without hiding completed neighbors (descriptive=%s)', descriptive => {
+    toolTheme.descriptiveToolSteps = descriptive
+    const item = assistant('interrupted-batch', [call('lost-bash', 'bash'), call('done-read', 'read')], 1)
+    delete item.toolResults['lost-bash']
+    item.toolExecutions = { 'lost-bash': { startedAt: 1, isRunning: false, error: 'Runtime exited with code 23', endedAt: 2 } }
+    render(<MessageRenderer item={item} processContentScope="inline" />)
+    if (descriptive) {
+      const summary = screen.getByRole('button', { name: /toolSteps.executeFailed/ })
+      expect(summary).toHaveTextContent('toolSteps.readDone')
+      expect(summary.querySelector('.reasoning-shimmer-text')).toBeNull()
+    } else expect(screen.getByRole('button', { name: /^2\/2/ })).toBeInTheDocument()
+  })
+  it('renders a four-tool batch with only the started bash running and timed', () => {
+    const item = assistant('blocking-batch', ['bash', 'todo', 'read', 'write'].map(name => call(`batch-${name}`, name)), 1)
+    item.toolResults = {}
+    item.toolExecutions = { 'batch-bash': { startedAt: Date.now() - 2_000 } }
+    const { container } = render(<FullscreenProvider><MessageRenderer item={item} processContentScope="inline" /></FullscreenProvider>)
+    fireEvent.click(screen.getByRole('button', { name: /^0\/4/ }))
+    expect(screen.getAllByText('toolPart.pending')).toHaveLength(3)
+    expect(screen.getAllByText('toolPart.running')).toHaveLength(1)
+    expect(container.querySelectorAll('.tabular-nums')).toHaveLength(1)
   })
 
   it.each(['text', 'thinking'] as const)('does not merge across visible %s', type => {

@@ -4,6 +4,7 @@ import type { Attachment } from "../features/attachment"
 interface SessionEditorDraft {
   text: string
   attachments?: Attachment[]
+  delivery?: 'steer' | 'followUp'
   revision: number
 }
 
@@ -21,9 +22,9 @@ function emit() {
 export function setSessionEditorDraft(
   sessionId: string,
   text: string,
-  options: { sync?: boolean; attachments?: Attachment[] } = {},
+  options: { sync?: boolean; attachments?: Attachment[]; delivery?: 'steer' | 'followUp' } = {},
 ) {
-  drafts.set(sessionId, { text, attachments: options.attachments, revision: ++revision })
+  drafts.set(sessionId, { text, attachments: options.attachments, delivery: options.delivery, revision: ++revision })
   emit()
   if (options.sync === false) {
     clearTimeout(syncTimers.get(sessionId))

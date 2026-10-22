@@ -6,6 +6,7 @@ import { detectLanguage } from '../../../../utils/languageUtils'
 import { getMaterialIconUrl } from '../../../../utils/materialIcons'
 import { themeStore } from '../../../../store/themeStore'
 import { useLiveToolOutput } from '../../../../omp/liveToolOutput'
+import { getToolExecutionStatus } from '../../../../omp/domain/index.js'
 import type { ToolRendererProps, ExtractedToolData } from '../types'
 import { AttachmentItem } from '../../../attachment'
 import { HistoryImage } from '../../HistoryImage'
@@ -20,7 +21,7 @@ export function DefaultRenderer({ execution, partKey, data, onFullscreenChange }
   const tool = execution.call.name
   const { toolCardStyle } = useSyncExternalStore(themeStore.subscribe, themeStore.getSnapshot)
   const isCompact = toolCardStyle === 'compact'
-  const isActive = !execution.result
+  const isActive = getToolExecutionStatus(execution) === 'running'
   // 运行中优先显示 Pi 流式推送的实时输出（edit/read 等非 bash 工具同样适用）
   const liveOutput = useLiveToolOutput(execution.call.id)
   const effectiveOutput = data.output?.trim() ?? liveOutput?.trim()
@@ -68,6 +69,9 @@ export function DefaultRenderer({ execution, partKey, data, onFullscreenChange }
           fullscreenBaseId={`tool:${partKey}:output`}
           stateBaseKey={`message:${partKey}:output`}
         />
+      )}
+      {hasError && !execution.result && effectiveOutput && (
+        <ContentBlock stateKey={`message:${partKey}:interrupted-output`} label={t('defaultRenderer.output')} content={effectiveOutput} compact={isCompact} defaultCollapsed={false} onFullscreenChange={onFullscreenChange} fullscreenId={`tool:${partKey}:interrupted-output`} />
       )}
       {data.notice ? (
         <div className="flex items-start gap-1.5 text-[length:var(--fs-xs)] text-warning-100">

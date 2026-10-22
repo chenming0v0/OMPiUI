@@ -48,6 +48,7 @@ export function ExtensionUiDialogCard({
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [responseId] = useState(() => globalThis.crypto?.randomUUID?.() ?? `${request.requestId}-${Date.now()}`)
+  const submittingRef = useRef(false)
 
   // 多行输入框（input kind）：随内容自动增高，封顶后内部滚动
   const multilineRef = useRef<HTMLTextAreaElement | null>(null)
@@ -76,17 +77,21 @@ export function ExtensionUiDialogCard({
     if (!request.expiresAt) return
     const remaining = new Date(request.expiresAt).getTime() - Date.now()
     if (remaining <= 0) {
-      extensionUiStore.requestSettled(request.sessionId, request.requestId)
+      extensionUiStore.requestSettled(request.sessionId, request.requestId, request.workerGeneration)
       return
     }
     const timer = window.setTimeout(
-      () => extensionUiStore.requestSettled(request.sessionId, request.requestId),
+      () => extensionUiStore.requestSettled(request.sessionId, request.requestId, request.workerGeneration),
       remaining,
     )
     return () => clearTimeout(timer)
   }, [request])
 
   const send = async (response: ExtensionUiDialogResponse) => {
+    if (submittingRef.current) return
+    const pending = extensionUiStore.getSnapshot().sessions[request.sessionId]?.pending
+    if (!pending?.some(item => item.requestId === request.requestId && item.workerGeneration === request.workerGeneration)) return
+    submittingRef.current = true
     setSubmitting(true)
     setError(null)
     try {
@@ -94,8 +99,9 @@ export function ExtensionUiDialogCard({
         ...response,
         responseId,
       } as never)
-      extensionUiStore.requestSettled(request.sessionId, request.requestId)
+      extensionUiStore.requestSettled(request.sessionId, request.requestId, request.workerGeneration)
     } catch (cause) {
+      submittingRef.current = false
       setError(cause instanceof Error ? cause.message : String(cause))
       setSubmitting(false)
     }

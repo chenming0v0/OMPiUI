@@ -270,9 +270,10 @@ export const PI_COMMAND_SPECS = [
       {
         kind: { enum: ["steering", "followUp"] },
         index: { type: "integer", minimum: 0 },
+        entryId: STRING,
         returnContent: BOOLEAN,
       },
-      ["kind", "index"],
+      ["kind", "index", "entryId"],
     ),
     queue: "immediate",
   },
@@ -284,8 +285,9 @@ export const PI_COMMAND_SPECS = [
       {
         kind: { enum: ["steering", "followUp"] },
         index: { type: "integer", minimum: 0 },
+        entryId: STRING,
       },
-      ["kind", "index"],
+      ["kind", "index", "entryId"],
     ),
     queue: "immediate",
   },
@@ -405,13 +407,10 @@ export const PI_COMMAND_SPECS = [
         entryId: STRING,
         summarize: BOOLEAN,
         customInstructions: STRING,
-        replaceInstructions: BOOLEAN,
-        label: STRING,
       },
       ["entryId"],
     ),
     queue: "serialized",
-    replacement: true,
     cancellable: true,
   },
   {
@@ -1061,7 +1060,7 @@ export type PiPageParams = {
 export type PiCommandParams = CoreCommandParams & {
   "preview.settings.get": Record<string, never>;
   "preview.settings.set": { subagentThinking: boolean };
-  removeQueuedMessage: { kind: "steering" | "followUp"; index: number; returnContent?: boolean };
+  removeQueuedMessage: { kind: "steering" | "followUp"; index: number; entryId: string; returnContent?: boolean };
   "state.get": Record<string, never>;
   "entries.get": PiPageParams;
   "branch.get": PiPageParams & BranchSyncRequest;

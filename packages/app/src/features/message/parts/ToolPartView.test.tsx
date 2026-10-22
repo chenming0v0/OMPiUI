@@ -4,6 +4,7 @@ import { ToolPartView } from './ToolPartView'
 import type { PiToolExecution } from '../../../omp/domain/index.js'
 import { SessionNavigationContext } from '../../../contexts/SessionNavigationContext'
 import { piSessionStateStore } from '../../../omp/state/index.js'
+import { serverStore } from '../../../store/serverStore'
 
 const { getActiveCalibratedNowMock } = vi.hoisted(() => ({
   getActiveCalibratedNowMock: vi.fn<() => number | undefined>(() => undefined),
@@ -40,11 +41,6 @@ vi.mock('../../../hooks/useTheme', () => ({
   }),
 }))
 
-vi.mock('../../../store/serverStore', () => ({
-  serverStore: {
-    getActiveCalibratedNow: getActiveCalibratedNowMock,
-  },
-}))
 
 vi.mock('../tools', () => ({
   getToolIcon: () => <span data-testid="tool-icon">icon</span>,
@@ -65,6 +61,7 @@ function createRunningExecution(): PiToolExecution {
       name: 'bash',
       arguments: { command: 'npm run build' },
     },
+    startedAt: 7_500,
   }
 }
 
@@ -74,6 +71,7 @@ describe('ToolPartView running duration', () => {
     vi.setSystemTime(10_000)
     getActiveCalibratedNowMock.mockReset()
     getActiveCalibratedNowMock.mockReturnValue(undefined)
+    vi.spyOn(serverStore, 'getActiveCalibratedNow').mockImplementation(getActiveCalibratedNowMock)
   })
 
   afterEach(() => {
@@ -82,7 +80,7 @@ describe('ToolPartView running duration', () => {
   })
 
   it('falls back to local wall clock when calibration is unavailable', () => {
-    render(<ToolPartView execution={createRunningExecution()} partKey="tool-1" startedAt={7_500} />)
+    render(<ToolPartView execution={createRunningExecution()} partKey="tool-1" />)
 
     expect(screen.getByText('Running')).toBeInTheDocument()
     expect(screen.getByText('2.5s')).toBeInTheDocument()
@@ -94,25 +92,30 @@ describe('ToolPartView running duration', () => {
     expect(screen.getByText('3.0s')).toBeInTheDocument()
   })
 
-  it('does not keep the running timer on an interrupted task after the backend is idle', () => {
-    piSessionStateStore.setState('stopped-task-session', { isIdle: true, isStreaming: false })
-    const execution = createRunningExecution()
-    execution.call.name = 'task'
-    render(
-      <SessionNavigationContext.Provider value={{ currentSessionId: 'stopped-task-session', navigateToSession: vi.fn(), currentDirectory: undefined }}>
-        <ToolPartView execution={execution} partKey="stopped-task" startedAt={7500} />
-      </SessionNavigationContext.Provider>,
-    )
+  it.each(['timeline', 'compact', 'descriptive'] as const)('does not keep the running timer after an authoritative tool interruption in the %s layout', layout => {
+    const execution = { ...createRunningExecution(), isRunning: false, error: 'Runtime crashed before a result', endedAt: 10_000 }
+    const { container } = render(<ToolPartView execution={execution} partKey={`stopped-tool-${layout}`} compact={layout === 'compact'} descriptive={layout === 'descriptive'} />)
     expect(screen.getByText('Failed')).toBeInTheDocument()
-    expect(screen.getByText('Running')).toHaveClass('opacity-0')
-    expect(screen.queryByText('2.5s')).not.toBeInTheDocument()
-    piSessionStateStore.clear('stopped-task-session')
+    expect(screen.getByText('2.5s')).toBeInTheDocument()
+    act(() => vi.advanceTimersByTime(5_000))
+    expect(screen.getByText('2.5s')).toBeInTheDocument()
+    expect(container.querySelector('.reasoning-shimmer-text')).toBeNull()
+  })
+
+  it.each(['cancelled', 'unknown'] as const)('keeps a no-result %s interruption distinct from success', interruption => {
+    const execution = { ...createRunningExecution(), isRunning: false, error: 'The real terminal explanation', interruption, endedAt: 10_000 }
+    const { container, rerender } = render(<ToolPartView execution={execution} partKey={`outcome-${interruption}`} descriptive />)
+    expect(screen.getByText(`toolPart.${interruption}`)).toHaveAttribute('title', execution.error)
+    expect(container.querySelector('.reasoning-shimmer-text')).toBeNull()
+    rerender(<ToolPartView execution={{ ...execution, result: { role: 'toolResult', toolCallId: execution.call.id, toolName: execution.call.name, isError: false, timestamp: 10_500, content: [{ type: 'text', text: 'Recovered actual result' }] } }} partKey={`outcome-${interruption}`} descriptive />)
+    expect(screen.queryByText(`toolPart.${interruption}`)).not.toBeInTheDocument()
+    expect(screen.queryByText('Failed')).not.toBeInTheDocument()
   })
 
   it('uses calibrated server time for running tools when available', () => {
     getActiveCalibratedNowMock.mockReturnValue(11_000)
 
-    render(<ToolPartView execution={createRunningExecution()} partKey="tool-1" startedAt={7_500} />)
+    render(<ToolPartView execution={createRunningExecution()} partKey="tool-1" />)
 
     expect(screen.getByText('3.5s')).toBeInTheDocument()
   })
@@ -120,7 +123,7 @@ describe('ToolPartView running duration', () => {
   it('clamps running duration to zero when calibrated time is earlier than start', () => {
     getActiveCalibratedNowMock.mockReturnValue(7_000)
 
-    render(<ToolPartView execution={createRunningExecution()} partKey="tool-1" startedAt={7_500} />)
+    render(<ToolPartView execution={createRunningExecution()} partKey="tool-1" />)
 
     expect(screen.getByText('0ms')).toBeInTheDocument()
   })
@@ -128,17 +131,41 @@ describe('ToolPartView running duration', () => {
   it('rounds calibrated sub-second durations before rendering', () => {
     getActiveCalibratedNowMock.mockReturnValue(7_623.456)
 
-    render(<ToolPartView execution={createRunningExecution()} partKey="tool-1" startedAt={7_500} />)
+    render(<ToolPartView execution={createRunningExecution()} partKey="tool-1" />)
 
     expect(screen.getByText('123ms')).toBeInTheDocument()
   })
-
-  it('uses shared item spacing on compact and descriptive roots', () => {
-    const execution = createRunningExecution()
-    const { container, rerender } = render(<ToolPartView execution={execution} partKey="tool-1" compact />)
-    expect(container.firstElementChild?.className).toContain('pt-1')
-
-    rerender(<ToolPartView execution={execution} partKey="tool-1" descriptive />)
-    expect(container.firstElementChild?.className).toContain('pt-1')
+  it.each(['timeline', 'compact', 'descriptive'] as const)('does not time unstarted calls in the %s layout, then starts and settles only that call', layout => {
+    const queued = { ...createRunningExecution(), startedAt: undefined }
+    const props = { partKey: `queued-${layout}`, compact: layout === 'compact', descriptive: layout === 'descriptive' }
+    const { container, rerender } = render(<ToolPartView execution={queued} {...props} />)
+    expect(screen.getByText('toolPart.pending')).toBeInTheDocument()
+    expect(screen.queryByText('Running')).not.toBeInTheDocument()
+    expect(screen.queryByText('2.5s')).not.toBeInTheDocument()
+    expect(container.querySelector('.reasoning-shimmer-text')).toBeNull()
+    rerender(<ToolPartView execution={{ ...queued, startedAt: 9_000 }} {...props} />)
+    expect(screen.queryByText('toolPart.pending')).not.toBeInTheDocument()
+    expect(screen.getByText('1.0s')).toBeInTheDocument()
+    const result: NonNullable<PiToolExecution['result']> = {
+      role: 'toolResult', toolCallId: queued.call.id, toolName: queued.call.name,
+      content: [{ type: 'text', text: 'done' }], isError: false, timestamp: 10_500,
+    }
+    rerender(<ToolPartView execution={{ ...queued, startedAt: 9_000, isRunning: true, result }} {...props} />)
+    expect(screen.getByText('1.5s')).toBeInTheDocument()
+    act(() => vi.advanceTimersByTime(2_000))
+    expect(screen.getByText('1.5s')).toBeInTheDocument()
+    expect(container.querySelector('.reasoning-shimmer-text')).toBeNull()
   })
+
+  it('leaves an unstarted task waiting even if the session is idle', () => {
+    piSessionStateStore.setState('queued-task-session', { isIdle: true, isStreaming: false })
+    render(<SessionNavigationContext.Provider value={{ currentSessionId: 'queued-task-session', navigateToSession: vi.fn(), currentDirectory: undefined }}>
+      <ToolPartView execution={{ call: { type: 'toolCall', id: 'queued-task', name: 'task', arguments: {} } }} partKey="queued-task" />
+    </SessionNavigationContext.Provider>)
+    expect(screen.getByText('toolPart.pending')).toBeInTheDocument()
+    expect(screen.queryByText('Running')).not.toBeInTheDocument()
+    expect(screen.getByText('Failed')).toHaveClass('opacity-0')
+    piSessionStateStore.clear('queued-task-session')
+  })
+
 })

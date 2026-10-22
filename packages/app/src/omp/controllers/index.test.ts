@@ -1,9 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { JsonObject } from '@ompiui/protocol'
+import type { PiBranchPage } from '../domain/index.js'
 import * as transport from '../transport/index.js'
-import { loadPiSessionData, refreshPiSessionState, refreshPiBranch } from './index.js'
+import { loadPiSessionData, refreshPiSessionState, refreshPiBranch, returnToLatestPiBranch, forkPiSession, navigatePiTree } from './index.js'
 import { piSessionStateStore, piBranchStore } from '../state/index.js'
 import { ompSubagentStore } from '../ompSubagentStore'
+import { composerDraftKey, getComposerDraft, updateComposerDraft } from '../../features/chat/input/composerDraftStore'
+import { clearSessionEditorDraft } from '../sessionEditorDraftStore'
+import { serverStore } from '../../store/serverStore'
+import { notificationStore } from '../../store/notificationStore'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -159,6 +164,24 @@ describe('session state response ordering', () => {
     expect(piBranchStore.getData('session-a')?.head.revision).toBe(2)
   })
 
+  it('returns to the latest history without losing a tool start received during the fetch', async () => {
+    const pending = deferred<PiBranchPage>()
+    const head = { sdkVersion: 'test', revision: 1, header: null, leafId: null, entryCount: 0, epoch: 'test' }
+    const checkpoint = { position: { epoch: 'events', sequence: 1 } }
+    piBranchStore.setData('session-a', {
+      head, checkpoint, items: [{ type: 'custom', customType: 'older', id: 'old', parentId: null, timestamp: new Date(1).toISOString(), data: {} }],
+      hasMore: true, client: { historyWindowed: true },
+    })
+    vi.spyOn(transport, 'getPiBranchPage').mockReturnValueOnce(pending.promise)
+    const returning = returnToLatestPiBranch('session-a')
+    piBranchStore.patchToolExecution('session-a', 'read', { startedAt: 1000, isRunning: true })
+    pending.resolve({ head, checkpoint, items: [], hasMore: false })
+    await returning
+    expect(piBranchStore.getData('session-a')?.items).toEqual([])
+    expect(piBranchStore.getData('session-a')?.client).toMatchObject({ toolExecutions: { read: { startedAt: 1000, isRunning: true } } })
+    expect(piBranchStore.getData('session-a')?.client?.historyWindowed).not.toBe(true)
+  })
+
   it('uses the cached sync cursor when a session preview is loaded again', async () => {
     const branch = {
       head: { sdkVersion: 'test', revision: 2, header: null, leafId: null, entryCount: 1, epoch: 'test' },
@@ -169,4 +192,36 @@ describe('session state response ordering', () => {
     await loadPiSessionData('session-a')
     expect(preview).toHaveBeenCalledWith('session-a', expect.objectContaining({ syncCursor: 'cached-sync' }), undefined)
   })
+})
+
+describe('committed native navigation drafts', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    clearSessionEditorDraft('draft-source')
+    clearSessionEditorDraft('draft-target')
+  })
+  for (const operation of ['navigate', 'fork'] as const) {
+    it(`restores the committed ${operation} draft and exposes partial refresh failure without wiping the other session`, async () => {
+      const target = operation === 'fork' ? 'draft-target' : 'draft-source'
+      const other = operation === 'fork' ? 'draft-source' : 'draft-target'
+      const targetKey = composerDraftKey(serverStore.getActiveServer(), target, '', '')
+      const otherKey = composerDraftKey(serverStore.getActiveServer(), other, '', '')
+      updateComposerDraft(otherKey, () => ({ text: 'independent draft', attachments: [], ready: true }))
+      const receipt = { cancelled: false, targetSessionId: target, editorText: 'native draft', selectedText: 'native draft',
+        editorImages: [{ type: 'image', mimeType: 'image/png', data: 'AA==' }],
+        selectedImages: [{ type: 'image', mimeType: 'image/png', data: 'AA==' }], projectionError: 'History readback unavailable' }
+      vi.spyOn(transport, operation === 'fork' ? 'forkPiSession' : 'navigatePiTree').mockResolvedValue({
+        id: 'native-command', sessionId: 'draft-source', type: operation === 'fork' ? 'fork' : 'navigateTree',
+        status: 'completed', submittedAt: '2026-10-23T00:00:00Z',
+      })
+      vi.spyOn(transport, 'waitHostCommand').mockResolvedValue(receipt)
+      const notifications = vi.spyOn(notificationStore, 'push').mockImplementation(() => {})
+      const result = operation === 'fork' ? await forkPiSession('draft-source', 'user', 'before')
+        : await navigatePiTree('draft-source', { entryId: 'user' })
+      expect(result.projectionError).toBe('History readback unavailable')
+      expect(getComposerDraft(targetKey)).toMatchObject({ text: 'native draft', attachments: [{ mime: 'image/png', url: 'data:image/png;base64,AA==' }] })
+      expect(getComposerDraft(otherKey).text).toBe('independent draft')
+      expect(notifications).toHaveBeenCalledWith('error', expect.any(String), 'History readback unavailable', target)
+    })
+  }
 })

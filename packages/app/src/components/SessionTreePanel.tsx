@@ -15,7 +15,6 @@ import {
 import { IconButton } from './ui/IconButton'
 import { SegmentedControl, SettingField, SettingRow, SettingsDisclosure, SettingsSection, Toggle } from '../features/settings/components/SettingsUI'
 import { usePiCapabilities } from '../omp/capabilities'
-import { stashForkText } from '../omp/pendingForkText'
 import {
   abortPiBranchSummary,
   abortPiCompaction,
@@ -36,7 +35,6 @@ import {
 } from '../omp/controllers/index.js'
 import { getPiTree, type PiForkResult } from '../omp/transport/index.js'
 import { commitRedoPlan } from '../omp/redoPlanStore'
-import { clearSessionEditorDraft, setSessionEditorDraft } from '../omp/sessionEditorDraftStore'
 import { usePiSessionRuntimeState } from '../omp/hooks/index.js'
 import { selectPiTimelineItems } from '../omp/selectors/index.js'
 import type { PiBranchPage } from '../omp/domain'
@@ -57,7 +55,6 @@ interface SessionTreePanelProps {
   sessionId: string
   mode?: 'tree' | 'controls'
   onNavigateSession?: (session: { id: string; directory?: string }) => void
-  onNewChat?: () => void
 }
 
 // Typed views over the runtime state JsonObject (state.get). Shapes are
@@ -105,7 +102,6 @@ export const SessionTreePanel = memo(function SessionTreePanel({
   sessionId,
   mode = 'tree',
   onNavigateSession,
-  onNewChat,
 }: SessionTreePanelProps) {
   const { t } = useTranslation('components')
   const capabilities = usePiCapabilities()
@@ -233,8 +229,6 @@ export const SessionTreePanel = memo(function SessionTreePanel({
   }, [nativeTree.length, treeGraph])
   const [summarizeNavigation, setSummarizeNavigation] = useState(false)
   const [navigationInstructions, setNavigationInstructions] = useState('')
-  const [replaceNavigationInstructions, setReplaceNavigationInstructions] = useState(false)
-  const [navigationLabel, setNavigationLabel] = useState('')
   const [error, setError] = useState<string | null>(null)
   const selectedNode = useMemo(
     () => findSessionTreeNode(nativeTree, selectedEntryId),
@@ -306,16 +300,12 @@ export const SessionTreePanel = memo(function SessionTreePanel({
           entryId,
           summarize: summarizeNavigation || undefined,
           customInstructions: navigationInstructions.trim() || undefined,
-          replaceInstructions: replaceNavigationInstructions || undefined,
-          label: navigationLabel.trim() || undefined,
         })
         if (result.cancelled || result.aborted) return
-        if (result.editorText == null) clearSessionEditorDraft(sessionId)
-        else setSessionEditorDraft(sessionId, result.editorText)
         await commitRedoPlan(sessionId, checkpoints)
       })
     },
-    [capabilities.sessionNavigate, nativeTree, leafId, navigationInstructions, navigationLabel, replaceNavigationInstructions, runEntryCommand, sessionId, summarizeNavigation],
+    [capabilities.sessionNavigate, nativeTree, leafId, navigationInstructions, runEntryCommand, sessionId, summarizeNavigation],
   )
 
   const runRuntimeCommand = useCallback(async (
@@ -348,32 +338,13 @@ export const SessionTreePanel = memo(function SessionTreePanel({
   const handleFork = useCallback(
     (entryId: string) => {
       if (!capabilities.fork) return
-      // fork 第一条用户消息 = 没有历史可分，纯前端开新会话预填，不留孤儿
-      const firstUserNode = treeGraph.nodes.find(node => node.data.type === 'message' && node.data.role === 'user')
-      if (firstUserNode && firstUserNode.id === entryId && entryId === selectedEntryId && selectedMessage) {
-        const content = (selectedMessage as { content?: unknown }).content
-        const text = Array.isArray(content)
-          ? content
-              .filter((block): block is { type: 'text'; text: string } =>
-                Boolean(block && typeof block === 'object' && (block as { type?: unknown }).type === 'text' && typeof (block as { text?: unknown }).text === 'string'),
-              )
-              .map(block => block.text)
-              .join('\n')
-          : ''
-        stashForkText('home', text)
-        onNewChat?.()
-        return
-      }
       void runEntryCommand(entryId, async () => {
         // pi TUI parity：fork 从该用户消息之前分叉，消息文本带回输入框改写重发
         const result = await forkPiSession(sessionId, entryId, 'before')
-        if (!result.cancelled && result.targetSessionId && typeof result.selectedText === 'string' && result.selectedText.trim()) {
-          stashForkText(result.targetSessionId, result.selectedText)
-        }
         applyReplacement(result)
       })
     },
-    [applyReplacement, capabilities.fork, runEntryCommand, sessionId, treeGraph, selectedEntryId, selectedMessage, onNewChat],
+    [applyReplacement, capabilities.fork, runEntryCommand, sessionId],
   )
 
   const handleStartLabel = useCallback((entryId: string, label?: string) => {
@@ -862,18 +833,6 @@ export const SessionTreePanel = memo(function SessionTreePanel({
                                 autoComplete="off"
                                 onChange={event => setNavigationInstructions(event.target.value)}
                               />
-                              <input
-                                className="h-7 w-full rounded-md border border-border-200 bg-bg-100 px-2 text-text-100 focus-visible:border-accent-main-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-main-100"
-                                value={navigationLabel}
-                                aria-label={t('sessionTree.optionalBranchLabel')}
-                                placeholder={t('sessionTree.optionalBranchLabel')}
-                                autoComplete="off"
-                                onChange={event => setNavigationLabel(event.target.value)}
-                              />
-                              <label className="flex items-center gap-2">
-                                <input type="checkbox" className="size-3.5 accent-accent-main-100" checked={replaceNavigationInstructions} onChange={event => setReplaceNavigationInstructions(event.target.checked)} />
-                                {t('sessionTree.replaceDefaultInstructions')}
-                              </label>
                             </>
                           ) : null}
                         </div>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 import { BookOpen, Files, LoaderCircle, MessageSquareText, Puzzle, RefreshCw, Search, Terminal, Wrench, type LucideIcon } from 'lucide-react'
 import type { PromptTemplate, Skill } from '../../../omp/vendor/pi-coding-agent'
@@ -7,9 +7,10 @@ import { Button } from '../../../components/ui/Button'
 import { JsonView } from '../../../components/JsonView'
 import { extensionUiStore } from '../../../omp/extensionUiStore'
 import { useManagementEvents } from '../../../omp/managementEventStore'
-import { getPiAgentsFiles, getPiPrompts, getPiSkills } from '../../../omp/transport/index.js'
-import { loadPiSessionRegistry, reloadPiSessionResources } from '../../../omp/controllers/index.js'
+import { getPiAgentsFiles, getPiPrompts, getPiSkills, getPiSessionRegistry } from '../../../omp/transport/index.js'
+import { reloadPiSessionResources } from '../../../omp/controllers/index.js'
 import { SettingsSection, SettingsSubgroup, SettingsDisclosure, settingsFieldClass } from './SettingsUI'
+import { serverStore } from '../../../store/serverStore'
 
 /**
  * Session resource inspector over the native runtime registry (registry.get).
@@ -20,34 +21,68 @@ import { SettingsSection, SettingsSubgroup, SettingsDisclosure, settingsFieldCla
  */
 export function PiResourceManagement({ sessionId, workspacePath }: { sessionId: string | null; workspacePath: string }) {
   const { t } = useTranslation(['settings', 'common'])
-  const [registry, setRegistry] = useState<RegistrySnapshot | null>(null)
-  const [skills, setSkills] = useState<Skill[] | null>(null)
-  const [prompts, setPrompts] = useState<PromptTemplate[] | null>(null)
-  const [agentsFiles, setAgentsFiles] = useState<Array<{ path: string; content: string }> | null>(null)
+  const serverGeneration = useSyncExternalStore(listener => serverStore.subscribe(listener), () => serverStore.getActiveServerGeneration(), () => serverStore.getActiveServerGeneration())
+  const scope = JSON.stringify([serverGeneration, sessionId, workspacePath])
+  const currentScope = useRef(scope)
+  currentScope.current = scope
+  const request = useRef<AbortController | null>(null)
+  const [data, setData] = useState<{
+    scope: string
+    registry: RegistrySnapshot | null
+    skills: Skill[] | null
+    prompts: PromptTemplate[] | null
+    agentsFiles: Array<{ path: string; content: string }> | null
+    errors: Record<string, string>
+    loading: boolean
+  } | null>(null)
+  const visible = data?.scope === scope ? data : null
+  const registry = visible?.registry ?? null
+  const skills = visible?.skills ?? null
+  const prompts = visible?.prompts ?? null
+  const agentsFiles = visible?.agentsFiles ?? null
+  const errors = visible?.errors ?? {}
+  const loading = visible?.loading ?? true
   const [eventType, setEventType] = useState('')
-  const [handlerResult, setHandlerResult] = useState<boolean | null>(null)
-  const [busy, setBusy] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [handlerResult, setHandlerResult] = useState<{ scope: string; eventType: string; registered: boolean } | null>(null)
+  const [operation, setOperation] = useState<{ scope: string; key: string } | null>(null)
+  const busy = operation?.scope === scope ? operation.key : null
+  const [actionError, setActionError] = useState<{ scope: string; message: string } | null>(null)
+  const error = actionError?.scope === scope ? actionError.message : null
   const { resourceRevisions } = useManagementEvents()
   const resourceRevision = resourceRevisions[workspacePath]
   const extensionUi = useSyncExternalStore(extensionUiStore.subscribe, extensionUiStore.getSnapshot, extensionUiStore.getSnapshot)
 
   const load = useCallback(async () => {
+    if (currentScope.current !== scope) return
+    request.current?.abort()
+    const controller = new AbortController()
+    request.current = controller
+    setHandlerResult(null)
+    setData({ scope, registry: null, skills: null, prompts: null, agentsFiles: null, errors: {}, loading: true })
     if (!sessionId) return
-    setLoading(true)
-    try {
-      setRegistry((await loadPiSessionRegistry(sessionId)) ?? null)
-      setSkills((await getPiSkills(sessionId)) ?? null)
-      setPrompts((await getPiPrompts(sessionId)) ?? null)
-      setAgentsFiles((await getPiAgentsFiles(sessionId)) ?? null)
-      setError(null)
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
-    } finally {
-      setLoading(false)
+    const results = await Promise.allSettled([
+      getPiSessionRegistry(sessionId, controller.signal),
+      getPiSkills(sessionId, controller.signal),
+      getPiPrompts(sessionId, controller.signal),
+      getPiAgentsFiles(sessionId, controller.signal),
+    ])
+    if (controller.signal.aborted || currentScope.current !== scope) return
+    const nextErrors: Record<string, string> = {}
+    const readList = <T,>(index: number, key: string): T[] | null => {
+      const result = results[index]
+      if (result.status === 'fulfilled' && Array.isArray(result.value)) return result.value as T[]
+      nextErrors[key] = result.status === 'rejected' ? String(result.reason instanceof Error ? result.reason.message : result.reason) : t('pi.resourcesUnavailable')
+      return null
     }
-  }, [sessionId])
+    const registryResult = results[0]
+    let nextRegistry: RegistrySnapshot | null = null
+    if (registryResult.status === 'fulfilled' && registryResult.value && typeof registryResult.value === 'object' && !Array.isArray(registryResult.value)) {
+      nextRegistry = registryResult.value as RegistrySnapshot
+    } else {
+      nextErrors.registry = registryResult.status === 'rejected' ? String(registryResult.reason instanceof Error ? registryResult.reason.message : registryResult.reason) : t('pi.resourcesUnavailable')
+    }
+    setData({ scope, registry: nextRegistry, skills: readList<Skill>(1, 'skills'), prompts: readList<PromptTemplate>(2, 'prompts'), agentsFiles: readList<{ path: string; content: string }>(3, 'contextFiles'), errors: nextErrors, loading: false })
+  }, [scope, sessionId, t])
 
   useEffect(() => {
     const timer = window.setTimeout(() => { void load() }, 0)
@@ -57,20 +92,21 @@ export function PiResourceManagement({ sessionId, workspacePath }: { sessionId: 
     }
     window.addEventListener('ompiui:registry-updated', onRegistryUpdated)
     return () => {
+      request.current?.abort()
       window.clearTimeout(timer)
       window.removeEventListener('ompiui:registry-updated', onRegistryUpdated)
     }
   }, [load, resourceRevision, sessionId])
 
   const run = async (key: string, action: () => Promise<void>) => {
-    setBusy(key)
-    setError(null)
+    setOperation({ scope, key })
+    setActionError(null)
     try {
       await action()
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
+      if (currentScope.current === scope) setActionError({ scope, message: cause instanceof Error ? cause.message : String(cause) })
     } finally {
-      setBusy(null)
+      if (currentScope.current === scope) setOperation(null)
     }
   }
 
@@ -90,19 +126,28 @@ export function PiResourceManagement({ sessionId, workspacePath }: { sessionId: 
       title={t('pi.resourcesTitle')}
       description={t('pi.resourcesDescription')}
       actions={
-        <Button
-          size="sm"
-          variant="secondary"
-          disabled={busy !== null}
-          isLoading={busy === 'reload'}
-          onClick={() => void run('reload', async () => { await reloadPiSessionResources(sessionId); await load() })}
-        >
-          {busy !== 'reload' ? <RefreshCw size={14} aria-hidden="true" /> : null}
-          {t('common:reload')}
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="secondary" disabled={loading || busy !== null} onClick={() => void load()}>
+            <RefreshCw size={14} aria-hidden="true" />
+            {t('common:refresh')}
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={busy !== null}
+            isLoading={busy === 'reload'}
+            onClick={() => void run('reload', async () => { await reloadPiSessionResources(sessionId); await load() })}
+          >
+            {busy !== 'reload' ? <RefreshCw size={14} aria-hidden="true" /> : null}
+            {t('common:reload')}
+          </Button>
+        </div>
       }
     >
       {error ? <p role="alert" className="text-[length:var(--fs-xs)] text-danger-100 [overflow-wrap:anywhere]">{error}</p> : null}
+      {Object.entries(errors).map(([name, message]) => <p key={name} role="alert" className="text-[length:var(--fs-xs)] text-danger-100 [overflow-wrap:anywhere]">{t(`pi.${name === 'registry' ? 'registryData' : name === 'contextFiles' ? 'agentsFiles' : name}`)}: {message}</p>)}
+      {Array.isArray(registry?.skillWarnings) && registry.skillWarnings.length > 0 ? <JsonDetails title={t('pi.resourcesSkillWarnings')} value={registry.skillWarnings} /> : null}
+      {registry?.resourceErrors && Object.keys(registry.resourceErrors).length > 0 ? <JsonDetails title={t('pi.resourcesDiscoveryErrors')} value={registry.resourceErrors} /> : null}
 
       {loading && !registry && !skills && !prompts && !agentsFiles ? (
         <p role="status" className="flex items-center gap-2 py-3 text-[length:var(--fs-sm)] text-text-400">
@@ -117,30 +162,34 @@ export function PiResourceManagement({ sessionId, workspacePath }: { sessionId: 
               description={t('pi.resourceToolsDescription')}
               icon={Wrench}
               loading={loading}
-              summary={registry ? t('pi.resourcesToolsActive', { active: registry.activeTools.length, total: registry.tools.length }) : undefined}
-              items={registry?.tools.map(item => ({
+              error={errors.registry}
+              summary={Array.isArray(registry?.activeTools) && Array.isArray(registry?.tools) ? t('pi.resourcesToolsActive', { active: registry.activeTools.length, total: registry.tools.length }) : undefined}
+              items={Array.isArray(registry?.tools) ? registry.tools.map(item => ({
                 name: item.name,
                 detail: item.description,
-                status: registry.activeTools.includes(item.name) ? undefined : t('pi.inactive'),
-              })) ?? null}
+                status: Array.isArray(registry.activeTools) && !registry.activeTools.includes(item.name) ? t('pi.inactive') : undefined,
+              })) : null}
             />
             <ResourceList
               title={t('pi.extensions')}
               description={t('pi.resourceExtensionsDescription')}
               icon={Puzzle}
               loading={loading}
-              items={registry?.extensions.map(item => ({
+              error={errors.registry || (registry?.resourceErrors?.extensions ? String(registry.resourceErrors.extensions) : undefined)}
+              items={Array.isArray(registry?.extensions) ? registry.extensions.map(item => ({
                 name: item.path,
                 detail: t('pi.extensionDetail', { tools: item.tools.length, commands: item.commands.length, handlers: item.handlers.length }),
-                status: item.hidden ? t('pi.hidden') : undefined,
-              })) ?? null}
+                path: item.sourceInfo && typeof item.sourceInfo === 'object' && !Array.isArray(item.sourceInfo) && typeof item.sourceInfo.path === 'string' && item.sourceInfo.path !== item.path ? item.sourceInfo.path : undefined,
+                status: item.active === false ? t('pi.inactive') : item.hidden ? t('pi.hidden') : undefined,
+              })) : null}
             />
             <ResourceList
               title={t('pi.commands')}
               description={t('pi.resourceCommandsDescription')}
               icon={Terminal}
               loading={loading}
-              items={registry?.commands.map(item => ({ name: item.name, detail: item.description })) ?? null}
+              error={errors.registry}
+              items={Array.isArray(registry?.commands) ? registry.commands.map(item => ({ name: item.name, detail: item.description })) : null}
             />
           </SettingsSubgroup>
 
@@ -150,11 +199,12 @@ export function PiResourceManagement({ sessionId, workspacePath }: { sessionId: 
               description={t('pi.resourceSkillsDescription')}
               icon={BookOpen}
               loading={loading}
+              error={errors.skills}
               items={skills?.map(item => ({
                 name: item.name,
                 detail: item.description,
                 path: item.filePath,
-                status: item.disableModelInvocation ? t('pi.skillModelInvocationOff') : undefined,
+                status: item.disableModelInvocation || item.hide ? t('pi.skillModelInvocationOff') : undefined,
               })) ?? null}
             />
             <ResourceList
@@ -162,10 +212,12 @@ export function PiResourceManagement({ sessionId, workspacePath }: { sessionId: 
               description={t('pi.resourcePromptsDescription')}
               icon={MessageSquareText}
               loading={loading}
+              error={errors.prompts}
               items={prompts?.map(item => ({
                 name: `${item.name}${item.argumentHint ? ` ${item.argumentHint}` : ''}`,
                 detail: item.description,
                 path: item.filePath,
+                status: !item.filePath ? t('pi.resourcesPromptPathUnavailable') : undefined,
               })) ?? null}
             />
             <ResourceList
@@ -173,6 +225,7 @@ export function PiResourceManagement({ sessionId, workspacePath }: { sessionId: 
               description={t('pi.resourceContextDescription')}
               icon={Files}
               loading={loading}
+              error={errors.contextFiles}
               items={agentsFiles?.map(item => ({
                 name: item.path,
                 detail: `${t('pi.agentsFileLines')}: ${item.content.split('\n').length}`,
@@ -199,7 +252,8 @@ export function PiResourceManagement({ sessionId, workspacePath }: { sessionId: 
               description={t('pi.resourceHandlersDescription')}
               icon={Terminal}
               loading={loading}
-              items={registry?.eventHandlers.map(name => ({ name })) ?? null}
+              error={errors.registry || (registry?.resourceErrors?.eventHandlers ? String(registry.resourceErrors.eventHandlers) : undefined)}
+              items={Array.isArray(registry?.eventHandlers) ? registry.eventHandlers.map(name => ({ name })) : null}
             />
             <div className="flex min-w-0 flex-col items-start gap-2 sm:flex-row sm:items-end">
               <label className="block w-full min-w-0 flex-1">
@@ -208,22 +262,23 @@ export function PiResourceManagement({ sessionId, workspacePath }: { sessionId: 
                   className={`${settingsFieldClass} mt-1.5`}
                   placeholder={t('pi.eventTypePlaceholder')}
                   value={eventType}
-                  onChange={event => setEventType(event.target.value)}
+                  onChange={event => { setEventType(event.target.value); setHandlerResult(null) }}
                 />
               </label>
               <Button
                 size="sm"
                 variant="secondary"
                 className="shrink-0"
-                disabled={busy !== null || !eventType.trim()}
-                onClick={() => setHandlerResult(registry?.eventHandlers.includes(eventType.trim()) ?? null)}
+                disabled={busy !== null || loading || !eventType.trim() || !Array.isArray(registry?.eventHandlers)}
+                onClick={() => { if (Array.isArray(registry?.eventHandlers)) setHandlerResult({ scope, eventType: eventType.trim(), registered: registry.eventHandlers.includes(eventType.trim()) }) }}
               >
                 {t('pi.checkHandler')}
               </Button>
             </div>
-            {handlerResult !== null ? (
+            {!loading && !Array.isArray(registry?.eventHandlers) ? <p role="status" className="text-[length:var(--fs-xs)] text-text-400">{t('pi.resourcesHandlerUnknown')}</p> : null}
+            {handlerResult?.scope === scope ? (
               <p role="status" className="text-[length:var(--fs-xs)] leading-relaxed text-text-300 [overflow-wrap:anywhere]">
-                {handlerResult ? t('pi.handlerRegistered', { eventType }) : t('pi.handlerNotRegistered', { eventType })}
+                {handlerResult.registered ? t('pi.handlerRegistered', { eventType: handlerResult.eventType }) : t('pi.handlerNotRegistered', { eventType: handlerResult.eventType })}
               </p>
             ) : null}
           </SettingsSubgroup>
@@ -242,17 +297,18 @@ export function PiResourceManagement({ sessionId, workspacePath }: { sessionId: 
   )
 }
 
-function ResourceList({ title, description, icon: Icon, items, loading, summary }: {
+function ResourceList({ title, description, icon: Icon, items, loading, summary, error }: {
   title: string
   description: string
   icon: LucideIcon
   items: Array<{ name: string; detail?: string; path?: string; status?: string }> | null
   loading: boolean
   summary?: string
+  error?: string
 }) {
   const { t } = useTranslation(['settings'])
   const populated = items !== null && items.length > 0
-  const status = items === null
+  const status = error ? t('pi.resourcesReadFailed') : items === null
     ? t(loading ? 'pi.resourcesLoading' : 'pi.resourcesUnavailable')
     : populated
       ? summary ?? t('pi.resourcesLoadedCount', { count: items.length })

@@ -1,15 +1,31 @@
+import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { managedSessionsRoot } from "./managed-sessions.js"
+import { runtimeBridgeExtension } from "./runtime-bridge.js"
+import { resolveOmpPackageRoot } from "./omp-native-script.js"
 
 const RUNTIME_POLICY = "autoResume: false\ntask:\n  maxRecursionDepth: 1\n"
 
-/** 最后加载的进程级配置；不修改用户的官方终端设置或第一层并发上限。 */
-export function runtimePolicyArgs(): string[] {
-  const file = join(dirname(managedSessionsRoot()), "runtime-config", "runtime-policy.yml")
-  mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
-  if (!existsSync(file) || readFileSync(file, "utf8") !== RUNTIME_POLICY) {
-    writeFileSync(file, RUNTIME_POLICY, { mode: 0o600 })
+
+function writePolicyFile(file: string, contents: string): void {
+  if (!existsSync(file) || readFileSync(file, "utf8") !== contents) {
+    writeFileSync(file, contents, { mode: 0o600 })
   }
-  return ["--config", file]
+}
+
+/** 最后加载的进程级配置与受管桥；不修改用户 CLI 设置。 */
+export function runtimePolicyArgs(bin?: string, env: NodeJS.ProcessEnv = process.env): string[] {
+  const bridgeSource = runtimeBridgeExtension(resolveOmpPackageRoot(bin, env))
+  const directory = join(dirname(managedSessionsRoot()), "runtime-config")
+  const file = join(directory, "runtime-policy.yml")
+  // Different selected installations must not overwrite a running runtime's
+  // extension path: native reload imports the same file again.
+  const bridge = join(directory, `runtime-bridge-${createHash("sha256").update(bridgeSource).digest("hex").slice(0, 16)}.mjs`)
+  mkdirSync(directory, { recursive: true, mode: 0o700 })
+  writePolicyFile(file, RUNTIME_POLICY)
+  writePolicyFile(bridge, bridgeSource)
+  // Explicit extensions are loaded even with --no-extensions; discovery stays
+  // native. Modules are evaluated by the official loader, never the worker.
+  return ["--config", file, "--extension", bridge]
 }

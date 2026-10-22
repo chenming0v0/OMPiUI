@@ -55,13 +55,13 @@ export function ExtensionUiDialogHost({
   // 新请求到来 / 请求切换：自动展开（用户收起的胶囊让位给新请求）
   useEffect(() => {
     if (request?.requestId) setCollapsed(false)
-  }, [request?.requestId, setCollapsed])
+  }, [request?.sessionId, request?.workerGeneration, request?.requestId, setCollapsed])
 
   if (!request || isCollapsed) return null
 
   return (
     <ExtensionUiDialogCardWrapper
-      key={request.requestId}
+      key={JSON.stringify([request.sessionId, request.workerGeneration, request.requestId])}
       request={request}
       queueLength={sorted.length}
       queueIndex={queueIndex}

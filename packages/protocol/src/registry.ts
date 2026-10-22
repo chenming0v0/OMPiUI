@@ -13,6 +13,8 @@ export type CommandDescriptor = {
   name: string
   description?: string
   argumentHint?: string
+  aliases?: string[]
+  subcommands?: Array<{ name: string; description?: string; usage?: string }>
   sourceInfo?: JsonValue
   [extra: string]: JsonValue | undefined
 }
@@ -20,6 +22,7 @@ export type CommandDescriptor = {
 export type ExtensionDescriptor = {
   path: string
   hidden?: boolean
+  active?: boolean
   sourceInfo?: JsonValue
   tools: string[]
   commands: string[]
@@ -31,8 +34,10 @@ export type RegistrySnapshot = {
   tools: ToolDescriptor[]
   activeTools: string[]
   commands: CommandDescriptor[]
-  extensions: ExtensionDescriptor[]
-  eventHandlers: string[]
+  extensions: ExtensionDescriptor[] | null
+  eventHandlers: string[] | null
+  skillWarnings?: JsonValue[]
+  resourceErrors?: JsonObject
 }
 
 export type PiCapabilityScope = "global" | "session"

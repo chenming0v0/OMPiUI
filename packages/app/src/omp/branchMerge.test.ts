@@ -329,4 +329,11 @@ describe('mergeLatestBranchPage', () => {
     const latest = page(['a'], { checkpoint: { position: { epoch: 'new-runtime', sequence: 1 } } })
     expect(mergeLatestBranchPage(current, latest).checkpoint).toBe(latest.checkpoint)
   })
+  it('drops prior runtime live tool evidence on event epoch changes', () => {
+    const current = page(['a'], { checkpoint: { position: { epoch: 'old-runtime', sequence: 20 } },
+      client: { toolExecutions: { bash: { startedAt: 10_000, isRunning: true } } } })
+    const latest = page(['a'], { checkpoint: { position: { epoch: 'new-runtime', sequence: 1 } } })
+    const merged = mergeLatestBranchPage(current, latest)
+    expect(merged.client?.toolExecutions?.bash).toBeUndefined()
+  })
 })

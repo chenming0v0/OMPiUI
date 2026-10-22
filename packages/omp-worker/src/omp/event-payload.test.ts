@@ -79,7 +79,11 @@ test("IRC messages keep the sender and actual message instead of their injected 
 test("real session emits compact updates and keeps compact subagent state for reconnect", async t => {
   const session = Reflect.construct(OmpRpcSession, []) as OmpRpcSession
   const internal = session as unknown as { client: unknown; handleFrame(frame: OmpRpcFrame): void }
-  internal.client = { async request(command: JsonObject) { return { type: "response", success: true, command: command.type, data: {} } }, async close() {} }
+  internal.client = {
+    async request(command: JsonObject) { return { type: "response", success: true, command: command.type, data: {} } },
+    async requestRuntime() { return { steering: [], followUp: [] } },
+    async close() {},
+  }
   t.after(() => session.dispose())
   const events: JsonObject[] = []
   const subevents: JsonObject[] = []

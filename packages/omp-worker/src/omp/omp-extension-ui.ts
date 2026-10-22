@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto"
 import type { JsonObject } from "@ompiui/protocol"
 import { isJsonObject } from "@ompiui/protocol"
 import type { ExtensionUiDialogRequest, ExtensionUiDialogResponse, ExtensionUiSettlementReason, ExtensionUiStatePatch } from "@ompiui/protocol"
@@ -18,7 +17,6 @@ export type OmpExtensionUiEvent =
   | { type: "notify"; sessionId: string; message: string; notifyType?: string }
   | { type: "editor"; sessionId: string; command: { kind: "set" | "paste"; text: string } }
 
-const MAX_STATE_MIRROR_PATCHES = 500
 const MAX_WIDGET_LINES = 512
 const MAX_WIDGET_BYTES = 64 * 1024
 
@@ -31,12 +29,17 @@ interface PendingDialog {
 export class OmpExtensionUiBridge {
   private readonly pending = new Map<string, PendingDialog>()
   private readonly pendingByOmpId = new Map<string, string>()
+  private readonly settledOmpIds = new Set<string>()
   private readonly stateMirror: ExtensionUiStatePatch[] = []
   private readonly listeners = new Set<(event: OmpExtensionUiEvent) => void>()
   private sessionId = ""
   private write: ((response: JsonObject) => void) | undefined
 
   bind(sessionId: string, write: (response: JsonObject) => void): void {
+    if (this.sessionId !== sessionId) {
+      this.cancelAll("session_replaced", false)
+      this.settledOmpIds.clear()
+    }
     this.sessionId = sessionId
     this.write = write
   }
@@ -58,8 +61,9 @@ export class OmpExtensionUiBridge {
         return
       }
       case "cancel": {
-        const requestId = this.pendingByOmpId.get(ompId)
-        if (requestId) this.cancel(requestId, "user_cancelled", ompId)
+        const targetId = typeof frame.targetId === "string" ? frame.targetId : ""
+        const requestId = this.pendingByOmpId.get(targetId)
+        if (requestId) this.cancel(requestId, "aborted", false)
         return
       }
       case "notify": {
@@ -116,7 +120,7 @@ export class OmpExtensionUiBridge {
   }
 
   private openDialog(kind: ExtensionUiDialogRequest["kind"], ompId: string, frame: JsonObject): void {
-    if (!ompId) return
+    if (!ompId || this.pendingByOmpId.has(ompId) || this.settledOmpIds.has(ompId)) return
     const title = typeof frame.title === "string" ? frame.title : ""
     const timeout = typeof frame.timeout === "number" ? frame.timeout : undefined
     const base = stripUndefined({
@@ -124,7 +128,7 @@ export class OmpExtensionUiBridge {
       sessionId: this.sessionId,
       title,
       createdAt: new Date().toISOString(),
-      ...(timeout ? { expiresAt: new Date(Date.now() + timeout).toISOString() } : {}),
+      ...(timeout !== undefined ? { expiresAt: new Date(Date.now() + timeout).toISOString() } : {}),
     })
     const request: ExtensionUiDialogRequest = kind === "select"
       ? { ...base, kind, options: Array.isArray(frame.options) ? frame.options.map(String) : [] }
@@ -134,8 +138,8 @@ export class OmpExtensionUiBridge {
           ? { ...base, kind, ...(typeof frame.placeholder === "string" ? { placeholder: frame.placeholder } : {}) }
           : { ...base, kind, ...(typeof frame.prefill === "string" ? { prefill: frame.prefill } : {}) }
     const pending: PendingDialog = { request, ompId }
-    if (timeout) {
-      pending.timer = setTimeout(() => this.cancel(request.requestId, "timeout", ompId), timeout)
+    if (timeout !== undefined) {
+      pending.timer = setTimeout(() => this.cancel(request.requestId, "timeout"), timeout)
       pending.timer.unref?.()
     }
     this.pending.set(request.requestId, pending)
@@ -157,24 +161,23 @@ export class OmpExtensionUiBridge {
       ompResponse.value = typeof response.value === "string" ? response.value : ""
     }
     this.write?.(ompResponse)
-    this.emit({ type: "settled", requestId, sessionId: this.sessionId, reason: "submitted" })
+    this.emit({ type: "settled", requestId, sessionId: pending.request.sessionId, reason: isCancelled(response) ? "user_cancelled" : "submitted" })
     return true
   }
 
-  cancelAll(reason: ExtensionUiSettlementReason): void {
+  cancelAll(reason: ExtensionUiSettlementReason, respond = true): void {
     for (const requestId of [...this.pending.keys()]) {
-      this.cancel(requestId, reason)
+      this.cancel(requestId, reason, respond)
     }
     this.stateMirror.length = 0
   }
 
-  private cancel(requestId: string, reason: ExtensionUiSettlementReason, ompId?: string): void {
+  private cancel(requestId: string, reason: ExtensionUiSettlementReason, respond = true): void {
     const pending = this.pending.get(requestId)
     if (!pending) return
     this.clearPending(requestId)
-    void ompId
-    this.write?.({ type: "extension_ui_response", id: pending.ompId, cancelled: true })
-    this.emit({ type: "settled", requestId, sessionId: this.sessionId, reason })
+    if (respond) this.write?.({ type: "extension_ui_response", id: pending.ompId, cancelled: true, ...(reason === "timeout" ? { timedOut: true } : {}) })
+    this.emit({ type: "settled", requestId, sessionId: pending.request.sessionId, reason })
   }
 
   private clearPending(requestId: string): void {
@@ -183,13 +186,15 @@ export class OmpExtensionUiBridge {
     if (pending.timer) clearTimeout(pending.timer)
     this.pending.delete(requestId)
     this.pendingByOmpId.delete(pending.ompId)
+    this.settledOmpIds.add(pending.ompId)
   }
 
   private pushState(patch: ExtensionUiStatePatch): void {
-    this.stateMirror.push(patch)
-    if (this.stateMirror.length > MAX_STATE_MIRROR_PATCHES) {
-      this.stateMirror.splice(0, this.stateMirror.length - MAX_STATE_MIRROR_PATCHES)
-    }
+    const index = this.stateMirror.findIndex(previous => previous.kind === patch.kind && (
+      !('key' in previous) || ('key' in patch && previous.key === patch.key)
+    ))
+    if (index >= 0) this.stateMirror[index] = patch
+    else this.stateMirror.push(patch)
     this.emit({ type: "state", sessionId: this.sessionId, patch })
   }
 

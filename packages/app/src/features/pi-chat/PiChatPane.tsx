@@ -23,38 +23,24 @@ import { bashPendingStore } from '../../omp/bashPendingStore'
 import {
   abortPiOperation,
   abortPiCompaction,
-  compactPiSession,
   cyclePiModel,
   cyclePiThinkingLevel,
-  executePiBash,
-  exportPiSession,
   forkPiSession,
-  importPiSession,
   loadMorePiBranchEntries,
   prefetchPiBranchEntries,
-  loadPiSessionRegistry,
-  logoutPiProvider,
   refreshPiBranch,
   returnToLatestPiBranch,
   refreshPiSessionState,
   loadPiModels,
   loadPiSessionData,
   navigatePiTree,
-  newPiSessionFrom,
   openPiSession,
-  reloadPiSessionResources,
-  renamePiSession,
-  sendPiPrompt,
   sendPiUserMessage,
-  setPiProjectTrust,
-  setPiScopedModels,
-  startPiProviderAuth,
   setPiExtensionEditorState,
   setPiModel,
   setPiThinkingLevel,
 } from '../../omp/controllers/index.js'
 import {
-  invokePiCommand,
   manageSessionGoal,
   removeQueuedMessage,
   discardQueuedMessage,
@@ -62,18 +48,18 @@ import {
   waitHostCommand,
 } from '../../omp/transport/index.js'
 import { layoutStore } from '../../store/layoutStore'
-import { themeStore } from '../../store/themeStore'
 import { useSessionActiveEntry } from '../../store/activeSessionStore'
 import type { PiImageInput } from '../../omp/transport/index.js'
 import { attachmentToImage, imageInputToAttachment } from './attachmentToImage'
+import { SessionStopCoordinator } from './sessionStopCoordinator'
+import { composerDraftKey, getComposerDraft, updateComposerDraft } from '../chat/input/composerDraftStore'
+import type { ComposerQueueEntry } from '../chat/input/QueuedUserMessageQueue'
 import { piBranchStore, piSessionStateStore } from '../../omp/state/index.js'
 import { captureRedoCheckpoints, commitRedoPlan, redoPlanStore, type RedoPlan } from '../../omp/redoPlanStore'
 import { extensionUiStore, getEditorTextSource } from '../../omp/extensionUiStore'
 import { paneControllerStore } from '../../store/paneControllerStore'
-import { commandFeedbackStore, type CommandFeedbackStatus } from '../../omp/commandFeedbackStore'
 import { trackPiSession } from '../../omp/ompSessionIndex'
 import { resolveWorkspacePath } from '../../omp/workspaces.js'
-import { stashForkText, subscribeForkSeed, takeForkText } from '../../omp/pendingForkText'
 import {
   clearSessionEditorDraft,
   configureSessionEditorDraftSync,
@@ -87,8 +73,8 @@ import { useDirectory } from '../../contexts/useDirectory'
 import { useSessionContext } from '../../contexts/useSessionContext'
 import { SessionNavigationContext, type SessionNavigationContextValue } from '../../contexts/SessionNavigationContext'
 import { paneLayoutStore } from '../../store/paneLayoutStore'
-import { notificationStore } from '../../store/notificationStore'
 import { useServerStore } from '../../hooks/useServerStore'
+import { serverStore } from '../../store/serverStore'
 import { useManagementEvents } from '../../omp/managementEventStore'
 import { getInternalDragSnapshot, subscribeInternalDrag, subscribeInternalDrop } from '../../lib/internalDragCore'
 import { copyTextToClipboard } from '../../utils/clipboard'
@@ -100,29 +86,11 @@ import {
   setPreferredModelKey,
 } from '../../utils/modelUtils'
 
-const PI_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
-// 这些命令自带界面（选择器/设置/面板），执行后不自动展开扩展面板
-const AUTO_EXPAND_EXCLUDED = new Set(['new', 'settings', 'hotkeys', 'changelog', 'model', 'resume', 'tree'])
 /** 稳定空数组引用：避免 `?? []` 每次渲染新建数组导致 ChatArea memo 失效 */
-const EMPTY_STRING_ARRAY: readonly string[] = []
+const EMPTY_QUEUE: readonly ComposerQueueEntry[] = []
+const PI_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 
-function resolveExportOutputPath(requested: string, baseDirectory: string): string {
-  const trimmed = requested.trim()
-  const unquoted =
-    trimmed.length >= 2 &&
-    ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'")))
-      ? trimmed.slice(1, -1).trim()
-      : trimmed
-  const base = baseDirectory.replace(/[\\/]+$/, '')
-  if (!unquoted) return `${base}/pi-session.html`
-  // Keep absolute Windows/Unix paths intact; resolve relative paths against
-  // the active workspace so the server never receives an ambiguous `.` path.
-  if (/^(?:[A-Za-z]:[\\/]|[\\/]{1,2})/.test(unquoted)) return unquoted
-  return `${base}/${unquoted.replace(/^\.[\\/]+/, '')}`
-}
 
-/** fork 第一条消息的纯前端特判：不开 SDK 会话，直接落在首页预填 */
-const HOME_FORK_KEY = 'home'
 
 // ============================================
 // Compact viewport shell for split panes (from ocui ChatPane).
@@ -198,8 +166,7 @@ function cancelPendingSplitSessionNavigation() {
  * 队列条目。worker 在纯文本数组之外还上报 *Entries，带上图片附件；
  * 重建队列必须用它，否则图片在撤销/改投递模式时丢失。
  */
-interface PiQueueEntry {
-  text: string
+interface PiQueueEntry extends ComposerQueueEntry {
   images?: PiImageInput[]
 }
 
@@ -207,8 +174,9 @@ interface PiQueueEntry {
 interface PiQueueSnapshot {
   steering?: string[]
   followUp?: string[]
-  steeringEntries?: Array<PiQueueEntry | string>
-  followUpEntries?: Array<PiQueueEntry | string>
+  steeringEntries?: PiQueueEntry[]
+  followUpEntries?: PiQueueEntry[]
+  editable?: boolean
 }
 
 interface PiChatPaneProps {
@@ -364,51 +332,11 @@ export function PiChatPane({
     sessionUnavailable,
   ])
 
-  // Fork 带来的待编辑文本：进入目标会话时取走，灌进输入框。
-  // fork 的 replacement 事件比命令结果先到时，导航会先于 stash 发生，
-  // 所以既要在 sessionId 变化时尝试，也要订阅 stash 通知补漏；
-  // 只有真正拿到种子才标记已应用，拿不到就等通知
-  const [forkSeedText, setForkSeedText] = useState<string | undefined>(undefined)
-  const forkSeedAppliedForRef = useRef<string | null>(null)
-  const forkSeedHomeAppliedRef = useRef(false)
-  const lastEditorTextRef = useRef<string | undefined>(undefined)
-  // fork stash 是外部 store：取到一次性种子后同步进本地 state（订阅外部系统同步，
-  // 一次性消费语义无法用“渲染期间调整 state”表达，这里保留 effect 同步）
-  /* eslint-disable react-hooks/set-state-in-effect */
-  useEffect(() => {
-    if (!sessionId) {
-      // fork 第一条消息的纯前端特判会落在 home：一次性取走 home 种子
-      if (!forkSeedHomeAppliedRef.current) {
-        const seed = takeForkText(HOME_FORK_KEY)
-        if (seed) {
-          forkSeedHomeAppliedRef.current = true
-          setForkSeedText(seed)
-        }
-      }
-      return
-    }
-    const applySeed = (sid: string) => {
-      if (forkSeedAppliedForRef.current === sid) return
-      const seed = takeForkText(sid)
-      if (!seed) return
-      forkSeedAppliedForRef.current = sid
-      setForkSeedText(seed)
-      // 让扩展编辑器状态和种子一致：worker 端新会话的 editorText 是空，
-      // 同步 effect 会把种子抹掉；同时推到 worker，刷新后也能恢复
-      extensionUiStore.editorCommand(sid, { kind: 'set', text: seed })
-      lastEditorTextRef.current = seed
-      void setPiExtensionEditorState(sid, seed).catch(() => undefined)
-    }
-    applySeed(sessionId)
-    return subscribeForkSeed(sid => {
-      if (sid === sessionId) applySeed(sid)
-    })
-  }, [sessionId])
-  /* eslint-enable react-hooks/set-state-in-effect */
 
   // 树导航的编辑器草稿（undo 语义：回到用户消息前，文本进输入框）。
   // 树面板写 draft store，这里消费并同步到 worker 编辑器状态
   const editorDraft = useSessionEditorDraft(sessionId)
+  const lastEditorTextRef = useRef<string | undefined>(undefined)
   useEffect(() => {
     return configureSessionEditorDraftSync((sid, text) => setPiExtensionEditorState(sid, text).catch(() => undefined))
   }, [])
@@ -418,23 +346,33 @@ export function PiChatPane({
   const queue = state?.queue as PiQueueSnapshot | undefined
 
   // 输入框是 memo 组件；内容不变时复用队列引用，避免每个流式事件都重绘队列。
-  const queuedSteering = useMemo(() => queue?.steering ?? EMPTY_STRING_ARRAY, [queue?.steering])
-  const queuedFollowUps = useMemo(() => queue?.followUp ?? EMPTY_STRING_ARRAY, [queue?.followUp])
+  const queuedSteering = useMemo(() => queue?.steeringEntries ?? EMPTY_QUEUE, [queue?.steeringEntries])
+  const queuedFollowUps = useMemo(() => queue?.followUpEntries ?? EMPTY_QUEUE, [queue?.followUpEntries])
 
   const handleQueueBackToInput = useCallback(
-    async (kind: 'steering' | 'followUp', index: number) => {
+    async (kind: 'steering' | 'followUp', index: number, entryId: string) => {
       if (!sessionId) return
       try {
-        const entry = await removeQueuedMessage(sessionId, { kind, index })
-        setSessionEditorDraft(sessionId, entry.text, {
-          attachments: entry.images?.map(image => imageInputToAttachment(image)),
+        const entry = await stopCoordinatorRef.current.submit(JSON.stringify([activeServerGeneration, sessionId]), () => {
+          if (paneIdentityRef.current.activeServerGeneration !== activeServerGeneration || paneIdentityRef.current.sessionId !== sessionId) throw new Error('Session changed before queue selection')
+          return removeQueuedMessage(sessionId, { kind, index, entryId })
         })
-        await refreshPiSessionState(sessionId)
+        const key = composerDraftKey(activeServer, sessionId, '', '')
+        const draft = getComposerDraft(key)
+        const text = draft.text.trim() ? `${draft.text}\n\n${entry.text}` : entry.text
+        const attachments = [...draft.attachments, ...(entry.images?.map(imageInputToAttachment) ?? [])]
+        updateComposerDraft(key, () => ({ text, attachments, ready: true }))
+        // The native removal already committed. Save to its original draft even
+        // if this pane or backend changed while the response was in flight.
+        if (serverStore.getActiveServerGeneration() === activeServerGeneration) {
+          setSessionEditorDraft(sessionId, text, { attachments, delivery: kind === 'steering' ? 'steer' : 'followUp', sync: false })
+          void refreshPiSessionState(sessionId).catch(() => undefined)
+        }
       } catch (error) {
         uiErrorHandler('remove queued message', error)
       }
     },
-    [sessionId],
+    [sessionId, activeServer, activeServerGeneration],
   )
   /**
    * 立即提交队列中的一条（本轮 steer / 下一轮 prompt）。worker 端原子地
@@ -442,29 +380,35 @@ export function PiChatPane({
    * 不允许用 clearQueue + 重放来模拟，那会丢附件并打乱顺序。
    */
   const handleQueueSendNow = useCallback(
-    async (kind: 'steering' | 'followUp', index: number) => {
+    async (kind: 'steering' | 'followUp', index: number, entryId: string) => {
       if (!sessionId) return
       try {
-        await sendQueuedMessage(sessionId, { kind, index })
-        await Promise.all([refreshPiSessionState(sessionId), refreshPiBranch(sessionId)])
+        await stopCoordinatorRef.current.submit(JSON.stringify([activeServerGeneration, sessionId]), () => {
+          if (paneIdentityRef.current.activeServerGeneration !== activeServerGeneration || paneIdentityRef.current.sessionId !== sessionId) throw new Error('Session changed before queue selection')
+          return sendQueuedMessage(sessionId, { kind, index, entryId })
+        })
+        if (paneIdentityRef.current.activeServerGeneration === activeServerGeneration) void Promise.all([refreshPiSessionState(sessionId), refreshPiBranch(sessionId)]).catch(() => undefined)
       } catch (error) {
         uiErrorHandler('send queued message', error)
       }
     },
-    [sessionId],
+    [sessionId, activeServerGeneration],
   )
   /** 直接清除队列中的一条（不回输入框） */
   const handleQueueClear = useCallback(
-    async (kind: 'steering' | 'followUp', index: number) => {
+    async (kind: 'steering' | 'followUp', index: number, entryId: string) => {
       if (!sessionId) return
       try {
-        await discardQueuedMessage(sessionId, { kind, index })
-        await refreshPiSessionState(sessionId)
+        await stopCoordinatorRef.current.submit(JSON.stringify([activeServerGeneration, sessionId]), () => {
+          if (paneIdentityRef.current.activeServerGeneration !== activeServerGeneration || paneIdentityRef.current.sessionId !== sessionId) throw new Error('Session changed before queue selection')
+          return discardQueuedMessage(sessionId, { kind, index, entryId })
+        })
+        if (paneIdentityRef.current.activeServerGeneration === activeServerGeneration) void refreshPiSessionState(sessionId).catch(() => undefined)
       } catch (error) {
         uiErrorHandler('remove queued message', error)
       }
     },
-    [sessionId],
+    [sessionId, activeServerGeneration],
   )
 
   const handleQueueOpenInSideChat = useCallback(
@@ -494,36 +438,30 @@ export function PiChatPane({
     return pendingItems.length > 0 ? [...timeline, ...pendingItems] : timeline
   }, [baseItems, sessionId, pendingBashCount, state?.submittedMessages])
 
-  const pendingStopsRef = useRef(new Map<string, Promise<boolean>>())
-  const stoppedSessionsRef = useRef(new Set<string>())
-  const [stoppingSessionId, setStoppingSessionId] = useState<string | null>(null)
-  const isStopping = stoppingSessionId === sessionId
+  const stopCoordinatorRef = useRef(new SessionStopCoordinator())
+  const stopKey = JSON.stringify([activeServerGeneration, sessionId])
+  const [stoppingKey, setStoppingKey] = useState<string | null>(null)
+  const isStopping = stoppingKey === stopKey
+  const paneIdentityRef = useRef({ sessionId, activeServerGeneration })
+  paneIdentityRef.current = { sessionId, activeServerGeneration }
   const handleAbort = useCallback(async () => {
     if (!sessionId) return
-    const pending = pendingStopsRef.current.get(sessionId)
-    if (pending) {
-      await pending
-      return
-    }
     const sid = sessionId
-    const stopping = (async () => {
-      setStoppingSessionId(sid)
-      try {
-        await (compacting ? abortPiCompaction(sid) : abortPiOperation(sid))
-        stoppedSessionsRef.current.add(sid)
+    setStoppingKey(stopKey)
+    try {
+      await stopCoordinatorRef.current.stop(stopKey, () => {
+        if (paneIdentityRef.current.activeServerGeneration !== activeServerGeneration) throw new Error('Server changed before Stop dispatch')
+        return compacting ? abortPiCompaction(sid) : abortPiOperation(sid)
+      })
+      if (paneIdentityRef.current.activeServerGeneration === activeServerGeneration) {
         void Promise.all([refreshPiBranch(sid), refreshPiSessionState(sid)]).catch(() => undefined)
-        return true
-      } catch (error) {
-        uiErrorHandler('stop operation', error)
-        return false
-      } finally {
-        setStoppingSessionId(current => current === sid ? null : current)
-        pendingStopsRef.current.delete(sid)
       }
-    })()
-    pendingStopsRef.current.set(sid, stopping)
-    await stopping
-  }, [sessionId, compacting])
+    } catch (error) {
+      if (paneIdentityRef.current.activeServerGeneration === activeServerGeneration) uiErrorHandler('stop operation', error)
+    } finally {
+      setStoppingKey(current => current === stopKey ? null : current)
+    }
+  }, [sessionId, compacting, stopKey, activeServerGeneration])
 
   // ── Pane controller 注册（全局快捷键/命令入口）──
   // paneControllerStore 由 OpenCodeUI 迁移保留但从未注册：App 的
@@ -629,8 +567,7 @@ export function PiChatPane({
         ? null
         : homeModelKey)
 
-  // Thinking level: variants filtered by the current model's support map,
-  // current value from runtime state — the native home for this control.
+  // Thinking level candidates retain the existing model support-map behavior.
   const currentModelObj = useMemo(
     () =>
       models.find(m => `${m.provider}:${m.id}` === pendingModelKey) ??
@@ -711,38 +648,20 @@ export function PiChatPane({
     [sessionId],
   )
 
-  // Fork at a user message (pi TUI parity: branch BEFORE the message and
-  // carry its text into the new session's composer for edit-and-resend).
-  // forkMessageId is the merged tail entry id from ChatArea's visibility
-  // model. Forking the FIRST user message is a pure-frontend shortcut:
-  // there is no history to branch, so we just go home with the text
-  // pre-filled instead of leaving an empty in-memory session behind.
+  // Native before-user fork creates a new file even for the first user turn.
   const handleFork = useCallback(
     async (entryId: string, forkMessageId?: string) => {
       if (!sessionId) return
       const targetId = forkMessageId ?? entryId
-      const firstUser = itemsRef.current.find(item => item.kind === 'user_message')
-      if (firstUser && firstUser.entryId === targetId) {
-        const text = firstUser.blocks
-          .filter((block): block is Extract<typeof block, { type: 'text' }> => block?.type === 'text')
-          .map(block => block.text)
-          .join('\n')
-        stashForkText(HOME_FORK_KEY, text)
-        onNewChatRef.current?.()
-        return
-      }
       try {
         const result = await forkPiSession(sessionId, targetId, 'before')
-        if (result.cancelled || !result.targetSessionId) return
-        if (typeof result.selectedText === 'string' && result.selectedText.trim()) {
-          stashForkText(result.targetSessionId, result.selectedText)
-        }
+        if (result.cancelled || result.aborted || !result.targetSessionId) return
         const directory = result.targetCwd ?? currentDirectoryRef.current
         if (directory) {
           onEnterSessionRef.current?.(result.targetSessionId, directory)
         }
       } catch (error) {
-        console.error('Failed to fork session:', error)
+        uiErrorHandler('fork session', error)
       }
     },
     [sessionId],
@@ -846,11 +765,9 @@ export function PiChatPane({
       try {
         const result = await navigatePiTree(sessionId, { entryId })
         if (result.cancelled || result.aborted) return
-        if (result.editorText == null) clearSessionEditorDraft(sessionId)
-        else setSessionEditorDraft(sessionId, result.editorText)
         await commitRedoPlan(sessionId, checkpoints)
       } catch (error) {
-        console.error('Failed to undo message:', error)
+        uiErrorHandler('undo message', error)
       }
     },
     [sessionId, isStreaming],
@@ -863,12 +780,11 @@ export function PiChatPane({
     try {
       const result = await navigatePiTree(sessionId, { entryId: target })
       if (result.cancelled || result.aborted) return
-      clearSessionEditorDraft(sessionId)
       const restored = revertState.restored + 1
       if (restored >= revertState.checkpoints.length) updateRevertState(null)
       else updateRevertState({ ...revertState, restored })
     } catch (error) {
-      console.error('Failed to redo message:', error)
+      uiErrorHandler('redo message', error)
     }
   }, [sessionId, revertState, isStreaming, updateRevertState])
 
@@ -879,10 +795,9 @@ export function PiChatPane({
     try {
       const result = await navigatePiTree(sessionId, { entryId: target })
       if (result.cancelled || result.aborted) return
-      clearSessionEditorDraft(sessionId)
       updateRevertState(null)
     } catch (error) {
-      console.error('Failed to redo all:', error)
+      uiErrorHandler('redo all', error)
     }
   }, [sessionId, revertState, isStreaming, updateRevertState])
 
@@ -1007,14 +922,44 @@ export function PiChatPane({
   )
   const handleSend = useCallback(
     async (text: string, attachments: Attachment[], options?: { delivery?: 'steer' | 'followUp' }) => {
+      const capturedServerGeneration = activeServerGeneration
       let targetSessionId = sessionId
       try {
-        const pendingStop = sessionId ? pendingStopsRef.current.get(sessionId) : undefined
-        if (pendingStop && !(await pendingStop)) return false
+        // Only explicitly UI-namespaced actions are local. Official names,
+        // aliases, arguments and image inputs always reach the native prompt.
+        const uiCommand = /^\/(ui-[^\s]+)(?:\s|$)/.exec(text)?.[1]
+        switch (uiCommand) {
+          case 'ui-new':
+            onNewChatRef.current?.()
+            return true
+          case 'ui-settings':
+            onOpenSettings?.()
+            return true
+          case 'ui-hotkeys':
+            onOpenSettingsTab?.('keybindings')
+            return true
+          case 'ui-about':
+            onOpenSettingsTab?.('about')
+            return true
+          case 'ui-sessions':
+            onOpenSidebar?.()
+            return true
+          case 'ui-model':
+            modelSelectorRef.current?.openMenu()
+            return true
+          case 'ui-tree':
+            layoutStore.addSessionTreeTab('right')
+            return true
+          case 'ui-copy': {
+            const lastAssistant = [...itemsRef.current].reverse().find(item => item.kind === 'assistant_message')
+            const responseText = lastAssistant ? textFromTimelineItem(lastAssistant) : ''
+            if (!responseText) throw new Error('No AI response to copy')
+            await copyTextToClipboard(responseText)
+            return true
+          }
+        }
         const images = attachments.map(attachmentToImage).filter((image): image is PiImageInput => image !== null)
-        // Stop is an idle boundary, even if this callback captured streaming UI state.
-        const stopped = sessionId ? stoppedSessionsRef.current.has(sessionId) : false
-        const deliverAs = stopped ? undefined : (options?.delivery ?? (isStreaming ? 'followUp' : undefined))
+        const deliverAs = options?.delivery ?? 'followUp'
 
         if (!targetSessionId) {
           const directory = currentDirectoryRef.current || (await resolveWorkspacePath())
@@ -1039,34 +984,40 @@ export function PiChatPane({
           const preferred = getPreferredModelKey()
           const preferredModel = preferred ? models.find(m => `${m.provider}:${m.id}` === preferred) : undefined
           if (preferredModel) {
-            await setPiModel(targetSessionId, preferredModel.provider, preferredModel.id).catch(() => undefined)
+            await setPiModel(targetSessionId, preferredModel.provider, preferredModel.id)
           }
           const preferredVariant = preferred ? getModelVariantPref(preferred) : undefined
           if (preferredVariant) {
-            await setPiThinkingLevel(targetSessionId, preferredVariant).catch(() => undefined)
+            await setPiThinkingLevel(targetSessionId, preferredVariant)
           }
         }
         const sid = targetSessionId
         // The command resolves on backend acceptance, not at the end of the turn.
         // Until then InputBox retains both the text and its attachments.
-        await sendPiUserMessage(sid, text, images.length ? images : undefined, deliverAs)
-        stoppedSessionsRef.current.delete(sid)
+        await stopCoordinatorRef.current.submit(JSON.stringify([capturedServerGeneration, sid]), () => {
+          if (paneIdentityRef.current.activeServerGeneration !== capturedServerGeneration ||
+              (sessionId && paneIdentityRef.current.sessionId !== sessionId)) throw new Error('Session changed before message submission')
+          return sendPiUserMessage(sid, text, images.length ? images : undefined, deliverAs)
+        })
+        if (paneIdentityRef.current.activeServerGeneration !== capturedServerGeneration || paneIdentityRef.current.sessionId !== sid) return true
         const currentText = inputBoxRef.current?.getEditorText() ?? localComposerTextRef.current ?? text
         const remainingText = currentText === text ? '' : currentText
         localComposerTextRef.current = remainingText
         lastEditorTextRef.current = remainingText
-        clearSessionEditorDraft(sid)
-        setForkSeedText(undefined)
+        if (currentText === text) clearSessionEditorDraft(sid)
+        else syncSessionEditorDraft(sid, remainingText)
         void setPiExtensionEditorState(sid, remainingText).catch(() => undefined)
         scheduleDelayedRefresh(sid)
         return true
       } catch (error) {
-        uiErrorHandler('send message', error)
-        if (targetSessionId) scheduleDelayedRefresh(targetSessionId)
+        if (paneIdentityRef.current.activeServerGeneration === capturedServerGeneration) {
+          uiErrorHandler('send message', error)
+          if (targetSessionId) scheduleDelayedRefresh(targetSessionId)
+        }
         return false
       }
     },
-    [sessionId, isStreaming, models, scheduleDelayedRefresh],
+    [sessionId, activeServerGeneration, models, scheduleDelayedRefresh, onOpenSettings, onOpenSettingsTab, onOpenSidebar],
   )
 
   const handleSetGoal = useCallback(
@@ -1117,452 +1068,6 @@ export function PiChatPane({
     [models, sessionId],
   )
 
-  // Slash command dispatch, mirroring pi TUI: frontend built-ins are handled
-  // locally; everything else goes through the native prompt path, where the
-  // SDK executes extension commands and expands skills/prompt templates.
-  const handleCommand = useCallback(
-    async (commandStr: string): Promise<boolean> => {
-      const trimmed = commandStr.trim()
-      const withoutSlash = trimmed.startsWith('/') ? trimmed.slice(1) : trimmed
-      const spaceIndex = withoutSlash.indexOf(' ')
-      const command = spaceIndex > 0 ? withoutSlash.slice(0, spaceIndex) : withoutSlash
-      const args = spaceIndex > 0 ? withoutSlash.slice(spaceIndex + 1).trim() : ''
-      if (!command) return false
-
-      // 命令反馈日志：每个命令的执行结果（完整消息）都进扩展面板的"命令反馈"区，
-      // 通知只是瞬时的缩略提示。
-      // 自动展开：设置开启时，执行完命令把右侧面板切到扩展 tab（打开自身界面的命令除外）。
-      const report = (status: CommandFeedbackStatus, message: string, forSession: string | null = sessionId) => {
-        commandFeedbackStore.add({
-          sessionId: forSession ?? sessionId ?? '',
-          command,
-          args: args || undefined,
-          status,
-          message,
-        })
-        if (themeStore.autoExpandExtensionsOnCommand && !AUTO_EXPAND_EXCLUDED.has(command)) {
-          layoutStore.addExtensionsTab('right')
-        }
-      }
-
-      if (command === 'new') {
-        report('info', 'Started a new session')
-        onNewChatRef.current?.()
-        return true
-      }
-
-      if (command === 'settings') {
-        report('info', 'Opened the settings panel')
-        onOpenSettings?.()
-        return true
-      }
-
-      if (command === 'hotkeys') {
-        report('info', 'Opened keyboard shortcuts')
-        onOpenSettingsTab?.('keybindings')
-        return true
-      }
-
-      if (command === 'changelog') {
-        report('info', 'Opened the changelog (About)')
-        onOpenSettingsTab?.('about')
-        return true
-      }
-
-      if (command === 'resume') {
-        report('info', 'Opened the session list — pick a session to resume')
-        onOpenSidebar?.()
-        return true
-      }
-
-      if (command === 'model' && !args) {
-        report('info', 'Opened the model selector')
-        modelSelectorRef.current?.openMenu()
-        return true
-      }
-
-      let targetSessionId = sessionId
-      if (!targetSessionId) {
-        const directory = currentDirectoryRef.current
-        if (!directory) return false
-        const opened = await openPiSession(directory)
-        if (!opened.sessionId) return false
-        targetSessionId = opened.sessionId
-        onEnterSessionRef.current?.(targetSessionId, directory)
-      }
-      const sid = targetSessionId
-
-      // 与 handleSend 相同的发送前清理：斜杠命令路径同样要取消挂起的输入
-      // 同步防抖并清空 worker 的扩展编辑器状态——否则 500ms 后旧文本被写回
-      // worker，下一次 extensionUiStore 刷新经 editor bridge 回填输入框
-      // （表现为发送 /permission 这类命令后输入框又被旧文本填回）。
-      clearSessionEditorDraft(sid)
-      void setPiExtensionEditorState(sid, '').catch(() => undefined)
-
-      if (command === 'compact') {
-        // 启动即有反馈（SDK 无压缩进度流，只有 start/end 事件）——先记一条
-        // "已开始"，避免干等；结束再记结果。
-        report('info', 'Compaction started — this can take a while (no progress stream from the SDK)', sid)
-        void compactPiSession(sid, args || undefined)
-          .then(async result => {
-            const details =
-              result && typeof result === 'object' && !Array.isArray(result) ? (result as Record<string, unknown>) : {}
-            const skipped = details.status === 'skipped'
-            const message =
-              typeof details.message === 'string'
-                ? details.message
-                : skipped
-                  ? i18n.t('chat:notification.nothingToCompact')
-                  : i18n.t('chat:notification.contextCompacted')
-            report(skipped ? 'info' : 'ok', message, sid)
-            notificationStore.push(
-              'completed',
-              skipped ? i18n.t('chat:notification.compactSkipped') : i18n.t('chat:notification.compactCompleted'),
-              message,
-              sid,
-              currentDirectoryRef.current,
-            )
-            await Promise.all([refreshPiBranch(sid), refreshPiSessionState(sid)])
-          })
-          .catch(error => {
-            console.error('Failed to compact session:', error)
-            const message = error instanceof Error ? error.message : String(error)
-            report('error', `Compaction failed: ${message}`, sid)
-            notificationStore.push(
-              'error',
-              i18n.t('chat:notification.compactFailed'),
-              message,
-              sid,
-              currentDirectoryRef.current,
-            )
-          })
-        return true
-      }
-
-      // /bash <command> — one-shot bash via the slash command path
-      if (command === 'bash') {
-        if (!args) {
-          report('error', 'Usage: /bash <command>', sid)
-          notificationStore.push('error', '/bash', 'Usage: /bash <command>', sid, currentDirectoryRef.current)
-          return true
-        }
-        report('ok', `Running: ${args}`, sid)
-        const clientId = crypto.randomUUID()
-        bashPendingStore.add(sid, clientId, args)
-        void executePiBash(sid, args, undefined, clientId).catch(error => {
-          console.error('Failed to run bash command:', error)
-          const message = error instanceof Error ? error.message : String(error)
-          report('error', `bash failed: ${message}`, sid)
-          notificationStore.push('error', '/bash', message, sid, currentDirectoryRef.current)
-        })
-        scheduleDelayedRefresh(sid)
-        return true
-      }
-
-      // /share — pi TUI 的 gist 分享依赖本机 gh CLI，Web 客户端暂不提供
-      if (command === 'share') {
-        report('info', 'Gist sharing needs the gh CLI on the server host; use /export to save the session instead', sid)
-        notificationStore.push(
-          'completed',
-          '/share',
-          'Gist sharing needs the gh CLI on the server host; use /export to save the session instead',
-          sid,
-          currentDirectoryRef.current,
-        )
-        return true
-      }
-
-      if (command === 'reload') {
-        try {
-          await reloadPiSessionResources(sid)
-          report('ok', 'Pi resources reloaded (keybindings, extensions, skills, prompts, themes, context files)', sid)
-          notificationStore.push('completed', '/reload', 'Pi resources reloaded', sid, currentDirectoryRef.current)
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          report('error', `Reload failed: ${message}`, sid)
-          notificationStore.push('error', '/reload', message, sid, currentDirectoryRef.current)
-        }
-        return true
-      }
-
-      if (command === 'model') {
-        const requested = args.includes(':') ? args : args.split(/\s+/).slice(0, 2).join(':')
-        const model = models.find(item => `${item.provider}:${item.id}` === requested)
-        if (!model) {
-          report('error', `Unknown model: ${args}`, sid)
-          notificationStore.push('error', '/model', `Unknown model: ${args}`, sid, currentDirectoryRef.current)
-          return true
-        }
-        report('ok', `Switched to ${model.provider}/${model.id}`, sid)
-        handleModelChange(requested, model)
-        return true
-      }
-
-      if (command === 'scoped-models') {
-        const patterns = args
-          .split(/[\s,]+/)
-          .map(value => value.trim())
-          .filter(Boolean)
-        if (patterns.length === 0) {
-          report('info', 'Opened scoped-model settings', sid)
-          onOpenSettingsTab?.('config')
-          return true
-        }
-        await setPiScopedModels(sid, patterns)
-        await refreshPiSessionState(sid)
-        report('ok', `Scoped models: ${patterns.join(', ')}`, sid)
-        return true
-      }
-
-      if (command === 'name') {
-        if (!args) {
-          const currentName = state?.sessionName
-          report(
-            'info',
-            typeof currentName === 'string' && currentName ? `Current name: ${currentName}` : 'Session has no name',
-            sid,
-          )
-          notificationStore.push(
-            'completed',
-            '/name',
-            typeof currentName === 'string' && currentName ? currentName : 'Session has no name',
-            sid,
-            currentDirectoryRef.current,
-          )
-          return true
-        }
-        await renamePiSession(sid, args)
-        report('ok', `Renamed session to "${args}"`, sid)
-        return true
-      }
-
-      if (command === 'copy') {
-        const lastAssistant = [...items].reverse().find(item => item.kind === 'assistant_message')
-        const text = lastAssistant ? textFromTimelineItem(lastAssistant) : ''
-        if (!text) {
-          report('error', 'No AI response to copy', sid)
-          notificationStore.push('error', '/copy', 'No AI response to copy', sid, currentDirectoryRef.current)
-          return true
-        }
-        await copyTextToClipboard(text)
-        report('ok', 'Copied the last AI response to the clipboard', sid)
-        notificationStore.push('completed', '/copy', 'AI response copied', sid, currentDirectoryRef.current)
-        return true
-      }
-
-      if (command === 'clone') {
-        const result = await newPiSessionFrom(sid)
-        if (result.targetSessionId) {
-          report('ok', `Cloned into a new session ${result.targetSessionId}`, sid)
-          onEnterSessionRef.current?.(result.targetSessionId, result.targetCwd ?? currentDirectoryRef.current ?? '')
-        }
-        return true
-      }
-
-      if (command === 'fork') {
-        const target = args || [...items].reverse().find(item => item.kind === 'user_message')?.entryId
-        if (!target) {
-          report('error', 'No user message to fork from', sid)
-          notificationStore.push('error', '/fork', 'No user message to fork from', sid, currentDirectoryRef.current)
-          return true
-        }
-        await handleFork(target)
-        report('ok', `Forked from entry ${target}`, sid)
-        return true
-      }
-
-      if (command === 'trust') {
-        const decision = args.toLowerCase()
-        if (!decision) {
-          report('info', 'Opened project trust settings', sid)
-          onOpenSettingsTab?.('config')
-          return true
-        }
-        const value =
-          decision === 'yes' || decision === 'true' || decision === 'allow'
-            ? true
-            : decision === 'no' || decision === 'false' || decision === 'deny'
-              ? false
-              : decision === 'reset' || decision === 'ask'
-                ? null
-                : undefined
-        if (value === undefined) {
-          report('error', 'Use yes, no, or reset', sid)
-          notificationStore.push('error', '/trust', 'Use yes, no, or reset', sid, currentDirectoryRef.current)
-          return true
-        }
-        const cwd = currentDirectoryRef.current
-        if (!cwd) {
-          report('error', 'Open a project before changing trust', sid)
-          notificationStore.push(
-            'error',
-            '/trust',
-            'Open a project before changing trust',
-            sid,
-            currentDirectoryRef.current,
-          )
-          return true
-        }
-        await setPiProjectTrust(cwd, value)
-        report('ok', `Project trust set to ${value === null ? 'ask' : value ? 'trusted' : 'denied'}: ${cwd}`, sid)
-        return true
-      }
-
-      if (command === 'logout') {
-        if (!args) {
-          report('info', 'Opened provider settings', sid)
-          onOpenSettingsTab?.('config')
-          return true
-        }
-        const provider = args.split(/\s+/)[0]!
-        await logoutPiProvider(provider)
-        report('ok', `Logged out of ${provider}`, sid)
-        return true
-      }
-
-      if (command === 'login') {
-        if (!args) {
-          report('info', 'Opened provider settings', sid)
-          onOpenSettings?.()
-          return true
-        }
-        const provider = args.split(/\s+/)[0]!
-        await startPiProviderAuth(provider)
-        report('ok', `Started login flow for ${provider}`, sid)
-        return true
-      }
-
-      if (command === 'export') {
-        const baseDirectory = currentDirectoryRef.current || (await resolveWorkspacePath())
-        if (!baseDirectory) {
-          report('error', 'Unable to resolve the active workspace for export', sid)
-          return false
-        }
-        const outputPath = resolveExportOutputPath(args, baseDirectory)
-        const format = outputPath.toLowerCase().endsWith('.jsonl') ? 'jsonl' : 'html'
-        await exportPiSession(sid, format, outputPath)
-        report('ok', `Exported session (${format}) to ${outputPath}`, sid)
-        notificationStore.push('completed', '/export', outputPath, sid, currentDirectoryRef.current)
-        return true
-      }
-
-      if (command === 'import') {
-        if (!args) {
-          report('error', 'Provide a session JSONL path', sid)
-          notificationStore.push('error', '/import', 'Provide a session JSONL path', sid, currentDirectoryRef.current)
-          return true
-        }
-        const result = await importPiSession(sid, args)
-        if (result.targetSessionId) {
-          report('ok', `Imported session ${result.targetSessionId} from ${args}`, sid)
-          onEnterSessionRef.current?.(result.targetSessionId, result.targetCwd ?? currentDirectoryRef.current ?? '')
-        }
-        return true
-      }
-
-      if (command === 'tree') {
-        // 跳到右侧会话树标签（而不是 toggle：面板已开时不会把它关掉）
-        report('info', 'Opened the session tree panel')
-        layoutStore.addSessionTreeTab('right')
-        return true
-      }
-
-      if (command === 'session') {
-        const model = state?.model as { provider?: string; id?: string } | undefined
-        const stats = state?.sessionStats as
-          { totalMessages?: number; userMessages?: number; assistantMessages?: number; toolCalls?: number } | undefined
-        const summary = [
-          typeof state?.sessionName === 'string' && state.sessionName ? state.sessionName : sid,
-          model?.provider && model.id ? `${model.provider}/${model.id}` : undefined,
-          stats
-            ? `${stats.totalMessages ?? 0} messages · ${stats.userMessages ?? 0} user · ${stats.assistantMessages ?? 0} assistant · ${stats.toolCalls ?? 0} tool calls`
-            : undefined,
-        ]
-          .filter(Boolean)
-          .join(' · ')
-        report('ok', summary, sid)
-        notificationStore.push('completed', '/session', summary, sid, currentDirectoryRef.current)
-        return true
-      }
-
-      if (command === 'quit') {
-        report('info', 'The web app stays open; close its window to exit', sid)
-        notificationStore.push(
-          'completed',
-          '/quit',
-          'The web app stays open; close its window to exit',
-          sid,
-          currentDirectoryRef.current,
-        )
-        return true
-      }
-
-      const registry = await loadPiSessionRegistry(sid)
-      const registered = registry?.commands.find(item => item.name === command)
-      const sourceInfo = registered?.sourceInfo
-      const isBuiltin = Boolean(
-        sourceInfo && typeof sourceInfo === 'object' && !Array.isArray(sourceInfo) && sourceInfo.builtin === true,
-      )
-      if (isBuiltin) {
-        report('error', 'This Pi command needs a GUI interaction that is not available here yet', sid)
-        notificationStore.push(
-          'error',
-          `/${command}`,
-          'This Pi command needs a GUI interaction that is not available here yet',
-          sid,
-          currentDirectoryRef.current,
-        )
-        return true
-      }
-
-      // 扩展命令（如 /exa /ui-test-*）：真正调用扩展注册的 handler，而不是
-      // 当普通消息发给模型（那只会让模型回答一段"这不是命令"的废话）。
-      // 反馈走 pi 原生语义：命令自己的 ctx.ui.notify / 返回值就是结果。
-      // 这里不再前置记录 "Invoking" 日志——自带 notify 的命令（/permission
-      // /exa 等）会因此出现两条重复通知。
-      if (registered) {
-        try {
-          const result = await invokePiCommand(sid, command, args)
-          const summary = typeof result === 'string' && result ? result : ''
-          if (summary) {
-            report('ok', summary, sid)
-          } else if (themeStore.autoExpandExtensionsOnCommand && !AUTO_EXPAND_EXCLUDED.has(command)) {
-            // 静默命令（无返回也不 notify）：至少把扩展面板带出来看状态变化
-            layoutStore.addExtensionsTab('right')
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          report('error', `/${command} failed: ${message}`, sid)
-        }
-        scheduleDelayedRefresh(sid)
-        return true
-      }
-
-      report('info', `Sent "${trimmed}" to the model (not a known command)`, sid)
-      void sendPiPrompt(sid, trimmed, {
-        streamingBehavior: isStreaming ? 'followUp' : undefined,
-      }).catch(error => {
-        uiErrorHandler('send command', error)
-        setSessionEditorDraft(sid, trimmed)
-      })
-      scheduleDelayedRefresh(sid)
-      return true
-    },
-    [
-      currentDirectoryRef,
-      handleFork,
-      handleModelChange,
-      isStreaming,
-      items,
-      models,
-      onOpenSettings,
-      onOpenSettingsTab,
-      onOpenSidebar,
-      scheduleDelayedRefresh,
-      sessionId,
-      state,
-    ],
-  )
 
   // Image attachment capability from the current model's native input
   // kinds; home (unknown default model) optimistically allows when any
@@ -1839,8 +1344,8 @@ export function PiChatPane({
       />
 
       <ExtensionUiDialogHost sessionId={sessionId} collapsed={dialogCollapsed} onCollapsedChange={setDialogCollapsed} />
-
       <ProjectTrustPrompt cwd={currentDirectory} />
+
 
       <div ref={inputBoxWrapperRef} className="absolute bottom-0 left-0 right-0 z-10 pointer-events-none">
         {/* 仅由输入区和可见按钮接收触摸，避免收起后的透明占位阻挡消息滚动。 */}
@@ -1849,26 +1354,26 @@ export function PiChatPane({
             ref={inputBoxRef}
             paneId={paneId}
             sessionId={sessionId}
+            draftKey={composerDraftKey(activeServer, sessionId, currentDirectory ?? '', paneId)}
             queuedSteering={queuedSteering}
             queuedFollowUps={queuedFollowUps}
-            onQueueBackToInput={handleQueueBackToInput}
-            onQueueSendNow={handleQueueSendNow}
-            onQueueClear={handleQueueClear}
+            onQueueBackToInput={queue?.editable === false ? undefined : handleQueueBackToInput}
+            onQueueSendNow={queue?.editable === false ? undefined : handleQueueSendNow}
+            onQueueClear={queue?.editable === false ? undefined : handleQueueClear}
             onQueueOpenInSideChat={handleQueueOpenInSideChat}
             rootPath={inputRootPath}
             onSend={handleSend}
-            onCommand={handleCommand}
             onCycleModel={direction =>
               sessionId &&
               void cyclePiModel(sessionId, direction)
                 .then(() => refreshPiSessionState(sessionId))
-                .catch(() => undefined)
+                .catch(error => uiErrorHandler('cycle model', error))
             }
             onCycleThinkingLevel={() =>
               sessionId &&
               void cyclePiThinkingLevel(sessionId)
                 .then(() => refreshPiSessionState(sessionId))
-                .catch(() => undefined)
+                .catch(error => uiErrorHandler('cycle thinking level', error))
             }
             onOpenModelSelector={() => modelSelectorRef.current?.openMenu()}
             onTextChange={handleTextChange}
@@ -1891,7 +1396,8 @@ export function PiChatPane({
             variants={thinkingLevels}
             selectedVariant={thinkingLevel}
             onVariantChange={handleVariantChange}
-            revertedText={editorDraft?.text ?? forkSeedText}
+            revertedText={editorDraft?.text}
+            revertedDelivery={editorDraft?.delivery}
             revertedAttachments={editorDraft?.attachments}
             canRedo={canRedo}
             revertSteps={revertSteps}

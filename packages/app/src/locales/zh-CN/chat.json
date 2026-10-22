@@ -24,6 +24,7 @@
     "loadingHistory": "加载历史记录...",
     "historyLoadFailed": "历史记录加载失败",
     "retryHistory": "重新加载历史记录",
+    "nativeChangeRefreshFailed": "原生历史变更已完成，但会话刷新失败。已恢复的草稿仍然保留。",
     "currentTurnQueue": "等待本轮追加 · {{count}}",
     "nextTurnQueue": "等待下一轮 · {{count}}",
     "dropFolderToAddProject": "添加为项目",
@@ -42,7 +43,8 @@
     "editQueueItem": "编辑消息（回到输入框）",
     "openQueueInSideChat": "在侧边聊天中打开",
     "openQueueMenu": "打开排队消息菜单",
-    "queueOptions": "排队消息操作"
+    "queueOptions": "排队消息操作",
+    "queuedImages": "{{count}} 张排队图片"
   },
   "emptyState": {
     "title": "开始新对话",

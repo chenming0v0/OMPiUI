@@ -21,7 +21,6 @@ import { useMobileCollapse } from './input/useMobileCollapse'
 import { useAttachmentRail } from './input/useAttachmentRail'
 import { useInputHistory } from './input/useInputHistory'
 import { useComposerDraft } from './input/useComposerDraft'
-import { getComposerDraft, updateComposerDraft, wasComposerDraftMovedFrom } from './input/composerDraftStore'
 import {
   TEXT_STYLE,
   bytesToDataUrl,
@@ -153,7 +152,6 @@ export interface InputBoxProps extends ComposerQueueProps {
     options?: { agent?: string; variant?: string; delivery?: 'steer' | 'followUp' },
   ) => Promise<boolean> | boolean
   onAbort?: () => Promise<void> | void
-  onCommand?: (command: string) => Promise<boolean> | boolean // 斜杠命令回调，接收完整命令字符串如 "/help"
   onCycleModel?: (direction: 'forward' | 'backward') => void
   onCycleThinkingLevel?: () => void
   onOpenModelSelector?: () => void
@@ -186,6 +184,7 @@ export interface InputBoxProps extends ComposerQueueProps {
   // Undo/Redo
   revertedText?: string
   revertedAttachments?: Attachment[]
+  revertedDelivery?: 'steer' | 'followUp'
   restoreMode?: 'replace' | 'append'
   canRedo?: boolean
   revertSteps?: number
@@ -218,7 +217,6 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   paneId,
   onSend,
   onAbort,
-  onCommand,
   onCycleModel,
   onCycleThinkingLevel,
   onOpenModelSelector,
@@ -245,6 +243,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   draftKey,
   revertedText,
   revertedAttachments,
+  revertedDelivery,
   restoreMode = 'replace',
   canRedo = false,
   revertSteps = 0,
@@ -315,6 +314,18 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
       : piCapabilities.promptSteer
         ? 'steer'
         : undefined
+  const restoredDeliveryRef = useRef<{ key?: string; text?: string; attachments?: Attachment[]; delivery?: 'steer' | 'followUp' } | null>(null)
+
+  useEffect(() => {
+    if (!revertedDelivery) return
+    const previous = restoredDeliveryRef.current
+    if (previous && previous.key === draftKey && previous.text === revertedText && previous.attachments === revertedAttachments && previous.delivery === revertedDelivery) return
+    const frame = requestAnimationFrame(() => {
+      restoredDeliveryRef.current = { key: draftKey, text: revertedText, attachments: revertedAttachments, delivery: revertedDelivery }
+      setDeliveryMode(revertedDelivery)
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [draftKey, revertedDelivery, revertedText, revertedAttachments])
 
   // @ Mention 状态
   const [mentionOpen, setMentionOpen] = useState(false)
@@ -378,10 +389,8 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   const [composerMaxHeight, setComposerMaxHeight] = useState(280)
   const [inputContainerMaxHeight, setInputContainerMaxHeight] = useState(240)
   const [textareaMaxHeight, setTextareaMaxHeight] = useState(180)
-  const activeDraftKeyRef = useRef(draftKey)
   const restoredTextByDraftRef = useRef(new Map<string | undefined, string | undefined>())
   useLayoutEffect(() => {
-    activeDraftKeyRef.current = draftKey
     prevRevertedTextRef.current = restoredTextByDraftRef.current.get(draftKey)
     appendedRestoreRef.current = undefined
   }, [draftKey])
@@ -568,75 +577,6 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   // Handlers
   // ============================================
 
-  const resetDraft = useCallback(() => {
-    latestDraftRef.current = { text: '', attachments: [] }
-    setText('')
-    setAttachments([])
-    resetHistoryIndex()
-  }, [resetHistoryIndex, setText, setAttachments])
-
-  const restoreDraft = useCallback(
-    (draft: HistoryEntry) => {
-      latestDraftRef.current = draft
-      setText(draft.text)
-      setAttachments(draft.attachments)
-      resetHistoryIndex()
-
-      requestAnimationFrame(() => {
-        if (!textareaRef.current) return
-        const cursorPos = draft.text.length
-        textareaRef.current.focus()
-        textareaRef.current.setSelectionRange(cursorPos, cursorPos)
-      })
-    },
-    [resetHistoryIndex, setText, setAttachments],
-  )
-
-  const submitCommandOptimistically = useCallback(
-    (commandStr: string) => {
-      if (!onCommand) return
-
-      const draftSnapshot: HistoryEntry = {
-        text,
-        attachments: [...attachments],
-      }
-
-      resetDraft()
-      requestAnimationFrame(() => {
-        if (!textareaRef.current) return
-        textareaRef.current.focus()
-        textareaRef.current.setSelectionRange(0, 0)
-      })
-
-      void (async () => {
-        let result: boolean | void
-        try {
-          result = await onCommand(commandStr)
-        } catch {
-          result = false
-        }
-
-        if (result !== false) {
-          onClearRevert?.()
-          return
-        }
-
-        const activeKey = activeDraftKeyRef.current
-        const recoveryKey = draftKey && activeKey && wasComposerDraftMovedFrom(activeKey, draftKey)
-          ? activeKey
-          : draftKey
-        const currentDraft = recoveryKey ? getComposerDraft(recoveryKey) : latestDraftRef.current
-        if (currentDraft.text.length === 0 && currentDraft.attachments.length === 0) {
-          if (recoveryKey && recoveryKey !== draftKey) {
-            updateComposerDraft(recoveryKey, () => ({ ...draftSnapshot, ready: true }))
-          } else {
-            restoreDraft(draftSnapshot)
-          }
-        }
-      })()
-    },
-    [attachments, onClearRevert, onCommand, resetDraft, restoreDraft, text, draftKey],
-  )
 
   const runSubmit = useCallback(
     async (submit: () => Promise<boolean | void> | boolean | void, onSuccess?: () => void, onFailure?: () => void) => {
@@ -674,25 +614,11 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
       return
     }
 
-    // 检测 command attachment
-    const commandAttachment = attachments.find(a => a.type === 'command')
-    if (commandAttachment && commandAttachment.commandName) {
-      if (!onCommand) return
-
-      // 提取命令后的参数文本
-      const textRange = commandAttachment.textRange
-      const afterCommand = textRange ? text.slice(textRange.end).trim() : ''
-      const commandStr = `/${commandAttachment.commandName}${afterCommand ? ' ' + afterCommand : ''}`
-      submitCommandOptimistically(commandStr)
-      return
-    }
-
-    // 从 attachments 中找 agent mention
     void runSubmit(
       () =>
-        onSend(text, attachments, {
+        onSend(text, attachments.filter(attachment => attachment.type !== 'command'), {
           variant: selectedVariant,
-          ...(isStreaming && effectiveDeliveryMode ? { delivery: effectiveDeliveryMode } : {}),
+          ...(effectiveDeliveryMode ? { delivery: effectiveDeliveryMode } : {}),
         }),
       () => {
         // Acceptance belongs to this snapshot, not edits made while awaiting it.
@@ -706,15 +632,12 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
     attachments,
     canSend,
     isSubmitting,
-    onCommand,
     onClearRevert,
     onSend,
     resetHistoryIndex,
     runSubmit,
     selectedVariant,
-    isStreaming,
     effectiveDeliveryMode,
-    submitCommandOptimistically,
     setText,
     setAttachments,
     text,
@@ -1228,15 +1151,6 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   // / Slash Command 选择处理 - 类似 @ mention
   const handleSlashSelect = useCallback(
     (command: Command) => {
-      if (command.source === 'frontend') {
-        if (!onCommand) return
-
-        setSlashOpen(false)
-        submitCommandOptimistically(`/${command.name}`)
-        requestAnimationFrame(() => textareaRef.current?.focus())
-        return
-      }
-
       if (!textareaRef.current) return
 
       // 构建 /command 文本
@@ -1279,7 +1193,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
       // 自动弹出参数补全：选中带参命令后光标已在参数区，直接列出候选
       // （无候选的命令会自动关闭菜单，不发多余 UI）
       const argStart = slashStartIndex + commandText.length + 1
-      void requestArgCompletions({ commandName: command.name, argStart }, '')
+      if (command.source !== 'frontend') void requestArgCompletions({ commandName: command.name, argStart }, '')
 
       // 移动光标到命令后
       requestAnimationFrame(() => {
@@ -1289,7 +1203,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
         textareaRef.current.focus()
       })
     },
-    [text, slashStartIndex, slashQuery, onCommand, requestArgCompletions, submitCommandOptimistically, setText, setAttachments],
+    [text, slashStartIndex, slashQuery, requestArgCompletions, setText, setAttachments],
   )
 
   const handleSlashClose = useCallback(() => {

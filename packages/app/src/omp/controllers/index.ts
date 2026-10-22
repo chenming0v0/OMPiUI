@@ -19,6 +19,11 @@ import { serverStore } from '../../store/serverStore'
 import { ompSubagentStore } from '../ompSubagentStore'
 import { trackPiSession } from '../ompSessionIndex'
 import type { PiBranchPage } from '../domain/index.js'
+import { setSessionEditorDraft } from '../sessionEditorDraftStore'
+import { composerDraftKey, updateComposerDraft } from '../../features/chat/input/composerDraftStore'
+import { imageInputToAttachment } from '../../features/pi-chat/attachmentToImage'
+import { notificationStore } from '../../store/notificationStore'
+import i18n from '../../i18n'
 
 /**
  * Load a session's native slash commands (extension commands, prompt
@@ -303,6 +308,7 @@ async function loadPiSessionDataOnce(sessionId: string, signal?: AbortSignal): P
       mergeLatestBranchPage(piBranchStore.getData(sessionId), preview.branch),
       branchVersion,
     )
+    reconcilePiSessionSnapshot(sessionId)
   } catch (error) {
     if (serverStore.getActiveServerGeneration() !== serverGeneration) return
     if (piSessionStateStore.isRequestCurrent(sessionId, requestVersion))
@@ -521,7 +527,9 @@ export async function returnToLatestPiBranch(sessionId: string): Promise<void> {
     maxBytes,
   }))
   if (serverStore.getActiveServerGeneration() !== generation) return
-  piBranchStore.setDataIfCurrent(sessionId, latest, version)
+  const current = piBranchStore.getData(sessionId)
+  const merged = mergeLatestBranchPage(current ? { ...current, items: [], client: { ...current.client, historyWindowed: false } } : null, latest)
+  piBranchStore.setDataIfCurrent(sessionId, merged, version)
 }
 
 export function refreshPiBranch(
@@ -613,18 +621,30 @@ export async function refreshPiSessionState(sessionId: string, signal?: AbortSig
   const currentRequest = piSessionStateStore.isRequestCurrent(sessionId, requestVersion)
   if (!piSessionStateStore.setStateIfCurrent(sessionId, snapshot as JsonObject, requestVersion)) return
   if (!currentRequest) return
+  reconcilePiSessionSnapshot(sessionId)
+}
+
+function reconcilePiSessionSnapshot(sessionId: string): void {
   const state = piSessionStateStore.getState(sessionId)
   // worker 的子代理注册表快照并入全局 store：页面刷新 / 重连后 HUD 与
   // TaskRenderer 内联视图据此恢复（运行中的随后由 progress 帧继续推进）
   if (isJsonObject(state)) {
+    if (state.isStreaming === true && !state.toolInterruption) piBranchStore.beginToolExecutions(sessionId)
     const settled =
-      state.isIdle === true &&
+      (typeof state.isSettled === 'boolean' ? state.isSettled : state.isIdle === true) &&
       !state.isStreaming &&
       !state.isCompacting &&
       !state.isRetrying &&
       !state.isBashRunning &&
-      !state.hasPendingAsyncWork
-    if (settled) settlePiLiveMessage(sessionId)
+      !state.hasPendingAsyncWork &&
+      Number(state.pendingMessageCount ?? state.queuedMessageCount ?? 0) === 0
+    if (settled) {
+      const interruption = isJsonObject(state.toolInterruption) ? state.toolInterruption : undefined
+      const kind = interruption?.kind === 'failed' || interruption?.kind === 'cancelled' ? interruption.kind : 'unknown'
+      const error = typeof interruption?.error === 'string' && interruption.error.trim() ? interruption.error : 'Session settled before this tool returned a result; execution outcome is unknown'
+      piBranchStore.interruptToolExecutions(sessionId, error, kind)
+      settlePiLiveMessage(sessionId)
+    }
     if (Array.isArray(state.subagents) || (settled && state.diskPreview === true)) {
       ompSubagentStore.applySnapshot(sessionId, Array.isArray(state.subagents) ? state.subagents : [], settled)
     }
@@ -890,9 +910,14 @@ export async function forkPiSession(
   position: 'before' | 'at' = 'at',
   signal?: AbortSignal,
 ): Promise<transport.PiForkResult> {
+  const generation = serverStore.getActiveServerGeneration()
   const submitted = await transport.forkPiSession(sessionId, { entryId, position }, signal)
-  const result = await transport.waitHostCommand(submitted.id, signal)
-  return (result ?? {}) as transport.PiForkResult
+  const result = (await transport.waitHostCommand(submitted.id, signal) ?? {}) as transport.PiForkResult
+  if (generation === serverStore.getActiveServerGeneration() && result.cancelled === false && !result.aborted && result.targetSessionId) {
+    restoreNativeDraft(result.targetSessionId, result.selectedText ?? '', result.selectedImages ?? [])
+    if (result.projectionError) notificationStore.push('error', i18n.t('chat:chatArea.nativeChangeRefreshFailed'), result.projectionError, result.targetSessionId)
+  }
+  return result
 }
 
 /**
@@ -904,9 +929,21 @@ export async function navigatePiTree(
   params: transport.PiNavigateTreeParams,
   signal?: AbortSignal,
 ): Promise<transport.PiNavigateTreeResult> {
+  const generation = serverStore.getActiveServerGeneration()
   const submitted = await transport.navigatePiTree(sessionId, params, signal)
-  const result = await transport.waitHostCommand(submitted.id, signal)
-  return (result ?? {}) as transport.PiNavigateTreeResult
+  const result = (await transport.waitHostCommand(submitted.id, signal) ?? {}) as transport.PiNavigateTreeResult
+  if (generation === serverStore.getActiveServerGeneration() && result.cancelled === false && !result.aborted && !result.noOp) {
+    restoreNativeDraft(sessionId, result.editorText ?? '', result.editorImages ?? [])
+    if (result.projectionError) notificationStore.push('error', i18n.t('chat:chatArea.nativeChangeRefreshFailed'), result.projectionError, sessionId)
+  }
+  return result
+}
+
+function restoreNativeDraft(sessionId: string, text: string, images: transport.PiImageInput[]): void {
+  const attachments = images.map(imageInputToAttachment)
+  const key = composerDraftKey(serverStore.getActiveServer(), sessionId, '', '')
+  updateComposerDraft(key, () => ({ text, attachments, ready: true }))
+  setSessionEditorDraft(sessionId, text, { sync: false, attachments })
 }
 
 /**

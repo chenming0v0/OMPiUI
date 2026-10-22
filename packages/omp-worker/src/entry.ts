@@ -189,7 +189,7 @@ function subscribeRuntimeEvents(current: SessionRuntime): Array<() => void> {
     unsubs.push(current.onExtensionUi(event => send({
       kind: "event",
       generation: workerGeneration,
-      sessionId: current.getSessionId(),
+      sessionId: typeof event.sessionId === "string" ? event.sessionId : current.getSessionId(),
       channel: "extension.ui",
       event: toJsonObject(event),
     })))

@@ -28,10 +28,15 @@
   },
   "toolPart": {
     "running": "Running",
-    "failed": "Failed"
+    "pending": "Waiting to execute",
+    "failed": "Failed",
+    "cancelled": "Interrupted",
+    "unknown": "Outcome unknown"
   },
   "toolSteps": {
     "separator": ", ",
+    "pending_one": "{{count}} tool waiting to execute",
+    "pending_other": "{{count}} tools waiting to execute",
     "executeDone_one": "Ran {{count}} command",
     "executeDone_other": "Ran {{count}} commands",
     "executeActive": "Running command",

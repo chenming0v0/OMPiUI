@@ -226,7 +226,7 @@ class ActiveSessionStore {
 
     for (const p of permissions) {
       const desc = p.patterns?.length ? `${p.permission}: ${p.patterns[0]}` : p.permission
-      pendingRequests.set(p.id, {
+      pendingRequests.set(JSON.stringify([p.sessionID, p.id]), {
         requestId: p.id,
         sessionId: p.sessionID,
         type: 'permission',
@@ -241,7 +241,7 @@ class ActiveSessionStore {
 
     for (const q of questions) {
       const desc = q.questions?.[0]?.header || 'Waiting for input'
-      pendingRequests.set(q.id, {
+      pendingRequests.set(JSON.stringify([q.sessionID, q.id]), {
         requestId: q.id,
         sessionId: q.sessionID,
         type: 'question',
@@ -268,7 +268,7 @@ class ActiveSessionStore {
   // ============================================
 
   addPendingRequest(requestId: string, sessionId: string, type: 'permission' | 'question', description?: string) {
-    this.pendingRequests.set(requestId, { requestId, sessionId, type, description })
+    this.pendingRequests.set(JSON.stringify([sessionId, requestId]), { requestId, sessionId, type, description })
     // 确保 session 在 busy 列表
     if (!this.state.statusMap[sessionId] || this.state.statusMap[sessionId].type === 'idle') {
       const newMap = { ...this.state.statusMap, [sessionId]: { type: 'busy' as const } }
@@ -282,10 +282,14 @@ class ActiveSessionStore {
   // SSE 事件：permission/question replied → 移除 pending
   // ============================================
 
-  resolvePendingRequest(requestId: string) {
-    const req = this.pendingRequests.get(requestId)
+  resolvePendingRequest(requestId: string, sessionId?: string) {
+    const key = sessionId === undefined
+      ? [...this.pendingRequests].find(([, request]) => request.requestId === requestId)?.[0]
+      : JSON.stringify([sessionId, requestId])
+    if (key === undefined) return
+    const req = this.pendingRequests.get(key)
     if (!req) return
-    this.pendingRequests.delete(requestId)
+    this.pendingRequests.delete(key)
 
     // 检查该 session 是否还有其他 pending，没有且 deferred 就移出 busy
     if (this.deferredIdleSessions.has(req.sessionId) && !this.hasPendingForSession(req.sessionId)) {

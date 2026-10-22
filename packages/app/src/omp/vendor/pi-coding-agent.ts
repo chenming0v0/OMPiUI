@@ -55,8 +55,11 @@ export interface Skill {
   description: string
   filePath: string
   baseDir: string
-  sourceInfo: SourceInfo
-  disableModelInvocation: boolean
+  sourceInfo?: SourceInfo
+  source?: string
+  disableModelInvocation?: boolean
+  /** Native OMP resolves disableModelInvocation into hide during discovery. */
+  hide?: boolean
 }
 
 /** Represents a prompt template loaded from a markdown file. */
@@ -65,8 +68,9 @@ export interface PromptTemplate {
   description: string
   argumentHint?: string
   content: string
-  sourceInfo: SourceInfo
-  filePath: string
+  sourceInfo?: SourceInfo
+  source?: string
+  filePath?: string
 }
 
 // ---------------------------------------------------------------------------

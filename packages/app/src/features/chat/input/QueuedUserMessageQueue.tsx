@@ -1,16 +1,23 @@
 import { memo, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ArrowDownIcon, ArrowUpIcon, PencilIcon, TrashIcon, MoreVerticalIcon, MessageSquareIcon } from '../../../components/Icons'
+import { ArrowDownIcon, ArrowUpIcon, PencilIcon, TrashIcon, MoreVerticalIcon, MessageSquareIcon, ImageIcon } from '../../../components/Icons'
 import { CopyButton, DropdownMenu, MenuItem } from '../../../components/ui'
 import { useInputCapabilities } from '../../../hooks/useInputCapabilities'
+import { apiErrorHandler } from '../../../utils'
+
+export interface ComposerQueueEntry {
+  entryId: string
+  text: string
+  images?: readonly { mimeType?: string; dataOmitted?: boolean; byteLength?: number }[]
+}
 
 export interface ComposerQueueProps {
-  queuedSteering?: readonly string[]
-  queuedFollowUps?: readonly string[]
-  onQueueBackToInput?: (kind: 'steering' | 'followUp', index: number) => void | Promise<void>
-  onQueueSendNow?: (kind: 'steering' | 'followUp', index: number) => void | Promise<void>
-  onQueueClear?: (kind: 'steering' | 'followUp', index: number) => void | Promise<void>
-  onQueueOpenInSideChat?: (kind: 'steering' | 'followUp', index: number) => void | Promise<void>
+  queuedSteering?: readonly ComposerQueueEntry[]
+  queuedFollowUps?: readonly ComposerQueueEntry[]
+  onQueueBackToInput?: (kind: 'steering' | 'followUp', index: number, entryId: string) => void | Promise<void>
+  onQueueSendNow?: (kind: 'steering' | 'followUp', index: number, entryId: string) => void | Promise<void>
+  onQueueClear?: (kind: 'steering' | 'followUp', index: number, entryId: string) => void | Promise<void>
+  onQueueOpenInSideChat?: (kind: 'steering' | 'followUp', index: number, entryId: string) => void | Promise<void>
 }
 
 export const QueuedUserMessageQueue = memo(function QueuedUserMessageQueue({
@@ -22,19 +29,18 @@ export const QueuedUserMessageQueue = memo(function QueuedUserMessageQueue({
   onOpenInSideChat,
 }: {
   kind: 'current' | 'next'
-  items: readonly string[]
-  /** 修改该条（pi 不支持队列内修改：清除后回填输入框，编辑后重发） */
-  onBackToInput?: (queueKind: 'steering' | 'followUp', index: number) => void | Promise<void>
-  /** 立即提交该条（本轮 steer / 下一轮 prompt），不做队列重排 */
-  onSendNow?: (queueKind: 'steering' | 'followUp', index: number) => void | Promise<void>
-  /** 直接清除该条 */
-  onClear?: (queueKind: 'steering' | 'followUp', index: number) => void | Promise<void>
-  onOpenInSideChat?: (queueKind: 'steering' | 'followUp', index: number) => void | Promise<void>
+  items: readonly ComposerQueueEntry[]
+  /** Retrieve only this native item, including its images, for editing. */
+  onBackToInput?: ComposerQueueProps['onQueueBackToInput']
+  /** Promote this native item to steering without replaying any content. */
+  onSendNow?: ComposerQueueProps['onQueueSendNow']
+  onClear?: ComposerQueueProps['onQueueClear']
+  onOpenInSideChat?: ComposerQueueProps['onQueueOpenInSideChat']
 }) {
   const { t } = useTranslation('chat')
   const { preferTouchUi } = useInputCapabilities()
   const [openMenuIndex, setOpenMenuIndex] = useState<number | null>(null)
-  /** 正在提交的条目：命令未落地前禁用该行，避免连点重复提交同一条 */
+  /** Serialize mutations until the backend acknowledges this selection. */
   const [isSubmitting, setIsSubmitting] = useState(false)
   const submittingRef = useRef(false)
   const menuTriggerRefs = useRef<Array<HTMLButtonElement | null>>([])
@@ -69,12 +75,15 @@ export const QueuedUserMessageQueue = memo(function QueuedUserMessageQueue({
     : 'flex items-center gap-0.5 opacity-70 group-hover/msg:opacity-100 group-focus-within/msg:opacity-100 transition-opacity'
   const actionBtnClass =
     'inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[length:var(--fs-xs)] text-text-400 hover:bg-bg-200/60 hover:text-text-100 transition-colors'
-  // 行内按钮和菜单项共用：命令未落地前禁用该行，连点不会重复提交同一条。
-  const submitSendNow = (index: number) => {
-    if (!onSendNow || submittingRef.current) return
+  const submitAction = (action: ComposerQueueProps['onQueueSendNow'], index: number) => {
+    if (!action || submittingRef.current) return
+    const selected = items[index]
+    if (!selected) return
     submittingRef.current = true
     setIsSubmitting(true)
-    void Promise.resolve().then(() => onSendNow(queueKind, index)).finally(() => {
+    void Promise.resolve().then(() => action(queueKind, index, selected.entryId)).catch(error => {
+      apiErrorHandler('queued message', error)
+    }).finally(() => {
       submittingRef.current = false
       setIsSubmitting(false)
     })
@@ -87,14 +96,20 @@ export const QueuedUserMessageQueue = memo(function QueuedUserMessageQueue({
     >
       <div className="sr-only" role="status">{label}</div>
       <div>
-        {items.map((text, index) => (
-          <div key={`${kind}:${index}:${text}`} className="group/msg flex items-center gap-2 px-3 py-1.5 min-h-10 border-b border-border-200/60">
+        {items.map(({ text, entryId, images }, index) => (
+          <div key={entryId} data-queue-entry-id={entryId} className="group/msg flex items-center gap-2 px-3 py-1.5 min-h-10 border-b border-border-200/60">
             <span className="shrink-0 text-text-400" aria-hidden="true">
               {kind === 'current' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
             </span>
             <div className="min-w-0 flex-1 truncate text-[length:var(--fs-sm)] leading-5 text-text-200" title={text}>
               {text}
             </div>
+            {!!images?.length && (
+              <span className="inline-flex shrink-0 items-center gap-1 text-text-400 text-[length:var(--fs-xs)]" aria-label={t('chatArea.queuedImages', { count: images.length })}>
+                <ImageIcon size={14} />
+                {images.length}
+              </span>
+            )}
             {(onBackToInput || onSendNow || onClear || onOpenInSideChat) && (
               <div className={`relative shrink-0 ${actionBarClass}`}>
                 <CopyButton text={text} position="static" />
@@ -102,7 +117,7 @@ export const QueuedUserMessageQueue = memo(function QueuedUserMessageQueue({
                   <button
                     type="button"
                     disabled={isSubmitting}
-                    onClick={() => submitSendNow(index)}
+                    onClick={() => submitAction(onSendNow, index)}
                     title={sendNowTitle}
                     aria-label={sendNowTitle}
                     className={`${actionBtnClass} disabled:opacity-40 disabled:cursor-default`}
@@ -114,7 +129,7 @@ export const QueuedUserMessageQueue = memo(function QueuedUserMessageQueue({
                   <button
                     type="button"
                     disabled={isSubmitting}
-                    onClick={() => void onClear(queueKind, index)}
+                    onClick={() => submitAction(onClear, index)}
                     title={t('chatArea.clearQueueItem')}
                     aria-label={t('chatArea.clearQueueItem')}
                     className={actionBtnClass}
@@ -149,7 +164,7 @@ export const QueuedUserMessageQueue = memo(function QueuedUserMessageQueue({
                         icon={<PencilIcon size={15} />}
                         onClick={() => {
                           setOpenMenuIndex(null)
-                          void onBackToInput(queueKind, index)
+                          submitAction(onBackToInput, index)
                         }}
                       />
                     )}
@@ -160,7 +175,7 @@ export const QueuedUserMessageQueue = memo(function QueuedUserMessageQueue({
                         disabled={isSubmitting}
                         onClick={() => {
                           setOpenMenuIndex(null)
-                          submitSendNow(index)
+                          submitAction(onSendNow, index)
                         }}
                       />
                     )}
@@ -168,9 +183,10 @@ export const QueuedUserMessageQueue = memo(function QueuedUserMessageQueue({
                       <MenuItem
                         label={t('chatArea.openQueueInSideChat')}
                         icon={<MessageSquareIcon size={15} />}
+                        disabled={isSubmitting}
                         onClick={() => {
                           setOpenMenuIndex(null)
-                          void onOpenInSideChat(queueKind, index)
+                          submitAction(onOpenInSideChat, index)
                         }}
                       />
                     )}
@@ -181,7 +197,7 @@ export const QueuedUserMessageQueue = memo(function QueuedUserMessageQueue({
                         icon={<TrashIcon size={15} />}
                         onClick={() => {
                           setOpenMenuIndex(null)
-                          void onClear(queueKind, index)
+                          submitAction(onClear, index)
                         }}
                       />
                     )}
