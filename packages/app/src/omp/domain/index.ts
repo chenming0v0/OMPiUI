@@ -369,23 +369,60 @@ export type PiModelsDevLookupResult = {
   } | null
 }
 
-// SDK package shapes (core/package-manager). ResolvedPaths/ResolvedResource
-// are publicly exported; ConfiguredPackage/PackageUpdate are not, so they
-// are mirrored here from the SDK declarations.
-export type { ResolvedPaths, ResolvedResource } from '../vendor/pi-coding-agent'
-
+/** Native OMP plugin manager snapshots, not the obsolete Pi SDK package manager. */
 export type PiConfiguredPackage = {
   source: string
   scope: 'user' | 'project'
-  filtered: boolean
-  installedPath?: string
+  enabled: boolean
+  version: string
+  type: 'npm' | 'git' | 'link' | 'marketplace'
+  installedPath: string
+  shadowedBy?: 'project'
+}
+
+
+export type PiMarketplaceSource = {
+  name: string
+  source: string
+  sourceType: 'github' | 'git' | 'url' | 'local'
+  catalogPath: string
+}
+
+
+export type PiPackagesSnapshot = {
+  packages: PiConfiguredPackage[]
+  marketplaces: PiMarketplaceSource[]
+}
+
+
+export type OmpPackageResource = {
+  path: string
+  name?: string
+  enabled: boolean
+  scope: 'user' | 'project'
+  source: string
+}
+
+
+export type OmpResolvedPackageResources = {
+  extensions: OmpPackageResource[]
+  tools: OmpPackageResource[]
+  hooks: OmpPackageResource[]
+  commands: OmpPackageResource[]
+  skills: OmpPackageResource[]
+  prompts: OmpPackageResource[]
+  rules: OmpPackageResource[]
+  mcpServers: OmpPackageResource[]
+  warnings: string[]
 }
 
 export type PiPackageUpdate = {
   source: string
   displayName: string
-  type: 'npm' | 'git'
+  type: 'marketplace'
   scope: 'user' | 'project'
+  from: string
+  to: string
 }
 
 /**

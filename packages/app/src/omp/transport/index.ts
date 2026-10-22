@@ -593,7 +593,7 @@ export function refreshModelRuntime(options?: JsonObject, signal?: AbortSignal):
   return postPiGlobalCommand('modelRuntime.refresh', options ? { options } : undefined, signal)
 }
 
-export function listPiPackages(cwd: string, signal?: AbortSignal): Promise<PiConfiguredPackage[]> {
+export function listPiPackages(cwd: string, signal?: AbortSignal): Promise<PiPackagesSnapshot> {
   return postPiGlobalCommand('packages.list', { cwd }, signal)
 }
 
@@ -601,30 +601,28 @@ export function managePiPackage(
   cwd: string,
   params: {
     commandId: string
-    action: 'install' | 'remove' | 'update'
+    action: 'install' | 'link' | 'remove' | 'update' | 'enable' | 'disable'
     source?: string
     local?: boolean
-    persist?: boolean
   },
   signal?: AbortSignal,
-): Promise<PiConfiguredPackage[]> {
+): Promise<PiPackagesSnapshot> {
   return postPiGlobalCommand('packages.manage', { cwd, ...params }, signal)
 }
 
 export function resolvePiPackages(
   cwd: string,
-  missingAction?: 'install' | 'skip' | 'error',
   signal?: AbortSignal,
-): Promise<ResolvedPaths> {
-  return postPiGlobalCommand('packages.resolve', { cwd, missingAction }, signal)
+): Promise<OmpResolvedPackageResources> {
+  return postPiGlobalCommand('packages.resolve', { cwd }, signal)
 }
 
 export function resolvePiExtensionSources(
   cwd: string,
   sources: string[],
-  options?: { local?: boolean; temporary?: boolean },
+  options?: { local?: boolean },
   signal?: AbortSignal,
-): Promise<ResolvedPaths> {
+): Promise<OmpResolvedPackageResources> {
   return postPiGlobalCommand('packages.resolveSources', { cwd, sources, ...options }, signal)
 }
 
@@ -632,18 +630,17 @@ export function changePiPackageSource(
   cwd: string,
   source: string,
   operation: 'add' | 'remove',
-  local?: boolean,
   signal?: AbortSignal,
-): Promise<{ changed: boolean; packages: PiConfiguredPackage[] }> {
-  return postPiGlobalCommand('packages.changeSource', { cwd, source, operation, local }, signal)
+): Promise<PiPackagesSnapshot & { changed: boolean }> {
+  return postPiGlobalCommand('packages.changeSource', { cwd, source, operation }, signal)
 }
 
 export function getPiPackageInstalledPath(
   cwd: string,
   source: string,
-  scope?: 'user' | 'project',
+  scope: 'user' | 'project',
   signal?: AbortSignal,
-): Promise<string | null> {
+): Promise<string> {
   return postPiGlobalCommand('packages.installedPath', { cwd, source, scope }, signal)
 }
 

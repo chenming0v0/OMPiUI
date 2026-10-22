@@ -913,10 +913,9 @@ export const PI_COMMAND_SPECS = [
       {
         cwd: STRING,
         commandId: STRING,
-        action: { enum: ["install", "remove", "update"] },
+        action: { enum: ["install", "link", "remove", "update", "enable", "disable"] },
         source: STRING,
         local: BOOLEAN,
-        persist: BOOLEAN,
       },
       ["cwd", "commandId"],
     ),
@@ -926,10 +925,7 @@ export const PI_COMMAND_SPECS = [
     name: "packages.resolve",
     scope: "global",
     description: "Resolve OMP packages for a workspace",
-    paramsSchema: objectSchema(
-      { cwd: STRING, missingAction: { enum: ["install", "skip", "error"] } },
-      ["cwd"],
-    ),
+    paramsSchema: CWD_PARAMS,
     queue: "serialized",
   },
   {
@@ -941,7 +937,6 @@ export const PI_COMMAND_SPECS = [
         cwd: STRING,
         sources: STRING_ARRAY,
         local: BOOLEAN,
-        temporary: BOOLEAN,
       },
       ["cwd", "sources"],
     ),
@@ -950,7 +945,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "packages.changeSource",
     scope: "global",
-    description: "Add or remove an OMP package source",
+    description: "Add or remove an official OMP marketplace source",
     paramsSchema: objectSchema(
       {
         cwd: STRING,
@@ -1126,20 +1121,15 @@ export type PiCommandParams = CoreCommandParams & {
   "packages.manage": {
     cwd: string;
     commandId: string;
-    action?: "install" | "remove" | "update";
+    action?: "install" | "link" | "remove" | "update" | "enable" | "disable";
     source?: string;
     local?: boolean;
-    persist?: boolean;
   };
-  "packages.resolve": {
-    cwd: string;
-    missingAction?: "install" | "skip" | "error";
-  };
+  "packages.resolve": { cwd: string };
   "packages.resolveSources": {
     cwd: string;
     sources: string[];
     local?: boolean;
-    temporary?: boolean;
   };
   "packages.changeSource": {
     cwd: string;

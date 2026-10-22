@@ -22,7 +22,6 @@ import {
   utf8Prefix,
 } from "@ompiui/protocol";
 import type { CatalogProvider } from "../runtime.js";
-import type { PackagesGateway } from "../command-table.js";
 import {
   entriesPageFromEntries,
   imageAttachmentFromEntry,
@@ -551,7 +550,7 @@ export class OmpControlChannel {
   }
 }
 
-export class OmpCatalog implements CatalogProvider, PackagesGateway {
+export class OmpCatalog implements CatalogProvider {
   readonly control = new OmpControlChannel();
   private readonly diskBranchCaches = new Map<string, DiskBranchCache>();
   private readonly diskReads = new Map<string, Promise<DiskBranchCache>>();
@@ -1193,34 +1192,6 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
 
   setProjectTrust(cwd: string): JsonValue {
     return this.getProjectTrust(cwd);
-  }
-
-  list(): JsonValue {
-    return [];
-  }
-
-  async manage(): Promise<JsonValue> {
-    return [];
-  }
-
-  async resolve(): Promise<JsonValue> {
-    return { extensions: [], skills: [], prompts: [], themes: [] };
-  }
-
-  async resolveSources(): Promise<JsonValue> {
-    return { extensions: [], skills: [], prompts: [], themes: [] };
-  }
-
-  async changeSource(): Promise<JsonValue> {
-    return { changed: false, packages: [] };
-  }
-
-  installedPath(): JsonValue {
-    return null;
-  }
-
-  async checkUpdates(): Promise<JsonValue> {
-    return [];
   }
 
   async dispose(): Promise<void> {

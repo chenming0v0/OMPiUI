@@ -34,21 +34,16 @@ export interface PackagesGateway {
   manage(
     cwd: string,
     commandId: string,
-    action: "install" | "remove" | "update",
+    action: "install" | "link" | "remove" | "update" | "enable" | "disable",
     source?: string,
     local?: boolean,
-    persist?: boolean,
     onProgress?: (event: JsonObject) => void,
   ): Promise<JsonValue>;
-  resolve(
-    cwd: string,
-    missingAction?: "install" | "skip" | "error",
-  ): Promise<JsonValue>;
+  resolve(cwd: string): Promise<JsonValue>;
   resolveSources(
     cwd: string,
     sources: string[],
     local?: boolean,
-    temporary?: boolean,
   ): Promise<JsonValue>;
   changeSource(
     cwd: string,
@@ -488,23 +483,18 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
     ctx.packages.manage(
       P.reqString(p, "cwd"),
       P.reqString(p, "commandId"),
-      P.optEnum(p, "action", ["install", "remove", "update"] as const) ??
+      P.optEnum(p, "action", ["install", "link", "remove", "update", "enable", "disable"] as const) ??
         "install",
       P.optString(p, "source"),
       P.optBoolean(p, "local"),
-      P.optBoolean(p, "persist"),
     ),
   "packages.resolve": async (ctx, p) =>
-    ctx.packages.resolve(
-      P.reqString(p, "cwd"),
-      P.optEnum(p, "missingAction", ["install", "skip", "error"] as const),
-    ),
+    ctx.packages.resolve(P.reqString(p, "cwd")),
   "packages.resolveSources": async (ctx, p) =>
     ctx.packages.resolveSources(
       P.reqString(p, "cwd"),
       P.optStringArray(p, "sources") ?? [],
       P.optBoolean(p, "local"),
-      P.optBoolean(p, "temporary"),
     ),
   "packages.changeSource": async (ctx, p) =>
     ctx.packages.changeSource(
