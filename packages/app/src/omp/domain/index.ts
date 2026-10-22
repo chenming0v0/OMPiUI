@@ -86,7 +86,6 @@ import type {
   ImageContent,
   ToolCall,
 } from '../vendor/pi-ai'
-import type { ThinkingLevel } from '../vendor/pi-agent-core'
 import type { JsonObject, JsonValue, EntriesPage, BranchCheckpoint, LiveMessage } from '@ompiui/protocol'
 
 /**
@@ -252,27 +251,11 @@ export type PiSessionRuntimeState = JsonObject
  */
 export type PiSettingsSnapshot = {
   workspacePath: string
-  projectTrusted: boolean
   global: JsonObject
   project: JsonObject
-  effective: {
-    defaultProvider?: string
-    defaultModel?: string
-    defaultThinkingLevel?: ThinkingLevel
-    transport?: 'auto' | 'sse' | 'websocket' | 'websocket-cached'
-    steeringMode?: 'all' | 'one-at-a-time'
-    followUpMode?: 'all' | 'one-at-a-time'
-    theme?: string
-    compaction?: { enabled?: boolean; reserveTokens?: number; keepRecentTokens?: number }
-    retry?: { enabled?: boolean; maxRetries?: number; baseDelayMs?: number }
-    shellPath?: string
-    httpProxy?: string
-    enableSkillCommands?: boolean
-    showImages?: boolean
-    defaultProjectTrust?: 'ask' | 'always' | 'never'
-    [key: string]: JsonValue | undefined
-  }
+  effective: JsonObject
   errors: Array<{ scope: string; message: string }>
+  definitions?: Array<{ id: string; type: string; values?: string[] }>
 }
 
 /** Native project trust state (worker trust.get / trust.set). */

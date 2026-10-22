@@ -1,20 +1,18 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Folder, ShieldCheck, ShieldOff, SlidersHorizontal } from 'lucide-react'
+import { Folder, SlidersHorizontal } from 'lucide-react'
 import type { JsonObject } from '@ompiui/protocol'
-import type { PiProjectTrust, PiSettingsSnapshot } from '../../../omp/domain'
+import type { PiSettingsSnapshot } from '../../../omp/domain'
 import type { HostWorkspace } from '../../../omp/workspaces'
 import { Button } from '../../../components/ui/Button'
 import { JsonView } from '../../../components/JsonView'
-import { useCurrentDirectory } from '../../../hooks'
+import { useCurrentDirectory, useServerStore } from '../../../hooks'
 import { useFocusedSessionId } from '../../../omp/hooks/index.js'
-import {
-  getPiSettings,
-  getProjectTrust,
-  patchPiSettings,
-  setProjectTrust,
-} from '../../../omp/transport/index.js'
+import { getPiSettings, patchPiSettings } from '../../../omp/transport/index.js'
 import { listHostWorkspaces, resolveWorkspacePath } from '../../../omp/workspaces'
+import { loadPiModelRoles } from '../../../omp/controllers/modelRoles'
+import { piModelRolesStore } from '../../../omp/state/piModelRolesStore'
+import { serverStore } from '../../../store/serverStore'
 import {
   SettingRow,
   SettingField,
@@ -29,83 +27,92 @@ import { PiPackageManagement } from './PiPackageManagement'
 import { PiResourceManagement } from './PiResourceManagement'
 import { PiSessionManagement } from './PiSessionManagement'
 
-// Draft keys are the worker's flat settings.patch keys.
-type SettingsDraft = {
-  defaultProvider?: string
-  defaultModel?: string
-  defaultThinkingLevel?: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
-  transport?: 'auto' | 'sse' | 'websocket' | 'websocket-cached'
-  steeringMode?: 'all' | 'one-at-a-time'
-  followUpMode?: 'all' | 'one-at-a-time'
-  compactionEnabled?: boolean
-  retryEnabled?: boolean
-  enableSkillCommands?: boolean
-  showImages?: boolean
-  shellPath?: string | null
-  defaultProjectTrust?: 'ask' | 'always' | 'never'
-  theme?: string
-  httpProxy?: string | null
-}
+// The form edits only global overrides; effective/project values remain inspectable below.
+type SettingsDraft = Record<string, string>
+
+const formKeys = [
+  'modelRoles.default', 'defaultThinkingLevel', 'steeringMode', 'followUpMode',
+  'compaction.enabled', 'retry.enabled', 'skills.enableSkillCommands', 'images.blockImages',
+  'shellPath', 'theme.dark', 'theme.light',
+] as const
 
 function draftFromSnapshot(snapshot: PiSettingsSnapshot): SettingsDraft {
-  const settings = snapshot.effective
-  return {
-    defaultProvider: settings.defaultProvider ?? '',
-    defaultModel: settings.defaultModel ?? '',
-    defaultThinkingLevel: settings.defaultThinkingLevel,
-    transport: settings.transport,
-    steeringMode: settings.steeringMode,
-    followUpMode: settings.followUpMode,
-    compactionEnabled: settings.compaction?.enabled,
-    retryEnabled: settings.retry?.enabled,
-    enableSkillCommands: settings.enableSkillCommands,
-    showImages: settings.showImages,
-    shellPath: settings.shellPath ?? '',
-    theme: settings.theme ?? '',
-    httpProxy: settings.httpProxy ?? '',
-    defaultProjectTrust: settings.defaultProjectTrust,
+  return Object.fromEntries(formKeys.map(key => {
+    const value = key.split('.').reduce<unknown>((object, segment) =>
+      object !== null && typeof object === 'object' ? (object as Record<string, unknown>)[segment] : undefined,
+    snapshot.global)
+    return [key, value == null ? '' : String(value)]
+  }))
+}
+
+function patchFromDraft(snapshot: PiSettingsSnapshot, draft: SettingsDraft): JsonObject {
+  const previous = draftFromSnapshot(snapshot)
+  const patch: JsonObject = {}
+  for (const key of formKeys) {
+    if (draft[key] === previous[key]) continue
+    const value = draft[key].trim()
+    if (value === previous[key]) continue
+    patch[key] = value === '' ? null : ['compaction.enabled', 'retry.enabled', 'skills.enableSkillCommands', 'images.blockImages'].includes(key) ? value === 'true' : value
   }
+  return patch
 }
 
 export function PiManagementSettings() {
-  const { t } = useTranslation(['settings', 'common'])
   const directory = useCurrentDirectory()
+  const { activeServerGeneration } = useServerStore()
+  return <PiManagementSettingsPanel key={`${activeServerGeneration}:${directory}`} directory={directory} />
+}
+
+function PiManagementSettingsPanel({ directory }: { directory: string | undefined }) {
+  const { t } = useTranslation(['settings', 'common'])
   const sessionId = useFocusedSessionId()
   const [workspacePath, setWorkspacePath] = useState<string | null>(null)
   const [settings, setSettings] = useState<PiSettingsSnapshot | null>(null)
   const [draft, setDraft] = useState<SettingsDraft | null>(null)
-  const [trust, setTrust] = useState<PiProjectTrust | null>(null)
   const [registeredWorkspaces, setRegisteredWorkspaces] = useState<HostWorkspace[]>([])
   const [advancedPatch, setAdvancedPatch] = useState('{}')
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (signal: AbortSignal) => {
     if (!directory) return
     setError(null)
     try {
       const canonical = await resolveWorkspacePath(directory)
+      if (signal.aborted) return
       if (!canonical) throw new Error('Workspace is not available on the active server')
       setWorkspacePath(canonical)
-      const [nextSettings, nextTrust, nextWorkspaces] = await Promise.all([
-        getPiSettings(canonical),
-        getProjectTrust(canonical),
-        listHostWorkspaces(),
+      const [nextSettings, nextWorkspaces] = await Promise.all([
+        getPiSettings(canonical, signal),
+        listHostWorkspaces(signal),
       ])
+      if (signal.aborted) return
       setSettings(nextSettings)
       setDraft(draftFromSnapshot(nextSettings))
-      setTrust(nextTrust)
       setRegisteredWorkspaces(nextWorkspaces)
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : t('pi.loadFailed'))
+      if (!signal.aborted) setError(loadError instanceof Error ? loadError.message : t('pi.loadFailed'))
     }
   }, [directory, t])
 
   useEffect(() => {
-    const timer = window.setTimeout(() => { void load() }, 0)
-    return () => window.clearTimeout(timer)
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => { void load(controller.signal) }, 0)
+    return () => { window.clearTimeout(timer); controller.abort() }
   }, [load])
+
+  const savePatch = async (patch: JsonObject) => {
+    const generation = serverStore.getActiveServerGeneration()
+    const saved = await patchPiSettings(workspacePath!, patch)
+    if (serverStore.getActiveServerGeneration() === generation && Object.keys(patch).some(key => key === 'modelRoles' || key.startsWith('modelRoles.'))) {
+      // Invalidate reads begun before this persisted change, then refresh the dedicated role page from its official CLI path.
+      piModelRolesStore.markDisconnected()
+      void loadPiModelRoles(true).catch(() => undefined)
+    }
+    setSettings(saved)
+    setDraft(draftFromSnapshot(saved))
+  }
 
   const run = useCallback(async (name: string, action: () => Promise<void>, message: string) => {
     setBusy(name)
@@ -123,24 +130,13 @@ export function PiManagementSettings() {
 
   if (!directory) return <p className="text-[length:var(--fs-sm)] text-text-300">{t('pi.openWorkspace')}</p>
 
-  const trustStatus = !trust
-    ? t('common:loading')
-    : trust.trusted
-      ? t('pi.trusted')
-      : trust.required
-        ? t('pi.decisionRequired')
-        : t('pi.notTrusted')
-  const trustSource = trust?.inheritedFrom
-    ? t('pi.trustInherited', { source: trust.inheritedFrom })
-    : trust?.decision != null
-      ? t('pi.trustSavedDecision')
-      : t('pi.trustDefaultDecision', { policy: t(`pi.trustPolicies.${trust?.defaultDecision ?? 'ask'}`) })
   const activePath = workspacePath ?? directory
   const workspaceName = registeredWorkspaces.find(workspace => workspace.path === activePath)?.displayName
     || activePath.split(/[\\/]/).filter(Boolean).pop()
     || activePath
   const runtimeDefault = t('pi.runtimeDefault')
   const booleanOptions = [
+    { value: '', label: runtimeDefault },
     { value: 'true', label: t('pi.enabled') },
     { value: 'false', label: t('pi.disabled') },
   ]
@@ -173,32 +169,6 @@ export function PiManagementSettings() {
       {error ? <p role="alert" className="mb-4 rounded-lg bg-danger-100/10 p-3 text-[length:var(--fs-sm)] text-danger-100">{error}</p> : null}
       {notice ? <p role="status" className="mb-4 text-[length:var(--fs-sm)] text-success-100">{notice}</p> : null}
 
-      <SettingsSection
-        title={t('pi.trustTitle')}
-        description={t('pi.trustDescription')}
-        className="[&>.settings-section-header]:border-b-0 [&>.settings-section-header]:pb-0"
-        status={
-          <span className={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[length:var(--fs-xs)] font-medium ${trust?.trusted ? 'bg-success-100/10 text-success-100' : 'bg-bg-200 text-text-200'}`}>
-            {trust?.trusted ? <ShieldCheck size={14} aria-hidden="true" /> : <ShieldOff size={14} aria-hidden="true" />}
-            {trustStatus}
-          </span>
-        }
-      >
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className="min-w-0 flex-1 basis-56 break-words text-[length:var(--fs-xs)] leading-relaxed text-text-300">{trust ? trustSource : t('common:loading')}</p>
-          <div className="flex flex-wrap gap-2">
-            {trust?.decision != null ? (
-              <Button variant="ghost" disabled={busy !== null} isLoading={busy === 'trust-reset'} onClick={() => workspacePath && void run('trust-reset', async () => setTrust(await setProjectTrust(workspacePath, null)), t('pi.trustReset'))}>{t('pi.resetTrust')}</Button>
-            ) : null}
-            <Button variant={trust?.trusted ? 'secondary' : 'primary'} disabled={busy !== null || !trust} isLoading={busy === 'trust-allow' || busy === 'trust-deny'} onClick={() => workspacePath && trust && void run(trust.trusted ? 'trust-deny' : 'trust-allow', async () => setTrust(await setProjectTrust(workspacePath, !trust.trusted)), t(trust.trusted ? 'pi.trustDenied' : 'pi.trustGranted'))}>
-              {trust?.trusted ? t('pi.revokeTrust') : t('pi.trustAction')}
-            </Button>
-            {trust?.required && !trust.trusted ? (
-              <Button variant="secondary" disabled={busy !== null} onClick={() => workspacePath && void run('trust-deny', async () => setTrust(await setProjectTrust(workspacePath, false)), t('pi.trustDenied'))}>{t('pi.denyAction')}</Button>
-            ) : null}
-          </div>
-        </div>
-      </SettingsSection>
 
       {settings && draft ? (
         <SettingsSection title={t('pi.runtimeTitle')} description={t('pi.runtimeDescription')}>
@@ -209,29 +179,24 @@ export function PiManagementSettings() {
           ) : null}
           <fieldset disabled={busy !== null} className="min-w-0 space-y-6 disabled:opacity-60">
             <SettingsSubgroup title={t('pi.modelDefaults')} description={t('pi.modelDefaultsDescription')}>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <SettingField label={t('pi.defaultProvider')}>
-                  <input className={settingsFieldClass} aria-label={t('pi.defaultProvider')} placeholder={runtimeDefault} value={draft.defaultProvider} onChange={event => setDraft({ ...draft, defaultProvider: event.target.value })} />
-                </SettingField>
-                <SettingField label={t('pi.defaultModel')}>
-                  <input className={settingsFieldClass} aria-label={t('pi.defaultModel')} placeholder={runtimeDefault} value={draft.defaultModel} onChange={event => setDraft({ ...draft, defaultModel: event.target.value })} />
-                </SettingField>
-              </div>
+              <SettingField label={t('pi.defaultModel')}>
+                <input className={settingsFieldClass} aria-label={t('pi.defaultModel')} placeholder={t('pi.modelSelectorPlaceholder')} value={draft['modelRoles.default']} onChange={event => setDraft({ ...draft, 'modelRoles.default': event.target.value })} />
+              </SettingField>
               <SettingRow label={t('pi.thinking')} description={t('pi.thinkingDescription')} className="pt-2">
-                <SettingsSelect className="!w-36" ariaLabel={t('pi.thinking')} placeholder={runtimeDefault} value={draft.defaultThinkingLevel} onChange={value => setDraft({ ...draft, defaultThinkingLevel: value })} options={(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const).map(level => ({ value: level, label: t(`pi.thinkingLevels.${level}`) }))} />
+                <SettingsSelect className="!w-36" ariaLabel={t('pi.thinking')} placeholder={runtimeDefault} value={draft.defaultThinkingLevel} onChange={value => setDraft({ ...draft, defaultThinkingLevel: value })} options={[{ value: '', label: runtimeDefault }, ...(settings.definitions?.find(setting => setting.id === 'defaultThinkingLevel')?.values ?? []).map(level => ({ value: level, label: t(`pi.thinkingLevels.${level}`, { defaultValue: level }) }))]} />
               </SettingRow>
             </SettingsSubgroup>
 
             <SettingsSubgroup title={t('pi.conversationBehavior')} className="border-t border-border-200/60 pt-5">
               <div className="space-y-4">
                 {([
-                  ['compactionEnabled', 'compaction'],
-                  ['retryEnabled', 'retry'],
-                  ['enableSkillCommands', 'skillCommands'],
-                  ['showImages', 'images'],
+                  ['compaction.enabled', 'compaction'],
+                  ['retry.enabled', 'retry'],
+                  ['skills.enableSkillCommands', 'skillCommands'],
+                  ['images.blockImages', 'blockImages'],
                 ] as const).map(([key, label]) => (
                   <SettingRow key={key} label={t(`pi.${label}`)} description={t(`pi.${label}Description`)}>
-                    <SettingsSelect className="!w-36" ariaLabel={t(`pi.${label}`)} placeholder={runtimeDefault} value={draft[key] === undefined ? undefined : String(draft[key])} onChange={value => setDraft({ ...draft, [key]: value === 'true' })} options={booleanOptions} />
+                    <SettingsSelect className="!w-36" ariaLabel={t(`pi.${label}`)} placeholder={runtimeDefault} value={draft[key]} onChange={value => setDraft({ ...draft, [key]: value })} options={booleanOptions} />
                   </SettingRow>
                 ))}
               </div>
@@ -246,29 +211,23 @@ export function PiManagementSettings() {
                 <SettingsSubgroup title={t('pi.messageQueue')}>
                   <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <SettingField label={t('pi.steeringMode')} description={t('pi.steeringDescription')}>
-                      <SettingsSelect ariaLabel={t('pi.steeringMode')} placeholder={runtimeDefault} value={draft.steeringMode} onChange={value => setDraft({ ...draft, steeringMode: value })} options={(['all', 'one-at-a-time'] as const).map(mode => ({ value: mode, label: t(`pi.queueModes.${mode}`) }))} />
+                      <SettingsSelect ariaLabel={t('pi.steeringMode')} placeholder={runtimeDefault} value={draft.steeringMode} onChange={value => setDraft({ ...draft, steeringMode: value })} options={[{ value: '', label: runtimeDefault }, ...(['all', 'one-at-a-time'] as const).map(mode => ({ value: mode, label: t(`pi.queueModes.${mode}`) }))]} />
                     </SettingField>
                     <SettingField label={t('pi.followUpMode')} description={t('pi.followUpDescription')}>
-                      <SettingsSelect ariaLabel={t('pi.followUpMode')} placeholder={runtimeDefault} value={draft.followUpMode} onChange={value => setDraft({ ...draft, followUpMode: value })} options={(['all', 'one-at-a-time'] as const).map(mode => ({ value: mode, label: t(`pi.queueModes.${mode}`) }))} />
+                      <SettingsSelect ariaLabel={t('pi.followUpMode')} placeholder={runtimeDefault} value={draft.followUpMode} onChange={value => setDraft({ ...draft, followUpMode: value })} options={[{ value: '', label: runtimeDefault }, ...(['all', 'one-at-a-time'] as const).map(mode => ({ value: mode, label: t(`pi.queueModes.${mode}`) }))]} />
                     </SettingField>
                   </div>
                 </SettingsSubgroup>
                 <SettingsSubgroup title={t('pi.environment')}>
                   <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    <SettingField label={t('pi.transport')}>
-                      <SettingsSelect ariaLabel={t('pi.transport')} placeholder={runtimeDefault} value={draft.transport} onChange={value => setDraft({ ...draft, transport: value })} options={(['auto', 'sse', 'websocket', 'websocket-cached'] as const).map(transport => ({ value: transport, label: t(`pi.transports.${transport}`) }))} />
-                    </SettingField>
-                    <SettingField label={t('pi.httpProxy')}>
-                      <input className={settingsFieldClass} aria-label={t('pi.httpProxy')} value={draft.httpProxy ?? ''} placeholder="http://127.0.0.1:7890" onChange={event => setDraft({ ...draft, httpProxy: event.target.value })} />
-                    </SettingField>
                     <SettingField label={t('pi.shellPath')}>
                       <input className={settingsFieldClass} aria-label={t('pi.shellPath')} placeholder={runtimeDefault} value={draft.shellPath ?? ''} onChange={event => setDraft({ ...draft, shellPath: event.target.value })} />
                     </SettingField>
-                    <SettingField label={t('pi.runtimeTheme')} description={t('pi.runtimeThemeDescription')}>
-                      <input className={settingsFieldClass} aria-label={t('pi.runtimeTheme')} value={draft.theme ?? ''} placeholder={runtimeDefault} onChange={event => setDraft({ ...draft, theme: event.target.value })} />
+                    <SettingField label={t('pi.darkTheme')} description={t('pi.runtimeThemeDescription')}>
+                      <input className={settingsFieldClass} aria-label={t('pi.darkTheme')} value={draft['theme.dark']} placeholder={runtimeDefault} onChange={event => setDraft({ ...draft, 'theme.dark': event.target.value })} />
                     </SettingField>
-                    <SettingField label={t('pi.defaultTrust')}>
-                      <SettingsSelect ariaLabel={t('pi.defaultTrust')} placeholder={runtimeDefault} value={draft.defaultProjectTrust} onChange={value => setDraft({ ...draft, defaultProjectTrust: value })} options={(['ask', 'always', 'never'] as const).map(trust => ({ value: trust, label: t(`pi.trustPolicies.${trust}`) }))} />
+                    <SettingField label={t('pi.lightTheme')} description={t('pi.runtimeThemeDescription')}>
+                      <input className={settingsFieldClass} aria-label={t('pi.lightTheme')} value={draft['theme.light']} placeholder={runtimeDefault} onChange={event => setDraft({ ...draft, 'theme.light': event.target.value })} />
                     </SettingField>
                   </div>
                 </SettingsSubgroup>
@@ -283,10 +242,12 @@ export function PiManagementSettings() {
                   <div className="mt-2 flex justify-end">
                     <Button size="sm" disabled={busy !== null} onClick={() => workspacePath && void run('advanced-settings', async () => {
                       let patch: JsonObject
-                      try { patch = JSON.parse(advancedPatch) as JsonObject } catch { throw new Error(t('pi.patchInvalidJson')) }
-                      const saved = await patchPiSettings(workspacePath, patch)
-                      setSettings(saved)
-                      setDraft(draftFromSnapshot(saved))
+                      try {
+                        const parsed: unknown = JSON.parse(advancedPatch)
+                        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error()
+                        patch = parsed as JsonObject
+                      } catch { throw new Error(t('pi.patchInvalidJson')) }
+                      await savePatch(patch)
                       setAdvancedPatch('{}')
                     }, t('pi.patchSaved'))}>{t('pi.applyPatch')}</Button>
                   </div>
@@ -297,16 +258,7 @@ export function PiManagementSettings() {
           <div className="mt-2 flex items-center justify-between gap-4 border-t border-border-200/60 pt-4">
             <p className="text-[length:var(--fs-xs)] leading-relaxed text-text-300">{t('pi.saveHint')}</p>
             <Button className="shrink-0" isLoading={busy === 'settings'} disabled={busy !== null} onClick={() => workspacePath && void run('settings', async () => {
-              const saved = await patchPiSettings(workspacePath, {
-                ...draft,
-                defaultProvider: draft.defaultProvider?.trim() || undefined,
-                defaultModel: draft.defaultModel?.trim() || undefined,
-                shellPath: draft.shellPath?.trim() || null,
-                theme: draft.theme?.trim() || undefined,
-                httpProxy: draft.httpProxy?.trim() || null,
-              })
-              setSettings(saved)
-              setDraft(draftFromSnapshot(saved))
+              await savePatch(patchFromDraft(settings, draft))
             }, t('pi.settingsSaved'))}>{t('common:save')}</Button>
           </div>
         </SettingsSection>

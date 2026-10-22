@@ -53,6 +53,7 @@ import { scanJsonl, mapLimited, type JsonlPosition } from "./jsonl-reader.js";
 import { readSubagentPreview } from "./subagent-preview.js";
 import { readSubagentSync } from "./subagent-sync.js";
 import type { SubagentSyncRequest } from "@ompiui/protocol";
+import { getOmpSettings, patchOmpSettings } from "./omp-settings.js";
 
 /**
  * OmpCatalog —— CatalogProvider 的 OMP 实现。
@@ -1091,21 +1092,12 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     return run(client);
   }
 
-  getSettings(cwd: string): JsonValue {
-    return {
-      workspacePath: cwd,
-      projectTrusted: true,
-      global: {},
-      project: {},
-      effective: {},
-      errors: [],
-    };
+  getSettings(cwd: string): Promise<JsonValue> {
+    return getOmpSettings(cwd);
   }
 
-  async patchSettings(cwd: string): Promise<JsonValue> {
-    // OMP 的配置源是 ~/.omp/agent/config.yml + models.yml（YAML），
-    // web 端设置先回显成功；行为层设置请用 OMP CLI / 手动编辑配置
-    return this.getSettings(cwd);
+  patchSettings(cwd: string, patch: JsonObject): Promise<JsonValue> {
+    return patchOmpSettings(cwd, patch);
   }
 
   private configCommand: OmpConfigCommand | undefined;

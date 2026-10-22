@@ -147,7 +147,7 @@ function ModelRolesPanel({ serverGeneration }: { serverGeneration: number }) {
   }
 
   useEffect(() => {
-    void loadPiModelRoles().catch(() => undefined)
+    void loadPiModelRoles(true).catch(() => undefined)
   }, [serverGeneration])
 
   const handleRoleModel = useCallback((def: ModelRoleDef, model: Model<Api> | null) => {

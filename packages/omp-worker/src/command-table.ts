@@ -421,11 +421,11 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
     ctx.driver === "mock" ? ctx.catalog.listModels() : ctx.auth.listModels(),
   "settings.get": async (ctx, p) =>
     ctx.catalog.getSettings(P.reqString(p, "cwd")),
-  "settings.patch": async (ctx, p) =>
-    ctx.catalog.patchSettings(
-      P.reqString(p, "cwd"),
-      P.optObject(p, "patch") ?? {},
-    ),
+  "settings.patch": async (ctx, p) => {
+    const patch = P.optObject(p, "patch");
+    if (!patch) throw Object.assign(new Error("params.patch must be an object"), { code: "INVALID_REQUEST" });
+    return ctx.catalog.patchSettings(P.reqString(p, "cwd"), patch);
+  },
   "modelRoles.get": async (ctx) => ctx.catalog.getModelRoles(),
   "modelRoles.set": async (ctx, p) => {
     const roles = P.optObject(p, "roles");

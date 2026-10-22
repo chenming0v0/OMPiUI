@@ -773,7 +773,7 @@ export const PI_COMMAND_SPECS = [
     description: "Patch OMP settings for a workspace",
     paramsSchema: objectSchema(
       { cwd: STRING, patch: { ...objectSchema({}, [], true), maxJsonBytes: 1024 * 1024 } },
-      ["cwd"],
+      ["cwd", "patch"],
     ),
     queue: "serialized",
   },
