@@ -820,6 +820,11 @@
     "bashGroup": "One-shot script"
   },
   "providers": {
+    "backToProviders": "Back to providers",
+    "mobileConfig": "Configuration",
+    "mobileModels": "Models",
+    "availableModels": "Available models",
+    "filterModels": "Filter by model name",
     "title": "Model providers",
     "description": "Manage OMP custom model providers (~/.omp/agent/models.yml). Each provider can fetch, edit and verify its own models.",
     "addProvider": "Add provider",

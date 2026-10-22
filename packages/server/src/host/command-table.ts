@@ -1,5 +1,5 @@
 import { HOST_COMMAND_SPECS, PROTOCOL_VERSION, hostSpecToCapability, requireJsonValue, validateParams, type HostCapability, type HostRegistrySnapshot, type JsonObject, type JsonValue } from "@ompiui/protocol"
-import path from "node:path"
+import { homedir } from "node:os"
 import type { SessionHost } from "../omp/session-host.ts"
 import {
   createWorkspaceEntry,
@@ -99,17 +99,9 @@ function optLimit(params: JsonObject, key: string, fallback: number, maximum: nu
   return value
 }
 
-/**
- * 全局工作区的默认根目录：服务器可执行文件所在目录（桌面安装目录）。
- * 独立运行服务器时同样成立——execPath 就是服务器自身的位置。
- */
+/** 未指定项目时使用用户主目录，应用安装位置只用于加载资源。 */
 export function defaultWorkspaceRoot(): string {
-  const exe = process.execPath
-  if (exe) {
-    const dir = path.dirname(exe)
-    if (dir && dir !== ".") return dir
-  }
-  return process.cwd()
+  return homedir()
 }
 
 function workspace(ctx: HostCommandContext, params: JsonObject): WorkspaceRecord {

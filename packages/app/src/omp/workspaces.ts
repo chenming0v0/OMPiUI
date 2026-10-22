@@ -1,6 +1,8 @@
 import { postHostCommand } from './transport/index.js'
 import { trackPiWorkspace } from './ompSessionIndex'
 import { serverStore } from '../store/serverStore'
+import { serverStorage } from '../utils/perServerStorage'
+import { STORAGE_KEY_LAST_DIRECTORY } from '../constants/storage'
 
 /**
  * Host workspace commands (workspaces.*). A workspace is just a directory
@@ -43,12 +45,20 @@ const missingWorkspacePaths = new Set<string>()
 let defaultWorkspacePromise: Promise<string | null> | null = null
 
 async function ensureDefaultWorkspacePath(): Promise<string | null> {
+  const generation = serverStore.getActiveServerGeneration()
   if (!defaultWorkspacePromise) {
     defaultWorkspacePromise = (async () => {
       try {
-        // 全局（未选目录）的默认工作区：服务器默认目录（桌面安装目录），
-        // 与终端的全局语义保持一致。
+        const saved = serverStorage.get(STORAGE_KEY_LAST_DIRECTORY)
+        if (saved) {
+          if (!/^[a-zA-Z]:[\\/]/.test(saved) && !saved.startsWith('/')) return null
+          return await resolveWorkspacePath(saved)
+        }
+        const known = (await listHostWorkspaces())[0]
+        if (serverStore.getActiveServerGeneration() !== generation) return null
+        if (known) return await resolveWorkspacePath(known.path)
         const fallback = await openHostWorkspace()
+        if (serverStore.getActiveServerGeneration() !== generation) return null
         await watchHostWorkspace(fallback.path)
         return fallback.path
       } catch {
@@ -57,17 +67,19 @@ async function ensureDefaultWorkspacePath(): Promise<string | null> {
     })()
   }
   try {
-    return await defaultWorkspacePromise
+    const result = await defaultWorkspacePromise
+    return serverStore.getActiveServerGeneration() === generation ? result : null
   } finally {
-    defaultWorkspacePromise = null
+    if (serverStore.getActiveServerGeneration() === generation) defaultWorkspacePromise = null
   }
 }
 
 /**
- * Return the workspace path for a directory (opening it on demand), or the
- * server's first known workspace when no directory is selected.
+ * Return an explicit directory, the saved project, a known workspace, or the
+ * server user's home directory when no project has been selected.
  */
 export async function resolveWorkspacePath(directory?: string): Promise<string | null> {
+  const generation = serverStore.getActiveServerGeneration()
   if (directory && (/^[a-zA-Z]:[\\/]/.test(directory) || directory.startsWith('/'))) {
     const normalized = directory.replace(/\\/g, '/').replace(/\/+$/, '')
     const key = `${serverStore.getActiveServerId()}:${serverStore.getActiveServerGeneration()}:${normalized}`
@@ -76,8 +88,9 @@ export async function resolveWorkspacePath(directory?: string): Promise<string |
     if (!pending) {
       pending = openHostWorkspace(directory)
         .then(async workspace => {
+          if (serverStore.getActiveServerGeneration() !== generation) return null
           await watchHostWorkspace(workspace.path)
-          return workspace.path
+          return serverStore.getActiveServerGeneration() === generation ? workspace.path : null
         })
         .catch(error => {
           workspaceResolutionPromises.delete(key)
@@ -90,7 +103,8 @@ export async function resolveWorkspacePath(directory?: string): Promise<string |
         })
       workspaceResolutionPromises.set(key, pending)
     }
-    return pending
+    const result = await pending
+    return serverStore.getActiveServerGeneration() === generation ? result : null
   }
   return ensureDefaultWorkspacePath()
 }

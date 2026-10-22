@@ -263,7 +263,7 @@ export function useSessions(options: UseSessionsOptions = {}): UseSessionsResult
   // 创建新会话
   const create = useCallback(
     async (title?: string) => {
-      // 全局（未选目录）时落到服务器默认工作区（桌面安装目录）
+      // 未选目录时恢复保存的项目，最终兜底为服务器用户主目录。
       const directory = normalizedDirectory || (await resolveWorkspacePath())
       if (!directory) throw new Error('A project directory is required')
       const created = await createPiSession(directory)

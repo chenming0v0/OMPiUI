@@ -820,6 +820,11 @@
     "bashGroup": "一次性脚本"
   },
   "providers": {
+    "backToProviders": "返回供应商",
+    "mobileConfig": "配置",
+    "mobileModels": "模型",
+    "availableModels": "可用模型",
+    "filterModels": "输入模型名称筛选",
     "title": "模型供应商",
     "description": "管理 OMP 自定义模型供应商（~/.omp/agent/models.yml）。每个供应商可以单独拉取、编辑和校验模型。",
     "addProvider": "添加供应商",
