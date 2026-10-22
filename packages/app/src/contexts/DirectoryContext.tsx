@@ -2,7 +2,7 @@
 // DirectoryContext - 管理当前工作目录
 // ============================================
 
-import { useState, useCallback, useEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react'
+import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react'
 import { useRouter } from '../hooks/useRouter'
 import { normalizeToForwardSlash, getDirectoryName, isSameDirectory, serverStorage } from '../utils'
 import { layoutStore, useLayoutStore } from '../store/layoutStore'
@@ -100,7 +100,7 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
           : previous)
       }
     },
-    [setUrlDirectory, urlDirectory, serverId],
+    [setUrlDirectory, serverId],
   )
 
   // 添加目录
@@ -177,31 +177,40 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     addDirectoryRef.current = addDirectory
   }, [addDirectory])
+  const startupDirectoryRef = useRef<Promise<{ directory: string; explicit: boolean } | null> | null>(null)
+  const currentDirectoryRef = useRef(urlDirectory)
+  useLayoutEffect(() => {
+    currentDirectoryRef.current = urlDirectory
+  }, [urlDirectory])
 
   useEffect(() => {
     if (!isTauri()) return
 
     let unlisten: (() => void) | undefined
+    let cancelled = false
+    const initialDirectory = currentDirectoryRef.current
+    const initialServer = getServerId()
 
-    // 拉取启动时的 CLI 目录（一次性）
-    import('@tauri-apps/api/core').then(({ invoke }) => {
-      invoke<string | null>('get_cli_directory')
-        .then(dir => {
-          if (dir) addDirectoryRef.current(dir)
-        })
-        .catch(() => {})
-    })
+    // StrictMode 的两次 effect 共享一次消费；隐式 cwd 不覆盖保存的项目。
+    startupDirectoryRef.current ??= import('@tauri-apps/api/core')
+      .then(({ invoke }) => invoke<{ directory: string; explicit: boolean } | null>('get_cli_directory'))
+    void startupDirectoryRef.current.then(request => {
+      if (cancelled || getServerId() !== initialServer || currentDirectoryRef.current !== initialDirectory) return
+      if (request && (request.explicit || !initialDirectory)) addDirectoryRef.current(request.directory)
+    }).catch(() => {})
 
     // 监听后续的 open-directory 事件（single-instance / macOS RunEvent::Opened）
     import('@tauri-apps/api/event').then(({ listen }) => {
       listen<string>('open-directory', event => {
-        addDirectoryRef.current(event.payload)
+        if (!cancelled) addDirectoryRef.current(event.payload)
       }).then(fn => {
-        unlisten = fn
+        if (cancelled) fn()
+        else unlisten = fn
       })
     })
 
     return () => {
+      cancelled = true
       unlisten?.()
     }
   }, [])

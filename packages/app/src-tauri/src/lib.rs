@@ -147,18 +147,48 @@ fn restore_window_state(window: &tauri::WebviewWindow) {
     }
 }
 
-/// 从命令行参数中提取目录路径（右键菜单 "Open with OMPiUI" 传 %V）
+/// 显式目录优先；快捷方式起始位置只在未保存项目时由前端采用。
 #[cfg(desktop)]
-fn extract_directory_from_args(args: &[String]) -> Option<String> {
+fn extract_directory_from_args(args: &[String], cwd: &std::path::Path) -> Option<(String, bool)> {
     for arg in args.iter().skip(1) {
         if arg.starts_with('-') {
             continue;
         }
-        if std::path::Path::new(arg).is_dir() {
-            return Some(arg.clone());
+        let path = cwd.join(arg);
+        if path.is_dir() {
+            return Some((path.to_string_lossy().to_string(), true));
         }
     }
-    None
+    let directory = cwd.canonicalize().ok()?;
+    let executable = std::env::current_exe().ok()?;
+    if executable.parent().and_then(|path| path.canonicalize().ok()).as_ref() == Some(&directory) {
+        return None;
+    }
+    Some((cwd.to_string_lossy().to_string(), false))
+}
+
+#[cfg(all(test, desktop))]
+mod launch_directory_tests {
+    use super::extract_directory_from_args;
+
+    #[test]
+    fn explicit_paths_resolve_against_the_launching_process_directory() {
+        let executable = std::env::current_exe().unwrap();
+        let install = executable.parent().unwrap();
+        let args = vec!["ompiui.exe".to_string(), ".".to_string()];
+        let request = extract_directory_from_args(&args, install).unwrap();
+        assert!(request.1);
+        assert_eq!(std::path::Path::new(&request.0).canonicalize().unwrap(), install.canonicalize().unwrap());
+        assert!(extract_directory_from_args(&["ompiui.exe".to_string()], install).is_none());
+    }
+
+    #[test]
+    fn implicit_working_directory_is_not_an_explicit_project_request() {
+        let temp = std::env::temp_dir();
+        let request = extract_directory_from_args(&["ompiui.exe".to_string()], &temp).unwrap();
+        assert!(!request.1);
+        assert_eq!(std::path::Path::new(&request.0), temp);
+    }
 }
 
 #[cfg(desktop)]
@@ -234,11 +264,11 @@ fn desktop_window_ready(window: Window) -> Result<(), String> {
 #[cfg(desktop)]
 #[tauri::command]
 async fn open_new_window(app: tauri::AppHandle, directory: Option<String>) -> Result<(), String> {
-    open_new_window_inner(&app, directory)
+    open_new_window_inner(&app, directory, true)
 }
 
 #[cfg(desktop)]
-fn open_new_window_inner(app: &tauri::AppHandle, directory: Option<String>) -> Result<(), String> {
+fn open_new_window_inner(app: &tauri::AppHandle, directory: Option<String>, explicit: bool) -> Result<(), String> {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let label = format!(
         "win-{}",
@@ -248,7 +278,7 @@ fn open_new_window_inner(app: &tauri::AppHandle, directory: Option<String>) -> R
     // 目录先存入 pending，窗口首帧后由前端 get_cli_directory 一次性消费
     if let Some(dir) = &directory {
         if let Some(state) = app.try_state::<OpenDirectoryState>() {
-            state.pin(&label, dir.clone());
+            state.pin(&label, dir.clone(), explicit);
         }
     }
 
@@ -290,10 +320,11 @@ pub fn run() {
 
     #[cfg(desktop)]
     let builder = builder
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            // 始终新建窗口（类似 VSCode：双击图标 / 右键目录 = 新窗口）
-            let dir = extract_directory_from_args(&args);
-            let _ = open_new_window_inner(app, dir);
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            // 始终新建窗口；调用方的 cwd 不应被首个进程的 cwd 替代。
+            let request = extract_directory_from_args(&args, std::path::Path::new(&cwd));
+            let (directory, explicit) = request.map_or((None, false), |(dir, explicit)| (Some(dir), explicit));
+            let _ = open_new_window_inner(app, directory, explicit);
         }))
         .manage(OpenDirectoryState::default())
         .manage(ServiceState::default())
@@ -384,9 +415,10 @@ pub fn run() {
             // 冷启动时从 CLI 参数提取目录（右键 "Open with OMPiUI" / 拖到图标），
             // 存入 pending，前端首帧后 get_cli_directory 一次性消费。
             let args: Vec<String> = std::env::args().collect();
-            if let Some(dir) = extract_directory_from_args(&args) {
+            if let Some((dir, explicit)) = std::env::current_dir().ok()
+                .and_then(|cwd| extract_directory_from_args(&args, &cwd)) {
                 if let Some(state) = app.try_state::<OpenDirectoryState>() {
-                    state.pin("main", dir);
+                    state.pin("main", dir, explicit);
                 }
             }
 
@@ -444,7 +476,7 @@ pub fn run() {
                         if win_count <= 1 {
                             let _ = app_handle.emit("open-directory", dir);
                         } else {
-                            let _ = open_new_window_inner(app_handle, Some(dir));
+                            let _ = open_new_window_inner(app_handle, Some(dir), true);
                         }
                     }
                 }

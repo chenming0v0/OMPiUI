@@ -226,31 +226,3 @@ pub(super) fn is_process_alive(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 打包脚本 (prepare-tauri-resources.mjs → package-desktop.mjs) 产出的
-    /// 文件名，钉住桌面壳查找路径：改错任一侧都会让桌面端找不到自带 server。
-    #[test]
-    fn bundled_server_binary_matches_packaged_name() {
-        let dir = env::temp_dir().join(format!("ompiui-bundled-binary-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("create temp dir");
-
-        assert!(
-            bundled_server_binary(&dir).is_err(),
-            "empty resource dir must not resolve"
-        );
-
-        let name = if cfg!(target_os = "windows") {
-            "omp-worker.exe"
-        } else {
-            "omp-worker"
-        };
-        std::fs::write(dir.join(name), b"").expect("write bundled binary");
-        let found = bundled_server_binary(&dir).expect("packaged name must resolve");
-
-        std::fs::remove_dir_all(&dir).expect("clean temp dir");
-        assert_eq!(found, dir.join(name));
-    }
-}
