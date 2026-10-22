@@ -1,6 +1,6 @@
 [package]
 name = "ompiui"
-version = "0.6.36"
+version = "0.6.37"
 description = "OMPiUI desktop client"
 authors = ["OMPiUI contributors"]
 license = "GPL-3.0-only"
