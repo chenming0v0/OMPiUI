@@ -6,6 +6,7 @@ import test, { type TestContext } from "node:test"
 import type { JsonObject } from "@ompiui/protocol"
 import { OmpRpcClient } from "./rpc-client.js"
 import { OmpStdinSender } from "./stdin-sender.js"
+import { RuntimeBridgeTransport } from "./runtime-bridge.js"
 
 function rpcFixture(t: TestContext, capacity?: { bytes: number; items: number }) {
   const delivered: JsonObject[] = []
@@ -23,6 +24,7 @@ function rpcFixture(t: TestContext, capacity?: { bytes: number; items: number })
   Object.assign(client, {
     nextId: 0, pending: new Map(), chunks: new Map(), chunkBytes: 0,
     stderrBuffer: [], exited: false,
+    runtimeBridge: new RuntimeBridgeTransport(),
     proc: { stdin, kill() { kills += 1; return true } },
   })
   const internal = client as unknown as {

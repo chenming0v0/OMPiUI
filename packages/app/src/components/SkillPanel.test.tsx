@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SkillPanel } from './SkillPanel'
 
@@ -27,22 +27,16 @@ describe('SkillPanel', () => {
     ])
   })
 
-  it('renders semantic controls for refresh, search, and expandable items', async () => {
+  it('expands the discovered skill to show its native path and details', async () => {
     render(<SkillPanel sessionId="session-1" />)
+    const itemButton = await screen.findByRole('button', { name: /deploy-to-vercel/i })
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeInTheDocument())
-    expect(getSkillsMock).toHaveBeenCalledWith('session-1')
-
-    const searchInput = screen.getByRole('textbox', { name: 'Filter skills...' })
-    const itemButton = screen.getByRole('button', { name: /deploy-to-vercel/i })
-
-    expect(searchInput).toHaveAttribute('name', 'skill-filter')
-    expect(searchInput).toHaveAttribute('autocomplete', 'off')
     expect(itemButton).toHaveAttribute('aria-expanded', 'false')
 
     fireEvent.click(itemButton)
 
     expect(itemButton).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByText(/baseDir/)).toBeInTheDocument()
+    expect(screen.getByText('/skills/deploy-to-vercel/SKILL.md')).toBeInTheDocument()
   })
 })

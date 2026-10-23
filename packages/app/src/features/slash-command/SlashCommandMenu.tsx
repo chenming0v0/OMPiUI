@@ -52,10 +52,13 @@ export const SlashCommandMenu = forwardRef<SlashCommandMenuHandle, SlashCommandM
   const filteredCommands = useMemo(() => {
     if (!isOpen) return []
 
-    // 按命令名过滤（不匹配描述）——输入 /session 时只应出现 /session，
-    // 描述里含 "session" 的 /resume /new /export 等不应混进来。
     const lowerQuery = query.toLowerCase()
-    return commands.filter(cmd => cmd.name.toLowerCase().includes(lowerQuery))
+    return commands.flatMap(cmd => {
+      if (cmd.name.toLowerCase().includes(lowerQuery)) return [cmd]
+      return (cmd.aliases ?? [])
+        .filter(alias => alias.toLowerCase().includes(lowerQuery))
+        .map(alias => ({ ...cmd, name: alias }))
+    })
   }, [commands, isOpen, query])
   const commandColumnWidth = useMemo(() => {
     const maxCommandLength = commands.reduce((max, cmd) => Math.max(max, cmd.name.length + 1), 0)
@@ -124,35 +127,32 @@ export const SlashCommandMenu = forwardRef<SlashCommandMenuHandle, SlashCommandM
     }
   }, [isOpen])
 
-  // 加载命令列表：前端内置命令（始终展示）+ OMP registry 的扩展命令
+  // Native registry is authoritative; local actions have separate ui-* names.
   useEffect(() => {
     if (!isOpen) return
 
     const frameId = requestAnimationFrame(() => {
       const requestId = ++requestIdRef.current
       const frontend = getFrontendCommands()
+      setCommands(frontend)
+      setLoading(Boolean(sessionId))
       if (!sessionId) {
-        setCommands(frontend)
         setSelectedIndex(0)
         return
       }
-      setLoading(true)
 
       loadPiSlashCommands(sessionId)
         .then(descriptors => {
           if (requestId !== requestIdRef.current) return
-          // 内置命令名由前端本地处理，同名 registry 命令（含 OMP RPC 内置命令
-          // 的镜像）直接跳过，避免重复项。仅补充扩展命令。
-          const frontendNames = new Set(frontend.map(cmd => cmd.name))
-          const sessionCommands: Command[] = descriptors
-            .filter(descriptor => !frontendNames.has(descriptor.name))
-            .map(descriptor => ({
-              name: descriptor.name,
-              description: descriptor.description,
-              argumentHint: descriptor.argumentHint,
-              source: descriptor.sourceInfo && typeof descriptor.sourceInfo === 'object' && !Array.isArray(descriptor.sourceInfo)
-                && descriptor.sourceInfo.builtin === true ? 'builtin' : 'api',
-            }))
+          const sessionCommands: Command[] = descriptors.map(descriptor => ({
+            name: descriptor.name,
+            description: descriptor.description,
+            argumentHint: descriptor.argumentHint,
+            aliases: descriptor.aliases,
+            subcommands: descriptor.subcommands,
+            source: descriptor.sourceInfo && typeof descriptor.sourceInfo === 'object' && !Array.isArray(descriptor.sourceInfo)
+              && descriptor.sourceInfo.source === 'builtin' ? 'builtin' : 'api',
+          }))
           setCommands([...frontend, ...sessionCommands])
           setSelectedIndex(0)
         })
@@ -168,7 +168,10 @@ export const SlashCommandMenu = forwardRef<SlashCommandMenuHandle, SlashCommandM
         })
     })
 
-    return () => cancelAnimationFrame(frameId)
+    return () => {
+      cancelAnimationFrame(frameId)
+      requestIdRef.current += 1
+    }
   }, [isOpen, sessionId])
 
   // query 变化时重置选中项
@@ -252,7 +255,12 @@ export const SlashCommandMenu = forwardRef<SlashCommandMenuHandle, SlashCommandM
         {filteredCommands.map((cmd, index) => (
           <button
             key={cmd.name}
-            title={[cmd.description, cmd.argumentHint].filter(Boolean).join(' ')}
+            title={[
+              cmd.description,
+              cmd.argumentHint,
+              cmd.aliases?.length ? `Aliases: ${cmd.aliases.map(alias => `/${alias}`).join(', ')}` : undefined,
+              ...((cmd.subcommands ?? []).map(subcommand => `${subcommand.name}${subcommand.usage ? ` ${subcommand.usage}` : ''}${subcommand.description ? ` — ${subcommand.description}` : ''}`)),
+            ].filter(Boolean).join('\n')}
             className={`w-full px-2.5 py-2 md:py-1.5 flex items-center gap-3 text-left rounded-lg transition-colors ${
               index === activeIndex ? 'bg-accent-main-100/10 text-text-100' : 'text-text-200 hover:bg-bg-100/40'
             }`}

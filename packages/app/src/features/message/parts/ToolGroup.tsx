@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { diffLines } from 'diff'
 import { ChevronDownIcon, ChevronRightIcon } from '../../../components/Icons'
 import type { PiToolExecution } from '../../../omp/domain/index.js'
+import { getToolExecutionStatus } from '../../../omp/domain/index.js'
 import { useCompositorExpand, useDisclosureScrollLock } from '../../../hooks'
 import { useTheme } from '../../../hooks/useTheme'
 import { extractToolData } from '../tools'
@@ -21,7 +22,6 @@ import { useTaskRuntimeStopped } from '../tools/useTaskRuntimeStopped'
 interface ToolGroupProps {
   /** 稳定分组 id：assistant 消息用 entryId，bash 组用组内第一个 entryId */
   groupId: string
-  startedAt?: number
   executions: PiToolExecution[]
   isStreaming?: boolean
   modelLabel?: string
@@ -39,7 +39,6 @@ function isReadableTool(toolName: string): boolean {
 
 export const ToolGroup = memo(function ToolGroup({
   groupId,
-  startedAt,
   executions,
   isStreaming,
   modelLabel,
@@ -48,11 +47,14 @@ export const ToolGroup = memo(function ToolGroup({
   const { t } = useTranslation('message')
   const { descriptiveToolSteps, immersiveMode, processCollapseEnabled } = useTheme()
 
-  const doneCount = executions.filter(e => e.result).length
+  const doneCount = executions.filter(e => {
+    const status = getToolExecutionStatus(e)
+    return status === 'completed' || status === 'error'
+  }).length
   const totalCount = executions.length
   const isAllDone = doneCount === totalCount
   const taskStopped = useTaskRuntimeStopped(executions.some(e => e.call.name === 'task'))
-  const hasActiveTools = executions.some(e => !e.result && !(e.call.name === 'task' && taskStopped))
+  const hasActiveTools = executions.some(e => getToolExecutionStatus(e) === 'running' && !(e.call.name === 'task' && taskStopped))
   const stepsSummary = descriptiveToolSteps ? buildDescriptiveToolStepsSummary(executions, t) : undefined
 
   // 汇总所有成功完成的工具的 diff stats（失败的不算）
@@ -159,7 +161,6 @@ export const ToolGroup = memo(function ToolGroup({
             compact={isSingleCompact}
             descriptive={descriptiveToolSteps}
             isStreaming={isStreaming}
-            startedAt={execution.startedAt ?? startedAt}
             defaultExpanded={defaultExpanded}
           />
         ))
@@ -293,9 +294,10 @@ function buildDescriptiveToolStepsSummary(
       failedMap.set(cat, 0)
       activeMap.set(cat, 0)
     }
-    if (execution.result && !execution.result.isError) doneMap.set(cat, (doneMap.get(cat) || 0) + 1)
-    else if (execution.result?.isError) failedMap.set(cat, (failedMap.get(cat) || 0) + 1)
-    else activeMap.set(cat, (activeMap.get(cat) || 0) + 1)
+    const status = getToolExecutionStatus(execution)
+    if (status === 'completed') doneMap.set(cat, (doneMap.get(cat) || 0) + 1)
+    else if (status === 'error') failedMap.set(cat, (failedMap.get(cat) || 0) + 1)
+    else if (status === 'running') activeMap.set(cat, (activeMap.get(cat) || 0) + 1)
   }
 
   // ── 已完成 + 失败（合并同类别）──
@@ -343,6 +345,11 @@ function buildDescriptiveToolStepsSummary(
   for (const cat of activeCategories) {
     if (segments.length > 0) segments.push({ text: sep, type: 'normal' })
     segments.push({ text: formatToolSummarySegment(cat, activeMap.get(cat) || 0, 'active', t), type: 'active' })
+  }
+  const pendingCount = executions.filter(execution => getToolExecutionStatus(execution) === 'pending').length
+  if (pendingCount > 0) {
+    if (segments.length > 0) segments.push({ text: sep, type: 'normal' })
+    segments.push({ text: t('toolSteps.pending', { count: pendingCount }), type: 'normal' })
   }
 
   if (segments.length === 0) {

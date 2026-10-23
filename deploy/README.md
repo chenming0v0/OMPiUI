@@ -15,6 +15,8 @@ OMPiUI 的**编程前端**（`packages/app`，浏览器/桌面里的聊天界面
 
 ## 方式一：VPS 一键安装（systemd）
 
+需要 glibc Linux、Node.js ≥ 22.19、npm、Git 和 systemd 用户服务。npm 只用于显式安装／构建，不需要全局安装官方 OMP 或 Bun；安装阶段需联网获取官方运行时及其生产／原生依赖。
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/chenming0v0/OMPiUI/dev/scripts/install-server.sh | bash
 ```
@@ -25,7 +27,9 @@ curl -fsSL https://raw.githubusercontent.com/chenming0v0/OMPiUI/dev/scripts/inst
 bash scripts/install-server.sh
 ```
 
-脚本做这些事：克隆（仅裸机需要）→ `npm install` + 构建 → 生成管理令牌 → 注册 systemd 用户服务并启用 linger（登出不停服务）→ 打印管理地址和令牌。
+脚本做这些事：克隆（仅裸机需要）→ `npm install` + 构建 → 准备 `omp-runtime/`（官方 `omp`、Bun 1.3.14、与 CLI 完全同版本的官方 npm 源码包及当前平台完整生产／原生依赖）→ 生成管理令牌 → 注册 systemd 用户服务并启用 linger（登出不停服务）→ 打印管理地址和令牌。后端默认选择该预装运行时；启动服务、浏览或刷新会话不会隐式下载。
+
+已有源码 checkout 也可在启动前显式执行 `npm run prepare:omp-runtime`。`OMPI_OMP_RUNTIME_DIR` 可替换为已准备好的当前平台运行时目录；选择外部 `OMPI_OMP_BIN`／`PATH` CLI 时仍需完全同版本官方源码与依赖，`OMPI_OMP_PACKAGE_ROOT` 和 `OMPI_BUN_BIN` 的含义见 [运行配置](../docs/development.md#运行配置)。模型、凭据和原生会话目录沿用官方 OMP；浏览历史只读，不启动会话写入进程。Android 只作为客户端连接此主机。
 
 装完后：
 
@@ -48,6 +52,8 @@ git clone --depth 1 -b dev https://github.com/chenming0v0/OMPiUI.git
 cd OMPiUI
 docker compose -f deploy/docker-compose.yml up -d --build
 ```
+
+镜像使用 glibc Debian，在镜像构建阶段准备上述完整运行时；容器启动不依赖宿主机的全局 OMP／Bun，也不在启动时安装依赖。
 
 容器里管理平面是 PID 1（`ompiui-admin web --host 0.0.0.0`），自带 HEALTHCHECK。容器内也可以用 TUI：
 

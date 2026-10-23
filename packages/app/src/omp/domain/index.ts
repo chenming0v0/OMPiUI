@@ -86,7 +86,6 @@ import type {
   ImageContent,
   ToolCall,
 } from '../vendor/pi-ai'
-import type { ThinkingLevel } from '../vendor/pi-agent-core'
 import type { JsonObject, JsonValue, EntriesPage, BranchCheckpoint, LiveMessage } from '@ompiui/protocol'
 
 /**
@@ -149,12 +148,13 @@ export type PiAssistantMessageItem = {
   blocks: (TextContent | ThinkingContent | ToolCall)[]
   /** Tool results paired by toolCallId; empty while a call has no result yet */
   toolResults: Record<string, ToolResultMessage>
-  /** Per-call source timestamps when consecutive assistant entries are merged for display. */
-  toolCallTimestamps?: Record<string, number>
+  /** Execution evidence keyed by call id; message timestamps are never tool starts. */
+  toolExecutions?: Record<string, PiToolExecutionState>
   /** True for the live streaming message (not yet persisted as an entry) */
   isStreaming?: boolean
   renderKey?: string
 }
+
 
 export type PiBashExecutionItem = {
   kind: 'bash_execution'
@@ -176,14 +176,32 @@ export type PiBashExecutionGroupItem = {
   items: PiBashExecutionItem[]
 }
 
-/**
- * One tool execution: the call plus its result (absent while pending).
- * The neutral contract for the tool rendering chain.
- */
-export type PiToolExecution = {
-  call: ToolCall
-  result?: ToolResultMessage
+/** Per-call execution evidence from persisted starts or the live event stream. */
+export type PiToolExecutionState = {
   startedAt?: number
+  /** Updates prove execution without inventing a start time when the start frame was missed. */
+  isRunning?: boolean
+  result?: ToolResultMessage
+  call?: ToolCall
+  completedAt?: number
+  /** Authoritative interruption/crash evidence; never inferred from elapsed time. */
+  error?: string
+  interruption?: 'failed' | 'cancelled' | 'unknown'
+  endedAt?: number
+}
+
+/** One tool call plus its authoritative result and execution evidence. */
+export type PiToolExecution = PiToolExecutionState & {
+  call: ToolCall
+}
+
+export function getToolExecutionStatus(execution: PiToolExecution): 'pending' | 'running' | 'completed' | 'error' {
+  if (execution.result) {
+    return execution.result.isError ? 'error' : 'completed'
+  }
+  if (execution.error) return 'error'
+  if (execution.completedAt !== undefined) return 'completed'
+  return (execution.isRunning ?? execution.startedAt !== undefined) ? 'running' : 'pending'
 }
 
 export type PiCompactionItem = {
@@ -252,27 +270,11 @@ export type PiSessionRuntimeState = JsonObject
  */
 export type PiSettingsSnapshot = {
   workspacePath: string
-  projectTrusted: boolean
   global: JsonObject
   project: JsonObject
-  effective: {
-    defaultProvider?: string
-    defaultModel?: string
-    defaultThinkingLevel?: ThinkingLevel
-    transport?: 'auto' | 'sse' | 'websocket' | 'websocket-cached'
-    steeringMode?: 'all' | 'one-at-a-time'
-    followUpMode?: 'all' | 'one-at-a-time'
-    theme?: string
-    compaction?: { enabled?: boolean; reserveTokens?: number; keepRecentTokens?: number }
-    retry?: { enabled?: boolean; maxRetries?: number; baseDelayMs?: number }
-    shellPath?: string
-    httpProxy?: string
-    enableSkillCommands?: boolean
-    showImages?: boolean
-    defaultProjectTrust?: 'ask' | 'always' | 'never'
-    [key: string]: JsonValue | undefined
-  }
+  effective: JsonObject
   errors: Array<{ scope: string; message: string }>
+  definitions?: Array<{ id: string; type: string; values?: string[] }>
 }
 
 /** Native project trust state (worker trust.get / trust.set). */
@@ -386,23 +388,56 @@ export type PiModelsDevLookupResult = {
   } | null
 }
 
-// SDK package shapes (core/package-manager). ResolvedPaths/ResolvedResource
-// are publicly exported; ConfiguredPackage/PackageUpdate are not, so they
-// are mirrored here from the SDK declarations.
-export type { ResolvedPaths, ResolvedResource } from '../vendor/pi-coding-agent'
-
+/** Native OMP plugin manager snapshots, not the obsolete Pi SDK package manager. */
 export type PiConfiguredPackage = {
   source: string
   scope: 'user' | 'project'
-  filtered: boolean
-  installedPath?: string
+  enabled: boolean
+  version: string
+  type: 'npm' | 'git' | 'link' | 'marketplace'
+  installedPath: string
+  shadowedBy?: 'project'
+}
+
+export type PiMarketplaceSource = {
+  name: string
+  source: string
+  sourceType: 'github' | 'git' | 'url' | 'local'
+  catalogPath: string
+}
+
+export type PiPackagesSnapshot = {
+  packages: PiConfiguredPackage[]
+  marketplaces: PiMarketplaceSource[]
+}
+
+export type OmpPackageResource = {
+  path: string
+  name?: string
+  enabled: boolean
+  scope: 'user' | 'project'
+  source: string
+}
+
+export type OmpResolvedPackageResources = {
+  extensions: OmpPackageResource[]
+  tools: OmpPackageResource[]
+  hooks: OmpPackageResource[]
+  commands: OmpPackageResource[]
+  skills: OmpPackageResource[]
+  prompts: OmpPackageResource[]
+  rules: OmpPackageResource[]
+  mcpServers: OmpPackageResource[]
+  warnings: string[]
 }
 
 export type PiPackageUpdate = {
   source: string
   displayName: string
-  type: 'npm' | 'git'
+  type: 'marketplace'
   scope: 'user' | 'project'
+  from: string
+  to: string
 }
 
 /**
@@ -418,6 +453,7 @@ export type PiBranchPage = Omit<EntriesPage, 'items' | 'checkpoint'> & {
   client?: {
     stableEntryIds?: Record<string, string>
     historyWindowed?: boolean
+    toolExecutions?: Record<string, PiToolExecutionState>
   }
 }
 

@@ -201,7 +201,6 @@ export const BottomPanel = memo(function BottomPanel({ directory, onNavigateSess
                   sessionId={sessionId}
                   mode={activeTab.type === 'session-controls' ? 'controls' : undefined}
                   onNavigateSession={onNavigateSession}
-                  onNewChat={onNewChat}
                 />
               </Suspense>
             ) : (

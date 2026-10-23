@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 import { act, render, screen } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DefaultRenderer } from './DefaultRenderer'
 import { liveToolOutputStore } from '../../../../omp/liveToolOutput'
 import type { ExtractedToolData } from '../types'
 import type { PiToolExecution } from '../../../../omp/domain/index.js'
+import { themeStore } from '../../../../store/themeStore'
+let previousCardStyle = themeStore.toolCardStyle
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -31,6 +33,7 @@ function runningEditExecution(toolCallId = 'call-edit'): PiToolExecution {
       arguments: { filePath: 'src/app.ts', oldString: 'a', newString: 'b' },
     },
     result: undefined,
+    startedAt: 7_500,
   }
 }
 
@@ -46,7 +49,21 @@ function renderDefault(execution: PiToolExecution, data: ExtractedToolData) {
 }
 
 describe('DefaultRenderer', () => {
-  beforeEach(() => liveToolOutputStore.clearAll())
+  beforeEach(() => {
+    previousCardStyle = themeStore.toolCardStyle
+    liveToolOutputStore.clearAll()
+    themeStore.setToolCardStyle('classic')
+  })
+  afterEach(() => themeStore.setToolCardStyle(previousCardStyle))
+  it('does not create a loading output block for a queued tool', () => {
+    const queued = { ...runningEditExecution(), startedAt: undefined }
+    const { container, rerender } = renderDefault(queued, { input: '{"filePath":"src/app.ts"}' })
+    expect(screen.queryByText('defaultRenderer.output')).not.toBeInTheDocument()
+    expect(container.querySelector('.animate-spin')).toBeNull()
+    rerender(<DefaultRenderer execution={{ ...queued, startedAt: 7_500 }} partKey="p1" data={{ input: '{"filePath":"src/app.ts"}' }} />)
+    expect(screen.getByText('defaultRenderer.output')).toBeInTheDocument()
+    expect(container.querySelector('.animate-spin')).not.toBeNull()
+  })
 
   it('streams live tool output for non-bash tools while running', async () => {
     renderDefault(runningEditExecution(), { input: '{"filePath":"src/app.ts"}' })
@@ -56,6 +73,15 @@ describe('DefaultRenderer', () => {
     })
 
     expect(await screen.findByText('editing src/app.ts...')).toBeInTheDocument()
+  })
+
+  it('retains received partial output beside the exit reason without a fabricated result', async () => {
+    const execution = { ...runningEditExecution(), isRunning: false, error: 'Runtime exited with code 23 before returning', endedAt: 10_000 }
+    liveToolOutputStore.set(execution.call.id, 'session-1', 'Last real output before exit')
+    const { container } = renderDefault(execution, { error: execution.error })
+    expect(await screen.findByText(execution.error)).toBeInTheDocument()
+    expect(await screen.findByText('Last real output before exit')).toBeInTheDocument()
+    expect(container.querySelector('.animate-spin')).toBeNull()
   })
 
   it('prefers the persisted result output once the tool completes', async () => {

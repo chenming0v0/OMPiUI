@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { extensionUiStore } from '../../omp/extensionUiStore'
 import { ExtensionUiDialogHost } from './ExtensionUiDialogHost'
@@ -109,6 +109,12 @@ describe('ExtensionUiDialogHost', () => {
     ))
   })
 
+  
+
+  
+
+  
+
   it('shows only the current session pending requests', () => {
     extensionUiStore.requestOpened(selectRequest({ sessionId: 'other-session' }))
     render(<ExtensionUiDialogHost sessionId="session-1" />)
@@ -164,6 +170,46 @@ describe('ExtensionUiDialogHost', () => {
     await waitFor(() => expect(screen.getByText('Second question')).toBeInTheDocument())
     // 队列只剩一个时不再显示分页器
     expect(screen.queryByText(/^\d+\/\d+$/)).toBeNull()
+  })
+
+  it('removes only the aborted target from the visible queue and rejects its late snapshot', () => {
+    extensionUiStore.requestOpened(selectRequest({ requestId: 'A', title: 'Target A' }))
+    extensionUiStore.requestOpened(selectRequest({ requestId: 'B', title: 'Keep B' }))
+    const stale = structuredClone(extensionUiStore.getSnapshot().sessions['session-1']!)
+    render(<ExtensionUiDialogHost sessionId="session-1" />)
+    expect(screen.getByText('Target A')).toBeInTheDocument()
+    act(() => extensionUiStore.requestSettled('session-1', 'A'))
+    expect(screen.queryByText('Target A')).toBeNull()
+    expect(screen.getByText('Keep B')).toBeInTheDocument()
+    act(() => extensionUiStore.replace(stale))
+    expect(screen.queryByText('Target A')).toBeNull()
+    expect(screen.getByText('Keep B')).toBeInTheDocument()
+    expect(respondPiExtensionUi).not.toHaveBeenCalled()
+  })
+
+  it('does not carry input drafts into another session using the same native ID', () => {
+    extensionUiStore.requestOpened(selectRequest({ kind: 'input', title: 'First session' } as never))
+    extensionUiStore.requestOpened(selectRequest({ kind: 'input', sessionId: 'session-2', title: 'Second session' } as never))
+    const { rerender } = render(<ExtensionUiDialogHost sessionId="session-1" />)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'private old draft' } })
+    rerender(<ExtensionUiDialogHost sessionId="session-2" />)
+    expect(screen.getByText('Second session')).toBeInTheDocument()
+    expect(screen.getByRole('textbox')).toHaveValue('')
+  })
+
+  it('keeps the replacement generation dialog when an old submission finishes late', async () => {
+    let finish!: () => void
+    respondPiExtensionUi.mockReturnValue(new Promise<void>(resolve => { finish = resolve }))
+    extensionUiStore.requestOpened(selectRequest({ kind: 'input', workerGeneration: 'old', title: 'Old generation' } as never))
+    render(<ExtensionUiDialogHost sessionId="session-1" />)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'old answer' } })
+    fireEvent.click(screen.getByRole('button', { name: /submit|提交/i }))
+    act(() => extensionUiStore.requestOpened(selectRequest({ kind: 'input', workerGeneration: 'new', title: 'New generation' } as never)))
+    expect(screen.getByRole('textbox')).toHaveValue('')
+    await act(async () => { finish(); await Promise.resolve() })
+    expect(screen.getByText('New generation')).toBeInTheDocument()
+    expect(screen.getByRole('textbox')).toHaveValue('')
+    expect(extensionUiStore.getSnapshot().sessions['session-1']?.pending.map(request => request.workerGeneration)).toEqual(['new'])
   })
 
   it('expands long select options inline and keeps them selectable', async () => {

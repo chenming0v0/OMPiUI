@@ -50,6 +50,8 @@ import { projectStateImages, projectSubagentPayload, projectToolUpdate } from ".
 import { MainMessageStream } from "./main-message-stream.js";
 import { getPreviewSettings } from "./preview-settings.js";
 import { projectPreviewMessage } from "./subagent-preview.js";
+import { requireResourceList, registryFromResources } from './resource-registry.js';
+import { requestNativePromptAcceptance } from './native-rpc-prompt.js';
 
 /**
  * OmpRpcSession —— SessionRuntime 契约的 OMP 实现。
@@ -77,17 +79,6 @@ interface EntryRecord {
   [key: string]: JsonValue | undefined;
 }
 
-type QueuedUserMessage = {
-  text: string;
-  images?: ImageInput[];
-};
-
-type SubmittedUserMessage = {
-  id: string;
-  message: JsonObject;
-  accepted: boolean;
-  nativeTimestamp?: number;
-};
 
 // goal 续跑循环的护栏：单个目标最多自动续跑轮数 / settle 后等 entries 落地的宽限
 const GOAL_MAX_CONTINUATIONS = 50;
@@ -175,7 +166,12 @@ export class OmpRpcSession implements SessionRuntime {
   private readonly piEvents = new EventSnapshotBuffer<{
     event: JsonObject;
     live?: { id: string; revision: number };
-  }>((buffered) => this.messageStream.push(buffered.event, buffered.live));
+    epoch: string;
+    historyGeneration: number;
+  }>((buffered) => {
+    if (buffered.epoch === this.eventEpoch && buffered.historyGeneration === this.historyGeneration)
+      this.messageStream.push(buffered.event, buffered.live);
+  });
   private readonly crashListeners = new Set<(error: Error) => void>();
   private readonly closeListeners = new Set<() => void>();
   private outputPaused = false;
@@ -187,6 +183,7 @@ export class OmpRpcSession implements SessionRuntime {
   private entriesSeeded = false;
   private syncInFlight: Promise<void> = Promise.resolve();
   private syncDirty = false;
+  private historyGeneration = 0;
   private syncTimer: NodeJS.Timeout | undefined;
 
   private nativeRevision = 1;
@@ -204,22 +201,15 @@ export class OmpRpcSession implements SessionRuntime {
     autoEnabled: true,
     operation: { type: "none" },
   };
-  // OMP 18.x 的 RPC 没有 clear_queue。用户消息先住在 worker，回合结束后
-  // 再逐条以普通 prompt 发送，因此编辑/删除不会留下已经发给 OMP 的幽灵消息。
-  private userQueue: {
-    steering: QueuedUserMessage[];
-    followUp: QueuedUserMessage[];
-  } = {
-    steering: [],
-    followUp: [],
-  };
-  private userQueueDrain: Promise<void> | undefined;
-  private queueSubmissionInFlight = false;
-  private submittedMessages: SubmittedUserMessage[] = [];
-  // OMPiUI 轻量 goal 运行时的注册表：RPC 模式的 OMP 不注册 goal 隐藏工具、
-  // 也没有 goal RPC 命令（实测 18.3.x），目标状态只能住 worker 这里。
-  // 未来 OMP 若在 RPC 透出真实 goal_updated，trackShadowState 的透传仍以
-  // 事件帧为准覆写本状态。经 state.get 的 goal 字段 + goal 命令到达前端。
+  // Queue execution and editing are native operations, never later prompts.
+  private nativeQueue: { steering: JsonObject[]; followUp: JsonObject[] } = { steering: [], followUp: [] };
+  private queueGeneration = 0;
+  private nativeSettled = true;
+  private activityGeneration = 0;
+  private readonly resourcesListeners = new Set<() => void>();
+  private scopedModels: JsonValue[] = [];
+  // OMPiUI goal continuation is worker-local. Native goal tools may also be
+  // registered by the SDK; there is no public RPC goal control operation.
   private goal: JsonValue = null;
   private goalContinuations = 0;
   private goalAnnouncementPending = false;
@@ -231,18 +221,14 @@ export class OmpRpcSession implements SessionRuntime {
     retrying: false,
     compacting: false,
   };
+  private abortIntentEpoch?: string;
+  private toolInterruption?: JsonObject;
   private abortInFlight: Promise<JsonValue | undefined> | undefined;
 
   private modelsCache: JsonObject[] = [];
-  private thinkingLevelsCache: string[] = [
-    "off",
-    "minimal",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-    "max",
-  ];
+  private modelsGeneration = 0;
+  private thinkingLevelsCache: string[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+  private thinkingLevelsGeneration = 0;
   private availableCommandsCache: JsonValue = [];
 
   private constructor() {}
@@ -303,15 +289,13 @@ export class OmpRpcSession implements SessionRuntime {
         throw ompTooOldError(detected);
       }
       this.ompVersion = detected;
-      await this.client.request({
-        type: "negotiate_protocol",
-        protocolVersion: 2,
-      });
+      unwrapResponse(await this.client.request({
+        type: "negotiate_protocol", protocolVersion: 2,
+      }));
       // 子代理帧：lifecycle + progress + 完整事件
-      await this.client.request({
-        type: "set_subagent_subscription",
-        level: "events",
-      });
+      unwrapResponse(await this.client.request({
+        type: "set_subagent_subscription", level: "events",
+      }));
       await this.refreshIdentity();
       this.extensionUi.bind(this.sessionId, (response) =>
         this.client.writeExtensionUiResponse(response),
@@ -330,16 +314,16 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   private async refreshIdentity(): Promise<void> {
-    const state = await this.fetchState();
-    this.sessionId =
-      typeof state.sessionId === "string"
-        ? state.sessionId
-        : `omp-${randomUUID()}`;
-    this.sessionFile =
-      typeof state.sessionFile === "string" ? state.sessionFile : undefined;
+    const [state, identity] = await Promise.all([
+      this.fetchState(), this.client.requestRuntime("identity"),
+    ]);
+    if (!isJsonObject(identity) || typeof identity.sessionId !== "string" || typeof identity.cwd !== "string")
+      throw new Error("Managed runtime returned an invalid session identity");
+    this.sessionId = identity.sessionId;
+    this.sessionFile = typeof identity.sessionFile === "string" ? identity.sessionFile : undefined;
     this.sessionName =
       typeof state.sessionName === "string" ? state.sessionName : null;
-    if (typeof state.cwd === "string") this.cwd = state.cwd;
+    this.cwd = identity.cwd;
   }
 
   private async fetchState(): Promise<JsonObject> {
@@ -391,7 +375,8 @@ export class OmpRpcSession implements SessionRuntime {
       );
       const data = unwrapResponse<JsonValue>(response);
       this.availableCommandsCache =
-        isJsonObject(data) && Array.isArray(data.commands) ? data.commands : [];
+        isJsonObject(data) && Array.isArray(data.commands)
+          ? data.commands.filter((command) => !isJsonObject(command) || command.name !== "ompiui-runtime") : [];
     } catch {
       this.availableCommandsCache = [];
     }
@@ -407,7 +392,6 @@ export class OmpRpcSession implements SessionRuntime {
       case "message_start":
       case "message_update":
       case "message_end": {
-        this.trackSubmittedMessage(frame);
         this.trackLiveMessage(frame);
         this.emitPiEvent(frame);
         if (type === "message_end") this.scheduleEntrySync();
@@ -437,19 +421,23 @@ export class OmpRpcSession implements SessionRuntime {
       case "session_info_changed":
       case "queue_update": {
         if (type === "agent_start") {
+          this.activityGeneration += 1;
           this.currentStreaming = true;
+          this.nativeSettled = false;
+          this.abortIntentEpoch = undefined;
+          this.toolInterruption = undefined;
           this.onGoalTurnStart();
         }
-        if (type === "agent_end") {
+        if (type === "agent_end" && frame.isTerminal !== false) {
+          this.activityGeneration += 1;
           this.currentStreaming = false;
           this.onGoalTurnEnd();
         }
         this.trackShadowState(frame);
-        // 原生队列可能包含内部 goal/扩展消息，UI 只展示可编辑的用户队列。
-        const queue = this.getUserQueueSnapshot();
-        this.emitPiEvent(
-          type === "queue_update" ? { ...frame, ...queue } : frame,
-        );
+        if (type === "queue_update") this.trackNativeQueue(frame);
+        this.emitPiEvent(type === "queue_update"
+          ? { ...frame, ...this.getNativeQueueSnapshot() }
+          : frame);
         if (
           type === "agent_end" ||
           type === "turn_end" ||
@@ -457,7 +445,6 @@ export class OmpRpcSession implements SessionRuntime {
         )
           this.scheduleEntrySync();
         this.emitActivityIfChanged();
-        if (type === "agent_end") this.scheduleUserQueueDrain();
         return;
       }
       // OMP 用 auto_compaction_*，Pi 前端监听 compaction_start/end —— 改名转发
@@ -483,19 +470,25 @@ export class OmpRpcSession implements SessionRuntime {
       }
       // OMP 的终态信号 → Pi 的 agent_settled（前端 idle/刷新依赖）
       case "session_settled": {
+        this.activityGeneration += 1;
         // 终态时 omp 不再单独发 isStreaming=false 的状态帧：必须在事件侧复位，
         // 否则 activity 一直 busy，前端停止按钮要等下一次 state.get 轮询才解除
         this.currentStreaming = false;
+        this.nativeSettled = true;
         this.scheduleEntrySync();
-        this.emitPiEvent({ type: "agent_settled" });
+        if (isJsonObject(frame.toolInterruption)) this.toolInterruption = frame.toolInterruption;
+        else if (this.abortIntentEpoch === this.eventEpoch) this.toolInterruption = { kind: 'cancelled', error: 'Stopped by the user before this tool returned a result' };
+        this.emitPiEvent({ type: "agent_settled", ...(this.toolInterruption ? { toolInterruption: this.toolInterruption } : {}) });
         this.emitActivityIfChanged();
         this.onGoalSettled();
-        this.scheduleUserQueueDrain();
         return;
       }
       case "prompt_result": {
-        if (frame.sessionSettled === true || frame.agentInvoked === false)
+        if (frame.sessionSettled === true) this.activityGeneration += 1;
+        if (frame.sessionSettled === true) {
           this.currentStreaming = false;
+          this.nativeSettled = true;
+        }
         this.emitPiEvent(frame);
         this.scheduleEntrySync();
         this.emitActivityIfChanged();
@@ -540,13 +533,14 @@ export class OmpRpcSession implements SessionRuntime {
       case "host_uri_cancel":
       default: {
         // 未识别/宿主侧帧：统一透传（前端 switch 未命中即忽略）
-        this.emitPiEvent(frame);
         if (type === "available_commands_update") {
           this.availableCommandsCache = Array.isArray(frame.commands)
-            ? frame.commands
+            ? frame.commands.filter((command) => !isJsonObject(command) || command.name !== "ompiui-runtime")
             : [];
           this.nativeFingerprint = ""; // 触发 head 刷新
         }
+        this.emitPiEvent(type === "available_commands_update"
+          ? { ...frame, commands: this.availableCommandsCache } : frame);
         return;
       }
     }
@@ -564,6 +558,8 @@ export class OmpRpcSession implements SessionRuntime {
           : undefined;
     this.piEvents.push(this.sessionId, update, {
       event: projectToolUpdate(event),
+      epoch: this.eventEpoch,
+      historyGeneration: this.historyGeneration,
       live: this.liveMessage
         ? {
             id: this.liveMessage.value.id,
@@ -623,12 +619,14 @@ export class OmpRpcSession implements SessionRuntime {
       phase: frame.type === "message_end" ? "persisting" : "streaming",
     };
     if (frame.type === "message_end") {
+      const pending = this.liveMessage;
+      const generation = this.historyGeneration;
       // 持久化交接：在 microtask 中刷新 branch，完成后再清除 live 行。
       queueMicrotask(() => {
-        if (this.closed) return;
+        if (this.closed || generation !== this.historyGeneration) return;
         void this.syncEntriesNow()
           .then(() => {
-            if (this.liveMessage?.phase === "persisting")
+            if (generation === this.historyGeneration && this.liveMessage === pending)
               this.liveMessage = undefined;
             this.emitHeadIfChanged();
           })
@@ -704,155 +702,42 @@ export class OmpRpcSession implements SessionRuntime {
     }
   }
 
-  private getUserQueueSnapshot(includeImages = false) {
+  private getNativeQueueSnapshot() {
     return {
-      steering: this.userQueue.steering.map((item) => item.text),
-      followUp: this.userQueue.followUp.map((item) => item.text),
-      steeringEntries: this.userQueue.steering.map(item => includeImages ? structuredClone(item) : projectStateImages({ ...item } as JsonObject)),
-      followUpEntries: this.userQueue.followUp.map(item => includeImages ? structuredClone(item) : projectStateImages({ ...item } as JsonObject)),
+      steering: this.nativeQueue.steering.map((entry) => String(entry.text ?? "")),
+      followUp: this.nativeQueue.followUp.map((entry) => String(entry.text ?? "")),
+      steeringEntries: this.nativeQueue.steering.map((entry) => structuredClone(entry)),
+      followUpEntries: this.nativeQueue.followUp.map((entry) => structuredClone(entry)),
+      editable: true,
     };
   }
 
-  private emitUserQueueSnapshot(): void {
-    const queue = this.getUserQueueSnapshot();
-    this.emitPiEvent({ type: "queue_update", ...queue });
-    this.emitActivityIfChanged();
-  }
-
-  private trackSubmittedMessage(frame: OmpRpcFrame): void {
-    if (
-      frame.type !== "message_start" ||
-      !isJsonObject(frame.message) ||
-      frame.message.role !== "user"
-    )
-      return;
-    const message = frame.message;
-    const content = message.content;
-    const text =
-      typeof content === "string"
-        ? content
-        : Array.isArray(content)
-          ? content
-              .filter(isJsonObject)
-              .filter((block) => block.type === "text")
-              .map((block) => block.text)
-              .join("")
-          : "";
-    const pending = this.submittedMessages.find(
-      (item) =>
-        item.nativeTimestamp === undefined &&
-        Array.isArray(item.message.content) &&
-        item.message.content
-          .filter(isJsonObject)
-          .filter((block) => block.type === "text")
-          .map((block) => block.text)
-          .join("") === text,
-    );
-    if (!pending || typeof message.timestamp !== "number") return;
-    pending.nativeTimestamp = message.timestamp;
-    pending.message = structuredClone(message);
-    if (pending.accepted) this.emitUserQueueSnapshot();
-  }
-
-  private reconcileSubmittedMessages(): void {
-    const previousLength = this.submittedMessages.length;
-    this.submittedMessages = this.submittedMessages.filter(
-      (item) =>
-        item.nativeTimestamp === undefined ||
-        !this.entries.some(
-          (entry) =>
-            isJsonObject(entry.message) &&
-            entry.message.role === "user" &&
-            entry.message.timestamp === item.nativeTimestamp,
-        ),
-    );
-    if (this.submittedMessages.length !== previousLength)
-      this.emitUserQueueSnapshot();
-  }
-
-  private async submitUserMessageNow(
-    text: string,
-    images?: ImageInput[],
-  ): Promise<void> {
-    const pending: SubmittedUserMessage = {
-      id: `submitted:${randomUUID()}`,
-      message: {
-        role: "user",
-        content: [
-          { type: "text", text },
-          ...(images?.map((image) => ({ ...image })) ?? []),
-        ],
-        timestamp: Date.now(),
-      },
-      accepted: false,
-    };
-    // 原生 ACK 早于用户消息持久化；这里只记录展示快照，不额外写入模型上下文。
-    this.submittedMessages.push(pending);
-    try {
-      if (this.currentStreaming) {
-        const command: JsonObject = { type: "steer", message: text };
-        if (images?.length)
-          command.images = images.map((image) => ({ ...image }));
-        unwrapResponse(await this.client.request(command, 30_000));
-        this.scheduleEntrySync();
-      } else {
-        await this.prompt(text, images);
+  private trackNativeQueue(frame: JsonObject): void {
+    this.queueGeneration += 1;
+    for (const kind of ["steering", "followUp"] as const) {
+      const entries = frame[`${kind}Entries`];
+      const values = Array.isArray(entries) ? entries : frame[kind];
+      if (Array.isArray(values)) {
+        this.nativeQueue[kind] = values.map((item) => typeof item === "string"
+          ? { text: item }
+          : isJsonObject(item) ? projectStateImages(item) : undefined).filter(isJsonObject);
       }
-      pending.accepted = true;
-      this.reconcileSubmittedMessages();
-    } catch (error) {
-      this.submittedMessages = this.submittedMessages.filter(
-        (item) => item !== pending,
-      );
-      throw error;
     }
-    this.emitUserQueueSnapshot();
   }
 
-  private scheduleUserQueueDrain(): void {
-    if (
-      this.closed ||
-      this.currentStreaming ||
-      this.userQueueDrain ||
-      this.queueSubmissionInFlight
-    )
-      return;
-    const next = this.userQueue.steering[0] ?? this.userQueue.followUp[0];
-    if (!next) return;
-
-    this.userQueueDrain = (async () => {
-      try {
-        // 不携带 streamingBehavior：此时会话已空闲，普通 prompt 才会真正
-        // 开始新回合。等待 prompt 被 OMP 接受后再从可编辑队列中移除。
-        await this.submitPrompt(
-          next.text,
-          next.images,
-          {},
-          () =>
-            !this.closed &&
-            !this.abortInFlight &&
-            (this.userQueue.steering.includes(next) ||
-              this.userQueue.followUp.includes(next)),
-        );
-        const steeringIndex = this.userQueue.steering.indexOf(next);
-        if (steeringIndex >= 0)
-          this.userQueue.steering.splice(steeringIndex, 1);
-        const followUpIndex = this.userQueue.followUp.indexOf(next);
-        if (followUpIndex >= 0)
-          this.userQueue.followUp.splice(followUpIndex, 1);
-        this.emitUserQueueSnapshot();
-      } catch (error) {
-        // 保留失败消息，静默丢弃会重现“发送成功但消息消失”的问题。
-        console.error("Failed to drain queued user message:", error);
-      } finally {
-        this.userQueueDrain = undefined;
-      }
-    })();
+  private async refreshQueue(publish = true): Promise<void> {
+    const epoch = this.eventEpoch;
+    const generation = ++this.queueGeneration;
+    const value = await this.client.requestRuntime("queue");
+    if (epoch !== this.eventEpoch || generation !== this.queueGeneration) return;
+    if (isJsonObject(value)) {
+      this.trackNativeQueue(value);
+      if (Array.isArray(value.scopedModels)) this.scopedModels = value.scopedModels;
+    }
+    if (publish) this.emitPiEvent({ type: "queue_update", ...this.getNativeQueueSnapshot() });
   }
 
   private emitActivityIfChanged(): void {
-    const streaming =
-      this.liveMessage?.phase === "streaming" || this.lastActivity.streaming;
     // 流式状态的权威判断依赖 get_state 的 isStreaming；事件驱动下用
     // agent_start/agent_end 推导。
     let status: SessionActivityStatus | null = null;
@@ -877,7 +762,7 @@ export class OmpRpcSession implements SessionRuntime {
             : "",
         next: Number.isFinite(nextAt) ? nextAt : 0,
       };
-    } else if (this.currentStreaming) {
+    } else if (this.currentStreaming || !this.nativeSettled) {
       status = { type: "busy" };
     } else if (
       isJsonObject(this.compactionShadow.operation) &&
@@ -895,7 +780,6 @@ export class OmpRpcSession implements SessionRuntime {
       next.retrying === this.lastActivity.retrying &&
       next.compacting === this.lastActivity.compacting
     ) {
-      void streaming;
       return;
     }
     this.lastActivity = next;
@@ -935,6 +819,7 @@ export class OmpRpcSession implements SessionRuntime {
 
   private async doSyncEntries(): Promise<void> {
     if (this.closed) return;
+    const generation = this.historyGeneration;
     try {
       const command: JsonObject =
         this.entriesSeeded && this.entries.length > 0
@@ -945,6 +830,7 @@ export class OmpRpcSession implements SessionRuntime {
           : { type: "get_entries" };
       const response = await this.client.request(command, 120_000);
       const data = unwrapResponse<JsonObject>(response);
+      if (generation !== this.historyGeneration) return;
       if (!isJsonObject(data) || !Array.isArray(data.entries)) return;
       const rawEntries = data.entries.filter(isJsonObject);
       if (!this.entriesSeeded) {
@@ -963,9 +849,9 @@ export class OmpRpcSession implements SessionRuntime {
       if (typeof data.leafId === "string" || data.leafId === null) {
         this.leafId = data.leafId as string | null;
       }
-      this.reconcileSubmittedMessages();
       this.emitHeadIfChanged();
     } catch (error) {
+      if (generation !== this.historyGeneration) return;
       if (error instanceof OmpRpcError && error.code === "unknown_since") {
         // 历史被改写（压缩/切换）：全量重播种
         this.entriesSeeded = false;
@@ -989,7 +875,7 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   private branchEntries(): EntryRecord[] {
-    if (!this.leafId) return this.entries;
+    if (!this.leafId) return [];
     const byId = new Map(this.entries.map((entry) => [entry.id, entry]));
     const path: EntryRecord[] = [];
     let cursor: string | null = this.leafId;
@@ -1045,7 +931,7 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async ensureSynced(): Promise<void> {
-    if (this.syncDirty) await this.syncEntriesNow();
+    if (this.syncDirty || !this.entriesSeeded) await this.syncEntriesNow();
     await this.syncInFlight;
   }
 
@@ -1111,9 +997,7 @@ export class OmpRpcSession implements SessionRuntime {
     offset = 0,
   ): Promise<JsonObject> {
     await this.ensureSynced();
-    const pending = this.submittedMessages.find(item => item.id === entryId);
-    const entry = this.entries.find((item) => item.id === entryId) ??
-      (pending ? { id: pending.id, message: pending.message } : undefined);
+    const entry = this.entries.find((item) => item.id === entryId);
     if (!entry)
       throw Object.assign(new Error("entry not found"), { code: "NOT_FOUND" });
     const serialized = entry as unknown as JsonObject;
@@ -1145,16 +1029,28 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   private async buildState(): Promise<JsonObject> {
+    const epoch = this.eventEpoch;
+    const historyGeneration = this.historyGeneration;
+    const modelsGeneration = this.modelsGeneration;
+    const activityGeneration = this.activityGeneration;
     const [native] = await Promise.all([
       this.fetchState(),
       this.ensureSynced(),
     ]);
+    if (epoch !== this.eventEpoch || historyGeneration !== this.historyGeneration || modelsGeneration !== this.modelsGeneration || activityGeneration !== this.activityGeneration) return this.buildState();
     this.currentStreaming = Boolean(native.isStreaming);
+    this.nativeSettled = native.isSettled === true ||
+      (native.isSettled === undefined && native.isStreaming === false &&
+        !native.hasPendingAsyncWork && !native.queuedMessageCount);
+    this.trackNativeQueue(native);
+    await this.refreshQueue(false);
+    if (epoch !== this.eventEpoch || historyGeneration !== this.historyGeneration || modelsGeneration !== this.modelsGeneration || activityGeneration !== this.activityGeneration) return this.buildState();
     const model = this.resolveModelDescriptor(native.model);
     const contextUsage = isJsonObject(native.contextUsage)
       ? native.contextUsage
       : null;
     let sessionStats: JsonValue = null;
+    const statsEpoch = this.eventEpoch;
     try {
       const statsResponse = await this.client.request(
         { type: "get_session_stats" },
@@ -1166,6 +1062,7 @@ export class OmpRpcSession implements SessionRuntime {
       /* stats 是增强信息 */
     }
     const head = this.getHead();
+    if (statsEpoch !== this.eventEpoch || historyGeneration !== this.historyGeneration || modelsGeneration !== this.modelsGeneration || activityGeneration !== this.activityGeneration) return this.buildState();
     return {
       sessionId: this.sessionId,
       sessionFile: this.sessionFile ?? null,
@@ -1198,7 +1095,9 @@ export class OmpRpcSession implements SessionRuntime {
           ? native.queuedMessageCount
           : 0,
       availableThinkingLevels: this.thinkingLevelsCache,
-      isIdle: !native.isStreaming && native.isSettled !== false,
+      isSettled: this.nativeSettled,
+      isIdle: this.nativeSettled,
+      ...(this.toolInterruption ? { toolInterruption: this.toolInterruption } : {}),
       // 上游 get_state 的两个「还会被唤醒」信号，宿主回收空闲 runtime 时依赖：
       // hasPendingAsyncWork 覆盖后台 bash / async task / eval 尚未回灌的长尾，
       // isSettled 是 session_settled 的同一谓词。isBashRunning 在 OMP RPC 下
@@ -1214,7 +1113,7 @@ export class OmpRpcSession implements SessionRuntime {
           ? this.retryShadow.attempt
           : 0,
       queue: {
-        ...this.getUserQueueSnapshot(),
+        ...this.getNativeQueueSnapshot(),
         steeringMode:
           typeof native.steeringMode === "string"
             ? native.steeringMode
@@ -1224,12 +1123,7 @@ export class OmpRpcSession implements SessionRuntime {
             ? native.followUpMode
             : "one-at-a-time",
       },
-      submittedMessages: this.submittedMessages
-        .filter((item) => item.accepted)
-        .map((item) => ({
-          id: item.id,
-          message: projectEntryAttachments({ id: item.id, message: item.message }, head).message,
-        })),
+      submittedMessages: [],
       pendingExtensionUiRequests: this.extensionUi.listPending(),
       extensionUiState: this.extensionUi.getStateMirror(),
       extensionTuiPanels: [],
@@ -1240,7 +1134,7 @@ export class OmpRpcSession implements SessionRuntime {
             .map((tool) => String(tool.name ?? ""))
             .filter(Boolean)
         : [],
-      scopedModels: [],
+      scopedModels: this.scopedModels,
       contextUsage,
       sessionStats,
       retry: this.retryShadow,
@@ -1353,48 +1247,29 @@ export class OmpRpcSession implements SessionRuntime {
     return Boolean(found?.reasoning ?? true);
   }
 
-  listSkills(): JsonValue {
-    return [];
+  private async discoverResources(): Promise<JsonObject> {
+    const value = await this.client.requestRuntime("resources", {}, 60_000);
+    if (!isJsonObject(value)) throw Object.assign(new Error('Runtime resources are unavailable'), { code: 'RESOURCE_UNAVAILABLE' });
+    return value;
   }
 
-  listPrompts(): JsonValue {
-    return [];
+  async listSkills(): Promise<JsonValue> {
+    const resources = await this.discoverResources();
+    return requireResourceList(resources, 'skills');
   }
 
-  listAgentsFiles(): JsonValue {
-    return [];
+  async listPrompts(): Promise<JsonValue> {
+    const resources = await this.discoverResources();
+    return requireResourceList(resources, 'prompts');
+  }
+
+  async listAgentsFiles(): Promise<JsonValue> {
+    const resources = await this.discoverResources();
+    return requireResourceList(resources, 'contextFiles');
   }
 
   async getRegistry(): Promise<RegistrySnapshot> {
-    const native = await this.fetchState();
-    const tools: RegistrySnapshot["tools"] = Array.isArray(native.dumpTools)
-      ? native.dumpTools.filter(isJsonObject).map((tool) => ({
-          name: String(tool.name ?? ""),
-          description:
-            typeof tool.description === "string" ? tool.description : "",
-          parameters: isJsonObject(tool.parameters) ? tool.parameters : {},
-        }))
-      : [];
-    const commands: RegistrySnapshot["commands"] = Array.isArray(
-      this.availableCommandsCache,
-    )
-      ? this.availableCommandsCache.filter(isJsonObject).map((command) => ({
-          name: String(command.name ?? ""),
-          description:
-            typeof command.description === "string" ? command.description : "",
-          sourceInfo: {
-            source: typeof command.source === "string" ? command.source : "omp",
-          },
-        }))
-      : [];
-    return {
-      sdkVersion: this.ompVersion ?? OMP_SDK_VERSION,
-      tools,
-      activeTools: tools.map((tool) => tool.name),
-      commands,
-      extensions: [],
-      eventHandlers: [],
-    };
+    return registryFromResources(await this.discoverResources(), this.ompVersion ?? OMP_SDK_VERSION);
   }
 
   // ---------------------------------------------------------------- prompting
@@ -1416,15 +1291,18 @@ export class OmpRpcSession implements SessionRuntime {
     options: { streamingBehavior?: "steer" | "followUp" } = {},
     shouldSubmit?: () => boolean,
   ): Promise<void> {
+    const epoch = this.eventEpoch;
     await this.abortInFlight;
     // 自动投递在等待期间可能已被暂停或清队列，写入 RPC 前重新确认。
     if (shouldSubmit && !shouldSubmit()) return;
+    if (epoch !== this.eventEpoch) {
+      if (shouldSubmit) return;
+      throw Object.assign(new Error("Session replaced before prompt submission"), { code: "SESSION_REPLACED" });
+    }
     const command: JsonObject = { type: "prompt", message: text };
-    // OMP only accepts streamingBehavior while a turn is active. Treat a
-    // stale follow-up/steer hint on an idle session as a normal prompt so the
-    // message starts a turn instead of being parked forever.
-    if (options.streamingBehavior && this.currentStreaming)
-      command.streamingBehavior = options.streamingBehavior;
+    // Let the native session decide at dispatch time whether this starts a turn
+    // or joins its queue; event-side streaming state can lag admitted prompts.
+    if (options.streamingBehavior) command.streamingBehavior = options.streamingBehavior;
     if (images?.length)
       command.images = images.map((image) => ({
         type: "image",
@@ -1432,18 +1310,31 @@ export class OmpRpcSession implements SessionRuntime {
         mimeType: image.mimeType,
       }));
     try {
-      unwrapResponse(await this.client.request(command, 30_000));
+      unwrapResponse(await (text.startsWith('/') ? requestNativePromptAcceptance(this.client, command, 300_000) : this.client.request(command, 30_000)));
+      void this.refreshQueue().catch((error) => this.reportEntrySyncError(error));
     } finally {
       this.scheduleEntrySync();
     }
   }
 
+  private async submitQueuedMessage(type: "steer" | "follow_up", text: string, images?: ImageInput[]): Promise<void> {
+    const epoch = this.eventEpoch;
+    await this.abortInFlight;
+    if (epoch !== this.eventEpoch)
+      throw Object.assign(new Error("Session replaced before queue submission"), { code: "SESSION_REPLACED" });
+    const command: JsonObject = { type, message: text };
+    if (images?.length) command.images = images.map((image) => ({ ...image }));
+    unwrapResponse(await this.client.request(command, 60_000));
+    await this.refreshQueue().catch(error => this.reportEntrySyncError(error));
+    this.scheduleEntrySync();
+  }
+
   async steer(text: string, images?: ImageInput[]): Promise<void> {
-    await this.prompt(text, images, { streamingBehavior: "steer" });
+    await this.submitQueuedMessage("steer", text, images);
   }
 
   async followUp(text: string, images?: ImageInput[]): Promise<void> {
-    await this.prompt(text, images, { streamingBehavior: "followUp" });
+    await this.submitQueuedMessage("follow_up", text, images);
   }
 
   async sendUserMessage(
@@ -1451,59 +1342,37 @@ export class OmpRpcSession implements SessionRuntime {
     images?: ImageInput[],
     deliverAs?: "steer" | "followUp",
   ): Promise<void> {
-    // An idle session must start a normal prompt. Forcing followUp here makes
-    // OMP acknowledge the RPC but place the text in a queue with no active turn
-    // to consume it — the exact "sent and swallowed" failure seen in the UI.
-    if (!this.currentStreaming) {
-      await this.prompt(text, images);
+    if (text.startsWith('/')) {
+      await this.prompt(text, images, { streamingBehavior: deliverAs ?? 'followUp' });
       return;
     }
-
-    const target =
-      deliverAs === "steer" ? this.userQueue.steering : this.userQueue.followUp;
-    target.push({
-      text,
-      ...(images ? { images: structuredClone(images) } : {}),
+    const epoch = this.eventEpoch;
+    await this.abortInFlight;
+    if (epoch !== this.eventEpoch) throw Object.assign(new Error('Session replaced before message submission'), { code: 'SESSION_REPLACED' });
+    await this.client.requestRuntime('submitUserMessage', {
+      text, deliverAs: deliverAs ?? 'followUp',
+      ...(images?.length ? { images: images.map(image => ({ type: 'image', data: image.data, mimeType: image.mimeType })) } : {}),
     });
-    this.emitUserQueueSnapshot();
+    await this.refreshQueue().catch(error => this.reportEntrySyncError(error));
+    this.scheduleEntrySync();
   }
 
-  async sendQueuedMessage(
-    kind: "steering" | "followUp",
-    index: number,
-  ): Promise<void> {
-    if (this.queueSubmissionInFlight || this.userQueueDrain) {
-      throw Object.assign(
-        new Error("A queued message is already being submitted"),
-        { code: "SESSION_BUSY" },
-      );
-    }
-    const queue = this.userQueue[kind];
-    const entry = queue[index];
-    if (!entry)
-      throw Object.assign(
-        new Error(`no ${kind} message queued at index ${index}`),
-        { code: "NOT_FOUND" },
-      );
-    this.queueSubmissionInFlight = true;
-    try {
-      await this.submitUserMessageNow(entry.text, entry.images);
-      const position = queue.indexOf(entry);
-      if (position >= 0) queue.splice(position, 1);
-      this.emitUserQueueSnapshot();
-    } finally {
-      this.queueSubmissionInFlight = false;
-    }
+  async sendQueuedMessage(kind: "steering" | "followUp", index: number, entryId: string, maxResultBytes?: number): Promise<void> {
+    const epoch = this.eventEpoch;
+    await this.abortInFlight;
+    if (epoch !== this.eventEpoch) throw Object.assign(new Error('Session replaced before queue submission'), { code: 'SESSION_REPLACED' });
+    await this.client.requestRuntime("sendQueuedMessage", {
+      kind, index, entryId, ...(maxResultBytes === undefined ? {} : { maxResultBytes }),
+    });
+    await this.refreshQueue().catch(error => this.reportEntrySyncError(error));
+    this.scheduleEntrySync();
   }
 
   // ---------------------------------------------------------------- goal
 
   /**
-   * OMPiUI 轻量 goal 运行时（`goal` 命令的落点）。RPC 模式的 OMP 不暴露
-   * goal 工具/命令，目标注册表住在这里：active 目标在会话 settle 后自动
-   * 发一条续跑 prompt（有上限），模型以 GOAL_COMPLETE 行尾标记完成；abort
-   * 自动暂停。状态经 state.get 的 goal 字段 + 合成 goal_updated 事件到达
-   * 前端目标栏。goal 只随 worker 进程存活（RPC 无自定义条目可持久化）。
+   * Worker-local goal continuation. Native goal tools are independent of this
+   * UI loop; it is invalidated on session replacement and paused on abort.
    */
   async manageGoal(params: import("@ompiui/protocol").PiCommandParams["goal"]): Promise<JsonObject> {
     const now = Date.now();
@@ -1661,8 +1530,9 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   private lastAssistantTextEndsWith(marker: string): boolean {
-    for (let i = this.entries.length - 1; i >= 0; i -= 1) {
-      const entry = this.entries[i];
+    const branch = this.branchEntries();
+    for (let i = branch.length - 1; i >= 0; i -= 1) {
+      const entry = branch[i];
       if (!entry || entry.type !== "message") continue;
       const message = entry.message;
       if (!isJsonObject(message) || message.role !== "assistant") return false;
@@ -1685,27 +1555,28 @@ export class OmpRpcSession implements SessionRuntime {
 
   async abort(): Promise<JsonValue | undefined> {
     if (this.abortInFlight) return this.abortInFlight;
+    const epoch = this.eventEpoch;
     this.pauseGoalForAbort();
+    this.abortIntentEpoch = epoch;
     const flight = (async () => {
       const result = unwrapResponse(
         await this.client.request({ type: "abort" }, 30_000),
       );
-      this.currentStreaming = false;
-      this.userQueue = { steering: [], followUp: [] };
-      this.submittedMessages = [];
-      this.retryShadow = { phase: "idle" };
-      this.liveMessage = undefined;
-      this.emitUserQueueSnapshot();
-      this.emitActivityIfChanged();
-      this.emitPiEvent({ type: "agent_settled" });
-      // 停止确认必须先到达 UI；历史同步只负责补齐落盘内容，后台执行不能
-      // 阻塞“已停止”的交互反馈。
-      void this.syncEntriesNow().catch(() => undefined);
+      if (epoch !== this.eventEpoch) return toJson(result) ?? undefined;
+      // An abort ACK is not proof of full settle: async work and retained native
+      // user queues still belong to the session. Only native settle emits it.
+      void this.buildState().then(() => {
+        if (epoch === this.eventEpoch) this.emitActivityIfChanged();
+      }).catch((error) => this.reportEntrySyncError(error));
+      void this.syncEntriesNow().catch((error) => this.reportEntrySyncError(error));
       return toJson(result) ?? undefined;
     })();
     this.abortInFlight = flight;
     try {
       return await flight;
+    } catch (error) {
+      if (this.abortIntentEpoch === epoch) this.abortIntentEpoch = undefined;
+      throw error;
     } finally {
       if (this.abortInFlight === flight) this.abortInFlight = undefined;
     }
@@ -1715,7 +1586,8 @@ export class OmpRpcSession implements SessionRuntime {
     const sourceSessionId = this.sessionId;
     const command: JsonObject = { type: "new_session" };
     if (parentSession) command.parentSession = parentSession;
-    await this.client.request(command, 60_000);
+    const result = unwrapResponse<JsonObject>(await this.client.request(command, 60_000));
+    if (result?.cancelled === true) return { operation: "new", sourceSessionId, cancelled: true };
     await this.refreshIdentity();
     this.resetHistory();
     await Promise.all([this.refreshModels(), this.refreshThinkingLevels()]);
@@ -1739,10 +1611,10 @@ export class OmpRpcSession implements SessionRuntime {
     const target = resolveUserPath(sessionPath);
     assertOmpSessionFile(target);
     backupOmpSession(target);
-    await this.client.request(
-      { type: "switch_session", sessionPath: target },
-      120_000,
-    );
+    const result = unwrapResponse<JsonObject>(await this.client.request(
+      { type: "switch_session", sessionPath: target }, 120_000,
+    ));
+    if (result?.cancelled === true) return { operation: "switch", sourceSessionId, cancelled: true };
     await this.refreshIdentity();
     this.resetHistory();
     await Promise.all([this.refreshModels(), this.refreshThinkingLevels()]);
@@ -1759,6 +1631,10 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   private resetHistory(): void {
+    this.historyGeneration += 1;
+    this.thinkingLevelsGeneration += 1;
+    this.abortIntentEpoch = undefined;
+    this.toolInterruption = undefined;
     this.entries = [];
     this.branchPages.clear();
     this.leafId = null;
@@ -1768,31 +1644,69 @@ export class OmpRpcSession implements SessionRuntime {
     this.eventSequence = 0;
     this.retryShadow = { phase: "idle" };
     this.compactionShadow = { autoEnabled: true, operation: { type: "none" } };
-    this.userQueue = { steering: [], followUp: [] };
-    this.submittedMessages = [];
+    this.nativeQueue = { steering: [], followUp: [] };
+    this.nativeSettled = true;
+    this.currentStreaming = false;
+    this.scopedModels = [];
+    this.goal = null;
+    this.goalGeneration += 1;
+    this.goalContinuations = 0;
+    this.goalAnnouncementPending = false;
+    this.goalImages = [];
+    this.goalTurnStartedAt = null;
+    this.subagentRuns.clear();
+    this.messageStream.clear();
+    this.modelsCache = [];
+    this.modelsGeneration += 1;
+    this.thinkingLevelsCache = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+    clearTimeout(this.syncTimer);
+    this.syncTimer = undefined;
+    this.syncDirty = false;
+    this.stateFlight = undefined;
+    this.nativeFingerprint = "";
+    this.lastActivity = { streaming: false, retrying: false, compacting: false };
     // Settle old dialogs with their original identity before publishing any
     // extension events from the refreshed session (including entry sync).
-    this.extensionUi.cancelAll("session_replaced");
+    this.extensionUi.cancelAll("session_replaced", false);
     this.extensionUi.bind(this.sessionId, (response) =>
       this.client.writeExtensionUiResponse(response),
     );
   }
 
-  async fork(entryId: string, _position: "before" | "at"): Promise<JsonObject> {
-    // OMP 的 branch(entryId) = 从指定条目开新分支（Pi fork 的对应物）
+  async fork(entryId: string, position: "before" | "at"): Promise<JsonObject> {
     const sourceSessionId = this.sessionId;
-    await this.client.request({ type: "branch", entryId }, 120_000);
-    await this.refreshIdentity();
+    const value = await this.client.requestRuntime("fork", { entryId, position }, 120_000);
+    if (!isJsonObject(value)) throw new Error("Native fork returned an invalid operation receipt");
+    const result = value;
+    if (result.cancelled === true || result.aborted === true) return { ...result, operation: "fork", sourceSessionId };
+    if (result.cancelled !== false || typeof result.sessionId !== "string" || typeof result.sessionFile !== "string" ||
+      typeof result.cwd !== "string" || (typeof result.leafId !== "string" && result.leafId !== null))
+      throw new Error("Native fork returned an invalid committed identity");
+    // The native operation receipt is authoritative; a later read cannot undo
+    // the file switch or turn it into a safely retriable operation failure.
+    this.sessionId = result.sessionId;
+    this.sessionFile = result.sessionFile;
+    this.cwd = result.cwd;
+    this.sessionName = null;
     this.resetHistory();
-    await this.syncEntriesNow();
+    this.leafId = result.leafId;
+    let projectionError: string | undefined;
+    try {
+      const [state] = await Promise.all([this.fetchState(), this.refreshModels(), this.refreshThinkingLevels()]);
+      this.sessionName = typeof state.sessionName === "string" ? state.sessionName : null;
+      await this.syncEntriesNow();
+    } catch (error) {
+      this.reportEntrySyncError(error);
+      projectionError = error instanceof Error ? error.message : String(error);
+    }
     this.emitHeadIfChanged();
     return {
-      operation: "fork",
-      sourceSessionId,
+      ...result, operation: "fork", sourceSessionId,
       targetSessionId: this.sessionId,
       targetSessionFile: this.sessionFile ?? null,
       targetCwd: this.cwd,
-      selectedText: null,
+      selectedText: result.selectedText ?? result.text ?? null,
+      ...(projectionError === undefined ? {} : { projectionError }),
       cancelled: false,
     };
   }
@@ -1805,7 +1719,7 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async setSessionName(name: string): Promise<void> {
-    await this.client.request({ type: "set_session_name", name }, 30_000);
+    unwrapResponse(await this.client.request({ type: "set_session_name", name }, 30_000));
     this.sessionName = name;
     this.nativeFingerprint = "";
     this.emitHeadIfChanged();
@@ -1827,9 +1741,13 @@ export class OmpRpcSession implements SessionRuntime {
     await Promise.all([this.refreshModels(), this.refreshThinkingLevels()]);
   }
 
-  async setScopedModels(_patterns: string[]): Promise<JsonValue | undefined> {
-    // OMP RPC 无 scoped models 命令：静默接受（模型选择走 setModel）
-    return undefined;
+  async setScopedModels(patterns: string[]): Promise<JsonValue | undefined> {
+    const epoch = this.eventEpoch;
+    const result = await this.client.requestRuntime("setScopedModels", { patterns }, 60_000);
+    if (epoch !== this.eventEpoch) return result;
+    this.scopedModels = isJsonObject(result) && Array.isArray(result.scopedModels)
+      ? result.scopedModels : [];
+    return result;
   }
 
   async setThinkingLevel(level: string): Promise<void> {
@@ -1848,42 +1766,35 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async setSteeringMode(mode: "all" | "one-at-a-time"): Promise<void> {
-    await this.client.request({ type: "set_steering_mode", mode }, 30_000);
+    unwrapResponse(await this.client.request({ type: "set_steering_mode", mode }, 30_000));
   }
 
   async setFollowUpMode(mode: "all" | "one-at-a-time"): Promise<void> {
-    await this.client.request({ type: "set_follow_up_mode", mode }, 30_000);
+    unwrapResponse(await this.client.request({ type: "set_follow_up_mode", mode }, 30_000));
   }
 
+
   async clearQueue(maxResultBytes?: number): Promise<JsonValue | undefined> {
-    const cleared = this.getUserQueueSnapshot(true);
-    assertResultBudget(cleared, maxResultBytes);
-    this.userQueue = { steering: [], followUp: [] };
-    this.emitUserQueueSnapshot();
-    return cleared;
+    const result = await this.client.requestRuntime("clearQueue", {
+      ...(maxResultBytes === undefined ? {} : { maxResultBytes }),
+    });
+    await this.refreshQueue();
+    return result;
   }
 
   async removeQueuedMessage(
-    kind: "steering" | "followUp",
-    index: number,
-    maxResultBytes?: number,
-    returnContent = true,
+    kind: "steering" | "followUp", index: number, entryId: string,
+    maxResultBytes?: number, returnContent = true,
   ): Promise<JsonValue> {
-    if (this.queueSubmissionInFlight || this.userQueueDrain) {
-      throw Object.assign(new Error("A queued message is being submitted"), {
-        code: "SESSION_BUSY",
-      });
-    }
-    const entry = this.userQueue[kind][index];
-    if (!entry)
-      throw Object.assign(new Error("queued message not found"), {
-        code: "NOT_FOUND",
-      });
-    const result = returnContent ? entry : { removed: true };
-    assertResultBudget(result, maxResultBytes);
-    this.userQueue[kind].splice(index, 1);
-    this.emitUserQueueSnapshot();
-    return result as unknown as JsonValue;
+    const epoch = this.eventEpoch;
+    await this.abortInFlight;
+    if (epoch !== this.eventEpoch) throw Object.assign(new Error('Session replaced before queue selection'), { code: 'SESSION_REPLACED' });
+    const result = await this.client.requestRuntime("removeQueuedMessage", {
+      kind, index, entryId, returnContent,
+      ...(maxResultBytes === undefined ? {} : { maxResultBytes }),
+    });
+    await this.refreshQueue().catch(error => this.reportEntrySyncError(error));
+    return result;
   }
 
   async compact(customInstructions?: string): Promise<JsonValue | undefined> {
@@ -1908,7 +1819,7 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async abortBranchSummary(): Promise<void> {
-    await this.abort();
+    await this.client.requestRuntime("abortBranchSummary");
   }
 
   async setAutoCompaction(enabled: boolean): Promise<void> {
@@ -1966,37 +1877,65 @@ export class OmpRpcSession implements SessionRuntime {
   ): Promise<JsonValue | undefined> {
     // OMP 的 slash 命令通过 prompt 触发；command_output 事件帧承载输出
     const message = args ? `/${name} ${args}` : `/${name}`;
-    await this.client.request({ type: "prompt", message }, 30_000);
+    await this.prompt(message, undefined, { streamingBehavior: "followUp" });
     return undefined;
   }
 
-  async getCommandCompletions(
-    _name: string,
-    _prefix: string,
-  ): Promise<JsonValue | undefined> {
-    return undefined;
+  async getCommandCompletions(name: string, prefix: string): Promise<JsonValue | undefined> {
+    const commands = Array.isArray(this.availableCommandsCache) ? this.availableCommandsCache.filter(isJsonObject) : [];
+    const command = commands.find((item) => item.name === name ||
+      (Array.isArray(item.aliases) && item.aliases.includes(name)));
+    if (!Array.isArray(command?.subcommands)) return undefined;
+    return command.subcommands.flatMap((item) => {
+      const value = typeof item === "string" ? item : isJsonObject(item) ? item.name : undefined;
+      if (typeof value !== "string" || !value.startsWith(prefix)) return [];
+      return [{ value, label: value,
+        ...(isJsonObject(item) && typeof item.description === "string" ? { description: item.description } : {}) }];
+    });
   }
 
   async navigateTree(
     entryId: string,
-    options: { summarize?: boolean } = {},
+    options: { summarize?: boolean; customInstructions?: string } = {},
   ): Promise<JsonObject> {
-    if (options.summarize) unsupported("branch summary navigation");
-    await this.client.request({ type: "branch", entryId }, 120_000);
-    await this.refreshIdentity();
-    this.resetHistory();
-    await this.syncEntriesNow();
+    const sourceSessionId = this.sessionId;
+    const value = await this.client.requestRuntime("navigateTree", { entryId, ...options }, 300_000);
+    if (!isJsonObject(value)) throw new Error("Native navigation returned an invalid operation receipt");
+    const result = value;
+    if (result.cancelled === true || result.aborted === true) return result;
+    if (result.cancelled !== false || result.sessionId !== sourceSessionId || result.sessionFile !== (this.sessionFile ?? null) ||
+      (typeof result.leafId !== "string" && result.leafId !== null))
+      throw new Error("Native navigation returned an invalid committed identity");
+    if (result.noOp === true) return { ...result, sourceSessionId, targetSessionId: this.sessionId };
+    // Navigation keeps the native file and identity; never implement it as branch.
+    // Only invalidate the history projection. Native same-file navigation does
+    // not replace the runtime's model scope, queues, subagents, or extension UI.
+    this.historyGeneration += 1;
+    this.messageStream.clear();
+    this.entries = [];
+    this.entriesSeeded = false;
+    this.branchPages.clear();
+    this.liveMessage = undefined;
+    this.nativeFingerprint = "";
+    this.leafId = result.leafId;
+    let projectionError: string | undefined;
+    try {
+      await this.syncEntriesNow();
+      await this.refreshQueue();
+    } catch (error) {
+      this.reportEntrySyncError(error);
+      projectionError = error instanceof Error ? error.message : String(error);
+    }
     this.emitHeadIfChanged();
-    return {
-      editorText: null,
-      cancelled: false,
-      aborted: false,
-      summaryEntry: null,
-    };
+    return { ...result, sourceSessionId, targetSessionId: this.sessionId,
+      editorText: result.editorText ?? null, cancelled: false,
+      aborted: false, summaryEntry: result.summaryEntry ?? null,
+      ...(projectionError === undefined ? {} : { projectionError }) };
   }
 
-  async setLabel(_entryId: string, _label?: string): Promise<void> {
-    // OMP RPC 无 label 条目：静默 no-op
+  async setLabel(entryId: string, label?: string): Promise<void> {
+    await this.client.requestRuntime("setLabel", { entryId, ...(label === undefined ? {} : { label }) });
+    await this.syncEntriesNow();
   }
 
   async sendCustomMessage(
@@ -2045,31 +1984,23 @@ export class OmpRpcSession implements SessionRuntime {
   async waitForIdle(): Promise<void> {
     const deadline = Date.now() + 10 * 60_000;
     while (Date.now() < deadline) {
-      if (this.closed) return;
-      try {
-        const native = await this.fetchState();
-        const settled =
-          native.isSettled === true ||
-          (native.isStreaming === false &&
-            native.hasPendingAsyncWork === false &&
-            native.isSettled !== false);
-        if (settled) return;
-      } catch {
-        return;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      if (this.closed) throw new Error("Session closed before settling");
+      const native = await this.fetchState();
+      const settled = native.isSettled === true ||
+        (native.isSettled === undefined && native.isStreaming === false &&
+          !native.hasPendingAsyncWork && !native.queuedMessageCount);
+      if (settled) return;
+      await new Promise<void>(resolve => setTimeout(resolve, 300));
     }
+    throw Object.assign(new Error("Session did not settle before the deadline"), { code: "SESSION_BUSY" });
   }
 
   async reload(): Promise<void> {
-    // OMP 扩展发现由子进程自管：刷新缓存即可
-    await Promise.all([
-      this.refreshModels(),
-      this.refreshThinkingLevels(),
-      this.refreshAvailableCommands(),
-    ]);
+    await this.client.requestRuntime("reload", {}, 120_000);
+    await Promise.all([this.refreshModels(), this.refreshThinkingLevels(), this.refreshAvailableCommands()]);
     this.nativeFingerprint = "";
     this.emitHeadIfChanged();
+    for (const listener of this.resourcesListeners) listener();
   }
 
   respondExtensionUi(
@@ -2241,13 +2172,14 @@ export class OmpRpcSession implements SessionRuntime {
     return this.extensionUi.onEvent(listener as never);
   }
 
-  onResourcesChanged(_listener: () => void): Unsubscribe {
-    return () => undefined;
+  onResourcesChanged(listener: () => void): Unsubscribe {
+    this.resourcesListeners.add(listener);
+    return () => this.resourcesListeners.delete(listener);
   }
 
   async dispose(): Promise<void> {
     this.closed = true;
-    if (this.syncTimer) clearTimeout(this.syncTimer);
+    clearTimeout(this.syncTimer);
     this.extensionUi.cancelAll("runtime_disposed");
     this.piEvents.flush();
     this.piEventListeners.clear();
@@ -2258,6 +2190,7 @@ export class OmpRpcSession implements SessionRuntime {
     this.subagentListeners.clear();
     this.crashListeners.clear();
     this.closeListeners.clear();
+    this.resourcesListeners.clear();
     await this.client.close();
   }
 }

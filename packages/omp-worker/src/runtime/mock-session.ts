@@ -521,7 +521,7 @@ export class MockCatalog implements CatalogProvider, PackagesGateway {
 
 interface MockEntry extends JsonObject {}
 
-type QueuedUserMessage = { text: string; images?: ImageInput[] };
+type QueuedUserMessage = { entryId: string; text: string; images?: ImageInput[] };
 
 export class MockPiSession implements SessionRuntime {
   private header: JsonObject | null;
@@ -534,7 +534,7 @@ export class MockPiSession implements SessionRuntime {
   private steeringQueue: QueuedUserMessage[] = [];
   private followUpQueue: QueuedUserMessage[] = [];
   /** 已受理但当前回合尚未消费的用户消息（立即提交/队列排空后本轮内消费） */
-  private acceptedUserMessages: QueuedUserMessage[] = [];
+  private acceptedUserMessages: Array<Pick<QueuedUserMessage, 'text' | 'images'>> = [];
   private steeringMode: "all" | "one-at-a-time" = "all";
   private followUpMode: "all" | "one-at-a-time" = "one-at-a-time";
   private thinkingLevel = "off";
@@ -1037,6 +1037,7 @@ export class MockPiSession implements SessionRuntime {
         code: "SESSION_CONFLICT",
       });
     this.steeringQueue.push({
+      entryId: randomUUID(),
       text,
       ...(images ? { images: structuredClone(images) } : {}),
     });
@@ -1050,6 +1051,7 @@ export class MockPiSession implements SessionRuntime {
         { code: "SESSION_CONFLICT" },
       );
     this.followUpQueue.push({
+      entryId: randomUUID(),
       text,
       ...(images ? { images: structuredClone(images) } : {}),
     });
@@ -1071,6 +1073,8 @@ export class MockPiSession implements SessionRuntime {
   async sendQueuedMessage(
     kind: "steering" | "followUp",
     index: number,
+    entryId: string,
+    maxResultBytes?: number,
   ): Promise<void> {
     const queue = kind === "steering" ? this.steeringQueue : this.followUpQueue;
     const entry = queue[index];
@@ -1080,6 +1084,8 @@ export class MockPiSession implements SessionRuntime {
         { code: "NOT_FOUND" },
       );
     }
+    if (entry.entryId !== entryId) throw Object.assign(new Error('Queue selection changed'), { code: 'QUEUE_SELECTION_STALE' });
+    assertResultBudget({ accepted: true }, maxResultBytes);
     // 先投递再出队：投递失败时队列保持原样，不会静默丢失。
     this.deliverAcceptedUserMessage(entry.text, entry.images);
     queue.splice(index, 1);
@@ -1089,6 +1095,7 @@ export class MockPiSession implements SessionRuntime {
   async removeQueuedMessage(
     kind: "steering" | "followUp",
     index: number,
+    entryId: string,
     maxResultBytes?: number,
     returnContent = true,
   ): Promise<JsonValue> {
@@ -1098,6 +1105,7 @@ export class MockPiSession implements SessionRuntime {
       throw Object.assign(new Error("queued message not found"), {
         code: "NOT_FOUND",
       });
+    if (entry.entryId !== entryId) throw Object.assign(new Error('Queue selection changed'), { code: 'QUEUE_SELECTION_STALE' });
     const result = returnContent ? entry : { removed: true };
     assertResultBudget(result, maxResultBytes);
     queue.splice(index, 1);

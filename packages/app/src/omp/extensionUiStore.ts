@@ -17,7 +17,6 @@ type EditorTextSource = 'none' | 'mirror' | 'extension'
 
 const editorTextSourceBySession = new Map<string, EditorTextSource>()
 const settledRequestsBySession = new Map<string, Set<string>>()
-const MAX_SETTLED_REQUESTS_PER_SESSION = 1024
 
 const emptyState = (): ExtensionUiState => ({
   revision: 0,
@@ -90,7 +89,10 @@ export const extensionUiStore = {
   },
 
   replace(snapshot: ExtensionUiSnapshot): void {
-    update(snapshot.sessionId, structuredClone(snapshot))
+    const restored = structuredClone(snapshot)
+    const settled = settledRequestsBySession.get(snapshot.sessionId)
+    restored.pending = restored.pending.filter(request => !settled?.has(settledKey(request.requestId, request.workerGeneration ?? snapshot.workerGeneration)))
+    update(snapshot.sessionId, restored)
   },
 
   requestOpened(request: ExtensionUiDialogRequest): boolean {
@@ -106,18 +108,17 @@ export const extensionUiStore = {
     return true
   },
 
-  requestSettled(sessionId: string, requestId: string): void {
-    // 已结算的请求不能由迟到快照或缓存的会话状态重新打开。
+  requestSettled(sessionId: string, requestId: string, workerGeneration?: string): void {
+    // Keep the originating identity even if a late response finishes after a runtime replacement.
     const snapshot = existing(sessionId)
+    const generation = workerGeneration ?? snapshot.pending.find(request => request.requestId === requestId)?.workerGeneration ?? snapshot.workerGeneration
     const settled = settledRequestsBySession.get(sessionId) ?? new Set<string>()
-    settled.add(settledKey(requestId, snapshot.workerGeneration))
-    while (settled.size > MAX_SETTLED_REQUESTS_PER_SESSION) {
-      const oldest = settled.values().next().value
-      if (oldest === undefined) break
-      settled.delete(oldest)
-    }
+    settled.add(settledKey(requestId, generation))
     settledRequestsBySession.set(sessionId, settled)
-    update(sessionId, { ...snapshot, pending: snapshot.pending.filter(item => item.requestId !== requestId) })
+    update(sessionId, {
+      ...snapshot,
+      pending: snapshot.pending.filter(request => request.requestId !== requestId || (request.workerGeneration ?? snapshot.workerGeneration) !== generation),
+    })
   },
 
   /**

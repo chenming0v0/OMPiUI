@@ -8,7 +8,7 @@
  *   会把所有绑定源 session 的 pane 切走（分屏串扰）。
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { PROTOCOL_VERSION } from '@ompiui/protocol'
+import { PROTOCOL_VERSION, type JsonObject } from '@ompiui/protocol'
 import { piEventStream } from './eventStream'
 import { piBranchStore, piSessionStateStore, piCommandStore } from './state/index.js'
 import { ompSubagentStore } from './ompSubagentStore'
@@ -19,6 +19,10 @@ import { buildPiLiveItems } from './selectors/index.js'
 import * as http from './httpClient.js'
 import { serverStore } from '../store/serverStore'
 import { notificationStore } from '../store/notificationStore'
+import * as transport from './transport/index.js'
+
+// Retain the real controller before sibling scenarios install module spies.
+const readNativeSessionState = controllers.refreshPiSessionState
 
 // 触达私有方法做白盒测试（事件驱动路径需要 WS，单测直接调 handler）
 type Handler = (payload: unknown) => void
@@ -552,18 +556,38 @@ describe('session configuration and stop synchronization', () => {
     expect(controllers.refreshPiSessionState).not.toHaveBeenCalled()
   })
 
-  it('clears stale streaming when the global activity snapshot reports idle', () => {
+  it('settles stale streaming only after the native readback confirms the global idle projection', async () => {
+    vi.mocked(controllers.refreshPiSessionState).mockImplementation(readNativeSessionState)
+    const { promise, resolve } = Promise.withResolvers<JsonObject>()
+    vi.spyOn(transport, 'getPiSessionState').mockReturnValueOnce(promise)
     activity({ 'session-stop': { type: 'busy' } })
     activity({})
+    expect(piSessionStateStore.getState('session-stop')).toMatchObject({ isStreaming: true, isIdle: false })
+    await vi.advanceTimersByTimeAsync(200)
+    expect(piSessionStateStore.getState('session-stop')).toMatchObject({ isStreaming: true, isIdle: false })
+    resolve({ isStreaming: false, isIdle: true, isSettled: true, pendingMessageCount: 0, subagents: [] })
+    const completion = vi.mocked(controllers.refreshPiSessionState).mock.results.at(-1)?.value
+    if (!(completion instanceof Promise)) throw new Error('Scheduled native-state readback was not dispatched')
+    await completion
     expect(piSessionStateStore.getState('session-stop')).toMatchObject({ isStreaming: false, isIdle: true })
     expect(activeSessionStore.getBusySessionsSnapshot()).toHaveLength(0)
   })
 
-  it('reconciles a cached busy state on reconnect even without an earlier active snapshot', () => {
+  it('keeps retained native work busy after reconnect when the global snapshot omits the session', async () => {
+    vi.mocked(controllers.refreshPiSessionState).mockImplementation(readNativeSessionState)
+    vi.spyOn(transport, 'getPiSessionState').mockResolvedValueOnce({
+      isStreaming: false, isIdle: false, isSettled: false, hasPendingAsyncWork: true, pendingMessageCount: 1,
+    })
     const internal = piEventStream as unknown as { refCounts: Map<string, number> }
     internal.refCounts.set('session-stop', 1)
     activity({})
-    expect(piSessionStateStore.getState('session-stop')).toMatchObject({ isStreaming: false, isIdle: true })
+    expect(piSessionStateStore.getState('session-stop')).toMatchObject({ isStreaming: true, isIdle: false })
+    await vi.advanceTimersByTimeAsync(200)
+    const completion = vi.mocked(controllers.refreshPiSessionState).mock.results.at(-1)?.value
+    if (!(completion instanceof Promise)) throw new Error('Reconnect native-state readback was not dispatched')
+    await completion
+    expect(piSessionStateStore.getState('session-stop')).toMatchObject({ isIdle: false, isSettled: false, pendingMessageCount: 1 })
+    expect(activeSessionStore.getBusySessionsSnapshot().map(session => session.sessionId)).toContain('session-stop')
   })
 
   it('keeps pending background work active at agent_end until the session settles', () => {

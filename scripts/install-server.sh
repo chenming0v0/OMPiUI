@@ -60,6 +60,10 @@ fi
 cd "$ROOT"
 npm install --include=dev
 npm run build
+# Explicit installation, not a network download during service/session startup.
+# Same-version official CLI + public API dependencies + private Bun are located
+# from this checkout by the worker; systemd does not need global npm/Bun PATH.
+node scripts/prepare-omp-runtime.mjs
 mkdir -p "$DATA_DIR"
 chmod 700 "$DATA_DIR" 2>/dev/null || true
 

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { diffLines } from 'diff'
 import { ChevronDownIcon, ChevronRightIcon } from '../../../components/Icons'
 import type { PiToolExecution } from '../../../omp/domain/index.js'
+import { getToolExecutionStatus } from '../../../omp/domain/index.js'
 import { useCompositorExpand, useDisclosureScrollLock } from '../../../hooks'
 import { useNow } from '../../../hooks/useNow'
 import { serverStore } from '../../../store/serverStore'
@@ -21,7 +22,6 @@ import {
 } from '../tools'
 import { MSG_SPACING } from '../messageSpacing'
 import { MessageExpandPanel, useMessageExpandRender } from '../messageExpand'
-import { useTaskRuntimeStopped } from '../tools/useTaskRuntimeStopped'
 
 // ============================================
 // ToolPartView - 单个工具调用
@@ -40,8 +40,6 @@ interface ToolPartViewProps {
   descriptive?: boolean
   /** Parent assistant message is still streaming. */
   isStreaming?: boolean
-  /** Call start time for the running-duration label (entry timestamp) */
-  startedAt?: number
   /** 初始即展开（用户发起的 bash 等：发命令就是为了看输出）。仅影响初始
    *  状态；用户手动折叠后保持折叠（respectUser）。 */
   defaultExpanded?: boolean
@@ -55,24 +53,24 @@ export const ToolPartView = memo(function ToolPartView({
   compact = false,
   descriptive = false,
   isStreaming = false,
-  startedAt,
   defaultExpanded = false,
 }: ToolPartViewProps) {
   const { t } = useTranslation('message')
   const { call, result } = execution
   const toolName = call.name
-  const taskStopped = useTaskRuntimeStopped(toolName === 'task')
-  const status = result ? (result.isError ? 'error' : 'completed') : taskStopped ? 'error' : 'pending'
+  const status = getToolExecutionStatus(execution)
   // title 显示工具调用实质（命令/路径/模式），而不是重复工具名——
   // OMP RPC 的工具调用事件只有 toolName + args，没有工具描述字段；
   // formatToolName(toolName) 已展示工具名，title 再显示同名就是冗余。
   const title = extractToolTitle(toolName, execution)
 
-  const isActive = status === 'pending'
+  const isActive = status === 'running'
+  const isQueued = status === 'pending'
   const isError = status === 'error'
+  const failureLabel = t(!result && execution.interruption === 'cancelled' ? 'toolPart.cancelled' : !result && execution.interruption === 'unknown' ? 'toolPart.unknown' : 'toolPart.failed')
   // Yield 完成工具：行名直接展示任务状态（提交中/完成/失败），不显示工具名
   const isYield = isYieldTool(toolName)
-  const displayName = isYield
+  const displayName = isYield && !isQueued
     ? isActive
       ? t('yield.submitting')
       : isError
@@ -80,9 +78,9 @@ export const ToolPartView = memo(function ToolPartView({
         : t('yield.completed')
     : formatToolName(toolName)
   const now = useNow(250, isActive)
-  const startTime = startedAt
+  const startTime = execution.startedAt
   const calibratedNow = isActive ? serverStore.getActiveCalibratedNow() : undefined
-  const endTime = result?.timestamp ?? (isActive ? (calibratedNow ?? now) : undefined)
+  const endTime = result?.timestamp ?? execution.endedAt ?? execution.completedAt ?? (isActive ? (calibratedNow ?? now) : undefined)
   const rawDuration = startTime !== undefined && endTime !== undefined ? endTime - startTime : undefined
   const duration = rawDuration !== undefined && isActive ? Math.max(0, rawDuration) : rawDuration
   const { immersiveMode } = useTheme()
@@ -196,7 +194,7 @@ export const ToolPartView = memo(function ToolPartView({
                   ? 'reasoning-shimmer-text'
                   : isError
                     ? 'text-danger-100'
-                    : isYield
+                    : isYield && status === 'completed'
                       ? 'text-success-100 group-hover/header:text-success-100'
                       : 'text-text-200 group-hover/header:text-text-100'
               }`}
@@ -224,7 +222,9 @@ export const ToolPartView = memo(function ToolPartView({
           </div>
 
           <div className="ml-auto flex shrink-0 items-center gap-2">
-            {duration !== undefined && (status === 'completed' || isActive) && (
+            {(isQueued || isActive) && <span className="text-[length:var(--fs-xxs)] text-text-400">{t(isQueued ? 'toolPart.pending' : 'toolPart.running')}</span>}
+            {isError && <span className="text-[length:var(--fs-xxs)] text-danger-100" title={execution.error}>{failureLabel}</span>}
+            {duration !== undefined && !isQueued && (
               <span
                 className={`text-[length:var(--fs-xxs)] font-mono tabular-nums ${isError ? 'text-danger-100/70' : isActive ? 'reasoning-shimmer-text' : 'text-text-500'}`}
               >
@@ -262,7 +262,7 @@ export const ToolPartView = memo(function ToolPartView({
                     ? 'reasoning-shimmer-text'
                     : isError
                       ? 'text-danger-100'
-                      : isYield
+                      : isYield && status === 'completed'
                         ? 'text-success-100 group-hover/header:text-success-100'
                         : 'text-text-200 group-hover/header:text-text-100'
                 }`}
@@ -280,7 +280,7 @@ export const ToolPartView = memo(function ToolPartView({
               )}
             </div>
             <div className="flex items-center gap-2 ml-auto shrink-0">
-              {duration !== undefined && (status === 'completed' || isActive) && (
+              {duration !== undefined && !isQueued && (
                 <span
                   className={`text-[length:var(--fs-xxs)] font-mono tabular-nums ${
                     isActive ? 'reasoning-shimmer-text' : 'text-text-500'
@@ -291,17 +291,17 @@ export const ToolPartView = memo(function ToolPartView({
               )}
               <span
                 className={`text-[length:var(--fs-xxs)] font-medium transition-all duration-300 ${
-                  isActive ? 'opacity-100 text-text-400' : 'opacity-0 w-0 overflow-hidden'
+                  isActive || isQueued ? 'opacity-100 text-text-400' : 'opacity-0 w-0 overflow-hidden'
                 }`}
               >
-                {t('toolPart.running')}
+                {t(isQueued ? 'toolPart.pending' : 'toolPart.running')}
               </span>
               <span
                 className={`text-[length:var(--fs-xxs)] font-medium transition-all duration-300 ${
                   isError ? 'opacity-100 text-danger-100' : 'opacity-0 w-0 overflow-hidden'
                 }`}
               >
-                {t('toolPart.failed')}
+                {failureLabel}
               </span>
               <span className="text-text-500">
                 {effectiveExpanded ? <ChevronDownIcon size={12} /> : <ChevronRightIcon size={12} />}
@@ -347,7 +347,7 @@ export const ToolPartView = memo(function ToolPartView({
                   ? 'reasoning-shimmer-text'
                   : isError
                     ? 'text-danger-100'
-                    : isYield
+                    : isYield && status === 'completed'
                       ? 'text-success-100 group-hover/header:text-success-100'
                       : 'text-text-200 group-hover/header:text-text-100'
               }`}
@@ -367,7 +367,7 @@ export const ToolPartView = memo(function ToolPartView({
           </div>
 
           <div className="flex items-center gap-2 ml-auto shrink-0">
-            {duration !== undefined && (status === 'completed' || isActive) && (
+            {duration !== undefined && !isQueued && (
               <span
                 className={`text-[length:var(--fs-xxs)] font-mono tabular-nums transition-opacity duration-300 ${
                   isActive ? 'reasoning-shimmer-text' : 'text-text-500'
@@ -378,17 +378,17 @@ export const ToolPartView = memo(function ToolPartView({
             )}
             <span
               className={`text-[length:var(--fs-xxs)] font-medium transition-all duration-300 ${
-                isActive ? 'opacity-100 text-text-400' : 'opacity-0 w-0 overflow-hidden'
+                isActive || isQueued ? 'opacity-100 text-text-400' : 'opacity-0 w-0 overflow-hidden'
               }`}
             >
-              {t('toolPart.running')}
+              {t(isQueued ? 'toolPart.pending' : 'toolPart.running')}
             </span>
             <span
               className={`text-[length:var(--fs-xxs)] font-medium transition-all duration-300 ${
                 isError ? 'opacity-100 text-danger-100' : 'opacity-0 w-0 overflow-hidden'
               }`}
             >
-              {t('toolPart.failed')}
+              {failureLabel}
             </span>
             <span className="text-text-500">
               {effectiveExpanded ? <ChevronDownIcon size={12} /> : <ChevronRightIcon size={12} />}

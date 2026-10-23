@@ -70,14 +70,14 @@ export function ExtensionsPanel({ sessionId }: { sessionId: string | null }) {
         <section className="flex flex-col gap-2">
           <SectionLabel>{t('extensionsPanel.dialogs', 'Dialog')}</SectionLabel>
           {sortedPending.map(request => (
-            <ExtensionUiDialogCard key={request.requestId} request={request} compact />
+            <ExtensionUiDialogCard key={JSON.stringify([request.sessionId, request.workerGeneration, request.requestId])} request={request} compact />
           ))}
         </section>
       )}
 
       {/* Command feedback log — full detail of every slash command the user ran */}
       {feedback.length > 0 && (
-        <section>
+        <section className="min-w-0">
           <div className="mb-1.5 flex items-center justify-between">
             <SectionLabel>{t('extensionsPanel.commandFeedback', 'Command Feedback')}</SectionLabel>
             <button
@@ -162,24 +162,20 @@ function CommandFeedbackItem({ entry }: { entry: CommandFeedbackEntry }) {
   const time = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}:${String(at.getSeconds()).padStart(2, '0')}`
   const isNotify = entry.kind === 'notify'
   return (
-    <div className="rounded-md border border-border-200/50 bg-bg-200/30 px-3 py-2">
+    <div className="min-w-0 rounded-md border border-border-200/50 bg-bg-200/30 px-3 py-2">
       <div className="flex items-center gap-2">
         <span className={`shrink-0 rounded px-1.5 py-0.5 text-[length:var(--fs-xxs)] font-medium ${config.className}`}>
           {config.label}
         </span>
-        {isNotify ? (
-          <span className="min-w-0 flex-1 truncate font-mono text-[length:var(--fs-sm)] text-text-100">[extension]</span>
-        ) : (
-          <span className="min-w-0 flex-1 truncate font-mono text-[length:var(--fs-sm)] text-text-100">
-            /{entry.command}
-            {entry.args ? <span className="text-text-400"> {entry.args}</span> : null}
-          </span>
-        )}
+        <span className="min-w-0 flex-1 truncate font-mono text-[length:var(--fs-sm)] text-text-100">
+          {entry.source ?? (isNotify ? '[extension]' : entry.command ? `/${entry.command}` : 'Native command')}
+          {entry.command && entry.args ? <span className="text-text-400"> {entry.args}</span> : null}
+        </span>
         <span className="shrink-0 font-mono text-[length:var(--fs-xxs)] text-text-500">{time}</span>
       </div>
-      <p className="mt-1 whitespace-pre-wrap break-words text-[length:var(--fs-sm)] text-text-200">
-        {entry.message}
-      </p>
+      <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[length:var(--fs-sm)] text-text-200">
+        {stripAnsi(entry.message)}
+      </pre>
     </div>
   )
 }

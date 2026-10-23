@@ -79,6 +79,11 @@ type QueueSnapshot = {
 }
 const image = (data: string): ImageInput => ({ type: "image", data, mimeType: "image/png" })
 const emptyQueue: QueueSnapshot = { steering: [], followUp: [], steeringEntries: [], followUpEntries: [] }
+function queueContent(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(queueContent)
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'entryId').map(([key, item]) => [key, queueContent(item)]))
+  return value
+}
 
 describe("MockPiSession image-bearing queue", () => {
   it("retains duplicate and image-only entries through mode changes, snapshots, clear and replay", async t => {
@@ -115,21 +120,21 @@ describe("MockPiSession image-bearing queue", () => {
         { text: "", images: [image("CAk=")] },
       ],
     }
-    assert.deepEqual(events.at(-1), { type: "queue_update", ...expected })
+    assert.deepEqual(queueContent(events.at(-1)), { type: "queue_update", ...expected })
     await session.setSteeringMode("one-at-a-time")
     await session.setFollowUpMode("all")
     const snapshot = session.getState().queue as QueueSnapshot
-    assert.deepEqual(snapshot, { ...expected, steeringMode: "one-at-a-time", followUpMode: "all" })
+    assert.deepEqual(queueContent(snapshot), { ...expected, steeringMode: "one-at-a-time", followUpMode: "all" })
     snapshot.steeringEntries[0]!.images![0]!.data = "snapshot mutation"
     snapshot.followUpEntries.splice(0)
     snapshot.followUp.splice(0)
     const cleared = await session.clearQueue() as QueueSnapshot
-    assert.deepEqual(cleared, expected)
+    assert.deepEqual(queueContent(cleared), expected)
     assert.deepEqual(events.at(-1), { type: "queue_update", ...emptyQueue })
     assert.deepEqual(session.getState().queue, { ...emptyQueue, steeringMode: "one-at-a-time", followUpMode: "all" })
     await session.sendUserMessage(cleared.steeringEntries[1]!.text, cleared.steeringEntries[1]!.images, "followUp")
     cleared.steeringEntries[1]!.images![0]!.data = "clear-result mutation"
-    assert.deepEqual(await session.clearQueue(), {
+    assert.deepEqual(queueContent(await session.clearQueue()), {
       ...emptyQueue, followUp: ["duplicate"], followUpEntries: [{ text: "duplicate", images: [image("AgM=")] }],
     })
   })
@@ -156,7 +161,7 @@ describe("MockPiSession image-bearing queue", () => {
       [{ type: "text", text: "" }, image("BAU=")],
       [{ type: "text", text: "" }, image("Bgc=")],
     ])
-    assert.deepEqual(events, [
+    assert.deepEqual(queueContent(events), [
       { type: "queue_update", steering: [""], followUp: [""], steeringEntries: [{ text: "", images: [image("BAU=")] }], followUpEntries: [{ text: "", images: [image("Bgc=")] }] },
       { type: "queue_update", ...emptyQueue, followUp: [""], followUpEntries: [{ text: "", images: [image("Bgc=")] }] },
       { type: "queue_update", ...emptyQueue },
@@ -177,11 +182,11 @@ describe("MockPiSession sendQueuedMessage", () => {
     await session.sendUserMessage("keep-b", undefined, "steer")
     await session.sendUserMessage("next-round", [image("BAU=")], "followUp")
 
-    await session.sendQueuedMessage("steering", 1)
+    await session.sendQueuedMessage("steering", 1, ((session.getState().queue as JsonObject).steeringEntries as JsonObject[])[1]!.entryId as string)
 
     // The submitted row leaves only its own queue slot; neighbours and the
     // follow-up queue keep their text, order and attachments.
-    assert.deepEqual(session.getState().queue, {
+    assert.deepEqual(queueContent(session.getState().queue), {
       ...emptyQueue,
       steering: ["keep-a", "keep-b"],
       steeringEntries: [{ text: "keep-a", images: [image("AAEC+/==")] }, { text: "keep-b" }],
@@ -218,15 +223,30 @@ describe("MockPiSession sendQueuedMessage", () => {
     await session.sendUserMessage("only", [image("AAEC+/==")], "steer")
 
     await assert.rejects(
-      session.sendQueuedMessage("steering", 3),
+      session.sendQueuedMessage("steering", 3, 'missing'),
       (error: unknown) => error instanceof Error && "code" in error && error.code === "NOT_FOUND",
     )
-    assert.deepEqual(session.getState().queue, {
+    assert.deepEqual(queueContent(session.getState().queue), {
       ...emptyQueue,
       steering: ["only"],
       steeringEntries: [{ text: "only", images: [image("AAEC+/==")] }],
       steeringMode: "all",
       followUpMode: "one-at-a-time",
     })
+  })
+
+  it('refuses an old native row identity after another row occupies its index', async t => {
+    const root = mkdtempSync(path.join(tmpdir(), 'ompiui-queue-stale-'))
+    roots.push(root)
+    process.env.OMPIUI_MOCK_DIR = root
+    const session = await MockPiSession.open(root)
+    t.after(() => session.abort())
+    await session.prompt('first')
+    await session.sendUserMessage('duplicate', [image('AA==')], 'steer')
+    await session.sendUserMessage('duplicate', [image('BB==')], 'steer')
+    const original = (session.getState().queue as JsonObject).steeringEntries as JsonObject[]
+    await session.removeQueuedMessage('steering', 0, original[0]!.entryId as string)
+    await assert.rejects(session.removeQueuedMessage('steering', 0, original[0]!.entryId as string), { code: 'QUEUE_SELECTION_STALE' })
+    assert.deepEqual((session.getState().queue as JsonObject).steeringEntries, [original[1]])
   })
 })

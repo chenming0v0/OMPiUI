@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { toolResultBlocks, toolResultText } from './toolResultContent'
 import i18n from '../../../i18n'
 import type { PiToolExecution } from '../../../omp/domain/index.js'
+import { getToolExecutionStatus } from '../../../omp/domain/index.js'
 import type { ToolConfig, ToolRegistry, ExtractedToolData, DiagnosticInfo, YieldResultData } from './types'
 import { BashRenderer, QuestionRenderer, YieldRenderer } from './renderers'
 import {
@@ -90,7 +91,7 @@ export function defaultExtractData(execution: PiToolExecution): ExtractedToolDat
             {
               url: `data:${block.mimeType};base64,${block.data}`,
               mimeType: block.mimeType,
-              ...('attachment' in block ? { block } : {}),
+              block,
             },
           ]
         : [],
@@ -105,8 +106,8 @@ export function defaultExtractData(execution: PiToolExecution): ExtractedToolDat
   }
 
   // Error
-  if (toolResult?.isError) {
-    result.error = output || 'Tool execution failed'
+  if (getToolExecutionStatus(execution) === 'error') {
+    result.error = [output, execution.error].filter(Boolean).join('\n') || 'Tool execution failed'
   }
 
   // FilePath

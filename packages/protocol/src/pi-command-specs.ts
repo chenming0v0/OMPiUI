@@ -270,9 +270,10 @@ export const PI_COMMAND_SPECS = [
       {
         kind: { enum: ["steering", "followUp"] },
         index: { type: "integer", minimum: 0 },
+        entryId: STRING,
         returnContent: BOOLEAN,
       },
-      ["kind", "index"],
+      ["kind", "index", "entryId"],
     ),
     queue: "immediate",
   },
@@ -284,8 +285,9 @@ export const PI_COMMAND_SPECS = [
       {
         kind: { enum: ["steering", "followUp"] },
         index: { type: "integer", minimum: 0 },
+        entryId: STRING,
       },
-      ["kind", "index"],
+      ["kind", "index", "entryId"],
     ),
     queue: "immediate",
   },
@@ -405,13 +407,10 @@ export const PI_COMMAND_SPECS = [
         entryId: STRING,
         summarize: BOOLEAN,
         customInstructions: STRING,
-        replaceInstructions: BOOLEAN,
-        label: STRING,
       },
       ["entryId"],
     ),
     queue: "serialized",
-    replacement: true,
     cancellable: true,
   },
   {
@@ -773,7 +772,7 @@ export const PI_COMMAND_SPECS = [
     description: "Patch OMP settings for a workspace",
     paramsSchema: objectSchema(
       { cwd: STRING, patch: { ...objectSchema({}, [], true), maxJsonBytes: 1024 * 1024 } },
-      ["cwd"],
+      ["cwd", "patch"],
     ),
     queue: "serialized",
   },
@@ -913,10 +912,9 @@ export const PI_COMMAND_SPECS = [
       {
         cwd: STRING,
         commandId: STRING,
-        action: { enum: ["install", "remove", "update"] },
+        action: { enum: ["install", "link", "remove", "update", "enable", "disable"] },
         source: STRING,
         local: BOOLEAN,
-        persist: BOOLEAN,
       },
       ["cwd", "commandId"],
     ),
@@ -926,10 +924,7 @@ export const PI_COMMAND_SPECS = [
     name: "packages.resolve",
     scope: "global",
     description: "Resolve OMP packages for a workspace",
-    paramsSchema: objectSchema(
-      { cwd: STRING, missingAction: { enum: ["install", "skip", "error"] } },
-      ["cwd"],
-    ),
+    paramsSchema: CWD_PARAMS,
     queue: "serialized",
   },
   {
@@ -941,7 +936,6 @@ export const PI_COMMAND_SPECS = [
         cwd: STRING,
         sources: STRING_ARRAY,
         local: BOOLEAN,
-        temporary: BOOLEAN,
       },
       ["cwd", "sources"],
     ),
@@ -950,7 +944,7 @@ export const PI_COMMAND_SPECS = [
   {
     name: "packages.changeSource",
     scope: "global",
-    description: "Add or remove an OMP package source",
+    description: "Add or remove an official OMP marketplace source",
     paramsSchema: objectSchema(
       {
         cwd: STRING,
@@ -1066,7 +1060,7 @@ export type PiPageParams = {
 export type PiCommandParams = CoreCommandParams & {
   "preview.settings.get": Record<string, never>;
   "preview.settings.set": { subagentThinking: boolean };
-  removeQueuedMessage: { kind: "steering" | "followUp"; index: number; returnContent?: boolean };
+  removeQueuedMessage: { kind: "steering" | "followUp"; index: number; entryId: string; returnContent?: boolean };
   "state.get": Record<string, never>;
   "entries.get": PiPageParams;
   "branch.get": PiPageParams & BranchSyncRequest;
@@ -1126,20 +1120,15 @@ export type PiCommandParams = CoreCommandParams & {
   "packages.manage": {
     cwd: string;
     commandId: string;
-    action?: "install" | "remove" | "update";
+    action?: "install" | "link" | "remove" | "update" | "enable" | "disable";
     source?: string;
     local?: boolean;
-    persist?: boolean;
   };
-  "packages.resolve": {
-    cwd: string;
-    missingAction?: "install" | "skip" | "error";
-  };
+  "packages.resolve": { cwd: string };
   "packages.resolveSources": {
     cwd: string;
     sources: string[];
     local?: boolean;
-    temporary?: boolean;
   };
   "packages.changeSource": {
     cwd: string;

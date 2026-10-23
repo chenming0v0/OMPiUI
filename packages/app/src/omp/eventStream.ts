@@ -12,7 +12,7 @@ import {
   type CommandRecord,
   type JsonObject,
 } from '@ompiui/protocol'
-import type { AgentMessage, AgentSessionEvent, PiLiveMessage } from './domain/index.js'
+import type { AgentMessage, AgentSessionEvent, PiLiveMessage, ToolResultMessage } from './domain/index.js'
 import type { ProviderAuthEvent, SessionsActivitySnapshot, SessionActivityStatus } from '@ompiui/protocol'
 import { getApiBase, getPiAuthToken, piFetch } from './httpClient.js'
 import { openPiSocket, PI_SOCKET_CLOSED, PI_SOCKET_CLOSING, PI_SOCKET_OPEN, type PiSocket } from './ompSocket'
@@ -59,6 +59,9 @@ type PiEventPayload = {
     | AgentSessionEvent
     | { type: 'config_update'; model?: JsonObject; thinkingLevel?: string }
     | { type: 'irc_message'; message: JsonObject }
+    | { type: 'command_output'; text: string; source?: string; isError?: boolean; level?: string; status?: string }
+    | { type: 'prompt_result'; agentInvoked: boolean; status: 'completed' | 'aborted' | 'error'; error?: string | JsonObject }
+    | { type: 'extension_error'; extensionPath: string; event: string; error: string }
   meta: EventCursor & { liveMessage?: { id: string; revision: number } }
 }
 
@@ -88,6 +91,8 @@ type SessionsUpdatedPayload = {
   faultId?: string
   faultTime?: string
   errorCode?: string
+  message?: string
+  runtimeExit?: JsonObject
   /** 会话活跃期间 head 推进（新条目），节流后通知列表刷新 */
   updated?: boolean
   replaced?: boolean
@@ -270,7 +275,7 @@ class PiEventStream {
   /** Drop everything (server switch etc.). */
   disconnectAll(): void {
     this.diagnostics.record('disconnect', { reason: 'server_switch_or_reset' })
-    for (const sessionId of this.refCounts.keys()) this.clearRefreshTimers(sessionId)
+    for (const sessionId of new Set([...this.refCounts.keys(), ...this.stateRefreshTimers.keys(), ...this.branchRefreshTimers.keys(), ...this.diskRefreshTimers.keys()])) this.clearRefreshTimers(sessionId)
     this.refCounts.clear()
     this.activityWatchdog.stop()
     piBranchStore.clearAll()
@@ -716,7 +721,8 @@ class PiEventStream {
   private handleSessionsUpdated(payload: SessionsUpdatedPayload | undefined): void {
     if (payload?.crashed && payload.sessionId) {
       reportRuntimeCrash(payload.sessionId, payload.faultId, payload.faultTime, payload.errorCode)
-      this.markSessionSettled(payload.sessionId)
+      const error = payload.message?.trim() || (payload.errorCode ? `Runtime crashed: ${payload.errorCode}` : 'Runtime crashed before this tool returned a result')
+      this.markSessionSettled(payload.sessionId, { kind: 'failed', error })
       ompSubagentStore.markSessionCrashed(payload.sessionId)
     }
     if (payload?.replaced && payload.sourceSessionId && payload.targetSessionId) {
@@ -741,6 +747,8 @@ class PiEventStream {
       piCommandStore.clearSession(payload.sourceSessionId)
       ompSubagentStore.clearSession(payload.sourceSessionId)
       liveToolOutputStore.clearSession(payload.sourceSessionId)
+      extensionUiStore.remove(payload.sourceSessionId)
+      activeSessionStore.removeSession(payload.sourceSessionId)
       this.liveRecoveryAt.delete(payload.sourceSessionId)
       window.dispatchEvent(new CustomEvent('ompiui:session-replaced', { detail: payload }))
     }
@@ -750,6 +758,7 @@ class PiEventStream {
   }
 
   private handleExtensionUiEvent(sessionId: string, event: PiExtensionUiEvent): void {
+    sessionId = event.type === 'settled' ? event.sessionId : event.type === 'requested' ? event.request.sessionId : sessionId
     piSessionStateStore.invalidateRequests(sessionId)
     switch (event.type) {
       case 'requested':
@@ -764,7 +773,7 @@ class PiEventStream {
         break
       case 'settled':
         extensionUiStore.requestSettled(sessionId, event.requestId)
-        activeSessionStore.resolvePendingRequest(event.requestId)
+        activeSessionStore.resolvePendingRequest(event.requestId, sessionId)
         break
       case 'state':
         extensionUiStore.statePatched(sessionId, event.patch)
@@ -833,7 +842,9 @@ class PiEventStream {
           state?.isRetrying ||
           state?.hasPendingAsyncWork
         ) {
-          this.markSessionSettled(sessionId)
+          // Activity is a sidebar projection, not the native settled predicate.
+          // An omitted/idle agent may still have queued or async work.
+          this.scheduleStateRefresh(sessionId)
         }
         activeSessionStore.updateStatus(sessionId, { type: 'idle' })
         notifySessionIdle(sessionId)
@@ -845,8 +856,9 @@ class PiEventStream {
     } else this.knownActiveSessions = new Set(Object.keys(active))
   }
 
-  private markSessionSettled(sessionId: string): void {
+  private markSessionSettled(sessionId: string, interruption?: { error: string; kind: 'failed' | 'cancelled' | 'unknown' }): void {
     this.activityWatchdog.cancel(sessionId)
+    piBranchStore.interruptToolExecutions(sessionId, interruption?.error ?? 'Session settled before this tool returned a result; execution outcome is unknown', interruption?.kind ?? 'unknown')
     piSessionStateStore.patchState(sessionId, {
       isStreaming: false,
       isIdle: true,
@@ -855,6 +867,7 @@ class PiEventStream {
       isBashRunning: false,
       hasPendingAsyncWork: false,
       retry: null,
+      isSettled: true,
       compaction: null,
     })
     settlePiLiveMessage(sessionId)
@@ -875,8 +888,9 @@ class PiEventStream {
       this.knownActiveSessions.add(sessionId)
       return
     }
-    if (state.isIdle === true || this.knownActiveSessions.has(sessionId)) {
-      this.markSessionSettled(sessionId)
+    if ((state.isSettled === true || (state.isSettled === undefined && state.isIdle === true)) && Number(state.pendingMessageCount ?? state.queuedMessageCount ?? 0) === 0) {
+      const interruption = isJsonObject(state.toolInterruption) ? state.toolInterruption : undefined
+      this.markSessionSettled(sessionId, interruption && typeof interruption.error === 'string' ? { error: interruption.error, kind: interruption.kind === 'failed' || interruption.kind === 'cancelled' ? interruption.kind : 'unknown' } : undefined)
       activeSessionStore.updateStatus(sessionId, { type: 'idle' })
       this.knownActiveSessions.delete(sessionId)
     }
@@ -988,6 +1002,13 @@ class PiEventStream {
       return
     }
     switch (event.type) {
+      case 'command_output':
+      case 'extension_error':
+      case 'prompt_result': {
+        const feedback = commandFeedbackStore.addNativeEvent(sessionId, patch)
+        if (feedback) notificationStore.push(feedback.status === 'error' ? 'error' : 'completed', feedback.source ?? 'Native command', feedback.message, sessionId, activeSessionStore.getSessionMeta(sessionId)?.directory, { target: 'extensions' })
+        break
+      }
       case 'config_update': {
         const patch: JsonObject = {}
         if (isJsonObject(event.model)) patch.model = event.model
@@ -1004,6 +1025,10 @@ class PiEventStream {
         if (event.message.role === 'assistant') {
           this.updateLiveMessage(sessionId, event.message, meta, 'persisting')
         }
+        if (event.message.role === 'toolResult') {
+          piBranchStore.patchToolExecution(sessionId, event.message.toolCallId, { isRunning: false, result: event.message })
+          liveToolOutputStore.delete(event.message.toolCallId)
+        }
         this.scheduleBranchRefresh(sessionId)
         break
       case 'turn_end':
@@ -1011,15 +1036,47 @@ class PiEventStream {
       case 'irc_message':
         this.scheduleBranchRefresh(sessionId)
         break
+      case 'tool_execution_start':
+        piBranchStore.patchToolExecution(sessionId, event.toolCallId, {
+          isRunning: true,
+          // Official start frames carry no timestamp; persisted custom data replaces this observation on refresh.
+          startedAt: serverStore.getActiveCalibratedNow() ?? Date.now(),
+          call: { type: 'toolCall', id: event.toolCallId, name: event.toolName, arguments: event.args },
+        })
+        this.scheduleBranchRefresh(sessionId)
+        break
       case 'tool_execution_end':
         if ('toolCallId' in event && typeof event.toolCallId === 'string') {
           liveToolOutputStore.delete(event.toolCallId)
+          const timestamp = serverStore.getActiveCalibratedNow() ?? Date.now()
+          piBranchStore.patchToolExecution(sessionId, event.toolCallId, {
+            isRunning: false, completedAt: timestamp,
+            call: piBranchStore.getData(sessionId)?.client?.toolExecutions?.[event.toolCallId]?.call ?? { type: 'toolCall', id: event.toolCallId, name: event.toolName, arguments: {} },
+            ...(event.isError && !(isJsonObject(event.result) && Array.isArray(event.result.content)) ? { error: typeof event.result === 'string' ? event.result : 'Tool execution failed without a result payload' } : {}),
+          })
+          if (isJsonObject(event.result) && Array.isArray(event.result.content)) {
+            piBranchStore.patchToolExecution(sessionId, event.toolCallId, {
+              isRunning: false,
+              result: {
+                role: 'toolResult', toolCallId: event.toolCallId, toolName: event.toolName,
+                content: event.result.content as unknown as ToolResultMessage['content'],
+                details: event.result.details,
+                isError: event.isError === true || event.result.isError === true,
+                timestamp: typeof event.result.timestamp === 'number' ? event.result.timestamp : serverStore.getActiveCalibratedNow() ?? Date.now(),
+              },
+            })
+          }
         }
         this.scheduleBranchRefresh(sessionId)
         this.scheduleStateRefresh(sessionId)
         break
       case 'tool_execution_update': {
         if ('toolCallId' in event && typeof event.toolCallId === 'string') {
+          const accepted = piBranchStore.patchToolExecution(sessionId, event.toolCallId, {
+            isRunning: true,
+            ...(typeof event.toolName === 'string' ? { call: { type: 'toolCall' as const, id: event.toolCallId, name: event.toolName, arguments: event.args ?? {} } } : {}),
+          })
+          if (!accepted) break
           const text = extractToolExecutionText('partialResult' in event ? event.partialResult : undefined)
           if (text) liveToolOutputStore.set(event.toolCallId, sessionId, text)
         }
@@ -1042,7 +1099,7 @@ class PiEventStream {
         break
       }
       case 'agent_settled':
-        this.markSessionSettled(sessionId)
+        this.markSessionSettled(sessionId, isJsonObject(patch.toolInterruption) && typeof patch.toolInterruption.error === 'string' ? { error: patch.toolInterruption.error, kind: patch.toolInterruption.kind === 'failed' || patch.toolInterruption.kind === 'cancelled' ? patch.toolInterruption.kind : 'unknown' } : undefined)
         activeSessionStore.updateStatus(sessionId, { type: 'idle' })
         this.knownActiveSessions.delete(sessionId)
         this.scheduleBranchRefresh(sessionId)
@@ -1050,14 +1107,15 @@ class PiEventStream {
         notifySessionIdle(sessionId)
         break
       case 'agent_end':
-        piSessionStateStore.patchState(sessionId, { isStreaming: false })
+        if (patch.isTerminal !== false) piSessionStateStore.patchState(sessionId, { isStreaming: false })
         this.pendingLiveMessages.delete(sessionId)
         this.scheduleBranchRefresh(sessionId)
         this.scheduleStateRefresh(sessionId)
         notifySessionIdle(sessionId)
         break
       case 'agent_start':
-        piSessionStateStore.patchState(sessionId, { isStreaming: true, isIdle: false })
+        piBranchStore.beginToolExecutions(sessionId)
+        piSessionStateStore.patchState(sessionId, { isStreaming: true, isIdle: false, isSettled: false })
         activeSessionStore.updateStatus(sessionId, { type: 'busy' })
         this.knownActiveSessions.add(sessionId)
         notifySessionStarted(sessionId)
@@ -1259,8 +1317,13 @@ class PiEventStream {
     if (this.stateRefreshTimers.has(sessionId)) return
     const timer = setTimeout(() => {
       this.stateRefreshTimers.delete(sessionId)
+      const serverGeneration = serverStore.getActiveServerGeneration()
       void refreshPiSessionState(sessionId)
-        .then(() => this.diagnostics.state(sessionId, piSessionStateStore.getState(sessionId)))
+        .then(() => {
+          if (serverStore.getActiveServerGeneration() !== serverGeneration) return
+          this.reconcileActivityFromState(sessionId)
+          this.diagnostics.state(sessionId, piSessionStateStore.getState(sessionId))
+        })
         .catch(error => this.diagnostics.error('state_error', sessionId, error))
     }, REFRESH_DEBOUNCE_MS)
     this.stateRefreshTimers.set(sessionId, timer)

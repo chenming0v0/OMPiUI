@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { InputBox } from './InputBox'
 import type { Command } from '../slash-command'
 import type { PiBranchPage } from '../../omp/domain'
-import { getComposerDraft, moveComposerDraft } from './input/composerDraftStore'
+import { getComposerDraft, moveComposerDraft, updateComposerDraft } from './input/composerDraftStore'
 
 let slashCommands: Command[] = []
 let historyTexts: string[] = []
@@ -94,10 +94,11 @@ vi.mock('../slash-command', () => ({
 }))
 
 vi.mock('./input/InputToolbar', () => ({
-  InputToolbar: ({ onSend, canSend }: { onSend: () => void; canSend: boolean }) => (
-    <button type="button" onClick={onSend} disabled={!canSend}>
-      send
-    </button>
+  InputToolbar: ({ onSend, canSend, onDeliveryModeChange }: { onSend: () => void; canSend: boolean; onDeliveryModeChange: (mode: 'steer' | 'followUp') => void }) => (
+    <>
+      <button type="button" onClick={onSend} disabled={!canSend}>send</button>
+      <button type="button" onClick={() => onDeliveryModeChange('steer')}>steer</button>
+    </>
   ),
 }))
 
@@ -132,38 +133,49 @@ describe('InputBox slash command selection', () => {
     historyTexts = []
     completionsMock.mockReset()
   })
-
-  it('executes frontend commands immediately on selection', async () => {
-    slashCommands = [{ name: 'compact', description: 'Compact session', source: 'frontend' }]
-    const onCommand = vi.fn()
-
-    render(<InputBox paneId="pane-test" onSend={vi.fn()} onCommand={onCommand} />)
-
-    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
+  it.each(['builtin', 'api', 'frontend'] as const)('inserts %s commands without discarding the existing draft', async source => {
+    slashCommands = [{ name: source === 'frontend' ? 'ui-model' : 'model', source }]
+    const onSend = vi.fn()
+    render(<InputBox paneId="pane-test" onSend={onSend} />)
+    const textarea = screen.getByRole('textbox')
     fireEvent.change(textarea, { target: { value: '/', selectionStart: 1 } })
-    fireEvent.click(screen.getByRole('button', { name: 'compact' }))
-
-    await waitFor(() => {
-      expect(onCommand).toHaveBeenCalledWith('/compact')
-      expect(textarea.value).toBe('')
-    })
+    fireEvent.click(screen.getByRole('button', { name: slashCommands[0]!.name }))
+    await waitFor(() => expect(textarea).toHaveValue(`/${slashCommands[0]!.name} `))
+    expect(onSend).not.toHaveBeenCalled()
   })
 
-  it('keeps api commands on attachment insertion path', async () => {
-    slashCommands = [{ name: 'review', description: 'Run review', source: 'api' }]
-    const onCommand = vi.fn()
-
-    render(<InputBox paneId="pane-test" onSend={vi.fn()} onCommand={onCommand} />)
-
-    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
-    fireEvent.change(textarea, { target: { value: '/', selectionStart: 1 } })
-    fireEvent.click(screen.getByRole('button', { name: 'review' }))
-
-    await waitFor(() => {
-      expect(onCommand).not.toHaveBeenCalled()
-      expect(textarea.value).toBe('/review ')
+  it.each([{ fromMenu: true, delivery: 'followUp' }, { fromMenu: false, delivery: 'followUp' }, { fromMenu: true, delivery: 'steer' }, { fromMenu: false, delivery: 'steer' }] as const)('retains command text/images until acceptance (menu=$fromMenu delivery=$delivery)', async ({ fromMenu, delivery }) => {
+    slashCommands = [{ name: 'export', source: 'builtin' }]
+    const image = { id: 'photo', type: 'file' as const, displayName: 'photo.png', url: 'data:image/png;base64,aW1hZ2U=', mime: 'image/png' }
+    let submission = Promise.withResolvers<boolean>()
+    const onSend = vi.fn(() => submission.promise)
+    const view = render(<InputBox paneId="pane-test" onSend={onSend} isStreaming revertedText="" revertedAttachments={[image]} />)
+    const textarea = screen.getByRole('textbox')
+    await act(async () => {
+      const frame = Promise.withResolvers<void>()
+      requestAnimationFrame(() => frame.resolve())
+      await frame.promise
     })
+    if (fromMenu) {
+      fireEvent.change(textarea, { target: { value: '/', selectionStart: 1 } })
+      fireEvent.click(screen.getByRole('button', { name: 'export' }))
+      await waitFor(() => expect(textarea).toHaveValue('/export '))
+    }
+    fireEvent.change(textarea, { target: { value: '/export --themes "a b.html"\nkeep whitespace' } })
+    if (delivery === 'steer') fireEvent.click(screen.getByRole('button', { name: 'steer' }))
+    fireEvent.click(screen.getByRole('button', { name: 'send' }))
+    expect(onSend).toHaveBeenCalledWith('/export --themes "a b.html"\nkeep whitespace', [image], { variant: undefined, delivery })
+    expect(textarea).toHaveValue('/export --themes "a b.html"\nkeep whitespace')
+    await act(async () => { submission.resolve(false) })
+    expect(textarea).toHaveValue('/export --themes "a b.html"\nkeep whitespace')
+    submission = Promise.withResolvers<boolean>()
+    fireEvent.click(screen.getByRole('button', { name: 'send' }))
+    await act(async () => { submission.resolve(true) })
+    expect(textarea).toHaveValue('')
+    view.unmount()
   })
+
+
 
   it('auto-opens completions after selecting a command and applies on Enter', async () => {
     slashCommands = [{ name: 'permission', description: 'Permission presets', source: 'api' }]
@@ -172,7 +184,7 @@ describe('InputBox slash command selection', () => {
       { value: 'read-only', label: 'read-only' },
     ])
 
-    render(<InputBox paneId="pane-test" onSend={vi.fn()} onCommand={vi.fn()} sessionId="s1" />)
+    render(<InputBox paneId="pane-test" onSend={vi.fn()} sessionId="s1" />)
 
     const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
     fireEvent.change(textarea, { target: { value: '/', selectionStart: 1 } })
@@ -197,7 +209,7 @@ describe('InputBox slash command selection', () => {
       { value: 'danger-full-access', label: 'danger-full-access' },
     ])
 
-    render(<InputBox paneId="pane-test" onSend={vi.fn()} onCommand={vi.fn()} sessionId="s1" />)
+    render(<InputBox paneId="pane-test" onSend={vi.fn()} sessionId="s1" />)
 
     const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
     fireEvent.change(textarea, { target: { value: '/', selectionStart: 1 } })
@@ -224,7 +236,7 @@ describe('InputBox slash command selection', () => {
       { value: 'read-only', label: 'read-only' },
     ])
 
-    render(<InputBox paneId="pane-test" onSend={vi.fn()} onCommand={vi.fn()} sessionId="s1" />)
+    render(<InputBox paneId="pane-test" onSend={vi.fn()} sessionId="s1" />)
 
     const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
     // 从 slash 菜单选中 permission → 文本 "/permission " + 命令附件 + 自动弹出候选
@@ -252,7 +264,7 @@ describe('InputBox slash command selection', () => {
     slashCommands = [{ name: 'permission', description: 'Permission presets', source: 'api' }]
     completionsMock.mockResolvedValue([{ value: 'workspace-write', label: 'workspace-write' }])
 
-    render(<InputBox paneId="pane-test" onSend={vi.fn()} onCommand={vi.fn()} sessionId="s1" />)
+    render(<InputBox paneId="pane-test" onSend={vi.fn()} sessionId="s1" />)
 
     const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
     fireEvent.change(textarea, { target: { value: '/', selectionStart: 1 } })
@@ -275,7 +287,7 @@ describe('InputBox slash command selection', () => {
     slashCommands = [{ name: 'permission', description: 'Permission presets', source: 'api' }]
     completionsMock.mockResolvedValue([{ value: 'workspace-write', label: 'workspace-write' }])
 
-    render(<InputBox paneId="pane-test" onSend={vi.fn()} onCommand={vi.fn()} sessionId="s1" />)
+    render(<InputBox paneId="pane-test" onSend={vi.fn()} sessionId="s1" />)
 
     const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
     // 中文输入法：组合期间输入 /permission w（change 被 isComposing 跳过）
@@ -296,7 +308,7 @@ describe('InputBox slash command selection', () => {
     slashCommands = [{ name: 'permission', description: 'Permission presets', source: 'api' }]
     completionsMock.mockResolvedValue([{ value: 'workspace-write', label: 'workspace-write' }])
 
-    render(<InputBox paneId="pane-test" onSend={vi.fn()} onCommand={vi.fn()} sessionId="s1" />)
+    render(<InputBox paneId="pane-test" onSend={vi.fn()} sessionId="s1" />)
 
     const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
     // 手输命令（无 attachment 路径）后按 Tab 触发
@@ -318,7 +330,7 @@ describe('InputBox slash command selection', () => {
       { value: 'danger-full-access', label: 'danger-full-access' },
     ])
 
-    render(<InputBox paneId="pane-test" onSend={vi.fn()} onCommand={vi.fn()} sessionId="s1" />)
+    render(<InputBox paneId="pane-test" onSend={vi.fn()} sessionId="s1" />)
 
     const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
     // 手输 /permission + 空格 + w，每次 change 带真实光标位置（用户场景：
@@ -334,18 +346,15 @@ describe('InputBox slash command selection', () => {
   })
 
   it('keeps the draft when sending fails', async () => {
-    const onSend = vi.fn().mockResolvedValue(false)
+    const submission = Promise.withResolvers<boolean>()
+    const onSend = vi.fn(() => submission.promise)
 
     render(<InputBox paneId="pane-test" onSend={onSend} />)
 
     const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
     fireEvent.change(textarea, { target: { value: 'hello world' } })
     fireEvent.click(screen.getByRole('button', { name: 'send' }))
-
-    await waitFor(() => {
-      expect(onSend).toHaveBeenCalledWith('hello world', [], { agent: undefined, variant: undefined })
-    })
-
+    await act(async () => { submission.resolve(false) })
     expect(textarea.value).toBe('hello world')
   })
 
@@ -424,23 +433,49 @@ describe('InputBox slash command selection', () => {
     expect(getComposerDraft('sending-session').text).toBe('')
   })
 
+
+  it('preserves independent images added while an image-only submission is pending', async () => {
+    const key = 'pending-image-only'
+    const sent = { id: 'sent-photo', type: 'file' as const, displayName: 'sent.png', url: 'data:image/png;base64,c2VudA==', mime: 'image/png' }
+    const next = { ...sent, id: 'next-photo', displayName: 'next.png', url: 'data:image/png;base64,bmV4dA==' }
+    updateComposerDraft(key, () => ({ text: '', attachments: [sent], ready: true }))
+    const submission = Promise.withResolvers<boolean>()
+    render(<InputBox paneId="pane-test" draftKey={key} onSend={() => submission.promise} isStreaming />)
+    fireEvent.click(screen.getByRole('button', { name: 'send' }))
+    expect(getComposerDraft(key).attachments).toEqual([sent])
+    act(() => updateComposerDraft(key, current => ({ ...current, attachments: [...current.attachments, next] })))
+    await act(async () => { submission.resolve(true) })
+    expect(getComposerDraft(key).attachments).toEqual([next])
+  })
+
+  it('retains failed image-only sends across stopping and navigation without changing another draft', async () => {
+    const sent = { id: 'failed-photo', type: 'file' as const, displayName: 'failed.png', url: 'data:image/png;base64,ZmFpbA==', mime: 'image/png' }
+    const other = { ...sent, id: 'other-photo' }
+    updateComposerDraft('stopping-photo', () => ({ text: '', attachments: [sent], ready: true }))
+    updateComposerDraft('other-photo', () => ({ text: 'other draft', attachments: [other], ready: true }))
+    const submission = Promise.withResolvers<boolean>()
+    const view = render(<InputBox paneId="pane-test" draftKey="stopping-photo" onSend={() => submission.promise} isStreaming isStopping />)
+    fireEvent.click(screen.getByRole('button', { name: 'send' }))
+    view.rerender(<InputBox paneId="pane-test" draftKey="other-photo" onSend={() => submission.promise} />)
+    await act(async () => { submission.resolve(false) })
+    expect(getComposerDraft('stopping-photo').attachments).toEqual([sent])
+    expect(getComposerDraft('other-photo')).toMatchObject({ text: 'other draft', attachments: [other] })
+  })
   it('restores a failed home command in the session created by that command', async () => {
     slashCommands = [{ name: 'review', description: 'Review', source: 'api' }]
-    let resolveCommand!: (accepted: boolean) => void
-    const onCommand = vi.fn(() => new Promise<boolean>(resolve => { resolveCommand = resolve }))
-    const onSend = vi.fn()
+    const submission = Promise.withResolvers<boolean>()
+    const onSend = vi.fn(() => submission.promise)
     const { rerender } = render(
-      <InputBox paneId="pane-test" draftKey="command-home" onSend={onSend} onCommand={onCommand} />,
+      <InputBox paneId="pane-test" draftKey="command-home" onSend={onSend} />,
     )
     fireEvent.change(screen.getByRole('textbox'), { target: { value: '/', selectionStart: 1 } })
     fireEvent.click(screen.getByRole('button', { name: 'review' }))
     await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('/review '))
     fireEvent.change(screen.getByRole('textbox'), { target: { value: '/review code' } })
     fireEvent.click(screen.getByRole('button', { name: 'send' }))
-    expect(onCommand).toHaveBeenCalledWith('/review code')
     act(() => { moveComposerDraft('command-home', 'command-session') })
-    rerender(<InputBox paneId="pane-test" draftKey="command-session" onSend={onSend} onCommand={onCommand} />)
-    await act(async () => { resolveCommand(false) })
+    rerender(<InputBox paneId="pane-test" draftKey="command-session" onSend={onSend} />)
+    await act(async () => { submission.resolve(false) })
     await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('/review code'))
     expect(getComposerDraft('command-home').text).toBe('')
     expect(getComposerDraft('command-session').text).toBe('/review code')
@@ -518,92 +553,6 @@ describe('InputBox slash command selection', () => {
     })
   })
 
-  it('clears api slash command drafts immediately after keyboard submission', async () => {
-    slashCommands = [{ name: 'review', description: 'Run review', source: 'api' }]
-    let resolveCommand: ((value: boolean) => void) | null = null
-    const onCommand = vi.fn(
-      () =>
-        new Promise<boolean>(resolve => {
-          resolveCommand = resolve
-        }),
-    )
-
-    render(<InputBox paneId="pane-test" onSend={vi.fn()} onCommand={onCommand} />)
-
-    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
-    fireEvent.change(textarea, { target: { value: '/', selectionStart: 1 } })
-    fireEvent.keyDown(textarea, { key: 'Enter' })
-
-    await waitFor(() => {
-      expect(textarea.value).toBe('/review ')
-    })
-
-    fireEvent.click(screen.getByRole('button', { name: 'send' }))
-
-    expect(onCommand).toHaveBeenCalledWith('/review')
-    expect(textarea.value).toBe('')
-    expect(textarea).not.toBeDisabled()
-
-    fireEvent.change(textarea, { target: { value: 'next prompt' } })
-    expect(textarea.value).toBe('next prompt')
-
-    await act(async () => {
-      resolveCommand?.(true)
-    })
-  })
-
-  it('restores api slash command drafts when command submission fails', async () => {
-    slashCommands = [{ name: 'review', description: 'Run review', source: 'api' }]
-    let resolveCommand: ((value: boolean) => void) | null = null
-    const onCommand = vi.fn(
-      () =>
-        new Promise<boolean>(resolve => {
-          resolveCommand = resolve
-        }),
-    )
-
-    render(<InputBox paneId="pane-test" onSend={vi.fn()} onCommand={onCommand} />)
-
-    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
-    fireEvent.change(textarea, { target: { value: '/', selectionStart: 1 } })
-    fireEvent.click(screen.getByRole('button', { name: 'review' }))
-
-    await waitFor(() => {
-      expect(textarea.value).toBe('/review ')
-    })
-
-    fireEvent.click(screen.getByRole('button', { name: 'send' }))
-    expect(textarea.value).toBe('')
-
-    await act(async () => {
-      resolveCommand?.(false)
-    })
-
-    await waitFor(() => {
-      expect(textarea.value).toBe('/review ')
-    })
-  })
-
-  it('restores api slash command drafts when command submission fails synchronously', async () => {
-    slashCommands = [{ name: 'review', description: 'Run review', source: 'api' }]
-    const onCommand = vi.fn().mockReturnValue(false)
-
-    render(<InputBox paneId="pane-test" onSend={vi.fn()} onCommand={onCommand} />)
-
-    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
-    fireEvent.change(textarea, { target: { value: '/', selectionStart: 1 } })
-    fireEvent.click(screen.getByRole('button', { name: 'review' }))
-
-    await waitFor(() => {
-      expect(textarea.value).toBe('/review ')
-    })
-
-    fireEvent.click(screen.getByRole('button', { name: 'send' }))
-
-    await waitFor(() => {
-      expect(textarea.value).toBe('/review ')
-    })
-  })
 
   it('does not send when Enter confirms IME composition', async () => {
     const onSend = vi.fn()
@@ -624,29 +573,10 @@ describe('InputBox slash command selection', () => {
     })
 
     fireEvent.keyDown(textarea, { key: 'Enter' })
+    await waitFor(() => expect(textarea.value).toBe(''))
 
-    await waitFor(() => {
-      expect(onSend).toHaveBeenCalledWith('这是一个 test', [], { agent: undefined, variant: undefined })
-    })
   })
 
-  it('queues a follow-up while the session is streaming', async () => {
-    const onSend = vi.fn().mockResolvedValue(true)
-
-    render(<InputBox paneId="pane-test" onSend={onSend} isStreaming />)
-
-    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
-    fireEvent.change(textarea, { target: { value: 'queued while busy' } })
-    fireEvent.click(screen.getByRole('button', { name: 'send' }))
-
-    await waitFor(() => {
-      expect(onSend).toHaveBeenCalledWith('queued while busy', [], {
-        agent: undefined,
-        variant: undefined,
-        delivery: 'followUp',
-      })
-    })
-  })
 
   it('does not send keydown events marked as IME composition', () => {
     const onSend = vi.fn()

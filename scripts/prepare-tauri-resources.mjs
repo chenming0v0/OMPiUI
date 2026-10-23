@@ -1,6 +1,7 @@
 import { cpSync, existsSync, mkdirSync, rmSync, statSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { inspectOmpRuntime } from "./prepare-omp-runtime.mjs"
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)))
 const packageDir = join(root, "packages", "app", "src-tauri")
@@ -33,11 +34,16 @@ if (!isFile(bridge)) {
   )
 }
 
+// Validate the complete native runtime before replacing Tauri resources. The
+// existing resources/ -> root mapping and launcher cwd retain relative layout.
+inspectOmpRuntime(join(source, "omp-runtime"), isWindowsPackage ? "win32" : process.platform)
+
 rmSync(target, { recursive: true, force: true })
 mkdirSync(target, { recursive: true })
 cpSync(server, join(target, serverName))
 cpSync(join(source, "node_modules"), join(target, "node_modules"), { recursive: true })
 cpSync(join(source, "web"), join(target, "web"), { recursive: true })
 cpSync(join(source, "tailscale"), join(target, "tailscale"), { recursive: true })
+cpSync(join(source, "omp-runtime"), join(target, "omp-runtime"), { recursive: true })
 
 console.info(`[tauri] resources prepared at ${target}`)

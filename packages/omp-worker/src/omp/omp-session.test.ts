@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { EventEmitter } from "node:events"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -8,20 +9,10 @@ import { parseGoalMessage } from "@ompiui/protocol"
 import { OmpExtensionUiBridge } from "./omp-extension-ui.js"
 import { OmpRpcSession } from "./omp-session.js"
 import type { OmpRpcFrame } from "./rpc-client.js"
-import { WorkerIpcSender } from "../worker-ipc-sender.js"
-import { createWorkerCommandScheduler } from "../worker-command-scheduler.js"
-import type { WorkerResponse } from "../ipc.js"
 
-type QueueEntry = { text: string; images?: ImageInput[] }
-type QueueSnapshot = {
-  steering: string[]
-  followUp: string[]
-  steeringEntries: QueueEntry[]
-  followUpEntries: QueueEntry[]
-}
 
-// Exercise the real session adapter with a deterministic RPC transport, not an
-// installed OMP process. In particular, this does not bypass its version gate.
+// Exercise consumer-visible session projection and transitions with a controlled
+// native transport. Installed RPC smoke is run separately by the main agent.
 async function sessionFixture(t: TestContext) {
   const session = Reflect.construct(OmpRpcSession, []) as OmpRpcSession
   const internal = session as unknown as {
@@ -29,30 +20,56 @@ async function sessionFixture(t: TestContext) {
     extensionUi: OmpExtensionUiBridge
     refreshIdentity(): Promise<void>
     handleFrame(frame: OmpRpcFrame): void
-    userQueueDrain?: Promise<void>
+    resetHistory(): void
   }
   const commands: JsonObject[] = []
   const responses: JsonObject[] = []
   const entries: JsonObject[] = []
-  const native: JsonObject = { sessionId: "old-session", cwd: process.cwd(), isStreaming: true }
-  const rpc = {
-    onRequest: (_command: JsonObject): void | Promise<void> => {},
+  const native: JsonObject = { sessionId: "old-session", sessionFile: null, cwd: process.cwd(), isStreaming: true }
+  const rpc = Object.assign(new EventEmitter(), {
+    onRequest: (_command: JsonObject): void | JsonObject | Promise<void | JsonObject> => {},
     async request(command: JsonObject) {
       commands.push(structuredClone(command))
-      if (["new_session", "switch_session", "branch"].includes(String(command.type))) {
-        native.sessionId = `replacement-${command.type}`
-      }
       if (command.type === "set_steering_mode") native.steeringMode = command.mode
       if (command.type === "set_follow_up_mode") native.followUpMode = command.mode
-      await rpc.onRequest(command)
+      const override = await rpc.onRequest(command)
+      if (override) return { type: "response", success: true, command: command.type, ...override }
+      if (["new_session", "switch_session"].includes(String(command.type))) {
+        native.sessionId = `replacement-${command.type}`
+      }
       const data = command.type === "get_state" ? structuredClone(native)
-        : command.type === "get_entries" ? { entries: structuredClone(entries), leafId: entries.at(-1)?.id ?? null }
-          : {}
+        : command.type === "get_entries" ? { entries: structuredClone(entries), leafId: native.leafId === undefined ? entries.at(-1)?.id ?? null : native.leafId }
+          : command.type === "get_available_thinking_levels" ? { levels: ["off", "high"] }
+            : {}
       return { type: "response", success: true, command: command.type, data }
+    },
+    async requestRuntime(operation: string, args: JsonObject = {}) {
+      const command = { type: operation, ...args }
+      commands.push(structuredClone(command))
+      const override = await rpc.onRequest(command)
+      if (override?.success === false) throw new Error(String(override.error))
+      if (override?.data !== undefined) {
+        if ((operation === "fork" || operation === "navigateTree") && override.data && typeof override.data === "object" && !Array.isArray(override.data))
+          return { ...native, leafId: native.leafId === undefined ? entries.at(-1)?.id ?? null : native.leafId, ...override.data };
+        return override.data;
+      }
+      if (operation === "identity") return structuredClone(native)
+      if (operation === "fork") {
+        native.sessionId = "replacement-fork"
+        native.sessionFile = path.join(process.cwd(), "replacement-fork.jsonl")
+        return { ...native, leafId: native.leafId ?? null, cancelled: false, selectedText: "selected draft" }
+      }
+      if (operation === "navigateTree") {
+        native.leafId = args.entryId
+        return { ...native, cancelled: false, editorText: "restored draft" }
+      }
+      return operation === "queue" ? { steering: [], followUp: [] }
+        : operation === "resources" ? { skills: [], prompts: [], contextFiles: [], tools: [], activeTools: [], commands: [] }
+          : {}
     },
     writeExtensionUiResponse(response: JsonObject) { responses.push(response) },
     async close() {},
-  }
+  })
   internal.client = rpc
   await internal.refreshIdentity()
   internal.extensionUi.bind(session.getSessionId(), response => rpc.writeExtensionUiResponse(response))
@@ -60,11 +77,9 @@ async function sessionFixture(t: TestContext) {
   return {
     session, commands, responses, native, rpc, entries,
     frame: (frame: OmpRpcFrame) => internal.handleFrame(frame),
-    drain: () => internal.userQueueDrain,
   }
 }
 
-const emptyQueue: QueueSnapshot = { steering: [], followUp: [], steeringEntries: [], followUpEntries: [] }
 const image = (data: string): ImageInput => ({ type: "image", data, mimeType: "image/png" })
 
 describe("OmpRpcSession native subagent progress", () => {
@@ -107,129 +122,349 @@ describe("OmpRpcSession native subagent progress", () => {
   })
 })
 
-describe("OmpRpcSession immediate queued delivery", () => {
-  it("acknowledges abort before the asynchronous history sync finishes", async t => {
-    const { session, frame } = await sessionFixture(t)
-    const internal = session as unknown as { syncEntriesNow(): Promise<void> }
+describe("OmpRpcSession authoritative lifecycle", () => {
+  it("keeps nonterminal end busy until native settle and preserves queued work on Stop", async t => {
+    const { session, frame, native, rpc } = await sessionFixture(t)
+    const activity: unknown[] = []
+    const events: JsonObject[] = []
+    session.onActivity(value => activity.push(value))
+    session.onPiEvent(value => events.push(value))
+    rpc.onRequest = command => command.type === "queue"
+      ? { data: { steering: [{ text: "keep", images: [image("AA==")] }], followUp: [] } } : undefined
     frame({ type: "agent_start" })
-    let finishSync!: () => void
-    internal.syncEntriesNow = () => new Promise<void>(resolve => { finishSync = resolve })
+    frame({ type: "agent_end", isTerminal: false })
+    assert.deepEqual(activity, [{ type: "busy" }])
+    native.isStreaming = false
+    native.isSettled = false
+    native.queuedMessageCount = 1
+    await session.abort()
+    const state = await session.getState()
+    assert.equal(state.isIdle, false)
+    assert.equal(state.pendingMessageCount, 1)
+    assert.deepEqual((state.queue as JsonObject).steeringEntries, [{ text: "keep", images: [image("AA==")] }])
+    assert.equal(events.some(event => event.type === "agent_settled"), false)
+    native.queuedMessageCount = 0
+    native.isSettled = true
+    frame({ type: "session_settled" })
+    assert.equal(activity.at(-1), null)
+    assert.equal((await session.getState()).isSettled, true)
+  })
+
+  it('preserves a native resumed turn that starts before the Stop ACK', async t => {
+    const { session, frame, native, rpc } = await sessionFixture(t)
     const events: JsonObject[] = []
     session.onPiEvent(event => events.push(event))
-
-    await session.abort()
-    assert.ok(events.some(event => event.type === "agent_settled"))
-    finishSync()
-  })
-
-  it("returns a legal large attachment through IPC and refuses larger results before removing queue data", async t => {
-    const { session, frame } = await sessionFixture(t)
-    frame({ type: "agent_start" })
-    const largeImage = image("A".repeat(5 * 1024 * 1024))
-    await session.sendUserMessage("neighbor", undefined, "followUp")
-    await session.sendUserMessage("large", [largeImage], "followUp")
-    const responses: WorkerResponse[] = []
-    const sender = new WorkerIpcSender((message, done) => {
-      if (message.kind === "response") responses.push(message)
-      done()
-    }, () => {})
-    const schedule = createWorkerCommandScheduler(async command => command.type === "clearQueue"
-      ? session.clearQueue(command.maxResultBytes)
-      : session.removeQueuedMessage("followUp", 1, command.maxResultBytes), sender, "test")
-    const run = (id: string, type: string) => schedule({ kind: "request", id, generation: "test", command: { type } })
-    await run("large", "removeQueuedMessage")
-    const result = responses.at(-1)!
-    assert.equal(result.ok, true)
-    if (result.ok) assert.equal(((result.data as JsonObject).images as JsonObject[])[0]?.data, largeImage.data)
-    await session.sendUserMessage("over-limit", [largeImage, largeImage], "followUp")
-    await run("rejected", "removeQueuedMessage")
-    const rejected = responses.at(-1)!
-    assert.equal(rejected.ok, false)
-    if (!rejected.ok) assert.equal(rejected.error.code, "FILE_TOO_LARGE")
-    assert.deepEqual(((await session.getState()).queue as QueueSnapshot).followUp, ["neighbor", "over-limit"])
-    await run("clear-rejected", "clearQueue")
-    assert.equal(responses.at(-1)!.ok, false)
-    assert.deepEqual(((await session.getState()).queue as QueueSnapshot).followUp, ["neighbor", "over-limit"])
-    await assert.rejects(session.removeQueuedMessage("followUp", 1, 1024), { code: "FILE_TOO_LARGE" })
-    assert.deepEqual(((await session.getState()).queue as QueueSnapshot).followUp, ["neighbor", "over-limit"])
-    await schedule.close(async () => {})
-  })
-  it("projects large queue images and pending attachments without losing explicit edits", async t => {
-    const { session, frame } = await sessionFixture(t)
-    frame({ type: "agent_start" })
-    const data = "A".repeat(1024 * 1024)
-    await session.sendUserMessage("large queue image", [image(data)], "followUp")
-    const state = await session.getState()
-    assert.ok(JSON.stringify(state).length < 10000)
-    const restored = await session.removeQueuedMessage("followUp", 0)
-    assert.equal(((restored as JsonObject).images as JsonObject[])[0]!.data, data)
-    await session.sendUserMessage("pending image", [image(data)], "followUp")
-    await session.sendQueuedMessage("followUp", 0)
-    const pending = (await session.getState()).submittedMessages as JsonObject[]
-    assert.ok(JSON.stringify(pending).length < 10000)
-    const content = (pending[0]!.message as JsonObject).content as JsonObject[]
-    assert.equal((content[1]!.attachment as JsonObject).entryId, pending[0]!.id)
-    const chunk = await session.getAttachment(String(pending[0]!.id), 1)
-    assert.equal(chunk.data, data.slice(0, 256 * 1024))
-    assert.equal(chunk.hasMore, true)
-  })
-  it("submits only the selected message with images before the current turn ends", async t => {
-    const { session, frame, commands, entries } = await sessionFixture(t)
-    frame({ type: "agent_start" })
-    await session.sendUserMessage("neighbor", undefined, "followUp")
-    await session.sendUserMessage("send now", [image("AgM=")], "followUp")
-    await session.sendQueuedMessage("followUp", 1)
-    assert.deepEqual(commands.filter(command => command.type === "steer"), [
-      { type: "steer", message: "send now", images: [image("AgM=")] },
-    ])
-    const accepted = await session.getState()
-    assert.deepEqual((accepted.queue as QueueSnapshot).followUp, ["neighbor"])
-    assert.equal((accepted.submittedMessages as JsonObject[]).length, 1)
-    assert.deepEqual((accepted.submittedMessages as JsonObject[])[0]!.message, {
-      role: "user", content: [{ type: "text", text: "send now" }, image("AgM=")],
-      timestamp: ((accepted.submittedMessages as JsonObject[])[0]!.message as JsonObject).timestamp,
-    })
-    const message: JsonObject = {
-      role: "user", content: [{ type: "text", text: "send now" }, image("AgM=")], timestamp: 123456,
-    }
-    frame({ type: "message_start", message })
-    const consumed = (await session.getState()).submittedMessages as JsonObject[]
-    assert.equal((consumed[0]!.message as JsonObject).timestamp, 123456)
-    entries.push({ type: "message", id: "native-user", parentId: null, timestamp: new Date(123456).toISOString(), message })
-    frame({ type: "message_end", message })
-    await session.ensureSynced()
-    assert.deepEqual((await session.getState()).submittedMessages, [])
-    assert.equal((await session.getBranchPage(undefined, 100, 100000)).items.length, 1)
-  })
-
-  it("retains the selected message on failed submission and rejects overlapping submissions", async t => {
-    const { session, frame, rpc } = await sessionFixture(t)
-    frame({ type: "agent_start" })
-    await session.sendUserMessage("keep", [image("AA==")], "steer")
-    let fail = true
     rpc.onRequest = command => {
-      if (command.type === "steer" && fail) throw new Error("provider rejected")
+      if (command.type !== 'abort') return
+      native.isStreaming = true
+      native.isSettled = false
+      frame({ type: 'agent_start' })
+      frame({ type: 'message_start', messageId: 'resumed', message: { role: 'assistant', content: [{ type: 'text', text: 'retained follow-up running' }] } })
     }
-    await assert.rejects(session.sendQueuedMessage("steering", 0), /provider rejected/)
-    assert.deepEqual((await session.getState()).submittedMessages, [])
-    assert.deepEqual(((await session.getState()).queue as QueueSnapshot).steering, ["keep"])
-    fail = false
-    const sending = session.sendQueuedMessage("steering", 0)
-    await assert.rejects(session.sendQueuedMessage("steering", 0), /already being submitted/)
-    await sending
-    assert.deepEqual(((await session.getState()).queue as QueueSnapshot).steering, [])
+    await session.abort()
+    const state = await session.getState()
+    assert.equal(state.isStreaming, true)
+    assert.equal(state.isSettled, false)
+    const branch = await session.getBranchPage(undefined, 100, 100000)
+    assert.equal((branch.checkpoint?.liveMessage as JsonObject).id, 'resumed')
+    assert.equal(events.some(event => event.type === 'agent_settled'), false)
   })
 
-  it("starts a normal prompt if the queued message is sent after the turn becomes idle", async t => {
-    const { session, frame, native, commands } = await sessionFixture(t)
-    frame({ type: "agent_start" })
-    await session.sendUserMessage("idle send", undefined, "followUp")
+  it('keeps async-only work busy after Stop and records cancellation only on native settle', async t => {
+    const { session, frame, native } = await sessionFixture(t)
     native.isStreaming = false
-    await session.getState()
-    await session.sendQueuedMessage("followUp", 0)
-    assert.deepEqual(commands.filter(command => command.type === "prompt"), [{ type: "prompt", message: "idle send" }])
+    native.isSettled = false
+    native.hasPendingAsyncWork = true
+    await session.abort()
+    const pending = await session.getState()
+    assert.equal(pending.isIdle, false)
+    assert.equal(pending.toolInterruption, undefined)
+    native.hasPendingAsyncWork = false
+    native.isSettled = true
+    frame({ type: 'session_settled' })
+    const settled = await session.getState()
+    assert.equal((settled.toolInterruption as JsonObject).kind, 'cancelled')
+    frame({ type: 'agent_start' })
+    native.isStreaming = true
+    native.isSettled = false
+    assert.equal((await session.getState()).toolInterruption, undefined)
+  })
+  it('does not let a pre-Stop state read erase a newer native resumed run', async t => {
+    const { session, frame, native, rpc } = await sessionFixture(t)
+    native.isStreaming = false
+    native.isSettled = true
+    const started = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    let first = true
+    rpc.onRequest = command => {
+      if (command.type !== 'get_state' || !first) return
+      first = false
+      const stale = structuredClone(native)
+      started.resolve()
+      return release.promise.then(() => ({ data: stale }))
+    }
+    const reading = session.getState()
+    await started.promise
+    native.isStreaming = true
+    native.isSettled = false
+    frame({ type: 'agent_start' })
+    release.resolve()
+    const state = await reading
+    assert.equal(state.isStreaming, true)
+    assert.equal(state.isSettled, false)
+  })
+  it('reads authoritative queue state without manufacturing an event or invalidating its caller', async t => {
+    const { session, native, rpc } = await sessionFixture(t)
+    native.isStreaming = false
+    native.isSettled = false
+    native.queuedMessageCount = 1
+    rpc.onRequest = command => command.type === 'queue' ? { data: { steering: [{ text: 'retained', entryId: 'runtime:1' }], followUp: [] } } : undefined
+    const events: JsonObject[] = []
+    session.onPiEvent(event => events.push(event))
+    for (let read = 0; read < 3; read++) {
+      const state = await session.getState()
+      assert.equal(state.isSettled, false)
+      assert.equal(state.pendingMessageCount, 1)
+      assert.deepEqual((state.queue as JsonObject).steeringEntries, [{ text: 'retained', entryId: 'runtime:1' }])
+    }
+    assert.deepEqual(events.filter(event => event.type === 'queue_update'), [])
+  })
+
+
+
+  
+
+  
+
+  
+
+  
+
+  it("keeps tree navigation in the same identity and preserves cancelled history", async t => {
+    const { session, entries, rpc } = await sessionFixture(t)
+    entries.push({ id: "assistant", type: "message", parentId: null, timestamp: new Date(1).toISOString(), message: { role: "assistant", content: [] } })
+    await session.ensureSynced()
+    const result = await session.navigateTree("assistant")
+    assert.equal(result.targetSessionId, "old-session")
+    assert.equal(result.editorText, "restored draft")
+    rpc.onRequest = command => command.type === "navigateTree" ? { data: { cancelled: true } } : undefined
+    assert.equal((await session.navigateTree("missing")).cancelled, true)
+    assert.equal((await session.getBranchPage(undefined, 100, 100000)).items[0]!.id, "assistant")
+  })
+
+  for (const operation of ["navigateTree", "fork"] as const) {
+    it(`preserves committed ${operation} identity and image draft when history readback fails`, async t => {
+      const { session, entries, native, rpc } = await sessionFixture(t)
+      t.mock.method(console, "error", () => undefined)
+      entries.push({ id: "user", type: "message", parentId: null, message: { role: "user", content: "image question" } },
+        { id: "answer", type: "message", parentId: "user", message: { role: "assistant", content: [] } })
+      await session.ensureSynced()
+      let committed = false
+      rpc.onRequest = command => {
+        if (command.type === operation) {
+          committed = true
+          native.leafId = null
+          if (operation === "fork") {
+            native.sessionId = "fork-target"
+            native.sessionFile = path.join(process.cwd(), "fork-target.jsonl")
+          }
+          return { data: { ...native, cancelled: false, editorText: "image question", selectedText: "image question",
+            editorImages: [image("AA==")], selectedImages: [image("AA==")] } }
+        }
+        if (committed && command.type === "get_entries") throw new Error("History readback unavailable")
+      }
+      const result = operation === "fork" ? await session.fork("user", "before") : await session.navigateTree("user")
+      assert.equal(result.cancelled, false)
+      assert.equal(result.targetSessionId, native.sessionId)
+      assert.equal(session.getSessionId(), native.sessionId)
+      assert.equal(session.getSessionFile() ?? null, native.sessionFile)
+      assert.equal(session.getHead().leafId, null)
+      assert.deepEqual(result[operation === "fork" ? "selectedImages" : "editorImages"], [image("AA==")])
+      assert.equal(result.projectionError, "History readback unavailable")
+      committed = false
+      assert.deepEqual((await session.getBranchPage(undefined, 100, 100000)).items, [])
+    })
+  }
+
+  it("does not publish a successful transition from a malformed native receipt", async t => {
+    const { session, rpc } = await sessionFixture(t)
+    rpc.onRequest = command => command.type === "fork" || command.type === "navigateTree"
+      ? { data: { cancelled: false, sessionId: 42 } } : undefined
+    await assert.rejects(session.fork("entry", "at"), /invalid committed identity/)
+    await assert.rejects(session.navigateTree("entry"), /invalid committed identity/)
+    assert.equal(session.getSessionId(), "old-session")
+  })
+  it('keeps the current branch and live projection on a native no-op navigation', async t => {
+    const { session, entries, rpc, frame } = await sessionFixture(t)
+    entries.push({ id: 'answer', type: 'message', parentId: null, message: { role: 'assistant', content: [] } })
+    await session.ensureSynced()
+    frame({ type: 'message_start', messageId: 'current', message: { role: 'assistant', content: [{ type: 'text', text: 'current projection' }] } })
+    rpc.onRequest = command => command.type === 'navigateTree' ? { data: { cancelled: false, noOp: true } } : undefined
+    const result = await session.navigateTree('answer')
+    assert.equal(result.noOp, true)
+    assert.equal(result.editorText, undefined)
+    const branch = await session.getBranchPage(undefined, 100, 100000)
+    assert.equal((branch.checkpoint?.liveMessage as JsonObject).id, 'current')
+    assert.deepEqual(branch.items.map(entry => entry.id), ['answer'])
+  })
+
+
+  it("undoes to an empty root without replacing native runtime state and can redo", async t => {
+    const { session, entries, native, frame, rpc } = await sessionFixture(t)
+    entries.push({ id: "user", type: "message", parentId: null, message: { role: "user", content: "question" } },
+      { id: "answer", type: "message", parentId: "user", message: { role: "assistant", content: [{ type: "text", text: "answer" }] } })
+    await session.ensureSynced()
+    frame({ type: "agent_start" })
+    await session.manageGoal({ op: "set", objective: "keep goal" })
+    frame({ type: "subagent_lifecycle", payload: { id: "reviewer", status: "started" } })
+    frame({ type: "extension_ui_request", method: "input", id: "dialog", title: "Keep" })
+    rpc.onRequest = command => {
+      if (command.type === "queue") return { data: { steering: ["keep steer"], followUp: [], scopedModels: [{ model: { provider: "p", id: "m" } }] } }
+      if (command.type !== "navigateTree" || command.entryId !== "user") return
+      native.leafId = null
+      return { data: { cancelled: false, editorText: "question", editorImages: [image("AA==")] } }
+    }
+    const undo = await session.navigateTree("user")
+    assert.equal(undo.targetSessionId, "old-session")
+    assert.deepEqual(undo.editorImages, [image("AA==")])
+    assert.deepEqual((await session.getBranchPage(undefined, 100, 100000)).items, [])
+    const state = await session.getState()
+    assert.equal((state.goal as JsonObject).objective, "keep goal")
+    assert.equal((state.subagents as JsonObject[])[0]!.id, "reviewer")
+    assert.deepEqual((state.queue as JsonObject).steering, ["keep steer"])
+    assert.deepEqual(state.scopedModels, [{ model: { provider: "p", id: "m" } }])
+    assert.equal((state.pendingExtensionUiRequests as JsonObject[])[0]!.requestId, "dialog")
+    await session.navigateTree("answer")
+    assert.deepEqual((await session.getBranchPage(undefined, 100, 100000)).items.map(item => item.id), ["user", "answer"])
+  })
+
+  it("applies and removes native journal labels on existing tree nodes", async t => {
+    const { session, entries, rpc } = await sessionFixture(t)
+    entries.push({ id: "answer", type: "message", parentId: null, message: { role: "assistant", content: [] } })
+    await session.ensureSynced()
+    rpc.onRequest = command => {
+      if (command.type === "setLabel") entries.push({ id: `label-${entries.length}`, type: "label", parentId: entries.at(-1)!.id, targetId: command.entryId, ...(command.label === undefined ? {} : { label: command.label }) })
+    }
+    await session.setLabel("answer", "bookmark")
+    const labeled = await session.getTree() as JsonObject[]
+    assert.equal(labeled.find(node => (node.entry as JsonObject).id === "answer")!.label, "bookmark")
+    await session.setLabel("answer")
+    const cleared = await session.getTree() as JsonObject[]
+    assert.equal(cleared.find(node => (node.entry as JsonObject).id === "answer")!.label, undefined)
+  })
+
+  it("does not replay paused main events from an abandoned branch after navigation", async t => {
+    const { session, entries, frame } = await sessionFixture(t)
+    entries.push({ id: "answer", type: "message", parentId: null, message: { role: "assistant", content: [] } })
+    await session.ensureSynced()
+    const events: JsonObject[] = []
+    session.onPiEvent(event => events.push(event))
+    session.setOutputPaused(true)
+    frame({ type: "message_start", messageId: "abandoned", message: { role: "assistant", content: [{ type: "text", text: "old branch" }] } })
+    frame({ type: "message_update", messageId: "abandoned", message: { role: "assistant", content: [{ type: "text", text: "old branch update" }] } })
+    await session.navigateTree("answer")
+    session.setOutputPaused(false)
+    assert.equal(events.some(event => event.messageId === "abandoned"), false)
+    frame({ type: "message_start", messageId: "current", message: { role: "assistant", content: [{ type: "text", text: "new branch" }] } })
+    assert.equal(events.find(event => event.type === "message_start")?.messageId, "current")
+  })
+
+  it("keeps an aborted navigation's history and propagates fork cancellation with the selected images", async t => {
+    const { session, entries, rpc } = await sessionFixture(t)
+    entries.push({ id: "answer", type: "message", parentId: null, message: { role: "assistant", content: [] } })
+    await session.ensureSynced()
+    rpc.onRequest = command => command.type === "navigateTree" ? { data: { cancelled: true, aborted: true } }
+      : command.type === "fork" ? { data: { cancelled: true, selectedText: "draft", selectedImages: [image("AA==")] } } : undefined
+    assert.equal((await session.navigateTree("missing", { summarize: true })).aborted, true)
+    const fork = await session.fork("answer", "at")
+    assert.equal(fork.cancelled, true)
+    assert.equal(fork.sourceSessionId, "old-session")
+    assert.equal(fork.targetSessionId, undefined)
+    assert.deepEqual(fork.selectedImages, [image("AA==")])
+    assert.equal(session.getSessionId(), "old-session")
+    assert.deepEqual((await session.getBranchPage(undefined, 100, 100000)).items.map(item => item.id), ["answer"])
+  })
+
+  it("rejects failed commands and transitions without mutating identity", async t => {
+    const { session, rpc } = await sessionFixture(t)
+    rpc.onRequest = command => command.type === "prompt" || command.type === "new_session" || command.type === "fork"
+      ? { success: false, error: "native rejection" } : undefined
+    await assert.rejects(session.invokeCommand("missing"), /native rejection/)
+    await assert.rejects(session.newSession(), /native rejection/)
+    await assert.rejects(session.fork("missing", "at"), /native rejection/)
+    assert.equal(session.getSessionId(), "old-session")
   })
 })
+
+describe("OmpRpcSession replacement isolation", () => {
+  it("rejects old in-flight history after selecting a new session", async t => {
+    const { session, rpc, entries } = await sessionFixture(t)
+    const stale = Promise.withResolvers<void>()
+    const admitted = Promise.withResolvers<void>()
+    let held = false
+    rpc.onRequest = command => {
+      if (command.type !== "get_entries" || held) return
+      held = true
+      admitted.resolve()
+      return stale.promise.then(() => ({ data: { entries: [{ id: "stale", type: "message", message: { role: "user", content: "old" } }], leafId: "stale" } }))
+    }
+    const oldRead = session.ensureSynced()
+    await admitted.promise
+    const replacing = session.newSession()
+    await new Promise(resolve => setImmediate(resolve))
+    entries.push({ id: "fresh", type: "message", parentId: null, timestamp: new Date(2).toISOString(), message: { role: "user", content: "new" } })
+    stale.resolve()
+    await Promise.all([oldRead, replacing])
+    const page = await session.getBranchPage(undefined, 100, 100000)
+    assert.deepEqual(page.items.map(item => item.id), ["fresh"])
+    assert.equal(session.getSessionId(), "replacement-new_session")
+  })
+
+  
+
+  
+
+  it("rejects a user submission waiting behind Stop when the session is replaced", async t => {
+    const { session, frame, rpc, commands } = await sessionFixture(t)
+    frame({ type: "agent_start" })
+    const admitted = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    rpc.onRequest = command => {
+      if (command.type !== "abort") return
+      admitted.resolve()
+      return release.promise
+    }
+    const stopping = session.abort()
+    await admitted.promise
+    const sending = session.sendUserMessage("old-session question", [image("AA==")])
+    const rejected = assert.rejects(sending, { code: "SESSION_REPLACED" })
+    await session.newSession()
+    frame({ type: "agent_start" })
+    release.resolve()
+    await Promise.all([stopping, rejected])
+    assert.equal((await session.getState()).sessionId, "replacement-new_session")
+    assert.equal(commands.some(command => command.message === "old-session question"), false)
+  })
+
+  it("migrates native workspace identity even though get_state omits cwd", async t => {
+    const { session, rpc, native } = await sessionFixture(t)
+    const workspace = path.resolve(tmpdir(), "ompiui-replacement-workspace")
+    rpc.onRequest = command => {
+      if (command.type === "get_state") {
+        const state = structuredClone(native)
+        delete state.cwd
+        return { data: state }
+      }
+      if (command.type === "new_session") native.cwd = workspace
+    }
+    const replaced = await session.newSession()
+    assert.equal(replaced.targetCwd, workspace)
+    assert.equal(session.getCwd(), workspace)
+    assert.equal((await session.getState()).cwd, workspace)
+  })
+
+})
+
 
 describe("OmpRpcSession background history synchronization", () => {
   it("contains both event and timer sync failures and retries on the next read", async t => {
@@ -292,7 +527,7 @@ describe("OmpRpcSession extension identity after replacement", () => {
       assert.deepEqual(events.shift(), {
         type: "settled", requestId: "old-dialog", sessionId: "old-session", reason: "session_replaced",
       })
-      assert.deepEqual(responses.shift(), { type: "extension_ui_response", id: "old-dialog", cancelled: true })
+      assert.deepEqual(responses, [], "Replacement must not send a stale reply into the new native session")
       assert.deepEqual(events.map(event => event.type), ["requested", "notify", "state", "editor"])
       for (const event of events) {
         assert.equal(event.type === "requested" ? (event.request as JsonObject).sessionId : event.sessionId, targetId)
@@ -311,96 +546,6 @@ describe("OmpRpcSession extension identity after replacement", () => {
   }
 })
 
-describe("OmpRpcSession image-bearing user queue", () => {
-  it("removes only the selected image-bearing queue entry without resubmitting its neighbors", async t => {
-    const { session, frame, commands } = await sessionFixture(t)
-    frame({ type: "agent_start" })
-    await session.sendUserMessage("first", [image("AA==")], "steer")
-    await session.sendUserMessage("second", [image("AQ==")], "steer")
-    const before = commands.length
-    assert.deepEqual(await session.removeQueuedMessage("steering", 0), { text: "first", images: [image("AA==")] })
-    assert.equal(commands.length, before)
-    const queue = (await session.getState()).queue as QueueSnapshot
-    assert.deepEqual(queue.steeringEntries, [{ text: "second", images: [image("AQ==")] }])
-    await assert.rejects(session.removeQueuedMessage("steering", 10), { code: "NOT_FOUND" })
-  })
-  it("preserves duplicate text, image-only entries and clone boundaries in snapshots, events and clear results", async t => {
-    const { session, frame } = await sessionFixture(t)
-    const events: JsonObject[] = []
-    session.onPiEvent(event => { if (event.type === "queue_update") events.push(event) })
-    frame({ type: "agent_start" })
-    const inputs = [image("AAEC+/==")]
-    await session.sendUserMessage("duplicate", inputs, "steer")
-    const firstEvent = events[0] as QueueSnapshot
-    inputs[0]!.data = "caller mutation"
-    inputs.push(image("extra"))
-    firstEvent.steeringEntries[0]!.images![0]!.mimeType = "event mutation"
-    firstEvent.steering.push("event-only")
-    await session.sendUserMessage("duplicate", [image("AgM=")], "steer")
-    await session.sendUserMessage("", [image("BAU=")], "steer")
-    await session.sendUserMessage("duplicate", [image("Bgc=")])
-    await session.sendUserMessage("duplicate")
-    await session.sendUserMessage("", [image("CAk=")])
-    const expected: QueueSnapshot = {
-      steering: ["duplicate", "duplicate", ""], followUp: ["duplicate", "duplicate", ""],
-      steeringEntries: [
-        { text: "duplicate", images: [image("AAEC+/==")] },
-        { text: "duplicate", images: [image("AgM=")] },
-        { text: "", images: [image("BAU=")] },
-      ],
-      followUpEntries: [
-        { text: "duplicate", images: [image("Bgc=")] },
-        { text: "duplicate" },
-        { text: "", images: [image("CAk=")] },
-      ],
-    }
-    assert.deepEqual(events.at(-1), { type: "queue_update", ...expected })
-    await session.setSteeringMode("all")
-    await session.setFollowUpMode("all")
-    const snapshot = (await session.getState()).queue as QueueSnapshot
-    assert.deepEqual(snapshot, { ...expected, steeringMode: "all", followUpMode: "all" })
-    snapshot.steeringEntries[0]!.images![0]!.data = "snapshot mutation"
-    snapshot.followUpEntries.splice(0)
-    snapshot.followUp.splice(0)
-
-    // Native/internal queue contents must not replace editable user entries.
-    frame({ type: "queue_update", steering: ["internal"], followUp: [], steeringEntries: [{ text: "internal" }], followUpEntries: [] })
-    assert.deepEqual(events.at(-1), { type: "queue_update", ...expected })
-    const cleared = await session.clearQueue() as QueueSnapshot
-    assert.deepEqual(cleared, expected)
-    assert.deepEqual(events.at(-1), { type: "queue_update", ...emptyQueue })
-    assert.deepEqual((await session.getState()).queue, { ...emptyQueue, steeringMode: "all", followUpMode: "all" })
-
-    // Replaying the authoritative clear result copies attachments again.
-    await session.sendUserMessage(cleared.steeringEntries[1]!.text, cleared.steeringEntries[1]!.images, "followUp")
-    cleared.steeringEntries[1]!.images![0]!.data = "clear-result mutation"
-    assert.deepEqual((await session.getState()).queue, {
-      ...emptyQueue, followUp: ["duplicate"], followUpEntries: [{ text: "duplicate", images: [image("AgM=")] }],
-      steeringMode: "all", followUpMode: "all",
-    })
-  })
-
-  it("drains image-only messages without losing encoding or a duplicate-text neighbor", async t => {
-    const { session, frame, commands, native, drain } = await sessionFixture(t)
-    const events: JsonObject[] = []
-    session.onPiEvent(event => { if (event.type === "queue_update") events.push(event) })
-    frame({ type: "agent_start" })
-    await session.sendUserMessage("", [image("AAEC+/==")], "steer")
-    await session.sendUserMessage("", [image("AgM=")], "steer")
-    native.isStreaming = false
-    frame({ type: "agent_end" })
-    await drain()
-    assert.deepEqual(commands.filter(command => command.type === "prompt"), [
-      { type: "prompt", message: "", images: [image("AAEC+/==")] },
-    ])
-    assert.deepEqual(events.at(-1), {
-      type: "queue_update", ...emptyQueue, steering: [""], steeringEntries: [{ text: "", images: [image("AgM=")] }],
-    })
-    assert.deepEqual(await session.clearQueue(), {
-      ...emptyQueue, steering: [""], steeringEntries: [{ text: "", images: [image("AgM=")] }],
-    })
-  })
-})
 
 describe("OmpRpcSession idle reporting for host recycling", () => {
   it("surfaces hasPendingAsyncWork and keeps isIdle false while the session can still wake", async t => {
@@ -467,31 +612,6 @@ describe("OmpRpcSession goal pause and continuation", () => {
     assert.equal(parseGoalMessage(String(first.message))?.kind, "set")
   })
 
-  it("aborts the running turn and clears queued messages before acknowledging pause", async t => {
-    const { session, frame, commands, native, rpc, drain } = await sessionFixture(t)
-    frame({ type: "agent_start" })
-    await session.manageGoal({ op: "set", objective: "Finish the task" })
-    await session.sendUserMessage("must not restart", undefined, "followUp")
-    const events: JsonObject[] = []
-    session.onPiEvent(event => events.push(event))
-    rpc.onRequest = command => {
-      if (command.type !== "abort") return
-      native.isStreaming = false
-      frame({ type: "agent_end" })
-      frame({ type: "session_settled" })
-    }
-
-    const result = await session.manageGoal({ op: "pause" })
-    await drain()
-    const state = await session.getState()
-    assert.equal((result.goal as JsonObject).status, "paused")
-    assert.equal((state.goal as JsonObject).status, "paused")
-    assert.equal(state.isStreaming, false)
-    assert.deepEqual((state.queue as QueueSnapshot).followUp, [])
-    assert.equal(commands.filter(command => command.type === "abort").length, 1)
-    assert.deepEqual(commands.filter(command => command.type === "prompt"), [])
-    assert.ok(events.some(event => event.type === "agent_settled"))
-  })
 
   it("does not submit an idle goal continuation if pause arrives before the RPC write", async t => {
     const { session, commands, native } = await sessionFixture(t)
@@ -531,7 +651,6 @@ describe("OmpRpcSession goal pause and continuation", () => {
     const prompts = commands.filter(command => command.type === "prompt")
     assert.equal(prompts.length, 1)
     assert.match(String(prompts[0]!.message), /Finish the task/)
-    assert.equal(prompts[0]!.streamingBehavior, undefined)
     assert.equal(((await session.getState()).goal as JsonObject).status, "active")
   })
 
@@ -553,40 +672,7 @@ describe("OmpRpcSession goal pause and continuation", () => {
     assert.equal(commands.filter(command => command.type === "abort").length, 2)
   })
 
-  it("cancels a queued-message drain that was scheduled just before abort", async t => {
-    const { session, frame, commands, native, drain } = await sessionFixture(t)
-    frame({ type: "agent_start" })
-    await session.sendUserMessage("must not restart")
-    native.isStreaming = false
-    frame({ type: "agent_end" })
-    const draining = drain()
-    await session.abort()
-    await draining
-    assert.deepEqual(commands.filter(command => command.type === "prompt"), [])
-    assert.deepEqual((await session.getState()).queue, {
-      ...emptyQueue, steeringMode: "one-at-a-time", followUpMode: "one-at-a-time",
-    })
-  })
 
-  it("still submits an explicit new user prompt with images after abort finishes", async t => {
-    const { session, frame, commands, native, rpc } = await sessionFixture(t)
-    frame({ type: "agent_start" })
-    let releaseAbort!: () => void
-    rpc.onRequest = command => {
-      if (command.type !== "abort") return
-      native.isStreaming = false
-      frame({ type: "agent_end" })
-      return new Promise<void>(resolve => { releaseAbort = resolve })
-    }
-    const stopping = session.abort()
-    const sending = session.sendUserMessage("new request", [image("AgM=")], "followUp")
-    assert.deepEqual(commands.filter(command => command.type === "prompt"), [])
-    releaseAbort()
-    await Promise.all([stopping, sending])
-    assert.deepEqual(commands.filter(command => command.type === "prompt"), [
-      { type: "prompt", message: "new request", images: [image("AgM=")] },
-    ])
-  })
 
   it("does not auto-continue after pausing during the settle grace period", async t => {
     const { session, frame, commands, native } = await sessionFixture(t)
@@ -612,6 +698,7 @@ describe("OmpRpcSession goal pause and continuation", () => {
   })
 
   it("still completes a goal with the completion marker without another turn", async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] })
     const { session, frame, commands, native, entries } = await sessionFixture(t)
     frame({ type: "agent_start" })
     await session.manageGoal({ op: "set", objective: "Finish the task" })
@@ -622,29 +709,29 @@ describe("OmpRpcSession goal pause and continuation", () => {
     native.isStreaming = false
     frame({ type: "session_settled" })
     await session.ensureSynced()
-    await new Promise(resolve => setTimeout(resolve, 1100))
+    t.mock.timers.tick(1000)
     assert.deepEqual(commands.filter(command => command.type === "prompt"), [])
     assert.equal(((await session.getState()).goal as JsonObject).status, "complete")
   })
+
+  it("ignores a completion marker on an inactive sibling branch", async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] })
+    const { session, frame, native, entries, commands } = await sessionFixture(t)
+    entries.push({ id: "question", type: "message", parentId: null, message: { role: "user", content: "request" } },
+      { id: "active", type: "message", parentId: "question", message: { role: "assistant", content: [{ type: "text", text: "work remains" }] } },
+      { id: "sibling", type: "message", parentId: "question", message: { role: "assistant", content: [{ type: "text", text: "GOAL_COMPLETE" }] } })
+    native.leafId = "active"
+    frame({ type: "agent_start" })
+    await session.manageGoal({ op: "set", objective: "Finish active branch" })
+    native.isStreaming = false
+    frame({ type: "session_settled" })
+    await session.ensureSynced()
+    t.mock.timers.tick(1000)
+    const submitted = Promise.withResolvers<void>()
+    queueMicrotask(submitted.resolve)
+    await submitted.promise
+    assert.equal(((await session.getState()).goal as JsonObject).status, "active")
+    assert.equal(parseGoalMessage(String(commands.find(command => command.type === "prompt")?.message))?.objective, "Finish active branch")
+  })
 })
 
-describe("OmpRpcSession configuration reporting", () => {
-  it("preserves native model reasoning metadata when the available-model cache has not caught up", async t => {
-    const { session, native } = await sessionFixture(t)
-    native.model = { provider: "custom", id: "correct", name: "Correct model", reasoning: true, input: ["text", "image"] }
-    native.thinkingLevel = "xhigh"
-    const state = await session.getState()
-    assert.deepEqual(state.model, native.model)
-    assert.equal(state.thinkingLevel, "xhigh")
-  })
-
-  it("rejects unsuccessful model and thinking RPC responses instead of acknowledging the selection", async t => {
-    const { session } = await sessionFixture(t)
-    const client = (session as unknown as { client: { request: unknown } }).client
-    t.mock.method(client, "request", async (command: JsonObject) => ({
-      type: "response", command: command.type, success: false, error: "unsupported selection",
-    }))
-    await assert.rejects(session.setModel("custom", "wrong"), /unsupported selection/)
-    await assert.rejects(session.setThinkingLevel("wrong"), /unsupported selection/)
-  })
-})

@@ -34,21 +34,16 @@ export interface PackagesGateway {
   manage(
     cwd: string,
     commandId: string,
-    action: "install" | "remove" | "update",
+    action: "install" | "link" | "remove" | "update" | "enable" | "disable",
     source?: string,
     local?: boolean,
-    persist?: boolean,
     onProgress?: (event: JsonObject) => void,
   ): Promise<JsonValue>;
-  resolve(
-    cwd: string,
-    missingAction?: "install" | "skip" | "error",
-  ): Promise<JsonValue>;
+  resolve(cwd: string): Promise<JsonValue>;
   resolveSources(
     cwd: string,
     sources: string[],
     local?: boolean,
-    temporary?: boolean,
   ): Promise<JsonValue>;
   changeSource(
     cwd: string,
@@ -177,7 +172,7 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
       });
     return ctx
       .requireRuntime()
-      .removeQueuedMessage(kind, P.reqNonNegativeInteger(p, "index"), ctx.maxResultBytes, P.optBoolean(p, "returnContent"));
+      .removeQueuedMessage(kind, P.reqNonNegativeInteger(p, "index"), P.reqString(p, "entryId"), ctx.maxResultBytes, P.optBoolean(p, "returnContent"));
   },
   sendQueuedMessage: async (ctx, p) => {
     const kind = P.optEnum(p, "kind", ["steering", "followUp"] as const);
@@ -189,7 +184,7 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
     }
     await ctx
       .requireRuntime()
-      .sendQueuedMessage(kind, P.reqNonNegativeInteger(p, "index"));
+      .sendQueuedMessage(kind, P.reqNonNegativeInteger(p, "index"), P.reqString(p, "entryId"), ctx.maxResultBytes);
   },
 
   compact: async (ctx, p) =>
@@ -256,8 +251,6 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
     ctx.requireRuntime().navigateTree(P.reqString(p, "entryId"), {
       summarize: P.optBoolean(p, "summarize"),
       customInstructions: P.optString(p, "customInstructions"),
-      replaceInstructions: P.optBoolean(p, "replaceInstructions"),
-      label: P.optString(p, "label"),
     }),
   setLabel: async (ctx, p) => {
     await ctx
@@ -421,11 +414,11 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
     ctx.driver === "mock" ? ctx.catalog.listModels() : ctx.auth.listModels(),
   "settings.get": async (ctx, p) =>
     ctx.catalog.getSettings(P.reqString(p, "cwd")),
-  "settings.patch": async (ctx, p) =>
-    ctx.catalog.patchSettings(
-      P.reqString(p, "cwd"),
-      P.optObject(p, "patch") ?? {},
-    ),
+  "settings.patch": async (ctx, p) => {
+    const patch = P.optObject(p, "patch");
+    if (!patch) throw Object.assign(new Error("params.patch must be an object"), { code: "INVALID_REQUEST" });
+    return ctx.catalog.patchSettings(P.reqString(p, "cwd"), patch);
+  },
   "modelRoles.get": async (ctx) => ctx.catalog.getModelRoles(),
   "modelRoles.set": async (ctx, p) => {
     const roles = P.optObject(p, "roles");
@@ -488,23 +481,18 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
     ctx.packages.manage(
       P.reqString(p, "cwd"),
       P.reqString(p, "commandId"),
-      P.optEnum(p, "action", ["install", "remove", "update"] as const) ??
+      P.optEnum(p, "action", ["install", "link", "remove", "update", "enable", "disable"] as const) ??
         "install",
       P.optString(p, "source"),
       P.optBoolean(p, "local"),
-      P.optBoolean(p, "persist"),
     ),
   "packages.resolve": async (ctx, p) =>
-    ctx.packages.resolve(
-      P.reqString(p, "cwd"),
-      P.optEnum(p, "missingAction", ["install", "skip", "error"] as const),
-    ),
+    ctx.packages.resolve(P.reqString(p, "cwd")),
   "packages.resolveSources": async (ctx, p) =>
     ctx.packages.resolveSources(
       P.reqString(p, "cwd"),
       P.optStringArray(p, "sources") ?? [],
       P.optBoolean(p, "local"),
-      P.optBoolean(p, "temporary"),
     ),
   "packages.changeSource": async (ctx, p) =>
     ctx.packages.changeSource(

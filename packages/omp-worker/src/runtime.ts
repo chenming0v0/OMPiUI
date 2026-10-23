@@ -54,9 +54,9 @@ export interface SessionRuntime {
   setSteeringMode(mode: "all" | "one-at-a-time"): Promise<void>
   setFollowUpMode(mode: "all" | "one-at-a-time"): Promise<void>
   clearQueue(maxResultBytes?: number): Promise<JsonValue | undefined>
-  removeQueuedMessage(kind: "steering" | "followUp", index: number, maxResultBytes?: number, returnContent?: boolean): Promise<JsonValue>
+  removeQueuedMessage(kind: "steering" | "followUp", index: number, entryId: string, maxResultBytes?: number, returnContent?: boolean): Promise<JsonValue>
   /** 原子提交队列中的一条（kind=steering 本轮 / followUp 下一轮）：受理成功才出队 */
-  sendQueuedMessage(kind: "steering" | "followUp", index: number): Promise<void>
+  sendQueuedMessage(kind: "steering" | "followUp", index: number, entryId: string, maxResultBytes?: number): Promise<void>
 
   compact(customInstructions?: string): Promise<JsonValue | undefined>
   abortCompaction(): Promise<void>
@@ -81,8 +81,6 @@ export interface SessionRuntime {
     options?: {
       summarize?: boolean
       customInstructions?: string
-      replaceInstructions?: boolean
-      label?: string
     },
   ): Promise<JsonObject>
   setLabel(entryId: string, label?: string): Promise<void>

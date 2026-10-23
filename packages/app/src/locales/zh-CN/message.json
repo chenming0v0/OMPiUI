@@ -28,10 +28,14 @@
   },
   "toolPart": {
     "running": "运行中",
-    "failed": "失败"
+    "pending": "等待执行",
+    "failed": "失败",
+    "cancelled": "已中断",
+    "unknown": "结果未知"
   },
   "toolSteps": {
     "separator": "，",
+    "pending": "{{count}} 个工具等待执行",
     "executeDone": "执行了 {{count}} 条命令",
     "executeActive": "正在执行命令",
     "executeFailed": "{{count}} 条命令执行失败",

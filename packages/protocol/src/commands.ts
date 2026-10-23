@@ -86,6 +86,7 @@ export type SendUserMessageParams = {
 export type SendQueuedMessageParams = {
   kind: "steering" | "followUp"
   index: number
+  entryId: string
 }
 
 export type NewSessionParams = {
@@ -166,8 +167,6 @@ export type NavigateTreeParams = {
   entryId: string
   summarize?: boolean
   customInstructions?: string
-  replaceInstructions?: boolean
-  label?: string
 }
 
 export type SetLabelParams = {

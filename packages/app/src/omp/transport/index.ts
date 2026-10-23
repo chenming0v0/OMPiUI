@@ -46,7 +46,8 @@ import {
 import type { SessionInfo, SessionTreeNode, Skill, PromptTemplate } from '../vendor/pi-coding-agent'
 import type {
   PiBranchPage,
-  PiConfiguredPackage,
+  PiPackagesSnapshot,
+  OmpResolvedPackageResources,
   PiModelProviderConfig,
   PiModelProviderFetchResult,
   PiModelProvidersSnapshot,
@@ -56,7 +57,6 @@ import type {
   PiProjectTrust,
   PiProviderAuthInfo,
   PiSettingsSnapshot,
-  ResolvedPaths,
 } from '../domain/index.js'
 import { getApiBase, getPiAuthToken, piFetch, type PiRequestInit } from '../httpClient.js'
 import { piCommandStore } from '../state/index.js'
@@ -593,7 +593,7 @@ export function refreshModelRuntime(options?: JsonObject, signal?: AbortSignal):
   return postPiGlobalCommand('modelRuntime.refresh', options ? { options } : undefined, signal)
 }
 
-export function listPiPackages(cwd: string, signal?: AbortSignal): Promise<PiConfiguredPackage[]> {
+export function listPiPackages(cwd: string, signal?: AbortSignal): Promise<PiPackagesSnapshot> {
   return postPiGlobalCommand('packages.list', { cwd }, signal)
 }
 
@@ -601,30 +601,28 @@ export function managePiPackage(
   cwd: string,
   params: {
     commandId: string
-    action: 'install' | 'remove' | 'update'
+    action: 'install' | 'link' | 'remove' | 'update' | 'enable' | 'disable'
     source?: string
     local?: boolean
-    persist?: boolean
   },
   signal?: AbortSignal,
-): Promise<PiConfiguredPackage[]> {
+): Promise<PiPackagesSnapshot> {
   return postPiGlobalCommand('packages.manage', { cwd, ...params }, signal)
 }
 
 export function resolvePiPackages(
   cwd: string,
-  missingAction?: 'install' | 'skip' | 'error',
   signal?: AbortSignal,
-): Promise<ResolvedPaths> {
-  return postPiGlobalCommand('packages.resolve', { cwd, missingAction }, signal)
+): Promise<OmpResolvedPackageResources> {
+  return postPiGlobalCommand('packages.resolve', { cwd }, signal)
 }
 
 export function resolvePiExtensionSources(
   cwd: string,
   sources: string[],
-  options?: { local?: boolean; temporary?: boolean },
+  options?: { local?: boolean },
   signal?: AbortSignal,
-): Promise<ResolvedPaths> {
+): Promise<OmpResolvedPackageResources> {
   return postPiGlobalCommand('packages.resolveSources', { cwd, sources, ...options }, signal)
 }
 
@@ -632,18 +630,17 @@ export function changePiPackageSource(
   cwd: string,
   source: string,
   operation: 'add' | 'remove',
-  local?: boolean,
   signal?: AbortSignal,
-): Promise<{ changed: boolean; packages: PiConfiguredPackage[] }> {
-  return postPiGlobalCommand('packages.changeSource', { cwd, source, operation, local }, signal)
+): Promise<PiPackagesSnapshot & { changed: boolean }> {
+  return postPiGlobalCommand('packages.changeSource', { cwd, source, operation }, signal)
 }
 
 export function getPiPackageInstalledPath(
   cwd: string,
   source: string,
-  scope?: 'user' | 'project',
+  scope: 'user' | 'project',
   signal?: AbortSignal,
-): Promise<string | null> {
+): Promise<string> {
   return postPiGlobalCommand('packages.installedPath', { cwd, source, scope }, signal)
 }
 
@@ -1025,6 +1022,10 @@ export type PiForkResult = {
   targetSessionFile?: string | null
   targetCwd?: string
   cancelled?: boolean
+  aborted?: boolean
+  selectedText?: string | null
+  selectedImages?: PiImageInput[]
+  projectionError?: string
   [key: string]: JsonValue | undefined
 }
 
@@ -1040,14 +1041,15 @@ export type PiNavigateTreeParams = {
   entryId: string
   summarize?: boolean
   customInstructions?: string
-  replaceInstructions?: boolean
-  label?: string
 }
 
 export type PiNavigateTreeResult = {
   editorText?: string | null
+  editorImages?: PiImageInput[]
   cancelled?: boolean
   aborted?: boolean
+  noOp?: boolean
+  projectionError?: string
 }
 
 export function navigatePiTree(
@@ -1119,7 +1121,7 @@ export function sendQueuedMessage(
 
 export function removeQueuedMessage(
   sessionId: string,
-  params: { kind: 'steering' | 'followUp'; index: number },
+  params: { kind: 'steering' | 'followUp'; index: number; entryId: string },
   signal?: AbortSignal,
 ): Promise<{ text: string; images?: PiImageInput[] }> {
   return postPiSessionCommand(sessionId, 'removeQueuedMessage', params, signal)
@@ -1128,7 +1130,7 @@ export function removeQueuedMessage(
 /** 直接删除仅返回确认；取回编辑仍使用 removeQueuedMessage 的完整结果。 */
 export function discardQueuedMessage(
   sessionId: string,
-  params: { kind: 'steering' | 'followUp'; index: number },
+  params: { kind: 'steering' | 'followUp'; index: number; entryId: string },
   signal?: AbortSignal,
 ): Promise<{ removed: true }> {
   return postPiSessionCommand(sessionId, 'removeQueuedMessage', { ...params, returnContent: false }, signal)

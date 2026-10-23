@@ -132,6 +132,7 @@ export class SessionHost {
   readonly executor: SessionExecutor;
   private pendingAttachBytes = 0;
   private pendingAttachCommands = 0;
+  private readonly toolInterruptions = new Map<string, JsonObject>();
 
   constructor(
     private readonly supervisor: RuntimeSupervisor,
@@ -373,6 +374,9 @@ export class SessionHost {
         "error",
       );
       const fault = diagnostics.recentFaults().at(-1);
+      this.toolInterruptions.delete(session.sessionId);
+      this.toolInterruptions.set(session.sessionId, { kind: 'failed', error: error.message });
+      if (this.toolInterruptions.size > 4096) this.toolInterruptions.delete(this.toolInterruptions.keys().next().value!);
       this.executor.markRuntimeCrashed(session.sessionId);
       this.runtimes.delete(session.sessionId);
       this.activity.delete(session.sessionId);
@@ -417,6 +421,8 @@ export class SessionHost {
       const crashed = {
         sessionId: session.sessionId,
         crashed: true,
+        message: error.message,
+        ...(runtimeExit ? { runtimeExit } : {}),
         ...(fault
           ? {
               faultId: fault.id,
@@ -546,11 +552,13 @@ export class SessionHost {
             "subagent.messages": true,
           };
           if (diskQueries[type]) {
-            return this.catalogCommand(
+            const result = await this.catalogCommand(
               "session.read",
               { sessionId, query: type, params: params ?? {} },
               { idempotent: true, signal },
             );
+            return type === 'state.get' && isJsonObject(result) && this.toolInterruptions.has(sessionId)
+              ? { ...result, toolInterruption: this.toolInterruptions.get(sessionId)! } : result;
           }
           if (this.getSessionCapability(type)?.idempotent) {
             throw Object.assign(
@@ -574,7 +582,9 @@ export class SessionHost {
             code: "INVALID_REQUEST",
           });
         }
-        return session.worker.command(type, params, signal);
+        const result = await session.worker.command(type, params, signal);
+        return type === 'state.get' && isJsonObject(result) && this.toolInterruptions.has(sessionId)
+          ? { ...result, toolInterruption: this.toolInterruptions.get(sessionId)! } : result;
       })(),
       signal,
     );
@@ -824,7 +834,7 @@ export class SessionHost {
           attached.worker.command("state.get", undefined, options.signal),
           attached.worker.command("branch.get", pageParams, options.signal),
         ]);
-        return { state: state ?? null, branch: branch ?? null };
+        return { state: isJsonObject(state) && this.toolInterruptions.has(params.sessionId) ? { ...state, toolInterruption: this.toolInterruptions.get(params.sessionId)! } : state ?? null, branch: branch ?? null };
       }
     }
     if (type === "session.copy") {
@@ -990,7 +1000,16 @@ export class SessionHost {
     params?: JsonObject,
     options?: { retry?: boolean; idempotent?: boolean; signal?: AbortSignal },
   ): Promise<JsonValue | undefined> {
-    return this.supervisor.catalogCommand(type, params, options);
+    const result = await this.supervisor.catalogCommand(type, params, options);
+    if (typeof params?.sessionId === 'string') {
+      const interruption = this.toolInterruptions.get(params.sessionId);
+      if (type === 'session.delete') this.toolInterruptions.delete(params.sessionId);
+      if (interruption && isJsonObject(result)) {
+        if (type === 'session.preview' && isJsonObject(result.state)) return { ...result, state: { ...result.state, toolInterruption: interruption } };
+        if (type === 'session.read' && params.query === 'state.get') return { ...result, toolInterruption: interruption };
+      }
+    }
+    return result;
   }
 
   private getSessionCapability(type: string): PiCapability | undefined {
@@ -1059,6 +1078,8 @@ export class SessionHost {
       const previousLastAccess = this.lastAccess.get(sourceSessionId);
       const previousActivity = this.activity.get(sourceSessionId);
       const wasMaterialized = this.materialized.delete(sourceSessionId);
+      this.toolInterruptions.delete(sourceSessionId);
+      this.toolInterruptions.delete(targetSessionId);
       this.lastAccess.delete(sourceSessionId);
       this.activity.delete(sourceSessionId);
       this.runtimes.delete(sourceSessionId);
@@ -1131,6 +1152,7 @@ export class SessionHost {
     }
     if (event.channel === "pi.event") {
       const type = event.event.type;
+      if (type === 'agent_start') this.toolInterruptions.delete(session.sessionId);
       if (typeof type === "string" && DIAGNOSTIC_AGENT_EVENTS.has(type)) {
         const meta = event.event as unknown as JsonObject;
         const message = isJsonObject(meta.message) ? meta.message : undefined;
@@ -1201,7 +1223,7 @@ export class SessionHost {
     }
     if (event.channel === "extension.ui") {
       this.hub.publish(
-        { kind: "session", id: session.sessionId },
+        { kind: "session", id: event.sessionId ?? session.sessionId },
         "extension.ui",
         event.event,
       );
@@ -1353,6 +1375,7 @@ export class SessionHost {
     this.activity.clear();
     this.lastActivity.clear();
     this.materialized.clear();
+    this.toolInterruptions.clear();
   }
 
   private touch(sessionId: string): void {

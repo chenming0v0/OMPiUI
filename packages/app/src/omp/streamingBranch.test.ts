@@ -5,6 +5,8 @@ import { loadPiSessionData, refreshPiBranch } from './controllers/index.js'
 import * as transport from './transport/index.js'
 import { piBranchStore, piSessionStateStore } from './state/index.js'
 import { selectPiTimelineItems } from './selectors/index.js'
+import { getToolExecutionStatus } from './domain/index.js'
+import { commandFeedbackStore } from './commandFeedbackStore'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -63,6 +65,7 @@ describe('tool completion during assistant streaming', () => {
     piEventStream.disconnectAll()
     piBranchStore.clearAll()
     piSessionStateStore.clearAll()
+    commandFeedbackStore.reset()
     vi.restoreAllMocks()
     vi.useRealTimers()
   })
@@ -171,6 +174,33 @@ describe('tool completion during assistant streaming', () => {
 
     expect(piBranchStore.getData('session-stream')!.checkpoint).toBe(checkpoint)
   })
+
+  it('shows an independently completed tool while the assistant continues', () => {
+    event('tool_execution_start', 2, { toolCallId: 'eval-call', toolName: 'eval', args: { code: 'print(200)' } })
+    event('tool_execution_end', 3, { toolCallId: 'eval-call', toolName: 'eval', result: { content: [{ type: 'text', text: 'HTTP 200' }] }, isError: false })
+    thinking(4, 'Continuing a longer task')
+    const owner = selectPiTimelineItems(piBranchStore.getData('session-stream')!)[0]
+    if (owner.kind !== 'assistant_message') throw new Error('Expected assistant')
+    expect(getToolExecutionStatus({ ...owner.toolExecutions?.['eval-call'], call: owner.blocks[0] as never, result: owner.toolResults['eval-call'] })).toBe('completed')
+    expect(piBranchStore.getData('session-stream')!.checkpoint?.liveMessage?.phase).toBe('streaming')
+  })
+
+  it('stops only started tools after a runtime crash and accepts a recovered authoritative result', () => {
+    event('tool_execution_start', 2, { toolCallId: 'eval-call', toolName: 'eval', args: {} })
+    event('agent_end', 3, { messages: [] })
+    expect(getToolExecutionStatus({ ...piBranchStore.getData('session-stream')!.client?.toolExecutions?.['eval-call'], call: { type: 'toolCall', id: 'eval-call', name: 'eval', arguments: {} } })).toBe('running')
+    ;(piEventStream as unknown as { handleSessionsUpdated(payload: unknown): void }).handleSessionsUpdated({ sessionId: 'session-stream', crashed: true, errorCode: 'WORKER_EXIT' })
+    const execution = piBranchStore.getData('session-stream')!.client!.toolExecutions!['eval-call']
+    expect(getToolExecutionStatus({ ...execution, call: execution.call! })).toBe('error')
+    expect(execution.error).toContain('WORKER_EXIT')
+    expect(getToolExecutionStatus({ call: { type: 'toolCall', id: 'not-started', name: 'read', arguments: {} } })).toBe('pending')
+    event('tool_execution_update', 4, { toolCallId: 'eval-call', partialResult: { content: [{ type: 'text', text: 'late progress' }] } })
+    expect(piBranchStore.getData('session-stream')!.client!.toolExecutions!['eval-call'].isRunning).toBe(false)
+    event('tool_execution_end', 5, { toolCallId: 'eval-call', toolName: 'eval', result: { content: [{ type: 'text', text: 'recovered result' }] }, isError: false })
+    const recovered = piBranchStore.getData('session-stream')!.client!.toolExecutions!['eval-call']
+    expect(getToolExecutionStatus({ ...recovered, call: recovered.call! })).toBe('completed')
+  })
+
 
   it('keeps the live user message visible until its persisted entry is loaded', () => {
     event('message_start', 3, {

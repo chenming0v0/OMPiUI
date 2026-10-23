@@ -114,8 +114,6 @@
     "navigateEntryHint": "Makes this entry the current context. New messages continue from here as a new branch.",
     "navigationOptions": "Navigation Options",
     "branchSummaryInstructions": "Branch summary instructions…",
-    "optionalBranchLabel": "Optional branch label…",
-    "replaceDefaultInstructions": "Replace default summary instructions",
     "fork": "Fork here",
     "label": "Edit label",
     "labelPlaceholder": "Branch label",

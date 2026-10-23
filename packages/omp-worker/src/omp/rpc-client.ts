@@ -1,7 +1,4 @@
 import { spawn, type ChildProcess } from "node:child_process"
-import { existsSync } from "node:fs"
-import { homedir } from "node:os"
-import { join } from "node:path"
 import { EventEmitter } from "node:events"
 import { JSONParser } from "@streamparser/json"
 import type { JsonObject, JsonValue } from "@ompiui/protocol"
@@ -10,18 +7,8 @@ import { runtimePolicyArgs } from "./runtime-policy.js"
 import { RpcLineReader } from "./rpc-line-reader.js"
 import { OmpStdinSender, type StdinWriteHandle } from "./stdin-sender.js"
 import { ompCommandEnvironment, resolveOmpCommand } from "./omp-command.js"
+import { RuntimeBridgeTransport, type RuntimeBridgeOperation } from "./runtime-bridge.js"
 
-/**
- * 可选的 OMP 兼容配置覆盖：`~/.ompiui/omp-compat.yml` 存在时以 `--config`
- * 附加到每个 OMPiUI 拉起的 `omp --mode rpc` 进程（只影响 OMPiUI 会话，
- * 不碰用户 CLI）。用于绕过个别网关的怪癖，例如某些 Anthropic 翻译层
- * 会在看到 OMP 的 `wait` 工具时返回 0-token 空响应（`async.enabled: false`
- * 可让 wait 工具退场）。
- */
-export function ompCompatConfigArgs(): string[] {
-  const path = join(homedir(), ".ompiui", "omp-compat.yml")
-  return existsSync(path) ? ["--config", path] : []
-}
 
 /**
  * OMP RPC 客户端：把 `omp --mode rpc` 的 stdio JSONL 协议包成一个 Node 友好的
@@ -41,7 +28,7 @@ export interface OmpRpcClientOptions {
   /** 额外 CLI 参数（如 --session-dir） */
   args?: string[]
   env?: NodeJS.ProcessEnv
-  /** 对 UI 主动启动的会话应用运行配置，禁止隐式恢复其他会话。 */
+  /** 对 UI 主动启动的会话应用进程级配置与受管桥，不影响用户 CLI。 */
   applyRuntimePolicy?: boolean
 }
 
@@ -79,6 +66,7 @@ export class OmpRpcClient extends EventEmitter {
   private readonly stdoutReader: RpcLineReader
   private stdinSender?: OmpStdinSender
   private nextId = 0
+  private readonly runtimeBridge = new RuntimeBridgeTransport()
   private readonly pending = new Map<string, {
     commandType: string
     resolve: (response: OmpRpcResponse) => void
@@ -113,7 +101,7 @@ export class OmpRpcClient extends EventEmitter {
     const env = ompCommandEnvironment(options.env)
     // 与配置命令共用入口解析，脚本由解释器执行，不经过 shell 或 Windows 文件关联。
     const invocation = resolveOmpCommand(options.bin ?? env.OMPI_OMP_BIN, env)
-    const args = [...invocation.args, "--mode", "rpc", ...ompCompatConfigArgs(), ...(options.args ?? []), ...(options.applyRuntimePolicy ? runtimePolicyArgs() : [])]
+    const args = [...invocation.args, "--mode", options.applyRuntimePolicy && !options.args?.includes("--no-ui") ? "rpc-ui" : "rpc", ...(options.args ?? []), ...(options.applyRuntimePolicy ? runtimePolicyArgs(options.bin ?? env.OMPI_OMP_BIN, env) : [])]
     this.proc = spawn(invocation.command, args, {
       cwd: options.cwd,
       env,
@@ -288,6 +276,7 @@ export class OmpRpcClient extends EventEmitter {
   }
 
   private dispatchFrame(frame: OmpRpcFrame): void {
+    if (this.runtimeBridge.handleFrame(frame)) return
     if (frame.type === "rpc_chunk") {
       this.handleChunk(frame)
       return
@@ -448,8 +437,18 @@ export class OmpRpcClient extends EventEmitter {
     })
   }
 
+  async requestRuntime(operation: RuntimeBridgeOperation, args: JsonObject = {}, timeoutMs = 30_000): Promise<JsonValue> {
+    try {
+      return await this.runtimeBridge.request(this, operation, args, timeoutMs)
+    } catch (error) {
+      if (error instanceof OmpRpcError) throw error
+      const code = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : undefined
+      throw new OmpRpcError(error instanceof Error ? error.message : String(error), code)
+    }
+  }
+
   async request<T extends JsonValue = JsonValue>(command: JsonObject, timeoutMs = 60_000): Promise<OmpRpcResponse & { data?: T }> {
-    const id = `req_${++this.nextId}`
+    const id = typeof command.id === "string" ? command.id : `req_${++this.nextId}`
     const commandType = typeof command.type === "string" ? command.type : ""
     const full: JsonObject = { id, ...command }
     return new Promise((resolve, reject) => {
@@ -548,6 +547,7 @@ export class OmpRpcClient extends EventEmitter {
 
   private failAllPending(): void {
     const error = this.exitError ?? new OmpRpcError("omp RPC process exited", "OMP_EXITED")
+    this.runtimeBridge.close(error)
     this.stdinSender?.close(error)
     for (const [id, pending] of this.pending) {
       clearTimeout(pending.timer)

@@ -92,4 +92,17 @@ describe('activeSessionStore scoped refresh handling', () => {
     })
   })
 
+  it('settles native request IDs only in their originating session', () => {
+    activeSessionStore.addPendingRequest('same', 'S', 'question', 'S input')
+    activeSessionStore.addPendingRequest('same', 'T', 'question', 'T input')
+    activeSessionStore.updateStatus('S', { type: 'idle' })
+    activeSessionStore.updateStatus('T', { type: 'idle' })
+    activeSessionStore.resolvePendingRequest('same', 'S')
+    activeSessionStore.resolvePendingRequest('same', 'S')
+    activeSessionStore.resolvePendingRequest('unknown', 'T')
+    expect(activeSessionStore.getBusySessions().map(row => [row.sessionId, row.pendingAction?.description])).toEqual([['T', 'T input']])
+    activeSessionStore.resolvePendingRequest('same', 'T')
+    expect(activeSessionStore.getBusySessions()).toEqual([])
+  })
+
 })

@@ -1,4 +1,4 @@
-import type { PiBranchCheckpoint, PiBranchPage } from '../domain/index.js'
+import type { PiBranchCheckpoint, PiBranchPage, PiToolExecutionState } from '../domain/index.js'
 import { windowBranch } from '../branchWindow'
 
 interface BranchEntry {
@@ -6,6 +6,8 @@ interface BranchEntry {
   loading: boolean
   error: Error | null
   requestVersion: number
+  pendingToolExecutions?: Record<string, PiToolExecutionState>
+  toolInterruption?: { error: string; kind: NonNullable<PiToolExecutionState['interruption']> }
 }
 
 const EMPTY_ENTRY: BranchEntry = { data: null, loading: false, error: null, requestVersion: 0 }
@@ -74,7 +76,32 @@ class PiBranchStore {
   setData(sessionId: string, data: PiBranchPage): void {
     const entry = this.entry(sessionId)
     entry.requestVersion = ++this.nextVersion
-    entry.data = windowBranch(data, data.client?.historyWindowed)
+    const executions = { ...data.client?.toolExecutions, ...entry.pendingToolExecutions }
+    const visibleCallIds = new Set<string>()
+    const results = new Map<string, NonNullable<PiToolExecutionState['result']>>()
+    for (const item of data.items) {
+      if (item.type === 'message' && item.message.role === 'assistant') {
+        for (const block of item.message.content) if (block.type === 'toolCall') visibleCallIds.add(block.id)
+      } else if (item.type === 'message' && item.message.role === 'toolResult') {
+        results.set(item.message.toolCallId, item.message)
+      } else if (item.type === 'custom' && item.customType === 'tool_execution_start') {
+        const start = item.data as { toolCallId?: unknown } | undefined
+        if (typeof start?.toolCallId === 'string') visibleCallIds.add(start.toolCallId)
+      }
+    }
+    const live = data.checkpoint?.liveMessage?.message
+    if (live?.role === 'assistant') for (const block of live.content) if (block.type === 'toolCall') visibleCallIds.add(block.id)
+    // A reconnect may replace the event epoch. Keep terminal evidence for calls
+    // still in this branch, but never leak it into an unrelated navigated branch.
+    for (const [id, execution] of Object.entries(entry.data?.client?.toolExecutions ?? {})) {
+      if ((execution.error || execution.completedAt !== undefined || execution.result) && visibleCallIds.has(id) && !executions[id]?.result) executions[id] = execution
+    }
+    for (const [id, result] of results) {
+      if (executions[id]) executions[id] = { ...executions[id], result, isRunning: false, error: undefined, interruption: undefined, endedAt: undefined }
+    }
+    entry.data = windowBranch(Object.keys(executions).length > 0 ? { ...data, client: { ...data.client, toolExecutions: executions } } : data, data.client?.historyWindowed)
+    entry.pendingToolExecutions = undefined
+    if (entry.toolInterruption) this.interruptToolExecutions(sessionId, entry.toolInterruption.error, entry.toolInterruption.kind)
     entry.error = null
     entry.loading = false
     this.trimInactive()
@@ -86,6 +113,76 @@ class PiBranchStore {
     const entry = this.bySessionId.get(sessionId)
     if (!entry?.data) return
     entry.data = { ...entry.data, checkpoint }
+    this.notify()
+  }
+  /** Live tool evidence shares the branch projection and survives checkpoint replacement. */
+  patchToolExecution(sessionId: string, toolCallId: string, patch: PiToolExecutionState): boolean {
+    const entry = this.entry(sessionId)
+    const previous = entry.data?.client?.toolExecutions?.[toolCallId] ?? entry.pendingToolExecutions?.[toolCallId]
+    if ((previous?.result || previous?.completedAt !== undefined || previous?.error) && !patch.result) return false
+    const next = { ...previous, ...patch }
+    if (patch.result) {
+      next.error = undefined
+      next.interruption = undefined
+      next.endedAt = undefined
+      next.isRunning = false
+    }
+    if (previous?.startedAt !== undefined && patch.startedAt !== undefined) next.startedAt = previous.startedAt
+    if (!previous && entry.toolInterruption && !next.result && next.completedAt === undefined && (next.isRunning ?? next.startedAt !== undefined)) {
+      next.isRunning = false
+      next.error = entry.toolInterruption.error
+      next.interruption = entry.toolInterruption.kind
+      next.endedAt = Date.now()
+    }
+    if (previous && Object.keys(patch).every(key => previous[key as keyof PiToolExecutionState] === next[key as keyof PiToolExecutionState])) return true
+    if (!entry.data) {
+      entry.pendingToolExecutions = { ...entry.pendingToolExecutions, [toolCallId]: next }
+      return !next.error || Boolean(patch.result)
+    }
+    entry.data = {
+      ...entry.data,
+      client: { ...entry.data.client, toolExecutions: { ...entry.data.client?.toolExecutions, [toolCallId]: next } },
+    }
+    this.notify()
+    return !next.error || Boolean(patch.result)
+  }
+
+  /** Only a genuine new native run clears the prehydration terminal boundary. */
+  beginToolExecutions(sessionId: string): void {
+    const entry = this.bySessionId.get(sessionId)
+    if (entry) entry.toolInterruption = undefined
+  }
+
+  /** Only a crash, completed abort, or authoritative settled state can seal unfinished executions. */
+  interruptToolExecutions(sessionId: string, error: string, kind: NonNullable<PiToolExecutionState['interruption']> = 'failed'): void {
+    const entry = this.entry(sessionId)
+    if (!entry.toolInterruption || (entry.toolInterruption.kind === 'unknown' && kind !== 'unknown')) {
+      entry.toolInterruption = { error, kind }
+    }
+    const interruption = entry.toolInterruption
+    const executions = { ...(entry.data?.client?.toolExecutions ?? entry.pendingToolExecutions) }
+    const resultIds = new Set<string>()
+    for (const item of entry.data?.items ?? []) {
+      if (item.type === 'message' && item.message.role === 'toolResult') resultIds.add(item.message.toolCallId)
+      if (item.type !== 'custom' || item.customType !== 'tool_execution_start') continue
+      const data = item.data
+      if (!data || typeof data !== 'object' || !('toolCallId' in data) || typeof data.toolCallId !== 'string') continue
+      executions[data.toolCallId] ??= { isRunning: true }
+    }
+    let changed = false
+    for (const [id, execution] of Object.entries(executions)) {
+      if (resultIds.has(id) || execution.result || execution.completedAt !== undefined) continue
+      // Stronger exit evidence may replace an unknown settled outcome, never a real tool failure/result.
+      if (execution.error) {
+        if (execution.interruption !== 'unknown' || interruption.kind === 'unknown') continue
+      } else if (!(execution.isRunning ?? execution.startedAt !== undefined)) continue
+      executions[id] = { ...execution, isRunning: false, error: interruption.error, interruption: interruption.kind, endedAt: execution.endedAt ?? Date.now() }
+      changed = true
+    }
+    if (!changed) return
+    entry.requestVersion = ++this.nextVersion
+    if (!entry.data) entry.pendingToolExecutions = executions
+    else entry.data = { ...entry.data, client: { ...entry.data.client, toolExecutions: executions } }
     this.notify()
   }
 

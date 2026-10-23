@@ -133,7 +133,6 @@ function BashExecutionGroupView({ item }: { item: PiBashExecutionItem | PiBashEx
   return (
     <ToolGroup
       groupId={item.entryId}
-      startedAt={item.timestamp}
       executions={executions}
       defaultExpanded={fresh}
     />
@@ -147,13 +146,13 @@ function bashItemToExecution(item: PiBashExecutionItem): PiToolExecution {
     name: 'bash',
     arguments: { command: item.message.command },
   }
-  // 乐观条目（执行中，无 exitCode）：result 缺失 → isActive，BashRenderer
-  // 通过 useLiveToolOutput(call.id) 显示流式输出（pi TUI 的 onChunk 对应物）
+  // A pending explicit bash execution proves a started call; retain its stream.
   if (item.message.exitCode === undefined) {
-    return { call }
+    return { call, startedAt: item.timestamp, isRunning: true }
   }
   return {
     call,
+    startedAt: item.timestamp,
     result: {
       role: 'toolResult',
       toolCallId: item.entryId,

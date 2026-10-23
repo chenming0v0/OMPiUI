@@ -744,7 +744,6 @@ const AssistantMessageView = memo(function AssistantMessageView({
               <ToolGroup
                 key={`${item.entryId}:tg:${renderItem.firstIndex}`}
                 groupId={item.entryId}
-                startedAt={item.timestamp}
                 executions={renderItem.executions}
                 isStreaming={isStreaming}
                 modelLabel={modelLabel}
@@ -830,9 +829,9 @@ function groupBlocksForRender(item: PiAssistantMessageItem): RenderItem[] {
     if (block.type === 'toolCall') {
       if (executions.length === 0) firstIndex = index
       executions.push({
+        ...item.toolExecutions?.[block.id],
         call: block,
         result: item.toolResults[block.id],
-        startedAt: item.toolCallTimestamps?.[block.id] ?? item.timestamp,
       })
       return
     }

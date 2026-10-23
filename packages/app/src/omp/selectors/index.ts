@@ -15,6 +15,7 @@ import type {
   PiModeChangeItem,
   PiUnknownItem,
 } from '../domain/index.js'
+import type { PiToolExecutionState } from '../domain/index.js'
 import { piSessionInfoStore } from '../state/index.js'
 
 /**
@@ -62,6 +63,7 @@ export function selectPiTimelineItems(branch: PiBranchPage): PiTimelineItem[] {
 export function buildPiHistoryItems(branch: PiBranchPage): PiTimelineItem[] {
   const items: PiTimelineItem[] = []
   const assistantByCallId = new Map<string, PiAssistantMessageItem>()
+  const toolExecutions: Record<string, PiToolExecutionState> = { ...branch.client?.toolExecutions }
   // 相邻 bash 执行合并为工具组：遇到非 bash 条目时重置，保证只有连续
   // 的 bash（`!cmd` / `/bash cmd`）才会并组，与 AI 连续工具调用一致。
   let lastBashGroup: PiBashExecutionGroupItem | undefined
@@ -124,8 +126,12 @@ export function buildPiHistoryItems(branch: PiBranchPage): PiTimelineItem[] {
           items.push(lastBashGroup)
         }
       }
-      // role custom is persisted as custom_message entry; summary roles are
-      // runtime projections — neither exists in persisted entries.
+    } else if (entry.type === 'custom' && entry.customType === 'tool_execution_start') {
+      const data = entry.data as { toolCallId?: unknown; startedAt?: unknown } | undefined
+      if (typeof data?.toolCallId === 'string') {
+        const startedAt = parseTime(data.startedAt)
+        toolExecutions[data.toolCallId] = { ...toolExecutions[data.toolCallId], isRunning: toolExecutions[data.toolCallId]?.isRunning ?? true, ...(startedAt > 0 ? { startedAt } : {}) }
+      }
     } else if (entry.type === 'compaction') {
       items.push({
         kind: 'compaction',
@@ -218,6 +224,13 @@ export function buildPiHistoryItems(branch: PiBranchPage): PiTimelineItem[] {
       lastBashGroup = undefined
     }
   }
+  for (const [callId, owner] of assistantByCallId) {
+    const execution = toolExecutions[callId]
+    if (!execution) continue
+    owner.toolExecutions ??= {}
+    owner.toolExecutions[callId] = execution
+    if (!owner.toolResults[callId] && execution.result) owner.toolResults[callId] = execution.result
+  }
 
   return items
 }
@@ -275,6 +288,20 @@ export function buildPiLiveItems(branch: PiBranchPage): PiTimelineItem[] {
   }
   if (live && !persistedVisible && live.message.role === 'assistant' && live.message.content.length > 0) {
     const message = live.message as AssistantMessage
+    const toolExecutions = { ...branch.client?.toolExecutions }
+    const callIds = new Set(message.content.flatMap(block => block.type === 'toolCall' ? [block.id] : []))
+    if (callIds.size > 0) {
+      for (const entry of branch.items) {
+        if (entry.type === 'custom' && entry.customType === 'tool_execution_start') {
+          const data = entry.data as { toolCallId?: unknown; startedAt?: unknown } | undefined
+          if (typeof data?.toolCallId !== 'string' || !callIds.has(data.toolCallId)) continue
+          const startedAt = parseTime(data.startedAt)
+          toolExecutions[data.toolCallId] = { ...toolExecutions[data.toolCallId], isRunning: toolExecutions[data.toolCallId]?.isRunning ?? true, ...(startedAt > 0 ? { startedAt } : {}) }
+        } else if (entry.type === 'message' && entry.message.role === 'toolResult' && callIds.has(entry.message.toolCallId)) {
+          toolExecutions[entry.message.toolCallId] = { ...toolExecutions[entry.message.toolCallId], result: entry.message }
+        }
+      }
+    }
     items.push({
       kind: 'assistant_message',
       entryId: live.id,
@@ -282,7 +309,12 @@ export function buildPiLiveItems(branch: PiBranchPage): PiTimelineItem[] {
       rawEntry: liveRawEntry(live),
       message,
       blocks: message.content,
-      toolResults: {},
+      toolResults: Object.fromEntries(message.content.flatMap(block => {
+        if (block.type !== 'toolCall') return []
+        const result = toolExecutions[block.id]?.result
+        return result ? [[block.id, result]] : []
+      })),
+      toolExecutions,
       isStreaming: live.phase === 'streaming',
     })
   }

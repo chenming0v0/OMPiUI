@@ -114,8 +114,6 @@
     "navigateEntryHint": "将这条记录设为当前上下文，后续消息会从这里继续形成新分支。",
     "navigationOptions": "跳转选项",
     "branchSummaryInstructions": "分支总结要求…",
-    "optionalBranchLabel": "分支标签（可选）…",
-    "replaceDefaultInstructions": "替换默认总结要求",
     "fork": "从这里 Fork",
     "label": "编辑标签",
     "labelPlaceholder": "分支标签",

@@ -190,7 +190,7 @@ export const RightPanel = memo(function RightPanel({
           {activeTab.type === 'session-tree' ? (
             sessionId ? (
               <Suspense fallback={<PanelFallback />}>
-                <SessionTreePanel sessionId={sessionId} onNavigateSession={onNavigateSession} onNewChat={onNewChat} />
+                <SessionTreePanel sessionId={sessionId} onNavigateSession={onNavigateSession} />
               </Suspense>
             ) : (
               <div className="flex items-center justify-center h-full text-text-400 text-[length:var(--fs-sm)] px-4 text-center">
@@ -202,7 +202,7 @@ export const RightPanel = memo(function RightPanel({
           {activeTab.type === 'session-controls' ? (
             sessionId ? (
               <Suspense fallback={<PanelFallback />}>
-                <SessionTreePanel sessionId={sessionId} mode="controls" onNavigateSession={onNavigateSession} onNewChat={onNewChat} />
+                <SessionTreePanel sessionId={sessionId} mode="controls" onNavigateSession={onNavigateSession} />
               </Suspense>
             ) : (
               <div className="flex items-center justify-center h-full text-text-400 text-[length:var(--fs-sm)] px-4 text-center">

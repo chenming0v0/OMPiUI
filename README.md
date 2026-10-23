@@ -4,7 +4,7 @@
 
 OMPiUI 是 [oh-my-pi (OMP)](https://github.com/can1357/oh-my-pi) 的第三方客户端。你可以在桌面上管理编程任务，也可以用手机连接电脑或服务器，继续同一个项目。
 
-桌面端将界面和 OMPiUI 后端一起打包；手机端只负责界面，任务始终在连接的电脑或服务器上执行。另有两套终端管理界面，分别管理无头后端和自建公网中转。
+桌面端将界面、OMPiUI 后端和官方 OMP 运行时一起打包；手机端只负责界面，任务始终在连接的电脑或服务器上执行。另有两套终端管理界面，分别管理无头后端和自建公网中转。
 
 [下载安装](https://github.com/chenming0v0/OMPiUI/releases) · [服务器部署](deploy/README.md) · [自建中转](docs/tunnel.md) · [TUI 使用指南](docs/tui.md)
 
@@ -21,7 +21,7 @@ OMPiUI 是 [oh-my-pi (OMP)](https://github.com/can1357/oh-my-pi) 的第三方客
 
 | 你想怎么用 | 从哪里开始 |
 | --- | --- |
-| 在自己的电脑上编程 | 下载桌面安装包，并在电脑上安装、配置官方 OMP |
+| 在自己的电脑上编程 | 下载桌面安装包，配置模型与凭据后使用内置官方 OMP |
 | 用手机连接电脑 | 安装 Android 客户端，或用手机浏览器打开电脑分享的地址 |
 | 让任务在 Linux 服务器上运行 | 按 [无桌面部署指南](deploy/README.md) 安装后端，再用手机或浏览器连接 |
 | 电脑没有公网 IP，但需要从外面连接 | 在自己的 VPS 上部署 [公网中转](docs/tunnel.md) |
@@ -32,17 +32,14 @@ OMPiUI 是 [oh-my-pi (OMP)](https://github.com/can1357/oh-my-pi) 的第三方客
 ## 桌面与手机
 
 1. 从 [Releases](https://github.com/chenming0v0/OMPiUI/releases) 下载适合系统的安装包。
-2. 在**实际执行任务的电脑或服务器**上安装 [OMP CLI](https://omp.sh)，并通过 OMP 配置模型和登录凭据：
-
-   ```bash
-   bun install -g @oh-my-pi/pi-coding-agent
-   omp
-   ```
+2. 在**实际执行任务的电脑或服务器**上配置模型和登录凭据；沿用官方 OMP 的 `~/.omp/agent/models.yml`、`config.yml`，已有配置可直接使用。
 
 3. 打开 OMPiUI 桌面端，等待本机后端就绪，然后打开项目、创建或继续任务。
 4. 手机连接时，在电脑的「设置 → 服务」中生成配对信息，再到手机的认证页扫码或粘贴。
 
-桌面安装包包含 OMPiUI 前后端，但**不包含官方 OMP 引擎**。运行任务需要 OMP CLI ≥ 18.2.11；仅用于远程连接的手机不需要安装 OMP。模型配置和凭据沿用 OMP，不需要在 OMPiUI 中重新维护一套。
+桌面安装包包含 OMPiUI 前后端，以及 `omp-runtime/` 中的官方 `omp`、Bun 1.3.14、同版本官方 npm 源码包和当前平台完整生产／原生依赖；默认使用内置运行时，不要求全局 npm 包或全局 Bun。依赖在显式安装／打包时准备，浏览会话或启动服务不会隐式下载。
+
+如需使用外部官方 CLI，可设置 `OMPI_OMP_BIN`（设为 `omp` 时从 `PATH` 选择）；它必须有与实测 CLI 版本完全一致的官方源码及依赖，不能只安装一个不同版本的全局包。预装运行时目录、源码目录与 Bun 解释器的覆盖方式见 [运行配置](docs/development.md#运行配置)。Android 只连接电脑／服务器，不在手机本地执行 OMP。官方终端和 OMPiUI 继续共用原生会话目录，浏览与刷新只读，不创建会话写入进程。
 
 手机必须能访问后端地址：同一局域网可启用局域网监听；跨网络连接请配置自己的 HTTPS 入口或中转，见 [远程访问](#远程访问)。
 
@@ -83,12 +80,13 @@ npm run tui:relay -- --config ./relay.config.json
 
 ## 从源码运行
 
-需要 Node.js ≥ 22.19、npm，以及已安装并配置好的 OMP CLI。
+需要 Node.js ≥ 22.19 和 npm；模型与凭据沿用官方 OMP 配置。先显式准备当前平台完整运行时，不需要全局安装 OMP npm 包或 Bun，启动时不会自动下载。
 
 ```bash
 git clone -b dev https://github.com/chenming0v0/OMPiUI.git
 cd OMPiUI
 npm install
+npm run prepare:omp-runtime
 npm run build
 node packages/server/dist/bundle-entry.js web --host 127.0.0.1 --port 8787
 ```

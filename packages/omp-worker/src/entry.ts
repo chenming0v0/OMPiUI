@@ -8,6 +8,7 @@ import type { JsonObject, JsonValue, PiRegistrySnapshot } from "@ompiui/protocol
 import { isJsonObject, problemFromError, PROTOCOL_VERSION, validateParams } from "@ompiui/protocol"
 import { OmpRpcSession, type OmpSessionOptions } from "./omp/omp-session.js"
 import { OmpCatalog } from "./omp/omp-catalog.js"
+import { OmpPackages } from "./omp/omp-packages.js"
 import { OmpProviderAuth } from "./omp/omp-auth.js"
 import { OmpModelsWatcher } from "./omp/models-watcher.js"
 import { OMP_SDK_VERSION } from "./omp/constants.js"
@@ -108,6 +109,7 @@ const ompSessionOptions: OmpSessionOptions = { bin: ompBin }
 const ompVersion = driver === "omp" ? detectOmpVersionSync(ompBin) : null
 
 const catalog = driver === "omp" ? new OmpCatalog() : new MockCatalog()
+const packages = driver === "omp" ? new OmpPackages() : catalog as MockCatalog
 const providerAuth = new OmpProviderAuth(async () => {
   if (catalog instanceof OmpCatalog) return catalog.control.acquire()
   throw Object.assign(new Error("mock driver has no provider auth channel"), { code: "CAPABILITY_DISABLED" })
@@ -187,7 +189,7 @@ function subscribeRuntimeEvents(current: SessionRuntime): Array<() => void> {
     unsubs.push(current.onExtensionUi(event => send({
       kind: "event",
       generation: workerGeneration,
-      sessionId: current.getSessionId(),
+      sessionId: typeof event.sessionId === "string" ? event.sessionId : current.getSessionId(),
       channel: "extension.ui",
       event: toJsonObject(event),
     })))
@@ -266,7 +268,7 @@ const ctx: CommandContext = {
   driver,
   catalog,
   auth: providerAuth,
-  packages: catalog,
+  packages,
   requireRuntime(): SessionRuntime {
     throw Object.assign(new Error("OMP runtime is not open"), { code: "RUNTIME_NOT_OPEN" })
   },
@@ -340,7 +342,7 @@ async function execute(command: { type: string; params?: JsonObject; sessionId?:
     driver,
     catalog,
     auth: providerAuth,
-    packages: catalog,
+    packages,
     requireRuntime(): SessionRuntime {
       if (!current) throw Object.assign(new Error("OMP runtime is not open"), { code: "RUNTIME_NOT_OPEN" })
       return current

@@ -246,17 +246,6 @@ describe('ModelRolesSettings', () => {
     expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4.1')
   })
 
-  it('retains green status when reopened without issuing another request', async () => {
-    getPiModelRolesMock.mockResolvedValue({ default: 'openai/gpt-4.1' })
-    const first = render(<ModelRolesSettings />)
-    await waitFor(() => expect(screen.getByRole('status')).toHaveAccessibleName('Connected / synced'))
-    first.unmount()
-    getPiModelRolesMock.mockImplementation(() => new Promise(() => {}))
-    render(<ModelRolesSettings />)
-    expect(screen.getByRole('status')).toHaveAccessibleName('Connected / synced')
-    expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4.1')
-    expect(getPiModelRolesMock).toHaveBeenCalledTimes(1)
-  })
 
   it('does not reset a pending request when closed and reopened', async () => {
     seedRoles({ default: 'openai/gpt-4o-mini' })
@@ -282,17 +271,14 @@ describe('ModelRolesSettings', () => {
     expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4.1')
   })
 
-  it('shows background updates immediately on reopening', async () => {
+  it('reads an externally changed role when reopening a previously synced page', async () => {
     getPiModelRolesMock.mockResolvedValueOnce({ default: 'openai/gpt-4o-mini' })
-      .mockResolvedValueOnce({ default: 'openai/gpt-4.1' })
     const first = render(<ModelRolesSettings />)
-    await waitFor(() => expect(screen.getByRole('status')).toHaveAccessibleName('Connected / synced'))
+    await waitFor(() => expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4o-mini'))
     first.unmount()
-    await loadPiModelRoles(true)
+    getPiModelRolesMock.mockResolvedValue({ default: 'openai/gpt-4.1' })
     render(<ModelRolesSettings />)
-    expect(screen.getByRole('status')).toHaveAccessibleName('Connected / synced')
-    expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4.1')
-    expect(getPiModelRolesMock).toHaveBeenCalledTimes(2)
+    await waitFor(() => expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4.1'))
   })
 
   it('does not persist an old-server save into the newly selected server cache', async () => {

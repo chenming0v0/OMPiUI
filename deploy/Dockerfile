@@ -5,7 +5,7 @@ COPY package.json package-lock.json ./
 COPY packages ./packages
 COPY scripts ./scripts
 COPY patches ./patches
-RUN npm ci --include=dev && npm run build
+RUN npm ci --include=dev && npm run build && node scripts/prepare-omp-runtime.mjs
 
 ENV OMPIUI_DATA_DIR=/data/ompiui
 ENV OMPIUI_ADMIN_DATA_DIR=/data/ompiui

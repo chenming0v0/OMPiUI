@@ -54,6 +54,24 @@ export function mergeLatestBranchPage(current: PiBranchPage | null, latest: PiBr
     const localPosition = current.checkpoint?.position
     const remotePosition = page.checkpoint?.position
     const sameStream = !remotePosition || localPosition?.epoch === remotePosition.epoch
+    const toolExecutions = sameStream
+      ? { ...page.client?.toolExecutions, ...current.client?.toolExecutions }
+      : { ...page.client?.toolExecutions }
+    const persistedStarts = new Set<string>()
+    const persistedResults = new Set<string>()
+    for (const entry of page.items) {
+      if (entry.type === 'custom' && entry.customType === 'tool_execution_start') {
+        const data = entry.data as { toolCallId?: unknown } | undefined
+        if (typeof data?.toolCallId === 'string') persistedStarts.add(data.toolCallId)
+      } else if (entry.type === 'message' && entry.message.role === 'toolResult') {
+        persistedResults.add(entry.message.toolCallId)
+      }
+    }
+    for (const id of persistedResults) {
+      if (persistedStarts.has(id) || toolExecutions[id]?.startedAt === undefined) delete toolExecutions[id]
+      else toolExecutions[id] = { startedAt: toolExecutions[id].startedAt }
+    }
+    const hasToolExecutions = Object.keys(toolExecutions).length > 0
     const localIsNewer =
       sameStream && localPosition && remotePosition && localPosition.sequence > remotePosition.sequence
     const checkpoint =
@@ -66,11 +84,11 @@ export function mergeLatestBranchPage(current: PiBranchPage | null, latest: PiBr
           : { ...current.checkpoint!, position: remotePosition, liveMessageOmitted: page.checkpoint?.liveMessageOmitted }
         : page.checkpoint
 
-    if (checkpoint === page.checkpoint && Object.keys(stableEntryIds).length === 0) return page
+    if (checkpoint === page.checkpoint && Object.keys(stableEntryIds).length === 0 && !hasToolExecutions) return page
     return {
       ...page,
       checkpoint,
-      client: Object.keys(stableEntryIds).length > 0 ? { ...page.client, stableEntryIds } : page.client,
+      client: { ...page.client, stableEntryIds, toolExecutions: hasToolExecutions ? toolExecutions : undefined },
     }
   }
 

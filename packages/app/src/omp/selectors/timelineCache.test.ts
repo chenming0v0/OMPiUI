@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach } from 'vitest'
 import { selectPiTimelineItemsCached, clearPiTimelineItemCache } from './timelineCache'
-import type { PiBranchPage, PiTimelineItem } from '../domain/index.js'
+import { getToolExecutionStatus, type PiBranchPage, type PiTimelineItem, type PiAssistantMessageItem } from '../domain/index.js'
 import type { SessionMessageEntry } from '../vendor/pi-coding-agent'
 
 function rawEntry(id: string, timestamp = 1, role: 'user' | 'assistant' = 'user'): SessionMessageEntry {
@@ -140,6 +140,22 @@ describe('selectPiTimelineItemsCached streaming (items identity)', () => {
     expect(next[1]).not.toBe(previous[1])
     expect(previous[1]).toMatchObject({ toolResults: {} })
     expect(next[1]).toMatchObject({ toolResults: { 'call-1': result.message } })
+  })
+  it('refreshes cached execution evidence when a persisted start is appended to the same assistant', () => {
+    const call = { type: 'toolCall' as const, id: 'cached-call', name: 'bash', arguments: {} }
+    const assistant = rawEntry('cached-assistant', 1, 'assistant')
+    if (assistant.message.role !== 'assistant') throw new Error('Expected assistant fixture')
+    assistant.message = { ...assistant.message, content: [call] }
+    const initial = branch([user1, assistant])
+    const before = selectPiTimelineItemsCached('cached-session', initial)[1] as PiAssistantMessageItem
+    expect(getToolExecutionStatus({ call, ...before.toolExecutions?.[call.id] })).toBe('pending')
+    const start: PiBranchPage['items'][number] = { type: 'custom', id: 'cached-start', parentId: assistant.id,
+      timestamp: new Date(6_000).toISOString(), customType: 'tool_execution_start',
+      data: { toolCallId: call.id, startedAt: new Date(5_000).toISOString() } }
+    const next = selectPiTimelineItemsCached('cached-session', { ...initial, items: [...initial.items, start] })[1] as PiAssistantMessageItem
+    expect(getToolExecutionStatus({ call, ...next.toolExecutions?.[call.id] })).toBe('running')
+    expect(next.toolExecutions?.[call.id].startedAt).toBe(5_000)
+    expect(getToolExecutionStatus({ call, ...before.toolExecutions?.[call.id] })).toBe('pending')
   })
 
   it('refreshes render keys when client identities change without changing the items array', () => {

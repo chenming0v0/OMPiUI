@@ -22,7 +22,6 @@ import {
   utf8Prefix,
 } from "@ompiui/protocol";
 import type { CatalogProvider } from "../runtime.js";
-import type { PackagesGateway } from "../command-table.js";
 import {
   entriesPageFromEntries,
   imageAttachmentFromEntry,
@@ -53,6 +52,7 @@ import { scanJsonl, mapLimited, type JsonlPosition } from "./jsonl-reader.js";
 import { readSubagentPreview } from "./subagent-preview.js";
 import { readSubagentSync } from "./subagent-sync.js";
 import type { SubagentSyncRequest } from "@ompiui/protocol";
+import { getOmpSettings, patchOmpSettings } from "./omp-settings.js";
 
 /**
  * OmpCatalog —— CatalogProvider 的 OMP 实现。
@@ -550,7 +550,7 @@ export class OmpControlChannel {
   }
 }
 
-export class OmpCatalog implements CatalogProvider, PackagesGateway {
+export class OmpCatalog implements CatalogProvider {
   readonly control = new OmpControlChannel();
   private readonly diskBranchCaches = new Map<string, DiskBranchCache>();
   private readonly diskReads = new Map<string, Promise<DiskBranchCache>>();
@@ -1091,21 +1091,12 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     return run(client);
   }
 
-  getSettings(cwd: string): JsonValue {
-    return {
-      workspacePath: cwd,
-      projectTrusted: true,
-      global: {},
-      project: {},
-      effective: {},
-      errors: [],
-    };
+  getSettings(cwd: string): Promise<JsonValue> {
+    return getOmpSettings(cwd);
   }
 
-  async patchSettings(cwd: string): Promise<JsonValue> {
-    // OMP 的配置源是 ~/.omp/agent/config.yml + models.yml（YAML），
-    // web 端设置先回显成功；行为层设置请用 OMP CLI / 手动编辑配置
-    return this.getSettings(cwd);
+  patchSettings(cwd: string, patch: JsonObject): Promise<JsonValue> {
+    return patchOmpSettings(cwd, patch);
   }
 
   private configCommand: OmpConfigCommand | undefined;
@@ -1203,33 +1194,7 @@ export class OmpCatalog implements CatalogProvider, PackagesGateway {
     return this.getProjectTrust(cwd);
   }
 
-  list(): JsonValue {
-    return [];
-  }
 
-  async manage(): Promise<JsonValue> {
-    return [];
-  }
-
-  async resolve(): Promise<JsonValue> {
-    return { extensions: [], skills: [], prompts: [], themes: [] };
-  }
-
-  async resolveSources(): Promise<JsonValue> {
-    return { extensions: [], skills: [], prompts: [], themes: [] };
-  }
-
-  async changeSource(): Promise<JsonValue> {
-    return { changed: false, packages: [] };
-  }
-
-  installedPath(): JsonValue {
-    return null;
-  }
-
-  async checkUpdates(): Promise<JsonValue> {
-    return [];
-  }
 
   async dispose(): Promise<void> {
     await this.control.close();
