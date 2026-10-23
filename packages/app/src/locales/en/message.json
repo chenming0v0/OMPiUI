@@ -119,7 +119,8 @@
       "cancelled": "Cancelled",
       "abandoned": "Abandoned",
       "blocked": "Blocked"
-    }
+    },
+    "rawResult": "Raw result"
   },
   "task": {
     "partialTranscript": "Partial transcript",
@@ -165,7 +166,8 @@
       "tests": "Tests",
       "todos": "Todos",
       "nextsteps": "Next steps"
-    }
+    },
+    "rawOutput": "Raw result"
   },
   "system": {
     "agentMessage": "Agent · {{name}}",

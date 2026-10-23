@@ -13,6 +13,8 @@ export { OMP_SDK_VERSION } from "./omp/constants.js"
 export { createWorkerCommandScheduler } from "./worker-command-scheduler.js"
 export { getDriverMode, type DriverMode } from "./driver.js"
 export { managedSessionsRoot, ompSessionsRoot, isManagedSessionFile, isOmpSessionFile, assertOmpSessionFile } from "./omp/managed-sessions.js"
+export { resolveOmpCommand, ompCommandEnvironment } from "./omp/omp-command.js"
+export { backupOmpSession } from "./omp/managed-sessions.js"
 
 export function getOmpWorkerEntryUrl(): URL {
   return new URL("./entry.js", import.meta.url)

@@ -178,6 +178,49 @@ describe('InputToolbar file selection', () => {
     expect(onDeliveryModeChange).toHaveBeenCalledWith('steer')
   })
 
+  it('cycles through abort-and-prompt when the native command is advertised (#360)', () => {
+    const onDeliveryModeChange = vi.fn()
+    render(
+      <InputToolbar
+        fileCapabilities={{ image: false, pdf: false, audio: false, video: false }}
+        onFilesSelected={vi.fn()}
+        isStreaming
+        deliveryMode="followUp"
+        onDeliveryModeChange={onDeliveryModeChange}
+        canSteer
+        canFollowUp
+        canInterruptAndPrompt
+        canSend
+        onSend={vi.fn()}
+      />,
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Running message timing: Follow-up' })
+    fireEvent.click(trigger)
+    expect(onDeliveryModeChange).toHaveBeenLastCalledWith('steer')
+  })
+
+  it('offers interrupt-and-prompt even without steer/follow-up capabilities', () => {
+    const onDeliveryModeChange = vi.fn()
+    render(
+      <InputToolbar
+        fileCapabilities={{ image: false, pdf: false, audio: false, video: false }}
+        onFilesSelected={vi.fn()}
+        isStreaming
+        deliveryMode="abortAndPrompt"
+        onDeliveryModeChange={onDeliveryModeChange}
+        canInterruptAndPrompt
+        canSend
+        onSend={vi.fn()}
+      />,
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Running message timing: Interrupt & prompt' })
+    expect(trigger).toHaveAttribute('title', 'Abort the current work and immediately start a new turn with this message')
+    fireEvent.click(trigger)
+    expect(onDeliveryModeChange).toHaveBeenCalledWith('abortAndPrompt')
+  })
+
   it('shows Stop while session is active and the input is empty', () => {
     render(
       <InputToolbar

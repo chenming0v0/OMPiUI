@@ -18,7 +18,7 @@ import {
 } from '../store/notificationStore'
 import { layoutStore } from '../store/layoutStore'
 import { hasUpdateAvailable, shouldShowUpdateToast, updateStore, useUpdateStore } from '../store/updateStore'
-import { CloseIcon, HandIcon, QuestionIcon, CheckIcon, AlertCircleIcon, DownloadIcon } from './Icons'
+import { CloseIcon, HandIcon, QuestionIcon, CheckIcon, AlertCircleIcon, AlertTriangleIcon, DownloadIcon } from './Icons'
 
 // ============================================
 // 类型图标映射
@@ -36,6 +36,7 @@ const typeConfig: Record<
   question: { icon: QuestionIcon, color: 'text-info-100', bgAccent: 'bg-info-bg' },
   completed: { icon: CheckIcon, color: 'text-success-100', bgAccent: 'bg-success-bg' },
   error: { icon: AlertCircleIcon, color: 'text-danger-100', bgAccent: 'bg-danger-bg' },
+  warning: { icon: AlertTriangleIcon, color: 'text-warning-100', bgAccent: 'bg-warning-bg' },
 }
 
 // ============================================

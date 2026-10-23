@@ -21,6 +21,8 @@ export interface PersistedSubagentResult {
   assignment?: string
   exitCode?: number
   aborted?: boolean
+  error?: string
+  mergeError?: string
   tokens?: number
   durationMs?: number
   outputPath?: string
@@ -70,9 +72,9 @@ export function buildPersistedSubagentRun(
   if (typeof result.id !== 'string' || !result.id) return undefined
   const status: OmpSubagentStatus = result.aborted === true
     ? 'aborted'
-    : (result.exitCode ?? 0) === 0
-      ? 'completed'
-      : 'failed'
+    : result.error || result.mergeError || (result.exitCode !== undefined && result.exitCode !== 0)
+      ? 'failed'
+      : 'completed'
   return {
     id: `persisted:${callId}:${result.id}`,
     sessionId: parentSessionId,
@@ -89,5 +91,9 @@ export function buildPersistedSubagentRun(
     historyLoaded: true,
     transcript: [],
     startedAt: 0,
+    progress: typeof result.tokens === 'number' || typeof result.durationMs === 'number' ? {
+      status, recentTools: [], recentOutput: [], toolCount: 0, requests: 0,
+      tokens: result.tokens ?? 0, cost: 0, durationMs: result.durationMs ?? 0,
+    } : undefined,
   }
 }

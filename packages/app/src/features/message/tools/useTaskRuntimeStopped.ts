@@ -8,7 +8,8 @@ export function useTaskRuntimeStopped(enabled = true): boolean {
   const getStopped = useCallback(() => {
     if (!enabled || !currentSessionId) return false
     const state = piSessionStateStore.getState(currentSessionId)
-    return Boolean(state?.isIdle === true && !state.isStreaming && !state.isCompacting &&
+    if (!state) return false
+    return Boolean((typeof state?.isSettled === 'boolean' ? state.isSettled : state?.isIdle === true) && !state.isStreaming && !state.isCompacting &&
       !state.isRetrying && !state.isBashRunning && !state.hasPendingAsyncWork)
   }, [currentSessionId, enabled])
   return useSyncExternalStore(piSessionStateStore.subscribe, getStopped, getStopped)

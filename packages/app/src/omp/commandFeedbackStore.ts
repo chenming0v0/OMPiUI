@@ -4,7 +4,7 @@
  * for the lifetime of the client session so the extension panel can show detail.
  */
 
-export type CommandFeedbackStatus = 'ok' | 'error' | 'info'
+export type CommandFeedbackStatus = 'ok' | 'error' | 'warning' | 'info'
 
 export interface CommandFeedbackEntry {
   id: string
@@ -69,7 +69,7 @@ export const commandFeedbackStore = {
         sessionId,
         command: '',
         source,
-        status: event.isError === true || event.level === 'error' || event.status === 'error' ? 'error' : 'info',
+        status: event.isError === true || event.level === 'error' || event.status === 'error' ? 'error' : event.level === 'warning' ? 'warning' : 'info',
         message: event.text,
       })
     }

@@ -25,7 +25,9 @@ vi.mock('../../../../omp/controllers/index.js', () => ({
 }))
 
 vi.mock('../../../../utils/uiDisclosureState', () => ({
-  useUiDisclosureState: () => [true, vi.fn()],
+  // Respect the caller's fallback: TaskRenderer expands running/failed tasks,
+  // ContentBlock keeps its own defaultCollapsed semantics.
+  useUiDisclosureState: (key: string, fallback: boolean) => [key.includes(':task-body') ? true : fallback, vi.fn()],
 }))
 
 vi.mock('../../../../contexts', () => ({
@@ -166,6 +168,16 @@ describe('persisted subagent fallback', () => {
     ompSubagentStore.clearAll()
     openSubagentSessionMock.mockReset()
   })
+  it('does not load or animate a child for an unstarted task proposal', () => {
+    piSessionStateStore.setState('parent-session', { sessionFile: 'C:/sessions/parent.jsonl', isIdle: true })
+    const { container } = renderTask({ call: { type: 'toolCall', id: 'queued-task', name: 'task',
+      arguments: { tasks: [{ name: 'QueuedScout', agent: 'scout', task: 'Inspect files' }] } } })
+    expect(screen.getByText('toolPart.pending')).toBeInTheDocument()
+    expect(screen.queryByText('task.error')).not.toBeInTheDocument()
+    expect(screen.queryByText('task.waitingForResponse')).not.toBeInTheDocument()
+    expect(getOmpSubagentMessagesMock).not.toHaveBeenCalled()
+    expect(container.querySelector('.animate-spin, .animate-pulse')).toBeNull()
+  })
 
   it('restores all ten interrupted child transcripts without a task result', async () => {
     piSessionStateStore.setState('parent-session', {
@@ -175,6 +187,7 @@ describe('persisted subagent fallback', () => {
       messages: [{ role: 'assistant', content: `Recovered ${sessionFile}` }],
     }))
     renderTask({
+      startedAt: 7_500,
       call: {
         type: 'toolCall', id: 'interrupted-task', name: 'task',
         arguments: { tasks: Array.from({ length: 10 }, (_, index) => ({ name: `Lane${index}`, agent: 'scout', task: `Review ${index}` })) },
@@ -210,6 +223,17 @@ describe('persisted subagent fallback', () => {
     const aborted = buildPersistedSubagentRun('call-1', { id: 'a', aborted: true }, undefined, 'parent-session')
     expect(aborted?.status).toBe('aborted')
     expect(buildPersistedSubagentRun('call-1', {}, undefined, 'parent-session')).toBeUndefined()
+  })
+
+  it('shows merge failures despite an otherwise successful child exit code', async () => {
+    getOmpSubagentMessagesMock.mockResolvedValue({ messages: [] })
+    const execution = completedTaskExecution()
+    execution.result!.details = { results: [{ id: 'MergeScout', exitCode: 0, mergeError: 'Merge conflicted in src/app.ts', output: 'Analysis finished' }] }
+    expect(buildPersistedSubagentRun('call', { id: 'MergeScout', exitCode: 0, mergeError: 'Merge conflicted' }, undefined, 'parent-session')?.status).toBe('failed')
+    renderTask(execution)
+    expect(await screen.findByText(/Merge conflicted in src\/app.ts/)).toBeInTheDocument()
+    expect(screen.getByText('task.error')).toBeInTheDocument()
+    expect(screen.queryByText('task.completed')).not.toBeInTheDocument()
   })
 
   it('shows the disk transcript instead of the waiting placeholder after reopen', async () => {

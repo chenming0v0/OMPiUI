@@ -5,7 +5,7 @@ import type { OmpRpcClient, OmpRpcFrame } from "./rpc-client.js"
 import { nativeExtensionResourcesSource } from './resource-registry.js'
 import { NATIVE_PROMPT_ADMISSION_IMPORT, NATIVE_PROMPT_ADMISSION_SOURCE } from './native-prompt-admission.js'
 
-export type RuntimeBridgeOperation = "capabilities" | "identity" | "queue" | "clearQueue" | "removeQueuedMessage" | "sendQueuedMessage" | "submitUserMessage" | "navigateTree" | "abortBranchSummary" | "fork" | "branch" | "reload" | "setLabel" | "setScopedModels" | "resources" | "tree"
+export type RuntimeBridgeOperation = "capabilities" | "identity" | "queue" | "clearQueue" | "removeQueuedMessage" | "sendQueuedMessage" | "submitUserMessage" | "navigateTree" | "abortBranchSummary" | "fork" | "branch" | "reload" | "setLabel" | "setScopedModels" | "cycleModel" | "resources" | "tree" | "asyncJobs" | "goal"
 const RESPONSE_PREFIX = "\u001eompiui-runtime:"
 
 /** Correlates managed command results without exposing control traffic as chat/UI events. */
@@ -146,7 +146,7 @@ export default function (pi) {
   async function execute(operation, args, ctx) {
     const session = ownSession(ctx);
     switch (operation) {
-      case "capabilities": return { operations: ["identity", "queue", "clearQueue", "removeQueuedMessage", "sendQueuedMessage", "submitUserMessage", "navigateTree", "abortBranchSummary", "fork", "branch", "reload", "setLabel", "setScopedModels", "resources", "tree"] };
+      case "capabilities": return { operations: ["identity", "queue", "clearQueue", "removeQueuedMessage", "sendQueuedMessage", "submitUserMessage", "navigateTree", "abortBranchSummary", "fork", "branch", "reload", "setLabel", "setScopedModels", "cycleModel", "resources", "tree", "asyncJobs", "goal"] };
       case "identity": return identity(session);
       case "submitUserMessage": return await submitUserMessage(session, args);
       case "queue": return queue(session);
@@ -257,7 +257,52 @@ export default function (pi) {
         session.setScopedModels(scopedModels);
         return { scopedModels: session.scopedModels };
       }
+      case "cycleModel": return await session.cycleModel(args.direction === "backward" ? "backward" : "forward") ?? null;
       case "tree": return { ...identity(session), entries: session.sessionManager.getEntries(), tree: session.sessionManager.getTree() };
+      case "asyncJobs": return ctx.getAsyncJobSnapshot();
+      case "goal": {
+        // #354: 目标生命周期代理到官方 GoalRuntime（create/replace/pause/resume/drop），
+        // worker 不再自建续跑循环。按官方 TUI 语义同步 goal 工具与流中上下文：
+        // 启用/恢复时把 goal 工具加入活动集（模型经它上报完成），暂停/放弃时移除。
+        const officialAgent = session.agent;
+        const runtime = officialAgent?.goalRuntime;
+        const stateReader = officialAgent?.getGoalModeState;
+        if (!runtime || typeof stateReader !== "function") {
+          throw Object.assign(new Error("The selected OMP runtime does not expose the official goal runtime"), { code: "CAPABILITY_DISABLED" });
+        }
+        const readState = () => {
+          const state = stateReader.call(officialAgent);
+          return state === undefined || state === null ? null : JSON.parse(JSON.stringify(state));
+        };
+        const op = args.op;
+        if (op === "snapshot") return { state: readState() };
+        const objective = typeof args.objective === "string" ? args.objective.trim() : "";
+        const tokenBudget = typeof args.tokenBudget === "number" ? args.tokenBudget : undefined;
+        let state;
+        if (op === "create" || op === "replace") {
+          const previous = officialAgent.getEnabledToolNames().filter(name => name !== "goal");
+          state = op === "create"
+            ? await runtime.createGoal({ objective, tokenBudget })
+            : await runtime.replaceGoal({ objective, tokenBudget });
+          await officialAgent.setActiveToolsByName([...new Set([...previous, "goal"])]);
+          if (officialAgent.isStreaming) await officialAgent.sendGoalModeContext({ deliverAs: "steer" });
+        }
+        else if (op === "pause") {
+          state = await runtime.pauseGoal();
+          await officialAgent.setActiveToolsByName(officialAgent.getEnabledToolNames().filter(name => name !== "goal"));
+        }
+        else if (op === "resume") {
+          const previous = officialAgent.getEnabledToolNames().filter(name => name !== "goal");
+          state = await runtime.resumeGoal();
+          await officialAgent.setActiveToolsByName([...new Set([...previous, "goal"])]);
+        }
+        else if (op === "drop") {
+          state = await runtime.dropGoal();
+          await officialAgent.setActiveToolsByName(officialAgent.getEnabledToolNames().filter(name => name !== "goal"));
+        }
+        else throw Object.assign(new Error("Invalid goal operation"), { code: "INVALID_REQUEST" });
+        return { state: state === undefined ? null : JSON.parse(JSON.stringify(state)) };
+      }
       default: throw Object.assign(new Error("Unknown managed runtime operation: " + operation), { code: "CAPABILITY_DISABLED" });
     }
   }

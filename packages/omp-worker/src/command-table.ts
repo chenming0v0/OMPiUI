@@ -108,6 +108,7 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
       );
   },
   abort: async (ctx) => ctx.requireRuntime().abort(),
+  abortAndPrompt: async (ctx, p) => ctx.requireRuntime().abortAndPrompt(P.reqString(p, "text"), P.optImages(p)),
 
   newSession: async (ctx, p) =>
     ctx.requireRuntime().newSession(P.optString(p, "parentSession")),
@@ -163,6 +164,7 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
       .requireRuntime()
       .setFollowUpMode(P.optEnum(p, "mode", QUEUE_MODES) ?? "one-at-a-time");
   },
+  setInterruptMode: async (ctx, p) => ctx.requireRuntime().setInterruptMode(P.optEnum(p, "mode", ["immediate", "wait"] as const) ?? "immediate"),
   clearQueue: async (ctx) => ctx.requireRuntime().clearQueue(ctx.maxResultBytes),
   removeQueuedMessage: async (ctx, p) => {
     const kind = P.optEnum(p, "kind", ["steering", "followUp"] as const);
@@ -368,6 +370,7 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
         p.offset === undefined
           ? undefined
           : P.reqNonNegativeInteger(p, "offset"),
+        P.optEnum(p, "source", ["content", "details"] as const),
       ),
 
   "session.list": async (ctx, p) =>
@@ -428,18 +431,6 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
       });
     }
     return ctx.catalog.setModelRoles(roles);
-  },
-  "trust.get": async (ctx, p) =>
-    ctx.catalog.getProjectTrust(P.reqString(p, "cwd")),
-  "trust.set": async (ctx, p) => {
-    const decision = p.decision;
-    if (decision !== null && typeof decision !== "boolean") {
-      throw Object.assign(
-        new Error("params.decision must be a boolean or null"),
-        { code: "INVALID_REQUEST" },
-      );
-    }
-    return ctx.catalog.setProjectTrust(P.reqString(p, "cwd"), decision);
   },
 
   "providers.list": async (ctx) => ctx.auth.listProviders(),

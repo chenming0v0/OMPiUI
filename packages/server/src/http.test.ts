@@ -366,7 +366,6 @@ describe("http api", () => {
     for (const type of [
       "models.list",
       "settings.patch",
-      "trust.set",
       "providers.logout",
       "modelRuntime.setApiKey",
       "packages.manage",
@@ -385,10 +384,6 @@ describe("http api", () => {
       assert.equal(sessionThroughGlobal.status, 404, type)
       assert.equal(sessionThroughGlobal.json.code, "UNKNOWN_COMMAND", type)
     }
-
-    const trust = await request(port, "POST", "/api/v1/pi/commands/trust.get", { body: { cwd: mockHome } })
-    assert.equal(trust.status, 200)
-    assert.equal(trust.json.data.trusted, true)
 
     const unknown = await request(port, "POST", "/api/v1/pi/commands/does.not.exist")
     assert.equal(unknown.status, 404)

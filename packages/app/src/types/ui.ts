@@ -43,6 +43,13 @@ export interface FileCapabilities {
   video: boolean
 }
 
+/**
+ * 运行中消息投递方式：steer（打断并注入当前轮）、followUp（排队下一轮）、
+ * abortAndPrompt（#360：一次原子原生 abort_and_prompt，中断当前工作并立即
+ * 以该消息重新开始）。
+ */
+export type DeliveryMode = 'steer' | 'followUp' | 'abortAndPrompt'
+
 // ============================================
 // Router Types
 // ============================================

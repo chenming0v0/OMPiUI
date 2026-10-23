@@ -156,9 +156,17 @@ describe('SubagentTranscriptPreview', () => {
     expect(badge).toHaveClass('text-danger-100')
     expect(badge.querySelector('.animate-pulse')).toBeNull()
   })
+  it('does not animate queued calls even while their parent subagent is running', () => {
+    const { rerender } = render(<SubagentTranscriptPreview items={[{ ...tool('read', 1), toolStatus: 'pending' }]} isRunning />)
+    const badge = screen.getByTitle('read')
+    expect(badge.querySelector('.animate-pulse')).toBeNull()
+    rerender(<SubagentTranscriptPreview items={[{ ...tool('read', 1), toolStatus: 'running' }]} isRunning />)
+    expect(screen.getByTitle('read').querySelector('.animate-pulse')).not.toBeNull()
+  })
 
   it('truncates old assistant text from its beginning while keeping users and the final reply complete', () => {
-    const old = `${'a'.repeat(500)}OLD_END`
+    // 组件的展示截断阈值是 8000 字符：旧助手文本超限后从头截断并丢弃尾部
+    const old = `${'a'.repeat(8100)}OLD_END`
     const user = 'u'.repeat(600)
     const final = 'f'.repeat(600)
     render(
@@ -171,7 +179,7 @@ describe('SubagentTranscriptPreview', () => {
         isRunning={false}
       />,
     )
-    expect(screen.getByText(`${old.slice(0, 500)}...`)).toBeInTheDocument()
+    expect(screen.getByText(`${old.slice(0, 8000)}...`)).toBeInTheDocument()
     expect(screen.queryByText(/OLD_END/)).not.toBeInTheDocument()
     expect(screen.getByText(user)).toBeInTheDocument()
     expect(screen.getByText(final)).toBeInTheDocument()

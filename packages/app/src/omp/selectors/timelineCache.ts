@@ -24,13 +24,22 @@ let historyCache = new WeakMap<readonly unknown[], {
   items: PiTimelineItem[]
   stableEntryIds: NonNullable<PiBranchPage['client']>['stableEntryIds']
   toolExecutions: NonNullable<PiBranchPage['client']>['toolExecutions']
+  liveCallKey: string
 }>()
 let entryCache = new WeakMap<object, PiTimelineItem>()
 
 function reuseHistoryItem(item: PiTimelineItem): PiTimelineItem {
   if (item.kind === 'bash_execution_group') return item
+  if (!item.rawEntry) return item
   const previous = entryCache.get(item.rawEntry)
   if (previous?.kind === item.kind && previous.renderKey === item.renderKey) {
+    if (previous.kind === 'tool_result' && item.kind === 'tool_result') {
+      const a = previous.execution
+      const b = item.execution
+      if (a.result === b.result && a.error === b.error && a.completedAt === b.completedAt && a.endedAt === b.endedAt && a.isRunning === b.isRunning && a.startedAt === b.startedAt) return previous
+      entryCache.set(item.rawEntry, item)
+      return item
+    }
     if (previous.kind !== 'assistant_message' || item.kind !== 'assistant_message') return previous
     const ids = Object.keys(item.toolResults)
     const executionIds = Object.keys(item.toolExecutions ?? {})
@@ -66,13 +75,15 @@ export function selectPiTimelineItemsCached(
     return []
   }
 
+  const live = branch.checkpoint?.liveMessage?.message
+  const liveCallKey = live?.role === 'assistant' ? live.content.flatMap(block => block.type === 'toolCall' ? [block.id] : []).join('\u0000') : ''
   const cached = historyCache.get(branch.items)
   let history: PiTimelineItem[]
-  if (cached && cached.stableEntryIds === branch.client?.stableEntryIds && cached.toolExecutions === branch.client?.toolExecutions) {
+  if (cached && cached.stableEntryIds === branch.client?.stableEntryIds && cached.toolExecutions === branch.client?.toolExecutions && cached.liveCallKey === liveCallKey) {
     history = cached.items
   } else {
     history = buildPiHistoryItems(branch).map(reuseHistoryItem)
-    historyCache.set(branch.items, { items: history, stableEntryIds: branch.client?.stableEntryIds, toolExecutions: branch.client?.toolExecutions })
+    historyCache.set(branch.items, { items: history, stableEntryIds: branch.client?.stableEntryIds, toolExecutions: branch.client?.toolExecutions, liveCallKey })
   }
 
   const liveItems = buildPiLiveItems(branch)

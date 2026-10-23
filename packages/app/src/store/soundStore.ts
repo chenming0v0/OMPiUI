@@ -75,6 +75,7 @@ function createDefaultSettings(): SoundSettings {
       permission: { soundId: DEFAULT_SOUNDS.permission },
       question: { soundId: DEFAULT_SOUNDS.question },
       error: { soundId: DEFAULT_SOUNDS.error },
+      warning: { soundId: DEFAULT_SOUNDS.warning },
     },
   }
 }
@@ -110,6 +111,7 @@ function loadSettings(): SoundSettings {
         permission: normalizeEventConfig('permission', parsed.events?.permission),
         question: normalizeEventConfig('question', parsed.events?.question),
         error: normalizeEventConfig('error', parsed.events?.error),
+        warning: normalizeEventConfig('warning', parsed.events?.warning),
       },
     }
   } catch {
@@ -502,6 +504,7 @@ function normalizeSoundSettings(raw: unknown): SoundSettings {
       ),
       question: normalizeEventConfig('question', parsed?.events && (parsed.events as Record<string, unknown>).question),
       error: normalizeEventConfig('error', parsed?.events && (parsed.events as Record<string, unknown>).error),
+      warning: normalizeEventConfig('warning', parsed?.events && (parsed.events as Record<string, unknown>).warning),
     },
   }
 }

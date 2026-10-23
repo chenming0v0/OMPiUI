@@ -47,6 +47,8 @@ export type OmpSubagentProgress = {
 
 export type OmpSubagentRun = {
   id: string
+  /** Worker generation for a stable registry ID reused by later task calls. */
+  runId?: string
   sessionId: string
   parentToolCallId?: string
   agent: string
@@ -59,7 +61,7 @@ export type OmpSubagentRun = {
   progress?: OmpSubagentProgress
   /** 子代理会话事件转出的轻量转录（subagent_event 帧） */
   transcript: OmpSubagentTranscriptItem[]
-  /** 已尝试过磁盘转录回填（get_subagent_messages），避免重复拉取 */
+  /** Successfully read disk history for this generation. */
   historyLoaded?: boolean
   historyTruncated?: boolean
   historyHasMore?: boolean
@@ -190,6 +192,7 @@ class OmpSubagentStore {
   private byToolCall = new Map<string, string[]>()
   /** 防止重连/双流把同一份子代理事件重复追加到转录。 */
   private eventFingerprints = new Map<string, Set<string>>()
+  private retiredRuns = new Set<string>()
   /** 用户从 HUD 清掉的终态 run：后续帧与快照恢复一律忽略 */
   private dismissed = new Set<string>(loadDismissedIds())
   private revision = 0
@@ -285,6 +288,7 @@ class OmpSubagentStore {
     this.bySession.clear()
     this.byToolCall.clear()
     this.eventFingerprints.clear()
+    this.retiredRuns.clear()
     this.keyCache.clear()
     this.keyVersions.clear()
     this.bump()
@@ -305,7 +309,7 @@ class OmpSubagentStore {
     }
     this.runs.delete(runId)
     this.eventFingerprints.delete(runId)
-    this.dismissed.add(runId)
+    this.dismissed.add(run?.runId ?? runId)
     saveDismissedIds(this.dismissed)
     this.bump()
   }
@@ -359,8 +363,8 @@ class OmpSubagentStore {
     else setTimeout(flush, 16)
   }
 
-  private upsert(sessionId: string, runId: string, fn: (run: OmpSubagentRun) => OmpSubagentRun): void {
-    if (this.dismissed.has(runId)) return
+  private upsert(sessionId: string, runId: string, fn: (run: OmpSubagentRun) => OmpSubagentRun, generation?: string): void {
+    if (this.dismissed.has(generation ?? this.runs.get(runId)?.runId ?? runId)) return
     const existing = this.runs.get(runId)
     const base: OmpSubagentRun = existing ?? {
       id: runId,
@@ -373,8 +377,19 @@ class OmpSubagentStore {
       transcript: [],
       startedAt: Date.now(),
     }
-    const next = fn(base)
+    let next = fn(base)
     if (existing && next === existing) return
+    if (isTerminalStatus(next.status)) {
+      const unfinished = next.transcript.some(item => item.streaming || item.toolStatus === 'running' || item.toolStatus === 'pending')
+      next = {
+        ...next,
+        progress: next.progress ? { ...next.progress, status: next.status, currentTool: undefined, currentToolArgs: undefined, currentToolStartMs: undefined } : undefined,
+        transcript: unfinished ? next.transcript.map(item => ({
+          ...item, streaming: false,
+          toolStatus: item.toolStatus === 'running' || item.toolStatus === 'pending' ? 'error' : item.toolStatus,
+        })) : next.transcript,
+      }
+    }
     this.runs.set(runId, next)
     if (existing && existing.parentToolCallId && existing.parentToolCallId !== next.parentToolCallId) {
       this.unlinkToolCall(existing)
@@ -386,9 +401,31 @@ class OmpSubagentStore {
     this.bump()
   }
 
+  private acceptRun(sessionId: string, id: string, payload: JsonObject, started = false): boolean {
+    const incoming = str(payload.runId)
+    const current = this.runs.get(id)
+    if (incoming && (this.retiredRuns.has(incoming) || this.dismissed.has(incoming))) return false
+    const parent = str(payload.parentToolCallId)
+    if (!incoming && !started && current?.parentToolCallId && parent && current.parentToolCallId !== parent) return false
+    const replacement = incoming ? incoming !== current?.runId : started && current &&
+      parent && parent !== current.parentToolCallId
+    if (!replacement) return true
+    if (current?.runId) this.retiredRuns.add(current.runId)
+    if (this.retiredRuns.size > 512) this.retiredRuns.delete(this.retiredRuns.values().next().value!)
+    this.dismissed.delete(id)
+    this.upsert(sessionId, id, () => ({
+      id, runId: incoming, sessionId, agent: 'task', task: '', status: 'pending',
+      index: typeof payload.index === 'number' ? payload.index : current?.index ?? this.runs.size,
+      detached: false, transcript: [], historyLoaded: false, startedAt: Date.now(),
+    }), incoming)
+    this.eventFingerprints.delete(id)
+    return true
+  }
+
   applyLifecycle(sessionId: string, payload: JsonObject): void {
     const id = str(payload.id)
     if (!id) return
+    if (!this.acceptRun(sessionId, id, payload, payload.status === 'started')) return
     this.upsert(sessionId, id, run => {
       const incomingStatus = payload.status === undefined ? run.status : normalizeStatus(payload.status)
       const status = mergeStatus(run.status, incomingStatus)
@@ -413,6 +450,7 @@ class OmpSubagentStore {
       id = this.runsForSession(sessionId).find(run => run.index === payload.index)?.id
     }
     if (!id) return
+    if (!this.acceptRun(sessionId, id, payload)) return
     this.upsert(sessionId, id, run => {
       const rawProgress = asRecord(payload.progress)
       const progress =
@@ -442,6 +480,7 @@ class OmpSubagentStore {
     const id = str(payload.id)
     const event = asRecord(payload.event)
     if (!id || !event) return
+    if (!this.acceptRun(sessionId, id, payload)) return
     const fingerprint = eventId ?? JSON.stringify(event)
     const seen = this.eventFingerprints.get(id) ?? new Set<string>()
     if (seen.has(fingerprint)) return
@@ -495,13 +534,14 @@ class OmpSubagentStore {
    */
   applyHistory(
     sessionId: string,
-    runId: string,
+    id: string,
     messages: unknown[],
     page?: { truncated: boolean; hasMore: boolean },
+    expected?: { runId?: string; sessionFile?: string },
   ): void {
-    // 回填只作用于已存在的 run（回填不负责凭空创建）
-    if (!this.runs.has(runId)) return
-    this.upsert(sessionId, runId, run => {
+    const current = this.runs.get(id)
+    if (!current || current.sessionId !== sessionId || (expected && (current.runId !== expected.runId || current.sessionFile !== expected.sessionFile))) return
+    this.upsert(sessionId, id, run => {
       const incomplete = run.transcript.some(item => (item.textOffset ?? 0) > 0)
       const terminal = isTerminalStatus(run.status)
       return {
@@ -524,6 +564,7 @@ class OmpSubagentStore {
       const record = asRecord(raw)
       const id = str(record?.id)
       if (!record || !id) continue
+      if (!this.acceptRun(sessionId, id, record)) continue
       present.add(id)
       this.upsert(sessionId, id, run => {
         const incomingStatus = record.status === undefined ? run.status : normalizeStatus(record.status)
@@ -546,7 +587,7 @@ class OmpSubagentStore {
     // 只在后端已确认空闲时处理缺失条目；忙碌期间的部分快照不能中止新任务。
     if (settled) {
       for (const run of this.runsForSession(sessionId)) {
-        if (!present.has(run.id) && !isTerminalStatus(run.status)) this.settleRun(sessionId, run.id, 'aborted')
+        if (!present.has(run.id) && !run.detached && !isTerminalStatus(run.status)) this.settleRun(sessionId, run.id, 'aborted')
       }
     }
   }

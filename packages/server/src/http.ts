@@ -441,6 +441,7 @@ export function createAppServer(
   const reportClients = new Map<string, number>();
   const watcher = new WorkspaceWatcher(hub);
   const terminals = new TerminalManager({
+    prepareNativeSession: (workspacePath, sessionId) => sessions.prepareNativeSession(workspacePath, sessionId),
     publish: (workspacePath, channel, payload) => {
       hub.publish({ kind: "workspace", id: workspacePath }, channel, payload);
     },

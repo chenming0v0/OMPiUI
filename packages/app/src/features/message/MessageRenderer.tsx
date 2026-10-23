@@ -11,6 +11,7 @@ import { useNow } from '../../hooks/useNow'
 import { useTheme } from '../../hooks/useTheme'
 import { TextPartView, ReasoningPartView, MessageErrorView, ToolGroup } from './parts'
 import { PiSystemItemView } from './parts/PiSystemItemViews'
+import { ToolPartView } from './parts/ToolPartView'
 import { MSG_SPACING } from './messageSpacing'
 import { MessageExpandPanel, useMessageExpandRender } from './messageExpand'
 import { perfRecordRender, isPerfEnabled } from '../../utils/perf'
@@ -294,6 +295,9 @@ export const MessageRenderer = memo(function MessageRenderer({
         processContentScope={processContentScope}
       />
     )
+  }
+  if (item.kind === 'tool_result') {
+    return <ToolPartView execution={item.execution} partKey={item.entryId} compact defaultExpanded />
   }
 
   return <PiSystemItemView item={item} />

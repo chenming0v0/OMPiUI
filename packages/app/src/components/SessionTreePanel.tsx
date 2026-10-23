@@ -31,6 +31,7 @@ import {
   setPiAutoRetry,
   setPiEntryLabel,
   setPiFollowUpMode,
+  setPiInterruptMode,
   setPiSteeringMode,
 } from '../omp/controllers/index.js'
 import { getPiTree, type PiForkResult } from '../omp/transport/index.js'
@@ -302,6 +303,10 @@ export const SessionTreePanel = memo(function SessionTreePanel({
           customInstructions: navigationInstructions.trim() || undefined,
         })
         if (result.cancelled || result.aborted) return
+        // #356: 原生返回的目标节点文本/图片草稿交给聊天面板恢复输入框。
+        if (typeof result.editorText === 'string' || Array.isArray(result.editorImages)) {
+          window.dispatchEvent(new CustomEvent('ompiui:native-editor-draft', { detail: { sessionId, editorText: result.editorText, editorImages: result.editorImages } }))
+        }
         await commitRedoPlan(sessionId, checkpoints)
       })
     },
@@ -580,6 +585,26 @@ export const SessionTreePanel = memo(function SessionTreePanel({
                 onChange={value => {
                   if (runtimePending !== null) return false
                   void runRuntimeCommand('queue-mode', () => setPiFollowUpMode(sessionId, value))
+                }}
+              />
+            </div>
+          </SettingField>
+        </SettingsSection>
+      ) : null}
+
+      {state && capabilities.interruptModeManage ? (
+        <SettingsSection title={t('sessionTree.interruptMode')} description={t('sessionTree.interruptModeHint')}>
+          <SettingField label={t('sessionTree.interruptMode')} description={t('sessionTree.interruptModeDetail')}>
+            <div className="w-56 max-w-full">
+              <SegmentedControl
+                value={typeof state.interruptMode === 'string' ? (state.interruptMode as 'immediate' | 'wait') : 'immediate'}
+                options={[
+                  { value: 'immediate' as const, label: t('sessionTree.interruptImmediate') },
+                  { value: 'wait' as const, label: t('sessionTree.interruptWait') },
+                ]}
+                onChange={value => {
+                  if (runtimePending !== null) return false
+                  void runRuntimeCommand('interrupt-mode', () => setPiInterruptMode(sessionId, value))
                 }}
               />
             </div>

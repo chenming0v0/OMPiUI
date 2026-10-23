@@ -532,6 +532,8 @@ export interface Model<TApi extends Api> {
    * Missing keys use provider defaults. null marks a level as unsupported.
    */
   thinkingLevelMap?: ThinkingLevelMap
+  /** Official available thinking efforts supplied by the OMP catalog. */
+  supportedThinkingLevels?: string[]
   input: ('text' | 'image')[]
   cost: ModelCost
   contextWindow: number

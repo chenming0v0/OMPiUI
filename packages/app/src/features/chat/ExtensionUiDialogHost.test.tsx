@@ -109,11 +109,42 @@ describe('ExtensionUiDialogHost', () => {
     ))
   })
 
-  
+  it('shows positional descriptions without changing the selected native label', async () => {
+    extensionUiStore.requestOpened(selectRequest({ optionDetails: [{ description: 'Plan the change' }, { description: 'Implement the change' }] } as never))
+    render(<ExtensionUiDialogHost sessionId="session-1" />)
+    expect(screen.getByText('Implement the change')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('build'))
+    fireEvent.click(screen.getByRole('button', { name: /submit|提交/i }))
+    await waitFor(() => expect(respondPiExtensionUi).toHaveBeenCalledWith('session-1', 'request-1', expect.objectContaining({ value: 'build' })))
+  })
 
-  
+  it('uses prompt editor Enter submission, leaves Shift+Enter and IME composition alone, and accepts an empty value', async () => {
+    extensionUiStore.requestOpened(selectRequest({ kind: 'editor', prefill: 'draft', promptStyle: true } as never))
+    render(<ExtensionUiDialogHost sessionId="session-1" />)
+    const editor = screen.getByRole('textbox')
+    fireEvent.change(editor, { target: { value: '' } })
+    fireEvent.keyDown(editor, { key: 'Enter', shiftKey: true })
+    fireEvent.keyDown(editor, { key: 'Enter', isComposing: true })
+    expect(respondPiExtensionUi).not.toHaveBeenCalled()
+    fireEvent.keyDown(editor, { key: 'Enter' })
+    await waitFor(() => expect(respondPiExtensionUi).toHaveBeenCalledWith('session-1', 'request-1', expect.objectContaining({ value: '' })))
+  })
 
-  
+  it('requires the editor submit chord for a non-prompt editor and permits empty input', async () => {
+    extensionUiStore.requestOpened(selectRequest({ kind: 'editor', prefill: '' } as never))
+    const { unmount } = render(<ExtensionUiDialogHost sessionId="session-1" />)
+    const editor = screen.getByRole('textbox')
+    fireEvent.keyDown(editor, { key: 'Enter' })
+    expect(respondPiExtensionUi).not.toHaveBeenCalled()
+    fireEvent.keyDown(editor, { key: 'Enter', ctrlKey: true })
+    await waitFor(() => expect(respondPiExtensionUi).toHaveBeenCalledWith('session-1', 'request-1', expect.objectContaining({ value: '' })))
+    unmount()
+    respondPiExtensionUi.mockClear()
+    extensionUiStore.requestOpened(selectRequest({ requestId: 'input-empty', kind: 'input' } as never))
+    render(<ExtensionUiDialogHost sessionId="session-1" />)
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
+    await waitFor(() => expect(respondPiExtensionUi).toHaveBeenCalledWith('session-1', 'input-empty', expect.objectContaining({ value: '' })))
+  })
 
   it('shows only the current session pending requests', () => {
     extensionUiStore.requestOpened(selectRequest({ sessionId: 'other-session' }))

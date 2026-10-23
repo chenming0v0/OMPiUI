@@ -42,6 +42,7 @@ export function writeModelsCache(models: readonly Model<Api>[]): void {
     contextWindow: model.contextWindow,
     maxTokens: model.maxTokens,
     thinkingLevelMap: model.thinkingLevelMap,
+    supportedThinkingLevels: model.supportedThinkingLevels,
     kind: (model as Model<Api> & { kind?: string }).kind,
   })))
 }

@@ -32,19 +32,6 @@ export interface PathMetadata {
   baseDir?: string
 }
 
-/** SDK package shapes (core/package-manager). */
-export interface ResolvedResource {
-  path: string
-  enabled: boolean
-  metadata: PathMetadata
-}
-
-export interface ResolvedPaths {
-  extensions: ResolvedResource[]
-  skills: ResolvedResource[]
-  prompts: ResolvedResource[]
-  themes: ResolvedResource[]
-}
 
 // ---------------------------------------------------------------------------
 // Skills & prompt templates (core/skills.d.ts, core/prompt-templates.d.ts)

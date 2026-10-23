@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { diffLines } from 'diff'
@@ -22,6 +23,7 @@ import {
 } from '../tools'
 import { MSG_SPACING } from '../messageSpacing'
 import { MessageExpandPanel, useMessageExpandRender } from '../messageExpand'
+import { ToolResultImages } from '../tools/renderers/DefaultRenderer'
 
 // ============================================
 // ToolPartView - 单个工具调用
@@ -471,19 +473,24 @@ const ToolBody = memo(function ToolBody({
 }) {
   const tool = execution.call.name
   const lowerTool = tool.toLowerCase()
+  // A specialized success view must never hide the original failure payload.
+  if (getToolExecutionStatus(execution) === 'error' && lowerTool !== 'task') {
+    return <DefaultRenderer execution={execution} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} />
+  }
+  const specialized = (content: ReactNode) => <>{content}<ToolResultImages tool={tool} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} /></>
 
   if (lowerTool === 'task') {
-    return <TaskRenderer execution={execution} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} />
+    return specialized(<TaskRenderer execution={execution} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} />)
   }
 
   if (lowerTool.includes('todo') && hasTodos(execution)) {
-    return <TodoRenderer execution={execution} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} />
+    return specialized(<TodoRenderer execution={execution} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} />)
   }
 
   const config = getToolConfig(tool)
   if (config?.renderer) {
     const CustomRenderer = config.renderer
-    return <CustomRenderer execution={execution} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} />
+    return specialized(<CustomRenderer execution={execution} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} />)
   }
 
   return <DefaultRenderer execution={execution} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} />

@@ -833,6 +833,7 @@ export class OmpCatalog implements CatalogProvider {
         entry,
         Number(params.blockIndex),
         typeof params.offset === "number" ? params.offset : 0,
+        params.source === "details" ? "details" : "content",
       );
     }
     if (query === "entries.get") {
@@ -1178,20 +1179,6 @@ export class OmpCatalog implements CatalogProvider {
       JSON.stringify(record),
     ]);
     return record;
-  }
-
-  getProjectTrust(cwd: string): JsonValue {
-    return {
-      workspacePath: cwd,
-      required: false,
-      decision: null,
-      defaultDecision: "always",
-      trusted: true,
-    };
-  }
-
-  setProjectTrust(cwd: string): JsonValue {
-    return this.getProjectTrust(cwd);
   }
 
 

@@ -117,6 +117,7 @@ export type PiSessionRow = {
 export type PiTimelineItem = (
   | PiUserMessageItem
   | PiAssistantMessageItem
+  | PiToolResultItem
   | PiBashExecutionItem
   | PiBashExecutionGroupItem
   | PiCompactionItem
@@ -155,6 +156,14 @@ export type PiAssistantMessageItem = {
   renderKey?: string
 }
 
+/** Result/start visible even when pagination omits the owning assistant. */
+export type PiToolResultItem = {
+  kind: 'tool_result'
+  entryId: string
+  timestamp: number
+  rawEntry?: SessionEntry
+  execution: PiToolExecution
+}
 
 export type PiBashExecutionItem = {
   kind: 'bash_execution'
@@ -197,7 +206,10 @@ export type PiToolExecution = PiToolExecutionState & {
 
 export function getToolExecutionStatus(execution: PiToolExecution): 'pending' | 'running' | 'completed' | 'error' {
   if (execution.result) {
-    return execution.result.isError ? 'error' : 'completed'
+    const details = execution.result.details as { error?: unknown; mergeError?: unknown; nativeDetails?: { error?: unknown; mergeError?: unknown }; results?: Array<{ error?: unknown; mergeError?: unknown; aborted?: boolean; exitCode?: number }> } | undefined
+    const failed = execution.result.isError || Boolean(details?.error || details?.mergeError || details?.nativeDetails?.error || details?.nativeDetails?.mergeError) ||
+      (execution.call.name === 'task' && Array.isArray(details?.results) && details.results.some(result => result && (result.error || result.mergeError || result.aborted || (result.exitCode !== undefined && result.exitCode !== 0))))
+    return failed ? 'error' : 'completed'
   }
   if (execution.error) return 'error'
   if (execution.completedAt !== undefined) return 'completed'
@@ -275,16 +287,6 @@ export type PiSettingsSnapshot = {
   effective: JsonObject
   errors: Array<{ scope: string; message: string }>
   definitions?: Array<{ id: string; type: string; values?: string[] }>
-}
-
-/** Native project trust state (worker trust.get / trust.set). */
-export type PiProjectTrust = {
-  workspacePath: string
-  required: boolean
-  decision: boolean | null
-  inheritedFrom?: string
-  defaultDecision: 'ask' | 'always' | 'never'
-  trusted: boolean
 }
 
 /** Native provider auth info (worker providers.list). */

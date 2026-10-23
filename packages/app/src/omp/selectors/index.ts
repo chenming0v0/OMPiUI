@@ -64,6 +64,9 @@ export function buildPiHistoryItems(branch: PiBranchPage): PiTimelineItem[] {
   const items: PiTimelineItem[] = []
   const assistantByCallId = new Map<string, PiAssistantMessageItem>()
   const toolExecutions: Record<string, PiToolExecutionState> = { ...branch.client?.toolExecutions }
+  const orphanResults = new Map<string, Extract<PiTimelineItem, { kind: 'tool_result' }>>()
+  const liveCallIds = new Set(branch.checkpoint?.liveMessage?.message.role === 'assistant'
+    ? branch.checkpoint.liveMessage.message.content.flatMap(block => block.type === 'toolCall' ? [block.id] : []) : [])
   // 相邻 bash 执行合并为工具组：遇到非 bash 条目时重置，保证只有连续
   // 的 bash（`!cmd` / `/bash cmd`）才会并组，与 AI 连续工具调用一致。
   let lastBashGroup: PiBashExecutionGroupItem | undefined
@@ -105,6 +108,15 @@ export function buildPiHistoryItems(branch: PiBranchPage): PiTimelineItem[] {
       } else if (message.role === 'toolResult') {
         const owner = assistantByCallId.get(message.toolCallId)
         if (owner) owner.toolResults[message.toolCallId] = message
+        else {
+          const execution = toolExecutions[message.toolCallId]
+          const orphan: Extract<PiTimelineItem, { kind: 'tool_result' }> = {
+            kind: 'tool_result', entryId: entry.id, timestamp, rawEntry: entry,
+            execution: { ...execution, call: execution?.call ?? { type: 'toolCall', id: message.toolCallId, name: message.toolName || 'tool', arguments: {} }, result: message },
+          }
+          orphanResults.set(message.toolCallId, orphan)
+          items.push(orphan)
+        }
       } else if (message.role === 'bashExecution') {
         // 相邻 bash 执行并入当前工具组；非连续时开新组
         const bashItem: PiBashExecutionItem = {
@@ -125,7 +137,12 @@ export function buildPiHistoryItems(branch: PiBranchPage): PiTimelineItem[] {
           }
           items.push(lastBashGroup)
         }
+      } else {
+        // The vendored union may not include future runtime message roles.
+        const unknownMessage: { role: string } = message
+        items.push({ kind: 'unknown', entryId: entry.id, timestamp, rawEntry: entry, entryType: `message:${unknownMessage.role}` })
       }
+      // Preserve future message roles rather than silently losing their content.
     } else if (entry.type === 'custom' && entry.customType === 'tool_execution_start') {
       const data = entry.data as { toolCallId?: unknown; startedAt?: unknown } | undefined
       if (typeof data?.toolCallId === 'string') {
@@ -223,6 +240,15 @@ export function buildPiHistoryItems(branch: PiBranchPage): PiTimelineItem[] {
       } as PiUnknownItem)
       lastBashGroup = undefined
     }
+  }
+  for (const [callId, orphan] of orphanResults) {
+    const owner = assistantByCallId.get(callId)
+    if (owner) owner.toolResults[callId] = orphan.execution.result!
+    if (owner || liveCallIds.has(callId)) items.splice(items.indexOf(orphan), 1)
+  }
+  for (const [callId, execution] of Object.entries(toolExecutions)) {
+    if (assistantByCallId.has(callId) || liveCallIds.has(callId) || orphanResults.has(callId) || !execution.call) continue
+    items.push({ kind: 'tool_result', entryId: `tool:${callId}`, timestamp: execution.startedAt ?? execution.result?.timestamp ?? 0, execution: { ...execution, call: execution.call } })
   }
   for (const [callId, owner] of assistantByCallId) {
     const execution = toolExecutions[callId]

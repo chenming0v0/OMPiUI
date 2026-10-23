@@ -46,6 +46,7 @@ function runningExecution(toolCallId = 'call-1'): PiToolExecution {
   return {
     call: { type: 'toolCall', id: toolCallId, name: 'bash', arguments: { command: 'echo hi' } },
     result: undefined,
+    startedAt: 7_500,
   }
 }
 
@@ -77,6 +78,14 @@ function renderBash(execution: PiToolExecution, data: ExtractedToolData) {
 
 describe('BashRenderer', () => {
   beforeEach(() => liveToolOutputStore.clearAll())
+  it('shows a queued command without an output spinner until execution starts', () => {
+    const queued = { ...runningExecution(), startedAt: undefined }
+    const { container, rerender } = renderBash(queued, { input: 'echo hi' })
+    expect(screen.getByText(/echo hi/)).toBeInTheDocument()
+    expect(container.querySelector('[style*="terminal-blink"]')).toBeNull()
+    rerender(<BashRenderer execution={{ ...queued, startedAt: 7_500 }} partKey="p1" data={{ input: 'echo hi' }} />)
+    expect(container.querySelector('[style*="terminal-blink"]')).not.toBeNull()
+  })
 
   it('streams live tool output into a running bash card', async () => {
     const execution = runningExecution()

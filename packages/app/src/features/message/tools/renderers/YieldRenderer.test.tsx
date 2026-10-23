@@ -44,9 +44,26 @@ describe('yieldExtractData', () => {
   it('extracts the submitted payload from result details and drops generic blocks', () => {
     const extracted = yieldExtractData(yieldExecution())
 
-    expect(extracted.yieldResult).toEqual({ status: 'success', data: { reply: 'pong' } })
+    // #364: 结果文本里负载之外的原始说明保留为 rawOutput，不再随结构化负载一起删除。
+    expect(extracted.yieldResult).toEqual({ status: 'success', data: { reply: 'pong' }, rawOutput: 'Result submitted.' })
     expect(extracted.input).toBeUndefined()
     expect(extracted.output).toBeUndefined()
+  })
+
+  it('does not duplicate the payload text as rawOutput', () => {
+    const extracted = yieldExtractData(yieldExecution({
+      result: {
+        role: 'toolResult',
+        toolCallId: 'call-yield',
+        toolName: 'yield',
+        content: [{ type: 'text', text: 'pong' }],
+        isError: false,
+        timestamp: 0,
+        details: { status: 'success', data: { reply: 'pong' } },
+      },
+    }))
+
+    expect(extracted.yieldResult).toEqual({ status: 'success', data: { reply: 'pong' } })
   })
 
   it('marks failed yields and keeps the error text', () => {
@@ -105,7 +122,7 @@ describe('YieldRenderer', () => {
     expect(container.textContent).not.toContain('"reply"')
   })
 
-  it('shows a completion line when no payload is present', () => {
+  it('shows the raw result text when no payload is present (#364)', () => {
     const execution = yieldExecution({
       call: {
         type: 'toolCall',
@@ -118,6 +135,31 @@ describe('YieldRenderer', () => {
         toolCallId: 'call-yield',
         toolName: 'yield',
         content: [{ type: 'text', text: 'Result submitted.' }],
+        isError: false,
+        timestamp: 0,
+        details: { status: 'success' },
+      },
+    })
+    const { container } = render(<YieldRenderer execution={execution} partKey="p1" data={yieldExtractData(execution)} />)
+
+    // 原始结果文本就是全部证据，不能只剩一个“已完成”标记
+    expect(container.textContent).toContain('Result submitted.')
+    expect(screen.getByText('yield.rawOutput')).toBeInTheDocument()
+  })
+
+  it('shows a completion line when no payload and no raw text is present', () => {
+    const execution = yieldExecution({
+      call: {
+        type: 'toolCall',
+        id: 'call-yield',
+        name: 'yield',
+        arguments: {},
+      },
+      result: {
+        role: 'toolResult',
+        toolCallId: 'call-yield',
+        toolName: 'yield',
+        content: [{ type: 'text', text: '' }],
         isError: false,
         timestamp: 0,
         details: { status: 'success' },
@@ -146,9 +188,17 @@ describe('YieldRenderer', () => {
   })
 
   it('shows a submitting line while running', () => {
-    const execution = yieldExecution({ result: undefined })
+    const execution = yieldExecution({ result: undefined, startedAt: 7_500 })
     render(<YieldRenderer execution={execution} partKey="p1" data={yieldExtractData(execution)} />)
 
     expect(screen.getByText('yield.submitting')).toBeInTheDocument()
+  })
+  it('does not submit or spin before the yield call starts', () => {
+    const execution = yieldExecution({ result: undefined })
+    const { container } = render(<YieldRenderer execution={execution} partKey="queued-yield" data={yieldExtractData(execution)} />)
+    expect(screen.getByText('toolPart.pending')).toBeInTheDocument()
+    expect(screen.queryByText('yield.submitting')).not.toBeInTheDocument()
+    expect(screen.queryByText('yield.completed')).not.toBeInTheDocument()
+    expect(container.querySelector('.animate-spin')).toBeNull()
   })
 })

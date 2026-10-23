@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url"
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)))
 const resources = join(root, "packages", "app", "src-tauri", "resources")
 
-// Android 不启动本地 server，只保留资源目录本身，不把桌面 runtime 带进 APK。
+// Android is a remote client: no local server/OMP/Bun/native npm dependencies.
+// The connected desktop/server ships the complete same-version public runtime.
 rmSync(resources, { recursive: true, force: true })
 mkdirSync(resources, { recursive: true })
 writeFileSync(join(resources, ".mobile-placeholder"), "")

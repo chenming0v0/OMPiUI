@@ -1,3 +1,14 @@
+## [Unreleased]
+
+- fix: #354 目标生命周期代理到官方 GoalRuntime（create/replace/pause/resume/drop），按官方 TUI 语义同步 goal 工具与流中上下文；移除 worker 自建续跑循环、完成标记与轮次计时，会话替换后读取官方目标快照；官方目标不支持图片附件，UI 停用附加入口。
+- fix: #360 客户端接入原生 set_interrupt_mode 与原子 abort_and_prompt：队列设置区新增中断行为 immediate/wait，输入栏投递方式三态循环新增「中断并提交」，能力开关由 registry 命令派生。
+- fix: #367 本地 RPC 协议错误（分片/解码失败）经 `rpc_frame_error` 事件实时送达前端（每分钟 20 条上限，超出折叠为抑制提示）；notice/command_output 的 warning 级别不再伪装为 completed 通知，通知与提示音新增 warning 严重度，扩展面板完整文本保留来源。
+- fix: #364 专用工具渲染器保留成功路径原始说明：todo 列表折叠展示原始结果，问答解析失败回退原始回答文本，yield 负载之外的说明保留为可展开原文；失败任务卡片默认展开，exitCode=0 但 mergeError 的子代理不再显示为全流程成功（#374）。
+- fix: #372 移除托管运行时对 `task.maxRecursionDepth` 的 UI 专用覆盖，子代理递归深度遵循用户原生设置；保留 autoResume:false 与前台无界 PTY 调用拦截。
+- fix: #356 树导航 Undo/Redo 恢复目标节点的原生文本与图片草稿，输入框新增整段草稿替换接口；会话树面板导航经统一事件路径恢复，Fork 图片草稿沿用既有 restoreNativeDraft。
+- fix: 恢复被误改回的 0.6.38 版本号与 v0.6.38 发布记录；WIP 批次遗留的 PiChatPane serverStore 缺失 import 已补。测试隔离修复：SlashCommandMenu mock 计数、Subagent 预览默认 mock、转录截断断言对齐 8000 字符阈值。
+- verification: app 全套 204 文件／1553 项测试通过；worker 全套 251 项中 238 通过、13 跳过、0 失败；protocol/omp-worker/app 类型检查与 lint（0 error / 18 warning）通过。#354 官方 Goal 生命周期、#360 abort_and_prompt、#367 真实协议错误帧、#382 PTY 接管上游边界仍需隔离环境真实运行验收；#336 安装器升级路径待用户实测。
+
 ## [v0.6.38] - 2026-10-23
 
 - fix(omp): align native sessions queues resources and terminal feedback (b99efce)

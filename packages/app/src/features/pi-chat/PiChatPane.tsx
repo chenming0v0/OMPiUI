@@ -12,7 +12,8 @@ import { FolderProjectDropOverlay } from '../chat/FolderProjectDropOverlay.js'
 import { ChatViewportProvider, useChatViewportMaybe, type ChatViewportValue } from '../chat/chatViewport.js'
 import type { Attachment } from '../attachment/index.js'
 import { ExtensionUiDialogHost } from '../chat/ExtensionUiDialogHost.js'
-import { ProjectTrustPrompt } from './ProjectTrustPrompt'
+import { ExtensionUiSurface } from '../chat/ExtensionUiSurface'
+import { NativeOmpTerminalButton, openNativeOmpTerminal } from '../../components/NativeOmpTerminalButton'
 import { OutlineIndex } from '../../components/OutlineIndex'
 import { buildOutlineSourceEntries } from '../../components/outlineIndexModel'
 import { selectPiTimelineItemsCached } from '../../omp/selectors/timelineCache.js'
@@ -23,6 +24,7 @@ import { bashPendingStore } from '../../omp/bashPendingStore'
 import {
   abortPiOperation,
   abortPiCompaction,
+  abortAndPrompt,
   cyclePiModel,
   cyclePiThinkingLevel,
   forkPiSession,
@@ -48,8 +50,10 @@ import {
   waitHostCommand,
 } from '../../omp/transport/index.js'
 import { layoutStore } from '../../store/layoutStore'
+import { serverStore } from '../../store/serverStore'
 import { useSessionActiveEntry } from '../../store/activeSessionStore'
 import type { PiImageInput } from '../../omp/transport/index.js'
+import type { DeliveryMode } from '../../types/ui'
 import { attachmentToImage, imageInputToAttachment } from './attachmentToImage'
 import { SessionStopCoordinator } from './sessionStopCoordinator'
 import { composerDraftKey, getComposerDraft, updateComposerDraft } from '../chat/input/composerDraftStore'
@@ -74,7 +78,6 @@ import { useSessionContext } from '../../contexts/useSessionContext'
 import { SessionNavigationContext, type SessionNavigationContextValue } from '../../contexts/SessionNavigationContext'
 import { paneLayoutStore } from '../../store/paneLayoutStore'
 import { useServerStore } from '../../hooks/useServerStore'
-import { serverStore } from '../../store/serverStore'
 import { useManagementEvents } from '../../omp/managementEventStore'
 import { getInternalDragSnapshot, subscribeInternalDrag, subscribeInternalDrop } from '../../lib/internalDragCore'
 import { copyTextToClipboard } from '../../utils/clipboard'
@@ -88,7 +91,6 @@ import {
 
 /** 稳定空数组引用：避免 `?? []` 每次渲染新建数组导致 ChatArea memo 失效 */
 const EMPTY_QUEUE: readonly ComposerQueueEntry[] = []
-const PI_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 
 
 
@@ -567,7 +569,8 @@ export function PiChatPane({
         ? null
         : homeModelKey)
 
-  // Thinking level candidates retain the existing model support-map behavior.
+  // Candidates come from official model/runtime controls, never inferred
+  // from a provider map that may expose a different set of efforts.
   const currentModelObj = useMemo(
     () =>
       models.find(m => `${m.provider}:${m.id}` === pendingModelKey) ??
@@ -576,11 +579,11 @@ export function PiChatPane({
     [models, pendingModelKey, currentModel?.provider, currentModel?.id, homeModelKey, sessionId],
   )
   const thinkingLevels = useMemo(() => {
-    if (!currentModelObj) return PI_THINKING_LEVELS
-    if (!currentModelObj.reasoning) return ['off']
-    const map = currentModelObj.thinkingLevelMap as Record<string, string | null> | undefined
-    return PI_THINKING_LEVELS.filter(level => !map || map[level] !== null)
-  }, [currentModelObj])
+    const levels = sessionId && !pendingModelKey
+      ? state?.supportedThinkingLevels
+      : currentModelObj?.supportedThinkingLevels
+    return Array.isArray(levels) ? levels.filter((level): level is string => typeof level === 'string') : []
+  }, [sessionId, pendingModelKey, state?.supportedThinkingLevels, currentModelObj])
   // On home there is no runtime state; the selector shows the persisted
   // variant preference for the home model, applied once the session exists.
   const [homeVariant, setHomeVariant] = useState<string | undefined>(() =>
@@ -756,51 +759,6 @@ export function PiChatPane({
     updateRevertState(null)
   }, [headLeafId, revertState, revertPositions, state, updateRevertState])
 
-  const handleUndo = useCallback(
-    async (entryId: string) => {
-      if (!sessionId || isStreaming) return
-      // 逐回合的 redo 落点：沿被裁掉的原分支，每个用户回合的尾部条目。
-      // 必须在导航前从 branch 捕获
-      const checkpoints = captureRedoCheckpoints(sessionId, entryId)
-      try {
-        const result = await navigatePiTree(sessionId, { entryId })
-        if (result.cancelled || result.aborted) return
-        await commitRedoPlan(sessionId, checkpoints)
-      } catch (error) {
-        uiErrorHandler('undo message', error)
-      }
-    },
-    [sessionId, isStreaming],
-  )
-
-  const handleRedoStep = useCallback(async () => {
-    if (!sessionId || !revertState || isStreaming) return
-    const target = revertState.checkpoints[revertState.restored]
-    if (!target) return
-    try {
-      const result = await navigatePiTree(sessionId, { entryId: target })
-      if (result.cancelled || result.aborted) return
-      const restored = revertState.restored + 1
-      if (restored >= revertState.checkpoints.length) updateRevertState(null)
-      else updateRevertState({ ...revertState, restored })
-    } catch (error) {
-      uiErrorHandler('redo message', error)
-    }
-  }, [sessionId, revertState, isStreaming, updateRevertState])
-
-  const handleRedoAll = useCallback(async () => {
-    if (!sessionId || !revertState || isStreaming) return
-    const target = revertState.checkpoints[revertState.checkpoints.length - 1]
-    if (!target) return
-    try {
-      const result = await navigatePiTree(sessionId, { entryId: target })
-      if (result.cancelled || result.aborted) return
-      updateRevertState(null)
-    } catch (error) {
-      uiErrorHandler('redo all', error)
-    }
-  }, [sessionId, revertState, isStreaming, updateRevertState])
-
   const canUndo = Boolean(sessionId && !isStreaming && items.some(item => item.kind === 'user_message'))
   const canRedo = Boolean(
     sessionId &&
@@ -887,6 +845,79 @@ export function PiChatPane({
     inputBoxRef.current?.setEditorText(extensionState.editorText)
   }, [extensionState, sessionId])
 
+  // #356: 树导航成功后恢复目标节点的原生文本/图片草稿。SessionTreePanel 的
+  // 导航没有输入框句柄，通过 window 事件到达这里，与 Undo/Redo 共用一条恢复路径。
+  const applyNativeEditorDraft = useCallback((sid: string, result: { editorText?: unknown; editorImages?: unknown }) => {
+    if (paneIdentityRef.current.sessionId !== sid) return
+    const hasText = typeof result.editorText === 'string'
+    const hasImages = Array.isArray(result.editorImages)
+    if (!hasText && !hasImages) return
+    const images = hasImages ? (result.editorImages as PiImageInput[]).map(imageInputToAttachment) : undefined
+    const text = hasText ? (result.editorText as string) : inputBoxRef.current?.getEditorText() ?? ''
+    inputBoxRef.current?.setEditorDraft(text, images)
+    setSessionEditorDraft(sid, text, { attachments: images, sync: false })
+    localComposerTextRef.current = text
+    lastEditorTextRef.current = text
+  }, [])
+
+  useEffect(() => {
+    const handleNativeDraft = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string; editorText?: unknown; editorImages?: unknown }>).detail
+      if (!detail?.sessionId) return
+      applyNativeEditorDraft(detail.sessionId, detail)
+    }
+    window.addEventListener('ompiui:native-editor-draft', handleNativeDraft)
+    return () => window.removeEventListener('ompiui:native-editor-draft', handleNativeDraft)
+  }, [applyNativeEditorDraft])
+
+  const handleUndo = useCallback(
+    async (entryId: string) => {
+      if (!sessionId || isStreaming) return
+      // 逐回合的 redo 落点：沿被裁掉的原分支，每个用户回合的尾部条目。
+      // 必须在导航前从 branch 捕获
+      const checkpoints = captureRedoCheckpoints(sessionId, entryId)
+      try {
+        const result = await navigatePiTree(sessionId, { entryId })
+        if (result.cancelled || result.aborted) return
+        applyNativeEditorDraft(sessionId, result)
+        await commitRedoPlan(sessionId, checkpoints)
+      } catch (error) {
+        uiErrorHandler('undo message', error)
+      }
+    },
+    [sessionId, isStreaming, applyNativeEditorDraft],
+  )
+
+  const handleRedoStep = useCallback(async () => {
+    if (!sessionId || !revertState || isStreaming) return
+    const target = revertState.checkpoints[revertState.restored]
+    if (!target) return
+    try {
+      const result = await navigatePiTree(sessionId, { entryId: target })
+      if (result.cancelled || result.aborted) return
+      applyNativeEditorDraft(sessionId, result)
+      const restored = revertState.restored + 1
+      if (restored >= revertState.checkpoints.length) updateRevertState(null)
+      else updateRevertState({ ...revertState, restored })
+    } catch (error) {
+      uiErrorHandler('redo message', error)
+    }
+  }, [sessionId, revertState, isStreaming, updateRevertState, applyNativeEditorDraft])
+
+  const handleRedoAll = useCallback(async () => {
+    if (!sessionId || !revertState || isStreaming) return
+    const target = revertState.checkpoints[revertState.checkpoints.length - 1]
+    if (!target) return
+    try {
+      const result = await navigatePiTree(sessionId, { entryId: target })
+      if (result.cancelled || result.aborted) return
+      applyNativeEditorDraft(sessionId, result)
+      updateRevertState(null)
+    } catch (error) {
+      uiErrorHandler('redo message', error)
+    }
+  }, [sessionId, revertState, isStreaming, updateRevertState, applyNativeEditorDraft])
+
   const refreshTimerRefs = useRef(new Set<number>())
   const scheduleDelayedRefresh = useCallback((sid: string) => {
     const timer = window.setTimeout(() => {
@@ -921,7 +952,7 @@ export function PiChatPane({
     [sessionId],
   )
   const handleSend = useCallback(
-    async (text: string, attachments: Attachment[], options?: { delivery?: 'steer' | 'followUp' }) => {
+    async (text: string, attachments: Attachment[], options?: { delivery?: DeliveryMode }) => {
       const capturedServerGeneration = activeServerGeneration
       let targetSessionId = sessionId
       try {
@@ -957,6 +988,10 @@ export function PiChatPane({
             await copyTextToClipboard(responseText)
             return true
           }
+          case 'ui-terminal':
+            if (!sessionId) throw new Error('Open a session before handing it to the native terminal')
+            await openNativeOmpTerminal(sessionId, currentDirectoryRef.current ?? undefined)
+            return true
         }
         const images = attachments.map(attachmentToImage).filter((image): image is PiImageInput => image !== null)
         const deliverAs = options?.delivery ?? 'followUp'
@@ -987,7 +1022,7 @@ export function PiChatPane({
             await setPiModel(targetSessionId, preferredModel.provider, preferredModel.id)
           }
           const preferredVariant = preferred ? getModelVariantPref(preferred) : undefined
-          if (preferredVariant) {
+          if (preferredVariant && preferredModel?.supportedThinkingLevels?.includes(preferredVariant)) {
             await setPiThinkingLevel(targetSessionId, preferredVariant)
           }
         }
@@ -997,6 +1032,11 @@ export function PiChatPane({
         await stopCoordinatorRef.current.submit(JSON.stringify([capturedServerGeneration, sid]), () => {
           if (paneIdentityRef.current.activeServerGeneration !== capturedServerGeneration ||
               (sessionId && paneIdentityRef.current.sessionId !== sessionId)) throw new Error('Session changed before message submission')
+          // #360: abortAndPrompt is its own native admission, never an
+          // abort followed by a plain prompt re-submission.
+          if (deliverAs === 'abortAndPrompt') {
+            return abortAndPrompt(sid, text, images.length ? images : undefined).then(() => undefined)
+          }
           return sendPiUserMessage(sid, text, images.length ? images : undefined, deliverAs)
         })
         if (paneIdentityRef.current.activeServerGeneration !== capturedServerGeneration || paneIdentityRef.current.sessionId !== sid) return true
@@ -1344,12 +1384,12 @@ export function PiChatPane({
       />
 
       <ExtensionUiDialogHost sessionId={sessionId} collapsed={dialogCollapsed} onCollapsedChange={setDialogCollapsed} />
-      <ProjectTrustPrompt cwd={currentDirectory} />
 
 
       <div ref={inputBoxWrapperRef} className="absolute bottom-0 left-0 right-0 z-10 pointer-events-none">
         {/* 仅由输入区和可见按钮接收触摸，避免收起后的透明占位阻挡消息滚动。 */}
         <div className="pointer-events-none">
+          <ExtensionUiSurface sessionId={sessionId} placement="aboveEditor" />
           <InputBox
             ref={inputBoxRef}
             paneId={paneId}
@@ -1413,6 +1453,10 @@ export function PiChatPane({
                 : undefined
             }
           />
+          <ExtensionUiSurface sessionId={sessionId} placement="belowEditor" />
+          <div className="pointer-events-auto flex justify-end px-4 pb-1">
+            <NativeOmpTerminalButton sessionId={sessionId ?? undefined} directory={currentDirectory ?? undefined} />
+          </div>
         </div>
       </div>
     </div>

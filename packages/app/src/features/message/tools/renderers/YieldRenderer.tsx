@@ -4,6 +4,7 @@ import { ContentBlock } from '../../../../components'
 import { MarkdownRenderer } from '../../../../components/MarkdownRenderer'
 import { CheckCircleIcon } from '../icons'
 import type { ToolRendererProps } from '../types'
+import { getToolExecutionStatus } from '../../../../omp/domain/index.js'
 
 // ============================================
 // Yield Tool Renderer（子代理提交最终结果）
@@ -16,7 +17,12 @@ import type { ToolRendererProps } from '../types'
 export const YieldRenderer = memo(function YieldRenderer({ execution, partKey, data, onFullscreenChange }: ToolRendererProps) {
   const { t } = useTranslation('message')
   const yieldResult = data.yieldResult
-  const isActive = !execution.result
+  const status = getToolExecutionStatus(execution)
+  const isActive = status === 'running'
+
+  if (status === 'pending') {
+    return <span className="text-[length:var(--fs-sm)] text-text-400">{t('toolPart.pending')}</span>
+  }
 
   if (isActive) {
     return (
@@ -27,22 +33,47 @@ export const YieldRenderer = memo(function YieldRenderer({ execution, partKey, d
     )
   }
 
-  if (yieldResult?.status === 'error' || execution.result?.isError) {
+  if (status === 'error' || yieldResult?.status === 'error') {
     return (
-      <ContentBlock
-        stateKey={`message:${partKey}:yield-error`}
-        label={t('yield.failed')}
-        content={yieldResult?.error || t('yield.failed')}
-        variant="error"
-        defaultCollapsed={true}
-        onFullscreenChange={onFullscreenChange}
-        fullscreenId={`yield:${partKey}:error`}
-      />
+      <div className="min-w-0 space-y-1">
+        <ContentBlock
+          stateKey={`message:${partKey}:yield-error`}
+          label={t('yield.failed')}
+          content={data.error || yieldResult?.error || execution.error || t('yield.failed')}
+          variant="error"
+          defaultCollapsed={true}
+          onFullscreenChange={onFullscreenChange}
+          fullscreenId={`yield:${partKey}:error`}
+        />
+        {yieldResult?.rawOutput ? (
+          <ContentBlock
+            stateKey={`message:${partKey}:yield-raw`}
+            label={t('yield.rawOutput', 'Raw result')}
+            content={yieldResult.rawOutput}
+            defaultCollapsed={true}
+            maxHeight={240}
+          />
+        ) : null}
+      </div>
     )
   }
 
   const payload = yieldResult?.data
   if (!hasResultContent(payload)) {
+    // 没有结构化负载时原始结果文本就是全部证据，不能只剩一个“已完成”标记（#364）。
+    if (yieldResult?.rawOutput) {
+      return (
+        <ContentBlock
+          stateKey={`message:${partKey}:yield-raw`}
+          label={t('yield.rawOutput', 'Raw result')}
+          content={yieldResult.rawOutput}
+          defaultCollapsed={false}
+          maxHeight={320}
+          onFullscreenChange={onFullscreenChange}
+          fullscreenId={`yield:${partKey}:raw`}
+        />
+      )
+    }
     return (
       <div className="flex items-center gap-1.5 py-0.5 text-[length:var(--fs-sm)] text-success-100">
         <CheckCircleIcon size={13} />
@@ -51,7 +82,20 @@ export const YieldRenderer = memo(function YieldRenderer({ execution, partKey, d
     )
   }
 
-  return <ResultCard payload={payload} />
+  return (
+    <div className="min-w-0 space-y-1">
+      <ResultCard payload={payload} />
+      {yieldResult?.rawOutput ? (
+        <ContentBlock
+          stateKey={`message:${partKey}:yield-raw`}
+          label={t('yield.rawOutput', 'Raw result')}
+          content={yieldResult.rawOutput}
+          defaultCollapsed={true}
+          maxHeight={240}
+        />
+      ) : null}
+    </div>
+  )
 })
 
 // ============================================

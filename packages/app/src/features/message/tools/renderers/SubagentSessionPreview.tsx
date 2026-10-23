@@ -9,12 +9,14 @@ import { SubagentTranscriptPreview } from './SubagentTranscriptPreview'
 const EMPTY_TRANSCRIPT: OmpSubagentTranscriptItem[] = []
 
 /** 跨 pane 合并历史回填请求；落盘结果不覆盖已经推进的实时转录。 */
-function useSubagentHistoryBackfill(run: OmpSubagentRun | undefined, enabled: boolean): { loading: boolean; reload: () => void } {
+function useSubagentHistoryBackfill(run: OmpSubagentRun | undefined, enabled: boolean): { loading: boolean; error?: string; reload: () => void } {
   const [revision, setRevision] = useState(0)
-  const [loadedRevision, setLoadedRevision] = useState(0)
+  const [loaded, setLoaded] = useState<{ key: string; error?: string }>({ key: '' })
   const id = run?.id
   const sessionId = run?.sessionId
   const sessionFile = run?.sessionFile
+  const runId = run?.runId
+  const key = JSON.stringify([sessionId, id, runId, sessionFile, revision])
   const historyLoaded = run?.historyLoaded
   const hasLiveTranscript = Boolean(run?.transcript.length) && (run?.status === 'running' || run?.status === 'pending')
   useEffect(() => {
@@ -27,19 +29,18 @@ function useSubagentHistoryBackfill(run: OmpSubagentRun | undefined, enabled: bo
             ? (result as Record<string, unknown>)
             : undefined
         if (controller.signal.aborted) return
-        setLoadedRevision(revision)
+        setLoaded({ key })
         ompSubagentStore.applyHistory(sessionId, id, Array.isArray(record?.messages) ? record.messages : [],
-          { truncated: Boolean(record?.truncated), hasMore: Boolean(record?.hasMore) })
+          { truncated: Boolean(record?.truncated), hasMore: Boolean(record?.hasMore) }, { runId, sessionFile })
       })
-      .catch(() => {
+      .catch(cause => {
         if (!controller.signal.aborted) {
-          setLoadedRevision(revision)
-          ompSubagentStore.applyHistory(sessionId, id, [])
+          setLoaded({ key, error: cause instanceof Error ? cause.message : String(cause) })
         }
       })
     return () => controller.abort()
-  }, [id, sessionId, sessionFile, historyLoaded, hasLiveTranscript, enabled, revision])
-  return { loading: loadedRevision !== revision, reload: () => setRevision(value => value + 1) }
+  }, [id, runId, sessionId, sessionFile, historyLoaded, hasLiveTranscript, enabled, revision, key])
+  return { loading: loaded.key !== key, error: loaded.key === key ? loaded.error : undefined, reload: () => setRevision(value => value + 1) }
 }
 
 export const SubagentSessionPreview = memo(function SubagentSessionPreview({
@@ -57,10 +58,11 @@ export const SubagentSessionPreview = memo(function SubagentSessionPreview({
   const isAtBottomRef = useRef(true)
   const maxHeight = useResponsiveMaxHeight(0.25, 120, 240)
   const transcript = run?.transcript ?? EMPTY_TRANSCRIPT
-  const isRunning = run?.status === 'running' || run?.status === 'pending'
+  const isRunning = run?.status === 'running'
   const progress = run?.progress
-  const isLoading = loading || Boolean(run?.sessionFile && !run.historyLoaded && transcript.length === 0)
-  const previousRunIdRef = useRef(run?.id)
+  const isLoading = loading || Boolean(run?.sessionFile && !run.historyLoaded && transcript.length === 0 && !history.error)
+  const identity = run?.runId ?? run?.id
+  const previousRunIdRef = useRef(identity)
   const wasRunningRef = useRef(isRunning)
 
   const handleScroll = useCallback(() => {
@@ -69,20 +71,22 @@ export const SubagentSessionPreview = memo(function SubagentSessionPreview({
   }, [])
   // 使用用户上次滚动的位置判断，而不是新内容撑高以后才重新计算距底距离。
   useLayoutEffect(() => {
-    if (previousRunIdRef.current !== run?.id) {
-      previousRunIdRef.current = run?.id
+    if (previousRunIdRef.current !== identity) {
+      previousRunIdRef.current = identity
       isAtBottomRef.current = true
       wasRunningRef.current = isRunning
     }
     const node = scrollRef.current
     if (node && isAtBottomRef.current && (isRunning || wasRunningRef.current)) node.scrollTop = node.scrollHeight
     wasRunningRef.current = isRunning
-  }, [transcript, maxHeight, isLoading, isRunning, run?.id])
+  }, [transcript, maxHeight, isLoading, isRunning, identity])
 
   const progressSummary = [progress?.currentTool, progress?.lastIntent, ...(progress?.recentOutput ?? [])]
     .filter(Boolean)
     .join('\n')
 
+  const historyError = history.error ? <div className="px-3 py-2"><p role="alert" className="break-words text-[length:var(--fs-xs)] text-danger-100">{history.error}</p><button type="button" onClick={history.reload} disabled={history.loading} className="mt-1 text-[length:var(--fs-xs)] text-text-200 disabled:opacity-50">{t('common:retry')}</button></div> : null
+  if (historyError && transcript.length === 0) return historyError
   if (isLoading && transcript.length === 0 && !progressSummary) {
     return (
       <div
@@ -144,6 +148,7 @@ export const SubagentSessionPreview = memo(function SubagentSessionPreview({
       >
         <SubagentTranscriptPreview items={transcript} isRunning={isRunning} />
       </div>
+      {historyError}
       {run?.historyTruncated && (
         <div role="status" className="flex flex-wrap items-center justify-between gap-2 border-t border-border-200/30 px-3 py-2 text-[length:var(--fs-xxs)] text-text-400">
           <span>{t('task.partialTranscript')}</span>

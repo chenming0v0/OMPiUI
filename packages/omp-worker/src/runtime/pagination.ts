@@ -12,6 +12,9 @@ import type {
   SessionHead,
 } from "@ompiui/protocol";
 import { entryContentReference } from "./entry-content.js";
+import { closeSync, openSync, readSync, fstatSync } from "node:fs";
+import path from "node:path";
+import { nativeOmpSessionsRoot } from "../omp/omp-directories.js";
 
 export type { BranchCheckpoint, EntriesPage, LiveMessage, SessionHead };
 
@@ -185,66 +188,92 @@ function buildEntriesPage<T>(
   };
 }
 
-export function projectEntryAttachments(
-  entry: JsonObject,
-  head: SessionHead,
-): JsonObject {
+export function projectEntryAttachments(entry: JsonObject, head: SessionHead): JsonObject {
   const message = asRecord(entry.message);
-  if (!Array.isArray(message.content)) return entry;
   let changed = false;
-  const content = message.content.map((value, blockIndex) => {
+  const project = (value: JsonValue, blockIndex: number, source: "content" | "details"): JsonValue => {
     const block = asRecord(value);
-    if (
-      block.type !== "image" ||
-      typeof block.data !== "string" ||
-      block.data.length <= 64 * 1024
-    )
-      return value;
+    if (typeof block.data !== "string" || !isImageBlock(block) ||
+      (!block.data.startsWith("blob:sha256:") && block.data.length <= 64 * 1024)) return value;
     changed = true;
-    return {
-      ...block,
-      data: "",
-      attachment: { sessionId: head.header?.id, entryId: entry.id, blockIndex },
-    };
-  });
-  return changed ? { ...entry, message: { ...message, content } } : entry;
+    return { ...block, data: "", attachment: { sessionId: head.header?.id, entryId: entry.id, blockIndex, source } };
+  };
+  const content = Array.isArray(message.content)
+    ? message.content.map((value, index) => project(value, index, "content")) : message.content;
+  let detailIndex = 0;
+  const projectDetails = (value: JsonValue): JsonValue => {
+    if (Array.isArray(value)) return value.map(projectDetails);
+    if (!value || typeof value !== "object") return value;
+    if (isImageBlock(value)) return project(value, detailIndex++, "details");
+    const result: JsonObject = {};
+    for (const [key, child] of Object.entries(value)) result[key] = child === undefined ? undefined : projectDetails(child);
+    return result;
+  };
+  const details = message.details === undefined ? undefined : projectDetails(message.details);
+  return changed ? { ...entry, message: { ...message, content, ...(details === undefined ? {} : { details }) } } : entry;
+}
+
+function isImageBlock(value: JsonObject): boolean {
+  return typeof value.data === "string" && typeof value.mimeType === "string" &&
+    (value.type === "image" || value.mimeType.startsWith("image/"));
+}
+
+function detailImage(value: JsonValue | undefined, index: number): JsonObject | undefined {
+  let seen = 0;
+  const visit = (node: JsonValue | undefined): JsonObject | undefined => {
+    if (!node || typeof node !== "object") return;
+    if (!Array.isArray(node) && isImageBlock(node)) return seen++ === index ? node : undefined;
+    for (const child of Array.isArray(node) ? node : Object.values(node)) {
+      const found = visit(child);
+      if (found) return found;
+    }
+  };
+  return visit(value);
 }
 
 export function imageAttachmentFromEntry(
   entry: JsonObject,
   blockIndex: number,
   offset = 0,
+  source: "content" | "details" = "content",
 ): JsonObject {
   const message = asRecord(entry.message);
-  const content = message.content;
-  if (!Array.isArray(content)) throw notFound("entry has no message content");
-  const block = asRecord(content[blockIndex] as JsonValue);
-  if (
-    block.type !== "image" ||
-    typeof block.mimeType !== "string" ||
-    typeof block.data !== "string"
-  ) {
-    throw notFound("image block not found");
-  }
-  if (
-    !Number.isSafeInteger(offset) ||
-    offset < 0 ||
-    offset > block.data.length ||
-    offset % 4 !== 0
-  ) {
-    throw Object.assign(new Error("invalid attachment offset"), {
-      code: "INVALID_REQUEST",
-    });
-  }
-  const nextOffset = Math.min(block.data.length, offset + 256 * 1024);
-  return {
-    mimeType: block.mimeType,
-    data: block.data.slice(offset, nextOffset),
-    etag: imageEtag(block),
-    nextOffset,
-    totalChars: block.data.length,
-    hasMore: nextOffset < block.data.length,
-  };
+  const block = source === "details" ? detailImage(message.details, blockIndex)
+    : Array.isArray(message.content) ? asRecord(message.content[blockIndex]) : undefined;
+  if (!Number.isSafeInteger(blockIndex) || blockIndex < 0 || !block || !isImageBlock(block)) throw notFound("image block not found");
+  const data = String(block.data);
+  const hash = /^blob:sha256:([a-f0-9]{64})$/.exec(data)?.[1];
+  if (data.startsWith("blob:sha256:") && !hash) throw notFound("invalid image blob reference");
+  let descriptor: number | undefined;
+  try {
+    if (hash) {
+      try { descriptor = openSync(path.join(path.dirname(nativeOmpSessionsRoot()), "blobs", hash), "r"); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") throw notFound("image blob not found");
+        throw error;
+      }
+    }
+    const size = descriptor === undefined ? undefined : fstatSync(descriptor).size;
+    const totalChars = size === undefined ? data.length : Math.ceil(size / 3) * 4;
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > totalChars || offset % 4 !== 0) {
+      throw Object.assign(new Error("invalid attachment offset"), { code: "INVALID_REQUEST" });
+    }
+    const nextOffset = Math.min(totalChars, offset + 256 * 1024);
+    let chunk: string;
+    if (descriptor === undefined) chunk = data.slice(offset, nextOffset);
+    else {
+      const byteOffset = offset / 4 * 3;
+      const bytes = Buffer.allocUnsafe(Math.max(0, Math.min(size! - byteOffset, (nextOffset - offset) / 4 * 3)));
+      let read = 0;
+      while (read < bytes.length) {
+        const count = readSync(descriptor, bytes, read, bytes.length - read, byteOffset + read);
+        if (count === 0) throw notFound("image blob was truncated while reading");
+        read += count;
+      }
+      chunk = bytes.toString("base64");
+    }
+    return { mimeType: String(block.mimeType), data: chunk, etag: hash ? `"${hash}"` : imageEtag(block), nextOffset, totalChars, hasMore: nextOffset < totalChars };
+  } finally { if (descriptor !== undefined) closeSync(descriptor); }
 }
 
 const imageEtags = new WeakMap<JsonObject, string>();

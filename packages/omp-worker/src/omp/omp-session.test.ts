@@ -5,7 +5,6 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { describe, it, type TestContext } from "node:test"
 import type { ImageInput, JsonObject } from "@ompiui/protocol"
-import { parseGoalMessage } from "@ompiui/protocol"
 import { OmpExtensionUiBridge } from "./omp-extension-ui.js"
 import { OmpRpcSession } from "./omp-session.js"
 import type { OmpRpcFrame } from "./rpc-client.js"
@@ -213,6 +212,7 @@ describe("OmpRpcSession authoritative lifecycle", () => {
     assert.equal(state.isStreaming, true)
     assert.equal(state.isSettled, false)
   })
+
   it('reads authoritative queue state without manufacturing an event or invalidating its caller', async t => {
     const { session, native, rpc } = await sessionFixture(t)
     native.isStreaming = false
@@ -232,13 +232,77 @@ describe("OmpRpcSession authoritative lifecycle", () => {
 
 
 
-  
+  it("reopens a stable subagent ID without accepting retired task progress", async t => {
+    const { session, frame } = await sessionFixture(t)
+    frame({ type: "subagent_lifecycle", payload: { id: "reviewer", parentToolCallId: "first", status: "started" } })
+    const first = ((await session.getState()).subagents as JsonObject[])[0]!.runId
+    frame({ type: "subagent_progress", payload: { id: "reviewer", parentToolCallId: "first", progress: { status: "completed", tokens: 7 } } })
+    frame({ type: "subagent_lifecycle", payload: { id: "reviewer", parentToolCallId: "second", status: "started" } })
+    frame({ type: "subagent_progress", payload: { id: "reviewer", parentToolCallId: "first", progress: { status: "failed", tokens: 999 } } })
+    const restarted = ((await session.getState()).subagents as JsonObject[])[0]!
+    assert.notEqual(restarted.runId, first)
+    assert.equal(restarted.status, "running")
+    assert.equal(restarted.parentToolCallId, "second")
+    assert.equal(restarted.progress, undefined)
+  })
 
-  
+  it("starts a fresh autonomous run with the same task owner and rejects retired terminal replay", async t => {
+    const { session, frame } = await sessionFixture(t)
+    const started = { id: "reviewer", parentToolCallId: "task", sessionFile: "reviewer.jsonl", status: "started" }
+    frame({ type: "subagent_lifecycle", payload: started })
+    const first = ((await session.getState()).subagents as JsonObject[])[0]!.runId
+    frame({ type: "subagent_progress", payload: { id: "reviewer", parentToolCallId: "task", progress: { status: "completed", tokens: 7 } } })
+    frame({ type: "subagent_lifecycle", payload: started })
+    const revived = ((await session.getState()).subagents as JsonObject[])[0]!
+    assert.notEqual(revived.runId, first)
+    assert.equal(revived.status, "running")
+    assert.equal(revived.progress, undefined)
+    frame({ type: "subagent_lifecycle", payload: { id: "reviewer", parentToolCallId: "task", runId: first, status: "failed" } })
+    frame({ type: "subagent_progress", payload: { id: "reviewer", parentToolCallId: "task", runId: first, progress: { status: "aborted", tokens: 999 } } })
+    const current = ((await session.getState()).subagents as JsonObject[])[0]!
+    assert.equal(current.runId, revived.runId)
+    assert.equal(current.status, "running")
+    assert.equal(current.progress, undefined)
+  })
 
-  
+  it("does not let an in-flight registry snapshot terminate a later run", async t => {
+    const { session, frame, rpc } = await sessionFixture(t)
+    frame({ type: "subagent_lifecycle", payload: { id: "reviewer", parentToolCallId: "task", status: "started" } })
+    frame({ type: "subagent_lifecycle", payload: { id: "reviewer", parentToolCallId: "task", status: "completed" } })
+    const admitted = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    rpc.onRequest = command => {
+      if (command.type !== "get_subagents") return
+      admitted.resolve()
+      return release.promise.then(() => ({ data: { subagents: [{ id: "reviewer", parentToolCallId: "task", status: "completed" }] } }))
+    }
+    const reading = session.listSubagents()
+    await admitted.promise
+    frame({ type: "subagent_lifecycle", payload: { id: "reviewer", parentToolCallId: "task", status: "started" } })
+    release.resolve()
+    const snapshot = await reading as JsonObject[]
+    assert.equal(snapshot[0]!.status, "running")
+    assert.equal(((await session.getState()).subagents as JsonObject[])[0]!.runId, snapshot[0]!.runId)
+  })
 
-  
+  it("keeps goal and subagents on cancelled replacement and clears both after success", async t => {
+    const { session, frame, rpc } = await sessionFixture(t)
+    await session.manageGoal({ op: "set", objective: "old goal" })
+    await session.manageGoal({ op: "pause" })
+    frame({ type: "goal_updated", goal: { id: "goal-old", objective: "old goal", status: "paused", tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1, updatedAt: 1 } })
+    frame({ type: "subagent_lifecycle", payload: { id: "old-agent", status: "started" } })
+    rpc.onRequest = command => command.type === "new_session" ? { data: { cancelled: true } } : undefined
+    assert.equal((await session.newSession()).cancelled, true)
+    const cancelled = await session.getState()
+    assert.equal(cancelled.sessionId, "old-session")
+    assert.equal((cancelled.goal as JsonObject).objective, "old goal")
+    assert.equal((cancelled.subagents as JsonObject[])[0]!.id, "old-agent")
+    rpc.onRequest = () => undefined
+    await session.newSession()
+    const fresh = await session.getState()
+    assert.equal(fresh.goal, null)
+    assert.deepEqual(fresh.subagents, [])
+  })
 
   it("keeps tree navigation in the same identity and preserves cancelled history", async t => {
     const { session, entries, rpc } = await sessionFixture(t)
@@ -316,6 +380,7 @@ describe("OmpRpcSession authoritative lifecycle", () => {
     await session.ensureSynced()
     frame({ type: "agent_start" })
     await session.manageGoal({ op: "set", objective: "keep goal" })
+    frame({ type: "goal_updated", goal: { id: "goal-keep", objective: "keep goal", status: "active", tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1, updatedAt: 1 } })
     frame({ type: "subagent_lifecycle", payload: { id: "reviewer", status: "started" } })
     frame({ type: "extension_ui_request", method: "input", id: "dialog", title: "Keep" })
     rpc.onRequest = command => {
@@ -420,9 +485,45 @@ describe("OmpRpcSession replacement isolation", () => {
     assert.equal(session.getSessionId(), "replacement-new_session")
   })
 
-  
+  it("discovers a changed model's supported efforts without retaining legacy choices", async t => {
+    const { session, native, rpc } = await sessionFixture(t)
+    native.model = { provider: "custom", id: "effort-model", reasoning: true }
+    rpc.onRequest = command => command.type === "get_available_thinking_levels"
+      ? { data: { levels: ["off", "high", "extreme"] } } : undefined
+    assert.deepEqual((await session.getState()).supportedThinkingLevels, ["off", "high", "extreme"])
+    rpc.onRequest = command => command.type === "get_available_thinking_levels"
+      ? { data: { levels: ["off"] } } : undefined
+    native.model = { provider: "custom", id: "no-effort", reasoning: false }
+    assert.deepEqual((await session.getState()).supportedThinkingLevels, ["off"])
+    assert.equal((await session.getState()).supportsThinking, false)
+  })
 
-  
+  it("does not restore an older model's thinking candidates after a newer selection", async t => {
+    const { session, native, rpc } = await sessionFixture(t)
+    native.model = { provider: "custom", id: "old", reasoning: true }
+    const admitted = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    let reads = 0
+    rpc.onRequest = command => {
+      if (command.type === "set_model") native.model = { provider: "custom", id: "new", reasoning: false }
+      if (command.type !== "get_available_thinking_levels") return
+      if (reads++ === 0) {
+        admitted.resolve()
+        return release.promise.then(() => ({ data: { levels: ["off", "high", "extreme"] } }))
+      }
+      return { data: { levels: ["off"] } }
+    }
+    const oldState = session.getState()
+    await admitted.promise
+    await session.setModel("custom", "new")
+    release.resolve()
+    const refreshed = await oldState
+    assert.equal((refreshed.model as JsonObject).id, "new")
+    assert.deepEqual(refreshed.availableThinkingLevels, ["off"])
+    const current = await session.getState()
+    assert.deepEqual(current.availableThinkingLevels, ["off"])
+    assert.equal(current.supportsThinking, false)
+  })
 
   it("rejects a user submission waiting behind Stop when the session is replaced", async t => {
     const { session, frame, rpc, commands } = await sessionFixture(t)
@@ -569,169 +670,76 @@ describe("OmpRpcSession idle reporting for host recycling", () => {
   })
 })
 
-describe("OmpRpcSession goal pause and continuation", () => {
-  it("sends goal images on the first turn and keeps subsequent continuations compact", async t => {
-    const { session, frame, commands, native } = await sessionFixture(t)
-    native.isStreaming = false
-    await session.getState()
-    await session.manageGoal({ op: "set", objective: '按 "截图" 修复\n布局', images: [image("AA==")] })
-    await new Promise(resolve => setImmediate(resolve))
-    const first = commands.find(command => command.type === "prompt")!
-    assert.equal(parseGoalMessage(String(first.message))?.kind, "set")
-    assert.deepEqual(first.images, [image("AA==")])
-    assert.deepEqual(((await session.getState()).goal as JsonObject).images, [image("AA==")])
-    frame({ type: "agent_start" })
-    native.isStreaming = false
-    frame({ type: "session_settled" })
-    await new Promise(resolve => setTimeout(resolve, 1100))
-    const prompts = commands.filter(command => command.type === "prompt")
-    assert.equal(prompts.length, 2)
-    assert.equal(parseGoalMessage(String(prompts[1]!.message))?.kind, "continuation")
-    assert.equal(prompts[1]!.images, undefined)
-    await session.manageGoal({ op: "drop" })
-    await session.manageGoal({ op: "set", objective: "新目标" })
-    await new Promise(resolve => setImmediate(resolve))
-    const last = commands.filter(command => command.type === "prompt").at(-1)!
-    assert.equal(parseGoalMessage(String(last.message))?.objective, "新目标")
-    assert.equal(last.images, undefined)
+describe("OmpRpcSession official goal lifecycle (#354)", () => {
+  const officialGoal = (overrides: JsonObject = {}): JsonObject => ({
+    id: "goal-1", objective: "Finish the task", status: "active",
+    tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1, updatedAt: 1, ...overrides,
   })
 
-  it("preserves pending goal images across pause before the first submission", async t => {
-    const { session, commands, native } = await sessionFixture(t)
-    native.isStreaming = false
-    await session.getState()
-    await Promise.all([
+  it("proxies set to create without a live goal and replace with one; rejects images", async t => {
+    const { session, commands, frame } = await sessionFixture(t)
+    await session.manageGoal({ op: "set", objective: "Finish the task" })
+    assert.deepEqual(commands.find(command => command.type === "goal"), { type: "goal", op: "create", objective: "Finish the task" })
+    // 官方 goal_updated 帧负责镜像；没有图片附件支持
+    frame({ type: "goal_updated", goal: officialGoal() })
+    assert.equal(((await session.getState()).goal as JsonObject).objective, "Finish the task")
+    await session.manageGoal({ op: "set", objective: "New objective" })
+    assert.deepEqual(commands.filter(command => command.type === "goal").at(-1), { type: "goal", op: "replace", objective: "New objective" })
+    await assert.rejects(
       session.manageGoal({ op: "set", objective: "图片目标", images: [image("AA==")] }),
-      session.manageGoal({ op: "pause" }),
-    ])
-    assert.equal(commands.filter(command => command.type === "prompt").length, 0)
-    await session.manageGoal({ op: "resume" })
-    await new Promise(resolve => setImmediate(resolve))
-    const first = commands.find(command => command.type === "prompt")!
-    assert.deepEqual(first.images, [image("AA==")])
-    assert.equal(parseGoalMessage(String(first.message))?.kind, "set")
+      /does not support image attachments/,
+    )
   })
 
-
-  it("does not submit an idle goal continuation if pause arrives before the RPC write", async t => {
-    const { session, commands, native } = await sessionFixture(t)
-    native.isStreaming = false
-    await session.getState()
-    const setting = session.manageGoal({ op: "set", objective: "Finish the task" })
-    const pausing = session.manageGoal({ op: "pause" })
-    await Promise.all([setting, pausing])
-    assert.deepEqual(commands.filter(command => command.type === "prompt"), [])
-    assert.equal((await session.getState()).isStreaming, false)
-  })
-
-  it("waits for abort and starts only the latest resumed continuation", async t => {
-    const { session, frame, commands, native, rpc } = await sessionFixture(t)
-    frame({ type: "agent_start" })
-    await session.manageGoal({ op: "set", objective: "Finish the task" })
-    let releaseAbort!: () => void
-    rpc.onRequest = command => {
-      if (command.type !== "abort") return
-      native.isStreaming = false
-      frame({ type: "agent_end" })
-      return new Promise<void>(resolve => { releaseAbort = resolve })
-    }
-    const firstPause = session.manageGoal({ op: "pause" })
-    let pauseCompleted = false
-    void firstPause.then(() => { pauseCompleted = true })
-    await session.manageGoal({ op: "resume" })
-    const secondPause = session.manageGoal({ op: "pause" })
-    await session.manageGoal({ op: "resume" })
-    assert.deepEqual(commands.filter(command => command.type === "prompt"), [])
-    assert.equal(pauseCompleted, false)
-    assert.equal(commands.filter(command => command.type === "abort").length, 1)
-    releaseAbort()
-    await Promise.all([firstPause, secondPause])
-    await new Promise<void>(resolve => setImmediate(resolve))
-    assert.equal(commands.filter(command => command.type === "abort").length, 1)
-    const prompts = commands.filter(command => command.type === "prompt")
-    assert.equal(prompts.length, 1)
-    assert.match(String(prompts[0]!.message), /Finish the task/)
-    assert.equal(((await session.getState()).goal as JsonObject).status, "active")
-  })
-
-  it("propagates abort failure and allows a paused goal to retry stopping", async t => {
-    const { session, frame, native, rpc, commands } = await sessionFixture(t)
-    frame({ type: "agent_start" })
-    await session.manageGoal({ op: "set", objective: "Finish the task" })
-    let fail = true
-    rpc.onRequest = command => {
-      if (command.type !== "abort") return
-      if (fail) throw new Error("abort transport failed")
-      native.isStreaming = false
-    }
-    await assert.rejects(session.manageGoal({ op: "pause" }), /abort transport failed/)
-    assert.equal(((await session.getState()).goal as JsonObject).status, "paused")
-    fail = false
+  it("proxies pause/resume/drop and mirrors official goal_updated frames", async t => {
+    const { session, commands, frame } = await sessionFixture(t)
+    frame({ type: "goal_updated", goal: officialGoal() })
     await session.manageGoal({ op: "pause" })
-    assert.equal((await session.getState()).isStreaming, false)
-    assert.equal(commands.filter(command => command.type === "abort").length, 2)
+    assert.deepEqual(commands.find(command => command.type === "goal"), { type: "goal", op: "pause" })
+    await session.manageGoal({ op: "resume" })
+    await session.manageGoal({ op: "drop" })
+    assert.deepEqual(commands.filter(command => command.type === "goal").map(command => command.op), ["pause", "resume", "drop"])
+    // 官方 drop 先广播 dropped 再清空
+    frame({ type: "goal_updated", goal: officialGoal({ status: "dropped" }) })
+    assert.equal(((await session.getState()).goal as JsonObject).status, "dropped")
+    frame({ type: "goal_updated", goal: null })
+    assert.equal((await session.getState()).goal, null)
   })
 
-
-
-  it("does not auto-continue after pausing during the settle grace period", async t => {
-    const { session, frame, commands, native } = await sessionFixture(t)
-    frame({ type: "agent_start" })
-    await session.manageGoal({ op: "set", objective: "Finish the task" })
-    native.isStreaming = false
-    frame({ type: "session_settled" })
-    await session.manageGoal({ op: "pause" })
-    await new Promise(resolve => setTimeout(resolve, 1100))
-    assert.deepEqual(commands.filter(command => command.type === "prompt"), [])
-    assert.equal(((await session.getState()).goal as JsonObject).status, "paused")
+  it("loads the official goal snapshot after a session replacement", async t => {
+    const { session, rpc } = await sessionFixture(t)
+    rpc.onRequest = command => command.type === "goal" && command.op === "snapshot"
+      ? { data: { state: { enabled: true, mode: "active", goal: officialGoal({ objective: "restored goal" }) } } }
+      : undefined
+    await session.newSession()
+    assert.equal(((await session.getState()).goal as JsonObject).objective, "restored goal")
   })
 
-  it("still auto-continues an active goal after the turn settles", async t => {
-    const { session, frame, commands, native } = await sessionFixture(t)
-    frame({ type: "agent_start" })
-    await session.manageGoal({ op: "set", objective: "Finish the task" })
-    native.isStreaming = false
-    frame({ type: "session_settled" })
-    await new Promise(resolve => setTimeout(resolve, 1100))
-    assert.equal(commands.filter(command => command.type === "prompt").length, 1)
-    assert.equal(((await session.getState()).goal as JsonObject).status, "active")
-  })
-
-  it("still completes a goal with the completion marker without another turn", async t => {
-    t.mock.timers.enable({ apis: ["setTimeout"] })
-    const { session, frame, commands, native, entries } = await sessionFixture(t)
-    frame({ type: "agent_start" })
-    await session.manageGoal({ op: "set", objective: "Finish the task" })
-    entries.push({
-      type: "message", id: "completed", parentId: null, timestamp: new Date(1).toISOString(),
-      message: { role: "assistant", content: [{ type: "text", text: "Done\nGOAL_COMPLETE" }], timestamp: 1 },
-    })
-    native.isStreaming = false
-    frame({ type: "session_settled" })
-    await session.ensureSynced()
-    t.mock.timers.tick(1000)
-    assert.deepEqual(commands.filter(command => command.type === "prompt"), [])
-    assert.equal(((await session.getState()).goal as JsonObject).status, "complete")
-  })
-
-  it("ignores a completion marker on an inactive sibling branch", async t => {
-    t.mock.timers.enable({ apis: ["setTimeout"] })
-    const { session, frame, native, entries, commands } = await sessionFixture(t)
-    entries.push({ id: "question", type: "message", parentId: null, message: { role: "user", content: "request" } },
-      { id: "active", type: "message", parentId: "question", message: { role: "assistant", content: [{ type: "text", text: "work remains" }] } },
-      { id: "sibling", type: "message", parentId: "question", message: { role: "assistant", content: [{ type: "text", text: "GOAL_COMPLETE" }] } })
-    native.leafId = "active"
-    frame({ type: "agent_start" })
-    await session.manageGoal({ op: "set", objective: "Finish active branch" })
-    native.isStreaming = false
-    frame({ type: "session_settled" })
-    await session.ensureSynced()
-    t.mock.timers.tick(1000)
-    const submitted = Promise.withResolvers<void>()
-    queueMicrotask(submitted.resolve)
-    await submitted.promise
-    assert.equal(((await session.getState()).goal as JsonObject).status, "active")
-    assert.equal(parseGoalMessage(String(commands.find(command => command.type === "prompt")?.message))?.objective, "Finish active branch")
+  it("keeps the mirror empty when the goal bridge is unavailable", async t => {
+    const { session, rpc } = await sessionFixture(t)
+    rpc.onRequest = command => command.type === "goal" ? { success: false, error: "bridge unavailable" } : undefined
+    await session.newSession()
+    assert.equal((await session.getState()).goal, null)
   })
 })
 
+describe("OmpRpcSession configuration reporting", () => {
+  it("preserves native model reasoning metadata when the available-model cache has not caught up", async t => {
+    const { session, native } = await sessionFixture(t)
+    native.model = { provider: "custom", id: "correct", name: "Correct model", reasoning: true, input: ["text", "image"] }
+    native.thinkingLevel = "xhigh"
+    const state = await session.getState()
+    assert.deepEqual(state.model, native.model)
+    assert.equal(state.thinkingLevel, "xhigh")
+  })
+
+  it("rejects unsuccessful model and thinking RPC responses instead of acknowledging the selection", async t => {
+    const { session } = await sessionFixture(t)
+    const client = (session as unknown as { client: { request: unknown } }).client
+    t.mock.method(client, "request", async (command: JsonObject) => ({
+      type: "response", command: command.type, success: false, error: "unsupported selection",
+    }))
+    await assert.rejects(session.setModel("custom", "wrong"), /unsupported selection/)
+    await assert.rejects(session.setThinkingLevel("wrong"), /unsupported selection/)
+  })
+})

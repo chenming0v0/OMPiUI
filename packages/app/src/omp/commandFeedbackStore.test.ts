@@ -44,6 +44,7 @@ describe('commandFeedbackStore', () => {
     expect(commandFeedbackStore.addNativeEvent('b', { type: 'prompt_result', agentInvoked: true, status: 'error', error: { message: 'Agent failure' } })).toBeNull()
     expect(commandFeedbackStore.getSnapshot().sessions.b).toBeUndefined()
   })
+
   it('retains a real extension command throw as failure even when native local completion follows', () => {
     commandFeedbackStore.addNativeEvent('a', { type: 'extension_error', event: 'command', extensionPath: 'command:review', error: 'Permission denied\nNo changes written.' })
     expect(commandFeedbackStore.addNativeEvent('a', { type: 'prompt_result', agentInvoked: false, status: 'completed' })).toBeNull()

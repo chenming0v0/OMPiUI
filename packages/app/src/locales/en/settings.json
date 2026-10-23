@@ -1,8 +1,5 @@
 {
-  "backendPreview": {
-    "title": "Backend Preview",
-    "thinking": "Subagent Thinking"
-  },
+  "backendPreview": { "title": "Backend Preview", "thinking": "Subagent Thinking" },
   "title": "Settings",
   "closeSettings": "Close settings",
   "version": "OMPiUI v{{version}}",
@@ -537,6 +534,8 @@
     "eventQuestionDesc": "When AI is waiting for your input",
     "eventError": "Error",
     "eventErrorDesc": "When a session encounters an error",
+    "eventWarning": "Warning",
+    "eventWarningDesc": "When a session reports a warning notice",
     "customSound": "Custom",
     "noSound": "None",
     "preview": "Preview",
@@ -802,29 +801,7 @@
     "continue": "Continue",
     "denyAction": "Deny",
     "trustAction": "Trust",
-    "bashGroup": "One-shot script",
-    "trustTitle": "Project trust",
-    "trustDescription": "Allow the Agent to load this project's extensions, skills and prompt templates. Only trust projects you know.",
-    "trusted": "Trusted",
-    "notTrusted": "Not trusted",
-    "decisionRequired": "Decision required",
-    "trustReset": "Trust decision reset",
-    "trustDenied": "Project marked untrusted",
-    "trustGranted": "Project trusted",
-    "trustInherited": "Using trust settings from {{source}}.",
-    "trustSavedDecision": "Set for this project. Takes effect immediately.",
-    "trustDefaultDecision": "Using the default policy: {{policy}}.",
-    "resetTrust": "Use default policy",
-    "revokeTrust": "Revoke trust",
-    "trustPromptTitle": "Trust this project?",
-    "trustPromptDesc": "\"{{directory}}\" requires your trust before project extensions, skills and prompts may load.",
-    "trustPromptHint": "You can change this decision later in Settings → Management → Project trust.",
-    "trustPromptLater": "Not now",
-    "trustPolicies": {
-      "ask": "Ask first",
-      "always": "Always trust",
-      "never": "Never trust"
-    }
+    "bashGroup": "One-shot script"
   },
   "providers": {
     "backToProviders": "Back to providers",

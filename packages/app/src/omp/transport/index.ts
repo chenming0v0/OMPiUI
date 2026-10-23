@@ -54,7 +54,6 @@ import type {
   PiModelsDevLookupResult,
   PiModelRuntimeSnapshot,
   PiPackageUpdate,
-  PiProjectTrust,
   PiProviderAuthInfo,
   PiSettingsSnapshot,
 } from '../domain/index.js'
@@ -514,21 +513,13 @@ export function getHostTerminalWebSocketUrl(terminalId: string, ticket: string, 
   return url.toString()
 }
 
-// Global Pi commands (settings / trust / providers / model runtime / packages)
+// Global Pi commands (settings / providers / model runtime / packages)
 export function getPiSettings(cwd: string, signal?: AbortSignal): Promise<PiSettingsSnapshot> {
   return postPiGlobalCommand('settings.get', { cwd }, signal)
 }
 
 export function patchPiSettings(cwd: string, patch: JsonObject, signal?: AbortSignal): Promise<PiSettingsSnapshot> {
   return postPiGlobalCommand('settings.patch', { cwd, patch }, signal)
-}
-
-export function getProjectTrust(cwd: string, signal?: AbortSignal): Promise<PiProjectTrust> {
-  return postPiGlobalCommand('trust.get', { cwd }, signal)
-}
-
-export function setProjectTrust(cwd: string, decision: boolean | null, signal?: AbortSignal): Promise<PiProjectTrust> {
-  return postPiGlobalCommand('trust.set', { cwd, decision }, signal)
 }
 
 export function listPiProviders(signal?: AbortSignal): Promise<PiProviderAuthInfo[]> {
@@ -1150,6 +1141,27 @@ export function setPiFollowUpMode(
   signal?: AbortSignal,
 ): Promise<JsonValue> {
   return postPiSessionCommand(sessionId, 'setFollowUpMode', { mode }, signal)
+}
+
+export function setPiInterruptMode(
+  sessionId: string,
+  mode: 'immediate' | 'wait',
+  signal?: AbortSignal,
+): Promise<JsonValue> {
+  return postPiSessionCommand(sessionId, 'setInterruptMode', { mode }, signal)
+}
+
+/**
+ * One atomic native interruption: abort the current work and deliver the
+ * message in the same official abort_and_prompt command (#360). The backend
+ * decides admission; the client must not emulate it with abort + prompt.
+ */
+export function abortAndPromptPi(
+  sessionId: string,
+  params: { text: string; images?: PiImageInput[] },
+  signal?: AbortSignal,
+): Promise<JsonValue> {
+  return postPiSessionCommand(sessionId, 'abortAndPrompt', params, signal)
 }
 
 /**

@@ -23,5 +23,6 @@ export function getFrontendCommands(): Command[] {
     { name: 'ui-sessions', description: 'Open the OMPiUI session list', source: 'frontend' },
     { name: 'ui-tree', description: 'Open the OMPiUI session tree panel', source: 'frontend' },
     { name: 'ui-copy', description: 'Copy the last response to the browser clipboard', source: 'frontend' },
+    { name: 'ui-terminal', description: 'Hand this session to the official interactive terminal', source: 'frontend' },
   ]
 }

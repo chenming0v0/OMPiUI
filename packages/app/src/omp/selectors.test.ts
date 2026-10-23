@@ -269,4 +269,22 @@ describe('tool execution history', () => {
     expect(blocks.map(call => getToolExecutionStatus({ ...old.toolExecutions?.[call.id], call }))).toEqual(['pending', 'pending', 'pending', 'pending'])
   })
 
+  it('renders an orphan result at a pagination boundary and removes its fallback once the owner is loaded', () => {
+    const result = { type: 'message', id: 'orphan-result', parentId: 'missing-owner', timestamp: '2026-10-22T00:00:00Z', message: { role: 'toolResult', toolCallId: 'call-orphan', toolName: 'read', content: [{ type: 'text', text: 'Permission denied' }], isError: true, timestamp: 1 } } as SessionEntry
+    const orphan = selectPiTimelineItems(page([result]))[0]
+    expect(orphan).toMatchObject({ kind: 'tool_result', execution: { call: { id: 'call-orphan', name: 'read' }, result: { isError: true, content: [{ text: 'Permission denied' }] } } })
+    const owner: SessionEntry = {
+      type: 'message', id: 'owner', parentId: null, timestamp: '2026-10-22T00:00:00Z',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'toolCall', id: 'call-orphan', name: 'read', arguments: { path: 'private.txt' } }],
+        api: 'anthropic-messages', provider: 'anthropic', model: 'm',
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        stopReason: 'toolUse', timestamp: 1,
+      },
+    }
+    const hydrated = selectPiTimelineItems(page([owner, result]))
+    expect(hydrated.map(item => item.kind)).toEqual(['assistant_message'])
+    expect(hydrated[0]).toMatchObject({ toolResults: { 'call-orphan': { isError: true } } })
+  })
 })

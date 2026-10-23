@@ -50,6 +50,8 @@ export interface YieldResultData {
   data?: unknown
   /** 提交失败时的错误信息 */
   error?: string
+  /** 结果文本中负载之外的原始说明（跳过/截断/限制），不能随结构化负载一起丢失（#364） */
+  rawOutput?: string
 }
 
 export interface DiagnosticInfo {
