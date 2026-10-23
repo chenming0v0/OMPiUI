@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { OMP_SDK_VERSION } from "../packages/omp-worker/src/omp/constants.ts"
 
 export const OMP_BUN_VERSION = "1.3.14"
 const packageName = "@oh-my-pi/pi-coding-agent"
+const runtimePackageName = "ompiui-omp-runtime"
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 
 // Reuse the packaging scripts' direct npm-cli invocation on Windows: no cmd
@@ -68,7 +69,7 @@ export async function prepareOmpRuntime({ version = OMP_SDK_VERSION, out = join(
     const binaryVersion = execFileSync(omp, ["--version"], { encoding: "utf8", timeout: 30_000, windowsHide: true }).trim()
     if (binaryVersion.match(/\b\d+\.\d+\.\d+\b/)?.[0] !== version) throw new Error(`Official binary version ${binaryVersion} does not match requested source ${version}`)
     writeFileSync(join(staging, "package.json"), JSON.stringify({
-      name: "ompiui-omp-runtime", private: true, type: "module",
+      name: runtimePackageName, private: true, type: "module",
       dependencies: { [packageName]: version, bun: OMP_BUN_VERSION },
     }, null, 2) + "\n")
     const [npm, prefix] = npmInvocation()
@@ -76,6 +77,11 @@ export async function prepareOmpRuntime({ version = OMP_SDK_VERSION, out = join(
     execFileSync(npm, [...prefix, "install", "--prefix", staging, "--omit=dev", "--include=optional", "--no-audit", "--no-fund"], {
       cwd: staging, stdio: "inherit", shell: false, windowsHide: true,
     })
+    // npm 10 links the private root package to staging; relocation would dangle.
+    const selfLink = join(staging, "node_modules", runtimePackageName)
+    if (lstatSync(selfLink, { throwIfNoEntry: false })?.isSymbolicLink() && realpathSync(selfLink) === realpathSync(staging)) {
+      unlinkSync(selfLink)
+    }
     const bun = join(staging, "bin", `bun${suffix}`)
     const bunPackageRoot = join(staging, "node_modules", "bun")
     const bunPackage = JSON.parse(readFileSync(join(bunPackageRoot, "package.json"), "utf8"))
