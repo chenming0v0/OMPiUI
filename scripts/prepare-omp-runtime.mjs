@@ -77,7 +77,10 @@ export async function prepareOmpRuntime({ version = OMP_SDK_VERSION, out = join(
       cwd: staging, stdio: "inherit", shell: false, windowsHide: true,
     })
     const bun = join(staging, "bin", `bun${suffix}`)
-    cpSync(join(staging, "node_modules", "bun", "bin", `bun${suffix}`), bun)
+    const bunPackageRoot = join(staging, "node_modules", "bun")
+    const bunPackage = JSON.parse(readFileSync(join(bunPackageRoot, "package.json"), "utf8"))
+    // Bun's installer uses its npm bin path on every OS, including Unix.
+    cpSync(join(bunPackageRoot, bunPackage.bin.bun), bun)
     chmodSync(bun, 0o755)
     const bunVersion = execFileSync(bun, ["--version"], { encoding: "utf8", timeout: 30_000, windowsHide: true }).trim()
     if (bunVersion !== OMP_BUN_VERSION) throw new Error(`Packaged Bun version ${bunVersion} does not match ${OMP_BUN_VERSION}`)
