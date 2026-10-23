@@ -3,6 +3,7 @@
  * 打包桌面/便携形态：
  *   dist-desktop/omp-worker.exe     Bun 编译的统一 server/worker/CLI 文件
  *   dist-desktop/web/…             Web 客户端构建产物
+ *   dist-desktop/omp-runtime/…     Official OMP binary, matching public source/deps and Bun
  *
  * 用法：node scripts/package-desktop.mjs [--skip-build] [--target bun-windows-x64]
  */
@@ -10,12 +11,18 @@ import { execFileSync } from "node:child_process"
 import { cpSync, existsSync, mkdirSync, rmSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { inspectOmpRuntime, prepareOmpRuntime } from "./prepare-omp-runtime.mjs"
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const outDir = join(repoRoot, "dist-desktop")
 const args = process.argv.slice(2)
 const skipBuild = args.includes("--skip-build")
 const target = args.find((arg, i) => args[i - 1] === "--target") ?? "bun-windows-x64"
+const targetPlatform = target.includes("windows") ? "win32" : target.includes("darwin") ? "darwin" : "linux"
+const targetArch = target.includes("arm64") ? "arm64" : "x64"
+if (targetPlatform !== process.platform || targetArch !== process.arch) {
+  throw new Error(`Desktop public OMP native dependencies must be packaged on the target host (${targetPlatform}/${targetArch}); current host is ${process.platform}/${process.arch}`)
+}
 
 // npm 在 Windows 上的入口是 npm.cmd(cmd 批处理),shell:false 时无法直接执行,
 // 也不能为此开启 shell(参数会被 cmd.exe 按空格拆分)。与 scripts/test-mock.mjs 一致:
@@ -49,6 +56,7 @@ const goOs = target.includes("windows") ? "windows" : target.includes("darwin") 
 const goArch = target.includes("arm64") ? "arm64" : "amd64"
 const tailscaleOut = join(outDir, "tailscale")
 run(process.execPath, ["scripts/build-tailscale.mjs", "--os", goOs, "--arch", goArch, "--out", tailscaleOut])
+await prepareOmpRuntime({ out: join(outDir, "omp-runtime") })
 rmSync(join(outDir, "runtime"), { recursive: true, force: true })
 rmSync(join(outDir, "piui-server.exe"), { force: true })
 rmSync(join(outDir, "piui-server"), { force: true })
@@ -94,6 +102,7 @@ run("bun", [
   "--outfile", outfile,
 ])
 
+inspectOmpRuntime(join(outDir, "omp-runtime"), targetPlatform, targetArch)
 const requiredFiles = [
   outfile,
   join(tailscaleOut, `ompiui-tailscale-bridge${goOs === "windows" ? ".exe" : ""}`),
@@ -109,5 +118,6 @@ console.info(`
 [package] done → ${outDir}
   omp-worker    Web/API 服务、OMP worker 和原生 CLI
   web/         Web 客户端，server 同端口托管
+  omp-runtime/ Official OMP + matching public APIs/dependencies + private Bun runtime
 局域网/手机访问：omp-worker.exe web --host 0.0.0.0
 `)

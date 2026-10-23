@@ -1,56 +1,72 @@
 import { spawn, spawnSync } from "node:child_process"
-import { existsSync, readFileSync, realpathSync } from "node:fs"
-import { createRequire } from "node:module"
-import os from "node:os"
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs"
 import path from "node:path"
-import { ompCommandEnvironment, resolveOmpCommand } from "./omp-command.js"
+import { locateExecutable, ompCommandEnvironment, resolveOmpBunCommand, resolveOmpCommand } from "./omp-command.js"
+import { resolveInstalledOmpRuntime } from "./omp-runtime.js"
+import { parseOmpVersion } from "./omp-version.js"
 
 const packageName = "@oh-my-pi/pi-coding-agent"
+const selectedVersions = new Map<string, string>()
 
-/** Locate the installed official source without loading it in the worker. */
+/** The public source package must belong to the selected CLI, never an ambient global install. */
 export function resolveOmpPackageRoot(bin?: string, env: NodeJS.ProcessEnv = process.env): string {
   env = ompCommandEnvironment(env)
-  const explicit = env.OMPI_OMP_PACKAGE_ROOT?.trim()
-  const selectedBin = bin?.trim() || env.OMPI_OMP_BIN?.trim() || "omp"
-  const invocation = explicit ? undefined : resolveOmpCommand(selectedBin, env)
-  let executable = invocation?.args[0] ?? invocation?.command ?? ""
-  if (!explicit && !path.isAbsolute(executable)) {
-    const probe = spawnSync(process.platform === "win32" ? "where.exe" : "which", [executable], {
-      env, encoding: "utf8", timeout: 5_000, windowsHide: true,
+  const invocation = resolveOmpCommand(bin, env)
+  const executable = locateExecutable(invocation.command, env) ?? invocation.command
+  const files = [executable, ...invocation.args]
+  const identity = files.map(file => {
+    try { const stat = statSync(file); return `${file}:${stat.size}:${stat.mtimeMs}` } catch { return file }
+  }).join("\n") + `\n${env.PATH ?? ""}`
+  let version = selectedVersions.get(identity)
+  if (!version) {
+    const probe = spawnSync(invocation.command, [...invocation.args, "--version"], {
+      env, encoding: "utf8", timeout: 10_000, windowsHide: true, shell: false,
     })
-    executable = probe.status === 0 ? probe.stdout.trim().split(/\r?\n/)[0]! : executable
+    const detected = probe.status === 0 ? parseOmpVersion(`${probe.stdout ?? ""}\n${probe.stderr ?? ""}`) : null
+    if (!detected) {
+      throw Object.assign(new Error(`Cannot verify the selected official OMP CLI version (${executable}): ${probe.error?.message ?? probe.stderr?.trim() ?? "missing version"}. Install the OMPiUI runtime bundle or select a working official CLI.`), { code: "OMP_VERSION_UNVERIFIED" })
+    }
+    version = detected
+    selectedVersions.set(identity, version)
   }
-  if (executable && existsSync(executable)) executable = realpathSync(executable)
+  const explicit = env.OMPI_OMP_PACKAGE_ROOT?.trim()
   const candidates: string[] = explicit ? [path.resolve(explicit)] : []
+  const runtime = explicit ? undefined : resolveInstalledOmpRuntime(env)
   if (!explicit) {
-    for (let directory = path.dirname(path.resolve(executable)); ; directory = path.dirname(directory)) {
-      candidates.push(directory, path.join(directory, "node_modules", packageName), path.join(directory, "install", "global", "node_modules", packageName))
+    let entry = invocation.args[0] ?? executable
+    if (existsSync(entry)) entry = realpathSync(entry)
+    for (let directory = path.dirname(path.resolve(entry)); ; directory = path.dirname(directory)) {
+      candidates.push(directory, path.join(directory, "node_modules", packageName))
       if (directory === path.dirname(directory)) break
     }
-    if (selectedBin === "omp" || selectedBin === "omp.exe") {
-      try {
-        const entry = createRequire(import.meta.url).resolve(packageName)
-        for (let directory = path.dirname(entry); directory !== path.dirname(directory); directory = path.dirname(directory)) candidates.push(directory)
-      } catch { /* Global CLI installations need not be in the worker's module search path. */ }
-      const home = (process.platform === "win32" ? env.USERPROFILE : env.HOME) || os.homedir()
-      candidates.push(path.join(home, ".bun", "install", "global", "node_modules", packageName))
-      if (env.APPDATA) candidates.push(path.join(env.APPDATA, "npm", "node_modules", packageName))
-    }
+    if (runtime) candidates.push(path.join(runtime.root, "node_modules", packageName))
   }
-  for (const candidate of candidates) {
+  const incompatible: string[] = []
+  for (const candidate of new Set(candidates)) {
     const manifest = path.join(candidate, "package.json")
     if (!existsSync(manifest)) continue
-    try {
-      if (JSON.parse(readFileSync(manifest, "utf8")).name === packageName && existsSync(path.join(candidate, "src", "config", "settings.ts"))) return realpathSync(candidate)
-    } catch { /* Continue to the next independently located installation. */ }
+    let metadata: { name?: string; version?: string }
+    try { metadata = JSON.parse(readFileSync(manifest, "utf8")) } catch { continue }
+    if (metadata.name !== packageName || !existsSync(path.join(candidate, "src", "config", "settings.ts"))) continue
+    if (metadata.version !== version) {
+      incompatible.push(`${candidate} (${metadata.version ?? "unversioned"})`)
+      continue
+    }
+    if (runtime && candidate === path.join(runtime.root, "node_modules", packageName) && runtime.version !== version) {
+      incompatible.push(`${runtime.root} (bundle ${runtime.version})`)
+      continue
+    }
+    return realpathSync(candidate)
   }
-  throw new Error("Cannot locate official OMP public API sources. Set OMPI_OMP_PACKAGE_ROOT to the installed @oh-my-pi/pi-coding-agent package directory.")
+  throw Object.assign(new Error(incompatible.length
+    ? `OMP public API version mismatch: selected CLI is ${version}; available sources: ${incompatible.join(", ")}. Prepare the runtime with --version ${version}, or select the bundled official CLI.`
+    : `Cannot locate official OMP ${version} public API sources with their dependencies. Install/prepare the OMPiUI runtime bundle with --version ${version}. An external npm installation may be selected with OMPI_OMP_PACKAGE_ROOT.`), { code: incompatible.length ? "OMP_SOURCE_VERSION_MISMATCH" : "OMP_SOURCE_MISSING" })
 }
 
 /** Run trusted bridge source with the official Bun-only APIs in a separate process. */
 export async function runOmpNativeScript<T>(cwd: string, source: string, input: unknown, timeoutMs = 120_000): Promise<T> {
   const packageRoot = resolveOmpPackageRoot()
-  const runtime = resolveOmpCommand(process.env.OMPI_BUN_BIN?.trim() || "bun")
+  const runtime = resolveOmpBunCommand()
   const payload = JSON.stringify({ cwd: path.resolve(cwd), packageRoot, input })
   const marker = "\nOMPI_NATIVE_RESULT="
   const wrapper = `

@@ -108,9 +108,9 @@ jobs:
         with:
           build-artifact: ci-build-${{ matrix.platform }}
 
-      # 同时验证当前标定版本和官方最新稳定版，及时发现上游目录或 RPC 协议变化。
-      # 使用官方原生二进制，Windows 下不经过会拆分空格参数的 cmd 启动脚本。
-      - name: Install official OMP binary
+      # Supported/latest keep the official standalone binary under test, but
+      # stage its exact npm public sources, native dependencies and private Bun.
+      - name: Install official OMP binary and matching public runtime
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -136,8 +136,13 @@ jobs:
             chmod +x $ompTestBinary
             if ($LASTEXITCODE -ne 0) { throw 'Cannot make OMP executable' }
           }
-          $ompTestDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          Write-Host "Testing official OMP release $ompTestRelease"
+          $ompTestVersion = $ompTestRelease -replace '^v', ''
+          $ompRuntime = Join-Path $env:RUNNER_TEMP 'omp-interop-runtime'
+          node scripts/prepare-omp-runtime.mjs --version $ompTestVersion --out $ompRuntime --binary $ompTestBinary
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot prepare same-version public OMP runtime' }
+          "OMPI_OMP_RUNTIME_DIR=$ompRuntime" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "OMPI_OMP_BIN=$(Join-Path $ompRuntime "bin/$ompTestName")" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Testing official binary and npm public sources from OMP release $ompTestRelease"
           & $ompTestBinary --version
           if ($LASTEXITCODE -ne 0) { throw 'Official OMP binary cannot start' }
 
@@ -146,6 +151,9 @@ jobs:
 
       - name: Verify native OMP model role configuration
         run: node scripts/verify-model-roles.mjs
+
+      - name: Verify isolated Node and compiled Bun runtime continuation
+        run: node scripts/verify-packaged-omp-runtime.mjs --runtime "$OMPI_OMP_RUNTIME_DIR"
 
   test-omp-config-windows:
     name: OMP npm config windows

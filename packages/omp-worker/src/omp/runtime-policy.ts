@@ -16,10 +16,11 @@ function writePolicyFile(file: string, contents: string): void {
 
 /** 最后加载的进程级配置与受管桥；不修改用户 CLI 设置。 */
 export function runtimePolicyArgs(bin?: string, env: NodeJS.ProcessEnv = process.env): string[] {
-  const bridgeSource = runtimeBridgeExtension(resolveOmpPackageRoot(bin, env))
+  resolveOmpPackageRoot(bin, env)
+  const bridgeSource = runtimeBridgeExtension()
   const directory = join(dirname(managedSessionsRoot()), "runtime-config")
   const file = join(directory, "runtime-policy.yml")
-  // Different selected installations must not overwrite a running runtime's
+  // Content-addressed bridge files must not overwrite a running runtime's
   // extension path: native reload imports the same file again.
   const bridge = join(directory, `runtime-bridge-${createHash("sha256").update(bridgeSource).digest("hex").slice(0, 16)}.mjs`)
   mkdirSync(directory, { recursive: true, mode: 0o700 })

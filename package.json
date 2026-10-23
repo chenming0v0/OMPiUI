@@ -34,6 +34,7 @@
     "build:tailscale": "node scripts/build-tailscale.mjs",
     "build:tailscale:android": "node scripts/build-tailscale-android.mjs",
     "prepare:tauri-resources": "node scripts/prepare-tauri-resources.mjs",
+    "prepare:omp-runtime": "node scripts/prepare-omp-runtime.mjs",
     "prepare:tauri-mobile-resources": "node scripts/prepare-tauri-mobile-resources.mjs",
     "tauri": "npm run tauri -w @ompiui/app --",
     "tauri:dev": "npm run tauri:dev -w @ompiui/app",

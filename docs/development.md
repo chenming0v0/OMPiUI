@@ -26,11 +26,17 @@ app (React/Vite) <-> HTTP + WebSocket <-> server (Node)
 
 OMPiUI 通过官方 `omp --mode rpc` 跨进程调用 OMP，而不是在 Node 服务中嵌入 Agent SDK。OMP 负责执行编程任务；OMPiUI 负责界面、连接和运行时协调。
 
-桌面端同样使用宿主机安装的官方 `omp`，不捆绑 Agent SDK，也不存在宿主机／内置 Pi SDK 切换。默认从 `PATH` 查找 `omp`；需要指定版本或安装位置时，在本机服务的环境变量中设置 `OMPI_OMP_BIN` 为 CLI 可执行文件路径，然后重启本地服务。旧 `OMPIUI_USE_SYSTEM_PI`、`OMPIUI_SDK_PATH` 已失效，桌面设置加载与备份导入会移除它们（包括旧 `PIUI_` 前缀），不会把 SDK 目录误转换为可执行文件路径。官方 OMP 仍使用的 `PI_CODING_AGENT_DIR` 等变量不属于迁移残留。
+桌面发布与服务器安装默认使用预装 `omp-runtime/`：`bin/omp`（Windows 为 `omp.exe`）是官方独立 CLI，`bin/bun` 是 Bun 1.3.14，`node_modules/` 保留与 CLI 完全同版本的官方 npm 源码包及当前平台完整生产／原生依赖。服务仍通过 RPC 调用官方进程，不在 Node 内嵌第二份 Agent SDK；运行不要求全局 npm 包或全局 Bun。运行时解析只读取已安装资源，不在启动或浏览时下载、安装依赖。
+
+显式 `OMPI_OMP_BIN` 优先于内置 CLI（设为 `omp` 可选择 `PATH` 中的 CLI）；未显式指定时先选内置运行时，没有预装资源才从 `PATH` 查找。公共源码必须与所选 CLI 的实测版本完全一致，缺失或不匹配明确失败，不借用无关全局包。`OMPI_OMP_RUNTIME_DIR` 替换预装运行时根，`OMPI_OMP_PACKAGE_ROOT` 显式指定同版本官方包目录，`OMPI_BUN_BIN` 指定真实 Bun 解释器。旧 `OMPIUI_USE_SYSTEM_PI`、`OMPIUI_SDK_PATH` 已失效，桌面设置加载与备份导入会移除它们（包括旧 `PIUI_` 前缀），不会把 SDK 目录误转换为可执行文件路径。官方 OMP 仍使用的 `PI_CODING_AGENT_DIR` 等变量不属于迁移残留。
 
 健康检查以 `ompVersion: string | null` 返回已启动 worker 探测到的 CLI 版本；未有握手、mock 驱动或探测失败时为 `null`，不再返回 Pi SDK 的 verified/fallback 字段，也不以基线版本冒充实测版本。读取健康检查不会启动 Agent 会话。此元数据切换使用 OMPiUI 协议 3 / `ompiui.events.v3`、worker 协议 4，前端、服务端与 worker 必须配套升级；官方 OMP RPC 协商版本 2 和原生会话文件不变。
 
 OMP 原生模型与凭据配置来自 `~/.omp/agent/models.yml`、`config.yml`。会话目录必须与官方终端保持互通；浏览和刷新不能触发 Agent 或写入历史，约束见根目录 [AGENTS.md](../AGENTS.md)。
+
+### 原生会话操作边界
+
+受管会话在官方 RPC UI 进程内加载公共扩展桥接；桥接只适配官方 `AgentSession`／`SessionManager`，不在 worker 另建提示词或队列执行器。桥接的队列、模型范围与扩展设置模块通过官方公开 canonical subpaths 由 host loader 解析，使用当前官方会话及同一设置注册表，不从绝对 `file://` 源码入口另加载模块图。独立设置／包操作仍使用与所选 CLI 完全同版本的公开源码及其依赖；缺少原生 API／Bun 时明确失败，不以空结果代替。
 
 新对话优先使用当前项目；未选项目时，恢复当前服务器保存的上次项目，其次使用已打开工作区，最后使用服务器用户主目录。应用安装目录只负责加载程序资源，不再作为隐式项目根目录。保存项目已不存在时应重新选择项目，不静默切换到其他目录。
 
@@ -54,7 +60,10 @@ OMP 原生模型与凭据配置来自 `~/.omp/agent/models.yml`、`config.yml`�
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `OMPIUI_DRIVER` | `omp` | `omp` 执行真实任务；`mock` 用于隔离验证 |
-| `OMPI_OMP_BIN` | `PATH` 中的 `omp` | 官方 OMP CLI 可执行文件路径（如 `C:/Tools/omp.exe`）；不是 SDK 包目录 |
+| `OMPI_OMP_BIN` | 内置 `omp-runtime/bin/omp`，无内置资源时查 `PATH` | 显式选择官方 CLI 可执行文件路径（如 `C:/Tools/omp.exe`），设为 `omp` 则强制查 `PATH`；不是 SDK 包目录，公共源码版本必须与实测 CLI 完全一致 |
+| `OMPI_OMP_RUNTIME_DIR` | 自动发现预装 `omp-runtime/` | 替换为已准备好的当前平台运行时根（含 `runtime.json`、`bin/`、`node_modules/`）；不触发下载 |
+| `OMPI_OMP_PACKAGE_ROOT` | 随所选 CLI／预装运行时定位 | 显式指定 `@oh-my-pi/pi-coding-agent` 包根；须保留公开源码与完整生产／原生依赖，版本必须与所选 CLI 完全一致 |
+| `OMPI_BUN_BIN` | 内置 `omp-runtime/bin/bun`，无内置资源时查 `PATH` | 显式指定真实 Bun 解释器可执行文件；打包后端自身不是 Node／Bun 解释器 |
 | `OMPIUI_HOST` / `OMPIUI_PORT` | `127.0.0.1` / `8787` | 后端监听地址与端口 |
 | `OMPIUI_PUBLIC_BASE_URL` | 空 | 反向代理或隧道后的公网基址 |
 | `OMPIUI_AUTH_TOKEN` | 自动生成 | 后端 Bearer token，默认持久化到 `~/.ompiui/auth-token` |
@@ -92,11 +101,16 @@ Windows 安装器固定使用当前 Tauri NSIS 模板，在旧卸载器删除快
 
 ```bash
 npm install
+npm run prepare:omp-runtime
 npm run build
 npm run dev:server:omp
 # 另开一个终端：
 npm run dev:app
 ```
+
+源码开发／服务器运行需要 Node.js ≥ 22.19 和 npm。`npm run prepare:omp-runtime` 在显式准备阶段生成根目录 `omp-runtime/`，该目录不入库；默认使用 worker 标定的精确官方版本，并安装 Bun 1.3.14 与完整生产／原生依赖。需要其他官方版本或已有官方 binary 时可传 `-- --version <exact-version> --binary <official-OMP-path>`；binary 与 npm 源码版本必须完全一致，不能混搭。
+
+准备脚本支持 Windows、glibc Linux、macOS 的 x64／arm64，必须在目标系统与架构上安装原生依赖；桌面打包同样拒绝跨宿主平台／架构准备。此范围是 stage 支持范围，不代表每个平台的发布产物已验收。musl Linux 与 Android 不提供本地引擎打包；Android 仅作为客户端连接桌面／服务器主机。正常桌面打包、服务器安装与 Docker 镜像构建会显式准备运行时，服务启动和只读浏览不会补装依赖。
 
 ```bash
 npm run typecheck

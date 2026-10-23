@@ -51,7 +51,7 @@ const detected = new Map<string, string | null>()
  * cmd.exe，带空格的路径会被拆成多段参数（CI 的 `omp npm config` 就探测不到版本）。
  */
 function versionInvocation(bin?: string): { command: string; args: string[] } {
-  const invocation = resolveOmpCommand(bin?.trim() || "omp")
+  const invocation = resolveOmpCommand(bin?.trim() || undefined)
   return { command: invocation.command, args: [...invocation.args, "--version"] }
 }
 
@@ -66,7 +66,7 @@ export function detectOmpVersionSync(bin?: string, timeoutMs = 5_000): string | 
   let version: string | null = null
   try {
     // omp 是外部 CLI，参数是固定 flag，直接以 argv 拉起解析后的入口。
-    const invocation = versionInvocation(key)
+    const invocation = versionInvocation(bin)
     const probe = spawnSync(invocation.command, invocation.args, {
       encoding: "utf8",
       timeout: timeoutMs,
@@ -89,7 +89,7 @@ export function detectOmpVersion(bin?: string, timeoutMs = 10_000): Promise<stri
   return new Promise<string | null>(resolve => {
     let child: ReturnType<typeof spawn>
     try {
-      const invocation = versionInvocation(key)
+      const invocation = versionInvocation(bin)
       child = spawn(invocation.command, invocation.args, {
         stdio: ["ignore", "pipe", "pipe"],
         shell: false,

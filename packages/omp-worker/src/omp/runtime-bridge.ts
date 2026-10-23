@@ -1,6 +1,4 @@
 import { randomUUID } from "node:crypto"
-import { join } from "node:path"
-import { pathToFileURL } from "node:url"
 import type { JsonObject, JsonValue } from "@ompiui/protocol"
 import { isJsonObject } from "@ompiui/protocol"
 import type { OmpRpcClient, OmpRpcFrame } from "./rpc-client.js"
@@ -81,15 +79,14 @@ export class RuntimeBridgeTransport {
 }
 
 
-/** Generate imports from the selected official installation, not the runtime-config module ancestry. */
-export function runtimeBridgeExtension(packageRoot: string): string {
-  const source = (relative: string) => JSON.stringify(pathToFileURL(join(packageRoot, "src", relative)).href)
+/** Generate canonical public imports resolved by the official host loader. */
+export function runtimeBridgeExtension(): string {
   return `${NATIVE_PROMPT_ADMISSION_IMPORT}
 import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
-import { isUserQueuedMessage, isHiddenUserCompanion, toRestoredQueuedMessage } from ${source("session/queued-messages.ts")};
-import { resolveModelScope } from ${source("config/model-resolver.ts")};
-import { cfgDisabledExtensions } from ${source("extensibility/settings.ts")};
+import { isUserQueuedMessage, isHiddenUserCompanion, toRestoredQueuedMessage } from "@oh-my-pi/pi-coding-agent/session/queued-messages";
+import { resolveModelScope } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
+import { cfgDisabledExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/settings";
 export default function (pi) {
   const prefix = ${JSON.stringify(RESPONSE_PREFIX)};
   const queueEntryIds = new WeakMap();
@@ -110,16 +107,6 @@ export default function (pi) {
   }
   function identity(session) {
     return { sessionId: session.sessionManager.getSessionId(), sessionFile: session.sessionFile ?? null, leafId: session.sessionManager.getLeafId(), cwd: session.sessionManager.getCwd() };
-  }
-  function sourceSettings(settings) {
-    // Public source-module setting handles have different registry slots from
-    // the bundled CLI. Never read/write those slots in its native valueCache.
-    const valueCache = [];
-    return new Proxy(settings, { get(target, key) {
-      if (key === "valueCache") return valueCache;
-      const value = target[key];
-      return typeof value === "function" ? value.bind(target) : value;
-    } });
   }
   function queue(session, includeImageData = false) {
     const restore = message => {
@@ -254,7 +241,7 @@ export default function (pi) {
       case "resources": {
         const extensions = extensionResources(session);
         let contextFiles = null;
-        try { contextFiles = await pi.pi.discoverContextFiles(ctx.cwd, undefined, cfgDisabledExtensions.get(sourceSettings(session.settings))); }
+        try { contextFiles = await pi.pi.discoverContextFiles(ctx.cwd, undefined, cfgDisabledExtensions.get(session.settings)); }
         catch (error) { extensions.resourceErrors.contextFiles = error instanceof Error ? error.message : String(error); }
         return { skills: session.skills, skillWarnings: session.skillWarnings, prompts: session.promptTemplates, contextFiles, commands: pi.getCommands().filter(command => command.name !== "ompiui-runtime"), tools: pi.getAllTools(), activeTools: pi.getActiveTools(), systemPrompt: ctx.getSystemPrompt(), sessionDir: session.sessionManager.getSessionDir(), artifactsDir: session.sessionManager.getArtifactsDir(), ...extensions };
       }
@@ -266,7 +253,7 @@ export default function (pi) {
       case "setScopedModels": {
         if (!Array.isArray(args.patterns) || !args.patterns.every(pattern => typeof pattern === "string")) throw new Error("Invalid model scope");
         await session.modelRegistry.awaitBackgroundRefresh();
-        const scopedModels = await resolveModelScope(args.patterns, session.modelRegistry, undefined, sourceSettings(session.settings));
+        const scopedModels = await resolveModelScope(args.patterns, session.modelRegistry, undefined, session.settings);
         session.setScopedModels(scopedModels);
         return { scopedModels: session.scopedModels };
       }
