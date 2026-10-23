@@ -318,7 +318,7 @@ jobs:
        (needs.desktop.result == 'success' &&
         (needs.android.result == 'success' || needs.android.result == 'skipped')))
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 45
     permissions:
       contents: write
       actions: read
