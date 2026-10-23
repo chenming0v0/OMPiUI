@@ -21,6 +21,8 @@
 - verification: Windows 实际桌面打包成功，产物包含编译后的 OMPiUI server、Tailscale bridge，以及官方 OMP 18.3.1、Bun 1.3.14 和同版本完整公开源码／生产／原生依赖。官方 18.3.1 与最新 18.12.6 的完整运行时分别移到含空格的隔离目录后，在无全局 OMP／npm／Bun 查找的 Node 与 compiled Bun 下，真实设置／包 API、精确版本及 UI→官方 CLI→UI 同一原生文件继续写入均通过（分别 239.15／248.49 秒，含完整运行时复制）。Tauri 资源准备在清理本轮临时产物后实际成功（115.10 秒），完整复制运行时、server、原生 PTY、Web 与 Tailscale 资源；此前磁盘空间耗尽（errno 112）不再是该步骤阻断。跨平台 CI 仍待完成，Linux 安装步骤已定位 Bun npm 包可执行文件布局差异，不能据 Windows 本机通过声明所有平台 CI、安装器构建或完整安装升级通过。
 - verification: 官方 canonical host loader 的受管扩展已通过真实加载命令元数据、会话 ID／文件身份与资源检查验证；实际包含 bash 工具，context discovery 无错误。非默认 fast role 精确解析到 offline-fast 模型范围，再完成 UI→官方→UI 三回合同文件继续写入（22 秒）；未以独立源码模块图或设置 cache 代理替代官方运行时。
 - verification: 依赖 CI 39898893796 已完成，Windows supported／latest 两项官方会话迁移、模型角色与 compiled relocation 验收均通过；Ubuntu 两项失败在运行时安装的 Bun npm 可执行文件布局，Windows app shard 1 失败在上述样式实现固定测试，其它检查通过。移除该单项实现固定测试后，实际 MarkdownRenderer 98 项通过（8.76 秒），相邻预览高度与主题行为测试保留且通过；Unix 安装路径修复与后续完整 CI 仍待结果，此轮不声明完整 CI 通过。
+- ci(release): 完整官方运行时加入后，五平台预构建附件共约 4.8 GB；标签发布首次在 10 分钟期限内未完成 Linux 附件下载。发布任务期限改为 45 分钟，保留完整附件、SHA-256 校验和原标签；手动复用同源码树预构建的发布运行 39935995841 实际成功，发布步骤耗时 10 分 23 秒。
+- verification: 发布收尾的 PR CI 39909161949 全部通过，Ubuntu 服务端 230 通过、3 跳过、0 失败；实际隔离 OMP 18.3.1 的 Node／compiled Bun 公共 API 和 UI→官方→UI 同文件续写再次通过（175.42 秒），真实 Node PTY 输出、回放及退出码 0 通过。独立 dev 验证中出现过 staging rename EPERM 和官方 RPC ready 超时，原因未证实，不宣称修复；#361 与原有未提交工作不纳入本版。
 
 ## [v0.6.37] - 2026-10-22
 

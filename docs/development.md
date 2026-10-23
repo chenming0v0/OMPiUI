@@ -151,3 +151,5 @@ git push origin v<version>
 ```
 
 `v*` 标签触发桌面与移动端发布构建。发布记录写根目录 `CHANGELOG.md`；`packages/app/CHANGELOG.md` 是上游历史，不参与 OMPiUI 发版。
+
+`dev` 预构建按源码树标识保存完整五平台附件；标签发布或手动指定 `tag` 时只复用同源码树、未过期的完整集合，继续校验 SHA-256 与必需安装包，不混用不同运行。完整官方运行时的附件传输不保证五分钟完成，发布任务期限为 45 分钟。若标签已创建、尚未发布且仅工作流需要修正，可在 `dev` 手动运行 `desktop-release.yml` 并指定原 `tag`、`rebuild=false`、`verify_only=false`；源码仍取原标签，不移动标签或混入 `dev` 后续代码。
