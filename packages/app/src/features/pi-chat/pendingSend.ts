@@ -40,7 +40,7 @@ export function createPendingSend(
 /**
  * A new native user row owns its content immediately, even before command ACK.
  * Pre-send timestamps exclude old identical messages without comparing clocks.
- * Native history may contain lazy image references instead of original base64.
+ * Native history may contain lazy image references or re-encoded images.
  */
 export function reconcilePendingSends<T extends PendingSend>(pending: readonly T[], items: readonly PiTimelineItem[]): readonly T[] {
 
@@ -52,11 +52,9 @@ export function reconcilePendingSends<T extends PendingSend>(pending: readonly T
       if (item.kind !== 'user_message' || send.baselineTimestamps.has(item.timestamp) || consumed.has(item.timestamp)) return false
       const content = typeof item.message.content === 'string' ? [{ type: 'text' as const, text: item.message.content }] : item.message.content
       if (send.text !== content.filter(block => block.type === 'text').map(block => block.text).join('')) return false
-      const images = content.filter(block => block.type === 'image')
-      return images.length === send.images.length && send.images.every((image, index) => {
-        const actual = images[index]
-        return actual.mimeType === image.mimeType && (!image.data || !actual.data || actual.data.startsWith('blob:sha256:') || actual.data === image.data || 'attachment' in actual)
-      })
+      // OMP 在落盘前会重编码图片（缩放、png→webp/jpeg），mimeType 与 data 都不是稳定身份。
+      // 身份 = 发送后新出现的行 + 相同文本 + 相同图片数。
+      return content.filter(block => block.type === 'image').length === send.images.length
     })
     if (!native) return true
     consumed.add(native.timestamp)
