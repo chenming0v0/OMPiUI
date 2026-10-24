@@ -974,10 +974,15 @@ export function createAppServer(
         // 活跃终端流是 HTTP upgrade 连接：先终结终端让它们的流自然收尾，
         // 再等 server.close()。反过来的顺序会互相吊住——杀终端的 dispose 排在
         // 等待之后，而等待又在等终端流结束（Windows CI 上实测挂死 8 分钟）。
-        terminals.dispose();
+        // shutdown() 同步杀终端，真实 PTY 退出稍后才兑现；租约必须等它退出后才释放。
+        // 立即挂 catch，避免 10s 超时在被 await 前变成未处理拒绝。
+        const terminalsDown = terminals.shutdown().catch((error) => {
+          console.error("[ompiui-server] owned terminals did not exit cleanly", error);
+        });
         await closeHttpServer();
         await watcher.dispose();
         sessions.dispose();
+        await terminalsDown;
         await supervisor.dispose();
       })();
       return disposal;
