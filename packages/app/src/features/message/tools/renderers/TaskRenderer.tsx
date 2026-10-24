@@ -116,8 +116,7 @@ function SubagentTask({ slot, execution, partKey, intent, targetSessionId, showA
   // 运行中与失败都默认展开：失败说明（聚合结果、mergeError）不能折叠隐藏，
   // 否则 exitCode=0 但合并失败的子代理会看起来像全流程成功（#364/#374）。
   // 这里用不依赖子代理历史的先行判定作展开默认值。
-  const prelimIsError = executionStatus === 'error' ||
-    Boolean(slot.result?.error || slot.result?.mergeError) || Boolean(execution.result?.isError)
+  const prelimIsError = isTaskSlotFailed(slot.result, liveRun, executionStatus === 'error' || Boolean(execution.result?.isError))
   const [expanded, setExpanded] = useUiDisclosureState(`message:${partKey}:task-body`, isRunning || prelimIsError)
   const [isContentFullscreen, setIsContentFullscreen] = useState(false)
   const [opening, setOpening] = useState(false)
@@ -138,9 +137,8 @@ function SubagentTask({ slot, execution, partKey, intent, targetSessionId, showA
     !slot.result ? runtimeStopped ? 'aborted' : isRunning ? 'running' : 'pending' : undefined,
   )
   const subagentRun = liveRun ?? persistedRun
-  const isError = executionStatus === 'error' || Boolean(slot.result?.error || slot.result?.mergeError) ||
-    (subagentRun ? subagentRun.status === 'failed' || subagentRun.status === 'aborted' || (!isRunning && hasStarted && !execution.result && runtimeStopped)
-      : Boolean(execution.result?.isError) || (hasStarted && !execution.result && runtimeStopped))
+  // 中断且无结果的任务（runtime 已停）也算失败；其余全部走 isTaskSlotFailed。
+  const isError = prelimIsError || (!isRunning && hasStarted && !execution.result && runtimeStopped)
   const isCompleted = !isRunning && !isError && Boolean(slot.result || execution.result || subagentRun?.status === 'completed')
   const name = subagentDisplayTitle(
     typeof slot.input.name === 'string' ? slot.input.name : undefined,
@@ -450,3 +448,22 @@ function usePersistedSubagentRun(
 // ============================================
 // Icons & Helpers
 // ============================================
+
+/**
+ * 子任务失败判定（#400）：有自身结果或实时 run 时只看自身，
+ * 两者都缺才回退聚合状态，避免批量 task 一个失败全员标红。
+ * exitCode=0 但 mergeError 存在仍算失败（#374）。
+ * 落盘回退 run 的状态是合成的（fallbackStatus），不算自身证据。
+ */
+function isTaskSlotFailed(
+  result: PersistedSubagentResult | undefined,
+  liveRun: OmpSubagentRun | undefined,
+  aggregateFailed: boolean,
+): boolean {
+  const runFailed = liveRun?.status === 'failed' || liveRun?.status === 'aborted'
+  // 非终态的实时 run 不算自身证据：聚合已结束而 run 仍停在 running 时要回退聚合
+  if (!result && !runFailed && liveRun?.status !== 'completed') return aggregateFailed
+  const resultFailed = Boolean(result && (result.aborted || result.error || result.mergeError ||
+    (result.exitCode !== undefined && result.exitCode !== 0)))
+  return resultFailed || runFailed
+}

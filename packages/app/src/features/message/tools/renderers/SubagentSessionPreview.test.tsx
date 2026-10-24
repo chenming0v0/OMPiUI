@@ -163,4 +163,17 @@ describe('SubagentSessionPreview', () => {
     expect(screen.getByText('Recovered child reply')).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
+
+  it('keeps load-more clickable for persisted transcripts paged by an external handler', () => {
+    const onLoadMore = vi.fn()
+    render(<SubagentSessionPreview onLoadMore={onLoadMore} run={{
+      ...run('Persisted reply'), status: 'completed', sessionFile: 'C:/persisted.jsonl',
+      historyLoaded: true, historyTruncated: true, historyHasMore: true,
+    }} />)
+    const button = screen.getByRole('button', { name: 'task.loadMoreTranscript' })
+    expect(button).toBeEnabled()
+    fireEvent.click(button)
+    expect(onLoadMore).toHaveBeenCalledTimes(1)
+    expect(getHistory).not.toHaveBeenCalled()
+  })
 })
