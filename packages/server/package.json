@@ -1,6 +1,6 @@
 {
   "name": "@ompiui/server",
-  "version": "0.6.39",
+  "version": "0.6.40",
   "private": true,
   "type": "module",
   "bin": {
@@ -20,9 +20,9 @@
   },
   "dependencies": {
     "@lydell/node-pty": "^1.2.0-beta.14",
-    "@ompiui/omp-worker": "0.6.39",
-    "@ompiui/protocol": "0.6.39",
-    "@ompiui/relay": "0.6.39",
+    "@ompiui/omp-worker": "0.6.40",
+    "@ompiui/protocol": "0.6.40",
+    "@ompiui/relay": "0.6.40",
     "bun-pty": "^0.4.8",
     "chokidar": "^4.0.3",
     "ws": "^8.21.1",

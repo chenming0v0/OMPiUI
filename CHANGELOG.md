@@ -1,3 +1,24 @@
+## [v0.6.40] - 2026-10-24
+
+- fix: flush provider edits on close and keep the native queue after Stop (3f801f8)
+- fix(app): drop the background subagent HUD and show only working or viewed child sessions in the sidebar (1ee012f)
+- fix(worker): drive official goals through AgentSession with RPC delivery and continuation (#391, #392) (05737e9)
+- fix(app): preload and back up the warning sound (#401) (753040c)
+- fix(app): enable external load-more and judge batch tasks per child (#399, #400) (fa4d499)
+- fix(chat): bind queued pending sends to entryId and stop re-claiming history rows (#397, #398) (cbc07eb)
+- fix(protocol): accept goal.tokenBudget across the command boundary (#396) (6af525b)
+- fix(server): release session leases only after native PTYs exit (#394) (6885e2a)
+- fix(server): guard immediate writes and deletes during native takeover (#393, #395) (d7808c1)
+- fix(worker): start managed sessions without OMP npm sources for lite builds (#390) (c8a368f)
+- ci(interop): retry the runtime staging rename against Windows EPERM (d486cbc)
+- ci(test): force-close ws.test.ts after its suite when ConPTY pins the loop (fd1dcf8)
+- fix(server): dispose terminals before waiting out HTTP connections (2cb4a97)
+- ci(test): stabilize windows PTY shards with serialized runs and bounded waits (959fbf7)
+- ci(release): collect lite installers in-shell so they reach the release (ac4ed42)
+- ci(test): retry rpc-launch temp cleanup against Windows EBUSY (4929710)
+- ci(test): terminate PTY input lines and quote the server test glob (bd15a76)
+- fix(chat): reconcile pending sends with native queues (b1236fd)
+
 ## [v0.6.39] - 2026-10-24
 
 - ci(release): 桌面发版拆分为两档并异步交付：主发布阶段构建并发布轻量版（`-lite` 后缀，不带官方 OMP 运行时，使用外部 OMP CLI），发布成功后由异步任务构建开箱即用版（无后缀，附带完整 OMP runtime/Bun/依赖，保留 LZMA 最小压缩）并追加到同一 Release；dev 预构建只预构建轻量版，单平台 Tauri 打包从约 18 分钟回落到个位数分钟。
