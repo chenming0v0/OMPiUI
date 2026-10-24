@@ -105,8 +105,18 @@ export async function prepareOmpRuntime({ version = OMP_SDK_VERSION, out = join(
     }
     writeFileSync(join(staging, "runtime.json"), JSON.stringify(manifest, null, 2) + "\n")
     inspectOmpRuntime(staging)
-    rmSync(destination, { recursive: true, force: true })
-    renameSync(staging, destination)
+    rmSync(destination, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    // Windows 上 Defender 会短暂锁住刚写入的文件，目录级 rename 撞
+    // EPERM/EACCES 是环境竞争而不是装配错误；退避重试后再放弃。
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        renameSync(staging, destination)
+        break
+      } catch (error) {
+        if (attempt >= 10 || !["EPERM", "EACCES", "ENOTEMPTY"].includes(error.code)) throw error
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100 * 2 ** attempt)
+      }
+    }
     console.info(`[omp-runtime] ready: ${destination} (official OMP ${version}, Bun ${bunVersion}, ${process.platform}/${process.arch})`)
     return manifest
   } finally {
