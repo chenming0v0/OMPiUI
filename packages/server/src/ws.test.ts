@@ -668,3 +668,11 @@ async function waitForCommand(
   }
   throw new Error(`command ${commandId} did not complete`);
 }
+
+after(() => {
+  // 与 terminal-manager.test.ts 同理：Windows 上全部测试与清理结束后，
+  // ConPTY 句柄仍可能钉住事件循环（套件 ok 后进程僵住直到 CI 超时强杀）。
+  // 由看门狗收尾退出，保留 node:test 已写好的退出码。
+  const code = process.exitCode;
+  setTimeout(() => process.exit(code ?? 0), 10_000).unref();
+});
