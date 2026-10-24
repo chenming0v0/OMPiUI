@@ -3,7 +3,6 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { managedSessionsRoot } from "./managed-sessions.js"
 import { runtimeBridgeExtension } from "./runtime-bridge.js"
-import { resolveOmpPackageRoot } from "./omp-native-script.js"
 
 // Subagent recursion follows the user's native task.maxRecursionDepth setting;
 // the managed runtime no longer pins a UI-specific depth override (#372).
@@ -33,8 +32,9 @@ function writePolicyFile(file: string, contents: string): void {
 }
 
 /** 最后加载的进程级配置与工具调用限制；不修改用户 CLI 设置或正常 bash 行为。 */
-export function runtimePolicyArgs(bin?: string, env: NodeJS.ProcessEnv = process.env): string[] {
-  resolveOmpPackageRoot(bin, env)
+// 桥扩展的 @oh-my-pi import 由官方宿主加载器解析，不需要 npm 源码树（#390）；
+// 参数保留以兼容现有调用方。
+export function runtimePolicyArgs(_bin?: string, _env: NodeJS.ProcessEnv = process.env): string[] {
   const bridgeSource = runtimeBridgeExtension()
   const directory = join(dirname(managedSessionsRoot()), "runtime-config")
   const file = join(directory, "runtime-policy.yml")

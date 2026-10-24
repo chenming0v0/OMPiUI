@@ -60,7 +60,7 @@ export function resolveOmpPackageRoot(bin?: string, env: NodeJS.ProcessEnv = pro
   }
   throw Object.assign(new Error(incompatible.length
     ? `OMP public API version mismatch: selected CLI is ${version}; available sources: ${incompatible.join(", ")}. Prepare the runtime with --version ${version}, or select the bundled official CLI.`
-    : `Cannot locate official OMP ${version} public API sources with their dependencies. Install/prepare the OMPiUI runtime bundle with --version ${version}. An external npm installation may be selected with OMPI_OMP_PACKAGE_ROOT.`), { code: incompatible.length ? "OMP_SOURCE_VERSION_MISMATCH" : "OMP_SOURCE_MISSING" })
+    : `Cannot locate official OMP ${version} public API sources with their dependencies. Sessions still work with a standalone OMP binary; only features that need these sources (such as OMP settings read/write) are unavailable. Install/prepare the OMPiUI runtime bundle with --version ${version}. An external npm installation may be selected with OMPI_OMP_PACKAGE_ROOT.`), { code: incompatible.length ? "OMP_SOURCE_VERSION_MISMATCH" : "OMP_SOURCE_MISSING" })
 }
 
 /** Run trusted bridge source with the official Bun-only APIs in a separate process. */
