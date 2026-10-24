@@ -55,7 +55,7 @@ import { useSessionActiveEntry } from '../../store/activeSessionStore'
 import type { PiImageInput } from '../../omp/transport/index.js'
 import type { DeliveryMode } from '../../types/ui'
 import { attachmentToImage, imageInputToAttachment } from './attachmentToImage'
-import { appendPendingSends, createPendingSend, reconcilePendingSends, reconcileQueuedPendingSends, type PendingSend } from './pendingSend'
+import { appendPendingSends, createPendingSend, reconcilePendingSends, reconcileQueuedPendingSends, withoutQueueEntry, type PendingSend } from './pendingSend'
 import { hasStoppableSessionActivity } from './sessionActivity'
 import { SessionStopCoordinator } from './sessionStopCoordinator'
 import { composerDraftKey, getComposerDraft, moveComposerDraft, updateComposerDraft } from '../chat/input/composerDraftStore'
@@ -363,7 +363,7 @@ export function PiChatPane({
           if (paneIdentityRef.current.activeServerGeneration !== activeServerGeneration || paneIdentityRef.current.sessionId !== sessionId) throw new Error('Session changed before queue selection')
           return removeQueuedMessage(sessionId, { kind, index, entryId })
         })
-        setPendingSends(current => current.filter(send => send.serverGeneration !== activeServerGeneration || send.sessionId !== sessionId || send.queueEntryId !== entryId))
+        setPendingSends(current => withoutQueueEntry(current, activeServerGeneration, sessionId, entryId))
         const key = composerDraftKey(activeServer, sessionId, '', '')
         const draft = getComposerDraft(key)
         const text = draft.text.trim() ? `${draft.text}\n\n${entry.text}` : entry.text
@@ -400,7 +400,7 @@ export function PiChatPane({
         baseItems,
         entryId,
       )
-      setPendingSends(current => [...current.filter(send => send.serverGeneration !== activeServerGeneration || send.sessionId !== sessionId || send.queueEntryId !== entryId), pending])
+      setPendingSends(current => [...withoutQueueEntry(current, activeServerGeneration, sessionId, entryId), pending])
       let accepted = false
       try {
         await stopCoordinatorRef.current.submit(JSON.stringify([activeServerGeneration, sessionId]), () => {
@@ -427,7 +427,7 @@ export function PiChatPane({
           if (paneIdentityRef.current.activeServerGeneration !== activeServerGeneration || paneIdentityRef.current.sessionId !== sessionId) throw new Error('Session changed before queue selection')
           return discardQueuedMessage(sessionId, { kind, index, entryId })
         })
-        setPendingSends(current => current.filter(send => send.serverGeneration !== activeServerGeneration || send.sessionId !== sessionId || send.queueEntryId !== entryId))
+        setPendingSends(current => withoutQueueEntry(current, activeServerGeneration, sessionId, entryId))
         if (paneIdentityRef.current.activeServerGeneration === activeServerGeneration) void refreshPiSessionState(sessionId).catch(() => undefined)
       } catch (error) {
         uiErrorHandler('remove queued message', error)
@@ -452,8 +452,10 @@ export function PiChatPane({
       const sameServer = current.filter(send => send.serverGeneration === activeServerGeneration)
       const visible = sameServer.filter(send => send.sessionId === sessionId)
       const remaining = reconcileQueuedPendingSends(reconcilePendingSends(visible, baseItems), [...queuedSteering, ...queuedFollowUps])
-      const removed = new Set(visible.filter(send => !remaining.includes(send)).map(send => send.id))
-      return sameServer.length === current.length && removed.size === 0 ? current : sameServer.filter(send => !removed.has(send.id))
+      if (sameServer.length === current.length && remaining === visible) return current
+      // 按 id 回写：存活 pending 可能带着更新后的 baselineTimestamps。
+      const next = new Map(remaining.map(send => [send.id, send]))
+      return sameServer.flatMap(send => send.sessionId !== sessionId ? [send] : next.has(send.id) ? [next.get(send.id)!] : [])
     })
   }, [baseItems, sessionId, activeServerGeneration, queuedSteering, queuedFollowUps, pendingSends])
 
