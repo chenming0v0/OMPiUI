@@ -412,6 +412,8 @@ describe("event websocket", () => {
     ws.on("message", (data) => frames.push(JSON.parse(String(data))));
     await waitFor(() => frames.some((frame) => frame.type === "ready"));
     assert.equal(frames[0]?.inputAck, true);
+    // PTY 行输入以 CR 结尾（ICRNL 映射为换行）；printf 格式里的 \n 是字面量，
+    // 不带 \r 终止符时命令永不提交，exit 会并进上一行导致 shell 不退出。
     ws.send(
       JSON.stringify({
         type: "input",
@@ -419,7 +421,7 @@ describe("event websocket", () => {
         data:
           process.platform === "win32"
             ? "echo ompiui-ws\r\n"
-            : "printf ompiui-ws\\n",
+            : "printf ompiui-ws\\n\r",
       }),
     );
     await waitFor(() => frames.some((frame) => frame.type === "input_ack" && frame.inputId === 1));
@@ -433,7 +435,7 @@ describe("event websocket", () => {
       JSON.stringify({
         type: "input",
         inputId: 2,
-        data: process.platform === "win32" ? "exit\r\n" : "exit\n",
+        data: process.platform === "win32" ? "exit\r\n" : "exit\r",
       }),
     );
     await waitFor(() => frames.some((frame) => frame.type === "input_ack" && frame.inputId === 2));
@@ -582,13 +584,13 @@ describe("event websocket", () => {
         data:
           process.platform === "win32"
             ? "echo replay-ws\r\n"
-            : "printf replay-ws\\n",
+            : "printf replay-ws\\n\r",
       }),
     );
     first.ws.send(
       JSON.stringify({
         type: "input",
-        data: process.platform === "win32" ? "exit\r\n" : "exit\n",
+        data: process.platform === "win32" ? "exit\r\n" : "exit\r",
       }),
     );
     await waitFor(() => first.frames.some((frame) => frame.type === "exit"));
