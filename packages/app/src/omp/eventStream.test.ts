@@ -590,6 +590,28 @@ describe('session configuration and stop synchronization', () => {
     expect(activeSessionStore.getBusySessionsSnapshot().map(session => session.sessionId)).toContain('session-stop')
   })
 
+  it('clears executing activity after Stop without settling or dropping the retained queue', async () => {
+    vi.mocked(controllers.refreshPiSessionState).mockImplementation(readNativeSessionState)
+    const retained = [{ text: 'continue later', entryId: 'queue:1' }]
+    vi.spyOn(transport, 'getPiSessionState').mockResolvedValueOnce({
+      isStreaming: false, isIdle: false, isSettled: false, hasPendingAsyncWork: false,
+      pendingMessageCount: 1, queue: { followUpEntries: retained },
+    })
+    activity({ 'session-stop': { type: 'busy' } })
+    event({ type: 'agent_end' })
+    await vi.advanceTimersByTimeAsync(200)
+    const completion = vi.mocked(controllers.refreshPiSessionState).mock.results.at(-1)?.value
+    if (!(completion instanceof Promise)) throw new Error('Stop native-state readback was not dispatched')
+    await completion
+    expect(activeSessionStore.getBusySessionsSnapshot()).toHaveLength(0)
+    expect(piSessionStateStore.getState('session-stop')).toMatchObject({
+      isStreaming: false, isIdle: false, isSettled: false, pendingMessageCount: 1,
+      queue: { followUpEntries: retained },
+    })
+    event({ type: 'agent_start' })
+    expect(activeSessionStore.getBusySessionsSnapshot().map(session => session.sessionId)).toContain('session-stop')
+  })
+
   it('keeps pending background work active at agent_end until the session settles', () => {
     activity({ 'session-stop': { type: 'busy' } })
     piSessionStateStore.patchState('session-stop', { hasPendingAsyncWork: true, isIdle: false })

@@ -94,6 +94,16 @@ npm run diagnostics -- --session <sessionId> --out diagnostic-report.jsonl
 桌面 Bun 和 Node 的 worker 错误均写入数据根目录的日志。重连和故障状态探测
 会重新校准当前运行状态；后端确认空闲且子代理已不在注册表时，遗留条目标记中断。
 
+停止后若已经出现终止的 `agent_end`，且原生状态为 `isStreaming=false`、
+`hasPendingAsyncWork=false`，但 `pendingMessageCount>0`、`isIdle=false`，
+表示前台已停止、原生队列仍保留，不代表模型继续生成。活动指示与 Stop 按钮
+按实际前台／异步执行状态显示；`isSettled` 仍保留原生语义，不因隐藏忙碌提示
+伪造完全结束。清除或取回排队消息使用显式队列操作，不要发新消息“解除卡住”，
+那会真正启动下一轮。真正的异步工作、压缩与重试仍保留停止入口。
+
+桌面窗口使用可执行文件内嵌的前端；仅更新安装目录的 `web/` 只能更新服务托管网页，
+不能修复旧桌面窗口。确认桌面应用版本与实际运行的程序路径，再使用包含修复的桌面构建。
+
 OMPiUI 管理的会话使用进程级 `task.maxRecursionDepth: 1`：主代理可以并发派任务，
 子代理不能继续派子代理；不修改官方终端的全局配置，也不降低第一层并发上限。
 

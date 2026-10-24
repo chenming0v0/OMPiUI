@@ -201,6 +201,8 @@ export class OmpRpcSession implements SessionRuntime {
   // Queue execution and editing are native operations, never later prompts.
   private nativeQueue: { steering: JsonObject[]; followUp: JsonObject[] } = { steering: [], followUp: [] };
   private queueGeneration = 0;
+  /** Native async-work state; unknown until readback after an end event. */
+  private pendingAsyncWork: boolean | undefined;
   private nativeSettled = true;
   private activityGeneration = 0;
   private readonly resourcesListeners = new Set<() => void>();
@@ -443,6 +445,7 @@ export class OmpRpcSession implements SessionRuntime {
           this.activityGeneration += 1;
           this.currentStreaming = true;
           this.nativeSettled = false;
+          this.pendingAsyncWork = undefined;
           this.abortIntentEpoch = undefined;
           this.toolInterruption = undefined;
         }
@@ -465,6 +468,9 @@ export class OmpRpcSession implements SessionRuntime {
         if (type === "model_changed") {
           void Promise.all([this.refreshModels(), this.refreshThinkingLevels()])
             .catch((error) => this.reportEntrySyncError(error));
+        }
+        if (type === "agent_end" && frame.isTerminal !== false) {
+          void this.getState().catch((error) => this.reportEntrySyncError(error));
         }
         return;
       }
@@ -496,6 +502,7 @@ export class OmpRpcSession implements SessionRuntime {
         // 否则 activity 一直 busy，前端停止按钮要等下一次 state.get 轮询才解除
         this.currentStreaming = false;
         this.nativeSettled = true;
+        this.pendingAsyncWork = false;
         this.scheduleEntrySync();
         if (isJsonObject(frame.toolInterruption)) this.toolInterruption = frame.toolInterruption;
         else if (this.abortIntentEpoch === this.eventEpoch) this.toolInterruption = { kind: 'cancelled', error: 'Stopped by the user before this tool returned a result' };
@@ -508,6 +515,7 @@ export class OmpRpcSession implements SessionRuntime {
         if (frame.sessionSettled === true) {
           this.currentStreaming = false;
           this.nativeSettled = true;
+          this.pendingAsyncWork = false;
         }
         this.emitPiEvent(frame);
         this.scheduleEntrySync();
@@ -764,8 +772,8 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   private emitActivityIfChanged(): void {
-    // 流式状态的权威判断依赖 get_state 的 isStreaming；事件驱动下用
-    // agent_start/agent_end 推导。
+    // Native isSettled also includes retained queues. Keep activity conservative
+    // until readback, then show busy only for actual foreground or async work.
     let status: SessionActivityStatus | null = null;
     if (
       this.retryShadow.phase === "waiting" ||
@@ -788,7 +796,7 @@ export class OmpRpcSession implements SessionRuntime {
             : "",
         next: Number.isFinite(nextAt) ? nextAt : 0,
       };
-    } else if (this.currentStreaming || !this.nativeSettled) {
+    } else if (this.currentStreaming || (this.pendingAsyncWork ?? !this.nativeSettled)) {
       status = { type: "busy" };
     } else if (
       isJsonObject(this.compactionShadow.operation) &&
@@ -1077,6 +1085,8 @@ export class OmpRpcSession implements SessionRuntime {
     }
     const head = this.getHead();
     if (statsEpoch !== this.eventEpoch || historyGeneration !== this.historyGeneration || modelsGeneration !== this.modelsGeneration || activityGeneration !== this.activityGeneration) return this.buildState();
+    this.pendingAsyncWork = Boolean(native.hasPendingAsyncWork);
+    this.emitActivityIfChanged();
     return {
       sessionId: this.sessionId,
       sessionFile: this.sessionFile ?? null,
@@ -1544,6 +1554,7 @@ export class OmpRpcSession implements SessionRuntime {
     this.retryShadow = { phase: "idle" };
     this.compactionShadow = { autoEnabled: true, operation: { type: "none" } };
     this.nativeQueue = { steering: [], followUp: [] };
+    this.pendingAsyncWork = undefined;
     this.nativeSettled = true;
     this.currentStreaming = false;
     this.scopedModels = [];
