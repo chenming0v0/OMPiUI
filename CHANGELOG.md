@@ -1,5 +1,6 @@
 ## [v0.6.39] - 2026-10-24
 
+- ci(release): 桌面发版拆分为两档并异步交付：主发布阶段构建并发布轻量版（`-lite` 后缀，不带官方 OMP 运行时，使用外部 OMP CLI），发布成功后由异步任务构建开箱即用版（无后缀，附带完整 OMP runtime/Bun/依赖，保留 LZMA 最小压缩）并追加到同一 Release；dev 预构建只预构建轻量版，单平台 Tauri 打包从约 18 分钟回落到个位数分钟。
 - fix: #354 目标生命周期代理到官方 GoalRuntime（create/replace/pause/resume/drop），按官方 TUI 语义同步 goal 工具与流中上下文；移除 worker 自建续跑循环、完成标记与轮次计时，会话替换后读取官方目标快照；官方目标不支持图片附件，UI 停用附加入口。
 - fix: #360 客户端接入原生 set_interrupt_mode 与原子 abort_and_prompt：队列设置区新增中断行为 immediate/wait，输入栏投递方式三态循环新增「中断并提交」，能力开关由 registry 命令派生。
 - fix: #367 本地 RPC 协议错误（分片/解码失败）经 `rpc_frame_error` 事件实时送达前端（每分钟 20 条上限，超出折叠为抑制提示）；notice/command_output 的 warning 级别不再伪装为 completed 通知，通知与提示音新增 warning 严重度，扩展面板完整文本保留来源。

@@ -17,6 +17,8 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const outDir = join(repoRoot, "dist-desktop")
 const args = process.argv.slice(2)
 const skipBuild = args.includes("--skip-build")
+// 轻量版：不装配官方 OMP 运行时（用户使用外部 OMP CLI 或 --config 指定）。
+const skipRuntime = args.includes("--skip-runtime")
 const target = args.find((arg, i) => args[i - 1] === "--target") ?? "bun-windows-x64"
 const targetPlatform = target.includes("windows") ? "win32" : target.includes("darwin") ? "darwin" : "linux"
 const targetArch = target.includes("arm64") ? "arm64" : "x64"
@@ -56,7 +58,7 @@ const goOs = target.includes("windows") ? "windows" : target.includes("darwin") 
 const goArch = target.includes("arm64") ? "arm64" : "amd64"
 const tailscaleOut = join(outDir, "tailscale")
 run(process.execPath, ["scripts/build-tailscale.mjs", "--os", goOs, "--arch", goArch, "--out", tailscaleOut])
-await prepareOmpRuntime({ out: join(outDir, "omp-runtime") })
+if (!skipRuntime) await prepareOmpRuntime({ out: join(outDir, "omp-runtime") })
 rmSync(join(outDir, "runtime"), { recursive: true, force: true })
 rmSync(join(outDir, "piui-server.exe"), { force: true })
 rmSync(join(outDir, "piui-server"), { force: true })
@@ -102,7 +104,7 @@ run("bun", [
   "--outfile", outfile,
 ])
 
-inspectOmpRuntime(join(outDir, "omp-runtime"), targetPlatform, targetArch)
+if (!skipRuntime) inspectOmpRuntime(join(outDir, "omp-runtime"), targetPlatform, targetArch)
 const requiredFiles = [
   outfile,
   join(tailscaleOut, `ompiui-tailscale-bridge${goOs === "windows" ? ".exe" : ""}`),
@@ -118,6 +120,5 @@ console.info(`
 [package] done → ${outDir}
   omp-worker    Web/API 服务、OMP worker 和原生 CLI
   web/         Web 客户端，server 同端口托管
-  omp-runtime/ Official OMP + matching public APIs/dependencies + private Bun runtime
-局域网/手机访问：omp-worker.exe web --host 0.0.0.0
+${skipRuntime ? "  (lite: no bundled omp-runtime — external OMP CLI provides the engine)\n" : "  omp-runtime/ Official OMP + matching public APIs/dependencies + private Bun runtime\n"}局域网/手机访问：omp-worker.exe web --host 0.0.0.0
 `)
