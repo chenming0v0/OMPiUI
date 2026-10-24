@@ -13,7 +13,6 @@ import { ChatViewportProvider, useChatViewportMaybe, type ChatViewportValue } fr
 import type { Attachment } from '../attachment/index.js'
 import { ExtensionUiDialogHost } from '../chat/ExtensionUiDialogHost.js'
 import { ExtensionUiSurface } from '../chat/ExtensionUiSurface'
-import { NativeOmpTerminalButton, openNativeOmpTerminal } from '../../components/NativeOmpTerminalButton'
 import { OutlineIndex } from '../../components/OutlineIndex'
 import { buildOutlineSourceEntries } from '../../components/outlineIndexModel'
 import { selectPiTimelineItemsCached } from '../../omp/selectors/timelineCache.js'
@@ -1026,10 +1025,6 @@ export function PiChatPane({
             await copyTextToClipboard(responseText)
             return true
           }
-          case 'ui-terminal':
-            if (!sessionId) throw new Error('Open a session before handing it to the native terminal')
-            await openNativeOmpTerminal(sessionId, currentDirectoryRef.current ?? undefined)
-            return true
         }
         const images = attachments.map(attachmentToImage).filter((image): image is PiImageInput => image !== null)
         const deliverAs = options?.delivery ?? 'followUp'
@@ -1507,9 +1502,6 @@ export function PiChatPane({
             }
           />
           <ExtensionUiSurface sessionId={sessionId} placement="belowEditor" />
-          <div className="pointer-events-auto flex justify-end px-4 pb-1">
-            <NativeOmpTerminalButton sessionId={sessionId ?? undefined} directory={currentDirectory ?? undefined} />
-          </div>
         </div>
       </div>
     </div>

@@ -19,7 +19,7 @@ export const SHELL_POLICY_EXTENSION = `export default function (pi) {
     if (input.pty !== true || input.timeout !== 0 || input.async === true || input.name !== undefined) return;
     return {
       block: true,
-      reason: "The managed RPC UI has no local interactive PTY: this foreground pty:true timeout:0 command was not started. Use OMPiUI's Native OMP terminal entry for terminal interaction. Named services remain available through bash name + ready.timeout and proc:// stdin; async:true non-interactive jobs are also available. No command or agent was stopped.",
+      reason: "The managed RPC UI has no local interactive PTY: this foreground pty:true timeout:0 command was not started. Named services remain available through bash name + ready.timeout and proc:// stdin; async:true non-interactive jobs are also available. No command or agent was stopped.",
     };
   });
 }

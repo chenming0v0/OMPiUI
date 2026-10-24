@@ -83,7 +83,6 @@ import { resolveWorkspacePath } from "./path-safety.ts";
 import { workspacePathKey } from "./workspace-store.ts";
 import { TextWindow } from "./text-window.ts";
 import { RateBudget } from "../rate-budget.ts";
-import { ompCommandEnvironment, resolveOmpCommand } from "@ompiui/omp-worker";
 
 const OUTPUT_BUFFER_LIMIT = 2 * 1024 * 1024;
 const REPLAY_BYTE_LIMIT = 1024 * 1024;
@@ -139,10 +138,6 @@ export type TerminalAttachment = {
 };
 
 export type TerminalManagerOptions = {
-  prepareNativeSession?: (
-    workspacePath: string,
-    sessionId: string,
-  ) => Promise<{ sessionFile: string; cwd: string; release(): void }>;
   publish?: (
     workspacePath: string,
     channel: TerminalEventChannel,
@@ -229,59 +224,27 @@ export class TerminalManager {
     workspacePath: string,
     params: TerminalCreateParams,
   ): Promise<TerminalInfo> {
-    const nativeSessionId = params.nativeSessionId?.trim();
-    if (params.nativeSessionId !== undefined && !nativeSessionId) {
-      throw Object.assign(new Error("nativeSessionId must not be empty"), { code: "INVALID_REQUEST" });
-    }
-    const ompUtility = params.ompCommand;
-    if (ompUtility !== undefined && ompUtility !== "play" && ompUtility !== "stream") {
-      throw Object.assign(new Error("unsupported native OMP command"), { code: "INVALID_REQUEST" });
-    }
-    if (nativeSessionId && ompUtility) {
-      throw Object.assign(new Error("session takeover and native utility commands are mutually exclusive"), { code: "INVALID_REQUEST" });
-    }
-    if ((nativeSessionId || ompUtility) && (params.cwd !== undefined || params.shell !== undefined)) {
-      throw Object.assign(new Error("native terminals use the current workspace, not a custom cwd or shell"), { code: "INVALID_REQUEST" });
-    }
-    const environment = ompCommandEnvironment({
-      TERM: "xterm-256color",
-      COLORTERM: "truecolor",
-      OMPIUI_TERMINAL: "1",
-    });
-    const invocation = nativeSessionId || ompUtility
-      ? resolveOmpCommand(environment.OMPI_OMP_BIN, environment)
-      : { command: resolveShell(params.shell), args: [] as string[] };
-    const shell = invocation.command;
+    const cwd = await this.resolveCwd(workspacePath, params.cwd);
+    const shell = resolveShell(params.shell);
     requireByteLimit(shell, 4096, "shell");
     const size = terminalSize(params.rows, params.cols);
     const id = `term_${randomUUID()}`;
-    const customTitle = params.title?.trim() || (nativeSessionId ? "OMP Native" : ompUtility ? `OMP ${ompUtility}` : undefined);
+    const customTitle = params.title?.trim() || undefined;
     if (customTitle) requireByteLimit(customTitle, 512, "title");
     const title = customTitle || path.basename(shell) || "Terminal";
-    let native: { sessionFile: string; cwd: string; release(): void } | undefined;
-    let cwd: string;
+    const environment = {
+      ...process.env,
+      TERM: "xterm-256color",
+      COLORTERM: "truecolor",
+      OMPIUI_TERMINAL: "1",
+    };
+
     let child: PtyProcess;
-    let starting = false;
     try {
-      if (nativeSessionId) {
-        if (!this.options.prepareNativeSession) {
-          throw Object.assign(new Error("native session takeover is unavailable on this server"), { code: "NOT_SUPPORTED" });
-        }
-        native = await this.options.prepareNativeSession(workspacePath, nativeSessionId);
-        cwd = await this.resolveCwd(workspacePath, native.cwd);
-        if (!path.isAbsolute(native.sessionFile)) {
-          throw new Error("native session takeover must return an absolute session file");
-        }
-      } else {
-        cwd = await this.resolveCwd(workspacePath, params.cwd);
-      }
       if (this.shuttingDown) {
         throw Object.assign(new Error("terminal manager is shutting down"), { code: "TERMINAL_CLOSED" });
       }
-      starting = true;
-      child = loadPty().spawn(shell, native
-        ? [...invocation.args, "--cwd", cwd, "--session", native.sessionFile]
-        : ompUtility ? [...invocation.args, ompUtility] : shellArgs(shell), {
+      child = loadPty().spawn(shell, shellArgs(shell), {
         name: "xterm-256color",
         cwd,
         cols: size.cols,
@@ -289,8 +252,6 @@ export class TerminalManager {
         env: environment,
       });
     } catch (error) {
-      if (!starting && !native) throw error;
-      native?.release();
       throw Object.assign(
         new Error(
           `failed to start terminal: ${error instanceof Error ? error.message : String(error)}`,
@@ -312,8 +273,6 @@ export class TerminalManager {
         status: "running",
         pid: child.pid,
         cursor: 0,
-        ...(nativeSessionId ? { nativeSessionId, sessionFile: native!.sessionFile } : {}),
-        ...(ompUtility ? { ompCommand: ompUtility } : {}),
       },
       process: child,
       customTitle,
@@ -330,12 +289,11 @@ export class TerminalManager {
       listeners: [],
     };
     this.terminals.set(id, terminal);
-    const lease = native;
     let resolveExit!: () => void;
     const exited = new Promise<void>((resolve) => { resolveExit = resolve; });
     this.ownedProcesses.set(child, { exited });
     // This listener is deliberately not in terminal.listeners: removing a tab
-    // must neither release its writer lease nor lose the actual exit barrier.
+    // must not lose the actual exit barrier.
     let exitObserved = false;
     const exitListener = child.onExit(({ exitCode }) => {
       if (exitObserved) return;
@@ -345,26 +303,20 @@ export class TerminalManager {
       // exact owned PID; never signal a PID that may have been reused.
       void (async () => {
         if (isBunRuntime) await waitForOwnedProcessExit(child.pid);
-        try {
-          lease?.release();
-        } catch (error) {
-          this.exitErrors.push(error);
-        } finally {
-          // Defer disposal: bun-pty iterates its mutable listener array.
-          // Close its PTY only after the real owned process disappeared.
-          queueMicrotask(() => {
-            try {
-              exitListener.dispose();
-              if (isBunRuntime) child.kill();
-              if (this.terminals.get(id) === terminal) this.handleExit(terminal, exitCode);
-            } catch (error) {
-              this.exitErrors.push(error);
-            } finally {
-              this.ownedProcesses.delete(child);
-              resolveExit();
-            }
-          });
-        }
+        // Defer disposal: bun-pty iterates its mutable listener array.
+        // Close its PTY only after the real owned process disappeared.
+        queueMicrotask(() => {
+          try {
+            exitListener.dispose();
+            if (isBunRuntime) child.kill();
+            if (this.terminals.get(id) === terminal) this.handleExit(terminal, exitCode);
+          } catch (error) {
+            this.exitErrors.push(error);
+          } finally {
+            this.ownedProcesses.delete(child);
+            resolveExit();
+          }
+        });
       })();
     });
     terminal.listeners.push(child.onData((data) => this.handleData(terminal, data)));
@@ -427,9 +379,6 @@ export class TerminalManager {
 
   remove(workspacePath: string, id: string): void {
     const terminal = this.require(workspacePath, id);
-    if (terminal.info.nativeSessionId && terminal.info.status === "running") {
-      throw Object.assign(new Error("Exit the native OMP TUI with /quit before closing this terminal; its current work will not be aborted."), { code: "NATIVE_TERMINAL_ACTIVE" });
-    }
     this.removeTerminal(terminal);
   }
 
@@ -614,11 +563,11 @@ export class TerminalManager {
           await Promise.allSettled(this.creates);
           await Promise.all(exits);
           if (this.exitErrors.length) {
-            throw new AggregateError(this.exitErrors, "failed to release native terminal session leases");
+            throw new AggregateError(this.exitErrors, "failed to reap owned terminal processes");
           }
         })(),
         new Promise<never>((_resolve, reject) => {
-          deadline = setTimeout(() => reject(new Error("owned terminals did not exit; native session leases remain held until real PTY exit")), 10_000);
+          deadline = setTimeout(() => reject(new Error("owned terminals did not exit")), 10_000);
         }),
       ]);
     } finally {
@@ -641,14 +590,9 @@ export class TerminalManager {
     this.tickets.clear();
   }
 
-  /** Closes owned shells; active native sessions require an explicit /quit. */
+  /** Closes every terminal owned by the workspace and invalidates their connect tickets. */
   closeWorkspace(workspacePath: string): void {
     const key = workspacePathKey(workspacePath);
-    for (const terminal of this.terminals.values()) {
-      if (workspacePathKey(terminal.workspacePath) === key && terminal.info.nativeSessionId && terminal.info.status === "running") {
-        throw Object.assign(new Error("Exit the native OMP TUI with /quit before removing its workspace; its current work will not be aborted."), { code: "NATIVE_TERMINAL_ACTIVE" });
-      }
-    }
     for (const terminal of Array.from(this.terminals.values())) {
       if (workspacePathKey(terminal.workspacePath) === key)
         this.removeTerminal(terminal);
@@ -790,8 +734,8 @@ export class TerminalManager {
     try {
       process.kill();
     } catch {
-      // Do not treat a failed signal as exit. Keep the handle and lease until
-      // onExit, and retry this owned handle on a later dispose/shutdown.
+      // Do not treat a failed signal as exit. Keep the handle until onExit,
+      // and retry this owned handle on a later dispose/shutdown.
     }
   }
 

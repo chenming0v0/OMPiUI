@@ -101,7 +101,7 @@ describe("http api", () => {
     assert.equal(accepted.json.service, "ompiui-server")
   })
 
-  it("dispose kills terminals before closing HTTP and releases leases only after real PTY exit", async () => {
+  it("dispose kills terminals before closing HTTP and disposes the supervisor only after real PTY exit", async () => {
     const app = createAppServer({ authToken: "test-token" })
     await listen(app)
     const order: string[] = []

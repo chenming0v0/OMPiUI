@@ -1091,16 +1091,6 @@ export class WorkerSession {
     return () => this.replacementListeners.delete(listener);
   }
 
-  /** Native handover requires a confirmed runtime close, not best-effort cleanup. */
-  async disposeForNativeTakeover(): Promise<void> {
-    if (this.disposed) throw new Error("Session runtime was already disposed before native handover")
-    if (this.core.isGone()) throw new Error("Cannot confirm the runtime is stopped")
-    await this.core.request({ type: "session.close" }, undefined, this.sessionId)
-    this.disposed = true
-    this.core.unregisterHandle(this, this.sessionId)
-    this.notifyClose()
-  }
-
   /**
    * 关闭本句柄对应的 runtime（session.close 命令），不杀共享进程。
    * 幂等：进程已崩溃/已关闭时只做本地清理。

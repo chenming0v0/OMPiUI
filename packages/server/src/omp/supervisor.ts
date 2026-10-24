@@ -108,12 +108,6 @@ export class RuntimeSupervisor {
     return Promise.resolve(host.peekHandshake())
   }
 
-  async acquireNativeSessionLease(sessionFile: string, sessionId: string): Promise<() => void> {
-    if (this.disposed) throw new Error("Runtime supervisor is disposed")
-    const lease = await this.leases.acquire(sessionFile, sessionId)
-    return once(() => lease.release())
-  }
-
   open(cwd: string, sessionFile?: string, signal?: AbortSignal): Promise<WorkerSession> {
     if (this.disposed) return Promise.reject(new Error("Runtime supervisor is disposed"))
     const opening = this.performOpen(cwd, sessionFile, signal)

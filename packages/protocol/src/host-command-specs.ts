@@ -141,8 +141,6 @@ export const HOST_COMMAND_SPECS = [
         cwd: STRING,
         shell: byteString(4096),
         title: byteString(512),
-        nativeSessionId: byteString(256),
-        ompCommand: { enum: ["play", "stream"] },
         ...TERMINAL_SIZE,
       },
       ["workspacePath"],

@@ -1,3 +1,8 @@
+## [Unreleased]
+
+- fix: 移除「原生 OMP」终端接管入口——输入框下方按钮、`▾` 下的 `omp play`/`omp stream`、`/ui-terminal` 命令、终端面板的接管提示条、`terminals.create` 的 `nativeSessionId`/`ompCommand` 参数、服务端 `prepareNativeSession` 预留与写入/删除守卫、worker `disposeForNativeTakeover`、supervisor 原生租约，以及 `scripts/verify-native-terminal.mjs`。回退 c9bd333 的接管部分、d7808c1（#393、#395）的接管守卫，以及 6885e2a（#394）的租约部分。终端标签与 PTY 退出回收保留；supervisor 运行时租约不变。需要官方 TUI 时自行开终端。
+- fix(worker): 托管 bash 拦截前台 `pty:true timeout:0` 的提示不再指向原生终端入口。
+
 ## [v0.6.40] - 2026-10-24
 
 - fix: flush provider edits on close and keep the native queue after Stop (3f801f8)
