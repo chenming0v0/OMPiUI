@@ -29,7 +29,6 @@ import {
   getDriverMode,
   listCommandCapabilities,
   type WorkerEvent,
-  backupOmpSession,
 } from "@ompiui/omp-worker";
 import type { EventHub } from "../event-hub.ts";
 import { logToFile } from "../logger.ts";
@@ -92,18 +91,6 @@ const SERVER_SESSION_CAPABILITIES: PiCapability[] = [
   },
 ];
 
-// immediate 非幂等命令都是写入，需经过 Native 接管保护；草稿同步与 TUI 镜像保持原行为。
-const NATIVE_GUARD_EXEMPT = new Set([
-  "setExtensionEditorState",
-  "extensionUi.tuiInput",
-  "extensionUi.tuiResize",
-  "extensionUi.tuiRedraw",
-]);
-
-function isImmediateWrite(type: string, capability?: PiCapability): boolean {
-  return capability?.queue === "immediate" && capability.idempotent !== true && !NATIVE_GUARD_EXEMPT.has(type);
-}
-
 const DEFAULT_IDLE_RUNTIME_TTL_MS = 2 * 60_000;
 const RUNTIME_REAPER_INTERVAL_MS = 30_000;
 const ATTACH_BUSY_RETRIES = 12;
@@ -145,9 +132,6 @@ export class SessionHost {
   readonly executor: SessionExecutor;
   private pendingAttachBytes = 0;
   private pendingAttachCommands = 0;
-  private readonly nativeSessions = new Map<string, { sessionFile?: string }>();
-  /** 每个会话已受理、尚未返回的 immediate 写命令数。 */
-  private readonly immediateWrites = new Map<string, number>();
   private readonly toolInterruptions = new Map<string, JsonObject>();
 
   constructor(
@@ -293,7 +277,6 @@ export class SessionHost {
     signal?: AbortSignal,
   ): Promise<JsonObject> {
     if (signal?.aborted) throw abortError();
-    this.assertUiWriterAvailable(undefined, sessionFile);
     // Idempotent attach: reopening an already-attached session file reuses
     // its runtime instead of spawning a second worker that would lose the
     // session lease (SESSION_BUSY 409).
@@ -516,77 +499,6 @@ export class SessionHost {
     });
   }
 
-  async prepareNativeSession(workspacePath: string, sessionId: string): Promise<{
-    sessionFile: string;
-    cwd: string;
-    release: () => void;
-  }> {
-    this.assertUiWriterAvailable(sessionId);
-    if (this.executor.hasPendingWork(sessionId) || this.activity.has(sessionId) || this.immediateWrites.has(sessionId)) {
-      throw Object.assign(new Error("Wait for this session to settle before opening its native terminal"), { code: "SESSION_BUSY" });
-    }
-    const reservation: { sessionFile?: string } = {};
-    this.nativeSessions.set(sessionId, reservation);
-    let releaseLease: (() => void) | undefined;
-    const release = () => {
-      releaseLease?.();
-      if (this.nativeSessions.get(sessionId) === reservation) this.nativeSessions.delete(sessionId);
-    };
-    try {
-      const existing = this.runtimes.get(sessionId);
-      const found = existing?.sessionFile
-        ? { cwd: existing.cwd, sessionFile: existing.sessionFile }
-        : await this.findSessionOnDisk(sessionId);
-      if (!found) throw Object.assign(new Error("Session file not found"), { code: "SESSION_NOT_FOUND" });
-      if (pathKey(found.cwd) !== pathKey(workspacePath)) {
-        throw Object.assign(new Error("Session belongs to another workspace"), { code: "PATH_OUTSIDE_WORKSPACE" });
-      }
-      reservation.sessionFile = found.sessionFile;
-      const attached = this.runtimes.get(sessionId);
-      if (attached) {
-        const state = await attached.worker.command("state.get");
-        if (!isJsonObject(state) || state.isStreaming === true || state.isCompacting === true ||
-          state.isBashRunning === true || state.hasPendingAsyncWork === true || state.isIdle === false ||
-          Number(state.pendingMessageCount ?? state.queuedMessageCount ?? 0) > 0 ||
-          this.executor.hasPendingWork(sessionId) || this.immediateWrites.has(sessionId)) {
-          throw Object.assign(new Error("Session still has active or queued work"), { code: "SESSION_BUSY" });
-        }
-        await this.executor.close(sessionId, { dispose: async () => {
-          await attached.worker.disposeForNativeTakeover();
-          this.runtimes.delete(sessionId);
-          this.activity.delete(sessionId);
-          this.lastAccess.delete(sessionId);
-        } });
-      }
-      releaseLease = await this.supervisor.acquireNativeSessionLease(found.sessionFile, sessionId);
-      backupOmpSession(found.sessionFile);
-      this.hub.publish({ kind: "server", id: "server" }, "sessions.updated", { sessionId, detached: true });
-      return { ...found, release };
-    } catch (error) {
-      release();
-      throw error;
-    }
-  }
-
-  /** 先过 Native 保护再计数；计数在命令返回（成功或失败）后归还。 */
-  private async trackImmediateWrite<T>(sessionId: string, run: () => Promise<T>): Promise<T> {
-    this.assertUiWriterAvailable(sessionId);
-    this.immediateWrites.set(sessionId, (this.immediateWrites.get(sessionId) ?? 0) + 1);
-    try {
-      return await run();
-    } finally {
-      const left = (this.immediateWrites.get(sessionId) ?? 1) - 1;
-      if (left > 0) this.immediateWrites.set(sessionId, left);
-      else this.immediateWrites.delete(sessionId);
-    }
-  }
-
-  private assertUiWriterAvailable(sessionId?: string, sessionFile?: string): void {
-    const native = sessionId && this.nativeSessions.has(sessionId) ||
-      sessionFile && [...this.nativeSessions.values()].some(item => item.sessionFile && pathKey(item.sessionFile) === pathKey(sessionFile));
-    if (native) throw Object.assign(new Error("This session is open in its native OMP terminal; quit that terminal before writing from chat"), { code: "SESSION_BUSY" });
-  }
-
   getAttached(sessionId: string): AttachedSession | undefined {
     return this.runtimes.get(sessionId);
   }
@@ -688,7 +600,6 @@ export class SessionHost {
     signal?: AbortSignal,
   ): Promise<AttachedSession> {
     if (signal?.aborted) throw abortError();
-    this.assertUiWriterAvailable(sessionId);
     const existing = this.runtimes.get(sessionId);
     if (existing) return existing;
     // Single-flight: concurrent queries (state.get + branch.get fire together)
@@ -949,8 +860,6 @@ export class SessionHost {
           ? params.sessionFile
           : undefined;
       if (sessionFile) {
-        // Native 终端预留中的会话不得删除；必须在 close/unlink 之前拒绝。
-        this.assertUiWriterAvailable(undefined, sessionFile);
         const live = this.runtimes.findBySessionFile(sessionFile);
         if (live) await this.closeSession(live.sessionId, "session_delete");
       }
@@ -1001,8 +910,6 @@ export class SessionHost {
         options,
       );
     validateParams(capability.paramsSchema, params ?? {});
-    if (isImmediateWrite(type, capability))
-      return this.trackImmediateWrite(sessionId, () => this.sessionQuery(sessionId, type, params, options.signal));
     if (capability.queue === "immediate")
       return this.sessionQuery(sessionId, type, params, options.signal);
     return this.submitSessionCommand(sessionId, {
@@ -1061,13 +968,11 @@ export class SessionHost {
   ): SubmittedCommand | Promise<SubmittedCommand> {
     assertCommandId(envelope.id);
     if (options.signal?.aborted) throw abortError();
-    this.assertUiWriterAvailable(sessionId);
     const full: CommandEnvelope = { ...envelope, sessionId };
     const submit = (session: AttachedSession): SubmittedCommand => {
       if (options.signal?.aborted) throw abortError();
       this.touch(session.sessionId);
       return this.executor.submit(full, async () => {
-        this.assertUiWriterAvailable(sessionId);
         const data = await session.worker.command(full.type, full.params);
         await this.trackReplacement(session, data);
         return data;

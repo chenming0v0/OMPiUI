@@ -288,3 +288,22 @@ describe('tool execution history', () => {
     expect(hydrated[0]).toMatchObject({ toolResults: { 'call-orphan': { isError: true } } })
   })
 })
+
+describe('selectPiTimelineItems execution-only fallback rows', () => {
+  const read = { type: 'toolCall' as const, id: 'old-read', name: 'read', arguments: { path: 'a.ts' } }
+  const result = { role: 'toolResult' as const, toolCallId: read.id, toolName: 'read', content: [{ type: 'text' as const, text: 'ok' }], isError: false, timestamp: 600 }
+  const user: SessionEntry = { type: 'message', id: 'u', parentId: null, timestamp: new Date(1_000).toISOString(), message: { role: 'user', content: 'go', timestamp: 1_000 } } as SessionEntry
+  const final: SessionEntry = { type: 'message', id: 'a', parentId: 'u', timestamp: new Date(2_000).toISOString(), message: { role: 'assistant', content: [{ type: 'text', text: 'done' }], timestamp: 2_000 } } as SessionEntry
+
+  it('does not append completed calls whose owner slid out of the loaded window', () => {
+    const branch = { ...page([user, final]), hasMore: true }
+    branch.client = { toolExecutions: { [read.id]: { call: read, startedAt: 500, completedAt: 600, isRunning: false, result } } }
+    expect(selectPiTimelineItems(branch).map(item => item.kind)).toEqual(['user_message', 'assistant_message'])
+  })
+
+  it('still shows a call that started after the newest loaded entry', () => {
+    const branch = page([user, final])
+    branch.client = { toolExecutions: { fresh: { call: { ...read, id: 'fresh' }, startedAt: 3_000, isRunning: true } } }
+    expect(selectPiTimelineItems(branch).map(item => item.kind)).toEqual(['user_message', 'assistant_message', 'tool_result'])
+  })
+})

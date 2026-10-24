@@ -246,9 +246,15 @@ export function buildPiHistoryItems(branch: PiBranchPage): PiTimelineItem[] {
     if (owner) owner.toolResults[callId] = orphan.execution.result!
     if (owner || liveCallIds.has(callId)) items.splice(items.indexOf(orphan), 1)
   }
+  // 无所属条目的执行兜底行只覆盖「比已加载历史更新、尚未落盘」或仍在运行的调用。
+  // 所属助手消息滑出加载窗口的旧调用不能再追加到时间线末尾（会显示成任务结束后才出现）。
+  const newestLoaded = branch.items.reduce((max, entry) => Math.max(max, parseTime(entry.timestamp)), 0)
   for (const [callId, execution] of Object.entries(toolExecutions)) {
     if (assistantByCallId.has(callId) || liveCallIds.has(callId) || orphanResults.has(callId) || !execution.call) continue
-    items.push({ kind: 'tool_result', entryId: `tool:${callId}`, timestamp: execution.startedAt ?? execution.result?.timestamp ?? 0, execution: { ...execution, call: execution.call } })
+    const at = execution.startedAt ?? execution.result?.timestamp ?? 0
+    const running = execution.isRunning === true && !execution.result && execution.completedAt === undefined && !execution.error
+    if (!running && at <= newestLoaded) continue
+    items.push({ kind: 'tool_result', entryId: `tool:${callId}`, timestamp: at, execution: { ...execution, call: execution.call } })
   }
   for (const [callId, owner] of assistantByCallId) {
     const execution = toolExecutions[callId]

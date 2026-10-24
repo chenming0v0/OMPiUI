@@ -18,9 +18,6 @@ export type TerminalInfo = {
   status: TerminalStatus
   pid: number
   exitCode?: number | null
-  nativeSessionId?: string
-  sessionFile?: string
-  ompCommand?: "play" | "stream"
   cursor: number
 }
 
@@ -30,8 +27,6 @@ export type TerminalCreateParams = {
   title?: string
   rows?: number
   cols?: number
-  nativeSessionId?: string
-  ompCommand?: "play" | "stream"
 }
 
 export type TerminalUpdateParams = {

@@ -73,7 +73,14 @@ describe('pending user message handoff', () => {
     const two = createPendingSend('session', 1, 'same', [{ mimeType: 'image/png', data: 'AA==' }], [])
     const row = native('same', 12, [{ type: 'image', mimeType: 'image/png', data: 'blob:sha256:stored' }])
     expect(reconcilePendingSends([one, two], [row])).toMatchObject([{ id: two.id }])
-    expect(reconcilePendingSends([one], [native('same', 13, [{ type: 'image', mimeType: 'image/png', data: 'different' }])])).toEqual([one])
+    expect(reconcilePendingSends([one], [native('same', 13, [])])).toEqual([one])
+  })
+
+  it('hands off a send whose image OMP re-encoded before persisting (png -> webp)', () => {
+    const pending = { ...createPendingSend('session', 1, 'what is this', [{ mimeType: 'image/png', data: 'iVBORw0KGgo=' }], []), phase: 'accepted' as const }
+    const row = native('what is this', 30, [{ type: 'image', mimeType: 'image/webp', data: 'UklGRg==' }])
+    expect(reconcilePendingSends([pending], [row])).toEqual([])
+    expect(appendPendingSends([row], [pending], 'session', label)).toEqual([row])
   })
 
   it('does not let a consumed native row be claimed again by later reconciles', () => {

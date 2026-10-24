@@ -43,20 +43,7 @@
     "hidePanel": "Hide Panel",
     "restoringSessions": "Restoring sessions...",
     "createTerminal": "Create Terminal",
-    "createTerminalFailed": "Failed to create terminal",
-    "nativeOpen": "Native OMP",
-    "nativeOpenFailed": "Could not open native OMP",
-    "nativeWorkspaceRequired": "Select the current session workspace before opening native OMP.",
-    "nativeHint": "Explicitly hand this session to the official interactive OMP terminal; active work is never aborted.",
-    "nativeConfirm": "Open the official OMP TUI for this session?\n\nWorkspace: {{directory}}\nSession: {{sessionId}}\n\nThe server refuses takeover while UI work or queued messages remain. Once settled, it closes the UI writer, backs up the latest history and resumes the same session file (no private copy). UI browsing stays read-only while the terminal owns this session. Exit with /quit before returning to UI writing; hiding the panel does not stop OMP.",
-    "nativeSessionFile": "Shared file resumed at launch: {{path}} (native move/worktree or session navigation may change it)",
-    "nativeInstructions": "Official OMP TUI — use /plan, /plan-review, /loop, /guided-goal, /goal, /vibe, /git, /wt, /collab, /record and extension custom UI. Voice (/live and native STT/TTS) uses the server's microphone/speakers, not browser audio, and needs host devices, models and credentials. Collab can expose this session to remote participants; /record captures it locally on the server. Availability follows the installed OMP, not web RPC. Exit with /quit to return to UI writing; hiding the panel does not stop work.",
-    "nativeUtilities": "Official OMP utilities",
-    "nativePlay": "Play latest host recording",
-    "nativeStream": "Open public live stream",
-    "nativePlayInstructions": "Official omp play — replays the newest /record capture from the server's recordings directory, not only this session. Space pauses; q quits. Missing recordings are reported by OMP. This does not take over the chat session.",
-    "nativeStreamInstructions": "Official omp stream — may broadcast server-local OMP session screens/chat to a public live channel using the host's credentials. This is not limited to the selected chat. Use the native stream console to control sharing and quit; hiding this panel does not stop broadcasting.",
-    "nativeStreamConfirm": "Start the official public live-stream console?\n\nWorkspace: {{directory}}\n\nThis runs omp stream on the server and can broadcast server-local OMP session screens and chat to a public channel using the server's configured credentials. It is not limited to the selected chat and does not stream your browser screen or microphone. Review the native console and stop/quit there when finished; hiding the panel does not stop sharing."
+    "createTerminalFailed": "Failed to create terminal"
   },
   "diffViewer": {
     "noChanges": "No changes",
