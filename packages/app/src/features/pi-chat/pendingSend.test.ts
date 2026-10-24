@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { appendPendingSends, createPendingSend, reconcilePendingSends } from './pendingSend'
+import { appendPendingSends, createPendingSend, reconcilePendingSends, reconcileQueuedPendingSends } from './pendingSend'
 import type { PiTimelineItem } from '../../omp/domain'
 
 const label = (count: number) => `${count} image(s)`
@@ -11,6 +11,16 @@ function native(text: string, timestamp: number, images: object[] = []): PiTimel
 }
 
 describe('pending user message handoff', () => {
+  it('hands an accepted normal send to the native queue without duplicating a Send now preview', () => {
+    const queued = { entryId: 'new-queue-entry', text: 'follow up' }
+    const regular = { ...createPendingSend('session', 1, queued.text, [], []), phase: 'accepted' as const }
+    const promoted = { ...createPendingSend('session', 1, queued.text, [], [], queued.entryId), phase: 'accepted' as const }
+    expect(reconcileQueuedPendingSends([regular, promoted], [queued])).toEqual([promoted])
+    const older = { ...createPendingSend('session', 1, queued.text, [], [], undefined, [queued]), phase: 'accepted' as const }
+    expect(reconcileQueuedPendingSends([older], [queued])).toEqual([older])
+    expect(reconcileQueuedPendingSends([{ ...regular, phase: 'submitting' }], [queued])).toMatchObject([{ phase: 'submitting' }])
+  })
+
   it('renders before session creation and keeps a stable timestamp without changing native history', () => {
     const pending = createPendingSend(null, 1, 'first prompt', [], [])
     const items: PiTimelineItem[] = []

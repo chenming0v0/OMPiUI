@@ -14,6 +14,7 @@ export interface PendingSend {
   images: readonly PendingSendImage[]
   phase: 'submitting' | 'accepted'
   baselineTimestamps: ReadonlySet<number>
+  baselineQueueIds: ReadonlySet<string>
   queueEntryId?: string
 }
 
@@ -25,11 +26,13 @@ export function createPendingSend(
   images: readonly PendingSendImage[],
   items: readonly PiTimelineItem[],
   queueEntryId?: string,
+  queueEntries: readonly { entryId: string }[] = [],
 ): PendingSend {
   return {
     id: crypto.randomUUID(), timestamp: Date.now(), sessionId, serverGeneration, text, images,
     phase: 'submitting', queueEntryId,
     baselineTimestamps: new Set(items.filter(item => item.kind === 'user_message').map(item => item.timestamp)),
+    baselineQueueIds: new Set(queueEntries.map(entry => entry.entryId)),
   }
 }
 
@@ -54,6 +57,24 @@ export function reconcilePendingSends(pending: readonly PendingSend[], items: re
     })
     if (!native) return true
     consumed.add(native.timestamp)
+    return false
+  })
+  return remaining.length === pending.length ? pending : remaining
+}
+
+/** A regular send is already visible in the native queue; Send now owns a separate preview. */
+export function reconcileQueuedPendingSends(
+  pending: readonly PendingSend[],
+  entries: readonly { entryId: string; text: string; images?: readonly PendingSendImage[] }[],
+): readonly PendingSend[] {
+  const consumed = new Set<string>()
+  const remaining = pending.filter(send => {
+    if (send.phase !== 'accepted' || send.queueEntryId) return true
+    const queued = entries.find(entry => !consumed.has(entry.entryId) &&
+      !send.baselineQueueIds.has(entry.entryId) && entry.text === send.text &&
+      (entry.images?.length ?? 0) === send.images.length)
+    if (!queued) return true
+    consumed.add(queued.entryId)
     return false
   })
   return remaining.length === pending.length ? pending : remaining

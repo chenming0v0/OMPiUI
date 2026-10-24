@@ -9,6 +9,8 @@
 - fix: #372 移除托管运行时对 `task.maxRecursionDepth` 的 UI 专用覆盖，子代理递归深度遵循用户原生设置；保留 autoResume:false 与前台无界 PTY 调用拦截。
 - fix: #356 树导航 Undo/Redo 恢复目标节点的原生文本与图片草稿，输入框新增整段草稿替换接口；会话树面板导航经统一事件路径恢复，Fork 图片草稿沿用既有 restoreNativeDraft。
 - fix: 恢复被误改回的 0.6.38 版本号与 v0.6.38 发布记录；WIP 批次遗留的 PiChatPane serverStore 缺失 import 已补。测试隔离修复：SlashCommandMenu mock 计数、Subagent 预览默认 mock、转录截断断言对齐 8000 字符阈值。
+- fix(chat): 新会话首条消息在会话创建、模型配置与原生准入等待期间先显示本地待发气泡，原生落盘后去重并迁移草稿；修复 `b99efce` 移除 `submittedMessages` 投影后首条消息延迟可见的问题。
+- fix(chat): 停止后以原生 `isStreaming` 与实际异步工作判断 Stop 按钮，保留未消费的 follow-up 队列但不把队列误判为前台运行；修复 `b99efce` 的 `hasAdmittedSubmission` 队列提升门禁导致 Send now 返回 INTERNAL。
 - verification: app 全套 204 文件／1553 项测试通过；worker 全套 251 项中 238 通过、13 跳过、0 失败；protocol/omp-worker/app 类型检查与 lint（0 error / 18 warning）通过。#354 官方 Goal 生命周期、#360 abort_and_prompt、#367 真实协议错误帧、#382 PTY 接管上游边界仍需隔离环境真实运行验收；#336 安装器升级路径待用户实测。
 
 ## [v0.6.38] - 2026-10-23
