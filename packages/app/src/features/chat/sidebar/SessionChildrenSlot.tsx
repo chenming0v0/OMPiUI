@@ -3,6 +3,7 @@ import type { UiSession } from '../../../types/session'
 import { useInputCapabilities } from '../../../hooks/useInputCapabilities'
 import { SessionListItem } from '../../sessions'
 import { flattenSessionHierarchy } from '../../../omp/sessionHierarchy'
+import { WORKING_CHILD_ID_PREFIX } from './workingChildSessions'
 
 interface SessionChildrenSlotProps {
   parentSession: UiSession
@@ -72,7 +73,7 @@ export function SessionChildrenSlot({
               checkedPrev={prevChecked}
               checkedNext={nextChecked}
               onToggleCheck={
-                onToggleSessionSelection
+                onToggleSessionSelection && !row.session.id.startsWith(WORKING_CHILD_ID_PREFIX)
                   ? options => onToggleSessionSelection(row.session.id, options)
                   : undefined
               }

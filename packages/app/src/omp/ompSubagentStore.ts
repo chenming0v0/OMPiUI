@@ -74,43 +74,6 @@ export type OmpSubagentSnapshot = {
   revision: number
 }
 
-// HUD 里被用户清掉的 run（终态）：localStorage 持久化，防止刷新后
-// state.get 快照把已清除的条目带回来（OpenCodeUI pinned 列表的同款语义）
-const DISMISSED_STORAGE_KEY = 'ompiui-omp-subagent-hud-dismissed'
-const MAX_DISMISSED_IDS = 200
-
-function loadDismissedIds(): string[] {
-  try {
-    const raw = localStorage.getItem(DISMISSED_STORAGE_KEY)
-    const parsed: unknown = raw ? JSON.parse(raw) : null
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter((id): id is string => typeof id === 'string').slice(-MAX_DISMISSED_IDS)
-  } catch {
-    return []
-  }
-}
-
-function saveDismissedIds(ids: Set<string>): void {
-  try {
-    localStorage.setItem(DISMISSED_STORAGE_KEY, JSON.stringify([...ids].slice(-MAX_DISMISSED_IDS)))
-  } catch {
-    // 持久化失败只影响刷新后的记忆，不影响本次会话
-  }
-}
-
-/**
- * 全局 HUD 列表（detached 后台子代理）：运行中在前（按启动时间），
- * 已结束的按结束时间倒序排在下面。
- */
-export function selectHudRuns(snapshot: OmpSubagentSnapshot): OmpSubagentRun[] {
-  const detached = snapshot.runs.filter(run => run.detached)
-  const running = detached.filter(run => run.status === 'running' || run.status === 'pending')
-  const finished = detached.filter(run => run.status !== 'running' && run.status !== 'pending')
-  running.sort((a, b) => a.startedAt - b.startedAt)
-  finished.sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
-  return [...running, ...finished]
-}
-
 function asRecord(value: unknown): JsonObject | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as JsonObject) : undefined
 }
@@ -193,8 +156,6 @@ class OmpSubagentStore {
   /** 防止重连/双流把同一份子代理事件重复追加到转录。 */
   private eventFingerprints = new Map<string, Set<string>>()
   private retiredRuns = new Set<string>()
-  /** 用户从 HUD 清掉的终态 run：后续帧与快照恢复一律忽略 */
-  private dismissed = new Set<string>(loadDismissedIds())
   private revision = 0
   private listeners = new Set<() => void>()
   /** useSyncExternalStore 要求 getSnapshot 返回稳定引用：按 revision 缓存 */
@@ -294,26 +255,6 @@ class OmpSubagentStore {
     this.bump()
   }
 
-  /** 从 HUD 清除一个 run（通常已是终态）：删除并记录，后续帧不再恢复 */
-  dismiss(runId: string): void {
-    const run = this.runs.get(runId)
-    if (run) {
-      this.touchKey(run)
-      this.unlinkToolCall(run)
-    }
-    const sessionIds = this.bySession.get(run?.sessionId ?? '')
-    if (sessionIds && run) {
-      const next = sessionIds.filter(id => id !== runId)
-      if (next.length > 0) this.bySession.set(run.sessionId, next)
-      else this.bySession.delete(run.sessionId)
-    }
-    this.runs.delete(runId)
-    this.eventFingerprints.delete(runId)
-    this.dismissed.add(run?.runId ?? runId)
-    saveDismissedIds(this.dismissed)
-    this.bump()
-  }
-
   private unlinkToolCall(run: OmpSubagentRun): void {
     const callId = run.parentToolCallId
     if (!callId) return
@@ -363,8 +304,7 @@ class OmpSubagentStore {
     else setTimeout(flush, 16)
   }
 
-  private upsert(sessionId: string, runId: string, fn: (run: OmpSubagentRun) => OmpSubagentRun, generation?: string): void {
-    if (this.dismissed.has(generation ?? this.runs.get(runId)?.runId ?? runId)) return
+  private upsert(sessionId: string, runId: string, fn: (run: OmpSubagentRun) => OmpSubagentRun): void {
     const existing = this.runs.get(runId)
     const base: OmpSubagentRun = existing ?? {
       id: runId,
@@ -404,7 +344,7 @@ class OmpSubagentStore {
   private acceptRun(sessionId: string, id: string, payload: JsonObject, started = false): boolean {
     const incoming = str(payload.runId)
     const current = this.runs.get(id)
-    if (incoming && (this.retiredRuns.has(incoming) || this.dismissed.has(incoming))) return false
+    if (incoming && this.retiredRuns.has(incoming)) return false
     const parent = str(payload.parentToolCallId)
     if (!incoming && !started && current?.parentToolCallId && parent && current.parentToolCallId !== parent) return false
     const replacement = incoming ? incoming !== current?.runId : started && current &&
@@ -412,12 +352,11 @@ class OmpSubagentStore {
     if (!replacement) return true
     if (current?.runId) this.retiredRuns.add(current.runId)
     if (this.retiredRuns.size > 512) this.retiredRuns.delete(this.retiredRuns.values().next().value!)
-    this.dismissed.delete(id)
     this.upsert(sessionId, id, () => ({
       id, runId: incoming, sessionId, agent: 'task', task: '', status: 'pending',
       index: typeof payload.index === 'number' ? payload.index : current?.index ?? this.runs.size,
       detached: false, transcript: [], historyLoaded: false, startedAt: Date.now(),
-    }), incoming)
+    }))
     this.eventFingerprints.delete(id)
     return true
   }
