@@ -481,6 +481,21 @@ describe('InputBox slash command selection', () => {
     expect(getComposerDraft('command-session').text).toBe('/review code')
   })
 
+  it('clears a successfully submitted home draft after moving to its created session', async () => {
+    const submission = Promise.withResolvers<boolean>()
+    const onSend = vi.fn(() => submission.promise)
+    const sent = { id: 'home-photo', type: 'file' as const, displayName: 'home.png', url: 'data:image/png;base64,AA==', mime: 'image/png' }
+    updateComposerDraft('accepted-home', () => ({ text: 'first prompt', attachments: [sent], ready: true }))
+    const { rerender } = render(<InputBox paneId="pane-test" draftKey="accepted-home" onSend={onSend} />)
+    fireEvent.click(screen.getByRole('button', { name: 'send' }))
+    act(() => { moveComposerDraft('accepted-home', 'accepted-session') })
+    rerender(<InputBox paneId="pane-test" draftKey="accepted-session" onSend={onSend} />)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'next prompt' } })
+    await act(async () => { submission.resolve(true) })
+    expect(getComposerDraft('accepted-session')).toMatchObject({ text: 'next prompt', attachments: [] })
+    expect(getComposerDraft('accepted-home')).toMatchObject({ text: '', attachments: [] })
+  })
+
   it('does not let the previous session undo marker clear the next session draft', async () => {
     const onSend = vi.fn()
     const { rerender } = render(

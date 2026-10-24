@@ -18,6 +18,8 @@
     "closePane": "Close pane"
   },
   "chatArea": {
+    "submittingMessage": "Submitting message…",
+    "submittedMessage": "Submitted; waiting for session update…",
     "historyWindow": "Reading earlier history",
     "returnToLatest": "Return to latest",
     "loadingSession": "Loading session...",

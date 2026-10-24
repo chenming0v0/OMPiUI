@@ -21,6 +21,7 @@ import { useMobileCollapse } from './input/useMobileCollapse'
 import { useAttachmentRail } from './input/useAttachmentRail'
 import { useInputHistory } from './input/useInputHistory'
 import { useComposerDraft } from './input/useComposerDraft'
+import { acceptComposerDraft, wasComposerDraftMovedFrom } from './input/composerDraftStore'
 import {
   TEXT_STYLE,
   bytesToDataUrl,
@@ -287,6 +288,8 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
 
   // 文本状态
   const { text, attachments, ready: draftReady, setText, setAttachments } = useComposerDraft(draftKey)
+  const currentDraftKeyRef = useRef(draftKey)
+  currentDraftKeyRef.current = draftKey
 
   // 扩展 editor 命令接口（set/paste 已由 store 合并为全量文本）
   useImperativeHandle(ref, () => ({
@@ -631,15 +634,25 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
           ...(effectiveDeliveryMode ? { delivery: effectiveDeliveryMode } : {}),
         }),
       () => {
-        // Acceptance belongs to this snapshot, not edits made while awaiting it.
-        setText(current => current === text ? '' : current)
-        setAttachments(current => current.filter(attachment => !attachments.includes(attachment)))
+        // Home-to-session navigation moves the draft while this request is
+        // pending. Clear its submitted snapshot, never another session's edits.
+        if (draftKey) {
+          acceptComposerDraft(draftKey, { text, attachments })
+          const currentKey = currentDraftKeyRef.current
+          if (currentKey && currentKey !== draftKey && wasComposerDraftMovedFrom(currentKey, draftKey)) {
+            acceptComposerDraft(currentKey, { text, attachments })
+          }
+        } else {
+          setText(current => current === text ? '' : current)
+          setAttachments(current => current.filter(attachment => !attachments.includes(attachment)))
+        }
         resetHistoryIndex()
         onClearRevert?.()
       },
     )
   }, [
     attachments,
+    draftKey,
     canSend,
     isSubmitting,
     onClearRevert,

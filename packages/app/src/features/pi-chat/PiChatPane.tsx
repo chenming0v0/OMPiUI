@@ -55,8 +55,10 @@ import { useSessionActiveEntry } from '../../store/activeSessionStore'
 import type { PiImageInput } from '../../omp/transport/index.js'
 import type { DeliveryMode } from '../../types/ui'
 import { attachmentToImage, imageInputToAttachment } from './attachmentToImage'
+import { appendPendingSends, createPendingSend, reconcilePendingSends, type PendingSend } from './pendingSend'
+import { hasStoppableSessionActivity } from './sessionActivity'
 import { SessionStopCoordinator } from './sessionStopCoordinator'
-import { composerDraftKey, getComposerDraft, updateComposerDraft } from '../chat/input/composerDraftStore'
+import { composerDraftKey, getComposerDraft, moveComposerDraft, updateComposerDraft } from '../chat/input/composerDraftStore'
 import type { ComposerQueueEntry } from '../chat/input/QueuedUserMessageQueue'
 import { piBranchStore, piSessionStateStore } from '../../omp/state/index.js'
 import { captureRedoCheckpoints, commitRedoPlan, redoPlanStore, type RedoPlan } from '../../omp/redoPlanStore'
@@ -276,13 +278,11 @@ export function PiChatPane({
   const branch = usePiBranchData(sessionId)
   const branchError = usePiBranchError(sessionId)
   const state = usePiSessionRuntimeState(sessionId)
-  // 压缩中：优先用活动状态（worker 推送、已验证可靠），state.isCompacting 兜底
   const sessionEntry = useSessionActiveEntry(sessionId ?? '')
-  const compacting = sessionEntry?.status.type === 'compacting' || state?.isCompacting === true
-  // 兜底：session 在活跃列表中（GET /session/status 全量快照驱动，可靠）→
-  // 即使 piSessionStateStore 因无事件流而 stale（如 bash 等待期），
-  // 输入框发送按钮也保持「停止」状态，避免按钮变暗。
-  const sessionActive = Boolean(sessionEntry)
+  const compacting = state?.isCompacting === true || (state?.isCompacting === undefined && sessionEntry?.status.type === 'compacting')
+  // Native queues can keep the sidebar busy after Stop. Explicit foreground
+  // state wins; the active list is only a fallback until runtime state arrives.
+  const sessionActive = hasStoppableSessionActivity(state, Boolean(sessionEntry))
   const sessionUnavailableRef = useRef(false)
   const [isRetryingSession, setIsRetryingSession] = useState(false)
   // 本 pane 当前会话的实际工作区（来自会话列表或全局当前目录），用于 @ 补全根目录。
@@ -350,6 +350,10 @@ export function PiChatPane({
   // 输入框是 memo 组件；内容不变时复用队列引用，避免每个流式事件都重绘队列。
   const queuedSteering = useMemo(() => queue?.steeringEntries ?? EMPTY_QUEUE, [queue?.steeringEntries])
   const queuedFollowUps = useMemo(() => queue?.followUpEntries ?? EMPTY_QUEUE, [queue?.followUpEntries])
+  // Timeline items from this session's keyed branch; home (no session)
+  // shows an empty flow — user types and sends to create one.
+  const baseItems = useMemo(() => selectPiTimelineItemsCached(sessionId, branch), [sessionId, branch])
+  const [pendingSends, setPendingSends] = useState<PendingSend[]>([])
 
   const handleQueueBackToInput = useCallback(
     async (kind: 'steering' | 'followUp', index: number, entryId: string) => {
@@ -359,6 +363,7 @@ export function PiChatPane({
           if (paneIdentityRef.current.activeServerGeneration !== activeServerGeneration || paneIdentityRef.current.sessionId !== sessionId) throw new Error('Session changed before queue selection')
           return removeQueuedMessage(sessionId, { kind, index, entryId })
         })
+        setPendingSends(current => current.filter(send => send.serverGeneration !== activeServerGeneration || send.sessionId !== sessionId || send.queueEntryId !== entryId))
         const key = composerDraftKey(activeServer, sessionId, '', '')
         const draft = getComposerDraft(key)
         const text = draft.text.trim() ? `${draft.text}\n\n${entry.text}` : entry.text
@@ -384,17 +389,34 @@ export function PiChatPane({
   const handleQueueSendNow = useCallback(
     async (kind: 'steering' | 'followUp', index: number, entryId: string) => {
       if (!sessionId) return
+      const entries = kind === 'steering' ? queuedSteering : queuedFollowUps
+      const selected = entries[index]
+      if (!selected || selected.entryId !== entryId) return
+      const pending = createPendingSend(
+        sessionId,
+        activeServerGeneration,
+        selected.text,
+        selected.images?.map(image => ({ mimeType: image.mimeType })) ?? [],
+        baseItems,
+        entryId,
+      )
+      setPendingSends(current => [...current.filter(send => send.serverGeneration !== activeServerGeneration || send.sessionId !== sessionId || send.queueEntryId !== entryId), pending])
+      let accepted = false
       try {
         await stopCoordinatorRef.current.submit(JSON.stringify([activeServerGeneration, sessionId]), () => {
           if (paneIdentityRef.current.activeServerGeneration !== activeServerGeneration || paneIdentityRef.current.sessionId !== sessionId) throw new Error('Session changed before queue selection')
           return sendQueuedMessage(sessionId, { kind, index, entryId })
         })
+        accepted = true
+        setPendingSends(current => current.map(send => send.id === pending.id ? { ...send, phase: 'accepted' } : send))
         if (paneIdentityRef.current.activeServerGeneration === activeServerGeneration) void Promise.all([refreshPiSessionState(sessionId), refreshPiBranch(sessionId)]).catch(() => undefined)
       } catch (error) {
         uiErrorHandler('send queued message', error)
+      } finally {
+        if (!accepted) setPendingSends(current => current.filter(send => send.id !== pending.id))
       }
     },
-    [sessionId, activeServerGeneration],
+    [sessionId, activeServerGeneration, baseItems, queuedSteering, queuedFollowUps],
   )
   /** 直接清除队列中的一条（不回输入框） */
   const handleQueueClear = useCallback(
@@ -405,6 +427,7 @@ export function PiChatPane({
           if (paneIdentityRef.current.activeServerGeneration !== activeServerGeneration || paneIdentityRef.current.sessionId !== sessionId) throw new Error('Session changed before queue selection')
           return discardQueuedMessage(sessionId, { kind, index, entryId })
         })
+        setPendingSends(current => current.filter(send => send.serverGeneration !== activeServerGeneration || send.sessionId !== sessionId || send.queueEntryId !== entryId))
         if (paneIdentityRef.current.activeServerGeneration === activeServerGeneration) void refreshPiSessionState(sessionId).catch(() => undefined)
       } catch (error) {
         uiErrorHandler('remove queued message', error)
@@ -421,9 +444,16 @@ export function PiChatPane({
     [paneId, sessionId],
   )
 
-  // Timeline items from this session's keyed branch; home (no session)
-  // shows an empty flow — user types and sends to create one.
-  const baseItems = useMemo(() => selectPiTimelineItemsCached(sessionId, branch), [sessionId, branch])
+
+  useEffect(() => {
+    setPendingSends(current => {
+      const sameServer = current.filter(send => send.serverGeneration === activeServerGeneration)
+      const visible = sameServer.filter(send => send.sessionId === sessionId)
+      const remaining = reconcilePendingSends(visible, baseItems)
+      const removed = new Set(visible.filter(send => !remaining.includes(send)).map(send => send.id))
+      return sameServer.length === current.length && removed.size === 0 ? current : sameServer.filter(send => !removed.has(send.id))
+    })
+  }, [baseItems, sessionId, activeServerGeneration])
 
   // 用户发起的 bash 乐观条目（执行中显示 + 流式输出，pi TUI 的
   // BashExecutionComponent 对应物）。订阅 pending 数量变化以便渲染合并。
@@ -432,13 +462,13 @@ export function PiChatPane({
     () => bashPendingStore.getForSession(sessionId ?? '').length,
   )
   const items = useMemo(() => {
-    // pendingBashCount 仅作为 bashPendingStore 变化的订阅信号：store 变化会
-    // 触发重渲染，这里显式引用以把它算进依赖，确保乐观条目被重新合并。
     void pendingBashCount
     const pendingItems = sessionId ? bashPendingStore.toItems(baseItems, sessionId) : []
     const timeline = appendSubmittedUserMessages(baseItems, state?.submittedMessages)
-    return pendingItems.length > 0 ? [...timeline, ...pendingItems] : timeline
-  }, [baseItems, sessionId, pendingBashCount, state?.submittedMessages])
+    const withPending = appendPendingSends(timeline, pendingSends.filter(send => send.serverGeneration === activeServerGeneration), sessionId, count => t('chat:chatArea.queuedImages', { count }))
+    return pendingItems.length > 0 ? [...withPending, ...pendingItems] : withPending
+  }, [baseItems, pendingSends, sessionId, activeServerGeneration, pendingBashCount, state?.submittedMessages, t])
+
 
   const stopCoordinatorRef = useRef(new SessionStopCoordinator())
   const stopKey = JSON.stringify([activeServerGeneration, sessionId])
@@ -786,10 +816,10 @@ export function PiChatPane({
   }, [])
   const outlineEntries = useMemo(() => buildOutlineSourceEntries(items), [items])
 
-  // Mount ChatArea only after this session's branch data is ready — the
-  // virtual scroller's cold-start logic estimates the initial offset at
-  // the bottom on mount. Home mounts immediately with an empty flow.
-  const chatAreaMountKey = sessionId ? (branch ? sessionId : null) : 'home'
+  // Existing history waits for its initial page; a local first send must not
+  // disappear behind that load while session creation/model setup is pending.
+  const hasPendingSessionSend = pendingSends.some(send => send.sessionId === sessionId && send.serverGeneration === activeServerGeneration)
+  const chatAreaMountKey = sessionId ? (branch || hasPendingSessionSend ? sessionId : null) : 'home'
   // Assume at-bottom on session remount so the scroll-to-bottom button
   // doesn't flash.（渲染期间调整 state，避免 effect 级联渲染）
   const [lastMountKey, setLastMountKey] = useState(chatAreaMountKey)
@@ -954,7 +984,10 @@ export function PiChatPane({
   const handleSend = useCallback(
     async (text: string, attachments: Attachment[], options?: { delivery?: DeliveryMode }) => {
       const capturedServerGeneration = activeServerGeneration
+      const sourceDraftKey = composerDraftKey(activeServer, sessionId, currentDirectory ?? '', paneId)
       let targetSessionId = sessionId
+      let pendingId: string | undefined
+      let accepted = false
       try {
         // Only explicitly UI-namespaced actions are local. Official names,
         // aliases, arguments and image inputs always reach the native prompt.
@@ -995,14 +1028,21 @@ export function PiChatPane({
         }
         const images = attachments.map(attachmentToImage).filter((image): image is PiImageInput => image !== null)
         const deliverAs = options?.delivery ?? 'followUp'
+        const pending = createPendingSend(targetSessionId, capturedServerGeneration, text, images, baseItems)
+        pendingId = pending.id
+        setPendingSends(current => [...current, pending])
 
         if (!targetSessionId) {
           const directory = currentDirectoryRef.current || (await resolveWorkspacePath())
           if (!directory) return false
+          if (paneIdentityRef.current.activeServerGeneration !== capturedServerGeneration || paneIdentityRef.current.sessionId !== sessionId) throw new Error('Session changed before opening a session')
           const opened = await openPiSession(directory)
           if (!opened.sessionId) return false
+          if (paneIdentityRef.current.activeServerGeneration !== capturedServerGeneration || paneIdentityRef.current.sessionId !== sessionId) throw new Error('Session changed while opening a session')
           const sessionDir = opened.cwd ?? directory
           targetSessionId = opened.sessionId
+          const sid = targetSessionId
+          setPendingSends(current => current.map(send => send.id === pendingId ? { ...send, sessionId: sid } : send))
           trackPiSession(targetSessionId, sessionDir)
           registerSessionRef.current({
             id: targetSessionId,
@@ -1013,6 +1053,7 @@ export function PiChatPane({
             updatedAt: Date.now(),
             path: opened.sessionFile ?? undefined,
           })
+          moveComposerDraft(sourceDraftKey, composerDraftKey(activeServer, targetSessionId, '', ''))
           onEnterSessionRef.current?.(targetSessionId, directory)
           window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
           // Configure the first turn before submitting its prompt.
@@ -1023,6 +1064,7 @@ export function PiChatPane({
           }
           const preferredVariant = preferred ? getModelVariantPref(preferred) : undefined
           if (preferredVariant && preferredModel?.supportedThinkingLevels?.includes(preferredVariant)) {
+            if (paneIdentityRef.current.activeServerGeneration !== capturedServerGeneration || (paneIdentityRef.current.sessionId !== sessionId && paneIdentityRef.current.sessionId !== targetSessionId)) throw new Error('Session changed before model setup')
             await setPiThinkingLevel(targetSessionId, preferredVariant)
           }
         }
@@ -1031,7 +1073,7 @@ export function PiChatPane({
         // Until then InputBox retains both the text and its attachments.
         await stopCoordinatorRef.current.submit(JSON.stringify([capturedServerGeneration, sid]), () => {
           if (paneIdentityRef.current.activeServerGeneration !== capturedServerGeneration ||
-              (sessionId && paneIdentityRef.current.sessionId !== sessionId)) throw new Error('Session changed before message submission')
+              (paneIdentityRef.current.sessionId !== sessionId && paneIdentityRef.current.sessionId !== sid)) throw new Error('Session changed before message submission')
           // #360: abortAndPrompt is its own native admission, never an
           // abort followed by a plain prompt re-submission.
           if (deliverAs === 'abortAndPrompt') {
@@ -1039,6 +1081,10 @@ export function PiChatPane({
           }
           return sendPiUserMessage(sid, text, images.length ? images : undefined, deliverAs)
         })
+        accepted = true
+        setPendingSends(current => text.startsWith('/')
+          ? current.filter(send => send.id !== pendingId)
+          : current.map(send => send.id === pendingId ? { ...send, phase: 'accepted' } : send))
         if (paneIdentityRef.current.activeServerGeneration !== capturedServerGeneration || paneIdentityRef.current.sessionId !== sid) return true
         const currentText = inputBoxRef.current?.getEditorText() ?? localComposerTextRef.current ?? text
         const remainingText = currentText === text ? '' : currentText
@@ -1055,9 +1101,11 @@ export function PiChatPane({
           if (targetSessionId) scheduleDelayedRefresh(targetSessionId)
         }
         return false
+      } finally {
+        if (!accepted && pendingId) setPendingSends(current => current.filter(send => send.id !== pendingId))
       }
     },
-    [sessionId, activeServerGeneration, models, scheduleDelayedRefresh, onOpenSettings, onOpenSettingsTab, onOpenSidebar],
+    [sessionId, activeServer, activeServerGeneration, currentDirectory, paneId, baseItems, models, scheduleDelayedRefresh, onOpenSettings, onOpenSettingsTab, onOpenSidebar],
   )
 
   const handleSetGoal = useCallback(

@@ -138,6 +138,8 @@ export type PiUserMessageItem = {
   message: UserMessage
   blocks: (TextContent | ImageContent)[]
   renderKey?: string
+  /** Client-only delivery feedback; never persisted to native history. */
+  submissionStatus?: 'submitting' | 'accepted'
 }
 
 export type PiAssistantMessageItem = {

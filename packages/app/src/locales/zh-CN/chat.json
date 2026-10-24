@@ -18,6 +18,8 @@
     "closePane": "关闭窗格"
   },
   "chatArea": {
+    "submittingMessage": "正在提交消息…",
+    "submittedMessage": "已提交，正在同步会话…",
     "historyWindow": "正在阅读较早历史",
     "returnToLatest": "返回最新",
     "loadingSession": "加载会话中...",

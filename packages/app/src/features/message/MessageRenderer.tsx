@@ -602,6 +602,12 @@ const UserMessageView = memo(function UserMessageView({
           </div>
         )}
 
+        {item.submissionStatus && (
+          <div role="status" className="text-[length:var(--fs-xs)] text-text-400">
+            {t(item.submissionStatus === 'submitting' ? 'chat:chatArea.submittingMessage' : 'chat:chatArea.submittedMessage')}
+          </div>
+        )}
+
         {/* Action buttons — PC 悬浮消息显示；触控设备始终显示 */}
         <div className={actionBarClass}>
           {/* Undo button */}

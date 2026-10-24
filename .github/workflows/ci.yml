@@ -65,7 +65,7 @@ jobs:
       fail-fast: false
       matrix:
         platform: [ubuntu, windows]
-        suite: [core, server]
+        suite: [core]
     env:
       OMPIUI_DRIVER: mock
     steps:
@@ -86,11 +86,32 @@ jobs:
           npm run test -w @ompiui/admin
           npm run test -w @ompiui/tui
 
-      - name: Check and test server
-        if: matrix.suite == 'server'
-        run: |
-          npm run typecheck -w @ompiui/server
-          npm run test -w @ompiui/server
+  # server 套件在 Windows 上是 15 倍于 Linux 的病态慢（PTY/子进程 + 逐文件 tsx
+  # 编译）；按文件轮转分片到 4 个 runner 并发，和 app 套件同一策略。
+  test-server:
+    name: test server ${{ matrix.platform }} ${{ matrix.shard }}/4
+    needs: build-deps
+    runs-on: ${{ matrix.platform }}-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ubuntu, windows]
+        shard: [1, 2, 3, 4]
+    env:
+      OMPIUI_DRIVER: mock
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-workspace
+        with:
+          build-artifact: ci-build-${{ matrix.platform }}
+
+      - name: Typecheck server
+        if: matrix.shard == 1
+        run: npm run typecheck -w @ompiui/server
+
+      - name: Test server shard
+        run: npm run test:shard -w @ompiui/server -- ${{ matrix.shard }} 4
 
   test-omp-interop:
     name: OMP interop ${{ matrix.omp }} ${{ matrix.platform }}
@@ -256,7 +277,7 @@ jobs:
   validate:
     name: validate ${{ matrix.platform }}
     if: always()
-    needs: [build-deps, test-backend, test-omp-interop, test-omp-config-windows, test-app, build-app, lint]
+    needs: [build-deps, test-backend, test-server, test-omp-interop, test-omp-config-windows, test-app, build-app, lint]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     strategy:

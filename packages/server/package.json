@@ -15,7 +15,8 @@
     "start": "node dist/bundle-entry.js web",
     "omp-worker": "node --import tsx src/bundle-entry.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test --test-concurrency=2 src/**/*.test.ts"
+    "test": "node --import tsx --test --test-concurrency=2 src/**/*.test.ts",
+    "test:shard": "node scripts/test-shard.mjs"
   },
   "dependencies": {
     "@lydell/node-pty": "^1.2.0-beta.14",

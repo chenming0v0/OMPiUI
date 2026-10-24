@@ -167,7 +167,7 @@ export default function (pi) {
       }
       case "sendQueuedMessage": {
         const selected = selectQueued(session, args);
-        if (session.hasAdmittedSubmission || session.isRetrying || session.isCompacting || session.isGeneratingHandoff) throw new Error("Wait for the current submission before sending queued content");
+        if (session.isRetrying || session.isCompacting || session.isGeneratingHandoff) throw new Error("Wait for the current submission before sending queued content");
         const result = { accepted: true };
         budget(result, args.maxResultBytes);
         const next = selected.source.slice();
