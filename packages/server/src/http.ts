@@ -971,9 +971,12 @@ export function createAppServer(
     dispose: async () => {
       if (disposal) return disposal;
       disposal = (async () => {
+        // 活跃终端流是 HTTP upgrade 连接：先终结终端让它们的流自然收尾，
+        // 再等 server.close()。反过来的顺序会互相吊住——杀终端的 dispose 排在
+        // 等待之后，而等待又在等终端流结束（Windows CI 上实测挂死 8 分钟）。
+        terminals.dispose();
         await closeHttpServer();
         await watcher.dispose();
-        terminals.dispose();
         sessions.dispose();
         await supervisor.dispose();
       })();

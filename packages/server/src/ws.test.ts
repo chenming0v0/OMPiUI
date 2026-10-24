@@ -73,7 +73,15 @@ function assertAcceptedOrBeyond(command: { status?: string }): void {
 describe("event websocket", () => {
   const cleanups: Array<() => Promise<void> | void> = [];
   after(async () => {
-    for (const cleanup of cleanups.splice(0)) await cleanup();
+    // 清理卡死曾把整个分片吊到 CI 超时；每步设限并在失败时点名是哪一步。
+    for (const [index, cleanup] of cleanups.splice(0).entries()) {
+      await Promise.race([
+        Promise.resolve(cleanup()),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error(`cleanup step ${index} did not finish in 20s`)), 20_000).unref();
+        }),
+      ]);
+    }
   });
 
   it("streams native Pi events for a mock session end to end", async () => {
