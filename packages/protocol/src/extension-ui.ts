@@ -10,10 +10,10 @@ type ExtensionUiDialogRequestBase = {
 }
 
 export type ExtensionUiDialogRequest =
-  | (ExtensionUiDialogRequestBase & { kind: "select"; options: string[] })
+  | (ExtensionUiDialogRequestBase & { kind: "select"; options: string[]; optionDetails?: { description?: string }[] })
   | (ExtensionUiDialogRequestBase & { kind: "confirm"; message: string })
   | (ExtensionUiDialogRequestBase & { kind: "input"; placeholder?: string })
-  | (ExtensionUiDialogRequestBase & { kind: "editor"; prefill?: string })
+  | (ExtensionUiDialogRequestBase & { kind: "editor"; prefill?: string; promptStyle?: boolean })
 
 export type ExtensionUiDialogResponse =
   | { responseId?: string; value: string }

@@ -132,3 +132,13 @@ test("local IPC pauses suspend chunk expiry but preserve the remaining timeout",
   assert.equal(rpc.chunkBytes, 0)
   assert.match(rpc.stderrBuffer.join(""), /timed out/)
 })
+
+test("local protocol errors surface as events while the runtime is alive, not only the stderr tail (#367)", () => {
+  const rpc = harness()
+  const errors: string[] = []
+  rpc.on("protocolError", (message: string) => errors.push(message))
+  rpc.handleChunk(chunk("mismatch", 0, 1, 10, Buffer.from("x")))
+  assert.equal(errors.length, 1)
+  assert.match(errors[0]!, /length mismatch/)
+  assert.match(rpc.stderrBuffer.join(""), /length mismatch/)
+})

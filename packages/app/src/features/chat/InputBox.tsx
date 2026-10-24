@@ -21,6 +21,7 @@ import { useMobileCollapse } from './input/useMobileCollapse'
 import { useAttachmentRail } from './input/useAttachmentRail'
 import { useInputHistory } from './input/useInputHistory'
 import { useComposerDraft } from './input/useComposerDraft'
+import { acceptComposerDraft, wasComposerDraftMovedFrom } from './input/composerDraftStore'
 import {
   TEXT_STYLE,
   bytesToDataUrl,
@@ -34,7 +35,7 @@ import { keybindingStore, matchesKeybinding } from '../../store/keybindingStore'
 import { themeStore } from '../../store/themeStore'
 import { useChatViewportSelect } from './chatViewport'
 import type { Model, Api } from '../../omp/vendor/pi-ai'
-import type { FileCapabilities } from '../../types/ui'
+import type { FileCapabilities, DeliveryMode } from '../../types/ui'
 import { notificationStore } from '../../store/notificationStore'
 import { attachmentBytes, assertAttachmentBudget, assertAttachmentsBudget, mergeAttachmentsWithinBudget } from './input/attachmentBudget'
 
@@ -149,7 +150,7 @@ export interface InputBoxProps extends ComposerQueueProps {
   onSend: (
     text: string,
     attachments: Attachment[],
-    options?: { agent?: string; variant?: string; delivery?: 'steer' | 'followUp' },
+    options?: { agent?: string; variant?: string; delivery?: DeliveryMode },
   ) => Promise<boolean> | boolean
   onAbort?: () => Promise<void> | void
   onCycleModel?: (direction: 'forward' | 'backward') => void
@@ -184,7 +185,7 @@ export interface InputBoxProps extends ComposerQueueProps {
   // Undo/Redo
   revertedText?: string
   revertedAttachments?: Attachment[]
-  revertedDelivery?: 'steer' | 'followUp'
+  revertedDelivery?: DeliveryMode
   restoreMode?: 'replace' | 'append'
   canRedo?: boolean
   revertSteps?: number
@@ -211,6 +212,8 @@ export interface InputBoxHandle {
   /** Replace the composer text (extension editor set/paste commands) */
   setEditorText: (text: string) => void
   getEditorText: () => string
+  /** Replace the whole draft (text + attachments) from native editor state (#356) */
+  setEditorDraft: (text: string, attachments?: Attachment[]) => void
 }
 
 const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function InputBoxComponent({
@@ -285,6 +288,8 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
 
   // 文本状态
   const { text, attachments, ready: draftReady, setText, setAttachments } = useComposerDraft(draftKey)
+  const currentDraftKeyRef = useRef(draftKey)
+  currentDraftKeyRef.current = draftKey
 
   // 扩展 editor 命令接口（set/paste 已由 store 合并为全量文本）
   useImperativeHandle(ref, () => ({
@@ -296,6 +301,12 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
       setAttachments(prev => prev.filter(attachment => !attachment.textRange))
     },
     getEditorText: () => textareaRef.current?.value ?? latestDraftRef.current.text,
+    // 树导航恢复原生草稿时整段替换：文本与图片附件都来自原生 editorText/editorImages，
+    // 不是用户输入，不能沿用合并/过滤规则（#356）。
+    setEditorDraft: (next: string, attachments?: Attachment[]) => {
+      setText(next)
+      setAttachments(attachments ?? [])
+    },
   }), [setText, setAttachments])
 
   // 文本变化同步（扩展 editor 状态回传）
@@ -305,16 +316,18 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   // 附件状态（图片、文件、文件夹、agent）
   const [isSubmitting, setIsSubmitting] = useState(false)
   const submittingRef = useRef(false)
-  const [deliveryMode, setDeliveryMode] = useState<'steer' | 'followUp'>('followUp')
+  const [deliveryMode, setDeliveryMode] = useState<DeliveryMode>('followUp')
   const piCapabilities = usePiCapabilities()
   const effectiveDeliveryMode = deliveryMode === 'steer' && piCapabilities.promptSteer
     ? 'steer'
-    : piCapabilities.promptFollowUp
+    : deliveryMode === 'abortAndPrompt' && piCapabilities.promptInterrupt
+      ? 'abortAndPrompt'
+      : piCapabilities.promptFollowUp
       ? 'followUp'
       : piCapabilities.promptSteer
         ? 'steer'
         : undefined
-  const restoredDeliveryRef = useRef<{ key?: string; text?: string; attachments?: Attachment[]; delivery?: 'steer' | 'followUp' } | null>(null)
+  const restoredDeliveryRef = useRef<{ key?: string; text?: string; attachments?: Attachment[]; delivery?: DeliveryMode } | null>(null)
 
   useEffect(() => {
     if (!revertedDelivery) return
@@ -621,15 +634,25 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
           ...(effectiveDeliveryMode ? { delivery: effectiveDeliveryMode } : {}),
         }),
       () => {
-        // Acceptance belongs to this snapshot, not edits made while awaiting it.
-        setText(current => current === text ? '' : current)
-        setAttachments(current => current.filter(attachment => !attachments.includes(attachment)))
+        // Home-to-session navigation moves the draft while this request is
+        // pending. Clear its submitted snapshot, never another session's edits.
+        if (draftKey) {
+          acceptComposerDraft(draftKey, { text, attachments })
+          const currentKey = currentDraftKeyRef.current
+          if (currentKey && currentKey !== draftKey && wasComposerDraftMovedFrom(currentKey, draftKey)) {
+            acceptComposerDraft(currentKey, { text, attachments })
+          }
+        } else {
+          setText(current => current === text ? '' : current)
+          setAttachments(current => current.filter(attachment => !attachments.includes(attachment)))
+        }
         resetHistoryIndex()
         onClearRevert?.()
       },
     )
   }, [
     attachments,
+    draftKey,
     canSend,
     isSubmitting,
     onClearRevert,
@@ -1731,7 +1754,9 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
               sessionId={sessionId}
               isCompact={isCompact}
               onSetGoal={onSetGoal}
-              supportsImages={fileCaps.image}
+              // #354: 目标生命周期已代理到官方 GoalRuntime，官方 Goal 不支持
+              // 图片附件，不再把模型图片能力当作目标图片能力。
+              supportsImages={false}
               queuedMessages={
                 <>
                   <QueuedUserMessageQueue
@@ -1870,6 +1895,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
                       onDeliveryModeChange={setDeliveryMode}
                       canSteer={piCapabilities.promptSteer}
                       canFollowUp={piCapabilities.promptFollowUp}
+                      canInterruptAndPrompt={piCapabilities.promptInterrupt}
                       canSend={canSend || false}
                       onSend={handleSend}
                       models={models}

@@ -10,6 +10,7 @@ import { stripAnsi } from '../utils/ansiUtils'
 const feedbackStatusConfig: Record<CommandFeedbackStatus, { label: string; className: string }> = {
   ok: { label: 'ok', className: 'text-success-100 bg-success-100/10' },
   error: { label: 'error', className: 'text-danger-100 bg-danger-100/10' },
+  warning: { label: 'warning', className: 'text-warning-100 bg-warning-100/10' },
   info: { label: 'info', className: 'text-info-100 bg-info-100/10' },
 }
 

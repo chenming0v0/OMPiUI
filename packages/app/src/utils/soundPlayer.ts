@@ -43,6 +43,7 @@ export const DEFAULT_SOUNDS: Record<NotificationType, BuiltinSoundId> = {
   permission: 'builtin:knock',
   question: 'builtin:ping',
   error: 'builtin:error',
+  warning: 'builtin:warning',
 }
 
 // 每类事件的推荐内置音效列表
@@ -51,6 +52,7 @@ export const SOUND_OPTIONS: Record<NotificationType, BuiltinSoundId[]> = {
   permission: ['builtin:knock', 'builtin:alert', 'builtin:tap'],
   question: ['builtin:ping', 'builtin:bubble', 'builtin:pop'],
   error: ['builtin:error', 'builtin:buzz', 'builtin:warning'],
+  warning: ['builtin:warning', 'builtin:buzz', 'builtin:alert'],
 }
 
 // ============================================

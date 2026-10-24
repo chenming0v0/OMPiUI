@@ -73,13 +73,31 @@ export function DefaultRenderer({ execution, partKey, data, onFullscreenChange }
       {hasError && !execution.result && effectiveOutput && (
         <ContentBlock stateKey={`message:${partKey}:interrupted-output`} label={t('defaultRenderer.output')} content={effectiveOutput} compact={isCompact} defaultCollapsed={false} onFullscreenChange={onFullscreenChange} fullscreenId={`tool:${partKey}:interrupted-output`} />
       )}
+      {!hasError && (data.files || data.diff) && effectiveOutput && (
+        <ContentBlock stateKey={`message:${partKey}:raw-output`} label={t('defaultRenderer.output')} content={effectiveOutput} defaultCollapsed onFullscreenChange={onFullscreenChange} fullscreenId={`tool:${partKey}:raw-output`} />
+      )}
       {data.notice ? (
         <div className="flex items-start gap-1.5 text-[length:var(--fs-xs)] text-warning-100">
           <AlertCircleIcon size={12} className="mt-0.5 shrink-0" />
           <span className="break-all">{data.notice}</span>
         </div>
       ) : null}
-      {data.images?.length ? (
+      <ToolResultImages tool={tool} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} />
+
+      {/* Diagnostics */}
+      {hasDiagnostics && <DiagnosticsBlock diagnostics={data.diagnostics!} />}
+    </div>
+  )
+}
+
+export function ToolResultImages({ tool, partKey, data, onFullscreenChange }: {
+  tool: string
+  partKey: string
+  data: ExtractedToolData
+  onFullscreenChange?: (isOpen: boolean) => void
+}) {
+  return (
+      data.images?.length ? (
         <div className="flex flex-wrap items-start gap-2">
           {data.images.map((image, index) =>
             image.block ? (
@@ -102,11 +120,7 @@ export function DefaultRenderer({ execution, partKey, data, onFullscreenChange }
             ),
           )}
         </div>
-      ) : null}
-
-      {/* Diagnostics */}
-      {hasDiagnostics && <DiagnosticsBlock diagnostics={data.diagnostics!} />}
-    </div>
+      ) : null
   )
 }
 
@@ -157,7 +171,7 @@ function OutputBlock({
     )
   }
 
-  // 2. 工具活跃时（running/pending）统一显示 loading — compact 模式下不显示
+  // 2. 工具实际运行且无输出时显示 loading — queued 不生成输出块，compact 不显示
   if (isActive && !hasOutput) {
     if (compact) return null
     return (

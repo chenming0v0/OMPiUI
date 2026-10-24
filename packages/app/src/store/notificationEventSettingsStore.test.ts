@@ -19,6 +19,7 @@ describe('notificationEventSettingsStore', () => {
         permission: { systemEnabled: true },
         question: { systemEnabled: false },
         error: { systemEnabled: true },
+        warning: { systemEnabled: true },
       },
     })
   })

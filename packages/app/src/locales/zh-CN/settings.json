@@ -1,8 +1,5 @@
 {
-  "backendPreview": {
-    "title": "后端预览",
-    "thinking": "子代理思考"
-  },
+  "backendPreview": { "title": "后端预览", "thinking": "子代理思考" },
   "title": "设置",
   "closeSettings": "关闭设置",
   "version": "OMPiUI v{{version}}",
@@ -536,6 +533,8 @@
     "eventQuestion": "问题",
     "eventQuestionDesc": "AI 等待你输入时",
     "eventError": "错误",
+    "eventWarning": "警告",
+    "eventWarningDesc": "当会话报告警告通知时",
     "eventErrorDesc": "会话遇到错误时",
     "customSound": "自定义",
     "noSound": "无",
@@ -802,29 +801,7 @@
     "continue": "继续",
     "denyAction": "拒绝",
     "trustAction": "信任",
-    "bashGroup": "一次性脚本",
-    "trustTitle": "项目信任",
-    "trustDescription": "允许 Agent 加载此项目的扩展、技能和提示模板。仅信任你了解的项目。",
-    "trusted": "已信任",
-    "notTrusted": "未信任",
-    "decisionRequired": "需要决定",
-    "trustReset": "信任决定已重置",
-    "trustDenied": "项目已标记为不信任",
-    "trustGranted": "项目已信任",
-    "trustInherited": "沿用上级目录的信任设置：{{source}}",
-    "trustSavedDecision": "已为此项目单独设置，立即生效。",
-    "trustDefaultDecision": "沿用默认策略：{{policy}}。",
-    "resetTrust": "恢复默认策略",
-    "revokeTrust": "撤销信任",
-    "trustPromptTitle": "是否信任此项目？",
-    "trustPromptDesc": "「{{directory}}」需要你的信任后才会加载项目扩展、技能和提示模板。",
-    "trustPromptHint": "之后可在 设置 → 管理 → 项目信任 中更改此决定。",
-    "trustPromptLater": "暂不决定",
-    "trustPolicies": {
-      "ask": "每次询问",
-      "always": "始终信任",
-      "never": "始终不信任"
-    }
+    "bashGroup": "一次性脚本"
   },
   "providers": {
     "backToProviders": "返回供应商",

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DefaultRenderer } from './DefaultRenderer'
 import { liveToolOutputStore } from '../../../../omp/liveToolOutput'
@@ -91,5 +91,11 @@ describe('DefaultRenderer', () => {
     })
     expect(await screen.findByText('final result')).toBeInTheDocument()
     expect(screen.queryByText('stale live text')).not.toBeInTheDocument()
+  })
+
+  it('keeps the tool explanation accessible alongside structured file output', async () => {
+    renderDefault(runningEditExecution(), { files: [{ filePath: 'src/app.ts', before: 'a', after: 'b' }], output: 'Updated one file; lint reported an unrelated import warning.' })
+    fireEvent.click(screen.getByText('defaultRenderer.output'))
+    expect(await screen.findByText('Updated one file; lint reported an unrelated import warning.')).toBeInTheDocument()
   })
 })

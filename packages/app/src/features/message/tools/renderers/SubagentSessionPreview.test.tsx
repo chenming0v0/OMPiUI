@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
-import type { OmpSubagentRun } from '../../../../omp/ompSubagentStore'
+import { act, fireEvent, render, screen } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { ompSubagentStore, type OmpSubagentRun } from '../../../../omp/ompSubagentStore'
 import { SubagentSessionPreview } from './SubagentSessionPreview'
 
 vi.mock('react-i18next', () => ({
@@ -10,7 +10,8 @@ vi.mock('react-i18next', () => ({
       values?.count === undefined ? key : `${values.count} ${key.split('.').at(-1)}`,
   }),
 }))
-vi.mock('../../../../omp/transport/index.js', () => ({ getOmpSubagentMessages: vi.fn() }))
+const getHistory = vi.hoisted(() => vi.fn())
+vi.mock('../../../../omp/transport/index.js', () => ({ getOmpSubagentMessages: getHistory }))
 
 function run(text = 'Current reply'): OmpSubagentRun {
   return {
@@ -37,6 +38,12 @@ function run(text = 'Current reply'): OmpSubagentRun {
 }
 
 describe('SubagentSessionPreview', () => {
+  beforeEach(() => {
+    getHistory.mockReset()
+    // 严格模式双挂载/重试会让调用次数超过 Once 队列；默认回空，测试内再按需覆盖。
+    getHistory.mockResolvedValue({ messages: [] })
+    ompSubagentStore.clearAll()
+  })
   it('keeps live progress visible while a transcript is already rendered', () => {
     render(<SubagentSessionPreview run={run()} />)
     expect(screen.getAllByText('Current reply')).toHaveLength(1)
@@ -127,5 +134,33 @@ describe('SubagentSessionPreview', () => {
     })
     rerender(<SubagentSessionPreview run={{ ...run('Final response'), status: 'completed' }} />)
     expect(scroll.scrollTop).toBe(1000)
+  })
+  it('restarts a same-file backfill on runId change and rejects the previous response', async () => {
+    const old = Promise.withResolvers<{ messages: Array<{ role: string; content: string }> }>()
+    const current = Promise.withResolvers<{ messages: Array<{ role: string; content: string }> }>()
+    getHistory.mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise)
+    const identity = { id: 'preview-wake', sessionFile: 'C:/wake.jsonl', parentToolCallId: 'same-parent' }
+    ompSubagentStore.applyLifecycle('parent', { ...identity, runId: 'old', status: 'completed' })
+    const view = render(<SubagentSessionPreview run={ompSubagentStore.runsForSession('parent')[0]} />)
+    ompSubagentStore.applyLifecycle('parent', { ...identity, runId: 'new', status: 'started' })
+    view.rerender(<SubagentSessionPreview run={ompSubagentStore.runsForSession('parent')[0]} />)
+    await act(async () => { old.resolve({ messages: [{ role: 'assistant', content: 'Old response' }] }) })
+    expect(ompSubagentStore.runsForSession('parent')[0].transcript).toEqual([])
+    await act(async () => { current.resolve({ messages: [{ role: 'assistant', content: 'Current response' }] }) })
+    view.rerender(<SubagentSessionPreview run={ompSubagentStore.runsForSession('parent')[0]} />)
+    expect(screen.getByText('Current response')).toBeInTheDocument()
+    expect(screen.queryByText('Old response')).not.toBeInTheDocument()
+  })
+
+  it('retains a history read failure and permits recovery instead of reporting empty success', async () => {
+    getHistory.mockRejectedValueOnce(new Error('Child history is unavailable')).mockResolvedValueOnce({ messages: [{ role: 'assistant', content: 'Recovered child reply' }] })
+    ompSubagentStore.applyLifecycle('parent', { id: 'recover-preview', runId: 'recover', sessionFile: 'C:/recover.jsonl', status: 'completed' })
+    const view = render(<SubagentSessionPreview run={ompSubagentStore.runsForSession('parent')[0]} />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Child history is unavailable')
+    expect(ompSubagentStore.runsForSession('parent')[0].historyLoaded).toBe(false)
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'common:retry' })) })
+    view.rerender(<SubagentSessionPreview run={ompSubagentStore.runsForSession('parent')[0]} />)
+    expect(screen.getByText('Recovered child reply')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })

@@ -146,13 +146,12 @@ function bashItemToExecution(item: PiBashExecutionItem): PiToolExecution {
     name: 'bash',
     arguments: { command: item.message.command },
   }
-  // A pending explicit bash execution proves a started call; retain its stream.
+  // User-issued bash entries are optimistic executions, not assistant call proposals.
   if (item.message.exitCode === undefined) {
     return { call, startedAt: item.timestamp, isRunning: true }
   }
   return {
     call,
-    startedAt: item.timestamp,
     result: {
       role: 'toolResult',
       toolCallId: item.entryId,

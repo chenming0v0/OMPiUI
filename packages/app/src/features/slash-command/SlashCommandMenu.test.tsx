@@ -19,6 +19,7 @@ describe('SlashCommandMenu', () => {
     vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(id => {
       clearTimeout(id)
     })
+    mocks.loadPiSlashCommands.mockClear()
     mocks.loadPiSlashCommands.mockResolvedValue([
       { name: 'explain', description: 'Explain code', sourceInfo: null },
       { name: 'review', description: 'Review changes', sourceInfo: null },
@@ -57,6 +58,14 @@ describe('SlashCommandMenu', () => {
     expect(screen.queryByText('/ui-model')).not.toBeInTheDocument()
   })
 
+  it('never invents native commands when no runtime registry is available', async () => {
+    render(<SlashCommandMenu isOpen query="" onSelect={vi.fn()} onClose={vi.fn()} />)
+    await act(async () => { vi.advanceTimersByTime(32) })
+    expect(screen.getByText('/ui-settings')).toBeInTheDocument()
+    expect(screen.queryByText('/share')).not.toBeInTheDocument()
+    expect(screen.queryByText('/compact')).not.toBeInTheDocument()
+    expect(mocks.loadPiSlashCommands).not.toHaveBeenCalled()
+  })
 
 
 

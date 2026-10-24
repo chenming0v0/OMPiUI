@@ -476,19 +476,6 @@ export class MockCatalog implements CatalogProvider, PackagesGateway {
     return roles;
   }
 
-  getProjectTrust(cwd: string): JsonValue {
-    return {
-      workspacePath: cwd,
-      required: false,
-      decision: null,
-      defaultDecision: "always",
-      trusted: true,
-    };
-  }
-
-  setProjectTrust(cwd: string): JsonValue {
-    return this.getProjectTrust(cwd);
-  }
 
   list(): JsonValue {
     return [];
@@ -534,7 +521,7 @@ export class MockPiSession implements SessionRuntime {
   private steeringQueue: QueuedUserMessage[] = [];
   private followUpQueue: QueuedUserMessage[] = [];
   /** 已受理但当前回合尚未消费的用户消息（立即提交/队列排空后本轮内消费） */
-  private acceptedUserMessages: Array<Pick<QueuedUserMessage, 'text' | 'images'>> = [];
+  private acceptedUserMessages: Array<Pick<QueuedUserMessage, "text" | "images">> = [];
   private steeringMode: "all" | "one-at-a-time" = "all";
   private followUpMode: "all" | "one-at-a-time" = "one-at-a-time";
   private thinkingLevel = "off";
@@ -1278,6 +1265,15 @@ export class MockPiSession implements SessionRuntime {
 
   async setFollowUpMode(mode: "all" | "one-at-a-time"): Promise<void> {
     this.followUpMode = mode;
+  }
+
+  async setInterruptMode(mode: "immediate" | "wait"): Promise<void> {
+    this.header = { ...this.header, interruptMode: mode };
+  }
+
+  async abortAndPrompt(text: string, images?: ImageInput[]): Promise<void> {
+    await this.abort();
+    await this.prompt(text, images);
   }
 
   async clearQueue(maxResultBytes?: number): Promise<JsonValue | undefined> {

@@ -1,7 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { resolveGoalImages } from "../runtime/goal-images.js";
 import { copyFileSync, existsSync } from "node:fs";
-import path from "node:path";
 import type {
   BranchSyncRequest,
   ImageInput,
@@ -10,11 +8,10 @@ import type {
   RegistrySnapshot,
   SessionActivityStatus,
 } from "@ompiui/protocol";
-import { formatGoalMessage, isJsonObject, utf8Prefix } from "@ompiui/protocol";
+import { isJsonObject, utf8Prefix } from "@ompiui/protocol";
 import {
   entriesPageFromEntries,
   imageAttachmentFromEntry,
-  projectEntryAttachments,
   sessionHeadFromParts,
   type BranchCheckpoint,
   type EntriesPage,
@@ -23,7 +20,6 @@ import {
 } from "../runtime/pagination.js";
 import { buildSessionTreeFromEntries, sessionTreePage } from "../runtime/session-tree.js";
 import type { PiEventMeta, SessionRuntime, Unsubscribe } from "../runtime.js";
-import { assertResultBudget } from "../runtime/result-budget.js";
 import {
   normalizeCwd,
   readChildSessionPreviewPage,
@@ -81,9 +77,6 @@ interface EntryRecord {
 
 
 // goal 续跑循环的护栏：单个目标最多自动续跑轮数 / settle 后等 entries 落地的宽限
-const GOAL_MAX_CONTINUATIONS = 50;
-const GOAL_SETTLE_GRACE_MS = 1_000;
-const GOAL_COMPLETE_MARKER = "GOAL_COMPLETE";
 
 function toJson(value: unknown): JsonValue | undefined {
   if (value === undefined) return undefined;
@@ -148,6 +141,8 @@ export class OmpRpcSession implements SessionRuntime {
   private cwd = "";
   private sessionName: string | null = null;
   private closed = false;
+  private protocolErrorWindowStart = 0;
+  private protocolErrorCount = 0;
 
   private readonly piEventListeners = new Set<
     (event: JsonObject, meta: PiEventMeta) => void
@@ -158,6 +153,8 @@ export class OmpRpcSession implements SessionRuntime {
   >();
   private readonly subagentListeners = new Set<(event: JsonObject) => void>();
   private readonly subagentEvents = new SubagentEventBuffer((event) => {
+    const payload = isJsonObject(event.payload) ? event.payload : undefined;
+    if (typeof payload?.runId === "string" && !payload.runId.startsWith(`${this.eventEpoch}:`)) return;
     for (const listener of this.subagentListeners) listener(event);
   });
   private readonly messageStream = new MainMessageStream((event, live) =>
@@ -211,11 +208,8 @@ export class OmpRpcSession implements SessionRuntime {
   // OMPiUI goal continuation is worker-local. Native goal tools may also be
   // registered by the SDK; there is no public RPC goal control operation.
   private goal: JsonValue = null;
-  private goalContinuations = 0;
-  private goalAnnouncementPending = false;
   private goalImages: ImageInput[] = [];
   private goalGeneration = 0;
-  private goalTurnStartedAt: number | null = null;
   private lastActivity = {
     streaming: false,
     retrying: false,
@@ -227,7 +221,7 @@ export class OmpRpcSession implements SessionRuntime {
 
   private modelsCache: JsonObject[] = [];
   private modelsGeneration = 0;
-  private thinkingLevelsCache: string[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+  private thinkingLevelsCache: string[] = [];
   private thinkingLevelsGeneration = 0;
   private availableCommandsCache: JsonValue = [];
 
@@ -270,6 +264,29 @@ export class OmpRpcSession implements SessionRuntime {
       env: { PIUI_EMBEDDED: "1" },
     });
     this.client.on("frame", (frame) => this.handleFrame(frame));
+    // Local RPC protocol failures (chunk reassembly, decode) are otherwise only
+    // visible in the exit stderr tail; forward them as events while the process
+    // is still alive (#367). Bounded so an error storm cannot flood the UI.
+    this.client.on("protocolError", (message: unknown) => {
+      if (this.closed) return;
+      const text = typeof message === "string" ? message : String(message);
+      const now = Date.now();
+      if (now - this.protocolErrorWindowStart > 60_000) {
+        this.protocolErrorWindowStart = now;
+        this.protocolErrorCount = 0;
+      }
+      this.protocolErrorCount += 1;
+      if (this.protocolErrorCount > 20) return;
+      this.emitPiEvent({
+        type: "rpc_frame_error",
+        source: "OMP RPC",
+        level: "error",
+        text:
+          this.protocolErrorCount === 20
+            ? `${text} (further protocol errors suppressed for 60s)`
+            : text,
+      });
+    });
     this.client.on("exit", () => {
       if (this.closed) return;
       const error =
@@ -333,12 +350,15 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   private async refreshModels(): Promise<void> {
+    const generation = ++this.modelsGeneration;
+    const epoch = this.eventEpoch;
     try {
       const response = await this.client.request(
         { type: "get_available_models" },
         60_000,
       );
       const data = unwrapResponse<JsonValue>(response);
+      if (generation !== this.modelsGeneration || epoch !== this.eventEpoch) return;
       const list =
         isJsonObject(data) && Array.isArray(data.models)
           ? data.models
@@ -347,24 +367,23 @@ export class OmpRpcSession implements SessionRuntime {
             : [];
       this.modelsCache = list.filter(isJsonObject);
     } catch {
+      if (generation !== this.modelsGeneration || epoch !== this.eventEpoch) return;
       this.modelsCache = [];
     }
   }
 
   private async refreshThinkingLevels(): Promise<void> {
-    try {
-      const response = await this.client.request(
-        { type: "get_available_thinking_levels" },
-        30_000,
-      );
-      const data = unwrapResponse<JsonValue>(response);
-      const levels =
-        isJsonObject(data) && Array.isArray(data.levels) ? data.levels : [];
-      const mapped = levels.map(String).filter(Boolean);
-      if (mapped.length > 0) this.thinkingLevelsCache = mapped;
-    } catch {
-      /* keep default */
-    }
+    const generation = ++this.thinkingLevelsGeneration;
+    const epoch = this.eventEpoch;
+    const response = await this.client.request(
+      { type: "get_available_thinking_levels" },
+      30_000,
+    );
+    const data = unwrapResponse<JsonValue>(response);
+    if (generation !== this.thinkingLevelsGeneration || epoch !== this.eventEpoch) return;
+    this.thinkingLevelsCache = isJsonObject(data) && Array.isArray(data.levels)
+      ? data.levels.filter((level): level is string => typeof level === "string")
+      : [];
   }
 
   private async refreshAvailableCommands(): Promise<void> {
@@ -426,12 +445,10 @@ export class OmpRpcSession implements SessionRuntime {
           this.nativeSettled = false;
           this.abortIntentEpoch = undefined;
           this.toolInterruption = undefined;
-          this.onGoalTurnStart();
         }
         if (type === "agent_end" && frame.isTerminal !== false) {
           this.activityGeneration += 1;
           this.currentStreaming = false;
-          this.onGoalTurnEnd();
         }
         this.trackShadowState(frame);
         if (type === "queue_update") this.trackNativeQueue(frame);
@@ -445,6 +462,10 @@ export class OmpRpcSession implements SessionRuntime {
         )
           this.scheduleEntrySync();
         this.emitActivityIfChanged();
+        if (type === "model_changed") {
+          void Promise.all([this.refreshModels(), this.refreshThinkingLevels()])
+            .catch((error) => this.reportEntrySyncError(error));
+        }
         return;
       }
       // OMP 用 auto_compaction_*，Pi 前端监听 compaction_start/end —— 改名转发
@@ -480,7 +501,6 @@ export class OmpRpcSession implements SessionRuntime {
         else if (this.abortIntentEpoch === this.eventEpoch) this.toolInterruption = { kind: 'cancelled', error: 'Stopped by the user before this tool returned a result' };
         this.emitPiEvent({ type: "agent_settled", ...(this.toolInterruption ? { toolInterruption: this.toolInterruption } : {}) });
         this.emitActivityIfChanged();
-        this.onGoalSettled();
         return;
       }
       case "prompt_result": {
@@ -513,8 +533,14 @@ export class OmpRpcSession implements SessionRuntime {
           typeof raw.id !== "string" && typeof progress?.id === "string"
             ? { ...raw, id: progress.id }
             : raw;
-        this.trackSubagentFrame(kind, payload);
-        this.subagentEvents.push(kind, payload);
+        const tracked = this.trackSubagentFrame(kind, {
+          ...payload,
+          ...(isJsonObject(frame.payload) && frame.payload.parentToolCallId !== undefined
+            ? { parentToolCallId: frame.payload.parentToolCallId } : {}),
+          ...(isJsonObject(frame.payload) && frame.payload.runId !== undefined
+            ? { runId: frame.payload.runId } : {}),
+        });
+        if (tracked) this.subagentEvents.push(kind, tracked);
         return;
       }
       case "extension_ui_request": {
@@ -995,26 +1021,14 @@ export class OmpRpcSession implements SessionRuntime {
     entryId: string,
     blockIndex: number,
     offset = 0,
+    source: "content" | "details" = "content",
   ): Promise<JsonObject> {
     await this.ensureSynced();
     const entry = this.entries.find((item) => item.id === entryId);
     if (!entry)
       throw Object.assign(new Error("entry not found"), { code: "NOT_FOUND" });
     const serialized = entry as unknown as JsonObject;
-    const message = isJsonObject(serialized.message) ? serialized.message : {};
-    const content = Array.isArray(message.content) ? message.content : [];
-    const block = content[blockIndex];
-    if (
-      !isJsonObject(block) ||
-      block.type !== "image" ||
-      typeof block.mimeType !== "string" ||
-      typeof block.data !== "string"
-    ) {
-      throw Object.assign(new Error("image block not found"), {
-        code: "NOT_FOUND",
-      });
-    }
-    return imageAttachmentFromEntry(serialized, blockIndex, offset);
+    return imageAttachmentFromEntry(serialized, blockIndex, offset, source);
   }
 
   private stateFlight: Promise<JsonObject> | undefined;
@@ -1043,7 +1057,7 @@ export class OmpRpcSession implements SessionRuntime {
       (native.isSettled === undefined && native.isStreaming === false &&
         !native.hasPendingAsyncWork && !native.queuedMessageCount);
     this.trackNativeQueue(native);
-    await this.refreshQueue(false);
+    await Promise.all([this.refreshQueue(false), this.refreshThinkingLevels()]);
     if (epoch !== this.eventEpoch || historyGeneration !== this.historyGeneration || modelsGeneration !== this.modelsGeneration || activityGeneration !== this.activityGeneration) return this.buildState();
     const model = this.resolveModelDescriptor(native.model);
     const contextUsage = isJsonObject(native.contextUsage)
@@ -1084,6 +1098,7 @@ export class OmpRpcSession implements SessionRuntime {
         typeof native.followUpMode === "string"
           ? native.followUpMode
           : "one-at-a-time",
+      interruptMode: typeof native.interruptMode === "string" ? native.interruptMode : "immediate",
       autoCompactionEnabled: Boolean(native.autoCompactionEnabled),
       autoRetryEnabled: true,
       messageCount:
@@ -1094,7 +1109,8 @@ export class OmpRpcSession implements SessionRuntime {
         typeof native.queuedMessageCount === "number"
           ? native.queuedMessageCount
           : 0,
-      availableThinkingLevels: this.thinkingLevelsCache,
+      availableThinkingLevels: [...this.thinkingLevelsCache],
+      supportedThinkingLevels: [...this.thinkingLevelsCache],
       isSettled: this.nativeSettled,
       isIdle: this.nativeSettled,
       ...(this.toolInterruption ? { toolInterruption: this.toolInterruption } : {}),
@@ -1155,6 +1171,8 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   private readonly subagentRuns = new Map<string, JsonObject>();
+  private readonly supersededSubagentParents = new Map<string, Set<string>>();
+  private subagentRunSequence = 0;
   private readonly MAX_SUBAGENT_RUNS = 200;
 
   private rememberSubagent(id: string, value: JsonObject): void {
@@ -1163,51 +1181,55 @@ export class OmpRpcSession implements SessionRuntime {
       const removable = [...this.subagentRuns.entries()].find(([, item]) =>
         item.status === "completed" || item.status === "failed" || item.status === "aborted",
       );
-      this.subagentRuns.delete(removable?.[0] ?? this.subagentRuns.keys().next().value!);
+      const id = removable?.[0] ?? this.subagentRuns.keys().next().value!;
+      this.subagentRuns.delete(id);
+      this.supersededSubagentParents.delete(id);
     }
   }
 
-  private trackSubagentFrame(kind: string, payload: JsonObject): void {
+  private trackSubagentFrame(kind: string, payload: JsonObject): JsonObject | undefined {
     const id = typeof payload.id === "string" ? payload.id : undefined;
-    if (!id) return;
-    if (kind === "event") return;
-    const existing = this.subagentRuns.get(id) ?? {};
-    const merged: JsonObject = { ...existing, id };
-    if (kind === "lifecycle") {
-      for (const key of [
-        "agent",
-        "agentSource",
-        "description",
-        "status",
-        "sessionFile",
-        "parentToolCallId",
-        "index",
-        "detached",
-      ]) {
-        if (payload[key] !== undefined) merged[key] = payload[key];
-      }
-      if (payload.status === "started") merged.status = "running";
-    } else if (kind === "progress") {
-      for (const key of [
-        "agent",
-        "task",
-        "assignment",
-        "sessionFile",
-        "parentToolCallId",
-        "index",
-        "detached",
-      ]) {
-        if (payload[key] !== undefined) merged[key] = payload[key];
-      }
-      merged.progress = payload.progress ?? merged.progress;
-      if (
-        isJsonObject(payload.progress) &&
-        typeof payload.progress.status === "string"
-      ) {
-        merged.status = payload.progress.status;
+    if (!id) return payload;
+    const existing = this.subagentRuns.get(id);
+    const parent = typeof payload.parentToolCallId === "string" ? payload.parentToolCallId : undefined;
+    if (parent && this.supersededSubagentParents.get(id)?.has(parent)) return;
+    const parentChanged = typeof payload.parentToolCallId === "string" &&
+      typeof existing?.parentToolCallId === "string" &&
+      payload.parentToolCallId !== existing.parentToolCallId;
+    if (parentChanged && !(kind === "lifecycle" && payload.status === "started")) return;
+    const terminal = existing?.status === "completed" || existing?.status === "failed" || existing?.status === "aborted";
+    if (typeof payload.runId === "string" && existing && payload.runId !== existing.runId) return;
+    const restart = kind === "lifecycle" && payload.status === "started" && (parentChanged || terminal);
+    if (parentChanged && typeof existing?.parentToolCallId === "string") {
+      const superseded = this.supersededSubagentParents.get(id) ?? new Set<string>();
+      superseded.add(existing.parentToolCallId);
+      if (superseded.size > this.MAX_SUBAGENT_RUNS) superseded.delete(superseded.values().next().value!);
+      this.supersededSubagentParents.set(id, superseded);
+    }
+    const runId = !existing || restart
+      ? `${this.eventEpoch}:${id}:${++this.subagentRunSequence}`
+      : String(existing.runId);
+    const tracked = { ...payload, runId };
+    if (kind === "event") {
+      if (!existing) this.rememberSubagent(id, { id, runId });
+      return tracked;
+    }
+    const merged: JsonObject = restart || !existing ? { id, runId } : { ...existing, runId };
+    for (const key of ["agent", "agentSource", "description", "task", "assignment",
+      "sessionFile", "parentToolCallId", "index", "detached"]) {
+      if (payload[key] !== undefined) merged[key] = payload[key];
+    }
+    if (kind === "lifecycle" && typeof payload.status === "string") {
+      merged.status = payload.status === "started" ? "running" : payload.status;
+    } else if (kind === "progress" && isJsonObject(payload.progress)) {
+      merged.progress = payload.progress;
+      const status = payload.progress.status;
+      if (typeof status === "string" && !(terminal && !restart && (status === "running" || status === "pending"))) {
+        merged.status = status;
       }
     }
     this.rememberSubagent(id, merged);
+    return tracked;
   }
 
   private resolveModelDescriptor(
@@ -1221,7 +1243,7 @@ export class OmpRpcSession implements SessionRuntime {
         (item.provider === provider || item.provider === undefined) &&
         item.id === id,
     );
-    if (found) return { ...found, provider: found.provider ?? provider };
+    if (found) return { ...found, ...model, provider: model.provider ?? found.provider };
     // get_state 的 model 没有完整描述符时，用缓存的最小形状补齐
     if (provider || id)
       return {
@@ -1236,7 +1258,7 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   private resolveSupportsThinking(model: JsonValue | undefined): boolean {
-    if (!isJsonObject(model)) return true;
+    if (!isJsonObject(model)) return false;
     const provider = typeof model.provider === "string" ? model.provider : "";
     const id = typeof model.id === "string" ? model.id : "";
     const found = this.modelsCache.find(
@@ -1244,7 +1266,7 @@ export class OmpRpcSession implements SessionRuntime {
         (item.provider === provider || item.provider === undefined) &&
         item.id === id,
     );
-    return Boolean(found?.reasoning ?? true);
+    return Boolean(model.reasoning ?? found?.reasoning ?? false);
   }
 
   private async discoverResources(): Promise<JsonObject> {
@@ -1375,7 +1397,8 @@ export class OmpRpcSession implements SessionRuntime {
    * UI loop; it is invalidated on session replacement and paused on abort.
    */
   async manageGoal(params: import("@ompiui/protocol").PiCommandParams["goal"]): Promise<JsonObject> {
-    const now = Date.now();
+    // #354: 目标生命周期完全代理到官方 GoalRuntime（桥接 goal 操作）。worker 只
+    // 镜像官方 goal_updated 事件帧，不再自建续跑循环、完成标记或轮次计时。
     if (params.op === "set") {
       const objective = (params.objective ?? "").trim();
       if (!objective) {
@@ -1384,179 +1407,53 @@ export class OmpRpcSession implements SessionRuntime {
           { code: "INVALID_REQUEST" },
         );
       }
-      const images = resolveGoalImages(params.images ?? [], this.goal);
-      this.goal = {
-        id: randomUUID(),
+      if (params.images?.length) {
+        throw Object.assign(
+          new Error("The official goal runtime does not support image attachments on goals"),
+          { code: "INVALID_REQUEST" },
+        );
+      }
+      const hasLiveGoal =
+        isJsonObject(this.goal) &&
+        this.goal.status !== "dropped" &&
+        this.goal.status !== "complete";
+      await this.client.requestRuntime("goal", {
+        op: hasLiveGoal ? "replace" : "create",
         objective,
-        images,
-        status: "active",
-        tokensUsed: 0,
-        timeUsedSeconds: 0,
-        createdAt: now,
-        updatedAt: now,
-      };
-      this.goalContinuations = 0;
-      this.goalAnnouncementPending = true;
-      this.goalImages = structuredClone(images);
-    } else if (isJsonObject(this.goal)) {
-      const goal = { ...this.goal };
-      if (params.op === "pause") {
-        if (goal.status === "active") goal.status = "paused";
-      } else if (params.op === "resume") {
-        if (goal.status === "paused" || goal.status === "budget-limited")
-          goal.status = "active";
-        this.goalContinuations = 0;
-      } else {
-        this.goal = null;
-        this.goalAnnouncementPending = false;
-        this.goalImages = [];
-      }
-      if (isJsonObject(this.goal)) {
-        goal.updatedAt = now;
-        this.goal = goal;
-      }
+        ...(typeof params.tokenBudget === "number" ? { tokenBudget: params.tokenBudget } : {}),
+      });
+    } else {
+      const op =
+        params.op === "pause" ? "pause" : params.op === "resume" ? "resume" : "drop";
+      await this.client.requestRuntime("goal", { op });
     }
     this.goalGeneration += 1;
-    this.emitGoalUpdated();
-    if (params.op === "pause" && this.goalStatus() === "paused")
-      await this.abort();
-    if (params.op === "set" || params.op === "resume")
-      this.pumpGoalContinuation();
+    // 官方 runtime 的 goal_updated 事件帧负责广播；这里只推进代次。
     return { goal: this.goal };
+  }
+
+  /** 官方 goal 状态快照：会话替换/恢复后补齐镜像（restore 不重放 goal_updated）。 */
+  private async loadOfficialGoalSnapshot(): Promise<void> {
+    try {
+      const result = await this.client.requestRuntime("goal", { op: "snapshot" });
+      const state = isJsonObject(result) ? result.state : undefined;
+      const goal = isJsonObject(state) && isJsonObject(state.goal) ? state.goal : null;
+      if (this.goal !== goal) {
+        this.goal = goal;
+        this.emitGoalUpdated();
+      }
+    } catch {
+      // 桥不可用（普通 rpc / --no-ui）时保持空镜像，不阻塞会话打开。
+    }
   }
 
   private emitGoalUpdated(): void {
     this.emitPiEvent({ type: "goal_updated", goal: this.goal });
   }
 
-  private goalStatus(): string | null {
-    return isJsonObject(this.goal) && typeof this.goal.status === "string"
-      ? this.goal.status
-      : null;
-  }
-
-  private setGoalStatus(status: string): void {
-    if (!isJsonObject(this.goal)) return;
-    this.goal = { ...this.goal, status, updatedAt: Date.now() };
-    this.goalGeneration += 1;
-    this.emitGoalUpdated();
-  }
-
-  private onGoalTurnStart(): void {
-    if (this.goalStatus() !== "active" || this.goalTurnStartedAt !== null)
-      return;
-    this.goalTurnStartedAt = Date.now();
-  }
-
-  private onGoalTurnEnd(): void {
-    if (this.goalTurnStartedAt === null) return;
-    const elapsedSeconds = (Date.now() - this.goalTurnStartedAt) / 1000;
-    this.goalTurnStartedAt = null;
-    if (!isJsonObject(this.goal)) return;
-    const previous =
-      typeof this.goal.timeUsedSeconds === "number"
-        ? this.goal.timeUsedSeconds
-        : 0;
-    this.goal = {
-      ...this.goal,
-      timeUsedSeconds: previous + Math.max(0, Math.round(elapsedSeconds)),
-    };
-  }
-
-  private onGoalSettled(): void {
-    this.onGoalTurnEnd();
-    if (this.goalStatus() !== "active") return;
-    const generation = this.goalGeneration;
-    // entries 落盘是异步的：等同步落地后判定完成标记，避免把已完成的目标再续跑一轮
-    setTimeout(() => {
-      if (
-        this.closed ||
-        this.currentStreaming ||
-        this.goalStatus() !== "active" ||
-        generation !== this.goalGeneration
-      )
-        return;
-      if (this.lastAssistantTextEndsWith(GOAL_COMPLETE_MARKER)) {
-        this.setGoalStatus("complete");
-        return;
-      }
-      this.pumpGoalContinuation();
-    }, GOAL_SETTLE_GRACE_MS);
-  }
-
-  private pauseGoalForAbort(): void {
-    if (this.goalStatus() !== "active") return;
-    this.setGoalStatus("paused");
-  }
-
-  private pumpGoalContinuation(): void {
-    if (!isJsonObject(this.goal) || typeof this.goal.objective !== "string")
-      return;
-    if (this.goal.status !== "active" || this.currentStreaming || this.closed)
-      return;
-    const generation = this.goalGeneration;
-    this.goalContinuations += 1;
-    if (this.goalContinuations > GOAL_MAX_CONTINUATIONS) {
-      this.setGoalStatus("budget-limited");
-      return;
-    }
-    const objective = this.goal.objective;
-    const announce = this.goalAnnouncementPending;
-    const message = formatGoalMessage({
-      kind: announce ? "set" : "continuation",
-      objective,
-      round: this.goalContinuations,
-      limit: GOAL_MAX_CONTINUATIONS,
-    });
-    void this.submitPrompt(
-      message,
-      announce ? this.goalImages : undefined,
-      { streamingBehavior: "followUp" },
-      () => {
-        if (
-          generation !== this.goalGeneration ||
-          this.goalStatus() !== "active" ||
-          this.currentStreaming ||
-          this.closed
-        )
-          return false;
-        this.goalAnnouncementPending = false;
-        return true;
-      },
-    ).catch(() => {
-      if (generation === this.goalGeneration && announce)
-        this.goalAnnouncementPending = true;
-    });
-  }
-
-  private lastAssistantTextEndsWith(marker: string): boolean {
-    const branch = this.branchEntries();
-    for (let i = branch.length - 1; i >= 0; i -= 1) {
-      const entry = branch[i];
-      if (!entry || entry.type !== "message") continue;
-      const message = entry.message;
-      if (!isJsonObject(message) || message.role !== "assistant") return false;
-      const content = message.content;
-      if (!Array.isArray(content)) return false;
-      const text = content
-        .filter(
-          (block) =>
-            isJsonObject(block) &&
-            block.type === "text" &&
-            typeof block.text === "string",
-        )
-        .map((block) => String((block as JsonObject).text))
-        .join("\n")
-        .trimEnd();
-      return text.endsWith(marker);
-    }
-    return false;
-  }
-
   async abort(): Promise<JsonValue | undefined> {
     if (this.abortInFlight) return this.abortInFlight;
     const epoch = this.eventEpoch;
-    this.pauseGoalForAbort();
     this.abortIntentEpoch = epoch;
     const flight = (async () => {
       const result = unwrapResponse(
@@ -1593,6 +1490,7 @@ export class OmpRpcSession implements SessionRuntime {
     await Promise.all([this.refreshModels(), this.refreshThinkingLevels()]);
     await this.syncEntriesNow();
     this.emitHeadIfChanged();
+    await this.loadOfficialGoalSnapshot();
     return {
       operation: "new",
       sourceSessionId,
@@ -1620,6 +1518,7 @@ export class OmpRpcSession implements SessionRuntime {
     await Promise.all([this.refreshModels(), this.refreshThinkingLevels()]);
     await this.syncEntriesNow();
     this.emitHeadIfChanged();
+    await this.loadOfficialGoalSnapshot();
     return {
       operation: "switch",
       sourceSessionId,
@@ -1650,15 +1549,13 @@ export class OmpRpcSession implements SessionRuntime {
     this.scopedModels = [];
     this.goal = null;
     this.goalGeneration += 1;
-    this.goalContinuations = 0;
-    this.goalAnnouncementPending = false;
-    this.goalImages = [];
-    this.goalTurnStartedAt = null;
     this.subagentRuns.clear();
+    this.supersededSubagentParents.clear();
+    this.subagentRunSequence = 0;
     this.messageStream.clear();
     this.modelsCache = [];
     this.modelsGeneration += 1;
-    this.thinkingLevelsCache = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+    this.thinkingLevelsCache = [];
     clearTimeout(this.syncTimer);
     this.syncTimer = undefined;
     this.syncDirty = false;
@@ -1699,6 +1596,7 @@ export class OmpRpcSession implements SessionRuntime {
       this.reportEntrySyncError(error);
       projectionError = error instanceof Error ? error.message : String(error);
     }
+    await this.loadOfficialGoalSnapshot();
     this.emitHeadIfChanged();
     return {
       ...result, operation: "fork", sourceSessionId,
@@ -1735,9 +1633,8 @@ export class OmpRpcSession implements SessionRuntime {
     await Promise.all([this.refreshModels(), this.refreshThinkingLevels()]);
   }
 
-  async cycleModel(direction?: "forward" | "backward"): Promise<void> {
-    await this.client.request({ type: "cycle_model" }, 60_000);
-    void direction;
+  async cycleModel(direction: "forward" | "backward" = "forward"): Promise<void> {
+    await this.client.requestRuntime("cycleModel", { direction }, 60_000);
     await Promise.all([this.refreshModels(), this.refreshThinkingLevels()]);
   }
 
@@ -1773,6 +1670,20 @@ export class OmpRpcSession implements SessionRuntime {
     unwrapResponse(await this.client.request({ type: "set_follow_up_mode", mode }, 30_000));
   }
 
+  async setInterruptMode(mode: "immediate" | "wait"): Promise<void> {
+    unwrapResponse(await this.client.request({ type: "set_interrupt_mode", mode }, 30_000));
+  }
+
+  async abortAndPrompt(text: string, images?: ImageInput[]): Promise<void> {
+    const epoch = this.eventEpoch;
+    await this.abortInFlight;
+    if (epoch !== this.eventEpoch)
+      throw Object.assign(new Error("Session replaced before interrupt submission"), { code: "SESSION_REPLACED" });
+    const command: JsonObject = { type: "abort_and_prompt", message: text };
+    if (images?.length) command.images = images.map((image) => ({ ...image }));
+    unwrapResponse(await this.client.request(command, 60_000));
+    this.scheduleEntrySync();
+  }
 
   async clearQueue(maxResultBytes?: number): Promise<JsonValue | undefined> {
     const result = await this.client.requestRuntime("clearQueue", {
@@ -1823,15 +1734,15 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async setAutoCompaction(enabled: boolean): Promise<void> {
-    await this.client.request({ type: "set_auto_compaction", enabled }, 30_000);
+    unwrapResponse(await this.client.request({ type: "set_auto_compaction", enabled }, 30_000));
   }
 
   async setAutoRetry(enabled: boolean): Promise<void> {
-    await this.client.request({ type: "set_auto_retry", enabled }, 30_000);
+    unwrapResponse(await this.client.request({ type: "set_auto_retry", enabled }, 30_000));
   }
 
   async abortRetry(): Promise<void> {
-    await this.client.request({ type: "abort_retry" }, 30_000);
+    unwrapResponse(await this.client.request({ type: "abort_retry" }, 30_000));
   }
 
   async bash(
@@ -1857,7 +1768,7 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async abortBash(): Promise<void> {
-    await this.client.request({ type: "abort_bash" }, 30_000);
+    unwrapResponse(await this.client.request({ type: "abort_bash" }, 30_000));
   }
 
   async setActiveTools(_toolNames: string[]): Promise<void> {
@@ -2042,12 +1953,15 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async listSubagents(): Promise<JsonValue> {
+    const epoch = this.eventEpoch;
+    const observed = new Map(this.subagentRuns);
     try {
       const response = await this.client.request(
         { type: "get_subagents" },
         30_000,
       );
       const data = unwrapResponse<JsonValue>(response);
+      if (epoch !== this.eventEpoch) return this.getSubagentsSnapshot();
       const list =
         isJsonObject(data) && Array.isArray(data.subagents)
           ? data.subagents
@@ -2056,13 +1970,15 @@ export class OmpRpcSession implements SessionRuntime {
             : [];
       for (const item of list) {
         if (isJsonObject(item) && typeof item.id === "string") {
-          this.rememberSubagent(item.id, {
-            ...this.subagentRuns.get(item.id),
-            ...item,
-          });
+          // A registry read can finish after a newer lifecycle/progress frame.
+          // Preserve that generation rather than replaying its previous status.
+          if (this.subagentRuns.get(item.id) !== observed.get(item.id)) continue;
+          const existing = this.subagentRuns.get(item.id);
+          const runId = existing?.runId ?? `${this.eventEpoch}:${item.id}:${++this.subagentRunSequence}`;
+          this.rememberSubagent(item.id, { ...existing, ...item, runId });
         }
       }
-      return list;
+      return this.getSubagentsSnapshot();
     } catch {
       return [...this.subagentRuns.values()];
     }

@@ -62,6 +62,8 @@ type PiEventPayload = {
     | { type: 'command_output'; text: string; source?: string; isError?: boolean; level?: string; status?: string }
     | { type: 'prompt_result'; agentInvoked: boolean; status: 'completed' | 'aborted' | 'error'; error?: string | JsonObject }
     | { type: 'extension_error'; extensionPath: string; event: string; error: string }
+    | { type: 'notice'; level: 'info' | 'warning' | 'error'; message: string; source?: string }
+    | { type: 'rpc_frame_error' | 'rpc_stream_error'; error: string; originalType?: string }
   meta: EventCursor & { liveMessage?: { id: string; revision: number } }
 }
 
@@ -521,7 +523,7 @@ class PiEventStream {
       if (this.lastProblemCode !== message.problem.code) {
         this.lastProblemCode = message.problem.code
         notificationStore.push('error', i18n.t('common:eventStreamError'),
-          `${message.problem.code}: ${i18n.t('common:eventStreamRecovery')}`, '')
+          `${message.problem.code}: ${message.problem.message}\n${i18n.t('common:eventStreamRecovery')}`, '')
       }
       window.dispatchEvent(new CustomEvent('ompiui:event-stream-error', { detail: message.problem }))
     }
@@ -905,7 +907,7 @@ class PiEventStream {
     const inner = payload.payload
     if (!isJsonObject(inner)) return
     if (typeof payload.eventId === 'string') {
-      const key = `${sessionId}:${payload.eventId}`
+      const key = JSON.stringify([sessionId, inner.runId, payload.eventId])
       if (this.subagentSeen.has(key)) return
       this.subagentSeen.add(key)
       if (this.subagentSeen.size > 1024) this.subagentSeen.delete(this.subagentSeen.values().next().value!)
@@ -1006,7 +1008,17 @@ class PiEventStream {
       case 'extension_error':
       case 'prompt_result': {
         const feedback = commandFeedbackStore.addNativeEvent(sessionId, patch)
-        if (feedback) notificationStore.push(feedback.status === 'error' ? 'error' : 'completed', feedback.source ?? 'Native command', feedback.message, sessionId, activeSessionStore.getSessionMeta(sessionId)?.directory, { target: 'extensions' })
+        if (feedback) notificationStore.push(feedback.status === 'error' ? 'error' : feedback.status === 'warning' ? 'warning' : 'completed', feedback.source ?? 'Native command', feedback.message, sessionId, activeSessionStore.getSessionMeta(sessionId)?.directory, { target: 'extensions' })
+        break
+      }
+      case 'notice':
+      case 'rpc_frame_error':
+      case 'rpc_stream_error': {
+        const message = typeof patch.text === 'string' ? patch.text : typeof patch.message === 'string' ? patch.message : typeof patch.error === 'string' ? patch.error : ''
+        const source = typeof patch.source === 'string' ? patch.source : 'OMP runtime'
+        const status = patch.level === 'error' || patch.type === 'rpc_frame_error' || patch.type === 'rpc_stream_error' ? 'error' : patch.level === 'warning' ? 'warning' : 'info'
+        commandFeedbackStore.add({ sessionId, command: '', kind: 'notify', status, message: `${source}: ${message}` })
+        notificationStore.push(status === 'error' ? 'error' : status === 'warning' ? 'warning' : 'completed', source, message, sessionId, activeSessionStore.getSessionMeta(sessionId)?.directory, { target: 'extensions' })
         break
       }
       case 'config_update': {

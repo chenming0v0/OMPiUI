@@ -7,13 +7,22 @@ import { serverStore } from '../../store/serverStore'
 import { useSessionNavigation } from '../../contexts/SessionNavigationContext'
 import { AttachmentItem } from '../attachment'
 
-type ImageReference = { sessionId?: string; entryId: string; blockIndex: number }
+type ImageReference = { sessionId?: string; entryId: string; blockIndex: number; source?: 'content' | 'details' }
 
-export const HistoryImage = memo(function HistoryImage({ block, id, onFullscreenChange }: {
+type HistoryImageProps = {
   block: ImageContent
   id: string
   onFullscreenChange?: (isOpen: boolean) => void
-}) {
+}
+
+export const HistoryImage = memo(function HistoryImage(props: HistoryImageProps) {
+  const { currentSessionId } = useSessionNavigation()
+  const reference = (props.block as ImageContent & { attachment?: ImageReference }).attachment
+  const key = JSON.stringify([props.id, props.block.data, props.block.mimeType, reference?.sessionId ?? currentSessionId, reference?.entryId, reference?.blockIndex, reference?.source])
+  return <HistoryImageContent key={key} {...props} />
+})
+
+function HistoryImageContent({ block, id, onFullscreenChange }: HistoryImageProps) {
   const { currentSessionId } = useSessionNavigation()
   const reference = (block as ImageContent & { attachment?: ImageReference }).attachment
   const [data, setData] = useState('')
@@ -50,6 +59,7 @@ export const HistoryImage = memo(function HistoryImage({ block, id, onFullscreen
           {
             entryId: reference.entryId,
             blockIndex: reference.blockIndex,
+            ...(reference.source ? { source: reference.source } : {}),
             offset,
           },
           signal.signal,
@@ -67,12 +77,16 @@ export const HistoryImage = memo(function HistoryImage({ block, id, onFullscreen
         if (!Number.isSafeInteger(next) || next <= offset) throw new Error('Image cursor did not advance')
         offset = next
       }
+      signal.signal.throwIfAborted()
       setData(chunks.join(''))
     } catch (cause) {
       if (!signal.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
       if (!signal.signal.aborted) setLoading(false)
     }
+  }
+  if (!reference && block.data.startsWith('blob:sha256:')) {
+    return <p role="alert" className="break-words text-[length:var(--fs-xs)] text-error">Image data is not available: {block.data}</p>
   }
   if (!reference || data)
     return <AttachmentItem attachment={attachment} expandable size="sm" onFullscreenChange={onFullscreenChange} />
@@ -99,4 +113,4 @@ export const HistoryImage = memo(function HistoryImage({ block, id, onFullscreen
       )}
     </div>
   )
-})
+}

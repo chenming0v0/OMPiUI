@@ -26,7 +26,7 @@ export interface SessionRuntime {
   getEntriesPage(cursor: string | undefined, limit: number, maxBytes: number): JsonObject | Promise<JsonObject>
   getBranchPage(cursor: string | undefined, limit: number, maxBytes: number, sync?: BranchSyncRequest): JsonObject | Promise<JsonObject>
   getTree(params?: { cursor?: string; limit?: number; maxBytes?: number }): JsonValue | Promise<JsonValue>
-  getAttachment(entryId: string, blockIndex: number, offset?: number): JsonObject | Promise<JsonObject>
+  getAttachment(entryId: string, blockIndex: number, offset?: number, source?: "content" | "details"): JsonObject | Promise<JsonObject>
   getSubagentMessages(params: import("@ompiui/protocol").SubagentMessagesParams): JsonValue | Promise<JsonValue>
   getRegistry(): RegistrySnapshot | Promise<RegistrySnapshot>
   listSkills(): JsonValue | Promise<JsonValue>
@@ -38,6 +38,7 @@ export interface SessionRuntime {
   followUp(text: string, images?: ImageInput[]): Promise<void>
   sendUserMessage(text: string, images?: ImageInput[], deliverAs?: "steer" | "followUp"): Promise<void>
   abort(): Promise<JsonValue | undefined>
+  abortAndPrompt(text: string, images?: ImageInput[]): Promise<void>
 
   newSession(parentSession?: string): Promise<JsonObject>
   switchSession(sessionPath: string, cwdOverride?: string): Promise<JsonObject>
@@ -53,6 +54,7 @@ export interface SessionRuntime {
 
   setSteeringMode(mode: "all" | "one-at-a-time"): Promise<void>
   setFollowUpMode(mode: "all" | "one-at-a-time"): Promise<void>
+  setInterruptMode(mode: "immediate" | "wait"): Promise<void>
   clearQueue(maxResultBytes?: number): Promise<JsonValue | undefined>
   removeQueuedMessage(kind: "steering" | "followUp", index: number, entryId: string, maxResultBytes?: number, returnContent?: boolean): Promise<JsonValue>
   /** 原子提交队列中的一条（kind=steering 本轮 / followUp 下一轮）：受理成功才出队 */
@@ -130,6 +132,4 @@ export interface CatalogProvider {
   patchSettings(cwd: string, patch: JsonObject): Promise<JsonValue>
   getModelRoles(): JsonValue | Promise<JsonValue>
   setModelRoles(roles: JsonObject): JsonValue | Promise<JsonValue>
-  getProjectTrust(cwd: string): JsonValue | Promise<JsonValue>
-  setProjectTrust(cwd: string, decision: boolean | null): JsonValue | Promise<JsonValue>
 }

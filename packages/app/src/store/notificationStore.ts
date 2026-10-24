@@ -14,7 +14,7 @@ import { useSyncExternalStore } from 'react'
 // Types
 // ============================================
 
-export type NotificationType = 'permission' | 'question' | 'completed' | 'error'
+export type NotificationType = 'permission' | 'question' | 'completed' | 'error' | 'warning'
 
 /** 点击通知后的跳转目标：session 页面（默认）或该 session 右侧边栏的扩展面板 */
 export type NotificationTarget = 'session' | 'extensions'

@@ -10,6 +10,7 @@ import {
   ShieldIcon,
   QuestionIcon,
   AlertCircleIcon,
+  AlertTriangleIcon,
 } from '../../../components/Icons'
 import { useNotification } from '../../../hooks'
 import { notificationStore } from '../../../store'
@@ -60,6 +61,13 @@ const EVENT_TYPES: {
     descKey: 'notifications.eventErrorDesc',
     icon: <AlertCircleIcon size={14} />,
     color: 'text-danger-100',
+  },
+  {
+    type: 'warning',
+    labelKey: 'notifications.eventWarning',
+    descKey: 'notifications.eventWarningDesc',
+    icon: <AlertTriangleIcon size={14} />,
+    color: 'text-warning-100',
   },
 ]
 

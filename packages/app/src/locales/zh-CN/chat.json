@@ -18,6 +18,8 @@
     "closePane": "关闭窗格"
   },
   "chatArea": {
+    "submittingMessage": "正在提交消息…",
+    "submittedMessage": "已提交，正在同步会话…",
     "historyWindow": "正在阅读较早历史",
     "returnToLatest": "返回最新",
     "loadingSession": "加载会话中...",
@@ -116,6 +118,8 @@
     "deliveryMode": "运行中消息发送时机",
     "steerHint": "把这条消息加入当前正在生成的回复，用于纠正或补充本轮回答",
     "followUpHint": "等待当前回复完成，再把这条消息作为下一轮发送",
+    "abortAndPrompt": "中断并提交",
+    "abortAndPromptHint": "中止当前工作，并立即以这条消息开始新一轮",
     "agentMenu": "智能体菜单",
     "variantMenu": "变体菜单"
   },
@@ -199,6 +203,7 @@
     "error": "错误",
     "permission": "权限",
     "question": "问题",
+    "warning": "警告",
     "compactCompleted": "压缩完成",
     "compactSkipped": "跳过压缩",
     "compactFailed": "压缩失败",

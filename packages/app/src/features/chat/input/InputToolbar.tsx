@@ -6,7 +6,7 @@ import { ModelSelector, type ModelSelectorHandle } from '../ModelSelector'
 import { useChatViewportSelect } from '../chatViewport'
 import { isTauri, isTauriMobile, extToMime } from '../../../utils/tauri'
 import type { Model, Api } from '../../../omp/vendor/pi-ai'
-import type { FileCapabilities } from '../../../types/ui'
+import type { FileCapabilities, DeliveryMode } from '../../../types/ui'
 
 type ModelInfo = Model<Api>
 
@@ -26,10 +26,11 @@ interface InputToolbarProps {
   isSending?: boolean
   isStopping?: boolean
   onAbort?: () => void
-  deliveryMode?: 'steer' | 'followUp'
-  onDeliveryModeChange?: (mode: 'steer' | 'followUp') => void
+  deliveryMode?: DeliveryMode
+  onDeliveryModeChange?: (mode: DeliveryMode) => void
   canSteer?: boolean
   canFollowUp?: boolean
+  canInterruptAndPrompt?: boolean
 
   canSend: boolean
   onSend: () => void
@@ -60,6 +61,7 @@ export function InputToolbar({
   onDeliveryModeChange,
   canSteer = false,
   canFollowUp = false,
+  canInterruptAndPrompt = false,
   canSend,
   onSend,
   models = [],
@@ -288,10 +290,40 @@ export function InputToolbar({
     }, 0)
     return () => clearTimeout(timerId)
   }, [variantMenuOpen, focusMenuItem])
-  const activeDeliveryMode = deliveryMode === 'steer' && canSteer ? 'steer' : canFollowUp ? 'followUp' : 'steer'
-  const deliveryLabel = activeDeliveryMode === 'steer' ? 'Steer' : 'Follow-up'
-  const deliveryHint = activeDeliveryMode === 'steer' ? t('inputToolbar.steerHint') : t('inputToolbar.followUpHint')
-  const canToggleDeliveryMode = canSteer && canFollowUp
+  const activeDeliveryMode: DeliveryMode = deliveryMode === 'steer' && canSteer
+    ? 'steer'
+    : deliveryMode === 'abortAndPrompt' && canInterruptAndPrompt
+      ? 'abortAndPrompt'
+      : canFollowUp
+        ? 'followUp'
+        : canSteer
+          ? 'steer'
+          : canInterruptAndPrompt
+            ? 'abortAndPrompt'
+            : 'followUp'
+  const deliveryLabel = activeDeliveryMode === 'steer'
+    ? 'Steer'
+    : activeDeliveryMode === 'abortAndPrompt'
+      ? t('inputToolbar.abortAndPrompt')
+      : 'Follow-up'
+  const deliveryHint = activeDeliveryMode === 'steer'
+    ? t('inputToolbar.steerHint')
+    : activeDeliveryMode === 'abortAndPrompt'
+      ? t('inputToolbar.abortAndPromptHint')
+      : t('inputToolbar.followUpHint')
+  const canToggleDeliveryMode = canSteer || canFollowUp || canInterruptAndPrompt
+  // Cycle through the officially available delivery behaviors; the composer
+  // keeps a single tri-state control instead of three separate buttons.
+  const nextDeliveryMode = (): DeliveryMode => {
+    const cycle: DeliveryMode[] = [
+      ...(canSteer ? (['steer'] as const) : []),
+      ...(canInterruptAndPrompt ? (['abortAndPrompt'] as const) : []),
+      ...(canFollowUp ? (['followUp'] as const) : []),
+    ]
+    if (cycle.length === 0) return activeDeliveryMode
+    const index = cycle.indexOf(activeDeliveryMode)
+    return cycle[(index + 1) % cycle.length] ?? cycle[0]!
+  }
 
   return (
     <div className="flex items-center justify-between px-3 pb-3 relative">
@@ -388,7 +420,7 @@ export function InputToolbar({
           </div>
         </AnimatedPresence>
 
-        <AnimatedPresence show={Boolean(isStreaming && (canSteer || canFollowUp))} className={isCompact ? 'shrink-0' : ''}>
+        <AnimatedPresence show={Boolean(isStreaming && canToggleDeliveryMode)} className={isCompact ? 'shrink-0' : ''}>
           <div className="relative">
             <button
               type="button"
@@ -398,7 +430,7 @@ export function InputToolbar({
               title={deliveryHint}
               onClick={() => {
                 if (!canToggleDeliveryMode) return
-                onDeliveryModeChange?.(activeDeliveryMode === 'steer' ? 'followUp' : 'steer')
+                onDeliveryModeChange?.(nextDeliveryMode())
               }}
               className="flex items-center gap-1.5 px-2 py-1.5 text-[length:var(--fs-base)] rounded-lg transition-all duration-150 hover:bg-bg-200 active:scale-95 cursor-pointer min-w-0 overflow-hidden w-full disabled:cursor-not-allowed disabled:opacity-40"
             >

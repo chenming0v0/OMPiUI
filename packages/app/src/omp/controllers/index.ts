@@ -1027,6 +1027,27 @@ export async function setPiFollowUpMode(
   await transport.setPiFollowUpMode(sessionId, mode, signal)
 }
 
+export async function setPiInterruptMode(
+  sessionId: string,
+  mode: 'immediate' | 'wait',
+  signal?: AbortSignal,
+): Promise<void> {
+  await transport.setPiInterruptMode(sessionId, mode, signal)
+}
+
+/**
+ * Interrupt the current turn and deliver a new prompt in one native
+ * abort_and_prompt command; images ride along like a normal user message (#360).
+ */
+export async function abortAndPrompt(
+  sessionId: string,
+  text: string,
+  images?: transport.PiImageInput[],
+  signal?: AbortSignal,
+): Promise<void> {
+  await transport.abortAndPromptPi(sessionId, { text, images }, signal)
+}
+
 /**
  * Load available models from the Pi model runtime into the models store.
  */
@@ -1047,10 +1068,6 @@ export async function loadPiModels(signal?: AbortSignal): Promise<Model<Api>[]> 
     })
     .catch(() => undefined)
   return flight
-}
-
-export async function setPiProjectTrust(cwd: string, decision: boolean | null, signal?: AbortSignal): Promise<void> {
-  await transport.setProjectTrust(cwd, decision, signal)
 }
 
 export async function logoutPiProvider(providerId: string, signal?: AbortSignal): Promise<void> {

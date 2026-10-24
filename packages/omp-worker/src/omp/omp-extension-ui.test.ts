@@ -132,7 +132,25 @@ describe("OMP extension UI wire contract", () => {
     })
   }
 
-  
+  it("preserves positional option descriptions and empty editor submission as a value", () => {
+    const ui = new OmpExtensionUiBridge()
+    const responses: unknown[] = []
+    ui.bind("session-1", response => responses.push(response))
+    ui.handleOmpRequest({ method: "select", id: "choice", title: "Storage", options: ["SQLite", "Postgres"], optionDetails: [{}, { description: "Server storage" }] })
+    const choice = ui.listPending()[0]!
+    assert.equal(choice.kind, "select")
+    if (choice.kind === "select") assert.deepEqual(choice.optionDetails, [{}, { description: "Server storage" }])
+    ui.handleOmpRequest({ method: "editor", id: "draft", title: "Draft", prefill: "", promptStyle: true })
+    const draft = ui.listPending()[1]!
+    assert.equal(draft.kind, "editor")
+    if (draft.kind === "editor") {
+      assert.equal(draft.prefill, "")
+      assert.equal(draft.promptStyle, true)
+    }
+    ui.respond("draft", { value: "" })
+    assert.deepEqual(responses, [{ type: "extension_ui_response", id: "draft", value: "" }])
+    ui.cancelAll("runtime_disposed")
+  })
 
   it("expires a zero-timeout native request instead of leaving an immortal dialog", t => {
     t.mock.timers.enable({ apis: ["setTimeout"] })

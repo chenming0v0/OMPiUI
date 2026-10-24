@@ -17,6 +17,7 @@ import { useResponsiveMaxHeight } from '../../../../hooks/useResponsiveMaxHeight
 import { parseAnsi, type AnsiSegment } from '../../../../utils/ansiUtils'
 import { copyTextToClipboard, clipboardErrorHandler } from '../../../../utils'
 import { useLiveToolOutput } from '../../../../omp/liveToolOutput'
+import { getToolExecutionStatus } from '../../../../omp/domain/index.js'
 import type { ToolRendererProps } from '../types'
 
 // ============================================
@@ -25,7 +26,7 @@ import type { ToolRendererProps } from '../types'
 
 export function BashRenderer({ execution, partKey, data, onFullscreenChange }: ToolRendererProps) {
   const { t } = useTranslation(['components'])
-  const isActive = !execution.result
+  const isActive = getToolExecutionStatus(execution) === 'running'
   const hasError = !!data.error
   const command = data.input?.trim()
   // 运行中优先显示 Pi 流式推送的实时输出（partialResult 累积文本）
@@ -53,7 +54,7 @@ export function BashRenderer({ execution, partKey, data, onFullscreenChange }: T
   }, [output])
 
   const hasOutput = !!(outputSegments && outputSegments.length > 0)
-  const isDone = !isActive
+  const isDone = Boolean(execution.result)
 
   const handleCloseFullscreen = useCallback(() => {
     closeFullscreen(fullscreenId)

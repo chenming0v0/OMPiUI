@@ -293,15 +293,7 @@ function RoleRow({
   const selectedModel = parsed
     ? models.find(model => model.provider === parsed.provider && model.id === parsed.modelId) ?? null
     : null
-  const levels =
-    selectedModel && selectedModel.reasoning
-      ? PI_THINKING_LEVELS.filter(level => {
-          const map = selectedModel.thinkingLevelMap as Record<string, string | null> | undefined
-          return !map || map[level] !== null
-        })
-      : selectedModel
-        ? ['off']
-        : []
+  const levels = selectedModel?.supportedThinkingLevels ?? []
   const levelOptions = [
     { value: '', label: t('models.roleLevelNone') },
     ...levels.map(level => ({ value: level, label: level })),

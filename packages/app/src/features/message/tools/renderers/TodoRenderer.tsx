@@ -1,6 +1,7 @@
 import { Fragment } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ChevronDownIcon, CheckIcon, ClockIcon, CloseIcon, CircleIcon } from '../../../../components/Icons'
+import { ContentBlock } from '../../../../components'
 import type { ToolRendererProps } from '../types'
 import { toolResultText } from '../toolResultContent'
 import { useDisclosureScrollLock } from '../../../../hooks'
@@ -16,9 +17,8 @@ import { chevronClass, MessageExpandPanel, useMessageExpandRender } from '../../
 export function TodoRenderer({ execution, partKey }: ToolRendererProps) {
   const { t } = useTranslation('message')
   const todos = extractTodos(execution)
+  const outcome = toolResultText(execution.result).trim()
   if (todos.length === 0) {
-    const outcome = toolResultText(execution.result).trim()
-
     return (
       <div className="px-3 py-2 text-[length:var(--fs-sm)] text-text-400 whitespace-pre-wrap break-words">
         {outcome || t('todo.empty')}
@@ -26,7 +26,24 @@ export function TodoRenderer({ execution, partKey }: ToolRendererProps) {
     )
   }
 
-  return <TodoList todos={todos} stateKey={`message:${partKey}:todo-list`} />
+  // 结构化列表不能吞掉结果里的原始说明（跳过/截断/限制等）；折叠保留原文（#364）。
+  return (
+    <div className="min-w-0">
+      <TodoList todos={todos} stateKey={`message:${partKey}:todo-list`} />
+      {outcome ? (
+        <div className="px-3 pb-1">
+          <ContentBlock
+            stateKey={`message:${partKey}:todo-raw`}
+            label={t('todo.rawResult', 'Raw result')}
+            content={outcome}
+            defaultCollapsed
+            collapsible
+            maxHeight={240}
+          />
+        </div>
+      ) : null}
+    </div>
+  )
 }
 
 // ============================================

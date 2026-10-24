@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { CheckIcon, AlertCircleIcon, CloseIcon, HandIcon, QuestionIcon } from '../../../components/Icons'
+import { CheckIcon, AlertCircleIcon, AlertTriangleIcon, CloseIcon, HandIcon, QuestionIcon } from '../../../components/Icons'
 import { notificationStore } from '../../../store/notificationStore'
 import { layoutStore } from '../../../store/layoutStore'
 import { useInputCapabilities } from '../../../hooks/useInputCapabilities'
@@ -21,6 +21,7 @@ const notifTypeConfig = {
     labelKey: 'notification.permission',
   },
   question: { icon: QuestionIcon, color: 'text-info-100', labelKey: 'notification.question' },
+  warning: { icon: AlertTriangleIcon, color: 'text-warning-100', labelKey: 'notification.warning' },
 } as const
 
 interface NotificationItemProps {

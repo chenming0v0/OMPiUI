@@ -6,7 +6,8 @@ const workflow = "desktop-release.yml"
 const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim()
 
 export function artifactNames(tree, android) {
-  const platforms = ["windows-x64", "macos-arm64", "linux-x64"]
+  // dev 预构建只产轻量版（-lite）；开箱即用版在发布时由 desktop-full 异步构建上传。
+  const platforms = ["windows-x64-lite", "macos-arm64-lite", "linux-x64-lite"]
   if (android) platforms.push("android-arm64", "android-armv7")
   return platforms.map(platform => `ompiui-release-${tree}-${platform}`)
 }

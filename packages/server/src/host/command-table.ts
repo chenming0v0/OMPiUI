@@ -177,6 +177,8 @@ const HOST_COMMAND_HANDLERS: Record<string, HostCommandHandler> = {
     cwd: optString(params, "cwd"),
     shell: optString(params, "shell"),
     title: optString(params, "title"),
+    nativeSessionId: optString(params, "nativeSessionId"),
+    ompCommand: params.ompCommand === "play" || params.ompCommand === "stream" ? params.ompCommand : undefined,
     rows: optSize(params, "rows"),
     cols: optSize(params, "cols"),
   }) as Promise<JsonValue>,

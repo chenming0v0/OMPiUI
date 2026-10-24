@@ -60,7 +60,7 @@ describe('ompSubagentStore HUD', () => {
   })
 
   it('settles missing runs and their live tools after an authoritative idle reconnect', () => {
-    ompSubagentStore.applyLifecycle('session-a', { id: 'lost', status: 'started', detached: true })
+    ompSubagentStore.applyLifecycle('session-a', { id: 'lost', status: 'started', detached: false })
     ompSubagentStore.applyProgress('session-a', { id: 'lost', progress: { status: 'running' } })
     ompSubagentStore.applyEvent('session-a', {
       id: 'lost', event: { type: 'tool_execution_start', toolCallId: 'lost-read', toolName: 'read' },
@@ -125,6 +125,52 @@ describe('ompSubagentStore HUD', () => {
       ['child-a', 'completed', false],
       ['child-b', 'running', false],
     ])
+  })
+
+  it('reopens a reused registry ID and rejects old generation terminal frames', () => {
+    ompSubagentStore.applyLifecycle('reuse', { id: 'child', runId: 'run:1', parentToolCallId: 'call:1', status: 'started' })
+    ompSubagentStore.applyLifecycle('reuse', { id: 'child', runId: 'run:1', parentToolCallId: 'call:1', status: 'completed' })
+    ompSubagentStore.applyLifecycle('reuse', { id: 'child', runId: 'run:2', parentToolCallId: 'call:2', status: 'started' })
+    ompSubagentStore.applyProgress('reuse', { id: 'child', runId: 'run:2', progress: { status: 'running', tokens: 72 } })
+    ompSubagentStore.applyLifecycle('reuse', { id: 'child', runId: 'run:1', parentToolCallId: 'call:1', status: 'failed' })
+    expect(ompSubagentStore.getRunsForToolCall('call:1', 'reuse')).toEqual([])
+    expect(ompSubagentStore.getRunsForToolCall('call:2', 'reuse')[0]).toMatchObject({ runId: 'run:2', status: 'running', progress: { tokens: 72 }, endedAt: undefined })
+  })
+
+  it('reopens an autonomous wake with the same parent and file without inheriting old run state', () => {
+    const identity = { id: 'wake', parentToolCallId: 'same-parent', sessionFile: 'C:/wake.jsonl' }
+    ompSubagentStore.applyLifecycle('wake-parent', { ...identity, runId: 'wake:1', status: 'started', detached: true })
+    ompSubagentStore.applyProgress('wake-parent', { ...identity, runId: 'wake:1', task: 'Old assignment', progress: { tokens: 100, status: 'running' } })
+    ompSubagentStore.applyLifecycle('wake-parent', { ...identity, runId: 'wake:1', status: 'completed' })
+    ompSubagentStore.dismiss('wake')
+    ompSubagentStore.applyLifecycle('wake-parent', { ...identity, runId: 'wake:2', status: 'started', detached: true })
+    ompSubagentStore.applyEvent('wake-parent', { ...identity, runId: 'wake:2', event: { type: 'message_end', message: { role: 'assistant', content: 'New wake response' } } }, 'same-event')
+    ompSubagentStore.applySnapshot('wake-parent', [{ ...identity, runId: 'wake:1', status: 'failed' }])
+    const current = ompSubagentStore.runsForSession('wake-parent')[0]
+    expect(current).toMatchObject({ runId: 'wake:2', status: 'running', task: '', detached: true })
+    expect(current.progress).toBeUndefined()
+    expect(current.endedAt).toBeUndefined()
+    expect(current.transcript.map(item => item.text)).toEqual(['New wake response'])
+  })
+
+  it.each(['lifecycle', 'progress', 'snapshot'] as const)('seals unfinished transcript tools on terminal %s without losing completed results', source => {
+    const identity = { id: `terminal-${source}`, runId: `terminal:${source}` }
+    ompSubagentStore.applyLifecycle('terminal-parent', { ...identity, status: 'started' })
+    ompSubagentStore.applyEvent('terminal-parent', { ...identity, event: { type: 'tool_execution_start', toolCallId: 'done', toolName: 'read' } })
+    ompSubagentStore.applyEvent('terminal-parent', { ...identity, event: { type: 'tool_execution_end', toolCallId: 'done', toolName: 'read', isError: false, result: { content: [{ type: 'text', text: 'Read completed' }] } } })
+    ompSubagentStore.applyEvent('terminal-parent', { ...identity, event: { type: 'tool_execution_start', toolCallId: 'lost', toolName: 'bash' } })
+    if (source === 'lifecycle') ompSubagentStore.applyLifecycle('terminal-parent', { ...identity, status: 'failed' })
+    if (source === 'progress') ompSubagentStore.applyProgress('terminal-parent', { ...identity, progress: { status: 'failed' } })
+    if (source === 'snapshot') ompSubagentStore.applySnapshot('terminal-parent', [{ ...identity, status: 'failed' }])
+    const transcript = ompSubagentStore.runsForSession('terminal-parent')[0].transcript
+    expect(transcript.find(item => item.toolCallId === 'done')).toMatchObject({ toolStatus: 'completed' })
+    expect(transcript.find(item => item.toolCallId === 'lost')).toMatchObject({ toolStatus: 'error', streaming: false })
+  })
+
+  it('does not stop detached work missing from a settled parent snapshot', () => {
+    ompSubagentStore.applyLifecycle('parent', { id: 'background', runId: 'bg:1', status: 'started', detached: true })
+    ompSubagentStore.applySnapshot('parent', [], true)
+    expect(ompSubagentStore.runsForSession('parent')[0].status).toBe('running')
   })
 })
 
@@ -265,6 +311,16 @@ describe('ompSubagentStore disk backfill', () => {
     ompSubagentStore.applyLifecycle('s', { id: 'partial-history', status: 'completed' })
     ompSubagentStore.applyHistory('s', 'partial-history', [{ role: 'assistant', content: 'full disk reply' }])
     expect(ompSubagentStore.runsForSession('s')[0]?.transcript[0]?.text).toBe('full disk reply')
+  })
+  it('rejects stale disk history after a same-ID same-file generation replacement', () => {
+    const identity = { id: 'history-wake', parentToolCallId: 'parent', sessionFile: 'C:/wake.jsonl' }
+    ompSubagentStore.applyLifecycle('history-parent', { ...identity, runId: 'old', status: 'completed' })
+    ompSubagentStore.applyLifecycle('history-parent', { ...identity, runId: 'new', status: 'started' })
+    ompSubagentStore.applyHistory('history-parent', identity.id, [{ role: 'assistant', content: 'Old wake history' }], undefined, { runId: 'old', sessionFile: identity.sessionFile })
+    expect(ompSubagentStore.runsForSession('history-parent')[0].transcript).toEqual([])
+    expect(ompSubagentStore.runsForSession('history-parent')[0].historyLoaded).toBe(false)
+    ompSubagentStore.applyHistory('history-parent', identity.id, [{ role: 'assistant', content: 'Current wake history' }], undefined, { runId: 'new', sessionFile: identity.sessionFile })
+    expect(ompSubagentStore.runsForSession('history-parent')[0].transcript.map(item => item.text)).toEqual(['Current wake history'])
   })
 })
 

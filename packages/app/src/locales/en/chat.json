@@ -18,6 +18,8 @@
     "closePane": "Close pane"
   },
   "chatArea": {
+    "submittingMessage": "Submitting message…",
+    "submittedMessage": "Submitted; waiting for session update…",
     "historyWindow": "Reading earlier history",
     "returnToLatest": "Return to latest",
     "loadingSession": "Loading session...",
@@ -116,6 +118,8 @@
     "deliveryMode": "Running message timing",
     "steerHint": "Add this message to the response currently being generated",
     "followUpHint": "Send this message as the next turn after the current response finishes",
+    "abortAndPrompt": "Interrupt & prompt",
+    "abortAndPromptHint": "Abort the current work and immediately start a new turn with this message",
     "agentMenu": "Agent menu",
     "variantMenu": "Variant menu"
   },
@@ -199,6 +203,7 @@
     "error": "Error",
     "permission": "Permission",
     "question": "Question",
+    "warning": "Warning",
     "compactCompleted": "Compact completed",
     "compactSkipped": "Compact skipped",
     "compactFailed": "Compact failed",

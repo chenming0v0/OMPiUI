@@ -9,7 +9,16 @@ const disclosureStateCache = new Map<string, DisclosureState>()
 
 export function getUiDisclosureState(key: string, fallback: boolean): DisclosureState {
   const cached = disclosureStateCache.get(key)
-  if (cached) return cached
+  if (cached) {
+    // 用户没有明确操作过时，默认值跟随当前调用方（同一 key 的运行/失败/完成
+    // 状态可能给出不同默认值）；touched 的值保持粘性。
+    if (!cached.touched && cached.value !== fallback) {
+      const updated = { value: fallback, touched: false }
+      disclosureStateCache.set(key, updated)
+      return updated
+    }
+    return cached
+  }
   const initial = { value: fallback, touched: false }
   disclosureStateCache.set(key, initial)
   return initial

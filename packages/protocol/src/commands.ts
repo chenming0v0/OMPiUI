@@ -7,6 +7,7 @@ export const CORE_COMMAND_TYPES = [
   "followUp",
   "sendUserMessage",
   "abort",
+  "abortAndPrompt",
   "newSession",
   "switchSession",
   "fork",
@@ -19,6 +20,7 @@ export const CORE_COMMAND_TYPES = [
   "cycleThinkingLevel",
   "setSteeringMode",
   "setFollowUpMode",
+  "setInterruptMode",
   "clearQueue",
   "sendQueuedMessage",
   "compact",
@@ -231,6 +233,7 @@ export type CoreCommandParams = {
   followUp: FollowUpParams
   sendUserMessage: SendUserMessageParams
   abort: Record<string, never>
+  abortAndPrompt: SteerParams
   newSession: NewSessionParams
   switchSession: SwitchSessionParams
   fork: ForkParams
@@ -243,6 +246,7 @@ export type CoreCommandParams = {
   cycleThinkingLevel: Record<string, never>
   setSteeringMode: SetQueueModeParams
   setFollowUpMode: SetQueueModeParams
+  setInterruptMode: { mode: "immediate" | "wait" }
   clearQueue: Record<string, never>
   sendQueuedMessage: SendQueuedMessageParams
   compact: CompactParams

@@ -111,7 +111,9 @@ export class OmpExtensionUiBridge {
       }
       case "open_url": {
         const url = typeof frame.url === "string" ? frame.url : ""
-        this.emit({ type: "notify", sessionId: this.sessionId, message: url ? `打开链接: ${url}` : "", notifyType: "link" })
+        const launchUrl = typeof frame.launchUrl === "string" ? frame.launchUrl : url
+        const instructions = typeof frame.instructions === "string" ? frame.instructions : ""
+        this.emit({ type: "notify", sessionId: this.sessionId, message: [launchUrl ? `打开链接: ${launchUrl}` : "", instructions, launchUrl !== url ? url : ""].filter(Boolean).join("\n"), notifyType: "link" })
         return
       }
       default:
@@ -131,12 +133,15 @@ export class OmpExtensionUiBridge {
       ...(timeout !== undefined ? { expiresAt: new Date(Date.now() + timeout).toISOString() } : {}),
     })
     const request: ExtensionUiDialogRequest = kind === "select"
-      ? { ...base, kind, options: Array.isArray(frame.options) ? frame.options.map(String) : [] }
+      ? { ...base, kind, options: Array.isArray(frame.options) ? frame.options.map(String) : [],
+          ...(Array.isArray(frame.optionDetails) ? { optionDetails: frame.optionDetails.map(detail =>
+            isJsonObject(detail) && typeof detail.description === "string" ? { description: detail.description } : {}) } : {}) }
       : kind === "confirm"
         ? { ...base, kind, message: typeof frame.message === "string" ? frame.message : "" }
         : kind === "input"
           ? { ...base, kind, ...(typeof frame.placeholder === "string" ? { placeholder: frame.placeholder } : {}) }
-          : { ...base, kind, ...(typeof frame.prefill === "string" ? { prefill: frame.prefill } : {}) }
+          : { ...base, kind, ...(typeof frame.prefill === "string" ? { prefill: frame.prefill } : {}),
+              ...(typeof frame.promptStyle === "boolean" ? { promptStyle: frame.promptStyle } : {}) }
     const pending: PendingDialog = { request, ompId }
     if (timeout !== undefined) {
       pending.timer = setTimeout(() => this.cancel(request.requestId, "timeout"), timeout)

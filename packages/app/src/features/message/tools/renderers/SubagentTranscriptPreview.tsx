@@ -62,7 +62,7 @@ export const SubagentTranscriptPreview = memo(function SubagentTranscriptPreview
     return grouped
   }, [items])
 
-  return rows.map((row, index) => {
+  return rows.map(row => {
     const item = row.items[0]
     const text = row.items
       .filter(part => part.kind !== 'tool')
@@ -90,7 +90,7 @@ export const SubagentTranscriptPreview = memo(function SubagentTranscriptPreview
         {text && (
           <div className="text-[length:var(--fs-xs)] text-text-200 leading-relaxed whitespace-pre-wrap break-words">
             <PreviewText
-              text={text.length > 500 && index !== rows.length - 1 ? `${text.slice(0, 500)}...` : text}
+              text={text}
               streaming={isRunning && row.items.some(part => part.streaming)}
             />
           </div>
@@ -98,7 +98,7 @@ export const SubagentTranscriptPreview = memo(function SubagentTranscriptPreview
         {tools.length > 0 && (
           <div className="flex flex-wrap gap-1">
             {tools.map((tool, toolIndex) => {
-              const active = isRunning && (tool.toolStatus === 'running' || tool.toolStatus === 'pending')
+              const active = isRunning && tool.toolStatus === 'running'
               const title = tool.toolTitle || formatToolName(tool.toolName ?? 'tool')
               return (
                 <span

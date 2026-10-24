@@ -28,7 +28,7 @@ export interface OmpRpcClientOptions {
   /** 额外 CLI 参数（如 --session-dir） */
   args?: string[]
   env?: NodeJS.ProcessEnv
-  /** 对 UI 主动启动的会话应用进程级配置与受管桥，不影响用户 CLI。 */
+  /** 对 UI 主动启动的会话应用进程级配置与 bash 调用限制，不影响用户 CLI。 */
   applyRuntimePolicy?: boolean
 }
 
@@ -424,6 +424,9 @@ export class OmpRpcClient extends EventEmitter {
   private emitProtocolError(message: string): void {
     this.stderrBuffer.push(`[omp-rpc] ${message}\n`)
     if (this.stderrBuffer.length > 200) this.stderrBuffer.splice(0, this.stderrBuffer.length - 200)
+    // Surface local protocol failures (chunk loss, decode errors) to the host
+    // session so they reach the UI instead of only the exit stderr tail (#367).
+    this.emit("protocolError", message)
   }
 
   private getStdinSender(): OmpStdinSender {

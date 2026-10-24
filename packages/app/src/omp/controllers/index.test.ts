@@ -108,16 +108,18 @@ describe('session state response ordering', () => {
     expect(piSessionStateStore.getState('session-b')?.thinkingLevel).toBe('low')
   })
 
-  it('reconciles missed crash state from an empty idle snapshot or a disk-only preview', async () => {
+  it('settles missing session-bound children on authoritative idle without aborting detached work', async () => {
     vi.spyOn(transport, 'getPiSessionState')
       .mockResolvedValueOnce({ isIdle: true, isStreaming: false, subagents: [] })
       .mockResolvedValueOnce({ isIdle: true, isStreaming: false, diskPreview: true })
     for (const sessionId of ['session-a', 'session-b']) {
       piSessionStateStore.setState(sessionId, { isStreaming: true, isIdle: false })
-      ompSubagentStore.applyLifecycle(sessionId, { id: `child-${sessionId}`, status: 'started', detached: true })
+      ompSubagentStore.applyLifecycle(sessionId, { id: `child-${sessionId}`, status: 'started' })
+      ompSubagentStore.applyLifecycle(sessionId, { id: `detached-${sessionId}`, status: 'started', detached: true })
       await refreshPiSessionState(sessionId)
       expect(piSessionStateStore.getState(sessionId)).toMatchObject({ isIdle: true, isStreaming: false })
-      expect(ompSubagentStore.runsForSession(sessionId)[0]?.status).toBe('aborted')
+      expect(ompSubagentStore.runsForSession(sessionId).find(run => run.id === `child-${sessionId}`)?.status).toBe('aborted')
+      expect(ompSubagentStore.runsForSession(sessionId).find(run => run.id === `detached-${sessionId}`)?.status).toBe('running')
     }
   })
 

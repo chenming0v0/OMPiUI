@@ -3,12 +3,16 @@ import { piEventStream } from './eventStream'
 import * as controllers from './controllers/index.js'
 import { liveToolOutputStore } from './liveToolOutput'
 import { ompSubagentStore } from './ompSubagentStore'
-import { piSessionStateStore } from './state/index.js'
+import { piBranchStore, piSessionStateStore } from './state/index.js'
+import { getToolExecutionStatus, type PiAssistantMessageItem, type PiBranchPage } from './domain/index.js'
+import { selectPiTimelineItemsCached } from './selectors/timelineCache'
+import { mergeLatestBranchPage } from './branchMerge'
 
 afterEach(() => {
   piEventStream.disconnectAll()
   ompSubagentStore.clearAll()
   liveToolOutputStore.delete('traffic-tool')
+  piBranchStore.clearAll()
   vi.restoreAllMocks()
   vi.useRealTimers()
 })
@@ -67,4 +71,39 @@ it('restores projected progress from a reconnect state snapshot', () => {
   expect(ompSubagentStore.getRunsForToolCall('traffic-tool', 'traffic-session')[0]).toMatchObject({
     id: 'child', status: 'completed', sessionFile: 'child.jsonl', progress: { tokens: 99, recentOutput: ['done'] },
   })
+})
+
+it('projects queued/start/update/end transitions immediately and retains evidence during branch refresh', () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(10_000)
+  vi.spyOn(controllers, 'refreshPiBranch').mockResolvedValue()
+  vi.spyOn(controllers, 'refreshPiSessionState').mockResolvedValue()
+  const calls = ['bash', 'todo', 'read', 'write'].map(name => ({ type: 'toolCall' as const, id: `${name}-batch`, name, arguments: {} }))
+  const page: PiBranchPage = {
+    items: [{ type: 'message', id: 'assistant-batch', parentId: null, timestamp: new Date(1_000).toISOString(),
+      message: { role: 'assistant', content: calls, timestamp: 1_000 } } as PiBranchPage['items'][number]],
+    head: { sdkVersion: '18', revision: 1, header: null, leafId: 'assistant-batch', entryCount: 1, epoch: 'history' },
+    checkpoint: { position: { epoch: 'events', sequence: 1 } }, hasMore: false,
+  }
+  piBranchStore.setData('batch-session', page)
+  const readExecutions = () => {
+    const item = selectPiTimelineItemsCached('batch-session', piBranchStore.getData('batch-session'))[0] as PiAssistantMessageItem
+    return calls.map(call => ({ ...item.toolExecutions?.[call.id], call, result: item.toolResults[call.id] }))
+  }
+  const emit = (event: unknown) => (piEventStream as unknown as { handlePiEvent(id: string, payload: unknown): void })
+    .handlePiEvent('batch-session', { event, meta: { epoch: 'events', sequence: 2 } })
+  expect(readExecutions().map(getToolExecutionStatus)).toEqual(['pending', 'pending', 'pending', 'pending'])
+  emit({ type: 'tool_execution_start', toolCallId: calls[0].id, toolName: 'bash', args: {} })
+  expect(readExecutions().map(getToolExecutionStatus)).toEqual(['running', 'pending', 'pending', 'pending'])
+  expect(readExecutions()[0].startedAt).toBe(10_000)
+  piBranchStore.setData('batch-session', mergeLatestBranchPage(piBranchStore.getData('batch-session'), page))
+  expect(readExecutions()[0].startedAt).toBe(10_000)
+  emit({ type: 'tool_execution_update', toolCallId: calls[1].id, toolName: 'todo', args: {}, partialResult: { content: [] } })
+  expect(readExecutions().map(getToolExecutionStatus)).toEqual(['running', 'running', 'pending', 'pending'])
+  expect(readExecutions()[1].startedAt).toBeUndefined()
+  emit({ type: 'tool_execution_end', toolCallId: calls[0].id, toolName: 'bash', isError: false, result: { content: [{ type: 'text', text: 'done' }] } })
+  expect(readExecutions().map(getToolExecutionStatus)).toEqual(['completed', 'running', 'pending', 'pending'])
+  expect(readExecutions()[0].result?.content).toEqual([{ type: 'text', text: 'done' }])
+  emit({ type: 'tool_execution_start', toolCallId: calls[0].id, toolName: 'bash', args: {} })
+  expect(getToolExecutionStatus(readExecutions()[0])).toBe('completed')
 })

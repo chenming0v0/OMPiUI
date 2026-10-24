@@ -11,6 +11,8 @@ export interface PiCapabilities {
   sessionImport: boolean
   promptSteer: boolean
   promptFollowUp: boolean
+  promptInterrupt: boolean
+  interruptModeManage: boolean
   queueManage: boolean
   retryManage: boolean
   compactionManage: boolean
@@ -34,6 +36,8 @@ const unavailable: PiCapabilities = {
   sessionImport: false,
   promptSteer: false,
   promptFollowUp: false,
+  promptInterrupt: false,
+  interruptModeManage: false,
   queueManage: false,
   retryManage: false,
   compactionManage: false,
@@ -62,6 +66,8 @@ const COMMAND_MAP: Record<keyof PiCapabilities, string | null> = {
   sessionImport: 'importSession',
   promptSteer: 'steer',
   promptFollowUp: 'followUp',
+  promptInterrupt: 'abortAndPrompt',
+  interruptModeManage: 'setInterruptMode',
   queueManage: 'clearQueue',
   retryManage: 'setAutoRetry',
   compactionManage: 'compact',

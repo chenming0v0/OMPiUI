@@ -89,7 +89,7 @@ export function defaultExtractData(execution: PiToolExecution): ExtractedToolDat
       block.type === 'image'
         ? [
             {
-              url: `data:${block.mimeType};base64,${block.data}`,
+              url: block.data.startsWith('blob:sha256:') ? '' : `data:${block.mimeType};base64,${block.data}`,
               mimeType: block.mimeType,
               block,
             },
@@ -107,7 +107,8 @@ export function defaultExtractData(execution: PiToolExecution): ExtractedToolDat
 
   // Error
   if (getToolExecutionStatus(execution) === 'error') {
-    result.error = [output, execution.error].filter(Boolean).join('\n') || 'Tool execution failed'
+    const detailErrors = [metadata?.error, metadata?.mergeError, nativeDetails?.error, nativeDetails?.mergeError].filter(value => typeof value === 'string' && value.trim())
+    result.error = [output, ...detailErrors, execution.error].filter(Boolean).join('\n') || 'Tool execution failed'
   }
 
   // FilePath
@@ -257,15 +258,27 @@ export function defaultExtractData(execution: PiToolExecution): ExtractedToolDat
         : ''
     result.notice = `${shown}${fullPath}`
   }
-  if (Array.isArray(metadata?.images)) {
-    result.images = metadata.images.flatMap(image => {
-      if (!image || typeof image !== 'object') return []
-      const value = image as Record<string, unknown>
-      return typeof value.url === 'string' && typeof value.mimeType === 'string'
-        ? [{ url: value.url, mimeType: value.mimeType, requiresAuth: value.requiresAuth === true }]
-        : []
-    })
+  const detailImages: NonNullable<ExtractedToolData['images']> = []
+  const collectImages = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      value.forEach(collectImages)
+      return
+    }
+    if (!value || typeof value !== 'object') return
+    const image = value as Record<string, unknown>
+    if (typeof image.mimeType === 'string' && typeof image.data === 'string') {
+      const block = { type: 'image' as const, data: image.data, mimeType: image.mimeType, ...('attachment' in image ? { attachment: image.attachment } : {}) }
+      detailImages.push({ url: image.data.startsWith('blob:sha256:') ? '' : `data:${image.mimeType};base64,${image.data}`, mimeType: image.mimeType, block })
+      return
+    }
+    if (typeof image.mimeType === 'string' && typeof image.url === 'string') {
+      detailImages.push({ url: image.url, mimeType: image.mimeType, requiresAuth: image.requiresAuth === true })
+      return
+    }
+    Object.values(image).forEach(collectImages)
   }
+  collectImages(metadata)
+  if (detailImages.length) result.images = [...(result.images ?? []), ...detailImages]
 
   // Output language from filePath
   if (result.filePath) {
@@ -273,7 +286,7 @@ export function defaultExtractData(execution: PiToolExecution): ExtractedToolDat
   }
 
   // Output: 分运行状态取不同的字段
-  if (!result.files && !result.diff && output && !toolResult?.isError) {
+  if (output && !result.error) {
     result.output = output
 
     // 推断语言
@@ -307,7 +320,7 @@ export function yieldExtractData(execution: PiToolExecution): ExtractedToolData 
       ? (execution.result.details as Record<string, unknown>)
       : undefined
 
-  const isError = execution.result?.isError === true
+  const isError = getToolExecutionStatus(execution) === 'error'
   const data = metadata?.data ?? args?.data
   // defaultExtractData 对 isError 结果不设 output，错误文本在 base.error
   const error =
@@ -324,10 +337,21 @@ export function yieldExtractData(execution: PiToolExecution): ExtractedToolData 
   if (error) yieldResult.error = error
   base.yieldResult = yieldResult
 
-  // 结果负载已由专属渲染器呈现，通用块只留噪音
+  // 结果负载已由专属渲染器呈现，通用块只留噪音；但 output 里负载之外的
+  // 原始说明（跳过/截断/限制）不能跟着被删，YieldRenderer 会折叠展示（#364）。
+  const payloadTexts = new Set<string>()
+  const collectStrings = (value: unknown): void => {
+    if (typeof value === 'string') payloadTexts.add(value)
+    else if (Array.isArray(value)) value.forEach(collectStrings)
+    else if (value && typeof value === 'object') Object.values(value).forEach(collectStrings)
+  }
+  collectStrings(data === undefined ? [] : data)
+  if (base.output && !payloadTexts.has(base.output) && base.output !== error) {
+    yieldResult.rawOutput = base.output
+  }
   delete base.input
   delete base.output
-  delete base.error
+  if (!isError) delete base.error
   delete base.inputLang
   delete base.outputLang
 

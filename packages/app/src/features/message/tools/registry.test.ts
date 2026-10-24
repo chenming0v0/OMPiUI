@@ -133,6 +133,43 @@ describe('defaultExtractData', () => {
 
     expect(extracted.filePath).toBe('C:/work/demo/app.ts')
   })
+
+  it('preserves content images alongside nested details attachment images', () => {
+    const execution: PiToolExecution = {
+      call: { type: 'toolCall', id: 'images', name: 'read', arguments: {} },
+      result: { role: 'toolResult', toolCallId: 'images', toolName: 'read', timestamp: 1, isError: false,
+        content: [{ type: 'image', data: 'inline', mimeType: 'image/png' }],
+        details: { xdev: { result: { type: 'image', data: 'blob:sha256:abc', mimeType: 'image/png', attachment: { entryId: 'e1', blockIndex: 0, source: 'details' } } } },
+      },
+    }
+    expect(defaultExtractData(execution).images).toMatchObject([
+      { url: 'data:image/png;base64,inline' },
+      { block: { data: 'blob:sha256:abc', attachment: { entryId: 'e1', source: 'details' } } },
+    ])
+  })
+
+  it('retains raw failure content when details also describes file changes', () => {
+    const execution: PiToolExecution = {
+      call: { type: 'toolCall', id: 'edit-failed', name: 'edit', arguments: {} },
+      result: { role: 'toolResult', toolCallId: 'edit-failed', toolName: 'edit', timestamp: 1, isError: true,
+        content: [{ type: 'text', text: 'Permission denied while saving app.ts' }], details: { files: [{ filePath: 'app.ts', before: 'a', after: 'b' }] } },
+    }
+    expect(defaultExtractData(execution).error).toBe('Permission denied while saving app.ts')
+  })
+  it('retains a yield failure payload even when structured yield metadata is also present', () => {
+    const execution: PiToolExecution = { call: { type: 'toolCall', id: 'yield-error', name: 'yield', arguments: { data: { reply: 'Attempted response' } } },
+      result: { role: 'toolResult', toolCallId: 'yield-error', toolName: 'yield', timestamp: 1, isError: true,
+        content: [{ type: 'text', text: 'Submission rejected by the parent' }], details: { error: 'Result contract violated' } } }
+    expect(extractToolData(execution).error).toBe('Submission rejected by the parent\nResult contract violated')
+  })
+
+  it('classifies native-details merge failure as failure despite successful exit metadata', () => {
+    const execution: PiToolExecution = { call: { type: 'toolCall', id: 'merge-error', name: 'eval', arguments: {} },
+      result: { role: 'toolResult', toolCallId: 'merge-error', toolName: 'eval', timestamp: 1, isError: false,
+        content: [{ type: 'text', text: 'Child execution completed' }], details: { exitCode: 0, nativeDetails: { mergeError: 'Worktree merge conflicted' } } } }
+    expect(extractToolData(execution).error).toBe('Child execution completed\nWorktree merge conflicted')
+    expect(extractToolData(execution).output).toBeUndefined()
+  })
 })
 
 describe('write destinations', () => {

@@ -4,6 +4,7 @@
 // ============================================
 
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SerializeAddon } from '@xterm/addon-serialize'
@@ -358,6 +359,9 @@ interface TerminalProps {
 }
 
 export const Terminal = memo(function Terminal({ terminalId, workspacePath, isActive }: TerminalProps) {
+  const { t } = useTranslation('components')
+  const [nativeSessionFile, setNativeSessionFile] = useState<string>()
+  const [nativeUtility, setNativeUtility] = useState<'play' | 'stream'>()
   const containerRef = useRef<HTMLDivElement>(null)
   const [isTouchScrolling, setIsTouchScrolling] = useState(false)
   const [stickyModifiers, setStickyModifiers] = useState<StickyModifiers>(() => createStickyModifiers())
@@ -743,6 +747,8 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
           const frame = parseServerFrame(value)
           if (!frame) return
           if (frame.type === 'hello') {
+            setNativeSessionFile(frame.terminal.nativeSessionId ? frame.terminal.sessionFile : undefined)
+            setNativeUtility(frame.terminal.ompCommand)
             finalCursor = frame.terminal.status === 'exited' ? frame.terminal.cursor : undefined
             supportsInputAcknowledgements = frame.inputAck === true
             supportsOutputAcknowledgements = frame.outputAck === true
@@ -1195,6 +1201,17 @@ export const Terminal = memo(function Terminal({ terminalId, workspacePath, isAc
           inset: isActive ? undefined : 0
         }}
       >
+        {nativeSessionFile && (
+          <div className="shrink-0 border-b border-border-200 bg-bg-200 px-3 py-2 text-xs text-text-200">
+            <p>{t('terminal.nativeInstructions')}</p>
+            <p className="mt-1 break-all font-mono">{t('terminal.nativeSessionFile', { path: nativeSessionFile })}</p>
+          </div>
+        )}
+        {nativeUtility && (
+          <div className="shrink-0 border-b border-border-200 bg-bg-200 px-3 py-2 text-xs text-text-200">
+            <p>{t(`terminal.native${nativeUtility === 'play' ? 'Play' : 'Stream'}Instructions`)}</p>
+          </div>
+        )}
         {(inputState !== 'ready' || inputNotice) && (
           <div role="alert" className="shrink-0 border-b border-border-200 bg-bg-200 px-3 py-2 text-sm text-text-100">
             <p>

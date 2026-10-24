@@ -137,6 +137,14 @@ export const PI_COMMAND_SPECS = [
     queue: "immediate",
   },
   {
+    name: "abortAndPrompt",
+    scope: "session",
+    description: "Interrupt current work and send a new prompt",
+    paramsSchema: TEXT_IMAGES_PARAMS,
+    queue: "immediate",
+    streaming: true,
+  },
+  {
     name: "sendUserMessage",
     scope: "session",
     description: "Append and optionally deliver a user message",
@@ -253,6 +261,13 @@ export const PI_COMMAND_SPECS = [
     scope: "session",
     description: "Set follow-up queue delivery mode",
     paramsSchema: objectSchema({ mode: QUEUE_MODE }),
+    queue: "immediate",
+  },
+  {
+    name: "setInterruptMode",
+    scope: "session",
+    description: "Set immediate or wait interruption behavior",
+    paramsSchema: objectSchema({ mode: { enum: ["immediate", "wait"] } }, ["mode"]),
     queue: "immediate",
   },
   {
@@ -615,6 +630,7 @@ export const PI_COMMAND_SPECS = [
         entryId: STRING,
         blockIndex: { type: "integer", minimum: 0 },
         offset: { type: "integer", minimum: 0 },
+        source: { enum: ["content", "details"] },
       },
       ["entryId", "blockIndex"],
     ),
@@ -695,6 +711,7 @@ export const PI_COMMAND_SPECS = [
             etag: byteString(128),
             blockIndex: { type: "integer", minimum: 0 },
             offset: { type: "integer", minimum: 0 },
+            source: { enum: ["content", "details"] },
             sessionFile: byteString(4096),
             fromByte: { type: "integer", minimum: 0 },
             sync: SUBAGENT_SYNC_SCHEMA,
@@ -774,24 +791,6 @@ export const PI_COMMAND_SPECS = [
       { cwd: STRING, patch: { ...objectSchema({}, [], true), maxJsonBytes: 1024 * 1024 } },
       ["cwd", "patch"],
     ),
-    queue: "serialized",
-  },
-  {
-    name: "trust.get",
-    scope: "global",
-    description: "Read OMP project trust state",
-    paramsSchema: CWD_PARAMS,
-    queue: "immediate",
-    idempotent: true,
-  },
-  {
-    name: "trust.set",
-    scope: "global",
-    description: "Set OMP project trust state",
-    paramsSchema: objectSchema({ cwd: STRING, decision: nullable(BOOLEAN) }, [
-      "cwd",
-      "decision",
-    ]),
     queue: "serialized",
   },
   {
@@ -988,6 +987,7 @@ export const RUNTIME_TARGETS = {
   followUp: "followUp",
   sendUserMessage: "sendUserMessage",
   abort: "abort",
+  abortAndPrompt: "abortAndPrompt",
   newSession: "newSession",
   switchSession: "switchSession",
   fork: "fork",
@@ -1000,6 +1000,7 @@ export const RUNTIME_TARGETS = {
   cycleThinkingLevel: "cycleThinkingLevel",
   setSteeringMode: "setSteeringMode",
   setFollowUpMode: "setFollowUpMode",
+  setInterruptMode: "setInterruptMode",
   clearQueue: "clearQueue",
   removeQueuedMessage: "removeQueuedMessage",
   sendQueuedMessage: "sendQueuedMessage",
@@ -1069,12 +1070,15 @@ export type PiCommandParams = CoreCommandParams & {
   "skills.list": Record<string, never>;
   "prompts.list": Record<string, never>;
   "agentsFiles.list": Record<string, never>;
-  "attachment.get": { entryId: string; blockIndex: number; offset?: number };
+  "attachment.get": { entryId: string; blockIndex: number; offset?: number; source?: "content" | "details" };
   "subagent.messages": SubagentMessagesParams;
   "commands.completions": { name: string; prefix: string };
   goal: {
     op: "set" | "pause" | "resume" | "drop";
     objective?: string;
+    /** 官方 GoalRuntime 的可选 token 预算（#354） */
+    tokenBudget?: number;
+    /** 官方目标不支持图片附件；worker 会拒绝非空列表 */
     images?: import("./image-budget.js").GoalImageInput[];
   };
   "session.list": { cwd: string };
@@ -1101,8 +1105,6 @@ export type PiCommandParams = CoreCommandParams & {
   "models.list": Record<string, never>;
   "settings.get": { cwd: string };
   "settings.patch": { cwd: string; patch: JsonObject };
-  "trust.get": { cwd: string };
-  "trust.set": { cwd: string; decision: boolean | null };
   "providers.list": Record<string, never>;
   "providers.activeFlows": Record<string, never>;
   "providers.startAuth": { providerId: string; authType?: "api_key" | "oauth" };

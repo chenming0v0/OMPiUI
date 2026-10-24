@@ -53,6 +53,7 @@ function makeModel(id: string, reasoning = true): AnyModel {
     provider: 'openai',
     baseUrl: 'https://api.openai.com/v1',
     reasoning,
+    supportedThinkingLevels: reasoning ? ['off', 'low', 'high'] : ['off'],
     input: ['text'],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 128000,
@@ -185,6 +186,15 @@ describe('ModelRolesSettings', () => {
     await waitFor(() => {
       expect(setPiModelRolesMock).toHaveBeenCalledWith({ slow: 'openai/gpt-4.1:high' })
     })
+  })
+  it('offers only official thinking candidates for the selected role model', async () => {
+    getPiModelRolesMock.mockResolvedValue({ default: 'openai/gpt-4.1' })
+    render(<ModelRolesSettings />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Default variant' }))
+    expect(await screen.findByText('low')).toBeInTheDocument()
+    expect(screen.getByText('high')).toBeInTheDocument()
+    expect(screen.queryByText('max')).not.toBeInTheDocument()
+    expect(screen.queryByText('xhigh')).not.toBeInTheDocument()
   })
 
   it('renders cached roles immediately, then refreshes them and turns green', async () => {

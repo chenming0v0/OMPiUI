@@ -24,6 +24,7 @@ function createDefaultSettings(): NotificationEventSettings {
       permission: { systemEnabled: true },
       question: { systemEnabled: true },
       error: { systemEnabled: true },
+      warning: { systemEnabled: true },
     },
   }
 }
@@ -61,6 +62,12 @@ function loadSettings(): NotificationEventSettings {
             typeof parsed?.events?.error?.systemEnabled === 'boolean'
               ? parsed.events.error.systemEnabled
               : defaults.events.error.systemEnabled,
+        },
+        warning: {
+          systemEnabled:
+            typeof parsed?.events?.warning?.systemEnabled === 'boolean'
+              ? parsed.events.warning.systemEnabled
+              : defaults.events.warning.systemEnabled,
         },
       },
     }
@@ -125,6 +132,16 @@ function normalizeSettings(raw: unknown): NotificationEventSettings {
             'boolean'
             ? (((parsed.events as Record<string, unknown>).error as Record<string, unknown>).systemEnabled as boolean)
             : defaults.events.error.systemEnabled,
+      },
+      warning: {
+        systemEnabled:
+          typeof parsed?.events === 'object' &&
+          parsed.events &&
+          typeof (parsed.events as Record<string, unknown>).warning === 'object' &&
+          typeof ((parsed.events as Record<string, unknown>).warning as Record<string, unknown>).systemEnabled ===
+            'boolean'
+            ? (((parsed.events as Record<string, unknown>).warning as Record<string, unknown>).systemEnabled as boolean)
+            : defaults.events.warning.systemEnabled,
       },
     },
   }

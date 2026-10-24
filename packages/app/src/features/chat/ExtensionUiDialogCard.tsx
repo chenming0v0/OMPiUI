@@ -114,7 +114,8 @@ export function ExtensionUiDialogCard({
   const cancel = () =>
     request.kind === 'confirm' ? send({ confirmed: false }) : send({ cancelled: true })
 
-  // Enter 提交（Shift+Enter 换行）；editor 里 Enter 换行、Ctrl/Cmd+Enter 提交；Esc 取消。
+  // Prompt-style editor: Enter submits, Shift+Enter adds a newline. Other
+  // editors use Ctrl/Cmd+Enter. IME composition never submits.
   // 中文输入法组合中（选词）的 Enter 不触发提交。
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const nativeEvent = event.nativeEvent
@@ -122,11 +123,12 @@ export function ExtensionUiDialogCard({
     const target = event.target as HTMLElement
     const isTextarea = target.tagName === 'TEXTAREA'
     if (event.key === 'Enter') {
-      // editor：Enter 换行，仅 Ctrl/Cmd+Enter 提交
-      if (isTextarea && request.kind === 'editor' && !(event.metaKey || event.ctrlKey)) return
+      if (isTextarea && request.kind === 'editor' && !(event.metaKey || event.ctrlKey)) {
+        if (!request.promptStyle || event.shiftKey || event.altKey) return
+      }
       // input（多行）：Shift+Enter 换行，Enter 提交
       if (isTextarea && request.kind === 'input' && event.shiftKey) return
-      if (submitting || (request.kind !== 'confirm' && !value)) return
+      if (submitting || (request.kind === 'select' && request.options.length === 0)) return
       event.preventDefault()
       void submit()
     } else if (event.key === 'Escape' && !submitting) {
@@ -136,7 +138,7 @@ export function ExtensionUiDialogCard({
 
   const pad = compact ? 'px-3 py-2' : 'px-4 py-3'
   const gap = compact ? 'gap-2' : 'gap-2.5'
-  const canSubmit = request.kind === 'confirm' || !!value
+  const canSubmit = request.kind !== 'select' || request.options.length > 0
 
   return (
     <div
@@ -200,6 +202,7 @@ export function ExtensionUiDialogCard({
               <SelectOption
                 key={`${index}-${option}`}
                 option={option}
+                description={request.optionDetails?.[index]?.description}
                 selected={value === option}
                 disabled={submitting}
                 compact={compact}
@@ -226,10 +229,11 @@ export function ExtensionUiDialogCard({
           <textarea
             value={value}
             onChange={event => setValue(event.target.value)}
+            data-prompt-style={request.promptStyle ? 'true' : undefined}
             disabled={submitting}
             rows={compact ? 6 : 8}
             autoFocus
-            className="w-full resize-y rounded-md border border-border-200 bg-bg-100 p-3 font-mono text-[length:var(--fs-sm)] text-text-100 outline-none transition-colors hover:border-border-300 focus-visible:border-accent-main-100 focus-visible:ring-1 focus-visible:ring-accent-main-100/30"
+            className={`w-full resize-y rounded-md border border-border-200 bg-bg-100 p-3 ${request.promptStyle ? '' : 'font-mono '}text-[length:var(--fs-sm)] text-text-100 outline-none transition-colors hover:border-border-300 focus-visible:border-accent-main-100 focus-visible:ring-1 focus-visible:ring-accent-main-100/30`}
           />
         )}
 
@@ -291,12 +295,14 @@ export function ExtensionUiDialogCard({
  */
 function SelectOption({
   option,
+  description,
   selected,
   disabled,
   compact,
   onSelect,
 }: {
   option: string
+  description?: string
   selected: boolean
   disabled: boolean
   compact: boolean
@@ -363,6 +369,7 @@ function SelectOption({
           </button>
         )}
       </div>
+      {description && <p className="mx-3 mb-2 whitespace-pre-wrap break-words text-[length:var(--fs-xs)] leading-relaxed text-text-400">{description}</p>}
       {expanded && (
         <div className="mx-3 mb-2 overflow-hidden rounded-md border border-border-200/40 bg-bg-100">
           <CodePreview code={option} language="text" maxHeight={compact ? 100 : 180} />

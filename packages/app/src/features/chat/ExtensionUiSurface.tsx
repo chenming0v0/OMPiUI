@@ -2,6 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { ExtensionUiState } from '@ompiui/protocol'
 import { extensionUiStore } from '../../omp/extensionUiStore'
+import { stripAnsi } from '../../utils/ansiUtils'
 
 export function ExtensionUiSurface({ sessionId, placement }: { sessionId: string | null; placement: 'aboveEditor' | 'belowEditor' }) {
   const { t } = useTranslation('chat')
@@ -21,14 +22,14 @@ export function ExtensionUiSurface({ sessionId, placement }: { sessionId: string
       <div className={`space-y-1 px-2 text-[length:var(--fs-xs)] ${placement === 'aboveEditor' ? 'pb-1' : 'pt-1'}`}>
         {showState ? <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-text-400">
           {state.title ? <span className="font-medium text-text-200">{state.title}</span> : null}
-          {Object.entries(state.statuses).map(([key, value]) => <span key={key}><span className="text-text-500">{key}:</span> {value}</span>)}
+          {Object.entries(state.statuses).map(([key, value]) => <span key={key}><span className="text-text-500">{key}:</span> {stripAnsi(value)}</span>)}
           {state.workingVisible && state.workingIndicator ? <WorkingIndicator indicator={state.workingIndicator} /> : null}
           {state.workingVisible && state.workingMessage ? <span className="text-accent-main-100">{state.workingMessage}</span> : null}
           {state.hiddenThinkingLabel ? <span>{state.hiddenThinkingLabel}</span> : null}
           {state.themeName ? <span><span className="text-text-500">{t('extensionUi.theme')}:</span> {state.themeName}</span> : null}
           <span><span className="text-text-500">{t('extensionUi.tools')}:</span> {state.toolsExpanded ? t('extensionUi.toolsExpanded') : t('extensionUi.toolsCollapsed')}</span>
         </div> : null}
-        {widgets.map(([key, widget]) => <div key={key} className="whitespace-pre-wrap break-words border-l border-border-200 pl-2 text-text-300">{widget.lines.join('\n')}</div>)}
+        {widgets.map(([key, widget]) => <div key={key} data-widget-placement={placement} className="whitespace-pre-wrap break-words border-l border-border-200 pl-2 text-text-300">{stripAnsi(widget.lines.join('\n'))}</div>)}
       </div>
     </div>
   )

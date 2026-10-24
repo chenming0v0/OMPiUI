@@ -122,14 +122,13 @@ jobs:
           npm run build
           printf '%s\n' '{"build":{"beforeBuildCommand":""}}' > "$RUNNER_TEMP/tauri-release.json"
 
+      # 轻量版（-lite）：不带官方 OMP 运行时，运行时由外部 OMP CLI 提供。
+      # 完整开箱即用版由 desktop-full 在发布成功后异步追加到同一 Release。
       - name: Build bundled OMPiUI server
-        run: node scripts/package-desktop.mjs --skip-build --target ${{ matrix.target }}
-
-      - name: Verify packaged public runtime without global OMP or Bun
-        run: node scripts/verify-packaged-omp-runtime.mjs --runtime dist-desktop/omp-runtime
+        run: node scripts/package-desktop.mjs --skip-build --skip-runtime --target ${{ matrix.target }}
 
       - name: Prepare Tauri resources
-        run: node scripts/prepare-tauri-resources.mjs
+        run: node scripts/prepare-tauri-resources.mjs --skip-runtime
 
       - name: Build Tauri desktop bundle
         run: npm run tauri:build -w @ompiui/app -- --config "$RUNNER_TEMP/tauri-release.json"
@@ -139,30 +138,37 @@ jobs:
         run: |
           mkdir -p ../release-artifacts
           if [ "${{ runner.os }}" = "Windows" ]; then
-            7z a -tzip "../release-artifacts/ompiui-${{ matrix.name }}.zip" .
+            7z a -tzip "../release-artifacts/ompiui-${{ matrix.name }}-lite.zip" .
           else
-            tar -czf "../release-artifacts/ompiui-${{ matrix.name }}.tar.gz" .
+            tar -czf "../release-artifacts/ompiui-${{ matrix.name }}-lite.tar.gz" .
           fi
 
       - name: Collect desktop artifacts
         shell: bash
         run: |
           mkdir -p release-artifacts
+          # 安装器统一加 -lite 后缀：无后缀的名字留给开箱即用版（desktop-full）。
+          rename_lite() {
+            local file="$1" base extension
+            base="$(basename "$file")"
+            extension="${base##*.}"
+            mv "$file" "release-artifacts/${base%.*}-lite.${extension}"
+          }
           if [ "${{ runner.os }}" = "Windows" ]; then
-            find packages/app/src-tauri/target/release/bundle/nsis -name '*.exe' -exec cp {} release-artifacts/ \;
+            find packages/app/src-tauri/target/release/bundle/nsis -name '*.exe' -exec bash -c 'rename_lite "$0"' {} \;
           elif [ "${{ runner.os }}" = "macOS" ]; then
-            find packages/app/src-tauri/target/release/bundle/dmg -name '*.dmg' -exec cp {} release-artifacts/ \;
+            find packages/app/src-tauri/target/release/bundle/dmg -name '*.dmg' -exec bash -c 'rename_lite "$0"' {} \;
           else
-            find packages/app/src-tauri/target/release/bundle/deb -name '*.deb' -exec cp {} release-artifacts/ \;
+            find packages/app/src-tauri/target/release/bundle/deb -name '*.deb' -exec bash -c 'rename_lite "$0"' {} \;
             if [ -d packages/app/src-tauri/target/release/bundle/appimage ]; then
-              find packages/app/src-tauri/target/release/bundle/appimage -name '*.AppImage' -exec cp {} release-artifacts/ \;
+              find packages/app/src-tauri/target/release/bundle/appimage -name '*.AppImage' -exec bash -c 'rename_lite "$0"' {} \;
             fi
           fi
           ls -la release-artifacts
 
       - uses: actions/upload-artifact@v7
         with:
-          name: ompiui-release-${{ needs.prepare.outputs.tree }}-${{ matrix.name }}
+          name: ompiui-release-${{ needs.prepare.outputs.tree }}-${{ matrix.name }}-lite
           path: release-artifacts/*
           if-no-files-found: error
           compression-level: 0
@@ -318,7 +324,7 @@ jobs:
        (needs.desktop.result == 'success' &&
         (needs.android.result == 'success' || needs.android.result == 'skipped')))
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 45
     permissions:
       contents: write
       actions: read
@@ -342,15 +348,18 @@ jobs:
           node --input-type=module <<'JS'
           import { readdirSync, statSync } from 'node:fs'
           const files = readdirSync('release-assets').filter(name => statSync(`release-assets/${name}`).size > 0)
-          const required = ['ompiui-windows-x64.zip', 'ompiui-linux-x64.tar.gz', 'ompiui-macos-arm64.tar.gz']
+          // 发布阶段交付轻量版（-lite）；开箱即用版（无 -lite 后缀）由 desktop-full 异步追加。
+          const required = ['ompiui-windows-x64-lite.zip', 'ompiui-linux-x64-lite.tar.gz', 'ompiui-macos-arm64-lite.tar.gz']
           if (process.env.ANDROID_ENABLED === 'true') required.push('ompiui-android-arm64.apk', 'ompiui-android-armv7.apk')
           for (const name of required) {
             if (!files.includes(name)) throw new Error(`Missing release asset: ${name}`)
           }
           for (const extension of ['.exe', '.dmg', '.deb']) {
-            if (!files.some(name => name.endsWith(extension))) throw new Error(`Missing desktop installer: ${extension}`)
+            if (!files.some(name => name.endsWith(extension) && name.includes('-lite'))) {
+              throw new Error(`Missing lite desktop installer: ${extension}`)
+            }
           }
-          console.log(`Validated ${files.length} release assets: ${files.join(', ')}`)
+          console.log(`Validated ${files.length} lite release assets: ${files.join(', ')}`)
           JS
 
       - name: Extract changelog for tag
@@ -367,8 +376,8 @@ jobs:
           fi
           echo "$BODY" > /tmp/release-body.md
           {
-            printf '\n---\n\n**Portable:** Windows (.zip), Linux (.tar.gz), macOS (.tar.gz)\n'
-            printf '**Desktop:** Windows (.exe), macOS (.dmg), Linux (.deb, .AppImage)\n'
+            printf '\n---\n\n**Lite (no bundled runtime):** Windows (.zip, .exe), Linux (.tar.gz, .deb), macOS (.tar.gz, .dmg) — uses your own OMP CLI (`OMPI_OMP_BIN` or PATH)\n'
+            printf '**Full runtime (开箱即用):** assets without the `-lite` suffix bundle the complete official OMP runtime; they are attached to this release automatically a few minutes after publishing\n'
             if compgen -G "release-assets/*android*.apk" > /dev/null; then
               printf '**Mobile:** Android (.apk) — arm64, armeabi-v7a\n'
             fi
@@ -412,3 +421,111 @@ jobs:
           console.log(result)
           if (process.env.REUSED === 'true' && seconds > 300) console.warn('::warning::预构建已命中，但本次交付超过 5 分钟；请检查 runner 排队和附件传输耗时。')
           JS
+
+  # 开箱即用版（带完整官方 OMP 运行时）：发布成功后异步构建并追加到同一 Release。
+  # 不阻塞轻量版的发布；异步执行不必赶时间，安装器保留最小的 LZMA 固实压缩。
+  desktop-full:
+    name: desktop full runtime ${{ matrix.name }}
+    needs: [prepare, publish]
+    if: needs.prepare.outputs.publish == 'true' && needs.publish.result == 'success'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: windows-x64, os: windows-latest, target: bun-windows-x64 }
+          - { name: macos-arm64, os: macos-latest, target: bun-darwin-arm64 }
+          - { name: linux-x64, os: ubuntu-24.04, target: bun-linux-x64 }
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: packages/server/tailscale-bridge/go.mod
+          cache-dependency-path: packages/server/tailscale-bridge/go.sum
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './packages/app/src-tauri -> target'
+          shared-key: release-desktop-${{ matrix.name }}
+          save-if: 'false'
+
+      - name: Drop Windows-only patch on Unix
+        if: runner.os != 'Windows'
+        run: rm -f patches/@lydell+node-pty-win32-x64+*.patch
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - run: npm ci
+      - name: Build workspaces once
+        run: |
+          npm run build
+          printf '%s\n' '{"build":{"beforeBuildCommand":""}}' > "$RUNNER_TEMP/tauri-release.json"
+
+      - name: Build bundled OMPiUI server with full runtime
+        run: node scripts/package-desktop.mjs --skip-build --target ${{ matrix.target }}
+
+      - name: Verify packaged public runtime without global OMP or Bun
+        run: node scripts/verify-packaged-omp-runtime.mjs --runtime dist-desktop/omp-runtime
+
+      - name: Prepare Tauri resources
+        run: node scripts/prepare-tauri-resources.mjs
+
+      - name: Build Tauri desktop bundle
+        run: npm run tauri:build -w @ompiui/app -- --config "$RUNNER_TEMP/tauri-release.json"
+
+      - name: Archive portable bundle
+        working-directory: dist-desktop
+        run: |
+          mkdir -p ../release-artifacts
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a -tzip "../release-artifacts/ompiui-${{ matrix.name }}.zip" .
+          else
+            tar -czf "../release-artifacts/ompiui-${{ matrix.name }}.tar.gz" .
+          fi
+
+      - name: Collect desktop artifacts
+        shell: bash
+        run: |
+          mkdir -p release-artifacts
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            find packages/app/src-tauri/target/release/bundle/nsis -name '*.exe' -exec cp {} release-artifacts/ \;
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            find packages/app/src-tauri/target/release/bundle/dmg -name '*.dmg' -exec cp {} release-artifacts/ \;
+          else
+            find packages/app/src-tauri/target/release/bundle/deb -name '*.deb' -exec cp {} release-artifacts/ \;
+            if [ -d packages/app/src-tauri/target/release/bundle/appimage ]; then
+              find packages/app/src-tauri/target/release/bundle/appimage -name '*.AppImage' -exec cp {} release-artifacts/ \;
+            fi
+          fi
+          ls -la release-artifacts
+
+      - name: Attach full-runtime assets to the published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          gh release upload "$TAG" release-artifacts/* --clobber --repo "$GITHUB_REPOSITORY"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'

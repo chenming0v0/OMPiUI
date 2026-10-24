@@ -1,3 +1,16 @@
+## [v0.6.39] - 2026-10-24
+
+- ci(release): 桌面发版拆分为两档并异步交付：主发布阶段构建并发布轻量版（`-lite` 后缀，不带官方 OMP 运行时，使用外部 OMP CLI），发布成功后由异步任务构建开箱即用版（无后缀，附带完整 OMP runtime/Bun/依赖，保留 LZMA 最小压缩）并追加到同一 Release；dev 预构建只预构建轻量版，单平台 Tauri 打包从约 18 分钟回落到个位数分钟。
+- ci(test): server 测试套件按文件轮转分片到 4 个 runner 并发（与 app 套件同策略）；此前单 runner 在 Windows 上要 14m56s，而 Linux 同套件只要 57s。
+- fix: #354 目标生命周期代理到官方 GoalRuntime（create/replace/pause/resume/drop），按官方 TUI 语义同步 goal 工具与流中上下文；移除 worker 自建续跑循环、完成标记与轮次计时，会话替换后读取官方目标快照；官方目标不支持图片附件，UI 停用附加入口。
+- fix: #360 客户端接入原生 set_interrupt_mode 与原子 abort_and_prompt：队列设置区新增中断行为 immediate/wait，输入栏投递方式三态循环新增「中断并提交」，能力开关由 registry 命令派生。
+- fix: #367 本地 RPC 协议错误（分片/解码失败）经 `rpc_frame_error` 事件实时送达前端（每分钟 20 条上限，超出折叠为抑制提示）；notice/command_output 的 warning 级别不再伪装为 completed 通知，通知与提示音新增 warning 严重度，扩展面板完整文本保留来源。
+- fix: #364 专用工具渲染器保留成功路径原始说明：todo 列表折叠展示原始结果，问答解析失败回退原始回答文本，yield 负载之外的说明保留为可展开原文；失败任务卡片默认展开，exitCode=0 但 mergeError 的子代理不再显示为全流程成功（#374）。
+- fix: #372 移除托管运行时对 `task.maxRecursionDepth` 的 UI 专用覆盖，子代理递归深度遵循用户原生设置；保留 autoResume:false 与前台无界 PTY 调用拦截。
+- fix: #356 树导航 Undo/Redo 恢复目标节点的原生文本与图片草稿，输入框新增整段草稿替换接口；会话树面板导航经统一事件路径恢复，Fork 图片草稿沿用既有 restoreNativeDraft。
+- fix: 恢复被误改回的 0.6.38 版本号与 v0.6.38 发布记录；WIP 批次遗留的 PiChatPane serverStore 缺失 import 已补。测试隔离修复：SlashCommandMenu mock 计数、Subagent 预览默认 mock、转录截断断言对齐 8000 字符阈值。
+- verification: app 全套 204 文件／1553 项测试通过；worker 全套 251 项中 238 通过、13 跳过、0 失败；protocol/omp-worker/app 类型检查与 lint（0 error / 18 warning）通过。#354 官方 Goal 生命周期、#360 abort_and_prompt、#367 真实协议错误帧、#382 PTY 接管上游边界仍需隔离环境真实运行验收；#336 安装器升级路径待用户实测。
+
 ## [v0.6.38] - 2026-10-23
 
 - fix(omp): align native sessions queues resources and terminal feedback (b99efce)
@@ -21,6 +34,8 @@
 - verification: Windows 实际桌面打包成功，产物包含编译后的 OMPiUI server、Tailscale bridge，以及官方 OMP 18.3.1、Bun 1.3.14 和同版本完整公开源码／生产／原生依赖。官方 18.3.1 与最新 18.12.6 的完整运行时分别移到含空格的隔离目录后，在无全局 OMP／npm／Bun 查找的 Node 与 compiled Bun 下，真实设置／包 API、精确版本及 UI→官方 CLI→UI 同一原生文件继续写入均通过（分别 239.15／248.49 秒，含完整运行时复制）。Tauri 资源准备在清理本轮临时产物后实际成功（115.10 秒），完整复制运行时、server、原生 PTY、Web 与 Tailscale 资源；此前磁盘空间耗尽（errno 112）不再是该步骤阻断。跨平台 CI 仍待完成，Linux 安装步骤已定位 Bun npm 包可执行文件布局差异，不能据 Windows 本机通过声明所有平台 CI、安装器构建或完整安装升级通过。
 - verification: 官方 canonical host loader 的受管扩展已通过真实加载命令元数据、会话 ID／文件身份与资源检查验证；实际包含 bash 工具，context discovery 无错误。非默认 fast role 精确解析到 offline-fast 模型范围，再完成 UI→官方→UI 三回合同文件继续写入（22 秒）；未以独立源码模块图或设置 cache 代理替代官方运行时。
 - verification: 依赖 CI 39898893796 已完成，Windows supported／latest 两项官方会话迁移、模型角色与 compiled relocation 验收均通过；Ubuntu 两项失败在运行时安装的 Bun npm 可执行文件布局，Windows app shard 1 失败在上述样式实现固定测试，其它检查通过。移除该单项实现固定测试后，实际 MarkdownRenderer 98 项通过（8.76 秒），相邻预览高度与主题行为测试保留且通过；Unix 安装路径修复与后续完整 CI 仍待结果，此轮不声明完整 CI 通过。
+- ci(release): 完整官方运行时加入后，五平台预构建附件共约 4.8 GB；标签发布首次在 10 分钟期限内未完成 Linux 附件下载。发布任务期限改为 45 分钟，保留完整附件、SHA-256 校验和原标签；手动复用同源码树预构建的发布运行 39935995841 实际成功，发布步骤耗时 10 分 23 秒。
+- verification: 发布收尾的 PR CI 39909161949 全部通过，Ubuntu 服务端 230 通过、3 跳过、0 失败；实际隔离 OMP 18.3.1 的 Node／compiled Bun 公共 API 和 UI→官方→UI 同文件续写再次通过（175.42 秒），真实 Node PTY 输出、回放及退出码 0 通过。独立 dev 验证中出现过 staging rename EPERM 和官方 RPC ready 超时，原因未证实，不宣称修复；#361 与原有未提交工作不纳入本版。
 
 ## [v0.6.37] - 2026-10-22
 

@@ -38,7 +38,6 @@ interface QAPair {
 // ============================================
 
 export function QuestionRenderer({ execution, data }: ToolRendererProps) {
-  const isActive = !execution.result
   const inputObj = execution.call.arguments as Record<string, unknown> | undefined
   const output = data.output?.trim()
   const metadata = execution.result?.details && typeof execution.result.details === 'object' && !Array.isArray(execution.result.details)
@@ -50,8 +49,8 @@ export function QuestionRenderer({ execution, data }: ToolRendererProps) {
     return buildQAList(inputObj, output, metadata)
   }, [inputObj, output, metadata])
 
-  // 运行中不渲染（由交互层接管）
-  if (isActive) {
+  // Queued or running questions are owned by the interactive layer; only show answers after a result.
+  if (!execution.result) {
     return null
   }
 
@@ -61,7 +60,13 @@ export function QuestionRenderer({ execution, data }: ToolRendererProps) {
   }
 
   if (qaList.length === 0) {
-    return null
+    // 结构化问答解析不出来时不能静默清空成功结果：原始回答文本必须可读（#364）。
+    if (!output) return null
+    return (
+      <div className="px-3 py-2 text-[length:var(--fs-sm)] text-text-200 whitespace-pre-wrap break-words">
+        {output}
+      </div>
+    )
   }
 
   return (
