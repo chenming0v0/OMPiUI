@@ -41,9 +41,13 @@ if (selected.length === 0) {
 }
 console.info(`[test-shard] shard ${shard}/${total} runs ${selected.length}/${files.length} files`)
 
+// Windows 上并行测试进程同时起 ConPTY 会触发 @lydell/node-pty 的原生不稳定
+// （堆损坏 0xC0000374、spawn 挂起、进程被句柄钉住不退出）；串行执行避开。
+const concurrency = process.platform === "win32" ? 1 : 2
+
 const result = spawnSync(
   process.execPath,
-  ["--import", "tsx", "--test", "--test-concurrency=2", ...selected],
+  ["--import", "tsx", "--test", `--test-concurrency=${concurrency}`, ...selected],
   { cwd: packageRoot, stdio: "inherit", shell: false, env: { ...process.env, OMPIUI_DRIVER: "mock" } },
 )
 process.exit(result.status ?? 1)

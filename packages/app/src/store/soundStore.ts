@@ -61,6 +61,9 @@ const IDB_NAME = 'ompiui-sounds'
 const IDB_STORE = 'custom-audio'
 const IDB_VERSION = 1
 
+/** 所有带音效配置的通知类型；预加载、备份导出/导入统一遍历此表 */
+const SOUND_EVENT_TYPES: readonly NotificationType[] = ['completed', 'permission', 'question', 'error', 'warning']
+
 // ============================================
 // 默认配置
 // ============================================
@@ -399,9 +402,8 @@ class SoundStore {
 
   async exportCustomAudioForBackup(): Promise<BackupCustomAudioMap> {
     const exported: BackupCustomAudioMap = {}
-    const types: NotificationType[] = ['completed', 'permission', 'question', 'error']
 
-    for (const type of types) {
+    for (const type of SOUND_EVENT_TYPES) {
       const blob = await this.getCustomAudioBlobAsync(type)
       if (!blob) continue
       exported[type] = {
@@ -415,9 +417,7 @@ class SoundStore {
   }
 
   async importCustomAudioFromBackup(customAudio: BackupCustomAudioMap): Promise<void> {
-    const types: NotificationType[] = ['completed', 'permission', 'question', 'error']
-
-    for (const type of types) {
+    for (const type of SOUND_EVENT_TYPES) {
       const item = customAudio[type]
       if (!item) {
         try {
@@ -458,8 +458,7 @@ class SoundStore {
   }
 
   private async preloadCustomAudio() {
-    const types: NotificationType[] = ['completed', 'permission', 'question', 'error']
-    for (const type of types) {
+    for (const type of SOUND_EVENT_TYPES) {
       // 只要有 customFileName 就预加载，不管当前是否选中 custom
       if (this.settings.events[type].customFileName) {
         try {
@@ -514,9 +513,8 @@ function normalizeBackupCustomAudioMap(raw: unknown): BackupCustomAudioMap {
 
   const parsed = raw as Record<string, unknown>
   const normalized: BackupCustomAudioMap = {}
-  const types: NotificationType[] = ['completed', 'permission', 'question', 'error']
 
-  for (const type of types) {
+  for (const type of SOUND_EVENT_TYPES) {
     const item = parsed[type]
     if (!item || typeof item !== 'object') continue
     const value = item as Record<string, unknown>
@@ -542,9 +540,8 @@ export async function importSoundBackup(raw: unknown): Promise<void> {
   const parsed = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : undefined
   const settings = normalizeSoundSettings(parsed?.settings)
   const customAudio = normalizeBackupCustomAudioMap(parsed?.customAudio)
-  const types: NotificationType[] = ['completed', 'permission', 'question', 'error']
 
-  for (const type of types) {
+  for (const type of SOUND_EVENT_TYPES) {
     if (!customAudio[type] && settings.events[type].soundId === 'custom') {
       settings.events[type] = { soundId: DEFAULT_SOUNDS[type] }
     }

@@ -1,3 +1,24 @@
+## [v0.6.40] - 2026-10-24
+
+- fix: flush provider edits on close and keep the native queue after Stop (3f801f8)
+- fix(app): drop the background subagent HUD and show only working or viewed child sessions in the sidebar (1ee012f)
+- fix(worker): drive official goals through AgentSession with RPC delivery and continuation (#391, #392) (05737e9)
+- fix(app): preload and back up the warning sound (#401) (753040c)
+- fix(app): enable external load-more and judge batch tasks per child (#399, #400) (fa4d499)
+- fix(chat): bind queued pending sends to entryId and stop re-claiming history rows (#397, #398) (cbc07eb)
+- fix(protocol): accept goal.tokenBudget across the command boundary (#396) (6af525b)
+- fix(server): release session leases only after native PTYs exit (#394) (6885e2a)
+- fix(server): guard immediate writes and deletes during native takeover (#393, #395) (d7808c1)
+- fix(worker): start managed sessions without OMP npm sources for lite builds (#390) (c8a368f)
+- ci(interop): retry the runtime staging rename against Windows EPERM (d486cbc)
+- ci(test): force-close ws.test.ts after its suite when ConPTY pins the loop (fd1dcf8)
+- fix(server): dispose terminals before waiting out HTTP connections (2cb4a97)
+- ci(test): stabilize windows PTY shards with serialized runs and bounded waits (959fbf7)
+- ci(release): collect lite installers in-shell so they reach the release (ac4ed42)
+- ci(test): retry rpc-launch temp cleanup against Windows EBUSY (4929710)
+- ci(test): terminate PTY input lines and quote the server test glob (bd15a76)
+- fix(chat): reconcile pending sends with native queues (b1236fd)
+
 ## [v0.6.39] - 2026-10-24
 
 - ci(release): 桌面发版拆分为两档并异步交付：主发布阶段构建并发布轻量版（`-lite` 后缀，不带官方 OMP 运行时，使用外部 OMP CLI），发布成功后由异步任务构建开箱即用版（无后缀，附带完整 OMP runtime/Bun/依赖，保留 LZMA 最小压缩）并追加到同一 Release；dev 预构建只预构建轻量版，单平台 Tauri 打包从约 18 分钟回落到个位数分钟。
@@ -9,6 +30,9 @@
 - fix: #372 移除托管运行时对 `task.maxRecursionDepth` 的 UI 专用覆盖，子代理递归深度遵循用户原生设置；保留 autoResume:false 与前台无界 PTY 调用拦截。
 - fix: #356 树导航 Undo/Redo 恢复目标节点的原生文本与图片草稿，输入框新增整段草稿替换接口；会话树面板导航经统一事件路径恢复，Fork 图片草稿沿用既有 restoreNativeDraft。
 - fix: 恢复被误改回的 0.6.38 版本号与 v0.6.38 发布记录；WIP 批次遗留的 PiChatPane serverStore 缺失 import 已补。测试隔离修复：SlashCommandMenu mock 计数、Subagent 预览默认 mock、转录截断断言对齐 8000 字符阈值。
+- fix(chat): 新会话首条消息在会话创建、模型配置与原生准入等待期间先显示本地待发气泡，原生落盘后去重并迁移草稿；修复 `b99efce` 移除 `submittedMessages` 投影后首条消息延迟可见的问题。
+- fix(chat): 停止后以原生 `isStreaming` 与实际异步工作判断 Stop 按钮，保留未消费的 follow-up 队列但不把队列误判为前台运行；修复 `b99efce` 的 `hasAdmittedSubmission` 队列提升门禁导致 Send now 返回 INTERNAL。
+- fix(chat): Stop 后将原生 follow-up 队列与前台执行状态分离；保留队列但清除 busy/Stop 投影，重复 Stop 不会重新提交，显式新消息仍正常发送；补充真实官方 OMP 隔离验收。
 - verification: app 全套 204 文件／1553 项测试通过；worker 全套 251 项中 238 通过、13 跳过、0 失败；protocol/omp-worker/app 类型检查与 lint（0 error / 18 warning）通过。#354 官方 Goal 生命周期、#360 abort_and_prompt、#367 真实协议错误帧、#382 PTY 接管上游边界仍需隔离环境真实运行验收；#336 安装器升级路径待用户实测。
 
 ## [v0.6.38] - 2026-10-23

@@ -890,9 +890,15 @@ class PiEventStream {
       this.knownActiveSessions.add(sessionId)
       return
     }
-    if ((state.isSettled === true || (state.isSettled === undefined && state.isIdle === true)) && Number(state.pendingMessageCount ?? state.queuedMessageCount ?? 0) === 0) {
+    const queuedMessages = Number(state.pendingMessageCount ?? state.queuedMessageCount ?? 0)
+    const settled = (state.isSettled === true || (state.isSettled === undefined && state.isIdle === true)) && queuedMessages === 0
+    if (settled) {
       const interruption = isJsonObject(state.toolInterruption) ? state.toolInterruption : undefined
       this.markSessionSettled(sessionId, interruption && typeof interruption.error === 'string' ? { error: interruption.error, kind: interruption.kind === 'failed' || interruption.kind === 'cancelled' ? interruption.kind : 'unknown' } : undefined)
+    }
+    if (settled || (state.isStreaming === false && queuedMessages > 0)) {
+      // Stopped foreground and a retained native queue are not full settle.
+      // Clear only the executing projection; preserve queue/state and watchdog.
       activeSessionStore.updateStatus(sessionId, { type: 'idle' })
       this.knownActiveSessions.delete(sessionId)
     }

@@ -137,6 +137,93 @@ test("an explicit message attaches a previewed OMP session using its latest hist
   assert.deepEqual(commands, ["state.get", "sendUserMessage"])
 })
 
+test("immediate writes respect a native terminal reservation on an attached runtime", async t => {
+  const previous = process.env.OMPIUI_DRIVER
+  process.env.OMPIUI_DRIVER = "mock"
+  const commands: string[] = []
+  let finishSend: (() => void) | undefined
+  const worker = {
+    command: async (type: string) => {
+      commands.push(type)
+      if (type === "sendUserMessage") await new Promise<void>(resolve => { finishSend = resolve })
+      return {}
+    },
+    getSessionId: () => "native-test",
+    getSessionFile: () => "native-test.jsonl",
+    getCwd: () => ".",
+    onEvent: () => () => {}, onCrash: () => () => {}, onClose: () => () => {}, dispose: async () => {},
+  } as unknown as WorkerSession
+  const supervisor = { onEvent: () => () => {}, open: async () => worker } as unknown as RuntimeSupervisor
+  const host = new SessionHost(supervisor, new EventHub())
+  t.after(() => {
+    host.dispose()
+    if (previous === undefined) delete process.env.OMPIUI_DRIVER
+    else process.env.OMPIUI_DRIVER = previous
+  })
+  await host.openSession(".")
+  commands.length = 0
+
+  // 已受理未返回的 immediate 写入期间，Native 接管必须视为 busy。
+  const pending = host.executeSessionCommand("native-test", "sendUserMessage", { text: "hi" }) as Promise<unknown>
+  await new Promise(resolve => setImmediate(resolve))
+  await assert.rejects(host.prepareNativeSession(".", "native-test"), { code: "SESSION_BUSY" })
+  finishSend?.()
+  await pending
+
+  // reservation 存在时 immediate 写入被拒绝，草稿同步不受影响。
+  const native = (host as unknown as { nativeSessions: Map<string, { sessionFile?: string }> }).nativeSessions
+  native.set("native-test", { sessionFile: "native-test.jsonl" })
+  commands.length = 0
+  await assert.rejects(
+    Promise.resolve().then(() => host.executeSessionCommand("native-test", "sendUserMessage", { text: "hi" })),
+    { code: "SESSION_BUSY" },
+  )
+  await host.executeSessionCommand("native-test", "setExtensionEditorState", { text: "draft" })
+  assert.deepEqual(commands, ["setExtensionEditorState"])
+})
+
+test("session.delete refuses a session reserved by its native terminal before closing or unlinking", async t => {
+  const previous = process.env.OMPIUI_DRIVER
+  process.env.OMPIUI_DRIVER = "mock"
+  const commands: string[] = []
+  const catalog: string[] = []
+  let disposed = 0
+  const worker = {
+    command: async (type: string) => { commands.push(type); return {} },
+    getSessionId: () => "delete-test",
+    getSessionFile: () => "delete-test.jsonl",
+    getCwd: () => ".",
+    onEvent: () => () => {}, onCrash: () => () => {}, onClose: () => () => {},
+    dispose: async () => { disposed++ },
+  } as unknown as WorkerSession
+  const supervisor = {
+    onEvent: () => () => {},
+    open: async () => worker,
+    catalogCommand: async (type: string) => { catalog.push(type); return { ok: true } },
+  } as unknown as RuntimeSupervisor
+  const host = new SessionHost(supervisor, new EventHub())
+  t.after(() => {
+    host.dispose()
+    if (previous === undefined) delete process.env.OMPIUI_DRIVER
+    else process.env.OMPIUI_DRIVER = previous
+  })
+  await host.openSession(".")
+  commands.length = 0
+  catalog.length = 0
+
+  // reservation 按 sessionFile 路径匹配（另一个会话 id 也必须拦住）。
+  const native = (host as unknown as { nativeSessions: Map<string, { sessionFile?: string }> }).nativeSessions
+  native.set("other-id", { sessionFile: "./delete-test.jsonl" })
+  await assert.rejects(
+    Promise.resolve().then(() => host.executeGlobalCommand("session.delete", { sessionFile: "delete-test.jsonl" })),
+    { code: "SESSION_BUSY" },
+  )
+  assert.deepEqual(catalog, [])
+  assert.deepEqual(commands, [])
+  assert.equal(disposed, 0)
+  assert.equal(host.getAttached("delete-test")?.sessionId, "delete-test")
+})
+
 test("SessionHost notifies the session list when the session file materializes on disk", async () => {
   const sessionFile = join(tmpdir(), `piui-session-host-${randomUUID()}.jsonl`)
   let emitEvent!: (event: { channel: string; head?: unknown }) => void

@@ -101,6 +101,55 @@ describe("http api", () => {
     assert.equal(accepted.json.service, "ompiui-server")
   })
 
+  it("dispose kills terminals before closing HTTP and releases leases only after real PTY exit", async () => {
+    const app = createAppServer({ authToken: "test-token" })
+    await listen(app)
+    const order: string[] = []
+    let exitPty!: () => void
+    const realShutdown = app.terminals.shutdown.bind(app.terminals)
+    app.terminals.shutdown = () => {
+      order.push("terminals.kill")
+      return realShutdown().then(() => new Promise<void>(resolve => {
+        exitPty = () => { order.push("pty.exit"); resolve() }
+      }))
+    }
+    const realSupervisorDispose = app.supervisor.dispose.bind(app.supervisor)
+    app.supervisor.dispose = async () => { order.push("supervisor.dispose"); await realSupervisorDispose() }
+    app.server.once("close", () => order.push("http.closed"))
+
+    // dispose 是 async 箭头函数，每次调用返回新 Promise；只验证幂等语义，不比较引用。
+    const disposed = app.dispose()
+    const disposedAgain = app.dispose()
+    while (!exitPty) await new Promise(resolve => setImmediate(resolve))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.deepEqual(order, ["terminals.kill", "http.closed"])
+    exitPty()
+    await Promise.all([disposed, disposedAgain])
+    assert.deepEqual(order, ["terminals.kill", "http.closed", "pty.exit", "supervisor.dispose"])
+    assert.equal(order.filter(step => step === "terminals.kill").length, 1)
+    assert.equal(order.filter(step => step === "supervisor.dispose").length, 1)
+  })
+
+  it("dispose logs a terminal exit failure and still releases the supervisor", async () => {
+    const app = createAppServer({ authToken: "test-token" })
+    await listen(app)
+    const realShutdown = app.terminals.shutdown.bind(app.terminals)
+    app.terminals.shutdown = async () => { await realShutdown(); throw new Error("pty stuck") }
+    let supervisorDisposed = false
+    const realSupervisorDispose = app.supervisor.dispose.bind(app.supervisor)
+    app.supervisor.dispose = async () => { supervisorDisposed = true; await realSupervisorDispose() }
+    const logged: unknown[][] = []
+    const realError = console.error
+    console.error = (...args: unknown[]) => { logged.push(args) }
+    try {
+      await app.dispose()
+    } finally {
+      console.error = realError
+    }
+    assert.equal(supervisorDisposed, true)
+    assert.ok(logged.some(args => args.some(arg => arg instanceof Error && arg.message === "pty stuck")))
+  })
+
   it("protects fault report/status endpoints and reads them without opening a runtime", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "ompiui-report-api-"))
     const app = createAppServer({ authToken: "report-token", faultReports: new FaultReportService(root, []) })

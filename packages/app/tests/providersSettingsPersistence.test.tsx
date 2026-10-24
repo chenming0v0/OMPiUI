@@ -294,7 +294,7 @@ describe('provider settings persistence', () => {
     expect(mocks.saveProvider.mock.lastCall![0].models[0]).toMatchObject({ id: 'B', originalId: 'B' })
   })
 
-  it.each(['switch', 'unmount'] as const)('cancels delayed delete and queued writes on %s', async change => {
+  it('cancels delayed delete and queued writes on switch', async () => {
     const firstSave = Promise.withResolvers<PiModelProvidersSnapshot>()
     mocks.saveProvider.mockReturnValueOnce(firstSave.promise)
     const view = await openSettings()
@@ -302,23 +302,53 @@ describe('provider settings persistence', () => {
     await renameModel('C')
     fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: 'https://unsaved.test/v1' } })
     beginDelete()
-    if (change === 'switch') {
-      mocks.serverId = 'second'
-      mocks.generation += 1
-      mocks.listProviders.mockResolvedValue(snapshot([provider('demo', 'https://second.test/v1')]))
-      await act(async () => view.rerender(<ProvidersSettings />))
-    } else {
-      view.unmount()
-    }
+    mocks.serverId = 'second'
+    mocks.generation += 1
+    mocks.listProviders.mockResolvedValue(snapshot([provider('demo', 'https://second.test/v1')]))
+    await act(async () => view.rerender(<ProvidersSettings />))
     await act(async () => firstSave.resolve(snapshot([{ ...provider(), models: [{ id: 'B' }] }])))
     await debounce()
     expect(mocks.deleteProvider).not.toHaveBeenCalled()
     expect(mocks.saveProvider.mock.calls.map(call => call[0].models[0].id)).toEqual(['B'])
     expect(mocks.saveProvider.mock.calls[0]![1].aborted).toBe(true)
-    if (change === 'switch') {
-      expect(screen.getByLabelText('Base URL')).toHaveValue('https://second.test/v1')
-      expect(screen.getByText('A')).toBeVisible()
-    }
+    expect(screen.getByLabelText('Base URL')).toHaveValue('https://second.test/v1')
+    expect(screen.getByText('A')).toBeVisible()
+  })
+
+  it('lets queued writes finish on unmount', async () => {
+    const firstSave = Promise.withResolvers<PiModelProvidersSnapshot>()
+    mocks.saveProvider.mockReturnValueOnce(firstSave.promise)
+    const view = await openSettings()
+    await renameModel('B')
+    await renameModel('C')
+    view.unmount()
+    await act(async () => firstSave.resolve(snapshot([{ ...provider(), models: [{ id: 'B' }] }])))
+    await debounce()
+    expect(mocks.saveProvider.mock.calls.map(call => call[0].models[0].id)).toEqual(['B', 'C'])
+    expect(mocks.saveProvider.mock.calls[1]![1].aborted).toBe(false)
+  })
+
+  it('flushes a debounced edit when the page closes before the debounce fires', async () => {
+    const view = await openSettings()
+    fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: 'https://closing.test/v1' } })
+    await act(async () => vi.advanceTimersByTimeAsync(100))
+    expect(mocks.saveProvider).not.toHaveBeenCalled()
+    view.unmount()
+    await act(async () => { await vi.runAllTimersAsync() })
+    expect(mocks.saveProvider).toHaveBeenCalledTimes(1)
+    expect(mocks.saveProvider.mock.calls[0]![0].baseUrl).toBe('https://closing.test/v1')
+    expect(mocks.saveProvider.mock.calls[0]![1].aborted).toBe(false)
+  })
+
+  it('does not send a debounced edit to the next server after a server switch', async () => {
+    const view = await openSettings()
+    fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: 'https://first-only.test/v1' } })
+    mocks.serverId = 'second'
+    mocks.generation += 1
+    mocks.listProviders.mockResolvedValue(snapshot([provider('demo', 'https://second.test/v1')]))
+    await act(async () => view.rerender(<ProvidersSettings />))
+    await act(async () => { await vi.runAllTimersAsync() })
+    expect(mocks.saveProvider).not.toHaveBeenCalled()
   })
 
   it('fences a delayed delete immediately when the server generation changes before rendering', async () => {
@@ -373,20 +403,16 @@ describe('provider settings persistence', () => {
     expect(screen.getByLabelText('Base URL')).toHaveValue('https://latest.test/v1')
   })
 
-  it.each(['switch', 'unmount'] as const)('cancels a pending debounce on %s without transporting it', async change => {
+  it('cancels a pending debounce on switch without transporting it', async () => {
     const view = await openSettings()
     fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'old-server-secret' } })
-    if (change === 'switch') {
-      mocks.serverId = 'second'
-      mocks.generation += 1
-      mocks.listProviders.mockResolvedValue(snapshot([provider('demo', 'https://second.test/v1')]))
-      await act(async () => view.rerender(<ProvidersSettings />))
-    } else {
-      view.unmount()
-    }
+    mocks.serverId = 'second'
+    mocks.generation += 1
+    mocks.listProviders.mockResolvedValue(snapshot([provider('demo', 'https://second.test/v1')]))
+    await act(async () => view.rerender(<ProvidersSettings />))
     await debounce()
     expect(mocks.saveProvider).not.toHaveBeenCalled()
-    if (change === 'switch') expect(screen.getByLabelText('API Key')).toHaveValue('secret')
+    expect(screen.getByLabelText('API Key')).toHaveValue('secret')
   })
 
   it('preserves edits across refresh errors and allows retrying a failed rename save', async () => {

@@ -92,6 +92,18 @@ const SERVER_SESSION_CAPABILITIES: PiCapability[] = [
   },
 ];
 
+// immediate 非幂等命令都是写入，需经过 Native 接管保护；草稿同步与 TUI 镜像保持原行为。
+const NATIVE_GUARD_EXEMPT = new Set([
+  "setExtensionEditorState",
+  "extensionUi.tuiInput",
+  "extensionUi.tuiResize",
+  "extensionUi.tuiRedraw",
+]);
+
+function isImmediateWrite(type: string, capability?: PiCapability): boolean {
+  return capability?.queue === "immediate" && capability.idempotent !== true && !NATIVE_GUARD_EXEMPT.has(type);
+}
+
 const DEFAULT_IDLE_RUNTIME_TTL_MS = 2 * 60_000;
 const RUNTIME_REAPER_INTERVAL_MS = 30_000;
 const ATTACH_BUSY_RETRIES = 12;
@@ -134,6 +146,8 @@ export class SessionHost {
   private pendingAttachBytes = 0;
   private pendingAttachCommands = 0;
   private readonly nativeSessions = new Map<string, { sessionFile?: string }>();
+  /** 每个会话已受理、尚未返回的 immediate 写命令数。 */
+  private readonly immediateWrites = new Map<string, number>();
   private readonly toolInterruptions = new Map<string, JsonObject>();
 
   constructor(
@@ -508,7 +522,7 @@ export class SessionHost {
     release: () => void;
   }> {
     this.assertUiWriterAvailable(sessionId);
-    if (this.executor.hasPendingWork(sessionId) || this.activity.has(sessionId)) {
+    if (this.executor.hasPendingWork(sessionId) || this.activity.has(sessionId) || this.immediateWrites.has(sessionId)) {
       throw Object.assign(new Error("Wait for this session to settle before opening its native terminal"), { code: "SESSION_BUSY" });
     }
     const reservation: { sessionFile?: string } = {};
@@ -534,7 +548,7 @@ export class SessionHost {
         if (!isJsonObject(state) || state.isStreaming === true || state.isCompacting === true ||
           state.isBashRunning === true || state.hasPendingAsyncWork === true || state.isIdle === false ||
           Number(state.pendingMessageCount ?? state.queuedMessageCount ?? 0) > 0 ||
-          this.executor.hasPendingWork(sessionId)) {
+          this.executor.hasPendingWork(sessionId) || this.immediateWrites.has(sessionId)) {
           throw Object.assign(new Error("Session still has active or queued work"), { code: "SESSION_BUSY" });
         }
         await this.executor.close(sessionId, { dispose: async () => {
@@ -551,6 +565,19 @@ export class SessionHost {
     } catch (error) {
       release();
       throw error;
+    }
+  }
+
+  /** 先过 Native 保护再计数；计数在命令返回（成功或失败）后归还。 */
+  private async trackImmediateWrite<T>(sessionId: string, run: () => Promise<T>): Promise<T> {
+    this.assertUiWriterAvailable(sessionId);
+    this.immediateWrites.set(sessionId, (this.immediateWrites.get(sessionId) ?? 0) + 1);
+    try {
+      return await run();
+    } finally {
+      const left = (this.immediateWrites.get(sessionId) ?? 1) - 1;
+      if (left > 0) this.immediateWrites.set(sessionId, left);
+      else this.immediateWrites.delete(sessionId);
     }
   }
 
@@ -922,6 +949,8 @@ export class SessionHost {
           ? params.sessionFile
           : undefined;
       if (sessionFile) {
+        // Native 终端预留中的会话不得删除；必须在 close/unlink 之前拒绝。
+        this.assertUiWriterAvailable(undefined, sessionFile);
         const live = this.runtimes.findBySessionFile(sessionFile);
         if (live) await this.closeSession(live.sessionId, "session_delete");
       }
@@ -972,6 +1001,8 @@ export class SessionHost {
         options,
       );
     validateParams(capability.paramsSchema, params ?? {});
+    if (isImmediateWrite(type, capability))
+      return this.trackImmediateWrite(sessionId, () => this.sessionQuery(sessionId, type, params, options.signal));
     if (capability.queue === "immediate")
       return this.sessionQuery(sessionId, type, params, options.signal);
     return this.submitSessionCommand(sessionId, {

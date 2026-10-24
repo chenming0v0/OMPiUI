@@ -1,46 +1,15 @@
 /**
- * ompSubagentStore 的 HUD 语义测试：
- * - selectHudRuns：只取 detached run，运行中在前、终态按结束时间在后
- * - dismiss：从列表移除 + localStorage 持久化，后续帧不再恢复
+ * ompSubagentStore 状态测试：
  * - applySnapshot：worker state.get 注册表快照恢复（刷新/重连场景）
+ * - 生命周期/进度/事件合并、代际替换、终态封口
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { ompSubagentStore, selectHudRuns, transcriptItemsFromMessages } from './ompSubagentStore'
+import { ompSubagentStore, transcriptItemsFromMessages } from './ompSubagentStore'
 
-const DISMISSED_KEY = 'ompiui-omp-subagent-hud-dismissed'
-
-describe('ompSubagentStore HUD', () => {
+describe('ompSubagentStore state', () => {
   beforeEach(() => {
     localStorage.clear()
     ompSubagentStore.clearAll()
-  })
-
-  it('selectHudRuns keeps only detached runs with running first', () => {
-    // 先创建 running-1，再创建 running-2（稳定排序下两者 startedAt 相等时按插入序）
-    ompSubagentStore.applyLifecycle('session-a', { id: 'run-1', detached: true, status: 'started', agent: 'task', index: 0 })
-    ompSubagentStore.applyLifecycle('session-a', { id: 'run-2', detached: true, status: 'started', agent: 'task', index: 1 })
-    // 非 detached：task 工具内联等待的普通子代理，不进 HUD
-    ompSubagentStore.applyLifecycle('session-a', { id: 'run-3', detached: false, status: 'started', agent: 'task', index: 2 })
-
-    expect(selectHudRuns(ompSubagentStore.getSnapshot()).map(run => run.id)).toEqual(['run-1', 'run-2'])
-
-    // run-1 结束后沉到运行中条目之后
-    ompSubagentStore.applyLifecycle('session-a', { id: 'run-1', detached: true, status: 'completed', agent: 'task', index: 0 })
-    expect(selectHudRuns(ompSubagentStore.getSnapshot()).map(run => run.id)).toEqual(['run-2', 'run-1'])
-  })
-
-  it('dismiss removes the run, persists it, and suppresses later frames', () => {
-    ompSubagentStore.applyLifecycle('session-a', { id: 'hud-run-1', detached: true, status: 'completed', agent: 'task', index: 0 })
-    expect(ompSubagentStore.getSnapshot().runs.some(run => run.id === 'hud-run-1')).toBe(true)
-
-    ompSubagentStore.dismiss('hud-run-1')
-    expect(ompSubagentStore.getSnapshot().runs.some(run => run.id === 'hud-run-1')).toBe(false)
-    expect(JSON.parse(localStorage.getItem(DISMISSED_KEY) ?? '[]')).toContain('hud-run-1')
-
-    // 迟到的 progress 帧 / 快照恢复都不应把被清除的 run 带回来
-    ompSubagentStore.applyProgress('session-a', { id: 'hud-run-1', task: 'late', detached: true })
-    ompSubagentStore.applySnapshot('session-a', [{ id: 'hud-run-1', detached: true, status: 'completed' }])
-    expect(ompSubagentStore.getSnapshot().runs.some(run => run.id === 'hud-run-1')).toBe(false)
   })
 
   it('applySnapshot restores detached runs from the worker registry snapshot', () => {
@@ -55,8 +24,7 @@ describe('ompSubagentStore HUD', () => {
     expect(restored?.detached).toBe(true)
     expect(restored?.task).toBe('do work')
     expect(restored?.status).toBe('running')
-    // 非 detached 的快照条目只进 store（内联视图用），不进 HUD
-    expect(selectHudRuns(ompSubagentStore.getSnapshot()).some(run => run.id === 'snap-2')).toBe(false)
+    expect(runs.find(run => run.id === 'snap-2')?.detached).toBe(false)
   })
 
   it('settles missing runs and their live tools after an authoritative idle reconnect', () => {
@@ -142,7 +110,6 @@ describe('ompSubagentStore HUD', () => {
     ompSubagentStore.applyLifecycle('wake-parent', { ...identity, runId: 'wake:1', status: 'started', detached: true })
     ompSubagentStore.applyProgress('wake-parent', { ...identity, runId: 'wake:1', task: 'Old assignment', progress: { tokens: 100, status: 'running' } })
     ompSubagentStore.applyLifecycle('wake-parent', { ...identity, runId: 'wake:1', status: 'completed' })
-    ompSubagentStore.dismiss('wake')
     ompSubagentStore.applyLifecycle('wake-parent', { ...identity, runId: 'wake:2', status: 'started', detached: true })
     ompSubagentStore.applyEvent('wake-parent', { ...identity, runId: 'wake:2', event: { type: 'message_end', message: { role: 'assistant', content: 'New wake response' } } }, 'same-event')
     ompSubagentStore.applySnapshot('wake-parent', [{ ...identity, runId: 'wake:1', status: 'failed' }])
@@ -419,20 +386,14 @@ describe('ompSubagentStore toolCall slices', () => {
     }
   })
 
-  it('invalidates slices on dismiss and clearSession', () => {
+  it('invalidates slices on clearSession', () => {
     ompSubagentStore.applyLifecycle('session-a', { id: 'run-1', detached: false, status: 'started', agent: 'task', parentToolCallId: 'call-1', index: 0 })
-    const first = ompSubagentStore.getRunsForToolCall('call-1', 'session-a')
-    expect(first.map(run => run.id)).toEqual(['run-1'])
-
-    ompSubagentStore.dismiss('run-1')
-    const afterDismiss = ompSubagentStore.getRunsForToolCall('call-1', 'session-a')
-    expect(afterDismiss).toEqual([])
-    expect(afterDismiss).not.toBe(first)
-
     ompSubagentStore.applyLifecycle('session-a', { id: 'run-4', detached: false, status: 'started', agent: 'task', parentToolCallId: 'call-1', index: 3 })
-    expect(ompSubagentStore.getRunsForToolCall('call-1', 'session-a').map(run => run.id)).toEqual(['run-4'])
+    const first = ompSubagentStore.getRunsForToolCall('call-1', 'session-a')
+    expect(first.map(run => run.id)).toEqual(['run-1', 'run-4'])
 
     ompSubagentStore.clearSession('session-a')
+    expect(ompSubagentStore.getRunsForToolCall('call-1', 'session-a')).not.toBe(first)
     expect(ompSubagentStore.getRunsForToolCall('call-1', 'session-a')).toEqual([])
   })
 

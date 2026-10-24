@@ -12,8 +12,10 @@ export interface PendingSend {
   serverGeneration: number
   text: string
   images: readonly PendingSendImage[]
-  phase: 'submitting' | 'accepted'
+  /** queued：普通发送已出现在原生队列并绑定 queueEntryId，由队列 UI 展示。 */
+  phase: 'submitting' | 'accepted' | 'queued'
   baselineTimestamps: ReadonlySet<number>
+  baselineQueueIds: ReadonlySet<string>
   queueEntryId?: string
 }
 
@@ -25,11 +27,13 @@ export function createPendingSend(
   images: readonly PendingSendImage[],
   items: readonly PiTimelineItem[],
   queueEntryId?: string,
+  queueEntries: readonly { entryId: string }[] = [],
 ): PendingSend {
   return {
     id: crypto.randomUUID(), timestamp: Date.now(), sessionId, serverGeneration, text, images,
     phase: 'submitting', queueEntryId,
     baselineTimestamps: new Set(items.filter(item => item.kind === 'user_message').map(item => item.timestamp)),
+    baselineQueueIds: new Set(queueEntries.map(entry => entry.entryId)),
   }
 }
 
@@ -38,10 +42,12 @@ export function createPendingSend(
  * Pre-send timestamps exclude old identical messages without comparing clocks.
  * Native history may contain lazy image references instead of original base64.
  */
-export function reconcilePendingSends(pending: readonly PendingSend[], items: readonly PiTimelineItem[]): readonly PendingSend[] {
+export function reconcilePendingSends<T extends PendingSend>(pending: readonly T[], items: readonly PiTimelineItem[]): readonly T[] {
 
   const consumed = new Set<number>()
   const remaining = pending.filter(send => {
+    // 已绑定队列条目的发送只由队列生命周期清理，不被历史中的同文本行抢走。
+    if (send.phase === 'queued') return true
     const native = items.find(item => {
       if (item.kind !== 'user_message' || send.baselineTimestamps.has(item.timestamp) || consumed.has(item.timestamp)) return false
       const content = typeof item.message.content === 'string' ? [{ type: 'text' as const, text: item.message.content }] : item.message.content
@@ -56,10 +62,48 @@ export function reconcilePendingSends(pending: readonly PendingSend[], items: re
     consumed.add(native.timestamp)
     return false
   })
-  return remaining.length === pending.length ? pending : remaining
+  if (consumed.size === 0) return pending
+  // 已被认领的 row 写入存活 pending 的基线，后续调用不能再次认领。
+  return remaining.map(send => ({ ...send, baselineTimestamps: new Set([...send.baselineTimestamps, ...consumed]) }))
 }
+
+/**
+ * A regular send that appears in the native queue is bound to that entryId
+ * (phase 'queued'), so delete / back-to-input / Send now clear it by identity.
+ * It is dropped once its entry leaves the queue. Send now owns a separate preview.
+ */
+export function reconcileQueuedPendingSends(
+  pending: readonly PendingSend[],
+  entries: readonly { entryId: string; text: string; images?: readonly PendingSendImage[] }[],
+): readonly PendingSend[] {
+  const live = new Set(entries.map(entry => entry.entryId))
+  const claimed = new Set(pending.flatMap(send => send.phase === 'queued' && send.queueEntryId ? [send.queueEntryId] : []))
+  let changed = false
+  const next = pending.flatMap(send => {
+    if (send.phase === 'queued') return live.has(send.queueEntryId ?? '') ? [send] : (changed = true, [])
+    if (send.phase !== 'accepted' || send.queueEntryId) return [send]
+    const queued = entries.find(entry => !claimed.has(entry.entryId) &&
+      !send.baselineQueueIds.has(entry.entryId) && entry.text === send.text &&
+      (entry.images?.length ?? 0) === send.images.length)
+    if (!queued) return [send]
+    claimed.add(queued.entryId)
+    changed = true
+    return [{ ...send, phase: 'queued' as const, queueEntryId: queued.entryId }]
+  })
+  return changed ? next : pending
+}
+
+/** 删除 / 移回输入框 / 立即发送：按原生队列 entryId 同源清理，不做文本匹配。 */
+export function withoutQueueEntry(pending: readonly PendingSend[], serverGeneration: number, sessionId: string | null, entryId: string): PendingSend[] {
+  return pending.filter(send => send.serverGeneration !== serverGeneration || send.sessionId !== sessionId || send.queueEntryId !== entryId)
+}
+
+type VisiblePendingSend = PendingSend & { phase: 'submitting' | 'accepted' }
+
 export function appendPendingSends(items: PiTimelineItem[], pending: readonly PendingSend[], sessionId: string | null, imageLabel: (count: number) => string): PiTimelineItem[] {
-  const appended = reconcilePendingSends(pending.filter(send => send.sessionId === sessionId), items)
+  // 已排队的普通发送由队列 UI 展示，不在时间线重复出现。
+  const visible = pending.filter((send): send is VisiblePendingSend => send.sessionId === sessionId && send.phase !== 'queued')
+  const appended = reconcilePendingSends(visible, items)
     .map(send => {
       const timestamp = send.timestamp
       const id = `submitted:local:${send.id}`

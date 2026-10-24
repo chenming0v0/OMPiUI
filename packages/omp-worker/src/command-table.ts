@@ -237,6 +237,7 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
       .manageGoal({
         op,
         objective: P.optString(p, "objective"),
+        tokenBudget: P.optPositiveInteger(p, "tokenBudget"),
         images: p.images as import("@ompiui/protocol").GoalImageInput[] | undefined,
       });
     return { ok: true };

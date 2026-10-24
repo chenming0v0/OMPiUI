@@ -236,6 +236,25 @@ describe('persisted subagent fallback', () => {
     expect(screen.queryByText('task.completed')).not.toBeInTheDocument()
   })
 
+  it('marks only the failed sibling as an error in a partially failed batch (#400)', async () => {
+    getOmpSubagentMessagesMock.mockResolvedValue({ messages: [] })
+    const execution = completedTaskExecution()
+    execution.call.arguments = { tasks: [
+      { name: 'GoodScout', agent: 'scout', task: 'Read README' },
+      { name: 'BadReview', agent: 'reviewer', task: 'Review security' },
+    ] }
+    execution.result!.isError = true
+    execution.result!.details = { results: [
+      { index: 0, id: 'GoodScout', agent: 'scout', outputPath: 'C:/sessions/parent/GoodScout.md', exitCode: 0, output: 'Good output' },
+      { index: 1, id: 'BadReview', agent: 'reviewer', outputPath: 'C:/sessions/parent/BadReview.md', exitCode: 1, error: 'Reviewer crashed' },
+    ] }
+    renderTask(execution)
+    expect(await screen.findByText(/Reviewer crashed/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'scout' })).toHaveClass('text-accent-secondary-100')
+    expect(screen.getByRole('button', { name: 'reviewer' })).toHaveClass('text-danger-100')
+    expect(screen.getByRole('button', { name: 'scout' })).not.toHaveClass('text-danger-100')
+  })
+
   it('shows the disk transcript instead of the waiting placeholder after reopen', async () => {
     piSessionStateStore.setState('parent-session', {
       sessionFile: 'C:\\sessions\\proj\\2026-parent.jsonl',

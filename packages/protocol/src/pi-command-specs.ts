@@ -393,11 +393,12 @@ export const PI_COMMAND_SPECS = [
     name: "goal",
     scope: "session",
     description:
-      "Manage the OMPiUI session goal (worker-side registry: set/pause/resume/drop + continuation loop)",
+      "Manage the session goal by proxying the official OMP GoalRuntime (set/pause/resume/drop, optional tokenBudget)",
     paramsSchema: objectSchema(
       {
         op: { enum: ["set", "pause", "resume", "drop"] },
         objective: STRING,
+        tokenBudget: { type: "integer", minimum: 1 },
         images: GOAL_IMAGES,
       },
       ["op"],

@@ -7,8 +7,8 @@ import { ConfirmDialog } from '../../../components/ui/ConfirmDialog'
 import { ActiveSessionItem } from './ActiveSessionItem'
 import { NotificationItem } from './NotificationItem'
 import { SidebarFooter } from './SidebarFooter'
-import { SubagentHud } from './SubagentHud'
 import { useChildSessions } from './childSessions'
+import { WORKING_CHILD_ID_PREFIX, childPathKey, useWorkingChildSessions } from './workingChildSessions'
 import { getParentPath } from './sidebarUtils'
 import {
   SidebarIcon,
@@ -39,7 +39,7 @@ import {
 import type { UiSession } from '../../../types/session'
 import { getDirectoryName, isSameDirectory, normalizeToForwardSlash } from '../../../utils'
 import { uiErrorHandler } from '../../../utils'
-import { renamePiSession } from '../../../omp/controllers/index.js'
+import { openSubagentSession, renamePiSession } from '../../../omp/controllers/index.js'
 import { usePiCapabilities } from '../../../omp/capabilities'
 
 // 侧边栏设计模式：
@@ -138,7 +138,7 @@ export function SidePanel({
   const { catalog: gitWorkspaceCatalog, isLoading: isGitWorkspaceCatalogLoading } =
     useGitWorkspaceCatalog(catalogDirectories)
   const { vcsInfo: currentDirectoryVcsInfo, isLoading: isCurrentDirectoryVcsLoading } = useVcsInfo(currentDirectory)
-  const { sidebarFolderRecents } = useLayoutStore()
+  const { sidebarFolderRecents, sidebarShowChildSessions } = useLayoutStore()
   const [globalFolderIndex, setGlobalFolderIndex] = useState<number>(() => {
     const saved = localStorage.getItem('ompiui-sidebar-global-folder-index')
     const parsed = saved ? Number.parseInt(saved, 10) : 0
@@ -314,11 +314,42 @@ export function SidePanel({
   const sessionLookup = useMemo(() => new Map(sessions.map(session => [session.id, session])), [sessions])
   // 选中会话的 OMP 子代理会话（session.children；OpenCodeUI children 语义）
   const { parentId: childSessionsParentId, sessions: childSessions } = useChildSessions(selectedSessionId, sessionLookup)
-  // SessionChildrenSlot 的数据接口：父会话 id → 子会话列表（仅选中会话拉取）
-  const childrenByParent = useMemo(
-    () => (childSessionsParentId && childSessions.length > 0 ? new Map([[childSessionsParentId, childSessions]]) : undefined),
-    [childSessionsParentId, childSessions],
-  )
+  // OpenCodeUI 语义（未开启“始终显示子会话”）：父会话下只挂
+  // ① 正在工作的子代理（结束即消失）② 用户当前正在查看的那个子会话。
+  // 其余历史子会话一律不显示。
+  const workingChildSessions = useWorkingChildSessions()
+  // 运行中占位行被点开后解析出的真实会话 id（按子会话文件路径对应）
+  const [resolvedChild, setResolvedChild] = useState<{ id: string; pathKey: string } | null>(null)
+  const childrenByParent = useMemo(() => {
+    const map = new Map<string, UiSession[]>()
+    for (const [parentId, rows] of workingChildSessions) {
+      map.set(parentId, rows.map(row =>
+        resolvedChild && row.path && childPathKey(row.path) === resolvedChild.pathKey ? { ...row, id: resolvedChild.id } : row,
+      ))
+    }
+    // 开启“始终显示子会话”：选中父会话时列出全部子会话（运行中的保留工作圆点）
+    if (sidebarShowChildSessions && childSessionsParentId && childSessions.length > 0) {
+      const runningKeys = new Set((map.get(childSessionsParentId) ?? []).flatMap(row => row.path ? [childPathKey(row.path)] : []))
+      const listedKeys = new Set(childSessions.flatMap(child => child.path ? [childPathKey(child.path)] : []))
+      const notYetListed = (map.get(childSessionsParentId) ?? []).filter(row => !row.path || !listedKeys.has(childPathKey(row.path)))
+      map.set(childSessionsParentId, [
+        ...childSessions.map(child => child.path && runningKeys.has(childPathKey(child.path)) ? { ...child, subagentRunning: true } : child),
+        ...notYetListed,
+      ])
+      return map
+    }
+    const selectedChild = childSessions.find(session => session.id === selectedSessionId)
+    if (childSessionsParentId && selectedChild) {
+      const rows = map.get(childSessionsParentId) ?? []
+      const selectedKey = selectedChild.path ? childPathKey(selectedChild.path) : undefined
+      const runningIndex = selectedKey ? rows.findIndex(row => row.path && childPathKey(row.path) === selectedKey) : -1
+      // 正在查看的子会话仍在工作：用真实会话替换占位行，保留工作中圆点
+      if (runningIndex >= 0) rows[runningIndex] = { ...selectedChild, subagentRunning: true }
+      else rows.push(selectedChild)
+      map.set(childSessionsParentId, rows)
+    }
+    return map.size > 0 ? map : undefined
+  }, [workingChildSessions, resolvedChild, sidebarShowChildSessions, childSessionsParentId, childSessions, selectedSessionId])
 
   // 列表显示按当前工作区过滤；数据本身是全局的（活跃 tab / 标题解析都需全局）
   const visibleSessions = useMemo(
@@ -680,6 +711,24 @@ export function SidePanel({
     [addDirectory, onSelectSession, onCloseMobile],
   )
 
+  // 子会话行点击：运行中占位行先按子会话文件只读解析真实 id（不启动 runtime），再走普通选择链路
+  const handleSelectChild = useCallback(
+    (session: UiSession) => {
+      if (!session.id.startsWith(WORKING_CHILD_ID_PREFIX) || !session.path) {
+        handleSelectActive(session)
+        return
+      }
+      const path = session.path
+      void openSubagentSession(currentDirectory ?? '', path)
+        .then(target => {
+          setResolvedChild({ id: target.id, pathKey: childPathKey(path) })
+          handleSelectActive({ id: target.id, directory: target.directory || undefined })
+        })
+        .catch(error => uiErrorHandler('open subagent session', error))
+    },
+    [currentDirectory, handleSelectActive],
+  )
+
   const handleRename = useCallback(
     async (sessionId: string, newTitle: string) => {
       try {
@@ -781,7 +830,7 @@ export function SidePanel({
     onSelectSession: handleSelectActive,
     // 子会话（OMP 子代理）点击即打开：与普通会话同一条选择链路，
     // pane 端 preview 按 id 深度解析子会话文件
-    onSelectChildSession: handleSelectActive,
+    onSelectChildSession: handleSelectChild,
     onRenameSession: handleRenameFolderSession,
     onDeleteSession: handleDeleteFolderSession,
     isEditMode,
@@ -1093,10 +1142,6 @@ export function SidePanel({
           visibility: showLabels ? 'visible' : 'hidden',
         }}
       >
-        {/* Pinned HUD：detached 后台子代理全局列表（OpenCodeUI pinned 语义，
-            不随 tab/项目过滤变化；无后台子代理时不渲染） */}
-        <SubagentHud selectedSessionId={selectedSessionId} onSelectSession={handleSelectActive} onCloseMobile={onCloseMobile} />
-
         {/* Tab Bar: Recents / Active */}
         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
           <div className="flex items-center mx-2 gap-1 shrink-0">
@@ -1237,7 +1282,7 @@ export function SidePanel({
                 <SessionList
                   sessions={orderedSessions}
                   inlineChildSessions={childrenByParent}
-                  onSelectChildSession={handleSelectActive}
+                  onSelectChildSession={handleSelectChild}
                   selectedId={selectedSessionId}
                   isLoading={isLoading}
                   isLoadingMore={isLoadingMore}

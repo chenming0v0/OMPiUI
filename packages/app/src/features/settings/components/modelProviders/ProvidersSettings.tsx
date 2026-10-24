@@ -67,6 +67,8 @@ type ProviderOrigin = {
   serverId: string | null
   generation: number
   controller: AbortController
+  // Writes outlive the page on the same server; only a server switch aborts them.
+  writes: AbortController
 }
 
 // Advance only persisted identities; edits made while the request was in flight stay local.
@@ -265,6 +267,12 @@ export function ProvidersSettings() {
     && origin.serverId === (serverStore.getActiveServer()?.id ?? null)
   ), [])
 
+  const canWrite = useCallback((origin: ProviderOrigin | null): boolean => (
+    origin !== null && !origin.writes.signal.aborted
+    && origin.generation === serverStore.getActiveServerGeneration()
+    && origin.serverId === (serverStore.getActiveServer()?.id ?? null)
+  ), [])
+
   const applySnapshot = useCallback((next: PiModelProvidersSnapshot, readVersions: Map<string, number>) => {
     const current = new Map(draftsRef.current.map(draft => [draft.id, draft]))
     const keepLocal = (id: string) => dirtyRef.current.has(id) || deletingRef.current.has(id)
@@ -312,11 +320,61 @@ export function ProvidersSettings() {
     }
   }, [applySnapshot, isCurrentOrigin])
 
+  const persistNow = useCallback((providerId: string) => {
+    const origin = originRef.current
+    if (!isCurrentOrigin(origin) || deletingRef.current.has(providerId)) return
+    if ((savedRevisionsRef.current.get(providerId) ?? -1) >= (revisionsRef.current.get(providerId) ?? 0)) return
+    setSaveStates(state => ({ ...state, [providerId]: 'saving' }))
+    setSaveErrors(state => {
+      const next = { ...state }
+      delete next[providerId]
+      return next
+    })
+    const flight = writeQueueRef.current.then(async () => {
+      if (!canWrite(origin) || deletingRef.current.has(providerId)) return
+      const seq = revisionsRef.current.get(providerId) ?? 0
+      if ((savedRevisionsRef.current.get(providerId) ?? -1) >= seq) return
+      // Resolve at execution time, after the preceding save has rebased any rename.
+      const sent = draftsRef.current.find(draft => draft.id === providerId)
+      if (!sent) return
+      setSaveStates(state => ({ ...state, [providerId]: 'saving' }))
+      setSaveErrors(state => {
+        const next = { ...state }
+        delete next[providerId]
+        return next
+      })
+      try {
+        const next = await saveModelProvider(providerDraftToConfig(sent), origin.writes.signal)
+        if (!canWrite(origin)) return
+        writeVersionsRef.current.set(providerId, (writeVersionsRef.current.get(providerId) ?? 0) + 1)
+        savedRevisionsRef.current.set(providerId, seq)
+        const current = draftsRef.current.find(draft => draft.id === providerId)
+        if (current) {
+          const rebased = rebaseSavedModels(current, sent, modelIdentitiesRef.current)
+          draftsRef.current = draftsRef.current.map(draft => draft.id === providerId ? rebased : draft)
+          setDrafts(draftsRef.current)
+        }
+        setSnapshot(next)
+        refreshModelSettings()
+        if (revisionsRef.current.get(providerId) === seq) {
+          dirtyRef.current.delete(providerId)
+          setSaveStates(state => ({ ...state, [providerId]: 'idle' }))
+        }
+      } catch (error) {
+        if (!canWrite(origin)) return
+        setSaveStates(state => ({ ...state, [providerId]: 'error' }))
+        setSaveErrors(state => ({ ...state, [providerId]: errorMessage(error) }))
+      }
+    })
+    writeQueueRef.current = flight
+  }, [canWrite, isCurrentOrigin])
+
   useEffect(() => {
     const origin: ProviderOrigin = {
       serverId: serverStore.getActiveServer()?.id ?? null,
       generation: serverStore.getActiveServerGeneration(),
       controller: new AbortController(),
+      writes: new AbortController(),
     }
     const timers = timersRef.current
     originRef.current = origin
@@ -345,12 +403,19 @@ export function ProvidersSettings() {
     setPendingDeleteModel(null)
     void load('initial')
     return () => {
-      origin.controller.abort()
-      if (originRef.current === origin) originRef.current = null
+      const pending = [...timers.keys()]
       for (const timer of timers.values()) clearTimeout(timer)
       timers.clear()
+      // Closing the page flushes debounced edits; a server switch fences them out.
+      if (canWrite(origin)) {
+        for (const id of pending) persistNow(id)
+      } else {
+        origin.writes.abort()
+      }
+      origin.controller.abort()
+      if (originRef.current === origin) originRef.current = null
     }
-  }, [load, activeServerGeneration, activeServer?.id])
+  }, [load, canWrite, persistNow, activeServerGeneration, activeServer?.id])
 
   // Notifications and manual refresh update clean providers without discarding pending edits.
   useEffect(() => {
@@ -358,55 +423,6 @@ export function ProvidersSettings() {
     window.addEventListener('ompiui:models-updated', onModelsUpdated)
     return () => window.removeEventListener('ompiui:models-updated', onModelsUpdated)
   }, [load])
-
-  const persistNow = useCallback((providerId: string) => {
-    const origin = originRef.current
-    if (!isCurrentOrigin(origin) || deletingRef.current.has(providerId)) return
-    if ((savedRevisionsRef.current.get(providerId) ?? -1) >= (revisionsRef.current.get(providerId) ?? 0)) return
-    setSaveStates(state => ({ ...state, [providerId]: 'saving' }))
-    setSaveErrors(state => {
-      const next = { ...state }
-      delete next[providerId]
-      return next
-    })
-    const flight = writeQueueRef.current.then(async () => {
-      if (!isCurrentOrigin(origin) || deletingRef.current.has(providerId)) return
-      const seq = revisionsRef.current.get(providerId) ?? 0
-      if ((savedRevisionsRef.current.get(providerId) ?? -1) >= seq) return
-      // Resolve at execution time, after the preceding save has rebased any rename.
-      const sent = draftsRef.current.find(draft => draft.id === providerId)
-      if (!sent) return
-      setSaveStates(state => ({ ...state, [providerId]: 'saving' }))
-      setSaveErrors(state => {
-        const next = { ...state }
-        delete next[providerId]
-        return next
-      })
-      try {
-        const next = await saveModelProvider(providerDraftToConfig(sent), origin.controller.signal)
-        if (!isCurrentOrigin(origin)) return
-        writeVersionsRef.current.set(providerId, (writeVersionsRef.current.get(providerId) ?? 0) + 1)
-        savedRevisionsRef.current.set(providerId, seq)
-        const current = draftsRef.current.find(draft => draft.id === providerId)
-        if (current) {
-          const rebased = rebaseSavedModels(current, sent, modelIdentitiesRef.current)
-          draftsRef.current = draftsRef.current.map(draft => draft.id === providerId ? rebased : draft)
-          setDrafts(draftsRef.current)
-        }
-        setSnapshot(next)
-        refreshModelSettings()
-        if (revisionsRef.current.get(providerId) === seq) {
-          dirtyRef.current.delete(providerId)
-          setSaveStates(state => ({ ...state, [providerId]: 'idle' }))
-        }
-      } catch (error) {
-        if (!isCurrentOrigin(origin)) return
-        setSaveStates(state => ({ ...state, [providerId]: 'error' }))
-        setSaveErrors(state => ({ ...state, [providerId]: errorMessage(error) }))
-      }
-    })
-    writeQueueRef.current = flight
-  }, [isCurrentOrigin])
 
   const scheduleSave = useCallback(
     (draft: ProviderDraft, mode: 'debounced' | 'immediate') => {
@@ -1062,10 +1078,10 @@ export function ProvidersSettings() {
           clearTimeout(timersRef.current.get(target.id))
           timersRef.current.delete(target.id)
           const flight = writeQueueRef.current.then(async () => {
-            if (!isCurrentOrigin(origin)) return
+            if (!canWrite(origin)) return
             try {
-              const next = await deleteModelProvider(target.id, origin.controller.signal)
-              if (!isCurrentOrigin(origin)) return
+              const next = await deleteModelProvider(target.id, origin.writes.signal)
+              if (!canWrite(origin)) return
               writeVersionsRef.current.set(target.id, (writeVersionsRef.current.get(target.id) ?? 0) + 1)
               revisionsRef.current.delete(target.id)
               savedRevisionsRef.current.delete(target.id)
@@ -1079,7 +1095,7 @@ export function ProvidersSettings() {
               setMobileDetailOpen(false)
               setSelectedId(current => (current === target.id ? (remaining[0]?.id ?? '') : current))
             } catch (error) {
-              if (!isCurrentOrigin(origin)) return
+              if (!canWrite(origin)) return
               deletingRef.current.delete(target.id)
               dirtyRef.current.add(target.id)
               setSaveStates(state => ({ ...state, [target.id]: 'error' }))

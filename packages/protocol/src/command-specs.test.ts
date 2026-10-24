@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { HOST_COMMAND_SPECS, PI_COMMAND_SPECS } from "./index.ts"
+import { HOST_COMMAND_SPECS, PI_COMMAND_SPECS, validateParams } from "./index.ts"
 import type { JsonObject } from "./json.ts"
 
 function assertSchemaSane(name: string, schema: JsonObject | undefined): void {
@@ -34,5 +34,20 @@ test("serialized pi commands are not marked idempotent", () => {
     if (spec.queue === "serialized") {
       assert.ok(!spec.idempotent, `${spec.name}: serialized commands must not be idempotent`)
     }
+  }
+})
+
+test("goal schema accepts a positive integer tokenBudget (#396)", () => {
+  const spec = PI_COMMAND_SPECS.find(item => item.name === "goal") as { paramsSchema: JsonObject } | undefined
+  assert.ok(spec)
+  validateParams(spec.paramsSchema, { op: "set", objective: "ship", tokenBudget: 1 })
+  validateParams(spec.paramsSchema, { op: "set", objective: "ship", tokenBudget: 200000 })
+  validateParams(spec.paramsSchema, { op: "set", objective: "ship" })
+  for (const tokenBudget of [0, -1, 1.5, "100"]) {
+    assert.throws(
+      () => validateParams(spec.paramsSchema, { op: "set", objective: "ship", tokenBudget }),
+      { code: "INVALID_REQUEST" },
+      `tokenBudget=${String(tokenBudget)} must be rejected`,
+    )
   }
 })

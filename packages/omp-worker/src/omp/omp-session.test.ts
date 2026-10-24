@@ -149,6 +149,39 @@ describe("OmpRpcSession authoritative lifecycle", () => {
     assert.equal((await session.getState()).isSettled, true)
   })
 
+  it('reports no executing activity when Stop retains only queued messages', async t => {
+    const { session, frame, native, rpc } = await sessionFixture(t)
+    const activity: unknown[] = []
+    const events: JsonObject[] = []
+    session.onActivity(value => activity.push(value))
+    session.onPiEvent(value => events.push(value))
+    rpc.onRequest = command => command.type === 'queue'
+      ? { data: { steering: [], followUp: [{ text: 'retained follow-up', entryId: 'queued:1' }] } } : undefined
+    frame({ type: 'agent_start' })
+    native.isStreaming = false
+    native.isSettled = false
+    native.hasPendingAsyncWork = false
+    native.queuedMessageCount = 1
+    frame({ type: 'agent_end' })
+    await session.abort()
+    const stopped = await session.getState()
+    assert.equal(activity.at(-1), null)
+    assert.equal(stopped.isSettled, false)
+    assert.equal(stopped.isIdle, false)
+    assert.equal(stopped.pendingMessageCount, 1)
+    assert.deepEqual((stopped.queue as JsonObject).followUpEntries, [{ text: 'retained follow-up', entryId: 'queued:1' }])
+    assert.equal(events.some(event => event.type === 'agent_settled'), false)
+    native.hasPendingAsyncWork = true
+    await session.getState()
+    assert.deepEqual(activity.at(-1), { type: 'busy' })
+    native.hasPendingAsyncWork = false
+    await session.getState()
+    assert.equal(activity.at(-1), null)
+    native.isStreaming = true
+    frame({ type: 'agent_start' })
+    assert.deepEqual(activity.at(-1), { type: 'busy' })
+  })
+
   it('preserves a native resumed turn that starts before the Stop ACK', async t => {
     const { session, frame, native, rpc } = await sessionFixture(t)
     const events: JsonObject[] = []

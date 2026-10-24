@@ -423,7 +423,9 @@ export function SessionListItem({
         : activeEntry.status.type === 'retry'
           ? { dot: 'bg-warning-100', label: t('chat:activeSession.retrying'), pulse: false }
           : { dot: 'bg-success-100', label: t('chat:activeSession.working'), pulse: true }
-    : null
+    : session.subagentRunning
+      ? { dot: 'bg-success-100', label: t('chat:activeSession.working'), pulse: true }
+      : null
   const hasUnreadCompletedNotification = useHasUnreadCompletedNotification(session.id)
   const itemRef = useRef<HTMLDivElement>(null)
   const isCompact = density === 'compact'

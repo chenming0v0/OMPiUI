@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PROTOCOL_VERSION } from '@ompiui/protocol'
 import { initializePiBackend, installPiBackendServerSwitch } from './bootstrapMockChat'
 import { piEventStream } from './eventStream'
-import { ompSubagentStore, selectHudRuns } from './ompSubagentStore'
+import { ompSubagentStore } from './ompSubagentStore'
 import { openPiSocket, type PiSocket } from './ompSocket'
 import { LOCAL_SERVER_ID, serverStore } from '../store/serverStore'
 import { piModelsStore } from './state/piModelsStore'
@@ -99,7 +99,7 @@ describe('backend generation reset clears subagent state', () => {
     piEventStream.connectWorkspace('/workspace')
     const oldSocket = vi.mocked(openPiSocket).mock.results.at(-1)!.value as PiSocket
     deliverRun(oldSocket, 'run-1')
-    expect(selectHudRuns(ompSubagentStore.getSnapshot())).toHaveLength(1)
+    expect(ompSubagentStore.getSnapshot().runs).toHaveLength(1)
     expect(ompSubagentStore.runsForSession('session-old')).toHaveLength(1)
     expect(ompSubagentStore.getRunsForToolCall('call-1', 'session-old')).toHaveLength(1)
     const generation = serverStore.getActiveServerGeneration()
@@ -123,7 +123,7 @@ describe('backend generation reset clears subagent state', () => {
     deliverRun(newSocket, 'run-1', 'session-new')
     deliverRun(oldSocket, 'late-old-run')
     await initializePiBackend()
-    expect(selectHudRuns(ompSubagentStore.getSnapshot())).toMatchObject([{ id: 'run-1', sessionId: 'session-new' }])
+    expect(ompSubagentStore.getSnapshot().runs).toMatchObject([{ id: 'run-1', sessionId: 'session-new' }])
     expect(ompSubagentStore.getRunsForToolCall('call-1', 'session-old')).toEqual([])
     expect(ompSubagentStore.getRunsForToolCall('call-1', 'session-new')).toHaveLength(1)
   })
@@ -133,7 +133,7 @@ describe('backend generation reset clears subagent state', () => {
     const generation = serverStore.getActiveServerGeneration()
     serverStore.updateServer(LOCAL_SERVER_ID, { name: 'Renamed local' })
     expect(serverStore.getActiveServerGeneration()).toBe(generation)
-    expect(selectHudRuns(ompSubagentStore.getSnapshot())).toHaveLength(1)
+    expect(ompSubagentStore.getSnapshot().runs).toHaveLength(1)
   })
 
   it('installs the shared reset listener only once', () => {

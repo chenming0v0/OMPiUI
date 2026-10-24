@@ -44,10 +44,12 @@ async function request(
   path: string,
   body?: unknown,
 ): Promise<{ status: number; json: any }> {
+  // 服务端卡住（如 ConPTY spawn 挂起）必须变成可见的失败，而不是无限等待。
   const response = await fetch(`http://127.0.0.1:${port}${path}`, {
     method,
     headers: { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(15_000),
   });
   return {
     status: response.status,
@@ -71,7 +73,15 @@ function assertAcceptedOrBeyond(command: { status?: string }): void {
 describe("event websocket", () => {
   const cleanups: Array<() => Promise<void> | void> = [];
   after(async () => {
-    for (const cleanup of cleanups.splice(0)) await cleanup();
+    // 清理卡死曾把整个分片吊到 CI 超时；每步设限并在失败时点名是哪一步。
+    for (const [index, cleanup] of cleanups.splice(0).entries()) {
+      await Promise.race([
+        Promise.resolve(cleanup()),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error(`cleanup step ${index} did not finish in 20s`)), 20_000).unref();
+        }),
+      ]);
+    }
   });
 
   it("streams native Pi events for a mock session end to end", async () => {
@@ -412,6 +422,8 @@ describe("event websocket", () => {
     ws.on("message", (data) => frames.push(JSON.parse(String(data))));
     await waitFor(() => frames.some((frame) => frame.type === "ready"));
     assert.equal(frames[0]?.inputAck, true);
+    // PTY 行输入以 CR 结尾（ICRNL 映射为换行）；printf 格式里的 \n 是字面量，
+    // 不带 \r 终止符时命令永不提交，exit 会并进上一行导致 shell 不退出。
     ws.send(
       JSON.stringify({
         type: "input",
@@ -419,7 +431,7 @@ describe("event websocket", () => {
         data:
           process.platform === "win32"
             ? "echo ompiui-ws\r\n"
-            : "printf ompiui-ws\\n",
+            : "printf ompiui-ws\\n\r",
       }),
     );
     await waitFor(() => frames.some((frame) => frame.type === "input_ack" && frame.inputId === 1));
@@ -433,7 +445,7 @@ describe("event websocket", () => {
       JSON.stringify({
         type: "input",
         inputId: 2,
-        data: process.platform === "win32" ? "exit\r\n" : "exit\n",
+        data: process.platform === "win32" ? "exit\r\n" : "exit\r",
       }),
     );
     await waitFor(() => frames.some((frame) => frame.type === "input_ack" && frame.inputId === 2));
@@ -553,7 +565,6 @@ describe("event websocket", () => {
     const connect = async (): Promise<{
       ws: WebSocket;
       frames: any[];
-      closed: Promise<void>;
     }> => {
       const ticket = (
         await request(
@@ -568,10 +579,7 @@ describe("event websocket", () => {
       );
       const frames: any[] = [];
       ws.on("message", (data) => frames.push(JSON.parse(String(data))));
-      const closed = new Promise<void>((resolve) =>
-        ws.on("close", () => resolve()),
-      );
-      return { ws, frames, closed };
+      return { ws, frames };
     };
 
     const first = await connect();
@@ -582,17 +590,17 @@ describe("event websocket", () => {
         data:
           process.platform === "win32"
             ? "echo replay-ws\r\n"
-            : "printf replay-ws\\n",
+            : "printf replay-ws\\n\r",
       }),
     );
     first.ws.send(
       JSON.stringify({
         type: "input",
-        data: process.platform === "win32" ? "exit\r\n" : "exit\n",
+        data: process.platform === "win32" ? "exit\r\n" : "exit\r",
       }),
     );
     await waitFor(() => first.frames.some((frame) => frame.type === "exit"));
-    await first.closed;
+    await awaitClosed(first.ws, first.frames, "first terminal connection");
 
     const listed = await request(
       port,
@@ -610,7 +618,7 @@ describe("event websocket", () => {
       .map((frame) => frame.data as string)
       .join("");
     assert.match(output, /replay-ws/);
-    await second.closed;
+    await awaitClosed(second.ws, second.frames, "replayed terminal connection");
   });
 });
 
@@ -620,6 +628,27 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     if (Date.now() >= deadline)
       throw new Error("timed out waiting for websocket frame");
     await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+/**
+ * 服务端在终端退出/重放后应主动关连接；裸 await close 事件在 Windows 上
+ * 挂起过整个 CI 分片。带期限轮询并在失败时报告已收到的帧类型。
+ */
+async function awaitClosed(ws: WebSocket, frames: any[], label: string): Promise<void> {
+  const deadline = Date.now() + 15_000;
+  while (ws.readyState !== WebSocket.CLOSED) {
+    if (Date.now() >= deadline) {
+      const types = frames.map((frame) => frame.type).join(", ") || "none";
+      throw new Error(`${label} was not closed by the server; frame types: ${types}`);
+    }
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 100);
+      ws.once("close", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
   }
 }
 
@@ -639,3 +668,11 @@ async function waitForCommand(
   }
   throw new Error(`command ${commandId} did not complete`);
 }
+
+after(() => {
+  // 与 terminal-manager.test.ts 同理：Windows 上全部测试与清理结束后，
+  // ConPTY 句柄仍可能钉住事件循环（套件 ok 后进程僵住直到 CI 超时强杀）。
+  // 由看门狗收尾退出，保留 node:test 已写好的退出码。
+  const code = process.exitCode;
+  setTimeout(() => process.exit(code ?? 0), 10_000).unref();
+});

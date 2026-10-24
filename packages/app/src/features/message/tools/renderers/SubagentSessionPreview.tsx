@@ -19,8 +19,10 @@ function useSubagentHistoryBackfill(run: OmpSubagentRun | undefined, enabled: bo
   const key = JSON.stringify([sessionId, id, runId, sessionFile, revision])
   const historyLoaded = run?.historyLoaded
   const hasLiveTranscript = Boolean(run?.transcript.length) && (run?.status === 'running' || run?.status === 'pending')
+  // loading 只反映真实发出的请求；未启用或无需回填时不得占住按钮。
+  const active = Boolean(enabled && id && sessionId && sessionFile && !(historyLoaded && revision === 0) && !hasLiveTranscript)
   useEffect(() => {
-    if (!enabled || !id || !sessionId || !sessionFile || (historyLoaded && revision === 0) || hasLiveTranscript) return
+    if (!active || !id || !sessionId || !sessionFile) return
     const controller = new AbortController()
     getOmpSubagentMessages(sessionId, { sessionFile }, controller.signal)
       .then(result => {
@@ -39,8 +41,8 @@ function useSubagentHistoryBackfill(run: OmpSubagentRun | undefined, enabled: bo
         }
       })
     return () => controller.abort()
-  }, [id, runId, sessionId, sessionFile, historyLoaded, hasLiveTranscript, enabled, revision, key])
-  return { loading: loaded.key !== key, error: loaded.key === key ? loaded.error : undefined, reload: () => setRevision(value => value + 1) }
+  }, [id, runId, sessionId, sessionFile, active, key])
+  return { loading: active && loaded.key !== key, error: loaded.key === key ? loaded.error : undefined, reload: () => setRevision(value => value + 1) }
 }
 
 export const SubagentSessionPreview = memo(function SubagentSessionPreview({

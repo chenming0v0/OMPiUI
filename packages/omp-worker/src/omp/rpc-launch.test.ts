@@ -33,7 +33,18 @@ for (const entry of ["script", "environment-script", "npm-shim", "path-shim", "r
     let client: OmpRpcClient | undefined
     t.after(async () => {
       await client?.close()
-      rmSync(root, { recursive: true, force: true })
+      // 刚退出的子进程或 Defender 可能短暂锁住临时目录；重试清理，避免把
+      // 成功的用例误报成失败（EBUSY/EPERM/ENOTEMPTY 只在锁竞争时出现）。
+      for (let attempt = 0; ; attempt++) {
+        try {
+          rmSync(root, { recursive: true, force: true })
+          return
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code
+          if (attempt >= 10 || code !== "EBUSY" && code !== "EPERM" && code !== "ENOTEMPTY") throw error
+          await new Promise(resolve => setTimeout(resolve, 100))
+        }
+      }
     })
     const binDir = path.join(root, "bin space")
     mkdirSync(binDir)

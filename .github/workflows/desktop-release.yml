@@ -148,22 +148,35 @@ jobs:
         run: |
           mkdir -p release-artifacts
           # 安装器统一加 -lite 后缀：无后缀的名字留给开箱即用版（desktop-full）。
+          # 必须在本 shell 内循环改名：find -exec bash -c 起的子进程拿不到这里
+          # 定义的函数，v0.6.39 因此丢掉全部 lite 安装器且 job 仍显示成功。
           rename_lite() {
-            local file="$1" base extension
-            base="$(basename "$file")"
-            extension="${base##*.}"
-            mv "$file" "release-artifacts/${base%.*}-lite.${extension}"
+            local file base
+            for file in "$1"/*."$2"; do
+              [ -f "$file" ] || continue
+              base="${file##*/}"
+              mv "$file" "release-artifacts/${base%.*}-lite.${base##*.}"
+            done
           }
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            find packages/app/src-tauri/target/release/bundle/nsis -name '*.exe' -exec bash -c 'rename_lite "$0"' {} \;
-          elif [ "${{ runner.os }}" = "macOS" ]; then
-            find packages/app/src-tauri/target/release/bundle/dmg -name '*.dmg' -exec bash -c 'rename_lite "$0"' {} \;
-          else
-            find packages/app/src-tauri/target/release/bundle/deb -name '*.deb' -exec bash -c 'rename_lite "$0"' {} \;
-            if [ -d packages/app/src-tauri/target/release/bundle/appimage ]; then
-              find packages/app/src-tauri/target/release/bundle/appimage -name '*.AppImage' -exec bash -c 'rename_lite "$0"' {} \;
-            fi
-          fi
+          case "${{ runner.os }}" in
+            Windows)
+              rename_lite packages/app/src-tauri/target/release/bundle/nsis exe
+              expected=exe
+              ;;
+            macOS)
+              rename_lite packages/app/src-tauri/target/release/bundle/dmg dmg
+              expected=dmg
+              ;;
+            *)
+              rename_lite packages/app/src-tauri/target/release/bundle/deb deb
+              expected=deb
+              if [ -d packages/app/src-tauri/target/release/bundle/appimage ]; then
+                rename_lite packages/app/src-tauri/target/release/bundle/appimage AppImage
+              fi
+              ;;
+          esac
+          # 构建成功却收集不到安装器时立刻失败，不再静默只发便携压缩包。
+          ls release-artifacts/*-lite."$expected" >/dev/null
           ls -la release-artifacts
 
       - uses: actions/upload-artifact@v7
