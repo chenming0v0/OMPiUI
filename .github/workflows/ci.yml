@@ -92,7 +92,8 @@ jobs:
     name: test server ${{ matrix.platform }} ${{ matrix.shard }}/4
     needs: build-deps
     runs-on: ${{ matrix.platform }}-latest
-    timeout-minutes: 15
+    # Windows 的 ConPTY 套件单分片实测可达 14 分钟，15 分钟会被误杀。
+    timeout-minutes: ${{ matrix.platform == 'windows' && 25 || 15 }}
     strategy:
       fail-fast: false
       matrix:

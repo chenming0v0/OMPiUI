@@ -44,10 +44,12 @@ async function request(
   path: string,
   body?: unknown,
 ): Promise<{ status: number; json: any }> {
+  // 服务端卡住（如 ConPTY spawn 挂起）必须变成可见的失败，而不是无限等待。
   const response = await fetch(`http://127.0.0.1:${port}${path}`, {
     method,
     headers: { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(15_000),
   });
   return {
     status: response.status,
@@ -555,7 +557,6 @@ describe("event websocket", () => {
     const connect = async (): Promise<{
       ws: WebSocket;
       frames: any[];
-      closed: Promise<void>;
     }> => {
       const ticket = (
         await request(
@@ -570,10 +571,7 @@ describe("event websocket", () => {
       );
       const frames: any[] = [];
       ws.on("message", (data) => frames.push(JSON.parse(String(data))));
-      const closed = new Promise<void>((resolve) =>
-        ws.on("close", () => resolve()),
-      );
-      return { ws, frames, closed };
+      return { ws, frames };
     };
 
     const first = await connect();
@@ -594,7 +592,7 @@ describe("event websocket", () => {
       }),
     );
     await waitFor(() => first.frames.some((frame) => frame.type === "exit"));
-    await first.closed;
+    await awaitClosed(first.ws, first.frames, "first terminal connection");
 
     const listed = await request(
       port,
@@ -612,7 +610,7 @@ describe("event websocket", () => {
       .map((frame) => frame.data as string)
       .join("");
     assert.match(output, /replay-ws/);
-    await second.closed;
+    await awaitClosed(second.ws, second.frames, "replayed terminal connection");
   });
 });
 
@@ -622,6 +620,27 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     if (Date.now() >= deadline)
       throw new Error("timed out waiting for websocket frame");
     await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+/**
+ * 服务端在终端退出/重放后应主动关连接；裸 await close 事件在 Windows 上
+ * 挂起过整个 CI 分片。带期限轮询并在失败时报告已收到的帧类型。
+ */
+async function awaitClosed(ws: WebSocket, frames: any[], label: string): Promise<void> {
+  const deadline = Date.now() + 15_000;
+  while (ws.readyState !== WebSocket.CLOSED) {
+    if (Date.now() >= deadline) {
+      const types = frames.map((frame) => frame.type).join(", ") || "none";
+      throw new Error(`${label} was not closed by the server; frame types: ${types}`);
+    }
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 100);
+      ws.once("close", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
   }
 }
 

@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import test from "node:test"
+import { after, test } from "node:test"
 import type { TerminalInfo } from "@ompiui/protocol"
 import { extractTerminalTitle, TerminalManager } from "./terminal-manager.ts"
 
@@ -175,6 +175,14 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 20))
   }
 }
+
+after(() => {
+  // Windows 上全部测试通过并 dispose 之后，ConPTY 句柄仍可能钉住事件循环，
+  // 让整个测试文件卡到 CI 的 job 超时（实测 15 分钟被杀）。所有测试已经
+  // 结束时由看门狗收尾退出，保留 node:test 已写好的退出码。
+  const code = process.exitCode
+  setTimeout(() => process.exit(code ?? 0), 10_000).unref()
+})
 
 async function removeWithRetry(root: string): Promise<void> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
