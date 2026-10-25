@@ -78,15 +78,15 @@ try {
     if ($candidate[0].Name -ne "OMPiUI_${version}_x64-setup-lite.exe") { throw 'Candidate installer filename does not match exact-source package version.' }
     Record-Step 'installer-provenance' @{ candidateSha = $provenance.candidateSha; candidateVersion = $version; candidateInstaller = $candidate[0].FullName; sha256 = (Get-FileHash $candidate[0].FullName -Algorithm SHA256).Hash; baseline = $provenance.baseline }
 
-    $home = Join-Path $Root 'home'; $temp = Join-Path $Root 'temp'
+    $isolatedHome = Join-Path $Root 'home'; $temp = Join-Path $Root 'temp'
     $install = Join-Path $Root 'installed-app'
     $project = Join-Path $Root 'original-project'
     $shortcutCwd = Join-Path $Root 'custom-shortcut-cwd'
-    New-Item -ItemType Directory -Force $home, $temp, $project, $shortcutCwd | Out-Null
-    $env:HOME = $home; $env:USERPROFILE = $home
+    New-Item -ItemType Directory -Force $isolatedHome, $temp, $project, $shortcutCwd | Out-Null
+    $env:HOME = $isolatedHome; $env:USERPROFILE = $isolatedHome
     $env:TEMP = $temp; $env:TMP = $temp; $env:TMPDIR = $temp
-    $env:XDG_CONFIG_HOME = Join-Path $home 'config'; $env:XDG_DATA_HOME = Join-Path $home 'data'
-    $env:XDG_STATE_HOME = Join-Path $home 'state'; $env:XDG_CACHE_HOME = Join-Path $home 'cache'
+    $env:XDG_CONFIG_HOME = Join-Path $isolatedHome 'config'; $env:XDG_DATA_HOME = Join-Path $isolatedHome 'data'
+    $env:XDG_STATE_HOME = Join-Path $isolatedHome 'state'; $env:XDG_CACHE_HOME = Join-Path $isolatedHome 'cache'
     $env:OMPIUI_BACKGROUND_DIR = Join-Path $Root 'background'
     $env:OMPIUI_DATA_DIR = Join-Path $Root 'webui'
     $env:PI_CODING_AGENT_DIR = Join-Path $Root 'agent'

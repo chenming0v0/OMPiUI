@@ -102,15 +102,15 @@ jobs:
           $baseline = Join-Path $env:SMOKE_ROOT $env:BASELINE_NAME
           Invoke-WebRequest $env:BASELINE_URL -OutFile $baseline
           if ((Get-FileHash $baseline -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:BASELINE_DIGEST) { throw 'Baseline digest mismatch' }
-          $home = Join-Path $env:SMOKE_ROOT 'home'
+          $isolatedHome = Join-Path $env:SMOKE_ROOT 'home'
           $temp = Join-Path $env:SMOKE_ROOT 'temp'
-          New-Item -ItemType Directory -Force $home, $temp | Out-Null
-          $env:HOME = $home; $env:USERPROFILE = $home
+          New-Item -ItemType Directory -Force $isolatedHome, $temp | Out-Null
+          $env:HOME = $isolatedHome; $env:USERPROFILE = $isolatedHome
           $env:TEMP = $temp; $env:TMP = $temp; $env:TMPDIR = $temp
-          $env:XDG_CONFIG_HOME = Join-Path $home 'config'
-          $env:XDG_DATA_HOME = Join-Path $home 'data'
-          $env:XDG_STATE_HOME = Join-Path $home 'state'
-          $env:XDG_CACHE_HOME = Join-Path $home 'cache'
+          $env:XDG_CONFIG_HOME = Join-Path $isolatedHome 'config'
+          $env:XDG_DATA_HOME = Join-Path $isolatedHome 'data'
+          $env:XDG_STATE_HOME = Join-Path $isolatedHome 'state'
+          $env:XDG_CACHE_HOME = Join-Path $isolatedHome 'cache'
           $env:npm_config_cache = Join-Path $env:SMOKE_ROOT 'npm-cache'
           node candidate-source/scripts/prepare-omp-runtime.mjs --version 18.12.6 --out "$env:SMOKE_ROOT/native-runtime"
           if ($LASTEXITCODE -ne 0) { throw 'Public native runtime preparation failed' }
