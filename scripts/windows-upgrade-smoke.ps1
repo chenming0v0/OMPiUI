@@ -123,6 +123,9 @@ function Install-App([string]$installer, [string]$stage) {
     $process = Start-Process -FilePath $installer -ArgumentList $arguments -PassThru
     if (-not $process.WaitForExit(180000)) {
         Record-Step "$stage-timeout" @{ installer = $installer; pid = $process.Id; arguments = $arguments }
+        $ownedInstaller = Get-CimInstance Win32_Process -Filter "ProcessId=$($process.Id)" -ErrorAction SilentlyContinue
+        Record-Step "$stage-owned-installer-timeout" @{ pid = $process.Id; executable = $ownedInstaller.ExecutablePath; commandLine = $ownedInstaller.CommandLine }
+        Capture-OwnedGuiDiagnostics "$stage-installer-timeout"
         throw "$stage installer did not finish in three minutes; an unattended GUI prompt may be blocking."
     }
     Record-Step $stage @{ installer = $installer; sha256 = (Get-FileHash $installer -Algorithm SHA256).Hash; arguments = $arguments; exitCode = $process.ExitCode }
@@ -136,6 +139,16 @@ function Read-Link([string]$path) {
         Arguments = $link.Arguments; IconLocation = $link.IconLocation; WindowStyle = $link.WindowStyle
         sha256 = (Get-FileHash $path -Algorithm SHA256).Hash
     }
+}
+function Wait-OwnedGuiExit {
+    $deadline = (Get-Date).AddSeconds(30)
+    do {
+        $owned = @(Get-CimInstance Win32_Process -Filter "Name='ompiui.exe'" | Where-Object { $_.ExecutablePath -eq $exe })
+        if ($owned.Count -eq 0) { Record-Step 'native-gui-closed-with-backend-stop' @{ exited = $true }; return }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+    Capture-OwnedGuiDiagnostics 'native-close-did-not-exit'
+    throw 'Native Close and stop backend did not exit the owned GUI before upgrade.'
 }
 function Stop-OwnedGui {
     # Only this run's installed GUI can be stopped. Never inspect/kill generic omp,
@@ -251,7 +264,7 @@ public static class Issue336Token {
     Launch-Link $startMenu 'baseline-gui-launch'
     $baselineGuiAccepted = Run-WebView 'baseline'
     $report.baselineGuiAccepted = $baselineGuiAccepted
-    Stop-OwnedGui
+    if ($baselineGuiAccepted) { Wait-OwnedGuiExit } else { Stop-OwnedGui }
 
     foreach ($path in @($startMenu, $desktop)) {
         $link = $shell.CreateShortcut($path)

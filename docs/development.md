@@ -181,6 +181,8 @@ Windows 安装器固定使用当前 Tauri NSIS 模板，在旧卸载器删除快
 
 新会话的首轮原生文件验证后，工作流还从同一实际 GUI 会话再发普通文本；要求 native session ID／文件路径保持不变、两轮 user／assistant 均落盘、原文件字节作为前缀完整保留，并记录前后 SHA-256。它不另建影子会话，也不通过脚本直接写 native 历史。
 
+升级前等待旧版实际后端进入 Running，经原生标题栏关闭按钮与“Close and stop backend”确认正常停止并退出，再运行 NSIS 升级；不在后端尚 Preparing 时强杀 GUI 造成无人值守维护提示。候选 GUI 完成原生两轮写入后也通过同一真实确认退出。若安装器超时，保存当前物理桌面与该安装器进程身份，保留保护提示的原始失败，不改用绕过旧卸载的 `/UPDATE`。
+
 验收 artifact 保存候选源码／构建 run／安装器哈希、安装退出码、升级前后快捷方式字段、原生 WebView 截图、只读存储快照及真实 session JSONL。若托管环境缺 WebView/CDP、安装器受无人值守弹窗阻止或 GUI／原生会话路径未完成，job 失败并保留准确阻塞证据，不以 supervisor、单测或独立浏览器页代替升级通过。候选预构建不等于发布，不会由此工作流创建 tag 或 release。
 
 经授权的托管 runner 使用 WebView2 官方支持的 HKLM `Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments`／`UserDataFolder` 精确 `ompiui.exe` 值；只保存／修改／恢复该应用值，不设通配符，finally 恢复原值。工作流通过 Windows `GetTokenInformation(TokenElevation)` 记录实际提升状态；Microsoft 明确规定提升的 WebView2 host 忽略环境变量与 HKCU 调试参数，而接受 HKLM 配置，因此不重复无效的用户级调试等待。依据：[Environment overrides](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/webview2-idl?view=webview2-1.0.4022.49)／[Elevated-host overrides](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/security#for-an-elevated-host-app-use-appropriate-override-flags)。这些动作严格只在可弃置 GitHub 托管 runner 执行，不作用于真实工作站。诊断仅记录该 runner 自有安装 GUI 的子进程和物理桌面截图。GUI 仍受阻时可独立完成真实升级与快捷方式字段比较，但只标 `SHORTCUT_ONLY`，job 保持失败，完整项目／原生 GUI 会话验收仍不通过。

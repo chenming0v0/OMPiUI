@@ -126,6 +126,16 @@ async function fill(expression, text, description) {
   await cdp('Input.insertText', { text })
 }
 
+async function closeAndStopNativeBackend() {
+  await eventually('Native backend running before actual close', () => evaluate(`Array.from(document.querySelectorAll('button')).some(element => /Backend\\s*·\\s*Running|后端.*运行/.test(element.innerText))`))
+  await snapshot('before-native-close')
+  await click(button('/^Close$|^关闭$/i', true), 'Native titlebar Close action')
+  await eventually('Real native close confirmation', () => evaluate(`Array.from(document.querySelectorAll('button')).some(element => /Close and stop backend|关闭并停止后端/i.test(element.innerText))`))
+  await snapshot('native-close-confirmation')
+  await click(button('/Close and stop backend|关闭并停止后端/i'), 'Native Close and stop backend confirmation')
+  report.closedViaNativeStopConfirmation = true
+}
+
 function sessionFiles(directory) {
   if (!existsSync(directory)) return []
   return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
@@ -158,6 +168,7 @@ try {
     })
     report.savedOriginalProject = saved
     await snapshot('project-saved')
+    await closeAndStopNativeBackend()
     report.status = 'ACCEPTED_BASELINE_GUI_PROJECT_SETUP'
   } else {
     const baseline = JSON.parse(readFileSync(join(output, 'baseline-gui.json'), 'utf8').replace(/^\uFEFF/, ''))
@@ -210,6 +221,7 @@ try {
     copyFileSync(native.file, join(output, 'candidate-native-session.jsonl'))
     report.nativeSession = native
     await snapshot('new-native-chat-original-cwd')
+    await closeAndStopNativeBackend()
     report.status = 'ACCEPTED_NATIVE_GUI_NEW_CHAT_CWD'
   }
 } catch (error) {
