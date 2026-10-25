@@ -324,6 +324,7 @@ export class SessionHost {
         ),
         cwd: session.cwd,
         state: state ?? null,
+        eventCursor: { ...this.hub.getCursor({ kind: "session", id: session.sessionId }) },
       };
     } catch (error) {
       await worker?.dispose().catch(() => undefined);

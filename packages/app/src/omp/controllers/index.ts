@@ -189,7 +189,9 @@ export async function openPiSession(
   signal?: AbortSignal,
   reuseFromSessionId?: string,
 ): Promise<transport.PiSessionOpenResult> {
+  const generation = serverStore.getActiveServerGeneration()
   const result = await transport.openPiSession({ cwd, sessionFile, reuseFromSessionId }, signal)
+  if (serverStore.getActiveServerGeneration() !== generation) throw new Error('Server changed while opening a session')
 
   if (!result.sessionId) {
     throw new Error('Session open failed: no sessionId returned')
@@ -217,6 +219,7 @@ export async function openPiSession(
         epoch: `fresh:${result.sessionId}`,
       }) as PiBranchPage['head'],
       items: [],
+      checkpoint: result.eventCursor ? { position: result.eventCursor } : undefined,
       hasMore: false,
     })
   }

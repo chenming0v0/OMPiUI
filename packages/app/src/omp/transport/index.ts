@@ -84,6 +84,7 @@ export type PiSessionOpenResult = {
   sessionFileReady?: boolean
   cwd?: string
   state?: JsonValue
+  eventCursor?: { epoch: string; sequence: number }
   [key: string]: JsonValue | undefined
 }
 

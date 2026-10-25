@@ -454,8 +454,13 @@ class PiEventStream {
       const stream = { kind: 'session' as const, id: sessionId }
       streams.push(stream)
       const key = eventStreamKey(stream)
-      const cursor = this.cursors.get(key)
-      if (cursor) cursors[key] = cursor
+      // A branch/open checkpoint predates the first prompt, even when the
+      // pane subscribes after a fast native command has already completed.
+      const cursor = this.cursors.get(key) ?? piBranchStore.getData(sessionId)?.checkpoint?.position
+      if (cursor) {
+        this.cursors.set(key, cursor)
+        cursors[key] = cursor
+      }
     }
     for (const workspacePath of this.workspaceRefCounts.keys()) {
       const stream = { kind: 'workspace' as const, id: workspacePath }
