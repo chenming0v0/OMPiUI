@@ -292,6 +292,18 @@
     "fileCount_other": "{{count}} files"
   },
   "dialog": {
+    "ask": "Ask",
+    "other": "Other (type your own)",
+    "customInput": "Custom answer / notes",
+    "recommended": "Recommended",
+    "reviewAnswers": "Review answers",
+    "questionProgress": "Question {{current}} of {{total}}",
+    "questionnaireNotApproval": "These answers are not approval for another operation.",
+    "timedOut": "Automatically selected by native ask after timeout; not an explicit user approval.",
+    "askAvailable": "Native ask is active; the questionnaire response bridge is ready.",
+    "askBasicAvailable": "Native ask is active; only the official select/editor fallback is available.",
+    "askRuntimeUnavailable": "The native runtime is unavailable; no ask answer can be submitted.",
+    "askInactive": "Native ask is not active (disabled by native settings or excluded by the tool set).",
     "minimize": "Minimize",
     "previous": "Previous",
     "next": "Next",

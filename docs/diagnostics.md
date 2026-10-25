@@ -126,6 +126,15 @@ OMPiUI 管理的会话保留原生全局／项目 `task.maxRecursionDepth`，不
 打开尚未运行的历史会话、刷新和草稿同步走只读路径，不启动会写盘的 OMP runtime。
 主动发消息或明确修改会话时才恢复写入；不扫描或拦截官方终端进程。
 
+### 原生 ask 的活动与等待
+
+查看实际 `activeTools` 和 `askUi`：`askUi.available` 仅表示 ask 当前活动且托管原生应答通道可用，`surface` 区分官方问卷 `ask` 与基础 `select/editor`；不代表用户已作批准。扩展面板显示未活动／运行时不可用原因。只读历史预览不应为了探测 ask 启动 runtime；没有运行态快照不能当作已支持。
+
+OMP 18.12.6 实测普通 `rpc` 无 ask，托管 `rpc-ui` 有 ask；`rpc-ui --no-ui` 仍有工具 UI，但扩展 headless；官方禁用 ask 后活动／注册列表均没有 ask。新问卷使用真实 `set_ask_dialog` 和 `extension_ui_response.answers`。旧版本基础 fallback 不提供返回回调；不要声称基本 select 已有 TUI 富组件能力。
+
+隔离 Chrome 与原生进程已验证官方工具结果与答案一致、取消／abort 保留原错误、超时产生 `timedOut`，Plan 下即使 timeout=1s 也保持未决。`ask.timeout: 0` 是官方无期限等待；没有客户端时不能伪造默认审批，只有原生取消／abort／关闭或实际答案能够结算。独立单选附注被 18.12.6 RPC 忽略，接口缺少 `note`，与多选可携带的 `customInput` 不同；这是剩余上游能力边界，不能用普通聊天绕过。
+
+
 ## 工具长时间显示运行中
 
 先按会话查询 `tool_execution_start` / `tool_execution_end`：同一轮模型生成多个工具调用，不代表它们已经同时开始执行。界面使用官方落盘的 `customType=tool_execution_start` 与实时事件区分「等待执行」和「运行中」，按各工具实际开始时间计时；结果到达后立即结束，不使用助手消息时间作为工具开始时间。

@@ -145,7 +145,7 @@ class PiSessionStateStore {
         const request = raw as Partial<ExtensionUiDialogRequest> | null
         if (!request || typeof request !== 'object' || typeof request.requestId !== 'string') continue
         if (typeof request.sessionId === 'string' && request.sessionId !== sessionId) continue
-        if (!request.kind || !['select', 'confirm', 'input', 'editor'].includes(request.kind)) continue
+        if (!request.kind || !['select', 'confirm', 'input', 'editor', 'ask'].includes(request.kind)) continue
         if (!extensionUiStore.requestOpened(request as ExtensionUiDialogRequest)) continue
         activeSessionStore.addPendingRequest(
           request.requestId,

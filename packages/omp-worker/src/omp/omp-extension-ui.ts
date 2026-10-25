@@ -1,6 +1,6 @@
 import type { JsonObject } from "@ompiui/protocol"
 import { isJsonObject } from "@ompiui/protocol"
-import type { ExtensionUiDialogRequest, ExtensionUiDialogResponse, ExtensionUiSettlementReason, ExtensionUiStatePatch } from "@ompiui/protocol"
+import type { ExtensionUiDialogRequest, ExtensionUiSettlementReason, ExtensionUiStatePatch, NativeAskQuestion } from "@ompiui/protocol"
 
 /**
  * OMP 扩展 UI 桥：把 `omp --mode rpc` 的 extension_ui_request 帧映射成
@@ -56,7 +56,8 @@ export class OmpExtensionUiBridge {
       case "select":
       case "confirm":
       case "input":
-      case "editor": {
+      case "editor":
+      case "ask": {
         this.openDialog(method, ompId, frame)
         return
       }
@@ -132,16 +133,18 @@ export class OmpExtensionUiBridge {
       createdAt: new Date().toISOString(),
       ...(timeout !== undefined ? { expiresAt: new Date(Date.now() + timeout).toISOString() } : {}),
     })
-    const request: ExtensionUiDialogRequest = kind === "select"
-      ? { ...base, kind, options: Array.isArray(frame.options) ? frame.options.map(String) : [],
-          ...(Array.isArray(frame.optionDetails) ? { optionDetails: frame.optionDetails.map(detail =>
-            isJsonObject(detail) && typeof detail.description === "string" ? { description: detail.description } : {}) } : {}) }
-      : kind === "confirm"
-        ? { ...base, kind, message: typeof frame.message === "string" ? frame.message : "" }
-        : kind === "input"
-          ? { ...base, kind, ...(typeof frame.placeholder === "string" ? { placeholder: frame.placeholder } : {}) }
-          : { ...base, kind, ...(typeof frame.prefill === "string" ? { prefill: frame.prefill } : {}),
-              ...(typeof frame.promptStyle === "boolean" ? { promptStyle: frame.promptStyle } : {}) }
+    const request: ExtensionUiDialogRequest = kind === "ask"
+      ? { ...base, kind, title: "Ask", questions: frame.questions as unknown as NativeAskQuestion[] }
+      : kind === "select"
+        ? { ...base, kind, options: Array.isArray(frame.options) ? frame.options.map(String) : [],
+            ...(Array.isArray(frame.optionDetails) ? { optionDetails: frame.optionDetails.map(detail =>
+              isJsonObject(detail) && typeof detail.description === "string" ? { description: detail.description } : {}) } : {}) }
+        : kind === "confirm"
+          ? { ...base, kind, message: typeof frame.message === "string" ? frame.message : "" }
+          : kind === "input"
+            ? { ...base, kind, ...(typeof frame.placeholder === "string" ? { placeholder: frame.placeholder } : {}) }
+            : { ...base, kind, ...(typeof frame.prefill === "string" ? { prefill: frame.prefill } : {}),
+                ...(typeof frame.promptStyle === "boolean" ? { promptStyle: frame.promptStyle } : {}) }
     const pending: PendingDialog = { request, ompId }
     if (timeout !== undefined) {
       pending.timer = setTimeout(() => this.cancel(request.requestId, "timeout"), timeout)
@@ -160,6 +163,8 @@ export class OmpExtensionUiBridge {
     const ompResponse: JsonObject = { type: "extension_ui_response", id: pending.ompId }
     if (isCancelled(response)) {
       ompResponse.cancelled = true
+    } else if (pending.request.kind === "ask") {
+      ompResponse.answers = response.answers ?? []
     } else if (pending.request.kind === "confirm") {
       ompResponse.confirmed = response.confirmed === true
     } else {

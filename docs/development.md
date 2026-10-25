@@ -11,7 +11,7 @@ app (React/Vite) <-> HTTP + WebSocket <-> server (Node)
                                          |
                                      stdio JSONL
                                          |
-                                     omp --mode rpc
+                                     omp --mode rpc-ui
 ```
 
 | 目录 | 职责 |
@@ -24,7 +24,7 @@ app (React/Vite) <-> HTTP + WebSocket <-> server (Node)
 | `packages/relay` | 自建公网中转和中转 TUI 适配 |
 | `packages/tui` | 两套管理器共用的全屏终端界面 |
 
-OMPiUI 通过官方 `omp --mode rpc` 跨进程调用 OMP，而不是在 Node 服务中嵌入 Agent SDK。OMP 负责执行编程任务；OMPiUI 负责界面、连接和运行时协调。
+OMPiUI 通过官方 `omp --mode rpc-ui` 托管写入会话；只读控制进程使用普通 `rpc`。两者都是跨进程官方 RPC，不在 Node 服务中嵌入第二份 Agent SDK。OMP 负责执行编程任务；OMPiUI 负责界面、连接和运行时协调。
 
 桌面发布与服务器安装默认使用预装 `omp-runtime/`：`bin/omp`（Windows 为 `omp.exe`）是官方独立 CLI，`bin/bun` 是 Bun 1.3.14，`node_modules/` 保留与 CLI 完全同版本的官方 npm 源码包及当前平台完整生产／原生依赖。服务仍通过 RPC 调用官方进程，不在 Node 内嵌第二份 Agent SDK；运行不要求全局 npm 包或全局 Bun。运行时解析只读取已安装资源，不在启动或浏览时下载、安装依赖。
 
@@ -58,6 +58,7 @@ OMP 原生模型与凭据配置来自 `~/.omp/agent/models.yml`、`config.yml`�
 - 历史图片（用户／助手、工具 content／嵌套 details、子会话预览）保留所属原生 sessionId／entryId；blob 从官方当前 agent／profile 的共享 `blobs/<sha256>` 读取，自定义 session-dir 不改变 blob 归属。预览只读，不扫描猜测目录或改写历史。大图点击后按 256 KiB base64 页恢复，64 MiB 编码预览预算；校验分页长度、MIME、etag 和磁盘版本，引用／服务器换代、缺失或读取中截断会清除旧图并显示错误，可取消下载。
 - 目标栏直接读取官方 `get_state.goal` 的 mode/enabled、目标 ID、预算、`tokensUsed` 与 `timeUsedSeconds`；离线浏览从当前原生分支的 `mode_change` 快照投影，不实例化 writer、不把暂态 exiting/reason 当持久化字段。create/get/pause/resume/drop 使用原生 RPC GoalController，replace/complete/budget 使用受支持的 `AgentSession.goalRuntime`。受管进程配置启用官方 `goal.continuationModes: [rpc]`，不写用户设置、不再存在 WebUI 续跑循环或完成标记。预算留空表示清除；暂停目标保留 objective；目标图片明确拒绝，普通消息仍走官方图片规范化。隔离 18.12.6 实测原生计量 18→36 tokens、预算受限、GUI 暂停／恢复／完成／放弃、原生 Goal 工具完成日志及 CLI↔UI 同文件继续；catalog 预览字节不变，备份失败不启动写入。完整主界面和宿主租约并发仍由集成验收覆盖。
 - 输入区的 `Ctrl+P`／`Ctrl+Shift+P` 优先交给官方 `session.cycleModel` 前向／反向循环，不被全局命令面板抢占；输入区外的命令面板快捷键不变。候选范围用官方解析器及其模型匹配偏好解析，编辑区显示实际原生 `provider/id`、路由与可选思考档位，而不是对象字符串。循环后模型与可选思考等级读回原生状态；失败在当前服务器／会话输入区显示原始错误，无可循环候选遵循原生空结果。候选范围保持官方 session-only 生命周期：不写全局模型角色、不向会话添加自定义持久化协议，恢复／更换运行时按官方范围行为处理。
+- 原生 ask 只按实际注册／活动工具集和已就绪的应答桥广告；不会硬加入工具名或改写 `ask.enabled`／`ask.timeout`。OMP 18.12.6 及以上托管进程通过真实 `set_ask_dialog` 协议 opt-in，以 `method: ask` 的问题顺序和原请求身份发送 `answers`，不是普通聊天消息。基础 `select/editor` 路线保留用于官方普通扩展对话框。
 
 官方设置页编辑全局覆盖，项目覆盖仍按官方优先级生效；保存保留未编辑键、准确备份与独立原生落盘读回。包管理的安装／更新等待官方操作结果，资源检查只读，不执行扩展或 MCP。
 
@@ -68,6 +69,22 @@ Windows／官方 OMP 18.12.6 的设置验收使用实际 Management 设置页、
 会话资源检查只使用当前运行时实际加载的扩展、工具与处理器；斜杠菜单使用官方 RPC `get_available_commands`／`available_commands_update` 的完整命令列表，而不是会排除内置／文件命令的 `ExtensionAPI.getCommands()`。菜单与手输保留原生注册名称、参数及同一 `sendUserMessage` 分派；命令元数据事件会刷新已打开菜单，查询失败不会冒充空命令列表。
 原生 OMP 18.12.6 的 RPC `/reload-plugins` 清理插件发现缓存，并通过 `refreshSkillsAndCommands` 重发现技能／文件命令和刷新系统提示词；它不是 TUI 的 hooks/tools/agents/MCP 全重载，也不重新加载扩展工厂、提示词模板或模型设置。资源页的显式 Reload 另行重读当前会话；只读 Refresh 不执行上述操作。裸 `/reload` 未注册时仍由官方按普通提示词处理，不是 `/reload-plugins` 别名，不产生本地重载成功。
 隔离 18.12.6／OMPiUI 0.6.41 源码实测（独立 Chrome、直接 CDP）：菜单／手输 `/reload-plugins` 均得到原生 `Plugins reloaded.`；编辑技能与文件命令后原生列表及再次打开的菜单元数据从 v4 更新到 v5／v6，执行文件命令确实将 v6 内容写入原生日志。重发现期间会话 ID、文件、叶节点与历史条目数保持不变。无效 `skills.customDirectories: [null]` 由原生处理器返回错误；GUI 保留真实错误通知及命令反馈，不添加成功。设置页模型重载仍为独立能力。
+
+### 原生 ask 与扩展 UI 模式
+
+| 模式 | 原生 ask | 扩展 UI |
+| --- | --- | --- |
+| 普通 `rpc` | 18.12.6 实测不注册 ask，不声称可交互 | 基础 select/confirm/input/editor/notify/status/字符串 widget |
+| 托管 `rpc-ui` | 以实际活动工具为准；新接口 opt-in 问卷，旧版本基础 select/editor | 基础扩展 UI，不运行 TUI 自定义组件 |
+| `rpc-ui --no-ui` | 官方工具 UI 仍启用；不能为 `--no-ui` 偷换成普通 rpc | 扩展 hasUI=false，基础扩展弹窗不发出 |
+| 官方 `ask.enabled: false`／工具集排除 ask | 明确显示未活动原因，不强制开启 | 不改变其他扩展 UI |
+| 官方 TUI | 原生富组件及 TUI ask 能力 | 不等同于 RPC 能力；GUI 不启动／接管终端 |
+
+18.12.6 原生问卷 wire format 支持单选、多选、Other 自定义文本、多问题返回／修改／检查及一次最终提交；多选可附带 `customInput` 文本。单选的选项加独立附注仍是上游边界：RPC `answers` 只有 `id/selectedOptions/customInput`，不提供独立 `note` 字段，且单选不能同时携带选项和非空 `customInput`。不把附注拼接为普通 prompt，不伪造 TUI `note`、`chatRedirect` 或图片应答。
+
+本次隔离验证使用官方 OMP 18.12.6、同版本公开源码、Bun 1.3.14、一次性配置／会话和本地脚本化 OpenAI 协议 provider（不是外部真实模型服务）。实际模型协议 tool_calls 触发原生 AskTool，真实 Chrome 消费产品问卷组件，经原请求 `extension_ui_response` 产生正确 `selectedOptions/customInput` 和后续模型协议继续；同时验证单选、多选／自定义文本、三问题返回修改／最终提交、重复拒绝、刷新不复活、重连恢复、用户取消、原生 abort、官方超时答案与 Plan 禁用超时，以及普通扩展 UI 和各模式实际工具集。集成宿主／完整应用验证仍由集成轮执行。
+
+超时只由官方 ask 策略选推荐项并产生 `timedOut`；问卷回答及超时自动选择均不是另一个危险操作的审批。Plan 模式保持官方无 ask 超时。断线只恢复 worker 仍未结算的请求，不重放答案；没有用户答案时遵循官方待决／取消语义，`ask.timeout: 0` 不存在可冒充用户批准的自动答案。
 
 
 新对话优先使用当前项目；未选项目时，恢复当前服务器保存的上次项目，其次使用已打开工作区，最后使用服务器用户主目录。应用安装目录只负责加载程序资源，不再作为隐式项目根目录。保存项目已不存在时应重新选择项目，不静默切换到其他目录。

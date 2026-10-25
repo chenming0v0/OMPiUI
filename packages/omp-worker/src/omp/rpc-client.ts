@@ -101,7 +101,8 @@ export class OmpRpcClient extends EventEmitter {
     const env = ompCommandEnvironment(options.env)
     // 与配置命令共用入口解析，脚本由解释器执行，不经过 shell 或 Windows 文件关联。
     const invocation = resolveOmpCommand(options.bin ?? env.OMPI_OMP_BIN, env)
-    const args = [...invocation.args, "--mode", options.applyRuntimePolicy && !options.args?.includes("--no-ui") ? "rpc-ui" : "rpc", ...(options.args ?? []), ...(options.applyRuntimePolicy ? runtimePolicyArgs(options.bin ?? env.OMPI_OMP_BIN, env) : [])]
+    // --no-ui disables extension UI only; native rpc-ui tool UI remains enabled.
+    const args = [...invocation.args, "--mode", options.applyRuntimePolicy ? "rpc-ui" : "rpc", ...(options.args ?? []), ...(options.applyRuntimePolicy ? runtimePolicyArgs(options.bin ?? env.OMPI_OMP_BIN, env) : [])]
     this.proc = spawn(invocation.command, args, {
       cwd: options.cwd,
       env,

@@ -728,6 +728,7 @@ class PiEventStream {
   private handleSessionsUpdated(payload: SessionsUpdatedPayload | undefined): void {
     if (payload?.crashed && payload.sessionId) {
       reportRuntimeCrash(payload.sessionId, payload.faultId, payload.faultTime, payload.errorCode)
+      piSessionStateStore.patchState(payload.sessionId, { nativeAskDialog: false, askUi: { available: false, reason: 'runtime_unavailable' } })
       const error = payload.message?.trim() || (payload.errorCode ? `Runtime crashed: ${payload.errorCode}` : 'Runtime crashed before this tool returned a result')
       this.markSessionSettled(payload.sessionId, { kind: 'failed', error })
       ompSubagentStore.markSessionCrashed(payload.sessionId)

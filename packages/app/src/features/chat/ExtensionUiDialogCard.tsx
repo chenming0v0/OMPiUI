@@ -5,6 +5,12 @@ import { QuestionIcon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRight
 import { CodePreview } from '../../components/CodePreview'
 import { extensionUiStore } from '../../omp/extensionUiStore'
 import { respondPiExtensionUi } from '../../omp/controllers/index.js'
+import { NativeAskDialogCard } from './NativeAskDialogCard'
+
+export function ExtensionUiDialogCard(props: Omit<Parameters<typeof BasicExtensionUiDialogCard>[0], 'request'> & { request: ExtensionUiDialogRequest }) {
+  if (props.request.kind === 'ask') return <NativeAskDialogCard request={props.request} compact={props.compact} onCollapse={props.onCollapse} />
+  return <BasicExtensionUiDialogCard {...props} request={props.request} />
+}
 
 /**
  * Interactive card for one pending extension UI dialog
@@ -19,7 +25,7 @@ import { respondPiExtensionUi } from '../../omp/controllers/index.js'
  * - 选项为紧凑单选行；操作区为一行轻量按钮
  * - 支持 Enter 提交（textarea 内除外）/ Esc 取消
  */
-export function ExtensionUiDialogCard({
+function BasicExtensionUiDialogCard({
   request,
   queueLength = 1,
   queueIndex = 0,
@@ -27,7 +33,7 @@ export function ExtensionUiDialogCard({
   onCollapse,
   onQueueNav,
 }: {
-  request: ExtensionUiDialogRequest
+  request: Exclude<ExtensionUiDialogRequest, { kind: 'ask' }>
   queueLength?: number
   /** 当前显示的请求在队列中的位置（0-based）；仅 host 分页传入 */
   queueIndex?: number

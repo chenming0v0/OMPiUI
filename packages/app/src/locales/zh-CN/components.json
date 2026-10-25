@@ -289,6 +289,18 @@
     "fileCount_other": "{{count}} 个文件"
   },
   "dialog": {
+    "ask": "提问",
+    "other": "其他（自定义输入）",
+    "customInput": "自定义答案／附注",
+    "recommended": "推荐",
+    "reviewAnswers": "检查答案",
+    "questionProgress": "第 {{current}} 个问题，共 {{total}} 个",
+    "questionnaireNotApproval": "问卷答案不等同于批准另一个操作。",
+    "timedOut": "原生 ask 超时后自动选择；不是用户明确批准。",
+    "askAvailable": "原生 ask 已活动；问卷应答桥已就绪。",
+    "askBasicAvailable": "原生 ask 已活动；当前仅支持官方 select/editor 基础流程。",
+    "askRuntimeUnavailable": "原生运行时不可用；不能提交 ask 答案。",
+    "askInactive": "原生 ask 未活动（官方设置禁用或工具集未包含 ask）。",
     "minimize": "最小化",
     "previous": "上一个",
     "next": "下一个",

@@ -137,6 +137,7 @@ export class OmpRpcSession implements SessionRuntime {
   private ompOptions: OmpSessionOptions = {};
   /** 探测到的真实 omp 版本；探测失败时为 null（展示回退 OMP_SDK_VERSION） */
   private ompVersion: string | null = null;
+  private nativeAskDialog = false;
 
   private sessionId = "";
   private sessionFile: string | undefined;
@@ -293,6 +294,8 @@ export class OmpRpcSession implements SessionRuntime {
     });
     this.client.on("exit", () => {
       if (this.closed) return;
+      this.extensionUi.cancelAll("runtime_crashed", false);
+      this.nativeAskDialog = false;
       const error =
         this.client.exitInfo.error ??
         new Error("omp RPC process exited unexpectedly");
@@ -313,6 +316,12 @@ export class OmpRpcSession implements SessionRuntime {
       unwrapResponse(await this.client.request({
         type: "negotiate_protocol", protocolVersion: 2,
       }));
+      // Opt in only on the proven official interface; older runtimes keep
+      // their select/editor fallback. This never changes native ask settings.
+      if (detected && detected.localeCompare("18.12.6", undefined, { numeric: true }) >= 0) {
+        const ask = unwrapResponse<JsonObject>(await this.client.request({ type: "set_ask_dialog", enabled: true }));
+        this.nativeAskDialog = ask?.enabled === true;
+      }
       // 子代理帧：lifecycle + progress + 完整事件
       unwrapResponse(await this.client.request({
         type: "set_subagent_subscription", level: "events",
@@ -1097,6 +1106,10 @@ export class OmpRpcSession implements SessionRuntime {
     if (statsEpoch !== this.eventEpoch || historyGeneration !== this.historyGeneration || modelsGeneration !== this.modelsGeneration || activityGeneration !== this.activityGeneration) return this.buildState();
     this.pendingAsyncWork = Boolean(native.hasPendingAsyncWork);
     this.emitActivityIfChanged();
+    const activeTools = Array.isArray(native.dumpTools)
+      ? native.dumpTools.filter(isJsonObject).map(tool => String(tool.name ?? "")).filter(Boolean)
+      : [];
+    const askAvailable = activeTools.includes("ask") && !this.client.hasExited;
     return {
       sessionId: this.sessionId,
       sessionFile: this.sessionFile ?? null,
@@ -1163,13 +1176,14 @@ export class OmpRpcSession implements SessionRuntime {
       pendingExtensionUiRequests: this.extensionUi.listPending(),
       extensionUiState: this.extensionUi.getStateMirror(),
       extensionTuiPanels: [],
+      nativeAskDialog: this.nativeAskDialog && askAvailable,
+      askUi: {
+        available: askAvailable,
+        surface: this.nativeAskDialog ? "ask" : "select/editor",
+        ...(!askAvailable ? { reason: this.client.hasExited ? "runtime_unavailable" : "inactive" } : {}),
+      },
       supportsThinking: this.resolveSupportsThinking(native.model),
-      activeTools: Array.isArray(native.dumpTools)
-        ? native.dumpTools
-            .filter(isJsonObject)
-            .map((tool) => String(tool.name ?? ""))
-            .filter(Boolean)
-        : [],
+      activeTools,
       scopedModels: this.scopedModels,
       scopedModelPatterns: this.scopedModelPatterns,
       contextUsage,
