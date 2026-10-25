@@ -53,6 +53,7 @@ import { readSubagentPreview } from "./subagent-preview.js";
 import { readSubagentSync } from "./subagent-sync.js";
 import type { SubagentSyncRequest } from "@ompiui/protocol";
 import { getOmpSettings, patchOmpSettings } from "./omp-settings.js";
+import { withSupportedThinkingLevels } from "./model-thinking.js";
 
 /**
  * OmpCatalog —— CatalogProvider 的 OMP 实现。
@@ -1078,10 +1079,11 @@ export class OmpCatalog implements CatalogProvider {
           : Array.isArray(data)
             ? data
             : [];
-      return list.filter(isJsonObject).map((model) => ({
-        ...model,
-        provider: model.provider ?? "unknown",
-      }));
+      return list.filter(isJsonObject).map((model) => {
+        const adapted = withSupportedThinkingLevels(model);
+        adapted.provider = model.provider ?? "unknown";
+        return adapted;
+      });
     });
   }
 

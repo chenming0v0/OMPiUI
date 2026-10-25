@@ -16,18 +16,18 @@ test("model queries recover after config invalidation and control process exit",
   const auth = new OmpProviderAuth(() => control.acquire())
   const [first, concurrent] = await Promise.all([control.acquire(), control.acquire()])
   assert.equal(first, concurrent, "concurrent queries share one live control process")
-  assert.deepEqual(await auth.listModels(), [{ id: "test-model", provider: "test" }])
+  assert.deepEqual(await auth.listModels(), [{ id: "test-model", provider: "test", supportedThinkingLevels: ["off"] }])
 
   await auth.invalidate()
   assert.equal(first.hasExited, true)
-  assert.deepEqual(await auth.listModels(), [{ id: "test-model", provider: "test" }])
+  assert.deepEqual(await auth.listModels(), [{ id: "test-model", provider: "test", supportedThinkingLevels: ["off"] }])
   const second = await control.acquire()
   assert.notEqual(second, first, "config invalidation must acquire a fresh process")
 
   second.proc.kill()
   await second.waitForExit(5_000)
   assert.equal(second.hasExited, true)
-  assert.deepEqual(await auth.listModels(), [{ id: "test-model", provider: "test" }])
+  assert.deepEqual(await auth.listModels(), [{ id: "test-model", provider: "test", supportedThinkingLevels: ["off"] }])
   assert.notEqual(await control.acquire(), second, "unexpected exits must also recover")
 })
 
@@ -47,5 +47,5 @@ test("failed startup is not cached and a later query can recover", { timeout: 15
   await assert.rejects(control.acquire(), /test negotiation rejected/)
   delete process.env.OMPIUI_TEST_CONTROL_REJECT
   const auth = new OmpProviderAuth(() => control.acquire())
-  assert.deepEqual(await auth.listModels(), [{ id: "test-model", provider: "test" }])
+  assert.deepEqual(await auth.listModels(), [{ id: "test-model", provider: "test", supportedThinkingLevels: ["off"] }])
 })

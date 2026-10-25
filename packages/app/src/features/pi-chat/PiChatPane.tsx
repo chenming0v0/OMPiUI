@@ -613,8 +613,8 @@ export function PiChatPane({
     [models, pendingModelKey, currentModel?.provider, currentModel?.id, homeModelKey, sessionId],
   )
   const thinkingLevels = useMemo(() => {
-    const levels = sessionId && !pendingModelKey
-      ? state?.supportedThinkingLevels
+    const levels = sessionId && !pendingModelKey && Array.isArray(state?.supportedThinkingLevels)
+      ? state.supportedThinkingLevels
       : currentModelObj?.supportedThinkingLevels
     return Array.isArray(levels) ? levels.filter((level): level is string => typeof level === 'string') : []
   }, [sessionId, pendingModelKey, state?.supportedThinkingLevels, currentModelObj])
