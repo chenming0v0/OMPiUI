@@ -728,6 +728,11 @@ class PiEventStream {
       ompSubagentStore.markSessionCrashed(payload.sessionId)
     }
     if (payload?.replaced && payload.sourceSessionId && payload.targetSessionId) {
+      if (payload.sourceSessionId === payload.targetSessionId) {
+        window.dispatchEvent(new CustomEvent('ompiui:session-relocated', { detail: payload }))
+        window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
+        return
+      }
       if (payload.reason === 'runtime-reuse') {
         // runtime 复用（ensureAttached 偷同目录空闲 runtime）：源 session 的
         // 磁盘数据和 pane 绑定都不变，不做替换清理，只刷新会话列表。
@@ -742,8 +747,14 @@ class PiEventStream {
       // follow ompiui:session-replaced (their connect effect owns ref counts).
       this.cursors.delete(eventStreamKey({ kind: 'session', id: payload.sourceSessionId }))
       this.pendingLiveMessages.delete(payload.sourceSessionId)
-      this.branchRefreshTimers.delete(payload.sourceSessionId)
-      this.stateRefreshTimers.delete(payload.sourceSessionId)
+      this.clearRefreshTimers(payload.sourceSessionId)
+      const sourceKey = eventStreamKey({ kind: 'session', id: payload.sourceSessionId })
+      this.pendingResync.delete(sourceKey)
+      this.incompleteResync.delete(sourceKey)
+      this.clearResyncRetry(sourceKey)
+      this.resyncControllers.get(payload.sourceSessionId)?.abort()
+      this.resyncControllers.delete(payload.sourceSessionId)
+      this.resyncFlights.delete(payload.sourceSessionId)
       piBranchStore.clear(payload.sourceSessionId)
       piSessionStateStore.clear(payload.sourceSessionId)
       piCommandStore.clearSession(payload.sourceSessionId)
@@ -752,6 +763,10 @@ class PiEventStream {
       extensionUiStore.remove(payload.sourceSessionId)
       activeSessionStore.removeSession(payload.sourceSessionId)
       this.liveRecoveryAt.delete(payload.sourceSessionId)
+      // Invalidate reads started while the target belonged to an earlier runtime,
+      // without deleting the target's own native history/resources.
+      piSessionStateStore.invalidateRequests(payload.targetSessionId)
+      piBranchStore.beginRequest(payload.targetSessionId)
       window.dispatchEvent(new CustomEvent('ompiui:session-replaced', { detail: payload }))
     }
     // 事件驱动刷新：SessionContext/useSessions 订阅 ompiui:sessions-changed 会

@@ -357,9 +357,10 @@ export function PiChatPane({
   const handleQueueBackToInput = useCallback(
     async (kind: 'steering' | 'followUp', index: number, entryId: string) => {
       if (!sessionId) return
+      const capturedIdentity = paneIdentityRef.current
       try {
         const entry = await stopCoordinatorRef.current.submit(JSON.stringify([activeServerGeneration, sessionId]), () => {
-          if (paneIdentityRef.current.activeServerGeneration !== activeServerGeneration || paneIdentityRef.current.sessionId !== sessionId) throw new Error('Session changed before queue selection')
+          if (paneIdentityRef.current !== capturedIdentity) throw new Error('Session changed before queue selection')
           return removeQueuedMessage(sessionId, { kind, index, entryId })
         })
         setPendingSends(current => withoutQueueEntry(current, activeServerGeneration, sessionId, entryId))
@@ -388,6 +389,7 @@ export function PiChatPane({
   const handleQueueSendNow = useCallback(
     async (kind: 'steering' | 'followUp', index: number, entryId: string) => {
       if (!sessionId) return
+      const capturedIdentity = paneIdentityRef.current
       const entries = kind === 'steering' ? queuedSteering : queuedFollowUps
       const selected = entries[index]
       if (!selected || selected.entryId !== entryId) return
@@ -403,7 +405,7 @@ export function PiChatPane({
       let accepted = false
       try {
         await stopCoordinatorRef.current.submit(JSON.stringify([activeServerGeneration, sessionId]), () => {
-          if (paneIdentityRef.current.activeServerGeneration !== activeServerGeneration || paneIdentityRef.current.sessionId !== sessionId) throw new Error('Session changed before queue selection')
+          if (paneIdentityRef.current !== capturedIdentity) throw new Error('Session changed before queue selection')
           return sendQueuedMessage(sessionId, { kind, index, entryId })
         })
         accepted = true
@@ -421,9 +423,10 @@ export function PiChatPane({
   const handleQueueClear = useCallback(
     async (kind: 'steering' | 'followUp', index: number, entryId: string) => {
       if (!sessionId) return
+      const capturedIdentity = paneIdentityRef.current
       try {
         await stopCoordinatorRef.current.submit(JSON.stringify([activeServerGeneration, sessionId]), () => {
-          if (paneIdentityRef.current.activeServerGeneration !== activeServerGeneration || paneIdentityRef.current.sessionId !== sessionId) throw new Error('Session changed before queue selection')
+          if (paneIdentityRef.current !== capturedIdentity) throw new Error('Session changed before queue selection')
           return discardQueuedMessage(sessionId, { kind, index, entryId })
         })
         setPendingSends(current => withoutQueueEntry(current, activeServerGeneration, sessionId, entryId))
@@ -478,15 +481,18 @@ export function PiChatPane({
   const stopKey = JSON.stringify([activeServerGeneration, sessionId])
   const [stoppingKey, setStoppingKey] = useState<string | null>(null)
   const isStopping = stoppingKey === stopKey
-  const paneIdentityRef = useRef({ sessionId, activeServerGeneration })
-  paneIdentityRef.current = { sessionId, activeServerGeneration }
+  const paneIdentityRef = useRef({ sessionId, activeServerGeneration, epoch: 0 })
+  if (paneIdentityRef.current.sessionId !== sessionId || paneIdentityRef.current.activeServerGeneration !== activeServerGeneration) {
+    paneIdentityRef.current = { sessionId, activeServerGeneration, epoch: paneIdentityRef.current.epoch + 1 }
+  }
   const handleAbort = useCallback(async () => {
     if (!sessionId) return
     const sid = sessionId
+    const capturedIdentity = paneIdentityRef.current
     setStoppingKey(stopKey)
     try {
       await stopCoordinatorRef.current.stop(stopKey, () => {
-        if (paneIdentityRef.current.activeServerGeneration !== activeServerGeneration) throw new Error('Server changed before Stop dispatch')
+        if (paneIdentityRef.current !== capturedIdentity) throw new Error('Session changed before Stop dispatch')
         return compacting ? abortPiCompaction(sid) : abortPiOperation(sid)
       })
       if (paneIdentityRef.current.activeServerGeneration === activeServerGeneration) {
@@ -650,17 +656,15 @@ export function PiChatPane({
   const [modelCycleError, setModelCycleError] = useState<{ sessionId: string; serverGeneration: number; message: string } | null>(null)
   const modelCycleOperationRef = useRef(0)
   const handleCycleModel = useCallback((direction: 'forward' | 'backward') => {
-    if (!sessionId) return
+    const capturedIdentity = paneIdentityRef.current
+    if (!sessionId || capturedIdentity.sessionId !== sessionId || capturedIdentity.activeServerGeneration !== activeServerGeneration) return
     const operation = ++modelCycleOperationRef.current
-    const isCurrent = () => operation === modelCycleOperationRef.current &&
-      paneIdentityRef.current.sessionId === sessionId &&
-      paneIdentityRef.current.activeServerGeneration === activeServerGeneration
     setModelCycleError(null)
     void cyclePiModel(sessionId, direction)
-      .then(() => isCurrent() ? refreshPiSessionState(sessionId) : undefined)
+      .then(() => operation === modelCycleOperationRef.current && paneIdentityRef.current === capturedIdentity ? refreshPiSessionState(sessionId) : undefined)
       .catch(error => {
         uiErrorHandler('cycle model', error)
-        if (isCurrent()) setModelCycleError({ sessionId, serverGeneration: activeServerGeneration, message: error instanceof Error ? error.message : String(error) })
+        if (operation === modelCycleOperationRef.current && paneIdentityRef.current === capturedIdentity) setModelCycleError({ sessionId, serverGeneration: activeServerGeneration, message: error instanceof Error ? error.message : String(error) })
       })
   }, [sessionId, activeServerGeneration])
   const handleVariantChange = useCallback(
@@ -1018,8 +1022,14 @@ export function PiChatPane({
   const handleSend = useCallback(
     async (text: string, attachments: Attachment[], options?: { delivery?: DeliveryMode }) => {
       const capturedServerGeneration = activeServerGeneration
+      const capturedIdentity = paneIdentityRef.current
       const sourceDraftKey = composerDraftKey(activeServer, sessionId, currentDirectory ?? '', paneId)
       let targetSessionId = sessionId
+      const isCurrentIdentity = () => paneIdentityRef.current === capturedIdentity || (
+        targetSessionId !== sessionId && paneIdentityRef.current.epoch === capturedIdentity.epoch + 1 &&
+        paneIdentityRef.current.activeServerGeneration === capturedServerGeneration &&
+        paneIdentityRef.current.sessionId === targetSessionId
+      )
       let pendingId: string | undefined
       let accepted = false
       try {
@@ -1065,10 +1075,10 @@ export function PiChatPane({
         if (!targetSessionId) {
           const directory = currentDirectoryRef.current || (await resolveWorkspacePath())
           if (!directory) return false
-          if (paneIdentityRef.current.activeServerGeneration !== capturedServerGeneration || paneIdentityRef.current.sessionId !== sessionId) throw new Error('Session changed before opening a session')
+          if (paneIdentityRef.current !== capturedIdentity) throw new Error('Session changed before opening a session')
           const opened = await openPiSession(directory)
           if (!opened.sessionId) return false
-          if (paneIdentityRef.current.activeServerGeneration !== capturedServerGeneration || paneIdentityRef.current.sessionId !== sessionId) throw new Error('Session changed while opening a session')
+          if (paneIdentityRef.current !== capturedIdentity) throw new Error('Session changed while opening a session')
           const sessionDir = opened.cwd ?? directory
           targetSessionId = opened.sessionId
           const sid = targetSessionId
@@ -1090,11 +1100,12 @@ export function PiChatPane({
           const preferred = getPreferredModelKey()
           const preferredModel = preferred ? models.find(m => `${m.provider}:${m.id}` === preferred) : undefined
           if (preferredModel) {
+            if (!isCurrentIdentity()) throw new Error('Session changed before model setup')
             await setPiModel(targetSessionId, preferredModel.provider, preferredModel.id)
           }
           const preferredVariant = preferred ? getModelVariantPref(preferred) : undefined
           if (preferredVariant && preferredModel?.supportedThinkingLevels?.includes(preferredVariant)) {
-            if (paneIdentityRef.current.activeServerGeneration !== capturedServerGeneration || (paneIdentityRef.current.sessionId !== sessionId && paneIdentityRef.current.sessionId !== targetSessionId)) throw new Error('Session changed before model setup')
+            if (!isCurrentIdentity()) throw new Error('Session changed before model setup')
             await setPiThinkingLevel(targetSessionId, preferredVariant)
           }
           await refreshPiSessionState(targetSessionId)
@@ -1103,8 +1114,7 @@ export function PiChatPane({
         // The command resolves on backend acceptance, not at the end of the turn.
         // Until then InputBox retains both the text and its attachments.
         await stopCoordinatorRef.current.submit(JSON.stringify([capturedServerGeneration, sid]), () => {
-          if (paneIdentityRef.current.activeServerGeneration !== capturedServerGeneration ||
-              (paneIdentityRef.current.sessionId !== sessionId && paneIdentityRef.current.sessionId !== sid)) throw new Error('Session changed before message submission')
+          if (!isCurrentIdentity()) throw new Error('Session changed before message submission')
           // #360: abortAndPrompt is its own native admission, never an
           // abort followed by a plain prompt re-submission.
           if (deliverAs === 'abortAndPrompt') {
@@ -1116,7 +1126,7 @@ export function PiChatPane({
         setPendingSends(current => text.startsWith('/')
           ? current.filter(send => send.id !== pendingId)
           : current.map(send => send.id === pendingId ? { ...send, phase: 'accepted' } : send))
-        if (paneIdentityRef.current.activeServerGeneration !== capturedServerGeneration || paneIdentityRef.current.sessionId !== sid) return true
+        if (!isCurrentIdentity() || paneIdentityRef.current.sessionId !== sid) return true
         const currentText = inputBoxRef.current?.getEditorText() ?? localComposerTextRef.current ?? text
         const remainingText = currentText === text ? '' : currentText
         localComposerTextRef.current = remainingText
@@ -1127,7 +1137,7 @@ export function PiChatPane({
         scheduleDelayedRefresh(sid)
         return true
       } catch (error) {
-        if (paneIdentityRef.current.activeServerGeneration === capturedServerGeneration) {
+        if (isCurrentIdentity()) {
           uiErrorHandler('send message', error)
           if (targetSessionId) scheduleDelayedRefresh(targetSessionId)
         }
@@ -1142,13 +1152,21 @@ export function PiChatPane({
   const handleSetGoal = useCallback(
     async (objective: string, tokenBudget?: number): Promise<boolean> => {
       let targetSessionId = sessionId
+      const capturedIdentity = paneIdentityRef.current
+      const isCurrentIdentity = () => paneIdentityRef.current === capturedIdentity || (
+        targetSessionId !== sessionId && paneIdentityRef.current.epoch === capturedIdentity.epoch + 1 &&
+        paneIdentityRef.current.activeServerGeneration === capturedIdentity.activeServerGeneration &&
+        paneIdentityRef.current.sessionId === targetSessionId
+      )
       try {
         if (!targetSessionId) {
           // Creating a goal is explicit; native RPC owns lifecycle and continuation.
           const directory = currentDirectoryRef.current || (await resolveWorkspacePath())
           if (!directory) return false
+          if (paneIdentityRef.current !== capturedIdentity) throw new Error('Session changed before opening a goal session')
           const opened = await openPiSession(directory)
           if (!opened.sessionId) return false
+          if (paneIdentityRef.current !== capturedIdentity) throw new Error('Session changed while opening a goal session')
           const sessionDir = opened.cwd ?? directory
           targetSessionId = opened.sessionId
           trackPiSession(targetSessionId, sessionDir)
@@ -1167,21 +1185,25 @@ export function PiChatPane({
           const preferred = getPreferredModelKey()
           const preferredModel = preferred ? models.find(m => `${m.provider}:${m.id}` === preferred) : undefined
           if (preferredModel) {
+            if (!isCurrentIdentity()) throw new Error('Session changed before goal model setup')
             await setPiModel(targetSessionId, preferredModel.provider, preferredModel.id)
           }
           const preferredVariant = preferred ? getModelVariantPref(preferred) : undefined
           if (preferredVariant && preferredModel?.supportedThinkingLevels?.includes(preferredVariant)) {
+            if (!isCurrentIdentity()) throw new Error('Session changed before goal model setup')
             await setPiThinkingLevel(targetSessionId, preferredVariant)
           }
           await refreshPiSessionState(targetSessionId)
         }
 
+        if (!isCurrentIdentity()) throw new Error('Session changed before goal submission')
         const submitted = await manageSessionGoal(targetSessionId, 'create', { objective, tokenBudget })
         await waitHostCommand(submitted.id)
+        if (!isCurrentIdentity()) return true
         void refreshPiSessionState(targetSessionId).catch(() => undefined)
         return true
       } catch (error) {
-        uiErrorHandler('set goal', error)
+        if (isCurrentIdentity()) uiErrorHandler('set goal', error)
         return false
       }
     },

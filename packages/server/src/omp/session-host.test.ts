@@ -745,3 +745,48 @@ test('SessionHost keeps an unknown settle state and a runtime touched during the
   await touched.host.dispose()
   delete process.env.OMPIUI_DRIVER
 })
+
+test("SessionHost replacement retires source activity and rejects late source frames", async t => {
+  const previous = process.env.OMPIUI_DRIVER
+  process.env.OMPIUI_DRIVER = "mock"
+  let identity = "epoch-source"
+  let emitEvent!: (event: { channel: string; sessionId: string; event?: unknown }) => void
+  const worker = {
+    command: async () => ({}),
+    getSessionId: () => identity,
+    getSessionFile: () => undefined,
+    getCwd: () => ".",
+    updateSessionIdentity: (next: string) => { identity = next },
+    onEvent: (listener: typeof emitEvent) => { emitEvent = listener; return () => {} },
+    onCrash: () => () => {}, onClose: () => () => {}, dispose: async () => {},
+  } as unknown as WorkerSession
+  const supervisor = {
+    onEvent: () => () => {}, open: async () => worker, replaceRuntimeLease: async () => {},
+  } as unknown as RuntimeSupervisor
+  const hub = new EventHub()
+  const host = new SessionHost(supervisor, hub)
+  t.after(() => {
+    host.dispose()
+    if (previous === undefined) delete process.env.OMPIUI_DRIVER
+    else process.env.OMPIUI_DRIVER = previous
+  })
+  await host.openSession(".")
+  emitEvent({ channel: "session.activity", sessionId: "epoch-source", event: { status: { type: "busy" } } })
+  assert.ok(host.getActivitySnapshot().sessions["epoch-source"])
+  const attached = host.getAttached("epoch-source")!
+  // Test seam for the committed native receipt; the worker and lease boundary are controlled above.
+  const internal = host as unknown as { trackReplacement(session: typeof attached, data: JsonObject): Promise<void> }
+  await internal.trackReplacement(attached, {
+    cancelled: false, sourceSessionId: "epoch-source", targetSessionId: "epoch-target", targetSessionFile: null, targetCwd: ".",
+  })
+  assert.deepEqual(host.getActivitySnapshot().sessions, {})
+  const subagentFrames: unknown[] = []
+  const off = hub.subscribe(event => { if (event.channel === "omp.subagent") subagentFrames.push(event.payload) })
+  emitEvent({ channel: "session.activity", sessionId: "epoch-source", event: { status: { type: "busy" } } })
+  emitEvent({ channel: "omp.subagent", sessionId: "epoch-source", event: { kind: "lifecycle", payload: { id: "late-source", status: "started" } } })
+  assert.deepEqual(host.getActivitySnapshot().sessions, {})
+  assert.deepEqual(subagentFrames, [])
+  emitEvent({ channel: "session.activity", sessionId: "epoch-target", event: { status: { type: "busy" } } })
+  assert.ok(host.getActivitySnapshot().sessions["epoch-target"])
+  off()
+})

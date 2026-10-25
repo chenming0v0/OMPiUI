@@ -324,6 +324,7 @@ export class OmpRpcSession implements SessionRuntime {
         this.refreshAvailableCommands(),
       ]);
       await this.syncEntriesNow();
+      await this.getState();
     } catch (error) {
       // 启动中途失败：杀掉子进程，避免留下孤儿 omp 进程
       this.client.kill("startup_failed");
@@ -332,15 +333,14 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   private async refreshIdentity(): Promise<void> {
-    const [state, identity] = await Promise.all([
-      this.fetchState(), this.client.requestRuntime("identity"),
-    ]);
+    // Identity is the committed operation boundary. Projection read failures
+    // must not hide a native switch that has already changed the writer's file.
+    const identity = await this.client.requestRuntime("identity");
     if (!isJsonObject(identity) || typeof identity.sessionId !== "string" || typeof identity.cwd !== "string")
       throw new Error("Managed runtime returned an invalid session identity");
+    if (identity.sessionId !== this.sessionId) this.sessionName = null;
     this.sessionId = identity.sessionId;
     this.sessionFile = typeof identity.sessionFile === "string" ? identity.sessionFile : undefined;
-    this.sessionName =
-      typeof state.sessionName === "string" ? state.sessionName : null;
     this.cwd = identity.cwd;
   }
 
@@ -388,8 +388,10 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   private async refreshAvailableCommands(): Promise<void> {
+    const epoch = this.eventEpoch;
     const response = await this.client.request({ type: "get_available_commands" }, 30_000);
     const data = unwrapResponse<JsonValue>(response);
+    this.assertEventEpoch(epoch);
     if (!isJsonObject(data) || !Array.isArray(data.commands)) {
       throw new OmpRpcError("Native command catalog is unavailable", "RESOURCE_UNAVAILABLE");
     }
@@ -578,9 +580,6 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   private emitPiEvent(event: JsonObject): void {
-    if (event.type === "goal_updated" && isJsonObject(event.goal)) {
-      event = { ...event, goal: projectStateImages(event.goal) };
-    }
     const update =
       event.type === "message_update"
         ? "message"
@@ -724,6 +723,7 @@ export class OmpRpcSession implements SessionRuntime {
         };
         break;
       }
+
       default:
         break;
     }
@@ -832,6 +832,7 @@ export class OmpRpcSession implements SessionRuntime {
 
   private reportEntrySyncError(error: unknown): void {
     if (this.closed) return;
+    if (error instanceof Error && "code" in error && error.code === "SESSION_REPLACED") return;
     console.error("Failed to synchronize OMP session history:", error);
     this.syncDirty = true;
   }
@@ -1045,6 +1046,8 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   private async buildState(): Promise<JsonObject> {
+    // A read opened by the source must never return target state to its caller.
+    // Same-identity history/activity changes may retry; replacement must expire.
     const epoch = this.eventEpoch;
     const historyGeneration = this.historyGeneration;
     const modelsGeneration = this.modelsGeneration;
@@ -1054,13 +1057,16 @@ export class OmpRpcSession implements SessionRuntime {
       this.ensureSynced(),
       this.listSubagents(),
     ]);
+    this.assertEventEpoch(epoch);
     if (epoch !== this.eventEpoch || historyGeneration !== this.historyGeneration || modelsGeneration !== this.modelsGeneration || activityGeneration !== this.activityGeneration) return this.buildState();
+    this.sessionName = typeof native.sessionName === "string" ? native.sessionName : null;
     this.currentStreaming = Boolean(native.isStreaming);
     this.nativeSettled = native.isSettled === true ||
       (native.isSettled === undefined && native.isStreaming === false &&
         !native.hasPendingAsyncWork && !native.queuedMessageCount);
     this.trackNativeQueue(native);
     await Promise.all([this.refreshQueue(false), this.refreshThinkingLevels()]);
+    this.assertEventEpoch(epoch);
     if (epoch !== this.eventEpoch || historyGeneration !== this.historyGeneration || modelsGeneration !== this.modelsGeneration || activityGeneration !== this.activityGeneration) return this.buildState();
     const model = this.resolveModelDescriptor(native.model);
     const contextUsage = isJsonObject(native.contextUsage)
@@ -1079,6 +1085,7 @@ export class OmpRpcSession implements SessionRuntime {
       /* stats 是增强信息 */
     }
     const head = this.getHead();
+    this.assertEventEpoch(epoch);
     if (statsEpoch !== this.eventEpoch || historyGeneration !== this.historyGeneration || modelsGeneration !== this.modelsGeneration || activityGeneration !== this.activityGeneration) return this.buildState();
     this.pendingAsyncWork = Boolean(native.hasPendingAsyncWork);
     this.emitActivityIfChanged();
@@ -1435,7 +1442,6 @@ export class OmpRpcSession implements SessionRuntime {
     return result;
   }
 
-
   async abort(): Promise<JsonValue | undefined> {
     if (this.abortInFlight) return this.abortInFlight;
     const epoch = this.eventEpoch;
@@ -1472,15 +1478,14 @@ export class OmpRpcSession implements SessionRuntime {
     if (result?.cancelled === true) return { operation: "new", sourceSessionId, cancelled: true };
     await this.refreshIdentity();
     this.resetHistory();
-    await Promise.all([this.refreshModels(), this.refreshThinkingLevels()]);
-    await this.syncEntriesNow();
-    this.emitHeadIfChanged();
+    const projectionError = await this.restoreReplacementProjection();
     return {
       operation: "new",
       sourceSessionId,
       targetSessionId: this.sessionId,
       targetSessionFile: this.sessionFile ?? null,
       targetCwd: this.cwd,
+      ...(projectionError === undefined ? {} : { projectionError }),
       cancelled: false,
     };
   }
@@ -1498,24 +1503,61 @@ export class OmpRpcSession implements SessionRuntime {
     ));
     if (result?.cancelled === true) return { operation: "switch", sourceSessionId, cancelled: true };
     await this.refreshIdentity();
-    this.resetHistory();
-    await Promise.all([this.refreshModels(), this.refreshThinkingLevels()]);
-    await this.syncEntriesNow();
-    this.emitHeadIfChanged();
+    if (this.sessionId !== sourceSessionId) this.resetHistory();
+    else this.resetHistoryProjection();
+    const projectionError = await this.restoreReplacementProjection();
     return {
       operation: "switch",
       sourceSessionId,
       targetSessionId: this.sessionId,
       targetSessionFile: this.sessionFile ?? null,
       targetCwd: this.cwd,
+      ...(projectionError === undefined ? {} : { projectionError }),
       cancelled: false,
     };
+  }
+
+  private async restoreReplacementProjection(): Promise<string | undefined> {
+    const epoch = this.eventEpoch;
+    let projectionError: string | undefined;
+    try {
+      await Promise.all([
+        this.refreshModels(), this.refreshAvailableCommands(),
+      ]);
+      this.assertEventEpoch(epoch);
+      await this.syncEntriesNow();
+      await this.getState();
+    } catch (error) {
+      this.reportEntrySyncError(error);
+      projectionError = error instanceof Error ? error.message : String(error);
+    }
+    this.assertEventEpoch(epoch);
+    this.emitHeadIfChanged();
+    for (const listener of this.resourcesListeners) listener();
+    return projectionError;
+  }
+
+  private assertEventEpoch(epoch: string): void {
+    if (epoch !== this.eventEpoch) {
+      throw Object.assign(new Error("Session replaced while reading native state"), { code: "SESSION_REPLACED" });
+    }
+  }
+
+  private resetHistoryProjection(): void {
+    this.historyGeneration += 1;
+    this.messageStream.clear();
+    this.entries = [];
+    this.entriesSeeded = false;
+    this.branchPages.clear();
+    this.liveMessage = undefined;
+    this.nativeFingerprint = "";
   }
 
   private resetHistory(): void {
     this.historyGeneration += 1;
     this.thinkingLevelsGeneration += 1;
     this.abortIntentEpoch = undefined;
+    this.abortInFlight = undefined;
     this.toolInterruption = undefined;
     this.entries = [];
     this.branchPages.clear();
@@ -1535,6 +1577,7 @@ export class OmpRpcSession implements SessionRuntime {
     this.subagentRuns.clear();
     this.supersededSubagentParents.clear();
     this.subagentRunSequence = 0;
+    this.subagentEvents.clear();
     this.messageStream.clear();
     this.modelsCache = [];
     this.modelsGeneration += 1;
@@ -1570,16 +1613,7 @@ export class OmpRpcSession implements SessionRuntime {
     this.sessionName = null;
     this.resetHistory();
     this.leafId = result.leafId;
-    let projectionError: string | undefined;
-    try {
-      const [state] = await Promise.all([this.fetchState(), this.refreshModels(), this.refreshThinkingLevels()]);
-      this.sessionName = typeof state.sessionName === "string" ? state.sessionName : null;
-      await this.syncEntriesNow();
-    } catch (error) {
-      this.reportEntrySyncError(error);
-      projectionError = error instanceof Error ? error.message : String(error);
-    }
-    this.emitHeadIfChanged();
+    const projectionError = await this.restoreReplacementProjection();
     return {
       ...result, operation: "fork", sourceSessionId,
       targetSessionId: this.sessionId,
@@ -1807,13 +1841,7 @@ export class OmpRpcSession implements SessionRuntime {
     // Navigation keeps the native file and identity; never implement it as branch.
     // Only invalidate the history projection. Native same-file navigation does
     // not replace the runtime's model scope, queues, subagents, or extension UI.
-    this.historyGeneration += 1;
-    this.messageStream.clear();
-    this.entries = [];
-    this.entriesSeeded = false;
-    this.branchPages.clear();
-    this.liveMessage = undefined;
-    this.nativeFingerprint = "";
+    this.resetHistoryProjection();
     this.leafId = result.leafId;
     let projectionError: string | undefined;
     try {

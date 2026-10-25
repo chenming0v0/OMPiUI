@@ -1076,7 +1076,6 @@ export class SessionHost {
       }
 
       const previousLastAccess = this.lastAccess.get(sourceSessionId);
-      const previousActivity = this.activity.get(sourceSessionId);
       const wasMaterialized = this.materialized.delete(sourceSessionId);
       this.toolInterruptions.delete(sourceSessionId);
       this.toolInterruptions.delete(targetSessionId);
@@ -1095,10 +1094,11 @@ export class SessionHost {
       );
       if (previousLastAccess !== undefined)
         this.lastAccess.set(targetSessionId, previousLastAccess);
-      if (previousActivity !== undefined)
-        this.activity.set(targetSessionId, previousActivity);
       if (wasMaterialized) this.materialized.add(targetSessionId);
       this.runtimes.set(session);
+      // Activity belongs to the native identity, not to the reused worker.
+      // Target activity is restored by its own native events/state readback.
+      this.publishActivity();
       diagnostics.record("session.replaced", {
         sessionId: targetSessionId,
         sourceSessionId,
@@ -1142,6 +1142,8 @@ export class SessionHost {
     session: AttachedSession,
     event: WorkerEvent,
   ): void {
+    if (event.channel !== "extension.ui" && "sessionId" in event &&
+      typeof event.sessionId === "string" && event.sessionId !== session.sessionId) return;
     this.touch(session.sessionId);
     if (event.channel === "payload.omitted") {
       diagnostics.record("worker.payload_omitted", {

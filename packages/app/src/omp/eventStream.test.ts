@@ -240,6 +240,58 @@ describe('handleSessionsUpdated replacement semantics', () => {
     })
     expect(changedCount).toBe(1)
   })
+
+  it('same-ID relocation retains Goal and child state and emits metadata only', () => {
+    const page = fakeBranchPage('session-a')
+    piBranchStore.setData('session-a', page)
+    piSessionStateStore.setState('session-a', { goal: { objective: 'native goal' } } as never)
+    ompSubagentStore.applyLifecycle('session-a', { id: 'native-child', parentToolCallId: 'task-a', status: 'started' })
+    const relocated = vi.fn()
+    window.addEventListener('ompiui:session-relocated', relocated)
+    try {
+      handle({ replaced: true, sourceSessionId: 'session-a', targetSessionId: 'session-a', targetCwd: '/relocated' })
+      expect(piBranchStore.getData('session-a')).toBe(page)
+      expect(piSessionStateStore.getState('session-a')).toMatchObject({ goal: { objective: 'native goal' } })
+      expect(ompSubagentStore.getRunsForToolCall('task-a', 'session-a')).toHaveLength(1)
+      expect(replacedEvents).toHaveLength(0)
+      expect(relocated).toHaveBeenCalledTimes(1)
+      expect(changedCount).toBe(1)
+    } finally {
+      window.removeEventListener('ompiui:session-relocated', relocated)
+      ompSubagentStore.clearSession('session-a')
+    }
+  })
+
+  it('cancels source refresh timers and invalidates old target reads without clearing target', async () => {
+    vi.useFakeTimers()
+    const internal = piEventStream as unknown as {
+      branchRefreshTimers: Map<string, number>
+      stateRefreshTimers: Map<string, number>
+      resyncControllers: Map<string, AbortController>
+    }
+    const sourceRefresh = vi.fn()
+    const controller = new AbortController()
+    internal.branchRefreshTimers.set('session-a', window.setTimeout(sourceRefresh, 10))
+    internal.stateRefreshTimers.set('session-a', window.setTimeout(sourceRefresh, 10))
+    internal.resyncControllers.set('session-a', controller)
+    const targetPage = fakeBranchPage('session-b')
+    piBranchStore.setData('session-b', targetPage)
+    const oldBranch = piBranchStore.beginRequest('session-b')
+    const oldState = piSessionStateStore.beginRequest('session-b')
+    try {
+      handle({ replaced: true, sourceSessionId: 'session-a', targetSessionId: 'session-b' })
+      await vi.advanceTimersByTimeAsync(20)
+      expect(sourceRefresh).not.toHaveBeenCalled()
+      expect(controller.signal.aborted).toBe(true)
+      expect(piBranchStore.getData('session-b')).toBe(targetPage)
+      expect(piBranchStore.isRequestCurrent('session-b', oldBranch)).toBe(false)
+      expect(piSessionStateStore.isRequestCurrent('session-b', oldState)).toBe(false)
+    } finally {
+      piBranchStore.clear('session-b')
+      piSessionStateStore.clear('session-b')
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('omp.subagent routing across streams', () => {

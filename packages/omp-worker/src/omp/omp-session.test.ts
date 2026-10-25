@@ -779,3 +779,76 @@ describe("OmpRpcSession configuration reporting", () => {
     await assert.rejects(session.setThinkingLevel("wrong"), /unsupported selection/)
   })
 })
+
+describe("OmpRpcSession identity epochs (#361)", () => {
+  it("expires a source state read instead of returning target resources", async t => {
+    const { session, rpc, native } = await sessionFixture(t)
+    const admitted = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    let delayed = false
+    rpc.onRequest = command => {
+      if (command.type !== "get_state" || delayed) return
+      delayed = true
+      const source = structuredClone(native)
+      admitted.resolve()
+      return release.promise.then(() => ({ data: source }))
+    }
+    const reading = session.getState()
+    const expired = assert.rejects(reading, error => error instanceof Error && "code" in error && error.code === "SESSION_REPLACED")
+    await admitted.promise
+    await session.newSession()
+    release.resolve()
+    await expired
+    assert.equal((await session.getState()).sessionId, "replacement-new_session")
+  })
+
+
+
+  it("clears paused subagent buffers without emitting source frames to target", async t => {
+    const { session, frame } = await sessionFixture(t)
+    const events: JsonObject[] = []
+    session.onSubagentFrame(event => events.push(event))
+    session.setOutputPaused(true)
+    frame({ type: "subagent_lifecycle", payload: { id: "source-agent", status: "started" } })
+    frame({ type: "subagent_progress", payload: { id: "source-agent", progress: { id: "source-agent", status: "running" } } })
+    await session.newSession()
+    session.setOutputPaused(false)
+    assert.deepEqual(events, [])
+    assert.deepEqual((await session.getState()).subagents, [])
+  })
+
+  it("returns the committed target when a subsequent state projection fails", async t => {
+    const { session, rpc, frame } = await sessionFixture(t)
+    frame({ type: "goal_updated", goal: { id: "source-goal", objective: "source" } })
+    rpc.onRequest = command => command.type === "get_state"
+      ? { success: false, error: "projection read failed" } : undefined
+    const result = await session.newSession()
+    assert.equal(result.cancelled, false)
+    assert.equal(result.targetSessionId, "replacement-new_session")
+    assert.match(String(result.projectionError), /projection read failed/)
+    assert.equal(session.getSessionId(), "replacement-new_session")
+    rpc.onRequest = () => undefined
+    assert.equal((await session.getState()).goal, null)
+  })
+
+  it("does not wait on an old abort response before submitting to target", { timeout: 5000 }, async t => {
+    const { session, rpc, commands } = await sessionFixture(t)
+    const admitted = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    rpc.onRequest = command => {
+      if (command.type !== "abort") return
+      admitted.resolve()
+      return release.promise.then(() => ({ data: {} }))
+    }
+    const oldAbort = session.abort()
+    await admitted.promise
+    await session.newSession()
+    try {
+      await session.sendUserMessage("target message")
+      assert.ok(commands.some(command => command.type === "submitUserMessage" && command.text === "target message"))
+    } finally {
+      release.resolve()
+      await oldAbort
+    }
+  })
+})
