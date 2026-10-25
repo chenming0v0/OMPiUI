@@ -99,6 +99,14 @@ try {
     $runtime = Get-Content (Join-Path $env:OMPI_OMP_RUNTIME_DIR 'runtime.json') -Raw | ConvertFrom-Json
     if ($runtime.version -ne '18.12.6' -or $runtime.bunVersion -ne '1.3.14') { throw 'Smoke requires official OMP 18.12.6 with public sources and Bun 1.3.14.' }
     Record-Step 'runner-environment' @{ userInteractive = [Environment]::UserInteractive; sessionId = (Get-Process -Id $PID).SessionId; os = [Environment]::OSVersion.ToString(); runtime = $runtime; project = $project; shortcutCwd = $shortcutCwd }
+    $env:SMOKE_ROOT = $Root
+    $providerScript = Join-Path $PSScriptRoot 'windows-upgrade-provider.mjs'
+    $provider = Start-Process -FilePath (Get-Command node).Source -ArgumentList ('"' + $providerScript + '"') -PassThru -RedirectStandardOutput (Join-Path $evidence 'provider-stdout.log') -RedirectStandardError (Join-Path $evidence 'provider-stderr.log')
+    $ready = Join-Path $Root 'provider-ready.json'
+    $deadline = (Get-Date).AddSeconds(30)
+    while (-not (Test-Path $ready) -and (Get-Date) -lt $deadline -and -not $provider.HasExited) { Start-Sleep -Milliseconds 100 }
+    if (-not (Test-Path $ready)) { throw 'Owned local native provider did not initialize its modelRoles/models.yml; see provider logs.' }
+    Record-Step 'owned-local-test-provider' (Get-Content (Join-Path $evidence 'local-provider.json') -Raw | ConvertFrom-Json)
 
     Install-App $BaselineInstaller 'baseline-install'
     $exe = Join-Path $install 'ompiui.exe'
@@ -122,7 +130,10 @@ try {
         $link = $shell.CreateShortcut($path)
         $link.TargetPath = $exe
         $link.WorkingDirectory = $shortcutCwd
-        $link.Arguments = '--issue-336-upgrade-smoke'
+        # A quoted existing project is the supported explicit-directory argv.
+        # Desktop deliberately has no argv, so its differing WorkingDirectory
+        # must not replace the GUI's persisted original project.
+        $link.Arguments = if ($path -eq $startMenu) { '"' + $project + '"' } else { '' }
         $link.IconLocation = "$exe,0"
         $link.WindowStyle = 1
         $link.Save()
@@ -155,5 +166,6 @@ try {
     exit 1
 } finally {
     if ($exe) { Stop-OwnedGui }
+    if ($provider -and -not $provider.HasExited) { Stop-Process -Id $provider.Id -Force }
     Save-Report
 }

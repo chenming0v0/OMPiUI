@@ -157,16 +157,25 @@ try {
     await click(button('/^New chat$|^New Chat$|^新对话$/i', true), 'Actual new chat GUI action')
     await fill(`Array.from(document.querySelectorAll('textarea')).find(element => visible(element) && !element.disabled)`, '/changelog', 'Actual new chat composer')
     await click(button('/Send message|发送消息/i', true), 'Actual composer send action')
+    await eventually('Preliminary native command completed', () => evaluate(`Array.from(document.querySelectorAll('button')).some(element => /Send message|发送消息/i.test(element.getAttribute('aria-label') || ''))`))
+    const provider = JSON.parse(readFileSync(join(output, 'local-provider.json'), 'utf8'))
+    report.persistenceProvider = { kind: provider.kind, baseUrl: provider.baseUrl, marker: provider.marker }
+    await fill(`Array.from(document.querySelectorAll('textarea')).find(element => visible(element) && !element.disabled)`, provider.marker, 'Real plain GUI persistence prompt')
+    await click(button('/Send message|发送消息/i', true), 'Send real plain GUI persistence prompt')
     const native = await eventually('New native session file with original project cwd', async () => {
       const state = await evaluate('({url: location.href, text: document.body.innerText})')
       for (const file of sessionFiles(nativeSessionRoot).filter(file => !before.has(file))) {
         const contents = readFileSync(file, 'utf8')
-        const header = contents.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line)).find(entry => entry.type === 'session')
+        const entries = contents.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))
+        const header = entries.find(entry => entry.type === 'session')
         if (!header || !directoryEqual(header.cwd, project)) continue
         // Native session identity must be the GUI's actual selected new chat,
         // rather than a separately created background/control session file.
         if (!header.id || !decodeURIComponent(state.url).includes(header.id)) continue
-        return { file, header, guiUrl: state.url, sha256: createHash('sha256').update(contents).digest('hex') }
+        const hasUser = entries.some(entry => entry.type === 'message' && entry.message?.role === 'user' && JSON.stringify(entry.message.content).includes(provider.marker))
+        const hasAssistant = entries.some(entry => entry.type === 'message' && entry.message?.role === 'assistant' && JSON.stringify(entry.message.content).includes('Owned disposable HTTP upgrade smoke provider received the real GUI persistence prompt.'))
+        if (!hasUser || !hasAssistant) continue
+        return { file, header, guiUrl: state.url, hasUser, hasAssistant, sha256: createHash('sha256').update(contents).digest('hex') }
       }
       return null
     })

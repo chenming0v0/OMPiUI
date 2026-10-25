@@ -167,7 +167,7 @@ Windows 安装器固定使用当前 Tauri NSIS 模板，在旧卸载器删除快
 
 本轮实际编译 Windows 原生 exe，并在隔离配置目录运行 supervisor 与两个并发维护 CLI：关闭请求仅发一次，监听器关闭后仍等待 worker 退出；取消恢复原停止状态，旧配置格式重写后仍恢复原运行意图，开始替换后拒绝回滚，卸载完成后保持停止。独立浏览器已验证模型持久化、刷新保留草稿及新会话使用原项目；官方会话互通与只读浏览验收通过。完整安装／升级未在本机验收，按用户要求由用户下载新版本验证；隔离夹具不能替代真实版本升级与登录验收。
 
-真实 Windows 升级验收可手动派发 `Windows installed upgrade smoke` 工作流；它只接受 GitHub 托管的可弃置 Windows runner，本地和 self-hosted 主机被脚本拒绝。提供完整候选 commit SHA、该 SHA 成功的 `Desktop And Mobile Release` run ID 和旧版本 tag；工作流核对源树对应的 Windows lite artifact，校验旧安装器的发布 SHA-256，并单独装配官方 OMP 18.12.6 公共源码／二进制与 Bun 1.3.14。它实际安装旧版，经原生 WebView CDP 操作保存项目，定制桌面／开始菜单 `.lnk` 后用 `/P` 执行包含旧卸载的真实升级（不使用绕过卸载的 `/UPDATE`），比较目标、起始目录、参数及完整文件 SHA-256，再经保留的快捷方式启动新 GUI，并发送无需模型凭据的官方 `/changelog` 来打开新原生会话。只有 GUI 选中会话 ID 与新 JSONL 的原生 header ID 一致且 cwd 为升级前项目才通过；快捷方式 cwd 特意使用另一目录，以证明保存项目没有被它覆盖。
+真实 Windows 升级验收可手动派发 `Windows installed upgrade smoke` 工作流；它只接受 GitHub 托管的可弃置 Windows runner，本地和 self-hosted 主机被脚本拒绝。提供完整候选 commit SHA、该 SHA 成功的 `Desktop And Mobile Release` run ID 和旧版本 tag；工作流核对源树对应的 Windows lite artifact，校验旧安装器的发布 SHA-256，并单独装配官方 OMP 18.12.6 公共源码／二进制与 Bun 1.3.14。它实际安装旧版，经原生 WebView CDP 操作保存项目，定制桌面／开始菜单 `.lnk` 后用 `/P` 执行包含旧卸载的真实升级（不使用绕过卸载的 `/UPDATE`），比较目标、起始目录、参数及完整文件 SHA-256，再经保留的桌面快捷方式启动新 GUI。开始菜单参数使用受支持的显式原项目路径；桌面参数留空，快捷方式 cwd 特意使用另一目录，以证明保存项目没有被隐式 cwd 覆盖。独立、确定性的本地 HTTP 测试 provider 配合原生 `models.yml`／`modelRoles.default` 配置，让官方 OMP 无需任何真实账号凭据即可启动；其用途仅为持久化升级验收对话，不代表真实厂商模型或账号能力。GUI 先发送官方 `/changelog`，再发送真实普通文本，只有 GUI 选中会话 ID 与新 JSONL 原生 header ID 一致、cwd 为升级前项目且真实 user／assistant 条目均落盘才通过。
 
 验收 artifact 保存候选源码／构建 run／安装器哈希、安装退出码、升级前后快捷方式字段、原生 WebView 截图、只读存储快照及真实 session JSONL。若托管环境缺 WebView/CDP、安装器受无人值守弹窗阻止或 GUI／原生会话路径未完成，job 失败并保留准确阻塞证据，不以 supervisor、单测或独立浏览器页代替升级通过。候选预构建不等于发布，不会由此工作流创建 tag 或 release。
 
