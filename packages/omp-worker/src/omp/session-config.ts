@@ -45,7 +45,13 @@ export function sessionConfigFromBranch(branch: JsonObject[]): { model: JsonObje
 
 /** Read the native mode_change snapshot on this branch without restoring a runtime. */
 export function sessionGoalFromBranch(branch: JsonObject[]): JsonObject | null {
-  const entry = branch.findLast(item => item.type === "mode_change")
+  let entry: JsonObject | undefined
+  for (let index = branch.length - 1; index >= 0; index--) {
+    if (branch[index]?.type === "mode_change") {
+      entry = branch[index]
+      break
+    }
+  }
   if (!entry || (entry.mode !== "goal" && entry.mode !== "goal_paused") || !isJsonObject(entry.data) || !isJsonObject(entry.data.goal)) return null
   const goal = entry.data.goal
   // Match the official goalFromModeData boundary; do not invent missing usage.

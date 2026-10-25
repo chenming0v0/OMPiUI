@@ -102,7 +102,7 @@ export function runGit(
         options.signal?.addEventListener("abort", onAbort, { once: true });
         if (options.signal?.aborted) return onAbort();
 
-        child.stdout.on("data", (chunk: Buffer) => {
+        child.stdout!.on("data", (chunk: Buffer) => {
           if (truncated) return;
           const available = Math.max(0, maxOutput - stdoutBytes);
           stdoutBytes += chunk.length;
@@ -123,7 +123,7 @@ export function runGit(
           }
           stdout.push(chunk);
         });
-        child.stderr.on("data", (chunk: Buffer) => {
+        child.stderr!.on("data", (chunk: Buffer) => {
           stderrBytes += chunk.length;
           if (stderrBytes <= maxOutput) stderr.push(chunk);
         });

@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- fix(git): 动态 stdin 选择仍保持 stdout/stderr 固定管道，修正集成类型推断；实际 Git 根目录读取及 stdin hash-object 均返回退出码 0、空 stderr。
+- fix(goals): 只读原生 Goal 快照使用无分配逆向遍历，兼容现有 TypeScript 目标，不扩大 lib；已执行暂停快照、后续非 Goal 模式优先和空历史 smoke。
 - docs: 明确 OMPiUI 的 GUI 定位，禁止任何官方终端启动/接管入口及引导文案；对齐任务必须在网页内完成，缺官方接口明确记录阻塞。按此规则清理 GitHub 对齐 issue 的范围与验收。
 - fix(models): 从官方模型的 `thinking.efforts` 补齐 `supportedThinkingLevels`，修复 Agent 模型配置的思考强度下拉框只显示已有值、无法选择档位的问题；保留原生档位与已有角色配置，不依赖先发送消息或安装 OMP 源码包。
 - fix(chat): 只读会话预览缺少运行时档位时使用当前模型目录；原生明确返回的空列表或仅 `off` 仍优先，不再等待首条消息才显示思考强度。
