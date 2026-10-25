@@ -70,3 +70,14 @@ export type GitCommitPreview = {
 };
 
 export type GitCommitResponse = { headOid: string; output: string };
+export type GitWorktree = {
+  path: string;
+  head: string | null;
+  branch: string | null;
+  detached: boolean;
+  bare: boolean;
+  locked: boolean;
+  lockReason: string | null;
+  prunable: boolean;
+};
+export type GitWorktreeCatalog = { primaryRoot: string; worktrees: GitWorktree[] };

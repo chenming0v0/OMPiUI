@@ -18,6 +18,7 @@ import type {
   GitStatusResponse,
   GitCommitPreview,
   GitCommitResponse,
+  GitWorktreeCatalog,
   FileCreateRequest,
   FileListResponse,
   FileMoveRequest,
@@ -340,6 +341,16 @@ export async function postHostCommand<
 // Host git commands (git.*), workspace-scoped
 export function getHostGitInfo(workspacePath: string, signal?: AbortSignal): Promise<GitInfoResponse> {
   return postHostCommand('git.info', { workspacePath }, signal)
+}
+
+export function getHostGitWorktrees(workspacePath: string, signal?: AbortSignal): Promise<GitWorktreeCatalog> {
+  return postHostCommand('git.worktrees', { workspacePath }, signal)
+}
+export function createHostGitWorktree(workspacePath: string, path: string, branch: string): Promise<GitWorktreeCatalog> {
+  return postHostCommand('git.worktreeCreate', { workspacePath, path, branch })
+}
+export function removeHostGitWorktree(workspacePath: string, path: string): Promise<GitWorktreeCatalog> {
+  return postHostCommand('git.worktreeRemove', { workspacePath, path })
 }
 
 export function getHostGitStatus(workspacePath: string, signal?: AbortSignal): Promise<GitStatusResponse> {
@@ -1054,6 +1065,11 @@ export type PiForkResult = {
   selectedImages?: PiImageInput[]
   projectionError?: string
   [key: string]: JsonValue | undefined
+}
+
+export async function movePiSessionWorktree(sessionId: string, path: string): Promise<PiForkResult> {
+  const command = await postPiSessionCommand(sessionId, 'moveSession', { path })
+  return (await waitHostCommand(command.id) ?? {}) as PiForkResult
 }
 
 export function forkPiSession(

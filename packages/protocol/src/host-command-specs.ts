@@ -374,6 +374,31 @@ export const HOST_COMMAND_SPECS = [
     mutatesWorkspace: true,
   },
   {
+    name: "git.worktrees",
+    domain: "git",
+    description: "List real Git worktrees without starting an Agent",
+    paramsSchema: objectSchema(WORKSPACE_PATH, ["workspacePath"]),
+    idempotent: true,
+  },
+  {
+    name: "git.worktreeCreate",
+    domain: "git",
+    description: "Create a linked worktree on a new branch without moving a session",
+    paramsSchema: objectSchema({ ...WORKSPACE_PATH, path: STRING, branch: STRING }, ["workspacePath", "path", "branch"]),
+    queue: "serialized",
+    mutatesWorkspace: true,
+    emits: ["workspace.git"],
+  },
+  {
+    name: "git.worktreeRemove",
+    domain: "git",
+    description: "Explicitly remove a clean, unused linked worktree; never force or remove its branch",
+    paramsSchema: objectSchema({ ...WORKSPACE_PATH, path: STRING }, ["workspacePath", "path"]),
+    queue: "serialized",
+    mutatesWorkspace: true,
+    emits: ["workspace.git"],
+  },
+  {
     name: "models.providers.get",
     domain: "models",
     description: "Read custom model providers from ~/.omp/agent/models.yml",
@@ -495,6 +520,9 @@ export type HostCommandParams = {
   "git.hunk": { workspacePath: string; path: string; staged: boolean; hunk: number; expectedPatch: string };
   "git.commitPreview": { workspacePath: string };
   "git.commit": { workspacePath: string; message: string; fingerprint: string };
+  "git.worktrees": { workspacePath: string };
+  "git.worktreeCreate": { workspacePath: string; path: string; branch: string };
+  "git.worktreeRemove": { workspacePath: string; path: string };
   "models.providers.get": Record<string, never>;
   "models.providers.save": { provider: Record<string, unknown> };
   "models.providers.delete": { providerId: string };

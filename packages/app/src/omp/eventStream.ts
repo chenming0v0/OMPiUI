@@ -747,6 +747,11 @@ class PiEventStream {
         window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
         return
       }
+      if (payload.sourceSessionId === payload.targetSessionId) {
+        window.dispatchEvent(new CustomEvent('ompiui:session-relocated', { detail: payload }))
+        window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
+        return
+      }
       // Runtime replacement (fork/new/import): the worker now owns a
       // different session id. Drop the old session's cursors and keyed
       // data; panes re-subscribe and reload under the new id when they

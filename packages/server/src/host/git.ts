@@ -37,7 +37,7 @@ interface GitResult {
   truncated?: boolean;
 }
 
-function runGit(
+export function runGit(
   cwd: string,
   args: string[],
   options: {

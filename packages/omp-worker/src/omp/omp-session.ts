@@ -1512,6 +1512,40 @@ export class OmpRpcSession implements SessionRuntime {
     };
   }
 
+  async moveSession(path: string): Promise<JsonObject> {
+    if (this.currentStreaming || this.lastActivity.retrying || this.lastActivity.compacting || this.nativeQueue.steering.length || this.nativeQueue.followUp.length) {
+      throw Object.assign(new Error("The native session is busy; nothing was moved"), { code: "SESSION_BUSY" });
+    }
+    const sourceSessionId = this.sessionId;
+    const latest = await this.client.requestRuntime("worktreeState", {}, 120_000);
+    if (!isJsonObject(latest) || latest.sessionId !== sourceSessionId || typeof latest.sessionFileReady !== "boolean") throw new Error("Native worktree state returned an invalid identity");
+    if (latest.sessionFileReady) {
+      if (typeof latest.sessionFile !== "string") throw new Error("Native durable session did not return its journal path");
+      backupOmpSession(latest.sessionFile);
+    }
+    const result = await this.client.requestRuntime("moveSession", { path }, 120_000);
+    if (!isJsonObject(result) || result.sessionId !== sourceSessionId || typeof result.cwd !== "string" ||
+        (typeof result.sessionFile !== "string" && result.sessionFile !== null)) {
+      throw new Error("Native move returned an invalid authoritative identity");
+    }
+    this.cwd = result.cwd;
+    this.sessionFile = typeof result.sessionFile === "string" ? result.sessionFile : undefined;
+    // Same identity: keep queues, goals, native tasks, dialogs, and resources.
+    // Invalidate only branch/history reads after native same-file reload.
+    this.historyGeneration += 1;
+    this.branchPages.clear();
+    this.entriesSeeded = false;
+    let projectionError = typeof result.projectionError === "string" ? result.projectionError : undefined;
+    try { await this.syncEntriesNow(); } catch (error) {
+      this.reportEntrySyncError(error);
+      projectionError = [projectionError, String(error)].filter(Boolean).join("; ");
+    }
+    this.emitHeadIfChanged();
+    return { ...result, operation: "move", sourceSessionId, targetSessionId: this.sessionId,
+      targetSessionFile: this.sessionFile ?? null, targetCwd: this.cwd, cancelled: false,
+      ...(projectionError ? { projectionError } : {}) };
+  }
+
   async switchSession(
     sessionPath: string,
     _cwdOverride?: string,

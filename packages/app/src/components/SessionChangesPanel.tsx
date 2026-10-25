@@ -30,6 +30,7 @@ import { layoutStore, type PanelPosition } from '../store/layoutStore'
 import { useFullscreenLayer } from '../contexts'
 import { useAutoRefresh } from '../hooks/useAutoRefresh'
 import { GitStagingPanel } from './GitStagingPanel'
+import { WorktreeManager } from '../features/sessions/WorktreeManager'
 
 // 常量
 const MIN_LIST_HEIGHT = 80
@@ -755,6 +756,7 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
       >
         {/* Header */}
         <div className="relative flex h-10 items-center gap-2 px-3 shrink-0 overflow-hidden">
+          <WorktreeManager sessionId={sessionId} directory={directory} />
           <div
             className="min-w-0 flex flex-1 overflow-hidden"
             title={`+${totalStats.additions} -${totalStats.deletions} ${fullFileCountLabel}`}

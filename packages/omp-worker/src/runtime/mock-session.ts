@@ -1116,6 +1116,10 @@ export class MockPiSession implements SessionRuntime {
     return cleared;
   }
 
+  async moveSession(_path: string): Promise<JsonObject> {
+    throw Object.assign(new Error("Worktree relocation requires the official native runtime"), { code: "CAPABILITY_DISABLED" });
+  }
+
   async newSession(parentSession?: string): Promise<JsonObject> {
     const sourceSessionId = this.getSessionId();
     const store = new MockStore();

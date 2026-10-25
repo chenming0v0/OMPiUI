@@ -4,8 +4,9 @@ import { isJsonObject } from "@ompiui/protocol"
 import type { OmpRpcClient, OmpRpcFrame } from "./rpc-client.js"
 import { nativeExtensionResourcesSource } from './resource-registry.js'
 import { NATIVE_PROMPT_ADMISSION_IMPORT, NATIVE_PROMPT_ADMISSION_SOURCE } from './native-prompt-admission.js'
+import { NATIVE_WORKTREE_IMPORTS, NATIVE_WORKTREE_SOURCE } from './native-worktree.js'
 
-export type RuntimeBridgeOperation = "capabilities" | "identity" | "queue" | "clearQueue" | "removeQueuedMessage" | "sendQueuedMessage" | "submitUserMessage" | "navigateTree" | "abortBranchSummary" | "fork" | "branch" | "reload" | "setLabel" | "setScopedModels" | "cycleModel" | "resources" | "tree" | "asyncJobs" | "goal"
+export type RuntimeBridgeOperation = "capabilities" | "identity" | "queue" | "clearQueue" | "removeQueuedMessage" | "sendQueuedMessage" | "submitUserMessage" | "navigateTree" | "abortBranchSummary" | "fork" | "branch" | "reload" | "setLabel" | "setScopedModels" | "cycleModel" | "resources" | "tree" | "asyncJobs" | "goal" | "moveSession" | "worktreeState"
 const RESPONSE_PREFIX = "\u001eompiui-runtime:"
 
 /** Correlates managed command results without exposing control traffic as chat/UI events. */
@@ -86,6 +87,7 @@ import { randomUUID } from "node:crypto";
 import { isUserQueuedMessage, isHiddenUserCompanion, toRestoredQueuedMessage } from "@oh-my-pi/pi-coding-agent/session/queued-messages";
 import { resolveModelScope, getModelMatchPreferences, formatModelStringWithRouting } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { cfgDisabledExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/settings";
+${NATIVE_WORKTREE_IMPORTS}
 export default function (pi) {
   const prefix = ${JSON.stringify(RESPONSE_PREFIX)};
   const queueEntryIds = new WeakMap();
@@ -145,11 +147,17 @@ export default function (pi) {
   }
   ${nativeExtensionResourcesSource}
   ${NATIVE_PROMPT_ADMISSION_SOURCE}
+  ${NATIVE_WORKTREE_SOURCE}
   async function execute(operation, args, ctx) {
     const session = ownSession(ctx);
     switch (operation) {
-      case "capabilities": return { operations: ["identity", "queue", "clearQueue", "removeQueuedMessage", "sendQueuedMessage", "submitUserMessage", "navigateTree", "abortBranchSummary", "fork", "branch", "reload", "setLabel", "setScopedModels", "cycleModel", "resources", "tree", "asyncJobs", "goal"] };
+      case "capabilities": return { operations: ["identity", "queue", "clearQueue", "removeQueuedMessage", "sendQueuedMessage", "submitUserMessage", "navigateTree", "abortBranchSummary", "fork", "branch", "reload", "setLabel", "setScopedModels", "cycleModel", "resources", "tree", "asyncJobs", "goal", ...(typeof session.moveSession === "function" && typeof session.sessionManager.isSessionOnDisk === "function" ? ["moveSession", "worktreeState"] : [])] };
       case "identity": return identity(session);
+      case "worktreeState": {
+        if (typeof session.moveSession !== "function" || typeof session.sessionManager.isSessionOnDisk !== "function") throw Object.assign(new Error("Native worktree session relocation is unavailable"), { code: "CAPABILITY_DISABLED" });
+        return { ...identity(session), sessionFileReady: session.sessionManager.isSessionOnDisk() };
+      }
+      case "moveSession": return await moveWorktreeSession(session, args, ctx);
       case "submitUserMessage": return await submitUserMessage(session, args);
       case "queue": return queue(session);
       case "clearQueue": {

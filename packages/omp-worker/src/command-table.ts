@@ -110,6 +110,7 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
   abort: async (ctx) => ctx.requireRuntime().abort(),
   abortAndPrompt: async (ctx, p) => ctx.requireRuntime().abortAndPrompt(P.reqString(p, "text"), P.optImages(p)),
 
+  moveSession: async (ctx, p) => ctx.requireRuntime().moveSession(P.reqString(p, "path")),
   newSession: async (ctx, p) =>
     ctx.requireRuntime().newSession(P.optString(p, "parentSession")),
   switchSession: async (ctx, p) =>

@@ -90,6 +90,15 @@ Git 变更面板内提供明确勾选文件的暂存／取消暂存、完整文�
 
 本轮在官方 OMP 18.12.6 / Bun 1.3.14 的隔离真实仓库、完整网页变更面板中实测选中文件和区块的暂存／取消暂存、提交取消、hook 拒绝及成功提交；未选择文件保持未提交。原生 linked worktree 网页提交只改变对应分支 HEAD；子目录范围外暂存返回 403，真实 unmerged index 返回 409。官方 `@oh-my-pi/pi-natives/vcs` 的真实 HEAD／status 与网页操作后的 Git 状态一致；保存的原生历史在 Git 操作及刷新后字节不变。集成后的构建、测试与整套 CLI ↔ GUI 会话继续写入由主集成验收执行。
 
+### Git worktree 网页管理
+
+“变更”面板的 **Git worktrees**（新对话时也显示在侧栏）列出 Git 实际登记的路径、分支、HEAD、锁定及失效状态；不以已知文件夹分组冒充 worktree 管理。`git.worktrees` 只读，`git.worktreeCreate` 在当前 HEAD 创建新分支／linked worktree，`git.worktreeRemove` 仅在用户确认后移除干净、未占用、未锁定的 linked worktree，保留分支；不使用 `--force`、自动 clean/prune 或关闭用户 shell。占用路径／脏目录返回 `FILE_CONFLICT`，原生会话／GUI shell／正在打开的会话占用返回 `WORKSPACE_BUSY`。
+
+选择 **Switch native session here** 是明确的原生写入操作：以原生 `isSessionOnDisk()` 和当前 journal 路径确认持久化状态，备份已落盘的最新日志，再通过同一 RPC UI AgentSession 的公开 `reload()`／`moveSession()` 迁移官方日志及 artifacts，并重载目标 cwd 的设置、记忆与技能／命令。尚未落盘的会话不伪造日志或私有副本，第一次原生写入仍使用迁移后的 cwd；新对话尚无原生会话时，**Use this workspace** 仅切换 GUI 工作区。sessionId 不变，sessionFile 和 cwd 以原生回执为准；同身份迁移不清空任务、队列、Goal 或会话资源，所有显示该身份的 pane 继续跟随它。取消、浏览和刷新不启动 Agent 或保存历史；不静默复制成另一份私有会话。
+
+本功能已使用官方 OMP 18.12.6、Bun 1.3.14、隔离 Git／HOME／模型配置及仅本机离线协议服务实测：网页列举、取消／确认创建、切换后原生写文件、CLI 同文件继续及真实 task 结果回到 GUI、切换回原目录、只读刷新日志字节与 mtime 不变、脏／占用错误、取消／确认干净移除，以及无 Agent 的新对话工作区选择和未落盘原生会话的同身份迁移／首次写入。网页验收使用专属物理 Chrome CDP；未依赖终端 TUI 或 mock Agent。集成后的全量构建／测试及多 pane 组合验收由主集成流程执行。
+
+
 
 新对话优先使用当前项目；未选项目时，恢复当前服务器保存的上次项目，其次使用已打开工作区，最后使用服务器用户主目录。应用安装目录只负责加载程序资源，不再作为隐式项目根目录。保存项目已不存在时应重新选择项目，不静默切换到其他目录。
 

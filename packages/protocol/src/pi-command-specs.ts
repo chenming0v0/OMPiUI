@@ -182,6 +182,13 @@ export const PI_COMMAND_SPECS = [
     replacement: true,
   },
   {
+    name: "moveSession",
+    scope: "session",
+    description: "Move the same native session to a registered Git worktree",
+    paramsSchema: objectSchema({ path: STRING }, ["path"]),
+    queue: "serialized",
+  },
+  {
     name: "fork",
     scope: "session",
     description: "Fork the current OMP session at an entry",
@@ -990,6 +997,7 @@ export const RUNTIME_TARGETS = {
   abortAndPrompt: "abortAndPrompt",
   newSession: "newSession",
   switchSession: "switchSession",
+  moveSession: "moveSession",
   fork: "fork",
   importSession: "importSession",
   setSessionName: "setSessionName",

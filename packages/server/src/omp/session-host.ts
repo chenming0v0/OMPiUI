@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { open } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { beginWorktreeAttachment } from "../host/worktrees.ts";
 import type {
   CommandEnvelope,
   CommandRecord,
@@ -303,6 +304,7 @@ export class SessionHost {
       }
     }
     let worker: Awaited<ReturnType<RuntimeSupervisor["open"]>> | undefined;
+    const releaseWorktreeAttachment = beginWorktreeAttachment(cwd);
     try {
       worker = await this.supervisor.open(cwd, sessionFile, signal);
       const state = (await worker.command("state.get", undefined, signal)) as
@@ -329,6 +331,8 @@ export class SessionHost {
     } catch (error) {
       await worker?.dispose().catch(() => undefined);
       throw error;
+    } finally {
+      releaseWorktreeAttachment();
     }
   }
 
@@ -974,9 +978,13 @@ export class SessionHost {
       if (options.signal?.aborted) throw abortError();
       this.touch(session.sessionId);
       return this.executor.submit(full, async () => {
-        const data = await session.worker.command(full.type, full.params);
-        await this.trackReplacement(session, data);
-        return data;
+        const releaseWorkspace = full.type === "moveSession" && typeof full.params?.path === "string"
+          ? beginWorktreeAttachment(resolve(session.cwd, full.params.path)) : undefined;
+        try {
+          const data = await session.worker.command(full.type, full.params);
+          await this.trackReplacement(session, data);
+          return data;
+        } finally { releaseWorkspace?.(); }
       });
     };
     const existing = this.runtimes.get(sessionId);
@@ -1031,7 +1039,27 @@ export class SessionHost {
       typeof data.targetSessionId !== "string"
     )
       return;
-    if (data.targetSessionId === session.sessionId) return;
+    if (data.targetSessionId === session.sessionId) {
+      if (typeof data.targetCwd !== "string" || (typeof data.targetSessionFile !== "string" && data.targetSessionFile !== null)) return;
+      const nextFile = typeof data.targetSessionFile === "string" ? data.targetSessionFile : undefined;
+      if (session.cwd === data.targetCwd && session.sessionFile === nextFile) return;
+      // Relocation keeps identity-bound resources and executor state. The
+      // native receipt, not the old attachment, owns the committed file/cwd.
+      let leaseError: unknown;
+      try { await this.supervisor.replaceRuntimeLease(session.worker, nextFile, session.sessionId); }
+      catch (error) { leaseError = error; }
+      this.runtimes.delete(session.sessionId);
+      session.cwd = data.targetCwd;
+      session.sessionFile = nextFile;
+      session.worker.updateSessionIdentity(session.sessionId, nextFile, session.cwd);
+      this.runtimes.set(session);
+      this.hub.publish({ kind: "server", id: "server" }, "sessions.updated", {
+        replaced: true, reason: "worktree-relocation", sourceSessionId: session.sessionId,
+        targetSessionId: session.sessionId, targetSessionFile: nextFile ?? null, targetCwd: session.cwd,
+      });
+      if (leaseError) throw Object.assign(new Error(`Native session moved to ${session.cwd}, but host lease migration failed: ${String(leaseError)}`), { code: "SESSION_CONFLICT" });
+      return;
+    }
     const sourceSessionId = session.sessionId;
     const targetSessionId = data.targetSessionId;
     const target = this.runtimes.get(targetSessionId);
