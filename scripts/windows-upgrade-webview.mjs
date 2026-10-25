@@ -4,7 +4,10 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFi
 import { join, resolve, sep } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
-const options = Object.fromEntries(Array.from({ length: (process.argv.length - 2) / 2 }, (_, index) => process.argv.slice(2 + index * 2, 4 + index * 2)))
+const options = Object.fromEntries(Array.from({ length: (process.argv.length - 2) / 2 }, (_, index) => {
+  const [name, value] = process.argv.slice(2 + index * 2, 4 + index * 2)
+  return [name.replace(/^--/, ''), value]
+}))
 const { root, stage, project } = options
 assert.equal(process.platform, 'win32', 'Native WebView smoke is Windows-only')
 assert.equal(process.env.GITHUB_ACTIONS, 'true', 'Only disposable GitHub-hosted runners are authorized')
