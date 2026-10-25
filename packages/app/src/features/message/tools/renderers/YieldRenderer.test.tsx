@@ -50,7 +50,7 @@ describe('yieldExtractData', () => {
     expect(extracted.output).toBeUndefined()
   })
 
-  it('does not duplicate the payload text as rawOutput', () => {
+  it('retains matching payload text for the raw reading and copy entry', () => {
     const extracted = yieldExtractData(yieldExecution({
       result: {
         role: 'toolResult',
@@ -63,7 +63,7 @@ describe('yieldExtractData', () => {
       },
     }))
 
-    expect(extracted.yieldResult).toEqual({ status: 'success', data: { reply: 'pong' } })
+    expect(extracted.yieldResult).toEqual({ status: 'success', data: { reply: 'pong' }, rawOutput: 'pong' })
   })
 
   it('marks failed yields and keeps the error text', () => {

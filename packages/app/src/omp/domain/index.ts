@@ -210,8 +210,10 @@ export type PiToolExecution = PiToolExecutionState & {
 
 export function getToolExecutionStatus(execution: PiToolExecution): 'pending' | 'running' | 'completed' | 'error' {
   if (execution.result) {
-    const details = execution.result.details as { error?: unknown; mergeError?: unknown; nativeDetails?: { error?: unknown; mergeError?: unknown }; results?: Array<{ error?: unknown; mergeError?: unknown; aborted?: boolean; exitCode?: number }> } | undefined
+    type FailureDetails = { error?: unknown; mergeError?: unknown; service?: { state?: unknown } }
+    const details = execution.result.details as (FailureDetails & { nativeDetails?: FailureDetails; results?: Array<{ error?: unknown; mergeError?: unknown; aborted?: boolean; exitCode?: number }> }) | undefined
     const failed = execution.result.isError || Boolean(details?.error || details?.mergeError || details?.nativeDetails?.error || details?.nativeDetails?.mergeError) ||
+      (execution.call.name.toLowerCase() === 'bash' && (details?.service?.state === 'failed' || details?.nativeDetails?.service?.state === 'failed')) ||
       (execution.call.name === 'task' && Array.isArray(details?.results) && details.results.some(result => result && (result.error || result.mergeError || result.aborted || (result.exitCode !== undefined && result.exitCode !== 0))))
     return failed ? 'error' : 'completed'
   }

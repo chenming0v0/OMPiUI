@@ -6,6 +6,7 @@ import type { ToolRendererProps } from '../types'
 import { toolResultText } from '../toolResultContent'
 import { useDisclosureScrollLock } from '../../../../hooks'
 import { extractTodos } from './todoUtils'
+import { DefaultRenderer } from './DefaultRenderer'
 import type { TodoItem } from '../../../../omp/domain/todo'
 import { useUiDisclosureState } from '../../../../utils/uiDisclosureState'
 import { chevronClass, MessageExpandPanel, useMessageExpandRender } from '../../messageExpand'
@@ -14,14 +15,16 @@ import { chevronClass, MessageExpandPanel, useMessageExpandRender } from '../../
 // Todo Renderer
 // ============================================
 
-export function TodoRenderer({ execution, partKey }: ToolRendererProps) {
+export function TodoRenderer({ execution, partKey, data, onFullscreenChange }: ToolRendererProps) {
   const { t } = useTranslation('message')
   const todos = extractTodos(execution)
-  const outcome = toolResultText(execution.result).trim()
+  const outcome = toolResultText(execution.result)
+  if (data.error || execution.result?.isError) return <DefaultRenderer execution={execution} partKey={partKey} data={data} supplementary={false} onFullscreenChange={onFullscreenChange} />
   if (todos.length === 0) {
+    if (outcome) return <ContentBlock stateKey={`message:${partKey}:todo-raw`} label={t('todo.rawResult', 'Raw result')} content={outcome} onFullscreenChange={onFullscreenChange} fullscreenId={`todo:${partKey}:raw`} />
     return (
       <div className="px-3 py-2 text-[length:var(--fs-sm)] text-text-400 whitespace-pre-wrap break-words">
-        {outcome || t('todo.empty')}
+        {t('todo.empty')}
       </div>
     )
   }
@@ -39,6 +42,8 @@ export function TodoRenderer({ execution, partKey }: ToolRendererProps) {
             defaultCollapsed
             collapsible
             maxHeight={240}
+            onFullscreenChange={onFullscreenChange}
+            fullscreenId={`todo:${partKey}:raw`}
           />
         </div>
       ) : null}

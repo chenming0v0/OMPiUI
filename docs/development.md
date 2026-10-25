@@ -43,10 +43,12 @@ OMP 原生模型与凭据配置来自 `~/.omp/agent/models.yml`、`config.yml`�
 - 队列选择使用运行时条目标识，而不是仅信任可移动的下标；编辑取回保留原生规范化图片与隐藏上下文，并合并到原服务器／会话草稿。只读状态请求不发布合成 `queue_update`；停止既不清空也不重放队列，完整结束只以原生状态／事件为准。Steering 可以随官方停止后的续跑被消费，不能承诺所有队列在 ACK 后暂停。
 - 已开始工具的失败／取消／未知结果只由原生终态证据确定，最后部分输出与原因保留；真实工具结果始终优先。后台刷新和重连不得把完成或中断工具复活成运行。
 - 分页窗口缺少工具调用时，已加载的 `toolResult` 按原生日志位置独立显示，未知参数明确标记、不推断目标；调用通过既有有界分页或 live 消息可见后归并一次。旧 render-key 映射不能代替当前窗口中的持久化 owner，重读不扩大已完成执行缓存、也不全量拉取历史补关联。
+- 专用 ask／todo／yield／task 视图必须保留原生结果的阅读、复制与展开入口；失败优先于成功形状的入参／details。合法成功的附加说明、取消／跳过／无法解析答案、原生 `details.meta` 截断与限制信息不得随结构化视图丢弃，diff／files 与图片入口继续保留。隔离验收使用官方 18.12.6 公共工具实现产生的问答、todo、yield、eval、bash 与 task 拒绝结果，并在真实 ToolGroup／ToolPartView 的桌面与移动 compact／classic／timeline、过程折叠组合中验证；混合子任务、图片和截断元数据为合法隔离夹具，不等同于已附着原生会话的 RPC 端到端验收。
+- 官方 bash 命名服务结果即使 `isError: false`，`details.service.state: failed` 仍作为原生失败状态保留原文。`ready: false` 或就绪等待 `timedOut: true` 本身不伪造进程／工具失败；超时说明照常可读、可复制。成功读取 `proc://` 返回 daemon 的 failed／starting 状态也不等同于 read 工具失败。真实服务退出与就绪超时原文已在官方 18.12.6 隔离结果中观察，修正后的状态分类由集成回归与界面验收核对，不重放用户服务副作用。
 - 扩展取消使用官方 `targetId`，结算保留原请求会话身份；会话替换后的旧应答不能发送进新运行时。
 - 扩展对话框使用官方 `select(title, items, dialogOptions)`；描述属于选项对象 `{ label, description }`，不能把 `optionDetails` 当作扩展 API 参数。`editor(title, prefill, dialogOptions, { promptStyle })` 的样式参数在第四位。浮动卡片与扩展面板都按原索引显示说明，只向原生返回 label；旧的纯字符串帧仍正常工作。
 - 对话框声明 `role="dialog"`，避免全局发送／停止快捷键在捕获阶段抢走局部 Enter／Escape。Prompt-style editor 的 Enter 提交、Shift+Enter 换行；普通 editor 使用 Ctrl/Cmd+Enter，Shift／Alt 修饰的 Enter 不提交。按钮保留自身的键盘动作，IME 组合事件、`isComposing` 和 229 键码都受到保护，空 prefill 与空提交值保留。
-- #368 的隔离 OMP 18.12.6／真实浏览器验收使用 `ui-test-metadata` 扩展命令：两处界面均显示有／无描述混排，原生返回 `Review`／`Two`；input、prompt editor 和普通 editor 返回真实空字符串，取消／超时返回 `undefined`，每个请求都从 pending 中结算。真实 Chromium IME composition Enter 没有提交，非 prompt editor 的 Ctrl／Cmd+Enter 均已观察；OS 输入法候选窗的人工交互不由 CDP 验收覆盖。
+- #368 的隔离 OMP 18.12.6 验收使用 `ui-test-metadata` 扩展命令：原生返回 `Review`／`Two`，input、prompt editor 和普通 editor 返回真实空字符串，取消／超时返回 `undefined`，最终 pending 已结算。浏览器辅助工具曾发生跨目标路由，既有界面观察不作为关闭证据；需在独立直连 CDP 或串行集成环境重测两处界面的描述、按键及 IME 保护。OS 输入法候选窗的人工交互不由 CDP 验收覆盖。
 - 导航／Undo／Redo 调用官方同文件 `navigateTree`，Fork 分支创建新文件；取消／中断不恢复错误目标，也不清理源草稿。总结取消使用原生 `abortBranchSummary`，节点标签使用 `SessionManager.appendLabelChange` 写入并 flush 官方日志。成功原生回执的身份与图片草稿不依赖后续投影读回；读回失败返回明确部分刷新错误，不能把已提交变更误报为可重试的操作失败。
 
 官方设置页编辑全局覆盖，项目覆盖仍按官方优先级生效；保存保留未编辑键、准确备份与独立原生落盘读回。包管理的安装／更新等待官方操作结果，资源检查只读，不执行扩展或 MCP。

@@ -24,7 +24,7 @@ import {
 } from '../tools'
 import { MSG_SPACING } from '../messageSpacing'
 import { MessageExpandPanel, useMessageExpandRender } from '../messageExpand'
-import { ToolResultImages } from '../tools/renderers/DefaultRenderer'
+import { ToolResultImages, ToolResultNotice } from '../tools/renderers/DefaultRenderer'
 
 // ============================================
 // ToolPartView - 单个工具调用
@@ -480,10 +480,10 @@ const ToolBody = memo(function ToolBody({
     return <DefaultRenderer execution={execution} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} />
   }
   // A specialized success view must never hide the original failure payload.
-  if (getToolExecutionStatus(execution) === 'error' && lowerTool !== 'task') {
+  if ((data.error || getToolExecutionStatus(execution) === 'error') && lowerTool !== 'task') {
     return <DefaultRenderer execution={execution} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} />
   }
-  const specialized = (content: ReactNode) => <>{content}<ToolResultImages tool={tool} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} /></>
+  const specialized = (content: ReactNode) => <>{content}<ToolResultNotice data={data} /><ToolResultImages tool={tool} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} /></>
 
   if (lowerTool === 'task') {
     return specialized(<TaskRenderer execution={execution} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} />)
@@ -529,7 +529,7 @@ function extractToolTitle(toolName: string, execution: PiToolExecution): string 
       return undefined
     case 'yield': {
       // 结果预览：优先取 summary 类可读字段，其次结果负载本身；失败态不显示
-      if (execution.result?.isError) return undefined
+      if (getToolExecutionStatus(execution) === 'error') return undefined
       const details = execution.result?.details
       const detailData = details && typeof details === 'object' && !Array.isArray(details)
         ? (details as Record<string, unknown>).data

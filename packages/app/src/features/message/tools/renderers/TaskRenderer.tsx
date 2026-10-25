@@ -87,7 +87,7 @@ export const TaskRenderer = memo(function TaskRenderer({ execution, partKey, dat
         />
       ))}
       {slots.length > 1 && (data.error || (execution.result && toolResultText(execution.result))) && (
-        <ContentBlock label={t(getToolExecutionStatus(execution) === 'error' ? 'task.error' : 'task.result')} stateKey={`message:${partKey}:aggregate-result`} content={data.error || toolResultText(execution.result)} variant={getToolExecutionStatus(execution) === 'error' ? 'error' : undefined} defaultCollapsed onFullscreenChange={onFullscreenChange} fullscreenId={`task:${partKey}:aggregate-result`} />
+        <ContentBlock label={t(data.error ? 'task.error' : 'task.result')} stateKey={`message:${partKey}:aggregate-result`} content={data.error || toolResultText(execution.result)} variant={data.error ? 'error' : undefined} defaultCollapsed={!data.error} onFullscreenChange={onFullscreenChange} fullscreenId={`task:${partKey}:aggregate-result`} />
       )}
     </div>
   )
@@ -180,8 +180,8 @@ function SubagentTask({ slot, execution, partKey, intent, targetSessionId, showA
     }
   }, [opening, sessionFile, subagentRun?.sessionId, targetSessionId, currentDirectory, navigateToSession])
 
-  const resultOutput = [slot.result?.output, slot.result?.error, slot.result?.mergeError, execution.error,
-    showAggregateOutput ? aggregateError || (execution.result ? toolResultText(execution.result) : undefined) : undefined].filter(value => typeof value === 'string' && value.trim()).join('\n')
+  const resultOutput = [...new Set([slot.result?.output, slot.result?.error, slot.result?.mergeError, execution.error,
+    showAggregateOutput ? aggregateError || (execution.result ? toolResultText(execution.result) : undefined) : undefined].filter(value => typeof value === 'string' && value.trim()))].join('\n')
   const handleContentFullscreenChange = useCallback((isFullscreen: boolean) => {
     setIsContentFullscreen(isFullscreen)
     onFullscreenChange?.(isFullscreen)
