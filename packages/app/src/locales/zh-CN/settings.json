@@ -535,6 +535,8 @@
     "eventError": "错误",
     "eventWarning": "警告",
     "eventWarningDesc": "当会话报告警告通知时",
+    "eventInfo": "信息",
+    "eventInfoDesc": "当会话报告信息通知时",
     "eventErrorDesc": "会话遇到错误时",
     "customSound": "自定义",
     "noSound": "无",

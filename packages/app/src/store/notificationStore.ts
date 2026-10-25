@@ -9,12 +9,14 @@
 // 由 useGlobalEvents 统一推送，不再由 activeSessionStore 管通知
 
 import { useSyncExternalStore } from 'react'
+import { serverStore } from './serverStore'
+import { serverStorage } from '../utils/perServerStorage'
 
 // ============================================
 // Types
 // ============================================
 
-export type NotificationType = 'permission' | 'question' | 'completed' | 'error' | 'warning'
+export type NotificationType = 'permission' | 'question' | 'completed' | 'error' | 'warning' | 'info'
 
 /** 点击通知后的跳转目标：session 页面（默认）或该 session 右侧边栏的扩展面板 */
 export type NotificationTarget = 'session' | 'extensions'
@@ -68,7 +70,7 @@ const MAX_NOTIFICATIONS = 50
 
 function loadNotifications(): NotificationEntry[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = serverStorage.get(STORAGE_KEY)
     if (!raw) return []
     return (JSON.parse(raw) as NotificationEntry[]).slice(0, MAX_NOTIFICATIONS)
   } catch {
@@ -78,7 +80,7 @@ function loadNotifications(): NotificationEntry[] {
 
 function saveNotifications(entries: NotificationEntry[]) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(entries))
+    serverStorage.set(STORAGE_KEY, JSON.stringify(entries))
   } catch {
     // quota exceeded
   }
@@ -105,6 +107,15 @@ class NotificationStore {
       return true
     }
   })()
+  constructor() {
+    serverStore.onServerChange(() => {
+      this.toastTimers.forEach(timer => clearTimeout(timer))
+      this.toastTimers.clear()
+      this.state = { toasts: [], notifications: loadNotifications() }
+      this.notify()
+    })
+  }
+
 
   subscribe = (callback: Subscriber): (() => void) => {
     this.subscribers.add(callback)

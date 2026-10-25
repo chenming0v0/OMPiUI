@@ -808,16 +808,17 @@ class PiEventStream {
         // 规则列表）。完整文本进命令反馈日志；同时弹一条瞬时通知。
         // 该通知的内容只展示在右侧扩展面板里，因此点击后应跳转到对应
         // session 并打开扩展面板（target: 'extensions'）。
-        const status = event.notifyType === 'error' ? 'error' : event.notifyType === 'warning' ? 'info' : 'ok'
+        const status = event.notifyType ?? 'info'
         commandFeedbackStore.add({
           sessionId,
           command: '',
           kind: 'notify',
+          source: 'Extension',
           status,
           message: event.message,
         })
         notificationStore.push(
-          event.notifyType === 'error' ? 'error' : 'completed',
+          status,
           'Extension',
           event.message,
           sessionId,
@@ -1034,7 +1035,7 @@ class PiEventStream {
       case 'extension_error':
       case 'prompt_result': {
         const feedback = commandFeedbackStore.addNativeEvent(sessionId, patch)
-        if (feedback) notificationStore.push(feedback.status === 'error' ? 'error' : feedback.status === 'warning' ? 'warning' : 'completed', feedback.source ?? 'Native command', feedback.message, sessionId, activeSessionStore.getSessionMeta(sessionId)?.directory, { target: 'extensions' })
+        if (feedback) notificationStore.push(feedback.status === 'ok' ? 'completed' : feedback.status, feedback.source ?? 'Native command', feedback.message, sessionId, activeSessionStore.getSessionMeta(sessionId)?.directory, { target: 'extensions' })
         // Manual native commands can enter compaction without auto-compaction
         // lifecycle events; read the native state instead of inferring activity.
         if (event.type === 'prompt_result' || event.type === 'command_output') this.scheduleStateRefresh(sessionId)
@@ -1043,11 +1044,15 @@ class PiEventStream {
       case 'notice':
       case 'rpc_frame_error':
       case 'rpc_stream_error': {
-        const message = typeof patch.text === 'string' ? patch.text : typeof patch.message === 'string' ? patch.message : typeof patch.error === 'string' ? patch.error : ''
+        const message = event.type !== 'notice' && typeof patch.error === 'string' ? patch.error : typeof patch.text === 'string' ? patch.text : typeof patch.message === 'string' ? patch.message : typeof patch.error === 'string' ? patch.error : ''
         const source = typeof patch.source === 'string' ? patch.source : 'OMP runtime'
         const status = patch.level === 'error' || patch.type === 'rpc_frame_error' || patch.type === 'rpc_stream_error' ? 'error' : patch.level === 'warning' ? 'warning' : 'info'
-        commandFeedbackStore.add({ sessionId, command: '', kind: 'notify', status, message: `${source}: ${message}` })
-        notificationStore.push(status === 'error' ? 'error' : status === 'warning' ? 'warning' : 'completed', source, message, sessionId, activeSessionStore.getSessionMeta(sessionId)?.directory, { target: 'extensions' })
+        commandFeedbackStore.add({
+          sessionId, command: '', kind: 'notify', status, source, message,
+          originalType: typeof patch.originalType === 'string' ? patch.originalType : undefined,
+          context: typeof patch.text === 'string' && patch.text !== message ? patch.text : undefined,
+        })
+        notificationStore.push(status, source, message, sessionId, activeSessionStore.getSessionMeta(sessionId)?.directory, { target: 'extensions' })
         break
       }
       case 'config_update': {

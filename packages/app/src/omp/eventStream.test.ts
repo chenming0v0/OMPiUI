@@ -19,6 +19,7 @@ import { buildPiLiveItems } from './selectors/index.js'
 import * as http from './httpClient.js'
 import { serverStore } from '../store/serverStore'
 import { notificationStore } from '../store/notificationStore'
+import { commandFeedbackStore } from './commandFeedbackStore'
 import * as transport from './transport/index.js'
 
 // Retain the real controller before sibling scenarios install module spies.
@@ -674,5 +675,31 @@ describe('session configuration and stop synchronization', () => {
     expect(activeSessionStore.getBusySessionsSnapshot()).toHaveLength(1)
     event({ type: 'agent_settled' })
     expect(activeSessionStore.getBusySessionsSnapshot()).toHaveLength(0)
+  })
+})
+
+describe('native notices and protocol feedback', () => {
+  afterEach(() => { commandFeedbackStore.reset(); notificationStore.clearAll(); vi.restoreAllMocks() })
+
+  it('retains native severity, raw text, source and protocol context in the owning session', () => {
+    const push = vi.spyOn(notificationStore, 'push').mockImplementation(() => {})
+    const internal = piEventStream as unknown as { handlePiEvent(sessionId: string, payload: unknown): void }
+    for (const level of ['info', 'warning', 'error']) {
+      internal.handlePiEvent('notice-a', { event: { type: 'notice', level, message: `raw ${level}\nlast line\n`, source: 'native-source' }, meta: {} })
+      expect(push).toHaveBeenLastCalledWith(level, 'native-source', `raw ${level}\nlast line\n`, 'notice-a', undefined, { target: 'extensions' })
+    }
+    internal.handlePiEvent('notice-b', { event: { type: 'rpc_frame_error', error: 'original error\n', text: 'suppression context', originalType: 'rpc_chunk' }, meta: {} })
+    expect(commandFeedbackStore.getSnapshot().sessions['notice-b']?.[0]).toMatchObject({ source: 'OMP runtime', status: 'error', message: 'original error\n', originalType: 'rpc_chunk', context: 'suppression context' })
+    expect(commandFeedbackStore.getSnapshot().sessions['notice-a']?.map(entry => entry.status)).toEqual(['error', 'warning', 'info'])
+  })
+
+  it('does not turn extension warnings or informational native output into success', () => {
+    const push = vi.spyOn(notificationStore, 'push').mockImplementation(() => {})
+    const internal = piEventStream as unknown as { handleExtensionUiEvent(sessionId: string, event: unknown): void; handlePiEvent(sessionId: string, payload: unknown): void }
+    internal.handleExtensionUiEvent('notice-a', { type: 'notify', sessionId: 'notice-a', notifyType: 'warning', message: 'extension warning' })
+    expect(commandFeedbackStore.getSnapshot().sessions['notice-a']?.[0]).toMatchObject({ status: 'warning', source: 'Extension', message: 'extension warning' })
+    expect(push).toHaveBeenLastCalledWith('warning', 'Extension', 'extension warning', 'notice-a', undefined, { target: 'extensions' })
+    internal.handlePiEvent('notice-a', { event: { type: 'command_output', text: 'Usage only' }, meta: {} })
+    expect(push).toHaveBeenLastCalledWith('info', 'Native command', 'Usage only', 'notice-a', undefined, { target: 'extensions' })
   })
 })

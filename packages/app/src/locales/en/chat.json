@@ -209,6 +209,7 @@
     "permission": "Permission",
     "question": "Question",
     "warning": "Warning",
+    "info": "Info",
     "compactCompleted": "Compact completed",
     "compactSkipped": "Compact skipped",
     "compactFailed": "Compact failed",

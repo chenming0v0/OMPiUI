@@ -3,6 +3,7 @@
 // ============================================
 
 import type { TerminalInfo } from '@ompiui/protocol'
+import { serverStore } from './serverStore'
 
 // 面板位置
 export type PanelPosition = 'bottom' | 'right'
@@ -342,6 +343,7 @@ export class LayoutStore {
   }
   private subscribers = new Set<Subscriber>()
   private currentTerminalDirectory: string | null = null
+  private pendingFeedbackTab?: { directory: string; position: PanelPosition; id: string; generation: number }
   private persistenceTimer: ReturnType<typeof setTimeout> | undefined
 
   private persistPanelLayout() {
@@ -604,6 +606,7 @@ export class LayoutStore {
 
   // 设置活动 tab
   setActiveTab(position: PanelPosition, tabId: string) {
+    this.pendingFeedbackTab = undefined
     const tab = this.state.panelTabs.find(t => t.id === tabId && t.position === position)
     if (tab) {
       this.state.activeTabId[position] = tabId
@@ -682,8 +685,14 @@ export class LayoutStore {
     return this.addSingletonTab('skill', position, 'skill')
   }
 
-  addExtensionsTab(position: PanelPosition) {
-    return this.addSingletonTab('extensions', position, `extensions-${position}`)
+  addExtensionsTab(position: PanelPosition, directory?: string) {
+    const id = this.addSingletonTab('extensions', position, `extensions-${position}`)
+    // A notification can change project directory. Its explicit feedback target
+    // wins over that directory's asynchronous saved-panel restoration.
+    this.pendingFeedbackTab = directory && directory !== this.currentTerminalDirectory
+      ? { directory, position, id, generation: serverStore.getActiveServerGeneration() }
+      : undefined
+    return id
   }
 
   // 添加 Worktree 标签
@@ -1052,6 +1061,13 @@ export class LayoutStore {
       if (hasCurrentActive) continue
 
       this.state.activeTabId[position] = hasSavedActive ? (savedActiveId ?? null) : (this.getTabsForPosition(position)[0]?.id ?? null)
+    }
+    const feedbackTab = this.pendingFeedbackTab
+    if (feedbackTab && feedbackTab.generation !== serverStore.getActiveServerGeneration()) this.pendingFeedbackTab = undefined
+    else if (feedbackTab?.directory === nextDirectory) {
+      this.state.activeTabId[feedbackTab.position] = feedbackTab.id
+      this.setPanelOpen(feedbackTab.position, true)
+      this.pendingFeedbackTab = undefined
     }
     this.notify()
     this.persistTerminalLayout()

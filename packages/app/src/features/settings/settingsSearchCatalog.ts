@@ -129,7 +129,7 @@ export const SETTINGS_SEARCH_DEFINITIONS: SettingsSearchDefinition[] = [
     labelKey: 'notifications.notificationTypes',
     fallbackKey: 'notifications.systemNotifications',
   },
-  ...['eventCompleted', 'eventPermission', 'eventQuestion', 'eventError'].flatMap(label => [
+  ...['eventCompleted', 'eventPermission', 'eventQuestion', 'eventError', 'eventWarning', 'eventInfo'].flatMap(label => [
     {
       tab: 'notifications' as const,
       labelKey: `notifications.${label}`,

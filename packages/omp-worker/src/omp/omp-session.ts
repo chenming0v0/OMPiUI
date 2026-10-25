@@ -269,7 +269,7 @@ export class OmpRpcSession implements SessionRuntime {
     // Local RPC protocol failures (chunk reassembly, decode) are otherwise only
     // visible in the exit stderr tail; forward them as events while the process
     // is still alive (#367). Bounded so an error storm cannot flood the UI.
-    this.client.on("protocolError", (message: unknown) => {
+    this.client.on("protocolError", (message: unknown, originalType?: string) => {
       if (this.closed) return;
       const text = typeof message === "string" ? message : String(message);
       const now = Date.now();
@@ -283,6 +283,8 @@ export class OmpRpcSession implements SessionRuntime {
         type: "rpc_frame_error",
         source: "OMP RPC",
         level: "error",
+        error: text,
+        ...(originalType !== undefined ? { originalType } : {}),
         text:
           this.protocolErrorCount === 20
             ? `${text} (further protocol errors suppressed for 60s)`

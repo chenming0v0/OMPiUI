@@ -14,6 +14,9 @@ export interface CommandFeedbackEntry {
   args?: string
   /** Display origin, separate from the unmodified output text. */
   source?: string
+  /** Protocol frame context, separate from the unmodified error/message. */
+  originalType?: string
+  context?: string
   status: CommandFeedbackStatus
   message: string
   /** 'command' = native command feedback; 'notify' = extension/runtime notices. */

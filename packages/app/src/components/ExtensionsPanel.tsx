@@ -174,9 +174,15 @@ function CommandFeedbackItem({ entry }: { entry: CommandFeedbackEntry }) {
         </span>
         <span className="shrink-0 font-mono text-[length:var(--fs-xxs)] text-text-500">{time}</span>
       </div>
+      {entry.originalType !== undefined && (
+        <div className="mt-1 whitespace-pre-wrap break-words font-mono text-[length:var(--fs-xs)] text-text-400">originalType: {stripAnsi(entry.originalType)}</div>
+      )}
       <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[length:var(--fs-sm)] text-text-200">
         {stripAnsi(entry.message)}
       </pre>
+      {entry.context !== undefined && (
+        <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[length:var(--fs-sm)] text-text-400">{stripAnsi(entry.context)}</pre>
+      )}
     </div>
   )
 }

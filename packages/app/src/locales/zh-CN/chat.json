@@ -209,6 +209,7 @@
     "permission": "权限",
     "question": "问题",
     "warning": "警告",
+    "info": "信息",
     "compactCompleted": "压缩完成",
     "compactSkipped": "跳过压缩",
     "compactFailed": "压缩失败",
