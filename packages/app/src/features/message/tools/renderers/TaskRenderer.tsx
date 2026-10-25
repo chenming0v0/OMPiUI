@@ -111,13 +111,14 @@ function SubagentTask({ slot, execution, partKey, intent, targetSessionId, showA
   const executionStatus = getToolExecutionStatus(execution)
   const hasStarted = executionStatus !== 'pending' || (liveRun !== undefined && liveRun.status !== 'pending')
   const isRunning = liveRun
-    ? liveRun.status === 'running' && (!execution.result || liveRun.detached) && (!runtimeStopped || liveRun.detached)
+    ? liveRun.status === 'running' && (liveRun.isFollowUp || !execution.result || liveRun.detached) && (!runtimeStopped || liveRun.detached || liveRun.isFollowUp)
     : executionStatus === 'running' && !runtimeStopped
   // 运行中与失败都默认展开：失败说明（聚合结果、mergeError）不能折叠隐藏，
   // 否则 exitCode=0 但合并失败的子代理会看起来像全流程成功（#364/#374）。
   // 这里用不依赖子代理历史的先行判定作展开默认值。
-  const prelimIsError = isTaskSlotFailed(slot.result, liveRun, executionStatus === 'error' || Boolean(execution.result?.isError))
-  const [expanded, setExpanded] = useUiDisclosureState(`message:${partKey}:task-body`, isRunning || prelimIsError)
+  const prelimIsError = isTaskSlotFailed(liveRun?.isFollowUp ? undefined : slot.result, liveRun,
+    !liveRun?.isFollowUp && (executionStatus === 'error' || Boolean(execution.result?.isError)))
+  const [expanded, setExpanded] = useUiDisclosureState(`message:${partKey}:task-body:${liveRun?.runId ?? 'persisted'}`, isRunning || prelimIsError)
   const [isContentFullscreen, setIsContentFullscreen] = useState(false)
   const [opening, setOpening] = useState(false)
   const [openError, setOpenError] = useState<string | null>(null)
@@ -138,8 +139,9 @@ function SubagentTask({ slot, execution, partKey, intent, targetSessionId, showA
   )
   const subagentRun = liveRun ?? persistedRun
   // 中断且无结果的任务（runtime 已停）也算失败；其余全部走 isTaskSlotFailed。
-  const isError = prelimIsError || (!isRunning && hasStarted && !execution.result && runtimeStopped)
-  const isCompleted = !isRunning && !isError && Boolean(slot.result || execution.result || subagentRun?.status === 'completed')
+  const isError = prelimIsError || (!liveRun?.isFollowUp && !isRunning && hasStarted && !execution.result && runtimeStopped)
+  const isCompleted = !isRunning && !isError && (liveRun?.isFollowUp
+    ? liveRun.status === 'completed' : Boolean(slot.result || execution.result || subagentRun?.status === 'completed'))
   const name = subagentDisplayTitle(
     typeof slot.input.name === 'string' ? slot.input.name : undefined,
     slot.result?.id,
@@ -153,7 +155,7 @@ function SubagentTask({ slot, execution, partKey, intent, targetSessionId, showA
   const description = name && detail && name !== detail
     ? `${name} · ${detail}`
     : name || detail || t('task.subtask')
-  const prompt = typeof slot.input.prompt === 'string' ? slot.input.prompt
+  const prompt = liveRun?.isFollowUp ? liveRun.task : typeof slot.input.prompt === 'string' ? slot.input.prompt
     : typeof slot.input.task === 'string' ? slot.input.task
       : slot.result?.assignment || subagentRun?.task || ''
   const agentType = subagentRun?.agent || (typeof slot.input.agent === 'string' ? slot.input.agent : undefined)
@@ -180,7 +182,7 @@ function SubagentTask({ slot, execution, partKey, intent, targetSessionId, showA
     }
   }, [opening, sessionFile, subagentRun?.sessionId, targetSessionId, currentDirectory, navigateToSession])
 
-  const resultOutput = [...new Set([slot.result?.output, slot.result?.error, slot.result?.mergeError, execution.error,
+  const resultOutput = liveRun?.isFollowUp ? '' : [...new Set([slot.result?.output, slot.result?.error, slot.result?.mergeError, execution.error,
     showAggregateOutput ? aggregateError || (execution.result ? toolResultText(execution.result) : undefined) : undefined].filter(value => typeof value === 'string' && value.trim()))].join('\n')
   const handleContentFullscreenChange = useCallback((isFullscreen: boolean) => {
     setIsContentFullscreen(isFullscreen)

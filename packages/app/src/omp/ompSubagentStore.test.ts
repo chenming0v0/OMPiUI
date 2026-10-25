@@ -120,6 +120,26 @@ describe('ompSubagentStore state', () => {
     expect(current.transcript.map(item => item.text)).toEqual(['New wake response'])
   })
 
+  it('keeps equal native registry IDs isolated between parent sessions', () => {
+    ompSubagentStore.applyLifecycle('parent-a', { id: 'same-name', runId: 'a:1', parentToolCallId: 'task-a', status: 'started' })
+    ompSubagentStore.applyLifecycle('parent-b', { id: 'same-name', runId: 'b:1', parentToolCallId: 'task-b', status: 'completed' })
+    ompSubagentStore.applyEvent('parent-a', { id: 'same-name', runId: 'a:1', event: { type: 'message_end', message: { role: 'assistant', content: 'A only' } } }, 'same-event')
+    ompSubagentStore.applyEvent('parent-b', { id: 'same-name', runId: 'b:1', event: { type: 'message_end', message: { role: 'assistant', content: 'B only' } } }, 'same-event')
+    expect(ompSubagentStore.runsForSession('parent-a')[0]).toMatchObject({ status: 'running', transcript: [{ text: 'A only' }] })
+    expect(ompSubagentStore.getRunsForToolCall('task-b', 'parent-b')[0]).toMatchObject({ status: 'completed', transcript: [{ text: 'B only' }] })
+    ompSubagentStore.clearSession('parent-a')
+    expect(ompSubagentStore.runsForSession('parent-b')).toHaveLength(1)
+    expect(ompSubagentStore.getRunsForToolCall('task-a', 'parent-a')).toEqual([])
+  })
+
+  it('does not abort a new attached generation when an old settled snapshot still contains its native id', () => {
+    const owner = { id: 'wake-attached', parentToolCallId: 'owner', sessionFile: 'child.jsonl' }
+    ompSubagentStore.applyLifecycle('parent', { ...owner, runId: 'old', status: 'completed' })
+    ompSubagentStore.applyLifecycle('parent', { ...owner, runId: 'new', isFollowUp: true, status: 'started' })
+    ompSubagentStore.applySnapshot('parent', [{ ...owner, runId: 'old', status: 'completed' }], true)
+    expect(ompSubagentStore.runsForSession('parent')[0]).toMatchObject({ runId: 'new', status: 'running', isFollowUp: true })
+  })
+
   it.each(['lifecycle', 'progress', 'snapshot'] as const)('seals unfinished transcript tools on terminal %s without losing completed results', source => {
     const identity = { id: `terminal-${source}`, runId: `terminal:${source}` }
     ompSubagentStore.applyLifecycle('terminal-parent', { ...identity, status: 'started' })

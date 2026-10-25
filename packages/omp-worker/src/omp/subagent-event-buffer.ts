@@ -28,6 +28,11 @@ export class SubagentEventBuffer {
 
   setPaused(paused: boolean): void { this.messages.setPaused(paused) }
 
+  clear(): void {
+    this.buffer.clear()
+    this.messages.clear()
+  }
+
   dispose(): void {
     this.buffer.flush()
     this.messages.clear()

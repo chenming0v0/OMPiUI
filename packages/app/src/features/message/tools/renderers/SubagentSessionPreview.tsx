@@ -20,7 +20,8 @@ function useSubagentHistoryBackfill(run: OmpSubagentRun | undefined, enabled: bo
   const historyLoaded = run?.historyLoaded
   const hasLiveTranscript = Boolean(run?.transcript.length) && (run?.status === 'running' || run?.status === 'pending')
   // loading 只反映真实发出的请求；未启用或无需回填时不得占住按钮。
-  const active = Boolean(enabled && id && sessionId && sessionFile && !(historyLoaded && revision === 0) && !hasLiveTranscript)
+  // Native history has no run boundary for same-file wakes; never label prior turns as this run.
+  const active = Boolean(enabled && !run?.isFollowUp && id && sessionId && sessionFile && !(historyLoaded && revision === 0) && !hasLiveTranscript)
   useEffect(() => {
     if (!active || !id || !sessionId || !sessionFile) return
     const controller = new AbortController()
@@ -62,7 +63,7 @@ export const SubagentSessionPreview = memo(function SubagentSessionPreview({
   const transcript = run?.transcript ?? EMPTY_TRANSCRIPT
   const isRunning = run?.status === 'running'
   const progress = run?.progress
-  const isLoading = loading || Boolean(run?.sessionFile && !run.historyLoaded && transcript.length === 0 && !history.error)
+  const isLoading = loading || Boolean(!run?.isFollowUp && run?.sessionFile && !run.historyLoaded && transcript.length === 0 && !history.error)
   const identity = run?.runId ?? run?.id
   const previousRunIdRef = useRef(identity)
   const wasRunningRef = useRef(isRunning)

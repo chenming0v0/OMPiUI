@@ -41,8 +41,9 @@ export class SubagentMessageStream {
     const event = isJsonObject(payload?.event) ? payload.event : undefined;
     const message = isJsonObject(event?.message) ? event.message : undefined;
     const scope = typeof payload?.id === "string" ? payload.id : "";
+    const generationScope = typeof payload?.runId === "string" ? `${scope}\0${payload.runId}` : scope;
     if (frame.kind === "progress" && scope && isJsonObject(payload?.progress)) {
-      const previous = this.progress.get(scope);
+      const previous = this.progress.get(generationScope);
       const full = !previous || Date.now() - previous.fullAt >= 5000;
       const delta: JsonObject = {};
       for (const key of new Set([
@@ -56,7 +57,7 @@ export class SubagentMessageStream {
         )
           delta[key] = payload.progress[key] ?? null;
       }
-      this.progress.set(scope, {
+      this.progress.set(generationScope, {
         snapshot: payload.progress,
         fullAt: full ? Date.now() : previous!.fullAt,
       });
@@ -87,14 +88,15 @@ export class SubagentMessageStream {
           payload?.status === "failed" ||
           payload?.status === "aborted")
       ) {
-        this.messages.delete(scope);
-        this.progress.delete(scope);
+        this.messages.delete(generationScope);
+        this.messages.delete(`${generationScope}\0irc`);
+        this.progress.delete(generationScope);
       }
       return;
     }
 
     // IRC 消息可以插进正在生成的回复，不能改变该回复的增量身份与偏移。
-    const key = message.role === "agent" ? `${scope}\0irc` : scope;
+    const key = message.role === "agent" ? `${generationScope}\0irc` : generationScope;
     const previous = this.messages.get(key);
     const nativeId =
       typeof event.messageId === "string"
@@ -158,6 +160,7 @@ export class SubagentMessageStream {
         kind: frame.kind,
         eventId: randomUUID(),
         payload: {
+          ...payload,
           id: scope,
           event: {
             type: "message_patch",

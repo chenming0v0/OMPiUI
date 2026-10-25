@@ -31,4 +31,10 @@ export class EventSnapshotBuffer<T> {
       this.timer = undefined
     }
   }
+
+  clear(): void {
+    this.pending.clear()
+    clearTimeout(this.timer)
+    this.timer = undefined
+  }
 }

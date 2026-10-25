@@ -156,6 +156,8 @@ export class OmpRpcSession implements SessionRuntime {
   private readonly subagentEvents = new SubagentEventBuffer((event) => {
     const payload = isJsonObject(event.payload) ? event.payload : undefined;
     if (typeof payload?.runId === "string" && !payload.runId.startsWith(`${this.eventEpoch}:`)) return;
+    if (typeof payload?.id === "string" && typeof payload.runId === "string" &&
+      this.subagentRuns.get(payload.id)?.runId !== payload.runId) return;
     for (const listener of this.subagentListeners) listener(event);
   });
   private readonly messageStream = new MainMessageStream((event, live) =>
@@ -1048,6 +1050,7 @@ export class OmpRpcSession implements SessionRuntime {
     const [native] = await Promise.all([
       this.fetchState(),
       this.ensureSynced(),
+      this.listSubagents(),
     ]);
     if (epoch !== this.eventEpoch || historyGeneration !== this.historyGeneration || modelsGeneration !== this.modelsGeneration || activityGeneration !== this.activityGeneration) return this.buildState();
     this.currentStreaming = Boolean(native.isStreaming);
@@ -1192,7 +1195,8 @@ export class OmpRpcSession implements SessionRuntime {
     if (!id) return payload;
     const existing = this.subagentRuns.get(id);
     const parent = typeof payload.parentToolCallId === "string" ? payload.parentToolCallId : undefined;
-    if (parent && this.supersededSubagentParents.get(id)?.has(parent)) return;
+    if (parent && this.supersededSubagentParents.get(id)?.has(parent) &&
+      !(kind === "lifecycle" && payload.status === "started")) return;
     const parentChanged = typeof payload.parentToolCallId === "string" &&
       typeof existing?.parentToolCallId === "string" &&
       payload.parentToolCallId !== existing.parentToolCallId;
@@ -1200,6 +1204,7 @@ export class OmpRpcSession implements SessionRuntime {
     const terminal = existing?.status === "completed" || existing?.status === "failed" || existing?.status === "aborted";
     if (typeof payload.runId === "string" && existing && payload.runId !== existing.runId) return;
     const restart = kind === "lifecycle" && payload.status === "started" && (parentChanged || terminal);
+    if (restart && parent) this.supersededSubagentParents.get(id)?.delete(parent);
     if (parentChanged && typeof existing?.parentToolCallId === "string") {
       const superseded = this.supersededSubagentParents.get(id) ?? new Set<string>();
       superseded.add(existing.parentToolCallId);
@@ -1209,18 +1214,22 @@ export class OmpRpcSession implements SessionRuntime {
     const runId = !existing || restart
       ? `${this.eventEpoch}:${id}:${++this.subagentRunSequence}`
       : String(existing.runId);
-    const tracked = { ...payload, runId };
+    const tracked: JsonObject = { ...payload, runId };
     if (kind === "event") {
       if (!existing) this.rememberSubagent(id, { id, runId });
       return tracked;
     }
     const merged: JsonObject = restart || !existing ? { id, runId } : { ...existing, runId };
+    if (restart) merged.isFollowUp = typeof parent === "string" && parent === existing?.parentToolCallId &&
+      typeof payload.sessionFile === "string" && payload.sessionFile === existing?.sessionFile;
+    tracked.isFollowUp = merged.isFollowUp;
     for (const key of ["agent", "agentSource", "description", "task", "assignment",
       "sessionFile", "parentToolCallId", "index", "detached"]) {
       if (payload[key] !== undefined) merged[key] = payload[key];
     }
     if (kind === "lifecycle" && typeof payload.status === "string") {
-      merged.status = payload.status === "started" ? "running" : payload.status;
+      const status = payload.status === "started" ? "running" : payload.status;
+      if (!(terminal && !restart && (status === "running" || status === "pending"))) merged.status = status;
     } else if (kind === "progress" && isJsonObject(payload.progress)) {
       merged.progress = payload.progress;
       const status = payload.progress.status;
@@ -1932,7 +1941,7 @@ export class OmpRpcSession implements SessionRuntime {
         30_000,
       );
       const data = unwrapResponse<JsonValue>(response);
-      if (epoch !== this.eventEpoch) return this.getSubagentsSnapshot();
+      if (epoch !== this.eventEpoch) throw new OmpRpcError("The native session was replaced", "SESSION_REPLACED");
       const list =
         isJsonObject(data) && Array.isArray(data.subagents)
           ? data.subagents
@@ -1945,12 +1954,24 @@ export class OmpRpcSession implements SessionRuntime {
           // Preserve that generation rather than replaying its previous status.
           if (this.subagentRuns.get(item.id) !== observed.get(item.id)) continue;
           const existing = this.subagentRuns.get(item.id);
-          const runId = existing?.runId ?? `${this.eventEpoch}:${item.id}:${++this.subagentRunSequence}`;
-          this.rememberSubagent(item.id, { ...existing, ...item, runId });
+          const ownerChanged = existing && (
+            (typeof item.parentToolCallId === "string" && item.parentToolCallId !== existing.parentToolCallId) ||
+            (typeof item.sessionFile === "string" && item.sessionFile !== existing.sessionFile));
+          const active = item.status === "running" || item.status === "pending";
+          const terminal = existing?.status === "completed" || existing?.status === "failed" || existing?.status === "aborted";
+          const restart = Boolean(existing && (ownerChanged || (terminal && active)));
+          const runId = !existing || restart
+            ? `${this.eventEpoch}:${item.id}:${++this.subagentRunSequence}` : existing.runId;
+          this.rememberSubagent(item.id, {
+            ...(!restart ? existing : undefined), ...item, runId,
+            isFollowUp: restart ? !ownerChanged : existing?.isFollowUp,
+          });
         }
       }
       return this.getSubagentsSnapshot();
-    } catch {
+    } catch (error) {
+      if (epoch !== this.eventEpoch || (error instanceof OmpRpcError && error.code === "SESSION_REPLACED"))
+        throw new OmpRpcError("The native session was replaced", "SESSION_REPLACED");
       return [...this.subagentRuns.values()];
     }
   }
