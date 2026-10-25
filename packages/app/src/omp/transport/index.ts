@@ -5,6 +5,7 @@ import type {
   HealthResponse,
   HostCommandParams,
   PiCommandName,
+  PiCommandParams,
   PiGlobalCommandName,
   PiParamsFor,
   ShareInfo,
@@ -976,18 +977,17 @@ export function invokePiCommand(sessionId: string, name: string, args = '', sign
   return postPiSessionCommand(sessionId, 'invokeCommand', { name, args }, signal)
 }
 
-/** Manage the OMPiUI session goal (worker-side registry driving the goal bar). */
+/** Manage the official native goal, with no worker-local goal or continuation. */
 export function manageSessionGoal(
   sessionId: string,
-  op: 'set' | 'pause' | 'resume' | 'drop',
-  objective?: string,
+  op: PiCommandParams['goal']['op'],
+  options: Omit<PiCommandParams['goal'], 'op'> = {},
   signal?: AbortSignal,
-  images?: import('@ompiui/protocol').GoalImageInput[],
 ): Promise<CommandRecord> {
   return postPiSessionCommand<CommandRecord>(
     sessionId,
     'goal',
-    { op, objective, ...(images ? { images } : {}) },
+    { ...options, op },
     signal,
   )
 }

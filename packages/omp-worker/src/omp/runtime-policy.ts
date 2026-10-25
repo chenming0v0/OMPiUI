@@ -6,7 +6,7 @@ import { runtimeBridgeExtension } from "./runtime-bridge.js"
 
 // Subagent recursion follows the user's native task.maxRecursionDepth setting;
 // the managed runtime no longer pins a UI-specific depth override (#372).
-export const RUNTIME_POLICY = "autoResume: false\n"
+export const RUNTIME_POLICY = "autoResume: false\ngoal:\n  continuationModes: [rpc]\n"
 
 // Official OMP 18.3.1 excludes pty calls from bash.autoBackground, even when
 // RPC falls back to the non-PTY executor. timeout: 0 then has no deadline.

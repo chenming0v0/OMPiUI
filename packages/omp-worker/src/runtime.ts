@@ -1,4 +1,4 @@
-import type { BranchSyncRequest, ImageInput, JsonObject, JsonValue, RegistrySnapshot, SessionActivityStatus } from "@ompiui/protocol"
+import type { BranchSyncRequest, ImageInput, JsonObject, JsonValue, PiCommandParams, RegistrySnapshot, SessionActivityStatus } from "@ompiui/protocol"
 
 export interface PiEventMeta {
   epoch: string
@@ -75,8 +75,8 @@ export interface SessionRuntime {
   invokeCommand(name: string, args?: string): Promise<JsonValue | undefined>
   getCommandCompletions(name: string, prefix: string): Promise<JsonValue | undefined>
 
-  /** OMPiUI 轻量 goal 运行时（`goal` 命令落点）：set/pause/resume/drop + 续跑循环 */
-  manageGoal(params: import("@ompiui/protocol").PiCommandParams["goal"]): Promise<JsonObject>
+  /** Official native GoalRuntime lifecycle; no UI-owned continuation or goal state. */
+  manageGoal(params: PiCommandParams["goal"]): Promise<JsonObject>
 
   navigateTree(
     entryId: string,

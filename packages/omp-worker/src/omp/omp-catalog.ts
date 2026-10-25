@@ -42,7 +42,7 @@ import {
   ompSessionRoots,
 } from "./managed-sessions.js";
 import { ompAgentDirectory } from "./omp-directories.js";
-import { sessionConfigFromBranch } from "./session-config.js";
+import { sessionConfigFromBranch, sessionGoalFromBranch } from "./session-config.js";
 import { BranchPageReader } from "../runtime/branch-pages.js";
 import {
   resolveOmpConfigCommand,
@@ -683,6 +683,7 @@ export class OmpCatalog implements CatalogProvider {
     const entries = cache.allEntries;
     const branch = [...cache.entries];
     const config = sessionConfigFromBranch(branch);
+    const goalState = sessionGoalFromBranch(branch);
     const header: JsonObject = {
       version: 3,
       id: summary.id,
@@ -757,6 +758,8 @@ export class OmpCatalog implements CatalogProvider {
       supportsThinking: true,
       activeTools: [],
       scopedModels: [],
+      goalState,
+      goal: goalState?.goal ?? null,
       contextUsage: null,
       sessionStats: null,
       retry: null,

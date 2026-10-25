@@ -35,7 +35,9 @@ async function sessionFixture(t: TestContext) {
       if (override) return { type: "response", success: true, command: command.type, ...override }
       if (["new_session", "switch_session"].includes(String(command.type))) {
         native.sessionId = `replacement-${command.type}`
+        native.goal = null;
       }
+      if (command.type === "goal") return { type: "response", success: true, command: "goal", data: { state: native.goal ?? null } };
       const data = command.type === "get_state" ? structuredClone(native)
         : command.type === "get_entries" ? { entries: structuredClone(entries), leafId: native.leafId === undefined ? entries.at(-1)?.id ?? null : native.leafId }
           : command.type === "get_available_thinking_levels" ? { levels: ["off", "high"] }
@@ -75,7 +77,10 @@ async function sessionFixture(t: TestContext) {
   t.after(() => session.dispose())
   return {
     session, commands, responses, native, rpc, entries,
-    frame: (frame: OmpRpcFrame) => internal.handleFrame(frame),
+    frame: (frame: OmpRpcFrame) => {
+      if (frame.type === "goal_updated") native.goal = frame.state ?? (frame.goal ? { enabled: (frame.goal as JsonObject).status === "active", mode: "active", goal: frame.goal } : null);
+      internal.handleFrame(frame)
+    },
   }
 }
 
@@ -320,7 +325,7 @@ describe("OmpRpcSession authoritative lifecycle", () => {
 
   it("keeps goal and subagents on cancelled replacement and clears both after success", async t => {
     const { session, frame, rpc } = await sessionFixture(t)
-    await session.manageGoal({ op: "set", objective: "old goal" })
+    await session.manageGoal({ op: "create", objective: "old goal" })
     await session.manageGoal({ op: "pause" })
     frame({ type: "goal_updated", goal: { id: "goal-old", objective: "old goal", status: "paused", tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1, updatedAt: 1 } })
     frame({ type: "subagent_lifecycle", payload: { id: "old-agent", status: "started" } })
@@ -412,7 +417,7 @@ describe("OmpRpcSession authoritative lifecycle", () => {
       { id: "answer", type: "message", parentId: "user", message: { role: "assistant", content: [{ type: "text", text: "answer" }] } })
     await session.ensureSynced()
     frame({ type: "agent_start" })
-    await session.manageGoal({ op: "set", objective: "keep goal" })
+    await session.manageGoal({ op: "create", objective: "keep goal" })
     frame({ type: "goal_updated", goal: { id: "goal-keep", objective: "keep goal", status: "active", tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1, updatedAt: 1 } })
     frame({ type: "subagent_lifecycle", payload: { id: "reviewer", status: "started" } })
     frame({ type: "extension_ui_request", method: "input", id: "dialog", title: "Keep" })
@@ -706,53 +711,29 @@ describe("OmpRpcSession idle reporting for host recycling", () => {
 describe("OmpRpcSession official goal lifecycle (#354)", () => {
   const officialGoal = (overrides: JsonObject = {}): JsonObject => ({
     id: "goal-1", objective: "Finish the task", status: "active",
-    tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1, updatedAt: 1, ...overrides,
+    tokensUsed: 42, tokenBudget: 100, timeUsedSeconds: 3, createdAt: 1, updatedAt: 2, ...overrides,
   })
-
-  it("proxies set to create without a live goal and replace with one; rejects images", async t => {
-    const { session, commands, frame } = await sessionFixture(t)
-    await session.manageGoal({ op: "set", objective: "Finish the task" })
-    assert.deepEqual(commands.find(command => command.type === "goal"), { type: "goal", op: "create", objective: "Finish the task" })
-    // 官方 goal_updated 帧负责镜像；没有图片附件支持
-    frame({ type: "goal_updated", goal: officialGoal() })
-    assert.equal(((await session.getState()).goal as JsonObject).objective, "Finish the task")
-    await session.manageGoal({ op: "set", objective: "New objective" })
-    assert.deepEqual(commands.filter(command => command.type === "goal").at(-1), { type: "goal", op: "replace", objective: "New objective" })
-    await assert.rejects(
-      session.manageGoal({ op: "set", objective: "图片目标", images: [image("AA==")] }),
-      /does not support image attachments/,
-    )
+  it("projects native get_state goal mode and actual usage instead of cached events", async t => {
+    const { session, native, frame } = await sessionFixture(t)
+    frame({ type: "goal_updated", goal: officialGoal({ objective: "stale event" }) })
+    native.goal = { enabled: false, mode: "exiting", reason: "completed", goal: officialGoal({ status: "complete" }) }
+    const state = await session.getState()
+    assert.deepEqual(state.goalState, native.goal)
+    assert.deepEqual(state.goal, (native.goal as JsonObject).goal)
   })
-
-  it("proxies pause/resume/drop and mirrors official goal_updated frames", async t => {
-    const { session, commands, frame } = await sessionFixture(t)
-    frame({ type: "goal_updated", goal: officialGoal() })
-    await session.manageGoal({ op: "pause" })
-    assert.deepEqual(commands.find(command => command.type === "goal"), { type: "goal", op: "pause" })
-    await session.manageGoal({ op: "resume" })
-    await session.manageGoal({ op: "drop" })
-    assert.deepEqual(commands.filter(command => command.type === "goal").map(command => command.op), ["pause", "resume", "drop"])
-    // 官方 drop 先广播 dropped 再清空
-    frame({ type: "goal_updated", goal: officialGoal({ status: "dropped" }) })
-    assert.equal(((await session.getState()).goal as JsonObject).status, "dropped")
-    frame({ type: "goal_updated", goal: null })
-    assert.equal((await session.getState()).goal, null)
+  it("rejects invalid goal inputs before native mutation", async t => {
+    const { session, commands } = await sessionFixture(t)
+    const withImages = { op: "create", objective: "Image goal", images: [image("AA==")] } as Parameters<typeof session.manageGoal>[0]
+    await assert.rejects(session.manageGoal(withImages), { code: "INVALID_REQUEST" })
+    await assert.rejects(session.manageGoal({ op: "budget", tokenBudget: 0 }), { code: "INVALID_REQUEST" })
+    await assert.rejects(session.manageGoal({ op: "budget" }), { code: "INVALID_REQUEST" })
+    assert.equal(commands.filter(command => command.type === "goal").length, 0)
   })
-
-  it("loads the official goal snapshot after a session replacement", async t => {
-    const { session, rpc } = await sessionFixture(t)
-    rpc.onRequest = command => command.type === "goal" && command.op === "snapshot"
-      ? { data: { state: { enabled: true, mode: "active", goal: officialGoal({ objective: "restored goal" }) } } }
-      : undefined
+  it("does not restore private goal state or submit a goal prompt on replacement", async t => {
+    const { session, commands } = await sessionFixture(t)
     await session.newSession()
-    assert.equal(((await session.getState()).goal as JsonObject).objective, "restored goal")
-  })
-
-  it("keeps the mirror empty when the goal bridge is unavailable", async t => {
-    const { session, rpc } = await sessionFixture(t)
-    rpc.onRequest = command => command.type === "goal" ? { success: false, error: "bridge unavailable" } : undefined
-    await session.newSession()
-    assert.equal((await session.getState()).goal, null)
+    assert.equal(commands.some(command => command.type === "goal"), false)
+    assert.equal(commands.some(command => command.type === "prompt"), false)
   })
 })
 

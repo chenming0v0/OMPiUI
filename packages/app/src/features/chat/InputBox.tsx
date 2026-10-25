@@ -158,7 +158,7 @@ export interface InputBoxProps extends ComposerQueueProps {
   onOpenModelSelector?: () => void
   onTextChange?: (text: string) => void // 输入框文本变化（扩展 editor 状态同步）
   onNewChat?: () => void // 新建对话回调
-  onSetGoal?: (objective: string, images?: PiImageInput[]) => Promise<boolean> | boolean
+  onSetGoal?: (objective: string, tokenBudget?: number) => Promise<boolean> | boolean
   disabled?: boolean
   /** Allow editing a draft without submitting to a read-only session. */
   submissionDisabled?: boolean
@@ -1759,9 +1759,6 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
               sessionId={sessionId}
               isCompact={isCompact}
               onSetGoal={onSetGoal}
-              // #354: 目标生命周期已代理到官方 GoalRuntime，官方 Goal 不支持
-              // 图片附件，不再把模型图片能力当作目标图片能力。
-              supportsImages={false}
               queuedMessages={
                 <>
                   <QueuedUserMessageQueue

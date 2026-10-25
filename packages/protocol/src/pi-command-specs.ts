@@ -13,7 +13,6 @@ import {
   EMPTY_PARAMS,
   IMAGE_INPUT,
   IMAGES,
-  GOAL_IMAGES,
   STRING,
   STRING_ARRAY,
   nullable,
@@ -393,13 +392,13 @@ export const PI_COMMAND_SPECS = [
     name: "goal",
     scope: "session",
     description:
-      "Manage the session goal by proxying the official OMP GoalRuntime (set/pause/resume/drop, optional tokenBudget)",
+      "Manage the official OMP goal lifecycle (create/get/replace/complete/pause/resume/drop/budget)",
     paramsSchema: objectSchema(
       {
-        op: { enum: ["set", "pause", "resume", "drop"] },
+        op: { enum: ["create", "get", "replace", "complete", "pause", "resume", "drop", "budget"] },
         objective: STRING,
         tokenBudget: { type: "integer", minimum: 1 },
-        images: GOAL_IMAGES,
+        clearBudget: BOOLEAN,
       },
       ["op"],
     ),
@@ -1075,12 +1074,11 @@ export type PiCommandParams = CoreCommandParams & {
   "subagent.messages": SubagentMessagesParams;
   "commands.completions": { name: string; prefix: string };
   goal: {
-    op: "set" | "pause" | "resume" | "drop";
+    op: "create" | "get" | "replace" | "complete" | "pause" | "resume" | "drop" | "budget";
     objective?: string;
     /** 官方 GoalRuntime 的可选 token 预算（#354） */
     tokenBudget?: number;
-    /** 官方目标不支持图片附件；worker 会拒绝非空列表 */
-    images?: import("./image-budget.js").GoalImageInput[];
+    clearBudget?: boolean;
   };
   "session.list": { cwd: string };
   "session.listAll": Record<string, never>;

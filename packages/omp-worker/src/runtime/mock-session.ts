@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { resolveGoalImages } from "./goal-images.js";
 import { assertResultBudget } from "./result-budget.js";
 import {
   existsSync,
@@ -18,6 +17,7 @@ import type {
   ImageInput,
   JsonObject,
   JsonValue,
+  PiCommandParams,
   RegistrySnapshot,
 } from "@ompiui/protocol";
 import { isJsonObject } from "@ompiui/protocol";
@@ -530,7 +530,7 @@ export class MockPiSession implements SessionRuntime {
   private goal: {
     id: string;
     objective: string;
-    images?: ImageInput[];
+    tokenBudget?: number;
     status: string;
     tokensUsed: number;
     timeUsedSeconds: number;
@@ -790,6 +790,7 @@ export class MockPiSession implements SessionRuntime {
         operation: { type: "none" },
       },
       goal: this.goal,
+      goalState: this.goal ? { enabled: this.goal.status === "active" || this.goal.status === "budget-limited", mode: this.goal.status === "complete" ? "exiting" : "active", goal: this.goal } : null,
       head: this.getHead(),
     };
   }
@@ -1366,44 +1367,31 @@ export class MockPiSession implements SessionRuntime {
     return undefined;
   }
 
-  // mock 无续跑循环：只维护目标注册表本身，前端状态栏可联调
-  async manageGoal(params: import("@ompiui/protocol").PiCommandParams["goal"]): Promise<JsonObject> {
+  // Mock-only projection; never used as native lifecycle acceptance evidence.
+  async manageGoal(params: PiCommandParams["goal"]): Promise<JsonObject> {
+    if ("images" in params) throw Object.assign(new Error("The official goal runtime does not support image attachments on goals"), { code: "INVALID_REQUEST" });
     const now = Date.now();
-    if (params.op === "set") {
-      const objective = (params.objective ?? "").trim();
-      if (!objective) {
-        throw Object.assign(
-          new Error("params.objective is required for op=set"),
-          { code: "INVALID_REQUEST" },
-        );
-      }
-      const images = resolveGoalImages(params.images ?? [], this.goal);
-      this.goal = {
-        id: randomUUID(),
-        objective,
-        images,
-        status: "active",
-        tokensUsed: 0,
-        timeUsedSeconds: 0,
-        createdAt: now,
-        updatedAt: now,
-      };
+    if (params.op === "create" || params.op === "replace") {
+      const objective = params.objective?.trim();
+      if (!objective) throw new Error("Goal objective is required");
+      if (params.op === "create" && this.goal && this.goal.status !== "complete") throw new Error("A goal already exists");
+      if (params.op === "replace" && (!this.goal || !["active", "budget-limited"].includes(this.goal.status))) throw new Error("No active goal to replace");
+      this.goal = { id: randomUUID(), objective, tokenBudget: params.tokenBudget, status: "active", tokensUsed: 0, timeUsedSeconds: 0, createdAt: now, updatedAt: now };
     } else if (this.goal) {
-      if (params.op === "pause" && this.goal.status === "active")
-        this.goal.status = "paused";
-      if (
-        params.op === "resume" &&
-        (this.goal.status === "paused" || this.goal.status === "budget-limited")
-      ) {
+      if (params.op === "pause") this.goal.status = "paused";
+      if (params.op === "resume") {
+        if (this.goal.status !== "paused") throw new Error("No paused goal to resume");
         this.goal.status = "active";
       }
+      if (params.op === "complete") this.goal.status = "complete";
+      if (params.op === "budget") this.goal.tokenBudget = params.clearBudget ? undefined : params.tokenBudget;
       if (params.op === "drop") this.goal = null;
-      else if (this.goal) this.goal.updatedAt = now;
+      else if (params.op !== "get" && this.goal) this.goal.updatedAt = now;
     }
-    this.emitEvent({ type: "goal_updated", goal: this.goal ?? null });
-    if (params.op === "pause" && this.goal?.status === "paused")
-      await this.abort();
-    return { goal: this.goal ?? null };
+    const state = this.goal ? { enabled: this.goal.status === "active" || this.goal.status === "budget-limited", mode: this.goal.status === "complete" ? "exiting" : "active", goal: this.goal } : null;
+    if (params.op !== "get") this.emitEvent({ type: "goal_updated", goal: this.goal, state });
+    if (params.op === "pause" && this.goal?.status === "paused") await this.abort();
+    return { goal: this.goal, state };
   }
 
   async getCommandCompletions(

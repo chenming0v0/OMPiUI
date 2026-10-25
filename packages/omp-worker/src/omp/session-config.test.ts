@@ -5,7 +5,7 @@ import path from "node:path"
 import { it } from "node:test"
 import { isJsonObject, type JsonObject } from "@ompiui/protocol"
 import { OmpCatalog, previewEntriesFromLines } from "./omp-catalog.js"
-import { sessionConfigFromBranch } from "./session-config.js"
+import { sessionConfigFromBranch, sessionGoalFromBranch } from "./session-config.js"
 
 it("restores the explicit default model instead of an auxiliary role or temporary fallback", () => {
   const branch: JsonObject[] = [
@@ -95,4 +95,14 @@ it("disk preview and state.get restore configuration from the active branch, not
   assert.deepEqual(state.model, preview.state.model)
   assert.equal(state.thinkingLevel, preview.state.thinkingLevel)
   assert.equal(state.isStreaming, false)
+})
+
+it("reads native goal snapshots from the active branch without restore mutation", () => {
+  const goal = { id: "native-goal", objective: "keep objective", status: "paused", tokenBudget: 100, tokensUsed: 36, timeUsedSeconds: 2, createdAt: 1, updatedAt: 2 }
+  const branch: JsonObject[] = [{ type: "mode_change", mode: "goal_paused", data: { goal } }]
+  const before = structuredClone(branch)
+  assert.deepEqual(sessionGoalFromBranch(branch), { enabled: false, mode: "active", goal })
+  assert.deepEqual(branch, before)
+  assert.equal(sessionGoalFromBranch([...branch, { type: "mode_change", mode: "none" }]), null)
+  assert.equal(sessionGoalFromBranch([{ type: "mode_change", mode: "goal", data: { goal: { objective: "incomplete" } } }]), null)
 })

@@ -225,22 +225,21 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
       .requireRuntime()
       .invokeCommand(P.reqString(p, "name"), P.optString(p, "args")),
   goal: async (ctx, p) => {
-    const op = P.optEnum(p, "op", ["set", "pause", "resume", "drop"] as const);
+    const op = P.optEnum(p, "op", ["create", "get", "replace", "complete", "pause", "resume", "drop", "budget"] as const);
     if (!op) {
       throw Object.assign(
-        new Error("params.op must be one of set|pause|resume|drop"),
+        new Error("params.op must be one of create|get|replace|complete|pause|resume|drop|budget"),
         { code: "INVALID_REQUEST" },
       );
     }
-    await ctx
+    return await ctx
       .requireRuntime()
       .manageGoal({
         op,
         objective: P.optString(p, "objective"),
         tokenBudget: P.optPositiveInteger(p, "tokenBudget"),
-        images: p.images as import("@ompiui/protocol").GoalImageInput[] | undefined,
+        clearBudget: P.optBoolean(p, "clearBudget"),
       });
-    return { ok: true };
   },
   "commands.completions": async (ctx, p) =>
     ctx

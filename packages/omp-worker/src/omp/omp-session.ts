@@ -5,6 +5,7 @@ import type {
   ImageInput,
   JsonObject,
   JsonValue,
+  PiCommandParams,
   RegistrySnapshot,
   SessionActivityStatus,
 } from "@ompiui/protocol";
@@ -207,11 +208,6 @@ export class OmpRpcSession implements SessionRuntime {
   private activityGeneration = 0;
   private readonly resourcesListeners = new Set<() => void>();
   private scopedModels: JsonValue[] = [];
-  // OMPiUI goal continuation is worker-local. Native goal tools may also be
-  // registered by the SDK; there is no public RPC goal control operation.
-  private goal: JsonValue = null;
-  private goalImages: ImageInput[] = [];
-  private goalGeneration = 0;
   private lastActivity = {
     streaming: false,
     retrying: false,
@@ -727,10 +723,6 @@ export class OmpRpcSession implements SessionRuntime {
         };
         break;
       }
-      case "goal_updated": {
-        this.goal = toJson(frame.goal) ?? null;
-        break;
-      }
       default:
         break;
     }
@@ -1169,8 +1161,8 @@ export class OmpRpcSession implements SessionRuntime {
       // OMP 扩展：子代理注册表快照 + todo 阶段（前端子代理面板重连恢复用）
       subagents: this.getSubagentsSnapshot(),
       todoPhases: Array.isArray(native.todoPhases) ? native.todoPhases : [],
-      // goal 运行时快照（前端目标栏用；worker 侧注册表，见 manageGoal）
-      goal: isJsonObject(this.goal) ? projectStateImages(this.goal) : this.goal,
+      goal: isJsonObject(native.goal) && isJsonObject(native.goal.goal) ? native.goal.goal : null,
+      goalState: native.goal ?? null,
     };
   }
 
@@ -1402,64 +1394,34 @@ export class OmpRpcSession implements SessionRuntime {
 
   // ---------------------------------------------------------------- goal
 
-  /**
-   * Worker-local goal continuation. Native goal tools are independent of this
-   * UI loop; it is invalidated on session replacement and paused on abort.
-   */
-  async manageGoal(params: import("@ompiui/protocol").PiCommandParams["goal"]): Promise<JsonObject> {
-    // #354: 目标生命周期完全代理到官方 GoalRuntime（桥接 goal 操作）。worker 只
-    // 镜像官方 goal_updated 事件帧，不再自建续跑循环、完成标记或轮次计时。
-    if (params.op === "set") {
-      const objective = (params.objective ?? "").trim();
-      if (!objective) {
-        throw Object.assign(
-          new Error("params.objective is required for op=set"),
-          { code: "INVALID_REQUEST" },
-        );
-      }
-      if (params.images?.length) {
-        throw Object.assign(
-          new Error("The official goal runtime does not support image attachments on goals"),
-          { code: "INVALID_REQUEST" },
-        );
-      }
-      const hasLiveGoal =
-        isJsonObject(this.goal) &&
-        this.goal.status !== "dropped" &&
-        this.goal.status !== "complete";
-      await this.client.requestRuntime("goal", {
-        op: hasLiveGoal ? "replace" : "create",
-        objective,
-        ...(typeof params.tokenBudget === "number" ? { tokenBudget: params.tokenBudget } : {}),
+  /** Official GoalRuntime lifecycle; never infer an operation from cached goal state. */
+  async manageGoal(params: PiCommandParams["goal"]): Promise<JsonObject> {
+    const epoch = this.eventEpoch;
+    if ("images" in params) throw Object.assign(new Error("The official goal runtime does not support image attachments on goals"), { code: "INVALID_REQUEST" });
+    if (params.tokenBudget !== undefined && (!Number.isSafeInteger(params.tokenBudget) || params.tokenBudget <= 0)) throw Object.assign(new Error("Goal token budget must be a positive integer"), { code: "INVALID_REQUEST" });
+    if (params.clearBudget && params.tokenBudget !== undefined) throw Object.assign(new Error("Specify a token budget or clearBudget, not both"), { code: "INVALID_REQUEST" });
+    if ((params.op === "create" || params.op === "replace") && !params.objective?.trim()) throw Object.assign(new Error("Goal objective is required"), { code: "INVALID_REQUEST" });
+    if (params.op === "budget" && params.tokenBudget === undefined && !params.clearBudget) throw Object.assign(new Error("Specify tokenBudget or clearBudget for budget"), { code: "INVALID_REQUEST" });
+    let result: JsonValue | undefined;
+    if (["get", "create", "pause", "resume", "drop"].includes(params.op)) {
+      result = unwrapResponse(await this.client.request({ type: "goal", op: params.op,
+        ...(params.objective === undefined ? {} : { objective: params.objective.trim() }),
+        ...(params.tokenBudget === undefined ? {} : { token_budget: params.tokenBudget }),
+      }));
+    } else if (["replace", "complete", "budget"].includes(params.op)) {
+      result = await this.client.requestRuntime("goal", {
+        op: params.op,
+        ...(params.objective === undefined ? {} : { objective: params.objective.trim() }),
+        ...(params.tokenBudget === undefined ? {} : { tokenBudget: params.tokenBudget }),
+        ...(params.clearBudget === undefined ? {} : { clearBudget: params.clearBudget }),
       });
-    } else {
-      const op =
-        params.op === "pause" ? "pause" : params.op === "resume" ? "resume" : "drop";
-      await this.client.requestRuntime("goal", { op });
-    }
-    this.goalGeneration += 1;
-    // 官方 runtime 的 goal_updated 事件帧负责广播；这里只推进代次。
-    return { goal: this.goal };
+    } else throw Object.assign(new Error("Invalid goal operation"), { code: "INVALID_REQUEST" });
+    if (epoch !== this.eventEpoch) throw Object.assign(new Error("Session changed before goal operation completed"), { code: "SESSION_REPLACED" });
+    this.scheduleEntrySync();
+    if (!isJsonObject(result)) throw new OmpRpcError("Invalid native goal result", "OMP_PROTOCOL_ERROR");
+    return result;
   }
 
-  /** 官方 goal 状态快照：会话替换/恢复后补齐镜像（restore 不重放 goal_updated）。 */
-  private async loadOfficialGoalSnapshot(): Promise<void> {
-    try {
-      const result = await this.client.requestRuntime("goal", { op: "snapshot" });
-      const state = isJsonObject(result) ? result.state : undefined;
-      const goal = isJsonObject(state) && isJsonObject(state.goal) ? state.goal : null;
-      if (this.goal !== goal) {
-        this.goal = goal;
-        this.emitGoalUpdated();
-      }
-    } catch {
-      // 桥不可用（普通 rpc / --no-ui）时保持空镜像，不阻塞会话打开。
-    }
-  }
-
-  private emitGoalUpdated(): void {
-    this.emitPiEvent({ type: "goal_updated", goal: this.goal });
-  }
 
   async abort(): Promise<JsonValue | undefined> {
     if (this.abortInFlight) return this.abortInFlight;
@@ -1500,7 +1462,6 @@ export class OmpRpcSession implements SessionRuntime {
     await Promise.all([this.refreshModels(), this.refreshThinkingLevels()]);
     await this.syncEntriesNow();
     this.emitHeadIfChanged();
-    await this.loadOfficialGoalSnapshot();
     return {
       operation: "new",
       sourceSessionId,
@@ -1528,7 +1489,6 @@ export class OmpRpcSession implements SessionRuntime {
     await Promise.all([this.refreshModels(), this.refreshThinkingLevels()]);
     await this.syncEntriesNow();
     this.emitHeadIfChanged();
-    await this.loadOfficialGoalSnapshot();
     return {
       operation: "switch",
       sourceSessionId,
@@ -1558,8 +1518,6 @@ export class OmpRpcSession implements SessionRuntime {
     this.nativeSettled = true;
     this.currentStreaming = false;
     this.scopedModels = [];
-    this.goal = null;
-    this.goalGeneration += 1;
     this.subagentRuns.clear();
     this.supersededSubagentParents.clear();
     this.subagentRunSequence = 0;
@@ -1607,7 +1565,6 @@ export class OmpRpcSession implements SessionRuntime {
       this.reportEntrySyncError(error);
       projectionError = error instanceof Error ? error.message : String(error);
     }
-    await this.loadOfficialGoalSnapshot();
     this.emitHeadIfChanged();
     return {
       ...result, operation: "fork", sourceSessionId,

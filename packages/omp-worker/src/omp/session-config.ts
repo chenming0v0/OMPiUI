@@ -42,3 +42,17 @@ export function sessionConfigFromBranch(branch: JsonObject[]): { model: JsonObje
   }
   return { model, thinkingLevel }
 }
+
+/** Read the native mode_change snapshot on this branch without restoring a runtime. */
+export function sessionGoalFromBranch(branch: JsonObject[]): JsonObject | null {
+  const entry = branch.findLast(item => item.type === "mode_change")
+  if (!entry || (entry.mode !== "goal" && entry.mode !== "goal_paused") || !isJsonObject(entry.data) || !isJsonObject(entry.data.goal)) return null
+  const goal = entry.data.goal
+  // Match the official goalFromModeData boundary; do not invent missing usage.
+  if (typeof goal.id !== "string" || typeof goal.objective !== "string" || typeof goal.status !== "string"
+    || typeof goal.tokensUsed !== "number" || typeof goal.timeUsedSeconds !== "number"
+    || typeof goal.createdAt !== "number" || typeof goal.updatedAt !== "number") return null
+  // RpcGoalController reattaches the persisted mode with mode=active; it does
+  // not persist the transient exiting/reason fields, including on completion.
+  return { enabled: entry.mode === "goal", mode: "active", goal }
+}

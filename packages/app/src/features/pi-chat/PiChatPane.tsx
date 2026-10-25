@@ -1124,11 +1124,11 @@ export function PiChatPane({
   )
 
   const handleSetGoal = useCallback(
-    async (objective: string, images?: PiImageInput[]): Promise<boolean> => {
+    async (objective: string, tokenBudget?: number): Promise<boolean> => {
       let targetSessionId = sessionId
       try {
         if (!targetSessionId) {
-          // Goal 可以作为新会话的第一步：先创建会话，再让 worker 立刻进入目标续跑。
+          // Creating a goal is explicit; native RPC owns lifecycle and continuation.
           const directory = currentDirectoryRef.current || (await resolveWorkspacePath())
           if (!directory) return false
           const opened = await openPiSession(directory)
@@ -1160,7 +1160,7 @@ export function PiChatPane({
           await refreshPiSessionState(targetSessionId)
         }
 
-        const submitted = await manageSessionGoal(targetSessionId, 'set', objective, undefined, images)
+        const submitted = await manageSessionGoal(targetSessionId, 'create', { objective, tokenBudget })
         await waitHostCommand(submitted.id)
         void refreshPiSessionState(targetSessionId).catch(() => undefined)
         return true

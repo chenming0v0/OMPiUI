@@ -143,87 +143,6 @@ export default function (pi) {
   }
   ${nativeExtensionResourcesSource}
   ${NATIVE_PROMPT_ADMISSION_SOURCE}
-  // #392: rpc-ui 不运行官方 InteractiveMode#scheduleGoalContinuation，桥内按其语义复刻：
-  // 终止性 agent_end 后、goal 仍 active、空闲且无排队时投递官方续跑提示；abort/无进展抑制，
-  // pause/drop/会话替换后停止。
-  const goalContinuationDelayMs = 800;
-  // 循环挂在 session 上（全局 symbol 跨桥实例共享），桥重载后新实例能替换旧循环，避免重复订阅。
-  const goalLoopKey = Symbol.for("ompiui.goalLoop");
-  function notifyError(ctx, error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
-  // 只认 sessionId：新会话首次落盘前后 sessionFile 会变化。
-  function goalSessionKey(session) { return session.sessionManager.getSessionId(); }
-  function goalActive(session) {
-    const state = session.getGoalModeState();
-    return state?.enabled === true && state.goal?.status === "active";
-  }
-  function goalActivity(messages) {
-    const parts = (messages ?? []).flatMap(message => message?.role === "toolResult"
-      ? [["result", message.toolName, message.content, message.isError === true]]
-      : message?.role === "assistant" && Array.isArray(message.content)
-        ? message.content.filter(block => block?.type === "toolCall").map(block => ["call", block.name, block.arguments])
-        : []);
-    return parts.length > 0 ? JSON.stringify(parts) : "";
-  }
-  function endedByAbort(messages) {
-    return (messages ?? []).findLast(message => message?.role === "assistant")?.stopReason === "aborted";
-  }
-  function stopGoalLoop(session) {
-    const loop = session[goalLoopKey];
-    if (!loop) return;
-    delete session[goalLoopKey];
-    clearTimeout(loop.timer);
-    loop.unsubscribe();
-  }
-  function armGoalLoop(session, ctx) {
-    stopGoalLoop(session);
-    const loop = { key: goalSessionKey(session), ctx, pending: 0, suppressed: false, activity: undefined, timer: undefined, unsubscribe: () => {} };
-    // 不可枚举：官方展开/复制 AgentSession 时不得带走循环状态
-    Object.defineProperty(session, goalLoopKey, { value: loop, configurable: true, writable: true, enumerable: false });
-    loop.unsubscribe = session.subscribe(event => onGoalEvent(session, event));
-  }
-  function scheduleGoalContinuation(session) {
-    const loop = session[goalLoopKey];
-    if (!loop) return;
-    clearTimeout(loop.timer);
-    if (loop.suppressed) return;
-    loop.timer = setTimeout(() => {
-      loop.timer = undefined;
-      // 定时器内异常不得逃逸，否则会杀掉 native omp 进程。
-      try { fireGoalContinuation(session, loop); }
-      catch (error) { notifyError(loop.ctx, error); }
-    }, goalContinuationDelayMs);
-  }
-  function fireGoalContinuation(session, loop) {
-    if (session[goalLoopKey] !== loop || loop.suppressed) return;
-    if (goalSessionKey(session) !== loop.key) return stopGoalLoop(session);
-    if (session.isStreaming || session.isCompacting || session.hasPostPromptWork || session.hasAdmittedSubmission) return;
-    if (session.queuedMessageCount > 0 || !goalActive(session)) return;
-    const prompt = session.goalRuntime.buildContinuationPrompt();
-    if (!prompt) return;
-    loop.pending++;
-    void session.promptCustomMessage({ customType: "goal-continuation", content: prompt, display: false })
-      .catch(error => { loop.pending = Math.max(0, loop.pending - 1); notifyError(loop.ctx, error); });
-  }
-  function onGoalEvent(session, event) {
-    const loop = session[goalLoopKey];
-    if (!loop) return;
-    if (event.type === "agent_start") { clearTimeout(loop.timer); return; }
-    if (event.type === "message_start" && event.message?.role === "user" && !event.message.synthetic) {
-      loop.pending = 0;
-      loop.suppressed = false;
-      loop.activity = undefined;
-      return;
-    }
-    if (event.type === "goal_updated") { if (event.state?.enabled !== true) stopGoalLoop(session); return; }
-    if (event.type !== "agent_end" || event.isTerminal === false) return;
-    if (goalSessionKey(session) !== loop.key) return stopGoalLoop(session);
-    const activity = loop.pending > 0 ? goalActivity(event.messages) : undefined;
-    loop.pending = Math.max(0, loop.pending - 1);
-    // 用户 abort 后不自动续跑，直到下一条真实用户消息；续跑轮无新进展时同样抑制（同官方）。
-    loop.suppressed = endedByAbort(event.messages) || (activity !== undefined && (activity === "" || activity === loop.activity));
-    loop.activity = activity;
-    scheduleGoalContinuation(session);
-  }
   async function execute(operation, args, ctx) {
     const session = ownSession(ctx);
     switch (operation) {
@@ -342,57 +261,26 @@ export default function (pi) {
       case "tree": return { ...identity(session), entries: session.sessionManager.getEntries(), tree: session.sessionManager.getTree() };
       case "asyncJobs": return ctx.getAsyncJobSnapshot();
       case "goal": {
-        // #354: 目标生命周期代理到官方 GoalRuntime（create/replace/pause/resume/drop），
-        // worker 不再自建续跑循环。按官方 TUI 语义同步 goal 工具与流中上下文：
-        // 启用/恢复时把 goal 工具加入活动集（模型经它上报完成），暂停/放弃时移除。
-        // goalRuntime 及相关方法都在 AgentSession 上，不在底层 session.agent。
+        // Native RPC owns create/get/pause/resume/drop and the only continuation
+        // driver. The supported AgentSession GoalRuntime supplies the operations
+        // not present in the RPC goal command; never synthesize lifecycle events.
         const runtime = session.goalRuntime;
         const stateReader = session.getGoalModeState;
-        // 旧运行时在任何状态改动前整体拒绝，不留半完成的 goal。
-        if (!runtime || typeof stateReader !== "function" || typeof runtime.buildContinuationPrompt !== "function"
-          || typeof session.subscribe !== "function" || typeof session.setActiveToolsByName !== "function"
-          || typeof session.getEnabledToolNames !== "function") {
+        if (!runtime || typeof stateReader !== "function") {
           throw Object.assign(new Error("The selected OMP runtime does not expose the official goal runtime"), { code: "CAPABILITY_DISABLED" });
         }
-        const readState = () => {
-          const state = stateReader.call(session);
-          return state === undefined || state === null ? null : JSON.parse(JSON.stringify(state));
-        };
         const op = args.op;
-        if (op === "snapshot") return { state: readState() };
-        const objective = typeof args.objective === "string" ? args.objective.trim() : "";
-        const tokenBudget = typeof args.tokenBudget === "number" ? args.tokenBudget : undefined;
-        let state;
-        if (op === "create" || op === "replace") {
-          const previous = session.getEnabledToolNames().filter(name => name !== "goal");
-          state = op === "create"
-            ? await runtime.createGoal({ objective, tokenBudget })
-            : await runtime.replaceGoal({ objective, tokenBudget });
-          await session.setActiveToolsByName([...new Set([...previous, "goal"])]);
-          armGoalLoop(session, ctx);
-          // 官方 InteractiveMode：流中 steer 目标上下文；空闲时把 objective 作为普通用户输入投递首轮。
-          if (session.isStreaming) await session.sendGoalModeContext({ deliverAs: "steer" });
-          else if (objective) void session.prompt(objective).catch(error => notifyError(ctx, error));
+        const method = op === "replace" ? "replaceGoal" : op === "complete" ? "completeGoalFromTool" : op === "budget" ? "onBudgetMutated" : undefined;
+        if (!method || typeof runtime[method] !== "function") {
+          throw Object.assign(new Error("The selected OMP runtime does not expose goal operation: " + op), { code: "CAPABILITY_DISABLED" });
         }
-        else if (op === "pause") {
-          stopGoalLoop(session);
-          state = await runtime.pauseGoal();
-          await session.setActiveToolsByName(session.getEnabledToolNames().filter(name => name !== "goal"));
-        }
-        else if (op === "resume") {
-          const previous = session.getEnabledToolNames().filter(name => name !== "goal");
-          state = await runtime.resumeGoal();
-          await session.setActiveToolsByName([...new Set([...previous, "goal"])]);
-          armGoalLoop(session, ctx);
-          scheduleGoalContinuation(session);
-        }
-        else if (op === "drop") {
-          stopGoalLoop(session);
-          state = await runtime.dropGoal();
-          await session.setActiveToolsByName(session.getEnabledToolNames().filter(name => name !== "goal"));
-        }
-        else throw Object.assign(new Error("Invalid goal operation"), { code: "INVALID_REQUEST" });
-        return { state: state === undefined ? null : JSON.parse(JSON.stringify(state)) };
+        if (Array.isArray(args.images) && args.images.length) throw Object.assign(new Error("The official goal runtime does not support image attachments on goals"), { code: "INVALID_REQUEST" });
+        if (op === "replace") await runtime.replaceGoal({ objective: args.objective, tokenBudget: args.tokenBudget });
+        else if (op === "complete") await runtime.completeGoalFromTool();
+        else await runtime.onBudgetMutated(args.clearBudget === true ? undefined : args.tokenBudget);
+        const state = stateReader.call(session);
+        await session.sessionManager.flush();
+        return { state: state == null ? null : JSON.parse(JSON.stringify(state)) };
       }
       default: throw Object.assign(new Error("Unknown managed runtime operation: " + operation), { code: "CAPABILITY_DISABLED" });
     }

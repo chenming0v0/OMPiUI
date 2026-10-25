@@ -26,7 +26,9 @@ test("installed official OMP and UI share native sessions and continue writing i
       id: "local-fixture", object: "chat.completion.chunk", created: 1, model: "local",
       choices: [{ index: 0, delta, finish_reason }],
     })}\n\n`
-    res.end(chunk({ role: "assistant", content: "Local fixture reply." }, null) + chunk({}, "stop") + "data: [DONE]\n\n")
+    const final = JSON.parse(chunk({}, "stop").slice(6).trim())
+    final.usage = { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 }
+    res.end(chunk({ role: "assistant", content: "Local fixture reply." }, null) + `data: ${JSON.stringify(final)}\n\n` + "data: [DONE]\n\n")
   })
   endpoint.listen(0, "127.0.0.1")
   await once(endpoint, "listening")
@@ -100,6 +102,20 @@ test("installed official OMP and UI share native sessions and continue writing i
     sessions.add(uiCreate)
     await uiCreate.prompt("ui-created")
     await uiCreate.waitForIdle()
+    await uiCreate.manageGoal({ op: "create", objective: "Native interop goal", tokenBudget: 100 })
+    await uiCreate.waitForIdle()
+    const goal = (await uiCreate.getState()).goal as JsonObject
+    assert.equal(goal.objective, "Native interop goal")
+    assert.equal(goal.tokensUsed, 18)
+    await uiCreate.manageGoal({ op: "budget", tokenBudget: 1 })
+    assert.equal(((await uiCreate.getState()).goal as JsonObject).status, "budget-limited")
+    await uiCreate.manageGoal({ op: "pause" })
+    assert.equal(((await uiCreate.getState()).goal as JsonObject).status, "paused")
+    await uiCreate.manageGoal({ op: "budget", clearBudget: true })
+    await uiCreate.manageGoal({ op: "resume" })
+    await uiCreate.waitForIdle()
+    assert.equal(((await uiCreate.getState()).goal as JsonObject).tokensUsed, 36)
+    await uiCreate.manageGoal({ op: "pause" })
     const uiId = uiCreate.getSessionId()
     const uiFile = uiCreate.getSessionFile()!
     assert.ok(path.resolve(uiFile).startsWith(path.join(agent, "sessions") + path.sep))
@@ -108,6 +124,9 @@ test("installed official OMP and UI share native sessions and continue writing i
     const nativeResume = await official(["--continue"])
     assert.equal((await state(nativeResume)).sessionId, uiId)
     await echo(nativeResume, "native-continued-ui-created")
+    const continuedGoal = unwrapResponse<JsonObject>(await nativeResume.request({ type: "goal", op: "get" }))!
+    assert.equal((continuedGoal.goal as JsonObject).id, goal.id)
+    assert.equal((continuedGoal.goal as JsonObject).tokensUsed, 36)
     await nativeResume.close()
     clients.delete(nativeResume)
     assert.match(readFileSync(uiFile, "utf8"), /native-continued-ui-created/)
