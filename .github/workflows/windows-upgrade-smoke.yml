@@ -1,0 +1,134 @@
+name: Windows installed upgrade smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact candidate installer source commit (40 hex characters)
+        required: true
+        default: 69649f46a332019f171f69e8f8240001f4578d1a
+        type: string
+      candidate_run:
+        description: Successful Desktop And Mobile Release run containing that commit's Windows lite installer
+        required: true
+        default: '40225030721'
+        type: string
+      baseline_tag:
+        description: Published baseline release to install before the candidate
+        required: true
+        default: v0.6.41
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: windows-installed-upgrade-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  upgrade:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: smoke-source
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          path: candidate-source
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Resolve exact installer provenance
+        id: source
+        uses: actions/github-script@v8
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run }}
+          BASELINE_TAG: ${{ inputs.baseline_tag }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const { owner, repo } = context.repo;
+            const sha = process.env.CANDIDATE_SHA;
+            if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error('candidate_sha must be a full commit identity');
+            const run_id = Number(process.env.CANDIDATE_RUN);
+            if (!Number.isSafeInteger(run_id) || run_id <= 0) throw new Error('Invalid candidate_run');
+            const { data: run } = await github.rest.actions.getWorkflowRun({ owner, repo, run_id });
+            if (run.head_sha !== sha || run.status !== 'completed' || run.conclusion !== 'success' || run.name !== 'Desktop And Mobile Release') {
+              throw new Error('Candidate artifacts must come from a successful release-build run at exactly candidate_sha');
+            }
+            const { data: commit } = await github.rest.git.getCommit({ owner, repo, commit_sha: sha });
+            const name = `ompiui-release-${commit.tree.sha}-windows-x64-lite`;
+            const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, { owner, repo, run_id, per_page: 100 });
+            const artifact = artifacts.find(item => item.name === name && !item.expired);
+            if (!artifact) throw new Error(`Exact-source Windows installer artifact unavailable: ${name}`);
+            const { data: baseline } = await github.rest.repos.getReleaseByTag({ owner, repo, tag: process.env.BASELINE_TAG });
+            const asset = baseline.assets.find(item => /_x64-setup-lite\.exe$/.test(item.name));
+            if (!asset || !asset.digest?.startsWith('sha256:')) throw new Error('Baseline installer and published SHA-256 digest are required');
+            const tagged = await github.rest.repos.getCommit({ owner, repo, ref: baseline.tag_name });
+            const root = path.join(process.env.RUNNER_TEMP, `ompiui-upgrade-${context.runId}`);
+            fs.mkdirSync(root, { recursive: true });
+            fs.writeFileSync(path.join(root, 'provenance.json'), JSON.stringify({
+              issue: 336, workflowSha: context.sha, candidateSha: sha, candidateTree: commit.tree.sha,
+              candidateRun: run_id, candidateRunUrl: run.html_url, artifact,
+              baseline: { tag: baseline.tag_name, taggedSha: tagged.data.sha, releaseUrl: baseline.html_url, asset },
+              runner: { os: process.env.RUNNER_OS, environment: process.env.RUNNER_ENVIRONMENT }
+            }, null, 2));
+            core.setOutput('artifact', name);
+            core.setOutput('root', root);
+            core.setOutput('baseline_url', asset.browser_download_url);
+            core.setOutput('baseline_digest', asset.digest.slice(7));
+            core.setOutput('baseline_name', asset.name);
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ steps.source.outputs.artifact }}
+          path: ${{ steps.source.outputs.root }}/candidate
+          run-id: ${{ inputs.candidate_run }}
+          github-token: ${{ github.token }}
+      - name: Download published baseline and prepare exact public native runtime
+        shell: pwsh
+        env:
+          SMOKE_ROOT: ${{ steps.source.outputs.root }}
+          BASELINE_URL: ${{ steps.source.outputs.baseline_url }}
+          BASELINE_NAME: ${{ steps.source.outputs.baseline_name }}
+          BASELINE_DIGEST: ${{ steps.source.outputs.baseline_digest }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $baseline = Join-Path $env:SMOKE_ROOT $env:BASELINE_NAME
+          Invoke-WebRequest $env:BASELINE_URL -OutFile $baseline
+          if ((Get-FileHash $baseline -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:BASELINE_DIGEST) { throw 'Baseline digest mismatch' }
+          $home = Join-Path $env:SMOKE_ROOT 'home'
+          $temp = Join-Path $env:SMOKE_ROOT 'temp'
+          New-Item -ItemType Directory -Force $home, $temp | Out-Null
+          $env:HOME = $home; $env:USERPROFILE = $home
+          $env:TEMP = $temp; $env:TMP = $temp; $env:TMPDIR = $temp
+          $env:XDG_CONFIG_HOME = Join-Path $home 'config'
+          $env:XDG_DATA_HOME = Join-Path $home 'data'
+          $env:XDG_STATE_HOME = Join-Path $home 'state'
+          $env:XDG_CACHE_HOME = Join-Path $home 'cache'
+          $env:npm_config_cache = Join-Path $env:SMOKE_ROOT 'npm-cache'
+          node candidate-source/scripts/prepare-omp-runtime.mjs --version 18.12.6 --out "$env:SMOKE_ROOT/native-runtime"
+          if ($LASTEXITCODE -ne 0) { throw 'Public native runtime preparation failed' }
+      - name: Real baseline install, shortcut customization, upgrade, and native WebView chat
+        shell: pwsh
+        env:
+          SMOKE_ROOT: ${{ steps.source.outputs.root }}
+          BASELINE_NAME: ${{ steps.source.outputs.baseline_name }}
+        run: |
+          & ./smoke-source/scripts/windows-upgrade-smoke.ps1 -Root $env:SMOKE_ROOT -BaselineInstaller (Join-Path $env:SMOKE_ROOT $env:BASELINE_NAME) -CandidateDirectory (Join-Path $env:SMOKE_ROOT 'candidate')
+      - name: Upload evidence even when installation or GUI is blocked
+        if: always() && steps.source.outputs.root != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-installed-upgrade-${{ github.run_id }}
+          path: |
+            ${{ steps.source.outputs.root }}/provenance.json
+            ${{ steps.source.outputs.root }}/evidence/**
+            ${{ steps.source.outputs.root }}/native-runtime/runtime.json
+          if-no-files-found: error
+          retention-days: 14
