@@ -356,18 +356,22 @@ describe('SessionChangesPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Manage Git staging and commit' }))
     await act(async () => { await Promise.resolve() })
     const manager = screen.getByRole('region', { name: 'Manage Git staging and commit' })
+    const mainViewer = () => screen.getAllByTestId('diff-viewer').find(viewer => !manager.contains(viewer) && !viewer.closest('.hidden'))
     fireEvent.click(within(manager).getAllByRole('button', { name: 'src/z.ts' })[staged ? 1 : 0])
     await act(async () => { await Promise.resolve() })
     expect(within(manager).getByText(`src/z.ts · ${staged ? 'Staged' : 'Unstaged'}`)).toBeInTheDocument()
-    await act(async () => list.resolve({ mode, files: ['src/a.ts', 'src/z.ts'].map(file => ({ file, status: 'modified', additions: 1, deletions: 1, binary: false })) }))
-    expect(screen.getByTestId('diff-viewer')).toHaveTextContent('fresh src/z.ts')
-    expect(screen.getByTestId('diff-viewer')).not.toHaveTextContent('fresh src/a.ts')
+    await act(async () => {
+      list.resolve({ mode, files: ['src/a.ts', 'src/z.ts'].map(file => ({ file, status: 'modified', additions: 1, deletions: 1, binary: false })) })
+      await vi.runAllTimersAsync()
+    })
+    expect(mainViewer()).toHaveTextContent('fresh src/z.ts')
+    expect(mainViewer()).not.toHaveTextContent('fresh src/a.ts')
 
     // A later authoritative list removes the selection instead of pinning it forever.
     getHostGitDiff.mockResolvedValue({ mode, files: [{ file: 'src/a.ts', status: 'modified', additions: 1, deletions: 1, binary: false }] })
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
-    await act(async () => { await Promise.resolve() })
-    expect(screen.getByTestId('diff-viewer')).toHaveTextContent('fresh src/a.ts')
+    await act(async () => { await vi.runAllTimersAsync() })
+    expect(mainViewer()).toHaveTextContent('fresh src/a.ts')
   })
 
   it.each(['selection', 'patch', 'pending patch', 'preview', 'pending preview'])('invalidates %s on an active URL edit and requires a fresh selection', async state => {

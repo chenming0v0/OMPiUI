@@ -1,7 +1,6 @@
 import type { ReactNode } from 'react'
 import { render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { formatGoalMessage } from '@ompiui/protocol'
 import {
   MessageRenderer,
   assistantHasFinalContent,
@@ -127,8 +126,8 @@ describe('MessageRenderer assistant fork', () => {
     expect(screen.getByText('Use **bold** text')).toBeInTheDocument()
   })
 
-  it('shows the goal objective and marker without exposing the internal prompt', () => {
-    const text = formatGoalMessage({ kind: 'set', objective: '修复截图布局', round: 1, limit: 50 })
+  it('shows a historical goal objective without exposing its internal prompt', () => {
+    const text = '[ompiui goal set 1/50] Session goal: "修复截图布局". Continue working toward it. If it is already fully achieved, end your reply with the exact marker GOAL_COMPLETE and do nothing else.'
     const { container } = render(<MessageRenderer item={createUserTextItem(text)} />)
     expect(screen.getByText('修复截图布局')).toBeInTheDocument()
     expect(container.querySelector('[data-goal-message="set"]')).toBeInTheDocument()
@@ -136,8 +135,8 @@ describe('MessageRenderer assistant fork', () => {
     expect(screen.getByRole('button', { name: 'copy:修复截图布局' })).toBeInTheDocument()
   })
 
-  it('renders automatic continuation as a small marker instead of another user bubble', () => {
-    const text = formatGoalMessage({ kind: 'continuation', objective: '修复截图布局', round: 2, limit: 50 })
+  it('renders historical continuation as a small marker instead of another user bubble', () => {
+    const text = '[ompiui goal continuation 2/50] Session goal: "修复截图布局". Continue working toward it. If it is already fully achieved, end your reply with the exact marker GOAL_COMPLETE and do nothing else.'
     const { container } = render(<MessageRenderer item={createUserTextItem(text)} />)
     expect(container.querySelector('[data-goal-message="continuation"]')).toBeInTheDocument()
     expect(screen.getByText('2/50')).toBeInTheDocument()

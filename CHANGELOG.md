@@ -1,6 +1,8 @@
-## [v0.6.42] - 2026-10-25
+## [v0.6.42] - 2026-10-26
 
 - fix(notices): 原生 `open_url` 的 link 通知归为 info，并恢复已有 link 历史为有效严重度；保留原始链接与说明，不再因图标映射缺失导致通知界面异常。实际生产桥接事件与历史加载回归通过。
+- fix(goals): 删除已退出生产流程的 `formatGoalMessage` 旧提示生成器；原生 Goal 生命周期不再创建私有文本续跑标记。历史目标仍只读解析和展示，历史目录/字节保留回归通过。
+- verification(git): 实际 Git 暂存 rename 两端、字面路径和 worktree 后代 shell 删除保护 20 项通过；网页已打开的非活跃预览保留，冷 scope 指定文件及后续消失回退 19 项通过。永久 shell 保护回归隔离原生 PTY 句柄，真实 GUI shell 行为单独验收。
 - test: 修正原生空命令目录与已 settled 的空闲运行时夹具，删除仅固定占位按钮展示的断言，不放宽生产协议失败或回收门禁。worker/server 62 项、PiChatPane 11 项、通知/事件 34 项回归通过。
 - verification: 集成候选的原生 CLI↔GUI 同文件继续、只读字节/mtime、最新备份与历史迁移 smoke 通过；原生/托管递归 depth=0/1/2/3/-1、10 个并发子任务、实时转录及父关联通过。未据此声明全部 issue 或 Windows 安装升级已验收。
 - fix(integration): complete legal fixtures and cutover consumer types (977abc1)

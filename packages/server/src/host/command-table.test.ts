@@ -43,6 +43,22 @@ test("implicit workspace uses the user home rather than executable or launch dir
 
 test("worktree removal protects descendant workspace and cwd shells without affecting a sibling or branch", { timeout: 45_000 }, async () => {
   const root = mkdtempSync(path.join(tmpdir(), "ompiui-worktree-shell-"))
+  const previousNativeModules = process.env.OMPIUI_NATIVE_MODULES
+  const nativeModules = path.join(root, 'native-module-fixture')
+  const ptyDirectory = path.join(nativeModules, '@lydell', `node-pty-${process.platform}-${process.arch}`, 'lib')
+  mkdirSync(ptyDirectory, { recursive: true })
+  // Stateful OS dependency fixture keeps permanent containment tests independent
+  // of ConPTY handles; real owned-shell/native smoke is recorded separately.
+  writeFileSync(path.join(ptyDirectory, 'index.js'), `
+    let nextPid = 10000;
+    exports.spawn = () => {
+      const listeners = new Set(); let alive = true;
+      const finish = () => { if (!alive) return; alive = false; for (const listener of listeners) listener({ exitCode: 0 }); };
+      return { pid: ++nextPid, write: data => { if (data.trim() === 'exit') finish(); }, resize: () => {}, kill: finish,
+        onData: () => ({ dispose() {} }), onExit: listener => { listeners.add(listener); return { dispose: () => listeners.delete(listener) }; } };
+    };
+  `)
+  process.env.OMPIUI_NATIVE_MODULES = nativeModules
   const repo = path.join(root, "repo")
   const linked = path.join(root, "linked")
   const sibling = path.join(root, "linked-other")
@@ -97,6 +113,8 @@ test("worktree removal protects descendant workspace and cwd shells without affe
     sessions.dispose()
     await watcher.dispose()
     await supervisor.dispose()
+    if (previousNativeModules === undefined) delete process.env.OMPIUI_NATIVE_MODULES
+    else process.env.OMPIUI_NATIVE_MODULES = previousNativeModules
     rmSync(root, { recursive: true, force: true })
   }
 })
