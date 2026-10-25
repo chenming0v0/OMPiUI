@@ -21,6 +21,62 @@ $report = [ordered]@{
     issue = 336; status = 'BLOCKED'; root = $Root; steps = @(); shortcutsPreserved = $false
     nativeGuiCwdAccepted = $false; processOwnership = @(); blocker = $null
 }
+$webViewPolicies = @()
+function Set-OwnedWebViewPolicy([string]$option, [string]$value) {
+    # Official WebView2 exact-process-name policy override, on this disposable
+    # runner only. No wildcard, machine-wide policy, or other-app value.
+    $key = "HKCU:\Software\Policies\Microsoft\Edge\WebView2\$option"
+    $name = 'ompiui.exe'
+    $existed = Test-Path $key
+    if (-not $existed) { New-Item -Path $key -Force | Out-Null }
+    $item = Get-Item $key
+    $hadValue = $item.GetValueNames() -contains $name
+    $oldValue = if ($hadValue) { $item.GetValue($name) } else { $null }
+    $oldKind = if ($hadValue) { $item.GetValueKind($name) } else { $null }
+    $script:webViewPolicies += @{ key = $key; name = $name; existed = $existed; hadValue = $hadValue; oldValue = $oldValue; oldKind = $oldKind }
+    New-ItemProperty -Path $key -Name $name -Value $value -PropertyType String -Force | Out-Null
+    Record-Step 'exact-app-webview2-policy' @{ key = $key; name = $name; value = $value; hadPriorValue = $hadValue }
+}
+function Restore-OwnedWebViewPolicies {
+    foreach ($saved in $webViewPolicies) {
+        if ($saved.hadValue) {
+            New-ItemProperty -Path $saved.key -Name $saved.name -Value $saved.oldValue -PropertyType $saved.oldKind -Force | Out-Null
+        } else {
+            Remove-ItemProperty -Path $saved.key -Name $saved.name -ErrorAction SilentlyContinue
+        }
+        if (-not $saved.existed -and (Test-Path $saved.key)) {
+            $item = Get-Item $saved.key
+            if ($item.ValueCount -eq 0 -and $item.SubKeyCount -eq 0) { Remove-Item $saved.key }
+        }
+    }
+}
+function Capture-OwnedGuiDiagnostics([string]$stage) {
+    $roots = @(Get-CimInstance Win32_Process -Filter "Name='ompiui.exe'" | Where-Object { $_.ExecutablePath -eq $exe })
+    $queue = [Collections.Queue]::new()
+    $seen = @{}
+    $details = @()
+    foreach ($process in $roots) { $queue.Enqueue($process.ProcessId) }
+    while ($queue.Count -gt 0) {
+        $ownedPid = $queue.Dequeue()
+        if ($seen.ContainsKey($ownedPid)) { continue }
+        $seen[$ownedPid] = $true
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId=$ownedPid" -ErrorAction SilentlyContinue
+        if (-not $process) { continue }
+        $details += @{ pid = $process.ProcessId; parentPid = $process.ParentProcessId; path = $process.ExecutablePath; commandLine = $process.CommandLine; session = $process.SessionId }
+        foreach ($child in @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$ownedPid")) { $queue.Enqueue($child.ProcessId) }
+    }
+    Record-Step "$stage-owned-gui-descendants" $details
+    try {
+        Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+        $bounds = [Windows.Forms.Screen]::PrimaryScreen.Bounds
+        $image = [Drawing.Bitmap]::new($bounds.Width, $bounds.Height)
+        $graphics = [Drawing.Graphics]::FromImage($image)
+        try {
+            $graphics.CopyFromScreen($bounds.Location, [Drawing.Point]::Empty, $bounds.Size)
+            $image.Save((Join-Path $evidence "$stage-runner-desktop.png"), [Drawing.Imaging.ImageFormat]::Png)
+        } finally { $graphics.Dispose(); $image.Dispose() }
+    } catch { Record-Step "$stage-desktop-capture-unavailable" $_.Exception.Message }
+}
 function Save-Report { $report | ConvertTo-Json -Depth 20 | Set-Content -Encoding utf8 $reportPath }
 function Record-Step([string]$name, $details) {
     $report.steps += [ordered]@{ name = $name; at = (Get-Date).ToUniversalTime().ToString('o'); details = $details }
@@ -63,10 +119,14 @@ function Launch-Link([string]$path, [string]$stage) {
     # ShellExecute uses the actual .lnk, not a reconstructed command line.
     Start-Process -FilePath $path | Out-Null
     Record-Step $stage $link
+    Start-Sleep -Milliseconds 500
+    Capture-OwnedGuiDiagnostics $stage
 }
 function Run-WebView([string]$stage) {
     & node (Join-Path $PSScriptRoot 'windows-upgrade-webview.mjs') --root $Root --stage $stage --port 9336 --project $project
-    if ($LASTEXITCODE -ne 0) { throw "$stage native WebView GUI acceptance failed; see $stage-gui.json and screenshots." }
+    $accepted = $LASTEXITCODE -eq 0
+    if (-not $accepted) { Capture-OwnedGuiDiagnostics "$stage-gui-blocked" }
+    return $accepted
 }
 
 try {
@@ -95,6 +155,8 @@ try {
     $env:OMPI_BUN_BIN = Join-Path $env:OMPI_OMP_RUNTIME_DIR 'bin/bun.exe'
     $env:OMPI_OMP_PACKAGE_ROOT = Join-Path $env:OMPI_OMP_RUNTIME_DIR 'node_modules/@oh-my-pi/pi-coding-agent'
     $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9336 --remote-debugging-address=127.0.0.1'
+    Set-OwnedWebViewPolicy 'AdditionalBrowserArguments' $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
+    Set-OwnedWebViewPolicy 'UserDataFolder' (Join-Path $Root 'webview-profile')
     $env:PATH = (Join-Path $env:OMPI_OMP_RUNTIME_DIR 'bin') + ';' + $env:PATH
     $runtime = Get-Content (Join-Path $env:OMPI_OMP_RUNTIME_DIR 'runtime.json') -Raw | ConvertFrom-Json
     if ($runtime.version -ne '18.12.6' -or $runtime.bunVersion -ne '1.3.14') { throw 'Smoke requires official OMP 18.12.6 with public sources and Bun 1.3.14.' }
@@ -123,7 +185,8 @@ try {
     $initial.Arguments = '"' + $project + '"'
     $initial.Save()
     Launch-Link $startMenu 'baseline-gui-launch'
-    Run-WebView 'baseline'
+    $baselineGuiAccepted = Run-WebView 'baseline'
+    $report.baselineGuiAccepted = $baselineGuiAccepted
     Stop-OwnedGui
 
     foreach ($path in @($startMenu, $desktop)) {
@@ -155,8 +218,13 @@ try {
     }
     $report.shortcutsPreserved = $true
     Launch-Link $desktop 'upgraded-gui-launch-via-preserved-shortcut'
-    Run-WebView 'candidate'
-    $report.nativeGuiCwdAccepted = $true
+    $candidateGuiAccepted = Run-WebView 'candidate'
+    $report.nativeGuiCwdAccepted = $candidateGuiAccepted
+    if (-not $baselineGuiAccepted -or -not $candidateGuiAccepted) {
+        $report.status = 'SHORTCUT_ONLY'
+        Record-Step 'partial-shortcut-upgrade-acceptance' @{ shortcutsPreserved = $true; baselineGuiAccepted = $baselineGuiAccepted; candidateGuiAccepted = $candidateGuiAccepted }
+        throw 'Real install/upgrade preserved shortcuts, but saved project plus actual native GUI new-chat cwd acceptance is incomplete; see native GUI reports and owned runner diagnostics.'
+    }
     $report.status = 'ACCEPTED'
     Record-Step 'acceptance' @{ shortcutsPreserved = $true; nativeGuiCwdAccepted = $true }
 } catch {
@@ -165,7 +233,12 @@ try {
     Write-Error $report.blocker -ErrorAction Continue
     exit 1
 } finally {
-    if ($exe) { Stop-OwnedGui }
-    if ($provider -and -not $provider.HasExited) { Stop-Process -Id $provider.Id -Force }
-    Save-Report
+    try {
+        if ($exe) { Stop-OwnedGui }
+        if ($provider -and -not $provider.HasExited) { Stop-Process -Id $provider.Id -Force }
+    } finally {
+        Restore-OwnedWebViewPolicies
+        Record-Step 'exact-app-webview2-policy-restored' @{ count = $webViewPolicies.Count }
+        Save-Report
+    }
 }

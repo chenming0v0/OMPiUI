@@ -175,6 +175,8 @@ Windows 安装器固定使用当前 Tauri NSIS 模板，在旧卸载器删除快
 
 验收 artifact 保存候选源码／构建 run／安装器哈希、安装退出码、升级前后快捷方式字段、原生 WebView 截图、只读存储快照及真实 session JSONL。若托管环境缺 WebView/CDP、安装器受无人值守弹窗阻止或 GUI／原生会话路径未完成，job 失败并保留准确阻塞证据，不以 supervisor、单测或独立浏览器页代替升级通过。候选预构建不等于发布，不会由此工作流创建 tag 或 release。
 
+经授权的托管 runner 还使用 WebView2 官方支持的 HKCU `Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments`／`UserDataFolder` 精确 `ompiui.exe` 值，以应对快捷方式启动不继承调试环境的情形；只保存／修改／恢复该应用值，不设通配符，finally 恢复原值。依据：[Microsoft WebView2 Environment overrides](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/webview2-idl?view=webview2-1.0.4022.49)。诊断仅记录该 runner 自有安装 GUI 的子进程和物理桌面截图。GUI 仍受阻时可独立完成真实升级与快捷方式字段比较，但只标 `SHORTCUT_ONLY`，job 保持失败，完整项目／原生 GUI 会话验收仍不通过。
+
 ## 开发与验证
 
 ```bash
