@@ -169,6 +169,7 @@ export interface InputBoxProps extends ComposerQueueProps {
   isCompacting?: boolean
   isStopping?: boolean
   variants?: string[]
+  variantsDisabled?: boolean
   selectedVariant?: string
   onVariantChange?: (variant: string | undefined) => void
   supportsImages?: boolean // 保留向后兼容（deprecated，优先用 fileCapabilities）
@@ -232,6 +233,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   isCompacting = false,
   isStopping = false,
   variants = [],
+  variantsDisabled = false,
   selectedVariant,
   onVariantChange,
   supportsImages = false,
@@ -1884,6 +1886,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
 
 
                       variants={variants}
+                      variantsDisabled={variantsDisabled}
                       selectedVariant={selectedVariant}
                       onVariantChange={onVariantChange}
                       fileCapabilities={fileCaps}

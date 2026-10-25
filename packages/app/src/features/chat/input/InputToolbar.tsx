@@ -12,6 +12,7 @@ type ModelInfo = Model<Api>
 
 interface InputToolbarProps {
   variants?: string[]
+  variantsDisabled?: boolean
   selectedVariant?: string
   onVariantChange?: (variant: string | undefined) => void
 
@@ -47,6 +48,7 @@ interface InputToolbarProps {
 
 export function InputToolbar({
   variants = [],
+  variantsDisabled = false,
   selectedVariant,
   onVariantChange,
   fileCapabilities,
@@ -79,6 +81,7 @@ export function InputToolbar({
   const caps = fileCapabilities ?? { image: false, pdf: false, audio: false, video: false }
   const supportsAnyFile = caps.image || caps.pdf || caps.audio || caps.video
   const controlsDisabled = isSending
+  const effortDisabled = controlsDisabled || variantsDisabled || (variants.length === 1 && variants[0] === 'off')
 
   // 动态构建 HTML accept 和 Tauri filter
   const { acceptString, tauriFilters } = useMemo(() => {
@@ -290,6 +293,10 @@ export function InputToolbar({
     }, 0)
     return () => clearTimeout(timerId)
   }, [variantMenuOpen, focusMenuItem])
+
+  useEffect(() => {
+    if (effortDisabled || variants.length === 0) setVariantMenuOpen(false)
+  }, [effortDisabled, variants])
   const activeDeliveryMode: DeliveryMode = deliveryMode === 'steer' && canSteer
     ? 'steer'
     : deliveryMode === 'abortAndPrompt' && canInterruptAndPrompt
@@ -360,7 +367,7 @@ export function InputToolbar({
                   setVariantMenuOpen(true)
                 }
               }}
-              disabled={controlsDisabled}
+              disabled={effortDisabled}
               aria-haspopup="menu"
               aria-expanded={variantMenuOpen}
               aria-controls={variantMenuOpen ? variantMenuId : undefined}
@@ -387,7 +394,7 @@ export function InputToolbar({
 
             <DropdownMenu
               triggerRef={variantTriggerRef}
-              isOpen={variantMenuOpen}
+              isOpen={variantMenuOpen && !effortDisabled}
               position="top"
               align="left"
               minWidth="auto"
@@ -410,7 +417,7 @@ export function InputToolbar({
                     selected={selectedVariant === variant}
                     selectionRole="menuitemradio"
                     onClick={() => {
-                      onVariantChange?.(variant)
+                      if (!effortDisabled) onVariantChange?.(variant)
                       closeMenuToComposer(() => setVariantMenuOpen(false))
                     }}
                   />

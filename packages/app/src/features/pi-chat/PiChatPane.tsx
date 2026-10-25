@@ -606,18 +606,16 @@ export function PiChatPane({
   // Candidates come from official model/runtime controls, never inferred
   // from a provider map that may expose a different set of efforts.
   const currentModelObj = useMemo(
-    () =>
-      models.find(m => `${m.provider}:${m.id}` === pendingModelKey) ??
-      models.find(m => m.provider === currentModel?.provider && m.id === currentModel?.id) ??
-      (!sessionId && homeModelKey ? models.find(m => `${m.provider}:${m.id}` === homeModelKey) : undefined),
-    [models, pendingModelKey, currentModel?.provider, currentModel?.id, homeModelKey, sessionId],
+    () => selectedModelKey ? models.find(m => `${m.provider}:${m.id}` === selectedModelKey) : undefined,
+    [models, selectedModelKey],
   )
   const thinkingLevels = useMemo(() => {
+    if (!selectedModelKey) return []
     const levels = sessionId && !pendingModelKey && Array.isArray(state?.supportedThinkingLevels)
       ? state.supportedThinkingLevels
       : currentModelObj?.supportedThinkingLevels
     return Array.isArray(levels) ? levels.filter((level): level is string => typeof level === 'string') : []
-  }, [sessionId, pendingModelKey, state?.supportedThinkingLevels, currentModelObj])
+  }, [sessionId, pendingModelKey, selectedModelKey, state?.supportedThinkingLevels, currentModelObj])
   // On home there is no runtime state; the selector shows the persisted
   // variant preference for the home model, applied once the session exists.
   const [homeVariant, setHomeVariant] = useState<string | undefined>(() =>
@@ -625,53 +623,66 @@ export function PiChatPane({
   )
   const [pendingThinking, setPendingThinking] = useState<{ sessionId: string; level: string } | null>(null)
   const pendingThinkingLevel = pendingThinking?.sessionId === sessionId ? pendingThinking.level : undefined
+  const [modelControlError, setModelControlError] = useState<{ sessionId: string; message: string } | null>(null)
+  const modelControlOperationRef = useRef<object | null>(null)
+  useEffect(() => { modelControlOperationRef.current = null }, [sessionId, activeServerGeneration])
   // home 模型切换时重读持久化 variant 偏好（渲染期间调整 state）
   const [homeVariantForModel, setHomeVariantForModel] = useState(homeModelKey)
   if (homeModelKey !== homeVariantForModel) {
     setHomeVariantForModel(homeModelKey)
-    if (!sessionId) setHomeVariant(homeModelKey ? getModelVariantPref(homeModelKey) : undefined)
+    setHomeVariant(homeModelKey ? getModelVariantPref(homeModelKey) : undefined)
   }
-  // sessionId 变化时重置 pending 状态（渲染期间调整 state，避免 effect 级联渲染）
-  const [resetSessionId, setResetSessionId] = useState(sessionId)
-  if (sessionId !== resetSessionId) {
-    setResetSessionId(sessionId)
+  // 会话或服务器变化时重置临时选择及错误，避免迟到响应跨身份显示。
+  const sessionControlKey = JSON.stringify([activeServerGeneration, sessionId])
+  const [resetSessionKey, setResetSessionKey] = useState(sessionControlKey)
+  if (sessionControlKey !== resetSessionKey) {
+    setResetSessionKey(sessionControlKey)
     setPendingModel(null)
     setPendingThinking(null)
+    setModelControlError(null)
   }
-  const thinkingLevel =
-    pendingThinkingLevel ??
-    (typeof state?.thinkingLevel === 'string' ? state.thinkingLevel : undefined) ??
-    (sessionId ? undefined : homeVariant)
+  const thinkingLevel = pendingModelKey
+    ? undefined
+    : sessionId
+      ? pendingThinkingLevel ?? (typeof state?.thinkingLevel === 'string' ? state.thinkingLevel : undefined)
+      : homeVariant && thinkingLevels.includes(homeVariant) ? homeVariant : undefined
 
   const handleVariantChange = useCallback(
     (variant: string | undefined) => {
-      if (!variant) return
+      if (!variant || pendingModelKey || !thinkingLevels.includes(variant)) return
+      setModelControlError(null)
       if (!sessionId) {
         setHomeVariant(variant)
         if (homeModelKey) saveModelVariantPref(homeModelKey, variant)
         return
       }
       const selection = { sessionId, level: variant }
+      modelControlOperationRef.current = selection
       setPendingThinking(selection)
       void setPiThinkingLevel(sessionId, variant)
         .then(() => refreshPiSessionState(sessionId))
         .then(() => setPendingThinking(current => (current === selection ? null : current)))
         .catch(error => {
           setPendingThinking(current => (current === selection ? null : current))
+          if (modelControlOperationRef.current === selection) {
+            setModelControlError({ sessionId, message: error instanceof Error ? error.message : String(error) })
+          }
           uiErrorHandler('set thinking level', error)
         })
     },
-    [sessionId, homeModelKey],
+    [sessionId, homeModelKey, pendingModelKey, thinkingLevels],
   )
 
   const handleModelChange = useCallback(
     (_modelKey: string, model: Model<Api>) => {
+      setModelControlError(null)
       recordModelUsage(model)
       const key = `${model.provider}:${model.id}`
       setHomeModelKey(key)
       setPreferredModelKey(key)
       if (!sessionId) return
       const selection = { sessionId, key }
+      modelControlOperationRef.current = selection
       setPendingModel(selection)
       setPendingThinking(null)
       void setPiModel(sessionId, model.provider, model.id)
@@ -679,6 +690,9 @@ export function PiChatPane({
         .then(() => setPendingModel(current => (current === selection ? null : current)))
         .catch(error => {
           setPendingModel(current => (current === selection ? null : current))
+          if (modelControlOperationRef.current === selection) {
+            setModelControlError({ sessionId, message: error instanceof Error ? error.message : String(error) })
+          }
           uiErrorHandler('set model', error)
         })
     },
@@ -1067,6 +1081,7 @@ export function PiChatPane({
             if (paneIdentityRef.current.activeServerGeneration !== capturedServerGeneration || (paneIdentityRef.current.sessionId !== sessionId && paneIdentityRef.current.sessionId !== targetSessionId)) throw new Error('Session changed before model setup')
             await setPiThinkingLevel(targetSessionId, preferredVariant)
           }
+          await refreshPiSessionState(targetSessionId)
         }
         const sid = targetSessionId
         // The command resolves on backend acceptance, not at the end of the turn.
@@ -1136,12 +1151,13 @@ export function PiChatPane({
           const preferred = getPreferredModelKey()
           const preferredModel = preferred ? models.find(m => `${m.provider}:${m.id}` === preferred) : undefined
           if (preferredModel) {
-            await setPiModel(targetSessionId, preferredModel.provider, preferredModel.id).catch(() => undefined)
+            await setPiModel(targetSessionId, preferredModel.provider, preferredModel.id)
           }
           const preferredVariant = preferred ? getModelVariantPref(preferred) : undefined
-          if (preferredVariant) {
-            await setPiThinkingLevel(targetSessionId, preferredVariant).catch(() => undefined)
+          if (preferredVariant && preferredModel?.supportedThinkingLevels?.includes(preferredVariant)) {
+            await setPiThinkingLevel(targetSessionId, preferredVariant)
           }
+          await refreshPiSessionState(targetSessionId)
         }
 
         const submitted = await manageSessionGoal(targetSessionId, 'set', objective, undefined, images)
@@ -1482,8 +1498,14 @@ export function PiChatPane({
             modelsLoading={modelsLoading}
             modelSelectorRef={modelSelectorRef}
             variants={thinkingLevels}
+            variantsDisabled={Boolean(pendingModelKey)}
             selectedVariant={thinkingLevel}
             onVariantChange={handleVariantChange}
+            composerNotice={modelControlError?.sessionId === sessionId ? (
+              <div role="alert" className="mx-3 mb-2 rounded-lg border border-border-200 bg-bg-100 p-3 text-[length:var(--fs-sm)] text-text-100 break-words">
+                {modelControlError.message}
+              </div>
+            ) : undefined}
             revertedText={editorDraft?.text}
             revertedDelivery={editorDraft?.delivery}
             revertedAttachments={editorDraft?.attachments}
