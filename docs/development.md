@@ -163,6 +163,14 @@ TUI 的定向测试和真实 PTY 截图验收见 [终端管理界面的验证章
 
 新增 workspace 依赖时，应同时检查根构建顺序、CI 产物与版本同步脚本。`tui` 必须先于依赖它的 `relay` 和 `admin` 构建。
 
+### 原生 `/compact` 验收
+
+`/compact` 原文交给官方 parser；`soft`、`remote`、`snapcompact` 和完整 focus 不由 GUI 拆解或改写。菜单和参数提示使用官方 RPC 注册表（包括 builtin 描述）；只读磁盘预览不能为取得菜单而启动 runtime。手动压缩不一定发出 `auto_compaction_*`，因此 GUI 从官方状态读取 `isCompacting`，完成与失败保留 `command_output` 原文。压缩期间扩展命令会排队，此时读取官方 `get_state.queuedMessages`，不能为读取队列提交 `/ompiui-runtime` 控制 prompt。
+
+2026-10-26 在隔离 home／会话与独立 Chrome 中，以官方 OMP 18.12.6、Bun 1.3.14 和本地确定性 OpenAI 兼容服务实测菜单／手输模式、完整 focus、混合大小写与制表空白、snapcompact 尾参拒绝、摘要与原生位图压缩、provider 拒绝及 Already compacted。模式没有改写 `compaction.enabled` 或 `methodOrder`；取消通过 GUI Stop 调用原生 abort，恢复空闲而不生成压缩成功反馈。token 反馈和上下文来自原生运行时，本地夹具的 usage 是估算值，不代表外部模型计费精度；remote 在该模型上按官方顺序跳过不可用远端方法并采用 soft，未验证外部 provider 的远端压缩端点。
+
+同一原生 JSONL 已由独立官方 RPC 进程恢复并继续，历史请求包含 snapcompact 图片；GUI 只读重开后看见该续写，文件 SHA-256 不变，显式 GUI 续写读取最新历史并生成相同 SHA-256 的写前备份。隔离 Windows 夹具使用原安装位置的同版本 Bun，并显式指定原生库目录；这不等于重定位 Bun 的 Windows 临时文件问题已解决。
+
 ## 发版流程
 
 功能 PR 合入 `dev`；`main` 只接收本仓库 `dev` 的发布合并。根包、workspace、Tauri 和锁文件保持同一版本。

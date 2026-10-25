@@ -753,10 +753,15 @@ export class OmpRpcSession implements SessionRuntime {
     }
   }
 
-  private async refreshQueue(publish = true): Promise<void> {
+  private async refreshQueue(publish = true, native?: JsonObject): Promise<void> {
     const epoch = this.eventEpoch;
     const generation = ++this.queueGeneration;
-    const value = await this.client.requestRuntime("queue");
+    const state = native ?? await this.fetchState();
+    // Extension commands are queued during native compaction. Its readonly
+    // RPC state already exposes the queue; never submit a control prompt here.
+    const value = state.isCompacting
+      ? state.queuedMessages
+      : await this.client.requestRuntime("queue");
     if (epoch !== this.eventEpoch || generation !== this.queueGeneration) return;
     if (isJsonObject(value)) {
       this.trackNativeQueue(value);
@@ -1066,7 +1071,7 @@ export class OmpRpcSession implements SessionRuntime {
       (native.isSettled === undefined && native.isStreaming === false &&
         !native.hasPendingAsyncWork && !native.queuedMessageCount);
     this.trackNativeQueue(native);
-    await Promise.all([this.refreshQueue(false), this.refreshThinkingLevels()]);
+    await Promise.all([this.refreshQueue(false, native), this.refreshThinkingLevels()]);
     this.assertEventEpoch(epoch);
     if (epoch !== this.eventEpoch || historyGeneration !== this.historyGeneration || modelsGeneration !== this.modelsGeneration || activityGeneration !== this.activityGeneration) return this.buildState();
     const model = this.resolveModelDescriptor(native.model);

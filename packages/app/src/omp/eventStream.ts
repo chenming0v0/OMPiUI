@@ -1035,6 +1035,9 @@ class PiEventStream {
       case 'prompt_result': {
         const feedback = commandFeedbackStore.addNativeEvent(sessionId, patch)
         if (feedback) notificationStore.push(feedback.status === 'error' ? 'error' : feedback.status === 'warning' ? 'warning' : 'completed', feedback.source ?? 'Native command', feedback.message, sessionId, activeSessionStore.getSessionMeta(sessionId)?.directory, { target: 'extensions' })
+        // Manual native commands can enter compaction without auto-compaction
+        // lifecycle events; read the native state instead of inferring activity.
+        if (event.type === 'prompt_result' || event.type === 'command_output') this.scheduleStateRefresh(sessionId)
         break
       }
       case 'notice':
