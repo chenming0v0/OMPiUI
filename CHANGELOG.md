@@ -5,6 +5,10 @@
 - verification(git): 实际 Git 暂存 rename 两端、字面路径和 worktree 后代 shell 删除保护 20 项通过；网页已打开的非活跃预览保留，冷 scope 指定文件及后续消失回退 19 项通过。永久 shell 保护回归隔离原生 PTY 句柄，真实 GUI shell 行为单独验收。
 - test: 修正原生空命令目录与已 settled 的空闲运行时夹具，删除仅固定占位按钮展示的断言，不放宽生产协议失败或回收门禁。worker/server 62 项、PiChatPane 11 项、通知/事件 34 项回归通过。
 - verification: 集成候选的原生 CLI↔GUI 同文件继续、只读字节/mtime、最新备份与历史迁移 smoke 通过；原生/托管递归 depth=0/1/2/3/-1、10 个并发子任务、实时转录及父关联通过。未据此声明全部 issue 或 Windows 安装升级已验收。
+- fix(worktrees): 原生 relocation 在任何 await 前关闭提交准入，并等待已完成但尚未投递的 async 结果；移动期间消息／Steer／Follow-up／取消并发送明确拒绝，显式 Stop 仍可用。真实 HTTP／原生同文件继续及双物理窗格验收通过，worker/server 67 项回归通过。
+- verification(goals): 完整 GUI 实测原生目标预算 128→256、清空预算、暂停后放弃且保持会话身份；正整数预算校验与真实 PNG 剪贴板粘贴拒绝通过。扩展混合描述、空值、两类编辑器、Chrome composition、按 targetId 取消及真实 timeout／三请求队列结算通过；原生导出菜单与实际 HTML Light/Dark 切换通过，导出前后会话字节／mtime 不变。
+- verification(windows): 可弃置 Windows runner 的真实 0.6.41→0.6.42 候选 `69649f4` 安装／升级通过（run 40237794673）；两类快捷方式字段及完整文件哈希保留，原生 WebView 通过原项目创建新会话并在同一 JSONL 继续两轮。最终发布安装器仍须按其精确源码／产物补验收，不能把旧候选证明套到新字节。
+- limitations: 官方 OMP 18.12.6 的公开 GUI/RPC 边界仍阻塞 Plan／审批、Loop、Vibe、Collab、录制／屏幕流、Guided Goal、自定义组件、同次模型工具 PTY，以及子任务 run 排序／合并状态／ask note 关联；Voice 媒体交接及真实账户验收缺独立授权前提。对应 issue 保持 open，不以终端入口、私有控制器或影子状态交付。
 - fix(integration): complete legal fixtures and cutover consumer types (977abc1)
 - fix(integration): retain target-compatible snapshots and fixed Git pipes (9879d62)
 - feat(worktrees): manage Git checkouts with native session relocation (d30e629)
@@ -33,9 +37,7 @@
 - docs: preserve GUI-only native alignment rules (af03b33)
 - fix(models): restore thinking effort controls before first send (50170fe)
 
-## [Unreleased]
-
-- verification: 首轮 23 个修复提交集成后，完整 `npm run build` 通过；孤立工具结果、原始服务失败状态与传输消费者 3 文件／72 项回归通过。其余完整套件、合并后原生 GUI 与发布验收仍待完成，不据此关闭未闭环 issue。
+- verification: 首轮 23 个修复提交集成后，完整 `npm run build` 通过；孤立工具结果、原始服务失败状态与传输消费者 3 文件／72 项回归通过。此为该阶段记录，不替代后续精确发布产物与完整 GUI 验收。
 - fix(git): 动态 stdin 选择仍保持 stdout/stderr 固定管道，修正集成类型推断；实际 Git 根目录读取及 stdin hash-object 均返回退出码 0、空 stderr。
 - fix(goals): 只读原生 Goal 快照使用无分配逆向遍历，兼容现有 TypeScript 目标，不扩大 lib；已执行暂停快照、后续非 Goal 模式优先和空历史 smoke。
 - docs: 明确 OMPiUI 的 GUI 定位，禁止任何官方终端启动/接管入口及引导文案；对齐任务必须在网页内完成，缺官方接口明确记录阻塞。按此规则清理 GitHub 对齐 issue 的范围与验收。
