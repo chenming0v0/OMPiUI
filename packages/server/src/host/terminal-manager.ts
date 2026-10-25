@@ -169,6 +169,20 @@ export class TerminalManager {
       .map((terminal) => ({ ...terminal.info }));
   }
 
+  /** Only this manager's live GUI shells can keep a checkout in use. */
+  hasRunningInDirectory(directory: string): boolean {
+    const root = workspacePathKey(path.resolve(directory));
+    const contains = (candidate: string) => {
+      const relative = path.relative(root, workspacePathKey(path.resolve(candidate)));
+      return !relative || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+    };
+    for (const terminal of this.terminals.values()) {
+      if (terminal.info.status === "running" &&
+        (contains(terminal.workspacePath) || contains(terminal.info.cwd))) return true;
+    }
+    return false;
+  }
+
   async listShells(): Promise<TerminalShell[]> {
     const candidates =
       process.platform === "win32" ? await windowsShells() : await unixShells();

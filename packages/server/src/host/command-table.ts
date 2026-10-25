@@ -259,7 +259,7 @@ const HOST_COMMAND_HANDLERS: Record<string, HostCommandHandler> = {
     const record = ctx.store.find(targetPath)
     const result = await mutateGitWorktree(cwd, "remove", targetPath, undefined, target => {
       const root = path.resolve(target)
-      if (ctx.terminals.list(root).length) throw Object.assign(new Error("A GUI shell still uses this worktree; close it yourself before removing the checkout"), { code: "WORKSPACE_BUSY" })
+      if (ctx.terminals.hasRunningInDirectory(root)) throw Object.assign(new Error("A GUI shell still uses this worktree; close it yourself before removing the checkout"), { code: "WORKSPACE_BUSY" })
       for (const id of ctx.sessions.listAttachedIds()) {
         const session = ctx.sessions.getAttached(id)
         if (!session) continue

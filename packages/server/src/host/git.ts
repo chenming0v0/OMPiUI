@@ -549,7 +549,14 @@ async function selectedGitPaths(cwd: string, inputs: string[], staged: boolean):
     paths.add(relative);
     if (item.oldPath) {
       resolveWorkspacePath(cwd, item.oldPath);
-      paths.add(item.oldPath);
+      if (staged) paths.add(item.oldPath);
+      else {
+        // A staged rename's source is already absent from the index. Only
+        // include it when a tracked source still needs its deletion staged.
+        const deleted = await runGit(cwd, ["ls-files", "--deleted", "-z", "--", item.oldPath]);
+        assertGitSuccess(deleted, "git rename source deletion");
+        if (deleted.stdout.length) paths.add(item.oldPath);
+      }
     }
   }
   return [...paths];

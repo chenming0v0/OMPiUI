@@ -98,6 +98,8 @@ Git 变更面板内提供明确勾选文件的暂存／取消暂存、完整文�
 
 “变更”面板的 **Git worktrees**（新对话时也显示在侧栏）列出 Git 实际登记的路径、分支、HEAD、锁定及失效状态；不以已知文件夹分组冒充 worktree 管理。`git.worktrees` 只读，`git.worktreeCreate` 在当前 HEAD 创建新分支／linked worktree，`git.worktreeRemove` 仅在用户确认后移除干净、未占用、未锁定的 linked worktree，保留分支；不使用 `--force`、自动 clean/prune 或关闭用户 shell。占用路径／脏目录返回 `FILE_CONFLICT`，原生会话／GUI shell／正在打开的会话占用返回 `WORKSPACE_BUSY`。
 
+后端精确范围回归：已暂存的 rename 再修改新路径时，只在旧路径仍由 index 跟踪且工作区删除尚未暂存时加入旧路径；取消暂存 rename 始终恢复旧、新两条路径，不影响其他暂存文件。现有 Git 执行器的 literal pathspec 保持不变，`[slug]`、`[[...slug]]`、`[s]` 动态路由名不会选中普通同名目录。移除占用检查只枚举本服务 TerminalManager 的运行中 GUI shell 记录，分别比较所属 workspace 和记录 cwd 是否在目标 worktree 内（含子目录），不扫描外部终端／OMP 或关闭 shell。隔离 OMP 18.12.6 / Bun 1.3.14、真实 Git 和专属物理 Chrome 的实际 host HTTP／终端 WebSocket 验证了这两类 rename 暂存、精确取消暂存、路由范围、子目录 workspace／祖先 workspace 下的目标 cwd shell 返回 `WORKSPACE_BUSY` 且目录与 shell 不变；fixture shell 自行 `exit` 后，干净 checkout 移除成功、分支保留，相邻路径的 shell 仍运行。集成 GUI 和完整测试套件由主集成流程验收。
+
 选择 **Switch native session here** 是明确的原生写入操作：以原生 `isSessionOnDisk()` 和当前 journal 路径确认持久化状态，备份已落盘的最新日志，再通过同一 RPC UI AgentSession 的公开 `reload()`／`moveSession()` 迁移官方日志及 artifacts，并重载目标 cwd 的设置、记忆与技能／命令。尚未落盘的会话不伪造日志或私有副本，第一次原生写入仍使用迁移后的 cwd；新对话尚无原生会话时，**Use this workspace** 仅切换 GUI 工作区。sessionId 不变，sessionFile 和 cwd 以原生回执为准；同身份迁移不清空任务、队列、Goal 或会话资源，所有显示该身份的 pane 继续跟随它。取消、浏览和刷新不启动 Agent 或保存历史；不静默复制成另一份私有会话。
 
 本功能已使用官方 OMP 18.12.6、Bun 1.3.14、隔离 Git／HOME／模型配置及仅本机离线协议服务实测：网页列举、取消／确认创建、切换后原生写文件、CLI 同文件继续及真实 task 结果回到 GUI、切换回原目录、只读刷新日志字节与 mtime 不变、脏／占用错误、取消／确认干净移除，以及无 Agent 的新对话工作区选择和未落盘原生会话的同身份迁移／首次写入。网页验收使用专属物理 Chrome CDP；未依赖终端 TUI 或 mock Agent。集成后的全量构建／测试及多 pane 组合验收由主集成流程执行。
