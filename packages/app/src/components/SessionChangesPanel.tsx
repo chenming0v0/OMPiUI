@@ -4,7 +4,7 @@
 // 支持拖拽调整高度，CSS 变量 + requestAnimationFrame 优化
 // ============================================
 
-import { memo, useState, useEffect, useCallback, useRef, useMemo, useId } from 'react'
+import { memo, useState, useEffect, useCallback, useRef, useMemo, useId, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { RetryIcon, ChevronRightIcon, MaximizeIcon, GitBranchIcon, GitDiffIcon } from './Icons'
@@ -31,6 +31,7 @@ import { useFullscreenLayer } from '../contexts'
 import { useAutoRefresh } from '../hooks/useAutoRefresh'
 import { GitStagingPanel } from './GitStagingPanel'
 import { WorktreeManager } from '../features/sessions/WorktreeManager'
+import { serverStore } from '../store/serverStore'
 
 // 常量
 const MIN_LIST_HEIGHT = 80
@@ -71,6 +72,8 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
   isResizing: isPanelResizing = false,
 }: SessionChangesPanelProps) {
   const { t } = useTranslation(['components', 'common'])
+  const serverGeneration = useSyncExternalStore(listener => serverStore.subscribe(listener), () => serverStore.getActiveServerGeneration(), () => serverStore.getActiveServerGeneration())
+  const isCurrentServer = useCallback(() => serverStore.getActiveServerGeneration() === serverGeneration, [serverGeneration])
   const containerRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const fileContextMenuRef = useRef<HTMLDivElement>(null)
@@ -120,11 +123,11 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
     canonicalWorkspaceRef.current = null
     if (directory) {
       void resolveWorkspacePath(directory).then(workspacePath => {
-        if (!cancelled) canonicalWorkspaceRef.current = workspacePath
+        if (!cancelled && isCurrentServer()) canonicalWorkspaceRef.current = workspacePath
       }).catch(() => undefined)
     }
     return () => { cancelled = true }
-  }, [directory])
+  }, [directory, isCurrentServer])
 
   const projectRequestIdRef = useRef(0)
   const diffRequestIdRef = useRef({ git: 0, branch: 0, staged: 0, unstaged: 0 })
@@ -351,7 +354,7 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
   )
 
   const loadVcsState = useCallback(async (): Promise<GitInfoResponse | null> => {
-    if (!sessionId) return null
+    if (!sessionId || !isCurrentServer()) return null
 
     const requestId = ++projectRequestIdRef.current
     setProjectLoading(true)
@@ -359,27 +362,28 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
 
     try {
       const workspacePath = await resolveWorkspacePath(directory)
+      if (!isCurrentServer() || requestId !== projectRequestIdRef.current) return null
       const nextVcsInfo = workspacePath ? await getHostGitInfo(workspacePath).catch(() => null) : null
-      if (requestId !== projectRequestIdRef.current) return null
+      if (!isCurrentServer() || requestId !== projectRequestIdRef.current) return null
       setVcsInfo(nextVcsInfo)
       return nextVcsInfo
     } catch (err) {
-      if (requestId !== projectRequestIdRef.current) return null
+      if (!isCurrentServer() || requestId !== projectRequestIdRef.current) return null
       sessionErrorHandler('load vcs info', err)
       setVcsInfo(null)
       setError(t('sessionChanges.failedToLoad'))
       return null
     } finally {
-      if (requestId === projectRequestIdRef.current) {
+      if (isCurrentServer() && requestId === projectRequestIdRef.current) {
         setProjectLoading(false)
       }
     }
-  }, [directory, sessionId, t])
+  }, [directory, isCurrentServer, sessionId, t])
 
   const loadDiffMode = useCallback(
     async (mode: ChangeMode, options?: { force?: boolean; vcs?: GitInfoResponse | null }) => {
       const currentVcs = options?.vcs ?? vcsInfo
-      if (!sessionId || !currentVcs) return
+      if (!sessionId || !currentVcs || !isCurrentServer()) return
       if (!options?.force && loadedModes[mode]) return
 
       const requestId = ++diffRequestIdRef.current[mode]
@@ -391,10 +395,11 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
 
       try {
         const workspacePath = await resolveWorkspacePath(directory)
+        if (!isCurrentServer() || controller.signal.aborted || requestId !== diffRequestIdRef.current[mode]) return
         if (!workspacePath) throw new Error('No OMPiUI workspace is available')
         const data = (await getHostGitDiff(workspacePath, mode, controller.signal)).files
 
-        if (requestId !== diffRequestIdRef.current[mode]) return
+        if (!isCurrentServer() || controller.signal.aborted || requestId !== diffRequestIdRef.current[mode]) return
 
         if (mode === 'git') {
           setGitDiffs(data)
@@ -408,7 +413,7 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
 
         setLoadedModes(prev => ({ ...prev, [mode]: true }))
       } catch (err) {
-        if (requestId !== diffRequestIdRef.current[mode]) return
+        if (!isCurrentServer() || controller.signal.aborted || requestId !== diffRequestIdRef.current[mode]) return
         // 分支对比没有基准（无 upstream/默认分支）：不是故障，按空差异处理
         if (mode === 'branch' && (err as { code?: string }).code === 'GIT_BASE_NOT_FOUND') {
           setBranchDiffs([])
@@ -418,7 +423,7 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
         sessionErrorHandler(`load ${mode} diff`, err)
         setError(t('sessionChanges.failedToLoad'))
       } finally {
-        if (requestId === diffRequestIdRef.current[mode]) {
+        if (isCurrentServer() && requestId === diffRequestIdRef.current[mode]) {
           // Even an unchanged list must restart a patch invalidated by this refresh.
           setDiffGenerations(prev => ({ ...prev, [mode]: requestId }))
           setLoadingModes(prev => ({ ...prev, [mode]: false }))
@@ -426,7 +431,7 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
         if (diffAbortRef.current[mode] === controller) delete diffAbortRef.current[mode]
       }
     },
-    [directory, loadedModes, vcsInfo, sessionId, t],
+    [directory, isCurrentServer, loadedModes, vcsInfo, sessionId, t],
   )
 
   useEffect(() => {
@@ -470,6 +475,9 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
   }, [changeMode, changeOptions, loadDiffMode, vcsInfo])
 
   useEffect(() => {
+    // An explicitly selected file in a cold scope is pending until its list arrives.
+    // Once loaded, normal reconciliation still removes files absent from that scope.
+    if (!loadedModes[changeMode] || loadingModes[changeMode]) return
     setExpandedDirs(collectExpandedDirPaths(buildChangesTree(diffs)))
     const { nextOpenFiles, nextActiveFile } = reconcileDiffPreviewState(
       diffs,
@@ -481,7 +489,7 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
     if (diffs.length === 0) {
       resetSplitHeight()
     }
-  }, [diffs, resetSplitHeight])
+  }, [changeMode, diffs, loadedModes, loadingModes, resetSplitHeight])
 
   // 刷新入口：串行 + 合并（一次刷新完成前重复触发只标 dirty，攒到下一轮）
   const runGitRefresh = useCallback(async () => {
@@ -649,17 +657,18 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
   const diffGeneration = diffGenerations[changeMode]
   const diffLoading = loadingModes[changeMode]
   useEffect(() => {
-    if (diffLoading || !selectedFile || !selectedDiff || selectedDiff.patch !== undefined || selectedDiff.binary) return
+    if (!isCurrentServer() || diffLoading || !selectedFile || !selectedDiff || selectedDiff.patch !== undefined || selectedDiff.binary) return
     const controller = new AbortController()
     const listRequestId = diffRequestIdRef.current[changeMode]
     void (async () => {
       const workspacePath = await resolveWorkspacePath(directory)
+      if (!isCurrentServer() || controller.signal.aborted || diffRequestIdRef.current[changeMode] !== listRequestId) return
       if (!workspacePath) throw new Error('No OMPiUI workspace is available')
       return getHostGitFileDiff(workspacePath, selectedFile, changeMode, controller.signal)
     })()
       .then(loaded => {
         if (!loaded) return
-        if (controller.signal.aborted || diffRequestIdRef.current[changeMode] !== listRequestId) return
+        if (!isCurrentServer() || controller.signal.aborted || diffRequestIdRef.current[changeMode] !== listRequestId) return
         const apply = (items: ChangeDiff[]) => items.map(item => item.file === loaded.file ? { ...item, patch: loaded.patch, binary: loaded.binary } : item)
         if (changeMode === 'git') setGitDiffs(apply)
         else if (changeMode === 'branch') setBranchDiffs(apply)
@@ -667,10 +676,10 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
         else setUnstagedDiffs(apply)
       })
       .catch(error => {
-        if (!controller.signal.aborted && diffRequestIdRef.current[changeMode] === listRequestId) sessionErrorHandler('load file diff', error)
+        if (isCurrentServer() && !controller.signal.aborted && diffRequestIdRef.current[changeMode] === listRequestId) sessionErrorHandler('load file diff', error)
       })
     return () => controller.abort()
-  }, [changeMode, diffGeneration, diffLoading, directory, selectedDiff, selectedFile])
+  }, [changeMode, diffGeneration, diffLoading, directory, isCurrentServer, selectedDiff, selectedFile])
   const previewDiffs = useMemo(
     () =>
       openDiffFiles

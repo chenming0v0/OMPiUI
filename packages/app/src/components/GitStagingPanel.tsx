@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { GitCommitPreview, GitFileDiffResponse, GitStatusItem } from '@ompiui/protocol'
 import { resolveWorkspacePath } from '../omp/workspaces'
 import { getHostGitStatus, getHostGitFileDiff, stageHostGitFiles, unstageHostGitFiles, changeHostGitHunk, previewHostGitCommit, commitHostGit } from '../omp/transport/index.js'
+import { serverStore } from '../store/serverStore'
 
 type Props = {
   directory?: string
@@ -13,7 +14,12 @@ type Props = {
 const buttonClass = 'px-2 py-1 rounded border border-border-200 hover:bg-bg-200 disabled:opacity-50 text-[length:var(--fs-xs)]'
 
 /** Explicit host Git operations on the native session's existing checkout. No session writes. */
-export function GitStagingPanel({ directory, onSelectFile, onChanged }: Props) {
+export function GitStagingPanel(props: Props) {
+  const serverGeneration = useSyncExternalStore(listener => serverStore.subscribe(listener), () => serverStore.getActiveServerGeneration(), () => serverStore.getActiveServerGeneration())
+  return <ScopedGitStagingPanel key={JSON.stringify([serverGeneration, props.directory])} {...props} serverGeneration={serverGeneration} />
+}
+
+function ScopedGitStagingPanel({ directory, onSelectFile, onChanged, serverGeneration }: Props & { serverGeneration: number }) {
   const { t } = useTranslation('components')
   const [items, setItems] = useState<GitStatusItem[]>([])
   const [selection, setSelection] = useState<Set<string>>(new Set())
@@ -28,26 +34,29 @@ export function GitStagingPanel({ directory, onSelectFile, onChanged }: Props) {
   const operationActive = useRef(false)
   const workspace = useRef<string | null>(null)
   const mounted = useRef(true)
+  const isCurrent = useCallback(() => mounted.current && serverStore.getActiveServerGeneration() === serverGeneration, [serverGeneration])
 
   const refresh = useCallback(async () => {
+    if (!isCurrent()) return
     const request = ++generation.current
     setLoading(true)
     try {
       const root = await resolveWorkspacePath(directory)
+      if (!isCurrent() || generation.current !== request) return
       if (!root) throw new Error(t('gitStaging.noWorkspace'))
       const status = await getHostGitStatus(root)
-      if (!mounted.current || generation.current !== request) return
+      if (!isCurrent() || generation.current !== request) return
       workspace.current = root
       setItems(status.items)
       setSelection(new Set())
       setPatch(null)
       setPreview(null)
     } catch (cause) {
-      if (mounted.current && generation.current === request) setError(cause instanceof Error ? cause.message : String(cause))
+      if (isCurrent() && generation.current === request) setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
-      if (mounted.current && generation.current === request) setLoading(false)
+      if (isCurrent() && generation.current === request) setLoading(false)
     }
-  }, [directory, t])
+  }, [directory, isCurrent, t])
 
   useEffect(() => {
     mounted.current = true
@@ -70,7 +79,7 @@ export function GitStagingPanel({ directory, onSelectFile, onChanged }: Props) {
   }, [refresh])
 
   const operate = async (action: (root: string) => Promise<string | void>, mutation = false) => {
-    if (operationActive.current || loading || !workspace.current) return
+    if (!isCurrent() || operationActive.current || loading || !workspace.current) return
     operationActive.current = true
     const root = workspace.current
     setBusy(true)
@@ -78,24 +87,26 @@ export function GitStagingPanel({ directory, onSelectFile, onChanged }: Props) {
     setNotice(null)
     try {
       const result = await action(root)
-      if (!mounted.current || workspace.current !== root) return
+      if (!isCurrent() || workspace.current !== root) return
       if (mutation) {
         await refresh()
+        if (!isCurrent() || workspace.current !== root) return
         onChanged()
         window.dispatchEvent(new CustomEvent('ompiui:workspace-git-updated', { detail: { workspacePath: root } }))
       }
       if (result) setNotice(result)
     } catch (cause) {
-      if (mounted.current && workspace.current === root) {
+      if (isCurrent() && workspace.current === root) {
         setError(cause instanceof Error ? cause.message : String(cause))
         if (mutation) {
           await refresh()
+          if (!isCurrent() || workspace.current !== root) return
           onChanged()
         }
       }
     } finally {
       operationActive.current = false
-      if (mounted.current) setBusy(false)
+      if (isCurrent()) setBusy(false)
     }
   }
 
@@ -103,7 +114,7 @@ export function GitStagingPanel({ directory, onSelectFile, onChanged }: Props) {
   const openPatch = (item: GitStatusItem, staged: boolean) => void operate(async root => {
     onSelectFile(item.path, staged)
     const loaded = await getHostGitFileDiff(root, item.path, staged ? 'staged' : 'unstaged')
-    if (mounted.current && workspace.current === root) setPatch(loaded)
+    if (isCurrent() && workspace.current === root) setPatch(loaded)
   })
   const hunkStarts = patch ? [...patch.patch.matchAll(/^@@ .+@@.*$/gm)].map(match => match.index!) : []
   const canHunk = patch && !patch.binary && !patch.truncated && !/^(?:new file mode|deleted file mode|old mode|new mode|rename from|copy from)/m.test(patch.patch)
@@ -166,7 +177,7 @@ export function GitStagingPanel({ directory, onSelectFile, onChanged }: Props) {
         <div className="flex gap-2">
           <button type="button" className={buttonClass} disabled={disabled} onClick={() => void operate(async root => {
             const result = await commitHostGit(root, message, preview.fingerprint)
-            if (mounted.current && workspace.current === root) setMessage('')
+            if (isCurrent() && workspace.current === root) setMessage('')
             return t('gitStaging.commitSuccess', { sha: result.headOid }) + '\n' + result.output
           }, true)}>{t('gitStaging.commit')}</button>
           <button type="button" className={buttonClass} disabled={disabled} onClick={() => { setPreview(null); setNotice(t('gitStaging.cancelled')) }}>{t('gitStaging.cancel')}</button>
@@ -174,7 +185,7 @@ export function GitStagingPanel({ directory, onSelectFile, onChanged }: Props) {
       </div> : <button type="button" className={buttonClass} disabled={disabled || !message.trim() || !items.some(item => item.staged)} onClick={() => void operate(async root => {
         const next = await previewHostGitCommit(root)
         if (!next.files.length) throw new Error(t('gitStaging.noStaged'))
-        if (mounted.current && workspace.current === root) setPreview(next)
+        if (isCurrent() && workspace.current === root) setPreview(next)
       })}>{t('gitStaging.review')}</button>}
       <p className="text-text-400">{t('gitStaging.safety')}</p>
     </section>
