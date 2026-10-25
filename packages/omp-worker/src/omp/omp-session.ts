@@ -1110,7 +1110,7 @@ export class OmpRpcSession implements SessionRuntime {
         native.followUpMode === "all" || native.followUpMode === "one-at-a-time"
           ? native.followUpMode
           : null,
-      interruptMode: typeof native.interruptMode === "string" ? native.interruptMode : "immediate",
+      interruptMode: native.interruptMode === "immediate" || native.interruptMode === "wait" ? native.interruptMode : null,
       autoCompactionEnabled: Boolean(native.autoCompactionEnabled),
       autoRetryEnabled: true,
       messageCount:
@@ -1691,18 +1691,35 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async setInterruptMode(mode: "immediate" | "wait"): Promise<void> {
+    const epoch = this.eventEpoch;
     unwrapResponse(await this.client.request({ type: "set_interrupt_mode", mode }, 30_000));
+    const native = await this.fetchState();
+    if (epoch !== this.eventEpoch) throw Object.assign(new Error("Session replaced while setting interrupt mode"), { code: "SESSION_REPLACED" });
+    if (native.interruptMode !== mode) throw Object.assign(new Error("Native interrupt mode readback did not match the requested value"), { code: "SUBMISSION_NOT_ADMITTED" });
   }
 
+  private interruptSubmissionEpoch: string | undefined;
+
   async abortAndPrompt(text: string, images?: ImageInput[]): Promise<void> {
+    if (this.interruptSubmissionEpoch === this.eventEpoch) throw Object.assign(new Error("An interrupt-and-prompt submission is already pending"), { code: "SESSION_BUSY" });
     const epoch = this.eventEpoch;
-    await this.abortInFlight;
-    if (epoch !== this.eventEpoch)
-      throw Object.assign(new Error("Session replaced before interrupt submission"), { code: "SESSION_REPLACED" });
-    const command: JsonObject = { type: "abort_and_prompt", message: text };
-    if (images?.length) command.images = images.map((image) => ({ ...image }));
-    unwrapResponse(await this.client.request(command, 60_000));
-    this.scheduleEntrySync();
+    this.interruptSubmissionEpoch = epoch;
+    const assertIdentity = () => {
+      if (epoch !== this.eventEpoch) throw Object.assign(new Error("Session replaced before interrupt submission"), { code: "SESSION_REPLACED" });
+    };
+    try {
+      await this.abortInFlight;
+      assertIdentity();
+      const command: JsonObject = { type: "abort_and_prompt", message: text };
+      if (images?.length) command.images = images.map((image) => ({ type: "image", data: image.data, mimeType: image.mimeType }));
+      // The official ACK precedes prompt setup. Only this command's correlated
+      // result can distinguish pre-agent rejection from an admitted turn.
+      unwrapResponse(await requestNativePromptAcceptance(this.client, command, 300_000, assertIdentity));
+      if (epoch === this.eventEpoch) await this.refreshQueue().catch(error => this.reportEntrySyncError(error));
+    } finally {
+      if (this.interruptSubmissionEpoch === epoch) this.interruptSubmissionEpoch = undefined;
+      if (epoch === this.eventEpoch) this.scheduleEntrySync();
+    }
   }
 
   async clearQueue(maxResultBytes?: number): Promise<JsonValue | undefined> {

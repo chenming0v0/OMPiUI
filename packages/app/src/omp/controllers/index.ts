@@ -1047,6 +1047,7 @@ export async function setPiInterruptMode(
   signal?: AbortSignal,
 ): Promise<void> {
   await transport.setPiInterruptMode(sessionId, mode, signal)
+  await refreshPiSessionState(sessionId, signal)
 }
 
 /**

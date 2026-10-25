@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { JsonObject, JsonValue, ToolDescriptor } from '@ompiui/protocol'
 import type { SessionEntry } from '../omp/domain'
@@ -15,6 +15,7 @@ import {
 import { IconButton } from './ui/IconButton'
 import { SegmentedControl, SettingsSelect, SettingField, SettingRow, SettingsDisclosure, SettingsSection, Toggle } from '../features/settings/components/SettingsUI'
 import { usePiCapabilities } from '../omp/capabilities'
+import { serverStore } from '../store/serverStore'
 import {
   abortPiBranchSummary,
   abortPiCompaction,
@@ -117,6 +118,13 @@ export const SessionTreePanel = memo(function SessionTreePanel({
   const [importCwd, setImportCwd] = useState('')
   const [compactInstructions, setCompactInstructions] = useState('')
   const [runtimePending, setRuntimePending] = useState<string | null>(null)
+  const serverGeneration = useSyncExternalStore(listener => serverStore.subscribe(listener), () => serverStore.getActiveServerGeneration(), () => serverStore.getActiveServerGeneration())
+  const interruptScope = JSON.stringify([serverGeneration, sessionId])
+  const interruptIdentityRef = useRef({ scope: interruptScope })
+  if (interruptIdentityRef.current.scope !== interruptScope) interruptIdentityRef.current = { scope: interruptScope }
+  const interruptFlightRef = useRef<object | null>(null)
+  const [interruptStatus, setInterruptStatus] = useState<{ identity: object; pending: boolean; error: string | null } | null>(null)
+  const interruptVisible = interruptStatus?.identity === interruptIdentityRef.current ? interruptStatus : null
   const [nativeTree, setNativeTree] = useState<NativeTreeNode[]>([])
   const [nativeLoading, setNativeLoading] = useState(false)
   const [nativeLoadError, setNativeLoadError] = useState<string | null>(null)
@@ -331,6 +339,21 @@ export const SessionTreePanel = memo(function SessionTreePanel({
       setRuntimePending(null)
     }
   }, [loadNativeTree, sessionId, t])
+
+  const handleInterruptMode = useCallback(async (value: 'immediate' | 'wait') => {
+    const identity = interruptIdentityRef.current
+    if (identity.scope !== JSON.stringify([serverGeneration, sessionId]) || interruptFlightRef.current === identity || serverStore.getActiveServerGeneration() !== serverGeneration) return
+    interruptFlightRef.current = identity
+    setInterruptStatus({ identity, pending: true, error: null })
+    try {
+      await setPiInterruptMode(sessionId, value)
+      if (interruptIdentityRef.current === identity) setInterruptStatus({ identity, pending: false, error: null })
+    } catch (cause) {
+      if (interruptIdentityRef.current === identity) setInterruptStatus({ identity, pending: false, error: cause instanceof Error ? cause.message : String(cause) })
+    } finally {
+      if (interruptFlightRef.current === identity) interruptFlightRef.current = null
+    }
+  }, [serverGeneration, sessionId])
 
   const handleToggleTool = useCallback((toolName: string, enabled: boolean) => {
     if (!capabilities.toolsManage) return
@@ -600,19 +623,20 @@ export const SessionTreePanel = memo(function SessionTreePanel({
         <SettingsSection title={t('sessionTree.interruptMode')} description={t('sessionTree.interruptModeHint')}>
           <SettingField label={t('sessionTree.interruptMode')} description={t('sessionTree.interruptModeDetail')}>
             <div className="w-56 max-w-full">
-              <SegmentedControl
-                value={typeof state.interruptMode === 'string' ? (state.interruptMode as 'immediate' | 'wait') : 'immediate'}
+              <SettingsSelect<'immediate' | 'wait'>
+                value={state.interruptMode === 'immediate' || state.interruptMode === 'wait' ? state.interruptMode : undefined}
+                placeholder={t('sessionTree.interruptUnavailable')}
+                ariaLabel={t('sessionTree.interruptMode')}
+                disabled={interruptVisible?.pending === true || runtimePending !== null}
                 options={[
-                  { value: 'immediate' as const, label: t('sessionTree.interruptImmediate') },
-                  { value: 'wait' as const, label: t('sessionTree.interruptWait') },
+                  { value: 'immediate', label: t('sessionTree.interruptImmediate') },
+                  { value: 'wait', label: t('sessionTree.interruptWait') },
                 ]}
-                onChange={value => {
-                  if (runtimePending !== null) return false
-                  void runRuntimeCommand('interrupt-mode', () => setPiInterruptMode(sessionId, value))
-                }}
+                onChange={value => { void handleInterruptMode(value) }}
               />
             </div>
           </SettingField>
+          {interruptVisible?.error ? <p role="alert" className="text-[length:var(--fs-xs)] text-danger-100">{interruptVisible.error}</p> : null}
         </SettingsSection>
       ) : null}
 

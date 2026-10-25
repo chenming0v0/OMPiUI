@@ -233,6 +233,7 @@ export async function postPiSessionCommand<T = JsonValue | undefined, K extends 
   name: K,
   params?: PiParamsFor<K>,
   signal?: AbortSignal,
+  timeoutMs?: number,
 ): Promise<T extends undefined ? null : T> {
   const body = commandBody(
     params,
@@ -245,6 +246,7 @@ export async function postPiSessionCommand<T = JsonValue | undefined, K extends 
       headers: { 'content-type': 'application/json' },
       body,
       signal,
+      timeoutMs,
     },
   )
   if (response.command) piCommandStore.upsert(response.command)
@@ -1161,7 +1163,9 @@ export function abortAndPromptPi(
   params: { text: string; images?: PiImageInput[] },
   signal?: AbortSignal,
 ): Promise<JsonValue> {
-  return postPiSessionCommand(sessionId, 'abortAndPrompt', params, signal)
+  // Native prompt_result can follow a long turn; the ordinary 20s HTTP
+  // deadline would incorrectly retain an already-admitted draft as a failure.
+  return postPiSessionCommand(sessionId, 'abortAndPrompt', params, signal, 330_000)
 }
 
 /**

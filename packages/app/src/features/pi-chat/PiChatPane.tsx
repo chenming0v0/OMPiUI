@@ -53,7 +53,7 @@ import { serverStore } from '../../store/serverStore'
 import { useSessionActiveEntry } from '../../store/activeSessionStore'
 import type { PiImageInput } from '../../omp/transport/index.js'
 import type { DeliveryMode } from '../../types/ui'
-import { attachmentToImage, imageInputToAttachment } from './attachmentToImage'
+import { attachmentToImage, imageInputToAttachment, interruptAttachmentsToImages } from './attachmentToImage'
 import { appendPendingSends, createPendingSend, reconcilePendingSends, reconcileQueuedPendingSends, withoutQueueEntry, type PendingSend } from './pendingSend'
 import { hasStoppableSessionActivity } from './sessionActivity'
 import { SessionStopCoordinator } from './sessionStopCoordinator'
@@ -1066,8 +1066,10 @@ export function PiChatPane({
             return true
           }
         }
-        const images = attachments.map(attachmentToImage).filter((image): image is PiImageInput => image !== null)
         const deliverAs = options?.delivery ?? 'followUp'
+        const images = deliverAs === 'abortAndPrompt'
+          ? await interruptAttachmentsToImages(attachments)
+          : attachments.map(attachmentToImage).filter((image): image is PiImageInput => image !== null)
         const pending = createPendingSend(targetSessionId, capturedServerGeneration, text, images, baseItems, undefined, [...queuedSteering, ...queuedFollowUps])
         pendingId = pending.id
         setPendingSends(current => [...current, pending])
