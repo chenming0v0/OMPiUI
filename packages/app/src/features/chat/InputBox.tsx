@@ -644,7 +644,9 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
           }
         } else {
           setText(current => current === text ? '' : current)
-          setAttachments(current => current.filter(attachment => !attachments.includes(attachment)))
+          setAttachments(current => current.filter(attachment =>
+            !attachments.includes(attachment) || (!!attachment.textRange && latestDraftRef.current.text !== text),
+          ))
         }
         resetHistoryIndex()
         onClearRevert?.()
@@ -1198,19 +1200,16 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
       }
 
       setText(newText)
-      // 幂等：同一命令重复选择时替换旧附件（textRange 可能随文本变化），
-      // 避免输入框里累积多个相同的命令附件
-      setAttachments(prev => {
-        const existingIndex = prev.findIndex(
-          a => a.type === 'command' && a.commandName === command.name,
-        )
-        if (existingIndex >= 0) {
-          const next = [...prev]
-          next[existingIndex] = attachment
-          return next
-        }
-        return [...prev, attachment]
-      })
+      // Replace only the edited text span; independent images are unrelated.
+      // Mentions after the command move with the newly inserted spelling.
+      const replacedEnd = slashStartIndex + 1 + slashQuery.length
+      const offset = commandText.length - slashQuery.length
+      setAttachments(prev => [...prev.flatMap(existing => {
+        const range = existing.textRange
+        if (!range || range.end <= slashStartIndex) return [existing]
+        if (range.start < replacedEnd) return []
+        return [{ ...existing, textRange: { ...range, start: range.start + offset, end: range.end + offset } }]
+      }), attachment])
       setSlashOpen(false)
 
       // 自动弹出参数补全：选中带参命令后光标已在参数区，直接列出候选
@@ -1249,7 +1248,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   // 通用文件上传 — 根据模型能力判断是否接受
   const handleFilesSelected = useCallback(
     async (files: File[]) => {
-      if (files.length === 0 || !supportsAnyFile || isSubmitting) return
+      if (files.length === 0 || !supportsAnyFile) return
 
       const nextAttachments: Attachment[] = []
       let totalBytes = attachmentBytes(attachments)
@@ -1282,28 +1281,32 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
         appendFileAttachments(nextAttachments)
       }
     },
-    [supportsAnyFile, fileCaps, isSubmitting, appendFileAttachments, attachments, sessionId, t],
+    [supportsAnyFile, fileCaps, appendFileAttachments, attachments, sessionId, t],
   )
 
   // 删除附件
   const handleRemoveAttachment = useCallback(
     (id: string) => {
-      if (isSubmitting) return
-
       const attachment = attachments.find(a => a.id === id)
       if (!attachment) return
 
-      // 如果有 textRange，从文本中删除 @mention
-      if (attachment.textRange) {
-        const { value } = attachment.textRange
-        // 删除 @mention 和后面的空格
-        const newText = text.replace(value + ' ', '').replace(value, '')
-        setText(newText)
+      const range = attachment.textRange
+      if (range && text.slice(range.start, range.end) === range.value) {
+        const end = range.end + (text[range.end] === ' ' ? 1 : 0)
+        setText(text.slice(0, range.start) + text.slice(end))
+        setAttachments(prev => prev.flatMap(existing => {
+          if (existing.id === id) return []
+          const existingRange = existing.textRange
+          if (!existingRange || existingRange.end <= range.start) return [existing]
+          if (existingRange.start < end) return []
+          const offset = end - range.start
+          return [{ ...existing, textRange: { ...existingRange, start: existingRange.start - offset, end: existingRange.end - offset } }]
+        }))
+      } else {
+        setAttachments(prev => prev.filter(a => a.id !== id))
       }
-
-      setAttachments(prev => prev.filter(a => a.id !== id))
     },
-    [attachments, isSubmitting, text, setText, setAttachments],
+    [attachments, text, setText, setAttachments],
   )
 
   // 粘贴处理 — 根据模型能力过滤可粘贴的文件类型
@@ -1502,7 +1505,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
 
   const handleTauriExternalDrop = useCallback(
     async (paths: string[]) => {
-      if (paths.length === 0 || isSubmitting) return
+      if (paths.length === 0) return
 
       try {
         const droppedPaths = await getDroppedPathsInfo(paths)
@@ -1537,7 +1540,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
         console.warn('[InputBox] Failed to process Tauri dropped paths:', err)
       }
     },
-    [buildDraggedFileInfo, createUploadAttachmentFromDroppedPath, externalFileDropMode, insertDraggedFiles, isSubmitting, appendFileAttachments, attachments, sessionId, t],
+    [buildDraggedFileInfo, createUploadAttachmentFromDroppedPath, externalFileDropMode, insertDraggedFiles, appendFileAttachments, attachments, sessionId, t],
   )
 
   const handleTauriDragDropEvent = useCallback(
@@ -1833,7 +1836,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
                               attachments={attachments}
                               onRemove={handleRemoveAttachment}
                               variant="rail"
-                              className={isSubmitting ? 'pr-4 pointer-events-none opacity-70' : 'pr-4'}
+                              className="pr-4"
                             />
                           </div>
 

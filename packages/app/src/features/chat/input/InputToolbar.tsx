@@ -458,7 +458,7 @@ export function InputToolbar({
                 }}
               />
             )}
-            <IconButton aria-label={t('inputToolbar.attachFile')} disabled={controlsDisabled} onClick={handleFileClick}>
+            <IconButton aria-label={t('inputToolbar.attachFile')} onClick={handleFileClick}>
               <PaperclipIcon />
             </IconButton>
           </>
