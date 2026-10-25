@@ -1093,13 +1093,13 @@ export class OmpRpcSession implements SessionRuntime {
         (isJsonObject(this.compactionShadow.operation) &&
           this.compactionShadow.operation.type === "compaction"),
       steeringMode:
-        typeof native.steeringMode === "string"
+        native.steeringMode === "all" || native.steeringMode === "one-at-a-time"
           ? native.steeringMode
-          : "one-at-a-time",
+          : null,
       followUpMode:
-        typeof native.followUpMode === "string"
+        native.followUpMode === "all" || native.followUpMode === "one-at-a-time"
           ? native.followUpMode
-          : "one-at-a-time",
+          : null,
       interruptMode: typeof native.interruptMode === "string" ? native.interruptMode : "immediate",
       autoCompactionEnabled: Boolean(native.autoCompactionEnabled),
       autoRetryEnabled: true,
@@ -1133,13 +1133,13 @@ export class OmpRpcSession implements SessionRuntime {
       queue: {
         ...this.getNativeQueueSnapshot(),
         steeringMode:
-          typeof native.steeringMode === "string"
+          native.steeringMode === "all" || native.steeringMode === "one-at-a-time"
             ? native.steeringMode
-            : "one-at-a-time",
+            : null,
         followUpMode:
-          typeof native.followUpMode === "string"
+          native.followUpMode === "all" || native.followUpMode === "one-at-a-time"
             ? native.followUpMode
-            : "one-at-a-time",
+            : null,
       },
       submittedMessages: [],
       pendingExtensionUiRequests: this.extensionUi.listPending(),
@@ -1632,10 +1632,12 @@ export class OmpRpcSession implements SessionRuntime {
 
   async setSteeringMode(mode: "all" | "one-at-a-time"): Promise<void> {
     unwrapResponse(await this.client.request({ type: "set_steering_mode", mode }, 30_000));
+    this.stateFlight = undefined;
   }
 
   async setFollowUpMode(mode: "all" | "one-at-a-time"): Promise<void> {
     unwrapResponse(await this.client.request({ type: "set_follow_up_mode", mode }, 30_000));
+    this.stateFlight = undefined;
   }
 
   async setInterruptMode(mode: "immediate" | "wait"): Promise<void> {

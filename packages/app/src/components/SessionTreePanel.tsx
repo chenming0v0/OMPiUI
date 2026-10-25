@@ -13,7 +13,7 @@ import {
   UploadIcon,
 } from './Icons'
 import { IconButton } from './ui/IconButton'
-import { SegmentedControl, SettingField, SettingRow, SettingsDisclosure, SettingsSection, Toggle } from '../features/settings/components/SettingsUI'
+import { SegmentedControl, SettingsSelect, SettingField, SettingRow, SettingsDisclosure, SettingsSection, Toggle } from '../features/settings/components/SettingsUI'
 import { usePiCapabilities } from '../omp/capabilities'
 import {
   abortPiBranchSummary,
@@ -82,8 +82,8 @@ interface RetryView {
 interface QueueView {
   steering?: string[]
   followUp?: string[]
-  steeringMode?: 'all' | 'one-at-a-time'
-  followUpMode?: 'all' | 'one-at-a-time'
+  steeringMode?: 'all' | 'one-at-a-time' | null
+  followUpMode?: 'all' | 'one-at-a-time' | null
 }
 
 function record(value: JsonValue | undefined): JsonObject {
@@ -561,30 +561,34 @@ export const SessionTreePanel = memo(function SessionTreePanel({
         >
           <SettingField label={t('sessionTree.steering')} description={t('sessionTree.steeringHint')}>
             <div className="w-56 max-w-full">
-              <SegmentedControl
-                value={queue.steeringMode ?? 'all'}
+              <SettingsSelect
+                value={queue.steeringMode ?? undefined}
+                ariaLabel={t('sessionTree.steering')}
+                disabled={runtimePending !== null}
                 options={[
                   { value: 'one-at-a-time' as const, label: t('sessionTree.oneAtATime') },
                   { value: 'all' as const, label: t('sessionTree.allAtOnce') },
                 ]}
                 onChange={value => {
                   if (runtimePending !== null) return false
-                  void runRuntimeCommand('queue-mode', () => setPiSteeringMode(sessionId, value))
+                  void runRuntimeCommand('queue-mode', () => setPiSteeringMode(sessionId, value), false)
                 }}
               />
             </div>
           </SettingField>
           <SettingField label={t('sessionTree.followUp')} description={t('sessionTree.followUpHint')}>
             <div className="w-56 max-w-full">
-              <SegmentedControl
-                value={queue.followUpMode ?? 'all'}
+              <SettingsSelect
+                value={queue.followUpMode ?? undefined}
+                ariaLabel={t('sessionTree.followUp')}
+                disabled={runtimePending !== null}
                 options={[
                   { value: 'one-at-a-time' as const, label: t('sessionTree.oneAtATime') },
                   { value: 'all' as const, label: t('sessionTree.allAtOnce') },
                 ]}
                 onChange={value => {
                   if (runtimePending !== null) return false
-                  void runRuntimeCommand('queue-mode', () => setPiFollowUpMode(sessionId, value))
+                  void runRuntimeCommand('queue-mode', () => setPiFollowUpMode(sessionId, value), false)
                 }}
               />
             </div>

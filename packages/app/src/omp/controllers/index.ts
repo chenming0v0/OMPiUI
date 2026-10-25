@@ -1017,6 +1017,7 @@ export async function setPiSteeringMode(
   signal?: AbortSignal,
 ): Promise<void> {
   await transport.setPiSteeringMode(sessionId, mode, signal)
+  await refreshPiSessionState(sessionId, signal)
 }
 
 export async function setPiFollowUpMode(
@@ -1025,6 +1026,7 @@ export async function setPiFollowUpMode(
   signal?: AbortSignal,
 ): Promise<void> {
   await transport.setPiFollowUpMode(sessionId, mode, signal)
+  await refreshPiSessionState(sessionId, signal)
 }
 
 export async function setPiInterruptMode(
