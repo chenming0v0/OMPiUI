@@ -114,6 +114,22 @@ npm run diagnostics -- --session <sessionId> --out diagnostic-report.jsonl
 不是单纯改 UI 标签；`session` 恢复非持久模式，仍按官方共享 broker 的存活规则处理。
 关闭视图不是 kill，禁止为了重连批量停止共享／其它 workspace 的服务。
 
+官方 18.12.6／Bun 1.3.14 的隔离集成网页实跑已读到运行中普通 job 的真实 stdout，
+并保留普通 stdin 拒绝；服务空内容写入后，同一 UUID／PID 的日志出现独立 `INPUT:` 行。
+`ready.port`、log＋port 的联合等待及超时分别读回真实状态；刷新保留既有服务身份，
+而显式再次调用同名 bash 按官方 `replace:true` 策略更换 UUID／PID，不是 UI 重连重启。
+job 与服务同名时，原生 read／kill 均返回 ambiguity，不应自行任选目标。
+同 workspace 的服务由项目 broker 共享，owner 用于归属与结果投递，不是额外的私有 kill 门禁：
+原生 `tools.approvalMode: always-ask` 的 exec 批准对话框可以拒绝或单次批准明确目标，
+拒绝保留原服务，批准只停止该目标；其它 workspace 返回 not found。此证据仅使用自有、
+顺序启动的官方 CLI 夹具，未扫描、接管或停止用户终端。
+干净 ready ACK 后关闭最后一个原生 owner，且没有 persist／detached 或其它项目客户端时，
+session 服务随官方 broker 退出；有持久服务固定 broker 时，不能承诺 session 服务立即退出。
+同文件 CLI 顺序继续后，网页只读重开没有新增写 runtime；官方全局 config／models 文件
+在这些操作前后的字节与 mtime 保持不变。项目批准／async／eval 设置切换仅属于自有夹具。
+后台 task 在显式 `async.enabled:false` 时原生同步返回；eval 独立使用
+`eval.autoBackground.enabled`／`thresholdMs`，不接受杜撰的 async 参数或强制同步策略。
+
 子代理工具被原生拒绝时（例如缺少共享 `context`），描述式工具摘要显示「子代理失败」，
 展开后保留原生拒绝原因；失败摘要与真正完成的子代理结果不能混用。
 
