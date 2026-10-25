@@ -89,6 +89,87 @@ async function sessionFixture(t: TestContext) {
 
 const image = (data: string): ImageInput => ({ type: "image", data, mimeType: "image/png" })
 
+describe("OmpRpcSession worktree relocation admission", () => {
+  it("rejects every immediate submission throughout move and leaves explicit Stop available", async t => {
+    const { session, rpc, commands, native } = await sessionFixture(t)
+    native.isStreaming = false
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    rpc.onRequest = async command => {
+      if (command.type === "worktreeState") return { data: { ...native, sessionFileReady: false } }
+      if (command.type === "moveSession") {
+        entered.resolve()
+        await release.promise
+        native.cwd = path.join(process.cwd(), "target-worktree")
+        return { data: { ...native, cancelled: false } }
+      }
+    }
+    const move = session.moveSession("target-worktree")
+    await entered.promise
+    const before = commands.length
+    for (const submit of [
+      () => session.sendUserMessage("draft"),
+      () => session.sendUserMessage("/extension-command"),
+      () => session.prompt("draft"),
+      () => session.steer("draft"),
+      () => session.followUp("draft"),
+      () => session.sendQueuedMessage("steering", 0, "queued-id"),
+      () => session.abortAndPrompt("draft"),
+      () => session.moveSession("another-worktree"),
+    ]) await assert.rejects(submit(), { code: "SESSION_BUSY" })
+    assert.equal(commands.length, before)
+    await session.abort()
+    assert.equal(commands.some(command => command.type === "abort"), true)
+    release.resolve()
+    const receipt = await move
+    assert.equal(receipt.targetSessionId, "old-session")
+    assert.equal(receipt.targetCwd, native.cwd)
+    await session.sendUserMessage("after relocation")
+    assert.equal(commands.some(command => command.type === "submitUserMessage" && command.text === "after relocation"), true)
+  })
+
+  it("rejects relocation while a preexisting submission is awaiting native admission", async t => {
+    const { session, rpc, commands, native } = await sessionFixture(t)
+    native.isStreaming = false
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    rpc.onRequest = async command => {
+      if (command.type !== "submitUserMessage") return
+      entered.resolve()
+      await release.promise
+      return { data: { accepted: true } }
+    }
+    const submission = session.sendUserMessage("source turn")
+    await entered.promise
+    await assert.rejects(session.moveSession("target-worktree"), { code: "SESSION_BUSY" })
+    assert.equal(commands.some(command => command.type === "worktreeState" || command.type === "moveSession"), false)
+    release.resolve()
+    await submission
+  })
+
+  it("rejects completed async work awaiting delivery even with no streaming turn", async t => {
+    const { session, native, commands } = await sessionFixture(t)
+    native.isStreaming = false
+    native.isSettled = false
+    native.hasPendingAsyncWork = true
+    await session.getState()
+    await assert.rejects(session.moveSession("target-worktree"), { code: "SESSION_BUSY" })
+    assert.equal(commands.some(command => command.type === "worktreeState" || command.type === "moveSession"), false)
+    assert.equal(session.getSessionId(), "old-session")
+    assert.equal(session.getCwd(), process.cwd())
+  })
+
+  it("reopens admission after a failed move without changing identity", async t => {
+    const { session, rpc, native } = await sessionFixture(t)
+    native.isStreaming = false
+    rpc.onRequest = command => command.type === "worktreeState" ? { data: { ...native, sessionFileReady: false } }
+      : command.type === "moveSession" ? { success: false, error: "native relocation failed" } : undefined
+    await assert.rejects(session.moveSession("target-worktree"), /native relocation failed/)
+    assert.equal(session.getSessionId(), "old-session")
+    await session.sendUserMessage("source retry")
+  })
+})
+
 describe("OmpRpcSession native subagent progress", () => {
   it("tracks progress.id and keeps the parent task identity in refreshed state", async t => {
     const { session, frame } = await sessionFixture(t)

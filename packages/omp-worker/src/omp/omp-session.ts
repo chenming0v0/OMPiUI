@@ -221,6 +221,8 @@ export class OmpRpcSession implements SessionRuntime {
   private abortIntentEpoch?: string;
   private toolInterruption?: JsonObject;
   private abortInFlight: Promise<JsonValue | undefined> | undefined;
+  private relocationEpoch: string | undefined;
+  private readonly submissionFlights = new Map<string, number>();
 
   private modelsCache: JsonObject[] = [];
   private modelsGeneration = 0;
@@ -1340,6 +1342,20 @@ export class OmpRpcSession implements SessionRuntime {
 
   // ---------------------------------------------------------------- prompting
 
+  /** Close admission before any await; Stop deliberately remains outside this gate. */
+  private async withSubmissionAdmission(action: () => Promise<void>): Promise<void> {
+    const epoch = this.eventEpoch;
+    if (this.relocationEpoch === epoch) {
+      throw Object.assign(new Error("The native session is switching worktrees; your message was not submitted"), { code: "SESSION_BUSY" });
+    }
+    this.submissionFlights.set(epoch, (this.submissionFlights.get(epoch) ?? 0) + 1);
+    try { await action(); } finally {
+      const remaining = (this.submissionFlights.get(epoch) ?? 1) - 1;
+      if (remaining) this.submissionFlights.set(epoch, remaining);
+      else this.submissionFlights.delete(epoch);
+    }
+  }
+
   async prompt(
     text: string,
     images?: ImageInput[],
@@ -1348,7 +1364,7 @@ export class OmpRpcSession implements SessionRuntime {
       streamingBehavior?: "steer" | "followUp";
     } = {},
   ): Promise<void> {
-    await this.submitPrompt(text, images, options);
+    await this.withSubmissionAdmission(() => this.submitPrompt(text, images, options));
   }
 
   private async submitPrompt(
@@ -1396,11 +1412,11 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async steer(text: string, images?: ImageInput[]): Promise<void> {
-    await this.submitQueuedMessage("steer", text, images);
+    await this.withSubmissionAdmission(() => this.submitQueuedMessage("steer", text, images));
   }
 
   async followUp(text: string, images?: ImageInput[]): Promise<void> {
-    await this.submitQueuedMessage("follow_up", text, images);
+    await this.withSubmissionAdmission(() => this.submitQueuedMessage("follow_up", text, images));
   }
 
   async sendUserMessage(
@@ -1408,8 +1424,12 @@ export class OmpRpcSession implements SessionRuntime {
     images?: ImageInput[],
     deliverAs?: "steer" | "followUp",
   ): Promise<void> {
+    await this.withSubmissionAdmission(() => this.submitUserMessage(text, images, deliverAs));
+  }
+
+  private async submitUserMessage(text: string, images?: ImageInput[], deliverAs?: "steer" | "followUp"): Promise<void> {
     if (text.startsWith('/')) {
-      await this.prompt(text, images, { streamingBehavior: deliverAs ?? 'followUp' });
+      await this.submitPrompt(text, images, { streamingBehavior: deliverAs ?? 'followUp' });
       return;
     }
     const epoch = this.eventEpoch;
@@ -1424,6 +1444,10 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async sendQueuedMessage(kind: "steering" | "followUp", index: number, entryId: string, maxResultBytes?: number): Promise<void> {
+    await this.withSubmissionAdmission(() => this.submitNativeQueuedMessage(kind, index, entryId, maxResultBytes));
+  }
+
+  private async submitNativeQueuedMessage(kind: "steering" | "followUp", index: number, entryId: string, maxResultBytes?: number): Promise<void> {
     const epoch = this.eventEpoch;
     await this.abortInFlight;
     if (epoch !== this.eventEpoch) throw Object.assign(new Error('Session replaced before queue submission'), { code: 'SESSION_REPLACED' });
@@ -1513,7 +1537,18 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async moveSession(path: string): Promise<JsonObject> {
-    if (this.currentStreaming || this.lastActivity.retrying || this.lastActivity.compacting || this.nativeQueue.steering.length || this.nativeQueue.followUp.length) {
+    const epoch = this.eventEpoch;
+    if (this.relocationEpoch === epoch || this.submissionFlights.has(epoch)) {
+      throw Object.assign(new Error("The native session has an admitted submission; nothing was moved"), { code: "SESSION_BUSY" });
+    }
+    this.relocationEpoch = epoch;
+    try { return await this.moveSessionWithAdmissionClosed(path); } finally {
+      if (this.relocationEpoch === epoch) this.relocationEpoch = undefined;
+    }
+  }
+
+  private async moveSessionWithAdmissionClosed(path: string): Promise<JsonObject> {
+    if (this.currentStreaming || this.pendingAsyncWork || this.lastActivity.retrying || this.lastActivity.compacting || this.nativeQueue.steering.length || this.nativeQueue.followUp.length) {
       throw Object.assign(new Error("The native session is busy; nothing was moved"), { code: "SESSION_BUSY" });
     }
     const sourceSessionId = this.sessionId;
@@ -1761,6 +1796,10 @@ export class OmpRpcSession implements SessionRuntime {
   private interruptSubmissionEpoch: string | undefined;
 
   async abortAndPrompt(text: string, images?: ImageInput[]): Promise<void> {
+    await this.withSubmissionAdmission(() => this.submitInterruptPrompt(text, images));
+  }
+
+  private async submitInterruptPrompt(text: string, images?: ImageInput[]): Promise<void> {
     if (this.interruptSubmissionEpoch === this.eventEpoch) throw Object.assign(new Error("An interrupt-and-prompt submission is already pending"), { code: "SESSION_BUSY" });
     const epoch = this.eventEpoch;
     this.interruptSubmissionEpoch = epoch;

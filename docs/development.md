@@ -102,6 +102,10 @@ Git 变更面板内提供明确勾选文件的暂存／取消暂存、完整文�
 
 选择 **Switch native session here** 是明确的原生写入操作：以原生 `isSessionOnDisk()` 和当前 journal 路径确认持久化状态，备份已落盘的最新日志，再通过同一 RPC UI AgentSession 的公开 `reload()`／`moveSession()` 迁移官方日志及 artifacts，并重载目标 cwd 的设置、记忆与技能／命令。尚未落盘的会话不伪造日志或私有副本，第一次原生写入仍使用迁移后的 cwd；新对话尚无原生会话时，**Use this workspace** 仅切换 GUI 工作区。sessionId 不变，sessionFile 和 cwd 以原生回执为准；同身份迁移不清空任务、队列、Goal 或会话资源，所有显示该身份的 pane 继续跟随它。取消、浏览和刷新不启动 Agent 或保存历史；不静默复制成另一份私有会话。
 
+迁移从首次异步读取前到原生 reload／flush／move／cwd 重载及回执投影结束，按当前会话事件身份关闭消息受理；`sendUserMessage`（含斜杠命令）、Steer、Follow-up、队列立即发送和“中断并提交”返回 `SESSION_BUSY`，不投递到正在迁移的源会话。迁移前已受理但尚未开始／入队的提交，以及 `AgentSession.hasPendingAsyncWork()` 所报告的已完成但仍等待投递的后台结果，也禁止迁移；不能仅以 running jobs 为空判断空闲。显式 Stop 不经过消息受理门禁，仍由官方取消接口处理，不关闭其他会话／CLI 或扫描全局锁。
+
+本次受理门禁修复已在官方 OMP 18.12.6／Bun 1.3.14 的专属 HOME、两棵真实 Git worktree 及真实 HTTP worker 中验证：锁住原生 settings.flush 时三种即时提交均返回 409 `SESSION_BUSY`，显式 Stop 返回 200；真实异步 bash 已完成且 running 为空、delivery 仍在途时，迁移拒绝且 cwd／文件／ID／日志字节不变，释放后仅有一条原生 async-result 回到源会话；公开扩展命令已受理但未启动回合时同样拒绝。空闲迁移与关闭己方 writer 后 CLI 同文件续写／GUI 再续写保留同一 ID。独占物理 Chrome 的两个同身份分屏窗格经真实事件 WebSocket 跟随迁移，分别从左右窗格提交的新回合均写入同一原生日志并在两边可见。
+
 本功能已使用官方 OMP 18.12.6、Bun 1.3.14、隔离 Git／HOME／模型配置及仅本机离线协议服务实测：网页列举、取消／确认创建、切换后原生写文件、CLI 同文件继续及真实 task 结果回到 GUI、切换回原目录、只读刷新日志字节与 mtime 不变、脏／占用错误、取消／确认干净移除，以及无 Agent 的新对话工作区选择和未落盘原生会话的同身份迁移／首次写入。网页验收使用专属物理 Chrome CDP；未依赖终端 TUI 或 mock Agent。集成后的全量构建／测试及多 pane 组合验收由主集成流程执行。
 
 

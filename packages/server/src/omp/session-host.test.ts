@@ -11,6 +11,54 @@ import type { WorkerSession } from "./worker-client.ts"
 import type { RuntimeSupervisor } from "./supervisor.ts"
 import { SessionHost } from "./session-host.ts"
 
+test("relocation rejects immediate submissions before worker capacity and preserves Stop and other sessions", async t => {
+  const previous = process.env.OMPIUI_DRIVER
+  process.env.OMPIUI_DRIVER = "mock"
+  const entered = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  const commands: Array<{ sessionId: string; type: string }> = []
+  const worker = (sessionId: string) => ({
+    command: async (type: string) => {
+      commands.push({ sessionId, type })
+      if (type === "moveSession") {
+        entered.resolve()
+        await release.promise
+        throw Object.assign(new Error("Owned move rejected"), { code: "SESSION_BUSY" })
+      }
+      return {}
+    },
+    getSessionId: () => sessionId, getSessionFile: () => undefined, getCwd: () => ".",
+    onEvent: () => () => {}, onCrash: () => () => {}, onClose: () => () => {}, dispose: async () => {},
+  }) as unknown as WorkerSession
+  let opens = 0
+  const supervisor = { onEvent: () => () => {}, open: async () => worker(`move-host-${++opens}`) } as unknown as RuntimeSupervisor
+  const host = new SessionHost(supervisor, new EventHub())
+  t.after(() => {
+    host.dispose()
+    if (previous === undefined) delete process.env.OMPIUI_DRIVER
+    else process.env.OMPIUI_DRIVER = previous
+  })
+  await host.openSession(".")
+  await host.openSession(join(tmpdir(), "other-move-host"))
+  const move = await host.submitSessionCommand("move-host-1", { id: randomUUID(), type: "moveSession", params: { path: "." } })
+  const rejectedMove = assert.rejects(move.promise, { code: "SESSION_BUSY" })
+  await entered.promise
+  const count = commands.length
+  for (const type of ["sendUserMessage", "steer", "followUp", "abortAndPrompt"]) {
+    await assert.rejects(Promise.resolve(host.executeSessionCommand("move-host-1", type, { text: "keep draft" })), { code: "SESSION_BUSY" })
+  }
+  assert.equal(commands.length, count)
+  await host.executeSessionCommand("move-host-1", "abort")
+  await host.executeSessionCommand("move-host-2", "sendUserMessage", { text: "unrelated session" })
+  assert.deepEqual(commands.slice(count), [
+    { sessionId: "move-host-1", type: "abort" }, { sessionId: "move-host-2", type: "sendUserMessage" },
+  ])
+  release.resolve()
+  await rejectedMove
+  await host.executeSessionCommand("move-host-1", "sendUserMessage", { text: "source retry" })
+  assert.equal(commands.at(-1)?.type, "sendUserMessage")
+})
+
 test("attached previews forward sync cursors and reject excessive page limits before querying", async t => {
   const previous = process.env.OMPIUI_DRIVER
   process.env.OMPIUI_DRIVER = "mock"

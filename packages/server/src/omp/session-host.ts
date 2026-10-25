@@ -134,6 +134,7 @@ export class SessionHost {
   private pendingAttachBytes = 0;
   private pendingAttachCommands = 0;
   private readonly toolInterruptions = new Map<string, JsonObject>();
+  private readonly worktreeMoves = new WeakSet<AttachedSession>();
 
   constructor(
     private readonly supervisor: RuntimeSupervisor,
@@ -587,6 +588,12 @@ export class SessionHost {
             code: "INVALID_REQUEST",
           });
         }
+        // Reject before reserving worker response capacity: a blocked move must
+        // not keep an immediate prompt waiting behind its own transaction.
+        if (this.worktreeMoves.has(session) &&
+            (type === "sendUserMessage" || type === "steer" || type === "followUp" || type === "abortAndPrompt")) {
+          throw Object.assign(new Error("The native session is switching worktrees; your message was not submitted"), { code: "SESSION_BUSY" });
+        }
         const result = await session.worker.command(type, params, signal);
         return type === 'state.get' && isJsonObject(result) && this.toolInterruptions.has(sessionId)
           ? { ...result, toolInterruption: this.toolInterruptions.get(sessionId)! } : result;
@@ -978,13 +985,23 @@ export class SessionHost {
       if (options.signal?.aborted) throw abortError();
       this.touch(session.sessionId);
       return this.executor.submit(full, async () => {
-        const releaseWorkspace = full.type === "moveSession" && typeof full.params?.path === "string"
-          ? beginWorktreeAttachment(resolve(session.cwd, full.params.path)) : undefined;
+        const moving = full.type === "moveSession";
+        if (moving && this.worktreeMoves.has(session)) {
+          throw Object.assign(new Error("The native session is already switching worktrees; nothing was moved"), { code: "SESSION_BUSY" });
+        }
+        if (moving) this.worktreeMoves.add(session);
+        let releaseWorkspace: (() => void) | undefined;
         try {
+          if (moving && typeof full.params?.path === "string") {
+            releaseWorkspace = beginWorktreeAttachment(resolve(session.cwd, full.params.path));
+          }
           const data = await session.worker.command(full.type, full.params);
           await this.trackReplacement(session, data);
           return data;
-        } finally { releaseWorkspace?.(); }
+        } finally {
+          releaseWorkspace?.();
+          if (moving) this.worktreeMoves.delete(session);
+        }
       });
     };
     const existing = this.runtimes.get(sessionId);
