@@ -31,7 +31,8 @@
     "pending": "Waiting to execute",
     "failed": "Failed",
     "cancelled": "Interrupted",
-    "unknown": "Outcome unknown"
+    "unknown": "Outcome unknown",
+    "argumentsUnknown": "Arguments unknown — call not loaded"
   },
   "toolSteps": {
     "separator": ", ",

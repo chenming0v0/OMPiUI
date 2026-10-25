@@ -14,6 +14,7 @@ import { useUiDisclosureState } from '../../../utils/uiDisclosureState'
 import {
   getToolIcon,
   extractToolData,
+  defaultExtractData,
   getToolConfig,
   isYieldTool,
   DefaultRenderer,
@@ -64,14 +65,14 @@ export const ToolPartView = memo(function ToolPartView({
   // title 显示工具调用实质（命令/路径/模式），而不是重复工具名——
   // OMP RPC 的工具调用事件只有 toolName + args，没有工具描述字段；
   // formatToolName(toolName) 已展示工具名，title 再显示同名就是冗余。
-  const title = extractToolTitle(toolName, execution)
+  const title = execution.argumentsUnknown ? t('toolPart.argumentsUnknown') : extractToolTitle(toolName, execution)
 
   const isActive = status === 'running'
   const isQueued = status === 'pending'
   const isError = status === 'error'
   const failureLabel = t(!result && execution.interruption === 'cancelled' ? 'toolPart.cancelled' : !result && execution.interruption === 'unknown' ? 'toolPart.unknown' : 'toolPart.failed')
   // Yield 完成工具：行名直接展示任务状态（提交中/完成/失败），不显示工具名
-  const isYield = isYieldTool(toolName)
+  const isYield = !execution.argumentsUnknown && isYieldTool(toolName)
   const displayName = isYield && !isQueued
     ? isActive
       ? t('yield.submitting')
@@ -152,7 +153,7 @@ export const ToolPartView = memo(function ToolPartView({
   )
 
   // Memoize once — shared by both the descriptive header (diffStats) and ToolBody.
-  const toolData = useMemo(() => extractToolData(execution), [execution])
+  const toolData = useMemo(() => execution.argumentsUnknown ? defaultExtractData(execution) : extractToolData(execution), [execution])
 
   const handleFullscreenChange = useCallback((isFullscreen: boolean) => {
     setIsChildFullscreen(isFullscreen)
@@ -473,6 +474,11 @@ const ToolBody = memo(function ToolBody({
 }) {
   const tool = execution.call.name
   const lowerTool = tool.toLowerCase()
+  // Without the original call, specialized views must not infer its target
+  // or substitute a success summary for the actual orphan output.
+  if (execution.argumentsUnknown) {
+    return <DefaultRenderer execution={execution} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} />
+  }
   // A specialized success view must never hide the original failure payload.
   if (getToolExecutionStatus(execution) === 'error' && lowerTool !== 'task') {
     return <DefaultRenderer execution={execution} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} />

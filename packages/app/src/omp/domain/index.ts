@@ -204,6 +204,8 @@ export type PiToolExecutionState = {
 /** One tool call plus its authoritative result and execution evidence. */
 export type PiToolExecution = PiToolExecutionState & {
   call: ToolCall
+  /** The orphan row has only a result, not the original call arguments. */
+  argumentsUnknown?: boolean
 }
 
 export function getToolExecutionStatus(execution: PiToolExecution): 'pending' | 'running' | 'completed' | 'error' {

@@ -31,7 +31,8 @@
     "pending": "等待执行",
     "failed": "失败",
     "cancelled": "已中断",
-    "unknown": "结果未知"
+    "unknown": "结果未知",
+    "argumentsUnknown": "参数未知 — 调用尚未加载"
   },
   "toolSteps": {
     "separator": "，",

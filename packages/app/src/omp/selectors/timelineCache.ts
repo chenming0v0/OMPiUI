@@ -36,7 +36,8 @@ function reuseHistoryItem(item: PiTimelineItem): PiTimelineItem {
     if (previous.kind === 'tool_result' && item.kind === 'tool_result') {
       const a = previous.execution
       const b = item.execution
-      if (a.result === b.result && a.error === b.error && a.completedAt === b.completedAt && a.endedAt === b.endedAt && a.isRunning === b.isRunning && a.startedAt === b.startedAt) return previous
+      const sameCall = a.call === b.call || (a.argumentsUnknown && b.argumentsUnknown && a.call.id === b.call.id && a.call.name === b.call.name)
+      if (sameCall && a.argumentsUnknown === b.argumentsUnknown && a.result === b.result && a.error === b.error && a.completedAt === b.completedAt && a.endedAt === b.endedAt && a.isRunning === b.isRunning && a.startedAt === b.startedAt) return previous
       entryCache.set(item.rawEntry, item)
       return item
     }
@@ -75,8 +76,9 @@ export function selectPiTimelineItemsCached(
     return []
   }
 
-  const live = branch.checkpoint?.liveMessage?.message
-  const liveCallKey = live?.role === 'assistant' ? live.content.flatMap(block => block.type === 'toolCall' ? [block.id] : []).join('\u0000') : ''
+  const liveItems = buildPiLiveItems(branch)
+  const liveCallKey = liveItems.flatMap(item => item.kind === 'assistant_message'
+    ? item.blocks.flatMap(block => block.type === 'toolCall' ? [block.id] : []) : []).join('\u0000')
   const cached = historyCache.get(branch.items)
   let history: PiTimelineItem[]
   if (cached && cached.stableEntryIds === branch.client?.stableEntryIds && cached.toolExecutions === branch.client?.toolExecutions && cached.liveCallKey === liveCallKey) {
@@ -86,7 +88,6 @@ export function selectPiTimelineItemsCached(
     historyCache.set(branch.items, { items: history, stableEntryIds: branch.client?.stableEntryIds, toolExecutions: branch.client?.toolExecutions, liveCallKey })
   }
 
-  const liveItems = buildPiLiveItems(branch)
   if (liveItems.length === 0) return history
   return history.concat(liveItems)
 }
