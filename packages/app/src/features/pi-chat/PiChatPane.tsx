@@ -14,6 +14,7 @@ import type { Attachment } from '../attachment/index.js'
 import { ExtensionUiDialogHost } from '../chat/ExtensionUiDialogHost.js'
 import { ExtensionUiSurface } from '../chat/ExtensionUiSurface'
 import { OutlineIndex } from '../../components/OutlineIndex'
+import type { NativeTreeNode } from '../../components/sessionTreeGraph'
 import { buildOutlineSourceEntries } from '../../components/outlineIndexModel'
 import { selectPiTimelineItemsCached } from '../../omp/selectors/timelineCache.js'
 import type { HistoryPrefetchMode } from '../../omp/historyPagePrefetch'
@@ -47,6 +48,7 @@ import {
   discardQueuedMessage,
   sendQueuedMessage,
   waitHostCommand,
+  getPiTree,
 } from '../../omp/transport/index.js'
 import { layoutStore } from '../../store/layoutStore'
 import { serverStore } from '../../store/serverStore'
@@ -824,13 +826,21 @@ export function PiChatPane({
     if (!revertState || !revertPositions) return
     if (!state || !state.head || typeof state.head !== 'object' || Array.isArray(state.head)) return
     if (revertPositions.has(headLeafId)) return
-    updateRevertState(null)
+    const checkpoint = revertState.checkpoints.indexOf(headLeafId ?? '')
+    if (checkpoint >= revertState.restored) {
+      const restored = checkpoint + 1
+      updateRevertState(restored < revertState.checkpoints.length ? { ...revertState, restored } : null)
+    } else updateRevertState(null)
   }, [headLeafId, revertState, revertPositions, state, updateRevertState])
 
-  const canUndo = Boolean(sessionId && !isStreaming && items.some(item => item.kind === 'user_message'))
+  const navigationPendingRef = useRef(false)
+  const [navigationPending, setNavigationPending] = useState(false)
+
+  const canUndo = Boolean(sessionId && !isStreaming && !navigationPending && items.some(item => item.kind === 'user_message'))
   const canRedo = Boolean(
     sessionId &&
     !isStreaming &&
+    !navigationPending &&
     revertState &&
     revertState.restored < revertState.checkpoints.length &&
     revertPositions?.has(headLeafId),
@@ -913,78 +923,72 @@ export function PiChatPane({
     inputBoxRef.current?.setEditorText(extensionState.editorText)
   }, [extensionState, sessionId])
 
-  // #356: 树导航成功后恢复目标节点的原生文本/图片草稿。SessionTreePanel 的
-  // 导航没有输入框句柄，通过 window 事件到达这里，与 Undo/Redo 共用一条恢复路径。
-  const applyNativeEditorDraft = useCallback((sid: string, result: { editorText?: unknown; editorImages?: unknown }) => {
-    if (paneIdentityRef.current.sessionId !== sid) return
-    const hasText = typeof result.editorText === 'string'
-    const hasImages = Array.isArray(result.editorImages)
-    if (!hasText && !hasImages) return
-    const images = hasImages ? (result.editorImages as PiImageInput[]).map(imageInputToAttachment) : undefined
-    const text = hasText ? (result.editorText as string) : inputBoxRef.current?.getEditorText() ?? ''
-    inputBoxRef.current?.setEditorDraft(text, images)
-    setSessionEditorDraft(sid, text, { attachments: images, sync: false })
-    localComposerTextRef.current = text
-    lastEditorTextRef.current = text
-  }, [])
-
+  // The shared controller draft updates every source pane and survives remount.
+  // Keep mirror guards aligned without writing the same draft a second time.
   useEffect(() => {
-    const handleNativeDraft = (event: Event) => {
-      const detail = (event as CustomEvent<{ sessionId?: string; editorText?: unknown; editorImages?: unknown }>).detail
-      if (!detail?.sessionId) return
-      applyNativeEditorDraft(detail.sessionId, detail)
-    }
-    window.addEventListener('ompiui:native-editor-draft', handleNativeDraft)
-    return () => window.removeEventListener('ompiui:native-editor-draft', handleNativeDraft)
-  }, [applyNativeEditorDraft])
+    if (!editorDraft) return
+    localComposerTextRef.current = editorDraft.text
+    lastEditorTextRef.current = editorDraft.text
+  }, [editorDraft])
 
   const handleUndo = useCallback(
     async (entryId: string) => {
-      if (!sessionId || isStreaming) return
-      // 逐回合的 redo 落点：沿被裁掉的原分支，每个用户回合的尾部条目。
-      // 必须在导航前从 branch 捕获
-      const checkpoints = captureRedoCheckpoints(sessionId, entryId)
+      if (!sessionId || isStreaming || navigationPendingRef.current) return
+      navigationPendingRef.current = true
+      setNavigationPending(true)
       try {
+        const tree = await getPiTree(sessionId)
+        const checkpoints = captureRedoCheckpoints(sessionId, entryId, tree as unknown as NativeTreeNode[])
         const result = await navigatePiTree(sessionId, { entryId })
-        if (result.cancelled || result.aborted) return
-        applyNativeEditorDraft(sessionId, result)
+        if (result.cancelled || result.aborted || result.noOp) return
         await commitRedoPlan(sessionId, checkpoints)
       } catch (error) {
         uiErrorHandler('undo message', error)
+      } finally {
+        navigationPendingRef.current = false
+        setNavigationPending(false)
       }
     },
-    [sessionId, isStreaming, applyNativeEditorDraft],
+    [sessionId, isStreaming],
   )
 
   const handleRedoStep = useCallback(async () => {
-    if (!sessionId || !revertState || isStreaming) return
+    if (!sessionId || !revertState || isStreaming || navigationPendingRef.current) return
     const target = revertState.checkpoints[revertState.restored]
     if (!target) return
+    navigationPendingRef.current = true
+    setNavigationPending(true)
     try {
       const result = await navigatePiTree(sessionId, { entryId: target })
       if (result.cancelled || result.aborted) return
-      applyNativeEditorDraft(sessionId, result)
       const restored = revertState.restored + 1
       if (restored >= revertState.checkpoints.length) updateRevertState(null)
       else updateRevertState({ ...revertState, restored })
     } catch (error) {
       uiErrorHandler('redo message', error)
+    } finally {
+      navigationPendingRef.current = false
+      setNavigationPending(false)
     }
-  }, [sessionId, revertState, isStreaming, updateRevertState, applyNativeEditorDraft])
+  }, [sessionId, revertState, isStreaming, updateRevertState])
 
   const handleRedoAll = useCallback(async () => {
-    if (!sessionId || !revertState || isStreaming) return
+    if (!sessionId || !revertState || isStreaming || navigationPendingRef.current) return
     const target = revertState.checkpoints[revertState.checkpoints.length - 1]
     if (!target) return
+    navigationPendingRef.current = true
+    setNavigationPending(true)
     try {
       const result = await navigatePiTree(sessionId, { entryId: target })
       if (result.cancelled || result.aborted) return
-      applyNativeEditorDraft(sessionId, result)
       updateRevertState(null)
     } catch (error) {
       uiErrorHandler('redo message', error)
+    } finally {
+      navigationPendingRef.current = false
+      setNavigationPending(false)
     }
-  }, [sessionId, revertState, isStreaming, updateRevertState, applyNativeEditorDraft])
+  }, [sessionId, revertState, isStreaming, updateRevertState])
 
   const refreshTimerRefs = useRef(new Set<number>())
   const scheduleDelayedRefresh = useCallback((sid: string) => {

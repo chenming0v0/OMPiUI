@@ -83,7 +83,6 @@ export class RuntimeBridgeTransport {
 export function runtimeBridgeExtension(): string {
   return `${NATIVE_PROMPT_ADMISSION_IMPORT}
 import { randomUUID } from "node:crypto";
-import { rm } from "node:fs/promises";
 import { isUserQueuedMessage, isHiddenUserCompanion, toRestoredQueuedMessage } from "@oh-my-pi/pi-coding-agent/session/queued-messages";
 import { resolveModelScope, getModelMatchPreferences, formatModelStringWithRouting } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { cfgDisabledExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/settings";
@@ -206,39 +205,15 @@ export default function (pi) {
         if (args.position !== "at" && args.position !== "before") throw new Error("Invalid fork position");
         if (session.isStreaming || session.hasAdmittedSubmission || session.isRetrying || session.isCompacting || session.isGeneratingHandoff) throw new Error("Wait for the current run before forking");
         const entry = session.sessionManager.getEntry(args.entryId);
-        if (!entry) throw new Error("Fork entry does not exist");
-        if (args.position === "before" && entry.type === "message" && entry.message.role === "user") {
+        if (!entry || entry.type !== "message") throw new Error("Fork requires a native message entry");
+        if (args.position === "before") {
+          if (entry.message.role !== "user") throw new Error("Native before-message fork requires a user message");
           return { ...await session.branch(args.entryId), ...identity(session) };
         }
-        await session.sessionManager.flush();
-        const source = session.sessionFile;
-        if (!source) throw new Error("Fork requires a persisted session");
-        const forked = await pi.pi.SessionManager.forkFrom(source, ctx.cwd, session.sessionManager.getSessionDir(), undefined, { suppressBreadcrumb: true });
-        let target;
-        try {
-          const leafId = args.position === "before" ? entry.parentId : entry.id;
-          // The native loader restores the last journal entry, not an in-memory
-          // leaf. A native empty summary anchor durably selects this fork path
-          // while retaining inherited sibling subtrees in the new file.
-          forked.branchWithSummary(leafId, "", { targetId: args.entryId, position: args.position });
-          await forked.flush();
-          target = forked.getSessionFile();
-        } finally { await forked.close(); }
-        if (!target) throw new Error("Fork did not create a session file");
-        let switched;
-        try { switched = await session.switchSession(target); }
-        catch (error) {
-          if (session.sessionFile !== target) {
-            await rm(target, { force: true });
-            await rm(target.slice(0, -".jsonl".length), { recursive: true, force: true });
-          }
-          throw error;
-        }
-        if (!switched) {
-          await rm(target, { force: true });
-          await rm(target.slice(0, -".jsonl".length), { recursive: true, force: true });
-        }
-        return { ...identity(session), cancelled: switched === false, selectedText: "", selectedImages: [] };
+        // The official entry fork preserves artifacts, completes recorded tool
+        // batches, and honors session_before_branch cancellation atomically.
+        const completed = await session.fork(args.entryId);
+        return { ...identity(session), cancelled: !completed, selectedText: "", selectedImages: [] };
       }
       case "reload": await ctx.reload(); await session.refreshSkillsAndCommands(); return identity(session);
       case "resources": {

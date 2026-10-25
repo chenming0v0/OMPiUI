@@ -412,6 +412,18 @@ describe("http api", () => {
     assert.equal(preview.json.data.state.sessionId, sessionId)
     assert.ok(Array.isArray(preview.json.data.branch.items))
 
+    // Global commands receive their declared body directly. `params` belongs
+    // to session.read itself, not an HTTP command envelope.
+    const diskState = await request(port, "POST", "/api/v1/pi/commands/session.read", {
+      body: { sessionId, query: "state.get", params: {} },
+    })
+    assert.equal(diskState.status, 200)
+    assert.equal(diskState.json.data.sessionId, sessionId)
+    const invalidEnvelope = await request(port, "POST", "/api/v1/pi/commands/session.read", {
+      body: { params: { sessionId, query: "state.get" } },
+    })
+    assert.equal(invalidEnvelope.status, 400)
+
     for (const type of [
       "models.list",
       "settings.patch",

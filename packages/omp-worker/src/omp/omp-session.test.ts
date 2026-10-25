@@ -16,6 +16,7 @@ async function sessionFixture(t: TestContext) {
   const session = Reflect.construct(OmpRpcSession, []) as OmpRpcSession
   const internal = session as unknown as {
     client: unknown
+    ompVersion: string | null
     extensionUi: OmpExtensionUiBridge
     refreshIdentity(): Promise<void>
     handleFrame(frame: OmpRpcFrame): void
@@ -72,6 +73,7 @@ async function sessionFixture(t: TestContext) {
     async close() {},
   })
   internal.client = rpc
+  internal.ompVersion = '18.12.6'
   await internal.refreshIdentity()
   internal.extensionUi.bind(session.getSessionId(), response => rpc.writeExtensionUiResponse(response))
   t.after(() => session.dispose())
@@ -374,6 +376,23 @@ describe("OmpRpcSession authoritative lifecycle", () => {
     rpc.onRequest = command => command.type === "navigateTree" ? { data: { cancelled: true } } : undefined
     assert.equal((await session.navigateTree("missing")).cancelled, true)
     assert.equal((await session.getBranchPage(undefined, 100, 100000)).items[0]!.id, "assistant")
+  })
+
+  it('refuses inclusive fork on older native versions without issuing a whole-session fork', async t => {
+    const { session, commands } = await sessionFixture(t)
+    // The fixture owns this otherwise-private native version field.
+    const internal = session as unknown as { ompVersion: string }
+    internal.ompVersion = '18.3.1'
+    await assert.rejects(session.fork('assistant', 'at'), { code: 'CAPABILITY_DISABLED' })
+    assert.equal(commands.some(command => command.type === 'fork'), false)
+    assert.equal(session.getSessionId(), 'old-session')
+  })
+
+  it('rejects a fork receipt that retains the source identity', async t => {
+    const { session, rpc } = await sessionFixture(t)
+    rpc.onRequest = command => command.type === 'fork' ? { data: { cancelled: false, sessionFile: 'source.jsonl', leafId: null } } : undefined
+    await assert.rejects(session.fork('user', 'before'), /invalid committed identity/)
+    assert.equal(session.getSessionId(), 'old-session')
   })
 
   for (const operation of ["navigateTree", "fork"] as const) {

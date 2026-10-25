@@ -750,6 +750,17 @@ export function hydratePiBranchPage(sessionId: string, page: PiBranchPage, signa
   }, signal)
 }
 
+/** Tree pages contain previews only; selected details use bounded native disk reads. */
+export async function getPiEntry(sessionId: string, entryId: string, signal?: AbortSignal): Promise<PiBranchPage['items'][number]> {
+  const generation = serverStore.getActiveServerGeneration()
+  const first = await postPiGlobalCommand<JsonObject>('session.read', { sessionId, query: 'entry.get', params: { entryId, offset: 0 } }, signal)
+  const page = await hydrateEntryContent({ items: [{ type: 'ompiui.entry_ref', id: entryId, contentRef: { etag: first.etag, totalChars: first.totalChars } }] } as unknown as PiBranchPage, async (id, offset, etag) => {
+    if (serverStore.getActiveServerGeneration() !== generation) throw new DOMException('Server changed', 'AbortError')
+    return offset === 0 ? first : postPiGlobalCommand<JsonObject>('session.read', { sessionId, query: 'entry.get', params: { entryId: id, offset, etag } }, signal)
+  }, signal)
+  return page.items[0]!
+}
+
 export async function getPiTree(sessionId: string, signal?: AbortSignal): Promise<SessionTreeNode[]> {
   const pages: SessionTreeNode[][] = []
   let cursor: string | undefined

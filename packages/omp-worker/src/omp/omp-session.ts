@@ -30,6 +30,7 @@ import { OmpExtensionUiBridge } from "./omp-extension-ui.js";
 import { OMP_SDK_VERSION } from "./constants.js";
 import {
   detectOmpVersion,
+  compareOmpVersions,
   isOmpVersionSupported,
   ompTooOldError,
 } from "./omp-version.js";
@@ -1597,12 +1598,16 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async fork(entryId: string, position: "before" | "at"): Promise<JsonObject> {
+    if (position === "at" && (!this.ompVersion || compareOmpVersions(this.ompVersion, "18.12.6") < 0)) {
+      throw Object.assign(new Error("Native inclusive message fork requires OMP 18.12.6 or newer"), { code: "CAPABILITY_DISABLED" });
+    }
     const sourceSessionId = this.sessionId;
     const value = await this.client.requestRuntime("fork", { entryId, position }, 120_000);
     if (!isJsonObject(value)) throw new Error("Native fork returned an invalid operation receipt");
     const result = value;
     if (result.cancelled === true || result.aborted === true) return { ...result, operation: "fork", sourceSessionId };
     if (result.cancelled !== false || typeof result.sessionId !== "string" || typeof result.sessionFile !== "string" ||
+      result.sessionId === sourceSessionId || result.sessionFile === this.sessionFile ||
       typeof result.cwd !== "string" || (typeof result.leafId !== "string" && result.leafId !== null))
       throw new Error("Native fork returned an invalid committed identity");
     // The native operation receipt is authoritative; a later read cannot undo

@@ -878,7 +878,7 @@ export function createAppServer(
         const name = safeDecode(piCommandMatch[1]!);
         const data = await sessions.executeGlobalCommand(
           name,
-          commandParams(body),
+          body,
           { signal: scope.signal },
         );
         return sendJson(res, 200, { data: data ?? null });

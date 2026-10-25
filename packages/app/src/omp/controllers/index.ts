@@ -923,8 +923,17 @@ export async function forkPiSession(
   signal?: AbortSignal,
 ): Promise<transport.PiForkResult> {
   const generation = serverStore.getActiveServerGeneration()
-  const submitted = await transport.forkPiSession(sessionId, { entryId, position }, signal)
-  const result = (await transport.waitHostCommand(submitted.id, signal) ?? {}) as transport.PiForkResult
+  let result: transport.PiForkResult
+  try {
+    const submitted = await transport.forkPiSession(sessionId, { entryId, position }, signal)
+    result = (await transport.waitHostCommand(submitted.id, signal, 120_000) ?? {}) as transport.PiForkResult
+  } catch (error) {
+    if (generation === serverStore.getActiveServerGeneration()) notificationStore.push('error', i18n.t('components:sessionTree.failed'), error instanceof Error ? error.message : String(error), sessionId)
+    throw error
+  }
+  if (generation === serverStore.getActiveServerGeneration() && (result.cancelled || result.aborted)) {
+    notificationStore.push('warning', i18n.t(result.aborted ? 'components:sessionTree.navigationAborted' : 'components:sessionTree.navigationCancelled'), '', sessionId)
+  }
   if (generation === serverStore.getActiveServerGeneration() && result.cancelled === false && !result.aborted && result.targetSessionId) {
     restoreNativeDraft(result.targetSessionId, result.selectedText ?? '', result.selectedImages ?? [])
     if (result.projectionError) notificationStore.push('error', i18n.t('chat:chatArea.nativeChangeRefreshFailed'), result.projectionError, result.targetSessionId)
@@ -942,8 +951,17 @@ export async function navigatePiTree(
   signal?: AbortSignal,
 ): Promise<transport.PiNavigateTreeResult> {
   const generation = serverStore.getActiveServerGeneration()
-  const submitted = await transport.navigatePiTree(sessionId, params, signal)
-  const result = (await transport.waitHostCommand(submitted.id, signal) ?? {}) as transport.PiNavigateTreeResult
+  let result: transport.PiNavigateTreeResult
+  try {
+    const submitted = await transport.navigatePiTree(sessionId, params, signal)
+    result = (await transport.waitHostCommand(submitted.id, signal, 300_000) ?? {}) as transport.PiNavigateTreeResult
+  } catch (error) {
+    if (generation === serverStore.getActiveServerGeneration()) notificationStore.push('error', i18n.t('components:sessionTree.failed'), error instanceof Error ? error.message : String(error), sessionId)
+    throw error
+  }
+  if (generation === serverStore.getActiveServerGeneration() && (result.cancelled || result.aborted)) {
+    notificationStore.push('warning', i18n.t(result.aborted ? 'components:sessionTree.navigationAborted' : 'components:sessionTree.navigationCancelled'), '', sessionId)
+  }
   if (generation === serverStore.getActiveServerGeneration() && result.cancelled === false && !result.aborted && !result.noOp) {
     restoreNativeDraft(sessionId, result.editorText ?? '', result.editorImages ?? [])
     if (result.projectionError) notificationStore.push('error', i18n.t('chat:chatArea.nativeChangeRefreshFailed'), result.projectionError, sessionId)
