@@ -23,6 +23,7 @@ import { setSessionEditorDraft } from '../sessionEditorDraftStore'
 import { composerDraftKey, updateComposerDraft } from '../../features/chat/input/composerDraftStore'
 import { imageInputToAttachment } from '../../features/pi-chat/attachmentToImage'
 import { notificationStore } from '../../store/notificationStore'
+import { commandFeedbackStore } from '../commandFeedbackStore'
 import i18n from '../../i18n'
 
 /**
@@ -30,7 +31,7 @@ import i18n from '../../i18n'
  * templates, skills) from the runtime registry.
  */
 export async function loadPiSlashCommands(sessionId: string, signal?: AbortSignal): Promise<CommandDescriptor[]> {
-  const registry = await loadSessionRegistryCached(sessionId, signal)
+  const registry = await loadSessionRegistryOnce(sessionId, signal)
   return registry?.commands ?? []
 }
 
@@ -690,8 +691,8 @@ export async function compactPiSession(
 }
 
 /**
- * Reload runtime resources (extensions, skills, prompts, themes). Serialized
- * — submit, then wait for completion.
+ * Explicitly re-read the native session and rediscover skills/file commands.
+ * This is not the slash reload-plugins handler or an all-resource reload.
  */
 export async function reloadPiSessionResources(sessionId: string, signal?: AbortSignal): Promise<void> {
   const submitted = await transport.reloadPiSession(sessionId, signal)
@@ -827,7 +828,18 @@ export async function sendPiUserMessage(
   deliverAs?: 'steer' | 'followUp',
   signal?: AbortSignal,
 ): Promise<void> {
-  await transport.sendPiUserMessage(sessionId, { text, images, deliverAs }, signal)
+  const generation = serverStore.getActiveServerGeneration()
+  try {
+    await transport.sendPiUserMessage(sessionId, { text, images, deliverAs }, signal)
+  } catch (error) {
+    if (text.startsWith('/') && !signal?.aborted && serverStore.getActiveServerGeneration() === generation) {
+      const message = error instanceof Error ? error.message : String(error)
+      const command = text.slice(1).split(/\s/, 1)[0] ?? ''
+      commandFeedbackStore.add({ sessionId, command, source: 'Native RPC', status: 'error', message })
+      notificationStore.push('error', 'Native command', message, sessionId, undefined, { target: 'extensions' })
+    }
+    throw error
+  }
 }
 
 /**

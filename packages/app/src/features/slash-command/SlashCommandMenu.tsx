@@ -44,6 +44,7 @@ export const SlashCommandMenu = forwardRef<SlashCommandMenuHandle, SlashCommandM
   const [commands, setCommands] = useState<Command[]>([])
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [loading, setLoading] = useState(false)
+  const [registryRevision, setRegistryRevision] = useState(0)
 
   const menuRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
@@ -127,6 +128,17 @@ export const SlashCommandMenu = forwardRef<SlashCommandMenuHandle, SlashCommandM
     }
   }, [isOpen])
 
+  useEffect(() => {
+    if (!isOpen || !sessionId) return
+    const refresh = (event: Event) => {
+      if ((event as CustomEvent<{ sessionId?: string }>).detail?.sessionId === sessionId) {
+        setRegistryRevision(value => value + 1)
+      }
+    }
+    window.addEventListener('ompiui:registry-updated', refresh)
+    return () => window.removeEventListener('ompiui:registry-updated', refresh)
+  }, [isOpen, sessionId])
+
   // Native registry is authoritative; local actions have separate ui-* names.
   useEffect(() => {
     if (!isOpen) return
@@ -172,7 +184,7 @@ export const SlashCommandMenu = forwardRef<SlashCommandMenuHandle, SlashCommandM
       cancelAnimationFrame(frameId)
       requestIdRef.current += 1
     }
-  }, [isOpen, sessionId])
+  }, [isOpen, sessionId, registryRevision])
 
   // query 变化时重置选中项
   useEffect(() => {

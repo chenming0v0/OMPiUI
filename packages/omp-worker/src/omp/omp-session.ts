@@ -385,18 +385,12 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   private async refreshAvailableCommands(): Promise<void> {
-    try {
-      const response = await this.client.request(
-        { type: "get_available_commands" },
-        30_000,
-      );
-      const data = unwrapResponse<JsonValue>(response);
-      this.availableCommandsCache =
-        isJsonObject(data) && Array.isArray(data.commands)
-          ? data.commands.filter((command) => !isJsonObject(command) || command.name !== "ompiui-runtime") : [];
-    } catch {
-      this.availableCommandsCache = [];
+    const response = await this.client.request({ type: "get_available_commands" }, 30_000);
+    const data = unwrapResponse<JsonValue>(response);
+    if (!isJsonObject(data) || !Array.isArray(data.commands)) {
+      throw new OmpRpcError("Native command catalog is unavailable", "RESOURCE_UNAVAILABLE");
     }
+    this.availableCommandsCache = data.commands.filter((command) => !isJsonObject(command) || command.name !== "ompiui-runtime");
   }
 
   // ------------------------------------------------------------------ events
@@ -1297,7 +1291,10 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async getRegistry(): Promise<RegistrySnapshot> {
-    return registryFromResources(await this.discoverResources(), this.ompVersion ?? OMP_SDK_VERSION);
+    const resources = await this.discoverResources();
+    // ExtensionAPI.getCommands excludes builtins and file commands. The RPC
+    // catalog is the authoritative set dispatched by this running mode.
+    return registryFromResources({ ...resources, commands: this.availableCommandsCache }, this.ompVersion ?? OMP_SDK_VERSION);
   }
 
   // ---------------------------------------------------------------- prompting
