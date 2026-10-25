@@ -20,7 +20,7 @@ describe('HistoryImage', () => {
   beforeEach(() => request.mockReset())
 
   it.each(['content', 'details'] as const)('recovers %s image bytes in cursor order and replaces the placeholder with the real image source', async source => {
-    request.mockResolvedValueOnce({ data: 'aGVs', hasMore: true, nextOffset: 4, etag: 'image-hash' }).mockResolvedValueOnce({ data: 'bG8=', hasMore: false, etag: 'image-hash' })
+    request.mockResolvedValueOnce({ mimeType: 'image/png', data: 'aGVs', hasMore: true, nextOffset: 4, totalChars: 8, etag: 'image-hash' }).mockResolvedValueOnce({ mimeType: 'image/png', data: 'bG8=', hasMore: false, nextOffset: 8, totalChars: 8, etag: 'image-hash' })
     render(surface(block(source)))
     fireEvent.click(screen.getByRole('button', { name: 'image.png' }))
     expect(await screen.findByRole('img')).toHaveAttribute('src', 'data:image/png;base64,aGVsbG8=')
@@ -40,7 +40,7 @@ describe('HistoryImage', () => {
 
   it('never reuses downloaded bytes for a different image reference and ignores an aborted old download', async () => {
     const previous = Promise.withResolvers<{ data: string; hasMore: boolean }>()
-    request.mockReturnValueOnce(previous.promise).mockResolvedValueOnce({ data: 'bmV3', hasMore: false })
+    request.mockReturnValueOnce(previous.promise).mockResolvedValueOnce({ mimeType: 'image/png', data: 'bmV3', hasMore: false, nextOffset: 4, totalChars: 4, etag: 'current' })
     const view = render(surface(block('content', 'previous')))
     fireEvent.click(screen.getByRole('button', { name: 'image.png' }))
     view.rerender(surface(block('details', 'current')))
@@ -48,6 +48,25 @@ describe('HistoryImage', () => {
     expect(screen.queryByRole('img')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'image.png' }))
     expect(await screen.findByRole('img')).toHaveAttribute('src', 'data:image/png;base64,bmV3')
+  })
+
+  it('clears a loaded image when the same entry changes its reference etag', async () => {
+    request.mockResolvedValueOnce({ mimeType: 'image/png', data: 'b2xk', hasMore: false, nextOffset: 4, totalChars: 4, etag: 'old' })
+    const old = { ...block('content'), attachment: { entryId: 'image-entry', blockIndex: 1, source: 'content', etag: 'old' } } as ImageContent
+    const view = render(surface(old))
+    fireEvent.click(screen.getByRole('button', { name: 'image.png' }))
+    expect(await screen.findByRole('img')).toBeInTheDocument()
+    view.rerender(surface({ ...old, attachment: { entryId: 'image-entry', blockIndex: 1, source: 'content', etag: 'new' } } as ImageContent))
+    expect(screen.queryByRole('img')).not.toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('Image reference or server changed')
+  })
+
+  it('rejects a truncated final page instead of displaying partial bytes', async () => {
+    request.mockResolvedValueOnce({ mimeType: 'image/png', data: 'b2xk', hasMore: false, nextOffset: 4, totalChars: 8, etag: 'old' })
+    render(surface(block('content')))
+    fireEvent.click(screen.getByRole('button', { name: 'image.png' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Invalid image chunk')
+    expect(screen.queryByRole('img')).not.toBeInTheDocument()
   })
 
   it('reports an unprojected blob reference rather than rendering the hash as base64', () => {

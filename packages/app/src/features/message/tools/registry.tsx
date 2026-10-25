@@ -271,18 +271,18 @@ export function defaultExtractData(execution: PiToolExecution): ExtractedToolDat
     }
     if (!value || typeof value !== 'object') return
     const image = value as Record<string, unknown>
-    if (typeof image.mimeType === 'string' && typeof image.data === 'string') {
+    if (typeof image.mimeType === 'string' && image.mimeType.startsWith('image/') && typeof image.data === 'string') {
       const block = { type: 'image' as const, data: image.data, mimeType: image.mimeType, ...('attachment' in image ? { attachment: image.attachment } : {}) }
       detailImages.push({ url: image.data.startsWith('blob:sha256:') ? '' : `data:${image.mimeType};base64,${image.data}`, mimeType: image.mimeType, block })
       return
     }
-    if (typeof image.mimeType === 'string' && typeof image.url === 'string') {
+    if (typeof image.mimeType === 'string' && image.mimeType.startsWith('image/') && typeof image.url === 'string') {
       detailImages.push({ url: image.url, mimeType: image.mimeType, requiresAuth: image.requiresAuth === true })
       return
     }
     Object.values(image).forEach(collectImages)
   }
-  collectImages(metadata)
+  collectImages(toolResult?.details)
   if (detailImages.length) result.images = [...(result.images ?? []), ...detailImages]
 
   // Output language from filePath

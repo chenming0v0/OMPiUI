@@ -204,6 +204,14 @@ describe('process content split', () => {
     }
   }
 
+  it('keeps an image-only assistant answer in the final content surface', () => {
+    const item = createCompletedAssistantItem([{ type: 'image', data: `blob:sha256:${'a'.repeat(64)}`, mimeType: 'image/png' }])
+    expect(assistantHasProcessContent(item)).toBe(false)
+    expect(assistantHasFinalContent(item)).toBe(true)
+    render(<MessageRenderer item={item} processContentScope="final" />)
+    expect(screen.getByRole('alert')).toHaveTextContent('Image data is not available')
+  })
+
   it('keeps streaming assistant as process-only until completed', () => {
     const item = createCompletedAssistantItem([{ type: 'text', text: 'partial' }])
 

@@ -50,6 +50,7 @@ OMP 原生模型与凭据配置来自 `~/.omp/agent/models.yml`、`config.yml`�
 - 对话框声明 `role="dialog"`，避免全局发送／停止快捷键在捕获阶段抢走局部 Enter／Escape。Prompt-style editor 的 Enter 提交、Shift+Enter 换行；普通 editor 使用 Ctrl/Cmd+Enter，Shift／Alt 修饰的 Enter 不提交。按钮保留自身的键盘动作，IME 组合事件、`isComposing` 和 229 键码都受到保护，空 prefill 与空提交值保留。
 - #368 的隔离 OMP 18.12.6 验收使用 `ui-test-metadata` 扩展命令：原生返回 `Review`／`Two`，input、prompt editor 和普通 editor 返回真实空字符串，取消／超时返回 `undefined`，最终 pending 已结算。浏览器辅助工具曾发生跨目标路由，既有界面观察不作为关闭证据；需在独立直连 CDP 或串行集成环境重测两处界面的描述、按键及 IME 保护。OS 输入法候选窗的人工交互不由 CDP 验收覆盖。
 - 导航／Undo／Redo 调用官方同文件 `navigateTree`，Fork 分支创建新文件；取消／中断不恢复错误目标，也不清理源草稿。总结取消使用原生 `abortBranchSummary`，节点标签使用 `SessionManager.appendLabelChange` 写入并 flush 官方日志。成功原生回执的身份与图片草稿不依赖后续投影读回；读回失败返回明确部分刷新错误，不能把已提交变更误报为可重试的操作失败。
+- 历史图片（用户／助手、工具 content／嵌套 details、子会话预览）保留所属原生 sessionId／entryId；blob 从官方当前 agent／profile 的共享 `blobs/<sha256>` 读取，自定义 session-dir 不改变 blob 归属。预览只读，不扫描猜测目录或改写历史。大图点击后按 256 KiB base64 页恢复，64 MiB 编码预览预算；校验分页长度、MIME、etag 和磁盘版本，引用／服务器换代、缺失或读取中截断会清除旧图并显示错误，可取消下载。
 
 官方设置页编辑全局覆盖，项目覆盖仍按官方优先级生效；保存保留未编辑键、准确备份与独立原生落盘读回。包管理的安装／更新等待官方操作结果，资源检查只读，不执行扩展或 MCP。
 

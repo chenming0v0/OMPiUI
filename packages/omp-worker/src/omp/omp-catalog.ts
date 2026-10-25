@@ -832,9 +832,9 @@ export class OmpCatalog implements CatalogProvider {
       if (!entry) throw notFoundError("entry not found");
       return imageAttachmentFromEntry(
         entry,
-        Number(params.blockIndex),
+        params.blockIndex as number,
         typeof params.offset === "number" ? params.offset : 0,
-        params.source === "details" ? "details" : "content",
+        params.source === undefined ? "content" : params.source as "content" | "details",
       );
     }
     if (query === "entries.get") {
@@ -1336,9 +1336,10 @@ export async function readChildSessionPreviewPage(
   sync?: SubagentSyncRequest,
 ): Promise<JsonObject> {
   const filePath = await childSessionPath(sessionFile);
+  const sessionId = await sessionFileId(filePath);
   return sync
-    ? readSubagentSync(filePath, fromByte, sync)
-    : readSubagentPreview(filePath, fromByte);
+    ? readSubagentSync(filePath, fromByte, sync, sessionId)
+    : readSubagentPreview(filePath, fromByte, sessionId);
 }
 
 export async function readChildSessionMessages(

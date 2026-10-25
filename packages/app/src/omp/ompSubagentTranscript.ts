@@ -1,4 +1,5 @@
 import type { JsonObject } from '@ompiui/protocol'
+import type { ImageContent } from './vendor/pi-ai'
 
 export type OmpSubagentTranscriptItem = {
   kind: 'user' | 'assistant' | 'tool' | 'agent'
@@ -15,6 +16,7 @@ export type OmpSubagentTranscriptItem = {
   /** 增量预览在刷新后可能从短尾部开始；终态再用原生历史补齐。 */
   textOffset?: number
   thinking?: string
+  images?: ImageContent[]
 }
 
 const MAX_TRANSCRIPT_ITEMS = 200
@@ -48,6 +50,13 @@ function textFromMessage(message: JsonObject): string {
     })
     .filter(Boolean)
     .join('\n')
+}
+function imagesFromMessage(message: JsonObject): ImageContent[] {
+  return Array.isArray(message.content) ? message.content.flatMap(raw => {
+    const block = record(raw)
+    return block?.type === 'image' && typeof block.data === 'string' && typeof block.mimeType === 'string'
+      ? [block as unknown as ImageContent] : []
+  }) : []
 }
 
 function newMessageId(): string {
@@ -91,6 +100,7 @@ function updateTool(
           toolStatus: status,
           isError: status === 'error',
           streaming: tool.streaming ?? previous.streaming,
+          images: tool.images ?? previous.images,
         }
       : item,
   )
@@ -108,6 +118,7 @@ function assistantSnapshot(
     type === 'message_start' ? items.map(item => (item.streaming ? { ...item, streaming: false } : item)) : items
   const streaming = type !== 'message_end'
   const text = textFromMessage(message)
+  const images = imagesFromMessage(message)
   const thinking = Array.isArray(message.content)
     ? message.content
         .map(record)
@@ -119,10 +130,10 @@ function assistantSnapshot(
   const textIndex = next.findIndex(item => item.kind === 'assistant' && item.messageId === messageId)
   if (textIndex >= 0) {
     next = next.map((item, index) =>
-      index === textIndex ? { ...item, text: text || item.text, thinking, streaming } : item,
+      index === textIndex ? { ...item, text: text || item.text, images, thinking, streaming } : item,
     )
-  } else if (text) {
-    next = append(next, { kind: 'assistant', text, thinking, messageId, streaming })
+  } else if (text || images.length) {
+    next = append(next, { kind: 'assistant', text, images, thinking, messageId, streaming })
   }
   if (Array.isArray(message.content)) {
     for (const raw of message.content) {
@@ -199,8 +210,9 @@ export function appendTranscriptEvent(
     if (message.role === 'assistant') return assistantSnapshot(items, message, type, string(event.messageId))
     if (message.role !== 'user' || type !== 'message_end') return items
     const text = textFromMessage(message)
-    if (!text || (items.at(-1)?.kind === 'user' && items.at(-1)?.text === text)) return items
-    return append(items, { kind: 'user', text, messageId: string(message.id) ?? newMessageId() })
+    const images = imagesFromMessage(message)
+    if ((!text && !images.length) || (!images.length && items.at(-1)?.kind === 'user' && items.at(-1)?.text === text)) return items
+    return append(items, { kind: 'user', text, images, messageId: string(message.id) ?? newMessageId() })
   }
   if (type === 'tool_execution_start' || type === 'tool_execution_end') {
     const last = items.at(-1)
@@ -226,11 +238,13 @@ export function transcriptItemsFromMessages(messages: unknown[]): OmpSubagentTra
       items = assistantSnapshot(items, message, 'message_end', string(message.id) ?? `disk-message-${index}`)
     } else if (message.role === 'user') {
       const text = textFromMessage(message)
-      if (text) items = append(items, { kind: 'user', text, messageId: `disk-message-${index}` })
+      const images = imagesFromMessage(message)
+      if (text || images.length) items = append(items, { kind: 'user', text, images, messageId: `disk-message-${index}` })
     } else if (message.role === 'toolResult') {
       const last = items.at(-1)
       items = updateTool(items, {
         messageId: last?.kind !== 'user' ? (last?.messageId ?? `disk-message-${index}`) : `disk-message-${index}`,
+        images: imagesFromMessage(message),
         toolCallId: string(message.toolCallId),
         toolName: string(message.toolName) ?? 'tool',
         toolStatus: message.isError === true ? 'error' : 'completed',

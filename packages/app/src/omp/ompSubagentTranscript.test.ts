@@ -197,6 +197,17 @@ describe('subagent message groups', () => {
     expect(items[4].messageId).not.toBe(items[1].messageId)
   })
 
+  it('retains image-only user, assistant and tool result history in their own rows', () => {
+    const image = { type: 'image', data: '', mimeType: 'image/png', attachment: { sessionId: 'child-session', entryId: 'child-image', blockIndex: 0, etag: 'image-bytes' } }
+    const items = transcriptItemsFromMessages([
+      { role: 'user', content: [image] },
+      { role: 'assistant', content: [image] },
+      { role: 'toolResult', toolCallId: 'image-tool', toolName: 'read', content: [image] },
+    ])
+    expect(items.map(item => item.kind)).toEqual(['user', 'assistant', 'tool'])
+    expect(items.map(item => item.images)).toEqual([[image], [image], [image]])
+  })
+
   it('keeps long final replies intact in both live events and disk history', () => {
     const text = `${'Complete findings. '.repeat(400)}FINAL_CONCLUSION`
     const live = feed([{ type: 'message_end', message: { role: 'assistant', content: text } }])

@@ -148,7 +148,7 @@ export type PiAssistantMessageItem = {
   timestamp: number
   rawEntry: SessionEntry
   message: AssistantMessage
-  blocks: (TextContent | ThinkingContent | ToolCall)[]
+  blocks: (TextContent | ThinkingContent | ImageContent | ToolCall)[]
   /** Tool results paired by toolCallId; empty while a call has no result yet */
   toolResults: Record<string, ToolResultMessage>
   /** Execution evidence keyed by call id; message timestamps are never tool starts. */

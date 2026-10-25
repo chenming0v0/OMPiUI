@@ -4,7 +4,7 @@ import { splitUtf8Text, type JsonObject } from "@ompiui/protocol"
 import { WorkerIpcSender } from "../worker-ipc-sender.js"
 import type { WorkerMessage } from "../ipc.js"
 import { EventSnapshotBuffer } from "./event-snapshot-buffer.js"
-import { imageAttachmentFromEntry } from "../runtime/pagination.js"
+import { imageAttachmentFromEntry, projectEntryAttachments, sessionHeadFromParts } from "../runtime/pagination.js"
 
 test("UTF-8 chunks stay within their byte budget and round-trip mixed text", () => {
   const text = "正文😀\\\n".repeat(20000)
@@ -52,4 +52,18 @@ test("attachments are delivered in lossless bounded base64 pages", () => {
   }
   assert.equal(restored, data)
   assert.throws(() => imageAttachmentFromEntry(entry, 0, 1), { code: "INVALID_REQUEST" })
+})
+
+test("projected images bind session, epoch and bytes without mutating native history", () => {
+  const image = { type: "image", mimeType: "image/png", data: `blob:sha256:${"a".repeat(64)}` }
+  const entry: JsonObject = { id: "native-entry", message: { content: [image], details: [{ nested: [image] }] } }
+  const head = sessionHeadFromParts({ sdkVersion: "18.12.6", revision: 0, header: { id: "native-session" }, leafId: "native-entry", entryCount: 1 })
+  const projected = projectEntryAttachments(entry, head)
+  const message = projected.message as JsonObject
+  const content = message.content as JsonObject[]
+  assert.deepEqual(content[0]?.attachment, { sessionId: "native-session", entryId: "native-entry", blockIndex: 0, source: "content", epoch: head.epoch, etag: `"${"a".repeat(64)}"` })
+  assert.equal(content[0]?.data, "")
+  assert.equal(image.data, `blob:sha256:${"a".repeat(64)}`)
+  assert.match(JSON.stringify(message.details), /"source":"details"/)
+  assert.throws(() => imageAttachmentFromEntry(entry, 0, 0, "invalid" as "content"), { code: "INVALID_REQUEST" })
 })

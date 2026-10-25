@@ -18,6 +18,7 @@ import {
   SUBAGENT_PREVIEW_BYTES,
   type ProjectedPreviewMessage,
 } from "./subagent-preview.js";
+import { projectEntryAttachments, sessionHeadFromParts } from '../runtime/pagination.js';
 
 const BLOCK_BYTES = 256 * 1024;
 const CACHE_BYTES = 32 * 1024 * 1024;
@@ -58,12 +59,14 @@ async function readBlock(
   projection: string,
   thinking: boolean,
   messageBytes: number,
+  sessionId?: string,
 ): Promise<{ block: SubagentDataBlock; bytes: number; incomplete: boolean }> {
   const messages: JsonObject[] = [];
   let nextByte = fromByte;
   let bytes = 2;
   let previewTruncated = false;
   let incomplete = false;
+  const head = sessionHeadFromParts({ sdkVersion: '', revision: 0, header: { id: sessionId }, leafId: null, entryCount: 0 });
   for await (const line of jsonlEntries(file, fromByte, size)) {
     // 只有换行封闭的记录才稳定，正在写入的尾行留给下一轮读取。
     if (!line.newline) {
@@ -77,7 +80,8 @@ async function readBlock(
     ) {
       let projected: ProjectedPreviewMessage;
       try {
-        projected = projectPreviewMessage(line.entry.message, thinking, {
+        const imageMessage = projectEntryAttachments(line.entry, head).message;
+        projected = projectPreviewMessage(isJsonObject(imageMessage) ? imageMessage : line.entry.message, thinking, {
           fromByte: nextByte,
           nextByte: nextByte + line.bytes,
         });
@@ -116,13 +120,14 @@ export async function readSubagentSync(
   filePath: string,
   fromByte: number,
   sync: SubagentSyncRequest,
+  sessionId?: string,
 ): Promise<JsonObject> {
   if (!Number.isSafeInteger(fromByte) || fromByte < 0)
     throw Object.assign(new Error("invalid transcript cursor"), {
       code: "INVALID_REQUEST",
     });
   const settings = getPreviewSettings();
-  const projection = `subagent-preview-v2:thinking-${settings.subagentThinking ? "on" : "off"}`;
+  const projection = `subagent-preview-v3:images:${sessionId ?? ''}:thinking-${settings.subagentThinking ? "on" : "off"}`;
   const file = await open(filePath, "r");
   try {
     const stat = await file.stat();
@@ -160,6 +165,7 @@ export async function readSubagentSync(
             projection,
             settings.subagentThinking,
             messageBytes,
+            sessionId,
           );
         } catch (error) {
           if (!blocks.length || !(error instanceof Error) ||

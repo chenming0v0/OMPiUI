@@ -174,3 +174,13 @@ test("preview text clipping preserves the newest thinking tail and never mutates
   assert.ok(Buffer.byteLength(JSON.stringify(projected.message)) <= 256 * 1024);
   assert.deepEqual(message, original);
 });
+
+test("preview retains content and nested details images beside ordinary text", () => {
+  const image: JsonObject = { type: "image", mimeType: "image/png", data: "", attachment: { sessionId: "child", entryId: "result", blockIndex: 0, source: "details", etag: "native-image" } }
+  const source: JsonObject = { role: "toolResult", content: "Native outcome", details: [{ nested: [image] }] }
+  const original = structuredClone(source)
+  const projected = projectPreviewMessage(source, false)
+  assert.deepEqual(projected.message.content, [{ type: "text", text: "Native outcome" }, image])
+  assert.deepEqual(source, original)
+  assert.deepEqual(projectPreviewMessage({ role: "assistant", content: [image] }, false).message.content, [image])
+})
