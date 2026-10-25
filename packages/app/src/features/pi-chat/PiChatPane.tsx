@@ -643,8 +643,7 @@ export function PiChatPane({
     setHomeModelKey(preferred)
     setHomeVariantForModel(preferred)
     setHomeVariant(preferred ? getModelVariantPref(preferred) : undefined)
-  }
-  if (homeModelKey !== homeVariantForModel) {
+  } else if (homeModelKey !== homeVariantForModel) {
     setHomeVariantForModel(homeModelKey)
     setHomeVariant(homeModelKey ? getModelVariantPref(homeModelKey) : undefined)
   }

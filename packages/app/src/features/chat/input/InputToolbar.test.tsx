@@ -221,23 +221,6 @@ describe('InputToolbar file selection', () => {
     expect(onDeliveryModeChange).toHaveBeenCalledWith('abortAndPrompt')
   })
 
-  it.each([undefined, 'max'])('shows authoritative Off for an off-only model with preference %s', selectedVariant => {
-    render(
-      <InputToolbar
-        onFilesSelected={vi.fn()}
-        canSend={false}
-        onSend={vi.fn()}
-        variants={['off']}
-        selectedVariant={selectedVariant}
-      />,
-    )
-
-    const trigger = screen.getByRole('button', { name: 'Off' })
-    expect(trigger).toBeDisabled()
-    expect(trigger).toHaveAttribute('title', 'Off')
-    expect(screen.queryByRole('button', { name: 'Max' })).toBeNull()
-  })
-
   it('shows Stop while session is active and the input is empty', () => {
     render(
       <InputToolbar

@@ -233,17 +233,19 @@ describe('PiChatPane effort controls', () => {
     saveModelVariantPref('openai:preview-model', 'max')
     const nextServer = serverStore.addServer({ name: 'Other effort server', url: 'http://other-effort.test' })
     const view = render(<PiChatPane paneId="effort-home-server" sessionId={null} />)
-    expect(screen.getByRole('button', { name: 'Max' })).toBeInTheDocument()
-
-    await act(async () => { serverStore.setActiveServer(nextServer.id) })
-    view.rerender(<PiChatPane paneId="effort-home-server" sessionId={null} />)
-    expect(screen.queryByRole('button', { name: 'Max' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
-
-    await act(async () => { serverStore.setActiveServer(LOCAL_SERVER_ID) })
-    expect(screen.getByRole('button', { name: 'Max' })).toBeInTheDocument()
-    view.unmount()
-    serverStore.removeServer(nextServer.id)
+    try {
+      expect(screen.getByRole('button', { name: 'Max' })).toBeInTheDocument()
+      await act(async () => { serverStore.setActiveServer(nextServer.id) })
+      view.rerender(<PiChatPane paneId="effort-home-server" sessionId={null} />)
+      expect(screen.queryByRole('button', { name: 'Max' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+      await act(async () => { serverStore.setActiveServer(LOCAL_SERVER_ID) })
+      expect(screen.getByRole('button', { name: 'Max' })).toBeInTheDocument()
+    } finally {
+      view.unmount()
+      serverStore.setActiveServer(LOCAL_SERVER_ID)
+      serverStore.removeServer(nextServer.id)
+    }
   })
 
   it('does not display an unsupported persisted home effort as the current level', () => {
