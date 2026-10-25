@@ -179,6 +179,8 @@ Windows 安装器固定使用当前 Tauri NSIS 模板，在旧卸载器删除快
 
 经授权的托管 runner 还使用 WebView2 官方支持的 HKCU `Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments`／`UserDataFolder` 精确 `ompiui.exe` 值，以应对快捷方式启动不继承调试环境的情形；只保存／修改／恢复该应用值，不设通配符，finally 恢复原值。依据：[Microsoft WebView2 Environment overrides](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/webview2-idl?view=webview2-1.0.4022.49)。诊断仅记录该 runner 自有安装 GUI 的子进程和物理桌面截图。GUI 仍受阻时可独立完成真实升级与快捷方式字段比较，但只标 `SHORTCUT_ONLY`，job 保持失败，完整项目／原生 GUI 会话验收仍不通过。
 
+原生 GUI 若在 CDP 前退出，工作流不重复等待已不存在的页面；改用 Microsoft 官方签名的 Evergreen WebView2 bootstrapper（官方地址 `https://go.microsoft.com/fwlink/p/?LinkId=2124703`，执行前校验有效 Authenticode／Microsoft Corporation 签名并记录 SHA-256）显式准备运行前提。失败诊断只查询本 run 时间内、EventData 含自有安装 exe 完整路径的 Application crash 事件，并以诊断专用的直接原生 GUI 启动采集 stdout／stderr／退出码；该直接启动不计为快捷方式或 GUI 验收。不调用系统重启，仍保持 `SHORTCUT_ONLY` 与完整验收阻塞之间的区别。
+
 ## 开发与验证
 
 ```bash

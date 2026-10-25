@@ -22,6 +22,38 @@ $report = [ordered]@{
     nativeGuiCwdAccepted = $false; processOwnership = @(); blocker = $null
 }
 $webViewPolicies = @()
+$smokeStarted = Get-Date
+function Install-OfficialWebViewRuntime {
+    $url = 'https://go.microsoft.com/fwlink/p/?LinkId=2124703'
+    $installer = Join-Path $Root 'MicrosoftEdgeWebview2Setup.exe'
+    Invoke-WebRequest $url -OutFile $installer
+    $signature = Get-AuthenticodeSignature -FilePath $installer
+    Record-Step 'official-webview2-installer-provenance' @{ url = $url; sha256 = (Get-FileHash $installer -Algorithm SHA256).Hash; signatureStatus = $signature.Status.ToString(); signer = $signature.SignerCertificate.Subject }
+    if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') { throw 'Official WebView2 bootstrapper must have a valid Microsoft Corporation Authenticode signature.' }
+    $process = Start-Process -FilePath $installer -ArgumentList '/silent /install' -PassThru
+    if (-not $process.WaitForExit(180000)) { throw 'Official WebView2 runtime installation did not complete; no host reboot is permitted.' }
+    Record-Step 'official-webview2-runtime-install' @{ exitCode = $process.ExitCode; arguments = '/silent /install' }
+    if ($process.ExitCode -ne 0) { throw "Official WebView2 runtime installation failed with exit $($process.ExitCode)." }
+    $runtimeKeys = @('HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}', 'HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}')
+    $versions = @($runtimeKeys | ForEach-Object { if (Test-Path $_) { @{ key = $_; version = (Get-ItemProperty $_).pv } } })
+    Record-Step 'official-webview2-installed-version' $versions
+}
+function Capture-OwnedCrashEvents([string]$stage) {
+    # EventLog performs exact owned-path and run-time filtering, not a global
+    # event scan followed by an unrelated-process text heuristic.
+    $events = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Id = @(1000, 1001); StartTime = $smokeStarted; Data = $exe } -ErrorAction SilentlyContinue)
+    Record-Step "$stage-exact-owned-crash-events" @($events | ForEach-Object { @{ id = $_.Id; at = $_.TimeCreated.ToUniversalTime().ToString('o'); provider = $_.ProviderName; message = $_.Message; xml = $_.ToXml() } })
+}
+function Capture-DirectGuiStartupDiagnostic([string]$stage) {
+    # Diagnostic-only native GUI launch with inherited process environment and
+    # stdout/stderr capture. This is never credited as shortcut/GUI acceptance.
+    $process = Start-Process -FilePath $exe -ArgumentList ('"' + $project + '"') -WorkingDirectory $shortcutCwd -PassThru -RedirectStandardOutput (Join-Path $evidence "$stage-direct-gui-stdout.log") -RedirectStandardError (Join-Path $evidence "$stage-direct-gui-stderr.log")
+    $exited = $process.WaitForExit(3000)
+    Record-Step "$stage-diagnostic-only-direct-gui-launch" @{ pid = $process.Id; executable = $exe; exited = $exited; exitCode = $(if ($exited) { $process.ExitCode } else { $null }); acceptance = $false }
+    Capture-OwnedGuiDiagnostics "$stage-direct-gui-diagnostic"
+    Capture-OwnedCrashEvents "$stage-direct-gui-diagnostic"
+    Stop-OwnedGui
+}
 function Set-OwnedWebViewPolicy([string]$option, [string]$value) {
     # Official WebView2 exact-process-name policy override, on this disposable
     # runner only. No wildcard, machine-wide policy, or other-app value.
@@ -66,6 +98,7 @@ function Capture-OwnedGuiDiagnostics([string]$stage) {
         foreach ($child in @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$ownedPid")) { $queue.Enqueue($child.ProcessId) }
     }
     Record-Step "$stage-owned-gui-descendants" $details
+    Capture-OwnedCrashEvents $stage
     try {
         Add-Type -AssemblyName System.Windows.Forms, System.Drawing
         $bounds = [Windows.Forms.Screen]::PrimaryScreen.Bounds
@@ -123,9 +156,20 @@ function Launch-Link([string]$path, [string]$stage) {
     Capture-OwnedGuiDiagnostics $stage
 }
 function Run-WebView([string]$stage) {
+    $owned = @(Get-CimInstance Win32_Process -Filter "Name='ompiui.exe'" | Where-Object { $_.ExecutablePath -eq $exe })
+    @{ pids = @($owned | ForEach-Object { $_.ProcessId }); executable = $exe } | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $Root "$stage-process.json")
+    if ($owned.Count -eq 0) {
+        @{ issue = 336; stage = $stage; status = 'BLOCKED'; blocker = 'Actual shortcut-launched GUI exited before CDP; no repeated CDP timeout.' } | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $evidence "$stage-gui.json")
+        Capture-OwnedGuiDiagnostics "$stage-gui-exited"
+        Capture-DirectGuiStartupDiagnostic $stage
+        return $false
+    }
     & node (Join-Path $PSScriptRoot 'windows-upgrade-webview.mjs') --root $Root --stage $stage --port 9336 --project $project
     $accepted = $LASTEXITCODE -eq 0
-    if (-not $accepted) { Capture-OwnedGuiDiagnostics "$stage-gui-blocked" }
+    if (-not $accepted) {
+        Capture-OwnedGuiDiagnostics "$stage-gui-blocked"
+        Capture-DirectGuiStartupDiagnostic $stage
+    }
     return $accepted
 }
 
@@ -161,6 +205,7 @@ try {
     $runtime = Get-Content (Join-Path $env:OMPI_OMP_RUNTIME_DIR 'runtime.json') -Raw | ConvertFrom-Json
     if ($runtime.version -ne '18.12.6' -or $runtime.bunVersion -ne '1.3.14') { throw 'Smoke requires official OMP 18.12.6 with public sources and Bun 1.3.14.' }
     Record-Step 'runner-environment' @{ userInteractive = [Environment]::UserInteractive; sessionId = (Get-Process -Id $PID).SessionId; os = [Environment]::OSVersion.ToString(); runtime = $runtime; project = $project; shortcutCwd = $shortcutCwd }
+    Install-OfficialWebViewRuntime
     $env:SMOKE_ROOT = $Root
     $providerScript = Join-Path $PSScriptRoot 'windows-upgrade-provider.mjs'
     $provider = Start-Process -FilePath (Get-Command node).Source -ArgumentList ('"' + $providerScript + '"') -PassThru -RedirectStandardOutput (Join-Path $evidence 'provider-stdout.log') -RedirectStandardError (Join-Path $evidence 'provider-stderr.log')

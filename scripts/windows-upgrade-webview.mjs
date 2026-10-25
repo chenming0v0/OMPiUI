@@ -33,7 +33,10 @@ async function eventually(description, action, timeout = 60_000) {
     try {
       const result = await action()
       if (result) return result
-    } catch (error) { lastError = error }
+    } catch (error) {
+      if (error.code === 'OWNED_GUI_EXITED') throw error
+      lastError = error
+    }
     await delay(250)
   }
   throw new Error(`${description} unavailable after ${timeout}ms${lastError ? `: ${lastError.message}` : ''}`)
@@ -42,7 +45,14 @@ async function eventually(description, action, timeout = 60_000) {
 async function connect() {
   const port = Number(options.port)
   assert.ok(Number.isInteger(port) && port > 0 && port < 65536)
+  const ownership = JSON.parse(readFileSync(join(ownedRoot, `${stage}-process.json`), 'utf8').replace(/^\uFEFF/, ''))
+  assert.ok(resolve(ownership.executable).startsWith(join(ownedRoot, 'installed-app') + sep))
+  report.ownedGuiPids = ownership.pids
   const targets = await eventually('Native packaged WebView CDP target', async () => {
+    const alive = ownership.pids.some(pid => {
+      try { process.kill(pid, 0); return true } catch { return false }
+    })
+    if (!alive) throw Object.assign(new Error('Actual shortcut-launched GUI exited before native WebView CDP; stopping without repeating its timeout'), { code: 'OWNED_GUI_EXITED' })
     const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(2_000) })
     if (!response.ok) return null
     const result = await response.json()
@@ -150,7 +160,7 @@ try {
     await snapshot('project-saved')
     report.status = 'ACCEPTED_BASELINE_GUI_PROJECT_SETUP'
   } else {
-    const baseline = JSON.parse(readFileSync(join(output, 'baseline-gui.json'), 'utf8'))
+    const baseline = JSON.parse(readFileSync(join(output, 'baseline-gui.json'), 'utf8').replace(/^\uFEFF/, ''))
     assert.equal(baseline.status, 'ACCEPTED_BASELINE_GUI_PROJECT_SETUP')
     const persisted = await evaluate(`Object.fromEntries(Object.keys(localStorage).filter(key => /director|project/i.test(key)).map(key => [key, localStorage.getItem(key)]))`)
     report.savedProjectAfterUpgrade = persisted
