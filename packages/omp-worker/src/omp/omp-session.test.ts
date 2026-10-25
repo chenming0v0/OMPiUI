@@ -41,8 +41,9 @@ async function sessionFixture(t: TestContext) {
       if (command.type === "goal") return { type: "response", success: true, command: "goal", data: { state: native.goal ?? null } };
       const data = command.type === "get_state" ? structuredClone(native)
         : command.type === "get_entries" ? { entries: structuredClone(entries), leafId: native.leafId === undefined ? entries.at(-1)?.id ?? null : native.leafId }
-          : command.type === "get_available_thinking_levels" ? { levels: ["off", "high"] }
-            : {}
+          : command.type === "get_available_commands" ? { commands: [] }
+            : command.type === "get_available_thinking_levels" ? { levels: ["off", "high"] }
+              : {}
       return { type: "response", success: true, command: command.type, data }
     },
     async requestRuntime(operation: string, args: JsonObject = {}) {

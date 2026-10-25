@@ -21,6 +21,7 @@ import { serverStore } from '../store/serverStore'
 import { notificationStore } from '../store/notificationStore'
 import { commandFeedbackStore } from './commandFeedbackStore'
 import * as transport from './transport/index.js'
+import { OmpExtensionUiBridge } from '../../../omp-worker/src/omp/omp-extension-ui'
 
 // Retain the real controller before sibling scenarios install module spies.
 const readNativeSessionState = controllers.refreshPiSessionState
@@ -680,6 +681,19 @@ describe('session configuration and stop synchronization', () => {
 
 describe('native notices and protocol feedback', () => {
   afterEach(() => { commandFeedbackStore.reset(); notificationStore.clearAll(); vi.restoreAllMocks() })
+
+  it('renders supported native open_url events as informational notifications', () => {
+    notificationStore.clearAll()
+    const internal = piEventStream as unknown as { handleExtensionUiEvent(sessionId: string, event: unknown): void }
+    const bridge = new OmpExtensionUiBridge()
+    bridge.bind('native-link', () => { throw new Error('open_url must not submit a dialog answer') })
+    bridge.onEvent(event => internal.handleExtensionUiEvent('native-link', event))
+    bridge.handleOmpRequest({ method: 'open_url', url: 'https://example.invalid/native-help', instructions: 'Native link instructions' })
+    const notification = notificationStore.getSnapshot().notifications.find(entry => entry.sessionId === 'native-link')
+    expect(notification).toMatchObject({ type: 'info', target: 'extensions' })
+    expect(notification?.body).toContain('https://example.invalid/native-help')
+    expect(commandFeedbackStore.getSnapshot().sessions['native-link']?.[0]).toMatchObject({ status: 'info', source: 'Extension' })
+  })
 
   it('retains native severity, raw text, source and protocol context in the owning session', () => {
     const push = vi.spyOn(notificationStore, 'push').mockImplementation(() => {})

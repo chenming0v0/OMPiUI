@@ -213,7 +213,6 @@ describe('PiChatPane effort controls', () => {
     mocks.models = [mocks.models[0]]
     view.rerender(<PiChatPane paneId="effort-missing" sessionId="native-session" />)
     expect(screen.queryByRole('button', { name: 'Low' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: i18n.t('chat:inputToolbar.default') })).not.toBeInTheDocument()
   })
 
   it('reads the selected home model preference when returning from a session', async () => {

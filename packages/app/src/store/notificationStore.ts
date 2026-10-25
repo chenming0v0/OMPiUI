@@ -72,7 +72,9 @@ function loadNotifications(): NotificationEntry[] {
   try {
     const raw = serverStorage.get(STORAGE_KEY)
     if (!raw) return []
-    return (JSON.parse(raw) as NotificationEntry[]).slice(0, MAX_NOTIFICATIONS)
+    const entries = (JSON.parse(raw) as NotificationEntry[]).slice(0, MAX_NOTIFICATIONS)
+    for (const entry of entries) if ((entry.type as string) === 'link') entry.type = 'info'
+    return entries
   } catch {
     return []
   }

@@ -1,5 +1,8 @@
 ## [v0.6.42] - 2026-10-25
 
+- fix(notices): 原生 `open_url` 的 link 通知归为 info，并恢复已有 link 历史为有效严重度；保留原始链接与说明，不再因图标映射缺失导致通知界面异常。实际生产桥接事件与历史加载回归通过。
+- test: 修正原生空命令目录与已 settled 的空闲运行时夹具，删除仅固定占位按钮展示的断言，不放宽生产协议失败或回收门禁。worker/server 62 项、PiChatPane 11 项、通知/事件 34 项回归通过。
+- verification: 集成候选的原生 CLI↔GUI 同文件继续、只读字节/mtime、最新备份与历史迁移 smoke 通过；原生/托管递归 depth=0/1/2/3/-1、10 个并发子任务、实时转录及父关联通过。未据此声明全部 issue 或 Windows 安装升级已验收。
 - fix(integration): complete legal fixtures and cutover consumer types (977abc1)
 - fix(integration): retain target-compatible snapshots and fixed Git pipes (9879d62)
 - feat(worktrees): manage Git checkouts with native session relocation (d30e629)

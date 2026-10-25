@@ -814,7 +814,7 @@ class PiEventStream {
         // 规则列表）。完整文本进命令反馈日志；同时弹一条瞬时通知。
         // 该通知的内容只展示在右侧扩展面板里，因此点击后应跳转到对应
         // session 并打开扩展面板（target: 'extensions'）。
-        const status = event.notifyType ?? 'info'
+        const status = event.notifyType === 'error' ? 'error' : event.notifyType === 'warning' ? 'warning' : 'info'
         commandFeedbackStore.add({
           sessionId,
           command: '',

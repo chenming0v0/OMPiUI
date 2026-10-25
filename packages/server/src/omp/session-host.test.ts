@@ -493,7 +493,7 @@ test("SessionHost reaps an idle runtime without prewarming", async () => {
   process.env.OMPIUI_DRIVER = "mock"
   let prewarmed = 0
   const worker = {
-    command: async (type: string) => type === "state.get" ? { sessionId: "idle-session" } : {},
+    command: async (type: string) => type === "state.get" ? { sessionId: "idle-session", isIdle: true, isSettled: true, isStreaming: false } : {},
     getSessionId: () => "idle-session",
     getSessionFile: () => "idle-session.jsonl",
     getCwd: () => "/workspace",
