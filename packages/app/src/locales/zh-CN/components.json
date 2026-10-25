@@ -1,4 +1,18 @@
 {
+  "gitStaging": {
+    "manage": "管理 Git 暂存与提交", "manageShort": "提交",
+    "refresh": "刷新 Git", "loading": "正在读取 Git 状态…", "noWorkspace": "没有可用工作区",
+    "staged": "已暂存", "unstaged": "未暂存", "empty": "没有文件",
+    "stageSelected": "暂存选中文件", "unstageSelected": "取消暂存选中文件",
+    "selectStaged": "选择已暂存 {{path}}", "selectUnstaged": "选择未暂存 {{path}}",
+    "stagedSuccess": "已暂存 {{count}} 个选中文件。", "unstagedSuccess": "已取消暂存 {{count}} 个选中文件。",
+    "stageHunk": "暂存第 {{number}} 个区块", "unstageHunk": "取消暂存第 {{number}} 个区块", "hunkSuccess": "已更新选中区块。",
+    "wholeFile": "二进制、截断、新增/删除、重命名或权限变化的文件需按整文件选择。",
+    "message": "提交说明", "review": "预览暂存提交", "confirm": "确认 Git 提交", "commit": "提交已暂存文件", "cancel": "取消提交",
+    "scope": "仅提交以下已暂存文件；未暂存改动保持不变：",
+    "commitSuccess": "已提交 {{sha}}", "cancelled": "已取消提交；index 和 HEAD 未改变。", "noStaged": "没有可提交的暂存改动",
+    "safety": "不自动暂存。确认前请检查每个已暂存文件；正常执行仓库 hooks。"
+  },
   "commandPalette": {
     "placeholder": "输入命令...",
     "noCommandsFound": "未找到命令"

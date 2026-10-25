@@ -10,7 +10,7 @@ import {
   writeFileContent,
 } from "./files.ts"
 import { searchFilesByName, searchWorkspaceText } from "./file-search.ts"
-import { getGitDiff, getGitFileDiff, getGitInfo, getGitStatus } from "./git.ts"
+import { getGitDiff, getGitFileDiff, getGitInfo, getGitStatus, stageGitFiles, unstageGitFiles, changeGitHunk, previewGitCommit, commitGit } from "./git.ts"
 import {
   deleteModelProvider,
   fetchModelProviderModels,
@@ -244,6 +244,11 @@ const HOST_COMMAND_HANDLERS: Record<string, HostCommandHandler> = {
   "git.status": (ctx, params) => getGitStatus(workspace(ctx, params).canonicalRoot, ctx.signal) as Promise<JsonValue>,
   "git.diff": (ctx, params) => getGitDiff(workspace(ctx, params).canonicalRoot, gitMode(params), ctx.signal) as Promise<JsonValue>,
   "git.fileDiff": (ctx, params) => getGitFileDiff(workspace(ctx, params).canonicalRoot, gitMode(params), reqString(params, "path"), ctx.signal) as Promise<JsonValue>,
+  "git.stage": (ctx, params) => stageGitFiles(workspace(ctx, params).canonicalRoot, params.paths as string[]) as Promise<JsonValue>,
+  "git.unstage": (ctx, params) => unstageGitFiles(workspace(ctx, params).canonicalRoot, params.paths as string[]) as Promise<JsonValue>,
+  "git.hunk": (ctx, params) => changeGitHunk(workspace(ctx, params).canonicalRoot, reqString(params, "path"), params.staged === true, params.hunk as number, reqString(params, "expectedPatch")) as Promise<JsonValue>,
+  "git.commitPreview": (ctx, params) => previewGitCommit(workspace(ctx, params).canonicalRoot) as Promise<JsonValue>,
+  "git.commit": (ctx, params) => commitGit(workspace(ctx, params).canonicalRoot, reqString(params, "message"), reqString(params, "fingerprint")) as Promise<JsonValue>,
   "models.providers.get": () => readModelProvidersSnapshot().then(requireJsonValue),
   "models.providers.save": (_ctx, params) => {
     const provider = params.provider

@@ -62,3 +62,11 @@ export type GitFileDiffResponse = GitDiffItem & {
   patch: string;
   truncated: boolean;
 };
+
+export type GitCommitPreview = {
+  fingerprint: string;
+  headOid: string | null;
+  files: string[];
+};
+
+export type GitCommitResponse = { headOid: string; output: string };

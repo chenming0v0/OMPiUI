@@ -29,6 +29,7 @@ import { useBusySessions } from '../store/activeSessionStore'
 import { layoutStore, type PanelPosition } from '../store/layoutStore'
 import { useFullscreenLayer } from '../contexts'
 import { useAutoRefresh } from '../hooks/useAutoRefresh'
+import { GitStagingPanel } from './GitStagingPanel'
 
 // 常量
 const MIN_LIST_HEIGHT = 80
@@ -100,6 +101,7 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
   const [viewMode, setViewMode] = useState<ViewMode>('unified')
   const [listMode, setListMode] = useState<'flat' | 'tree'>('tree')
   const [changeMenuOpen, setChangeMenuOpen] = useState(false)
+  const [gitManagementOpen, setGitManagementOpen] = useState(false)
   const changeMode = useSessionChangeScope(sessionId)
 
   // 选中的文件（显示在预览区）
@@ -446,6 +448,7 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
     setMountedPreviewFiles(new Set())
     setExpandedDirs(new Set())
     setChangeMenuOpen(false)
+    setGitManagementOpen(false)
     for (const controller of Object.values(diffAbortRef.current)) controller?.abort()
     diffAbortRef.current = {}
     resetSplitHeight()
@@ -656,7 +659,7 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
       .then(loaded => {
         if (!loaded) return
         if (controller.signal.aborted || diffRequestIdRef.current[changeMode] !== listRequestId) return
-        const apply = (items: ChangeDiff[]) => items.map(item => item.file === loaded.file ? { ...item, ...loaded } : item)
+        const apply = (items: ChangeDiff[]) => items.map(item => item.file === loaded.file ? { ...item, patch: loaded.patch, binary: loaded.binary } : item)
         if (changeMode === 'git') setGitDiffs(apply)
         else if (changeMode === 'branch') setBranchDiffs(apply)
         else if (changeMode === 'staged') setStagedDiffs(apply)
@@ -728,6 +731,16 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
 
   return (
     <div ref={containerRef} className="flex flex-col h-full">
+      {gitManagementOpen && (
+        <GitStagingPanel
+          directory={directory}
+          onSelectFile={(path, staged) => { setChangeMode(staged ? 'staged' : 'unstaged'); handleSelectFile(path) }}
+          onChanged={() => {
+            setLoadedModes({ git: false, branch: false, staged: false, unstaged: false })
+            void runGitRefresh()
+          }}
+        />
+      )}
       {/* 文件列表区 */}
       <div
         ref={listRef}
@@ -894,6 +907,17 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
                 {t('sessionChanges.split')}
               </button>
             </div>
+
+            <button
+              type="button"
+              aria-expanded={gitManagementOpen}
+              aria-label={t('gitStaging.manage')}
+              title={t('gitStaging.manage')}
+              className="inline-flex h-6 items-center px-2 text-text-400 hover:text-text-100 hover:bg-bg-200/50 rounded-md text-[length:var(--fs-xs)]"
+              onClick={() => setGitManagementOpen(open => !open)}
+            >
+              {t('gitStaging.manageShort')}
+            </button>
 
             {/* Refresh */}
             <button

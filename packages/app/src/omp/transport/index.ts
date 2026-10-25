@@ -16,6 +16,8 @@ import type {
   GitFileDiffResponse,
   GitInfoResponse,
   GitStatusResponse,
+  GitCommitPreview,
+  GitCommitResponse,
   FileCreateRequest,
   FileListResponse,
   FileMoveRequest,
@@ -359,6 +361,26 @@ export function getHostGitFileDiff(
   signal?: AbortSignal,
 ): Promise<GitFileDiffResponse> {
   return postHostCommand('git.fileDiff', { workspacePath, path, mode }, signal)
+}
+
+export function stageHostGitFiles(workspacePath: string, paths: string[]): Promise<{ ok: true }> {
+  return postHostCommand('git.stage', { workspacePath, paths })
+}
+
+export function unstageHostGitFiles(workspacePath: string, paths: string[]): Promise<{ ok: true }> {
+  return postHostCommand('git.unstage', { workspacePath, paths })
+}
+
+export function changeHostGitHunk(workspacePath: string, path: string, staged: boolean, hunk: number, expectedPatch: string): Promise<{ ok: true }> {
+  return postHostCommand('git.hunk', { workspacePath, path, staged, hunk, expectedPatch })
+}
+
+export function previewHostGitCommit(workspacePath: string): Promise<GitCommitPreview> {
+  return postHostCommand('git.commitPreview', { workspacePath })
+}
+
+export function commitHostGit(workspacePath: string, message: string, fingerprint: string): Promise<GitCommitResponse> {
+  return postHostCommand('git.commit', { workspacePath, message, fingerprint })
 }
 
 // Host file commands (files.*), workspace-scoped

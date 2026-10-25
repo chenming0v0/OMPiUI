@@ -1,4 +1,18 @@
 {
+  "gitStaging": {
+    "manage": "Manage Git staging and commit", "manageShort": "Commit",
+    "refresh": "Refresh Git", "loading": "Reading Git status…", "noWorkspace": "No workspace is available",
+    "staged": "Staged", "unstaged": "Unstaged", "empty": "No files",
+    "stageSelected": "Stage selected files", "unstageSelected": "Unstage selected files",
+    "selectStaged": "Select staged {{path}}", "selectUnstaged": "Select unstaged {{path}}",
+    "stagedSuccess": "Staged {{count}} selected file(s).", "unstagedSuccess": "Unstaged {{count}} selected file(s).",
+    "stageHunk": "Stage hunk {{number}}", "unstageHunk": "Unstage hunk {{number}}", "hunkSuccess": "Selected hunk updated.",
+    "wholeFile": "Binary, truncated, new/deleted, renamed or mode-changing files must be selected as a whole file.",
+    "message": "Commit message", "review": "Review staged commit", "confirm": "Confirm Git commit", "commit": "Commit staged files", "cancel": "Cancel commit",
+    "scope": "Only these staged files will be committed. Unstaged changes remain untouched:",
+    "commitSuccess": "Committed {{sha}}", "cancelled": "Commit cancelled; index and HEAD unchanged.", "noStaged": "No staged changes to commit",
+    "safety": "No automatic staging. Review every staged file before confirming. Repository hooks run normally."
+  },
   "commandPalette": {
     "placeholder": "Type a command...",
     "noCommandsFound": "No commands found"
