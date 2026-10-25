@@ -103,6 +103,7 @@
     "moreActions_other": "And {{count}} more actions",
     "taskDone": "Subagent finished",
     "taskActive": "Subagent running",
+    "taskFailed": "Subagent failed",
     "yieldDone_one": "Submitted the final result",
     "yieldDone_other": "Submitted {{count}} results",
     "yieldActive": "Submitting result",
