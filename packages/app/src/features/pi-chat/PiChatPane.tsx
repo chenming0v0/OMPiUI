@@ -54,7 +54,7 @@ import { useSessionActiveEntry } from '../../store/activeSessionStore'
 import type { PiImageInput } from '../../omp/transport/index.js'
 import type { DeliveryMode } from '../../types/ui'
 import { attachmentToImage, imageInputToAttachment } from './attachmentToImage'
-import { appendPendingSends, createPendingSend, reconcilePendingSends, reconcileQueuedPendingSends, withoutQueueEntry, type PendingSend } from './pendingSend'
+import { appendPendingSends, appendPendingQueueEntries, createPendingSend, reconcilePendingSends, reconcileQueuedPendingSends, withoutQueueEntry, type PendingSend } from './pendingSend'
 import { hasStoppableSessionActivity } from './sessionActivity'
 import { SessionStopCoordinator } from './sessionStopCoordinator'
 import { composerDraftKey, getComposerDraft, moveComposerDraft, updateComposerDraft } from '../chat/input/composerDraftStore'
@@ -353,6 +353,11 @@ export function PiChatPane({
   // shows an empty flow — user types and sends to create one.
   const baseItems = useMemo(() => selectPiTimelineItemsCached(sessionId, branch), [sessionId, branch])
   const [pendingSends, setPendingSends] = useState<PendingSend[]>([])
+  const displayedQueues = useMemo(() => {
+    const visible = reconcilePendingSends(pendingSends.filter(send => send.serverGeneration === activeServerGeneration && send.sessionId === sessionId), baseItems)
+    const remaining = reconcileQueuedPendingSends(visible, [...queuedSteering, ...queuedFollowUps])
+    return { steering: appendPendingQueueEntries(queuedSteering, remaining, 'steering'), followUp: appendPendingQueueEntries(queuedFollowUps, remaining, 'followUp') }
+  }, [pendingSends, activeServerGeneration, sessionId, baseItems, queuedSteering, queuedFollowUps])
 
   const handleQueueBackToInput = useCallback(
     async (kind: 'steering' | 'followUp', index: number, entryId: string) => {
@@ -398,6 +403,8 @@ export function PiChatPane({
         selected.images?.map(image => ({ mimeType: image.mimeType })) ?? [],
         baseItems,
         entryId,
+        [...queuedSteering, ...queuedFollowUps],
+        'steering',
       )
       setPendingSends(current => [...withoutQueueEntry(current, activeServerGeneration, sessionId, entryId), pending])
       let accepted = false
@@ -407,7 +414,7 @@ export function PiChatPane({
           return sendQueuedMessage(sessionId, { kind, index, entryId })
         })
         accepted = true
-        setPendingSends(current => current.map(send => send.id === pending.id ? { ...send, phase: 'accepted' } : send))
+        setPendingSends(current => current.map(send => send.id === pending.id && send.phase === 'submitting' ? { ...send, phase: 'accepted' } : send))
         if (paneIdentityRef.current.activeServerGeneration === activeServerGeneration) void Promise.all([refreshPiSessionState(sessionId), refreshPiBranch(sessionId)]).catch(() => undefined)
       } catch (error) {
         uiErrorHandler('send queued message', error)
@@ -1028,7 +1035,10 @@ export function PiChatPane({
         }
         const images = attachments.map(attachmentToImage).filter((image): image is PiImageInput => image !== null)
         const deliverAs = options?.delivery ?? 'followUp'
-        const pending = createPendingSend(targetSessionId, capturedServerGeneration, text, images, baseItems, undefined, [...queuedSteering, ...queuedFollowUps])
+        const queueKind = targetSessionId && isStreaming && deliverAs !== 'abortAndPrompt' && !text.startsWith('/')
+          ? deliverAs === 'steer' ? 'steering' : 'followUp'
+          : undefined
+        const pending = createPendingSend(targetSessionId, capturedServerGeneration, text, images, baseItems, undefined, [...queuedSteering, ...queuedFollowUps], queueKind)
         pendingId = pending.id
         setPendingSends(current => [...current, pending])
 
@@ -1084,7 +1094,7 @@ export function PiChatPane({
         accepted = true
         setPendingSends(current => text.startsWith('/')
           ? current.filter(send => send.id !== pendingId)
-          : current.map(send => send.id === pendingId ? { ...send, phase: 'accepted' } : send))
+          : current.map(send => send.id === pendingId && send.phase === 'submitting' ? { ...send, phase: 'accepted' } : send))
         if (paneIdentityRef.current.activeServerGeneration !== capturedServerGeneration || paneIdentityRef.current.sessionId !== sid) return true
         const currentText = inputBoxRef.current?.getEditorText() ?? localComposerTextRef.current ?? text
         const remainingText = currentText === text ? '' : currentText
@@ -1105,7 +1115,7 @@ export function PiChatPane({
         if (!accepted && pendingId) setPendingSends(current => current.filter(send => send.id !== pendingId))
       }
     },
-    [sessionId, activeServer, activeServerGeneration, currentDirectory, paneId, baseItems, queuedSteering, queuedFollowUps, models, scheduleDelayedRefresh, onOpenSettings, onOpenSettingsTab, onOpenSidebar],
+    [sessionId, activeServer, activeServerGeneration, currentDirectory, paneId, baseItems, queuedSteering, queuedFollowUps, isStreaming, models, scheduleDelayedRefresh, onOpenSettings, onOpenSettingsTab, onOpenSidebar],
   )
 
   const handleSetGoal = useCallback(
@@ -1443,8 +1453,8 @@ export function PiChatPane({
             paneId={paneId}
             sessionId={sessionId}
             draftKey={composerDraftKey(activeServer, sessionId, currentDirectory ?? '', paneId)}
-            queuedSteering={queuedSteering}
-            queuedFollowUps={queuedFollowUps}
+            queuedSteering={displayedQueues.steering}
+            queuedFollowUps={displayedQueues.followUp}
             onQueueBackToInput={queue?.editable === false ? undefined : handleQueueBackToInput}
             onQueueSendNow={queue?.editable === false ? undefined : handleQueueSendNow}
             onQueueClear={queue?.editable === false ? undefined : handleQueueClear}

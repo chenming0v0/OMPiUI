@@ -47,6 +47,8 @@ test("generated bridge promotes a queued message while a native submission is ad
   const followUp = [companion, selected, untouched]
   const session = {
     sessionManager: { getSessionId: () => "session", getSessionFile: () => "session.jsonl" },
+    setSteeringMode: () => {},
+    setFollowUpMode: () => {},
     agent: {
       peekSteeringQueue: () => steering,
       peekFollowUpQueue: () => followUp,
@@ -91,10 +93,10 @@ test("generated bridge promotes a queued message while a native submission is ad
   const response = JSON.parse(notifications[0]!.slice("\u001eompiui-runtime:".length)) as JsonObject
   assert.equal(response.success, true)
   assert.equal(replaced.length, 1)
-  assert.deepEqual([...replaced[0]![0]], [companion, selected, ...steering])
+  assert.deepEqual([...replaced[0]![0]], [...steering, companion, selected])
   assert.deepEqual([...replaced[0]![1]], [untouched])
-  assert.equal(replaced[0]![0][0], companion)
-  assert.equal(replaced[0]![0][1], selected)
+  assert.equal(replaced[0]![0][1], companion)
+  assert.equal(replaced[0]![0][2], selected)
 })
 
 test("process shutdown rejects an operation still waiting for its runtime receipt", async () => {

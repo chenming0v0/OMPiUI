@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { appendPendingSends, createPendingSend, reconcilePendingSends, reconcileQueuedPendingSends, withoutQueueEntry } from './pendingSend'
+import { appendPendingSends, appendPendingQueueEntries, createPendingSend, reconcilePendingSends, reconcileQueuedPendingSends, withoutQueueEntry } from './pendingSend'
 import type { PiTimelineItem } from '../../omp/domain'
 
 const label = (count: number) => `${count} image(s)`
@@ -11,16 +11,33 @@ function native(text: string, timestamp: number, images: object[] = []): PiTimel
 }
 
 describe('pending user message handoff', () => {
-  it('hands an accepted normal send to the native queue without duplicating a Send now preview', () => {
-    const queued = { entryId: 'new-queue-entry', text: 'follow up' }
-    const regular = { ...createPendingSend('session', 1, queued.text, [], []), phase: 'accepted' as const }
-    const promoted = { ...createPendingSend('session', 1, queued.text, [], [], queued.entryId), phase: 'accepted' as const }
-    const handed = reconcileQueuedPendingSends([regular, promoted], [queued])
-    expect(handed).toEqual([{ ...regular, phase: 'queued', queueEntryId: queued.entryId }, promoted])
-    expect(appendPendingSends([], handed, 'session', label).map(item => item.entryId)).toEqual([`submitted:local:${promoted.id}`])
-    const older = { ...createPendingSend('session', 1, queued.text, [], [], undefined, [queued]), phase: 'accepted' as const }
-    expect(reconcileQueuedPendingSends([older], [queued])).toEqual([older])
-    expect(reconcileQueuedPendingSends([{ ...regular, phase: 'submitting' }], [queued])).toMatchObject([{ phase: 'submitting' }])
+  it('keeps two busy submissions out of history across pre-ACK queue arrival and consumption', () => {
+    const first = createPendingSend('session', 1, 'first queued', [], [], undefined, [], 'followUp')
+    const second = createPendingSend('session', 1, 'second queued', [], [], undefined, [], 'followUp')
+    let pending = [first, second]
+    expect(appendPendingSends([], pending, 'session', label)).toEqual([])
+    expect(appendPendingQueueEntries([], pending, 'followUp').map(entry => [entry.text, entry.pending])).toEqual([['first queued', true], ['second queued', true]])
+
+    const queue = [{ entryId: 'native-first', text: first.text }, { entryId: 'native-second', text: second.text }]
+    pending = [...reconcileQueuedPendingSends(pending, queue)]
+    expect(pending.map(send => send.queueEntryId)).toEqual(['native-first', 'native-second'])
+    expect(appendPendingQueueEntries(queue, pending, 'followUp')).toBe(queue)
+    expect(appendPendingSends([], pending, 'session', label)).toEqual([])
+
+    pending = [...reconcileQueuedPendingSends(pending, queue.slice(1))]
+    const history = [native(first.text, 100)]
+    expect(appendPendingSends(history, pending, 'session', label)).toBe(history)
+    expect(appendPendingQueueEntries(queue.slice(1), pending, 'followUp').map(entry => entry.text)).toEqual([second.text])
+    expect(reconcileQueuedPendingSends(pending, [])).toEqual([])
+  })
+
+  it('hands a busy send directly to history if the foreground ended before native dispatch', () => {
+    const pending = createPendingSend('session', 1, 'ready now', [], [], undefined, [], 'followUp')
+    const history = [native(pending.text, 101)]
+    const remaining = reconcilePendingSends([pending], history)
+    expect(remaining).toEqual([])
+    expect(appendPendingQueueEntries([], remaining, 'followUp')).toEqual([])
+    expect(appendPendingSends(history, remaining, 'session', label)).toBe(history)
   })
 
   it('binds a queued regular send to its entryId so deleting the entry clears it', () => {
@@ -38,15 +55,15 @@ describe('pending user message handoff', () => {
     expect(reconcileQueuedPendingSends(bound, [])).toEqual([])
   })
 
-  it('replaces a queued regular send on Send now without duplicating the preview', () => {
+  it('keeps Send now in the native queue until history takes ownership', () => {
     const queued = { entryId: 'q2', text: 'now please' }
-    const regular = { ...createPendingSend('session', 1, queued.text, [], []), phase: 'accepted' as const }
-    const bound = reconcileQueuedPendingSends([regular], [queued])
-    const promoted = createPendingSend('session', 1, queued.text, [], [], queued.entryId)
-    const next = [...withoutQueueEntry(bound, 1, 'session', queued.entryId), promoted]
-    expect(next).toEqual([promoted])
-    const visible = reconcileQueuedPendingSends(next, [])
-    expect(appendPendingSends([], visible, 'session', label).map(item => item.entryId)).toEqual([`submitted:local:${promoted.id}`])
+    const promoted = createPendingSend('session', 1, queued.text, [], [], queued.entryId, [queued], 'steering')
+    const before = reconcileQueuedPendingSends([promoted], [queued])
+    expect(appendPendingSends([], before, 'session', label)).toEqual([])
+    expect(appendPendingQueueEntries([queued], before, 'steering')).toEqual([queued])
+    expect(appendPendingSends([], [promoted], 'session', label)).toEqual([])
+    const rows = [native(queued.text, 102)]
+    expect(appendPendingSends(rows, reconcilePendingSends([promoted], rows), 'session', label)).toBe(rows)
   })
 
   it('renders before session creation and keeps a stable timestamp without changing native history', () => {

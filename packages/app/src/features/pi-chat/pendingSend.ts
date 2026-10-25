@@ -1,4 +1,5 @@
 import type { PiTimelineItem, PiUserMessageItem } from '../../omp/domain/index.js'
+import type { ComposerQueueEntry } from '../chat/input/QueuedUserMessageQueue'
 
 export interface PendingSendImage {
   mimeType?: string
@@ -17,6 +18,7 @@ export interface PendingSend {
   baselineTimestamps: ReadonlySet<number>
   baselineQueueIds: ReadonlySet<string>
   queueEntryId?: string
+  queueKind?: 'steering' | 'followUp'
 }
 
 /** Display-only state. Never write a synthetic entry or timestamp to history. */
@@ -28,10 +30,11 @@ export function createPendingSend(
   items: readonly PiTimelineItem[],
   queueEntryId?: string,
   queueEntries: readonly { entryId: string }[] = [],
+  queueKind?: PendingSend['queueKind'],
 ): PendingSend {
   return {
     id: crypto.randomUUID(), timestamp: Date.now(), sessionId, serverGeneration, text, images,
-    phase: 'submitting', queueEntryId,
+    phase: 'submitting', queueEntryId, queueKind,
     baselineTimestamps: new Set(items.filter(item => item.kind === 'user_message').map(item => item.timestamp)),
     baselineQueueIds: new Set(queueEntries.map(entry => entry.entryId)),
   }
@@ -79,7 +82,11 @@ export function reconcileQueuedPendingSends(
   let changed = false
   const next = pending.flatMap(send => {
     if (send.phase === 'queued') return live.has(send.queueEntryId ?? '') ? [send] : (changed = true, [])
-    if (send.phase !== 'accepted' || send.queueEntryId) return [send]
+    if (send.queueEntryId) {
+      if (!live.has(send.queueEntryId)) return [send]
+      changed = true
+      return [{ ...send, phase: 'queued' as const }]
+    }
     const queued = entries.find(entry => !claimed.has(entry.entryId) &&
       !send.baselineQueueIds.has(entry.entryId) && entry.text === send.text &&
       (entry.images?.length ?? 0) === send.images.length)
@@ -100,7 +107,7 @@ type VisiblePendingSend = PendingSend & { phase: 'submitting' | 'accepted' }
 
 export function appendPendingSends(items: PiTimelineItem[], pending: readonly PendingSend[], sessionId: string | null, imageLabel: (count: number) => string): PiTimelineItem[] {
   // 已排队的普通发送由队列 UI 展示，不在时间线重复出现。
-  const visible = pending.filter((send): send is VisiblePendingSend => send.sessionId === sessionId && send.phase !== 'queued')
+  const visible = pending.filter((send): send is VisiblePendingSend => send.sessionId === sessionId && send.phase !== 'queued' && !send.queueKind)
   const appended = reconcilePendingSends(visible, items)
     .map(send => {
       const timestamp = send.timestamp
@@ -115,4 +122,10 @@ export function appendPendingSends(items: PiTimelineItem[], pending: readonly Pe
       } as PiUserMessageItem
     })
   return appended.length > 0 ? [...items, ...appended] : items
+}
+
+/** Keep busy submissions in the queue rail from their first render through native admission. */
+export function appendPendingQueueEntries(entries: readonly ComposerQueueEntry[], pending: readonly PendingSend[], kind: 'steering' | 'followUp'): readonly ComposerQueueEntry[] {
+  const local = reconcileQueuedPendingSends(pending, entries).filter(send => send.queueKind === kind && send.phase !== 'queued')
+  return local.length === 0 ? entries : [...entries, ...local.map(send => ({ entryId: `submitted:local:${send.id}`, text: send.text, images: send.images, pending: true }))]
 }

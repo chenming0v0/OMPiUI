@@ -9,6 +9,8 @@ export interface ComposerQueueEntry {
   entryId: string
   text: string
   images?: readonly { mimeType?: string; dataOmitted?: boolean; byteLength?: number }[]
+  /** Local preview has not yet acquired a native queue identity. */
+  pending?: boolean
 }
 
 export interface ComposerQueueProps {
@@ -78,7 +80,7 @@ export const QueuedUserMessageQueue = memo(function QueuedUserMessageQueue({
   const submitAction = (action: ComposerQueueProps['onQueueSendNow'], index: number) => {
     if (!action || submittingRef.current) return
     const selected = items[index]
-    if (!selected) return
+    if (!selected || selected.pending) return
     submittingRef.current = true
     setIsSubmitting(true)
     void Promise.resolve().then(() => action(queueKind, index, selected.entryId)).catch(error => {
@@ -96,8 +98,8 @@ export const QueuedUserMessageQueue = memo(function QueuedUserMessageQueue({
     >
       <div className="sr-only" role="status">{label}</div>
       <div>
-        {items.map(({ text, entryId, images }, index) => (
-          <div key={entryId} data-queue-entry-id={entryId} className="group/msg flex items-center gap-2 px-3 py-1.5 min-h-10 border-b border-border-200/60">
+        {items.map(({ text, entryId, images, pending }, index) => (
+          <div key={entryId} data-queue-entry-id={entryId} aria-busy={pending || undefined} className="group/msg flex items-center gap-2 px-3 py-1.5 min-h-10 border-b border-border-200/60">
             <span className="shrink-0 text-text-400" aria-hidden="true">
               {kind === 'current' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
             </span>
@@ -110,7 +112,7 @@ export const QueuedUserMessageQueue = memo(function QueuedUserMessageQueue({
                 {images.length}
               </span>
             )}
-            {(onBackToInput || onSendNow || onClear || onOpenInSideChat) && (
+            {!pending && (onBackToInput || onSendNow || onClear || onOpenInSideChat) && (
               <div className={`relative shrink-0 ${actionBarClass}`}>
                 <CopyButton text={text} position="static" />
                 {onSendNow && (

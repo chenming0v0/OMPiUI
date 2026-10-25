@@ -4,12 +4,11 @@ import { resolveOmpCommand } from "./omp-command.js"
 /**
  * OMP 版本探测与最低版本门禁。
  *
- * OMPiUI 的 RPC 面依赖 18.2.11 才有的命令（get_entries / get_tree /
- * get_available_thinking_levels）。更老的 omp 对未知命令返回不带 id 的
- * error response，请求方只能干等到超时（打开会话卡 ~150s）——所以拉起
- * 会话前先探测 `omp --version`，低于下限立刻报错让用户升级（issue #5）。
+ * OMPiUI requires the native client-owned continuation gate: Stop must retain
+ * steering/follow-up queues without starting another turn. Earlier runtimes
+ * resume stranded steering from abort() cleanup, even after a user interrupt.
  */
-export const MIN_OMP_VERSION = "18.2.11"
+export const MIN_OMP_VERSION = "18.12.6"
 
 /** 从 `omp --version` 输出里提取 semver（容忍 "omp 18.4.4 (…)" 等前缀/尾注） */
 export function parseOmpVersion(output: string): string | null {

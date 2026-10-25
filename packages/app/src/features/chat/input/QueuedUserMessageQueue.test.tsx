@@ -7,6 +7,15 @@ vi.mock('../../../hooks/useInputCapabilities', () => ({
 }))
 
 describe('queued user message send-now action', () => {
+  it('does not allow mutations before a pending preview acquires native identity', () => {
+    const pending = { entryId: 'submitted:local:preview', text: 'waiting for admission', pending: true }
+    const onSendNow = vi.fn()
+    const view = render(<QueuedUserMessageQueue kind="next" items={[pending]} onSendNow={onSendNow} />)
+    expect(screen.getByText(pending.text)).toBeVisible()
+    expect(screen.queryByRole('button', { name: /立即发送|send now/i })).toBeNull()
+    view.rerender(<QueuedUserMessageQueue kind="next" items={[{ ...pending, entryId: 'native-entry', pending: false }]} onSendNow={onSendNow} />)
+    expect(screen.getByRole('button', { name: /立即发送|send now/i })).toBeEnabled()
+  })
   it('submits the selected index once and blocks mutations until acceptance', async () => {
     const { promise: accepting, resolve: finish } = Promise.withResolvers<void>()
     const onSendNow = vi.fn(() => accepting)

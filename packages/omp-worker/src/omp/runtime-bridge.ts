@@ -5,7 +5,7 @@ import type { OmpRpcClient, OmpRpcFrame } from "./rpc-client.js"
 import { nativeExtensionResourcesSource } from './resource-registry.js'
 import { NATIVE_PROMPT_ADMISSION_IMPORT, NATIVE_PROMPT_ADMISSION_SOURCE } from './native-prompt-admission.js'
 
-export type RuntimeBridgeOperation = "capabilities" | "identity" | "queue" | "clearQueue" | "removeQueuedMessage" | "sendQueuedMessage" | "submitUserMessage" | "navigateTree" | "abortBranchSummary" | "fork" | "branch" | "reload" | "setLabel" | "setScopedModels" | "cycleModel" | "resources" | "tree" | "asyncJobs" | "goal"
+export type RuntimeBridgeOperation = "capabilities" | "identity" | "queue" | "clearQueue" | "removeQueuedMessage" | "sendQueuedMessage" | "submitUserMessage" | "prepareStop" | "resumeStoppedSession" | "navigateTree" | "abortBranchSummary" | "fork" | "branch" | "reload" | "setLabel" | "setScopedModels" | "cycleModel" | "resources" | "tree" | "asyncJobs" | "goal"
 const RESPONSE_PREFIX = "\u001eompiui-runtime:"
 
 /** Correlates managed command results without exposing control traffic as chat/UI events. */
@@ -143,6 +143,35 @@ export default function (pi) {
   }
   ${nativeExtensionResourcesSource}
   ${NATIVE_PROMPT_ADMISSION_SOURCE}
+  const queueControlKey = Symbol.for("ompiui.queueControl");
+  function queueControl(session) {
+    return session[queueControlKey] ??= { batchConfigured: false, paused: false };
+  }
+  function configureQueueBatching(session) {
+    const control = queueControl(session);
+    if (control.batchConfigured) return;
+    session.setSteeringMode("all", false);
+    session.setFollowUpMode("all", false);
+    control.batchConfigured = true;
+  }
+  function prepareStop(session) {
+    if (typeof session.setClientBridge !== "function") throw Object.assign(new Error("The selected OMP runtime cannot suspend queued continuation"), { code: "CAPABILITY_DISABLED" });
+    const control = queueControl(session);
+    if (!control.paused) { control.originalClientBridge = session.clientBridge; control.paused = true; }
+    const original = control.originalClientBridge;
+    // The official client-ownership gate is checked before steering can resume.
+    // No queue is consumed, replaced, copied or moved back to the editor.
+    session.setClientBridge({ ...original, capabilities: original?.capabilities ?? {}, deferAgentInitiatedTurns: true });
+    stopGoalLoop(session);
+    return identity(session);
+  }
+  function resumeStoppedSession(session) {
+    const control = session[queueControlKey];
+    if (!control?.paused) return;
+    session.setClientBridge(control.originalClientBridge);
+    control.paused = false;
+    delete control.originalClientBridge;
+  }
   // #392: rpc-ui 不运行官方 InteractiveMode#scheduleGoalContinuation，桥内按其语义复刻：
   // 终止性 agent_end 后、goal 仍 active、空闲且无排队时投递官方续跑提示；abort/无进展抑制，
   // pause/drop/会话替换后停止。
@@ -227,8 +256,10 @@ export default function (pi) {
   async function execute(operation, args, ctx) {
     const session = ownSession(ctx);
     switch (operation) {
-      case "capabilities": return { operations: ["identity", "queue", "clearQueue", "removeQueuedMessage", "sendQueuedMessage", "submitUserMessage", "navigateTree", "abortBranchSummary", "fork", "branch", "reload", "setLabel", "setScopedModels", "cycleModel", "resources", "tree", "asyncJobs", "goal"] };
+      case "capabilities": return { operations: ["identity", "queue", "clearQueue", "removeQueuedMessage", "sendQueuedMessage", "submitUserMessage", "prepareStop", "resumeStoppedSession", "navigateTree", "abortBranchSummary", "fork", "branch", "reload", "setLabel", "setScopedModels", "cycleModel", "resources", "tree", "asyncJobs", "goal"] };
       case "identity": return identity(session);
+      case "prepareStop": return prepareStop(session);
+      case "resumeStoppedSession": resumeStoppedSession(session); return identity(session);
       case "submitUserMessage": return await submitUserMessage(session, args);
       case "queue": return queue(session);
       case "clearQueue": {
@@ -251,11 +282,13 @@ export default function (pi) {
         if (session.isRetrying || session.isCompacting || session.isGeneratingHandoff) throw new Error("Wait for the current submission before sending queued content");
         const result = { accepted: true };
         budget(result, args.maxResultBytes);
+        resumeStoppedSession(session);
+        configureQueueBatching(session);
         const next = selected.source.slice();
         const moved = next.splice(selected.start, selected.userIndex - selected.start + 1);
-        // Keep original normalized content/hidden image companions. Promote a
-        // follow-up to the native steer queue; never clear/re-enqueue user text.
-        const steering = args.kind === "steering" ? [...moved, ...next] : [...moved, ...selected.steering];
+        // Keep normalized content/hidden companions; append promotions so
+        // sequential Send now clicks cannot reverse the submitted order.
+        const steering = args.kind === "steering" ? selected.steering.slice() : [...selected.steering, ...moved];
         const followUp = args.kind === "followUp" ? next : selected.followUp.slice();
         session.agent.replaceQueues(steering, followUp);
         if (!session.isStreaming) {
@@ -364,6 +397,7 @@ export default function (pi) {
         const tokenBudget = typeof args.tokenBudget === "number" ? args.tokenBudget : undefined;
         let state;
         if (op === "create" || op === "replace") {
+          resumeStoppedSession(session);
           const previous = session.getEnabledToolNames().filter(name => name !== "goal");
           state = op === "create"
             ? await runtime.createGoal({ objective, tokenBudget })
@@ -380,6 +414,7 @@ export default function (pi) {
           await session.setActiveToolsByName(session.getEnabledToolNames().filter(name => name !== "goal"));
         }
         else if (op === "resume") {
+          resumeStoppedSession(session);
           const previous = session.getEnabledToolNames().filter(name => name !== "goal");
           state = await runtime.resumeGoal();
           await session.setActiveToolsByName([...new Set([...previous, "goal"])]);
