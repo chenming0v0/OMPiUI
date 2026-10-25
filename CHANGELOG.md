@@ -1,3 +1,33 @@
+## [v0.6.42] - 2026-10-25
+
+- fix(integration): complete legal fixtures and cutover consumer types (977abc1)
+- fix(integration): retain target-compatible snapshots and fixed Git pipes (9879d62)
+- feat(worktrees): manage Git checkouts with native session relocation (d30e629)
+- feat(git): add selected staging and reviewed GUI commits (8b07d2b)
+- fix(ask): consume official native questionnaire RPC and advertise active support (7880293)
+- fix(notices): preserve native severity and deliver protocol failures (02e2a82)
+- fix(compact): read native activity without queued control prompts (8d1f689)
+- fix(changelog): replay first native command from opening cursor (a2fc04f)
+- fix(navigation): preserve native branches and use official message fork (e41548a)
+- fix(interrupt): preserve native atomic prompt outcomes and session mode readback (b38c789)
+- fix(session): isolate native identity replacement epochs (76f6a4c)
+- fix(models): preserve native reverse cycling and scoped selectors (60f57ff)
+- fix(subagents): isolate reused task generations and wake cards (224e7cc)
+- fix(reload): use native RPC catalog and honest refresh scope (fe30f33)
+- fix(async): preserve native yielded work and safe idle reaping (a418bef)
+- fix(queue): read back session-only delivery modes (b4fa887)
+- fix(goals): use official native lifecycle and usage projection (5758ac0)
+- fix(images): recover attributed native blob history images (71d0598)
+- fix(renderers): retain native tool errors and explanatory results (690b146)
+- fix(extensions): align dialog keyboard and metadata boundaries (8d50136)
+- fix(thinking): align pending effort controls and native readback (c36408c)
+- fix(settings): repair native sibling acceptance fixture boundaries (705255e)
+- fix(composer): preserve slash image draft edits across acceptance (bdef9c9)
+- fix(tasks): verify native managed recursion depth boundaries (8b821ff)
+- fix(history): preserve orphan tool results through owner handover (cb17148)
+- docs: preserve GUI-only native alignment rules (af03b33)
+- fix(models): restore thinking effort controls before first send (50170fe)
+
 ## [Unreleased]
 
 - verification: 首轮 23 个修复提交集成后，完整 `npm run build` 通过；孤立工具结果、原始服务失败状态与传输消费者 3 文件／72 项回归通过。其余完整套件、合并后原生 GUI 与发布验收仍待完成，不据此关闭未闭环 issue。
