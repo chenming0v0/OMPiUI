@@ -188,6 +188,12 @@ try {
     $shortcutCwd = Join-Path $Root 'custom-shortcut-cwd'
     New-Item -ItemType Directory -Force $isolatedHome, $temp, $project, $shortcutCwd | Out-Null
     $env:HOME = $isolatedHome; $env:USERPROFILE = $isolatedHome
+    # SHGetKnownFolderPath(flags=0), used by Tauri's HTTP cookie cache,
+    # verifies the expanded Windows profile folders already exist.
+    $env:LOCALAPPDATA = Join-Path $isolatedHome 'AppData/Local'
+    $env:APPDATA = Join-Path $isolatedHome 'AppData/Roaming'
+    New-Item -ItemType Directory -Force $env:LOCALAPPDATA, $env:APPDATA | Out-Null
+    Record-Step 'owned-windows-known-folders' @{ localAppData = $env:LOCALAPPDATA; roamingAppData = $env:APPDATA }
     $env:TEMP = $temp; $env:TMP = $temp; $env:TMPDIR = $temp
     $env:XDG_CONFIG_HOME = Join-Path $isolatedHome 'config'; $env:XDG_DATA_HOME = Join-Path $isolatedHome 'data'
     $env:XDG_STATE_HOME = Join-Path $isolatedHome 'state'; $env:XDG_CACHE_HOME = Join-Path $isolatedHome 'cache'

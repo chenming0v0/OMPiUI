@@ -181,6 +181,8 @@ Windows 安装器固定使用当前 Tauri NSIS 模板，在旧卸载器删除快
 
 原生 GUI 若在 CDP 前退出，工作流不重复等待已不存在的页面；改用 Microsoft 官方签名的 Evergreen WebView2 bootstrapper（官方地址 `https://go.microsoft.com/fwlink/p/?LinkId=2124703`，执行前校验有效 Authenticode／Microsoft Corporation 签名并记录 SHA-256）显式准备运行前提。失败诊断只查询本 run 时间内、EventData 含自有安装 exe 完整路径的 Application crash 事件，并以诊断专用的直接原生 GUI 启动采集 stdout／stderr／退出码；该直接启动不计为快捷方式或 GUI 验收。不调用系统重启，仍保持 `SHORTCUT_ONLY` 与完整验收阻塞之间的区别。
 
+隔离 Windows `USERPROFILE` 不能只是空目录：工作流预建自有 `AppData/Local` 与 `AppData/Roaming` 并设置进程级 `LOCALAPPDATA`／`APPDATA`。Tauri HTTP plugin 的 cookie cache 使用 `app_cache_dir()`，底层 `SHGetKnownFolderPath(flags=0)` 会验证展开后的目录存在；缺失真实 LocalAppData 时曾实测两版 GUI 在 WebView 创建前报 `PluginInitialization("http", "unknown path")` 并退出（Event 1000／`0xc0000409`）。这属于验收 profile 前提，不能用捕获／忽略该异常冒充 GUI 可用。
+
 ## 开发与验证
 
 ```bash
