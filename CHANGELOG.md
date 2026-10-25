@@ -1,5 +1,6 @@
 ## [Unreleased]
 
+- verification: 首轮 23 个修复提交集成后，完整 `npm run build` 通过；孤立工具结果、原始服务失败状态与传输消费者 3 文件／72 项回归通过。其余完整套件、合并后原生 GUI 与发布验收仍待完成，不据此关闭未闭环 issue。
 - fix(git): 动态 stdin 选择仍保持 stdout/stderr 固定管道，修正集成类型推断；实际 Git 根目录读取及 stdin hash-object 均返回退出码 0、空 stderr。
 - fix(goals): 只读原生 Goal 快照使用无分配逆向遍历，兼容现有 TypeScript 目标，不扩大 lib；已执行暂停快照、后续非 Goal 模式优先和空历史 smoke。
 - docs: 明确 OMPiUI 的 GUI 定位，禁止任何官方终端启动/接管入口及引导文案；对齐任务必须在网页内完成，缺官方接口明确记录阻塞。按此规则清理 GitHub 对齐 issue 的范围与验收。

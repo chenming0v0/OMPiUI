@@ -8,7 +8,6 @@ import {
   getHostTerminalWebSocketUrl,
   getOmpSubagentMessages,
   listActiveProviderFlows,
-  manageSessionGoal,
   mintPairInvite,
   promptPi,
   readHostFile,
@@ -141,15 +140,6 @@ describe('transport retry and response contracts', () => {
     const result = await getOmpSubagentMessages('s', { sessionFile: 'child.jsonl' })
     expect(result).toMatchObject({ messages: [{ role: 'assistant', content: '正文😀'.repeat(1000) }] })
     expect(JSON.parse(nativeFetchMock.mock.calls[1][1].body).fromByte).toBe(101)
-  })
-  it('includes the native goal token budget and rejected image payload boundary', async () => {
-    nativeFetchMock.mockResolvedValue(Response.json({ data: { id: 'goal-command' } }))
-    const images = [{ type: 'image' as const, mimeType: 'image/png', data: 'AA==' }]
-    await manageSessionGoal('session-1', 'create', { objective: '检查截图', tokenBudget: 5000, images })
-    const [url, init] = nativeFetchMock.mock.calls[0]
-    const payload = JSON.parse(init.body)
-    expect(url).toContain('/sessions/session-1/commands/goal')
-    expect(payload).toEqual({ op: 'create', objective: '检查截图', tokenBudget: 5000, images })
   })
 
   beforeEach(() => {

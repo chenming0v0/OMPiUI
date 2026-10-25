@@ -13,7 +13,7 @@ import {
   UploadIcon,
 } from './Icons'
 import { IconButton } from './ui/IconButton'
-import { SegmentedControl, SettingsSelect, SettingField, SettingRow, SettingsDisclosure, SettingsSection, Toggle } from '../features/settings/components/SettingsUI'
+import { SettingsSelect, SettingField, SettingRow, SettingsDisclosure, SettingsSection, Toggle } from '../features/settings/components/SettingsUI'
 import { usePiCapabilities } from '../omp/capabilities'
 import { serverStore } from '../store/serverStore'
 import {

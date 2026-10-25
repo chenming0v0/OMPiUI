@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { SessionEntry } from './vendor/pi-coding-agent'
+import type { SessionEntry, SessionMessageEntry } from './vendor/pi-coding-agent'
 import { getToolExecutionStatus, type PiBranchPage, type PiBashExecutionGroupItem, type PiTimelineItem, type PiAssistantMessageItem } from './domain/index.js'
 import { selectPiTimelineItems } from './selectors/index.js'
 
@@ -303,9 +303,12 @@ describe('tool execution history', () => {
 
   it('deduplicates orphan results at their latest native position before a later owner arrives', () => {
     const call = { type: 'toolCall' as const, id: 'repeated-call', name: 'unknown-tool', arguments: { target: 'actual' } }
-    const first = { type: 'message', id: 'first-result', parentId: null, timestamp: new Date(1).toISOString(), message: { role: 'toolResult', toolCallId: call.id, toolName: call.name, content: [{ type: 'text', text: 'first' }], isError: false, timestamp: 1 } } as SessionEntry
-    const latest = { ...first, id: 'latest-result', timestamp: new Date(3).toISOString(), message: { ...first.message, content: [{ type: 'text', text: '  Permission denied\n' }, { type: 'image', data: 'AA==', mimeType: 'image/png' }], isError: true, timestamp: 3 } } as SessionEntry
-    const owner = { type: 'message', id: 'later-owner', parentId: null, timestamp: new Date(4).toISOString(), message: { role: 'assistant', content: [call], timestamp: 4 } } as SessionEntry
+    const first = { type: 'message', id: 'first-result', parentId: null, timestamp: new Date(1).toISOString(), message: { role: 'toolResult', toolCallId: call.id, toolName: call.name, content: [{ type: 'text', text: 'first' }], isError: false, timestamp: 1 } } satisfies SessionMessageEntry
+    const latest = { ...first, id: 'latest-result', timestamp: new Date(3).toISOString(), message: { ...first.message, content: [{ type: 'text', text: '  Permission denied\n' }, { type: 'image', data: 'AA==', mimeType: 'image/png' }], isError: true, timestamp: 3 } } satisfies SessionMessageEntry
+    const owner = { type: 'message', id: 'later-owner', parentId: null, timestamp: new Date(4).toISOString(), message: {
+      role: 'assistant', content: [call], timestamp: 4, api: 'openai-completions', provider: 'fixture', model: 'fixture', stopReason: 'toolUse',
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    } } satisfies SessionMessageEntry
     const separator = userEntry('separator', 'between results')
     const orphanItems = selectPiTimelineItems(page([first, separator, latest]))
     expect(orphanItems.map(item => item.entryId)).toEqual(['separator', 'latest-result'])

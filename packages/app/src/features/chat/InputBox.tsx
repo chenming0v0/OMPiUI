@@ -41,7 +41,7 @@ import { attachmentBytes, assertAttachmentBudget, assertAttachmentsBudget, merge
 
 type ModelInfo = Model<Api>
 import { usePiCapabilities } from '../../omp/capabilities'
-import { getPiCommandCompletions, type PiImageInput } from '../../omp/transport/index.js'
+import { getPiCommandCompletions } from '../../omp/transport/index.js'
 import { apiErrorHandler } from '../../utils'
 import { scrollItemIntoView } from '../../utils/scrollUtils'
 import {

@@ -1068,7 +1068,7 @@ export type PiForkResult = {
 }
 
 export async function movePiSessionWorktree(sessionId: string, path: string): Promise<PiForkResult> {
-  const command = await postPiSessionCommand(sessionId, 'moveSession', { path })
+  const command = await postPiSessionCommand<CommandRecord>(sessionId, 'moveSession', { path })
   return (await waitHostCommand(command.id) ?? {}) as PiForkResult
 }
 
