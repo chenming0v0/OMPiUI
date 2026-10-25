@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import i18n from '../../i18n'
 import type { Model, Api } from '../../omp/vendor/pi-ai'
 import { getModelVariantPref, saveModelVariantPref, setPreferredModelKey } from '../../utils/modelUtils'
+import { serverStore, LOCAL_SERVER_ID } from '../../store/serverStore'
 import { InputToolbar } from '../chat/input/InputToolbar'
 import { PiChatPane } from './PiChatPane'
 
@@ -122,6 +123,7 @@ function expectMenuChoices(menu: HTMLElement, choices: string[]) {
 
 describe('PiChatPane effort controls', () => {
   beforeEach(async () => {
+    serverStore.setActiveServer(LOCAL_SERVER_ID)
     localStorage.clear()
     vi.clearAllMocks()
     await i18n.changeLanguage('en')
@@ -225,6 +227,23 @@ describe('PiChatPane effort controls', () => {
     view.rerender(<PiChatPane paneId="effort-home-return" sessionId={null} />)
     expect(screen.getByRole('button', { name: 'Medium' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Max' })).not.toBeInTheDocument()
+  })
+
+  it('reads the new server home preferences instead of carrying the previous server model and effort', async () => {
+    saveModelVariantPref('openai:preview-model', 'max')
+    const nextServer = serverStore.addServer({ name: 'Other effort server', url: 'http://other-effort.test' })
+    const view = render(<PiChatPane paneId="effort-home-server" sessionId={null} />)
+    expect(screen.getByRole('button', { name: 'Max' })).toBeInTheDocument()
+
+    await act(async () => { serverStore.setActiveServer(nextServer.id) })
+    view.rerender(<PiChatPane paneId="effort-home-server" sessionId={null} />)
+    expect(screen.queryByRole('button', { name: 'Max' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+
+    await act(async () => { serverStore.setActiveServer(LOCAL_SERVER_ID) })
+    expect(screen.getByRole('button', { name: 'Max' })).toBeInTheDocument()
+    view.unmount()
+    serverStore.removeServer(nextServer.id)
   })
 
   it('does not display an unsupported persisted home effort as the current level', () => {

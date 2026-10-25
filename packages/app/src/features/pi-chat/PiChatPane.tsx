@@ -636,6 +636,14 @@ export function PiChatPane({
   useEffect(() => { modelControlOperationRef.current = null }, [sessionId, activeServerGeneration])
   // home 模型切换时重读持久化 variant 偏好（渲染期间调整 state）
   const [homeVariantForModel, setHomeVariantForModel] = useState(homeModelKey)
+  const [homeServerGeneration, setHomeServerGeneration] = useState(activeServerGeneration)
+  if (homeServerGeneration !== activeServerGeneration) {
+    const preferred = getPreferredModelKey()
+    setHomeServerGeneration(activeServerGeneration)
+    setHomeModelKey(preferred)
+    setHomeVariantForModel(preferred)
+    setHomeVariant(preferred ? getModelVariantPref(preferred) : undefined)
+  }
   if (homeModelKey !== homeVariantForModel) {
     setHomeVariantForModel(homeModelKey)
     setHomeVariant(homeModelKey ? getModelVariantPref(homeModelKey) : undefined)

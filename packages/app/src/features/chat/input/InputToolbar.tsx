@@ -82,6 +82,7 @@ export function InputToolbar({
   const supportsAnyFile = caps.image || caps.pdf || caps.audio || caps.video
   const controlsDisabled = isSending
   const effortDisabled = controlsDisabled || variantsDisabled || (variants.length === 1 && variants[0] === 'off')
+  const displayedVariant = variants.length === 1 && variants[0] === 'off' ? 'off' : selectedVariant
 
   // 动态构建 HTML accept 和 Tauri filter
   const { acceptString, tauriFilters } = useMemo(() => {
@@ -373,8 +374,8 @@ export function InputToolbar({
               aria-controls={variantMenuOpen ? variantMenuId : undefined}
               className="flex items-center gap-1.5 px-2 py-1.5 text-[length:var(--fs-base)] rounded-lg transition-all duration-150 hover:bg-bg-200 active:scale-95 cursor-pointer min-w-0 overflow-hidden w-full"
               title={
-                selectedVariant
-                  ? selectedVariant.charAt(0).toUpperCase() + selectedVariant.slice(1)
+                displayedVariant
+                  ? displayedVariant.charAt(0).toUpperCase() + displayedVariant.slice(1)
                   : t('inputToolbar.default')
               }
             >
@@ -383,8 +384,8 @@ export function InputToolbar({
                 <ThinkingIcon />
               </span>
               <span className="text-[length:var(--fs-sm)] text-text-300 truncate">
-                {selectedVariant
-                  ? selectedVariant.charAt(0).toUpperCase() + selectedVariant.slice(1)
+                {displayedVariant
+                  ? displayedVariant.charAt(0).toUpperCase() + displayedVariant.slice(1)
                   : t('inputToolbar.default')}
               </span>
               <span className={`text-text-400 shrink-0 ${isCompact ? 'hidden' : ''}`}>
