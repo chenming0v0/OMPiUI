@@ -647,6 +647,22 @@ export function PiChatPane({
       ? pendingThinkingLevel ?? (typeof state?.thinkingLevel === 'string' ? state.thinkingLevel : undefined)
       : homeVariant && thinkingLevels.includes(homeVariant) ? homeVariant : undefined
 
+  const [modelCycleError, setModelCycleError] = useState<{ sessionId: string; serverGeneration: number; message: string } | null>(null)
+  const modelCycleOperationRef = useRef(0)
+  const handleCycleModel = useCallback((direction: 'forward' | 'backward') => {
+    if (!sessionId) return
+    const operation = ++modelCycleOperationRef.current
+    const isCurrent = () => operation === modelCycleOperationRef.current &&
+      paneIdentityRef.current.sessionId === sessionId &&
+      paneIdentityRef.current.activeServerGeneration === activeServerGeneration
+    setModelCycleError(null)
+    void cyclePiModel(sessionId, direction)
+      .then(() => isCurrent() ? refreshPiSessionState(sessionId) : undefined)
+      .catch(error => {
+        uiErrorHandler('cycle model', error)
+        if (isCurrent()) setModelCycleError({ sessionId, serverGeneration: activeServerGeneration, message: error instanceof Error ? error.message : String(error) })
+      })
+  }, [sessionId, activeServerGeneration])
   const handleVariantChange = useCallback(
     (variant: string | undefined) => {
       if (!variant || pendingModelKey || !thinkingLevels.includes(variant)) return
@@ -1454,6 +1470,11 @@ export function PiChatPane({
         {/* 仅由输入区和可见按钮接收触摸，避免收起后的透明占位阻挡消息滚动。 */}
         <div className="pointer-events-none">
           <ExtensionUiSurface sessionId={sessionId} placement="aboveEditor" />
+          {modelCycleError?.sessionId === sessionId && modelCycleError.serverGeneration === activeServerGeneration ? (
+            <p role="alert" className="pointer-events-auto mx-4 mb-2 rounded-lg bg-bg-100 px-3 py-2 whitespace-pre-wrap text-[length:var(--fs-sm)] text-danger-100 [overflow-wrap:anywhere]">
+              {modelCycleError.message}
+            </p>
+          ) : null}
           <InputBox
             ref={inputBoxRef}
             paneId={paneId}
@@ -1467,12 +1488,7 @@ export function PiChatPane({
             onQueueOpenInSideChat={handleQueueOpenInSideChat}
             rootPath={inputRootPath}
             onSend={handleSend}
-            onCycleModel={direction =>
-              sessionId &&
-              void cyclePiModel(sessionId, direction)
-                .then(() => refreshPiSessionState(sessionId))
-                .catch(error => uiErrorHandler('cycle model', error))
-            }
+            onCycleModel={handleCycleModel}
             onCycleThinkingLevel={() =>
               sessionId &&
               void cyclePiThinkingLevel(sessionId)

@@ -85,13 +85,16 @@ export function runtimeBridgeExtension(): string {
 import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { isUserQueuedMessage, isHiddenUserCompanion, toRestoredQueuedMessage } from "@oh-my-pi/pi-coding-agent/session/queued-messages";
-import { resolveModelScope } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
+import { resolveModelScope, getModelMatchPreferences, formatModelStringWithRouting } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { cfgDisabledExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/settings";
 export default function (pi) {
   const prefix = ${JSON.stringify(RESPONSE_PREFIX)};
   const queueEntryIds = new WeakMap();
   const queueRuntimeId = randomUUID();
   let nextQueueEntryId = 0;
+  function scopePatterns(session) {
+    return session.scopedModels.map(scoped => formatModelStringWithRouting(scoped.model) + (scoped.thinkingLevel === undefined ? "" : ":" + scoped.thinkingLevel));
+  }
   function queueEntryId(session, message) {
     let id = queueEntryIds.get(message);
     if (!id) { id = queueRuntimeId + ":" + session.sessionManager.getSessionId() + ":" + (++nextQueueEntryId); queueEntryIds.set(message, id); }
@@ -117,7 +120,7 @@ export default function (pi) {
     };
     const steeringEntries = session.agent.peekSteeringQueue().filter(isUserQueuedMessage).map(restore);
     const followUpEntries = session.agent.peekFollowUpQueue().filter(isUserQueuedMessage).map(restore);
-    return { steering: steeringEntries.map(entry => entry.text), followUp: followUpEntries.map(entry => entry.text), steeringEntries, followUpEntries, scopedModels: session.scopedModels, steeringMode: session.steeringMode, followUpMode: session.followUpMode };
+    return { steering: steeringEntries.map(entry => entry.text), followUp: followUpEntries.map(entry => entry.text), steeringEntries, followUpEntries, scopedModels: session.scopedModels, scopedModelPatterns: scopePatterns(session), steeringMode: session.steeringMode, followUpMode: session.followUpMode };
   }
   function budget(value, maxBytes) {
     if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 0)) throw new Error("Invalid response capacity");
@@ -253,9 +256,9 @@ export default function (pi) {
       case "setScopedModels": {
         if (!Array.isArray(args.patterns) || !args.patterns.every(pattern => typeof pattern === "string")) throw new Error("Invalid model scope");
         await session.modelRegistry.awaitBackgroundRefresh();
-        const scopedModels = await resolveModelScope(args.patterns, session.modelRegistry, undefined, session.settings);
+        const scopedModels = await resolveModelScope(args.patterns, session.modelRegistry, getModelMatchPreferences(session.settings), session.settings);
         session.setScopedModels(scopedModels);
-        return { scopedModels: session.scopedModels };
+        return { scopedModels: session.scopedModels, scopedModelPatterns: scopePatterns(session) };
       }
       case "cycleModel": return await session.cycleModel(args.direction === "backward" ? "backward" : "forward") ?? null;
       case "tree": return { ...identity(session), entries: session.sessionManager.getEntries(), tree: session.sessionManager.getTree() };

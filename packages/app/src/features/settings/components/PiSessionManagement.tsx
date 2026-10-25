@@ -48,10 +48,17 @@ export function PiSessionManagement({ sessionId, workspacePath }: { sessionId: s
   const [error, setError] = useState<string | null>(null)
 
   const model = useMemo(() => record(state?.model), [state])
-  const scopedModelPatterns = useMemo(
-    () => (Array.isArray(state?.scopedModels) ? state.scopedModels.map(String) : []),
-    [state],
-  )
+  const scopedModelPatternsText = useMemo(() => {
+    const patterns = state?.scopedModelPatterns;
+    if (Array.isArray(patterns)) return patterns.filter(item => typeof item === 'string').join('\n')
+    return (Array.isArray(state?.scopedModels) ? state.scopedModels : []).flatMap(item => {
+      if (typeof item === 'string') return [item]
+      const scoped = record(item)
+      const candidate = record(scoped.model)
+      if (typeof candidate.provider !== 'string' || typeof candidate.id !== 'string') return []
+      return [`${candidate.provider}/${candidate.id}${typeof scoped.thinkingLevel === 'string' ? `:${scoped.thinkingLevel}` : ''}`]
+    }).join('\n')
+  }, [state?.scopedModelPatterns, state?.scopedModels])
   const otherSessions = useMemo(() => sessions.filter(item => item.id !== sessionId), [sessions, sessionId])
 
   const load = useCallback(async () => {
@@ -70,12 +77,12 @@ export function PiSessionManagement({ sessionId, workspacePath }: { sessionId: s
     return () => window.clearTimeout(timer)
   }, [load])
 
-  // 模型 pattern 同步到编辑区：响应 prop 变化的重置（prop 引用可能不稳定，
-  // 渲染期调整会引发循环重渲染，保留 effect 同步）
+  // Refresh the shortlist only when its native value or target changes, so
+  // unrelated state updates do not overwrite edits that have not been applied.
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
-    setScopedModels(scopedModelPatterns.join('\n'))
-  }, [scopedModelPatterns])
+    setScopedModels(scopedModelPatternsText)
+  }, [sessionId, scopedModelPatternsText])
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const run = async (key: string, action: () => Promise<void>) => {
@@ -109,7 +116,7 @@ export function PiSessionManagement({ sessionId, workspacePath }: { sessionId: s
   }
 
   const stateLabel = state?.isStreaming ? t('pi.stateStreaming') : state ? t('pi.stateIdle') : t('pi.stateLoading')
-  const modelLabel = typeof model.provider === 'string' ? `${model.provider}/${String(model.modelId ?? '')}` : t('pi.noModel')
+  const modelLabel = typeof model.provider === 'string' ? `${model.provider}/${String(model.id ?? model.modelId ?? '')}` : t('pi.noModel')
   const thinkingLevel = String(state?.thinkingLevel ?? '')
   const thinkingLabel = thinkingLevel
     ? t(`pi.thinkingLevels.${thinkingLevel}`, { defaultValue: thinkingLevel })

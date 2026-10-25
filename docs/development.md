@@ -53,6 +53,7 @@ OMP 原生模型与凭据配置来自 `~/.omp/agent/models.yml`、`config.yml`�
 - 导航／Undo／Redo 调用官方同文件 `navigateTree`，Fork 分支创建新文件；取消／中断不恢复错误目标，也不清理源草稿。总结取消使用原生 `abortBranchSummary`，节点标签使用 `SessionManager.appendLabelChange` 写入并 flush 官方日志。成功原生回执的身份与图片草稿不依赖后续投影读回；读回失败返回明确部分刷新错误，不能把已提交变更误报为可重试的操作失败。
 - 历史图片（用户／助手、工具 content／嵌套 details、子会话预览）保留所属原生 sessionId／entryId；blob 从官方当前 agent／profile 的共享 `blobs/<sha256>` 读取，自定义 session-dir 不改变 blob 归属。预览只读，不扫描猜测目录或改写历史。大图点击后按 256 KiB base64 页恢复，64 MiB 编码预览预算；校验分页长度、MIME、etag 和磁盘版本，引用／服务器换代、缺失或读取中截断会清除旧图并显示错误，可取消下载。
 - 目标栏直接读取官方 `get_state.goal` 的 mode/enabled、目标 ID、预算、`tokensUsed` 与 `timeUsedSeconds`；离线浏览从当前原生分支的 `mode_change` 快照投影，不实例化 writer、不把暂态 exiting/reason 当持久化字段。create/get/pause/resume/drop 使用原生 RPC GoalController，replace/complete/budget 使用受支持的 `AgentSession.goalRuntime`。受管进程配置启用官方 `goal.continuationModes: [rpc]`，不写用户设置、不再存在 WebUI 续跑循环或完成标记。预算留空表示清除；暂停目标保留 objective；目标图片明确拒绝，普通消息仍走官方图片规范化。隔离 18.12.6 实测原生计量 18→36 tokens、预算受限、GUI 暂停／恢复／完成／放弃、原生 Goal 工具完成日志及 CLI↔UI 同文件继续；catalog 预览字节不变，备份失败不启动写入。完整主界面和宿主租约并发仍由集成验收覆盖。
+- 输入区的 `Ctrl+P`／`Ctrl+Shift+P` 优先交给官方 `session.cycleModel` 前向／反向循环，不被全局命令面板抢占；输入区外的命令面板快捷键不变。候选范围用官方解析器及其模型匹配偏好解析，编辑区显示实际原生 `provider/id`、路由与可选思考档位，而不是对象字符串。循环后模型与可选思考等级读回原生状态；失败在当前服务器／会话输入区显示原始错误，无可循环候选遵循原生空结果。候选范围保持官方 session-only 生命周期：不写全局模型角色、不向会话添加自定义持久化协议，恢复／更换运行时按官方范围行为处理。
 
 官方设置页编辑全局覆盖，项目覆盖仍按官方优先级生效；保存保留未编辑键、准确备份与独立原生落盘读回。包管理的安装／更新等待官方操作结果，资源检查只读，不执行扩展或 MCP。
 

@@ -32,7 +32,8 @@ vi.mock('../../../omp/controllers/index.js', () => ({
 
 vi.mock('../../../omp/hooks/index.js', () => ({
   usePiSessionRuntimeState: () => ({
-    scopedModels: ['anthropic:claude-sonnet-4', 'openai:gpt-5'],
+    scopedModels: [{ model: { provider: 'anthropic', id: 'claude-sonnet-4' }, thinkingLevel: 'high' }, { model: { provider: 'openai', id: 'gpt-5' } }],
+    scopedModelPatterns: ['anthropic/claude-sonnet-4:high', 'openai/gpt-5'],
     model: { provider: 'anthropic', modelId: 'claude-sonnet-4' },
     thinkingLevel: 'off',
     isStreaming: false,
@@ -55,13 +56,13 @@ describe('PiSessionManagement scoped models', () => {
     fireEvent.click(screen.getByRole('button', { name: /pi\.sessionControls/ }))
 
     await waitFor(() => {
-      expect(scopedModelsTextarea().value).toBe('anthropic:claude-sonnet-4\nopenai:gpt-5')
+      expect(scopedModelsTextarea().value).toBe('anthropic/claude-sonnet-4:high\nopenai/gpt-5')
     })
-    fireEvent.change(scopedModelsTextarea(), { target: { value: ' anthropic:claude-sonnet-4 \n\nopenai:gpt-5 ' } })
+    fireEvent.change(scopedModelsTextarea(), { target: { value: ' anthropic/claude-sonnet-4:high \n\nopenai/gpt-5 ' } })
     fireEvent.click(screen.getByRole('button', { name: 'pi.applyModelScope' }))
 
     await waitFor(() => {
-      expect(setScopedModelsMock).toHaveBeenCalledWith('session-1', ['anthropic:claude-sonnet-4', 'openai:gpt-5'])
+      expect(setScopedModelsMock).toHaveBeenCalledWith('session-1', ['anthropic/claude-sonnet-4:high', 'openai/gpt-5'])
     })
   })
 })

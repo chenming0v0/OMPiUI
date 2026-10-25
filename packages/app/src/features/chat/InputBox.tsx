@@ -1855,6 +1855,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
                   <div className="pt-4 pb-2">
                     <textarea
                       ref={textareaRef}
+                      data-model-cycle-shortcut={onCycleModel ? '' : undefined}
                       value={text}
                       onChange={handleChange}
                       onKeyDown={handleKeyDown}

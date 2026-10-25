@@ -210,6 +210,7 @@ export class OmpRpcSession implements SessionRuntime {
   private activityGeneration = 0;
   private readonly resourcesListeners = new Set<() => void>();
   private scopedModels: JsonValue[] = [];
+  private scopedModelPatterns: string[] = [];
   private lastActivity = {
     streaming: false,
     retrying: false,
@@ -759,6 +760,7 @@ export class OmpRpcSession implements SessionRuntime {
     if (isJsonObject(value)) {
       this.trackNativeQueue(value);
       if (Array.isArray(value.scopedModels)) this.scopedModels = value.scopedModels;
+      if (Array.isArray(value.scopedModelPatterns)) this.scopedModelPatterns = value.scopedModelPatterns.filter((pattern): pattern is string => typeof pattern === "string");
     }
     if (publish) this.emitPiEvent({ type: "queue_update", ...this.getNativeQueueSnapshot() });
   }
@@ -1154,6 +1156,7 @@ export class OmpRpcSession implements SessionRuntime {
             .filter(Boolean)
         : [],
       scopedModels: this.scopedModels,
+      scopedModelPatterns: this.scopedModelPatterns,
       contextUsage,
       sessionStats,
       retry: this.retryShadow,
@@ -1528,6 +1531,7 @@ export class OmpRpcSession implements SessionRuntime {
     this.nativeSettled = true;
     this.currentStreaming = false;
     this.scopedModels = [];
+    this.scopedModelPatterns = [];
     this.subagentRuns.clear();
     this.supersededSubagentParents.clear();
     this.subagentRunSequence = 0;
@@ -1622,6 +1626,8 @@ export class OmpRpcSession implements SessionRuntime {
     if (epoch !== this.eventEpoch) return result;
     this.scopedModels = isJsonObject(result) && Array.isArray(result.scopedModels)
       ? result.scopedModels : [];
+    this.scopedModelPatterns = isJsonObject(result) && Array.isArray(result.scopedModelPatterns)
+      ? result.scopedModelPatterns.filter((pattern): pattern is string => typeof pattern === "string") : [];
     return result;
   }
 
