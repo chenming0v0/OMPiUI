@@ -1,12 +1,13 @@
 ## [Unreleased]
 
+- docs: 明确 OMPiUI 的 GUI 定位，禁止任何官方终端启动/接管入口及引导文案；对齐任务必须在网页内完成，缺官方接口明确记录阻塞。按此规则清理 GitHub 对齐 issue 的范围与验收。
 - fix(models): 从官方模型的 `thinking.efforts` 补齐 `supportedThinkingLevels`，修复 Agent 模型配置的思考强度下拉框只显示已有值、无法选择档位的问题；保留原生档位与已有角色配置，不依赖先发送消息或安装 OMP 源码包。
 - fix(chat): 只读会话预览缺少运行时档位时使用当前模型目录；原生明确返回的空列表或仅 `off` 仍优先，不再等待首条消息才显示思考强度。
 - verification: 官方 OMP 18.12.6 隔离模型的档位与原生 RPC 一致；真实设置页选择 `max`、保存至原生配置并关闭重开保留成功，其他角色保持不变；首页发送前选择档位并刷新保留成功，无会话修改请求。后端 20 项、前端 23 项回归及 protocol/worker 构建、app 类型检查通过；受影响前端 lint 为 0 error、2 条既有 ref 警告。
 
 ## [v0.6.41] - 2026-10-24
 
-- fix: 移除「原生 OMP」终端接管入口——输入框下方按钮、`▾` 下的 `omp play`/`omp stream`、`/ui-terminal` 命令、终端面板的接管提示条、`terminals.create` 的 `nativeSessionId`/`ompCommand` 参数、服务端 `prepareNativeSession` 预留与写入/删除守卫、worker `disposeForNativeTakeover`、supervisor 原生租约，以及 `scripts/verify-native-terminal.mjs`。回退 c9bd333 的接管部分、d7808c1（#393、#395）的接管守卫，以及 6885e2a（#394）的租约部分。终端标签与 PTY 退出回收保留；supervisor 运行时租约不变。需要官方 TUI 时自行开终端。
+- fix: 移除「原生 OMP」终端接管入口——输入框下方按钮、`▾` 下的 `omp play`/`omp stream`、`/ui-terminal` 命令、终端面板的接管提示条、`terminals.create` 的 `nativeSessionId`/`ompCommand` 参数、服务端 `prepareNativeSession` 预留与写入/删除守卫、worker `disposeForNativeTakeover`、supervisor 原生租约，以及 `scripts/verify-native-terminal.mjs`。回退 c9bd333 的接管部分、d7808c1（#393、#395）的接管守卫，以及 6885e2a（#394）的租约部分。终端标签与 PTY 退出回收保留；supervisor 运行时租约不变。
 - fix(worker): 托管 bash 拦截前台 `pty:true timeout:0` 的提示不再指向原生终端入口。
 - fix(app): 长任务结束刷新后，所属助手消息已滑出加载窗口的已完成工具调用不再被追加到时间线末尾（表现为工具调用在任务完成后才跳出来）。兜底行只保留仍在运行或晚于最新已加载条目的调用。
 - fix(app): 待发送消息与原生历史行的匹配不再依赖图片 `mimeType` 与 `data`，改用「发送后新出现的行 + 相同文本 + 相同图片数」。OMP 落盘前会重编码图片（缩放、png→webp/jpeg），旧的严格比较会漏认，导致带图消息发出后一直挂在待发送区。
