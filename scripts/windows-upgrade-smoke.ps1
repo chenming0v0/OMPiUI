@@ -26,7 +26,10 @@ $smokeStarted = Get-Date
 function Install-OfficialWebViewRuntime {
     $url = 'https://go.microsoft.com/fwlink/p/?LinkId=2124703'
     $installer = Join-Path $Root 'MicrosoftEdgeWebview2Setup.exe'
-    Invoke-WebRequest $url -OutFile $installer
+    # Use Node's public HTTPS transport, also used by native runtime packaging;
+    # do not repeat a failed PowerShell TLS handshake or weaken certificates.
+    & node --input-type=module -e 'import {writeFileSync} from "node:fs"; const response = await fetch(process.argv[1]); if (!response.ok) throw new Error(`Microsoft bootstrapper download: HTTP ${response.status}`); writeFileSync(process.argv[2], Buffer.from(await response.arrayBuffer()));' $url $installer
+    if ($LASTEXITCODE -ne 0) { throw 'Official WebView2 bootstrapper HTTPS download failed; no certificate bypass or retry was attempted.' }
     $signature = Get-AuthenticodeSignature -FilePath $installer
     Record-Step 'official-webview2-installer-provenance' @{ url = $url; sha256 = (Get-FileHash $installer -Algorithm SHA256).Hash; signatureStatus = $signature.Status.ToString(); signer = $signature.SignerCertificate.Subject }
     if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') { throw 'Official WebView2 bootstrapper must have a valid Microsoft Corporation Authenticode signature.' }
