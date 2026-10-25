@@ -154,6 +154,28 @@ describe("OmpRpcSession authoritative lifecycle", () => {
     assert.equal((await session.getState()).isSettled, true)
   })
 
+  it('projects a yielded async parent without treating its ACK as settled', async t => {
+    const { session, frame, native } = await sessionFixture(t)
+    const activity: unknown[] = []
+    session.onActivity(value => activity.push(value))
+    frame({ type: 'agent_start' })
+    native.isStreaming = false
+    native.isSettled = false
+    native.hasPendingAsyncWork = true
+    frame({ type: 'agent_end', isTerminal: false, yielded: true, awaitingAsyncWork: true })
+    // Inspect the synchronous shadow before the asynchronous native readback.
+    const shadow = session as unknown as { currentStreaming: boolean }
+    assert.equal(shadow.currentStreaming, false)
+    const pending = await session.getState()
+    assert.equal(pending.hasPendingAsyncWork, true)
+    assert.equal(pending.isIdle, false)
+    assert.deepEqual(activity.at(-1), { type: 'busy' })
+    native.hasPendingAsyncWork = false
+    native.isSettled = true
+    frame({ type: 'session_settled' })
+    assert.equal(activity.at(-1), null)
+  })
+
   it('reports no executing activity when Stop retains only queued messages', async t => {
     const { session, frame, native, rpc } = await sessionFixture(t)
     const activity: unknown[] = []

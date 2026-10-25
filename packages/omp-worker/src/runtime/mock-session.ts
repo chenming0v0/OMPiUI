@@ -759,6 +759,7 @@ export class MockPiSession implements SessionRuntime {
         this.steeringQueue.length + this.followUpQueue.length,
       availableThinkingLevels: ["off", "minimal", "low", "medium", "high"],
       isIdle: !this.streaming,
+      isSettled: !this.streaming && !this.compacting && this.steeringQueue.length === 0 && this.followUpQueue.length === 0,
       isBashRunning: false,
       hasPendingBashMessages: false,
       isRetrying: false,

@@ -103,7 +103,15 @@ Windows／官方 OMP 18.12.6 的设置验收使用实际 Management 设置页、
 
 公网基址同时用于分享地址和 Origin 校验。入口链接中的 `?token=` 会在首屏读取后移出地址栏，后续请求使用 `Authorization`；公开分享链接前必须移除真实令牌。
 
-个别 OpenAI 兼容网关对 OMP 的 `wait` 工具会返回 0-token 空响应。OMPiUI 启动的 OMP 进程会附加 `~/.ompiui/omp-compat.yml`（存在时），可使用 `async.enabled: false` 等覆盖项，而不修改官方 CLI 配置。
+受管写入会话使用官方 `rpc-ui` 与公共扩展桥；普通 `rpc`（含 `--no-ui`）不提供该桥，也不承诺相同扩展 UI 能力。浏览、刷新与草稿同步仍走只读历史路径，不应为了查看后台状态启动写入 runtime。
+
+启动已停止读取遗留 `~/.ompiui/omp-compat.yml`。UI 的进程级配置仅设置 `autoResume: false`，不覆盖官方全局／项目的 `async.enabled`、`launch.enabled` 或子代理递归深度，也不修改这些原生配置文件。普通异步 bash 与命名服务分别遵守原生 async／launch 开关；task／eval 沿用官方各自的后台执行规则，不能把所有工作强制转为同步。个别 OpenAI 兼容网关曾对 `wait` 返回 0-token 空响应；遗留兼容文件不是现行解决方案，网关是否支持连续工具调用仍须用其实际 provider 验证。
+
+#384 的隔离官方 OMP 18.12.6 实跑已观察：无兼容文件和旧 false 文件均可返回真实 bash job 身份；全局／项目显式 false 移除 bash schema 的 `async` 字段并返回官方禁用错误。成功、exit 7、超时及目标取消保留原生结果，async 父回合 yield 后仍 pending，最终结果只回灌一次再 settled。原生 task 在 async 开启时返回后台身份并回灌，关闭时直接返回真实结果；eval 的后台开关是独立的 `eval.autoBackground.enabled`，启用和关闭路径均实跑，未增加不存在的 `async` 输入字段。
+
+命名服务的 log＋port readiness、真实超时、stdin（含空内容 Enter）、persist／detached 跨原生进程退出恢复、session 模式最后客户端退出后的清理及目标 kill 已观察。普通 job 与同名服务冲突时，官方 read／kill 均返回歧义错误；其它 workspace 的 service 不能被此 workspace 的同名 proc 请求解析或停止。同名 bash 显式再次调用遵守官方 `replace:true` 策略，可能重新启动／换身份，不把它当作 UI 重连自动复用。配置字节／mtime 未变；独立普通 `rpc` 进程仍保留全局 false 的官方禁用错误。
+
+Windows 验收使用隔离原生 `shellPath`（PowerShell），Git Bash 的 MSYS 权限失败及 cmd 的命令解析失败单独记录，不以 PID 冒充 ready。实际网页切页／重连、GUI pending／reaper 状态及同 workspace 外来 CLI owner 的批准边界仍需集成验收；不将 RPC fixture、listener 重绑或只渲染录制结果当作 GUI 端到端证明。
 
 ## Windows 后台生命周期
 

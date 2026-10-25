@@ -77,7 +77,7 @@ npm run diagnostics -- --session <sessionId> --out diagnostic-report.jsonl
 - `worker.request.failed.reason=caller_cancelled_request_not_agent_abort`：
   只取消等待请求响应，不代表 Agent 已收到 abort。
 - `session.close.requested.reason=idle_ttl`：空闲回收触发关闭。
-- `session.reaper.kept`：状态查询失败或仍忙，保留运行实例。
+- `session.reaper.kept`：状态查询失败、缺少明确 idle／settled 答复或仍有工作，保留运行实例。回收还会复查查询期间的访问、活动、命令及运行实例身份，旧空闲答复不能回收新活动。
 - `server.stopping / worker.dispose / session.host.disposed`：
   服务端关闭造成的实例销毁。
 - `server.started` 的 `runId/pid` 变化：服务端已重启。
@@ -101,6 +101,20 @@ npm run diagnostics -- --session <sessionId> --out diagnostic-report.jsonl
 伪造完全结束。清除或取回排队消息使用显式队列操作，不要发新消息“解除卡住”，
 那会真正启动下一轮。真正的异步工作、压缩与重试仍保留停止入口。
 
+普通 async bash 的启动结果只是官方 job ACK。OMP 18.12.6 实测父回合会发
+`agent_end { isTerminal:false, yielded:true, awaitingAsyncWork:true }`：前台已 yield，
+但 `hasPendingAsyncWork=true`、`isSettled=false`，不可显示已完全完成或发送 idle 通知。
+原生 async-result 会唤醒后续回合；只在最终 `session_settled` 后清除 pending。
+读取 job／`proc://` 状态不应确认消费结果，也不能在刷新时重新启动或自行二次回灌。
+
+命名服务不同于普通 job：`ready=false` 或 PID 只表示尚未就绪；真实 ready 超时
+保留 `service.timedOut=true` 与日志，官方可能让服务继续 starting，可读状态后由用户
+明确目标取消。普通 job 不支持 stdin；服务支持 `write proc://<name>`，空内容是真实 Enter。
+`mode=persist` 保持 broker 存活；`detached` 由官方 broker 重新启动并分离服务，可能换 PID，
+不是单纯改 UI 标签；`session` 恢复非持久模式，仍按官方共享 broker 的存活规则处理。
+关闭视图不是 kill，禁止为了重连批量停止共享／其它 workspace 的服务。
+
+
 桌面窗口使用可执行文件内嵌的前端；仅更新安装目录的 `web/` 只能更新服务托管网页，
 不能修复旧桌面窗口。确认桌面应用版本与实际运行的程序路径，再使用包含修复的桌面构建。
 
@@ -118,7 +132,7 @@ OMPiUI 管理的会话保留原生全局／项目 `task.maxRecursionDepth`，不
 
 已确认的一类阻塞是模型用 `bash` 的 `pty:true, timeout:0` 在前台启动常驻服务。官方 OMP 的自动后台机制排除 PTY 调用，`timeout:0` 又取消执行期限，因此服务一直等标准输入或退出，后续工具也不能开始。这不是模型连续推理了数小时。
 
-OMPiUI 新启动的受管 runtime 通过显式进程级扩展，在执行前拒绝没有 `name`、没有 `async:true` 的这一组合，返回真实错误，不启动命令、不终止 Agent。有限交互命令使用正数 `timeout`；已启用服务能力时，常驻服务使用 `name` 和有界 `ready.timeout`，省略命令 `timeout`，通过 `read proc://<name>` 查看、`write proc://<name>` 输入；已启用异步能力时非交互后台任务可显式使用 `async:true`。本机兼容配置可能禁用服务或异步能力，此时应使用有界前台调用，不能假称已后台启动。
+OMPiUI 新启动的受管 runtime 通过显式进程级扩展，在执行前拒绝没有 `name`、没有 `async:true` 的这一组合，返回真实错误，不启动命令、不终止 Agent。有限交互命令使用正数 `timeout`；已启用服务能力时，常驻服务使用 `name` 和有界 `ready.timeout`，省略命令 `timeout`，通过 `read proc://<name>` 查看、`write proc://<name>` 输入；已启用异步能力时非交互后台任务可显式使用 `async:true`。能力由官方实际全局／项目设置决定；遗留 `omp-compat.yml` 已不加载，显式 false 应保留官方错误和实际 schema，不能假称已后台启动.
 
 不修改官方全局配置、普通非 PTY 命令或用户主动的 Bash RPC；已有运行实例不会热加载限制，不为应用修复强制中止正在工作的会话。
 

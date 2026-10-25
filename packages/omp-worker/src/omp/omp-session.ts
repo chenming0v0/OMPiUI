@@ -445,9 +445,13 @@ export class OmpRpcSession implements SessionRuntime {
           this.abortIntentEpoch = undefined;
           this.toolInterruption = undefined;
         }
-        if (type === "agent_end" && frame.isTerminal !== false) {
+        if (type === "agent_end" && (frame.isTerminal !== false || frame.awaitingAsyncWork === true)) {
           this.activityGeneration += 1;
           this.currentStreaming = false;
+          if (frame.awaitingAsyncWork === true) {
+            this.nativeSettled = false;
+            this.pendingAsyncWork = true;
+          }
         }
         this.trackShadowState(frame);
         if (type === "queue_update") this.trackNativeQueue(frame);
@@ -465,7 +469,7 @@ export class OmpRpcSession implements SessionRuntime {
           void Promise.all([this.refreshModels(), this.refreshThinkingLevels()])
             .catch((error) => this.reportEntrySyncError(error));
         }
-        if (type === "agent_end" && frame.isTerminal !== false) {
+        if (type === "agent_end" && (frame.isTerminal !== false || frame.awaitingAsyncWork === true)) {
           void this.getState().catch((error) => this.reportEntrySyncError(error));
         }
         return;

@@ -1438,8 +1438,11 @@ export class SessionHost {
         continue;
       }
       const stillBusy =
-        state.isIdle === false ||
+        state.isIdle !== true ||
+        state.isSettled !== true ||
         state.isStreaming === true ||
+        state.isCompacting === true ||
+        state.isRetrying === true ||
         state.isBashRunning === true ||
         state.hasPendingAsyncWork === true ||
         Number(state.pendingMessageCount ?? 0) > 0;
@@ -1452,6 +1455,16 @@ export class SessionHost {
         this.touch(session.sessionId);
         continue;
       }
+      // state.get is awaited: a view attach, new command or native wake may
+      // have touched this runtime since the candidate snapshot. Never close
+      // that newer activity using an older idle readback.
+      if (
+        this.runtimes.get(session.sessionId) !== session ||
+        (this.lastAccess.get(session.sessionId) ?? 0) >= cutoff ||
+        this.activity.has(session.sessionId) ||
+        this.executor.hasPendingWork(session.sessionId) ||
+        this.executor.isClosing(session.sessionId)
+      ) continue;
       diagnostics.record("session.reaper.close", {
         sessionId: session.sessionId,
         reason: "idle_ttl",

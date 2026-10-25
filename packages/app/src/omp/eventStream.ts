@@ -1125,11 +1125,13 @@ class PiEventStream {
         notifySessionIdle(sessionId)
         break
       case 'agent_end':
-        if (patch.isTerminal !== false) piSessionStateStore.patchState(sessionId, { isStreaming: false })
+        if (patch.awaitingAsyncWork === true) {
+          piSessionStateStore.patchState(sessionId, { isStreaming: false, isIdle: false, isSettled: false, hasPendingAsyncWork: true })
+        } else if (patch.isTerminal !== false) piSessionStateStore.patchState(sessionId, { isStreaming: false })
         this.pendingLiveMessages.delete(sessionId)
         this.scheduleBranchRefresh(sessionId)
         this.scheduleStateRefresh(sessionId)
-        notifySessionIdle(sessionId)
+        if (patch.isTerminal !== false && patch.awaitingAsyncWork !== true) notifySessionIdle(sessionId)
         break
       case 'agent_start':
         piBranchStore.beginToolExecutions(sessionId)

@@ -614,10 +614,10 @@ describe('session configuration and stop synchronization', () => {
 
   it('keeps pending background work active at agent_end until the session settles', () => {
     activity({ 'session-stop': { type: 'busy' } })
-    piSessionStateStore.patchState('session-stop', { hasPendingAsyncWork: true, isIdle: false })
-    event({ type: 'agent_end' })
+    piSessionStateStore.patchState('session-stop', { isStreaming: true, isIdle: false })
+    event({ type: 'agent_end', isTerminal: false, yielded: true, awaitingAsyncWork: true })
     expect(piSessionStateStore.getState('session-stop')).toMatchObject({
-      isStreaming: false, isIdle: false, hasPendingAsyncWork: true,
+      isStreaming: false, isIdle: false, isSettled: false, hasPendingAsyncWork: true,
     })
     expect(activeSessionStore.getBusySessionsSnapshot()).toHaveLength(1)
     event({ type: 'agent_settled' })
