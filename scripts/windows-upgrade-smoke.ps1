@@ -56,8 +56,9 @@ function Capture-DirectGuiStartupDiagnostic([string]$stage) {
 }
 function Set-OwnedWebViewPolicy([string]$option, [string]$value) {
     # Official WebView2 exact-process-name policy override, on this disposable
-    # runner only. No wildcard, machine-wide policy, or other-app value.
-    $key = "HKCU:\Software\Policies\Microsoft\Edge\WebView2\$option"
+    # runner only. Elevated hosts honor HKLM, not user/env debug flags.
+    # No wildcard or other-app value; the exact app value is restored below.
+    $key = "HKLM:\Software\Policies\Microsoft\Edge\WebView2\$option"
     $name = 'ompiui.exe'
     $existed = Test-Path $key
     if (-not $existed) { New-Item -Path $key -Force | Out-Null }
@@ -211,6 +212,18 @@ try {
     $runtime = Get-Content (Join-Path $env:OMPI_OMP_RUNTIME_DIR 'runtime.json') -Raw | ConvertFrom-Json
     if ($runtime.version -ne '18.12.6' -or $runtime.bunVersion -ne '1.3.14') { throw 'Smoke requires official OMP 18.12.6 with public sources and Bun 1.3.14.' }
     Record-Step 'runner-environment' @{ userInteractive = [Environment]::UserInteractive; sessionId = (Get-Process -Id $PID).SessionId; os = [Environment]::OSVersion.ToString(); runtime = $runtime; project = $project; shortcutCwd = $shortcutCwd }
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class Issue336Token {
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool GetTokenInformation(IntPtr token, int infoClass, out int information, int length, out int returnedLength);
+}
+'@
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $elevated = 0; $returnedLength = 0
+    if (-not [Issue336Token]::GetTokenInformation($identity.Token, 20, [ref]$elevated, 4, [ref]$returnedLength)) { throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error()) }
+    Record-Step 'actual-runner-token-elevation' @{ elevated = $elevated -ne 0; identity = $identity.Name; policySource = 'https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/security#for-an-elevated-host-app-use-appropriate-override-flags'; policyScope = 'HKLM exact ompiui.exe values on this disposable runner only' }
     Install-OfficialWebViewRuntime
     $env:SMOKE_ROOT = $Root
     $providerScript = Join-Path $PSScriptRoot 'windows-upgrade-provider.mjs'

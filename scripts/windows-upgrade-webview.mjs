@@ -193,6 +193,20 @@ try {
       return null
     })
     assert.ok(resolve(native.file).startsWith(nativeSessionRoot + sep))
+    const initialContents = readFileSync(native.file, 'utf8')
+    const continuationPrompt = provider.marker + ' Continue writing in the same native file.'
+    await fill(`Array.from(document.querySelectorAll('textarea')).find(element => visible(element) && !element.disabled)`, continuationPrompt, 'Real same-session GUI continuation')
+    await click(button('/Send message|发送消息/i', true), 'Send real same-session GUI continuation')
+    report.continuedWrite = await eventually('Same native file continued through actual GUI', async () => {
+      const contents = readFileSync(native.file, 'utf8')
+      const entries = contents.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))
+      const users = entries.filter(entry => entry.type === 'message' && entry.message?.role === 'user' && JSON.stringify(entry.message.content).includes(provider.marker))
+      const assistants = entries.filter(entry => entry.type === 'message' && entry.message?.role === 'assistant' && JSON.stringify(entry.message.content).includes('Owned disposable HTTP upgrade smoke provider received the real GUI persistence prompt.'))
+      const url = await evaluate('location.href')
+      if (users.length < 2 || assistants.length < 2 || !decodeURIComponent(url).includes(native.header.id)) return null
+      assert.ok(contents.startsWith(initialContents), 'Native continued writes must append to the same file without replacing its prior entries')
+      return { file: native.file, sessionId: native.header.id, guiUrl: url, userTurns: users.length, assistantTurns: assistants.length, originalHistoryRetained: true, beforeSha256: native.sha256, afterSha256: createHash('sha256').update(contents).digest('hex') }
+    })
     copyFileSync(native.file, join(output, 'candidate-native-session.jsonl'))
     report.nativeSession = native
     await snapshot('new-native-chat-original-cwd')
