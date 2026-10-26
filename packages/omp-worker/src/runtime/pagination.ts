@@ -152,6 +152,14 @@ function buildEntriesPage<T>(
             JSON.stringify({ beforeCursor: "x".repeat(cursorLength) }),
           ) - 1
         : 1;
+    // A normal native task aggregate can exceed the requested 128 KiB page
+    // while remaining well below the absolute entry limit. Reference that
+    // entry instead of stopping after a newer final message and losing its
+    // owner/results from the refreshed window. Count metadata and cursor too.
+    if (!referenced && itemBytes + fixedBytes + cursorBytes > options.maxBytes) {
+      item = entryContentReference(source, item);
+      itemBytes = Buffer.byteLength(JSON.stringify(item));
+    }
     const candidateBytes =
       fixedBytes +
       itemsBytes +
