@@ -150,7 +150,7 @@ export class TerminalManager {
   private readonly exitedOrder: string[] = [];
   private readonly tickets = new Map<string, TerminalTicket>();
   /** Retained after tab/workspace removal until the owned PTY reports real exit. */
-  private readonly ownedProcesses = new Map<PtyProcess, { exited: Promise<void> }>();
+  private readonly ownedProcesses = new Map<PtyProcess, { exited: Promise<void>; stopRequested: boolean }>();
   private readonly exitErrors: unknown[] = [];
   /** Creates still awaiting async cwd resolution; counts toward the limit. */
   private pendingCreates = 0;
@@ -303,9 +303,8 @@ export class TerminalManager {
       listeners: [],
     };
     this.terminals.set(id, terminal);
-    let resolveExit!: () => void;
-    const exited = new Promise<void>((resolve) => { resolveExit = resolve; });
-    this.ownedProcesses.set(child, { exited });
+    const { promise: exited, resolve: resolveExit } = Promise.withResolvers<void>();
+    this.ownedProcesses.set(child, { exited, stopRequested: false });
     // This listener is deliberately not in terminal.listeners: removing a tab
     // must not lose the actual exit barrier.
     let exitObserved = false;
@@ -744,10 +743,15 @@ export class TerminalManager {
   }
 
   private stopOwnedProcess(process: PtyProcess): void {
-    if (!this.ownedProcesses.has(process)) return;
+    const owned = this.ownedProcesses.get(process);
+    if (!owned || owned.stopRequested) return;
+    // ConPTY kill releases native handles before its delayed onExit callback.
+    // Repeated dispose/shutdown must not close those handles again.
+    owned.stopRequested = true;
     try {
       process.kill();
     } catch {
+      owned.stopRequested = false;
       // Do not treat a failed signal as exit. Keep the handle until onExit,
       // and retry this owned handle on a later dispose/shutdown.
     }

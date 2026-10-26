@@ -1,5 +1,10 @@
 ## [v0.6.42] - 2026-10-26
 
+- fix(pty): 同一个自有 ConPTY 成功请求停止后，不再由 remove／dispose／shutdown 重复关闭原生句柄；保留真实 onExit 屏障，只有停止调用失败时才允许重试。Node 22.23.4 原生 shell 计算、输出、回放、删除及完整 shutdown 实跑，停止调用由 3 次降为 1 次；原生套件等待实际退出，移除强制退出看门狗。
+- fix(worktrees): 显式 Git worktree 变更先解析物理目标及缺失路径的既有父目录，与 Git 的 junction／symlink 路径身份一致；同一物理路径同时用于变更准入、忙碌检查和 Git 操作。Node 22.23.4／Git 2.56.0.windows.2 真实 junction 场景由错误 FORBIDDEN 修正为 WORKSPACE_BUSY；primary 拒绝、空闲删除及保留分支实跑通过，不放宽锁定／脏目录保护。
+- fix(types): 服务端保持 ES2022 输出目标及原有环境类型，仅补入支持的 Node 22 原生 Promise.withResolvers 标准库类型，不以构造器绕过编译契约。
+- verification(pty): 同一后端源码以 Bun 1.3.14 编译为 Windows 可执行文件后，原生 shell 计算／回放／删除／dispose／shutdown 实跑通过；停止一次，确认自有 PID 实际退出后再关闭 PTY，不把 Bun 的资源释放误计为第二次停止。
+- verification(pty-gui): 最终 Web 生产构建连接真实 Node 22.23.4 原生 PTY，在网页新建通用 shell，计算得到 742，刷新后保留回放，关闭后再新建得到 743，页面错误列表为空。此隔离服务的 Agent driver 为 mock（无 LLM）；本项只证明真实通用 shell 生命周期，不替代官方 OMP／会话互通验收。
 - fix(notices): 原生 `open_url` 的 link 通知归为 info，并恢复已有 link 历史为有效严重度；保留原始链接与说明，不再因图标映射缺失导致通知界面异常。实际生产桥接事件与历史加载回归通过。
 - fix(goals): 删除已退出生产流程的 `formatGoalMessage` 旧提示生成器；原生 Goal 生命周期不再创建私有文本续跑标记。历史目标仍只读解析和展示，历史目录/字节保留回归通过。
 - verification(git): 实际 Git 暂存 rename 两端、字面路径和 worktree 后代 shell 删除保护 20 项通过；网页已打开的非活跃预览保留，冷 scope 指定文件及后续消失回退 19 项通过。永久 shell 保护回归隔离原生 PTY 句柄，真实 GUI shell 行为单独验收。

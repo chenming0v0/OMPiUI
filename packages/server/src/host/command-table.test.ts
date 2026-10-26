@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
 import { test } from "node:test"
 import { homedir, tmpdir } from "node:os"
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { WorkspaceStore } from "./workspace-store.ts"
 import { HostRuntime } from "./command-table.ts"
@@ -42,7 +42,11 @@ test("implicit workspace uses the user home rather than executable or launch dir
 })
 
 test("worktree removal protects descendant workspace and cwd shells without affecting a sibling or branch", { timeout: 45_000 }, async () => {
-  const root = mkdtempSync(path.join(tmpdir(), "ompiui-worktree-shell-"))
+  const fixture = mkdtempSync(path.join(tmpdir(), "ompiui-worktree-shell-"))
+  const root = path.join(fixture, "storage")
+  const alias = path.join(fixture, "workspace")
+  mkdirSync(root)
+  symlinkSync(root, alias, process.platform === "win32" ? "junction" : "dir")
   const previousNativeModules = process.env.OMPIUI_NATIVE_MODULES
   const nativeModules = path.join(root, 'native-module-fixture')
   const ptyDirectory = path.join(nativeModules, '@lydell', `node-pty-${process.platform}-${process.arch}`, 'lib')
@@ -60,7 +64,7 @@ test("worktree removal protects descendant workspace and cwd shells without affe
   `)
   process.env.OMPIUI_NATIVE_MODULES = nativeModules
   const repo = path.join(root, "repo")
-  const linked = path.join(root, "linked")
+  const linked = path.join(alias, "linked")
   const sibling = path.join(root, "linked-other")
   mkdirSync(path.join(repo, "src"), { recursive: true })
   mkdirSync(sibling)
@@ -89,7 +93,7 @@ test("worktree removal protects descendant workspace and cwd shells without affe
   }
   try {
     await runtime.execute("git.worktreeCreate", { workspacePath: repo, path: linked, branch: "keep-branch" })
-    const descendant = path.join(linked, "src")
+    const descendant = path.join(root, "linked", "src")
     const first = await runtime.execute("terminals.create", { workspacePath: descendant }) as { id: string }
     await assert.rejects(remove(), { code: "WORKSPACE_BUSY" })
     assert.equal(existsSync(path.join(linked, ".git")), true)
@@ -115,6 +119,8 @@ test("worktree removal protects descendant workspace and cwd shells without affe
     await supervisor.dispose()
     if (previousNativeModules === undefined) delete process.env.OMPIUI_NATIVE_MODULES
     else process.env.OMPIUI_NATIVE_MODULES = previousNativeModules
-    rmSync(root, { recursive: true, force: true })
+    if (process.platform === "win32") rmdirSync(alias)
+    else unlinkSync(alias)
+    rmSync(fixture, { recursive: true, force: true })
   }
 })

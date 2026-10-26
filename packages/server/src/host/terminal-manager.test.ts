@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { after, test } from "node:test"
+import { test } from "node:test"
 import type { TerminalInfo } from "@ompiui/protocol"
 import { extractTerminalTitle, TerminalManager } from "./terminal-manager.ts"
 
@@ -32,6 +32,7 @@ test("TerminalManager creates, streams, replays, and removes a terminal", async 
     assert.deepEqual(manager.list(root), [])
   } finally {
     manager.dispose()
+    await manager.shutdown()
     await removeWithRetry(root)
   }
 })
@@ -44,7 +45,7 @@ test("lists available shells on the PTY host", async () => {
     assert.ok(shells.every(shell => shell.path && shell.name && typeof shell.acceptable === "boolean"))
     if (process.platform === "win32") assert.ok(shells.some(shell => shell.name === "bash"))
   } finally {
-    manager.dispose()
+    await manager.shutdown()
   }
 })
 
@@ -72,7 +73,7 @@ test("closeWorkspace kills owned terminals and consumes their tickets", async ()
     assert.throws(() => manager.get(root, second.id), /not found/)
     assert.equal(manager.list(other).some(t => t.id === unrelated.id), true)
   } finally {
-    manager.dispose()
+    await manager.shutdown()
     await removeWithRetry(root)
     await removeWithRetry(other)
   }
@@ -87,7 +88,7 @@ test("closing an already-closed workspace is a no-op", async () => {
     manager.closeWorkspace(root)
     assert.deepEqual(manager.list(root), [])
   } finally {
-    manager.dispose()
+    await manager.shutdown()
     await removeWithRetry(root)
   }
 })
@@ -101,7 +102,7 @@ test("removing a terminal invalidates its connect ticket", async () => {
     manager.remove(root, created.id)
     assert.equal(manager.consumeConnectToken(created.id, ticket), undefined)
   } finally {
-    manager.dispose()
+    await manager.shutdown()
     await removeWithRetry(root)
   }
 })
@@ -117,7 +118,7 @@ test("attach rejects a future cursor", async () => {
     assert.throws(() => manager.attach(root, created.id, cursor + 10, () => {}, () => {}), (error: unknown) =>
       (error as { code?: string }).code === "INVALID_REQUEST")
   } finally {
-    manager.dispose()
+    await manager.shutdown()
     await removeWithRetry(root)
   }
 })
@@ -144,7 +145,7 @@ test("exited terminals replay buffered output and report the exit code", async (
     attachment.activate()
     assert.equal(exitCode, 0)
   } finally {
-    manager.dispose()
+    await manager.shutdown()
     await removeWithRetry(root)
   }
 })
@@ -162,7 +163,7 @@ test("enforces the terminal limit under concurrent creates", async () => {
       assert.equal((result.reason as { code?: string }).code, "TERMINAL_LIMIT_REACHED")
     }
   } finally {
-    manager.dispose()
+    await manager.shutdown()
     await removeWithRetry(root)
   }
 })
@@ -176,13 +177,6 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   }
 }
 
-after(() => {
-  // Windows 上全部测试通过并 dispose 之后，ConPTY 句柄仍可能钉住事件循环，
-  // 让整个测试文件卡到 CI 的 job 超时（实测 15 分钟被杀）。所有测试已经
-  // 结束时由看门狗收尾退出，保留 node:test 已写好的退出码。
-  const code = process.exitCode
-  setTimeout(() => process.exit(code ?? 0), 10_000).unref()
-})
 
 async function removeWithRetry(root: string): Promise<void> {
   for (let attempt = 0; attempt < 20; attempt += 1) {

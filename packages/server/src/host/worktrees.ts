@@ -10,6 +10,22 @@ function key(value: string): string {
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
+/** Match Git's physical paths, including targets below a junction or symlink. */
+async function resolveWorktreeTarget(target: string): Promise<string> {
+  let ancestor = target;
+  for (;;) {
+    try {
+      const real = await fs.realpath(ancestor);
+      return ancestor === target ? real : path.resolve(real, path.relative(ancestor, target));
+    } catch (error) {
+      if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error;
+      const parent = path.dirname(ancestor);
+      if (parent === ancestor) throw error;
+      ancestor = parent;
+    }
+  }
+}
+
 /** Block a new host attachment while its checkout is being mutated. */
 export function assertWorktreeAvailable(cwd: string): void {
   for (const target of mutations.values()) {
@@ -58,10 +74,10 @@ export async function listGitWorktrees(cwd: string, signal?: AbortSignal): Promi
 /** Explicit mutations only; never force, clean, prune, or remove a branch. */
 export async function mutateGitWorktree(cwd: string, operation: "create" | "remove", target: string, branch: string | undefined,
   assertUnused: ((target: string) => void) | undefined, signal?: AbortSignal): Promise<GitWorktreeCatalog> {
+  const resolved = await resolveWorktreeTarget(path.resolve(cwd, target));
   const catalog = await listGitWorktrees(cwd, signal);
   const rootKey = key(catalog.primaryRoot);
   if (mutations.has(rootKey)) throw Object.assign(new Error("Another worktree operation is in progress"), { code: "WORKSPACE_BUSY" });
-  const resolved = path.resolve(cwd, target);
   mutations.set(rootKey, key(resolved));
   try {
     if (operation === "create") {
