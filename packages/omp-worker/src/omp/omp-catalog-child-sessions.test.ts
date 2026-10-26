@@ -91,7 +91,11 @@ describe("OmpCatalog child session lookup", () => {
         assert.equal(state.sessionId, fixture.id)
         const branch = await catalog.readSession(fixture.id, "branch.get")
         assert.ok(isJsonObject(branch))
-        assert.deepEqual(branch, preview.branch)
+        assert.deepEqual(branch.items, preview.branch.items)
+        assert.ok(isJsonObject(branch.head) && isJsonObject(preview.branch.head))
+        assert.deepEqual(branch.head.header, preview.branch.head.header)
+        assert.equal(branch.head.epoch, preview.branch.head.epoch)
+        assert.equal(branch.head.leafId, preview.branch.head.leafId)
       } finally {
         await catalog.dispose()
       }

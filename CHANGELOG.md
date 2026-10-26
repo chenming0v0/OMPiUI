@@ -14,6 +14,7 @@
 - verification(async): 补齐原生运行中 stdout／普通 stdin 拒绝、同服务空 Enter、port／log＋port ready、同名 replace／歧义报错、跨 workspace／exec 批准、干净最后 owner 退出、task／eval 独立配置及同文件 CLI 顺序继续；只读重开不启 writer，全局 config／models 字节和 mtime 不变。
 - limitations(feedback): 两套真实后端通知归属、原生三种严重度、全局预授权 URL 与本地 decoder 有界故障已实测；#367 仍缺会话级公开 `open_url`、真实原始 encoded chunk／overflow 故障输入及官方 `rpc_stream_error` emitter。正常照片读取或全局 OAuth 流不能冒充这些证明，未制造极端重复通知或伪协议帧。
 - limitations(session): #361 的队列／资源／草稿／已提交身份与迟到投影隔离已实测；但真实旧扩展在原生 new 后抛错会被原生发送到新事件流。18.12.6 `extension_error` 仅有 extensionPath／event／error，缺源 session／prompt／epoch，无法安全区分迟到旧错误；保留阻塞，不忽略全部异常或提前恢复旧回调。
+- limitations(vision): 按用户选择，不使用现有密钥／付费视觉模型做额外识别验收；#375 已证明真实原生菜单、图片传输／归一化、@file 内容与失败／在飞草稿保护，真实视觉模型读取能力仍保留验收缺口。`message:fileMention` 的未支持显示单独披露，不把传输成功写成完整 renderer／视觉验收。
 - fix(integration): complete legal fixtures and cutover consumer types (977abc1)
 - fix(integration): retain target-compatible snapshots and fixed Git pipes (9879d62)
 - feat(worktrees): manage Git checkouts with native session relocation (d30e629)

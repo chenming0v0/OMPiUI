@@ -48,6 +48,7 @@ for (const entry of ["script", "environment-script", "npm-shim", "path-shim", "r
     })
     const binDir = path.join(root, "bin space")
     mkdirSync(binDir)
+    writeFileSync(path.join(root, "package.json"), '{"type":"commonjs"}')
     const script = path.join(root, "cli space.js")
     const shim = path.join(binDir, "omp.cmd")
     writeFileSync(script, `#!/usr/bin/env bun

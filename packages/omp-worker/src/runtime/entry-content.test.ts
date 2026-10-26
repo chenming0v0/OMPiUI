@@ -59,16 +59,17 @@ test("a native ten-child aggregate larger than the requested page keeps its owne
   assert.deepEqual(restored.items, entries)
 })
 
-test("checkpoint and first entry share the budget by omitting live, not by rejecting readable history", () => {
+test("a large history entry and live checkpoint share the page budget through read-only content", async () => {
   const entry: JsonObject = { type: "message", id: "one", message: { role: "assistant", content: "x".repeat(3 * 1024 * 1024) } }
   const head = sessionHeadFromParts({ sdkVersion: "test", revision: 1, header: null, leafId: "one", entryCount: 1 })
   const checkpoint = { position: { epoch: "e", sequence: 1 }, liveMessage: {
     id: "live", revision: 1, phase: "streaming" as const, message: { content: "x".repeat(2 * 1024 * 1024) },
   } }
   const page = entriesPageFromEntries(head, [entry], { limit: 100, maxBytes: 4 * 1024 * 1024, checkpoint }, value => value)
-  assert.deepEqual(page.items, [entry])
-  assert.equal(page.checkpoint?.liveMessageOmitted, true)
-  assert.equal(page.checkpoint?.liveMessage, undefined)
+  const restored = await hydrateEntryContent(page as never, async (_id, offset, etag) => entryContentChunk(entry, entry, offset, etag))
+  assert.deepEqual(restored.items, [entry])
+  assert.deepEqual(page.checkpoint?.liveMessage, checkpoint.liveMessage)
+  assert.equal(page.checkpoint?.liveMessageOmitted, undefined)
   assert.ok(Buffer.byteLength(JSON.stringify(page)) <= 4 * 1024 * 1024)
   assert.ok(checkpoint.liveMessage)
 })
