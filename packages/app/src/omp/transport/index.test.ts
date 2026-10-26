@@ -69,17 +69,26 @@ describe('transport retry and response contracts', () => {
     ['prompt', () => promptPi('slash-session', { text: '/native-dialog' })],
     ['composer', () => sendPiUserMessage('slash-session', { text: '/native-dialog', deliverAs: 'followUp' })],
   ] as const)('keeps %s slash acceptance pending through a native dialog', async (_name, send) => {
-    const timeout = vi.spyOn(AbortSignal, 'timeout')
-    const { promise, resolve: accept } = Promise.withResolvers<Response>()
-    nativeFetchMock.mockReturnValue(promise)
-    const request = send()
+    // Native AbortSignal.timeout uses platform timers; bind it to this suite's fake clock.
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation(delay => {
+      const controller = new AbortController()
+      setTimeout(() => controller.abort(new DOMException('The operation timed out', 'TimeoutError')), delay)
+      return controller.signal
+    })
+    const { promise, resolve: accept, reject } = Promise.withResolvers<Response>()
+    nativeFetchMock.mockImplementation((_url: string, init: RequestInit) => {
+      init.signal!.addEventListener('abort', () => reject(init.signal!.reason), { once: true })
+      return promise
+    })
+    let state = 'pending'
+    const request = send().then(() => { state = 'accepted' }, () => { state = 'rejected' })
     await vi.advanceTimersByTimeAsync(21_000)
-    expect(timeout).toHaveBeenCalledWith(330_000)
-    expect(nativeFetchMock).toHaveBeenCalledTimes(1)
+    expect(state).toBe('pending')
     expect(nativeFetchMock.mock.calls[0][1].signal.aborted).toBe(false)
+    expect(nativeFetchMock).toHaveBeenCalledTimes(1)
     accept(Response.json({ data: null }))
-    expect(await request).toBeNull()
-    timeout.mockRestore()
+    await request
+    expect(state).toBe('accepted')
   })
 
   it('preserves a native slash rejection without retrying or reporting acceptance', async () => {
@@ -173,6 +182,7 @@ describe('transport retry and response contracts', () => {
   afterEach(() => {
     vi.clearAllTimers()
     vi.useRealTimers()
+    vi.restoreAllMocks()
     nativeFetchMock.mockReset()
   })
 

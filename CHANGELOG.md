@@ -9,6 +9,9 @@
 - verification(goals): 完整 GUI 实测原生目标预算 128→256、清空预算、暂停后放弃且保持会话身份；正整数预算校验与真实 PNG 剪贴板粘贴拒绝通过。扩展混合描述、空值、两类编辑器、Chrome composition、按 targetId 取消及真实 timeout／三请求队列结算通过；原生导出菜单与实际 HTML Light/Dark 切换通过，导出前后会话字节／mtime 不变。
 - verification(windows): 可弃置 Windows runner 的真实 0.6.41→0.6.42 候选 `69649f4` 安装／升级通过（run 40237794673）；两类快捷方式字段及完整文件哈希保留，原生 WebView 通过原项目创建新会话并在同一 JSONL 继续两轮。最终发布安装器仍须按其精确源码／产物补验收，不能把旧候选证明套到新字节。
 - limitations: 官方 OMP 18.12.6 的公开 GUI/RPC 边界仍阻塞 Plan／审批、Loop、Vibe、Collab、录制／屏幕流、Guided Goal、自定义组件、同次模型工具 PTY，以及子任务 run 排序／合并状态／ask note 关联；Voice 媒体交接及真实账户验收缺独立授权前提。对应 issue 保持 open，不以终端入口、私有控制器或影子状态交付。
+- fix(models): 原生只支持 `off` 的首页控件明确显示禁用 Off；切换服务器时重新读取目标服务器的模型／思考偏好，不沿用旧服务器 Max 后首次发送悄悄用 High。两套真实独立后端的 Max／Low、切回恢复、草稿保留和设置／scope 矩阵已实测。
+- fix(commands): Slash `prompt`／`sendUserMessage` 保持 HTTP 到原生 300 秒处理期限后（330 秒），`abortAndPrompt` 纳入回合级 worker 期限；不再于普通 20／60 秒期限把仍等待原生终态的操作判成未知。真实 23 秒扩展输入与 65 秒图片原子中断＋Stop 均获得原生 200；成功按提交快照清理，更新后的文字／图片保留。
+- verification(async): 补齐原生运行中 stdout／普通 stdin 拒绝、同服务空 Enter、port／log＋port ready、同名 replace／歧义报错、跨 workspace／exec 批准、干净最后 owner 退出、task／eval 独立配置及同文件 CLI 顺序继续；只读重开不启 writer，全局 config／models 字节和 mtime 不变。
 - fix(integration): complete legal fixtures and cutover consumer types (977abc1)
 - fix(integration): retain target-compatible snapshots and fixed Git pipes (9879d62)
 - feat(worktrees): manage Git checkouts with native session relocation (d30e629)
