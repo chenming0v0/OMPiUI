@@ -11,6 +11,7 @@ import {
   mintPairInvite,
   promptPi,
   readHostFile,
+  sendPiUserMessage,
   setPiExtensionEditorState,
   writeHostFile,
   waitHostCommand,
@@ -64,6 +65,28 @@ describe('getHostTerminalWebSocketUrl', () => {
 })
 
 describe('transport retry and response contracts', () => {
+  it.each([
+    ['prompt', () => promptPi('slash-session', { text: '/native-dialog' })],
+    ['composer', () => sendPiUserMessage('slash-session', { text: '/native-dialog', deliverAs: 'followUp' })],
+  ] as const)('keeps %s slash acceptance pending through a native dialog', async (_name, send) => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout')
+    const { promise, resolve: accept } = Promise.withResolvers<Response>()
+    nativeFetchMock.mockReturnValue(promise)
+    const request = send()
+    await vi.advanceTimersByTimeAsync(21_000)
+    expect(timeout).toHaveBeenCalledWith(330_000)
+    expect(nativeFetchMock).toHaveBeenCalledTimes(1)
+    expect(nativeFetchMock.mock.calls[0][1].signal.aborted).toBe(false)
+    accept(Response.json({ data: null }))
+    expect(await request).toBeNull()
+    timeout.mockRestore()
+  })
+
+  it('preserves a native slash rejection without retrying or reporting acceptance', async () => {
+    nativeFetchMock.mockResolvedValueOnce(Response.json({ error: { message: 'Native command rejected' } }, { status: 500 }))
+    await expect(sendPiUserMessage('slash-session', { text: '/native-reject' })).rejects.toThrow('Native command rejected')
+    expect(nativeFetchMock).toHaveBeenCalledTimes(1)
+  })
   it.each(['headers', 'body'])('applies the command deadline while waiting for %s', async phase => {
     nativeFetchMock.mockImplementation((_url: string, init: RequestInit) => {
       const signal = init.signal!

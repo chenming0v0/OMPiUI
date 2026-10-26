@@ -842,7 +842,7 @@ export function getPiAgentsFiles(
 
 // Action commands
 export function promptPi(sessionId: string, params: PromptParams, signal?: AbortSignal): Promise<CommandRecord> {
-  return postPiSessionCommand(sessionId, 'prompt', params, signal)
+  return postPiSessionCommand(sessionId, 'prompt', params, signal, params.text.startsWith('/') ? 330_000 : undefined)
 }
 
 export function steerPi(sessionId: string, params: SteerParams, signal?: AbortSignal): Promise<JsonValue> {
@@ -951,7 +951,9 @@ export function sendPiUserMessage(
   params: SendUserMessageParams,
   signal?: AbortSignal,
 ): Promise<JsonValue> {
-  return postPiSessionCommand(sessionId, 'sendUserMessage', params, signal)
+  // Slash commands can await native dialogs before their correlated
+  // prompt_result. Keep HTTP alive through the native 300s deadline.
+  return postPiSessionCommand(sessionId, 'sendUserMessage', params, signal, params.text.startsWith('/') ? 330_000 : undefined)
 }
 
 export function setPiSessionName(sessionId: string, name: string, signal?: AbortSignal): Promise<CommandRecord> {
