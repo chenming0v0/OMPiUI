@@ -12,6 +12,7 @@
 - fix(models): 原生只支持 `off` 的首页控件明确显示禁用 Off；切换服务器时重新读取目标服务器的模型／思考偏好，不沿用旧服务器 Max 后首次发送悄悄用 High。两套真实独立后端的 Max／Low、切回恢复、草稿保留和设置／scope 矩阵已实测。
 - fix(commands): Slash `prompt`／`sendUserMessage` 保持 HTTP 到原生 300 秒处理期限后（330 秒），`abortAndPrompt` 纳入回合级 worker 期限；不再于普通 20／60 秒期限把仍等待原生终态的操作判成未知。真实 23 秒扩展输入与 65 秒图片原子中断＋Stop 均获得原生 200；成功按提交快照清理，更新后的文字／图片保留。
 - verification(async): 补齐原生运行中 stdout／普通 stdin 拒绝、同服务空 Enter、port／log＋port ready、同名 replace／歧义报错、跨 workspace／exec 批准、干净最后 owner 退出、task／eval 独立配置及同文件 CLI 顺序继续；只读重开不启 writer，全局 config／models 字节和 mtime 不变。
+- limitations(feedback): 两套真实后端通知归属、原生三种严重度、全局预授权 URL 与本地 decoder 有界故障已实测；#367 仍缺会话级公开 `open_url`、真实原始 encoded chunk／overflow 故障输入及官方 `rpc_stream_error` emitter。正常照片读取或全局 OAuth 流不能冒充这些证明，未制造极端重复通知或伪协议帧。
 - fix(integration): complete legal fixtures and cutover consumer types (977abc1)
 - fix(integration): retain target-compatible snapshots and fixed Git pipes (9879d62)
 - feat(worktrees): manage Git checkouts with native session relocation (d30e629)
