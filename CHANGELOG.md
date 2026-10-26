@@ -7,7 +7,7 @@
 - verification: 集成候选的原生 CLI↔GUI 同文件继续、只读字节/mtime、最新备份与历史迁移 smoke 通过；原生/托管递归 depth=0/1/2/3/-1、10 个并发子任务、实时转录及父关联通过。未据此声明全部 issue 或 Windows 安装升级已验收。
 - fix(worktrees): 原生 relocation 在任何 await 前关闭提交准入，并等待已完成但尚未投递的 async 结果；移动期间消息／Steer／Follow-up／取消并发送明确拒绝，显式 Stop 仍可用。真实 HTTP／原生同文件继续及双物理窗格验收通过，worker/server 67 项回归通过。
 - verification(goals): 完整 GUI 实测原生目标预算 128→256、清空预算、暂停后放弃且保持会话身份；正整数预算校验与真实 PNG 剪贴板粘贴拒绝通过。扩展混合描述、空值、两类编辑器、Chrome composition、按 targetId 取消及真实 timeout／三请求队列结算通过；原生导出菜单与实际 HTML Light/Dark 切换通过，导出前后会话字节／mtime 不变。
-- verification(windows): 可弃置 Windows runner 的真实 0.6.41→0.6.42 候选 `69649f4` 安装／升级通过（run 40237794673）；两类快捷方式字段及完整文件哈希保留，原生 WebView 通过原项目创建新会话并在同一 JSONL 继续两轮。最终发布安装器仍须按其精确源码／产物补验收，不能把旧候选证明套到新字节。
+- verification(windows): 可弃置 Windows runner 的真实 0.6.41→0.6.42 候选 `69649f4` 安装／升级通过（run 40237794673）；两类快捷方式字段及完整文件哈希保留，原生 WebView 通过原项目创建新会话并在同一 JSONL 继续两轮。每个发布安装器均按其精确源码／产物独立执行同样验收，不能把旧候选证明套到新字节。
 - limitations: 官方 OMP 18.12.6 的公开 GUI/RPC 边界仍阻塞 Plan／审批、Loop、Vibe、Collab、录制／屏幕流、Guided Goal、自定义组件、同次模型工具 PTY，以及子任务 run 排序／合并状态／ask note 关联；Voice 媒体交接及真实账户验收缺独立授权前提。对应 issue 保持 open，不以终端入口、私有控制器或影子状态交付。
 - fix(models): 原生只支持 `off` 的首页控件明确显示禁用 Off；切换服务器时重新读取目标服务器的模型／思考偏好，不沿用旧服务器 Max 后首次发送悄悄用 High。两套真实独立后端的 Max／Low、切回恢复、草稿保留和设置／scope 矩阵已实测。
 - fix(commands): Slash `prompt`／`sendUserMessage` 保持 HTTP 到原生 300 秒处理期限后（330 秒），`abortAndPrompt` 纳入回合级 worker 期限；不再于普通 20／60 秒期限把仍等待原生终态的操作判成未知。真实 23 秒扩展输入与 65 秒图片原子中断＋Stop 均获得原生 200；成功按提交快照清理，更新后的文字／图片保留。
@@ -15,6 +15,7 @@
 - limitations(feedback): 两套真实后端通知归属、原生三种严重度、全局预授权 URL 与本地 decoder 有界故障已实测；#367 仍缺会话级公开 `open_url`、真实原始 encoded chunk／overflow 故障输入及官方 `rpc_stream_error` emitter。正常照片读取或全局 OAuth 流不能冒充这些证明，未制造极端重复通知或伪协议帧。
 - limitations(session): #361 的队列／资源／草稿／已提交身份与迟到投影隔离已实测；但真实旧扩展在原生 new 后抛错会被原生发送到新事件流。18.12.6 `extension_error` 仅有 extensionPath／event／error，缺源 session／prompt／epoch，无法安全区分迟到旧错误；保留阻塞，不忽略全部异常或提前恢复旧回调。
 - limitations(vision): 按用户选择，不使用现有密钥／付费视觉模型做额外识别验收；#375 已证明真实原生菜单、图片传输／归一化、@file 内容与失败／在飞草稿保护，真实视觉模型读取能力仍保留验收缺口。`message:fileMention` 的未支持显示单独披露，不把传输成功写成完整 renderer／视觉验收。
+- verification(final): 统一构建通过；protocol 26、worker 275（13 跳过）、server 315（1 跳过）、admin 19、relay 59、tui 16、app 1618 项回归通过，lint 0 error／28 warning。最终生产构建实跑原生 23 秒扩展对话并得到 HTTP 200／精确清理已提交草稿；真实 rejected task 无子代理、原始拒绝可展开、无虚构等待，刷新后原生 history 字节／mtime 不变。隔离夹具已改为明确 CommonJS 与身份／内容契约，不固定探测到的 SDK 版本标签。
 - fix(integration): complete legal fixtures and cutover consumer types (977abc1)
 - fix(integration): retain target-compatible snapshots and fixed Git pipes (9879d62)
 - feat(worktrees): manage Git checkouts with native session relocation (d30e629)
