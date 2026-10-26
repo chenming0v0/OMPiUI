@@ -101,7 +101,8 @@ export class OmpRpcClient extends EventEmitter {
     const env = ompCommandEnvironment(options.env)
     // 与配置命令共用入口解析，脚本由解释器执行，不经过 shell 或 Windows 文件关联。
     const invocation = resolveOmpCommand(options.bin ?? env.OMPI_OMP_BIN, env)
-    const args = [...invocation.args, "--mode", options.applyRuntimePolicy && !options.args?.includes("--no-ui") ? "rpc-ui" : "rpc", ...(options.args ?? []), ...(options.applyRuntimePolicy ? runtimePolicyArgs(options.bin ?? env.OMPI_OMP_BIN, env) : [])]
+    // --no-ui disables extension UI only; native rpc-ui tool UI remains enabled.
+    const args = [...invocation.args, "--mode", options.applyRuntimePolicy ? "rpc-ui" : "rpc", ...(options.args ?? []), ...(options.applyRuntimePolicy ? runtimePolicyArgs(options.bin ?? env.OMPI_OMP_BIN, env) : [])]
     this.proc = spawn(invocation.command, args, {
       cwd: options.cwd,
       env,
@@ -268,10 +269,14 @@ export class OmpRpcClient extends EventEmitter {
     let frame: unknown
     try {
       frame = JSON.parse(line)
-    } catch {
+    } catch (error) {
+      this.emitProtocolError(error instanceof Error ? error.message : String(error))
       return
     }
-    if (!isJsonObject(frame) || typeof frame.type !== "string") return
+    if (!isJsonObject(frame) || typeof frame.type !== "string") {
+      this.emitProtocolError("rpc stdout frame must be an object with a string type")
+      return
+    }
     this.dispatchFrame(frame as OmpRpcFrame)
   }
 
@@ -317,11 +322,17 @@ export class OmpRpcClient extends EventEmitter {
     const byteLength = typeof frame.byteLength === "number" ? frame.byteLength : 0
     const data = typeof frame.data === "string" ? frame.data : ""
     if (Buffer.byteLength(chunkId) > MAX_CHUNK_ID_BYTES) {
-      this.emitProtocolError("rpc chunk id exceeds metadata limit")
+      this.emitProtocolError("rpc chunk id exceeds metadata limit", "rpc_chunk")
       return
     }
-    if (!chunkId || !Number.isSafeInteger(count) || count < 1 || count > MAX_CHUNK_COUNT) return
-    if (!Number.isSafeInteger(index) || index < 0 || index >= count || !data) return
+    if (!chunkId || !Number.isSafeInteger(count) || count < 1 || count > MAX_CHUNK_COUNT) {
+      this.abortChunk(chunkId, "invalid rpc chunk id or count")
+      return
+    }
+    if (!Number.isSafeInteger(index) || index < 0 || index >= count || !data) {
+      this.abortChunk(chunkId, "invalid rpc chunk index or data")
+      return
+    }
     if (!Number.isSafeInteger(byteLength) || byteLength < 1 || byteLength > MAX_REASSEMBLED_BYTES || count > byteLength) {
       this.abortChunk(chunkId, "invalid rpc chunk length")
       return
@@ -340,7 +351,7 @@ export class OmpRpcClient extends EventEmitter {
     if (!entry) {
       const metadataBytes = Buffer.byteLength(chunkId)
       if (this.chunks.size >= MAX_CHUNK_ENTRIES || this.chunkBytes + metadataBytes + bytes.byteLength > MAX_TOTAL_CHUNK_BYTES) {
-        this.emitProtocolError("rpc chunk buffer limit reached")
+        this.emitProtocolError("rpc chunk buffer limit reached", "rpc_chunk")
         return
       }
       const timer = this.outputPausedAt === undefined
@@ -375,14 +386,14 @@ export class OmpRpcClient extends EventEmitter {
     this.chunks.delete(chunkId)
     this.chunkBytes -= entry.receivedBytes + entry.metadataBytes
     if (entry.byteLength > 0 && entry.receivedBytes !== entry.byteLength) {
-      this.emitProtocolError(`rpc chunk ${chunkId} length mismatch: got ${entry.receivedBytes} expected ${entry.byteLength}`)
+      this.emitProtocolError(`rpc chunk ${chunkId} length mismatch: got ${entry.receivedBytes} expected ${entry.byteLength}`, "rpc_chunk")
       return
     }
     const ordered: Buffer[] = []
     for (let i = 0; i < entry.count; i++) {
       const part = entry.parts.get(i)
       if (!part) {
-        this.emitProtocolError(`rpc chunk ${chunkId} missing index ${i}`)
+        this.emitProtocolError(`rpc chunk ${chunkId} missing index ${i}`, "rpc_chunk")
         return
       }
       ordered.push(part)
@@ -400,33 +411,36 @@ export class OmpRpcClient extends EventEmitter {
       }
       parser.write(decoder.decode())
       if (!parser.isEnded) parser.end()
-    } catch {
-      this.emitProtocolError(`rpc chunk ${chunkId} is not valid UTF-8 or JSON`)
+    } catch (error) {
+      this.emitProtocolError(`rpc chunk ${chunkId} is not valid UTF-8 or JSON: ${error instanceof Error ? error.message : String(error)}`, "rpc_chunk")
       return
     }
     if (isJsonObject(reassembled) && reassembled.type === "rpc_chunk") {
-      this.emitProtocolError("nested rpc chunks are not supported")
+      this.emitProtocolError("nested rpc chunks are not supported", "rpc_chunk")
     } else if (isJsonObject(reassembled) && typeof reassembled.type === "string") {
       this.dispatchFrame(reassembled as OmpRpcFrame)
+    } else {
+      this.emitProtocolError("reassembled rpc frame must be an object with a string type", "rpc_chunk")
     }
   }
 
   /** 丢弃未完成的分片序列并记录协议错误(不静默吞掉) */
   private abortChunk(chunkId: string, reason: string): void {
     const entry = this.chunks.get(chunkId)
-    if (!entry) return
-    clearTimeout(entry.timer)
-    this.chunks.delete(chunkId)
-    this.chunkBytes -= entry.receivedBytes + entry.metadataBytes
-    this.emitProtocolError(`${reason} (${chunkId.slice(0, 128)})`)
+    if (entry) {
+      clearTimeout(entry.timer)
+      this.chunks.delete(chunkId)
+      this.chunkBytes -= entry.receivedBytes + entry.metadataBytes
+    }
+    this.emitProtocolError(`${reason} (${chunkId.slice(0, 128)})`, "rpc_chunk")
   }
 
-  private emitProtocolError(message: string): void {
+  private emitProtocolError(message: string, originalType?: string): void {
     this.stderrBuffer.push(`[omp-rpc] ${message}\n`)
     if (this.stderrBuffer.length > 200) this.stderrBuffer.splice(0, this.stderrBuffer.length - 200)
     // Surface local protocol failures (chunk loss, decode errors) to the host
     // session so they reach the UI instead of only the exit stderr tail (#367).
-    this.emit("protocolError", message)
+    this.emit("protocolError", message, originalType)
   }
 
   private getStdinSender(): OmpStdinSender {

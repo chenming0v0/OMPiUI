@@ -454,8 +454,13 @@ class PiEventStream {
       const stream = { kind: 'session' as const, id: sessionId }
       streams.push(stream)
       const key = eventStreamKey(stream)
-      const cursor = this.cursors.get(key)
-      if (cursor) cursors[key] = cursor
+      // A branch/open checkpoint predates the first prompt, even when the
+      // pane subscribes after a fast native command has already completed.
+      const cursor = this.cursors.get(key) ?? piBranchStore.getData(sessionId)?.checkpoint?.position
+      if (cursor) {
+        this.cursors.set(key, cursor)
+        cursors[key] = cursor
+      }
     }
     for (const workspacePath of this.workspaceRefCounts.keys()) {
       const stream = { kind: 'workspace' as const, id: workspacePath }
@@ -723,16 +728,27 @@ class PiEventStream {
   private handleSessionsUpdated(payload: SessionsUpdatedPayload | undefined): void {
     if (payload?.crashed && payload.sessionId) {
       reportRuntimeCrash(payload.sessionId, payload.faultId, payload.faultTime, payload.errorCode)
+      piSessionStateStore.patchState(payload.sessionId, { nativeAskDialog: false, askUi: { available: false, reason: 'runtime_unavailable' } })
       const error = payload.message?.trim() || (payload.errorCode ? `Runtime crashed: ${payload.errorCode}` : 'Runtime crashed before this tool returned a result')
       this.markSessionSettled(payload.sessionId, { kind: 'failed', error })
       ompSubagentStore.markSessionCrashed(payload.sessionId)
     }
     if (payload?.replaced && payload.sourceSessionId && payload.targetSessionId) {
+      if (payload.sourceSessionId === payload.targetSessionId) {
+        window.dispatchEvent(new CustomEvent('ompiui:session-relocated', { detail: payload }))
+        window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
+        return
+      }
       if (payload.reason === 'runtime-reuse') {
         // runtime 复用（ensureAttached 偷同目录空闲 runtime）：源 session 的
         // 磁盘数据和 pane 绑定都不变，不做替换清理，只刷新会话列表。
         // 若按真实替换处理，paneLayoutStore.remapSession 会把所有绑定源
         // session 的 pane 全部切走（分屏互相串扰）。
+        window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
+        return
+      }
+      if (payload.sourceSessionId === payload.targetSessionId) {
+        window.dispatchEvent(new CustomEvent('ompiui:session-relocated', { detail: payload }))
         window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
         return
       }
@@ -742,8 +758,14 @@ class PiEventStream {
       // follow ompiui:session-replaced (their connect effect owns ref counts).
       this.cursors.delete(eventStreamKey({ kind: 'session', id: payload.sourceSessionId }))
       this.pendingLiveMessages.delete(payload.sourceSessionId)
-      this.branchRefreshTimers.delete(payload.sourceSessionId)
-      this.stateRefreshTimers.delete(payload.sourceSessionId)
+      this.clearRefreshTimers(payload.sourceSessionId)
+      const sourceKey = eventStreamKey({ kind: 'session', id: payload.sourceSessionId })
+      this.pendingResync.delete(sourceKey)
+      this.incompleteResync.delete(sourceKey)
+      this.clearResyncRetry(sourceKey)
+      this.resyncControllers.get(payload.sourceSessionId)?.abort()
+      this.resyncControllers.delete(payload.sourceSessionId)
+      this.resyncFlights.delete(payload.sourceSessionId)
       piBranchStore.clear(payload.sourceSessionId)
       piSessionStateStore.clear(payload.sourceSessionId)
       piCommandStore.clearSession(payload.sourceSessionId)
@@ -752,6 +774,10 @@ class PiEventStream {
       extensionUiStore.remove(payload.sourceSessionId)
       activeSessionStore.removeSession(payload.sourceSessionId)
       this.liveRecoveryAt.delete(payload.sourceSessionId)
+      // Invalidate reads started while the target belonged to an earlier runtime,
+      // without deleting the target's own native history/resources.
+      piSessionStateStore.invalidateRequests(payload.targetSessionId)
+      piBranchStore.beginRequest(payload.targetSessionId)
       window.dispatchEvent(new CustomEvent('ompiui:session-replaced', { detail: payload }))
     }
     // 事件驱动刷新：SessionContext/useSessions 订阅 ompiui:sessions-changed 会
@@ -788,16 +814,17 @@ class PiEventStream {
         // 规则列表）。完整文本进命令反馈日志；同时弹一条瞬时通知。
         // 该通知的内容只展示在右侧扩展面板里，因此点击后应跳转到对应
         // session 并打开扩展面板（target: 'extensions'）。
-        const status = event.notifyType === 'error' ? 'error' : event.notifyType === 'warning' ? 'info' : 'ok'
+        const status = event.notifyType === 'error' ? 'error' : event.notifyType === 'warning' ? 'warning' : 'info'
         commandFeedbackStore.add({
           sessionId,
           command: '',
           kind: 'notify',
+          source: 'Extension',
           status,
           message: event.message,
         })
         notificationStore.push(
-          event.notifyType === 'error' ? 'error' : 'completed',
+          status,
           'Extension',
           event.message,
           sessionId,
@@ -1014,17 +1041,24 @@ class PiEventStream {
       case 'extension_error':
       case 'prompt_result': {
         const feedback = commandFeedbackStore.addNativeEvent(sessionId, patch)
-        if (feedback) notificationStore.push(feedback.status === 'error' ? 'error' : feedback.status === 'warning' ? 'warning' : 'completed', feedback.source ?? 'Native command', feedback.message, sessionId, activeSessionStore.getSessionMeta(sessionId)?.directory, { target: 'extensions' })
+        if (feedback) notificationStore.push(feedback.status === 'ok' ? 'completed' : feedback.status, feedback.source ?? 'Native command', feedback.message, sessionId, activeSessionStore.getSessionMeta(sessionId)?.directory, { target: 'extensions' })
+        // Manual native commands can enter compaction without auto-compaction
+        // lifecycle events; read the native state instead of inferring activity.
+        if (event.type === 'prompt_result' || event.type === 'command_output') this.scheduleStateRefresh(sessionId)
         break
       }
       case 'notice':
       case 'rpc_frame_error':
       case 'rpc_stream_error': {
-        const message = typeof patch.text === 'string' ? patch.text : typeof patch.message === 'string' ? patch.message : typeof patch.error === 'string' ? patch.error : ''
+        const message = event.type !== 'notice' && typeof patch.error === 'string' ? patch.error : typeof patch.text === 'string' ? patch.text : typeof patch.message === 'string' ? patch.message : typeof patch.error === 'string' ? patch.error : ''
         const source = typeof patch.source === 'string' ? patch.source : 'OMP runtime'
         const status = patch.level === 'error' || patch.type === 'rpc_frame_error' || patch.type === 'rpc_stream_error' ? 'error' : patch.level === 'warning' ? 'warning' : 'info'
-        commandFeedbackStore.add({ sessionId, command: '', kind: 'notify', status, message: `${source}: ${message}` })
-        notificationStore.push(status === 'error' ? 'error' : status === 'warning' ? 'warning' : 'completed', source, message, sessionId, activeSessionStore.getSessionMeta(sessionId)?.directory, { target: 'extensions' })
+        commandFeedbackStore.add({
+          sessionId, command: '', kind: 'notify', status, source, message,
+          originalType: typeof patch.originalType === 'string' ? patch.originalType : undefined,
+          context: typeof patch.text === 'string' && patch.text !== message ? patch.text : undefined,
+        })
+        notificationStore.push(status, source, message, sessionId, activeSessionStore.getSessionMeta(sessionId)?.directory, { target: 'extensions' })
         break
       }
       case 'config_update': {
@@ -1125,11 +1159,13 @@ class PiEventStream {
         notifySessionIdle(sessionId)
         break
       case 'agent_end':
-        if (patch.isTerminal !== false) piSessionStateStore.patchState(sessionId, { isStreaming: false })
+        if (patch.awaitingAsyncWork === true) {
+          piSessionStateStore.patchState(sessionId, { isStreaming: false, isIdle: false, isSettled: false, hasPendingAsyncWork: true })
+        } else if (patch.isTerminal !== false) piSessionStateStore.patchState(sessionId, { isStreaming: false })
         this.pendingLiveMessages.delete(sessionId)
         this.scheduleBranchRefresh(sessionId)
         this.scheduleStateRefresh(sessionId)
-        notifySessionIdle(sessionId)
+        if (patch.isTerminal !== false && patch.awaitingAsyncWork !== true) notifySessionIdle(sessionId)
         break
       case 'agent_start':
         piBranchStore.beginToolExecutions(sessionId)

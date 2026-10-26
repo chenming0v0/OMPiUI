@@ -87,14 +87,23 @@ test("writes preserve external sibling settings and exact pre-write backup bytes
   const original = readFileSync(f.config)
   await patchOmpSettings(f.workspace, { "modelRoles.default": "provider/first" })
   assert.deepEqual(readFileSync(f.config + ".bak"), original)
-  writeFileSync(f.config, readFileSync(f.config, "utf8") + "theme:\n  dark: external-dark\n  light: external-light\n")
+  // Official Bun YAML serialization need not terminate with a newline; an external edit must add its own separator.
+  const externalTheme = Buffer.concat([readFileSync(f.config), Buffer.from("\ntheme:\n  dark: external-dark\n  light: external-light\n")])
+  writeFileSync(f.config, externalTheme)
   const saved = await patchOmpSettings(f.workspace, { "modelRoles.default": "provider/second", theme: { dark: "selected-dark" } }) as JsonObject
+  assert.deepEqual(readFileSync(f.config + ".bak"), externalTheme)
   assert.deepEqual((saved.global as JsonObject).theme, { dark: "selected-dark", light: "external-light" })
   assert.equal(((saved.global as JsonObject).modelRoles as JsonObject).task, "provider/task")
-  writeFileSync(f.config, readFileSync(f.config, 'utf8') + 'extensionNamespace:\n  keep: original\n')
+  const externalNamespace = Buffer.concat([readFileSync(f.config), Buffer.from('\nextensionNamespace:\n  keep: original\n')])
+  writeFileSync(f.config, externalNamespace)
   const unrelated = await patchOmpSettings(f.workspace, { defaultThinkingLevel: 'auto' }) as JsonObject
+  assert.deepEqual(readFileSync(f.config + '.bak'), externalNamespace)
   assert.deepEqual((unrelated.global as JsonObject).extensionNamespace, { keep: 'original' })
   assert.equal((unrelated.global as JsonObject).defaultThinkingLevel, 'auto')
+  const readback = await getOmpSettings(f.workspace) as JsonObject
+  assert.deepEqual(readback.global, unrelated.global)
+  assert.deepEqual((readback.global as JsonObject).theme, { dark: 'selected-dark', light: 'external-light' })
+  assert.deepEqual((readback.global as JsonObject).modelRoles, { default: 'provider/second', task: 'provider/task' })
 })
 
 test("malformed official config fails loudly without modifying it", { skip: !integration }, async t => {

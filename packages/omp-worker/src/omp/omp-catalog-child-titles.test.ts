@@ -1,6 +1,5 @@
 import assert from "node:assert/strict"
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { formatGoalMessage } from "@ompiui/protocol"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { after, before, describe, it } from "node:test"
@@ -73,7 +72,7 @@ after(() => {
 describe("child session titles", () => {
   it("extracts the goal for list previews without rewriting native history", async () => {
     const goalFile = path.join(projectDir, "goal.jsonl")
-    const prompt = formatGoalMessage({ kind: "set", objective: "检查截图布局", round: 1, limit: 50 })
+    const prompt = '[ompiui goal set 1/50] Session goal: "检查截图布局". Continue working toward it. If it is already fully achieved, end your reply with the exact marker GOAL_COMPLETE and do nothing else.'
     writeSession(goalFile, [
       { type: "session", version: 3, id: "goal-1", timestamp: "t0", cwd: "C:/proj" },
       { type: "message", id: "g1", parentId: null, message: { role: "user", content: [{ type: "text", text: prompt }, { type: "image", data: "AA==", mimeType: "image/png" }] } },

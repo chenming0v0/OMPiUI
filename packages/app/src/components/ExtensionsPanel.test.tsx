@@ -47,4 +47,14 @@ describe('native command feedback panel', () => {
     expect(container.querySelector('pre')?.textContent).toBe('Native command rejected.\nNo changes written.')
     expect(commandFeedbackStore.getSnapshot().sessions.a?.[0]?.message).toBe(message)
   })
+
+  it('displays protocol origin and complete context separately from the raw error', () => {
+    commandFeedbackStore.add({ sessionId: 'a', command: '', kind: 'notify', source: 'OMP RPC', status: 'error', message: 'original error\nlast line\n', originalType: 'rpc_chunk', context: 'further protocol errors suppressed for 60s' })
+    const { container } = render(<ExtensionsPanel sessionId="a" />)
+    expect(screen.getByText('OMP RPC')).toBeInTheDocument()
+    expect(screen.getByText('originalType: rpc_chunk')).toBeInTheDocument()
+    expect(container.querySelector('pre')?.textContent).toBe('original error\nlast line\n')
+    expect(screen.getByText('further protocol errors suppressed for 60s')).toBeInTheDocument()
+    expect(screen.queryByText('[extension]')).toBeNull()
+  })
 })

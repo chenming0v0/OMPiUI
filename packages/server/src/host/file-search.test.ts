@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from "node:fs"
 import fsPromises from "node:fs/promises"
 import { syncBuiltinESMExports } from "node:module"
 import { tmpdir } from "node:os"
@@ -11,7 +11,7 @@ import { searchFilesByName, searchWorkspaceText } from "./file-search.ts"
 import type { WorkspaceRecord } from "./workspace-store.ts"
 
 describe("searchFilesByName", () => {
-  const root = mkdtempSync(path.join(tmpdir(), "ompiui-search-"))
+  const root = realpathSync.native(mkdtempSync(path.join(tmpdir(), "ompiui-search-")))
   mkdirSync(path.join(root, "src"))
   writeFileSync(path.join(root, "src", "hello.ts"), "export {}\n")
   writeFileSync(path.join(root, "src", "message.ts"), "const first = 'PiUI'\nconst second = 'piui client'\n")
@@ -216,7 +216,7 @@ it("text search retains complete small matches and UTF-8 offsets across CRLF", a
 })
 
 async function withSearchFixture(files: Record<string, string>, run: (ws: WorkspaceRecord) => Promise<void>): Promise<void> {
-  const root = mkdtempSync(path.join(tmpdir(), "ompiui-search-regression-"))
+  const root = realpathSync.native(mkdtempSync(path.join(tmpdir(), "ompiui-search-regression-")))
   try {
     for (const [name, content] of Object.entries(files)) writeFileSync(path.join(root, name), content)
     await run({ displayName: "fixture", canonicalRoot: root, createdAt: "", lastOpenedAt: "" })

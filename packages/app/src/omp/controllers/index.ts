@@ -23,6 +23,7 @@ import { setSessionEditorDraft } from '../sessionEditorDraftStore'
 import { composerDraftKey, updateComposerDraft } from '../../features/chat/input/composerDraftStore'
 import { imageInputToAttachment } from '../../features/pi-chat/attachmentToImage'
 import { notificationStore } from '../../store/notificationStore'
+import { commandFeedbackStore } from '../commandFeedbackStore'
 import i18n from '../../i18n'
 
 /**
@@ -30,7 +31,7 @@ import i18n from '../../i18n'
  * templates, skills) from the runtime registry.
  */
 export async function loadPiSlashCommands(sessionId: string, signal?: AbortSignal): Promise<CommandDescriptor[]> {
-  const registry = await loadSessionRegistryCached(sessionId, signal)
+  const registry = await loadSessionRegistryOnce(sessionId, signal)
   return registry?.commands ?? []
 }
 
@@ -188,7 +189,9 @@ export async function openPiSession(
   signal?: AbortSignal,
   reuseFromSessionId?: string,
 ): Promise<transport.PiSessionOpenResult> {
+  const generation = serverStore.getActiveServerGeneration()
   const result = await transport.openPiSession({ cwd, sessionFile, reuseFromSessionId }, signal)
+  if (serverStore.getActiveServerGeneration() !== generation) throw new Error('Server changed while opening a session')
 
   if (!result.sessionId) {
     throw new Error('Session open failed: no sessionId returned')
@@ -216,6 +219,7 @@ export async function openPiSession(
         epoch: `fresh:${result.sessionId}`,
       }) as PiBranchPage['head'],
       items: [],
+      checkpoint: result.eventCursor ? { position: result.eventCursor } : undefined,
       hasMore: false,
     })
   }
@@ -690,8 +694,8 @@ export async function compactPiSession(
 }
 
 /**
- * Reload runtime resources (extensions, skills, prompts, themes). Serialized
- * — submit, then wait for completion.
+ * Explicitly re-read the native session and rediscover skills/file commands.
+ * This is not the slash reload-plugins handler or an all-resource reload.
  */
 export async function reloadPiSessionResources(sessionId: string, signal?: AbortSignal): Promise<void> {
   const submitted = await transport.reloadPiSession(sessionId, signal)
@@ -827,7 +831,18 @@ export async function sendPiUserMessage(
   deliverAs?: 'steer' | 'followUp',
   signal?: AbortSignal,
 ): Promise<void> {
-  await transport.sendPiUserMessage(sessionId, { text, images, deliverAs }, signal)
+  const generation = serverStore.getActiveServerGeneration()
+  try {
+    await transport.sendPiUserMessage(sessionId, { text, images, deliverAs }, signal)
+  } catch (error) {
+    if (text.startsWith('/') && !signal?.aborted && serverStore.getActiveServerGeneration() === generation) {
+      const message = error instanceof Error ? error.message : String(error)
+      const command = text.slice(1).split(/\s/, 1)[0] ?? ''
+      commandFeedbackStore.add({ sessionId, command, source: 'Native RPC', status: 'error', message })
+      notificationStore.push('error', 'Native command', message, sessionId, undefined, { target: 'extensions' })
+    }
+    throw error
+  }
 }
 
 /**
@@ -911,8 +926,17 @@ export async function forkPiSession(
   signal?: AbortSignal,
 ): Promise<transport.PiForkResult> {
   const generation = serverStore.getActiveServerGeneration()
-  const submitted = await transport.forkPiSession(sessionId, { entryId, position }, signal)
-  const result = (await transport.waitHostCommand(submitted.id, signal) ?? {}) as transport.PiForkResult
+  let result: transport.PiForkResult
+  try {
+    const submitted = await transport.forkPiSession(sessionId, { entryId, position }, signal)
+    result = (await transport.waitHostCommand(submitted.id, signal, 120_000) ?? {}) as transport.PiForkResult
+  } catch (error) {
+    if (generation === serverStore.getActiveServerGeneration()) notificationStore.push('error', i18n.t('components:sessionTree.failed'), error instanceof Error ? error.message : String(error), sessionId)
+    throw error
+  }
+  if (generation === serverStore.getActiveServerGeneration() && (result.cancelled || result.aborted)) {
+    notificationStore.push('warning', i18n.t(result.aborted ? 'components:sessionTree.navigationAborted' : 'components:sessionTree.navigationCancelled'), '', sessionId)
+  }
   if (generation === serverStore.getActiveServerGeneration() && result.cancelled === false && !result.aborted && result.targetSessionId) {
     restoreNativeDraft(result.targetSessionId, result.selectedText ?? '', result.selectedImages ?? [])
     if (result.projectionError) notificationStore.push('error', i18n.t('chat:chatArea.nativeChangeRefreshFailed'), result.projectionError, result.targetSessionId)
@@ -930,8 +954,17 @@ export async function navigatePiTree(
   signal?: AbortSignal,
 ): Promise<transport.PiNavigateTreeResult> {
   const generation = serverStore.getActiveServerGeneration()
-  const submitted = await transport.navigatePiTree(sessionId, params, signal)
-  const result = (await transport.waitHostCommand(submitted.id, signal) ?? {}) as transport.PiNavigateTreeResult
+  let result: transport.PiNavigateTreeResult
+  try {
+    const submitted = await transport.navigatePiTree(sessionId, params, signal)
+    result = (await transport.waitHostCommand(submitted.id, signal, 300_000) ?? {}) as transport.PiNavigateTreeResult
+  } catch (error) {
+    if (generation === serverStore.getActiveServerGeneration()) notificationStore.push('error', i18n.t('components:sessionTree.failed'), error instanceof Error ? error.message : String(error), sessionId)
+    throw error
+  }
+  if (generation === serverStore.getActiveServerGeneration() && (result.cancelled || result.aborted)) {
+    notificationStore.push('warning', i18n.t(result.aborted ? 'components:sessionTree.navigationAborted' : 'components:sessionTree.navigationCancelled'), '', sessionId)
+  }
   if (generation === serverStore.getActiveServerGeneration() && result.cancelled === false && !result.aborted && !result.noOp) {
     restoreNativeDraft(sessionId, result.editorText ?? '', result.editorImages ?? [])
     if (result.projectionError) notificationStore.push('error', i18n.t('chat:chatArea.nativeChangeRefreshFailed'), result.projectionError, sessionId)
@@ -1017,6 +1050,7 @@ export async function setPiSteeringMode(
   signal?: AbortSignal,
 ): Promise<void> {
   await transport.setPiSteeringMode(sessionId, mode, signal)
+  await refreshPiSessionState(sessionId, signal)
 }
 
 export async function setPiFollowUpMode(
@@ -1025,6 +1059,7 @@ export async function setPiFollowUpMode(
   signal?: AbortSignal,
 ): Promise<void> {
   await transport.setPiFollowUpMode(sessionId, mode, signal)
+  await refreshPiSessionState(sessionId, signal)
 }
 
 export async function setPiInterruptMode(
@@ -1033,6 +1068,7 @@ export async function setPiInterruptMode(
   signal?: AbortSignal,
 ): Promise<void> {
   await transport.setPiInterruptMode(sessionId, mode, signal)
+  await refreshPiSessionState(sessionId, signal)
 }
 
 /**

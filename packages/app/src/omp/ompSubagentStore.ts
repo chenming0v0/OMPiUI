@@ -49,6 +49,8 @@ export type OmpSubagentRun = {
   id: string
   /** Worker generation for a stable registry ID reused by later task calls. */
   runId?: string
+  /** Derived from an observed new start with the same native owner/file; not a native run ID. */
+  isFollowUp?: boolean
   sessionId: string
   parentToolCallId?: string
   agent: string
@@ -146,8 +148,10 @@ function normalizeProgress(raw: unknown): OmpSubagentProgress | undefined {
 
 const EMPTY_RUNS: OmpSubagentRun[] = []
 
+function runKey(sessionId: string, id: string): string { return `${sessionId}\0${id}` }
+
 class OmpSubagentStore {
-  /** run.id → run；全局扁平（run.id 在单个 omp 进程内唯一，跨进程冲突时后写者胜） */
+  /** Parent session + native registry ID; names may repeat across native processes. */
   private runs = new Map<string, OmpSubagentRun>()
   /** sessionId → run.id[]（会话级面板用） */
   private bySession = new Map<string, string[]>()
@@ -260,7 +264,7 @@ class OmpSubagentStore {
     if (!callId) return
     const ids = this.byToolCall.get(callId)
     if (!ids) return
-    const next = ids.filter(id => id !== run.id)
+    const next = ids.filter(id => id !== runKey(run.sessionId, run.id))
     if (next.length > 0) this.byToolCall.set(callId, next)
     else this.byToolCall.delete(callId)
   }
@@ -269,7 +273,8 @@ class OmpSubagentStore {
     const callId = run.parentToolCallId
     if (!callId) return
     const ids = this.byToolCall.get(callId) ?? []
-    if (!ids.includes(run.id)) this.byToolCall.set(callId, [...ids, run.id])
+    const key = runKey(run.sessionId, run.id)
+    if (!ids.includes(key)) this.byToolCall.set(callId, [...ids, key])
   }
 
   /** run 的查找键（旧值 + 新值）全部标脏：受影响的 TaskRenderer 分片换引用 */
@@ -304,10 +309,11 @@ class OmpSubagentStore {
     else setTimeout(flush, 16)
   }
 
-  private upsert(sessionId: string, runId: string, fn: (run: OmpSubagentRun) => OmpSubagentRun): void {
-    const existing = this.runs.get(runId)
+  private upsert(sessionId: string, id: string, fn: (run: OmpSubagentRun) => OmpSubagentRun): void {
+    const key = runKey(sessionId, id)
+    const existing = this.runs.get(key)
     const base: OmpSubagentRun = existing ?? {
-      id: runId,
+      id,
       sessionId,
       agent: 'task',
       task: '',
@@ -330,20 +336,20 @@ class OmpSubagentStore {
         })) : next.transcript,
       }
     }
-    this.runs.set(runId, next)
+    this.runs.set(key, next)
     if (existing && existing.parentToolCallId && existing.parentToolCallId !== next.parentToolCallId) {
       this.unlinkToolCall(existing)
     }
     this.linkToolCall(next)
     if (existing !== next) this.touchKey(existing, next)
     const sessionIds = this.bySession.get(next.sessionId) ?? []
-    if (!sessionIds.includes(runId)) this.bySession.set(next.sessionId, [...sessionIds, runId])
+    if (!sessionIds.includes(key)) this.bySession.set(next.sessionId, [...sessionIds, key])
     this.bump()
   }
 
   private acceptRun(sessionId: string, id: string, payload: JsonObject, started = false): boolean {
     const incoming = str(payload.runId)
-    const current = this.runs.get(id)
+    const current = this.runs.get(runKey(sessionId, id))
     if (incoming && this.retiredRuns.has(incoming)) return false
     const parent = str(payload.parentToolCallId)
     if (!incoming && !started && current?.parentToolCallId && parent && current.parentToolCallId !== parent) return false
@@ -357,7 +363,7 @@ class OmpSubagentStore {
       index: typeof payload.index === 'number' ? payload.index : current?.index ?? this.runs.size,
       detached: false, transcript: [], historyLoaded: false, startedAt: Date.now(),
     }))
-    this.eventFingerprints.delete(id)
+    this.eventFingerprints.delete(runKey(sessionId, id))
     return true
   }
 
@@ -372,6 +378,7 @@ class OmpSubagentStore {
         ...run,
         parentToolCallId: str(payload.parentToolCallId) ?? run.parentToolCallId,
         agent: str(payload.agent) ?? run.agent,
+        isFollowUp: typeof payload.isFollowUp === 'boolean' ? payload.isFollowUp : run.isFollowUp,
         description: subagentDisplayTitle(str(payload.description)) ?? run.description,
         status,
         sessionFile: str(payload.sessionFile) ?? run.sessionFile,
@@ -408,6 +415,7 @@ class OmpSubagentStore {
         parentToolCallId: str(payload.parentToolCallId) ?? run.parentToolCallId,
         sessionFile: str(payload.sessionFile) ?? run.sessionFile,
         agent: str(payload.agent) ?? run.agent,
+        isFollowUp: typeof payload.isFollowUp === 'boolean' ? payload.isFollowUp : run.isFollowUp,
         progress,
         status,
         endedAt: isTerminalStatus(status) && !run.endedAt ? Date.now() : run.endedAt,
@@ -421,7 +429,8 @@ class OmpSubagentStore {
     if (!id || !event) return
     if (!this.acceptRun(sessionId, id, payload)) return
     const fingerprint = eventId ?? JSON.stringify(event)
-    const seen = this.eventFingerprints.get(id) ?? new Set<string>()
+    const key = runKey(sessionId, id)
+    const seen = this.eventFingerprints.get(key) ?? new Set<string>()
     if (seen.has(fingerprint)) return
     seen.add(fingerprint)
     // 只保留最近一小段事件指纹，避免长任务的去重表无限增长。
@@ -429,7 +438,7 @@ class OmpSubagentStore {
       const oldest = seen.values().next().value
       if (typeof oldest === 'string') seen.delete(oldest)
     }
-    this.eventFingerprints.set(id, seen)
+    this.eventFingerprints.set(key, seen)
     this.upsert(sessionId, id, run => {
       const transcript = appendTranscriptEvent(event, run.transcript)
       if (transcript === run.transcript) return run
@@ -478,7 +487,7 @@ class OmpSubagentStore {
     page?: { truncated: boolean; hasMore: boolean },
     expected?: { runId?: string; sessionFile?: string },
   ): void {
-    const current = this.runs.get(id)
+    const current = this.runs.get(runKey(sessionId, id))
     if (!current || current.sessionId !== sessionId || (expected && (current.runId !== expected.runId || current.sessionFile !== expected.sessionFile))) return
     this.upsert(sessionId, id, run => {
       const incomplete = run.transcript.some(item => (item.textOffset ?? 0) > 0)
@@ -503,8 +512,8 @@ class OmpSubagentStore {
       const record = asRecord(raw)
       const id = str(record?.id)
       if (!record || !id) continue
-      if (!this.acceptRun(sessionId, id, record)) continue
       present.add(id)
+      if (!this.acceptRun(sessionId, id, record)) continue
       this.upsert(sessionId, id, run => {
         const incomingStatus = record.status === undefined ? run.status : normalizeStatus(record.status)
         const status = mergeStatus(run.status, incomingStatus)
@@ -512,6 +521,7 @@ class OmpSubagentStore {
           ...run,
           parentToolCallId: str(record.parentToolCallId) ?? run.parentToolCallId,
           agent: str(record.agent) ?? run.agent,
+          isFollowUp: typeof record.isFollowUp === 'boolean' ? record.isFollowUp : run.isFollowUp,
           description: subagentDisplayTitle(str(record.description)) ?? run.description,
           task: str(record.task) ?? run.task,
           status,

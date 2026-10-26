@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { FileImage, LoaderCircle } from 'lucide-react'
 import { isJsonObject } from '@ompiui/protocol'
 import type { ImageContent } from '../../omp/vendor/pi-ai'
@@ -7,7 +7,7 @@ import { serverStore } from '../../store/serverStore'
 import { useSessionNavigation } from '../../contexts/SessionNavigationContext'
 import { AttachmentItem } from '../attachment'
 
-type ImageReference = { sessionId?: string; entryId: string; blockIndex: number; source?: 'content' | 'details' }
+type ImageReference = { sessionId?: string; entryId: string; blockIndex: number; source?: 'content' | 'details'; epoch?: string; etag?: string }
 
 type HistoryImageProps = {
   block: ImageContent
@@ -17,17 +17,21 @@ type HistoryImageProps = {
 
 export const HistoryImage = memo(function HistoryImage(props: HistoryImageProps) {
   const { currentSessionId } = useSessionNavigation()
+  const generation = useSyncExternalStore(listener => serverStore.subscribe(listener), () => serverStore.getActiveServerGeneration(), () => serverStore.getActiveServerGeneration())
   const reference = (props.block as ImageContent & { attachment?: ImageReference }).attachment
-  const key = JSON.stringify([props.id, props.block.data, props.block.mimeType, reference?.sessionId ?? currentSessionId, reference?.entryId, reference?.blockIndex, reference?.source])
-  return <HistoryImageContent key={key} {...props} />
+  const key = JSON.stringify([generation, props.id, props.block.data, props.block.mimeType, reference?.sessionId ?? currentSessionId, reference?.entryId, reference?.blockIndex, reference?.source, reference?.epoch, reference?.etag])
+  const previous = useRef(key)
+  const changed = previous.current !== key
+  useEffect(() => { previous.current = key }, [key])
+  return <HistoryImageContent key={key} {...props} initialError={changed ? 'Image reference or server changed; reload image' : ''} />
 })
 
-function HistoryImageContent({ block, id, onFullscreenChange }: HistoryImageProps) {
+function HistoryImageContent({ block, id, onFullscreenChange, initialError }: HistoryImageProps & { initialError: string }) {
   const { currentSessionId } = useSessionNavigation()
   const reference = (block as ImageContent & { attachment?: ImageReference }).attachment
   const [data, setData] = useState('')
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
+  const [error, setError] = useState(initialError)
   const controller = useRef<AbortController | undefined>(undefined)
   useEffect(() => () => controller.current?.abort(), [])
   const attachment = useMemo(
@@ -42,7 +46,12 @@ function HistoryImageContent({ block, id, onFullscreenChange }: HistoryImageProp
   )
   const load = async () => {
     const sessionId = reference?.sessionId ?? currentSessionId
-    if (!reference || !sessionId || loading) return
+    if (!reference || loading) return
+    if (!sessionId) { setError('Image session is not available'); return }
+    if (!reference.entryId || !Number.isSafeInteger(reference.blockIndex) || reference.blockIndex < 0 ||
+      (reference.source !== undefined && reference.source !== 'content' && reference.source !== 'details')) {
+      setError('Invalid image reference'); return
+    }
     const signal = new AbortController()
     controller.current = signal
     const generation = serverStore.getActiveServerGeneration()
@@ -51,6 +60,8 @@ function HistoryImageContent({ block, id, onFullscreenChange }: HistoryImageProp
     try {
       let offset = 0
       let etag: string | undefined
+      let totalChars: number | undefined
+      let revision: string | undefined
       const chunks: string[] = []
       for (;;) {
         const page = await postPiSessionCommand(
@@ -66,19 +77,31 @@ function HistoryImageContent({ block, id, onFullscreenChange }: HistoryImageProp
         )
         signal.signal.throwIfAborted()
         if (serverStore.getActiveServerGeneration() !== generation) throw new Error('Server changed')
-        if (!isJsonObject(page) || typeof page.data !== 'string') throw new Error('Invalid image chunk')
-        if (typeof page.totalChars === 'number' && page.totalChars > 64 * 1024 * 1024)
-          throw new Error('Image exceeds 64 MiB preview limit')
-        if (etag && page.etag !== etag) throw new Error('Image changed during download')
-        etag = typeof page.etag === 'string' ? page.etag : undefined
+        if (!isJsonObject(page) || typeof page.data !== 'string' || typeof page.etag !== 'string' ||
+          page.mimeType !== block.mimeType || typeof page.hasMore !== 'boolean' ||
+          typeof page.totalChars !== 'number' || !Number.isSafeInteger(page.totalChars) || page.totalChars <= 0 ||
+          typeof page.nextOffset !== 'number' || !Number.isSafeInteger(page.nextOffset) ||
+          page.nextOffset !== offset + page.data.length || page.nextOffset > page.totalChars ||
+          page.data.length === 0 || page.data.length > 256 * 1024 || page.data.length % 4 !== 0 ||
+          !/^[A-Za-z0-9+/]*={0,2}$/.test(page.data) ||
+          page.hasMore !== (page.nextOffset < page.totalChars) || (page.hasMore && page.data.includes('='))) {
+          throw new Error('Invalid image chunk')
+        }
+        if (page.totalChars > 64 * 1024 * 1024) throw new Error('Image exceeds 64 MiB preview limit')
+        if ((reference.etag && page.etag !== reference.etag) || (etag && page.etag !== etag) ||
+          (totalChars !== undefined && totalChars !== page.totalChars) ||
+          (revision !== undefined && revision !== page.revision)) throw new Error('Image changed during download')
+        etag = page.etag
+        totalChars = page.totalChars
+        revision = typeof page.revision === 'string' ? page.revision : undefined
         chunks.push(page.data)
+        offset = page.nextOffset
         if (!page.hasMore) break
-        const next = Number(page.nextOffset)
-        if (!Number.isSafeInteger(next) || next <= offset) throw new Error('Image cursor did not advance')
-        offset = next
       }
+      const restored = chunks.join('')
       signal.signal.throwIfAborted()
-      setData(chunks.join(''))
+      if (serverStore.getActiveServerGeneration() !== generation) throw new Error('Server changed')
+      setData(restored)
     } catch (cause) {
       if (!signal.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
@@ -106,6 +129,7 @@ function HistoryImageContent({ block, id, onFullscreenChange }: HistoryImageProp
         )}
         <span className="truncate">{attachment.displayName}</span>
       </button>
+      {loading && <button type="button" className="ml-2 text-[length:var(--fs-xs)] text-text-300" onClick={() => { controller.current?.abort(); setLoading(false); setError('Image download cancelled') }}>Cancel</button>}
       {error && (
         <p role="alert" className="mt-1 break-words text-[length:var(--fs-xs)] text-error">
           {error}

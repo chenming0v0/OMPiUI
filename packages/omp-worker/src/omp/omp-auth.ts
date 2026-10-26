@@ -4,6 +4,7 @@ import { isJsonObject } from "@ompiui/protocol"
 import type { ProviderAuthEvent, ProviderAuthPrompt } from "@ompiui/protocol"
 import type { ProviderAuthGateway } from "../command-table.js"
 import { OmpRpcClient, unwrapResponse } from "./rpc-client.js"
+import { withSupportedThinkingLevels } from "./model-thinking.js"
 
 /**
  * OMP 认证网关 —— ProviderAuthGateway 的 OMP RPC 实现。
@@ -121,7 +122,8 @@ export class OmpProviderAuth implements ProviderAuthGateway {
     const client = await this.ensureBound()
     const response = await client.request({ type: "get_available_models" }, 60_000)
     const data = unwrapResponse<JsonValue>(response)
-    return isJsonObject(data) && Array.isArray(data.models) ? data.models : Array.isArray(data) ? data : []
+    const models = isJsonObject(data) && Array.isArray(data.models) ? data.models : Array.isArray(data) ? data : []
+    return models.filter(isJsonObject).map(withSupportedThinkingLevels)
   }
 
   async start(providerId: string, _authType: "api_key" | "oauth"): Promise<JsonValue> {

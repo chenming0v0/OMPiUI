@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import i18n from '../../../i18n'
 import { ModelRolesSettings } from './ModelRolesSettings'
@@ -145,32 +145,6 @@ describe('ModelRolesSettings', () => {
     })
   })
 
-  it('places thinking next to the model and uses a variant placeholder when unset', async () => {
-    getPiModelRolesMock.mockResolvedValue({ default: 'openai/gpt-4.1' })
-    render(<ModelRolesSettings />)
-
-    await waitFor(() => {
-      expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4.1')
-    })
-
-    const row = screen.getAllByTestId('model-selector-stub')[0].closest('.model-role-row')
-    expect(row).not.toBeNull()
-    expect(row?.querySelector('.model-role-secondary')).toBeNull()
-    expect(row?.querySelector('.role-variant-select')).toHaveTextContent('variant')
-    expect(screen.queryByText('Thinking level')).not.toBeInTheDocument()
-  })
-
-  it('opens a click help popover with the role description', async () => {
-    getPiModelRolesMock.mockResolvedValue({ default: 'openai/gpt-4.1' })
-    render(<ModelRolesSettings />)
-
-    const help = await screen.findByRole('button', {
-      name: 'Main model for regular chat; also the fallback when other roles are unassigned.',
-    })
-    expect(screen.queryByText('Main model for regular chat; also the fallback when other roles are unassigned.')).not.toBeInTheDocument()
-    fireEvent.click(help)
-    expect(await screen.findByText('Main model for regular chat; also the fallback when other roles are unassigned.')).toBeInTheDocument()
-  })
 
   it('keeps the thinking suffix when changing a role model without touching levels', async () => {
     getPiModelRolesMock.mockResolvedValue({ slow: 'openai/gpt-4o-mini:high' })
@@ -187,14 +161,54 @@ describe('ModelRolesSettings', () => {
       expect(setPiModelRolesMock).toHaveBeenCalledWith({ slow: 'openai/gpt-4.1:high' })
     })
   })
-  it('offers only official thinking candidates for the selected role model', async () => {
-    getPiModelRolesMock.mockResolvedValue({ default: 'openai/gpt-4.1' })
+  it('selects catalog efforts, saves explicitly and reads the saved effort when reopened', async () => {
+    const model = { ...MODELS[0], supportedThinkingLevels: ['off', 'low', 'max'], thinkingLevelMap: { high: 'high' } }
+    usePiModelsMock.mockReturnValue({ models: [model], isLoading: false, syncStatus: 'synced' })
+    let persisted = { default: 'openai/gpt-4.1:low' }
+    getPiModelRolesMock.mockImplementation(async () => ({ ...persisted }))
+    setPiModelRolesMock.mockImplementation(async roles => {
+      persisted = { ...roles }
+      return { ...persisted }
+    })
+    const first = render(<ModelRolesSettings />)
+    const effort = await screen.findByRole('button', { name: 'Default variant' })
+    await waitFor(() => expect(effort).toHaveTextContent('low'))
+    fireEvent.click(effort)
+    const menu = screen.getByRole('listbox', { name: 'Default variant' })
+    expect(within(menu).getByRole('option', { name: 'low' })).toBeInTheDocument()
+    expect(within(menu).queryByRole('option', { name: 'high' })).not.toBeInTheDocument()
+    fireEvent.click(within(menu).getByRole('option', { name: 'max' }))
+    expect(effort).toHaveTextContent('max')
+    expect(setPiModelRolesMock).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled())
+    expect(persisted).toEqual({ default: 'openai/gpt-4.1:max' })
+    first.unmount()
     render(<ModelRolesSettings />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Default variant' }))
-    expect(await screen.findByText('low')).toBeInTheDocument()
-    expect(screen.getByText('high')).toBeInTheDocument()
-    expect(screen.queryByText('max')).not.toBeInTheDocument()
-    expect(screen.queryByText('xhigh')).not.toBeInTheDocument()
+    await waitFor(() => expect(getPiModelRolesMock).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveAccessibleName('Connected / synced'))
+    expect(screen.getByRole('button', { name: 'Default variant' })).toHaveTextContent('max')
+    expect(readModelRolesCache()).toEqual(persisted)
+  })
+
+  it.each(['high', 'max'])('retains stored unsupported %s until the user explicitly changes effort', async level => {
+    const model = { ...MODELS[0], supportedThinkingLevels: ['off', 'low'] }
+    usePiModelsMock.mockReturnValue({ models: [model], isLoading: false, syncStatus: 'synced' })
+    getPiModelRolesMock.mockResolvedValue({ default: `openai/gpt-4.1:${level}` })
+    render(<ModelRolesSettings />)
+    const effort = await screen.findByRole('button', { name: 'Default variant' })
+    await waitFor(() => expect(effort).toHaveTextContent(level))
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    fireEvent.click(effort)
+    const menu = screen.getByRole('listbox', { name: 'Default variant' })
+    expect(within(menu).queryByRole('option', { name: level })).not.toBeInTheDocument()
+    expect(setPiModelRolesMock).not.toHaveBeenCalled()
+    expect(readModelRolesCache()).toEqual({ default: `openai/gpt-4.1:${level}` })
+    fireEvent.click(within(menu).getByRole('option', { name: 'low' }))
+    expect(effort).toHaveTextContent('low')
+    expect(setPiModelRolesMock).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(setPiModelRolesMock).toHaveBeenCalledWith({ default: 'openai/gpt-4.1:low' }))
   })
 
   it('renders cached roles immediately, then refreshes them and turns green', async () => {

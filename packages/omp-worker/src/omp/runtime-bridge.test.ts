@@ -109,8 +109,7 @@ test("process shutdown rejects an operation still waiting for its runtime receip
   await rejected
 })
 
-// #391/#392: goal 操作接收者是 AgentSession 本身；同一桥实例内验证首轮投递与续跑调度。
-type GoalEvent = Record<string, unknown>
+// Public extension forwarding tests; actual native lifecycle proof is separate.
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value)) as JsonObject
 
 function goalHarness(session: Record<string, unknown>) {
@@ -119,8 +118,7 @@ function goalHarness(session: Record<string, unknown>) {
     .replace("export default function (pi)", "function extension(pi)")
     + "\nextension"
   let commandHandler!: (text: string, ctx: unknown) => Promise<void>
-  const sessionManager = { getSessionId: () => "session", getSessionFile: () => "session.jsonl" }
-  // 原地挂 sessionManager：多个桥实例共享同一 session 对象（循环登记在 session 上）。
+  const sessionManager = { getSessionId: () => "session", getSessionFile: () => "session.jsonl", flush: async () => {} }
   const fullSession = Object.assign(session, { sessionManager })
   const timers = new Set<() => void>()
   const pi = {
@@ -162,170 +160,41 @@ function goalHarness(session: Record<string, unknown>) {
   }
 }
 
-function fakeGoalSession(options: { streaming?: boolean } = {}) {
-  const calls: string[] = []
-  const prompts: string[] = []
-  const continuations: JsonObject[] = []
-  const listeners = new Set<(event: GoalEvent) => void>()
-  let active = ["read", "bash"]
-  let objective = ""
-  let state: JsonObject | null = null
-  const setState = (status: string) => {
-    state = { enabled: status === "active", goal: { status, objective } }
-    return state
-  }
-  return {
-    calls,
-    prompts,
-    continuations,
-    listeners,
-    active: () => active,
-    emit: (event: GoalEvent) => { for (const listener of [...listeners]) listener(event) },
-    surface: {
-      goalRuntime: {
-        createGoal: async (input: { objective: string }) => { calls.push("create"); objective = input.objective; return setState("active") },
-        pauseGoal: async () => { calls.push("pause"); return setState("paused") },
-        resumeGoal: async () => { calls.push("resume"); return setState("active") },
-        buildContinuationPrompt: () => "continue the goal",
-      },
-      getGoalModeState: () => state,
-      getEnabledToolNames: () => active.slice(),
-      // vm 上下文传入的数组原型不同，复制到测试 realm 再比较
-      setActiveToolsByName: async (names: string[]) => { active = [...names] },
-      isStreaming: options.streaming === true,
-      isCompacting: false,
-      hasPostPromptWork: false,
-      hasAdmittedSubmission: false,
-      queuedMessageCount: 0,
-      sendGoalModeContext: async (deliver?: { deliverAs?: string }) => { calls.push("context:" + deliver?.deliverAs) },
-      prompt: async (text: string) => { prompts.push(text) },
-      promptCustomMessage: async (message: JsonObject) => { continuations.push(plain(message)) },
-      subscribe: (listener: (event: GoalEvent) => void) => { listeners.add(listener); return () => { listeners.delete(listener) } },
+function fakeGoalSession() {
+  const calls: unknown[] = []
+  let state: JsonObject = { enabled: true, mode: "active", goal: { id: "goal", objective: "ship it", status: "active", tokensUsed: 12, timeUsedSeconds: 3 } }
+  return { calls, surface: {
+    goalRuntime: {
+      replaceGoal: async (input: unknown) => { calls.push(["replace", input]); return state },
+      completeGoalFromTool: async () => { calls.push("complete"); state = { ...state, enabled: false, mode: "exiting" }; return state.goal },
+      onBudgetMutated: async (value: unknown) => { calls.push(["budget", value]); return state },
     },
-  }
+    getGoalModeState: () => state,
+    sessionManager: { flush: async () => {} },
+  } }
 }
 
-test("goal operations use the goal runtime on AgentSession", async () => {
+test("bridge uses public AgentSession GoalRuntime only for non-RPC operations", async () => {
   const fake = fakeGoalSession()
-  const harness = goalHarness({ ...fake.surface, agent: {} })
-  const created = await harness.run({ op: "create", objective: "ship it" })
-  assert.equal(created.success, true, String(created.error))
-  assert.deepEqual((created.data as JsonObject).state, { enabled: true, goal: { status: "active", objective: "ship it" } })
-  assert.deepEqual(fake.active(), ["read", "bash", "goal"])
-  const paused = await harness.run({ op: "pause" })
-  assert.equal(paused.success, true, String(paused.error))
-  assert.equal((((paused.data as JsonObject).state as JsonObject).goal as JsonObject).status, "paused")
-  assert.deepEqual(fake.active(), ["read", "bash"])
-  const snapshot = await harness.run({ op: "snapshot" })
-  assert.equal((((snapshot.data as JsonObject).state as JsonObject).goal as JsonObject).status, "paused")
-  assert.deepEqual(fake.calls, ["create", "pause"])
+  const harness = goalHarness(fake.surface)
+  for (const args of [{ op: "replace", objective: "new", tokenBudget: 100 }, { op: "complete" }, { op: "budget", tokenBudget: 200 }, { op: "budget", clearBudget: true }]) {
+    assert.equal((await harness.run(args)).success, true)
+  }
+  assert.deepEqual(plain(fake.calls), [["replace", { objective: "new", tokenBudget: 100 }], "complete", ["budget", 200], ["budget", null]])
 })
 
-test("goal operations ignore a goal runtime that only exists on the inner agent", async () => {
+test("native RPC goal operations never use the bridge or a shadow continuation", async () => {
   const fake = fakeGoalSession()
-  const response = await goalHarness({ agent: fake.surface }).run({ op: "create", objective: "ship it" })
+  const harness = goalHarness(fake.surface)
+  for (const op of ["create", "get", "pause", "resume", "drop"]) assert.equal((await harness.run({ op })).success, false)
+  assert.deepEqual(fake.calls, [])
+  assert.equal(harness.pendingTimers(), 0)
+})
+
+test("missing official operation fails before any goal mutation", async () => {
+  const fake = fakeGoalSession()
+  const response = await goalHarness({ agent: fake.surface }).run({ op: "complete" })
   assert.equal(response.success, false)
   assert.equal(response.code, "CAPABILITY_DISABLED")
   assert.deepEqual(fake.calls, [])
-})
-
-test("goal create on an idle session delivers the objective as the first turn exactly once", async () => {
-  const fake = fakeGoalSession()
-  const harness = goalHarness(fake.surface)
-  await harness.run({ op: "create", objective: "ship it" })
-  assert.deepEqual(fake.prompts, ["ship it"])
-  assert.deepEqual(fake.continuations, [])
-  assert.equal(fake.calls.includes("context:steer"), false)
-  assert.equal(harness.pendingTimers(), 0)
-})
-
-test("goal create while streaming steers goal context instead of prompting", async () => {
-  const fake = fakeGoalSession({ streaming: true })
-  await goalHarness(fake.surface).run({ op: "create", objective: "ship it" })
-  assert.deepEqual(fake.prompts, [])
-  assert.deepEqual(fake.calls, ["create", "context:steer"])
-})
-
-test("terminal agent_end continues an active goal through the official continuation prompt", async () => {
-  const fake = fakeGoalSession()
-  const harness = goalHarness(fake.surface)
-  await harness.run({ op: "create", objective: "ship it" })
-  fake.emit({ type: "agent_end", isTerminal: false, messages: [] })
-  assert.equal(harness.pendingTimers(), 0)
-  fake.emit({ type: "agent_end", messages: [{ role: "assistant", stopReason: "stop", content: [] }] })
-  harness.flushTimers()
-  assert.deepEqual(fake.continuations, [{ customType: "goal-continuation", content: "continue the goal", display: false }])
-  // 续跑轮有新工具活动：继续调度。
-  fake.emit({ type: "agent_end", messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "toolCall", name: "bash", arguments: { command: "ls" } }] }] })
-  harness.flushTimers()
-  assert.equal(fake.continuations.length, 2)
-  // 续跑轮无工具活动：按官方语义抑制，直到下一条真实用户消息。
-  fake.emit({ type: "agent_end", messages: [{ role: "assistant", stopReason: "stop", content: [] }] })
-  assert.equal(harness.pendingTimers(), 0)
-  fake.emit({ type: "message_start", message: { role: "user" } })
-  fake.emit({ type: "agent_end", messages: [{ role: "assistant", stopReason: "stop", content: [] }] })
-  harness.flushTimers()
-  assert.equal(fake.continuations.length, 3)
-})
-
-test("goal continuation stops after pause and after a user abort", async () => {
-  const fake = fakeGoalSession()
-  const harness = goalHarness(fake.surface)
-  await harness.run({ op: "create", objective: "ship it" })
-  fake.emit({ type: "agent_end", messages: [{ role: "assistant", stopReason: "aborted", content: [] }] })
-  assert.equal(harness.pendingTimers(), 0)
-  fake.emit({ type: "agent_end", messages: [{ role: "assistant", stopReason: "stop", content: [] }] })
-  await harness.run({ op: "pause" })
-  assert.equal(fake.listeners.size, 0)
-  assert.equal(harness.pendingTimers(), 0)
-  fake.emit({ type: "agent_end", messages: [{ role: "assistant", stopReason: "stop", content: [] }] })
-  harness.flushTimers()
-  assert.deepEqual(fake.continuations, [])
-})
-
-test("goal resume on an idle session schedules one continuation", async () => {
-  const fake = fakeGoalSession()
-  const harness = goalHarness(fake.surface)
-  await harness.run({ op: "create", objective: "ship it" })
-  await harness.run({ op: "pause" })
-  await harness.run({ op: "resume" })
-  assert.equal(fake.listeners.size, 1)
-  harness.flushTimers()
-  assert.equal(fake.continuations.length, 1)
-})
-
-test("goal create on an old runtime is rejected before any goal state changes", async () => {
-  for (const missing of ["subscribe", "buildContinuationPrompt"] as const) {
-    const fake = fakeGoalSession()
-    const surface: Record<string, unknown> = { ...fake.surface, goalRuntime: { ...fake.surface.goalRuntime } }
-    if (missing === "subscribe") delete surface.subscribe
-    else delete (surface.goalRuntime as Record<string, unknown>).buildContinuationPrompt
-    const response = await goalHarness(surface).run({ op: "create", objective: "ship it" })
-    assert.equal(response.success, false, missing)
-    assert.equal(response.code, "CAPABILITY_DISABLED", missing)
-    assert.deepEqual(fake.calls, [], missing)
-    assert.deepEqual(fake.active(), ["read", "bash"], missing)
-  }
-})
-
-test("a throwing continuation prompt never escapes the continuation timer", async () => {
-  const fake = fakeGoalSession()
-  fake.surface.goalRuntime.buildContinuationPrompt = () => { throw new Error("prompt failed") }
-  const harness = goalHarness(fake.surface)
-  await harness.run({ op: "create", objective: "ship it" })
-  fake.emit({ type: "agent_end", messages: [{ role: "assistant", stopReason: "stop", content: [] }] })
-  assert.doesNotThrow(() => harness.flushTimers())
-  assert.deepEqual(fake.continuations, [])
-})
-
-test("a reloaded bridge replaces the previous goal loop instead of subscribing twice", async () => {
-  const fake = fakeGoalSession()
-  await goalHarness(fake.surface).run({ op: "create", objective: "ship it" })
-  assert.equal(fake.listeners.size, 1)
-  const reloaded = goalHarness(fake.surface)
-  await reloaded.run({ op: "create", objective: "ship it again" })
-  assert.equal(fake.listeners.size, 1)
-  fake.emit({ type: "agent_end", messages: [{ role: "assistant", stopReason: "stop", content: [] }] })
-  reloaded.flushTimers()
-  assert.equal(fake.continuations.length, 1)
 })

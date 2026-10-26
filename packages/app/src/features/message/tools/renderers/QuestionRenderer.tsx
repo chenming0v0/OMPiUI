@@ -6,6 +6,9 @@
  */
 
 import { useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
+import { ContentBlock } from '../../../../components'
+import { DefaultRenderer } from './DefaultRenderer'
 import { CheckIcon } from '../../../../components/Icons'
 import type { ToolRendererProps } from '../types'
 
@@ -30,6 +33,7 @@ interface QAPair {
   header?: string
   options: QuestionOption[]
   multiple?: boolean
+  timedOut?: boolean
   answers: string[] // 用户选择的答案
 }
 
@@ -37,12 +41,14 @@ interface QAPair {
 // Main
 // ============================================
 
-export function QuestionRenderer({ execution, data }: ToolRendererProps) {
+export function QuestionRenderer({ execution, partKey, data, onFullscreenChange }: ToolRendererProps) {
+  const { t } = useTranslation('message')
   const inputObj = execution.call.arguments as Record<string, unknown> | undefined
-  const output = data.output?.trim()
-  const metadata = execution.result?.details && typeof execution.result.details === 'object' && !Array.isArray(execution.result.details)
-    ? execution.result.details as Record<string, unknown>
-    : undefined
+  const output = data.output
+  const outer = execution.result?.details && typeof execution.result.details === 'object' && !Array.isArray(execution.result.details)
+    ? execution.result.details as Record<string, unknown> : undefined
+  const metadata = outer?.nativeDetails && typeof outer.nativeDetails === 'object' && !Array.isArray(outer.nativeDetails)
+    ? outer.nativeDetails as Record<string, unknown> : outer
 
   // 从 input 拿问题结构，从 metadata/output 解析答案
   const qaList = useMemo(() => {
@@ -54,19 +60,8 @@ export function QuestionRenderer({ execution, data }: ToolRendererProps) {
     return null
   }
 
-  // 用户跳过 / error 不渲染
-  if (data.error || execution.result?.isError) {
-    return null
-  }
-
-  if (qaList.length === 0) {
-    // 结构化问答解析不出来时不能静默清空成功结果：原始回答文本必须可读（#364）。
-    if (!output) return null
-    return (
-      <div className="px-3 py-2 text-[length:var(--fs-sm)] text-text-200 whitespace-pre-wrap break-words">
-        {output}
-      </div>
-    )
+  if (data.error || execution.result.isError || qaList.length === 0) {
+    return <DefaultRenderer execution={execution} partKey={partKey} data={data} supplementary={false} onFullscreenChange={onFullscreenChange} />
   }
 
   return (
@@ -74,6 +69,7 @@ export function QuestionRenderer({ execution, data }: ToolRendererProps) {
       {qaList.map((qa, i) => (
         <AnsweredQuestion key={i} qa={qa} />
       ))}
+      {output ? <ContentBlock stateKey={`message:${partKey}:question-raw`} label={t('defaultRenderer.output')} content={output} defaultCollapsed onFullscreenChange={onFullscreenChange} fullscreenId={`question:${partKey}:raw`} /> : null}
     </div>
   )
 }
@@ -83,12 +79,14 @@ export function QuestionRenderer({ execution, data }: ToolRendererProps) {
 // ============================================
 
 function AnsweredQuestion({ qa }: { qa: QAPair }) {
+  const { t } = useTranslation('components')
   return (
     <div className="space-y-2">
       {/* 问题文字 */}
       <div>
         {qa.header && <div className="text-[length:var(--fs-xs)] text-text-400 font-medium mb-0.5">{qa.header}</div>}
         <div className="text-[length:var(--fs-md)] text-text-100">{qa.question}</div>
+        {qa.timedOut && <p className="text-[length:var(--fs-xs)] text-warning-100">{t('dialog.timedOut')}</p>}
       </div>
 
       {/* 选项 — 一致的按钮组，已选中的高亮 */}
@@ -153,6 +151,29 @@ function buildQAList(
 ): QAPair[] {
   // 从 input 获取问题结构
   const questions = extractQuestions(inputObj)
+  // Native ask results use selectedOptions/customInput (single question), or
+  // details.results keyed by question id. Notes, timeout and cancellation text
+  // remain in the raw result rather than being guessed from the selected labels.
+  const nativeResults = Array.isArray(metadata?.results) ? metadata.results : metadata && Array.isArray(metadata.selectedOptions) ? [metadata] : []
+  if (nativeResults.length > 0) {
+    return nativeResults.flatMap((value, index) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+      const result = value as Record<string, unknown>
+      if (!Array.isArray(result.selectedOptions) || !result.selectedOptions.every(answer => typeof answer === 'string')) return []
+      const rawQuestions = Array.isArray(inputObj?.questions) ? inputObj.questions : []
+      const matchedIndex = typeof result.id === 'string' ? rawQuestions.findIndex(q => q && typeof q === 'object' && q.id === result.id) : index
+      const question = questions[matchedIndex >= 0 ? matchedIndex : index]
+      if (!question && typeof result.question !== 'string') return []
+      return [{
+        question: question?.question ?? String(result.question),
+        header: question?.header,
+        options: question?.options ?? (Array.isArray(result.options) ? result.options.filter((option): option is string => typeof option === 'string').map(label => ({ label, description: '' })) : []),
+        multiple: question?.multiple ?? result.multi === true,
+        answers: [...result.selectedOptions as string[], ...(typeof result.customInput === 'string' ? [result.customInput] : [])],
+        timedOut: result.timedOut === true,
+      }]
+    })
+  }
 
   // 优先从 metadata.answers 获取结构化答案（后端原始数组）
   const metadataAnswers = extractMetadataAnswers(metadata)
@@ -167,7 +188,7 @@ function buildQAList(
   // fallback: 从 output 文本解析答案
   const answerMap = parseAnswersFromOutput(output)
 
-  if (questions.length === 0 && answerMap.size === 0) {
+  if (answerMap.size === 0) {
     return []
   }
 
@@ -197,17 +218,18 @@ function extractQuestions(inputObj: Record<string, unknown> | undefined): Questi
   // questions 数组
   const raw = inputObj.questions
   if (Array.isArray(raw)) {
-    return raw.map(q => ({
-      question: String(q?.question || ''),
-      header: q?.header ? String(q.header) : undefined,
-      options: Array.isArray(q?.options)
-        ? q.options.map((o: Record<string, unknown>) => ({
-            label: String(o?.label || ''),
-            description: String(o?.description || ''),
-          }))
-        : [],
-      multiple: !!q?.multiple,
-    }))
+    return raw.flatMap(q => {
+      if (!q || typeof q !== 'object' || typeof q.question !== 'string') return []
+      return [{
+        question: q.question,
+        header: typeof q.header === 'string' ? q.header : undefined,
+        options: Array.isArray(q.options)
+          ? q.options.flatMap((o: unknown) => o && typeof o === 'object' && 'label' in o && typeof o.label === 'string'
+            ? [{ label: o.label, description: 'description' in o && typeof o.description === 'string' ? o.description : '' }] : [])
+          : [],
+        multiple: q.multi === true || q.multiple === true,
+      }]
+    })
   }
 
   return []

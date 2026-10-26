@@ -226,4 +226,26 @@ describe('committed native navigation drafts', () => {
       expect(notifications).toHaveBeenCalledWith('error', expect.any(String), 'History readback unavailable', target)
     })
   }
+  it('shows a native rejection without replacing the existing draft', async () => {
+    const key = composerDraftKey(serverStore.getActiveServer(), 'draft-source', '', '')
+    updateComposerDraft(key, () => ({ text: 'keep current draft', attachments: [], ready: true }))
+    vi.spyOn(transport, 'navigatePiTree').mockResolvedValue({ id: 'invalid-navigation' } as never)
+    const wait = vi.spyOn(transport, 'waitHostCommand').mockRejectedValue(new Error('Entry missing not found'))
+    const notifications = vi.spyOn(notificationStore, 'push').mockImplementation(() => {})
+    await expect(navigatePiTree('draft-source', { entryId: 'missing' })).rejects.toThrow('Entry missing not found')
+    expect(wait).toHaveBeenCalledWith('invalid-navigation', undefined, 300_000)
+    expect(getComposerDraft(key).text).toBe('keep current draft')
+    expect(notifications).toHaveBeenCalledWith('error', expect.any(String), 'Entry missing not found', 'draft-source')
+  })
+
+  it('reports native summary abort without restoring or clearing a draft', async () => {
+    const key = composerDraftKey(serverStore.getActiveServer(), 'draft-source', '', '')
+    updateComposerDraft(key, () => ({ text: 'keep current draft', attachments: [], ready: true }))
+    vi.spyOn(transport, 'navigatePiTree').mockResolvedValue({ id: 'aborted-summary' } as never)
+    vi.spyOn(transport, 'waitHostCommand').mockResolvedValue({ cancelled: true, aborted: true })
+    const notifications = vi.spyOn(notificationStore, 'push').mockImplementation(() => {})
+    await navigatePiTree('draft-source', { entryId: 'user', summarize: true })
+    expect(getComposerDraft(key).text).toBe('keep current draft')
+    expect(notifications).toHaveBeenCalledWith('warning', expect.any(String), '', 'draft-source')
+  })
 })

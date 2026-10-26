@@ -18,7 +18,7 @@ it("MockPiSession goal pause stops the active turn and clears its queue", async 
   const session = await MockPiSession.open(root)
   t.after(() => session.abort())
   await session.prompt("first")
-  await session.manageGoal({ op: "set", objective: "Finish the task" })
+  await session.manageGoal({ op: "create", objective: "Finish the task" })
   await session.sendUserMessage("must not restart")
   const events: JsonObject[] = []
   session.onPiEvent(event => events.push(event))

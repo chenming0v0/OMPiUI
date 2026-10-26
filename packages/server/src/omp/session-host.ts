@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { open } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { beginWorktreeAttachment } from "../host/worktrees.ts";
 import type {
   CommandEnvelope,
   CommandRecord,
@@ -133,6 +134,7 @@ export class SessionHost {
   private pendingAttachBytes = 0;
   private pendingAttachCommands = 0;
   private readonly toolInterruptions = new Map<string, JsonObject>();
+  private readonly worktreeMoves = new WeakSet<AttachedSession>();
 
   constructor(
     private readonly supervisor: RuntimeSupervisor,
@@ -303,6 +305,7 @@ export class SessionHost {
       }
     }
     let worker: Awaited<ReturnType<RuntimeSupervisor["open"]>> | undefined;
+    const releaseWorktreeAttachment = beginWorktreeAttachment(cwd);
     try {
       worker = await this.supervisor.open(cwd, sessionFile, signal);
       const state = (await worker.command("state.get", undefined, signal)) as
@@ -324,10 +327,13 @@ export class SessionHost {
         ),
         cwd: session.cwd,
         state: state ?? null,
+        eventCursor: { ...this.hub.getCursor({ kind: "session", id: session.sessionId }) },
       };
     } catch (error) {
       await worker?.dispose().catch(() => undefined);
       throw error;
+    } finally {
+      releaseWorktreeAttachment();
     }
   }
 
@@ -581,6 +587,12 @@ export class SessionHost {
           throw Object.assign(new Error(`${type} is not a query command`), {
             code: "INVALID_REQUEST",
           });
+        }
+        // Reject before reserving worker response capacity: a blocked move must
+        // not keep an immediate prompt waiting behind its own transaction.
+        if (this.worktreeMoves.has(session) &&
+            (type === "sendUserMessage" || type === "steer" || type === "followUp" || type === "abortAndPrompt")) {
+          throw Object.assign(new Error("The native session is switching worktrees; your message was not submitted"), { code: "SESSION_BUSY" });
         }
         const result = await session.worker.command(type, params, signal);
         return type === 'state.get' && isJsonObject(result) && this.toolInterruptions.has(sessionId)
@@ -973,9 +985,23 @@ export class SessionHost {
       if (options.signal?.aborted) throw abortError();
       this.touch(session.sessionId);
       return this.executor.submit(full, async () => {
-        const data = await session.worker.command(full.type, full.params);
-        await this.trackReplacement(session, data);
-        return data;
+        const moving = full.type === "moveSession";
+        if (moving && this.worktreeMoves.has(session)) {
+          throw Object.assign(new Error("The native session is already switching worktrees; nothing was moved"), { code: "SESSION_BUSY" });
+        }
+        if (moving) this.worktreeMoves.add(session);
+        let releaseWorkspace: (() => void) | undefined;
+        try {
+          if (moving && typeof full.params?.path === "string") {
+            releaseWorkspace = beginWorktreeAttachment(resolve(session.cwd, full.params.path));
+          }
+          const data = await session.worker.command(full.type, full.params);
+          await this.trackReplacement(session, data);
+          return data;
+        } finally {
+          releaseWorkspace?.();
+          if (moving) this.worktreeMoves.delete(session);
+        }
       });
     };
     const existing = this.runtimes.get(sessionId);
@@ -1030,7 +1056,27 @@ export class SessionHost {
       typeof data.targetSessionId !== "string"
     )
       return;
-    if (data.targetSessionId === session.sessionId) return;
+    if (data.targetSessionId === session.sessionId) {
+      if (typeof data.targetCwd !== "string" || (typeof data.targetSessionFile !== "string" && data.targetSessionFile !== null)) return;
+      const nextFile = typeof data.targetSessionFile === "string" ? data.targetSessionFile : undefined;
+      if (session.cwd === data.targetCwd && session.sessionFile === nextFile) return;
+      // Relocation keeps identity-bound resources and executor state. The
+      // native receipt, not the old attachment, owns the committed file/cwd.
+      let leaseError: unknown;
+      try { await this.supervisor.replaceRuntimeLease(session.worker, nextFile, session.sessionId); }
+      catch (error) { leaseError = error; }
+      this.runtimes.delete(session.sessionId);
+      session.cwd = data.targetCwd;
+      session.sessionFile = nextFile;
+      session.worker.updateSessionIdentity(session.sessionId, nextFile, session.cwd);
+      this.runtimes.set(session);
+      this.hub.publish({ kind: "server", id: "server" }, "sessions.updated", {
+        replaced: true, reason: "worktree-relocation", sourceSessionId: session.sessionId,
+        targetSessionId: session.sessionId, targetSessionFile: nextFile ?? null, targetCwd: session.cwd,
+      });
+      if (leaseError) throw Object.assign(new Error(`Native session moved to ${session.cwd}, but host lease migration failed: ${String(leaseError)}`), { code: "SESSION_CONFLICT" });
+      return;
+    }
     const sourceSessionId = session.sessionId;
     const targetSessionId = data.targetSessionId;
     const target = this.runtimes.get(targetSessionId);
@@ -1076,7 +1122,6 @@ export class SessionHost {
       }
 
       const previousLastAccess = this.lastAccess.get(sourceSessionId);
-      const previousActivity = this.activity.get(sourceSessionId);
       const wasMaterialized = this.materialized.delete(sourceSessionId);
       this.toolInterruptions.delete(sourceSessionId);
       this.toolInterruptions.delete(targetSessionId);
@@ -1095,10 +1140,11 @@ export class SessionHost {
       );
       if (previousLastAccess !== undefined)
         this.lastAccess.set(targetSessionId, previousLastAccess);
-      if (previousActivity !== undefined)
-        this.activity.set(targetSessionId, previousActivity);
       if (wasMaterialized) this.materialized.add(targetSessionId);
       this.runtimes.set(session);
+      // Activity belongs to the native identity, not to the reused worker.
+      // Target activity is restored by its own native events/state readback.
+      this.publishActivity();
       diagnostics.record("session.replaced", {
         sessionId: targetSessionId,
         sourceSessionId,
@@ -1142,6 +1188,8 @@ export class SessionHost {
     session: AttachedSession,
     event: WorkerEvent,
   ): void {
+    if (event.channel !== "extension.ui" && "sessionId" in event &&
+      typeof event.sessionId === "string" && event.sessionId !== session.sessionId) return;
     this.touch(session.sessionId);
     if (event.channel === "payload.omitted") {
       diagnostics.record("worker.payload_omitted", {
@@ -1438,8 +1486,11 @@ export class SessionHost {
         continue;
       }
       const stillBusy =
-        state.isIdle === false ||
+        state.isIdle !== true ||
+        state.isSettled !== true ||
         state.isStreaming === true ||
+        state.isCompacting === true ||
+        state.isRetrying === true ||
         state.isBashRunning === true ||
         state.hasPendingAsyncWork === true ||
         Number(state.pendingMessageCount ?? 0) > 0;
@@ -1452,6 +1503,16 @@ export class SessionHost {
         this.touch(session.sessionId);
         continue;
       }
+      // state.get is awaited: a view attach, new command or native wake may
+      // have touched this runtime since the candidate snapshot. Never close
+      // that newer activity using an older idle readback.
+      if (
+        this.runtimes.get(session.sessionId) !== session ||
+        (this.lastAccess.get(session.sessionId) ?? 0) >= cutoff ||
+        this.activity.has(session.sessionId) ||
+        this.executor.hasPendingWork(session.sessionId) ||
+        this.executor.isClosing(session.sessionId)
+      ) continue;
       diagnostics.record("session.reaper.close", {
         sessionId: session.sessionId,
         reason: "idle_ttl",

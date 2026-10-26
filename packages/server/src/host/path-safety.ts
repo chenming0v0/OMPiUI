@@ -72,7 +72,7 @@ export interface ResolveResult {
  */
 export function resolveWorkspacePath(rootPath: string, relativeInput: string): ResolveResult {
   const relative = normalizeRelativePath(relativeInput)
-  const rootReal = realpathSync(rootPath)
+  const rootReal = realpathSync.native(rootPath)
   const joined = relative === "" ? rootReal : path.join(rootReal, ...relative.split("/"))
 
   if (!existsSync(joined)) {
@@ -84,7 +84,7 @@ export function resolveWorkspacePath(rootPath: string, relativeInput: string): R
       while (!existsSync(cur) && cur !== path.dirname(cur)) {
         cur = path.dirname(cur)
       }
-      const parentReal = realpathSync(cur)
+      const parentReal = realpathSync.native(cur)
       if (!isInsideRoot(rootReal, parentReal)) {
         throw new PathSafetyError("PATH_OUTSIDE_WORKSPACE", "parent outside workspace")
       }
@@ -97,7 +97,7 @@ export function resolveWorkspacePath(rootPath: string, relativeInput: string): R
         restricted: false,
       }
     } else {
-      const parentReal = realpathSync(parent)
+      const parentReal = realpathSync.native(parent)
       if (!isInsideRoot(rootReal, parentReal)) {
         throw new PathSafetyError("PATH_OUTSIDE_WORKSPACE", "parent outside workspace")
       }
@@ -118,7 +118,13 @@ export function resolveWorkspacePath(rootPath: string, relativeInput: string): R
     isSymlink = false
   }
 
-  const targetReal = realpathSync(joined)
+  const targetReal = realpathSync.native(joined)
+  if (!isSymlink && targetReal !== joined) {
+    // Some Windows reparse aliases are absent from lstat's link flag. Compare
+    // the node against its physical parent, not against an aliased ancestor.
+    const parentReal = realpathSync.native(path.dirname(joined))
+    isSymlink = path.relative(path.join(parentReal, path.basename(joined)), targetReal) !== ""
+  }
   if (!isInsideRoot(rootReal, targetReal)) {
     if (isSymlink) {
       throw new PathSafetyError("SYMLINK_ESCAPE", "symlink points outside workspace")

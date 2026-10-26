@@ -45,6 +45,7 @@ vi.mock('../../../hooks/useTheme', () => ({
 vi.mock('../tools', () => ({
   getToolIcon: () => <span data-testid="tool-icon">icon</span>,
   extractToolData: () => ({}),
+  defaultExtractData: () => ({}),
   getToolConfig: () => undefined,
   isYieldTool: (name: string) => name.toLowerCase() === 'yield',
   DefaultRenderer: () => null,
@@ -90,6 +91,13 @@ describe('ToolPartView running duration', () => {
     })
 
     expect(screen.getByText('3.0s')).toBeInTheDocument()
+  })
+
+  it('labels orphan arguments as unknown instead of deriving an operation target', () => {
+    const execution = { ...createRunningExecution(), argumentsUnknown: true, result: { role: 'toolResult' as const, toolCallId: 'call-1', toolName: 'bash', content: [{ type: 'text' as const, text: 'actual output' }], isError: false, timestamp: 10_000 } }
+    render(<ToolPartView execution={execution} partKey="unknown-arguments" compact defaultExpanded />)
+    expect(screen.getByText('toolPart.argumentsUnknown')).toBeInTheDocument()
+    expect(screen.queryByText('npm run build')).not.toBeInTheDocument()
   })
 
   it.each(['timeline', 'compact', 'descriptive'] as const)('does not keep the running timer after an authoritative tool interruption in the %s layout', layout => {

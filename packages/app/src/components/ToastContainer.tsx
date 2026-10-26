@@ -37,6 +37,7 @@ const typeConfig: Record<
   completed: { icon: CheckIcon, color: 'text-success-100', bgAccent: 'bg-success-bg' },
   error: { icon: AlertCircleIcon, color: 'text-danger-100', bgAccent: 'bg-danger-bg' },
   warning: { icon: AlertTriangleIcon, color: 'text-warning-100', bgAccent: 'bg-warning-bg' },
+  info: { icon: AlertCircleIcon, color: 'text-info-100', bgAccent: 'bg-info-bg' },
 }
 
 // ============================================
@@ -183,12 +184,12 @@ export function ToastContainer({ onOpenAbout }: { onOpenAbout: () => void }) {
     notificationStore.dismissToast(id)
     notificationStore.markRead(id)
     if (sessionId) {
-      const dir = directory ? `?dir=${directory}` : ''
+      const dir = directory ? `?dir=${encodeURIComponent(directory)}` : ''
       window.location.assign(`#/session/${sessionId}${dir}`)
       // 扩展类通知（ctx.ui.notify）：内容在右侧扩展面板的命令反馈区，
       // 跳转 session 后顺带把扩展面板带出来
       if (target === 'extensions') {
-        layoutStore.addExtensionsTab('right')
+        layoutStore.addExtensionsTab('right', directory)
       }
     }
   }

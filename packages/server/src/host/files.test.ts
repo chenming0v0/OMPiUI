@@ -300,8 +300,8 @@ describe("workspace files", () => {
   it("supports a case-only rename on Windows", { skip: process.platform !== "win32" }, async () => {
     const { root, workspace } = fixture()
     writeFileSync(path.join(root, "Readme.txt"), "case")
-    const moved = await moveWorkspaceEntry(workspace, "Readme.txt", "README.txt")
-    assert.equal(moved.path, "README.txt")
+    await moveWorkspaceEntry(workspace, "Readme.txt", "README.txt")
+    assert.deepEqual(readdirSync(root), ["README.txt"])
     assert.equal(readFileSync(path.join(root, "README.txt"), "utf8"), "case")
   })
 
@@ -311,7 +311,7 @@ describe("workspace files", () => {
     await assert.rejects(writeFileContent(workspace, "bad.bin", "%%%", { encoding: "base64" }), /invalid base64/)
   })
 
-  it("writes through an internal directory link at its physical target", async () => {
+  it("writes through an internal directory link and removes only the link", async () => {
     const { root, workspace } = fixture()
     const physical = path.join(root, "physical")
     const alias = path.join(root, "alias")
@@ -322,6 +322,8 @@ describe("workspace files", () => {
       return
     }
     await writeFileContent(workspace, "alias/new.txt", "physical")
+    await deleteWorkspaceEntry(workspace, "alias", true)
+    assert.equal(existsSync(alias), false)
     assert.equal(readFileSync(path.join(physical, "new.txt"), "utf8"), "physical")
   })
 

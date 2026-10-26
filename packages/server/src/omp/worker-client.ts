@@ -54,7 +54,7 @@ interface LateResponseHandlers {
  * 心跳看门狗（missLimit ≈ 60s 连续丢心跳）兜底。显式配置的超时
  * （测试注入 / OMPIUI_WORKER_REQUEST_TIMEOUT_MS）对所有命令仍然生效。
  */
-const TURN_SCOPED_COMMANDS = new Set(["prompt", "sendUserMessage", "compact"]);
+const TURN_SCOPED_COMMANDS = new Set(["prompt", "sendUserMessage", "abortAndPrompt", "compact"]);
 
 /**
  * Spawning the SDK worker takes seconds on a loaded machine (cold boot even

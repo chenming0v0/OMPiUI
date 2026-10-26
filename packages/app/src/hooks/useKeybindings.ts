@@ -75,6 +75,9 @@ export function useGlobalKeybindings(handlers: KeybindingHandlers, enabled = tru
       const target = e.target as HTMLElement
       const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable
       if (target.closest('.xterm')) return
+      // The native composer owns Ctrl+P / Ctrl+Shift+P. In particular,
+      // reverse cycling must not be consumed by the global command palette.
+      if (target.matches('textarea[data-model-cycle-shortcut]') && e.ctrlKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === 'p') return
 
       // 检查是否有模态框/对话框/下拉菜单打开
       // 如果有，只允许特定的快捷键通过

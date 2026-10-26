@@ -179,6 +179,10 @@ export function acceptComposerDraft(key: string, submitted: Pick<ComposerDraft, 
   updateComposerDraft(key, current => ({
     ...current,
     text: current.text === submitted.text ? '' : current.text,
-    attachments: current.attachments.filter(attachment => !submitted.attachments.some(sent => sent.id === attachment.id)),
+    // Moved drafts retain attachment objects. New or replaced attachments, and
+    // chips still belonging to edited text, are not part of this acceptance.
+    attachments: current.attachments.filter(attachment =>
+      !submitted.attachments.includes(attachment) || (!!attachment.textRange && current.text !== submitted.text),
+    ),
   }))
 }

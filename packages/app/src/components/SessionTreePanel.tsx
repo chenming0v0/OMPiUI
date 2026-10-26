@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { JsonObject, JsonValue, ToolDescriptor } from '@ompiui/protocol'
 import type { SessionEntry } from '../omp/domain'
@@ -13,8 +13,9 @@ import {
   UploadIcon,
 } from './Icons'
 import { IconButton } from './ui/IconButton'
-import { SegmentedControl, SettingField, SettingRow, SettingsDisclosure, SettingsSection, Toggle } from '../features/settings/components/SettingsUI'
+import { SettingsSelect, SettingField, SettingRow, SettingsDisclosure, SettingsSection, Toggle } from '../features/settings/components/SettingsUI'
 import { usePiCapabilities } from '../omp/capabilities'
+import { serverStore } from '../store/serverStore'
 import {
   abortPiBranchSummary,
   abortPiCompaction,
@@ -34,8 +35,8 @@ import {
   setPiInterruptMode,
   setPiSteeringMode,
 } from '../omp/controllers/index.js'
-import { getPiTree, type PiForkResult } from '../omp/transport/index.js'
-import { commitRedoPlan } from '../omp/redoPlanStore'
+import { getPiEntry, getPiTree, type PiForkResult } from '../omp/transport/index.js'
+import { captureRedoCheckpoints, commitRedoPlan } from '../omp/redoPlanStore'
 import { usePiSessionRuntimeState } from '../omp/hooks/index.js'
 import { selectPiTimelineItems } from '../omp/selectors/index.js'
 import type { PiBranchPage } from '../omp/domain'
@@ -45,8 +46,6 @@ import { MessageRenderer } from '../features/message/MessageRenderer'
 import {
   buildSessionTreeGraph,
   findSessionTreeNode,
-  findNewestDescendantEntries,
-  isTreeVisibleEntry,
   sessionTreeEntryPreview,
   type NativeEntry,
   type NativeTreeNode,
@@ -82,22 +81,14 @@ interface RetryView {
 interface QueueView {
   steering?: string[]
   followUp?: string[]
-  steeringMode?: 'all' | 'one-at-a-time'
-  followUpMode?: 'all' | 'one-at-a-time'
+  steeringMode?: 'all' | 'one-at-a-time' | null
+  followUpMode?: 'all' | 'one-at-a-time' | null
 }
 
 function record(value: JsonValue | undefined): JsonObject {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
 }
 
-/** redo 可落节点：树上可见、非 user 消息（落在 user 消息 = 撤销语义） */
-function isRedoLandingEntry(entry: NativeEntry, currentLeafId: string | null): boolean {
-  if (typeof entry.id !== 'string' || !entry.id) return false
-  if (!isTreeVisibleEntry(entry, currentLeafId)) return false
-  const type = typeof entry.type === 'string' ? entry.type : ''
-  const role = record(entry.message as JsonValue).role
-  return !(type === 'message' && role === 'user')
-}
 
 export const SessionTreePanel = memo(function SessionTreePanel({
   sessionId,
@@ -117,6 +108,13 @@ export const SessionTreePanel = memo(function SessionTreePanel({
   const [importCwd, setImportCwd] = useState('')
   const [compactInstructions, setCompactInstructions] = useState('')
   const [runtimePending, setRuntimePending] = useState<string | null>(null)
+  const serverGeneration = useSyncExternalStore(listener => serverStore.subscribe(listener), () => serverStore.getActiveServerGeneration(), () => serverStore.getActiveServerGeneration())
+  const interruptScope = JSON.stringify([serverGeneration, sessionId])
+  const interruptIdentityRef = useRef({ scope: interruptScope })
+  if (interruptIdentityRef.current.scope !== interruptScope) interruptIdentityRef.current = { scope: interruptScope }
+  const interruptFlightRef = useRef<object | null>(null)
+  const [interruptStatus, setInterruptStatus] = useState<{ identity: object; pending: boolean; error: string | null } | null>(null)
+  const interruptVisible = interruptStatus?.identity === interruptIdentityRef.current ? interruptStatus : null
   const [nativeTree, setNativeTree] = useState<NativeTreeNode[]>([])
   const [nativeLoading, setNativeLoading] = useState(false)
   const [nativeLoadError, setNativeLoadError] = useState<string | null>(null)
@@ -224,10 +222,10 @@ export const SessionTreePanel = memo(function SessionTreePanel({
       return
     }
     setSelectedEntryId(current => {
-      if (current && treeGraph.nodeById.has(current)) return current
+      if (current && findSessionTreeNode(nativeTree, current)) return current
       return treeGraph.nodes.find(node => node.data.currentLeaf)?.id ?? treeGraph.nodes[0]?.id ?? null
     })
-  }, [nativeTree.length, treeGraph])
+  }, [nativeTree, treeGraph])
   const [summarizeNavigation, setSummarizeNavigation] = useState(false)
   const [navigationInstructions, setNavigationInstructions] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -245,27 +243,60 @@ export const SessionTreePanel = memo(function SessionTreePanel({
     ? selectedEntry.message as NativeEntry
     : undefined
   const selectedRole = typeof selectedMessage?.role === 'string' ? selectedMessage.role : undefined
-  const selectedIsLeaf = treeGraph.nodes.some(node => node.id === selectedEntryId && node.data.currentLeaf)
+  const selectedIsLeaf = selectedEntryId === leafId
+  const canNavigateSelected = !selectedIsLeaf || selectedRole === 'user'
+  const nativeEntries = useMemo(() => {
+    const entries: NativeEntry[] = []
+    const stack = [...nativeTree].reverse()
+    const seen = new Set<string>()
+    while (stack.length) {
+      const node = stack.pop()!
+      if (typeof node.entry.id !== 'string' || seen.has(node.entry.id)) continue
+      seen.add(node.entry.id)
+      if (node.entry.type !== 'omp.dropped') entries.push(node.entry)
+      stack.push(...[...node.children].reverse())
+    }
+    return entries
+  }, [nativeTree])
+  const detailEntries = useMemo(
+    () => selectedEntryId ? treeGraph.detailEntriesById.get(selectedEntryId) ?? (selectedEntry ? [selectedEntry] : []) : [],
+    [selectedEntryId, selectedEntry, treeGraph],
+  )
+  const [detailData, setDetailData] = useState<{ sessionId: string; entryId: string; entries?: SessionEntry[]; error?: string } | null>(null)
+  useEffect(() => {
+    if (!detailOpen || !selectedEntryId || detailEntries.length === 0) return
+    const controller = new AbortController()
+    void Promise.all(detailEntries.map(entry => getPiEntry(sessionId, String(entry.id), controller.signal)))
+      .then(entries => {
+        if (!controller.signal.aborted) setDetailData({ sessionId, entryId: selectedEntryId, entries })
+      })
+      .catch(cause => {
+        if (!controller.signal.aborted) setDetailData({ sessionId, entryId: selectedEntryId, error: cause instanceof Error ? cause.message : String(cause) })
+      })
+    return () => controller.abort()
+  }, [detailOpen, detailEntries, selectedEntryId, sessionId])
+  const selectedDetail = detailData?.sessionId === sessionId && detailData.entryId === selectedEntryId ? detailData : null
   const selectedDetailItems = useMemo(
-    () =>
-      selectPiTimelineItems({
-        items: (selectedEntryId ? treeGraph.detailEntriesById.get(selectedEntryId) ?? [] : []) as unknown as SessionEntry[],
-      } as unknown as PiBranchPage),
-    [selectedEntryId, treeGraph],
+    () => selectPiTimelineItems({ items: selectedDetail?.entries ?? [] } as unknown as PiBranchPage),
+    [selectedDetail],
   )
   const splitMaxHeight = Math.max(0, (containerRef.current?.clientHeight ?? 500) - 160)
   const splitMinHeight = Math.min(180, splitMaxHeight)
 
   const applyReplacement = useCallback(
     (result: PiForkResult) => {
-      if (result.cancelled || !result.targetSessionId) return
+      if (result.cancelled || result.aborted) {
+        setError(t(result.aborted ? 'sessionTree.navigationAborted' : 'sessionTree.navigationCancelled'))
+        return
+      }
+      if (!result.targetSessionId) return
       window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
       onNavigateSession?.({
         id: result.targetSessionId,
         directory: result.targetCwd ?? undefined,
       })
     },
-    [onNavigateSession],
+    [onNavigateSession, t],
   )
 
   const runEntryCommand = useCallback(async (entryId: string, command: () => Promise<void>) => {
@@ -287,30 +318,22 @@ export const SessionTreePanel = memo(function SessionTreePanel({
   const handleNavigate = useCallback(
     (entryId: string) => {
       if (!capabilities.sessionNavigate) return
-      // redo = 目标向下的后续可落节点（沿最新子分支，树上可见且非 user 消息——
-      // pi 的 navigateTree 落在 user 消息上是撤销语义，不能作为 redo 落点）。
-      // 条数即剩余节点数；目标是叶子时为空，不出 redo
-      const targetNode = findSessionTreeNode(nativeTree, entryId)
-      const checkpoints = targetNode
-        ? findNewestDescendantEntries(targetNode)
-            .filter(entry => isRedoLandingEntry(entry, leafId))
-            .map(entry => String(entry.id))
-        : []
+      const checkpoints = captureRedoCheckpoints(sessionId, entryId, nativeTree, leafId)
       void runEntryCommand(entryId, async () => {
         const result = await navigatePiTree(sessionId, {
           entryId,
           summarize: summarizeNavigation || undefined,
           customInstructions: navigationInstructions.trim() || undefined,
         })
-        if (result.cancelled || result.aborted) return
-        // #356: 原生返回的目标节点文本/图片草稿交给聊天面板恢复输入框。
-        if (typeof result.editorText === 'string' || Array.isArray(result.editorImages)) {
-          window.dispatchEvent(new CustomEvent('ompiui:native-editor-draft', { detail: { sessionId, editorText: result.editorText, editorImages: result.editorImages } }))
+        if (result.cancelled || result.aborted) {
+          setError(t(result.aborted ? 'sessionTree.navigationAborted' : 'sessionTree.navigationCancelled'))
+          return
         }
+        if (result.noOp) return
         await commitRedoPlan(sessionId, checkpoints)
       })
     },
-    [capabilities.sessionNavigate, nativeTree, leafId, navigationInstructions, runEntryCommand, sessionId, summarizeNavigation],
+    [capabilities.sessionNavigate, nativeTree, leafId, navigationInstructions, runEntryCommand, sessionId, summarizeNavigation, t],
   )
 
   const runRuntimeCommand = useCallback(async (
@@ -332,6 +355,21 @@ export const SessionTreePanel = memo(function SessionTreePanel({
     }
   }, [loadNativeTree, sessionId, t])
 
+  const handleInterruptMode = useCallback(async (value: 'immediate' | 'wait') => {
+    const identity = interruptIdentityRef.current
+    if (identity.scope !== JSON.stringify([serverGeneration, sessionId]) || interruptFlightRef.current === identity || serverStore.getActiveServerGeneration() !== serverGeneration) return
+    interruptFlightRef.current = identity
+    setInterruptStatus({ identity, pending: true, error: null })
+    try {
+      await setPiInterruptMode(sessionId, value)
+      if (interruptIdentityRef.current === identity) setInterruptStatus({ identity, pending: false, error: null })
+    } catch (cause) {
+      if (interruptIdentityRef.current === identity) setInterruptStatus({ identity, pending: false, error: cause instanceof Error ? cause.message : String(cause) })
+    } finally {
+      if (interruptFlightRef.current === identity) interruptFlightRef.current = null
+    }
+  }, [serverGeneration, sessionId])
+
   const handleToggleTool = useCallback((toolName: string, enabled: boolean) => {
     if (!capabilities.toolsManage) return
     const next = enabled
@@ -341,11 +379,10 @@ export const SessionTreePanel = memo(function SessionTreePanel({
   }, [activeTools, capabilities.toolsManage, runRuntimeCommand, sessionId])
 
   const handleFork = useCallback(
-    (entryId: string) => {
+    (entryId: string, position: 'before' | 'at' = 'before') => {
       if (!capabilities.fork) return
       void runEntryCommand(entryId, async () => {
-        // pi TUI parity：fork 从该用户消息之前分叉，消息文本带回输入框改写重发
-        const result = await forkPiSession(sessionId, entryId, 'before')
+        const result = await forkPiSession(sessionId, entryId, position)
         applyReplacement(result)
       })
     },
@@ -561,30 +598,34 @@ export const SessionTreePanel = memo(function SessionTreePanel({
         >
           <SettingField label={t('sessionTree.steering')} description={t('sessionTree.steeringHint')}>
             <div className="w-56 max-w-full">
-              <SegmentedControl
-                value={queue.steeringMode ?? 'all'}
+              <SettingsSelect
+                value={queue.steeringMode ?? undefined}
+                ariaLabel={t('sessionTree.steering')}
+                disabled={runtimePending !== null}
                 options={[
                   { value: 'one-at-a-time' as const, label: t('sessionTree.oneAtATime') },
                   { value: 'all' as const, label: t('sessionTree.allAtOnce') },
                 ]}
                 onChange={value => {
                   if (runtimePending !== null) return false
-                  void runRuntimeCommand('queue-mode', () => setPiSteeringMode(sessionId, value))
+                  void runRuntimeCommand('queue-mode', () => setPiSteeringMode(sessionId, value), false)
                 }}
               />
             </div>
           </SettingField>
           <SettingField label={t('sessionTree.followUp')} description={t('sessionTree.followUpHint')}>
             <div className="w-56 max-w-full">
-              <SegmentedControl
-                value={queue.followUpMode ?? 'all'}
+              <SettingsSelect
+                value={queue.followUpMode ?? undefined}
+                ariaLabel={t('sessionTree.followUp')}
+                disabled={runtimePending !== null}
                 options={[
                   { value: 'one-at-a-time' as const, label: t('sessionTree.oneAtATime') },
                   { value: 'all' as const, label: t('sessionTree.allAtOnce') },
                 ]}
                 onChange={value => {
                   if (runtimePending !== null) return false
-                  void runRuntimeCommand('queue-mode', () => setPiFollowUpMode(sessionId, value))
+                  void runRuntimeCommand('queue-mode', () => setPiFollowUpMode(sessionId, value), false)
                 }}
               />
             </div>
@@ -596,19 +637,20 @@ export const SessionTreePanel = memo(function SessionTreePanel({
         <SettingsSection title={t('sessionTree.interruptMode')} description={t('sessionTree.interruptModeHint')}>
           <SettingField label={t('sessionTree.interruptMode')} description={t('sessionTree.interruptModeDetail')}>
             <div className="w-56 max-w-full">
-              <SegmentedControl
-                value={typeof state.interruptMode === 'string' ? (state.interruptMode as 'immediate' | 'wait') : 'immediate'}
+              <SettingsSelect<'immediate' | 'wait'>
+                value={state.interruptMode === 'immediate' || state.interruptMode === 'wait' ? state.interruptMode : undefined}
+                placeholder={t('sessionTree.interruptUnavailable')}
+                ariaLabel={t('sessionTree.interruptMode')}
+                disabled={interruptVisible?.pending === true || runtimePending !== null}
                 options={[
-                  { value: 'immediate' as const, label: t('sessionTree.interruptImmediate') },
-                  { value: 'wait' as const, label: t('sessionTree.interruptWait') },
+                  { value: 'immediate', label: t('sessionTree.interruptImmediate') },
+                  { value: 'wait', label: t('sessionTree.interruptWait') },
                 ]}
-                onChange={value => {
-                  if (runtimePending !== null) return false
-                  void runRuntimeCommand('interrupt-mode', () => setPiInterruptMode(sessionId, value))
-                }}
+                onChange={value => { void handleInterruptMode(value) }}
               />
             </div>
           </SettingField>
+          {interruptVisible?.error ? <p role="alert" className="text-[length:var(--fs-xs)] text-danger-100">{interruptVisible.error}</p> : null}
         </SettingsSection>
       ) : null}
 
@@ -691,6 +733,26 @@ export const SessionTreePanel = memo(function SessionTreePanel({
       ) : null}
 
       <div ref={containerRef} className={mode === 'tree' ? 'min-h-0 flex-1 flex flex-col' : 'hidden'}>
+        <div className="flex shrink-0 items-center gap-2 border-b border-border-200/40 px-3 py-2">
+          <select
+            aria-label={t('sessionTree.nativeEntry')}
+            value={selectedEntryId ?? ''}
+            onChange={event => { setSelectedEntryId(event.target.value); setDetailOpen(true) }}
+            className="h-8 min-w-0 flex-1 rounded-md border border-border-200 bg-bg-100 px-2 text-[length:var(--fs-xs)] text-text-200"
+          >
+            <option value="" disabled>{t('sessionTree.nativeEntry')}</option>
+            {nativeEntries.map(entry => (
+              <option key={String(entry.id)} value={String(entry.id)}>
+                {String(entry.id)} · {sessionTreeEntryPreview(entry, type => t(`sessionTree.entryTypes.${type}`))}
+              </option>
+            ))}
+          </select>
+          {pendingEntryId && summarizeNavigation ? (
+            <IconButton size="sm" aria-label={t('sessionTree.abortBranchSummary')} title={t('sessionTree.abortBranchSummary')} onClick={() => void abortPiBranchSummary(sessionId).catch(cause => setError(cause instanceof Error ? cause.message : String(cause)))}>
+              <StopIcon size={13} />
+            </IconButton>
+          ) : null}
+        </div>
         <div
           ref={canvasRef}
           className="shrink-0 overflow-hidden"
@@ -747,7 +809,7 @@ export const SessionTreePanel = memo(function SessionTreePanel({
                   {editingEntryId !== selectedEntryId ? (
                     <>
                       <div className="flex items-center gap-0.5">
-                        {capabilities.sessionNavigate && !selectedIsLeaf ? (
+                        {capabilities.sessionNavigate && canNavigateSelected ? (
                           <IconButton
                             size="sm"
                             variant="solid"
@@ -772,9 +834,20 @@ export const SessionTreePanel = memo(function SessionTreePanel({
                           <IconButton
                             size="sm"
                             disabled={pendingEntryId !== null}
-                            aria-label={t('sessionTree.fork')}
-                            title={t('sessionTree.fork')}
+                            aria-label={t('sessionTree.forkBefore')}
+                            title={t('sessionTree.forkBefore')}
                             onClick={() => handleFork(selectedEntryId)}
+                          >
+                            <GitBranchIcon size={13} />
+                          </IconButton>
+                        ) : null}
+                        {capabilities.fork && selectedEntryType === 'message' ? (
+                          <IconButton
+                            size="sm"
+                            disabled={pendingEntryId !== null}
+                            aria-label={t('sessionTree.forkAt')}
+                            title={t('sessionTree.forkAt')}
+                            onClick={() => handleFork(selectedEntryId, 'at')}
                           >
                             <GitBranchIcon size={13} />
                           </IconButton>
@@ -790,6 +863,7 @@ export const SessionTreePanel = memo(function SessionTreePanel({
               </div>
 
               <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
+                {selectedDetail?.error ? <p role="alert" className="mb-2 text-[length:var(--fs-xs)] text-danger-100">{selectedDetail.error}</p> : null}
                 {selectedDetailItems.length > 0 ? (
                   <div className="space-y-3">
                     {selectedDetailItems.map(item => (
@@ -807,7 +881,7 @@ export const SessionTreePanel = memo(function SessionTreePanel({
                   </p>
                 ) : null}
 
-                {capabilities.sessionNavigate && !selectedIsLeaf ? (
+                {capabilities.sessionNavigate && canNavigateSelected ? (
                   <p className="mt-2 rounded-md bg-bg-200/40 px-3 py-2 text-[length:var(--fs-xs)] leading-relaxed text-text-400">
                     {selectedRole === 'user' || selectedEntryType === 'custom_message'
                       ? t('sessionTree.navigateUserHint')
@@ -841,7 +915,7 @@ export const SessionTreePanel = memo(function SessionTreePanel({
                   </div>
                 ) : (
                   <div className="flex flex-wrap items-center gap-1.5">
-                    {capabilities.sessionNavigate && capabilities.compactionManage && !selectedIsLeaf ? (
+                    {capabilities.sessionNavigate && capabilities.compactionManage && canNavigateSelected ? (
                       <SettingsDisclosure title={t('sessionTree.navigationOptions')} className="w-full">
                         <div className="space-y-2 text-[length:var(--fs-xs)] text-text-300">
                           <label className="flex items-center gap-2">

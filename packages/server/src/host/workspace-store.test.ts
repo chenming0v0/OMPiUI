@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtempSync, mkdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { mkdtempSync, mkdirSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { afterEach, describe, it } from "node:test"
@@ -100,7 +100,12 @@ describe("workspace identity", () => {
     store.resolve(root)
     renameSync(root, path.join(parent, "moved"))
     symlinkSync(outside, root, process.platform === "win32" ? "junction" : "dir")
-    assert.throws(() => store.resolve(root), /workspace root was replaced/)
+    try {
+      assert.throws(() => store.resolve(root), /workspace root was replaced/)
+    } finally {
+      if (process.platform === "win32") rmdirSync(root)
+      else unlinkSync(root)
+    }
   })
 
   it("rejects an operation using a known root after replacement", () => {
@@ -114,6 +119,11 @@ describe("workspace identity", () => {
     const record = store.resolve(root)
     renameSync(root, path.join(parent, "moved"))
     symlinkSync(outside, root, process.platform === "win32" ? "junction" : "dir")
-    assert.throws(() => store.assertCurrent(record), /workspace root was replaced/)
+    try {
+      assert.throws(() => store.assertCurrent(record), /workspace root was replaced/)
+    } finally {
+      if (process.platform === "win32") rmdirSync(root)
+      else unlinkSync(root)
+    }
   })
 })

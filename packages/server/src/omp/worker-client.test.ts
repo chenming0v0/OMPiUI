@@ -127,6 +127,41 @@ test("WorkerSession keeps a healthy worker when only a command times out", async
   }
 })
 
+test("atomic prompt acceptance outlives the default worker request deadline", async context => {
+  const catalog = WorkerSession.createCatalog(new URL("./worker-client-fixture.mjs", import.meta.url), {
+    env: { OMPIUI_FIXTURE_MODE: "slow-command" },
+    execArgv: ["--import", "tsx"],
+  })
+  const controller = new AbortController()
+  try {
+    await catalog.getHandshake()
+    context.mock.timers.enable({ apis: ["setTimeout"] })
+    let completed = false
+    const atomic = catalog.command("abortAndPrompt", { text: "native atomic input" }, controller.signal)
+    void atomic.finally(() => { completed = true }).catch(() => undefined)
+    const aborted = assert.rejects(atomic, { code: "REQUEST_ABORTED" })
+    const ordinary = assert.rejects(catalog.command("state.get"), { code: "WORKER_RESULT_UNKNOWN" })
+    context.mock.timers.tick(60_001)
+    await ordinary
+    assert.equal(completed, false, "native terminal acceptance must not be discarded at 60s")
+    controller.abort()
+    await aborted
+  } finally {
+    context.mock.timers.reset()
+    await catalog.dispose()
+  }
+})
+
+test("explicit worker request deadlines still apply to atomic prompts", async () => {
+  const catalog = startCatalog("slow-command", { requestTimeoutMs: 50 })
+  try {
+    await catalog.getHandshake()
+    await assert.rejects(catalog.command("abortAndPrompt", { text: "native atomic input" }), { code: "WORKER_RESULT_UNKNOWN" })
+  } finally {
+    await catalog.dispose()
+  }
+})
+
 test("WorkerSession rejects pending commands when the worker exits before confirming", async () => {
   const catalog = startCatalog("exit-on-request")
   const crashes: Error[] = []

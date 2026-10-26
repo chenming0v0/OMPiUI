@@ -155,34 +155,6 @@ export function findSessionTreePath(tree: NativeTreeNode[], entryId: string): st
   return null
 }
 
-function entryTime(entry: NativeEntry): number {
-  const value = entry.timestamp
-  if (typeof value === 'number') return value
-  if (typeof value === 'string') {
-    const parsed = Date.parse(value)
-    return Number.isNaN(parsed) ? 0 : parsed
-  }
-  return 0
-}
-
-/**
- * 节点向下的"分支尾巴"：每步选时间最新的子节点直到叶子。
- * 导航到某个节点时被裁掉的就是这一段——redo 只恢复自己分支的后续，
- * 不做跨分支 redo。多叉时最新子分支就是该分支最近的活跃延续。
- */
-export function findNewestDescendantEntries(node: NativeTreeNode): NativeEntry[] {
-  const entries: NativeEntry[] = []
-  let current = node
-  while (nodeChildren(current).length > 0) {
-    let next = nodeChildren(current)[0]!
-    for (const child of nodeChildren(current)) {
-      if (entryTime(nodeEntry(child)) > entryTime(nodeEntry(next))) next = child
-    }
-    entries.push(nodeEntry(next))
-    current = next
-  }
-  return entries
-}
 
 export function isTreeVisibleEntry(entry: NativeEntry, currentLeafId: string | null): boolean {
   const type = typeof entry.type === 'string' ? entry.type : 'unknown'

@@ -108,7 +108,7 @@ export function defaultExtractData(execution: PiToolExecution): ExtractedToolDat
   // Error
   if (getToolExecutionStatus(execution) === 'error') {
     const detailErrors = [metadata?.error, metadata?.mergeError, nativeDetails?.error, nativeDetails?.mergeError].filter(value => typeof value === 'string' && value.trim())
-    result.error = [output, ...detailErrors, execution.error].filter(Boolean).join('\n') || 'Tool execution failed'
+    result.error = [...new Set([output, ...detailErrors, execution.error].filter(Boolean))].join('\n') || 'Tool execution failed'
   }
 
   // FilePath
@@ -241,23 +241,28 @@ export function defaultExtractData(execution: PiToolExecution): ExtractedToolDat
 
   const patch = normalized?.patch ?? nativeDetails?.patch ?? nativeDetails?.diff
   if (!result.diff && typeof patch === 'string') result.diff = patch
-  const truncation = nativeDetails?.truncation as Record<string, unknown> | undefined
-  const limits = [
-    nativeDetails?.matchLimitReached,
-    nativeDetails?.resultLimitReached,
-    nativeDetails?.entryLimitReached,
-  ].filter(value => typeof value === 'number')
-  if (truncation?.truncated === true || limits.length > 0) {
-    const shown =
-      typeof truncation?.outputLines === 'number'
-        ? i18n.t('message:truncation.linesShown', { count: truncation.outputLines })
-        : i18n.t('message:truncation.outputTruncated')
-    const fullPath =
-      typeof nativeDetails?.fullOutputPath === 'string'
-        ? ` · ${i18n.t('message:truncation.fullOutput', { path: nativeDetails.fullOutputPath })}`
-        : ''
-    result.notice = `${shown}${fullPath}`
+  const outputMeta = (nativeDetails?.meta ?? metadata?.meta) as Record<string, unknown> | undefined
+  const truncation = (outputMeta?.truncation ?? nativeDetails?.truncation ?? metadata?.truncation) as Record<string, unknown> | undefined
+  const limits = [nativeDetails?.matchLimitReached, nativeDetails?.resultLimitReached, nativeDetails?.entryLimitReached,
+    metadata?.matchLimitReached, metadata?.resultLimitReached, metadata?.entryLimitReached].filter(value => typeof value === 'number')
+  const notices = [metadata?.notice, nativeDetails?.notice].filter((value): value is string => typeof value === 'string' && !!value.trim())
+  // Public OMP results carry truncation/limits under details.meta; older results
+  // and the normalized envelope may still use top-level nativeDetails fields.
+  if (truncation && (truncation.truncated === true || typeof truncation.truncatedBy === 'string')) result.truncated = true
+  if (!result.fullOutputPath && typeof nativeDetails?.fullOutputPath === 'string') result.fullOutputPath = nativeDetails.fullOutputPath
+  if (!result.fullOutputPath && typeof truncation?.artifactId === 'string') result.fullOutputPath = `artifact://${truncation.artifactId}`
+  if (result.truncated || limits.length > 0) {
+    const shown = typeof truncation?.outputLines === 'number'
+      ? i18n.t('message:truncation.linesShown', { count: truncation.outputLines })
+      : i18n.t('message:truncation.outputTruncated')
+    notices.push(`${shown}${result.fullOutputPath ? ` · ${i18n.t('message:truncation.fullOutput', { path: result.fullOutputPath })}` : ''}`)
+    // Retain exact bounds, direction, partial-line/artifact limits and suggestions.
+    if (truncation) notices.push(JSON.stringify(truncation))
+    if (limits.length) notices.push(`Limits: ${limits.join(', ')}`)
   }
+  if (outputMeta?.limits) notices.push(`Limits: ${JSON.stringify(outputMeta.limits)}`)
+  if (outputMeta?.artifactError) notices.push(JSON.stringify(outputMeta.artifactError))
+  if (notices.length) result.notice = [...new Set(notices)].join('\n')
   const detailImages: NonNullable<ExtractedToolData['images']> = []
   const collectImages = (value: unknown): void => {
     if (Array.isArray(value)) {
@@ -266,18 +271,18 @@ export function defaultExtractData(execution: PiToolExecution): ExtractedToolDat
     }
     if (!value || typeof value !== 'object') return
     const image = value as Record<string, unknown>
-    if (typeof image.mimeType === 'string' && typeof image.data === 'string') {
+    if (typeof image.mimeType === 'string' && image.mimeType.startsWith('image/') && typeof image.data === 'string') {
       const block = { type: 'image' as const, data: image.data, mimeType: image.mimeType, ...('attachment' in image ? { attachment: image.attachment } : {}) }
       detailImages.push({ url: image.data.startsWith('blob:sha256:') ? '' : `data:${image.mimeType};base64,${image.data}`, mimeType: image.mimeType, block })
       return
     }
-    if (typeof image.mimeType === 'string' && typeof image.url === 'string') {
+    if (typeof image.mimeType === 'string' && image.mimeType.startsWith('image/') && typeof image.url === 'string') {
       detailImages.push({ url: image.url, mimeType: image.mimeType, requiresAuth: image.requiresAuth === true })
       return
     }
     Object.values(image).forEach(collectImages)
   }
-  collectImages(metadata)
+  collectImages(toolResult?.details)
   if (detailImages.length) result.images = [...(result.images ?? []), ...detailImages]
 
   // Output language from filePath
@@ -320,35 +325,25 @@ export function yieldExtractData(execution: PiToolExecution): ExtractedToolData 
       ? (execution.result.details as Record<string, unknown>)
       : undefined
 
-  const isError = getToolExecutionStatus(execution) === 'error'
-  const data = metadata?.data ?? args?.data
-  // defaultExtractData 对 isError 结果不设 output，错误文本在 base.error
-  const error =
-    typeof metadata?.error === 'string'
-      ? metadata.error
-      : typeof args?.error === 'string'
-        ? args.error
-        : isError
-          ? base.error
-          : undefined
-
+  const nativeDetails = metadata?.nativeDetails && typeof metadata.nativeDetails === 'object' && !Array.isArray(metadata.nativeDetails)
+    ? metadata.nativeDetails as Record<string, unknown> : undefined
+  const details = nativeDetails ?? metadata
+  const isError = getToolExecutionStatus(execution) === 'error' || details?.status === 'error' || details?.status === 'aborted'
+  const data = details?.data ?? args?.data
+  const error = isError ? base.error || toolResultText(execution.result) || String(details?.error ?? args?.error ?? 'Tool execution failed') : undefined
   const yieldResult: YieldResultData = { status: isError ? 'error' : 'success' }
-  if (data !== undefined) yieldResult.data = data
-  if (error) yieldResult.error = error
+  // A rejected submission must not present its success-shaped input as accepted.
+  if (!isError && data !== undefined) yieldResult.data = data
+  if (error) {
+    yieldResult.error = error
+    base.error = error
+  }
   base.yieldResult = yieldResult
 
-  // 结果负载已由专属渲染器呈现，通用块只留噪音；但 output 里负载之外的
-  // 原始说明（跳过/截断/限制）不能跟着被删，YieldRenderer 会折叠展示（#364）。
-  const payloadTexts = new Set<string>()
-  const collectStrings = (value: unknown): void => {
-    if (typeof value === 'string') payloadTexts.add(value)
-    else if (Array.isArray(value)) value.forEach(collectStrings)
-    else if (value && typeof value === 'object') Object.values(value).forEach(collectStrings)
-  }
-  collectStrings(data === undefined ? [] : data)
-  if (base.output && !payloadTexts.has(base.output) && base.output !== error) {
-    yieldResult.rawOutput = base.output
-  }
+  // Keep the complete result available for reading/copying even when a structured
+  // payload is presented. ACK deduplication must never swallow extra explanations.
+  const rawOutput = toolResultText(execution.result)
+  if (!isError && rawOutput) yieldResult.rawOutput = rawOutput
   delete base.input
   delete base.output
   if (!isError) delete base.error

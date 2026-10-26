@@ -18,7 +18,10 @@ let latestServerChange: (() => void) | undefined
 
 vi.mock('../api', () => ({
   getCurrentProject: (...args: unknown[]) => getCurrentProjectMock(...args),
-  listWorktrees: (...args: unknown[]) => listWorktreesMock(...args),
+}))
+
+vi.mock('../omp/transport', () => ({
+  getHostGitWorktrees: (...args: unknown[]) => listWorktreesMock(...args),
 }))
 
 vi.mock('../api/events', () => ({
@@ -44,12 +47,14 @@ describe('useGitWorkspaceCatalog', () => {
       latestServerChange = listener as () => void
       return vi.fn()
     })
-    listWorktreesMock.mockResolvedValue(['C:/repo', 'C:/repo-worktree'])
+    listWorktreesMock.mockResolvedValue({ primaryRoot: 'C:/repo', worktrees: ['C:/repo', 'C:/repo-worktree'].map(path => ({
+      path, head: 'abc123', branch: 'refs/heads/main', detached: false, bare: false, locked: false, lockReason: null, prunable: false,
+    })) })
   })
 
   it('refetches workspace metadata on server endpoint changes while stale requests are in flight', async () => {
-    const staleRequest = createDeferred<{ vcs: string; worktree: string }>()
-    const freshRequest = createDeferred<{ vcs: string; worktree: string }>()
+    const staleRequest = createDeferred<{ gitRoot: string; path: string }>()
+    const freshRequest = createDeferred<{ gitRoot: string; path: string }>()
 
     getCurrentProjectMock.mockImplementationOnce(() => staleRequest.promise).mockImplementationOnce(() => freshRequest.promise)
 
@@ -66,22 +71,22 @@ describe('useGitWorkspaceCatalog', () => {
     expect(getCurrentProjectMock).toHaveBeenCalledTimes(2)
 
     await act(async () => {
-      freshRequest.resolve({ vcs: 'git', worktree: 'C:/repo' })
+      freshRequest.resolve({ gitRoot: 'C:/repo', path: 'C:/repo' })
       await Promise.resolve()
       await Promise.resolve()
     })
 
     await waitFor(() => {
-      expect(result.current.catalog.get('C:/repo')?.workspaces).toEqual(['C:/repo'])
+      expect(result.current.catalog.get('C:/repo')?.workspaces).toEqual(['C:/repo', 'C:/repo-worktree'])
     })
 
     await act(async () => {
-      staleRequest.resolve({ vcs: 'git', worktree: 'C:/stale' })
+      staleRequest.resolve({ gitRoot: 'C:/stale', path: 'C:/stale' })
       await Promise.resolve()
       await Promise.resolve()
     })
 
     expect(result.current.catalog.get('C:/repo')?.rootDirectory).toBe('C:/repo')
-    expect(result.current.catalog.get('C:/repo')?.workspaces).toEqual(['C:/repo'])
+    expect(result.current.catalog.get('C:/repo')?.workspaces).toEqual(['C:/repo', 'C:/repo-worktree'])
   })
 })

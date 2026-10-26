@@ -66,6 +66,10 @@ export function registryFromResources(resources: JsonObject, sdkVersion: string)
     return {
       ...command,
       name: command.name,
+      sourceInfo: command.sourceInfo ?? (typeof command.source === "string" ? { source: command.source } : undefined),
+      description: command.name === "reload-plugins" && (command.source === "builtin" || isJsonObject(command.sourceInfo) && command.sourceInfo.source === "builtin")
+        ? "RPC: refresh skills and file commands (not hooks, tools, agents, MCP, extension factories, or model settings)"
+        : typeof command.description === "string" ? command.description : undefined,
       argumentHint: typeof command.argumentHint === "string" ? command.argumentHint : isJsonObject(command.input) && typeof command.input.hint === "string" ? command.input.hint : undefined,
     }
   })

@@ -53,6 +53,16 @@ export function selectPiTimelineItems(branch: PiBranchPage): PiTimelineItem[] {
   return items
 }
 
+/** A retained render-key mapping is not proof that its entry is still loaded. */
+function visibleLiveMessage(branch: PiBranchPage) {
+  const live = branch.checkpoint?.liveMessage
+  if (!live) return undefined
+  const persistedVisible = branch.items.some(entry => entry.type === 'message'
+    && entry.message.role === live.message.role
+    && (entry.id === live.id || branch.client?.stableEntryIds?.[entry.id] === live.id))
+  return persistedVisible ? undefined : live
+}
+
 /**
  * History part of the timeline (persisted branch entries, tool results
  * paired back). Excludes the live streaming message — see buildPiLiveItems.
@@ -65,8 +75,9 @@ export function buildPiHistoryItems(branch: PiBranchPage): PiTimelineItem[] {
   const assistantByCallId = new Map<string, PiAssistantMessageItem>()
   const toolExecutions: Record<string, PiToolExecutionState> = { ...branch.client?.toolExecutions }
   const orphanResults = new Map<string, Extract<PiTimelineItem, { kind: 'tool_result' }>>()
-  const liveCallIds = new Set(branch.checkpoint?.liveMessage?.message.role === 'assistant'
-    ? branch.checkpoint.liveMessage.message.content.flatMap(block => block.type === 'toolCall' ? [block.id] : []) : [])
+  const live = visibleLiveMessage(branch)
+  const liveCallIds = new Set(live?.message.role === 'assistant'
+    ? live.message.content.flatMap(block => block.type === 'toolCall' ? [block.id] : []) : [])
   // 相邻 bash 执行合并为工具组：遇到非 bash 条目时重置，保证只有连续
   // 的 bash（`!cmd` / `/bash cmd`）才会并组，与 AI 连续工具调用一致。
   let lastBashGroup: PiBashExecutionGroupItem | undefined
@@ -109,10 +120,12 @@ export function buildPiHistoryItems(branch: PiBranchPage): PiTimelineItem[] {
         const owner = assistantByCallId.get(message.toolCallId)
         if (owner) owner.toolResults[message.toolCallId] = message
         else {
+          const previous = orphanResults.get(message.toolCallId)
+          if (previous) items.splice(items.indexOf(previous), 1)
           const execution = toolExecutions[message.toolCallId]
           const orphan: Extract<PiTimelineItem, { kind: 'tool_result' }> = {
             kind: 'tool_result', entryId: entry.id, timestamp, rawEntry: entry,
-            execution: { ...execution, call: execution?.call ?? { type: 'toolCall', id: message.toolCallId, name: message.toolName || 'tool', arguments: {} }, result: message },
+            execution: { ...execution, call: execution?.call ?? { type: 'toolCall', id: message.toolCallId, name: message.toolName || 'tool', arguments: {} }, argumentsUnknown: !execution?.call, result: message },
           }
           orphanResults.set(message.toolCallId, orphan)
           items.push(orphan)
@@ -243,7 +256,8 @@ export function buildPiHistoryItems(branch: PiBranchPage): PiTimelineItem[] {
   }
   for (const [callId, orphan] of orphanResults) {
     const owner = assistantByCallId.get(callId)
-    if (owner) owner.toolResults[callId] = orphan.execution.result!
+    // A result encountered after the owner is newer than an earlier fallback.
+    if (owner && !owner.toolResults[callId]) owner.toolResults[callId] = orphan.execution.result!
     if (owner || liveCallIds.has(callId)) items.splice(items.indexOf(orphan), 1)
   }
   // 无所属条目的执行兜底行只覆盖「比已加载历史更新、尚未落盘」或仍在运行的调用。
@@ -291,15 +305,9 @@ function liveRawEntry(live: NonNullable<NonNullable<PiBranchPage['checkpoint']>[
  */
 export function buildPiLiveItems(branch: PiBranchPage): PiTimelineItem[] {
   const items: PiTimelineItem[] = []
-  const live = branch.checkpoint?.liveMessage
-  // 持久化条目已可见（stableEntryIds 把它映射回 live.id 作 renderKey）时，
-  // 不再渲染 live 行——否则 live 行与条目同时存在、同 key，React 报
-  // "two children with the same key" 且 DOM 错乱。条目可见前仍渲染
-  // persisting live，避免消息短暂消失（branchMerge 保留 checkpoint 的初衷）。
-  const persistedVisible = live != null
-    && branch.client?.stableEntryIds != null
-    && Object.values(branch.client.stableEntryIds).includes(live.id)
-  if (live && !persistedVisible && live.message.role === 'user' && live.phase === 'streaming') {
+  // Keep the live row until its matching persisted entry is actually loaded.
+  const live = visibleLiveMessage(branch)
+  if (live && live.message.role === 'user' && live.phase === 'streaming') {
     const message = live.message
     const text = typeof message.content === 'string'
       ? message.content
@@ -318,7 +326,7 @@ export function buildPiLiveItems(branch: PiBranchPage): PiTimelineItem[] {
       })
     }
   }
-  if (live && !persistedVisible && live.message.role === 'assistant' && live.message.content.length > 0) {
+  if (live && live.message.role === 'assistant' && live.message.content.length > 0) {
     const message = live.message as AssistantMessage
     const toolExecutions = { ...branch.client?.toolExecutions }
     const callIds = new Set(message.content.flatMap(block => block.type === 'toolCall' ? [block.id] : []))

@@ -1,20 +1,29 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionChangesPanel } from './SessionChangesPanel'
 import { changeScopeStore } from '../store/changeScopeStore'
 import { layoutStore } from '../store/layoutStore'
 import { FullscreenProvider } from '../contexts'
+import { GitStagingPanel } from './GitStagingPanel'
+import { serverStore } from '../store/serverStore'
 
-const { getHostGitInfo, getHostGitDiff, getHostGitFileDiff } = vi.hoisted(() => ({
+const { getHostGitInfo, getHostGitDiff, getHostGitFileDiff, getHostGitStatus, stageHostGitFiles, unstageHostGitFiles, changeHostGitHunk, previewHostGitCommit, commitHostGit } = vi.hoisted(() => ({
   getHostGitInfo: vi.fn(),
   getHostGitDiff: vi.fn(),
   getHostGitFileDiff: vi.fn(),
+  getHostGitStatus: vi.fn(),
+  stageHostGitFiles: vi.fn(),
+  unstageHostGitFiles: vi.fn(),
+  changeHostGitHunk: vi.fn(),
+  previewHostGitCommit: vi.fn(),
+  commitHostGit: vi.fn(),
 }))
 
 vi.mock('../omp/transport/index.js', () => ({
   getHostGitInfo,
   getHostGitDiff,
   getHostGitFileDiff,
+  getHostGitStatus, stageHostGitFiles, unstageHostGitFiles, changeHostGitHunk, previewHostGitCommit, commitHostGit,
 }))
 
 vi.mock('../omp/workspaces', () => ({ resolveWorkspacePath: async (directory?: string) => directory ?? null }))
@@ -39,8 +48,10 @@ function renderSessionChangesPanel() {
 }
 
 describe('SessionChangesPanel', () => {
+  let originalServerUrl: string
   beforeEach(() => {
     vi.clearAllMocks()
+    originalServerUrl = serverStore.getActiveServer()!.url
     changeScopeStore.clearAll()
     vi.useFakeTimers()
     vi.spyOn(window, 'requestAnimationFrame').mockImplementation(cb =>
@@ -78,9 +89,14 @@ describe('SessionChangesPanel', () => {
         ? [{ file: 'src/branch.ts', status: 'modified', additions: 1, deletions: 1, binary: false }]
         : [{ file: 'src/git.ts', status: 'modified', additions: 1, deletions: 1, binary: false }],
     }))
+    getHostGitStatus.mockResolvedValue({ items: ['src/a.ts', 'src/z.ts'].map(path => ({ path, staged: true, unstaged: true, indexStatus: 'M', worktreeStatus: 'M' })) })
+    stageHostGitFiles.mockResolvedValue({ ok: true })
+    previewHostGitCommit.mockResolvedValue({ files: ['src/z.ts'], fingerprint: 'old-preview' })
   })
 
   afterEach(() => {
+    cleanup()
+    serverStore.updateServer(serverStore.getActiveServerId(), { url: originalServerUrl })
     vi.useRealTimers()
     vi.restoreAllMocks()
   })
@@ -324,5 +340,98 @@ describe('SessionChangesPanel', () => {
     await act(async () => { await Promise.resolve() })
     expect(getHostGitFileDiff).toHaveBeenCalledTimes(2)
     expect(screen.getByTestId('diff-viewer')).toHaveTextContent('new')
+  })
+  it.each([false, true])('keeps the explicit non-first manager filename through a cold scope load (staged=%s)', async staged => {
+    const list = Promise.withResolvers<unknown>()
+    const mode = staged ? 'staged' : 'unstaged'
+    getHostGitDiff.mockImplementation(async (_workspace, scope) => scope === mode
+      ? await list.promise
+      : { mode: scope, files: [{ file: 'src/a.ts', status: 'modified', additions: 1, deletions: 1, binary: false }] })
+    getHostGitFileDiff.mockImplementation(async (_workspace, file, scope) => ({
+      file, mode: scope, status: 'modified', binary: false,
+      patch: `--- a/${file}\n+++ b/${file}\n@@ -1 +1 @@\n-old ${file}\n+fresh ${file}\n`,
+    }))
+    renderSessionChangesPanel()
+    await act(async () => { await Promise.resolve() })
+    fireEvent.click(screen.getByRole('button', { name: 'Manage Git staging and commit' }))
+    await act(async () => { await Promise.resolve() })
+    const manager = screen.getByRole('region', { name: 'Manage Git staging and commit' })
+    const mainViewer = () => screen.getAllByTestId('diff-viewer').find(viewer => !manager.contains(viewer) && !viewer.closest('.hidden'))
+    fireEvent.click(within(manager).getAllByRole('button', { name: 'src/z.ts' })[staged ? 1 : 0])
+    await act(async () => { await Promise.resolve() })
+    expect(within(manager).getByText(`src/z.ts · ${staged ? 'Staged' : 'Unstaged'}`)).toBeInTheDocument()
+    await act(async () => {
+      list.resolve({ mode, files: ['src/a.ts', 'src/z.ts'].map(file => ({ file, status: 'modified', additions: 1, deletions: 1, binary: false })) })
+      await vi.runAllTimersAsync()
+    })
+    expect(mainViewer()).toHaveTextContent('fresh src/z.ts')
+    expect(mainViewer()).not.toHaveTextContent('fresh src/a.ts')
+
+    // A later authoritative list removes the selection instead of pinning it forever.
+    getHostGitDiff.mockResolvedValue({ mode, files: [{ file: 'src/a.ts', status: 'modified', additions: 1, deletions: 1, binary: false }] })
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    await act(async () => { await vi.runAllTimersAsync() })
+    expect(mainViewer()).toHaveTextContent('fresh src/a.ts')
+  })
+
+  it.each(['selection', 'patch', 'pending patch', 'preview', 'pending preview'])('invalidates %s on an active URL edit and requires a fresh selection', async state => {
+    const status = Promise.withResolvers<unknown>()
+    const preview = Promise.withResolvers<unknown>()
+    const patch = Promise.withResolvers<unknown>()
+    const onChanged = vi.fn()
+    render(<GitStagingPanel directory="/repo" onSelectFile={vi.fn()} onChanged={onChanged} />)
+    await act(async () => { await Promise.resolve() })
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select unstaged src/z.ts' }))
+    if (state.includes('patch')) {
+      if (state === 'pending patch') getHostGitFileDiff.mockReturnValueOnce(patch.promise)
+      fireEvent.click(screen.getAllByRole('button', { name: 'src/z.ts' })[0])
+      await act(async () => { await Promise.resolve() })
+      if (state === 'patch') expect(screen.getByText(/src\/z.ts ·/)).toBeInTheDocument()
+    }
+    if (state.includes('preview')) {
+      if (state === 'pending preview') previewHostGitCommit.mockReturnValueOnce(preview.promise)
+      fireEvent.change(screen.getByRole('textbox', { name: 'Commit message' }), { target: { value: 'old commit message' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Review staged commit' }))
+      await act(async () => { await Promise.resolve() })
+      if (state === 'preview') expect(screen.getByRole('group', { name: 'Confirm Git commit' })).toBeInTheDocument()
+    }
+    getHostGitStatus.mockReturnValueOnce(status.promise)
+    act(() => serverStore.updateServer(serverStore.getActiveServerId(), { url: 'http://127.0.0.1:19992' }))
+    await act(async () => { await Promise.resolve() })
+    expect(screen.getByRole('button', { name: 'Stage selected files' })).toBeDisabled()
+    expect(screen.queryByText(/src\/z.ts ·/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Confirm Git commit' })).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Commit message' })).toHaveValue('')
+    fireEvent.click(screen.getByRole('button', { name: 'Stage selected files' }))
+    if (state === 'pending preview') await act(async () => preview.resolve({ files: ['src/z.ts'], fingerprint: 'late-old-preview' }))
+    if (state === 'pending patch') await act(async () => patch.resolve({ file: 'src/z.ts', mode: 'unstaged', binary: false, patch: 'old endpoint patch' }))
+    expect(screen.queryByText(/src\/z.ts ·/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Confirm Git commit' })).not.toBeInTheDocument()
+    expect(onChanged).not.toHaveBeenCalled()
+    expect(stageHostGitFiles).not.toHaveBeenCalled()
+    expect(changeHostGitHunk).not.toHaveBeenCalled()
+    expect(commitHostGit).not.toHaveBeenCalled()
+    await act(async () => status.resolve({ items: [{ path: 'src/z.ts', staged: false, unstaged: true, indexStatus: ' ', worktreeStatus: 'M' }] }))
+    expect(screen.getByRole('checkbox', { name: 'Select unstaged src/z.ts' })).not.toBeChecked()
+    expect(screen.getByRole('button', { name: 'Stage selected files' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select unstaged src/z.ts' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Stage selected files' }))
+    await act(async () => { await Promise.resolve() })
+    expect(stageHostGitFiles).toHaveBeenCalledOnce()
+    expect(onChanged).toHaveBeenCalledOnce()
+  })
+  it('does not restore old viewer metadata after the active endpoint changes', async () => {
+    const oldList = Promise.withResolvers<unknown>()
+    getHostGitDiff.mockReturnValueOnce(oldList.promise)
+    renderSessionChangesPanel()
+    await act(async () => { await Promise.resolve() })
+    getHostGitDiff.mockResolvedValue({ mode: 'git', files: [{ file: 'src/replacement.ts', status: 'modified', additions: 1, deletions: 1, binary: false }] })
+    act(() => serverStore.updateServer(serverStore.getActiveServerId(), { url: 'http://127.0.0.1:19993' }))
+    await act(async () => { await Promise.resolve() })
+    expect(screen.getAllByText('replacement.ts').length).toBeGreaterThan(0)
+    await act(async () => oldList.resolve({ mode: 'git', files: [{ file: 'src/obsolete.ts', status: 'modified', additions: 1, deletions: 1, binary: false }] }))
+    expect(screen.queryByText('obsolete.ts')).not.toBeInTheDocument()
+    expect(screen.getByTestId('diff-viewer')).toBeInTheDocument()
+    expect(screen.getAllByText('replacement.ts').length).toBeGreaterThan(0)
   })
 })

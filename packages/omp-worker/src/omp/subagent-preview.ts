@@ -7,6 +7,7 @@ import {
 } from "@ompiui/protocol";
 import { getPreviewSettings } from "./preview-settings.js";
 import { jsonlEntries } from "./jsonl-reader.js";
+import { projectEntryAttachments, sessionHeadFromParts } from '../runtime/pagination.js';
 
 export const SUBAGENT_PREVIEW_BYTES = 256 * 1024;
 const MESSAGE_BYTES = 128 * 1024;
@@ -17,6 +18,7 @@ export type ProjectedPreviewMessage = { message: JsonObject; truncated: boolean 
 export async function readSubagentPreview(
   filePath: string,
   fromByte: number,
+  sessionId?: string,
 ): Promise<JsonObject> {
   if (!Number.isSafeInteger(fromByte) || fromByte < 0)
     throw Object.assign(new Error("invalid transcript cursor"), {
@@ -32,6 +34,7 @@ export async function readSubagentPreview(
     let incomplete = false;
     const messages: JsonObject[] = [];
     const settings = getPreviewSettings();
+    const head = sessionHeadFromParts({ sdkVersion: '', revision: 0, header: { id: sessionId }, leafId: null, entryCount: 0 });
     // false 和文件末尾游标占用最多字节；正文、逗号之外的完整页封装只计量一次。
     let bytes = jsonByteSize(
       {
@@ -63,7 +66,8 @@ export async function readSubagentPreview(
       ) {
         let projected: ProjectedPreviewMessage;
         try {
-          projected = projectPreviewMessage(entry.message, settings.subagentThinking, {
+          const imageMessage = projectEntryAttachments(entry, head).message;
+          projected = projectPreviewMessage(isJsonObject(imageMessage) ? imageMessage : entry.message, settings.subagentThinking, {
             fromByte: nextByte,
             nextByte: nextByte + line.bytes,
           });
@@ -135,6 +139,8 @@ export function projectPreviewMessage(
         item = { type: "toolCall", id: block.id, name: block.name };
       } else if (field && typeof block[field] === "string") {
         item = { type: block.type, [field]: "" };
+      } else if (block.type === 'image' && typeof block.data === 'string' && typeof block.mimeType === 'string') {
+        item = block;
       } else {
         continue;
       }
@@ -144,11 +150,30 @@ export function projectPreviewMessage(
       content.push(item);
     }
   }
+  const collectDetailImages = (value: unknown): void => {
+    if (!value || typeof value !== 'object') return;
+    if (Array.isArray(value)) { value.forEach(collectDetailImages); return; }
+    const block = value as JsonObject;
+    if (typeof block.data === 'string' && typeof block.mimeType === 'string' && block.mimeType.startsWith('image/')) {
+      const item = { ...block, type: 'image' };
+      metadataBytes += jsonByteSize(item, MESSAGE_BYTES) + (content.length ? 1 : 0);
+      if (metadataBytes > MESSAGE_BYTES) throw metadataLimit(cursor);
+      content.push(item);
+      projected.content = content;
+      return;
+    }
+    Object.values(block).forEach(collectDetailImages);
+  };
+  collectDetailImages(message.details);
+  if (typeof message.content === 'string' && content.length) {
+    metadataBytes += jsonByteSize({ type: 'text', text: '' }, MESSAGE_BYTES) + 1;
+    if (metadataBytes > MESSAGE_BYTES) throw metadataLimit(cursor);
+  }
   let remaining = MESSAGE_BYTES - metadataBytes;
   let truncated = false;
   if (typeof message.content === "string") {
     const text = encodedPreviewText(message.content, remaining);
-    projected.content = text.value;
+    projected.content = content.length ? [{ type: 'text', text: text.value }, ...content] : text.value;
     truncated = text.value.length < message.content.length;
   } else {
     for (const block of content) {

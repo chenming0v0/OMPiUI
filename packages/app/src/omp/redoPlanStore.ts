@@ -1,6 +1,8 @@
 import { piBranchStore, piSessionStateStore } from './state/index.js'
-import { selectPiTimelineItemsCached } from './selectors/timelineCache.js'
+import type { SessionEntry } from './domain'
+import type { NativeTreeNode } from '../components/sessionTreeGraph'
 import { refreshPiSessionState } from './controllers/index.js'
+import { isJsonObject } from '@ompiui/protocol'
 
 /**
  * Redo 计划共享 store。
@@ -80,18 +82,49 @@ class RedoPlanStore {
 
 export const redoPlanStore = new RedoPlanStore()
 
-/**
- * 导航前调用：redo 落点 = 目标之后的后续非 user 节点（pi 的 navigateTree
- * 落在 user 消息上是撤销语义，不能作为 redo 落点；落在非 user 节点时
- * 上面的 user 消息会作为祖先一并恢复）。条数即剩余节点数。
- * 必须在 navigatePiTree 之前读，导航后 branch store 可能已被事件流刷新。
- */
-export function captureRedoCheckpoints(sessionId: string, entryId: string): string[] {
-  const branch = piBranchStore.getData(sessionId)
-  const items = selectPiTimelineItemsCached(sessionId, branch)
-  const undoIndex = items.findIndex(item => item.entryId === entryId)
-  if (undoIndex === -1) return []
-  return items.slice(undoIndex).filter(item => item.kind !== 'user_message').map(item => item.entryId)
+/** Capture one native landing entry per user turn, on the original branch only. */
+export function captureRedoCheckpoints(sessionId: string, entryId: string, tree?: NativeTreeNode[], leafId?: string | null): string[] {
+  let entries = piBranchStore.getData(sessionId)?.items ?? []
+  if (tree) {
+    const head = piSessionStateStore.getState(sessionId)?.head
+    const currentLeaf = leafId === undefined && isJsonObject(head) && typeof head.leafId === 'string' ? head.leafId : leafId
+    const byId = new Map<string, SessionEntry>()
+    const stack = [...tree]
+    while (stack.length) {
+      const node = stack.pop()!
+      if (typeof node.entry.id !== 'string' || byId.has(node.entry.id)) continue
+      byId.set(node.entry.id, node.entry as unknown as SessionEntry)
+      stack.push(...node.children)
+    }
+    const path: SessionEntry[] = []
+    const seen = new Set<string>()
+    let cursor = currentLeaf
+    while (cursor && !seen.has(cursor)) {
+      const entry = byId.get(cursor)
+      if (!entry) return []
+      seen.add(cursor)
+      path.push(entry)
+      cursor = entry.parentId
+    }
+    entries = path.reverse()
+  }
+  const index = entries.findIndex(entry => entry.id === entryId)
+  if (index < 0) return []
+  const checkpoints: string[] = []
+  let landing: string | undefined
+  const target = entries[index]!
+  const targetIsUser = target.type === 'message' && target.message.role === 'user'
+  for (const entry of entries.slice(index + (targetIsUser ? 0 : 1))) {
+    if (entry.type === 'message' && entry.message.role === 'user') {
+      if (landing) checkpoints.push(landing)
+      landing = undefined
+    } else if (entry.type !== 'custom_message') {
+      // Custom-message navigation restores a draft rather than landing at it.
+      landing = entry.id
+    }
+  }
+  if (landing) checkpoints.push(landing)
+  return checkpoints
 }
 
 /**

@@ -44,6 +44,7 @@ export const DEFAULT_SOUNDS: Record<NotificationType, BuiltinSoundId> = {
   question: 'builtin:ping',
   error: 'builtin:error',
   warning: 'builtin:warning',
+  info: 'builtin:ping',
 }
 
 // 每类事件的推荐内置音效列表
@@ -53,6 +54,7 @@ export const SOUND_OPTIONS: Record<NotificationType, BuiltinSoundId[]> = {
   question: ['builtin:ping', 'builtin:bubble', 'builtin:pop'],
   error: ['builtin:error', 'builtin:buzz', 'builtin:warning'],
   warning: ['builtin:warning', 'builtin:buzz', 'builtin:alert'],
+  info: ['builtin:ping', 'builtin:bubble', 'builtin:pop'],
 }
 
 // ============================================
