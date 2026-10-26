@@ -13,6 +13,7 @@
 - fix(commands): Slash `prompt`／`sendUserMessage` 保持 HTTP 到原生 300 秒处理期限后（330 秒），`abortAndPrompt` 纳入回合级 worker 期限；不再于普通 20／60 秒期限把仍等待原生终态的操作判成未知。真实 23 秒扩展输入与 65 秒图片原子中断＋Stop 均获得原生 200；成功按提交快照清理，更新后的文字／图片保留。
 - verification(async): 补齐原生运行中 stdout／普通 stdin 拒绝、同服务空 Enter、port／log＋port ready、同名 replace／歧义报错、跨 workspace／exec 批准、干净最后 owner 退出、task／eval 独立配置及同文件 CLI 顺序继续；只读重开不启 writer，全局 config／models 字节和 mtime 不变。
 - limitations(feedback): 两套真实后端通知归属、原生三种严重度、全局预授权 URL 与本地 decoder 有界故障已实测；#367 仍缺会话级公开 `open_url`、真实原始 encoded chunk／overflow 故障输入及官方 `rpc_stream_error` emitter。正常照片读取或全局 OAuth 流不能冒充这些证明，未制造极端重复通知或伪协议帧。
+- limitations(session): #361 的队列／资源／草稿／已提交身份与迟到投影隔离已实测；但真实旧扩展在原生 new 后抛错会被原生发送到新事件流。18.12.6 `extension_error` 仅有 extensionPath／event／error，缺源 session／prompt／epoch，无法安全区分迟到旧错误；保留阻塞，不忽略全部异常或提前恢复旧回调。
 - fix(integration): complete legal fixtures and cutover consumer types (977abc1)
 - fix(integration): retain target-compatible snapshots and fixed Git pipes (9879d62)
 - feat(worktrees): manage Git checkouts with native session relocation (d30e629)
