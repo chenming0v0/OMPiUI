@@ -127,12 +127,12 @@ function SubagentTask({ slot, execution, partKey, intent, targetSessionId, showA
   const shouldRenderBody = useMessageExpandRender(effectiveExpanded)
   // 中途崩溃没有 task 结果，但已命名子代理的转录仍在父文件同名目录。
   const diskResult = useMemo<PersistedSubagentResult | undefined>(() => slot.result ??
-    (hasStarted && typeof slot.input.name === 'string' && slot.input.name ? {
+    (!execution.result && hasStarted && typeof slot.input.name === 'string' && slot.input.name ? {
       id: slot.input.name,
       agent: typeof slot.input.agent === 'string' ? slot.input.agent : undefined,
       task: typeof slot.input.task === 'string' ? slot.input.task : undefined,
       index: slot.index,
-    } : undefined), [slot.result, slot.input, slot.index, hasStarted])
+    } : undefined), [execution.result, slot.result, slot.input, slot.index, hasStarted])
   const { run: persistedRun, loading: previewLoading, reload: reloadPreview } = usePersistedSubagentRun(
     execution.call.id, diskResult, Boolean(liveRun), currentSessionId, shouldRenderBody,
     !slot.result ? runtimeStopped ? 'aborted' : isRunning ? 'running' : 'pending' : undefined,
@@ -217,7 +217,7 @@ function SubagentTask({ slot, execution, partKey, intent, targetSessionId, showA
           <div className="pt-2 space-y-3">
             {prompt && <div className="text-[length:var(--fs-xs)] text-text-500 leading-relaxed whitespace-nowrap overflow-hidden text-ellipsis">{prompt}</div>}
             {prompt && subagentRun && <hr className="border-border-200/30" />}
-            {hasStarted && <SubagentSessionPreview run={subagentRun} loading={previewLoading} onLoadMore={persistedRun ? reloadPreview : undefined} />}
+            {hasStarted && (subagentRun || previewLoading || !isError) && <SubagentSessionPreview run={subagentRun} loading={previewLoading} onLoadMore={persistedRun ? reloadPreview : undefined} />}
             {isCompleted && resultOutput && (
               <ContentBlock label={t('task.result')} stateKey={`message:${partKey}:task-result`} content={resultOutput} defaultCollapsed onFullscreenChange={handleContentFullscreenChange} fullscreenId={`task:${partKey}:result`} />
             )}
