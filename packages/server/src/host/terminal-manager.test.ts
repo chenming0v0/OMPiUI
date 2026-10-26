@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { test } from "node:test"
+import { after, test } from "node:test"
 import type { TerminalInfo } from "@ompiui/protocol"
 import { extractTerminalTitle, TerminalManager } from "./terminal-manager.ts"
 
@@ -176,6 +176,17 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 20))
   }
 }
+
+after(() => {
+  // Windows 上全部测试通过并 dispose 之后，@lydell/node-pty 的 ConPTY 仍会把
+  // in/out 管道句柄和 conout worker 的 MessagePort 留在事件循环里（只有 kill
+  // 路径会释放它们，shell 自然退出不会），进程永远不自然退出，整个测试文件
+  // 卡到 CI 的 job 超时被 runner 杀掉（实测 15 分钟）。测试已全部结束时由
+  // 看门狗按既有退出码收尾；事后对已退出句柄调用 destroy()/kill() 会与
+  // 原生退出回调竞态，堆损坏 0xC0000374（CI 实测），不能用作替代。
+  const code = process.exitCode
+  setTimeout(() => process.exit(code ?? 0), 10_000).unref()
+})
 
 
 async function removeWithRetry(root: string): Promise<void> {
