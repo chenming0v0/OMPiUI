@@ -19,8 +19,12 @@ import { FaultReportService } from "./diagnostics/fault-reports.ts"
 // 测试进程的 session 租约目录放进独立临时目录，跑完即删，
 // 不污染默认的 ompiui-session-leases 命名空间。
 const leaseHome = mkdtempSync(path.join(tmpdir(), "ompiui-http-leases-"))
+const previousDataDir = process.env.OMPIUI_DATA_DIR
+process.env.OMPIUI_DATA_DIR = path.join(leaseHome, "data")
 process.env.OMPIUI_SESSION_LEASE_DIR = leaseHome
 after(() => {
+  if (previousDataDir === undefined) delete process.env.OMPIUI_DATA_DIR
+  else process.env.OMPIUI_DATA_DIR = previousDataDir
   rmSync(leaseHome, { recursive: true, force: true })
 })
 
@@ -297,7 +301,7 @@ describe("http api", () => {
     const written = await request(port, "POST", "/api/v1/host/commands/files.write", {
       body: { workspacePath, path: "hello.txt", content: "updated", ifMatch: etag },
     })
-    assert.equal(written.status, 200)
+    assert.equal(written.status, 200, JSON.stringify(written.json))
     assert.equal(written.json.data.content, "updated")
 
     const stale = await request(port, "POST", "/api/v1/host/commands/files.write", {

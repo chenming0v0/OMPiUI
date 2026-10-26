@@ -42,7 +42,7 @@ test("implicit workspace uses the user home rather than executable or launch dir
 })
 
 test("worktree removal protects descendant workspace and cwd shells without affecting a sibling or branch", { timeout: 45_000 }, async () => {
-  const fixture = mkdtempSync(path.join(tmpdir(), "ompiui-worktree-shell-"))
+  const fixture = realpathSync.native(mkdtempSync(path.join(tmpdir(), "ompiui-worktree-shell-")))
   const root = path.join(fixture, "storage")
   const alias = path.join(fixture, "workspace")
   mkdirSync(root)

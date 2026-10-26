@@ -4,7 +4,12 @@
 - fix(worktrees): 显式 Git worktree 变更先解析物理目标及缺失路径的既有父目录，与 Git 的 junction／symlink 路径身份一致；同一物理路径同时用于变更准入、忙碌检查和 Git 操作。Node 22.23.4／Git 2.56.0.windows.2 真实 junction 场景由错误 FORBIDDEN 修正为 WORKSPACE_BUSY；primary 拒绝、空闲删除及保留分支实跑通过，不放宽锁定／脏目录保护。
 - fix(types): 服务端保持 ES2022 输出目标及原有环境类型，仅补入支持的 Node 22 原生 Promise.withResolvers 标准库类型，不以构造器绕过编译契约。
 - verification(pty): 同一后端源码以 Bun 1.3.14 编译为 Windows 可执行文件后，原生 shell 计算／回放／删除／dispose／shutdown 实跑通过；停止一次，确认自有 PID 实际退出后再关闭 PTY，不把 Bun 的资源释放误计为第二次停止。
-- verification(pty-gui): 最终 Web 生产构建连接真实 Node 22.23.4 原生 PTY，在网页新建通用 shell，计算得到 742，刷新后保留回放，关闭后再新建得到 743，页面错误列表为空。此隔离服务的 Agent driver 为 mock（无 LLM）；本项只证明真实通用 shell 生命周期，不替代官方 OMP／会话互通验收。
+- fix(pty): 补齐既有 @lydell Windows 补丁的自然退出路径，输出 socket 排空关闭后释放 ConPTY 输出 worker，不再由残留 MessagePort 钉住 Node 进程。真实 Node 22.23.4 shell exit=0／计算 742 后，引用端口由修复前 1 个变为 0 个，进程自然结束；不恢复强制退出看门狗，不在退出后再次 kill 原生句柄。
+- verification(pty-gui): 最终 Web 生产构建连接真实 Node 22.23.4 原生 PTY，在网页新建通用 shell，计算得到 742，刷新后保留回放，关闭页签后再新建得到 743，页面错误列表为空。页签关闭不冒充底层 PTY 退出；实际停止／自然退出由独立原生 smoke 证明。此隔离服务的 Agent driver 为 mock（无 LLM），不替代官方 OMP／会话互通验收。
+- fix(paths): 文件与静态资源边界统一使用既有的 native realpath 约定；解析直接重解析别名时区分物理父目录，显式删除仅移除别名，不递归触及目标目录。真实 Node 22.23.4 隔离 junction 曾绕过普通 realpath 检查并通过 HTTP 读出样本目录外文件；修复后网页首页 200、越界资源 404，工作区拒绝越界，别名写入／移动／删除后目标字节保留。
+- test(isolation): HTTP 文件操作的锁与状态目录放入既有独立临时夹具，不再尝试在用户 ~/.ompiui 下 mkdir；失败断言保留实际服务端响应。worktree 夹具按生产注册约定规范化 Windows TEMP 的物理路径；所有目录链接先拆除再回收夹具，不放宽忙碌／工作区替换或越界断言。
+- fix(rename): 物理路径解析只用于身份与边界，重命名目标仍保留用户请求的 basename；Windows 仅大小写变更不再被规范化回旧拼写而报目标存在。真实 Node 22 与 Bun 编译程序检查实际目录中的 README.txt 拼写及字节保留，永久回归不再只检查返回参数或大小写不敏感的读取。
+- verification(native-final): Node 22.23.4 服务端 typecheck 与完整 52 文件套件通过（315 通过、1 可选跳过），无强制退出，约 65 秒正常结束；同源 Bun 1.3.14 编译程序的别名写入／移动／删除、大小写重命名、工作区与实际 HTTP 静态边界通过。
 - fix(notices): 原生 `open_url` 的 link 通知归为 info，并恢复已有 link 历史为有效严重度；保留原始链接与说明，不再因图标映射缺失导致通知界面异常。实际生产桥接事件与历史加载回归通过。
 - fix(goals): 删除已退出生产流程的 `formatGoalMessage` 旧提示生成器；原生 Goal 生命周期不再创建私有文本续跑标记。历史目标仍只读解析和展示，历史目录/字节保留回归通过。
 - verification(git): 实际 Git 暂存 rename 两端、字面路径和 worktree 后代 shell 删除保护 20 项通过；网页已打开的非活跃预览保留，冷 scope 指定文件及后续消失回退 19 项通过。永久 shell 保护回归隔离原生 PTY 句柄，真实 GUI shell 行为单独验收。
