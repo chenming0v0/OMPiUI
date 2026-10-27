@@ -19,6 +19,7 @@ import {
   WrenchIcon,
 } from './icons'
 import { detectLanguage } from '../../../utils/languageUtils'
+import { resolveTaskExecution } from './taskToolData'
 
 // ============================================
 // Tool Matchers (复用的匹配函数)
@@ -556,9 +557,10 @@ export function getToolIcon(toolName: string): ReactNode {
  * 提取工具数据
  */
 export function extractToolData(execution: PiToolExecution): ExtractedToolData {
-  const config = getToolConfig(execution.call.name)
+  const target = resolveTaskExecution(execution)
+  const config = getToolConfig(target.call.name)
   if (config?.extractData) {
-    return config.extractData(execution)
+    return config.extractData(target)
   }
-  return defaultExtractData(execution)
+  return defaultExtractData(target)
 }

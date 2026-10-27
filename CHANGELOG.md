@@ -1,17 +1,22 @@
 ## [Unreleased]
 
+- feat(chat): 后台任务指示器移到顶栏模型名右侧，只在页面确有后台任务运行时出现，不再占用输入框下方空间。
+- feat(message): 多子代理 task 调用按子任务拆成多条工具卡片，每条是标准 Task 行（图标 + Task + 子代理名 + 耗时），展开后是该子代理的 prompt、实时转录与结果；子代理徽标按状态着色（运行绿／完成蓝／失败红），去掉徽标前的状态圆点。单子代理调用保持原样。
+- feat(worker): 异步 task 派发结果走 async-result 自定义消息投递，按 jobId 与派发时间回填对应子任务，派发回执不再被当作子任务完成。
+- fix: OMPiUI 会话目录与写出边界保持只读浏览约定；上述前端改动已在隔离预览实例（真实 `~/.omp` 会话目录、独立界面数据目录）核对。
 - fix(chat): 输入框停止与发送共用单个按钮槽位，运行中有可发送草稿时显示发送，空草稿或等待提交时保留停止，停止确认期间禁止重复点击；不再同时显示两个实心按钮。已在真实浏览器组件界面验证空闲、运行、草稿和停止确认切换。
 - fix(chat): 忙碌提交及「立即发送」从首帧由待发送区展示，原生实际消费后才进入对话，避免先出现气泡再撤回及队列／历史重复；连续立即发送按 FIFO 追加，不再因插到队首反序。受管会话首次提交采用进程内原生 `all` 模式，两条未消费消息在下一轮一起进入模型上下文，不修改官方全局设置。
 - fix(worker): 手动 Stop 先启用官方 client-owned continuation 门禁再发送 abort，保留原生队列及身份，阻止中止清理重新启动下一轮；只读刷新不解除暂停，明确提交／立即发送／恢复目标才解除。最低及打包 OMP 版本更新为 `18.12.6`。
 - verification(chat): 隔离真实官方 OMP + Web UI 验证 A/B 排队无历史闪现、下一轮模型上下文同时包含 A→B、连续立即发送 C→D 不反序且不重复显示；Stop 后草稿、队列 entryId 与顺序保留，刷新不启动新模型请求。前端受影响 6 文件／67 项、worker 55 项回归及 worker 构建、app 类型检查通过。
 - verification(chat): 官方会话与 GUI 双向可见、相同会话继续写入、只读预览不改文件的真实验收通过；前端生产构建通过，受影响前端 lint 为 0 error、2 条既有 ref 警告。
+- docs: 明确 OMPiUI 的 GUI 定位，禁止任何官方终端启动/接管入口及引导文案；对齐任务必须在网页内完成，缺官方接口明确记录阻塞。按此规则清理 GitHub 对齐 issue 的范围与验收。
 - fix(models): 从官方模型的 `thinking.efforts` 补齐 `supportedThinkingLevels`，修复 Agent 模型配置的思考强度下拉框只显示已有值、无法选择档位的问题；保留原生档位与已有角色配置，不依赖先发送消息或安装 OMP 源码包。
 - fix(chat): 只读会话预览缺少运行时档位时使用当前模型目录；原生明确返回的空列表或仅 `off` 仍优先，不再等待首条消息才显示思考强度。
 - verification: 官方 OMP 18.12.6 隔离模型的档位与原生 RPC 一致；真实设置页选择 `max`、保存至原生配置并关闭重开保留成功，其他角色保持不变；首页发送前选择档位并刷新保留成功，无会话修改请求。后端 20 项、前端 23 项回归及 protocol/worker 构建、app 类型检查通过；受影响前端 lint 为 0 error、2 条既有 ref 警告。
 
 ## [v0.6.41] - 2026-10-24
 
-- fix: 移除「原生 OMP」终端接管入口——输入框下方按钮、`▾` 下的 `omp play`/`omp stream`、`/ui-terminal` 命令、终端面板的接管提示条、`terminals.create` 的 `nativeSessionId`/`ompCommand` 参数、服务端 `prepareNativeSession` 预留与写入/删除守卫、worker `disposeForNativeTakeover`、supervisor 原生租约，以及 `scripts/verify-native-terminal.mjs`。回退 c9bd333 的接管部分、d7808c1（#393、#395）的接管守卫，以及 6885e2a（#394）的租约部分。终端标签与 PTY 退出回收保留；supervisor 运行时租约不变。需要官方 TUI 时自行开终端。
+- fix: 移除「原生 OMP」终端接管入口——输入框下方按钮、`▾` 下的 `omp play`/`omp stream`、`/ui-terminal` 命令、终端面板的接管提示条、`terminals.create` 的 `nativeSessionId`/`ompCommand` 参数、服务端 `prepareNativeSession` 预留与写入/删除守卫、worker `disposeForNativeTakeover`、supervisor 原生租约，以及 `scripts/verify-native-terminal.mjs`。回退 c9bd333 的接管部分、d7808c1（#393、#395）的接管守卫，以及 6885e2a（#394）的租约部分。终端标签与 PTY 退出回收保留；supervisor 运行时租约不变。
 - fix(worker): 托管 bash 拦截前台 `pty:true timeout:0` 的提示不再指向原生终端入口。
 - fix(app): 长任务结束刷新后，所属助手消息已滑出加载窗口的已完成工具调用不再被追加到时间线末尾（表现为工具调用在任务完成后才跳出来）。兜底行只保留仍在运行或晚于最新已加载条目的调用。
 - fix(app): 待发送消息与原生历史行的匹配不再依赖图片 `mimeType` 与 `data`，改用「发送后新出现的行 + 相同文本 + 相同图片数」。OMP 落盘前会重编码图片（缩放、png→webp/jpeg），旧的严格比较会漏认，导致带图消息发出后一直挂在待发送区。

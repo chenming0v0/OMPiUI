@@ -24,6 +24,7 @@ import {
 import { MSG_SPACING } from '../messageSpacing'
 import { MessageExpandPanel, useMessageExpandRender } from '../messageExpand'
 import { ToolResultImages } from '../tools/renderers/DefaultRenderer'
+import { resolveTaskExecution } from '../tools/taskToolData'
 
 // ============================================
 // ToolPartView - 单个工具调用
@@ -45,10 +46,13 @@ interface ToolPartViewProps {
   /** 初始即展开（用户发起的 bash 等：发命令就是为了看输出）。仅影响初始
    *  状态；用户手动折叠后保持折叠（respectUser）。 */
   defaultExpanded?: boolean
+  /** 批量 task 拆行：本行对应的子任务序号与标题 */
+  taskSlotIndex?: number
+  taskSlotTitle?: string
 }
 
 export const ToolPartView = memo(function ToolPartView({
-  execution,
+  execution: rawExecution,
   partKey,
   isFirst = false,
   isLast = false,
@@ -56,15 +60,18 @@ export const ToolPartView = memo(function ToolPartView({
   descriptive = false,
   isStreaming = false,
   defaultExpanded = false,
+  taskSlotIndex,
+  taskSlotTitle,
 }: ToolPartViewProps) {
   const { t } = useTranslation('message')
+  const execution = useMemo(() => resolveTaskExecution(rawExecution), [rawExecution])
   const { call, result } = execution
   const toolName = call.name
   const status = getToolExecutionStatus(execution)
   // title 显示工具调用实质（命令/路径/模式），而不是重复工具名——
   // OMP RPC 的工具调用事件只有 toolName + args，没有工具描述字段；
   // formatToolName(toolName) 已展示工具名，title 再显示同名就是冗余。
-  const title = extractToolTitle(toolName, execution)
+  const title = taskSlotTitle ?? extractToolTitle(toolName, execution)
 
   const isActive = status === 'running'
   const isQueued = status === 'pending'
@@ -160,7 +167,7 @@ export const ToolPartView = memo(function ToolPartView({
 
   const bodyContent = (
     <>
-      <ToolBody execution={execution} partKey={partKey} data={toolData} onFullscreenChange={handleFullscreenChange} />
+      <ToolBody execution={rawExecution} partKey={partKey} data={toolData} onFullscreenChange={handleFullscreenChange} taskSlotIndex={taskSlotIndex} />
     </>
   )
 
@@ -465,13 +472,15 @@ const ToolBody = memo(function ToolBody({
   partKey,
   data,
   onFullscreenChange,
+  taskSlotIndex,
 }: {
   execution: PiToolExecution
   partKey: string
   data: ReturnType<typeof extractToolData>
   onFullscreenChange?: (isFullscreen: boolean) => void
+  taskSlotIndex?: number
 }) {
-  const tool = execution.call.name
+  const tool = resolveTaskExecution(execution).call.name
   const lowerTool = tool.toLowerCase()
   // A specialized success view must never hide the original failure payload.
   if (getToolExecutionStatus(execution) === 'error' && lowerTool !== 'task') {
@@ -480,7 +489,7 @@ const ToolBody = memo(function ToolBody({
   const specialized = (content: ReactNode) => <>{content}<ToolResultImages tool={tool} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} /></>
 
   if (lowerTool === 'task') {
-    return specialized(<TaskRenderer execution={execution} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} />)
+    return specialized(<TaskRenderer execution={execution} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} taskSlotIndex={taskSlotIndex} />)
   }
 
   if (lowerTool.includes('todo') && hasTodos(execution)) {

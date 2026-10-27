@@ -2,7 +2,9 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionNavigationContext } from '../../../../contexts/SessionNavigationContext'
-import { piSessionStateStore } from '../../../../omp/state/index.js'
+import { piBranchStore, piSessionStateStore } from '../../../../omp/state/index.js'
+import type { PiBranchPage } from '../../../../omp/domain/index.js'
+import { xdTaskAsyncCall, xdTaskAsyncDelivery, xdTaskAsyncResult } from '../__fixtures__/xdTaskAsyncDispatch'
 import { ompSubagentStore } from '../../../../omp/ompSubagentStore'
 import type { JsonObject } from '@ompiui/protocol'
 import type { PiToolExecution } from '../../../../omp/domain/index.js'
@@ -419,4 +421,91 @@ describe('persisted subagent fallback', () => {
     })
     expect(screen.getByText('task.waitingForResponse')).toBeInTheDocument()
   })
+
+  it('renders write xd://task like a native task with the raw call visible', () => {
+    renderTask({ call: { type: 'toolCall', id: 'xd-call', name: 'write', arguments: {
+      path: 'xd://task', content: JSON.stringify({ agent: 'scout', tasks: [{ name: 'Fix366BlobImages', task: 'Complete assignment thoroughly.\n# Target\nfix' }] }),
+    } }, startedAt: 1, isRunning: true })
+    expect(screen.getByRole('button', { name: /Fix366BlobImages/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /# Target/ })).not.toBeInTheDocument()
+    expect(screen.getByTestId('task-raw-call')).toHaveTextContent('write → xd://task')
+  })
+
+  it('shows generating state for streaming xd content and the error for invalid JSON', () => {
+    const { unmount } = renderTask({ call: { type: 'toolCall', id: 'xd-stream', name: 'write', arguments: { path: 'xd://task', content: '{"tasks":[{"na' } } })
+    expect(screen.getByText('task.argumentsStreaming')).toBeInTheDocument()
+    expect(screen.queryAllByTestId('task-slot')).toHaveLength(0)
+    unmount()
+    renderTask({ call: { type: 'toolCall', id: 'xd-bad', name: 'write', arguments: { path: 'xd://task', content: '{oops' } }, startedAt: 1, isRunning: true })
+    expect(screen.getByTestId('task-invalid')).toHaveAttribute('data-status', 'error')
+    expect(screen.queryAllByTestId('task-slot')).toHaveLength(0)
+  })
+
+  it('renders the real async xd://task dispatch as one row per subagent with badge, title and prompt', () => {
+    piBranchStore.clear('parent-session')
+    renderTask({ call: xdTaskAsyncCall, result: xdTaskAsyncResult })
+    expect(screen.queryByText('task.invalidArguments')).not.toBeInTheDocument()
+    const slots = screen.getAllByTestId('task-slot')
+    expect(slots).toHaveLength(2)
+    expect(slots.map(slot => slot.getAttribute('data-status'))).toEqual(['running', 'running'])
+    expect(screen.getAllByText('reviewer')).toHaveLength(2)
+    expect(screen.getByRole('button', { name: /ReviewNativeIntegration/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /ReviewGuiGitIntegration/ })).toBeInTheDocument()
+    expect(screen.queryByText(/Spawned 2 background agents/)).not.toBeInTheDocument()
+  })
+
+  it('fills the Result of an async subagent from its later async-result delivery', () => {
+    piBranchStore.setData('parent-session', { items: [xdTaskAsyncDelivery] } as unknown as PiBranchPage)
+    try {
+      renderTask({ call: xdTaskAsyncCall, result: xdTaskAsyncResult })
+      const slots = screen.getAllByTestId('task-slot')
+      expect(slots.map(slot => slot.getAttribute('data-status'))).toEqual(['running', 'completed'])
+      fireEvent.click(screen.getByRole('button', { name: /ReviewGuiGitIntegration/ }))
+      expect(screen.getAllByText(/# Target/).length).toBeGreaterThan(0)
+      expect(screen.getAllByText('task.result').length).toBeGreaterThan(0)
+      expect(screen.queryByText('task.invalidArguments')).not.toBeInTheDocument()
+    } finally {
+      piBranchStore.clear('parent-session')
+    }
+  })
+
+  it('shows upstream-rejected content as a collapsible invalid task row', () => {
+    renderTask({
+      call: { type: 'toolCall', id: 'xd-rejected', name: 'write', arguments: { path: 'xd://task', content: '{"tasks":[{"name":"RepairCiWorktreePaths","task":"a\nb"}]}' } },
+      result: { role: 'toolResult', toolCallId: 'xd-rejected', toolName: 'write', isError: true, timestamp: 1,
+        content: [{ type: 'text', text: 'xd://task expects a JSON args object as content (JSON Parse error: Unterminated string)' }],
+        details: { xdev: { tool: 'task', mode: 'execute' } } },
+    })
+    const row = screen.getByTestId('task-invalid')
+    expect(row).toHaveAttribute('data-status', 'error')
+    expect(screen.getByRole('button', { name: /RepairCiWorktreePaths/ })).toBeInTheDocument()
+    expect(screen.queryByText(/Unterminated string/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /RepairCiWorktreePaths/ }))
+    expect(screen.getByText('task.invalidArguments')).toBeInTheDocument()
+  })
+
+  it('keeps tasks[] order and per-slot status when progress arrives out of order', () => {
+    ompSubagentStore.applyLifecycle('parent-session', { id: 'Third', parentToolCallId: 'ordered', index: 2, agent: 'scout', status: 'started' })
+    ompSubagentStore.applyLifecycle('parent-session', { id: 'First', parentToolCallId: 'ordered', index: 0, agent: 'scout', status: 'completed' })
+    renderTask({ call: { type: 'toolCall', id: 'ordered', name: 'task', arguments: { tasks: [
+      { name: 'First', task: 'a' }, { name: 'Second', task: 'b' }, { name: 'Third', task: 'c' },
+    ] } }, startedAt: 1, isRunning: true })
+    const slots = screen.getAllByTestId('task-slot')
+    expect(slots.map(slot => slot.getAttribute('data-status'))).toEqual(['completed', 'pending', 'running'])
+    expect(slots[0]).toHaveTextContent('First')
+    expect(slots[2]).toHaveTextContent('Third')
+    expect(screen.getByTestId('task-batch-summary')).toHaveTextContent('task.batchRunning')
+    expect(screen.getByTestId('task-batch-summary')).toHaveTextContent('task.batchQueued')
+  })
+
+  it('does not mark queued siblings done just because the outer call returned', () => {
+    renderTask({ call: { type: 'toolCall', id: 'outer-done', name: 'task', arguments: { tasks: [{ name: 'A', task: 'a' }, { name: 'B', task: 'b' }] } },
+      result: { role: 'toolResult', toolCallId: 'outer-done', toolName: 'task', content: [{ type: 'text', text: 'partial' }], isError: false, timestamp: 2,
+        details: { results: [{ index: 0, id: 'A', exitCode: 0 }, { index: 1, id: 'B', exitCode: 0, mergeError: 'merge conflict' }] } } })
+    const slots = screen.getAllByTestId('task-slot')
+    expect(slots.map(slot => slot.getAttribute('data-status'))).toEqual(['completed', 'error'])
+    expect(screen.getByText(/merge conflict/)).toBeInTheDocument()
+    expect(screen.getByTestId('task-batch-summary')).toHaveTextContent('task.batchFailed')
+  })
+
 })
