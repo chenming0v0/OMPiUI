@@ -50,14 +50,17 @@ function expand(name: string) {
 }
 
 describe('custom message timeline views', () => {
-  it('keeps batched job results separately expandable', () => {
+  it('renders one delivery with several jobs as one tool group whose rows expand separately', () => {
     render(<PiSystemItemView item={message('batch', '── Job one (task) ──\nFirst result\n── Job two (task) ──\nSecond result', {
       jobs: [{ jobId: 'one', label: 'First job' }, { jobId: 'two', label: 'Second job' }],
     })} />)
-    expect(header('First job')).toHaveAttribute('aria-expanded', 'false')
-    fireEvent.click(header('First job'))
-    expect(header('First job')).toHaveAttribute('aria-expanded', 'true')
-    expect(header('Second job')).toHaveAttribute('aria-expanded', 'false')
+    const group = region('First job, Second job')
+    if (!within(group).queryByText('First job')) fireEvent.click(within(group).getAllByRole('button')[0])
+    const row = (name: string) => within(group).getByText(name).closest('button')!
+    expect(row('First job')).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(row('First job'))
+    expect(row('First job')).toHaveAttribute('aria-expanded', 'true')
+    expect(row('Second job')).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('renders the job as a regular tool row: label, name and duration', () => {

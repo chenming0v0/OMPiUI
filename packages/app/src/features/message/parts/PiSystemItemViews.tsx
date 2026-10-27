@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react'
+import { memo } from 'react'
 import { useTranslation } from 'react-i18next'
 import type {
   PiBashExecutionGroupItem,
@@ -19,7 +19,8 @@ import { useNow } from '../../../hooks/useNow'
 import { chevronClass, MessageExpandPanel, useMessageExpandRender } from '../messageExpand'
 import { MSG_SPACING } from '../messageSpacing'
 import { ToolGroup } from './ToolGroup'
-import { customMessageText, readAgentMessage, readBackgroundJobs, type BackgroundJobView } from './customMessagePresentation'
+import { customMessageText, readAgentMessage, readBackgroundJobs } from './customMessagePresentation'
+import { backgroundJobExecutions } from './backgroundJobExecution'
 
 // ============================================
 // Pi system timeline item views
@@ -189,96 +190,24 @@ function CustomMessageItemView({ item }: { item: PiCustomMessageItem }) {
       </section>
     )
   }
-  const jobs = readBackgroundJobs(item)
-  if (jobs) {
-    return (
-      <div className="min-w-0">
-        {jobs.map((job, index) => (
-          <BackgroundJobRow key={`${job.id}:${index}`} job={job} partKey={`${item.entryId}:${job.id}:${index}`} />
-        ))}
-      </div>
-    )
-  }
+  const jobs = backgroundJobExecutions(item)
+  if (jobs) return <BackgroundJobGroup item={item} executions={jobs} />
   const text = customMessageText(item)
   return text.trim() ? <MarkdownRenderer content={text} /> : null
 }
 
-/** 后台任务沿用普通工具卡片的行样式（同样的图标列、title、耗时、折叠）。
- *  之前这里自己写了一套卡片 + header + 状态徽标 + 结果小字，与其余工具完全
- *  不同的视觉语言；现在把 job 合成一次工具执行，交给 ToolGroup 渲染。 */
-function BackgroundJobRow({ job, partKey }: { job: BackgroundJobView; partKey: string }) {
+/** 后台任务投递沿用普通工具卡片（同样的图标列、title、耗时、折叠）。
+ *  紧跟在工具链后面的投递已在 chatAreaVisibility 并进那条工具链；
+ *  走到这里的是前面没有工具行的独立投递，按普通工具组渲染。 */
+function BackgroundJobGroup({ item, executions }: { item: PiCustomMessageItem; executions: PiToolExecution[] }) {
   const { t } = useTranslation('message')
-  const execution = useMemo(() => backgroundJobExecution(job), [job])
+  const isStreaming = executions.some(execution => execution.isRunning)
+  const name = readBackgroundJobs(item)?.map(job => job.name).join(', ') ?? ''
   return (
-    <section className="min-w-0" aria-label={t('system.backgroundJob', { name: job.name })}>
-      <ToolGroup
-        groupId={partKey}
-        executions={[execution]}
-        isStreaming={job.status === 'running' || job.status === 'pending'}
-        nameOverride={t('system.jobLabel')}
-        plain
-        forceTimeline
-      />
+    <section className="min-w-0" aria-label={t('system.backgroundJob', { name })}>
+      <ToolGroup groupId={item.entryId} executions={executions} isStreaming={isStreaming} plain />
     </section>
   )
-}
-
-const RUNNING_JOB_STATUSES = new Set(['running', 'pending', 'started', 'queued'])
-
-/**
- * 把后台任务投递合成一次工具执行：type 决定沿用哪个工具的图标/渲染器
- * （bash 走终端样式、task 走子代理样式），name 作为行内 title。
- * 没有真实起止时间，用 0 → durationMs 表示耗时，只影响时长显示。
- */
-function backgroundJobExecution(job: BackgroundJobView): PiToolExecution {
-  // 只有 bash / task 这两类原生 job 有对应的工具渲染器；其余（含未知类型）
-  // 统一走通用工具卡片，避免误用终端渲染器和它的全屏上下文依赖。
-  const rawType = (job.type ?? '').trim().toLowerCase()
-  const toolName = rawType === 'bash' || rawType === 'task' ? rawType : 'job'
-  const callId = `job:${job.id}`
-  const isBash = toolName.toLowerCase() === 'bash'
-  const call: PiToolExecution['call'] = {
-    type: 'toolCall',
-    id: callId,
-    name: toolName,
-    arguments: isBash ? { command: job.name } : { description: job.name },
-  }
-
-  if (RUNNING_JOB_STATUSES.has(job.status)) return { call, isRunning: true, startedAt: 0 }
-
-  const text = [job.body.trim(), ...job.errors].filter(Boolean).join('\n\n') || job.summary || ''
-  const failed = job.status === 'failed' || job.status === 'aborted' || job.errors.length > 0
-  // 头部耗时由 ToolPartView 从 startedAt/completedAt 算，原生 duration 是
-  // 「5m 44s」这种字符串，先折算成毫秒才能复用同一套格式化。
-  const durationMs = job.durationMs ?? parseDurationLabel(job.duration)
-  return {
-    call,
-    startedAt: durationMs !== undefined ? 0 : undefined,
-    completedAt: durationMs,
-    result: {
-      role: 'toolResult',
-      toolCallId: callId,
-      toolName,
-      content: [{ type: 'text', text }],
-      isError: failed,
-      timestamp: durationMs,
-    } as unknown as PiToolExecution['result'],
-  }
-}
-
-const DURATION_PART = /(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)/gi
-const DURATION_UNIT_MS: Record<string, number> = { ms: 1, s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }
-
-/** 解析原生 "1m 11s" / "332ms" 形式的耗时为毫秒；无法解析时返回 undefined。 */
-function parseDurationLabel(label: string | undefined): number | undefined {
-  if (!label) return undefined
-  let total = 0
-  let matched = false
-  for (const match of label.matchAll(DURATION_PART)) {
-    matched = true
-    total += Number.parseFloat(match[1]) * DURATION_UNIT_MS[match[2].toLowerCase()]
-  }
-  return matched ? Math.round(total) : undefined
 }
 
 function UnknownItemView({ item }: { item: PiUnknownItem }) {

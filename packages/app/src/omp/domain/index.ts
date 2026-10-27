@@ -199,6 +199,8 @@ export type PiToolExecutionState = {
   error?: string
   interruption?: 'failed' | 'cancelled' | 'unknown'
   endedAt?: number
+  /** 由 async-result 后台任务投递合成的执行（行首显示「后台任务」）。 */
+  backgroundJob?: boolean
 }
 
 /** One tool call plus its authoritative result and execution evidence. */

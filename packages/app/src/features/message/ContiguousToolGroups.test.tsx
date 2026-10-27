@@ -178,6 +178,28 @@ describe('contiguous assistant tool groups', () => {
     expect(screen.queryByRole('button', { name: /^4\/4/ })).toBeNull()
   })
 
+  it('folds a background job delivery between tool runs into the same connected group', () => {
+    const job = (id: string, name: string) => ({
+      kind: 'custom_message' as const, entryId: id, timestamp: 250, rawEntry: fixture()[0].rawEntry,
+      customType: 'async-result', display: true, content: 'done',
+      details: { jobId: name, type: 'bash', label: name, status: 'completed' },
+    })
+    const [first, failed, completed] = fixture()
+    const entries = buildVisibleTimelineEntries([first, job('job-a', 'watch-a'), job('job-b', 'watch-b'), failed, completed])
+    expect(entries.map(entry => entry.sourceIds)).toEqual([['first', 'job-a', 'job-b', 'eval-failed-message', 'eval-completed-message']])
+    render(<FullscreenProvider><MessageRenderer item={entries[0].item} processContentScope="inline" /></FullscreenProvider>)
+    expect(screen.getByRole('button', { name: /^8\/8/ })).toBeInTheDocument()
+  })
+
+  it('keeps a background job after visible text as its own entry', () => {
+    const text = assistant('answer', [{ type: 'text', text: 'All done' }], 100)
+    const delivery = {
+      kind: 'custom_message' as const, entryId: 'late-job', timestamp: 200, rawEntry: text.rawEntry,
+      customType: 'async-result', display: true, content: 'ok', details: { jobId: 'late' },
+    }
+    expect(buildVisibleTimelineEntries([text, delivery]).map(entry => entry.sourceIds)).toEqual([['answer'], ['late-job']])
+  })
+
   it('never joins tools across a user boundary, even an empty user entry', () => {
     const [first, second] = fixture()
     const user = {
