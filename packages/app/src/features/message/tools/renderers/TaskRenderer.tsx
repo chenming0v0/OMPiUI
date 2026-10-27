@@ -382,7 +382,7 @@ function SubagentTask({ slot, status, runtimeStopped, execution, partKey, intent
           <div className="ml-[9px] border-l border-border-200/50 pl-3 pt-1 pb-2 space-y-3">
             {prompt && <div className="text-[length:var(--fs-xs)] text-text-500 leading-relaxed whitespace-nowrap overflow-hidden text-ellipsis">{prompt}</div>}
             {prompt && subagentRun && <hr className="border-border-200/30" />}
-            {hasStarted && (subagentRun || previewLoading || !isError) && <SubagentSessionPreview run={subagentRun} loading={previewLoading} onLoadMore={persistedRun ? reloadPreview : undefined} />
+            {hasStarted && (subagentRun || previewLoading || !isError) && <SubagentSessionPreview run={subagentRun} loading={previewLoading} onLoadMore={persistedRun ? reloadPreview : undefined} />}
             {isCompleted && resultOutput && (
               <ContentBlock label={t('task.result')} stateKey={`message:${partKey}:task-result`} content={resultOutput} defaultCollapsed onFullscreenChange={handleContentFullscreenChange} fullscreenId={`task:${partKey}:result`} />
             )}
