@@ -148,7 +148,7 @@ export type PiAssistantMessageItem = {
   timestamp: number
   rawEntry: SessionEntry
   message: AssistantMessage
-  blocks: (TextContent | ThinkingContent | ToolCall)[]
+  blocks: (TextContent | ThinkingContent | ImageContent | ToolCall)[]
   /** Tool results paired by toolCallId; empty while a call has no result yet */
   toolResults: Record<string, ToolResultMessage>
   /** Execution evidence keyed by call id; message timestamps are never tool starts. */
@@ -204,12 +204,16 @@ export type PiToolExecutionState = {
 /** One tool call plus its authoritative result and execution evidence. */
 export type PiToolExecution = PiToolExecutionState & {
   call: ToolCall
+  /** The orphan row has only a result, not the original call arguments. */
+  argumentsUnknown?: boolean
 }
 
 export function getToolExecutionStatus(execution: PiToolExecution): 'pending' | 'running' | 'completed' | 'error' {
   if (execution.result) {
-    const details = execution.result.details as { error?: unknown; mergeError?: unknown; nativeDetails?: { error?: unknown; mergeError?: unknown }; results?: Array<{ error?: unknown; mergeError?: unknown; aborted?: boolean; exitCode?: number }> } | undefined
+    type FailureDetails = { error?: unknown; mergeError?: unknown; service?: { state?: unknown } }
+    const details = execution.result.details as (FailureDetails & { nativeDetails?: FailureDetails; results?: Array<{ error?: unknown; mergeError?: unknown; aborted?: boolean; exitCode?: number }> }) | undefined
     const failed = execution.result.isError || Boolean(details?.error || details?.mergeError || details?.nativeDetails?.error || details?.nativeDetails?.mergeError) ||
+      (execution.call.name.toLowerCase() === 'bash' && (details?.service?.state === 'failed' || details?.nativeDetails?.service?.state === 'failed')) ||
       (execution.call.name === 'task' && Array.isArray(details?.results) && details.results.some(result => result && (result.error || result.mergeError || result.aborted || (result.exitCode !== undefined && result.exitCode !== 0))))
     return failed ? 'error' : 'completed'
   }

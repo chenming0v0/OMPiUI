@@ -61,8 +61,8 @@ export interface StaticServer {
 export function createStaticServer(root: string): StaticServer | undefined {
   const indexHtml = join(root, "index.html");
   if (!existsSync(indexHtml)) return undefined;
-  const canonicalRoot = realpathSync(root);
-  const canonicalIndex = realpathSync(indexHtml);
+  const canonicalRoot = realpathSync.native(root);
+  const canonicalIndex = realpathSync.native(indexHtml);
 
   const isInsideRoot = (candidate: string): boolean => {
     const rootWithSep = canonicalRoot.endsWith(sep)
@@ -233,7 +233,7 @@ export function createStaticServer(root: string): StaticServer | undefined {
       if (resolved && existsSync(resolved) && statSync(resolved).isFile()) {
         let physicalPath: string;
         try {
-          physicalPath = realpathSync(resolved);
+          physicalPath = realpathSync.native(resolved);
         } catch {
           return false;
         }

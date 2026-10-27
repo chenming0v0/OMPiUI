@@ -73,6 +73,26 @@ export default function (pi: ExtensionAPI) {
     },
   })
 
+  pi.registerCommand("ui-test-metadata", {
+    description: "Exercise official select descriptions, editor styles, empty values and timeout",
+    handler: async (_args, ctx) => {
+      const record = (step: string, value: string | undefined) =>
+        ctx.ui.setStatus("test:metadata", JSON.stringify({ step, value: value ?? null }))
+      record("mixed", await ctx.ui.select("Metadata: mixed descriptions", [
+        { label: "Plan", description: "Plan the change" },
+        "Build",
+        { label: "Review", description: "Review the result" },
+        { label: "Ship", description: "" },
+      ]))
+      record("legacy", await ctx.ui.select("Metadata: legacy labels", ["One", "Two"]))
+      record("input", await ctx.ui.input("Metadata: empty input", "Keep this empty"))
+      record("prompt", await ctx.ui.editor("Metadata: prompt editor", "prefilled draft", undefined, { promptStyle: true }))
+      record("editor", await ctx.ui.editor("Metadata: ordinary editor", "", undefined, { promptStyle: false }))
+      record("cancel", await ctx.ui.input("Metadata: cancel input"))
+      record("timeout", await ctx.ui.select("Metadata: timeout", ["Expired"], { timeout: 1500 }))
+    },
+  })
+
   pi.registerCommand("ui-test-dialog-queue", {
     description: "Queue several extension dialogs",
     handler: async (_args, ctx) => {

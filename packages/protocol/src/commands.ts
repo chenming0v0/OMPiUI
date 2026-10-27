@@ -10,6 +10,7 @@ export const CORE_COMMAND_TYPES = [
   "abortAndPrompt",
   "newSession",
   "switchSession",
+  "moveSession",
   "fork",
   "importSession",
   "setSessionName",
@@ -236,6 +237,7 @@ export type CoreCommandParams = {
   abortAndPrompt: SteerParams
   newSession: NewSessionParams
   switchSession: SwitchSessionParams
+  moveSession: { path: string }
   fork: ForkParams
   importSession: ImportSessionParams
   setSessionName: SetSessionNameParams

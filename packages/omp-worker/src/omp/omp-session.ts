@@ -5,6 +5,7 @@ import type {
   ImageInput,
   JsonObject,
   JsonValue,
+  PiCommandParams,
   RegistrySnapshot,
   SessionActivityStatus,
 } from "@ompiui/protocol";
@@ -29,6 +30,7 @@ import { OmpExtensionUiBridge } from "./omp-extension-ui.js";
 import { OMP_SDK_VERSION } from "./constants.js";
 import {
   detectOmpVersion,
+  compareOmpVersions,
   isOmpVersionSupported,
   ompTooOldError,
 } from "./omp-version.js";
@@ -135,6 +137,7 @@ export class OmpRpcSession implements SessionRuntime {
   private ompOptions: OmpSessionOptions = {};
   /** 探测到的真实 omp 版本；探测失败时为 null（展示回退 OMP_SDK_VERSION） */
   private ompVersion: string | null = null;
+  private nativeAskDialog = false;
 
   private sessionId = "";
   private sessionFile: string | undefined;
@@ -155,6 +158,8 @@ export class OmpRpcSession implements SessionRuntime {
   private readonly subagentEvents = new SubagentEventBuffer((event) => {
     const payload = isJsonObject(event.payload) ? event.payload : undefined;
     if (typeof payload?.runId === "string" && !payload.runId.startsWith(`${this.eventEpoch}:`)) return;
+    if (typeof payload?.id === "string" && typeof payload.runId === "string" &&
+      this.subagentRuns.get(payload.id)?.runId !== payload.runId) return;
     for (const listener of this.subagentListeners) listener(event);
   });
   private readonly messageStream = new MainMessageStream((event, live) =>
@@ -207,11 +212,7 @@ export class OmpRpcSession implements SessionRuntime {
   private activityGeneration = 0;
   private readonly resourcesListeners = new Set<() => void>();
   private scopedModels: JsonValue[] = [];
-  // OMPiUI goal continuation is worker-local. Native goal tools may also be
-  // registered by the SDK; there is no public RPC goal control operation.
-  private goal: JsonValue = null;
-  private goalImages: ImageInput[] = [];
-  private goalGeneration = 0;
+  private scopedModelPatterns: string[] = [];
   private lastActivity = {
     streaming: false,
     retrying: false,
@@ -220,6 +221,8 @@ export class OmpRpcSession implements SessionRuntime {
   private abortIntentEpoch?: string;
   private toolInterruption?: JsonObject;
   private abortInFlight: Promise<JsonValue | undefined> | undefined;
+  private relocationEpoch: string | undefined;
+  private readonly submissionFlights = new Map<string, number>();
 
   private modelsCache: JsonObject[] = [];
   private modelsGeneration = 0;
@@ -269,7 +272,7 @@ export class OmpRpcSession implements SessionRuntime {
     // Local RPC protocol failures (chunk reassembly, decode) are otherwise only
     // visible in the exit stderr tail; forward them as events while the process
     // is still alive (#367). Bounded so an error storm cannot flood the UI.
-    this.client.on("protocolError", (message: unknown) => {
+    this.client.on("protocolError", (message: unknown, originalType?: string) => {
       if (this.closed) return;
       const text = typeof message === "string" ? message : String(message);
       const now = Date.now();
@@ -283,6 +286,8 @@ export class OmpRpcSession implements SessionRuntime {
         type: "rpc_frame_error",
         source: "OMP RPC",
         level: "error",
+        error: text,
+        ...(originalType !== undefined ? { originalType } : {}),
         text:
           this.protocolErrorCount === 20
             ? `${text} (further protocol errors suppressed for 60s)`
@@ -291,6 +296,8 @@ export class OmpRpcSession implements SessionRuntime {
     });
     this.client.on("exit", () => {
       if (this.closed) return;
+      this.extensionUi.cancelAll("runtime_crashed", false);
+      this.nativeAskDialog = false;
       const error =
         this.client.exitInfo.error ??
         new Error("omp RPC process exited unexpectedly");
@@ -311,6 +318,12 @@ export class OmpRpcSession implements SessionRuntime {
       unwrapResponse(await this.client.request({
         type: "negotiate_protocol", protocolVersion: 2,
       }));
+      // Opt in only on the proven official interface; older runtimes keep
+      // their select/editor fallback. This never changes native ask settings.
+      if (detected && detected.localeCompare("18.12.6", undefined, { numeric: true }) >= 0) {
+        const ask = unwrapResponse<JsonObject>(await this.client.request({ type: "set_ask_dialog", enabled: true }));
+        this.nativeAskDialog = ask?.enabled === true;
+      }
       // 子代理帧：lifecycle + progress + 完整事件
       unwrapResponse(await this.client.request({
         type: "set_subagent_subscription", level: "events",
@@ -325,6 +338,7 @@ export class OmpRpcSession implements SessionRuntime {
         this.refreshAvailableCommands(),
       ]);
       await this.syncEntriesNow();
+      await this.getState();
     } catch (error) {
       // 启动中途失败：杀掉子进程，避免留下孤儿 omp 进程
       this.client.kill("startup_failed");
@@ -333,15 +347,14 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   private async refreshIdentity(): Promise<void> {
-    const [state, identity] = await Promise.all([
-      this.fetchState(), this.client.requestRuntime("identity"),
-    ]);
+    // Identity is the committed operation boundary. Projection read failures
+    // must not hide a native switch that has already changed the writer's file.
+    const identity = await this.client.requestRuntime("identity");
     if (!isJsonObject(identity) || typeof identity.sessionId !== "string" || typeof identity.cwd !== "string")
       throw new Error("Managed runtime returned an invalid session identity");
+    if (identity.sessionId !== this.sessionId) this.sessionName = null;
     this.sessionId = identity.sessionId;
     this.sessionFile = typeof identity.sessionFile === "string" ? identity.sessionFile : undefined;
-    this.sessionName =
-      typeof state.sessionName === "string" ? state.sessionName : null;
     this.cwd = identity.cwd;
   }
 
@@ -389,18 +402,14 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   private async refreshAvailableCommands(): Promise<void> {
-    try {
-      const response = await this.client.request(
-        { type: "get_available_commands" },
-        30_000,
-      );
-      const data = unwrapResponse<JsonValue>(response);
-      this.availableCommandsCache =
-        isJsonObject(data) && Array.isArray(data.commands)
-          ? data.commands.filter((command) => !isJsonObject(command) || command.name !== "ompiui-runtime") : [];
-    } catch {
-      this.availableCommandsCache = [];
+    const epoch = this.eventEpoch;
+    const response = await this.client.request({ type: "get_available_commands" }, 30_000);
+    const data = unwrapResponse<JsonValue>(response);
+    this.assertEventEpoch(epoch);
+    if (!isJsonObject(data) || !Array.isArray(data.commands)) {
+      throw new OmpRpcError("Native command catalog is unavailable", "RESOURCE_UNAVAILABLE");
     }
+    this.availableCommandsCache = data.commands.filter((command) => !isJsonObject(command) || command.name !== "ompiui-runtime");
   }
 
   // ------------------------------------------------------------------ events
@@ -449,9 +458,13 @@ export class OmpRpcSession implements SessionRuntime {
           this.abortIntentEpoch = undefined;
           this.toolInterruption = undefined;
         }
-        if (type === "agent_end" && frame.isTerminal !== false) {
+        if (type === "agent_end" && (frame.isTerminal !== false || frame.awaitingAsyncWork === true)) {
           this.activityGeneration += 1;
           this.currentStreaming = false;
+          if (frame.awaitingAsyncWork === true) {
+            this.nativeSettled = false;
+            this.pendingAsyncWork = true;
+          }
         }
         this.trackShadowState(frame);
         if (type === "queue_update") this.trackNativeQueue(frame);
@@ -469,7 +482,7 @@ export class OmpRpcSession implements SessionRuntime {
           void Promise.all([this.refreshModels(), this.refreshThinkingLevels()])
             .catch((error) => this.reportEntrySyncError(error));
         }
-        if (type === "agent_end" && frame.isTerminal !== false) {
+        if (type === "agent_end" && (frame.isTerminal !== false || frame.awaitingAsyncWork === true)) {
           void this.getState().catch((error) => this.reportEntrySyncError(error));
         }
         return;
@@ -581,9 +594,6 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   private emitPiEvent(event: JsonObject): void {
-    if (event.type === "goal_updated" && isJsonObject(event.goal)) {
-      event = { ...event, goal: projectStateImages(event.goal) };
-    }
     const update =
       event.type === "message_update"
         ? "message"
@@ -727,10 +737,7 @@ export class OmpRpcSession implements SessionRuntime {
         };
         break;
       }
-      case "goal_updated": {
-        this.goal = toJson(frame.goal) ?? null;
-        break;
-      }
+
       default:
         break;
     }
@@ -759,14 +766,20 @@ export class OmpRpcSession implements SessionRuntime {
     }
   }
 
-  private async refreshQueue(publish = true): Promise<void> {
+  private async refreshQueue(publish = true, native?: JsonObject): Promise<void> {
     const epoch = this.eventEpoch;
     const generation = ++this.queueGeneration;
-    const value = await this.client.requestRuntime("queue");
+    const state = native ?? await this.fetchState();
+    // Extension commands are queued during native compaction. Its readonly
+    // RPC state already exposes the queue; never submit a control prompt here.
+    const value = state.isCompacting
+      ? state.queuedMessages
+      : await this.client.requestRuntime("queue");
     if (epoch !== this.eventEpoch || generation !== this.queueGeneration) return;
     if (isJsonObject(value)) {
       this.trackNativeQueue(value);
       if (Array.isArray(value.scopedModels)) this.scopedModels = value.scopedModels;
+      if (Array.isArray(value.scopedModelPatterns)) this.scopedModelPatterns = value.scopedModelPatterns.filter((pattern): pattern is string => typeof pattern === "string");
     }
     if (publish) this.emitPiEvent({ type: "queue_update", ...this.getNativeQueueSnapshot() });
   }
@@ -838,6 +851,7 @@ export class OmpRpcSession implements SessionRuntime {
 
   private reportEntrySyncError(error: unknown): void {
     if (this.closed) return;
+    if (error instanceof Error && "code" in error && error.code === "SESSION_REPLACED") return;
     console.error("Failed to synchronize OMP session history:", error);
     this.syncDirty = true;
   }
@@ -1051,6 +1065,8 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   private async buildState(): Promise<JsonObject> {
+    // A read opened by the source must never return target state to its caller.
+    // Same-identity history/activity changes may retry; replacement must expire.
     const epoch = this.eventEpoch;
     const historyGeneration = this.historyGeneration;
     const modelsGeneration = this.modelsGeneration;
@@ -1058,14 +1074,18 @@ export class OmpRpcSession implements SessionRuntime {
     const [native] = await Promise.all([
       this.fetchState(),
       this.ensureSynced(),
+      this.listSubagents(),
     ]);
+    this.assertEventEpoch(epoch);
     if (epoch !== this.eventEpoch || historyGeneration !== this.historyGeneration || modelsGeneration !== this.modelsGeneration || activityGeneration !== this.activityGeneration) return this.buildState();
+    this.sessionName = typeof native.sessionName === "string" ? native.sessionName : null;
     this.currentStreaming = Boolean(native.isStreaming);
     this.nativeSettled = native.isSettled === true ||
       (native.isSettled === undefined && native.isStreaming === false &&
         !native.hasPendingAsyncWork && !native.queuedMessageCount);
     this.trackNativeQueue(native);
-    await Promise.all([this.refreshQueue(false), this.refreshThinkingLevels()]);
+    await Promise.all([this.refreshQueue(false, native), this.refreshThinkingLevels()]);
+    this.assertEventEpoch(epoch);
     if (epoch !== this.eventEpoch || historyGeneration !== this.historyGeneration || modelsGeneration !== this.modelsGeneration || activityGeneration !== this.activityGeneration) return this.buildState();
     const model = this.resolveModelDescriptor(native.model);
     const contextUsage = isJsonObject(native.contextUsage)
@@ -1084,9 +1104,14 @@ export class OmpRpcSession implements SessionRuntime {
       /* stats 是增强信息 */
     }
     const head = this.getHead();
+    this.assertEventEpoch(epoch);
     if (statsEpoch !== this.eventEpoch || historyGeneration !== this.historyGeneration || modelsGeneration !== this.modelsGeneration || activityGeneration !== this.activityGeneration) return this.buildState();
     this.pendingAsyncWork = Boolean(native.hasPendingAsyncWork);
     this.emitActivityIfChanged();
+    const activeTools = Array.isArray(native.dumpTools)
+      ? native.dumpTools.filter(isJsonObject).map(tool => String(tool.name ?? "")).filter(Boolean)
+      : [];
+    const askAvailable = activeTools.includes("ask") && !this.client.hasExited;
     return {
       sessionId: this.sessionId,
       sessionFile: this.sessionFile ?? null,
@@ -1101,14 +1126,14 @@ export class OmpRpcSession implements SessionRuntime {
         (isJsonObject(this.compactionShadow.operation) &&
           this.compactionShadow.operation.type === "compaction"),
       steeringMode:
-        typeof native.steeringMode === "string"
+        native.steeringMode === "all" || native.steeringMode === "one-at-a-time"
           ? native.steeringMode
-          : "one-at-a-time",
+          : null,
       followUpMode:
-        typeof native.followUpMode === "string"
+        native.followUpMode === "all" || native.followUpMode === "one-at-a-time"
           ? native.followUpMode
-          : "one-at-a-time",
-      interruptMode: typeof native.interruptMode === "string" ? native.interruptMode : "immediate",
+          : null,
+      interruptMode: native.interruptMode === "immediate" || native.interruptMode === "wait" ? native.interruptMode : null,
       autoCompactionEnabled: Boolean(native.autoCompactionEnabled),
       autoRetryEnabled: true,
       messageCount:
@@ -1141,26 +1166,28 @@ export class OmpRpcSession implements SessionRuntime {
       queue: {
         ...this.getNativeQueueSnapshot(),
         steeringMode:
-          typeof native.steeringMode === "string"
+          native.steeringMode === "all" || native.steeringMode === "one-at-a-time"
             ? native.steeringMode
-            : "one-at-a-time",
+            : null,
         followUpMode:
-          typeof native.followUpMode === "string"
+          native.followUpMode === "all" || native.followUpMode === "one-at-a-time"
             ? native.followUpMode
-            : "one-at-a-time",
+            : null,
       },
       submittedMessages: [],
       pendingExtensionUiRequests: this.extensionUi.listPending(),
       extensionUiState: this.extensionUi.getStateMirror(),
       extensionTuiPanels: [],
+      nativeAskDialog: this.nativeAskDialog && askAvailable,
+      askUi: {
+        available: askAvailable,
+        surface: this.nativeAskDialog ? "ask" : "select/editor",
+        ...(!askAvailable ? { reason: this.client.hasExited ? "runtime_unavailable" : "inactive" } : {}),
+      },
       supportsThinking: this.resolveSupportsThinking(native.model),
-      activeTools: Array.isArray(native.dumpTools)
-        ? native.dumpTools
-            .filter(isJsonObject)
-            .map((tool) => String(tool.name ?? ""))
-            .filter(Boolean)
-        : [],
+      activeTools,
       scopedModels: this.scopedModels,
+      scopedModelPatterns: this.scopedModelPatterns,
       contextUsage,
       sessionStats,
       retry: this.retryShadow,
@@ -1169,8 +1196,8 @@ export class OmpRpcSession implements SessionRuntime {
       // OMP 扩展：子代理注册表快照 + todo 阶段（前端子代理面板重连恢复用）
       subagents: this.getSubagentsSnapshot(),
       todoPhases: Array.isArray(native.todoPhases) ? native.todoPhases : [],
-      // goal 运行时快照（前端目标栏用；worker 侧注册表，见 manageGoal）
-      goal: isJsonObject(this.goal) ? projectStateImages(this.goal) : this.goal,
+      goal: isJsonObject(native.goal) && isJsonObject(native.goal.goal) ? native.goal.goal : null,
+      goalState: native.goal ?? null,
     };
   }
 
@@ -1202,7 +1229,8 @@ export class OmpRpcSession implements SessionRuntime {
     if (!id) return payload;
     const existing = this.subagentRuns.get(id);
     const parent = typeof payload.parentToolCallId === "string" ? payload.parentToolCallId : undefined;
-    if (parent && this.supersededSubagentParents.get(id)?.has(parent)) return;
+    if (parent && this.supersededSubagentParents.get(id)?.has(parent) &&
+      !(kind === "lifecycle" && payload.status === "started")) return;
     const parentChanged = typeof payload.parentToolCallId === "string" &&
       typeof existing?.parentToolCallId === "string" &&
       payload.parentToolCallId !== existing.parentToolCallId;
@@ -1210,6 +1238,7 @@ export class OmpRpcSession implements SessionRuntime {
     const terminal = existing?.status === "completed" || existing?.status === "failed" || existing?.status === "aborted";
     if (typeof payload.runId === "string" && existing && payload.runId !== existing.runId) return;
     const restart = kind === "lifecycle" && payload.status === "started" && (parentChanged || terminal);
+    if (restart && parent) this.supersededSubagentParents.get(id)?.delete(parent);
     if (parentChanged && typeof existing?.parentToolCallId === "string") {
       const superseded = this.supersededSubagentParents.get(id) ?? new Set<string>();
       superseded.add(existing.parentToolCallId);
@@ -1219,18 +1248,22 @@ export class OmpRpcSession implements SessionRuntime {
     const runId = !existing || restart
       ? `${this.eventEpoch}:${id}:${++this.subagentRunSequence}`
       : String(existing.runId);
-    const tracked = { ...payload, runId };
+    const tracked: JsonObject = { ...payload, runId };
     if (kind === "event") {
       if (!existing) this.rememberSubagent(id, { id, runId });
       return tracked;
     }
     const merged: JsonObject = restart || !existing ? { id, runId } : { ...existing, runId };
+    if (restart) merged.isFollowUp = typeof parent === "string" && parent === existing?.parentToolCallId &&
+      typeof payload.sessionFile === "string" && payload.sessionFile === existing?.sessionFile;
+    tracked.isFollowUp = merged.isFollowUp;
     for (const key of ["agent", "agentSource", "description", "task", "assignment",
       "sessionFile", "parentToolCallId", "index", "detached"]) {
       if (payload[key] !== undefined) merged[key] = payload[key];
     }
     if (kind === "lifecycle" && typeof payload.status === "string") {
-      merged.status = payload.status === "started" ? "running" : payload.status;
+      const status = payload.status === "started" ? "running" : payload.status;
+      if (!(terminal && !restart && (status === "running" || status === "pending"))) merged.status = status;
     } else if (kind === "progress" && isJsonObject(payload.progress)) {
       merged.progress = payload.progress;
       const status = payload.progress.status;
@@ -1313,10 +1346,27 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async getRegistry(): Promise<RegistrySnapshot> {
-    return registryFromResources(await this.discoverResources(), this.ompVersion ?? OMP_SDK_VERSION);
+    const resources = await this.discoverResources();
+    // ExtensionAPI.getCommands excludes builtins and file commands. The RPC
+    // catalog is the authoritative set dispatched by this running mode.
+    return registryFromResources({ ...resources, commands: this.availableCommandsCache }, this.ompVersion ?? OMP_SDK_VERSION);
   }
 
   // ---------------------------------------------------------------- prompting
+
+  /** Close admission before any await; Stop deliberately remains outside this gate. */
+  private async withSubmissionAdmission(action: () => Promise<void>): Promise<void> {
+    const epoch = this.eventEpoch;
+    if (this.relocationEpoch === epoch) {
+      throw Object.assign(new Error("The native session is switching worktrees; your message was not submitted"), { code: "SESSION_BUSY" });
+    }
+    this.submissionFlights.set(epoch, (this.submissionFlights.get(epoch) ?? 0) + 1);
+    try { await action(); } finally {
+      const remaining = (this.submissionFlights.get(epoch) ?? 1) - 1;
+      if (remaining) this.submissionFlights.set(epoch, remaining);
+      else this.submissionFlights.delete(epoch);
+    }
+  }
 
   async prompt(
     text: string,
@@ -1326,7 +1376,7 @@ export class OmpRpcSession implements SessionRuntime {
       streamingBehavior?: "steer" | "followUp";
     } = {},
   ): Promise<void> {
-    await this.submitPrompt(text, images, options);
+    await this.withSubmissionAdmission(() => this.submitPrompt(text, images, options));
   }
 
   private async submitPrompt(
@@ -1376,11 +1426,11 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async steer(text: string, images?: ImageInput[]): Promise<void> {
-    await this.submitQueuedMessage("steer", text, images);
+    await this.withSubmissionAdmission(() => this.submitQueuedMessage("steer", text, images));
   }
 
   async followUp(text: string, images?: ImageInput[]): Promise<void> {
-    await this.submitQueuedMessage("follow_up", text, images);
+    await this.withSubmissionAdmission(() => this.submitQueuedMessage("follow_up", text, images));
   }
 
   async sendUserMessage(
@@ -1388,8 +1438,12 @@ export class OmpRpcSession implements SessionRuntime {
     images?: ImageInput[],
     deliverAs?: "steer" | "followUp",
   ): Promise<void> {
+    await this.withSubmissionAdmission(() => this.submitUserMessage(text, images, deliverAs));
+  }
+
+  private async submitUserMessage(text: string, images?: ImageInput[], deliverAs?: "steer" | "followUp"): Promise<void> {
     if (text.startsWith('/')) {
-      await this.prompt(text, images, { streamingBehavior: deliverAs ?? 'followUp' });
+      await this.submitPrompt(text, images, { streamingBehavior: deliverAs ?? 'followUp' });
       return;
     }
     const epoch = this.eventEpoch;
@@ -1404,6 +1458,10 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async sendQueuedMessage(kind: "steering" | "followUp", index: number, entryId: string, maxResultBytes?: number): Promise<void> {
+    await this.withSubmissionAdmission(() => this.submitNativeQueuedMessage(kind, index, entryId, maxResultBytes));
+  }
+
+  private async submitNativeQueuedMessage(kind: "steering" | "followUp", index: number, entryId: string, maxResultBytes?: number): Promise<void> {
     const epoch = this.eventEpoch;
     await this.abortInFlight;
     if (epoch !== this.eventEpoch) throw Object.assign(new Error('Session replaced before queue submission'), { code: 'SESSION_REPLACED' });
@@ -1416,63 +1474,32 @@ export class OmpRpcSession implements SessionRuntime {
 
   // ---------------------------------------------------------------- goal
 
-  /**
-   * Worker-local goal continuation. Native goal tools are independent of this
-   * UI loop; it is invalidated on session replacement and paused on abort.
-   */
-  async manageGoal(params: import("@ompiui/protocol").PiCommandParams["goal"]): Promise<JsonObject> {
-    // #354: 目标生命周期完全代理到官方 GoalRuntime（桥接 goal 操作）。worker 只
-    // 镜像官方 goal_updated 事件帧，不再自建续跑循环、完成标记或轮次计时。
-    if (params.op === "set") {
-      const objective = (params.objective ?? "").trim();
-      if (!objective) {
-        throw Object.assign(
-          new Error("params.objective is required for op=set"),
-          { code: "INVALID_REQUEST" },
-        );
-      }
-      if (params.images?.length) {
-        throw Object.assign(
-          new Error("The official goal runtime does not support image attachments on goals"),
-          { code: "INVALID_REQUEST" },
-        );
-      }
-      const hasLiveGoal =
-        isJsonObject(this.goal) &&
-        this.goal.status !== "dropped" &&
-        this.goal.status !== "complete";
-      await this.client.requestRuntime("goal", {
-        op: hasLiveGoal ? "replace" : "create",
-        objective,
-        ...(typeof params.tokenBudget === "number" ? { tokenBudget: params.tokenBudget } : {}),
+  /** Official GoalRuntime lifecycle; never infer an operation from cached goal state. */
+  async manageGoal(params: PiCommandParams["goal"]): Promise<JsonObject> {
+    const epoch = this.eventEpoch;
+    if ("images" in params) throw Object.assign(new Error("The official goal runtime does not support image attachments on goals"), { code: "INVALID_REQUEST" });
+    if (params.tokenBudget !== undefined && (!Number.isSafeInteger(params.tokenBudget) || params.tokenBudget <= 0)) throw Object.assign(new Error("Goal token budget must be a positive integer"), { code: "INVALID_REQUEST" });
+    if (params.clearBudget && params.tokenBudget !== undefined) throw Object.assign(new Error("Specify a token budget or clearBudget, not both"), { code: "INVALID_REQUEST" });
+    if ((params.op === "create" || params.op === "replace") && !params.objective?.trim()) throw Object.assign(new Error("Goal objective is required"), { code: "INVALID_REQUEST" });
+    if (params.op === "budget" && params.tokenBudget === undefined && !params.clearBudget) throw Object.assign(new Error("Specify tokenBudget or clearBudget for budget"), { code: "INVALID_REQUEST" });
+    let result: JsonValue | undefined;
+    if (["get", "create", "pause", "resume", "drop"].includes(params.op)) {
+      result = unwrapResponse(await this.client.request({ type: "goal", op: params.op,
+        ...(params.objective === undefined ? {} : { objective: params.objective.trim() }),
+        ...(params.tokenBudget === undefined ? {} : { token_budget: params.tokenBudget }),
+      }));
+    } else if (["replace", "complete", "budget"].includes(params.op)) {
+      result = await this.client.requestRuntime("goal", {
+        op: params.op,
+        ...(params.objective === undefined ? {} : { objective: params.objective.trim() }),
+        ...(params.tokenBudget === undefined ? {} : { tokenBudget: params.tokenBudget }),
+        ...(params.clearBudget === undefined ? {} : { clearBudget: params.clearBudget }),
       });
-    } else {
-      const op =
-        params.op === "pause" ? "pause" : params.op === "resume" ? "resume" : "drop";
-      await this.client.requestRuntime("goal", { op });
-    }
-    this.goalGeneration += 1;
-    // 官方 runtime 的 goal_updated 事件帧负责广播；这里只推进代次。
-    return { goal: this.goal };
-  }
-
-  /** 官方 goal 状态快照：会话替换/恢复后补齐镜像（restore 不重放 goal_updated）。 */
-  private async loadOfficialGoalSnapshot(): Promise<void> {
-    try {
-      const result = await this.client.requestRuntime("goal", { op: "snapshot" });
-      const state = isJsonObject(result) ? result.state : undefined;
-      const goal = isJsonObject(state) && isJsonObject(state.goal) ? state.goal : null;
-      if (this.goal !== goal) {
-        this.goal = goal;
-        this.emitGoalUpdated();
-      }
-    } catch {
-      // 桥不可用（普通 rpc / --no-ui）时保持空镜像，不阻塞会话打开。
-    }
-  }
-
-  private emitGoalUpdated(): void {
-    this.emitPiEvent({ type: "goal_updated", goal: this.goal });
+    } else throw Object.assign(new Error("Invalid goal operation"), { code: "INVALID_REQUEST" });
+    if (epoch !== this.eventEpoch) throw Object.assign(new Error("Session changed before goal operation completed"), { code: "SESSION_REPLACED" });
+    this.scheduleEntrySync();
+    if (!isJsonObject(result)) throw new OmpRpcError("Invalid native goal result", "OMP_PROTOCOL_ERROR");
+    return result;
   }
 
   async abort(): Promise<JsonValue | undefined> {
@@ -1510,18 +1537,61 @@ export class OmpRpcSession implements SessionRuntime {
     if (result?.cancelled === true) return { operation: "new", sourceSessionId, cancelled: true };
     await this.refreshIdentity();
     this.resetHistory();
-    await Promise.all([this.refreshModels(), this.refreshThinkingLevels()]);
-    await this.syncEntriesNow();
-    this.emitHeadIfChanged();
-    await this.loadOfficialGoalSnapshot();
+    const projectionError = await this.restoreReplacementProjection();
     return {
       operation: "new",
       sourceSessionId,
       targetSessionId: this.sessionId,
       targetSessionFile: this.sessionFile ?? null,
       targetCwd: this.cwd,
+      ...(projectionError === undefined ? {} : { projectionError }),
       cancelled: false,
     };
+  }
+
+  async moveSession(path: string): Promise<JsonObject> {
+    const epoch = this.eventEpoch;
+    if (this.relocationEpoch === epoch || this.submissionFlights.has(epoch)) {
+      throw Object.assign(new Error("The native session has an admitted submission; nothing was moved"), { code: "SESSION_BUSY" });
+    }
+    this.relocationEpoch = epoch;
+    try { return await this.moveSessionWithAdmissionClosed(path); } finally {
+      if (this.relocationEpoch === epoch) this.relocationEpoch = undefined;
+    }
+  }
+
+  private async moveSessionWithAdmissionClosed(path: string): Promise<JsonObject> {
+    if (this.currentStreaming || this.pendingAsyncWork || this.lastActivity.retrying || this.lastActivity.compacting || this.nativeQueue.steering.length || this.nativeQueue.followUp.length) {
+      throw Object.assign(new Error("The native session is busy; nothing was moved"), { code: "SESSION_BUSY" });
+    }
+    const sourceSessionId = this.sessionId;
+    const latest = await this.client.requestRuntime("worktreeState", {}, 120_000);
+    if (!isJsonObject(latest) || latest.sessionId !== sourceSessionId || typeof latest.sessionFileReady !== "boolean") throw new Error("Native worktree state returned an invalid identity");
+    if (latest.sessionFileReady) {
+      if (typeof latest.sessionFile !== "string") throw new Error("Native durable session did not return its journal path");
+      backupOmpSession(latest.sessionFile);
+    }
+    const result = await this.client.requestRuntime("moveSession", { path }, 120_000);
+    if (!isJsonObject(result) || result.sessionId !== sourceSessionId || typeof result.cwd !== "string" ||
+        (typeof result.sessionFile !== "string" && result.sessionFile !== null)) {
+      throw new Error("Native move returned an invalid authoritative identity");
+    }
+    this.cwd = result.cwd;
+    this.sessionFile = typeof result.sessionFile === "string" ? result.sessionFile : undefined;
+    // Same identity: keep queues, goals, native tasks, dialogs, and resources.
+    // Invalidate only branch/history reads after native same-file reload.
+    this.historyGeneration += 1;
+    this.branchPages.clear();
+    this.entriesSeeded = false;
+    let projectionError = typeof result.projectionError === "string" ? result.projectionError : undefined;
+    try { await this.syncEntriesNow(); } catch (error) {
+      this.reportEntrySyncError(error);
+      projectionError = [projectionError, String(error)].filter(Boolean).join("; ");
+    }
+    this.emitHeadIfChanged();
+    return { ...result, operation: "move", sourceSessionId, targetSessionId: this.sessionId,
+      targetSessionFile: this.sessionFile ?? null, targetCwd: this.cwd, cancelled: false,
+      ...(projectionError ? { projectionError } : {}) };
   }
 
   async switchSession(
@@ -1537,25 +1607,61 @@ export class OmpRpcSession implements SessionRuntime {
     ));
     if (result?.cancelled === true) return { operation: "switch", sourceSessionId, cancelled: true };
     await this.refreshIdentity();
-    this.resetHistory();
-    await Promise.all([this.refreshModels(), this.refreshThinkingLevels()]);
-    await this.syncEntriesNow();
-    this.emitHeadIfChanged();
-    await this.loadOfficialGoalSnapshot();
+    if (this.sessionId !== sourceSessionId) this.resetHistory();
+    else this.resetHistoryProjection();
+    const projectionError = await this.restoreReplacementProjection();
     return {
       operation: "switch",
       sourceSessionId,
       targetSessionId: this.sessionId,
       targetSessionFile: this.sessionFile ?? null,
       targetCwd: this.cwd,
+      ...(projectionError === undefined ? {} : { projectionError }),
       cancelled: false,
     };
+  }
+
+  private async restoreReplacementProjection(): Promise<string | undefined> {
+    const epoch = this.eventEpoch;
+    let projectionError: string | undefined;
+    try {
+      await Promise.all([
+        this.refreshModels(), this.refreshAvailableCommands(),
+      ]);
+      this.assertEventEpoch(epoch);
+      await this.syncEntriesNow();
+      await this.getState();
+    } catch (error) {
+      this.reportEntrySyncError(error);
+      projectionError = error instanceof Error ? error.message : String(error);
+    }
+    this.assertEventEpoch(epoch);
+    this.emitHeadIfChanged();
+    for (const listener of this.resourcesListeners) listener();
+    return projectionError;
+  }
+
+  private assertEventEpoch(epoch: string): void {
+    if (epoch !== this.eventEpoch) {
+      throw Object.assign(new Error("Session replaced while reading native state"), { code: "SESSION_REPLACED" });
+    }
+  }
+
+  private resetHistoryProjection(): void {
+    this.historyGeneration += 1;
+    this.messageStream.clear();
+    this.entries = [];
+    this.entriesSeeded = false;
+    this.branchPages.clear();
+    this.liveMessage = undefined;
+    this.nativeFingerprint = "";
   }
 
   private resetHistory(): void {
     this.historyGeneration += 1;
     this.thinkingLevelsGeneration += 1;
     this.abortIntentEpoch = undefined;
+    this.abortInFlight = undefined;
     this.toolInterruption = undefined;
     this.entries = [];
     this.branchPages.clear();
@@ -1571,11 +1677,11 @@ export class OmpRpcSession implements SessionRuntime {
     this.nativeSettled = true;
     this.currentStreaming = false;
     this.scopedModels = [];
-    this.goal = null;
-    this.goalGeneration += 1;
+    this.scopedModelPatterns = [];
     this.subagentRuns.clear();
     this.supersededSubagentParents.clear();
     this.subagentRunSequence = 0;
+    this.subagentEvents.clear();
     this.messageStream.clear();
     this.modelsCache = [];
     this.modelsGeneration += 1;
@@ -1595,12 +1701,16 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async fork(entryId: string, position: "before" | "at"): Promise<JsonObject> {
+    if (position === "at" && (!this.ompVersion || compareOmpVersions(this.ompVersion, "18.12.6") < 0)) {
+      throw Object.assign(new Error("Native inclusive message fork requires OMP 18.12.6 or newer"), { code: "CAPABILITY_DISABLED" });
+    }
     const sourceSessionId = this.sessionId;
     const value = await this.client.requestRuntime("fork", { entryId, position }, 120_000);
     if (!isJsonObject(value)) throw new Error("Native fork returned an invalid operation receipt");
     const result = value;
     if (result.cancelled === true || result.aborted === true) return { ...result, operation: "fork", sourceSessionId };
     if (result.cancelled !== false || typeof result.sessionId !== "string" || typeof result.sessionFile !== "string" ||
+      result.sessionId === sourceSessionId || result.sessionFile === this.sessionFile ||
       typeof result.cwd !== "string" || (typeof result.leafId !== "string" && result.leafId !== null))
       throw new Error("Native fork returned an invalid committed identity");
     // The native operation receipt is authoritative; a later read cannot undo
@@ -1611,17 +1721,7 @@ export class OmpRpcSession implements SessionRuntime {
     this.sessionName = null;
     this.resetHistory();
     this.leafId = result.leafId;
-    let projectionError: string | undefined;
-    try {
-      const [state] = await Promise.all([this.fetchState(), this.refreshModels(), this.refreshThinkingLevels()]);
-      this.sessionName = typeof state.sessionName === "string" ? state.sessionName : null;
-      await this.syncEntriesNow();
-    } catch (error) {
-      this.reportEntrySyncError(error);
-      projectionError = error instanceof Error ? error.message : String(error);
-    }
-    await this.loadOfficialGoalSnapshot();
-    this.emitHeadIfChanged();
+    const projectionError = await this.restoreReplacementProjection();
     return {
       ...result, operation: "fork", sourceSessionId,
       targetSessionId: this.sessionId,
@@ -1668,6 +1768,8 @@ export class OmpRpcSession implements SessionRuntime {
     if (epoch !== this.eventEpoch) return result;
     this.scopedModels = isJsonObject(result) && Array.isArray(result.scopedModels)
       ? result.scopedModels : [];
+    this.scopedModelPatterns = isJsonObject(result) && Array.isArray(result.scopedModelPatterns)
+      ? result.scopedModelPatterns.filter((pattern): pattern is string => typeof pattern === "string") : [];
     return result;
   }
 
@@ -1688,26 +1790,48 @@ export class OmpRpcSession implements SessionRuntime {
 
   async setSteeringMode(mode: "all" | "one-at-a-time"): Promise<void> {
     unwrapResponse(await this.client.request({ type: "set_steering_mode", mode }, 30_000));
+    this.stateFlight = undefined;
   }
 
   async setFollowUpMode(mode: "all" | "one-at-a-time"): Promise<void> {
     unwrapResponse(await this.client.request({ type: "set_follow_up_mode", mode }, 30_000));
+    this.stateFlight = undefined;
   }
 
   async setInterruptMode(mode: "immediate" | "wait"): Promise<void> {
+    const epoch = this.eventEpoch;
     unwrapResponse(await this.client.request({ type: "set_interrupt_mode", mode }, 30_000));
+    const native = await this.fetchState();
+    if (epoch !== this.eventEpoch) throw Object.assign(new Error("Session replaced while setting interrupt mode"), { code: "SESSION_REPLACED" });
+    if (native.interruptMode !== mode) throw Object.assign(new Error("Native interrupt mode readback did not match the requested value"), { code: "SUBMISSION_NOT_ADMITTED" });
   }
 
+  private interruptSubmissionEpoch: string | undefined;
+
   async abortAndPrompt(text: string, images?: ImageInput[]): Promise<void> {
+    await this.withSubmissionAdmission(() => this.submitInterruptPrompt(text, images));
+  }
+
+  private async submitInterruptPrompt(text: string, images?: ImageInput[]): Promise<void> {
+    if (this.interruptSubmissionEpoch === this.eventEpoch) throw Object.assign(new Error("An interrupt-and-prompt submission is already pending"), { code: "SESSION_BUSY" });
     const epoch = this.eventEpoch;
-    await this.abortInFlight;
-    if (epoch !== this.eventEpoch)
-      throw Object.assign(new Error("Session replaced before interrupt submission"), { code: "SESSION_REPLACED" });
-    await this.client.requestRuntime("resumeStoppedSession", {});
-    const command: JsonObject = { type: "abort_and_prompt", message: text };
-    if (images?.length) command.images = images.map((image) => ({ ...image }));
-    unwrapResponse(await this.client.request(command, 60_000));
-    this.scheduleEntrySync();
+    this.interruptSubmissionEpoch = epoch;
+    const assertIdentity = () => {
+      if (epoch !== this.eventEpoch) throw Object.assign(new Error("Session replaced before interrupt submission"), { code: "SESSION_REPLACED" });
+    };
+    try {
+      await this.abortInFlight;
+      assertIdentity();
+      const command: JsonObject = { type: "abort_and_prompt", message: text };
+      if (images?.length) command.images = images.map((image) => ({ type: "image", data: image.data, mimeType: image.mimeType }));
+      // The official ACK precedes prompt setup. Only this command's correlated
+      // result can distinguish pre-agent rejection from an admitted turn.
+      unwrapResponse(await requestNativePromptAcceptance(this.client, command, 300_000, assertIdentity));
+      if (epoch === this.eventEpoch) await this.refreshQueue().catch(error => this.reportEntrySyncError(error));
+    } finally {
+      if (this.interruptSubmissionEpoch === epoch) this.interruptSubmissionEpoch = undefined;
+      if (epoch === this.eventEpoch) this.scheduleEntrySync();
+    }
   }
 
   async clearQueue(maxResultBytes?: number): Promise<JsonValue | undefined> {
@@ -1846,13 +1970,7 @@ export class OmpRpcSession implements SessionRuntime {
     // Navigation keeps the native file and identity; never implement it as branch.
     // Only invalidate the history projection. Native same-file navigation does
     // not replace the runtime's model scope, queues, subagents, or extension UI.
-    this.historyGeneration += 1;
-    this.messageStream.clear();
-    this.entries = [];
-    this.entriesSeeded = false;
-    this.branchPages.clear();
-    this.liveMessage = undefined;
-    this.nativeFingerprint = "";
+    this.resetHistoryProjection();
     this.leafId = result.leafId;
     let projectionError: string | undefined;
     try {
@@ -1986,7 +2104,7 @@ export class OmpRpcSession implements SessionRuntime {
         30_000,
       );
       const data = unwrapResponse<JsonValue>(response);
-      if (epoch !== this.eventEpoch) return this.getSubagentsSnapshot();
+      if (epoch !== this.eventEpoch) throw new OmpRpcError("The native session was replaced", "SESSION_REPLACED");
       const list =
         isJsonObject(data) && Array.isArray(data.subagents)
           ? data.subagents
@@ -1999,12 +2117,24 @@ export class OmpRpcSession implements SessionRuntime {
           // Preserve that generation rather than replaying its previous status.
           if (this.subagentRuns.get(item.id) !== observed.get(item.id)) continue;
           const existing = this.subagentRuns.get(item.id);
-          const runId = existing?.runId ?? `${this.eventEpoch}:${item.id}:${++this.subagentRunSequence}`;
-          this.rememberSubagent(item.id, { ...existing, ...item, runId });
+          const ownerChanged = existing && (
+            (typeof item.parentToolCallId === "string" && item.parentToolCallId !== existing.parentToolCallId) ||
+            (typeof item.sessionFile === "string" && item.sessionFile !== existing.sessionFile));
+          const active = item.status === "running" || item.status === "pending";
+          const terminal = existing?.status === "completed" || existing?.status === "failed" || existing?.status === "aborted";
+          const restart = Boolean(existing && (ownerChanged || (terminal && active)));
+          const runId = !existing || restart
+            ? `${this.eventEpoch}:${item.id}:${++this.subagentRunSequence}` : existing.runId;
+          this.rememberSubagent(item.id, {
+            ...(!restart ? existing : undefined), ...item, runId,
+            isFollowUp: restart ? !ownerChanged : existing?.isFollowUp,
+          });
         }
       }
       return this.getSubagentsSnapshot();
-    } catch {
+    } catch (error) {
+      if (epoch !== this.eventEpoch || (error instanceof OmpRpcError && error.code === "SESSION_REPLACED"))
+        throw new OmpRpcError("The native session was replaced", "SESSION_REPLACED");
       return [...this.subagentRuns.values()];
     }
   }

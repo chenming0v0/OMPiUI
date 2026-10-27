@@ -77,7 +77,7 @@ npm run diagnostics -- --session <sessionId> --out diagnostic-report.jsonl
 - `worker.request.failed.reason=caller_cancelled_request_not_agent_abort`：
   只取消等待请求响应，不代表 Agent 已收到 abort。
 - `session.close.requested.reason=idle_ttl`：空闲回收触发关闭。
-- `session.reaper.kept`：状态查询失败或仍忙，保留运行实例。
+- `session.reaper.kept`：状态查询失败、缺少明确 idle／settled 答复或仍有工作，保留运行实例。回收还会复查查询期间的访问、活动、命令及运行实例身份，旧空闲答复不能回收新活动。
 - `server.stopping / worker.dispose / session.host.disposed`：
   服务端关闭造成的实例销毁。
 - `server.started` 的 `runId/pid` 变化：服务端已重启。
@@ -104,15 +104,64 @@ npm run diagnostics -- --session <sessionId> --out diagnostic-report.jsonl
 受管 runtime 从 OMP `18.12.6` 起，GUI 的手动 Stop 在原生 abort 前启用 client-owned continuation 门禁，队列保持原对象及顺序但不自动续跑；只读刷新不解除暂停。明确提交新消息、队列「立即发送」或恢复目标才解除。未启用门禁的旧实现可能出现 `abort → aborted → agent_end → queue_update → agent_start`，这是真实的新回合，不是按钮假忙。
 
 普通完成不会启用暂停门禁：受管会话首次提交默认采用原生 `all` 模式（仅当前进程，不修改全局配置），当本轮完成时，尚未消费的消息按 FIFO 在下一轮一起进入模型上下文。排队区在实际原生消费前独占消息显示，不能把排队准入当成历史已发送。
+普通 async bash 的启动结果只是官方 job ACK。OMP 18.12.6 实测父回合会发
+`agent_end { isTerminal:false, yielded:true, awaitingAsyncWork:true }`：前台已 yield，
+但 `hasPendingAsyncWork=true`、`isSettled=false`，不可显示已完全完成或发送 idle 通知。
+原生 async-result 会唤醒后续回合；只在最终 `session_settled` 后清除 pending。
+读取 job／`proc://` 状态不应确认消费结果，也不能在刷新时重新启动或自行二次回灌。
+
+命名服务不同于普通 job：`ready=false` 或 PID 只表示尚未就绪；真实 ready 超时
+保留 `service.timedOut=true` 与日志，官方可能让服务继续 starting，可读状态后由用户
+明确目标取消。普通 job 不支持 stdin；服务支持 `write proc://<name>`，空内容是真实 Enter。
+`mode=persist` 保持 broker 存活；`detached` 由官方 broker 重新启动并分离服务，可能换 PID，
+不是单纯改 UI 标签；`session` 恢复非持久模式，仍按官方共享 broker 的存活规则处理。
+关闭视图不是 kill，禁止为了重连批量停止共享／其它 workspace 的服务。
+
+官方 18.12.6／Bun 1.3.14 的隔离集成网页实跑已读到运行中普通 job 的真实 stdout，
+并保留普通 stdin 拒绝；服务空内容写入后，同一 UUID／PID 的日志出现独立 `INPUT:` 行。
+`ready.port`、log＋port 的联合等待及超时分别读回真实状态；刷新保留既有服务身份，
+而显式再次调用同名 bash 按官方 `replace:true` 策略更换 UUID／PID，不是 UI 重连重启。
+job 与服务同名时，原生 read／kill 均返回 ambiguity，不应自行任选目标。
+同 workspace 的服务由项目 broker 共享，owner 用于归属与结果投递，不是额外的私有 kill 门禁：
+原生 `tools.approvalMode: always-ask` 的 exec 批准对话框可以拒绝或单次批准明确目标，
+拒绝保留原服务，批准只停止该目标；其它 workspace 返回 not found。此证据仅使用自有、
+顺序启动的官方 CLI 夹具，未扫描、接管或停止用户终端。
+干净 ready ACK 后关闭最后一个原生 owner，且没有 persist／detached 或其它项目客户端时，
+session 服务随官方 broker 退出；有持久服务固定 broker 时，不能承诺 session 服务立即退出。
+同文件 CLI 顺序继续后，网页只读重开没有新增写 runtime；官方全局 config／models 文件
+在这些操作前后的字节与 mtime 保持不变。项目批准／async／eval 设置切换仅属于自有夹具。
+后台 task 在显式 `async.enabled:false` 时原生同步返回；eval 独立使用
+`eval.autoBackground.enabled`／`thresholdMs`，不接受杜撰的 async 参数或强制同步策略。
+
+子代理工具被原生拒绝时（例如缺少共享 `context`），描述式工具摘要显示「子代理失败」，
+展开后保留原生拒绝原因；失败摘要与真正完成的子代理结果不能混用。若原生批次已拒绝且没有子代理结果／运行身份，不再显示「等待响应」或按请求名称猜测子代理文件；真正无结果的中断恢复和活动子代理的等待状态仍保留。
+
+隔离 OMP 18.12.6 的当前 GUI 已观察到 ask 的自定义回答、空多选、明确取消与超时说明，todo 的结构化状态和原始拒绝，yield 的原生失败、data/error 冲突及四次 schema 失败后附带说明的成功结果。原始结果的折叠阅读／复制入口，以及真实同批多工具 timeline、compact/classic 与过程折叠展开均保留；diff、图片入口和原生输出截断／artifact 信息不改为假完成结果。
+
 
 桌面窗口使用可执行文件内嵌的前端；仅更新安装目录的 `web/` 只能更新服务托管网页，
 不能修复旧桌面窗口。确认桌面应用版本与实际运行的程序路径，再使用包含修复的桌面构建。
 
-OMPiUI 管理的会话使用进程级 `task.maxRecursionDepth: 1`：主代理可以并发派任务，
-子代理不能继续派子代理；不修改官方终端的全局配置，也不降低第一层并发上限。
+OMPiUI 管理的会话保留原生全局／项目 `task.maxRecursionDepth`，不注入 UI 专用
+`depth=1`。原生语义是 `0` 禁止派任务、`1` 只允许第一层、`2` 允许子代理继续
+委派到第二层；更深数值按同一边界生效，负数不设递归上限。并发、异步等其他
+原生任务设置不被覆盖，`autoResume: false` 与受管 RPC 的无界前台 PTY 限制仍保留。
 
 打开尚未运行的历史会话、刷新和草稿同步走只读路径，不启动会写盘的 OMP runtime。
 主动发消息或明确修改会话时才恢复写入；不扫描或拦截官方终端进程。
+
+### 原生 ask 的活动与等待
+
+查看实际 `activeTools` 和 `askUi`：`askUi.available` 仅表示 ask 当前活动且托管原生应答通道可用，`surface` 区分官方问卷 `ask` 与基础 `select/editor`；不代表用户已作批准。扩展面板显示未活动／运行时不可用原因。只读历史预览不应为了探测 ask 启动 runtime；没有运行态快照不能当作已支持。
+
+OMP 18.12.6 实测普通 `rpc` 无 ask，托管 `rpc-ui` 有 ask；`rpc-ui --no-ui` 仍有工具 UI，但扩展 headless；官方禁用 ask 后活动／注册列表均没有 ask。新问卷使用真实 `set_ask_dialog` 和 `extension_ui_response.answers`。旧版本基础 fallback 不提供返回回调；不要声称基本 select 已有 TUI 富组件能力。
+
+隔离 Chrome 与原生进程已验证官方工具结果与答案一致、取消／abort 保留原错误、超时产生 `timedOut`，Plan 下即使 timeout=1s 也保持未决。`ask.timeout: 0` 是官方无期限等待；没有客户端时不能伪造默认审批，只有原生取消／abort／关闭或实际答案能够结算。独立单选附注被 18.12.6 RPC 忽略，接口缺少 `note`，与多选可携带的 `customInput` 不同；这是剩余上游能力边界，不能用普通聊天绕过。
+
+
+## 分页历史中的大型 task 结果
+
+原生十子代理的真实 task 汇总可能超过单页 128 KiB，但仍远低于单条内容硬上限。分页按实际请求预算（包括元数据、光标）把该条结果投影为只读内容引用，再由现有 `entry.get` 分片还原；不能因为末尾短回复先占了一行就将 task owner／结果从刷新窗口丢弃。页大小、400 条／8 MiB 浏览器历史窗口和附件预算不扩大；读取仍不附着写者或改写原生历史。
 
 ## 工具长时间显示运行中
 
@@ -120,9 +169,15 @@ OMPiUI 管理的会话使用进程级 `task.maxRecursionDepth: 1`：主代理可
 
 已确认的一类阻塞是模型用 `bash` 的 `pty:true, timeout:0` 在前台启动常驻服务。官方 OMP 的自动后台机制排除 PTY 调用，`timeout:0` 又取消执行期限，因此服务一直等标准输入或退出，后续工具也不能开始。这不是模型连续推理了数小时。
 
-OMPiUI 新启动的受管 runtime 通过显式进程级扩展，在执行前拒绝没有 `name`、没有 `async:true` 的这一组合，返回真实错误，不启动命令、不终止 Agent。有限交互命令使用正数 `timeout`；已启用服务能力时，常驻服务使用 `name` 和有界 `ready.timeout`，省略命令 `timeout`，通过 `read proc://<name>` 查看、`write proc://<name>` 输入；已启用异步能力时非交互后台任务可显式使用 `async:true`。本机兼容配置可能禁用服务或异步能力，此时应使用有界前台调用，不能假称已后台启动。
+OMPiUI 新启动的受管 runtime 通过显式进程级扩展，在执行前拒绝没有 `name`、没有 `async:true` 的这一组合，返回真实错误，不启动命令、不终止 Agent。有限交互命令使用正数 `timeout`；已启用服务能力时，常驻服务使用 `name` 和有界 `ready.timeout`，省略命令 `timeout`，通过 `read proc://<name>` 查看、`write proc://<name>` 输入；已启用异步能力时非交互后台任务可显式使用 `async:true`。能力由官方实际全局／项目设置决定；遗留 `omp-compat.yml` 已不加载，显式 false 应保留官方错误和实际 schema，不能假称已后台启动.
 
 不修改官方全局配置、普通非 PTY 命令或用户主动的 Bash RPC；已有运行实例不会热加载限制，不为应用修复强制中止正在工作的会话。
+
+## 通知与 RPC 协议错误反馈
+
+通知点击后打开所属会话右侧「扩展」面板中的命令反馈区；反馈记录分别保存来源和完整原文，`info`、`warning`、`error` 不使用「已完成」或成功标记。原生 `rpc_frame_error`／`rpc_stream_error` 保留 `error`、可用的 `originalType` 和额外文本上下文；没有扩展来源的运行时错误显示为 `OMP runtime`，本地 RPC 解码／分片失败显示为 `OMP RPC`。
+
+本地分片初始元数据拒绝、JSON／UTF-8 解码失败和字节上限错误不再只等待进程退出才可见。每个运行时仍最多每分钟送达 20 条本地协议错误，第 20 条保留原始错误并附上后续抑制说明；反馈区每会话最多保存最近 100 条，不截断保留下来的正文。错误反馈不绕过分片／字节硬上限或背压，不自动重放写命令。通知历史按服务器隔离，切服不会把旧服务器通知点击到当前服务器同名会话。
 
 ## 隐私与负载
 

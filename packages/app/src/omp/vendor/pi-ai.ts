@@ -171,7 +171,7 @@ export interface UserMessage {
 
 export interface AssistantMessage {
   role: 'assistant'
-  content: (TextContent | ThinkingContent | ToolCall)[]
+  content: (TextContent | ThinkingContent | ImageContent | ToolCall)[]
   api: Api
   provider: ProviderId
   model: string

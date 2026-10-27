@@ -22,6 +22,7 @@ const notifTypeConfig = {
   },
   question: { icon: QuestionIcon, color: 'text-info-100', labelKey: 'notification.question' },
   warning: { icon: AlertTriangleIcon, color: 'text-warning-100', labelKey: 'notification.warning' },
+  info: { icon: AlertCircleIcon, color: 'text-info-100', labelKey: 'notification.info' },
 } as const
 
 interface NotificationItemProps {
@@ -103,13 +104,13 @@ export function NotificationItem({ entry, resolvedSession, onSelect }: Notificat
     if (resolvedSession) {
       onSelect(resolvedSession)
     } else {
-      const dir = entry.directory ? `?dir=${entry.directory}` : ''
+      const dir = entry.directory ? `?dir=${encodeURIComponent(entry.directory)}` : ''
       window.location.hash = `#/session/${entry.sessionId}${dir}`
     }
     // 扩展类通知（ctx.ui.notify）：内容在右侧扩展面板的命令反馈区，
     // 跳转 session 后顺带把扩展面板带出来
     if (entry.target === 'extensions' && entry.sessionId) {
-      layoutStore.addExtensionsTab('right')
+      layoutStore.addExtensionsTab('right', resolvedSession?.directory ?? entry.directory)
     }
   }
 

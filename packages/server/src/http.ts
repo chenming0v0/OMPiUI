@@ -878,7 +878,7 @@ export function createAppServer(
         const name = safeDecode(piCommandMatch[1]!);
         const data = await sessions.executeGlobalCommand(
           name,
-          commandParams(body),
+          body,
           { signal: scope.signal },
         );
         return sendJson(res, 200, { data: data ?? null });
@@ -1085,6 +1085,8 @@ export function statusForError(error: unknown): number {
     case "GIT_TIMEOUT":
       return 504;
     case "GIT_BASE_NOT_FOUND":
+    case "GIT_STALE_SELECTION":
+    case "GIT_CONFLICT":
     case "EXTENSION_UI_CANCELLED":
       return 409;
     case "EXTENSION_UI_TUI_ONLY":

@@ -11,6 +11,54 @@ import type { WorkerSession } from "./worker-client.ts"
 import type { RuntimeSupervisor } from "./supervisor.ts"
 import { SessionHost } from "./session-host.ts"
 
+test("relocation rejects immediate submissions before worker capacity and preserves Stop and other sessions", async t => {
+  const previous = process.env.OMPIUI_DRIVER
+  process.env.OMPIUI_DRIVER = "mock"
+  const entered = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  const commands: Array<{ sessionId: string; type: string }> = []
+  const worker = (sessionId: string) => ({
+    command: async (type: string) => {
+      commands.push({ sessionId, type })
+      if (type === "moveSession") {
+        entered.resolve()
+        await release.promise
+        throw Object.assign(new Error("Owned move rejected"), { code: "SESSION_BUSY" })
+      }
+      return {}
+    },
+    getSessionId: () => sessionId, getSessionFile: () => undefined, getCwd: () => ".",
+    onEvent: () => () => {}, onCrash: () => () => {}, onClose: () => () => {}, dispose: async () => {},
+  }) as unknown as WorkerSession
+  let opens = 0
+  const supervisor = { onEvent: () => () => {}, open: async () => worker(`move-host-${++opens}`) } as unknown as RuntimeSupervisor
+  const host = new SessionHost(supervisor, new EventHub())
+  t.after(() => {
+    host.dispose()
+    if (previous === undefined) delete process.env.OMPIUI_DRIVER
+    else process.env.OMPIUI_DRIVER = previous
+  })
+  await host.openSession(".")
+  await host.openSession(join(tmpdir(), "other-move-host"))
+  const move = await host.submitSessionCommand("move-host-1", { id: randomUUID(), type: "moveSession", params: { path: "." } })
+  const rejectedMove = assert.rejects(move.promise, { code: "SESSION_BUSY" })
+  await entered.promise
+  const count = commands.length
+  for (const type of ["sendUserMessage", "steer", "followUp", "abortAndPrompt"]) {
+    await assert.rejects(Promise.resolve(host.executeSessionCommand("move-host-1", type, { text: "keep draft" })), { code: "SESSION_BUSY" })
+  }
+  assert.equal(commands.length, count)
+  await host.executeSessionCommand("move-host-1", "abort")
+  await host.executeSessionCommand("move-host-2", "sendUserMessage", { text: "unrelated session" })
+  assert.deepEqual(commands.slice(count), [
+    { sessionId: "move-host-1", type: "abort" }, { sessionId: "move-host-2", type: "sendUserMessage" },
+  ])
+  release.resolve()
+  await rejectedMove
+  await host.executeSessionCommand("move-host-1", "sendUserMessage", { text: "source retry" })
+  assert.equal(commands.at(-1)?.type, "sendUserMessage")
+})
+
 test("attached previews forward sync cursors and reject excessive page limits before querying", async t => {
   const previous = process.env.OMPIUI_DRIVER
   process.env.OMPIUI_DRIVER = "mock"
@@ -521,7 +569,7 @@ test("SessionHost reaps an idle runtime without prewarming", async () => {
   process.env.OMPIUI_DRIVER = "mock"
   let prewarmed = 0
   const worker = {
-    command: async (type: string) => type === "state.get" ? { sessionId: "idle-session" } : {},
+    command: async (type: string) => type === "state.get" ? { sessionId: "idle-session", isIdle: true, isSettled: true, isStreaming: false } : {},
     getSessionId: () => "idle-session",
     getSessionFile: () => "idle-session.jsonl",
     getCwd: () => "/workspace",
@@ -737,7 +785,7 @@ test("SessionHost keeps a runtime whose idle busy-check cannot be answered", asy
 test("SessionHost keeps a runtime with pending async work and still reaps a settled one", async () => {
   // isIdle=true 也不够：后台 bash / async task / eval 的结果还没回灌，会话仍会被叫醒
   const pending = await reaperFixture()
-  pending.setCheck(async () => ({ sessionId: "reap-session", isIdle: true, hasPendingAsyncWork: true }))
+  pending.setCheck(async () => ({ sessionId: "reap-session", isIdle: true, isSettled: false, hasPendingAsyncWork: true }))
   await pending.reap()
   assert.notEqual(pending.host.getAttached("reap-session"), undefined)
   assert.equal(pending.disposed(), 0)
@@ -745,10 +793,76 @@ test("SessionHost keeps a runtime with pending async work and still reaps a sett
 
   // 对照组：确实收到「无事」的答复时回收行为不变
   const idle = await reaperFixture()
-  idle.setCheck(async () => ({ sessionId: "reap-session", isIdle: true }))
+  idle.setCheck(async () => ({ sessionId: "reap-session", isIdle: true, isSettled: true }))
   await idle.reap()
   assert.equal(idle.host.getAttached("reap-session"), undefined)
   assert.equal(idle.disposed(), 1)
   await idle.host.dispose()
   delete process.env.OMPIUI_DRIVER
+})
+
+test('SessionHost keeps an unknown settle state and a runtime touched during the idle readback', async () => {
+  const unknown = await reaperFixture()
+  unknown.setCheck(async () => ({ sessionId: 'reap-session', isIdle: true }))
+  await unknown.reap()
+  assert.equal(unknown.disposed(), 0)
+  await unknown.host.dispose()
+
+  const touched = await reaperFixture()
+  touched.setCheck(async () => {
+    // Force the access update inside the awaited idle query.
+    const internal = touched.host as unknown as { lastAccess: Map<string, number> }
+    internal.lastAccess.set('reap-session', Date.now())
+    return { sessionId: 'reap-session', isIdle: true, isSettled: true }
+  })
+  await touched.reap()
+  assert.notEqual(touched.host.getAttached('reap-session'), undefined)
+  assert.equal(touched.disposed(), 0)
+  await touched.host.dispose()
+  delete process.env.OMPIUI_DRIVER
+})
+
+test("SessionHost replacement retires source activity and rejects late source frames", async t => {
+  const previous = process.env.OMPIUI_DRIVER
+  process.env.OMPIUI_DRIVER = "mock"
+  let identity = "epoch-source"
+  let emitEvent!: (event: { channel: string; sessionId: string; event?: unknown }) => void
+  const worker = {
+    command: async () => ({}),
+    getSessionId: () => identity,
+    getSessionFile: () => undefined,
+    getCwd: () => ".",
+    updateSessionIdentity: (next: string) => { identity = next },
+    onEvent: (listener: typeof emitEvent) => { emitEvent = listener; return () => {} },
+    onCrash: () => () => {}, onClose: () => () => {}, dispose: async () => {},
+  } as unknown as WorkerSession
+  const supervisor = {
+    onEvent: () => () => {}, open: async () => worker, replaceRuntimeLease: async () => {},
+  } as unknown as RuntimeSupervisor
+  const hub = new EventHub()
+  const host = new SessionHost(supervisor, hub)
+  t.after(() => {
+    host.dispose()
+    if (previous === undefined) delete process.env.OMPIUI_DRIVER
+    else process.env.OMPIUI_DRIVER = previous
+  })
+  await host.openSession(".")
+  emitEvent({ channel: "session.activity", sessionId: "epoch-source", event: { status: { type: "busy" } } })
+  assert.ok(host.getActivitySnapshot().sessions["epoch-source"])
+  const attached = host.getAttached("epoch-source")!
+  // Test seam for the committed native receipt; the worker and lease boundary are controlled above.
+  const internal = host as unknown as { trackReplacement(session: typeof attached, data: JsonObject): Promise<void> }
+  await internal.trackReplacement(attached, {
+    cancelled: false, sourceSessionId: "epoch-source", targetSessionId: "epoch-target", targetSessionFile: null, targetCwd: ".",
+  })
+  assert.deepEqual(host.getActivitySnapshot().sessions, {})
+  const subagentFrames: unknown[] = []
+  const off = hub.subscribe(event => { if (event.channel === "omp.subagent") subagentFrames.push(event.payload) })
+  emitEvent({ channel: "session.activity", sessionId: "epoch-source", event: { status: { type: "busy" } } })
+  emitEvent({ channel: "omp.subagent", sessionId: "epoch-source", event: { kind: "lifecycle", payload: { id: "late-source", status: "started" } } })
+  assert.deepEqual(host.getActivitySnapshot().sessions, {})
+  assert.deepEqual(subagentFrames, [])
+  emitEvent({ channel: "session.activity", sessionId: "epoch-target", event: { status: { type: "busy" } } })
+  assert.ok(host.getActivitySnapshot().sessions["epoch-target"])
+  off()
 })

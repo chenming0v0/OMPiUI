@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState, useEffect, useRef, useSyncExternalStore
 import { useTranslation } from 'react-i18next'
 import { SessionList } from '../../sessions'
 import { FolderRecentList } from './FolderRecentList'
+import { WorktreeManager } from '../../sessions/WorktreeManager'
 import { getProjectGroupIdentity } from './projectGrouping'
 import { ConfirmDialog } from '../../../components/ui/ConfirmDialog'
 import { ActiveSessionItem } from './ActiveSessionItem'
@@ -987,6 +988,9 @@ export function SidePanel({
             style={{ opacity: showLabels ? 1 : 0 }}
           />
         </button>
+        {!selectedSessionId && currentDirectory && showLabels && (
+          <WorktreeManager directory={currentDirectory} />
+        )}
 
         {/* Projects Dropdown */}
         <div

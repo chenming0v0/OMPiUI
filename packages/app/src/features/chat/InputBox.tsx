@@ -41,7 +41,7 @@ import { attachmentBytes, assertAttachmentBudget, assertAttachmentsBudget, merge
 
 type ModelInfo = Model<Api>
 import { usePiCapabilities } from '../../omp/capabilities'
-import { getPiCommandCompletions, type PiImageInput } from '../../omp/transport/index.js'
+import { getPiCommandCompletions } from '../../omp/transport/index.js'
 import { apiErrorHandler } from '../../utils'
 import { scrollItemIntoView } from '../../utils/scrollUtils'
 import {
@@ -158,7 +158,7 @@ export interface InputBoxProps extends ComposerQueueProps {
   onOpenModelSelector?: () => void
   onTextChange?: (text: string) => void // 输入框文本变化（扩展 editor 状态同步）
   onNewChat?: () => void // 新建对话回调
-  onSetGoal?: (objective: string, images?: PiImageInput[]) => Promise<boolean> | boolean
+  onSetGoal?: (objective: string, tokenBudget?: number) => Promise<boolean> | boolean
   disabled?: boolean
   /** Allow editing a draft without submitting to a read-only session. */
   submissionDisabled?: boolean
@@ -169,6 +169,7 @@ export interface InputBoxProps extends ComposerQueueProps {
   isCompacting?: boolean
   isStopping?: boolean
   variants?: string[]
+  variantsDisabled?: boolean
   selectedVariant?: string
   onVariantChange?: (variant: string | undefined) => void
   supportsImages?: boolean // 保留向后兼容（deprecated，优先用 fileCapabilities）
@@ -232,6 +233,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   isCompacting = false,
   isStopping = false,
   variants = [],
+  variantsDisabled = false,
   selectedVariant,
   onVariantChange,
   supportsImages = false,
@@ -644,7 +646,9 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
           }
         } else {
           setText(current => current === text ? '' : current)
-          setAttachments(current => current.filter(attachment => !attachments.includes(attachment)))
+          setAttachments(current => current.filter(attachment =>
+            !attachments.includes(attachment) || (!!attachment.textRange && latestDraftRef.current.text !== text),
+          ))
         }
         resetHistoryIndex()
         onClearRevert?.()
@@ -1198,19 +1202,16 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
       }
 
       setText(newText)
-      // 幂等：同一命令重复选择时替换旧附件（textRange 可能随文本变化），
-      // 避免输入框里累积多个相同的命令附件
-      setAttachments(prev => {
-        const existingIndex = prev.findIndex(
-          a => a.type === 'command' && a.commandName === command.name,
-        )
-        if (existingIndex >= 0) {
-          const next = [...prev]
-          next[existingIndex] = attachment
-          return next
-        }
-        return [...prev, attachment]
-      })
+      // Replace only the edited text span; independent images are unrelated.
+      // Mentions after the command move with the newly inserted spelling.
+      const replacedEnd = slashStartIndex + 1 + slashQuery.length
+      const offset = commandText.length - slashQuery.length
+      setAttachments(prev => [...prev.flatMap(existing => {
+        const range = existing.textRange
+        if (!range || range.end <= slashStartIndex) return [existing]
+        if (range.start < replacedEnd) return []
+        return [{ ...existing, textRange: { ...range, start: range.start + offset, end: range.end + offset } }]
+      }), attachment])
       setSlashOpen(false)
 
       // 自动弹出参数补全：选中带参命令后光标已在参数区，直接列出候选
@@ -1249,7 +1250,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   // 通用文件上传 — 根据模型能力判断是否接受
   const handleFilesSelected = useCallback(
     async (files: File[]) => {
-      if (files.length === 0 || !supportsAnyFile || isSubmitting) return
+      if (files.length === 0 || !supportsAnyFile) return
 
       const nextAttachments: Attachment[] = []
       let totalBytes = attachmentBytes(attachments)
@@ -1282,28 +1283,32 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
         appendFileAttachments(nextAttachments)
       }
     },
-    [supportsAnyFile, fileCaps, isSubmitting, appendFileAttachments, attachments, sessionId, t],
+    [supportsAnyFile, fileCaps, appendFileAttachments, attachments, sessionId, t],
   )
 
   // 删除附件
   const handleRemoveAttachment = useCallback(
     (id: string) => {
-      if (isSubmitting) return
-
       const attachment = attachments.find(a => a.id === id)
       if (!attachment) return
 
-      // 如果有 textRange，从文本中删除 @mention
-      if (attachment.textRange) {
-        const { value } = attachment.textRange
-        // 删除 @mention 和后面的空格
-        const newText = text.replace(value + ' ', '').replace(value, '')
-        setText(newText)
+      const range = attachment.textRange
+      if (range && text.slice(range.start, range.end) === range.value) {
+        const end = range.end + (text[range.end] === ' ' ? 1 : 0)
+        setText(text.slice(0, range.start) + text.slice(end))
+        setAttachments(prev => prev.flatMap(existing => {
+          if (existing.id === id) return []
+          const existingRange = existing.textRange
+          if (!existingRange || existingRange.end <= range.start) return [existing]
+          if (existingRange.start < end) return []
+          const offset = end - range.start
+          return [{ ...existing, textRange: { ...existingRange, start: existingRange.start - offset, end: existingRange.end - offset } }]
+        }))
+      } else {
+        setAttachments(prev => prev.filter(a => a.id !== id))
       }
-
-      setAttachments(prev => prev.filter(a => a.id !== id))
     },
-    [attachments, isSubmitting, text, setText, setAttachments],
+    [attachments, text, setText, setAttachments],
   )
 
   // 粘贴处理 — 根据模型能力过滤可粘贴的文件类型
@@ -1502,7 +1507,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
 
   const handleTauriExternalDrop = useCallback(
     async (paths: string[]) => {
-      if (paths.length === 0 || isSubmitting) return
+      if (paths.length === 0) return
 
       try {
         const droppedPaths = await getDroppedPathsInfo(paths)
@@ -1537,7 +1542,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
         console.warn('[InputBox] Failed to process Tauri dropped paths:', err)
       }
     },
-    [buildDraggedFileInfo, createUploadAttachmentFromDroppedPath, externalFileDropMode, insertDraggedFiles, isSubmitting, appendFileAttachments, attachments, sessionId, t],
+    [buildDraggedFileInfo, createUploadAttachmentFromDroppedPath, externalFileDropMode, insertDraggedFiles, appendFileAttachments, attachments, sessionId, t],
   )
 
   const handleTauriDragDropEvent = useCallback(
@@ -1754,9 +1759,6 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
               sessionId={sessionId}
               isCompact={isCompact}
               onSetGoal={onSetGoal}
-              // #354: 目标生命周期已代理到官方 GoalRuntime，官方 Goal 不支持
-              // 图片附件，不再把模型图片能力当作目标图片能力。
-              supportsImages={false}
               queuedMessages={
                 <>
                   <QueuedUserMessageQueue
@@ -1833,7 +1835,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
                               attachments={attachments}
                               onRemove={handleRemoveAttachment}
                               variant="rail"
-                              className={isSubmitting ? 'pr-4 pointer-events-none opacity-70' : 'pr-4'}
+                              className="pr-4"
                             />
                           </div>
 
@@ -1853,6 +1855,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
                   <div className="pt-4 pb-2">
                     <textarea
                       ref={textareaRef}
+                      data-model-cycle-shortcut={onCycleModel ? '' : undefined}
                       value={text}
                       onChange={handleChange}
                       onKeyDown={handleKeyDown}
@@ -1881,6 +1884,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
 
 
                       variants={variants}
+                      variantsDisabled={variantsDisabled}
                       selectedVariant={selectedVariant}
                       onVariantChange={onVariantChange}
                       fileCapabilities={fileCaps}

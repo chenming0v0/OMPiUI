@@ -80,6 +80,24 @@ describe('LayoutStore panel layout', () => {
     })
   })
 
+  it('retains an explicit notification feedback target after destination workspace restoration', () => {
+    const store = new LayoutStore()
+    store.syncTerminalSessions('C:/old', [])
+    const tabId = store.addExtensionsTab('right', 'C:/next')
+    store.syncTerminalSessions('C:/next', [])
+    expect(store.getState().activeTabId.right).toBe(tabId)
+    expect(store.getState().rightPanelOpen).toBe(true)
+  })
+
+  it('does not replay a pending feedback target after an explicit panel selection', () => {
+    const store = new LayoutStore()
+    store.syncTerminalSessions('C:/old', [])
+    store.addExtensionsTab('right', 'C:/next')
+    store.setActiveTab('right', 'files')
+    store.syncTerminalSessions('C:/next', [])
+    expect(store.getState().activeTabId.right).toBe('files')
+  })
+
   it('restores terminal order, active tab, title, and snapshot per workspace', () => {
     const sessions = [
       {

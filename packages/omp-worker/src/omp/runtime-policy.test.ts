@@ -45,8 +45,9 @@ test("managed bash rejects only unbounded foreground PTY calls before execution"
   assert.equal(handler({ toolName: "eval", input: { pty: true, timeout: 0 } }), undefined)
 })
 
-test("runtime policy keeps autoResume only and leaves native subagent recursion depth untouched", () => {
+test("runtime policy uses native RPC goal continuation and leaves subagent recursion depth untouched", () => {
   // #372: the managed UI must not override the user's native task.maxRecursionDepth.
   assert.match(RUNTIME_POLICY, /autoResume:\s*false/)
+  assert.match(RUNTIME_POLICY, /continuationModes:\s*\[rpc\]/)
   assert.doesNotMatch(RUNTIME_POLICY, /maxRecursionDepth/)
 })

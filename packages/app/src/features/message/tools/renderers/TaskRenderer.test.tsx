@@ -181,6 +181,20 @@ describe('persisted subagent fallback', () => {
     expect(container.querySelector('.animate-spin, .animate-pulse')).toBeNull()
   })
 
+  it('shows a rejected native batch error without waiting for a nonexistent child', () => {
+    const error = 'Missing `context`. Provide the shared background for this batch — goal, constraints, and any contract the tasks share.'
+    piSessionStateStore.setState('parent-session', { sessionFile: 'C:/sessions/parent.jsonl', isIdle: true, isStreaming: false })
+    renderTask({
+      call: { type: 'toolCall', id: 'rejected-task', name: 'task', arguments: { tasks: [{ name: 'NeverSpawned', task: 'Rejected before child launch', solutionSpace: 'one rejected request' }] } },
+      result: { role: 'toolResult', toolCallId: 'rejected-task', toolName: 'task',
+        content: [{ type: 'text', text: error }], isError: true,
+        details: { results: [], progress: [], totalDurationMs: 0 }, timestamp: 1_791_000_000_000 },
+    })
+    expect(screen.getByText(error)).toBeInTheDocument()
+    expect(screen.queryByText('task.waitingForResponse')).not.toBeInTheDocument()
+    expect(getOmpSubagentMessagesMock).not.toHaveBeenCalled()
+  })
+
   it('restores all ten interrupted child transcripts without a task result', async () => {
     piSessionStateStore.setState('parent-session', {
       sessionFile: 'C:/sessions/parent.jsonl', isIdle: true, isStreaming: false,

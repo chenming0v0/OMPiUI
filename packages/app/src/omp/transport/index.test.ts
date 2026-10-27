@@ -8,10 +8,10 @@ import {
   getHostTerminalWebSocketUrl,
   getOmpSubagentMessages,
   listActiveProviderFlows,
-  manageSessionGoal,
   mintPairInvite,
   promptPi,
   readHostFile,
+  sendPiUserMessage,
   setPiExtensionEditorState,
   writeHostFile,
   waitHostCommand,
@@ -65,6 +65,37 @@ describe('getHostTerminalWebSocketUrl', () => {
 })
 
 describe('transport retry and response contracts', () => {
+  it.each([
+    ['prompt', () => promptPi('slash-session', { text: '/native-dialog' })],
+    ['composer', () => sendPiUserMessage('slash-session', { text: '/native-dialog', deliverAs: 'followUp' })],
+  ] as const)('keeps %s slash acceptance pending through a native dialog', async (_name, send) => {
+    // Native AbortSignal.timeout uses platform timers; bind it to this suite's fake clock.
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation(delay => {
+      const controller = new AbortController()
+      setTimeout(() => controller.abort(new DOMException('The operation timed out', 'TimeoutError')), delay)
+      return controller.signal
+    })
+    const { promise, resolve: accept, reject } = Promise.withResolvers<Response>()
+    nativeFetchMock.mockImplementation((_url: string, init: RequestInit) => {
+      init.signal!.addEventListener('abort', () => reject(init.signal!.reason), { once: true })
+      return promise
+    })
+    let state = 'pending'
+    const request = send().then(() => { state = 'accepted' }, () => { state = 'rejected' })
+    await vi.advanceTimersByTimeAsync(21_000)
+    expect(state).toBe('pending')
+    expect(nativeFetchMock.mock.calls[0][1].signal.aborted).toBe(false)
+    expect(nativeFetchMock).toHaveBeenCalledTimes(1)
+    accept(Response.json({ data: null }))
+    await request
+    expect(state).toBe('accepted')
+  })
+
+  it('preserves a native slash rejection without retrying or reporting acceptance', async () => {
+    nativeFetchMock.mockResolvedValueOnce(Response.json({ error: { message: 'Native command rejected' } }, { status: 500 }))
+    await expect(sendPiUserMessage('slash-session', { text: '/native-reject' })).rejects.toThrow('Native command rejected')
+    expect(nativeFetchMock).toHaveBeenCalledTimes(1)
+  })
   it.each(['headers', 'body'])('applies the command deadline while waiting for %s', async phase => {
     nativeFetchMock.mockImplementation((_url: string, init: RequestInit) => {
       const signal = init.signal!
@@ -142,15 +173,6 @@ describe('transport retry and response contracts', () => {
     expect(result).toMatchObject({ messages: [{ role: 'assistant', content: '正文😀'.repeat(1000) }] })
     expect(JSON.parse(nativeFetchMock.mock.calls[1][1].body).fromByte).toBe(101)
   })
-  it('includes reference images in a goal command', async () => {
-    nativeFetchMock.mockResolvedValue(Response.json({ data: { id: 'goal-command' } }))
-    const images = [{ type: 'image' as const, mimeType: 'image/png', data: 'AA==' }]
-    await manageSessionGoal('session-1', 'set', '检查截图', undefined, images)
-    const [url, init] = nativeFetchMock.mock.calls[0]
-    const payload = JSON.parse(init.body)
-    expect(url).toContain('/sessions/session-1/commands/goal')
-    expect(payload).toEqual({ op: 'set', objective: '检查截图', images })
-  })
 
   beforeEach(() => {
     vi.useFakeTimers()
@@ -160,6 +182,7 @@ describe('transport retry and response contracts', () => {
   afterEach(() => {
     vi.clearAllTimers()
     vi.useRealTimers()
+    vi.restoreAllMocks()
     nativeFetchMock.mockReset()
   })
 

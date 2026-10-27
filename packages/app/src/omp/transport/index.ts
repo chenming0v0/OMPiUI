@@ -5,6 +5,7 @@ import type {
   HealthResponse,
   HostCommandParams,
   PiCommandName,
+  PiCommandParams,
   PiGlobalCommandName,
   PiParamsFor,
   ShareInfo,
@@ -15,6 +16,9 @@ import type {
   GitFileDiffResponse,
   GitInfoResponse,
   GitStatusResponse,
+  GitCommitPreview,
+  GitCommitResponse,
+  GitWorktreeCatalog,
   FileCreateRequest,
   FileListResponse,
   FileMoveRequest,
@@ -83,6 +87,7 @@ export type PiSessionOpenResult = {
   sessionFileReady?: boolean
   cwd?: string
   state?: JsonValue
+  eventCursor?: { epoch: string; sequence: number }
   [key: string]: JsonValue | undefined
 }
 
@@ -232,6 +237,7 @@ export async function postPiSessionCommand<T = JsonValue | undefined, K extends 
   name: K,
   params?: PiParamsFor<K>,
   signal?: AbortSignal,
+  timeoutMs?: number,
 ): Promise<T extends undefined ? null : T> {
   const body = commandBody(
     params,
@@ -244,6 +250,7 @@ export async function postPiSessionCommand<T = JsonValue | undefined, K extends 
       headers: { 'content-type': 'application/json' },
       body,
       signal,
+      timeoutMs,
     },
   )
   if (response.command) piCommandStore.upsert(response.command)
@@ -336,6 +343,16 @@ export function getHostGitInfo(workspacePath: string, signal?: AbortSignal): Pro
   return postHostCommand('git.info', { workspacePath }, signal)
 }
 
+export function getHostGitWorktrees(workspacePath: string, signal?: AbortSignal): Promise<GitWorktreeCatalog> {
+  return postHostCommand('git.worktrees', { workspacePath }, signal)
+}
+export function createHostGitWorktree(workspacePath: string, path: string, branch: string): Promise<GitWorktreeCatalog> {
+  return postHostCommand('git.worktreeCreate', { workspacePath, path, branch })
+}
+export function removeHostGitWorktree(workspacePath: string, path: string): Promise<GitWorktreeCatalog> {
+  return postHostCommand('git.worktreeRemove', { workspacePath, path })
+}
+
 export function getHostGitStatus(workspacePath: string, signal?: AbortSignal): Promise<GitStatusResponse> {
   return postHostCommand('git.status', { workspacePath }, signal)
 }
@@ -355,6 +372,26 @@ export function getHostGitFileDiff(
   signal?: AbortSignal,
 ): Promise<GitFileDiffResponse> {
   return postHostCommand('git.fileDiff', { workspacePath, path, mode }, signal)
+}
+
+export function stageHostGitFiles(workspacePath: string, paths: string[]): Promise<{ ok: true }> {
+  return postHostCommand('git.stage', { workspacePath, paths })
+}
+
+export function unstageHostGitFiles(workspacePath: string, paths: string[]): Promise<{ ok: true }> {
+  return postHostCommand('git.unstage', { workspacePath, paths })
+}
+
+export function changeHostGitHunk(workspacePath: string, path: string, staged: boolean, hunk: number, expectedPatch: string): Promise<{ ok: true }> {
+  return postHostCommand('git.hunk', { workspacePath, path, staged, hunk, expectedPatch })
+}
+
+export function previewHostGitCommit(workspacePath: string): Promise<GitCommitPreview> {
+  return postHostCommand('git.commitPreview', { workspacePath })
+}
+
+export function commitHostGit(workspacePath: string, message: string, fingerprint: string): Promise<GitCommitResponse> {
+  return postHostCommand('git.commit', { workspacePath, message, fingerprint })
 }
 
 // Host file commands (files.*), workspace-scoped
@@ -747,6 +784,17 @@ export function hydratePiBranchPage(sessionId: string, page: PiBranchPage, signa
   }, signal)
 }
 
+/** Tree pages contain previews only; selected details use bounded native disk reads. */
+export async function getPiEntry(sessionId: string, entryId: string, signal?: AbortSignal): Promise<PiBranchPage['items'][number]> {
+  const generation = serverStore.getActiveServerGeneration()
+  const first = await postPiGlobalCommand<JsonObject>('session.read', { sessionId, query: 'entry.get', params: { entryId, offset: 0 } }, signal)
+  const page = await hydrateEntryContent({ items: [{ type: 'ompiui.entry_ref', id: entryId, contentRef: { etag: first.etag, totalChars: first.totalChars } }] } as unknown as PiBranchPage, async (id, offset, etag) => {
+    if (serverStore.getActiveServerGeneration() !== generation) throw new DOMException('Server changed', 'AbortError')
+    return offset === 0 ? first : postPiGlobalCommand<JsonObject>('session.read', { sessionId, query: 'entry.get', params: { entryId: id, offset, etag } }, signal)
+  }, signal)
+  return page.items[0]!
+}
+
 export async function getPiTree(sessionId: string, signal?: AbortSignal): Promise<SessionTreeNode[]> {
   const pages: SessionTreeNode[][] = []
   let cursor: string | undefined
@@ -806,7 +854,7 @@ export function getPiAgentsFiles(
 
 // Action commands
 export function promptPi(sessionId: string, params: PromptParams, signal?: AbortSignal): Promise<CommandRecord> {
-  return postPiSessionCommand(sessionId, 'prompt', params, signal)
+  return postPiSessionCommand(sessionId, 'prompt', params, signal, params.text.startsWith('/') ? 330_000 : undefined)
 }
 
 export function steerPi(sessionId: string, params: SteerParams, signal?: AbortSignal): Promise<JsonValue> {
@@ -915,7 +963,9 @@ export function sendPiUserMessage(
   params: SendUserMessageParams,
   signal?: AbortSignal,
 ): Promise<JsonValue> {
-  return postPiSessionCommand(sessionId, 'sendUserMessage', params, signal)
+  // Slash commands can await native dialogs before their correlated
+  // prompt_result. Keep HTTP alive through the native 300s deadline.
+  return postPiSessionCommand(sessionId, 'sendUserMessage', params, signal, params.text.startsWith('/') ? 330_000 : undefined)
 }
 
 export function setPiSessionName(sessionId: string, name: string, signal?: AbortSignal): Promise<CommandRecord> {
@@ -988,18 +1038,17 @@ export function invokePiCommand(sessionId: string, name: string, args = '', sign
   return postPiSessionCommand(sessionId, 'invokeCommand', { name, args }, signal)
 }
 
-/** Manage the OMPiUI session goal (worker-side registry driving the goal bar). */
+/** Manage the official native goal, with no worker-local goal or continuation. */
 export function manageSessionGoal(
   sessionId: string,
-  op: 'set' | 'pause' | 'resume' | 'drop',
-  objective?: string,
+  op: PiCommandParams['goal']['op'],
+  options: Omit<PiCommandParams['goal'], 'op'> = {},
   signal?: AbortSignal,
-  images?: import('@ompiui/protocol').GoalImageInput[],
 ): Promise<CommandRecord> {
   return postPiSessionCommand<CommandRecord>(
     sessionId,
     'goal',
-    { op, objective, ...(images ? { images } : {}) },
+    { ...options, op },
     signal,
   )
 }
@@ -1030,6 +1079,11 @@ export type PiForkResult = {
   selectedImages?: PiImageInput[]
   projectionError?: string
   [key: string]: JsonValue | undefined
+}
+
+export async function movePiSessionWorktree(sessionId: string, path: string): Promise<PiForkResult> {
+  const command = await postPiSessionCommand<CommandRecord>(sessionId, 'moveSession', { path })
+  return (await waitHostCommand(command.id) ?? {}) as PiForkResult
 }
 
 export function forkPiSession(
@@ -1173,7 +1227,9 @@ export function abortAndPromptPi(
   params: { text: string; images?: PiImageInput[] },
   signal?: AbortSignal,
 ): Promise<JsonValue> {
-  return postPiSessionCommand(sessionId, 'abortAndPrompt', params, signal)
+  // Native prompt_result can follow a long turn; the ordinary 20s HTTP
+  // deadline would incorrectly retain an already-admitted draft as a failure.
+  return postPiSessionCommand(sessionId, 'abortAndPrompt', params, signal, 330_000)
 }
 
 /**

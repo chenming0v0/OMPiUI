@@ -5,6 +5,12 @@ import { QuestionIcon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRight
 import { CodePreview } from '../../components/CodePreview'
 import { extensionUiStore } from '../../omp/extensionUiStore'
 import { respondPiExtensionUi } from '../../omp/controllers/index.js'
+import { NativeAskDialogCard } from './NativeAskDialogCard'
+
+export function ExtensionUiDialogCard(props: Omit<Parameters<typeof BasicExtensionUiDialogCard>[0], 'request'> & { request: ExtensionUiDialogRequest }) {
+  if (props.request.kind === 'ask') return <NativeAskDialogCard request={props.request} compact={props.compact} onCollapse={props.onCollapse} />
+  return <BasicExtensionUiDialogCard {...props} request={props.request} />
+}
 
 /**
  * Interactive card for one pending extension UI dialog
@@ -19,7 +25,7 @@ import { respondPiExtensionUi } from '../../omp/controllers/index.js'
  * - 选项为紧凑单选行；操作区为一行轻量按钮
  * - 支持 Enter 提交（textarea 内除外）/ Esc 取消
  */
-export function ExtensionUiDialogCard({
+function BasicExtensionUiDialogCard({
   request,
   queueLength = 1,
   queueIndex = 0,
@@ -27,7 +33,7 @@ export function ExtensionUiDialogCard({
   onCollapse,
   onQueueNav,
 }: {
-  request: ExtensionUiDialogRequest
+  request: Exclude<ExtensionUiDialogRequest, { kind: 'ask' }>
   queueLength?: number
   /** 当前显示的请求在队列中的位置（0-based）；仅 host 分页传入 */
   queueIndex?: number
@@ -49,6 +55,7 @@ export function ExtensionUiDialogCard({
   const [error, setError] = useState<string | null>(null)
   const [responseId] = useState(() => globalThis.crypto?.randomUUID?.() ?? `${request.requestId}-${Date.now()}`)
   const submittingRef = useRef(false)
+  const composingRef = useRef(false)
 
   // 多行输入框（input kind）：随内容自动增高，封顶后内部滚动
   const multilineRef = useRef<HTMLTextAreaElement | null>(null)
@@ -119,15 +126,17 @@ export function ExtensionUiDialogCard({
   // 中文输入法组合中（选词）的 Enter 不触发提交。
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const nativeEvent = event.nativeEvent
-    if (nativeEvent.isComposing || event.keyCode === 229) return
+    if (composingRef.current || nativeEvent.isComposing || event.keyCode === 229) return
     const target = event.target as HTMLElement
     const isTextarea = target.tagName === 'TEXTAREA'
     if (event.key === 'Enter') {
-      if (isTextarea && request.kind === 'editor' && !(event.metaKey || event.ctrlKey)) {
-        if (!request.promptStyle || event.shiftKey || event.altKey) return
+      // Native button activation must keep its own action (cancel, select,
+      // collapse, pagination), rather than becoming a dialog submission.
+      if (target.closest('button')) return
+      if (isTextarea) {
+        if (event.shiftKey || event.altKey) return
+        if (request.kind === 'editor' && !request.promptStyle && !(event.metaKey || event.ctrlKey)) return
       }
-      // input（多行）：Shift+Enter 换行，Enter 提交
-      if (isTextarea && request.kind === 'input' && event.shiftKey) return
       if (submitting || (request.kind === 'select' && request.options.length === 0)) return
       event.preventDefault()
       void submit()
@@ -142,7 +151,11 @@ export function ExtensionUiDialogCard({
 
   return (
     <div
+      role="dialog"
+      aria-label={request.title}
       onKeyDown={handleKeyDown}
+      onCompositionStart={() => { composingRef.current = true }}
+      onCompositionEnd={() => { composingRef.current = false }}
       className={`overflow-hidden rounded-xl border border-border-200/60 bg-bg-100 shadow-float flex flex-col ${
         compact ? 'max-h-[min(440px,55vh)]' : 'max-h-[min(540px,62vh)]'
       }`}

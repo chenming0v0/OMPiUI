@@ -4,8 +4,10 @@ import fs, {
   type ReadStream,
   mkdirSync,
   mkdtempSync,
+  rmdirSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -102,14 +104,17 @@ test("fingerprinted assets get immutable caching, missing files return false", a
 test("static hosting rejects directory links that leave the web root", () => {
   const root = mkdtempSync(join(tmpdir(), "ompiui-static-root-"));
   const outside = mkdtempSync(join(tmpdir(), "ompiui-static-outside-"));
+  const linked = join(root, "linked");
+  let linkedCreated = false;
   try {
     writeFileSync(join(root, "index.html"), "<html>app</html>");
     writeFileSync(join(outside, "secret.txt"), "secret");
     symlinkSync(
       outside,
-      join(root, "linked"),
+      linked,
       process.platform === "win32" ? "junction" : "dir",
     );
+    linkedCreated = true;
     const server = createStaticServer(root)!;
     assert.equal(
       server.serve(
@@ -120,6 +125,10 @@ test("static hosting rejects directory links that leave the web root", () => {
       false,
     );
   } finally {
+    if (linkedCreated) {
+      if (process.platform === "win32") rmdirSync(linked);
+      else unlinkSync(linked);
+    }
     rmSync(root, { recursive: true, force: true });
     rmSync(outside, { recursive: true, force: true });
   }

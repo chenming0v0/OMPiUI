@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { captureRedoCheckpoints, redoPlanStore } from './redoPlanStore'
 import { piBranchStore } from './state/index.js'
 import type { PiBranchPage } from './domain/index.js'
+import type { NativeTreeNode } from '../components/sessionTreeGraph'
 
 const SID = 'test-session'
 
@@ -35,6 +36,25 @@ describe('captureRedoCheckpoints', () => {
   it('returns empty when the entry is not on the current branch', () => {
     seedBranch([userEntry('u1'), assistantEntry('a1')])
     expect(captureRedoCheckpoints(SID, 'other')).toEqual([])
+  })
+
+  it('restores whole user turns rather than intermediate assistant/tool entries', () => {
+    seedBranch([userEntry('u1'), assistantEntry('tool-start'), assistantEntry('tool-end'), assistantEntry('a1'), userEntry('u2'), assistantEntry('a2')])
+    expect(captureRedoCheckpoints(SID, 'u1')).toEqual(['a1', 'a2'])
+    expect(captureRedoCheckpoints(SID, 'a1')).toEqual(['a2'])
+  })
+
+  it('uses the native active path even when a sibling branch is newer or history is paged', () => {
+    seedBranch([userEntry('paged-user'), assistantEntry('paged-answer')])
+    const tree = [
+      { entry: { ...userEntry('root'), parentId: null }, children: [] },
+      { entry: { ...assistantEntry('old-answer'), parentId: 'root' }, children: [] },
+      { entry: { ...userEntry('old-user'), parentId: 'old-answer' }, children: [] },
+      { entry: { ...assistantEntry('old-tip'), parentId: 'old-user' }, children: [] },
+      { entry: { ...assistantEntry('newer-sibling'), parentId: 'root', timestamp: 999 }, children: [] },
+    ] as unknown as NativeTreeNode[]
+    expect(captureRedoCheckpoints(SID, 'root', tree, 'old-tip')).toEqual(['old-answer', 'old-tip'])
+    expect(captureRedoCheckpoints(SID, 'newer-sibling', tree, 'old-tip')).toEqual([])
   })
 })
 

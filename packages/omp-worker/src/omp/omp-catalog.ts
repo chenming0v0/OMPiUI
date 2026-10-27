@@ -42,7 +42,7 @@ import {
   ompSessionRoots,
 } from "./managed-sessions.js";
 import { ompAgentDirectory } from "./omp-directories.js";
-import { sessionConfigFromBranch } from "./session-config.js";
+import { sessionConfigFromBranch, sessionGoalFromBranch } from "./session-config.js";
 import { BranchPageReader } from "../runtime/branch-pages.js";
 import {
   resolveOmpConfigCommand,
@@ -683,6 +683,7 @@ export class OmpCatalog implements CatalogProvider {
     const entries = cache.allEntries;
     const branch = [...cache.entries];
     const config = sessionConfigFromBranch(branch);
+    const goalState = sessionGoalFromBranch(branch);
     const header: JsonObject = {
       version: 3,
       id: summary.id,
@@ -728,8 +729,8 @@ export class OmpCatalog implements CatalogProvider {
       thinkingLevel: config.thinkingLevel,
       isStreaming: false,
       isCompacting: false,
-      steeringMode: "one-at-a-time",
-      followUpMode: "one-at-a-time",
+      steeringMode: null,
+      followUpMode: null,
       autoCompactionEnabled: true,
       autoRetryEnabled: true,
       messageCount: summary.messageCount,
@@ -751,12 +752,14 @@ export class OmpCatalog implements CatalogProvider {
       queue: {
         steering: [],
         followUp: [],
-        steeringMode: "one-at-a-time",
-        followUpMode: "one-at-a-time",
+        steeringMode: null,
+        followUpMode: null,
       },
       supportsThinking: true,
       activeTools: [],
       scopedModels: [],
+      goalState,
+      goal: goalState?.goal ?? null,
       contextUsage: null,
       sessionStats: null,
       retry: null,
@@ -832,9 +835,9 @@ export class OmpCatalog implements CatalogProvider {
       if (!entry) throw notFoundError("entry not found");
       return imageAttachmentFromEntry(
         entry,
-        Number(params.blockIndex),
+        params.blockIndex as number,
         typeof params.offset === "number" ? params.offset : 0,
-        params.source === "details" ? "details" : "content",
+        params.source === undefined ? "content" : params.source as "content" | "details",
       );
     }
     if (query === "entries.get") {
@@ -1336,9 +1339,10 @@ export async function readChildSessionPreviewPage(
   sync?: SubagentSyncRequest,
 ): Promise<JsonObject> {
   const filePath = await childSessionPath(sessionFile);
+  const sessionId = await sessionFileId(filePath);
   return sync
-    ? readSubagentSync(filePath, fromByte, sync)
-    : readSubagentPreview(filePath, fromByte);
+    ? readSubagentSync(filePath, fromByte, sync, sessionId)
+    : readSubagentPreview(filePath, fromByte, sessionId);
 }
 
 export async function readChildSessionMessages(

@@ -536,6 +536,8 @@
     "eventErrorDesc": "When a session encounters an error",
     "eventWarning": "Warning",
     "eventWarningDesc": "When a session reports a warning notice",
+    "eventInfo": "Info",
+    "eventInfoDesc": "When a session reports an informational notice",
     "customSound": "Custom",
     "noSound": "None",
     "preview": "Preview",

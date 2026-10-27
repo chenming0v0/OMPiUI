@@ -1,4 +1,4 @@
-export type ExtensionUiDialogKind = "select" | "confirm" | "input" | "editor"
+export type ExtensionUiDialogKind = "select" | "confirm" | "input" | "editor" | "ask"
 
 type ExtensionUiDialogRequestBase = {
   requestId: string
@@ -9,16 +9,30 @@ type ExtensionUiDialogRequestBase = {
   expiresAt?: string
 }
 
+/** Official OMP set_ask_dialog / extension_ui_request method:ask payload. */
+export type NativeAskQuestion = {
+  id: string
+  question: string
+  header?: string
+  options: { label: string; description?: string; preview?: string }[]
+  multi?: boolean
+  recommended?: number
+}
+
+export type NativeAskAnswer = { id: string; selectedOptions: string[]; customInput?: string }
+
 export type ExtensionUiDialogRequest =
   | (ExtensionUiDialogRequestBase & { kind: "select"; options: string[]; optionDetails?: { description?: string }[] })
   | (ExtensionUiDialogRequestBase & { kind: "confirm"; message: string })
   | (ExtensionUiDialogRequestBase & { kind: "input"; placeholder?: string })
   | (ExtensionUiDialogRequestBase & { kind: "editor"; prefill?: string; promptStyle?: boolean })
+  | (ExtensionUiDialogRequestBase & { kind: "ask"; questions: NativeAskQuestion[] })
 
 export type ExtensionUiDialogResponse =
   | { responseId?: string; value: string }
   | { responseId?: string; confirmed: boolean }
   | { responseId?: string; cancelled: true }
+  | { responseId?: string; answers: NativeAskAnswer[] }
 
 export type ExtensionUiSettlementReason =
   | "submitted"

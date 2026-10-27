@@ -62,7 +62,7 @@ const IDB_STORE = 'custom-audio'
 const IDB_VERSION = 1
 
 /** 所有带音效配置的通知类型；预加载、备份导出/导入统一遍历此表 */
-const SOUND_EVENT_TYPES: readonly NotificationType[] = ['completed', 'permission', 'question', 'error', 'warning']
+const SOUND_EVENT_TYPES: readonly NotificationType[] = ['completed', 'permission', 'question', 'error', 'warning', 'info']
 
 // ============================================
 // 默认配置
@@ -79,6 +79,7 @@ function createDefaultSettings(): SoundSettings {
       question: { soundId: DEFAULT_SOUNDS.question },
       error: { soundId: DEFAULT_SOUNDS.error },
       warning: { soundId: DEFAULT_SOUNDS.warning },
+      info: { soundId: DEFAULT_SOUNDS.info },
     },
   }
 }
@@ -115,6 +116,7 @@ function loadSettings(): SoundSettings {
         question: normalizeEventConfig('question', parsed.events?.question),
         error: normalizeEventConfig('error', parsed.events?.error),
         warning: normalizeEventConfig('warning', parsed.events?.warning),
+        info: normalizeEventConfig('info', parsed.events?.info),
       },
     }
   } catch {
@@ -504,6 +506,7 @@ function normalizeSoundSettings(raw: unknown): SoundSettings {
       question: normalizeEventConfig('question', parsed?.events && (parsed.events as Record<string, unknown>).question),
       error: normalizeEventConfig('error', parsed?.events && (parsed.events as Record<string, unknown>).error),
       warning: normalizeEventConfig('warning', parsed?.events && (parsed.events as Record<string, unknown>).warning),
+      info: normalizeEventConfig('info', parsed?.events && (parsed.events as Record<string, unknown>).info),
     },
   }
 }

@@ -16,7 +16,7 @@ import { HistoryImage } from '../../HistoryImage'
 // 通用的 Input/Output 渲染逻辑
 // ============================================
 
-export function DefaultRenderer({ execution, partKey, data, onFullscreenChange }: ToolRendererProps) {
+export function DefaultRenderer({ execution, partKey, data, onFullscreenChange, supplementary = true }: ToolRendererProps & { supplementary?: boolean }) {
   const { t } = useTranslation('message')
   const tool = execution.call.name
   const { toolCardStyle } = useSyncExternalStore(themeStore.subscribe, themeStore.getSnapshot)
@@ -24,7 +24,7 @@ export function DefaultRenderer({ execution, partKey, data, onFullscreenChange }
   const isActive = getToolExecutionStatus(execution) === 'running'
   // 运行中优先显示 Pi 流式推送的实时输出（edit/read 等非 bash 工具同样适用）
   const liveOutput = useLiveToolOutput(execution.call.id)
-  const effectiveOutput = data.output?.trim() ?? liveOutput?.trim()
+  const effectiveOutput = data.output ?? liveOutput
 
   const hasInput = !!data.input?.trim()
   const hasError = !!data.error
@@ -76,18 +76,22 @@ export function DefaultRenderer({ execution, partKey, data, onFullscreenChange }
       {!hasError && (data.files || data.diff) && effectiveOutput && (
         <ContentBlock stateKey={`message:${partKey}:raw-output`} label={t('defaultRenderer.output')} content={effectiveOutput} defaultCollapsed onFullscreenChange={onFullscreenChange} fullscreenId={`tool:${partKey}:raw-output`} />
       )}
-      {data.notice ? (
-        <div className="flex items-start gap-1.5 text-[length:var(--fs-xs)] text-warning-100">
-          <AlertCircleIcon size={12} className="mt-0.5 shrink-0" />
-          <span className="break-all">{data.notice}</span>
-        </div>
-      ) : null}
-      <ToolResultImages tool={tool} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} />
+      {supplementary && <ToolResultNotice data={data} />}
+      {supplementary && <ToolResultImages tool={tool} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} />}
 
       {/* Diagnostics */}
       {hasDiagnostics && <DiagnosticsBlock diagnostics={data.diagnostics!} />}
     </div>
   )
+}
+
+export function ToolResultNotice({ data }: { data: ExtractedToolData }) {
+  return data.notice ? (
+    <div className="flex items-start gap-1.5 text-[length:var(--fs-xs)] text-warning-100">
+      <AlertCircleIcon size={12} className="mt-0.5 shrink-0" />
+      <span className="whitespace-pre-wrap break-all">{data.notice}</span>
+    </div>
+  ) : null
 }
 
 export function ToolResultImages({ tool, partKey, data, onFullscreenChange }: {

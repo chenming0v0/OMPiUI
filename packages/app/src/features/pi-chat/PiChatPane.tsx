@@ -14,6 +14,7 @@ import type { Attachment } from '../attachment/index.js'
 import { ExtensionUiDialogHost } from '../chat/ExtensionUiDialogHost.js'
 import { ExtensionUiSurface } from '../chat/ExtensionUiSurface'
 import { OutlineIndex } from '../../components/OutlineIndex'
+import type { NativeTreeNode } from '../../components/sessionTreeGraph'
 import { buildOutlineSourceEntries } from '../../components/outlineIndexModel'
 import { selectPiTimelineItemsCached } from '../../omp/selectors/timelineCache.js'
 import type { HistoryPrefetchMode } from '../../omp/historyPagePrefetch'
@@ -47,13 +48,14 @@ import {
   discardQueuedMessage,
   sendQueuedMessage,
   waitHostCommand,
+  getPiTree,
 } from '../../omp/transport/index.js'
 import { layoutStore } from '../../store/layoutStore'
 import { serverStore } from '../../store/serverStore'
 import { useSessionActiveEntry } from '../../store/activeSessionStore'
 import type { PiImageInput } from '../../omp/transport/index.js'
 import type { DeliveryMode } from '../../types/ui'
-import { attachmentToImage, imageInputToAttachment } from './attachmentToImage'
+import { attachmentToImage, imageInputToAttachment, interruptAttachmentsToImages } from './attachmentToImage'
 import { appendPendingSends, appendPendingQueueEntries, createPendingSend, reconcilePendingSends, reconcileQueuedPendingSends, withoutQueueEntry, type PendingSend } from './pendingSend'
 import { hasStoppableSessionActivity } from './sessionActivity'
 import { SessionStopCoordinator } from './sessionStopCoordinator'
@@ -362,9 +364,10 @@ export function PiChatPane({
   const handleQueueBackToInput = useCallback(
     async (kind: 'steering' | 'followUp', index: number, entryId: string) => {
       if (!sessionId) return
+      const capturedIdentity = paneIdentityRef.current
       try {
         const entry = await stopCoordinatorRef.current.submit(JSON.stringify([activeServerGeneration, sessionId]), () => {
-          if (paneIdentityRef.current.activeServerGeneration !== activeServerGeneration || paneIdentityRef.current.sessionId !== sessionId) throw new Error('Session changed before queue selection')
+          if (paneIdentityRef.current !== capturedIdentity) throw new Error('Session changed before queue selection')
           return removeQueuedMessage(sessionId, { kind, index, entryId })
         })
         setPendingSends(current => withoutQueueEntry(current, activeServerGeneration, sessionId, entryId))
@@ -393,6 +396,7 @@ export function PiChatPane({
   const handleQueueSendNow = useCallback(
     async (kind: 'steering' | 'followUp', index: number, entryId: string) => {
       if (!sessionId) return
+      const capturedIdentity = paneIdentityRef.current
       const entries = kind === 'steering' ? queuedSteering : queuedFollowUps
       const selected = entries[index]
       if (!selected || selected.entryId !== entryId) return
@@ -410,7 +414,7 @@ export function PiChatPane({
       let accepted = false
       try {
         await stopCoordinatorRef.current.submit(JSON.stringify([activeServerGeneration, sessionId]), () => {
-          if (paneIdentityRef.current.activeServerGeneration !== activeServerGeneration || paneIdentityRef.current.sessionId !== sessionId) throw new Error('Session changed before queue selection')
+          if (paneIdentityRef.current !== capturedIdentity) throw new Error('Session changed before queue selection')
           return sendQueuedMessage(sessionId, { kind, index, entryId })
         })
         accepted = true
@@ -428,9 +432,10 @@ export function PiChatPane({
   const handleQueueClear = useCallback(
     async (kind: 'steering' | 'followUp', index: number, entryId: string) => {
       if (!sessionId) return
+      const capturedIdentity = paneIdentityRef.current
       try {
         await stopCoordinatorRef.current.submit(JSON.stringify([activeServerGeneration, sessionId]), () => {
-          if (paneIdentityRef.current.activeServerGeneration !== activeServerGeneration || paneIdentityRef.current.sessionId !== sessionId) throw new Error('Session changed before queue selection')
+          if (paneIdentityRef.current !== capturedIdentity) throw new Error('Session changed before queue selection')
           return discardQueuedMessage(sessionId, { kind, index, entryId })
         })
         setPendingSends(current => withoutQueueEntry(current, activeServerGeneration, sessionId, entryId))
@@ -485,15 +490,18 @@ export function PiChatPane({
   const stopKey = JSON.stringify([activeServerGeneration, sessionId])
   const [stoppingKey, setStoppingKey] = useState<string | null>(null)
   const isStopping = stoppingKey === stopKey
-  const paneIdentityRef = useRef({ sessionId, activeServerGeneration })
-  paneIdentityRef.current = { sessionId, activeServerGeneration }
+  const paneIdentityRef = useRef({ sessionId, activeServerGeneration, epoch: 0 })
+  if (paneIdentityRef.current.sessionId !== sessionId || paneIdentityRef.current.activeServerGeneration !== activeServerGeneration) {
+    paneIdentityRef.current = { sessionId, activeServerGeneration, epoch: paneIdentityRef.current.epoch + 1 }
+  }
   const handleAbort = useCallback(async () => {
     if (!sessionId) return
     const sid = sessionId
+    const capturedIdentity = paneIdentityRef.current
     setStoppingKey(stopKey)
     try {
       await stopCoordinatorRef.current.stop(stopKey, () => {
-        if (paneIdentityRef.current.activeServerGeneration !== activeServerGeneration) throw new Error('Server changed before Stop dispatch')
+        if (paneIdentityRef.current !== capturedIdentity) throw new Error('Session changed before Stop dispatch')
         return compacting ? abortPiCompaction(sid) : abortPiOperation(sid)
       })
       if (paneIdentityRef.current.activeServerGeneration === activeServerGeneration) {
@@ -613,18 +621,16 @@ export function PiChatPane({
   // Candidates come from official model/runtime controls, never inferred
   // from a provider map that may expose a different set of efforts.
   const currentModelObj = useMemo(
-    () =>
-      models.find(m => `${m.provider}:${m.id}` === pendingModelKey) ??
-      models.find(m => m.provider === currentModel?.provider && m.id === currentModel?.id) ??
-      (!sessionId && homeModelKey ? models.find(m => `${m.provider}:${m.id}` === homeModelKey) : undefined),
-    [models, pendingModelKey, currentModel?.provider, currentModel?.id, homeModelKey, sessionId],
+    () => selectedModelKey ? models.find(m => `${m.provider}:${m.id}` === selectedModelKey) : undefined,
+    [models, selectedModelKey],
   )
   const thinkingLevels = useMemo(() => {
+    if (!selectedModelKey) return []
     const levels = sessionId && !pendingModelKey && Array.isArray(state?.supportedThinkingLevels)
       ? state.supportedThinkingLevels
       : currentModelObj?.supportedThinkingLevels
     return Array.isArray(levels) ? levels.filter((level): level is string => typeof level === 'string') : []
-  }, [sessionId, pendingModelKey, state?.supportedThinkingLevels, currentModelObj])
+  }, [sessionId, pendingModelKey, selectedModelKey, state?.supportedThinkingLevels, currentModelObj])
   // On home there is no runtime state; the selector shows the persisted
   // variant preference for the home model, applied once the session exists.
   const [homeVariant, setHomeVariant] = useState<string | undefined>(() =>
@@ -632,53 +638,87 @@ export function PiChatPane({
   )
   const [pendingThinking, setPendingThinking] = useState<{ sessionId: string; level: string } | null>(null)
   const pendingThinkingLevel = pendingThinking?.sessionId === sessionId ? pendingThinking.level : undefined
+  const [modelControlError, setModelControlError] = useState<{ sessionId: string; message: string } | null>(null)
+  const modelControlOperationRef = useRef<object | null>(null)
+  useEffect(() => { modelControlOperationRef.current = null }, [sessionId, activeServerGeneration])
   // home 模型切换时重读持久化 variant 偏好（渲染期间调整 state）
   const [homeVariantForModel, setHomeVariantForModel] = useState(homeModelKey)
-  if (homeModelKey !== homeVariantForModel) {
+  const [homeServerGeneration, setHomeServerGeneration] = useState(activeServerGeneration)
+  if (homeServerGeneration !== activeServerGeneration) {
+    const preferred = getPreferredModelKey()
+    setHomeServerGeneration(activeServerGeneration)
+    setHomeModelKey(preferred)
+    setHomeVariantForModel(preferred)
+    setHomeVariant(preferred ? getModelVariantPref(preferred) : undefined)
+  } else if (homeModelKey !== homeVariantForModel) {
     setHomeVariantForModel(homeModelKey)
-    if (!sessionId) setHomeVariant(homeModelKey ? getModelVariantPref(homeModelKey) : undefined)
+    setHomeVariant(homeModelKey ? getModelVariantPref(homeModelKey) : undefined)
   }
-  // sessionId 变化时重置 pending 状态（渲染期间调整 state，避免 effect 级联渲染）
-  const [resetSessionId, setResetSessionId] = useState(sessionId)
-  if (sessionId !== resetSessionId) {
-    setResetSessionId(sessionId)
+  // 会话或服务器变化时重置临时选择及错误，避免迟到响应跨身份显示。
+  const sessionControlKey = JSON.stringify([activeServerGeneration, sessionId])
+  const [resetSessionKey, setResetSessionKey] = useState(sessionControlKey)
+  if (sessionControlKey !== resetSessionKey) {
+    setResetSessionKey(sessionControlKey)
     setPendingModel(null)
     setPendingThinking(null)
+    setModelControlError(null)
   }
-  const thinkingLevel =
-    pendingThinkingLevel ??
-    (typeof state?.thinkingLevel === 'string' ? state.thinkingLevel : undefined) ??
-    (sessionId ? undefined : homeVariant)
+  const thinkingLevel = pendingModelKey
+    ? undefined
+    : sessionId
+      ? pendingThinkingLevel ?? (typeof state?.thinkingLevel === 'string' ? state.thinkingLevel : undefined)
+      : homeVariant && thinkingLevels.includes(homeVariant) ? homeVariant : undefined
 
+  const [modelCycleError, setModelCycleError] = useState<{ sessionId: string; serverGeneration: number; message: string } | null>(null)
+  const modelCycleOperationRef = useRef(0)
+  const handleCycleModel = useCallback((direction: 'forward' | 'backward') => {
+    const capturedIdentity = paneIdentityRef.current
+    if (!sessionId || capturedIdentity.sessionId !== sessionId || capturedIdentity.activeServerGeneration !== activeServerGeneration) return
+    const operation = ++modelCycleOperationRef.current
+    setModelCycleError(null)
+    void cyclePiModel(sessionId, direction)
+      .then(() => operation === modelCycleOperationRef.current && paneIdentityRef.current === capturedIdentity ? refreshPiSessionState(sessionId) : undefined)
+      .catch(error => {
+        uiErrorHandler('cycle model', error)
+        if (operation === modelCycleOperationRef.current && paneIdentityRef.current === capturedIdentity) setModelCycleError({ sessionId, serverGeneration: activeServerGeneration, message: error instanceof Error ? error.message : String(error) })
+      })
+  }, [sessionId, activeServerGeneration])
   const handleVariantChange = useCallback(
     (variant: string | undefined) => {
-      if (!variant) return
+      if (!variant || pendingModelKey || !thinkingLevels.includes(variant)) return
+      setModelControlError(null)
       if (!sessionId) {
         setHomeVariant(variant)
         if (homeModelKey) saveModelVariantPref(homeModelKey, variant)
         return
       }
       const selection = { sessionId, level: variant }
+      modelControlOperationRef.current = selection
       setPendingThinking(selection)
       void setPiThinkingLevel(sessionId, variant)
         .then(() => refreshPiSessionState(sessionId))
         .then(() => setPendingThinking(current => (current === selection ? null : current)))
         .catch(error => {
           setPendingThinking(current => (current === selection ? null : current))
+          if (modelControlOperationRef.current === selection) {
+            setModelControlError({ sessionId, message: error instanceof Error ? error.message : String(error) })
+          }
           uiErrorHandler('set thinking level', error)
         })
     },
-    [sessionId, homeModelKey],
+    [sessionId, homeModelKey, pendingModelKey, thinkingLevels],
   )
 
   const handleModelChange = useCallback(
     (_modelKey: string, model: Model<Api>) => {
+      setModelControlError(null)
       recordModelUsage(model)
       const key = `${model.provider}:${model.id}`
       setHomeModelKey(key)
       setPreferredModelKey(key)
       if (!sessionId) return
       const selection = { sessionId, key }
+      modelControlOperationRef.current = selection
       setPendingModel(selection)
       setPendingThinking(null)
       void setPiModel(sessionId, model.provider, model.id)
@@ -686,6 +726,9 @@ export function PiChatPane({
         .then(() => setPendingModel(current => (current === selection ? null : current)))
         .catch(error => {
           setPendingModel(current => (current === selection ? null : current))
+          if (modelControlOperationRef.current === selection) {
+            setModelControlError({ sessionId, message: error instanceof Error ? error.message : String(error) })
+          }
           uiErrorHandler('set model', error)
         })
     },
@@ -797,13 +840,21 @@ export function PiChatPane({
     if (!revertState || !revertPositions) return
     if (!state || !state.head || typeof state.head !== 'object' || Array.isArray(state.head)) return
     if (revertPositions.has(headLeafId)) return
-    updateRevertState(null)
+    const checkpoint = revertState.checkpoints.indexOf(headLeafId ?? '')
+    if (checkpoint >= revertState.restored) {
+      const restored = checkpoint + 1
+      updateRevertState(restored < revertState.checkpoints.length ? { ...revertState, restored } : null)
+    } else updateRevertState(null)
   }, [headLeafId, revertState, revertPositions, state, updateRevertState])
 
-  const canUndo = Boolean(sessionId && !isStreaming && items.some(item => item.kind === 'user_message'))
+  const navigationPendingRef = useRef(false)
+  const [navigationPending, setNavigationPending] = useState(false)
+
+  const canUndo = Boolean(sessionId && !isStreaming && !navigationPending && items.some(item => item.kind === 'user_message'))
   const canRedo = Boolean(
     sessionId &&
     !isStreaming &&
+    !navigationPending &&
     revertState &&
     revertState.restored < revertState.checkpoints.length &&
     revertPositions?.has(headLeafId),
@@ -886,78 +937,72 @@ export function PiChatPane({
     inputBoxRef.current?.setEditorText(extensionState.editorText)
   }, [extensionState, sessionId])
 
-  // #356: 树导航成功后恢复目标节点的原生文本/图片草稿。SessionTreePanel 的
-  // 导航没有输入框句柄，通过 window 事件到达这里，与 Undo/Redo 共用一条恢复路径。
-  const applyNativeEditorDraft = useCallback((sid: string, result: { editorText?: unknown; editorImages?: unknown }) => {
-    if (paneIdentityRef.current.sessionId !== sid) return
-    const hasText = typeof result.editorText === 'string'
-    const hasImages = Array.isArray(result.editorImages)
-    if (!hasText && !hasImages) return
-    const images = hasImages ? (result.editorImages as PiImageInput[]).map(imageInputToAttachment) : undefined
-    const text = hasText ? (result.editorText as string) : inputBoxRef.current?.getEditorText() ?? ''
-    inputBoxRef.current?.setEditorDraft(text, images)
-    setSessionEditorDraft(sid, text, { attachments: images, sync: false })
-    localComposerTextRef.current = text
-    lastEditorTextRef.current = text
-  }, [])
-
+  // The shared controller draft updates every source pane and survives remount.
+  // Keep mirror guards aligned without writing the same draft a second time.
   useEffect(() => {
-    const handleNativeDraft = (event: Event) => {
-      const detail = (event as CustomEvent<{ sessionId?: string; editorText?: unknown; editorImages?: unknown }>).detail
-      if (!detail?.sessionId) return
-      applyNativeEditorDraft(detail.sessionId, detail)
-    }
-    window.addEventListener('ompiui:native-editor-draft', handleNativeDraft)
-    return () => window.removeEventListener('ompiui:native-editor-draft', handleNativeDraft)
-  }, [applyNativeEditorDraft])
+    if (!editorDraft) return
+    localComposerTextRef.current = editorDraft.text
+    lastEditorTextRef.current = editorDraft.text
+  }, [editorDraft])
 
   const handleUndo = useCallback(
     async (entryId: string) => {
-      if (!sessionId || isStreaming) return
-      // 逐回合的 redo 落点：沿被裁掉的原分支，每个用户回合的尾部条目。
-      // 必须在导航前从 branch 捕获
-      const checkpoints = captureRedoCheckpoints(sessionId, entryId)
+      if (!sessionId || isStreaming || navigationPendingRef.current) return
+      navigationPendingRef.current = true
+      setNavigationPending(true)
       try {
+        const tree = await getPiTree(sessionId)
+        const checkpoints = captureRedoCheckpoints(sessionId, entryId, tree as unknown as NativeTreeNode[])
         const result = await navigatePiTree(sessionId, { entryId })
-        if (result.cancelled || result.aborted) return
-        applyNativeEditorDraft(sessionId, result)
+        if (result.cancelled || result.aborted || result.noOp) return
         await commitRedoPlan(sessionId, checkpoints)
       } catch (error) {
         uiErrorHandler('undo message', error)
+      } finally {
+        navigationPendingRef.current = false
+        setNavigationPending(false)
       }
     },
-    [sessionId, isStreaming, applyNativeEditorDraft],
+    [sessionId, isStreaming],
   )
 
   const handleRedoStep = useCallback(async () => {
-    if (!sessionId || !revertState || isStreaming) return
+    if (!sessionId || !revertState || isStreaming || navigationPendingRef.current) return
     const target = revertState.checkpoints[revertState.restored]
     if (!target) return
+    navigationPendingRef.current = true
+    setNavigationPending(true)
     try {
       const result = await navigatePiTree(sessionId, { entryId: target })
       if (result.cancelled || result.aborted) return
-      applyNativeEditorDraft(sessionId, result)
       const restored = revertState.restored + 1
       if (restored >= revertState.checkpoints.length) updateRevertState(null)
       else updateRevertState({ ...revertState, restored })
     } catch (error) {
       uiErrorHandler('redo message', error)
+    } finally {
+      navigationPendingRef.current = false
+      setNavigationPending(false)
     }
-  }, [sessionId, revertState, isStreaming, updateRevertState, applyNativeEditorDraft])
+  }, [sessionId, revertState, isStreaming, updateRevertState])
 
   const handleRedoAll = useCallback(async () => {
-    if (!sessionId || !revertState || isStreaming) return
+    if (!sessionId || !revertState || isStreaming || navigationPendingRef.current) return
     const target = revertState.checkpoints[revertState.checkpoints.length - 1]
     if (!target) return
+    navigationPendingRef.current = true
+    setNavigationPending(true)
     try {
       const result = await navigatePiTree(sessionId, { entryId: target })
       if (result.cancelled || result.aborted) return
-      applyNativeEditorDraft(sessionId, result)
       updateRevertState(null)
     } catch (error) {
       uiErrorHandler('redo message', error)
+    } finally {
+      navigationPendingRef.current = false
+      setNavigationPending(false)
     }
-  }, [sessionId, revertState, isStreaming, updateRevertState, applyNativeEditorDraft])
+  }, [sessionId, revertState, isStreaming, updateRevertState])
 
   const refreshTimerRefs = useRef(new Set<number>())
   const scheduleDelayedRefresh = useCallback((sid: string) => {
@@ -995,8 +1040,14 @@ export function PiChatPane({
   const handleSend = useCallback(
     async (text: string, attachments: Attachment[], options?: { delivery?: DeliveryMode }) => {
       const capturedServerGeneration = activeServerGeneration
+      const capturedIdentity = paneIdentityRef.current
       const sourceDraftKey = composerDraftKey(activeServer, sessionId, currentDirectory ?? '', paneId)
       let targetSessionId = sessionId
+      const isCurrentIdentity = () => paneIdentityRef.current === capturedIdentity || (
+        targetSessionId !== sessionId && paneIdentityRef.current.epoch === capturedIdentity.epoch + 1 &&
+        paneIdentityRef.current.activeServerGeneration === capturedServerGeneration &&
+        paneIdentityRef.current.sessionId === targetSessionId
+      )
       let pendingId: string | undefined
       let accepted = false
       try {
@@ -1033,8 +1084,10 @@ export function PiChatPane({
             return true
           }
         }
-        const images = attachments.map(attachmentToImage).filter((image): image is PiImageInput => image !== null)
         const deliverAs = options?.delivery ?? 'followUp'
+        const images = deliverAs === 'abortAndPrompt'
+          ? await interruptAttachmentsToImages(attachments)
+          : attachments.map(attachmentToImage).filter((image): image is PiImageInput => image !== null)
         const queueKind = targetSessionId && isStreaming && deliverAs !== 'abortAndPrompt' && !text.startsWith('/')
           ? deliverAs === 'steer' ? 'steering' : 'followUp'
           : undefined
@@ -1045,10 +1098,10 @@ export function PiChatPane({
         if (!targetSessionId) {
           const directory = currentDirectoryRef.current || (await resolveWorkspacePath())
           if (!directory) return false
-          if (paneIdentityRef.current.activeServerGeneration !== capturedServerGeneration || paneIdentityRef.current.sessionId !== sessionId) throw new Error('Session changed before opening a session')
+          if (paneIdentityRef.current !== capturedIdentity) throw new Error('Session changed before opening a session')
           const opened = await openPiSession(directory)
           if (!opened.sessionId) return false
-          if (paneIdentityRef.current.activeServerGeneration !== capturedServerGeneration || paneIdentityRef.current.sessionId !== sessionId) throw new Error('Session changed while opening a session')
+          if (paneIdentityRef.current !== capturedIdentity) throw new Error('Session changed while opening a session')
           const sessionDir = opened.cwd ?? directory
           targetSessionId = opened.sessionId
           const sid = targetSessionId
@@ -1070,20 +1123,21 @@ export function PiChatPane({
           const preferred = getPreferredModelKey()
           const preferredModel = preferred ? models.find(m => `${m.provider}:${m.id}` === preferred) : undefined
           if (preferredModel) {
+            if (!isCurrentIdentity()) throw new Error('Session changed before model setup')
             await setPiModel(targetSessionId, preferredModel.provider, preferredModel.id)
           }
           const preferredVariant = preferred ? getModelVariantPref(preferred) : undefined
           if (preferredVariant && preferredModel?.supportedThinkingLevels?.includes(preferredVariant)) {
-            if (paneIdentityRef.current.activeServerGeneration !== capturedServerGeneration || (paneIdentityRef.current.sessionId !== sessionId && paneIdentityRef.current.sessionId !== targetSessionId)) throw new Error('Session changed before model setup')
+            if (!isCurrentIdentity()) throw new Error('Session changed before model setup')
             await setPiThinkingLevel(targetSessionId, preferredVariant)
           }
+          await refreshPiSessionState(targetSessionId)
         }
         const sid = targetSessionId
         // The command resolves on backend acceptance, not at the end of the turn.
         // Until then InputBox retains both the text and its attachments.
         await stopCoordinatorRef.current.submit(JSON.stringify([capturedServerGeneration, sid]), () => {
-          if (paneIdentityRef.current.activeServerGeneration !== capturedServerGeneration ||
-              (paneIdentityRef.current.sessionId !== sessionId && paneIdentityRef.current.sessionId !== sid)) throw new Error('Session changed before message submission')
+          if (!isCurrentIdentity()) throw new Error('Session changed before message submission')
           // #360: abortAndPrompt is its own native admission, never an
           // abort followed by a plain prompt re-submission.
           if (deliverAs === 'abortAndPrompt') {
@@ -1094,8 +1148,8 @@ export function PiChatPane({
         accepted = true
         setPendingSends(current => text.startsWith('/')
           ? current.filter(send => send.id !== pendingId)
-          : current.map(send => send.id === pendingId && send.phase === 'submitting' ? { ...send, phase: 'accepted' } : send))
-        if (paneIdentityRef.current.activeServerGeneration !== capturedServerGeneration || paneIdentityRef.current.sessionId !== sid) return true
+          : current.map(send => send.id === pendingId ? { ...send, phase: 'accepted' } : send))
+        if (!isCurrentIdentity() || paneIdentityRef.current.sessionId !== sid) return true
         const currentText = inputBoxRef.current?.getEditorText() ?? localComposerTextRef.current ?? text
         const remainingText = currentText === text ? '' : currentText
         localComposerTextRef.current = remainingText
@@ -1106,7 +1160,7 @@ export function PiChatPane({
         scheduleDelayedRefresh(sid)
         return true
       } catch (error) {
-        if (paneIdentityRef.current.activeServerGeneration === capturedServerGeneration) {
+        if (isCurrentIdentity()) {
           uiErrorHandler('send message', error)
           if (targetSessionId) scheduleDelayedRefresh(targetSessionId)
         }
@@ -1119,15 +1173,23 @@ export function PiChatPane({
   )
 
   const handleSetGoal = useCallback(
-    async (objective: string, images?: PiImageInput[]): Promise<boolean> => {
+    async (objective: string, tokenBudget?: number): Promise<boolean> => {
       let targetSessionId = sessionId
+      const capturedIdentity = paneIdentityRef.current
+      const isCurrentIdentity = () => paneIdentityRef.current === capturedIdentity || (
+        targetSessionId !== sessionId && paneIdentityRef.current.epoch === capturedIdentity.epoch + 1 &&
+        paneIdentityRef.current.activeServerGeneration === capturedIdentity.activeServerGeneration &&
+        paneIdentityRef.current.sessionId === targetSessionId
+      )
       try {
         if (!targetSessionId) {
-          // Goal 可以作为新会话的第一步：先创建会话，再让 worker 立刻进入目标续跑。
+          // Creating a goal is explicit; native RPC owns lifecycle and continuation.
           const directory = currentDirectoryRef.current || (await resolveWorkspacePath())
           if (!directory) return false
+          if (paneIdentityRef.current !== capturedIdentity) throw new Error('Session changed before opening a goal session')
           const opened = await openPiSession(directory)
           if (!opened.sessionId) return false
+          if (paneIdentityRef.current !== capturedIdentity) throw new Error('Session changed while opening a goal session')
           const sessionDir = opened.cwd ?? directory
           targetSessionId = opened.sessionId
           trackPiSession(targetSessionId, sessionDir)
@@ -1146,20 +1208,25 @@ export function PiChatPane({
           const preferred = getPreferredModelKey()
           const preferredModel = preferred ? models.find(m => `${m.provider}:${m.id}` === preferred) : undefined
           if (preferredModel) {
-            await setPiModel(targetSessionId, preferredModel.provider, preferredModel.id).catch(() => undefined)
+            if (!isCurrentIdentity()) throw new Error('Session changed before goal model setup')
+            await setPiModel(targetSessionId, preferredModel.provider, preferredModel.id)
           }
           const preferredVariant = preferred ? getModelVariantPref(preferred) : undefined
-          if (preferredVariant) {
-            await setPiThinkingLevel(targetSessionId, preferredVariant).catch(() => undefined)
+          if (preferredVariant && preferredModel?.supportedThinkingLevels?.includes(preferredVariant)) {
+            if (!isCurrentIdentity()) throw new Error('Session changed before goal model setup')
+            await setPiThinkingLevel(targetSessionId, preferredVariant)
           }
+          await refreshPiSessionState(targetSessionId)
         }
 
-        const submitted = await manageSessionGoal(targetSessionId, 'set', objective, undefined, images)
+        if (!isCurrentIdentity()) throw new Error('Session changed before goal submission')
+        const submitted = await manageSessionGoal(targetSessionId, 'create', { objective, tokenBudget })
         await waitHostCommand(submitted.id)
+        if (!isCurrentIdentity()) return true
         void refreshPiSessionState(targetSessionId).catch(() => undefined)
         return true
       } catch (error) {
-        uiErrorHandler('set goal', error)
+        if (isCurrentIdentity()) uiErrorHandler('set goal', error)
         return false
       }
     },
@@ -1448,6 +1515,11 @@ export function PiChatPane({
         {/* 仅由输入区和可见按钮接收触摸，避免收起后的透明占位阻挡消息滚动。 */}
         <div className="pointer-events-none">
           <ExtensionUiSurface sessionId={sessionId} placement="aboveEditor" />
+          {modelCycleError?.sessionId === sessionId && modelCycleError.serverGeneration === activeServerGeneration ? (
+            <p role="alert" className="pointer-events-auto mx-4 mb-2 rounded-lg bg-bg-100 px-3 py-2 whitespace-pre-wrap text-[length:var(--fs-sm)] text-danger-100 [overflow-wrap:anywhere]">
+              {modelCycleError.message}
+            </p>
+          ) : null}
           <InputBox
             ref={inputBoxRef}
             paneId={paneId}
@@ -1461,12 +1533,7 @@ export function PiChatPane({
             onQueueOpenInSideChat={handleQueueOpenInSideChat}
             rootPath={inputRootPath}
             onSend={handleSend}
-            onCycleModel={direction =>
-              sessionId &&
-              void cyclePiModel(sessionId, direction)
-                .then(() => refreshPiSessionState(sessionId))
-                .catch(error => uiErrorHandler('cycle model', error))
-            }
+            onCycleModel={handleCycleModel}
             onCycleThinkingLevel={() =>
               sessionId &&
               void cyclePiThinkingLevel(sessionId)
@@ -1492,8 +1559,14 @@ export function PiChatPane({
             modelsLoading={modelsLoading}
             modelSelectorRef={modelSelectorRef}
             variants={thinkingLevels}
+            variantsDisabled={Boolean(pendingModelKey)}
             selectedVariant={thinkingLevel}
             onVariantChange={handleVariantChange}
+            composerNotice={modelControlError?.sessionId === sessionId ? (
+              <div role="alert" className="mx-3 mb-2 rounded-lg border border-border-200 bg-bg-100 p-3 text-[length:var(--fs-sm)] text-text-100 break-words">
+                {modelControlError.message}
+              </div>
+            ) : undefined}
             revertedText={editorDraft?.text}
             revertedDelivery={editorDraft?.delivery}
             revertedAttachments={editorDraft?.attachments}

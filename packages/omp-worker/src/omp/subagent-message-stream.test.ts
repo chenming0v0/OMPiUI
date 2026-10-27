@@ -11,6 +11,22 @@ function inner(frame: JsonObject): JsonObject {
   return (frame.payload as JsonObject).event as JsonObject
 }
 
+test("preview patches retain the worker generation and never share counters across reused native ids", () => {
+  const frames: JsonObject[] = []
+  const stream = new SubagentMessageStream(frame => frames.push(frame))
+  for (const runId of ["old", "new"]) {
+    stream.push({ kind: "event", payload: { id: "child", runId, parentToolCallId: "owner", event: {
+      type: "message_update", message: { role: "assistant", content: "same text" },
+    } } })
+    stream.push({ kind: "progress", payload: { id: "child", runId, progress: { tokens: 10 } } })
+  }
+  const patches = frames.filter(frame => frame.kind === "event")
+  assert.deepEqual(patches.map(frame => (frame.payload as JsonObject).runId), ["old", "new"])
+  assert.notEqual(inner(patches[0]!).messageId, inner(patches[1]!).messageId)
+  assert.ok(patches.every(frame => inner(frame).textOffset === 0))
+  assert.ok(frames.filter(frame => frame.kind === "progress").every(frame => (frame.payload as JsonObject).progressDelta === false))
+})
+
 test("large cumulative snapshots become bounded lossless chunks and retain one message identity", () => {
   const frames: JsonObject[] = []
   const stream = new SubagentMessageStream(frame => frames.push(frame))

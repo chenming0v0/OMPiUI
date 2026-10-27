@@ -10,7 +10,9 @@ import {
   writeFileContent,
 } from "./files.ts"
 import { searchFilesByName, searchWorkspaceText } from "./file-search.ts"
-import { getGitDiff, getGitFileDiff, getGitInfo, getGitStatus } from "./git.ts"
+import { getGitDiff, getGitFileDiff, getGitInfo, getGitStatus, stageGitFiles, unstageGitFiles, changeGitHunk, previewGitCommit, commitGit } from "./git.ts"
+import path from "node:path"
+import { listGitWorktrees, mutateGitWorktree } from "./worktrees.ts"
 import {
   deleteModelProvider,
   fetchModelProviderModels,
@@ -244,6 +246,35 @@ const HOST_COMMAND_HANDLERS: Record<string, HostCommandHandler> = {
   "git.status": (ctx, params) => getGitStatus(workspace(ctx, params).canonicalRoot, ctx.signal) as Promise<JsonValue>,
   "git.diff": (ctx, params) => getGitDiff(workspace(ctx, params).canonicalRoot, gitMode(params), ctx.signal) as Promise<JsonValue>,
   "git.fileDiff": (ctx, params) => getGitFileDiff(workspace(ctx, params).canonicalRoot, gitMode(params), reqString(params, "path"), ctx.signal) as Promise<JsonValue>,
+  "git.stage": (ctx, params) => stageGitFiles(workspace(ctx, params).canonicalRoot, params.paths as string[]) as Promise<JsonValue>,
+  "git.unstage": (ctx, params) => unstageGitFiles(workspace(ctx, params).canonicalRoot, params.paths as string[]) as Promise<JsonValue>,
+  "git.hunk": (ctx, params) => changeGitHunk(workspace(ctx, params).canonicalRoot, reqString(params, "path"), params.staged === true, params.hunk as number, reqString(params, "expectedPatch")) as Promise<JsonValue>,
+  "git.commitPreview": (ctx, params) => previewGitCommit(workspace(ctx, params).canonicalRoot) as Promise<JsonValue>,
+  "git.commit": (ctx, params) => commitGit(workspace(ctx, params).canonicalRoot, reqString(params, "message"), reqString(params, "fingerprint")) as Promise<JsonValue>,
+  "git.worktrees": (ctx, params) => listGitWorktrees(workspace(ctx, params).canonicalRoot, ctx.signal) as Promise<JsonValue>,
+  "git.worktreeCreate": (ctx, params) => mutateGitWorktree(workspace(ctx, params).canonicalRoot, "create", reqString(params, "path"), reqString(params, "branch"), undefined, ctx.signal) as Promise<JsonValue>,
+  "git.worktreeRemove": async (ctx, params) => {
+    const cwd = workspace(ctx, params).canonicalRoot
+    const targetPath = path.resolve(cwd, reqString(params, "path"))
+    const record = ctx.store.find(targetPath)
+    const result = await mutateGitWorktree(cwd, "remove", targetPath, undefined, target => {
+      const root = path.resolve(target)
+      if (ctx.terminals.hasRunningInDirectory(root)) throw Object.assign(new Error("A GUI shell still uses this worktree; close it yourself before removing the checkout"), { code: "WORKSPACE_BUSY" })
+      for (const id of ctx.sessions.listAttachedIds()) {
+        const session = ctx.sessions.getAttached(id)
+        if (!session) continue
+        const relative = path.relative(root, path.resolve(session.cwd))
+        if (!relative || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))) {
+          throw Object.assign(new Error("A native GUI session still uses this worktree; switch or close it first. Nothing was removed."), { code: "WORKSPACE_BUSY" })
+        }
+      }
+    }, ctx.signal)
+    // Removal has already committed; use the captured record, never stat a
+    // now-absent root via workspaces.close or terminate any user shell.
+    if (record) ctx.watcher.unwatch(record)
+    ctx.store.remove(targetPath)
+    return result as JsonValue
+  },
   "models.providers.get": () => readModelProvidersSnapshot().then(requireJsonValue),
   "models.providers.save": (_ctx, params) => {
     const provider = params.provider

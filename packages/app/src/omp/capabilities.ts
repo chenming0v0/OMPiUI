@@ -81,7 +81,7 @@ const COMMAND_MAP: Record<keyof PiCapabilities, string | null> = {
   sessionRename: 'setSessionName',
   sessionArchive: null,
   mcp: null,
-  worktree: null,
+  worktree: 'moveSession',
   config: 'settings.get',
   backgroundJobs: 'asyncJobs.get',
   backgroundJobCancel: 'asyncJobs.cancel',

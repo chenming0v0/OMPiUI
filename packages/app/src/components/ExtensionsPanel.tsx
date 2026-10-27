@@ -6,6 +6,8 @@ import { commandFeedbackStore, type CommandFeedbackEntry, type CommandFeedbackSt
 import { ExtensionUiDialogCard } from '../features/chat/ExtensionUiDialogCard'
 import { ExtensionTuiView } from './ExtensionTuiView'
 import { stripAnsi } from '../utils/ansiUtils'
+import { usePiSessionRuntimeState } from '../omp/hooks'
+import { isJsonObject } from '@ompiui/protocol'
 
 const feedbackStatusConfig: Record<CommandFeedbackStatus, { label: string; className: string }> = {
   ok: { label: 'ok', className: 'text-success-100 bg-success-100/10' },
@@ -22,6 +24,9 @@ const feedbackStatusConfig: Record<CommandFeedbackStatus, { label: string; class
  */
 export function ExtensionsPanel({ sessionId }: { sessionId: string | null }) {
   const { t } = useTranslation('components')
+  const runtimeState = usePiSessionRuntimeState(sessionId)
+  const askUiState = runtimeState?.askUi
+  const askUi = isJsonObject(askUiState) ? askUiState : undefined
   const snapshot = useSyncExternalStore(
     extensionUiStore.subscribe,
     extensionUiStore.getSnapshot,
@@ -54,7 +59,7 @@ export function ExtensionsPanel({ sessionId }: { sessionId: string | null }) {
     .filter(widget => widget.text.trim())
   const hasWorking = Boolean(state?.workingMessage || state?.workingIndicator || state?.title)
 
-  if (!hasWorking && statuses.length === 0 && widgets.length === 0 && pending.length === 0 && panels.length === 0 && feedback.length === 0) {
+  if (!askUi && !hasWorking && statuses.length === 0 && widgets.length === 0 && pending.length === 0 && panels.length === 0 && feedback.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-text-400 text-[length:var(--fs-sm)] px-4 text-center">
         {t('extensionsPanel.empty', 'No extension state')}
@@ -66,6 +71,12 @@ export function ExtensionsPanel({ sessionId }: { sessionId: string | null }) {
 
   return (
     <div className="h-full overflow-y-auto custom-scrollbar px-4 py-3 flex flex-col gap-4">
+      {askUi && <section className="text-[length:var(--fs-xs)] text-text-400">
+        <SectionLabel>{t('dialog.ask')}</SectionLabel>
+        <p>{askUi.available === true
+          ? t(askUi.surface === 'ask' ? 'dialog.askAvailable' : 'dialog.askBasicAvailable')
+          : t(askUi.reason === 'runtime_unavailable' ? 'dialog.askRuntimeUnavailable' : 'dialog.askInactive')}</p>
+      </section>}
       {/* Interactive dialogs inline (the floating cards above the composer stay too) */}
       {sortedPending.length > 0 && (
         <section className="flex flex-col gap-2">
@@ -174,9 +185,15 @@ function CommandFeedbackItem({ entry }: { entry: CommandFeedbackEntry }) {
         </span>
         <span className="shrink-0 font-mono text-[length:var(--fs-xxs)] text-text-500">{time}</span>
       </div>
+      {entry.originalType !== undefined && (
+        <div className="mt-1 whitespace-pre-wrap break-words font-mono text-[length:var(--fs-xs)] text-text-400">originalType: {stripAnsi(entry.originalType)}</div>
+      )}
       <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[length:var(--fs-sm)] text-text-200">
         {stripAnsi(entry.message)}
       </pre>
+      {entry.context !== undefined && (
+        <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[length:var(--fs-sm)] text-text-400">{stripAnsi(entry.context)}</pre>
+      )}
     </div>
   )
 }

@@ -41,7 +41,7 @@ export const YieldRenderer = memo(function YieldRenderer({ execution, partKey, d
           label={t('yield.failed')}
           content={data.error || yieldResult?.error || execution.error || t('yield.failed')}
           variant="error"
-          defaultCollapsed={true}
+          defaultCollapsed={false}
           onFullscreenChange={onFullscreenChange}
           fullscreenId={`yield:${partKey}:error`}
         />
@@ -52,6 +52,8 @@ export const YieldRenderer = memo(function YieldRenderer({ execution, partKey, d
             content={yieldResult.rawOutput}
             defaultCollapsed={true}
             maxHeight={240}
+            onFullscreenChange={onFullscreenChange}
+            fullscreenId={`yield:${partKey}:raw`}
           />
         ) : null}
       </div>
@@ -92,6 +94,8 @@ export const YieldRenderer = memo(function YieldRenderer({ execution, partKey, d
           content={yieldResult.rawOutput}
           defaultCollapsed={true}
           maxHeight={240}
+          onFullscreenChange={onFullscreenChange}
+          fullscreenId={`yield:${partKey}:raw`}
         />
       ) : null}
     </div>

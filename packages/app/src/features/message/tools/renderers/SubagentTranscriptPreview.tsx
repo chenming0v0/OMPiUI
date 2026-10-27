@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { ChevronDownIcon } from '../../../../components/Icons'
 import type { OmpSubagentTranscriptItem } from '../../../../omp/ompSubagentStore'
 import { formatToolName } from '../../../../utils/formatUtils'
+import { HistoryImage } from '../../HistoryImage'
 
 const PreviewText = memo(function PreviewText({ text, streaming = false }: { text: string; streaming?: boolean }) {
   const { t } = useTranslation('message')
@@ -69,11 +70,13 @@ export const SubagentTranscriptPreview = memo(function SubagentTranscriptPreview
       .map(part => part.text)
       .join('\n')
       .trim()
+    const images = row.items.flatMap(part => part.images ?? []).map((block, index) => <HistoryImage key={`${row.key}:image:${index}`} block={block} id={`${row.key}:image:${index}`} />)
     if (item.kind === 'user') {
       return (
         <div key={row.key} className="flex justify-end">
           <div className="max-w-[85%] px-2.5 py-1.5 rounded-md bg-bg-300 text-text-100 text-[length:var(--fs-xs)] whitespace-pre-wrap break-words">
             <PreviewText text={text} />
+            {images.length > 0 && <div className="mt-1 flex flex-wrap gap-2">{images}</div>}
           </div>
         </div>
       )
@@ -95,6 +98,7 @@ export const SubagentTranscriptPreview = memo(function SubagentTranscriptPreview
             />
           </div>
         )}
+        {images.length > 0 && <div className="flex flex-wrap gap-2">{images}</div>}
         {tools.length > 0 && (
           <div className="flex flex-wrap gap-1">
             {tools.map((tool, toolIndex) => {

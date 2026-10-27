@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getCurrentProject } from '../api'
+import { getHostGitWorktrees } from '../omp/transport'
 import { subscribeToConnectionState } from '../api/events'
 import { serverStore } from '../store/serverStore'
 import { normalizeToForwardSlash } from '../utils'
@@ -54,6 +55,7 @@ export function useGitWorkspaceCatalog(directories: string[]) {
         normalizedDirectories.map(async directory => ({
           directory,
           project: await getCurrentProject(directory),
+          git: await getHostGitWorktrees(directory).catch(() => null),
         })),
       )
 
@@ -87,10 +89,10 @@ export function useGitWorkspaceCatalog(directories: string[]) {
           continue
         }
 
-        const { project } = result.value
+        const { project, git } = result.value
 
         if (project.gitRoot && project.path) {
-          const rootDirectory = normalizeToForwardSlash(project.path)
+          const rootDirectory = normalizeToForwardSlash(git?.primaryRoot ?? project.path)
           rootDirectories.add(rootDirectory)
           directoryToRoot.set(directory, rootDirectory)
         } else {
@@ -102,10 +104,13 @@ export function useGitWorkspaceCatalog(directories: string[]) {
         }
       }
 
-      // pi has no worktree list command — each directory is its own workspace
       const rootToWorkspaces = new Map<string, string[]>()
       for (const rootDirectory of rootDirectories) {
-        rootToWorkspaces.set(rootDirectory, previousWorkspacesByRoot.get(rootDirectory) ?? [rootDirectory])
+        const native = projectResults.find(result => result.status === 'fulfilled' &&
+          result.value.git && normalizeToForwardSlash(result.value.git.primaryRoot) === rootDirectory)
+        rootToWorkspaces.set(rootDirectory, native?.status === 'fulfilled' && native.value.git
+          ? native.value.git.worktrees.filter(tree => !tree.bare && !tree.prunable).map(tree => normalizeToForwardSlash(tree.path))
+          : previousWorkspacesByRoot.get(rootDirectory) ?? [rootDirectory])
       }
 
       for (const [directory, rootDirectory] of directoryToRoot) {

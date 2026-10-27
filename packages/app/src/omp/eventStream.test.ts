@@ -19,6 +19,7 @@ import { buildPiLiveItems } from './selectors/index.js'
 import * as http from './httpClient.js'
 import { serverStore } from '../store/serverStore'
 import { notificationStore } from '../store/notificationStore'
+import { commandFeedbackStore } from './commandFeedbackStore'
 import * as transport from './transport/index.js'
 
 // Retain the real controller before sibling scenarios install module spies.
@@ -239,6 +240,58 @@ describe('handleSessionsUpdated replacement semantics', () => {
       targetSessionId: 'session-b',
     })
     expect(changedCount).toBe(1)
+  })
+
+  it('same-ID relocation retains Goal and child state and emits metadata only', () => {
+    const page = fakeBranchPage('session-a')
+    piBranchStore.setData('session-a', page)
+    piSessionStateStore.setState('session-a', { goal: { objective: 'native goal' } } as never)
+    ompSubagentStore.applyLifecycle('session-a', { id: 'native-child', parentToolCallId: 'task-a', status: 'started' })
+    const relocated = vi.fn()
+    window.addEventListener('ompiui:session-relocated', relocated)
+    try {
+      handle({ replaced: true, sourceSessionId: 'session-a', targetSessionId: 'session-a', targetCwd: '/relocated' })
+      expect(piBranchStore.getData('session-a')).toBe(page)
+      expect(piSessionStateStore.getState('session-a')).toMatchObject({ goal: { objective: 'native goal' } })
+      expect(ompSubagentStore.getRunsForToolCall('task-a', 'session-a')).toHaveLength(1)
+      expect(replacedEvents).toHaveLength(0)
+      expect(relocated).toHaveBeenCalledTimes(1)
+      expect(changedCount).toBe(1)
+    } finally {
+      window.removeEventListener('ompiui:session-relocated', relocated)
+      ompSubagentStore.clearSession('session-a')
+    }
+  })
+
+  it('cancels source refresh timers and invalidates old target reads without clearing target', async () => {
+    vi.useFakeTimers()
+    const internal = piEventStream as unknown as {
+      branchRefreshTimers: Map<string, number>
+      stateRefreshTimers: Map<string, number>
+      resyncControllers: Map<string, AbortController>
+    }
+    const sourceRefresh = vi.fn()
+    const controller = new AbortController()
+    internal.branchRefreshTimers.set('session-a', window.setTimeout(sourceRefresh, 10))
+    internal.stateRefreshTimers.set('session-a', window.setTimeout(sourceRefresh, 10))
+    internal.resyncControllers.set('session-a', controller)
+    const targetPage = fakeBranchPage('session-b')
+    piBranchStore.setData('session-b', targetPage)
+    const oldBranch = piBranchStore.beginRequest('session-b')
+    const oldState = piSessionStateStore.beginRequest('session-b')
+    try {
+      handle({ replaced: true, sourceSessionId: 'session-a', targetSessionId: 'session-b' })
+      await vi.advanceTimersByTimeAsync(20)
+      expect(sourceRefresh).not.toHaveBeenCalled()
+      expect(controller.signal.aborted).toBe(true)
+      expect(piBranchStore.getData('session-b')).toBe(targetPage)
+      expect(piBranchStore.isRequestCurrent('session-b', oldBranch)).toBe(false)
+      expect(piSessionStateStore.isRequestCurrent('session-b', oldState)).toBe(false)
+    } finally {
+      piBranchStore.clear('session-b')
+      piSessionStateStore.clear('session-b')
+      vi.useRealTimers()
+    }
   })
 })
 
@@ -614,10 +667,10 @@ describe('session configuration and stop synchronization', () => {
 
   it('keeps pending background work active at agent_end until the session settles', () => {
     activity({ 'session-stop': { type: 'busy' } })
-    piSessionStateStore.patchState('session-stop', { hasPendingAsyncWork: true, isIdle: false })
-    event({ type: 'agent_end' })
+    piSessionStateStore.patchState('session-stop', { isStreaming: true, isIdle: false })
+    event({ type: 'agent_end', isTerminal: false, yielded: true, awaitingAsyncWork: true })
     expect(piSessionStateStore.getState('session-stop')).toMatchObject({
-      isStreaming: false, isIdle: false, hasPendingAsyncWork: true,
+      isStreaming: false, isIdle: false, isSettled: false, hasPendingAsyncWork: true,
     })
     expect(activeSessionStore.getBusySessionsSnapshot()).toHaveLength(1)
     event({ type: 'agent_settled' })
@@ -648,5 +701,42 @@ describe('tool_execution_update progress frames', () => {
     const next = { path: 'xd://task', content: '{"tasks":[]}' }
     internal.handlePiEvent('progress-session', { event: { type: 'tool_execution_update', toolCallId: 'call-1', toolName: 'write', args: next } })
     expect(piBranchStore.getData('progress-session')?.client?.toolExecutions?.['call-1']?.call?.arguments).toEqual(next)
+  })
+})
+
+describe('native notices and protocol feedback', () => {
+  afterEach(() => { commandFeedbackStore.reset(); notificationStore.clearAll(); vi.restoreAllMocks() })
+
+  it('keeps native open_url notifications within supported informational severity', () => {
+    notificationStore.clearAll()
+    const internal = piEventStream as unknown as { handleExtensionUiEvent(sessionId: string, event: unknown): void }
+    // Exact supported open_url projection from the official worker bridge; no Node module enters the browser test graph.
+    internal.handleExtensionUiEvent('native-link', { type: 'notify', sessionId: 'native-link', notifyType: 'link', message: '打开链接: https://example.invalid/native-help\nNative link instructions' })
+    const notification = notificationStore.getSnapshot().notifications.find(entry => entry.sessionId === 'native-link')
+    expect(notification).toMatchObject({ type: 'info', target: 'extensions' })
+    expect(notification?.body).toContain('https://example.invalid/native-help')
+    expect(commandFeedbackStore.getSnapshot().sessions['native-link']?.[0]).toMatchObject({ status: 'info', source: 'Extension' })
+  })
+
+  it('retains native severity, raw text, source and protocol context in the owning session', () => {
+    const push = vi.spyOn(notificationStore, 'push').mockImplementation(() => {})
+    const internal = piEventStream as unknown as { handlePiEvent(sessionId: string, payload: unknown): void }
+    for (const level of ['info', 'warning', 'error']) {
+      internal.handlePiEvent('notice-a', { event: { type: 'notice', level, message: `raw ${level}\nlast line\n`, source: 'native-source' }, meta: {} })
+      expect(push).toHaveBeenLastCalledWith(level, 'native-source', `raw ${level}\nlast line\n`, 'notice-a', undefined, { target: 'extensions' })
+    }
+    internal.handlePiEvent('notice-b', { event: { type: 'rpc_frame_error', error: 'original error\n', text: 'suppression context', originalType: 'rpc_chunk' }, meta: {} })
+    expect(commandFeedbackStore.getSnapshot().sessions['notice-b']?.[0]).toMatchObject({ source: 'OMP runtime', status: 'error', message: 'original error\n', originalType: 'rpc_chunk', context: 'suppression context' })
+    expect(commandFeedbackStore.getSnapshot().sessions['notice-a']?.map(entry => entry.status)).toEqual(['error', 'warning', 'info'])
+  })
+
+  it('does not turn extension warnings or informational native output into success', () => {
+    const push = vi.spyOn(notificationStore, 'push').mockImplementation(() => {})
+    const internal = piEventStream as unknown as { handleExtensionUiEvent(sessionId: string, event: unknown): void; handlePiEvent(sessionId: string, payload: unknown): void }
+    internal.handleExtensionUiEvent('notice-a', { type: 'notify', sessionId: 'notice-a', notifyType: 'warning', message: 'extension warning' })
+    expect(commandFeedbackStore.getSnapshot().sessions['notice-a']?.[0]).toMatchObject({ status: 'warning', source: 'Extension', message: 'extension warning' })
+    expect(push).toHaveBeenLastCalledWith('warning', 'Extension', 'extension warning', 'notice-a', undefined, { target: 'extensions' })
+    internal.handlePiEvent('notice-a', { event: { type: 'command_output', text: 'Usage only' }, meta: {} })
+    expect(push).toHaveBeenLastCalledWith('info', 'Native command', 'Usage only', 'notice-a', undefined, { target: 'extensions' })
   })
 })

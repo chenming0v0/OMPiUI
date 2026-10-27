@@ -16,6 +16,7 @@ async function sessionFixture(t: TestContext) {
   const session = Reflect.construct(OmpRpcSession, []) as OmpRpcSession
   const internal = session as unknown as {
     client: unknown
+    ompVersion: string | null
     extensionUi: OmpExtensionUiBridge
     refreshIdentity(): Promise<void>
     handleFrame(frame: OmpRpcFrame): void
@@ -35,11 +36,14 @@ async function sessionFixture(t: TestContext) {
       if (override) return { type: "response", success: true, command: command.type, ...override }
       if (["new_session", "switch_session"].includes(String(command.type))) {
         native.sessionId = `replacement-${command.type}`
+        native.goal = null;
       }
+      if (command.type === "goal") return { type: "response", success: true, command: "goal", data: { state: native.goal ?? null } };
       const data = command.type === "get_state" ? structuredClone(native)
         : command.type === "get_entries" ? { entries: structuredClone(entries), leafId: native.leafId === undefined ? entries.at(-1)?.id ?? null : native.leafId }
-          : command.type === "get_available_thinking_levels" ? { levels: ["off", "high"] }
-            : {}
+          : command.type === "get_available_commands" ? { commands: [] }
+            : command.type === "get_available_thinking_levels" ? { levels: ["off", "high"] }
+              : {}
       return { type: "response", success: true, command: command.type, data }
     },
     async requestRuntime(operation: string, args: JsonObject = {}) {
@@ -70,16 +74,101 @@ async function sessionFixture(t: TestContext) {
     async close() {},
   })
   internal.client = rpc
+  internal.ompVersion = '18.12.6'
   await internal.refreshIdentity()
   internal.extensionUi.bind(session.getSessionId(), response => rpc.writeExtensionUiResponse(response))
   t.after(() => session.dispose())
   return {
     session, commands, responses, native, rpc, entries,
-    frame: (frame: OmpRpcFrame) => internal.handleFrame(frame),
+    frame: (frame: OmpRpcFrame) => {
+      if (frame.type === "goal_updated") native.goal = frame.state ?? (frame.goal ? { enabled: (frame.goal as JsonObject).status === "active", mode: "active", goal: frame.goal } : null);
+      internal.handleFrame(frame)
+    },
   }
 }
 
 const image = (data: string): ImageInput => ({ type: "image", data, mimeType: "image/png" })
+
+describe("OmpRpcSession worktree relocation admission", () => {
+  it("rejects every immediate submission throughout move and leaves explicit Stop available", async t => {
+    const { session, rpc, commands, native } = await sessionFixture(t)
+    native.isStreaming = false
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    rpc.onRequest = async command => {
+      if (command.type === "worktreeState") return { data: { ...native, sessionFileReady: false } }
+      if (command.type === "moveSession") {
+        entered.resolve()
+        await release.promise
+        native.cwd = path.join(process.cwd(), "target-worktree")
+        return { data: { ...native, cancelled: false } }
+      }
+    }
+    const move = session.moveSession("target-worktree")
+    await entered.promise
+    const before = commands.length
+    for (const submit of [
+      () => session.sendUserMessage("draft"),
+      () => session.sendUserMessage("/extension-command"),
+      () => session.prompt("draft"),
+      () => session.steer("draft"),
+      () => session.followUp("draft"),
+      () => session.sendQueuedMessage("steering", 0, "queued-id"),
+      () => session.abortAndPrompt("draft"),
+      () => session.moveSession("another-worktree"),
+    ]) await assert.rejects(submit(), { code: "SESSION_BUSY" })
+    assert.equal(commands.length, before)
+    await session.abort()
+    assert.equal(commands.some(command => command.type === "abort"), true)
+    release.resolve()
+    const receipt = await move
+    assert.equal(receipt.targetSessionId, "old-session")
+    assert.equal(receipt.targetCwd, native.cwd)
+    await session.sendUserMessage("after relocation")
+    assert.equal(commands.some(command => command.type === "submitUserMessage" && command.text === "after relocation"), true)
+  })
+
+  it("rejects relocation while a preexisting submission is awaiting native admission", async t => {
+    const { session, rpc, commands, native } = await sessionFixture(t)
+    native.isStreaming = false
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    rpc.onRequest = async command => {
+      if (command.type !== "submitUserMessage") return
+      entered.resolve()
+      await release.promise
+      return { data: { accepted: true } }
+    }
+    const submission = session.sendUserMessage("source turn")
+    await entered.promise
+    await assert.rejects(session.moveSession("target-worktree"), { code: "SESSION_BUSY" })
+    assert.equal(commands.some(command => command.type === "worktreeState" || command.type === "moveSession"), false)
+    release.resolve()
+    await submission
+  })
+
+  it("rejects completed async work awaiting delivery even with no streaming turn", async t => {
+    const { session, native, commands } = await sessionFixture(t)
+    native.isStreaming = false
+    native.isSettled = false
+    native.hasPendingAsyncWork = true
+    await session.getState()
+    await assert.rejects(session.moveSession("target-worktree"), { code: "SESSION_BUSY" })
+    assert.equal(commands.some(command => command.type === "worktreeState" || command.type === "moveSession"), false)
+    assert.equal(session.getSessionId(), "old-session")
+    assert.equal(session.getCwd(), process.cwd())
+  })
+
+  it("reopens admission after a failed move without changing identity", async t => {
+    const { session, rpc, native } = await sessionFixture(t)
+    native.isStreaming = false
+    rpc.onRequest = command => command.type === "worktreeState" ? { data: { ...native, sessionFileReady: false } }
+      : command.type === "moveSession" ? { success: false, error: "native relocation failed" } : undefined
+    await assert.rejects(session.moveSession("target-worktree"), /native relocation failed/)
+    assert.equal(session.getSessionId(), "old-session")
+    await session.sendUserMessage("source retry")
+  })
+})
 
 describe("OmpRpcSession native subagent progress", () => {
   it("tracks progress.id and keeps the parent task identity in refreshed state", async t => {
@@ -147,6 +236,28 @@ describe("OmpRpcSession authoritative lifecycle", () => {
     frame({ type: "session_settled" })
     assert.equal(activity.at(-1), null)
     assert.equal((await session.getState()).isSettled, true)
+  })
+
+  it('projects a yielded async parent without treating its ACK as settled', async t => {
+    const { session, frame, native } = await sessionFixture(t)
+    const activity: unknown[] = []
+    session.onActivity(value => activity.push(value))
+    frame({ type: 'agent_start' })
+    native.isStreaming = false
+    native.isSettled = false
+    native.hasPendingAsyncWork = true
+    frame({ type: 'agent_end', isTerminal: false, yielded: true, awaitingAsyncWork: true })
+    // Inspect the synchronous shadow before the asynchronous native readback.
+    const shadow = session as unknown as { currentStreaming: boolean }
+    assert.equal(shadow.currentStreaming, false)
+    const pending = await session.getState()
+    assert.equal(pending.hasPendingAsyncWork, true)
+    assert.equal(pending.isIdle, false)
+    assert.deepEqual(activity.at(-1), { type: 'busy' })
+    native.hasPendingAsyncWork = false
+    native.isSettled = true
+    frame({ type: 'session_settled' })
+    assert.equal(activity.at(-1), null)
   })
 
   it('reports no executing activity when Stop retains only queued messages', async t => {
@@ -320,7 +431,7 @@ describe("OmpRpcSession authoritative lifecycle", () => {
 
   it("keeps goal and subagents on cancelled replacement and clears both after success", async t => {
     const { session, frame, rpc } = await sessionFixture(t)
-    await session.manageGoal({ op: "set", objective: "old goal" })
+    await session.manageGoal({ op: "create", objective: "old goal" })
     await session.manageGoal({ op: "pause" })
     frame({ type: "goal_updated", goal: { id: "goal-old", objective: "old goal", status: "paused", tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1, updatedAt: 1 } })
     frame({ type: "subagent_lifecycle", payload: { id: "old-agent", status: "started" } })
@@ -347,6 +458,23 @@ describe("OmpRpcSession authoritative lifecycle", () => {
     rpc.onRequest = command => command.type === "navigateTree" ? { data: { cancelled: true } } : undefined
     assert.equal((await session.navigateTree("missing")).cancelled, true)
     assert.equal((await session.getBranchPage(undefined, 100, 100000)).items[0]!.id, "assistant")
+  })
+
+  it('refuses inclusive fork on older native versions without issuing a whole-session fork', async t => {
+    const { session, commands } = await sessionFixture(t)
+    // The fixture owns this otherwise-private native version field.
+    const internal = session as unknown as { ompVersion: string }
+    internal.ompVersion = '18.3.1'
+    await assert.rejects(session.fork('assistant', 'at'), { code: 'CAPABILITY_DISABLED' })
+    assert.equal(commands.some(command => command.type === 'fork'), false)
+    assert.equal(session.getSessionId(), 'old-session')
+  })
+
+  it('rejects a fork receipt that retains the source identity', async t => {
+    const { session, rpc } = await sessionFixture(t)
+    rpc.onRequest = command => command.type === 'fork' ? { data: { cancelled: false, sessionFile: 'source.jsonl', leafId: null } } : undefined
+    await assert.rejects(session.fork('user', 'before'), /invalid committed identity/)
+    assert.equal(session.getSessionId(), 'old-session')
   })
 
   for (const operation of ["navigateTree", "fork"] as const) {
@@ -412,7 +540,7 @@ describe("OmpRpcSession authoritative lifecycle", () => {
       { id: "answer", type: "message", parentId: "user", message: { role: "assistant", content: [{ type: "text", text: "answer" }] } })
     await session.ensureSynced()
     frame({ type: "agent_start" })
-    await session.manageGoal({ op: "set", objective: "keep goal" })
+    await session.manageGoal({ op: "create", objective: "keep goal" })
     frame({ type: "goal_updated", goal: { id: "goal-keep", objective: "keep goal", status: "active", tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1, updatedAt: 1 } })
     frame({ type: "subagent_lifecycle", payload: { id: "reviewer", status: "started" } })
     frame({ type: "extension_ui_request", method: "input", id: "dialog", title: "Keep" })
@@ -706,53 +834,29 @@ describe("OmpRpcSession idle reporting for host recycling", () => {
 describe("OmpRpcSession official goal lifecycle (#354)", () => {
   const officialGoal = (overrides: JsonObject = {}): JsonObject => ({
     id: "goal-1", objective: "Finish the task", status: "active",
-    tokensUsed: 0, timeUsedSeconds: 0, createdAt: 1, updatedAt: 1, ...overrides,
+    tokensUsed: 42, tokenBudget: 100, timeUsedSeconds: 3, createdAt: 1, updatedAt: 2, ...overrides,
   })
-
-  it("proxies set to create without a live goal and replace with one; rejects images", async t => {
-    const { session, commands, frame } = await sessionFixture(t)
-    await session.manageGoal({ op: "set", objective: "Finish the task" })
-    assert.deepEqual(commands.find(command => command.type === "goal"), { type: "goal", op: "create", objective: "Finish the task" })
-    // 官方 goal_updated 帧负责镜像；没有图片附件支持
-    frame({ type: "goal_updated", goal: officialGoal() })
-    assert.equal(((await session.getState()).goal as JsonObject).objective, "Finish the task")
-    await session.manageGoal({ op: "set", objective: "New objective" })
-    assert.deepEqual(commands.filter(command => command.type === "goal").at(-1), { type: "goal", op: "replace", objective: "New objective" })
-    await assert.rejects(
-      session.manageGoal({ op: "set", objective: "图片目标", images: [image("AA==")] }),
-      /does not support image attachments/,
-    )
+  it("projects native get_state goal mode and actual usage instead of cached events", async t => {
+    const { session, native, frame } = await sessionFixture(t)
+    frame({ type: "goal_updated", goal: officialGoal({ objective: "stale event" }) })
+    native.goal = { enabled: false, mode: "exiting", reason: "completed", goal: officialGoal({ status: "complete" }) }
+    const state = await session.getState()
+    assert.deepEqual(state.goalState, native.goal)
+    assert.deepEqual(state.goal, (native.goal as JsonObject).goal)
   })
-
-  it("proxies pause/resume/drop and mirrors official goal_updated frames", async t => {
-    const { session, commands, frame } = await sessionFixture(t)
-    frame({ type: "goal_updated", goal: officialGoal() })
-    await session.manageGoal({ op: "pause" })
-    assert.deepEqual(commands.find(command => command.type === "goal"), { type: "goal", op: "pause" })
-    await session.manageGoal({ op: "resume" })
-    await session.manageGoal({ op: "drop" })
-    assert.deepEqual(commands.filter(command => command.type === "goal").map(command => command.op), ["pause", "resume", "drop"])
-    // 官方 drop 先广播 dropped 再清空
-    frame({ type: "goal_updated", goal: officialGoal({ status: "dropped" }) })
-    assert.equal(((await session.getState()).goal as JsonObject).status, "dropped")
-    frame({ type: "goal_updated", goal: null })
-    assert.equal((await session.getState()).goal, null)
+  it("rejects invalid goal inputs before native mutation", async t => {
+    const { session, commands } = await sessionFixture(t)
+    const withImages = { op: "create", objective: "Image goal", images: [image("AA==")] } as Parameters<typeof session.manageGoal>[0]
+    await assert.rejects(session.manageGoal(withImages), { code: "INVALID_REQUEST" })
+    await assert.rejects(session.manageGoal({ op: "budget", tokenBudget: 0 }), { code: "INVALID_REQUEST" })
+    await assert.rejects(session.manageGoal({ op: "budget" }), { code: "INVALID_REQUEST" })
+    assert.equal(commands.filter(command => command.type === "goal").length, 0)
   })
-
-  it("loads the official goal snapshot after a session replacement", async t => {
-    const { session, rpc } = await sessionFixture(t)
-    rpc.onRequest = command => command.type === "goal" && command.op === "snapshot"
-      ? { data: { state: { enabled: true, mode: "active", goal: officialGoal({ objective: "restored goal" }) } } }
-      : undefined
+  it("does not restore private goal state or submit a goal prompt on replacement", async t => {
+    const { session, commands } = await sessionFixture(t)
     await session.newSession()
-    assert.equal(((await session.getState()).goal as JsonObject).objective, "restored goal")
-  })
-
-  it("keeps the mirror empty when the goal bridge is unavailable", async t => {
-    const { session, rpc } = await sessionFixture(t)
-    rpc.onRequest = command => command.type === "goal" ? { success: false, error: "bridge unavailable" } : undefined
-    await session.newSession()
-    assert.equal((await session.getState()).goal, null)
+    assert.equal(commands.some(command => command.type === "goal"), false)
+    assert.equal(commands.some(command => command.type === "prompt"), false)
   })
 })
 
@@ -774,5 +878,78 @@ describe("OmpRpcSession configuration reporting", () => {
     }))
     await assert.rejects(session.setModel("custom", "wrong"), /unsupported selection/)
     await assert.rejects(session.setThinkingLevel("wrong"), /unsupported selection/)
+  })
+})
+
+describe("OmpRpcSession identity epochs (#361)", () => {
+  it("expires a source state read instead of returning target resources", async t => {
+    const { session, rpc, native } = await sessionFixture(t)
+    const admitted = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    let delayed = false
+    rpc.onRequest = command => {
+      if (command.type !== "get_state" || delayed) return
+      delayed = true
+      const source = structuredClone(native)
+      admitted.resolve()
+      return release.promise.then(() => ({ data: source }))
+    }
+    const reading = session.getState()
+    const expired = assert.rejects(reading, error => error instanceof Error && "code" in error && error.code === "SESSION_REPLACED")
+    await admitted.promise
+    await session.newSession()
+    release.resolve()
+    await expired
+    assert.equal((await session.getState()).sessionId, "replacement-new_session")
+  })
+
+
+
+  it("clears paused subagent buffers without emitting source frames to target", async t => {
+    const { session, frame } = await sessionFixture(t)
+    const events: JsonObject[] = []
+    session.onSubagentFrame(event => events.push(event))
+    session.setOutputPaused(true)
+    frame({ type: "subagent_lifecycle", payload: { id: "source-agent", status: "started" } })
+    frame({ type: "subagent_progress", payload: { id: "source-agent", progress: { id: "source-agent", status: "running" } } })
+    await session.newSession()
+    session.setOutputPaused(false)
+    assert.deepEqual(events, [])
+    assert.deepEqual((await session.getState()).subagents, [])
+  })
+
+  it("returns the committed target when a subsequent state projection fails", async t => {
+    const { session, rpc, frame } = await sessionFixture(t)
+    frame({ type: "goal_updated", goal: { id: "source-goal", objective: "source" } })
+    rpc.onRequest = command => command.type === "get_state"
+      ? { success: false, error: "projection read failed" } : undefined
+    const result = await session.newSession()
+    assert.equal(result.cancelled, false)
+    assert.equal(result.targetSessionId, "replacement-new_session")
+    assert.match(String(result.projectionError), /projection read failed/)
+    assert.equal(session.getSessionId(), "replacement-new_session")
+    rpc.onRequest = () => undefined
+    assert.equal((await session.getState()).goal, null)
+  })
+
+  it("does not wait on an old abort response before submitting to target", { timeout: 5000 }, async t => {
+    const { session, rpc, commands } = await sessionFixture(t)
+    const admitted = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    rpc.onRequest = command => {
+      if (command.type !== "abort") return
+      admitted.resolve()
+      return release.promise.then(() => ({ data: {} }))
+    }
+    const oldAbort = session.abort()
+    await admitted.promise
+    await session.newSession()
+    try {
+      await session.sendUserMessage("target message")
+      assert.ok(commands.some(command => command.type === "submitUserMessage" && command.text === "target message"))
+    } finally {
+      release.resolve()
+      await oldAbort
+    }
   })
 })

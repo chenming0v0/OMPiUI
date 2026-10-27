@@ -1,9 +1,10 @@
-import { forwardRef, type ComponentProps } from 'react'
+import { forwardRef, type ComponentProps, type ReactNode } from 'react'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import i18n from '../../i18n'
 import type { Model, Api } from '../../omp/vendor/pi-ai'
-import { getModelVariantPref, setPreferredModelKey } from '../../utils/modelUtils'
+import { getModelVariantPref, saveModelVariantPref, setPreferredModelKey } from '../../utils/modelUtils'
+import { serverStore, LOCAL_SERVER_ID } from '../../store/serverStore'
 import { InputToolbar } from '../chat/input/InputToolbar'
 import { PiChatPane } from './PiChatPane'
 
@@ -81,14 +82,15 @@ vi.mock('../chat/useFolderProjectDrop.js', () => ({ useFolderProjectDrop: () => 
 vi.mock('../chat/index.js', () => ({
   ChatArea: forwardRef(() => null),
   Header: () => null,
-  InputBox: forwardRef((props: Pick<ComponentProps<typeof InputToolbar>, 'models' | 'onModelChange' | 'variants' | 'selectedVariant' | 'onVariantChange'>, _ref) => (
+  InputBox: forwardRef((props: Pick<ComponentProps<typeof InputToolbar>, 'models' | 'onModelChange' | 'variants' | 'variantsDisabled' | 'selectedVariant' | 'onVariantChange'> & { composerNotice?: ReactNode }, _ref) => (
     <div>
+      {props.composerNotice}
       {props.models?.map(model => (
         <button key={model.id} type="button" onClick={() => props.onModelChange?.(`${model.provider}:${model.id}`, model)}>
           Select {model.name}
         </button>
       ))}
-      <InputToolbar variants={props.variants} selectedVariant={props.selectedVariant} onVariantChange={props.onVariantChange} onFilesSelected={() => {}} canSend={false} onSend={() => {}} />
+      <InputToolbar variants={props.variants} variantsDisabled={props.variantsDisabled} selectedVariant={props.selectedVariant} onVariantChange={props.onVariantChange} onFilesSelected={() => {}} canSend={false} onSend={() => {}} />
     </div>
   )),
 }))
@@ -121,6 +123,7 @@ function expectMenuChoices(menu: HTMLElement, choices: string[]) {
 
 describe('PiChatPane effort controls', () => {
   beforeEach(async () => {
+    serverStore.setActiveServer(LOCAL_SERVER_ID)
     localStorage.clear()
     vi.clearAllMocks()
     await i18n.changeLanguage('en')
@@ -167,25 +170,110 @@ describe('PiChatPane effort controls', () => {
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
   })
 
-  it.each([{ levels: ['off'] }, { levels: ['minimal', 'medium'] }])('uses authoritative runtime levels $levels instead of catalog choices', async ({ levels }) => {
-    mocks.state!.supportedThinkingLevels = levels
+  it('disables the effort selector for authoritative Off-only models', () => {
+    mocks.state!.supportedThinkingLevels = ['off']
+    mocks.state!.thinkingLevel = 'off'
+    render(<PiChatPane paneId="effort-off" sessionId="native-session" />)
+    expect(screen.getByRole('button', { name: 'Off' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Off' }))
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    expect(mocks.setThinking).not.toHaveBeenCalled()
+  })
+
+  it('uses authoritative runtime levels instead of catalog choices', async () => {
+    mocks.state!.supportedThinkingLevels = ['minimal', 'medium']
+    mocks.state!.thinkingLevel = 'minimal'
     render(<PiChatPane paneId="effort-native" sessionId="native-session" />)
-    const menu = await openEffortMenu()
-    expectMenuChoices(menu, levels.map(level => level.charAt(0).toUpperCase() + level.slice(1)))
+    fireEvent.click(screen.getByRole('button', { name: 'Minimal' }))
+    const menu = await screen.findByRole('menu')
+    expectMenuChoices(menu, ['Minimal', 'Medium'])
     expect(within(menu).queryByRole('menuitemradio', { name: 'Max' })).not.toBeInTheDocument()
   })
 
-  it('uses the pending model catalog while the previous runtime levels remain authoritative', async () => {
+  it('does not expose the old effort or allow effort writes while a model switch is pending', async () => {
     mocks.state!.supportedThinkingLevels = []
     const pending = Promise.withResolvers<void>()
     mocks.setModel.mockReturnValue(pending.promise)
     const view = render(<PiChatPane paneId="effort-pending" sessionId="native-session" />)
     fireEvent.click(screen.getByRole('button', { name: 'Select next-model' }))
-    const menu = await openEffortMenu()
-    expectMenuChoices(menu, ['Low', 'Medium'])
+    const trigger = screen.getByRole('button', { name: i18n.t('chat:inputToolbar.default') })
+    expect(trigger).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Low' })).not.toBeInTheDocument()
+    fireEvent.click(trigger)
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    expect(mocks.setThinking).not.toHaveBeenCalled()
     expect(mocks.setModel).toHaveBeenCalledWith('native-session', 'openai', 'next-model')
     await act(async () => { pending.resolve() })
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Low' })).not.toBeInTheDocument())
     view.unmount()
+  })
+
+  it('drops a pending model missing from the refreshed catalog instead of using the previous ladder', () => {
+    mocks.setModel.mockReturnValue(new Promise(() => {}))
+    const view = render(<PiChatPane paneId="effort-missing" sessionId="native-session" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Select next-model' }))
+    mocks.models = [mocks.models[0]]
+    view.rerender(<PiChatPane paneId="effort-missing" sessionId="native-session" />)
+    expect(screen.queryByRole('button', { name: 'Low' })).not.toBeInTheDocument()
+  })
+
+  it('reads the selected home model preference when returning from a session', async () => {
+    saveModelVariantPref('openai:preview-model', 'max')
+    saveModelVariantPref('openai:next-model', 'medium')
+    const view = render(<PiChatPane paneId="effort-home-return" sessionId={null} />)
+    view.rerender(<PiChatPane paneId="effort-home-return" sessionId="native-session" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Select next-model' }))
+    await waitFor(() => expect(mocks.refreshState).toHaveBeenCalled())
+    view.rerender(<PiChatPane paneId="effort-home-return" sessionId={null} />)
+    expect(screen.getByRole('button', { name: 'Medium' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Max' })).not.toBeInTheDocument()
+  })
+
+  it('reads the new server home preferences instead of carrying the previous server model and effort', async () => {
+    saveModelVariantPref('openai:preview-model', 'max')
+    const nextServer = serverStore.addServer({ name: 'Other effort server', url: 'http://other-effort.test' })
+    const view = render(<PiChatPane paneId="effort-home-server" sessionId={null} />)
+    try {
+      expect(screen.getByRole('button', { name: 'Max' })).toBeInTheDocument()
+      await act(async () => { serverStore.setActiveServer(nextServer.id) })
+      view.rerender(<PiChatPane paneId="effort-home-server" sessionId={null} />)
+      expect(screen.queryByRole('button', { name: 'Max' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+      await act(async () => { serverStore.setActiveServer(LOCAL_SERVER_ID) })
+      expect(screen.getByRole('button', { name: 'Max' })).toBeInTheDocument()
+    } finally {
+      view.unmount()
+      serverStore.setActiveServer(LOCAL_SERVER_ID)
+      serverStore.removeServer(nextServer.id)
+    }
+  })
+
+  it('does not display an unsupported persisted home effort as the current level', () => {
+    saveModelVariantPref('openai:preview-model', 'xhigh')
+    render(<PiChatPane paneId="effort-home-stale" sessionId={null} />)
+    expect(screen.getByRole('button', { name: i18n.t('chat:inputToolbar.default') })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Xhigh' })).not.toBeInTheDocument()
+  })
+
+  it('shows the original effort error and restores the authoritative current level', async () => {
+    mocks.setThinking.mockRejectedValue(new Error('Native effort write rejected'))
+    render(<PiChatPane paneId="effort-error" sessionId="native-session" />)
+    const menu = await openEffortMenu()
+    fireEvent.click(within(menu).getByRole('menuitemradio', { name: 'Max' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Native effort write rejected')
+    expect(screen.getByRole('button', { name: 'Low' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Max' })).not.toBeInTheDocument()
+  })
+
+  it('does not publish a late effort error into a different session', async () => {
+    const pending = Promise.withResolvers<void>()
+    mocks.setThinking.mockReturnValue(pending.promise)
+    const view = render(<PiChatPane paneId="effort-late" sessionId="native-session" />)
+    const menu = await openEffortMenu()
+    fireEvent.click(within(menu).getByRole('menuitemradio', { name: 'Max' }))
+    view.rerender(<PiChatPane paneId="effort-late" sessionId="other-session" />)
+    await act(async () => { pending.reject(new Error('Late native failure')) })
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Low' })).toBeInTheDocument()
   })
 })

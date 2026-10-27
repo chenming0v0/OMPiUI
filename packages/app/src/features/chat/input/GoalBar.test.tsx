@@ -2,73 +2,74 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { GoalBar } from './GoalBar'
 
-const { manageGoal, waitCommand, state } = vi.hoisted(() => ({
-  manageGoal: vi.fn(), waitCommand: vi.fn(), state: { goal: null as unknown },
+const { manageGoal, waitCommand, refresh, state } = vi.hoisted(() => ({
+  manageGoal: vi.fn(), waitCommand: vi.fn(), refresh: vi.fn(), state: { goalState: null as unknown },
 }))
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }))
 vi.mock('../../../omp/transport/index.js', () => ({ manageSessionGoal: manageGoal, waitHostCommand: waitCommand }))
-vi.mock('../../../omp/state/index.js', () => ({ piSessionStateStore: {
-  subscribe: () => () => {}, getState: () => state,
-} }))
+vi.mock('../../../omp/controllers/index.js', () => ({ refreshPiSessionState: refresh }))
+vi.mock('../../../omp/state/index.js', () => ({ piSessionStateStore: { subscribe: () => () => {}, getState: () => state } }))
 
-function pasteImage() {
-  fireEvent.paste(screen.getByRole('textbox'), { clipboardData: { items: [
-    { kind: 'file', getAsFile: () => new File(['image'], 'reference.png', { type: 'image/png' }) },
-  ] } })
-}
+const nativeGoal = (status = 'active') => ({ enabled: status === 'active', mode: 'active', goal: {
+  id: 'native-id', objective: 'Native objective', status, tokensUsed: 123, tokenBudget: 1000,
+  timeUsedSeconds: 7, createdAt: 1, updatedAt: 1,
+} })
 
-describe('goal image editing', () => {
+describe('native goal UI', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    state.goal = null
+    state.goalState = null
     manageGoal.mockResolvedValue({ id: 'goal-command' })
     waitCommand.mockResolvedValue({})
+    refresh.mockResolvedValue(undefined)
   })
-
-  it.each([false, true])('pastes, previews, removes and submits images in compact=%s', async isCompact => {
-    const onSetGoal = vi.fn().mockResolvedValue(true)
-    render(<GoalBar isCompact={isCompact} supportsImages onSetGoal={onSetGoal} />)
+  it.each([false, true])('rejects goal images without a shadow attachment in compact=%s', isCompact => {
+    render(<GoalBar sessionId="session" isCompact={isCompact} />)
     fireEvent.click(screen.getByText('goalBar.setGoal'))
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: '修复图片中的布局' } })
-    pasteImage()
-    expect(screen.getByRole('button', { name: 'common:save' })).toBeDisabled()
-    await screen.findByRole('img', { name: 'goalBar.imageAlt' })
-    fireEvent.click(screen.getByRole('button', { name: 'goalBar.removeImage' }))
-    expect(screen.queryByRole('img')).toBeNull()
-    pasteImage()
-    await screen.findByRole('img', { name: 'goalBar.imageAlt' })
-    fireEvent.click(screen.getByRole('button', { name: 'common:save' }))
-    await waitFor(() => expect(onSetGoal).toHaveBeenCalledWith('修复图片中的布局', [
-      { type: 'image', mimeType: 'image/png', data: 'aW1hZ2U=' },
-    ]))
-    await waitFor(() => expect(screen.queryByRole('textbox')).toBeNull())
-  })
-
-  it('sends images through the existing-session command and preserves the draft on failure', async () => {
-    waitCommand.mockRejectedValue(new Error('failed'))
-    render(<GoalBar sessionId="session" isCompact={false} supportsImages />)
-    fireEvent.click(screen.getByText('goalBar.setGoal'))
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: '修复截图' } })
-    pasteImage()
-    await screen.findByRole('img', { name: 'goalBar.imageAlt' })
-    fireEvent.click(screen.getByRole('button', { name: 'common:save' }))
-    await screen.findByRole('alert')
-    expect(manageGoal).toHaveBeenCalledWith('session', 'set', '修复截图', undefined, [
-      { type: 'image', mimeType: 'image/png', data: 'aW1hZ2U=' },
-    ])
-    expect(screen.getByRole('textbox')).toHaveValue('修复截图')
-    expect(screen.getByRole('img', { name: 'goalBar.imageAlt' })).toBeInTheDocument()
-  })
-
-  it('restores stored goal images when editing and reports unsupported image input', () => {
-    state.goal = { id: 'goal', objective: '原目标', status: 'paused', images: [{ type: 'image', data: 'aW1hZ2U=', mimeType: 'image/png' }] }
-    render(<GoalBar sessionId="session" isCompact={false} supportsImages={false} />)
-    fireEvent.click(screen.getByText('原目标'))
-    expect(screen.getByRole('img', { name: 'goalBar.imageAlt' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'common:save' })).toBeDisabled()
-    fireEvent.click(screen.getByRole('button', { name: 'goalBar.removeImage' }))
-    pasteImage()
+    fireEvent.paste(screen.getByRole('textbox', { name: 'goalBar.objective' }), { clipboardData: { items: [{ kind: 'file', type: 'image/png' }] } })
     expect(screen.getByRole('alert')).toHaveTextContent('goalBar.imagesUnsupported')
     expect(screen.queryByRole('img')).toBeNull()
+    expect(manageGoal).not.toHaveBeenCalled()
+  })
+  it('creates with native token budget and preserves the draft on actual command failure', async () => {
+    waitCommand.mockRejectedValue(new Error('native rejected objective'))
+    render(<GoalBar sessionId="session" isCompact={false} />)
+    fireEvent.click(screen.getByText('goalBar.setGoal'))
+    fireEvent.change(screen.getByRole('textbox', { name: 'goalBar.objective' }), { target: { value: 'Fix layout' } })
+    fireEvent.change(screen.getByRole('textbox', { name: 'goalBar.tokenBudget' }), { target: { value: '500' } })
+    fireEvent.click(screen.getByRole('button', { name: 'common:save' }))
+    await screen.findByRole('alert')
+    expect(manageGoal).toHaveBeenCalledWith('session', 'create', { objective: 'Fix layout', tokenBudget: 500 })
+    expect(screen.getByRole('textbox', { name: 'goalBar.objective' })).toHaveValue('Fix layout')
+    expect(screen.getByRole('alert')).toHaveTextContent('native rejected objective')
+  })
+  it('projects real usage/time and adjusts budget without replacing the goal', async () => {
+    state.goalState = nativeGoal('paused')
+    render(<GoalBar sessionId="session" isCompact={false} />)
+    expect(screen.getByText(/877/)).toBeInTheDocument()
+    fireEvent.click(screen.getByText(/Native objective/))
+    expect(screen.getByText('native-id')).toBeInTheDocument()
+    expect(screen.getByText('7s')).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'goalBar.objective' })).toBeDisabled()
+    fireEvent.change(screen.getByRole('textbox', { name: 'goalBar.tokenBudget' }), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'common:save' }))
+    await waitFor(() => expect(manageGoal).toHaveBeenCalledWith('session', 'budget', { clearBudget: true }))
+  })
+  it('uses explicit completion and read-only refresh, not a get that opens a writer', async () => {
+    state.goalState = nativeGoal()
+    render(<GoalBar sessionId="session" isCompact={false} />)
+    fireEvent.click(screen.getByRole('button', { name: 'goalBar.refresh' }))
+    await waitFor(() => expect(refresh).toHaveBeenCalledWith('session'))
+    expect(manageGoal).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'goalBar.completeAction' }))
+    await waitFor(() => expect(manageGoal).toHaveBeenCalledWith('session', 'complete', {}))
+  })
+  it('prevents invalid token budgets from reaching the native runtime', () => {
+    render(<GoalBar sessionId="session" isCompact={false} />)
+    fireEvent.click(screen.getByText('goalBar.setGoal'))
+    fireEvent.change(screen.getByRole('textbox', { name: 'goalBar.objective' }), { target: { value: 'objective' } })
+    fireEvent.change(screen.getByRole('textbox', { name: 'goalBar.tokenBudget' }), { target: { value: '0' } })
+    expect(screen.getByRole('button', { name: 'common:save' })).toBeDisabled()
+    expect(screen.getByRole('alert')).toHaveTextContent('goalBar.invalidBudget')
   })
 })

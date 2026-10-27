@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { MaximizeIcon, MinimizeIcon } from '../../../../components/Icons'
+import { CopyButton } from '../../../../components/ui'
 import { useFullscreen } from '../../../../contexts'
 import { useSyntaxHighlight } from '../../../../hooks/useSyntaxHighlight'
 import { useResponsiveMaxHeight } from '../../../../hooks/useResponsiveMaxHeight'
@@ -31,7 +32,7 @@ export function BashRenderer({ execution, partKey, data, onFullscreenChange }: T
   const command = data.input?.trim()
   // 运行中优先显示 Pi 流式推送的实时输出（partialResult 累积文本）
   const liveOutput = useLiveToolOutput(execution.call.id)
-  const output = data.output?.trim() ?? liveOutput?.trim()
+  const output = data.output ?? liveOutput
   const cwd = data.cwd?.trim()
   const exitCode = data.exitCode
   const maxHeight = useResponsiveMaxHeight()
@@ -78,6 +79,8 @@ export function BashRenderer({ execution, partKey, data, onFullscreenChange }: T
           isFullscreen
           onToggleFullscreen={handleCloseFullscreen}
           exitCodeLabel={exitCode !== undefined ? t('contentBlock.exitCode', { code: exitCode }) : undefined}
+          truncated={data.truncated}
+          fullOutputPath={data.fullOutputPath}
         />
       </div>
     ),
@@ -85,6 +88,8 @@ export function BashRenderer({ execution, partKey, data, onFullscreenChange }: T
       command,
       cwd,
       data.error,
+      data.truncated,
+      data.fullOutputPath,
       exitCode,
       handleCloseFullscreen,
       hasError,
@@ -216,11 +221,12 @@ function TerminalSurface({
       >
         <div className="flex min-w-0 items-baseline gap-2">
           {cwd && <WorkingDirectoryPrompt cwd={cwd} />}
+          {(outputKey || error) && <CopyButton text={error || outputKey} position="static" className="ml-auto" />}
           {onToggleFullscreen && (
             <button
               type="button"
               onClick={onToggleFullscreen}
-              className="ml-auto inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-500 transition-colors hover:bg-bg-200/60 hover:text-text-100"
+              className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-500 transition-colors hover:bg-bg-200/60 hover:text-text-100"
               title={fullscreenLabel}
               aria-label={fullscreenLabel}
             >

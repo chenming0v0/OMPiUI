@@ -183,4 +183,28 @@ describe('selectPiTimelineItemsCached streaming (items identity)', () => {
     expect(items2.length).toBe(2)
     expect((items2[1] as { message: { content: { text: string }[] } }).message.content[0]?.text).toBe('Hello')
   })
+
+  it('updates orphan call evidence and merges exactly once through cached live and paged ownership', () => {
+    const call = { type: 'toolCall' as const, id: 'orphan-cached', name: 'read', arguments: { path: 'actual.txt' } }
+    const owner = rawEntry('owner-cached', 2, 'assistant')
+    if (owner.message.role !== 'assistant') throw new Error('Expected assistant fixture')
+    owner.message = { ...owner.message, content: [call] }
+    const result: SessionMessageEntry = { type: 'message', id: 'result-cached', parentId: owner.id, timestamp: new Date(3).toISOString(), message: { role: 'toolResult', toolCallId: call.id, toolName: call.name, content: [{ type: 'text', text: 'raw failure' }], isError: true, timestamp: 3 } }
+    const page = branch([result])
+    const orphan = selectPiTimelineItemsCached('orphan-session', page)[0]
+    expect(orphan).toMatchObject({ execution: { argumentsUnknown: true } })
+    const knownPage = { ...page, client: { toolExecutions: { [call.id]: { call } } } }
+    const recovered = selectPiTimelineItemsCached('orphan-session', knownPage)[0]
+    expect(recovered).not.toBe(orphan)
+    expect(recovered).toMatchObject({ execution: { argumentsUnknown: false, call } })
+    const livePage: PiBranchPage = { ...page, checkpoint: { position: { epoch: 'events', sequence: 1 }, liveMessage: { id: 'live-cached', revision: 1, phase: 'persisting', message: owner.message } }, client: { stableEntryIds: { [owner.id]: 'live-cached' } } }
+    const live = selectPiTimelineItemsCached('orphan-session', livePage)
+    expect(live).toHaveLength(1)
+    expect(live[0]).toMatchObject({ entryId: 'live-cached', toolResults: { [call.id]: result.message } })
+    const paged = selectPiTimelineItemsCached('orphan-session', { ...livePage, items: [owner, result] })
+    expect(paged).toHaveLength(1)
+    expect(paged[0]).toMatchObject({ entryId: owner.id, toolResults: { [call.id]: result.message } })
+    clearPiTimelineItemCache()
+    expect(selectPiTimelineItemsCached('orphan-session', branch([result]))[0]).toEqual(orphan)
+  })
 })

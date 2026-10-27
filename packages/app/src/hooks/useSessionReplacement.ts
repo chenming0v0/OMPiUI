@@ -22,8 +22,17 @@ export function useSessionReplacement(
       if (routeSessionId === detail.sourceSessionId) {
         navigateToSession(detail.targetSessionId, detail.targetCwd ?? routeDirectory)
       }
+      if (detail.sourceSessionId === detail.targetSessionId) {
+        // Session metadata is reloaded by sessions-changed; all leaves retain
+        // their same native id while the focused route adopts the new cwd.
+        window.dispatchEvent(new CustomEvent('ompiui:workspace-changed', { detail }))
+      }
     }
     window.addEventListener('ompiui:session-replaced', handler)
-    return () => window.removeEventListener('ompiui:session-replaced', handler)
+    window.addEventListener('ompiui:session-relocated', handler)
+    return () => {
+      window.removeEventListener('ompiui:session-replaced', handler)
+      window.removeEventListener('ompiui:session-relocated', handler)
+    }
   }, [routeSessionId, routeDirectory, navigateToSession])
 }

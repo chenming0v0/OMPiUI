@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { PiToolExecution } from '../../../omp/domain/index.js'
+import { getToolExecutionStatus, type PiToolExecution } from '../../../omp/domain/index.js'
 import { defaultExtractData, extractToolData } from './registry'
 
 describe('defaultExtractData', () => {
@@ -76,6 +76,22 @@ describe('defaultExtractData', () => {
     expect(extracted.cwd).toBeUndefined()
     expect(extracted.truncated).toBe(true)
     expect(extracted.fullOutputPath).toBe('/tmp/pi-bash-abc.log')
+  })
+
+  it.each([
+    { name: 'bash', state: 'failed', timedOut: false, status: 'error' },
+    { name: 'bash', state: 'starting', timedOut: true, status: 'completed' },
+    { name: 'read', state: 'failed', timedOut: false, status: 'completed' },
+  ] as const)('uses native $name service $state without inferring failure from readiness', ({ name, state, timedOut, status }) => {
+    const text = state === 'starting' ? 'NOT ready — readiness timed out; process state: starting.' : 'Native service state: failed'
+    const execution: PiToolExecution = {
+      call: { type: 'toolCall', id: 'service-outcome', name, arguments: {} },
+      result: { role: 'toolResult', toolCallId: 'service-outcome', toolName: name, content: [{ type: 'text', text }], isError: false, timestamp: 0,
+        details: { service: { state, ready: false, timedOut } } },
+    }
+    const extracted = defaultExtractData(execution)
+    expect(getToolExecutionStatus(execution)).toBe(status)
+    expect(extracted.error).toBe(status === 'error' ? text : undefined)
   })
 
   it('keeps OMP glob/grep string file lists as text output instead of per-file cards', () => {

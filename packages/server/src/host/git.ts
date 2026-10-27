@@ -2,7 +2,10 @@ import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import type {
+  GitCommitPreview,
+  GitCommitResponse,
   GitDiffItem,
   GitDiffMode,
   GitDiffResponse,
@@ -12,7 +15,7 @@ import type {
   GitStatusItem,
   GitStatusResponse,
 } from "@ompiui/protocol";
-import { normalizeRelativePath } from "./path-safety.ts";
+import { normalizeRelativePath, resolveWorkspacePath } from "./path-safety.ts";
 import { mapConcurrent, QueryPool } from "./query-pool.ts";
 
 const TIMEOUT_MS = 15_000;
@@ -34,13 +37,14 @@ interface GitResult {
   truncated?: boolean;
 }
 
-function runGit(
+export function runGit(
   cwd: string,
   args: string[],
   options: {
     signal?: AbortSignal;
     maxOutputBytes?: number;
     truncate?: boolean;
+    input?: string;
   } = {},
 ): Promise<GitResult> {
   return withGitSlot(
@@ -62,7 +66,7 @@ function runGit(
           {
             cwd,
             windowsHide: true,
-            stdio: ["ignore", "pipe", "pipe"],
+            stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
             env: safeGitEnv(),
           },
         );
@@ -98,7 +102,7 @@ function runGit(
         options.signal?.addEventListener("abort", onAbort, { once: true });
         if (options.signal?.aborted) return onAbort();
 
-        child.stdout.on("data", (chunk: Buffer) => {
+        child.stdout!.on("data", (chunk: Buffer) => {
           if (truncated) return;
           const available = Math.max(0, maxOutput - stdoutBytes);
           stdoutBytes += chunk.length;
@@ -119,11 +123,15 @@ function runGit(
           }
           stdout.push(chunk);
         });
-        child.stderr.on("data", (chunk: Buffer) => {
+        child.stderr!.on("data", (chunk: Buffer) => {
           stderrBytes += chunk.length;
           if (stderrBytes <= maxOutput) stderr.push(chunk);
         });
         child.on("error", finishError);
+        if (options.input !== undefined) {
+          child.stdin?.on("error", finishError);
+          child.stdin?.end(options.input);
+        }
         child.on("close", (code) => {
           if (settled) return;
           settled = true;
@@ -336,7 +344,7 @@ export function getGitDiff(
       text(namesResult.stdout),
       text(numbersResult.stdout),
     );
-    if (mode === "git") {
+    if (mode === "git" || mode === "unstaged") {
       const status = await getGitStatus(cwd, signal, onlyPath);
       const missing = status.items.filter(
         (item) =>
@@ -461,7 +469,7 @@ export async function getGitFileDiff(
   const info = await getGitInfo(cwd, signal);
   if (!info.root) throw Object.assign(new Error("not a git repository"), { code: "NOT_FOUND" });
   const comparison = await comparisonForMode(cwd, mode, info, signal);
-  const status = mode === "git" ? await getGitStatus(cwd, signal, relative) : undefined;
+  const status = mode === "git" || mode === "unstaged" ? await getGitStatus(cwd, signal, relative) : undefined;
   const statusItem = status?.items.find(item => item.path === relative);
   const item: GitDiffItem = statusItem?.status === "untracked"
     ? { file: relative, status: "untracked", additions: 0, deletions: 0, binary: false }
@@ -520,6 +528,114 @@ export async function getGitFileDiff(
     truncated: Boolean(result.truncated),
     binary: item.binary || /Binary files .* differ/.test(patch),
   };
+}
+
+// Mutations never accept directories, arbitrary patches, or an implicit "all".
+// The existing host workspace is the same checkout used by the native session.
+async function selectedGitPaths(cwd: string, inputs: string[], staged: boolean): Promise<string[]> {
+  if (!inputs.length) throw Object.assign(new Error("Select at least one file"), { code: "INVALID_REQUEST" });
+  invalidateGitCache(cwd);
+  const status = await getGitStatus(cwd);
+  const paths = new Set<string>();
+  for (const input of inputs) {
+    const relative = normalizeRelativePath(input);
+    if (!relative) throw Object.assign(new Error("A file path is required"), { code: "INVALID_REQUEST" });
+    // Check ancestors even for deleted paths; git must not follow a symlink into another checkout.
+    resolveWorkspacePath(cwd, relative);
+    const item = status.items.find(item => item.path === relative);
+    if (!item || !(staged ? item.staged : item.unstaged)) {
+      throw Object.assign(new Error(`No ${staged ? "staged" : "unstaged"} change at ${relative}; refresh the file list`), { code: "GIT_STALE_SELECTION" });
+    }
+    paths.add(relative);
+    if (item.oldPath) {
+      resolveWorkspacePath(cwd, item.oldPath);
+      if (staged) paths.add(item.oldPath);
+      else {
+        // A staged rename's source is already absent from the index. Only
+        // include it when a tracked source still needs its deletion staged.
+        const deleted = await runGit(cwd, ["ls-files", "--deleted", "-z", "--", item.oldPath]);
+        assertGitSuccess(deleted, "git rename source deletion");
+        if (deleted.stdout.length) paths.add(item.oldPath);
+      }
+    }
+  }
+  return [...paths];
+}
+
+export async function stageGitFiles(cwd: string, inputs: string[]): Promise<{ ok: true }> {
+  const paths = await selectedGitPaths(cwd, inputs, false);
+  try { assertGitSuccess(await runGit(cwd, ["add", "--", ...paths]), "git add"); }
+  finally { invalidateGitCache(); }
+  return { ok: true };
+}
+
+export async function unstageGitFiles(cwd: string, inputs: string[]): Promise<{ ok: true }> {
+  const paths = await selectedGitPaths(cwd, inputs, true);
+  const head = await runGit(cwd, ["rev-parse", "--verify", "HEAD"]);
+  try {
+    assertGitSuccess(await runGit(cwd, head.code === 0
+      ? ["reset", "--quiet", "HEAD", "--", ...paths]
+      : ["rm", "--cached", "--quiet", "-f", "--", ...paths]), "git unstage");
+  } finally { invalidateGitCache(); }
+  return { ok: true };
+}
+
+export async function changeGitHunk(cwd: string, file: string, staged: boolean, hunk: number, expectedPatch: string): Promise<{ ok: true }> {
+  await selectedGitPaths(cwd, [file], staged);
+  const diff = await getGitFileDiff(cwd, staged ? "staged" : "unstaged", file);
+  if (diff.truncated || diff.binary || diff.patch !== expectedPatch) {
+    throw Object.assign(new Error("The displayed patch changed or is not a complete text patch; refresh before selecting a hunk"), { code: "GIT_STALE_SELECTION" });
+  }
+  // Renames, new/deleted files and mode changes require an explicit whole-file selection.
+  if (/^(?:new file mode|deleted file mode|old mode|new mode|rename from|copy from)/m.test(diff.patch)) {
+    throw Object.assign(new Error("Select the whole file for additions, deletions, renames or mode changes"), { code: "INVALID_REQUEST" });
+  }
+  const starts = [...diff.patch.matchAll(/^@@ .+@@.*$/gm)].map(match => match.index!);
+  if (!Number.isInteger(hunk) || hunk < 0 || hunk >= starts.length) {
+    throw Object.assign(new Error("Invalid hunk selection"), { code: "INVALID_REQUEST" });
+  }
+  const patch = diff.patch.slice(0, starts[0]) + diff.patch.slice(starts[hunk], starts[hunk + 1] ?? diff.patch.length);
+  try {
+    assertGitSuccess(await runGit(cwd, ["apply", "--cached", ...(staged ? ["--reverse"] : []), "--whitespace=nowarn", "-"], { input: patch }), "git apply selected hunk");
+  } finally { invalidateGitCache(); }
+  return { ok: true };
+}
+
+export async function previewGitCommit(cwd: string): Promise<GitCommitPreview> {
+  if (!(await isGitRepo(cwd))) throw Object.assign(new Error("Not a Git repository"), { code: "NOT_FOUND" });
+  const prefix = await repoPrefix(cwd);
+  const [head, raw] = await Promise.all([
+    runGit(cwd, ["rev-parse", "--verify", "HEAD"]),
+    runGit(cwd, ["diff", "--cached", "--raw", "--no-abbrev", "--no-renames", "-z", "--"]),
+  ]);
+  assertGitSuccess(raw, "git staged fingerprint");
+  // --no-renames raw -z emits alternating metadata/path records. Scope and
+  // fingerprint must come from the same index read, not parallel Git snapshots.
+  const repoFiles = text(raw.stdout).split("\0").filter((_, index) => index % 2 === 1);
+  const files = repoFiles.map(file => toWorkspaceRelative(normalizeGitPath(file), prefix));
+  if (files.some(file => !file)) {
+    throw Object.assign(new Error("There are staged files outside this workspace. Open the repository root to review and commit them explicitly."), { code: "PATH_OUTSIDE_WORKSPACE" });
+  }
+  const conflicts = await runGit(cwd, ["ls-files", "--unmerged", "-z"]);
+  assertGitSuccess(conflicts, "git conflicts");
+  if (conflicts.stdout.length) throw Object.assign(new Error("Resolve all merge conflicts before committing"), { code: "GIT_CONFLICT" });
+  const headOid = successText(head) ?? null;
+  return { headOid, files: files as string[], fingerprint: createHash("sha256").update(headOid ?? "unborn").update(raw.stdout).digest("hex") };
+}
+
+export async function commitGit(cwd: string, message: string, fingerprint: string): Promise<GitCommitResponse> {
+  if (!message.trim() || message.includes("\0")) throw Object.assign(new Error("A non-empty commit message is required"), { code: "INVALID_REQUEST" });
+  const current = await previewGitCommit(cwd);
+  if (current.fingerprint !== fingerprint) throw Object.assign(new Error("HEAD or the staged files changed; review the commit again"), { code: "GIT_STALE_SELECTION" });
+  if (!current.files.length) throw Object.assign(new Error("There are no staged changes to commit"), { code: "INVALID_REQUEST" });
+  try {
+    // No --all, --only, pathspec, hook bypass, author override or shell launcher.
+    const result = await runGit(cwd, ["commit", "--file=-"], { input: message });
+    assertGitSuccess(result, "git commit");
+    const head = await runGit(cwd, ["rev-parse", "--verify", "HEAD"]);
+    assertGitSuccess(head, "git commit HEAD");
+    return { headOid: text(head.stdout).trim(), output: text(result.stdout).trim() };
+  } finally { invalidateGitCache(); }
 }
 
 export function invalidateGitCache(cwd?: string): void {

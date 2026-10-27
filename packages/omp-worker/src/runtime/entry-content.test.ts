@@ -37,16 +37,39 @@ for (const text of ["x".repeat(5 * 1024 * 1024), "\u0001".repeat(700_000)]) {
   })
 }
 
-test("checkpoint and first entry share the budget by omitting live, not by rejecting readable history", () => {
+test("a native ten-child aggregate larger than the requested page keeps its owner and newer completion", async () => {
+  const owner: JsonObject = { type: "message", id: "owner", parentId: null,
+    message: { role: "assistant", content: [{ type: "toolCall", id: "ten-task", name: "task", arguments: {} }] } }
+  const result: JsonObject = { type: "message", id: "result", parentId: "owner",
+    message: { role: "toolResult", toolCallId: "ten-task", toolName: "task", isError: false,
+      content: [{ type: "text", text: "Native child transcript\n".repeat(6500) }] } }
+  const completion: JsonObject = { type: "message", id: "done", parentId: "result",
+    message: { role: "assistant", content: [{ type: "text", text: "All native children completed" }] } }
+  const entries = [owner, result, completion]
+  const head = sessionHeadFromParts({ sdkVersion: "test", revision: 1, header: null, leafId: "done", entryCount: 3 })
+  const page = entriesPageFromEntries(head, entries, { limit: 100, maxBytes: 128 * 1024 }, value => value)
+  assert.deepEqual(page.items.map(item => item.id), ["owner", "result", "done"])
+  assert.equal(page.items[1]?.type, "ompiui.entry_ref")
+  assert.equal(page.hasMore, false)
+  assert.ok(Buffer.byteLength(JSON.stringify(page)) <= 128 * 1024)
+  const restored = await hydrateEntryContent(page as never, async (id, offset, etag) => {
+    assert.equal(id, "result")
+    return entryContentChunk(result, result, offset, etag)
+  })
+  assert.deepEqual(restored.items, entries)
+})
+
+test("a large history entry and live checkpoint share the page budget through read-only content", async () => {
   const entry: JsonObject = { type: "message", id: "one", message: { role: "assistant", content: "x".repeat(3 * 1024 * 1024) } }
   const head = sessionHeadFromParts({ sdkVersion: "test", revision: 1, header: null, leafId: "one", entryCount: 1 })
   const checkpoint = { position: { epoch: "e", sequence: 1 }, liveMessage: {
     id: "live", revision: 1, phase: "streaming" as const, message: { content: "x".repeat(2 * 1024 * 1024) },
   } }
   const page = entriesPageFromEntries(head, [entry], { limit: 100, maxBytes: 4 * 1024 * 1024, checkpoint }, value => value)
-  assert.deepEqual(page.items, [entry])
-  assert.equal(page.checkpoint?.liveMessageOmitted, true)
-  assert.equal(page.checkpoint?.liveMessage, undefined)
+  const restored = await hydrateEntryContent(page as never, async (_id, offset, etag) => entryContentChunk(entry, entry, offset, etag))
+  assert.deepEqual(restored.items, [entry])
+  assert.deepEqual(page.checkpoint?.liveMessage, checkpoint.liveMessage)
+  assert.equal(page.checkpoint?.liveMessageOmitted, undefined)
   assert.ok(Buffer.byteLength(JSON.stringify(page)) <= 4 * 1024 * 1024)
   assert.ok(checkpoint.liveMessage)
 })

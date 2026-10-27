@@ -152,6 +152,14 @@ function buildEntriesPage<T>(
             JSON.stringify({ beforeCursor: "x".repeat(cursorLength) }),
           ) - 1
         : 1;
+    // A normal native task aggregate can exceed the requested 128 KiB page
+    // while remaining well below the absolute entry limit. Reference that
+    // entry instead of stopping after a newer final message and losing its
+    // owner/results from the refreshed window. Count metadata and cursor too.
+    if (!referenced && itemBytes + fixedBytes + cursorBytes > options.maxBytes) {
+      item = entryContentReference(source, item);
+      itemBytes = Buffer.byteLength(JSON.stringify(item));
+    }
     const candidateBytes =
       fixedBytes +
       itemsBytes +
@@ -196,7 +204,8 @@ export function projectEntryAttachments(entry: JsonObject, head: SessionHead): J
     if (typeof block.data !== "string" || !isImageBlock(block) ||
       (!block.data.startsWith("blob:sha256:") && block.data.length <= 64 * 1024)) return value;
     changed = true;
-    return { ...block, data: "", attachment: { sessionId: head.header?.id, entryId: entry.id, blockIndex, source } };
+    const hash = /^blob:sha256:([a-f0-9]{64})$/.exec(block.data)?.[1];
+    return { ...block, data: "", attachment: { sessionId: head.header?.id, entryId: entry.id, blockIndex, source, epoch: head.epoch, etag: hash ? `"${hash}"` : imageEtag(block) } };
   };
   const content = Array.isArray(message.content)
     ? message.content.map((value, index) => project(value, index, "content")) : message.content;
@@ -237,6 +246,7 @@ export function imageAttachmentFromEntry(
   offset = 0,
   source: "content" | "details" = "content",
 ): JsonObject {
+  if (source !== 'content' && source !== 'details') throw Object.assign(new Error('invalid attachment source'), { code: 'INVALID_REQUEST' });
   const message = asRecord(entry.message);
   const block = source === "details" ? detailImage(message.details, blockIndex)
     : Array.isArray(message.content) ? asRecord(message.content[blockIndex]) : undefined;
@@ -253,8 +263,13 @@ export function imageAttachmentFromEntry(
         throw error;
       }
     }
-    const size = descriptor === undefined ? undefined : fstatSync(descriptor).size;
+    const stat = descriptor === undefined ? undefined : fstatSync(descriptor);
+    if (stat && !stat.isFile()) throw notFound("image blob is not a file");
+    const size = stat?.size;
     const totalChars = size === undefined ? data.length : Math.ceil(size / 3) * 4;
+    if (!Number.isSafeInteger(totalChars) || totalChars > 64 * 1024 * 1024) {
+      throw Object.assign(new Error("Image exceeds 64 MiB preview limit"), { code: "FILE_TOO_LARGE" });
+    }
     if (!Number.isSafeInteger(offset) || offset < 0 || offset > totalChars || offset % 4 !== 0) {
       throw Object.assign(new Error("invalid attachment offset"), { code: "INVALID_REQUEST" });
     }
@@ -272,7 +287,12 @@ export function imageAttachmentFromEntry(
       }
       chunk = bytes.toString("base64");
     }
-    return { mimeType: String(block.mimeType), data: chunk, etag: hash ? `"${hash}"` : imageEtag(block), nextOffset, totalChars, hasMore: nextOffset < totalChars };
+    const revision = stat ? JSON.stringify([stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs]) : undefined;
+    if (descriptor !== undefined) {
+      const after = fstatSync(descriptor);
+      if (revision !== JSON.stringify([after.dev, after.ino, after.size, after.mtimeMs, after.ctimeMs])) throw notFound("image blob changed while reading");
+    }
+    return { mimeType: String(block.mimeType), data: chunk, etag: hash ? `"${hash}"` : imageEtag(block), ...(revision ? { revision } : {}), nextOffset, totalChars, hasMore: nextOffset < totalChars };
   } finally { if (descriptor !== undefined) closeSync(descriptor); }
 }
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { afterEach, describe, it } from "node:test"
@@ -12,6 +12,8 @@ import {
   invalidateGitCache,
   parseNumstatZ,
   parsePorcelainStatus,
+  stageGitFiles,
+  unstageGitFiles,
 } from "./git.ts"
 
 const roots: string[] = []
@@ -104,6 +106,67 @@ describe("Git workspace API", () => {
     writeFileSync(path.join(root, "tracked.txt"), "base\n")
     invalidateGitCache(root)
     assert.deepEqual((await getGitDiff(root, "git")).files, [])
+  })
+
+  it("stages further edits of a staged rename and unstages both rename paths only", async () => {
+    const root = repository()
+    const original = Array.from({ length: 20 }, (_, index) => `line ${index}\n`).join("")
+    writeFileSync(path.join(root, "tracked.txt"), original)
+    writeFileSync(path.join(root, "other.txt"), "other base\n")
+    git(root, "add", "tracked.txt", "other.txt")
+    git(root, "commit", "-m", "rename fixture")
+    git(root, "mv", "tracked.txt", "renamed.txt")
+    writeFileSync(path.join(root, "renamed.txt"), original + "further edit\n")
+    writeFileSync(path.join(root, "other.txt"), "other staged\n")
+    git(root, "add", "other.txt")
+    writeFileSync(path.join(root, "unselected.txt"), "leave untracked\n")
+    const renamed = (await getGitStatus(root)).items.find(item => item.path === "renamed.txt")
+    assert.equal(renamed?.oldPath, "tracked.txt")
+    assert.equal(renamed?.staged, true)
+    assert.equal(renamed?.unstaged, true)
+
+    await stageGitFiles(root, ["renamed.txt"])
+    assert.equal(execFileSync("git", ["show", ":renamed.txt"], { cwd: root, encoding: "utf8" }), original + "further edit\n")
+    assert.equal(execFileSync("git", ["ls-files", "--", "tracked.txt", "unselected.txt"], { cwd: root, encoding: "utf8" }), "")
+    await unstageGitFiles(root, ["renamed.txt"])
+    assert.equal(execFileSync("git", ["diff", "--cached", "--name-only", "-z"], { cwd: root, encoding: "utf8" }), "other.txt\0")
+    assert.equal(execFileSync("git", ["show", ":tracked.txt"], { cwd: root, encoding: "utf8" }), original)
+    assert.equal(execFileSync("git", ["ls-files", "--", "renamed.txt"], { cwd: root, encoding: "utf8" }), "")
+    assert.equal(readFileSync(path.join(root, "renamed.txt"), "utf8"), original + "further edit\n")
+    assert.equal(existsSync(path.join(root, "tracked.txt")), false)
+  })
+
+  it("includes a rename source when its deletion is still pending in the index", async () => {
+    const root = repository()
+    git(root, "config", "status.renames", "true")
+    renameSync(path.join(root, "tracked.txt"), path.join(root, "renamed.txt"))
+    git(root, "add", "-N", "renamed.txt")
+    const renamed = (await getGitStatus(root)).items.find(item => item.path === "renamed.txt")
+    assert.equal(renamed?.oldPath, "tracked.txt")
+    assert.equal(renamed?.indexStatus, " ")
+    assert.equal(renamed?.worktreeStatus, "R")
+    assert.equal(execFileSync("git", ["ls-files", "--deleted", "-z", "--", "tracked.txt"], { cwd: root, encoding: "utf8" }), "tracked.txt\0")
+    await stageGitFiles(root, ["renamed.txt"])
+    assert.equal(execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" }), "renamed.txt\0")
+    assert.equal(execFileSync("git", ["diff", "--cached", "--name-status", "-z"], { cwd: root, encoding: "utf8" }), "R100\0tracked.txt\0renamed.txt\0")
+  })
+
+  it("keeps bracket and dynamic-route selections literal during stage and unstage", async () => {
+    const root = repository()
+    const selected = ["app/[slug]/page.tsx", "app/[[...slug]]/page.tsx", "app/[s]/page.tsx"]
+    const files = [...selected, "app/s/page.tsx"]
+    for (const file of files) {
+      mkdirSync(path.dirname(path.join(root, file)), { recursive: true })
+      writeFileSync(path.join(root, file), "base\n")
+    }
+    git(root, "add", "app")
+    git(root, "commit", "-m", "route fixture")
+    for (const file of files) writeFileSync(path.join(root, file), "changed\n")
+    await stageGitFiles(root, selected)
+    assert.deepEqual(execFileSync("git", ["diff", "--cached", "--name-only", "-z"], { cwd: root, encoding: "utf8" }).split("\0").filter(Boolean).sort(), [...selected].sort())
+    await stageGitFiles(root, ["app/s/page.tsx"])
+    await unstageGitFiles(root, selected)
+    assert.equal(execFileSync("git", ["diff", "--cached", "--name-only", "-z"], { cwd: root, encoding: "utf8" }), "app/s/page.tsx\0")
   })
 
   it("includes untracked files and generates their patch lazily", async () => {

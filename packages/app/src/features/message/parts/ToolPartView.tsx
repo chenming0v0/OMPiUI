@@ -14,6 +14,7 @@ import { useUiDisclosureState } from '../../../utils/uiDisclosureState'
 import {
   getToolIcon,
   extractToolData,
+  defaultExtractData,
   getToolConfig,
   isYieldTool,
   DefaultRenderer,
@@ -23,7 +24,7 @@ import {
 } from '../tools'
 import { MSG_SPACING } from '../messageSpacing'
 import { MessageExpandPanel, useMessageExpandRender } from '../messageExpand'
-import { ToolResultImages } from '../tools/renderers/DefaultRenderer'
+import { ToolResultImages, ToolResultNotice } from '../tools/renderers/DefaultRenderer'
 import { resolveTaskExecution } from '../tools/taskToolData'
 
 // ============================================
@@ -71,14 +72,15 @@ export const ToolPartView = memo(function ToolPartView({
   // title 显示工具调用实质（命令/路径/模式），而不是重复工具名——
   // OMP RPC 的工具调用事件只有 toolName + args，没有工具描述字段；
   // formatToolName(toolName) 已展示工具名，title 再显示同名就是冗余。
-  const title = taskSlotTitle ?? extractToolTitle(toolName, execution)
+  // 批量 task 拆行时用子任务标题；上游的 argumentsUnknown 提示优先于空白标题。
+  const title = taskSlotTitle ?? (execution.argumentsUnknown ? t('toolPart.argumentsUnknown') : extractToolTitle(toolName, execution))
 
   const isActive = status === 'running'
   const isQueued = status === 'pending'
   const isError = status === 'error'
   const failureLabel = t(!result && execution.interruption === 'cancelled' ? 'toolPart.cancelled' : !result && execution.interruption === 'unknown' ? 'toolPart.unknown' : 'toolPart.failed')
   // Yield 完成工具：行名直接展示任务状态（提交中/完成/失败），不显示工具名
-  const isYield = isYieldTool(toolName)
+  const isYield = !execution.argumentsUnknown && isYieldTool(toolName)
   const displayName = isYield && !isQueued
     ? isActive
       ? t('yield.submitting')
@@ -159,7 +161,7 @@ export const ToolPartView = memo(function ToolPartView({
   )
 
   // Memoize once — shared by both the descriptive header (diffStats) and ToolBody.
-  const toolData = useMemo(() => extractToolData(execution), [execution])
+  const toolData = useMemo(() => execution.argumentsUnknown ? defaultExtractData(execution) : extractToolData(execution), [execution])
 
   const handleFullscreenChange = useCallback((isFullscreen: boolean) => {
     setIsChildFullscreen(isFullscreen)
@@ -482,11 +484,16 @@ const ToolBody = memo(function ToolBody({
 }) {
   const tool = resolveTaskExecution(execution).call.name
   const lowerTool = tool.toLowerCase()
-  // A specialized success view must never hide the original failure payload.
-  if (getToolExecutionStatus(execution) === 'error' && lowerTool !== 'task') {
+  // Without the original call, specialized views must not infer its target
+  // or substitute a success summary for the actual orphan output.
+  if (execution.argumentsUnknown) {
     return <DefaultRenderer execution={execution} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} />
   }
-  const specialized = (content: ReactNode) => <>{content}<ToolResultImages tool={tool} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} /></>
+  // A specialized success view must never hide the original failure payload.
+  if ((data.error || getToolExecutionStatus(execution) === 'error') && lowerTool !== 'task') {
+    return <DefaultRenderer execution={execution} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} />
+  }
+  const specialized = (content: ReactNode) => <>{content}<ToolResultNotice data={data} /><ToolResultImages tool={tool} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} /></>
 
   if (lowerTool === 'task') {
     return specialized(<TaskRenderer execution={execution} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} taskSlotIndex={taskSlotIndex} />)
@@ -532,7 +539,7 @@ function extractToolTitle(toolName: string, execution: PiToolExecution): string 
       return undefined
     case 'yield': {
       // 结果预览：优先取 summary 类可读字段，其次结果负载本身；失败态不显示
-      if (execution.result?.isError) return undefined
+      if (getToolExecutionStatus(execution) === 'error') return undefined
       const details = execution.result?.details
       const detailData = details && typeof details === 'object' && !Array.isArray(details)
         ? (details as Record<string, unknown>).data

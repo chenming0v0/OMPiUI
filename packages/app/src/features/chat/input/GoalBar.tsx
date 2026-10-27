@@ -1,458 +1,217 @@
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  useSyncExternalStore,
-  type ReactNode,
-  type Dispatch,
-  type SetStateAction,
-} from 'react'
+import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
+import type { PiCommandParams } from '@ompiui/protocol'
 import { IconButton } from '../../../components/ui'
-import {
-  CloseIcon,
-  ExpandIcon,
-  PauseIcon,
-  PlayIcon,
-  TargetIcon,
-  TrashIcon,
-} from '../../../components/Icons'
+import { CloseIcon, ExpandIcon, PauseIcon, PlayIcon, TargetIcon, TrashIcon } from '../../../components/Icons'
 import { piSessionStateStore } from '../../../omp/state/index.js'
-import { manageSessionGoal, waitHostCommand, type PiImageInput } from '../../../omp/transport/index.js'
+import { refreshPiSessionState } from '../../../omp/controllers/index.js'
+import { manageSessionGoal, waitHostCommand } from '../../../omp/transport/index.js'
 import type { SessionGoalSnapshot } from '../../../omp/vendor/pi-coding-agent'
-import { useGoalImagePaste } from './useGoalImagePaste'
-import { assertGoalImageBudget, goalImageInput, type GoalDraftImage } from './goalImages'
-
-type GoalSnapshot = Omit<SessionGoalSnapshot, 'images'> & { images: GoalDraftImage[] }
 
 interface GoalBarProps {
   sessionId?: string | null
   isCompact: boolean
-  onSetGoal?: (objective: string, images?: PiImageInput[]) => Promise<boolean> | boolean
-  supportsImages?: boolean
+  onSetGoal?: (objective: string, tokenBudget?: number) => Promise<boolean> | boolean
   queuedMessages?: ReactNode
 }
-
-const GOAL_STATUS_KEYS: Record<string, string> = {
-  active: 'goalBar.active',
-  paused: 'goalBar.paused',
-  'budget-limited': 'goalBar.budgetLimited',
-  complete: 'goalBar.complete',
+type GoalOptions = Omit<PiCommandParams['goal'], 'op'>
+type GoalView = { goal: SessionGoalSnapshot | null; enabled: boolean; mode: string }
+const EMPTY_GOAL: GoalView = { goal: null, enabled: false, mode: '' }
+const STATUS_KEYS: Record<string, string> = {
+  active: 'goalBar.active', paused: 'goalBar.paused', 'budget-limited': 'goalBar.budgetLimited', complete: 'goalBar.complete',
 }
 
-/** 防御式解析 state.goal / goal_updated 事件里的 goal 快照（外来 JSON） */
-function parseGoal(raw: unknown): GoalSnapshot | null {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
-  const value = raw as Record<string, unknown>
-  if (typeof value.objective !== 'string' || value.objective.trim() === '') return null
-  // dropGoal 会先广播一次 status=dropped 的 goal 再清空，UI 视为无目标
-  if (value.status === 'dropped') return null
-  return {
-    id: typeof value.id === 'string' ? value.id : '',
-    objective: value.objective,
-    images: Array.isArray(value.images) ? (value.images as GoalDraftImage[]).map((image, imageIndex) => ({
-      ...image,
-      ...(image.dataOmitted && typeof value.id === 'string' ? { reference: { goalId: value.id, imageIndex } } : {}),
-    })) : [],
-    status: typeof value.status === 'string' ? value.status : 'active',
+function parseGoal(raw: unknown): GoalView {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return EMPTY_GOAL
+  const state = raw as Record<string, unknown>
+  const value = state.goal as Record<string, unknown> | undefined
+  if (!value || typeof value.objective !== 'string' || typeof value.id !== 'string' || value.status === 'dropped') return EMPTY_GOAL
+  if (typeof value.tokensUsed !== 'number' || typeof value.timeUsedSeconds !== 'number') return EMPTY_GOAL
+  return { enabled: state.enabled === true, mode: typeof state.mode === 'string' ? state.mode : '', goal: {
+    id: value.id, objective: value.objective, status: typeof value.status === 'string' ? value.status : '',
     tokenBudget: typeof value.tokenBudget === 'number' ? value.tokenBudget : undefined,
-    tokensUsed: typeof value.tokensUsed === 'number' ? value.tokensUsed : 0,
-    timeUsedSeconds: typeof value.timeUsedSeconds === 'number' ? value.timeUsedSeconds : 0,
+    tokensUsed: value.tokensUsed, timeUsedSeconds: value.timeUsedSeconds,
     createdAt: typeof value.createdAt === 'number' ? value.createdAt : 0,
     updatedAt: typeof value.updatedAt === 'number' ? value.updatedAt : 0,
-  }
+  } }
 }
 
-function useSessionGoal(sessionId: string | null | undefined): GoalSnapshot | null {
-  // useSyncExternalStore 要求 getSnapshot 返回稳定引用：state 对象没变时
-  // 必须复用上次解析结果，否则每次调用都产出新对象 → 无限重渲染崩溃
-  const cacheRef = useRef<{ raw: unknown; out: GoalSnapshot | null }>({ raw: undefined, out: null })
-  const subscribe = useCallback(
-    (onStoreChange: () => void) => piSessionStateStore.subscribe(onStoreChange),
-    [],
-  )
-  const getSnapshot = useCallback((): GoalSnapshot | null => {
-    const raw = sessionId ? piSessionStateStore.getState(sessionId)?.goal : undefined
-    const cache = cacheRef.current
-    if (cache.raw === raw) return cache.out
-    const out = parseGoal(raw)
-    cacheRef.current = { raw, out }
-    return out
+function useSessionGoal(sessionId: string | null | undefined): GoalView {
+  const cache = useRef<{ raw: unknown; out: GoalView }>({ raw: undefined, out: EMPTY_GOAL })
+  const subscribe = useCallback((onChange: () => void) => piSessionStateStore.subscribe(onChange), [])
+  const snapshot = useCallback(() => {
+    const raw = sessionId ? piSessionStateStore.getState(sessionId)?.goalState : undefined
+    if (cache.current.raw !== raw) cache.current = { raw, out: parseGoal(raw) }
+    return cache.current.out
   }, [sessionId])
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+  return useSyncExternalStore(subscribe, snapshot, snapshot)
 }
 
-function normalizeMs(timestamp: number): number | null {
-  if (!Number.isFinite(timestamp) || timestamp <= 0) return null
-  // 秒级时间戳 → 毫秒
-  return timestamp < 1e12 ? timestamp * 1000 : timestamp
-}
-
-function formatElapsed(totalSeconds: number): string {
-  const s = Math.max(0, Math.floor(totalSeconds))
+function elapsed(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds))
   if (s < 60) return `${s}s`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ${s % 60}s`
-  const h = Math.floor(m / 60)
-  return `${h}h ${m % 60}m`
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`
+  return `${Math.floor(s / 3600)}h ${Math.floor(s / 60) % 60}m`
 }
 
-/** 桌面端占据目标栏位置的编辑器 / 移动端从底部弹出的 sheet，共用同一份编辑器内容 */
-function GoalEditor({
-  goal,
-  draft,
-  onDraftChange,
-  onSave,
-  onClose,
-  onDrop,
-  isCompact,
-  sessionId,
-  isSaving,
-  images,
-  setImages,
-  supportsImages,
-  saveError,
-}: {
-  goal: GoalSnapshot | null
-  draft: string
-  onDraftChange: (value: string) => void
-  onSave: () => void
-  onClose: () => void
-  onDrop: () => void
-  isCompact: boolean
-  sessionId?: string | null
-  isSaving: boolean
-  images: GoalDraftImage[]
-  setImages: Dispatch<SetStateAction<GoalDraftImage[]>>
-  supportsImages: boolean
-  saveError: boolean
-}) {
+export const GoalBar = memo(function GoalBar({ sessionId, isCompact, onSetGoal, queuedMessages }: GoalBarProps) {
   const { t } = useTranslation('chat')
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const { onPaste, readingImages, imageError } = useGoalImagePaste(supportsImages, isSaving, setImages)
-  const canSave = draft.trim().length > 0 && !isSaving && !readingImages && (supportsImages || images.length === 0)
-
-  useEffect(() => {
-    const textarea = textareaRef.current
-    if (!textarea) return
-    textarea.focus()
-    textarea.setSelectionRange(textarea.value.length, textarea.value.length)
-  }, [])
-
-  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === 'Escape') {
-      event.stopPropagation()
-      onClose()
-      return
-    }
-    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-      event.preventDefault()
-      if (canSave) onSave()
-    }
-  }
-
-  const body = (
-    <>
-      <div className="flex items-center justify-between px-4 pt-3 pb-1">
-        <div className="flex items-center gap-2 text-[length:var(--fs-sm)] font-medium text-text-200">
-          <TargetIcon size={14} className="text-accent-main-100" />
-          {t('goalBar.editGoal')}
-        </div>
-        <IconButton size="sm" aria-label={t('common:close')} onClick={onClose}>
-          <CloseIcon size={14} />
-        </IconButton>
-      </div>
-      {!sessionId && (
-        <div className="px-4 py-2 mx-3 mb-2 rounded-lg bg-accent-main-100/10 border border-accent-main-100/20">
-          <p className="text-[length:var(--fs-sm)] text-text-300">
-            {t('goalBar.noSessionHint')}
-          </p>
-        </div>
-      )}
-      <div className="px-3">
-        <textarea
-          ref={textareaRef}
-          value={draft}
-          onChange={event => onDraftChange(event.target.value)}
-          onPaste={onPaste}
-          onKeyDown={handleKeyDown}
-          placeholder={t('goalBar.objectivePlaceholder')}
-          disabled={isSaving}
-          rows={isCompact ? 5 : 4}
-          className="w-full resize-none bg-transparent rounded-xl px-2 py-2 text-text-100 placeholder:text-text-500 focus:outline-none custom-scrollbar text-[length:var(--fs-base)] disabled:opacity-60 disabled:cursor-wait"
-        />
-        {images.length > 0 && (
-          <div className="flex flex-wrap gap-2 px-2 pb-2">
-            {images.map((image, index) => (
-              <div key={index} className="relative rounded-lg border border-border-200 p-1">
-                {image.dataOmitted
-                  ? <span className="flex h-20 w-20 items-center justify-center text-[length:var(--fs-xs)]">{t('goalBar.imageAlt', { index: index + 1 })}</span>
-                  : <img src={`data:${image.mimeType};base64,${image.data}`} alt={t('goalBar.imageAlt', { index: index + 1 })} className="h-20 w-20 rounded-md object-contain" />}
-                <button type="button" disabled={isSaving} aria-label={t('goalBar.removeImage', { index: index + 1 })}
-                  className="absolute -right-1 -top-1 rounded-full bg-bg-100 p-1 text-text-300 hover:text-text-100"
-                  onClick={() => setImages(previous => previous.filter((_, i) => i !== index))}>
-                  <CloseIcon size={12} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        {supportsImages && <p className="px-2 pb-2 text-[length:var(--fs-xs)] text-text-500">{t('goalBar.imagePasteHint')}</p>}
-        {readingImages && <p role="status" className="px-2 pb-2 text-[length:var(--fs-xs)] text-text-400">{t('goalBar.readingImages')}</p>}
-        {(imageError || saveError || (!supportsImages && images.length > 0)) && (
-          <p role="alert" className="px-2 pb-2 text-[length:var(--fs-xs)] text-red-400">{t(imageError ?? (saveError ? 'goalBar.saveFailed' : 'goalBar.imagesUnsupported'))}</p>
-        )}
-      </div>
-      <div
-        className="flex items-center gap-2 px-3 pb-3"
-        style={isCompact ? { paddingBottom: 'max(0.75rem, var(--safe-area-inset-bottom, 0px))' } : undefined}
-      >
-        {goal && sessionId && (
-          <button
-            type="button"
-            onClick={onDrop}
-            className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[length:var(--fs-sm)] text-red-400 hover:bg-red-400/10 transition-colors"
-          >
-            <TrashIcon size={13} />
-            {t('goalBar.drop')}
-          </button>
-        )}
-        <div className="flex-1" />
-        {!isCompact && (
-          <span className="text-[length:var(--fs-xs)] text-text-500/70">{t('goalBar.saveHint')}</span>
-        )}
-        <button
-          type="button"
-          onClick={onClose}
-          className="h-8 px-3 rounded-lg text-[length:var(--fs-sm)] text-text-300 hover:bg-bg-200 transition-colors"
-        >
-          {t('common:cancel')}
-        </button>
-        <button
-          type="button"
-          onClick={onSave}
-          disabled={!canSave}
-          className="h-8 px-4 rounded-lg text-[length:var(--fs-sm)] bg-accent-main-000 hover:bg-accent-main-200 text-oncolor-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          {t('common:save')}
-        </button>
-      </div>
-    </>
-  )
-
-  if (isCompact) {
-    // 移动端：底部弹层（portal 到 body，避免被输入区的 transform 包裹层困住）
-    return createPortal(
-      <div className="fixed inset-0 z-[250]">
-        <div className="absolute inset-0 bg-black/50 animate-goal-backdrop-in" onClick={onClose} />
-        <div
-          data-goal-editor-sheet
-          className="absolute inset-x-0 bottom-0 rounded-t-2xl glass border-t border-border-200/60 shadow-2xl animate-goal-sheet-in"
-        >
-          <div className="flex justify-center pt-2 pb-1">
-            <div className="h-1 w-10 rounded-full bg-border-200" />
-          </div>
-          {body}
-        </div>
-      </div>,
-      document.body,
-    )
-  }
-
-  return (
-    <div data-goal-editor-sheet>
-      {body}
-    </div>
-  )
-}
-
-export const GoalBar = memo(function GoalBar({ sessionId, isCompact, onSetGoal, queuedMessages, supportsImages = false }: GoalBarProps) {
-  const { t } = useTranslation('chat')
-  const goal = useSessionGoal(sessionId)
+  const { goal, mode, enabled } = useSessionGoal(sessionId)
   const [editorOpen, setEditorOpen] = useState(false)
   const [draft, setDraft] = useState('')
-  const [isSaving, setIsSaving] = useState(false)
-  const [images, setImages] = useState<GoalDraftImage[]>([])
-  const [saveError, setSaveError] = useState(false)
-  const [now, setNow] = useState(() => Date.now())
+  const [budget, setBudget] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const rootRef = useRef<HTMLDivElement>(null)
-
-  // active 目标的已用时间本地跳动（goal_updated / state 刷新间不冻结）
-  useEffect(() => {
-    if (!goal || goal.status !== 'active') return
-    const timer = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(timer)
-  }, [goal])
-
-  // 桌面端点击浮层外关闭；移动端 sheet 有遮罩，不需要
-  useEffect(() => {
-    if (!editorOpen || isCompact) return
-    const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target as Node
-      if (rootRef.current && !rootRef.current.contains(target)) setEditorOpen(false)
-    }
-    document.addEventListener('pointerdown', handlePointerDown)
-    return () => document.removeEventListener('pointerdown', handlePointerDown)
-  }, [editorOpen, isCompact])
-
-  const openEditor = useCallback(() => {
-    setDraft(goal?.objective ?? '')
-    setImages(goal?.images ?? [])
-    setSaveError(false)
-    setEditorOpen(true)
-  }, [goal?.objective, goal?.images])
-
-  const closeEditor = useCallback(() => setEditorOpen(false), [])
-
-  // goal 操作走 worker 侧的 `goal` 命令：确定性变更 + worker 合成 goal_updated
-  // 事件 → eventStream 刷新 state → 本组件经 piSessionStateStore 拿到新快照
-  const runGoalOp = useCallback(
-    async (op: 'set' | 'pause' | 'resume' | 'drop', objective?: string, goalImages?: GoalDraftImage[]): Promise<boolean> => {
-      if (!sessionId) return false
-      try {
-        const command = await manageSessionGoal(sessionId, op, objective, undefined, goalImages?.map(goalImageInput))
-        await waitHostCommand(command.id)
-        return true
-      } catch {
-        return false
-      }
-    },
-    [sessionId],
-  )
-
-  const handleSave = useCallback(async () => {
-    const text = draft.trim()
-    if (text === '' || isSaving) return
-    setIsSaving(true)
-    setSaveError(false)
-    let saved = false
-    try {
-      assertGoalImageBudget(images)
-      saved = sessionId
-        ? await runGoalOp('set', text, images)
-        : onSetGoal ? (await onSetGoal(text, images)) !== false : false
-    } catch {
-      saved = false
-    } finally {
-      setIsSaving(false)
-    }
-    if (saved) setEditorOpen(false)
-    else setSaveError(true)
-  }, [draft, images, isSaving, onSetGoal, runGoalOp, sessionId])
-
-  const handleTogglePause = useCallback(() => {
-    runGoalOp(goal?.status === 'paused' || goal?.status === 'budget-limited' ? 'resume' : 'pause')
-  }, [goal?.status, runGoalOp])
-
-  const handleDrop = useCallback(() => {
-    setEditorOpen(false)
-    runGoalOp('drop')
-  }, [runGoalOp])
-
-  // 已用时长：快照值 + active 时从 updatedAt 到现在的本地增量
-  let elapsedLabel: string | null = null
-  if (goal) {
-    let seconds = goal.timeUsedSeconds
-    if (goal.status === 'active') {
-      const updatedAtMs = normalizeMs(goal.updatedAt)
-      if (updatedAtMs !== null) {
-        seconds += Math.max(0, (now - updatedAtMs) / 1000)
-      }
-    }
-    elapsedLabel = formatElapsed(seconds)
-  }
-
-  const statusKey = goal ? (GOAL_STATUS_KEYS[goal.status] ?? 'goalBar.active') : 'goalBar.setGoal'
-
-  // 新会话由 onSetGoal 创建；已有会话直接走 worker 的 goal 命令。
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const identity = useRef({ sessionId, epoch: 0 })
+  if (identity.current.sessionId !== sessionId) identity.current = { sessionId, epoch: identity.current.epoch + 1 }
+  const validBudget = budget.trim() === '' || (/^\d+$/.test(budget) && Number.isSafeInteger(Number(budget)) && Number(budget) > 0)
+  const canReplace = !goal || (enabled && (goal.status === 'active' || goal.status === 'budget-limited'))
   const canOperate = !!sessionId || !!onSetGoal
 
+  useEffect(() => { setEditorOpen(false); setBusy(false); setError(null) }, [sessionId])
+  useEffect(() => {
+    if (editorOpen) textareaRef.current?.focus()
+  }, [editorOpen])
+  useEffect(() => {
+    if (!editorOpen || isCompact) return
+    const outside = (event: PointerEvent) => { if (rootRef.current && !rootRef.current.contains(event.target as Node)) setEditorOpen(false) }
+    document.addEventListener('pointerdown', outside)
+    return () => document.removeEventListener('pointerdown', outside)
+  }, [editorOpen, isCompact])
+
+  const openEditor = () => {
+    setDraft(goal?.objective ?? '')
+    setBudget(goal?.tokenBudget === undefined ? '' : String(goal.tokenBudget))
+    setError(null)
+    setEditorOpen(true)
+  }
+  const run = async (op: PiCommandParams['goal']['op'], options: GoalOptions = {}): Promise<boolean> => {
+    if (!sessionId || busy) return false
+    const captured = identity.current
+    setBusy(true)
+    setError(null)
+    try {
+      const command = await manageSessionGoal(sessionId, op, options)
+      await waitHostCommand(command.id)
+      try { await refreshPiSessionState(sessionId) }
+      catch (cause) {
+        if (captured === identity.current) setError(`${t('goalBar.refreshFailed')}: ${cause instanceof Error ? cause.message : String(cause)}`)
+      }
+      return captured === identity.current
+    } catch (cause) {
+      if (captured === identity.current) setError(cause instanceof Error ? cause.message : t('goalBar.operationFailed'))
+      return false
+    } finally {
+      if (captured === identity.current) setBusy(false)
+    }
+  }
+  const save = async () => {
+    if (!draft.trim() || !validBudget || busy) return
+    const tokenBudget = budget.trim() === '' ? undefined : Number(budget)
+    if (goal && draft.trim() === goal.objective) {
+      if (await run('budget', tokenBudget === undefined ? { clearBudget: true } : { tokenBudget })) setEditorOpen(false)
+    } else if (sessionId) {
+      if (await run(goal ? 'replace' : 'create', { objective: draft.trim(), tokenBudget })) setEditorOpen(false)
+    } else if (onSetGoal) {
+      const captured = identity.current
+      setBusy(true)
+      try {
+        const accepted = await onSetGoal(draft.trim(), tokenBudget)
+        if (captured === identity.current) {
+          if (accepted !== false) setEditorOpen(false)
+          else setError(t('goalBar.saveFailed'))
+        }
+      } catch (cause) {
+        if (captured === identity.current) setError(cause instanceof Error ? cause.message : t('goalBar.saveFailed'))
+      } finally { if (captured === identity.current) setBusy(false) }
+    }
+  }
+  const refresh = async () => {
+    if (!sessionId || busy) return
+    const captured = identity.current
+    setBusy(true)
+    setError(null)
+    try { await refreshPiSessionState(sessionId) }
+    catch (cause) { if (captured === identity.current) setError(cause instanceof Error ? cause.message : t('goalBar.operationFailed')) }
+    finally { if (captured === identity.current) setBusy(false) }
+  }
+  const details = goal && (
+    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 px-4 pb-2 text-[length:var(--fs-xs)] text-text-400" data-goal-metrics>
+      <dt>{t('goalBar.id')}</dt><dd className="break-all">{goal.id}</dd>
+      <dt>{t('goalBar.mode')}</dt><dd>{mode} / {enabled ? t('goalBar.enabled') : t('goalBar.disabled')}</dd>
+      <dt>{t('goalBar.tokens')}</dt><dd>{goal.tokensUsed.toLocaleString()} / {goal.tokenBudget?.toLocaleString() ?? t('goalBar.unbounded')}</dd>
+      <dt>{t('goalBar.remaining')}</dt><dd>{goal.tokenBudget === undefined ? t('goalBar.unbounded') : Math.max(0, goal.tokenBudget - goal.tokensUsed).toLocaleString()}</dd>
+      <dt>{t('goalBar.timeUsed')}</dt><dd>{elapsed(goal.timeUsedSeconds)}</dd>
+    </dl>
+  )
+  const editor = (
+    <div data-goal-editor-sheet className="rounded-2xl glass-alt">
+      <div className="flex items-center justify-between px-4 pt-3 pb-2">
+        <span className="text-text-200">{t(goal ? 'goalBar.editGoal' : 'goalBar.setGoal')}</span>
+        <IconButton size="sm" aria-label={t('common:close')} onClick={() => setEditorOpen(false)}><CloseIcon size={14} /></IconButton>
+      </div>
+      {details}
+      {!sessionId && <p className="px-4 text-[length:var(--fs-xs)] text-text-400">{t('goalBar.noSessionHint')}</p>}
+      <textarea ref={textareaRef} value={draft} onChange={event => setDraft(event.target.value)} disabled={busy || !canReplace}
+        onPaste={event => {
+          if (Array.from(event.clipboardData.items).some(item => item.kind === 'file' && item.type.startsWith('image/'))) {
+            event.preventDefault(); setError(t('goalBar.imagesUnsupported'))
+          }
+        }}
+        onKeyDown={event => {
+          if (event.key === 'Escape') { event.stopPropagation(); setEditorOpen(false) }
+          if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void save() }
+        }}
+        placeholder={t('goalBar.objectivePlaceholder')} aria-label={t('goalBar.objective')} rows={isCompact ? 5 : 4}
+        className="w-full resize-none bg-transparent px-4 py-2 text-text-100 focus:outline-none disabled:opacity-60" />
+      <label className="flex items-center gap-2 px-4 pb-2 text-[length:var(--fs-sm)] text-text-300">
+        {t('goalBar.tokenBudget')}
+        <input aria-label={t('goalBar.tokenBudget')} type="text" inputMode="numeric" value={budget} onChange={event => setBudget(event.target.value)} disabled={busy}
+          placeholder={t('goalBar.unbounded')} className="min-w-0 flex-1 rounded-lg border border-border-200 bg-transparent px-2 py-1" />
+      </label>
+      {!validBudget && <p role="alert" className="px-4 pb-2 text-red-400">{t('goalBar.invalidBudget')}</p>}
+      <p className="px-4 pb-2 text-[length:var(--fs-xs)] text-text-500">{t('goalBar.nativeHint')}</p>
+      {error && <p role="alert" className="px-4 pb-2 text-[length:var(--fs-xs)] text-red-400">{error}</p>}
+      <div className="flex justify-end gap-2 px-3 pb-3" style={isCompact ? { paddingBottom: 'max(0.75rem, var(--safe-area-inset-bottom, 0px))' } : undefined}>
+        <button type="button" onClick={() => setEditorOpen(false)} className="h-8 px-3 text-text-300">{t('common:cancel')}</button>
+        <button type="button" onClick={() => void save()} disabled={busy || !draft.trim() || !validBudget}
+          className="h-8 rounded-lg bg-accent-main-000 px-4 text-oncolor-100 disabled:opacity-40">{t('common:save')}</button>
+      </div>
+    </div>
+  )
   return (
     <div ref={rootRef} className="relative z-0 min-w-0 mx-4 -mb-8 pb-8 rounded-2xl glass-alt border border-border-200/60" data-goal-bar>
-      <div data-composer-queue className="max-h-[min(200px,25dvh)] overflow-y-auto custom-scrollbar rounded-t-2xl">
-        {queuedMessages}
-      </div>
-      {editorOpen && !isCompact ? (
-        <GoalEditor
-          goal={goal}
-          draft={draft}
-          onDraftChange={setDraft}
-          onSave={handleSave}
-          onClose={closeEditor}
-          onDrop={handleDrop}
-          isCompact={isCompact}
-          sessionId={sessionId}
-          isSaving={isSaving}
-          images={images}
-          setImages={setImages}
-          supportsImages={supportsImages}
-          saveError={saveError}
-        />
-      ) : goal ? (
-        <div className="flex items-center gap-1 h-9 pl-3 pr-1.5 text-[length:var(--fs-sm)]">
+      <div data-composer-queue className="max-h-[min(200px,25dvh)] overflow-y-auto custom-scrollbar rounded-t-2xl">{queuedMessages}</div>
+      {editorOpen && !isCompact ? editor : (
+        <div className="flex items-center gap-1 min-h-9 pl-3 pr-1.5 text-[length:var(--fs-sm)]">
           <TargetIcon size={14} className="shrink-0 text-accent-main-100" />
-          <button
-            type="button"
-            onClick={openEditor}
-            title={`${t(statusKey)}: ${goal.objective}`}
-            disabled={!canOperate}
-            className="flex items-center gap-2 min-w-0 flex-1 overflow-hidden text-left disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <span className={isCompact ? 'sr-only' : 'shrink-0 text-text-300'}>{t(statusKey)}</span>
-            {/* 全局 truncate 使用 overflow: clip，flex 子项仍需显式允许收缩。 */}
-            <span className="min-w-0 flex-1 truncate text-text-100">{goal.objective}</span>
-            {elapsedLabel && <span className="shrink-0 whitespace-nowrap text-text-500">• {elapsedLabel}</span>}
+          <button type="button" onClick={openEditor} disabled={!canOperate || busy} className="min-w-0 flex-1 truncate text-left text-text-100"
+            title={goal ? `${t(STATUS_KEYS[goal.status] ?? 'goalBar.unknownStatus')}: ${goal.objective}` : undefined}>
+            {goal ? `${t(STATUS_KEYS[goal.status] ?? 'goalBar.unknownStatus')}: ${goal.objective}` : t('goalBar.setGoal')}
           </button>
-          {/* 只有可暂停/可恢复的状态才显示切换按钮；complete/dropped 无意义 */}
-          {(goal.status === 'active' || goal.status === 'paused' || goal.status === 'budget-limited') && (
-            <IconButton
-              size="sm"
-              className="shrink-0"
-              aria-label={t(goal.status === 'paused' || goal.status === 'budget-limited' ? 'goalBar.resume' : 'goalBar.pause')}
-              onClick={handleTogglePause}
-              disabled={!canOperate}
-            >
-              {goal.status === 'paused' || goal.status === 'budget-limited' ? <PlayIcon size={14} /> : <PauseIcon size={14} />}
+          {sessionId && <IconButton size="sm" aria-label={t('goalBar.refresh')} onClick={() => void refresh()} disabled={busy}><ExpandIcon size={14} /></IconButton>}
+          {goal && (goal.status === 'active' || goal.status === 'budget-limited' || goal.status === 'paused') && (
+            <IconButton size="sm" aria-label={t(goal.status === 'paused' ? 'goalBar.resume' : 'goalBar.pause')}
+              onClick={() => void run(goal.status === 'paused' ? 'resume' : 'pause')} disabled={!sessionId || busy}>
+              {goal.status === 'paused' ? <PlayIcon size={14} /> : <PauseIcon size={14} />}
             </IconButton>
           )}
-          <IconButton size="sm" className="shrink-0" aria-label={t('goalBar.editGoal')} onClick={openEditor} disabled={!canOperate}>
-            <ExpandIcon size={14} />
-          </IconButton>
-          <IconButton size="sm" className="shrink-0" aria-label={t('goalBar.drop')} onClick={handleDrop} disabled={!canOperate}>
-            <TrashIcon size={14} />
-          </IconButton>
+          {goal && goal.status !== 'complete' && <button type="button" aria-label={t('goalBar.completeAction')} onClick={() => void run('complete')} disabled={!sessionId || busy}
+            className="shrink-0 px-2 text-text-300 disabled:opacity-40">{t('goalBar.completeAction')}</button>}
+          {goal && <IconButton size="sm" aria-label={t('goalBar.drop')} onClick={() => void run('drop')} disabled={!sessionId || busy}><TrashIcon size={14} /></IconButton>}
         </div>
-      ) : (
-        <button
-          type="button"
-          onClick={openEditor}
-          disabled={!canOperate}
-          className="w-full flex items-center justify-start gap-2 h-9 px-3 rounded-t-2xl text-[length:var(--fs-sm)] font-medium text-text-200 hover:text-accent-main-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-text-200"
-        >
-          <TargetIcon size={15} className="shrink-0" />
-          <span>{t('goalBar.setGoal')}</span>
-        </button>
       )}
-      {editorOpen && isCompact && (
-        <GoalEditor
-          goal={goal}
-          draft={draft}
-          onDraftChange={setDraft}
-          onSave={handleSave}
-          onClose={closeEditor}
-          onDrop={handleDrop}
-          isCompact={isCompact}
-          sessionId={sessionId}
-          isSaving={isSaving}
-          images={images}
-          setImages={setImages}
-          supportsImages={supportsImages}
-          saveError={saveError}
-        />
-      )}
+      {goal && !editorOpen && <div className="px-4 pb-1 text-[length:var(--fs-xs)] text-text-400" data-goal-usage>
+        {goal.tokensUsed.toLocaleString()} / {goal.tokenBudget?.toLocaleString() ?? t('goalBar.unbounded')} • {t('goalBar.remaining')}: {goal.tokenBudget === undefined ? t('goalBar.unbounded') : Math.max(0, goal.tokenBudget - goal.tokensUsed).toLocaleString()} • {elapsed(goal.timeUsedSeconds)}
+      </div>}
+      {error && !editorOpen && <p role="alert" className="px-4 pb-2 text-[length:var(--fs-xs)] text-red-400">{error}</p>}
+      {editorOpen && isCompact && createPortal(<div className="fixed inset-0 z-[250]">
+        <div className="absolute inset-0 bg-black/50" onClick={() => setEditorOpen(false)} />
+        <div className="absolute inset-x-0 bottom-0 max-h-[95dvh] overflow-y-auto custom-scrollbar rounded-t-2xl border-t border-border-200/60 shadow-2xl">{editor}</div>
+      </div>, document.body)}
     </div>
   )
 })

@@ -69,6 +69,13 @@ const EVENT_TYPES: {
     icon: <AlertTriangleIcon size={14} />,
     color: 'text-warning-100',
   },
+  {
+    type: 'info',
+    labelKey: 'notifications.eventInfo',
+    descKey: 'notifications.eventInfoDesc',
+    icon: <AlertCircleIcon size={14} />,
+    color: 'text-info-100',
+  },
 ]
 
 type AudioOperation = 'upload' | 'remove' | 'export'

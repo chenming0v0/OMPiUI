@@ -8,10 +8,12 @@ type Harness = {
   chunks: Map<string, { timer: NodeJS.Timeout; receivedBytes: number }>
   chunkBytes: number
   stderrBuffer: string[]
+  handleStdoutLine(line: string): void
   handleChunk(frame: object): void
   failAllPending(): void
   setOutputPaused(paused: boolean): void
-  on(event: string, listener: (frame: { text: string }) => void): void
+  on(event: "frame", listener: (frame: { text: string }) => void): void
+  on(event: "protocolError", listener: (message: string, originalType?: string) => void): void
 }
 
 function harness(): Harness {
@@ -141,4 +143,23 @@ test("local protocol errors surface as events while the runtime is alive, not on
   assert.equal(errors.length, 1)
   assert.match(errors[0]!, /length mismatch/)
   assert.match(rpc.stderrBuffer.join(""), /length mismatch/)
+})
+
+test("rejected initial chunks and malformed stdout deliver errors without retaining bytes", () => {
+  const rpc = harness()
+  const errors: Array<{ message: string; originalType?: string }> = []
+  rpc.on("protocolError", (message, originalType) => errors.push({ message, originalType }))
+  rpc.handleChunk(chunk("length", 0, 1, 0, Buffer.from("x")))
+  rpc.handleChunk(chunk("count", 0, 4097, 8192, Buffer.from("x")))
+  rpc.handleChunk(chunk("index", 2, 2, 2, Buffer.from("x")))
+  rpc.handleStdoutLine("not JSON")
+  rpc.handleStdoutLine("{}")
+  assert.equal(errors.length, 5)
+  assert.deepEqual(errors.slice(0, 3).map(error => error.originalType), ["rpc_chunk", "rpc_chunk", "rpc_chunk"])
+  assert.equal(rpc.chunkBytes, 0)
+  assert.equal(rpc.chunks.size, 0)
+  let continued = ""
+  rpc.on("frame", frame => { continued = frame.text })
+  rpc.handleStdoutLine(JSON.stringify({ type: "notice", text: "continued" }))
+  assert.equal(continued, "continued")
 })

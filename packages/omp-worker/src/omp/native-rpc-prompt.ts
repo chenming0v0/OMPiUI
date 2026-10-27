@@ -8,8 +8,9 @@ const promptFlights = new WeakMap<OmpRpcClient, Promise<void>>()
  * dispatch and use the correlated terminal result when no synchronous local
  * completion is declared. Never infer acceptance from an unrelated agent_start.
  */
-export async function requestNativePromptAcceptance(client: OmpRpcClient, command: JsonObject, timeoutMs = 60_000): Promise<OmpRpcResponse> {
-  const previous = promptFlights.get(client)
+export async function requestNativePromptAcceptance(client: OmpRpcClient, command: JsonObject, timeoutMs = 60_000, beforeDispatch?: () => void): Promise<OmpRpcResponse> {
+  // Interruption must overtake an earlier prompt, not wait for its turn to end.
+  const previous = command.type === "abort_and_prompt" ? undefined : promptFlights.get(client)
   let finish!: () => void
   const flight = new Promise<void>(resolve => { finish = resolve })
   promptFlights.set(client, flight)
@@ -45,6 +46,7 @@ export async function requestNativePromptAcceptance(client: OmpRpcClient, comman
   timer.unref()
   void promise.catch(() => {})
   try {
+    beforeDispatch?.()
     const response = await client.request({ ...command, id }, timeoutMs)
     const data = unwrapResponse(response)
     if (isJsonObject(data) && data.agentInvoked === false) {

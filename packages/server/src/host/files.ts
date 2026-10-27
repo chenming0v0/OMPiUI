@@ -6,6 +6,7 @@ import {
   open,
   readFile,
   readdir,
+  rmdir,
   rename,
   rm,
   unlink,
@@ -387,7 +388,7 @@ async function moveWorkspaceEntryLocked(
   );
   const targetPath = target.isSymlink
     ? lexicalPath(ws, target.relative)
-    : target.absolute;
+    : path.join(path.dirname(target.absolute), path.posix.basename(target.relative));
   const sourceLexicalPath = lexicalPath(ws, source.relative);
   if (
     process.platform === "win32" &&
@@ -456,14 +457,21 @@ async function deleteWorkspaceEntryLocked(
     ? lexicalPath(ws, resolved.relative)
     : resolved.absolute;
   const stat = await lstat(target);
-  if (stat.isDirectory() && !recursive) {
+  if (!resolved.isSymlink && stat.isDirectory() && !recursive) {
     const children = await readdir(target);
     if (children.length > 0) throw conflict("directory is not empty");
   }
-  await rm(target, {
-    recursive: recursive && stat.isDirectory(),
-    force: false,
-  });
+  if (resolved.isSymlink) {
+    // Remove the alias itself; recursive rm can traverse a Windows junction
+    // whose lstat metadata did not expose its reparse flag.
+    if (process.platform === "win32" && stat.isDirectory()) await rmdir(target);
+    else await unlink(target);
+  } else {
+    await rm(target, {
+      recursive: recursive && stat.isDirectory(),
+      force: false,
+    });
+  }
 }
 
 async function describeEntry(

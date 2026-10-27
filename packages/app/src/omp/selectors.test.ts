@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { SessionEntry } from './vendor/pi-coding-agent'
+import type { SessionEntry, SessionMessageEntry } from './vendor/pi-coding-agent'
 import { getToolExecutionStatus, type PiBranchPage, type PiBashExecutionGroupItem, type PiTimelineItem, type PiAssistantMessageItem } from './domain/index.js'
 import { selectPiTimelineItems } from './selectors/index.js'
 
@@ -272,7 +272,7 @@ describe('tool execution history', () => {
   it('renders an orphan result at a pagination boundary and removes its fallback once the owner is loaded', () => {
     const result = { type: 'message', id: 'orphan-result', parentId: 'missing-owner', timestamp: '2026-10-22T00:00:00Z', message: { role: 'toolResult', toolCallId: 'call-orphan', toolName: 'read', content: [{ type: 'text', text: 'Permission denied' }], isError: true, timestamp: 1 } } as SessionEntry
     const orphan = selectPiTimelineItems(page([result]))[0]
-    expect(orphan).toMatchObject({ kind: 'tool_result', execution: { call: { id: 'call-orphan', name: 'read' }, result: { isError: true, content: [{ text: 'Permission denied' }] } } })
+    expect(orphan).toMatchObject({ kind: 'tool_result', execution: { argumentsUnknown: true, call: { id: 'call-orphan', name: 'read' }, result: { isError: true, content: [{ text: 'Permission denied' }] } } })
     const owner: SessionEntry = {
       type: 'message', id: 'owner', parentId: null, timestamp: '2026-10-22T00:00:00Z',
       message: {
@@ -286,6 +286,40 @@ describe('tool execution history', () => {
     const hydrated = selectPiTimelineItems(page([owner, result]))
     expect(hydrated.map(item => item.kind)).toEqual(['assistant_message'])
     expect(hydrated[0]).toMatchObject({ toolResults: { 'call-orphan': { isError: true } } })
+    // Results keep their native payload through window eviction and reread.
+    expect(selectPiTimelineItems(page([result]))[0]).toEqual(orphan)
+    if (owner.type !== 'message' || owner.message.role !== 'assistant') throw new Error('Expected assistant')
+    const livePage = page([result])
+    livePage.checkpoint = { position: { epoch: 'events', sequence: 1 }, liveMessage: { id: 'live-owner', revision: 1, phase: 'persisting', message: owner.message } }
+    // A stable mapping can outlive its entry in the bounded history window.
+    livePage.client = { stableEntryIds: { [owner.id]: 'live-owner' } }
+    const liveItems = selectPiTimelineItems(livePage)
+    expect(liveItems).toHaveLength(1)
+    expect(liveItems[0]).toMatchObject({ kind: 'assistant_message', entryId: 'live-owner', toolResults: { 'call-orphan': { isError: true } } })
+    const persistedItems = selectPiTimelineItems({ ...livePage, items: [owner, result] })
+    expect(persistedItems).toHaveLength(1)
+    expect(persistedItems[0]).toMatchObject({ entryId: owner.id, toolResults: { 'call-orphan': { isError: true } } })
+  })
+
+  it('deduplicates orphan results at their latest native position before a later owner arrives', () => {
+    const call = { type: 'toolCall' as const, id: 'repeated-call', name: 'unknown-tool', arguments: { target: 'actual' } }
+    const first = { type: 'message', id: 'first-result', parentId: null, timestamp: new Date(1).toISOString(), message: { role: 'toolResult', toolCallId: call.id, toolName: call.name, content: [{ type: 'text', text: 'first' }], isError: false, timestamp: 1 } } satisfies SessionMessageEntry
+    const latest = { ...first, id: 'latest-result', timestamp: new Date(3).toISOString(), message: { ...first.message, content: [{ type: 'text', text: '  Permission denied\n' }, { type: 'image', data: 'AA==', mimeType: 'image/png' }], isError: true, timestamp: 3 } } satisfies SessionMessageEntry
+    const owner = { type: 'message', id: 'later-owner', parentId: null, timestamp: new Date(4).toISOString(), message: {
+      role: 'assistant', content: [call], timestamp: 4, api: 'openai-completions', provider: 'fixture', model: 'fixture', stopReason: 'toolUse',
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    } } satisfies SessionMessageEntry
+    const separator = userEntry('separator', 'between results')
+    const orphanItems = selectPiTimelineItems(page([first, separator, latest]))
+    expect(orphanItems.map(item => item.entryId)).toEqual(['separator', 'latest-result'])
+    expect(orphanItems[1]).toMatchObject({ execution: { result: latest.message } })
+    const merged = selectPiTimelineItems(page([first, separator, latest, owner]))
+    expect(merged.map(item => item.kind)).toEqual(['user_message', 'assistant_message'])
+    expect(merged[1]).toMatchObject({ toolResults: { [call.id]: latest.message } })
+    // Backfilling an earlier orphan must not overwrite a newer owned result.
+    const ownedLatest = selectPiTimelineItems(page([first, owner, latest]))
+    expect(ownedLatest).toHaveLength(1)
+    expect(ownedLatest[0]).toMatchObject({ toolResults: { [call.id]: latest.message } })
   })
 })
 

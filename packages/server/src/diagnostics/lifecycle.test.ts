@@ -14,7 +14,7 @@ test("runtime reaping records the busy decision and the actual closing reason", 
   const worker = {
     command: async (type: string) => {
       commands.push(type)
-      return { isStreaming: streaming, isIdle: !streaming, pendingMessageCount: 0 }
+      return { isStreaming: streaming, isIdle: !streaming, isSettled: !streaming, pendingMessageCount: 0 }
     },
     getSessionId: () => "s1", getSessionFile: () => undefined, getCwd: () => ".",
     onEvent: () => () => {}, onCrash: () => () => {}, onClose: () => () => {},

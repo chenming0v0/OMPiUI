@@ -12,6 +12,7 @@ type ModelInfo = Model<Api>
 
 interface InputToolbarProps {
   variants?: string[]
+  variantsDisabled?: boolean
   selectedVariant?: string
   onVariantChange?: (variant: string | undefined) => void
 
@@ -47,6 +48,7 @@ interface InputToolbarProps {
 
 export function InputToolbar({
   variants = [],
+  variantsDisabled = false,
   selectedVariant,
   onVariantChange,
   fileCapabilities,
@@ -80,6 +82,8 @@ export function InputToolbar({
   const supportsAnyFile = caps.image || caps.pdf || caps.audio || caps.video
   const controlsDisabled = isSending
   const showStop = isStopping || Boolean((isCompacting || isStreaming || sessionActive) && (!canSend || isSending))
+  const effortDisabled = controlsDisabled || variantsDisabled || (variants.length === 1 && variants[0] === 'off')
+  const displayedVariant = variants.length === 1 && variants[0] === 'off' ? 'off' : selectedVariant
 
   // 动态构建 HTML accept 和 Tauri filter
   const { acceptString, tauriFilters } = useMemo(() => {
@@ -291,6 +295,10 @@ export function InputToolbar({
     }, 0)
     return () => clearTimeout(timerId)
   }, [variantMenuOpen, focusMenuItem])
+
+  useEffect(() => {
+    if (effortDisabled || variants.length === 0) setVariantMenuOpen(false)
+  }, [effortDisabled, variants])
   const activeDeliveryMode: DeliveryMode = deliveryMode === 'steer' && canSteer
     ? 'steer'
     : deliveryMode === 'abortAndPrompt' && canInterruptAndPrompt
@@ -361,14 +369,14 @@ export function InputToolbar({
                   setVariantMenuOpen(true)
                 }
               }}
-              disabled={controlsDisabled}
+              disabled={effortDisabled}
               aria-haspopup="menu"
               aria-expanded={variantMenuOpen}
               aria-controls={variantMenuOpen ? variantMenuId : undefined}
               className="flex items-center gap-1.5 px-2 py-1.5 text-[length:var(--fs-base)] rounded-lg transition-all duration-150 hover:bg-bg-200 active:scale-95 cursor-pointer min-w-0 overflow-hidden w-full"
               title={
-                selectedVariant
-                  ? selectedVariant.charAt(0).toUpperCase() + selectedVariant.slice(1)
+                displayedVariant
+                  ? displayedVariant.charAt(0).toUpperCase() + displayedVariant.slice(1)
                   : t('inputToolbar.default')
               }
             >
@@ -377,8 +385,8 @@ export function InputToolbar({
                 <ThinkingIcon />
               </span>
               <span className="text-[length:var(--fs-sm)] text-text-300 truncate">
-                {selectedVariant
-                  ? selectedVariant.charAt(0).toUpperCase() + selectedVariant.slice(1)
+                {displayedVariant
+                  ? displayedVariant.charAt(0).toUpperCase() + displayedVariant.slice(1)
                   : t('inputToolbar.default')}
               </span>
               <span className={`text-text-400 shrink-0 ${isCompact ? 'hidden' : ''}`}>
@@ -388,7 +396,7 @@ export function InputToolbar({
 
             <DropdownMenu
               triggerRef={variantTriggerRef}
-              isOpen={variantMenuOpen}
+              isOpen={variantMenuOpen && !effortDisabled}
               position="top"
               align="left"
               minWidth="auto"
@@ -411,7 +419,7 @@ export function InputToolbar({
                     selected={selectedVariant === variant}
                     selectionRole="menuitemradio"
                     onClick={() => {
-                      onVariantChange?.(variant)
+                      if (!effortDisabled) onVariantChange?.(variant)
                       closeMenuToComposer(() => setVariantMenuOpen(false))
                     }}
                   />
@@ -459,7 +467,7 @@ export function InputToolbar({
                 }}
               />
             )}
-            <IconButton aria-label={t('inputToolbar.attachFile')} disabled={controlsDisabled} onClick={handleFileClick}>
+            <IconButton aria-label={t('inputToolbar.attachFile')} onClick={handleFileClick}>
               <PaperclipIcon />
             </IconButton>
           </>

@@ -31,7 +31,8 @@
     "pending": "等待执行",
     "failed": "失败",
     "cancelled": "已中断",
-    "unknown": "结果未知"
+    "unknown": "结果未知",
+    "argumentsUnknown": "参数未知 — 调用尚未加载"
   },
   "toolSteps": {
     "separator": "，",
@@ -77,6 +78,7 @@
     "moreActions": "等 {{count}} 项操作",
     "taskDone": "子代理已完成",
     "taskActive": "子代理运行中",
+    "taskFailed": "子代理失败",
     "yieldDone": "提交了最终结果",
     "yieldActive": "正在提交结果",
     "yieldFailed": "{{count}} 次结果提交失败"
