@@ -25,6 +25,10 @@ git push origin v<version>
 - `v*` tag 触发 Desktop And Mobile Release。Android 签名 secrets：`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`。
 - 应用内更新检查读本仓库 `releases/latest`，不是 PiUI。
 
+## 工具调用渲染
+
+- 新增工具、改工具行布局/连线、把非 toolCall 条目显示成工具行之前，先读 `.claude/skills/ompiui-tool-rendering/SKILL.md`。工具行外壳只有 `ToolGroup` / `ToolPartView` 一套；要连线就并进同一组，不要自绘卡片或加补线开关。
+
 ## 诊断日志
 
 - 查找会话运行日志、排查刷新后停止、断连重连、状态恢复、命令中止、空闲回收或服务端/worker 重启问题时，优先使用本仓库诊断工具 `npm run diagnostics --`，不要只搜索服务端文本日志就下结论。
