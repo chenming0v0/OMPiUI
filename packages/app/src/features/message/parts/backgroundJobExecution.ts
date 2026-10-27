@@ -4,23 +4,25 @@ import { readBackgroundJobs, type BackgroundJobView } from './customMessagePrese
 const RUNNING_JOB_STATUSES = new Set(['running', 'pending', 'started', 'queued'])
 
 /**
- * 把后台任务投递合成工具执行：type 决定沿用哪个工具的图标/渲染器
- * （bash 走终端样式、task 走子代理样式），name 作为行内 title。
+ * 把后台任务投递合成工具执行：name 作为行内 title，type 只用于取图标。
  * 没有真实起止时间，用 0 → durationMs 表示耗时，只影响时长显示。
  * backgroundJob 标记让行首显示「后台任务」而不是合成的工具名。
+ *
+ * 工具名固定是 job：后台任务投递不是真正的工具调用。冒用 bash / task 会让
+ * ToolBody 选中 BashRenderer / TaskRenderer——它们要的是真实调用参数、子任务
+ * 进度和全屏上下文，合成执行一概没有，结果就是一张自成一体的背景卡片：
+ * 和上下行对不齐，也接不上组内连线。统一走 DefaultRenderer 的 Input/Output
+ * 折叠，外观才和其它工具行完全一致。
  */
 export function backgroundJobExecution(job: BackgroundJobView, callId: string): PiToolExecution {
-  // 只有 bash / task 这两类原生 job 有对应的工具渲染器；其余（含未知类型）
-  // 统一走通用工具卡片，避免误用终端渲染器和它的全屏上下文依赖。
+  const toolName = 'job'
   const rawType = (job.type ?? '').trim().toLowerCase()
-  const toolName = rawType === 'bash' || rawType === 'task' ? rawType : 'job'
   const call: PiToolExecution['call'] = {
     type: 'toolCall',
     id: callId,
     name: toolName,
-    arguments: toolName === 'bash' ? { command: job.name } : { description: job.name },
+    arguments: { description: job.name, ...(rawType ? { kind: rawType } : {}) },
   }
-
   if (RUNNING_JOB_STATUSES.has(job.status)) return { call, isRunning: true, startedAt: 0, backgroundJob: true }
 
   const text = [job.body.trim(), ...job.errors].filter(Boolean).join('\n\n') || job.summary || ''
