@@ -53,6 +53,10 @@ interface ToolPartViewProps {
   /** 覆盖行首展示名（默认按工具名格式化）。后台任务投递复用工具卡片时
    *  仍要显示「后台任务」，而不是合成的内部工具名。 */
   nameOverride?: string
+  /** 单行也要画上下时间线连接线。工具组内的行靠 isFirst/isLast 决定连线，
+   *  但后台任务投递是独立条目，前后都是别的组，必须自己画满整行，
+   *  否则它会从消息的竖线上「掉出来」。 */
+  standaloneConnectors?: boolean
 }
 
 export const ToolPartView = memo(function ToolPartView({
@@ -67,6 +71,7 @@ export const ToolPartView = memo(function ToolPartView({
   taskSlotIndex,
   taskSlotTitle,
   nameOverride,
+  standaloneConnectors = false,
 }: ToolPartViewProps) {
   const { t } = useTranslation('message')
   const execution = useMemo(() => resolveTaskExecution(rawExecution), [rawExecution])
@@ -338,14 +343,31 @@ export const ToolPartView = memo(function ToolPartView({
     <div ref={rootRef} className="group relative flex min-w-0">
       {/* Timeline Column */}
       <div className="w-8 shrink-0 relative">
-        {/* Top connector — 留 4px gap 到 icon */}
-        {!isFirst && <div className="absolute left-1/2 -translate-x-1/2 top-0 h-[7px] w-px bg-border-300/40" />}
+        {/* Top connector — 留 4px gap 到 icon。独立行要往前多探一点，
+         *  盖住和上一组之间的行距，竖线才不会断。 */}
+        {(!isFirst || standaloneConnectors) && (
+          <div
+            className={
+              standaloneConnectors
+                ? 'absolute left-1/2 -translate-x-1/2 -top-1 h-[13px] w-px bg-border-300/40'
+                : 'absolute left-1/2 -translate-x-1/2 top-0 h-[7px] w-px bg-border-300/40'
+            }
+          />
+        )}
 
         {/* Tool icon — h-9 和右侧 header 等高，flex 自然居中 */}
         <div className="h-9 flex items-center justify-center relative z-10">{toolIcon}</div>
 
         {/* Bottom connector — 留 4px gap 到 icon */}
-        {!isLast && <div className="absolute left-1/2 -translate-x-1/2 top-[29px] bottom-0 w-px bg-border-300/40" />}
+        {(!isLast || standaloneConnectors) && (
+          <div
+            className={
+              standaloneConnectors
+                ? 'absolute left-1/2 -translate-x-1/2 top-[29px] -bottom-1 w-px bg-border-300/40'
+                : 'absolute left-1/2 -translate-x-1/2 top-[29px] bottom-0 w-px bg-border-300/40'
+            }
+          />
+        )}
       </div>
 
       {/* Content Column */}

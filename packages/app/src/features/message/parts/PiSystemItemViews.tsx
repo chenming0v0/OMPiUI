@@ -217,6 +217,7 @@ function BackgroundJobRow({ job, partKey }: { job: BackgroundJobView; partKey: s
         isStreaming={job.status === 'running' || job.status === 'pending'}
         nameOverride={t('system.jobLabel')}
         plain
+        forceTimeline
       />
     </section>
   )

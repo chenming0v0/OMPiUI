@@ -34,6 +34,10 @@ interface ToolGroupProps {
   /** 忽略全局「描述型步骤」设置，始终用单行工具卡片。后台任务不是 agent 的
    *  步骤序列，套上「4/4 steps」摘要行只会多一层无意义外壳。 */
   plain?: boolean
+  /** 强制使用时间线布局（w-8 图标列 + 上下连接线），不用紧凑布局。
+   *  紧凑布局的图标在 14px 列里，和组外的工具行对不齐，看起来就像
+   *  从消息竖线上掉出来了。 */
+  forceTimeline?: boolean
 }
 
 /** 用户需要阅读/交互的工具：沉浸模式下这些工具完成后保持展开 */
@@ -51,6 +55,7 @@ export const ToolGroup = memo(function ToolGroup({
   defaultExpanded = false,
   nameOverride,
   plain = false,
+  forceTimeline = false,
 }: ToolGroupProps) {
   const { t } = useTranslation('message')
   const viewExecutions = useMemo(() => executions.map(resolveTaskExecution), [executions])
@@ -160,7 +165,7 @@ export const ToolGroup = memo(function ToolGroup({
 
   // compact: 单工具时用紧凑布局（图标内联，无 timeline 连接线）
   // 不区分 streaming 状态 — 单工具始终 compact，第二个工具到来时再自然过渡到 timeline
-  const isSingleCompact = rows.length === 1 && !descriptiveToolSteps
+  const isSingleCompact = rows.length === 1 && !descriptiveToolSteps && !forceTimeline
   // steps header: 多工具始终显示；描述型 steps 模式下，单工具也显示
   const showStepsHeader = rows.length > 1 || descriptiveToolSteps
 
@@ -181,6 +186,7 @@ export const ToolGroup = memo(function ToolGroup({
             isStreaming={isStreaming}
             defaultExpanded={defaultExpanded}
             nameOverride={nameOverride}
+            standaloneConnectors={forceTimeline && rows.length === 1}
           />
         ))
       : null
