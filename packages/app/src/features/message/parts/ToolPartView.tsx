@@ -50,6 +50,9 @@ interface ToolPartViewProps {
   /** 批量 task 拆行：本行对应的子任务序号与标题 */
   taskSlotIndex?: number
   taskSlotTitle?: string
+  /** 覆盖行首展示名（默认按工具名格式化）。后台任务投递复用工具卡片时
+   *  仍要显示「后台任务」，而不是合成的内部工具名。 */
+  nameOverride?: string
 }
 
 export const ToolPartView = memo(function ToolPartView({
@@ -63,6 +66,7 @@ export const ToolPartView = memo(function ToolPartView({
   defaultExpanded = false,
   taskSlotIndex,
   taskSlotTitle,
+  nameOverride,
 }: ToolPartViewProps) {
   const { t } = useTranslation('message')
   const execution = useMemo(() => resolveTaskExecution(rawExecution), [rawExecution])
@@ -81,13 +85,13 @@ export const ToolPartView = memo(function ToolPartView({
   const failureLabel = t(!result && execution.interruption === 'cancelled' ? 'toolPart.cancelled' : !result && execution.interruption === 'unknown' ? 'toolPart.unknown' : 'toolPart.failed')
   // Yield 完成工具：行名直接展示任务状态（提交中/完成/失败），不显示工具名
   const isYield = !execution.argumentsUnknown && isYieldTool(toolName)
-  const displayName = isYield && !isQueued
+  const displayName = nameOverride ?? (isYield && !isQueued
     ? isActive
       ? t('yield.submitting')
       : isError
         ? t('yield.failed')
         : t('yield.completed')
-    : formatToolName(toolName)
+    : formatToolName(toolName))
   const now = useNow(250, isActive)
   const startTime = execution.startedAt
   const calibratedNow = isActive ? serverStore.getActiveCalibratedNow() : undefined
@@ -195,6 +199,7 @@ export const ToolPartView = memo(function ToolPartView({
         <button
           type="button"
           ref={headerRef}
+          aria-expanded={effectiveExpanded}
           className={`flex w-full items-center gap-3 rounded-md px-0 ${MSG_SPACING.header} text-left hover:bg-bg-200/30 transition-colors group/header`}
           onClick={toggleExpanded}
         >
@@ -263,6 +268,7 @@ export const ToolPartView = memo(function ToolPartView({
           <button
             type="button"
             ref={headerRef}
+            aria-expanded={effectiveExpanded}
             className="flex items-center gap-2 w-full h-9 text-left pl-2 pr-0 hover:bg-bg-200/40 rounded-sm transition-colors group/header"
             onClick={toggleExpanded}
           >
@@ -348,6 +354,7 @@ export const ToolPartView = memo(function ToolPartView({
         <button
           type="button"
           ref={headerRef}
+          aria-expanded={effectiveExpanded}
           className="flex items-center gap-2.5 w-full h-9 text-left pl-2 pr-0 hover:bg-bg-200/40 rounded-sm transition-colors group/header"
           onClick={toggleExpanded}
         >

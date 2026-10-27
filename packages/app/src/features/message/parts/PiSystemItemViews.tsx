@@ -1,4 +1,4 @@
-import { memo, useState } from 'react'
+import { memo, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import type {
   PiBashExecutionGroupItem,
@@ -12,15 +12,13 @@ import type {
   PiUnknownItem,
 } from '../../../omp/domain/index.js'
 import { MarkdownRenderer } from '../../../components/MarkdownRenderer'
-import { ChevronDownIcon, ChevronRightIcon, LayersIcon, UsersIcon } from '../../../components/Icons'
-import { ContentBlock } from '../../../components/ContentBlock'
+import { ChevronDownIcon, UsersIcon } from '../../../components/Icons'
 import { useUiDisclosureState } from '../../../utils/uiDisclosureState'
 import { useDisclosureScrollLock } from '../../../hooks'
 import { useNow } from '../../../hooks/useNow'
 import { chevronClass, MessageExpandPanel, useMessageExpandRender } from '../messageExpand'
 import { MSG_SPACING } from '../messageSpacing'
 import { ToolGroup } from './ToolGroup'
-import { formatDuration } from '../../../utils/formatUtils'
 import { customMessageText, readAgentMessage, readBackgroundJobs, type BackgroundJobView } from './customMessagePresentation'
 
 // ============================================
@@ -193,148 +191,93 @@ function CustomMessageItemView({ item }: { item: PiCustomMessageItem }) {
   }
   const jobs = readBackgroundJobs(item)
   if (jobs) {
-    return <div className="min-w-0">{jobs.map((job, index) => <BackgroundJobCard key={`${job.id}:${index}`} job={job} partKey={`${item.entryId}:${job.id}:${index}`} />)}</div>
+    return (
+      <div className="min-w-0">
+        {jobs.map((job, index) => (
+          <BackgroundJobRow key={`${job.id}:${index}`} job={job} partKey={`${item.entryId}:${job.id}:${index}`} />
+        ))}
+      </div>
+    )
   }
   const text = customMessageText(item)
   return text.trim() ? <MarkdownRenderer content={text} /> : null
 }
 
-const JOB_STATUS: Record<string, { key: string; tone: string }> = {
-  completed: { key: 'system.jobCompleted', tone: 'bg-success-100/10 text-success-100' },
-  failed: { key: 'system.jobFailed', tone: 'bg-danger-100/10 text-danger-100' },
-  cancelled: { key: 'system.jobCancelled', tone: 'bg-bg-200/60 text-text-400' },
-  aborted: { key: 'system.jobAborted', tone: 'bg-danger-100/10 text-danger-100' },
-}
-
-const MARKDOWN_TABLE_DIVIDER = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/m
-
-function isMarkdownDocument(text: string): boolean {
-  if (/^\s*```/m.test(text) || MARKDOWN_TABLE_DIVIDER.test(text)) return true
-  const lines = text.split('\n').filter(line => line.trim())
-  const headings = lines.filter(line => /^#{1,6}\s+\S/.test(line))
-  return headings.length > 0 && lines.length > headings.length
-}
-
-function BackgroundJobCard({ job, partKey }: { job: BackgroundJobView; partKey: string }) {
+/** 后台任务沿用普通工具卡片的行样式（同样的图标列、title、耗时、折叠）。
+ *  之前这里自己写了一套卡片 + header + 状态徽标 + 结果小字，与其余工具完全
+ *  不同的视觉语言；现在把 job 合成一次工具执行，交给 ToolGroup 渲染。 */
+function BackgroundJobRow({ job, partKey }: { job: BackgroundJobView; partKey: string }) {
   const { t } = useTranslation('message')
-  const [expanded, setExpanded] = useUiDisclosureState(`pi:${partKey}:job-result`, false)
-  const [isChildFullscreen, setIsChildFullscreen] = useState(false)
-  const effectiveExpanded = expanded || isChildFullscreen
-  const shouldRenderBody = useMessageExpandRender(effectiveExpanded)
-  const { rootRef, headerRef, withScrollLock } = useDisclosureScrollLock()
-  const duration = job.durationMs !== undefined ? formatDuration(job.durationMs) : job.duration
-  const status = JOB_STATUS[job.status]
-  const failed = job.status === 'failed' || job.status === 'aborted' || job.errors.length > 0
-  const body = job.body.trim()
-  const structured = body.startsWith('[') || body.startsWith('{')
-  const markdown = !structured && isMarkdownDocument(body)
-  const metadata = job.metadata && Object.keys(job.metadata).length > 0 ? JSON.stringify(job.metadata, null, 2) : undefined
-  const summaryOnly = !body && !job.errors.length ? job.summary : undefined
-  const expandable = Boolean(body || metadata || job.fullOutput || job.errors.length || summaryOnly)
-  const preview = job.errors[0] ?? job.summary
-
-  const headerContent = (
-    <>
-      <div className="flex min-w-0 flex-1 items-baseline gap-2 overflow-hidden">
-        <span className={`shrink-0 font-medium text-[length:var(--fs-md)] leading-tight ${failed ? 'text-danger-100' : 'text-text-200 group-hover/header:text-text-100'}`}>
-          {t('system.jobLabel')}
-        </span>
-        <span className="min-w-0 flex-1 truncate font-mono text-[length:var(--fs-sm)] text-text-400 opacity-70" title={job.name}>{job.name}</span>
-      </div>
-      <div className="ml-auto flex shrink-0 items-center gap-2">
-        <span className={`rounded px-1.5 py-px text-[length:var(--fs-xxs)] font-medium ${status?.tone ?? 'bg-bg-200/60 text-text-400'}`}>
-          {status ? t(status.key) : job.status}
-        </span>
-        {duration && <span className="font-mono text-[length:var(--fs-xxs)] tabular-nums text-text-500">{duration}</span>}
-        {expandable && (
-          <span className="text-text-500">
-            {effectiveExpanded ? <ChevronDownIcon size={12} /> : <ChevronRightIcon size={12} />}
-          </span>
-        )}
-      </div>
-    </>
-  )
-  const headerClass = 'flex h-9 w-full items-center gap-2 rounded-sm pl-2 pr-0 text-left'
-
+  const execution = useMemo(() => backgroundJobExecution(job), [job])
   return (
-    <section
-      ref={rootRef}
-      className={`group relative grid min-w-0 grid-cols-[14px_minmax(0,1fr)] items-start gap-x-1.5 ${MSG_SPACING.item}`}
-      aria-label={t('system.backgroundJob', { name: job.name })}
-    >
-      <span className={`inline-flex h-9 w-[14px] shrink-0 items-center justify-center ${failed ? 'text-danger-100' : 'text-text-400 group-hover:text-text-300'}`}>
-        <LayersIcon size={14} />
-      </span>
-      <div className="min-w-0">
-        {expandable
-          ? (
-              <button
-                type="button"
-                ref={headerRef}
-                aria-expanded={effectiveExpanded}
-                onClick={() => withScrollLock(() => setExpanded(!expanded))}
-                className={`${headerClass} group/header transition-colors hover:bg-bg-200/40`}
-              >
-                {headerContent}
-              </button>
-            )
-          : <div className={headerClass}>{headerContent}</div>}
-        {preview && !effectiveExpanded && (
-          <p
-            className={`-mt-1 truncate pl-2 pr-2.5 text-[length:var(--fs-xs)] ${job.errors.length ? 'text-danger-100' : 'text-text-500'}`}
-            title={preview}
-          >
-            {preview}
-          </p>
-        )}
-        <MessageExpandPanel open={effectiveExpanded} innerClassName="overflow-hidden min-h-0" contentClassName={MSG_SPACING.toolBodyInset}>
-          {shouldRenderBody && (
-            <div className="flex min-w-0 flex-col gap-2">
-              {job.errors.length > 0 && (
-                <ContentBlock
-                  label={t('system.jobError')}
-                  variant="error"
-                  content={job.errors.join('\n\n')}
-                  stateKey={`pi:${partKey}:job-error`}
-                  fullscreenId={`pi:${partKey}:job-error`}
-                  onFullscreenChange={setIsChildFullscreen}
-                />
-              )}
-              {body && (markdown
-                ? <div className="min-w-0"><MarkdownRenderer content={body} /></div>
-                : (
-                    <ContentBlock
-                      label={t('system.jobResult')}
-                      language={structured ? 'json' : undefined}
-                      content={job.body}
-                      stateKey={`pi:${partKey}:job-body`}
-                      fullscreenId={`pi:${partKey}:job-body`}
-                      onFullscreenChange={setIsChildFullscreen}
-                    />
-                  ))}
-              {summaryOnly && <MarkdownRenderer content={summaryOnly} />}
-              {metadata && (
-                <ContentBlock
-                  label={t('system.jobDetails')}
-                  language="json"
-                  content={metadata}
-                  defaultCollapsed
-                  stateKey={`pi:${partKey}:job-metadata`}
-                  fullscreenId={`pi:${partKey}:job-metadata`}
-                  onFullscreenChange={setIsChildFullscreen}
-                />
-              )}
-              {job.fullOutput && (
-                <p className="break-all text-[length:var(--fs-xs)] text-text-500">
-                  {t('system.jobFullOutput', { path: job.fullOutput })}
-                </p>
-              )}
-            </div>
-          )}
-        </MessageExpandPanel>
-      </div>
+    <section className="min-w-0" aria-label={t('system.backgroundJob', { name: job.name })}>
+      <ToolGroup
+        groupId={partKey}
+        executions={[execution]}
+        isStreaming={job.status === 'running' || job.status === 'pending'}
+        nameOverride={t('system.jobLabel')}
+        plain
+      />
     </section>
   )
+}
+
+const RUNNING_JOB_STATUSES = new Set(['running', 'pending', 'started', 'queued'])
+
+/**
+ * 把后台任务投递合成一次工具执行：type 决定沿用哪个工具的图标/渲染器
+ * （bash 走终端样式、task 走子代理样式），name 作为行内 title。
+ * 没有真实起止时间，用 0 → durationMs 表示耗时，只影响时长显示。
+ */
+function backgroundJobExecution(job: BackgroundJobView): PiToolExecution {
+  // 只有 bash / task 这两类原生 job 有对应的工具渲染器；其余（含未知类型）
+  // 统一走通用工具卡片，避免误用终端渲染器和它的全屏上下文依赖。
+  const rawType = (job.type ?? '').trim().toLowerCase()
+  const toolName = rawType === 'bash' || rawType === 'task' ? rawType : 'job'
+  const callId = `job:${job.id}`
+  const isBash = toolName.toLowerCase() === 'bash'
+  const call: PiToolExecution['call'] = {
+    type: 'toolCall',
+    id: callId,
+    name: toolName,
+    arguments: isBash ? { command: job.name } : { description: job.name },
+  }
+
+  if (RUNNING_JOB_STATUSES.has(job.status)) return { call, isRunning: true, startedAt: 0 }
+
+  const text = [job.body.trim(), ...job.errors].filter(Boolean).join('\n\n') || job.summary || ''
+  const failed = job.status === 'failed' || job.status === 'aborted' || job.errors.length > 0
+  // 头部耗时由 ToolPartView 从 startedAt/completedAt 算，原生 duration 是
+  // 「5m 44s」这种字符串，先折算成毫秒才能复用同一套格式化。
+  const durationMs = job.durationMs ?? parseDurationLabel(job.duration)
+  return {
+    call,
+    startedAt: durationMs !== undefined ? 0 : undefined,
+    completedAt: durationMs,
+    result: {
+      role: 'toolResult',
+      toolCallId: callId,
+      toolName,
+      content: [{ type: 'text', text }],
+      isError: failed,
+      timestamp: durationMs,
+    } as unknown as PiToolExecution['result'],
+  }
+}
+
+const DURATION_PART = /(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)/gi
+const DURATION_UNIT_MS: Record<string, number> = { ms: 1, s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }
+
+/** 解析原生 "1m 11s" / "332ms" 形式的耗时为毫秒；无法解析时返回 undefined。 */
+function parseDurationLabel(label: string | undefined): number | undefined {
+  if (!label) return undefined
+  let total = 0
+  let matched = false
+  for (const match of label.matchAll(DURATION_PART)) {
+    matched = true
+    total += Number.parseFloat(match[1]) * DURATION_UNIT_MS[match[2].toLowerCase()]
+  }
+  return matched ? Math.round(total) : undefined
 }
 
 function UnknownItemView({ item }: { item: PiUnknownItem }) {
