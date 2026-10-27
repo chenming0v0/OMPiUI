@@ -609,6 +609,28 @@ export const PI_COMMAND_SPECS = [
     idempotent: true,
   },
   {
+    name: "asyncJobs.get",
+    scope: "session",
+    description: "Read running and recent OMP background jobs",
+    queue: "immediate",
+    idempotent: true,
+  },
+  {
+    name: "asyncJobs.inspect",
+    scope: "session",
+    description: "Read one OMP background job's command and output tail",
+    paramsSchema: objectSchema({ jobId: STRING }, ["jobId"]),
+    queue: "immediate",
+    idempotent: true,
+  },
+  {
+    name: "asyncJobs.cancel",
+    scope: "session",
+    description: "Cancel a running OMP background job",
+    paramsSchema: objectSchema({ jobId: STRING }, ["jobId"]),
+    queue: "immediate",
+  },
+  {
     name: "prompts.list",
     scope: "session",
     description: "List loaded OMP prompt templates",
@@ -1037,6 +1059,9 @@ export const RUNTIME_TARGETS = {
   "tree.get": "getTree",
   "registry.get": "getRegistry",
   "skills.list": "listSkills",
+  "asyncJobs.get": "getAsyncJobs",
+  "asyncJobs.inspect": "inspectAsyncJob",
+  "asyncJobs.cancel": "cancelAsyncJob",
   "prompts.list": "listPrompts",
   "agentsFiles.list": "listAgentsFiles",
   "attachment.get": "getAttachment",
@@ -1069,6 +1094,9 @@ export type PiCommandParams = CoreCommandParams & {
   "tree.get": PiPageParams;
   "registry.get": Record<string, never>;
   "skills.list": Record<string, never>;
+  "asyncJobs.get": Record<string, never>;
+  "asyncJobs.inspect": { jobId: string };
+  "asyncJobs.cancel": { jobId: string };
   "prompts.list": Record<string, never>;
   "agentsFiles.list": Record<string, never>;
   "attachment.get": { entryId: string; blockIndex: number; offset?: number; source?: "content" | "details" };

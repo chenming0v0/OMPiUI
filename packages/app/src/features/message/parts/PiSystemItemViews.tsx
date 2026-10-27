@@ -1,4 +1,4 @@
-import { memo } from 'react'
+import { memo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type {
   PiBashExecutionGroupItem,
@@ -12,11 +12,13 @@ import type {
   PiUnknownItem,
 } from '../../../omp/domain/index.js'
 import { MarkdownRenderer } from '../../../components/MarkdownRenderer'
-import { ChevronDownIcon } from '../../../components/Icons'
+import { ChevronDownIcon, ChevronRightIcon, LayersIcon, UsersIcon } from '../../../components/Icons'
+import { ContentBlock } from '../../../components/ContentBlock'
 import { useUiDisclosureState } from '../../../utils/uiDisclosureState'
 import { useDisclosureScrollLock } from '../../../hooks'
 import { useNow } from '../../../hooks/useNow'
 import { chevronClass, MessageExpandPanel, useMessageExpandRender } from '../messageExpand'
+import { MSG_SPACING } from '../messageSpacing'
 import { ToolGroup } from './ToolGroup'
 import { formatDuration } from '../../../utils/formatUtils'
 import { customMessageText, readAgentMessage, readBackgroundJobs, type BackgroundJobView } from './customMessagePresentation'
@@ -178,60 +180,159 @@ function CustomMessageItemView({ item }: { item: PiCustomMessageItem }) {
   const agent = readAgentMessage(item)
   if (agent) {
     return (
-      <section className="min-w-0 rounded-md border border-border-200 bg-bg-100/50 px-3 py-2" aria-label={t('system.agentMessage', { name: agent.sender })}>
-        <div className="mb-1 text-[length:var(--fs-xs)] font-medium text-text-400">{t('system.agentMessage', { name: agent.sender })}</div>
-        <MarkdownRenderer content={agent.body} />
+      <section className={`min-w-0 ${MSG_SPACING.item}`} aria-label={t('system.agentMessage', { name: agent.sender })}>
+        <div className="min-w-0 border-l-2 border-accent-main-100/40 pl-3">
+          <div className="flex items-center gap-1.5 pb-1 text-[length:var(--fs-xs)] text-text-400">
+            <UsersIcon size={12} className="shrink-0" />
+            <span className="min-w-0 truncate">{t('system.agentMessageFrom', { name: agent.sender })}</span>
+          </div>
+          <MarkdownRenderer content={agent.body} />
+        </div>
       </section>
     )
   }
   const jobs = readBackgroundJobs(item)
   if (jobs) {
-    return <div className="min-w-0 space-y-2">{jobs.map((job, index) => <BackgroundJobCard key={`${job.id}:${index}`} job={job} partKey={`${item.entryId}:${job.id}:${index}`} />)}</div>
+    return <div className="min-w-0">{jobs.map((job, index) => <BackgroundJobCard key={`${job.id}:${index}`} job={job} partKey={`${item.entryId}:${job.id}:${index}`} />)}</div>
   }
   const text = customMessageText(item)
   return text.trim() ? <MarkdownRenderer content={text} /> : null
 }
 
+const JOB_STATUS: Record<string, { key: string; tone: string }> = {
+  completed: { key: 'system.jobCompleted', tone: 'bg-success-100/10 text-success-100' },
+  failed: { key: 'system.jobFailed', tone: 'bg-danger-100/10 text-danger-100' },
+  cancelled: { key: 'system.jobCancelled', tone: 'bg-bg-200/60 text-text-400' },
+  aborted: { key: 'system.jobAborted', tone: 'bg-danger-100/10 text-danger-100' },
+}
+
+const MARKDOWN_TABLE_DIVIDER = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/m
+
+function isMarkdownDocument(text: string): boolean {
+  if (/^\s*```/m.test(text) || MARKDOWN_TABLE_DIVIDER.test(text)) return true
+  const lines = text.split('\n').filter(line => line.trim())
+  const headings = lines.filter(line => /^#{1,6}\s+\S/.test(line))
+  return headings.length > 0 && lines.length > headings.length
+}
+
 function BackgroundJobCard({ job, partKey }: { job: BackgroundJobView; partKey: string }) {
   const { t } = useTranslation('message')
   const [expanded, setExpanded] = useUiDisclosureState(`pi:${partKey}:job-result`, false)
-  const shouldRenderBody = useMessageExpandRender(expanded)
+  const [isChildFullscreen, setIsChildFullscreen] = useState(false)
+  const effectiveExpanded = expanded || isChildFullscreen
+  const shouldRenderBody = useMessageExpandRender(effectiveExpanded)
   const { rootRef, headerRef, withScrollLock } = useDisclosureScrollLock()
   const duration = job.durationMs !== undefined ? formatDuration(job.durationMs) : job.duration
-  const status = job.status === 'completed' ? t('system.jobCompleted') : job.status
+  const status = JOB_STATUS[job.status]
+  const failed = job.status === 'failed' || job.status === 'aborted' || job.errors.length > 0
   const body = job.body.trim()
   const structured = body.startsWith('[') || body.startsWith('{')
+  const markdown = !structured && isMarkdownDocument(body)
+  const metadata = job.metadata && Object.keys(job.metadata).length > 0 ? JSON.stringify(job.metadata, null, 2) : undefined
+  const summaryOnly = !body && !job.errors.length ? job.summary : undefined
+  const expandable = Boolean(body || metadata || job.fullOutput || job.errors.length || summaryOnly)
+  const preview = job.errors[0] ?? job.summary
+
+  const headerContent = (
+    <>
+      <div className="flex min-w-0 flex-1 items-baseline gap-2 overflow-hidden">
+        <span className={`shrink-0 font-medium text-[length:var(--fs-md)] leading-tight ${failed ? 'text-danger-100' : 'text-text-200 group-hover/header:text-text-100'}`}>
+          {t('system.jobLabel')}
+        </span>
+        <span className="min-w-0 flex-1 truncate font-mono text-[length:var(--fs-sm)] text-text-400 opacity-70" title={job.name}>{job.name}</span>
+      </div>
+      <div className="ml-auto flex shrink-0 items-center gap-2">
+        <span className={`rounded px-1.5 py-px text-[length:var(--fs-xxs)] font-medium ${status?.tone ?? 'bg-bg-200/60 text-text-400'}`}>
+          {status ? t(status.key) : job.status}
+        </span>
+        {duration && <span className="font-mono text-[length:var(--fs-xxs)] tabular-nums text-text-500">{duration}</span>}
+        {expandable && (
+          <span className="text-text-500">
+            {effectiveExpanded ? <ChevronDownIcon size={12} /> : <ChevronRightIcon size={12} />}
+          </span>
+        )}
+      </div>
+    </>
+  )
+  const headerClass = 'flex h-9 w-full items-center gap-2 rounded-sm pl-2 pr-0 text-left'
 
   return (
-    <section ref={rootRef} className="min-w-0 rounded-md border border-border-200 bg-bg-100/50 px-3 py-2" aria-label={t('system.backgroundJob', { name: job.name })}>
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[length:var(--fs-xs)] text-text-400">
-        <span className="font-medium text-text-200 break-all">{job.name}</span>
-        <span>{status}</span>
-        {duration && <span className="tabular-nums">{duration}</span>}
+    <section
+      ref={rootRef}
+      className={`group relative grid min-w-0 grid-cols-[14px_minmax(0,1fr)] items-start gap-x-1.5 ${MSG_SPACING.item}`}
+      aria-label={t('system.backgroundJob', { name: job.name })}
+    >
+      <span className={`inline-flex h-9 w-[14px] shrink-0 items-center justify-center ${failed ? 'text-danger-100' : 'text-text-400 group-hover:text-text-300'}`}>
+        <LayersIcon size={14} />
+      </span>
+      <div className="min-w-0">
+        {expandable
+          ? (
+              <button
+                type="button"
+                ref={headerRef}
+                aria-expanded={effectiveExpanded}
+                onClick={() => withScrollLock(() => setExpanded(!expanded))}
+                className={`${headerClass} group/header transition-colors hover:bg-bg-200/40`}
+              >
+                {headerContent}
+              </button>
+            )
+          : <div className={headerClass}>{headerContent}</div>}
+        {preview && !effectiveExpanded && (
+          <p
+            className={`-mt-1 truncate pl-2 pr-2.5 text-[length:var(--fs-xs)] ${job.errors.length ? 'text-danger-100' : 'text-text-500'}`}
+            title={preview}
+          >
+            {preview}
+          </p>
+        )}
+        <MessageExpandPanel open={effectiveExpanded} innerClassName="overflow-hidden min-h-0" contentClassName={MSG_SPACING.toolBodyInset}>
+          {shouldRenderBody && (
+            <div className="flex min-w-0 flex-col gap-2">
+              {job.errors.length > 0 && (
+                <ContentBlock
+                  label={t('system.jobError')}
+                  variant="error"
+                  content={job.errors.join('\n\n')}
+                  stateKey={`pi:${partKey}:job-error`}
+                  fullscreenId={`pi:${partKey}:job-error`}
+                  onFullscreenChange={setIsChildFullscreen}
+                />
+              )}
+              {body && (markdown
+                ? <div className="min-w-0"><MarkdownRenderer content={body} /></div>
+                : (
+                    <ContentBlock
+                      label={t('system.jobResult')}
+                      language={structured ? 'json' : undefined}
+                      content={job.body}
+                      stateKey={`pi:${partKey}:job-body`}
+                      fullscreenId={`pi:${partKey}:job-body`}
+                      onFullscreenChange={setIsChildFullscreen}
+                    />
+                  ))}
+              {summaryOnly && <MarkdownRenderer content={summaryOnly} />}
+              {metadata && (
+                <ContentBlock
+                  label={t('system.jobDetails')}
+                  language="json"
+                  content={metadata}
+                  defaultCollapsed
+                  stateKey={`pi:${partKey}:job-metadata`}
+                  fullscreenId={`pi:${partKey}:job-metadata`}
+                  onFullscreenChange={setIsChildFullscreen}
+                />
+              )}
+              {job.fullOutput && (
+                <p className="break-all text-[length:var(--fs-xs)] text-text-500">
+                  {t('system.jobFullOutput', { path: job.fullOutput })}
+                </p>
+              )}
+            </div>
+          )}
+        </MessageExpandPanel>
       </div>
-      {job.summary && !job.errors.length && <p className="mt-1 line-clamp-3 whitespace-pre-wrap break-words text-[length:var(--fs-sm)] text-text-300">{job.summary}</p>}
-      {job.errors.map((error, index) => <p key={index} className="mt-1 whitespace-pre-wrap break-words text-[length:var(--fs-sm)] text-danger-100">{error}</p>)}
-      {(job.body || job.metadata && Object.keys(job.metadata).length > 0) && (
-        <>
-          <button ref={headerRef} type="button" aria-expanded={expanded} onClick={() => withScrollLock(() => setExpanded(!expanded))} className="mt-2 inline-flex items-center gap-1 text-[length:var(--fs-xs)] text-text-400 hover:text-text-200 focus-visible:outline-2 focus-visible:outline-primary-100">
-            <ChevronDownIcon size={12} className={chevronClass(expanded)} />
-            {t('system.jobResult')}
-          </button>
-          <MessageExpandPanel open={expanded} innerClassName="overflow-hidden">
-            {shouldRenderBody && (
-              <div className="mt-2 min-w-0">
-                {structured
-                  ? <pre className="whitespace-pre-wrap break-words text-[length:var(--fs-sm)] font-mono">{job.body}</pre>
-                  : <MarkdownRenderer content={job.body} />}
-                {job.metadata && Object.keys(job.metadata).length > 0 && (
-                  <pre className="mt-2 whitespace-pre-wrap break-words text-[length:var(--fs-xs)] font-mono text-text-400">{JSON.stringify(job.metadata, null, 2)}</pre>
-                )}
-              </div>
-            )}
-          </MessageExpandPanel>
-        </>
-      )}
-      {job.fullOutput && <p className="mt-1 break-all text-[length:var(--fs-xs)] text-text-400">{t('system.jobFullOutput', { path: job.fullOutput })}</p>}
     </section>
   )
 }

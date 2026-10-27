@@ -5,7 +5,7 @@ import type { OmpRpcClient, OmpRpcFrame } from "./rpc-client.js"
 import { nativeExtensionResourcesSource } from './resource-registry.js'
 import { NATIVE_PROMPT_ADMISSION_IMPORT, NATIVE_PROMPT_ADMISSION_SOURCE } from './native-prompt-admission.js'
 
-export type RuntimeBridgeOperation = "capabilities" | "identity" | "queue" | "clearQueue" | "removeQueuedMessage" | "sendQueuedMessage" | "submitUserMessage" | "prepareStop" | "resumeStoppedSession" | "navigateTree" | "abortBranchSummary" | "fork" | "branch" | "reload" | "setLabel" | "setScopedModels" | "cycleModel" | "resources" | "tree" | "asyncJobs" | "goal"
+export type RuntimeBridgeOperation = "capabilities" | "identity" | "queue" | "clearQueue" | "removeQueuedMessage" | "sendQueuedMessage" | "submitUserMessage" | "prepareStop" | "resumeStoppedSession" | "navigateTree" | "abortBranchSummary" | "fork" | "branch" | "reload" | "setLabel" | "setScopedModels" | "cycleModel" | "resources" | "tree" | "asyncJobs" | "inspectAsyncJob" | "cancelAsyncJob" | "goal"
 const RESPONSE_PREFIX = "\u001eompiui-runtime:"
 
 /** Correlates managed command results without exposing control traffic as chat/UI events. */
@@ -256,7 +256,7 @@ export default function (pi) {
   async function execute(operation, args, ctx) {
     const session = ownSession(ctx);
     switch (operation) {
-      case "capabilities": return { operations: ["identity", "queue", "clearQueue", "removeQueuedMessage", "sendQueuedMessage", "submitUserMessage", "prepareStop", "resumeStoppedSession", "navigateTree", "abortBranchSummary", "fork", "branch", "reload", "setLabel", "setScopedModels", "cycleModel", "resources", "tree", "asyncJobs", "goal"] };
+      case "capabilities": return { operations: ["identity", "queue", "clearQueue", "removeQueuedMessage", "sendQueuedMessage", "submitUserMessage", "prepareStop", "resumeStoppedSession", "navigateTree", "abortBranchSummary", "fork", "branch", "reload", "setLabel", "setScopedModels", "cycleModel", "resources", "tree", "asyncJobs", "inspectAsyncJob", "cancelAsyncJob", "goal"] };
       case "identity": return identity(session);
       case "prepareStop": return prepareStop(session);
       case "resumeStoppedSession": resumeStoppedSession(session); return identity(session);
@@ -374,6 +374,15 @@ export default function (pi) {
       case "cycleModel": return await session.cycleModel(args.direction === "backward" ? "backward" : "forward") ?? null;
       case "tree": return { ...identity(session), entries: session.sessionManager.getEntries(), tree: session.sessionManager.getTree() };
       case "asyncJobs": return ctx.getAsyncJobSnapshot();
+      case "inspectAsyncJob": {
+        if (typeof session.inspectAsyncJob !== "function") throw Object.assign(new Error("The selected OMP runtime cannot inspect background jobs"), { code: "CAPABILITY_DISABLED" });
+        const job = session.inspectAsyncJob(String(args.id));
+        return job ? { command: job.command, cwd: job.cwd, pids: job.pids, exitCode: job.exitCode, output: job.output, artifactId: job.artifactId } : null;
+      }
+      case "cancelAsyncJob": {
+        if (typeof session.cancelAsyncJob !== "function") throw Object.assign(new Error("The selected OMP runtime cannot cancel background jobs"), { code: "CAPABILITY_DISABLED" });
+        return { cancelled: session.cancelAsyncJob(String(args.id)) };
+      }
       case "goal": {
         // #354: 目标生命周期代理到官方 GoalRuntime（create/replace/pause/resume/drop），
         // worker 不再自建续跑循环。按官方 TUI 语义同步 goal 工具与流中上下文：

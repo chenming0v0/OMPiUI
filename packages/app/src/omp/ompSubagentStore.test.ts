@@ -434,4 +434,17 @@ describe('ompSubagentStore toolCall slices', () => {
     expect(run?.description).toBeUndefined()
     expect(run?.task).toMatch(/^Complete assignment thoroughly/)
   })
+
+  it('never promotes the wrapping assignment into the run title', () => {
+    const assignment = 'Complete assignment thoroughly.\n\n# Target\nFix blob images'
+    ompSubagentStore.applyLifecycle('title-session', { id: 'Fix366BlobImages', parentToolCallId: 'call-t', status: 'started', assignment })
+    ompSubagentStore.applyProgress('title-session', { id: 'Fix366BlobImages', assignment, progress: { status: 'running' } })
+    ompSubagentStore.applySnapshot('title-session', [{ id: 'Fix366BlobImages', parentToolCallId: 'call-t', status: 'running', assignment }])
+    const run = ompSubagentStore.runsForSession('title-session')[0]
+    expect(run?.description).toBeUndefined()
+    expect(run?.task).toBe(assignment)
+    ompSubagentStore.applyProgress('title-session', { id: 'Fix366BlobImages', description: 'Fix blob images', progress: { status: 'running' } })
+    expect(ompSubagentStore.runsForSession('title-session')[0]?.description).toBe('Fix blob images')
+  })
+
 })

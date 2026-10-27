@@ -1285,6 +1285,18 @@ export class OmpRpcSession implements SessionRuntime {
     return value;
   }
 
+  async getAsyncJobs(): Promise<JsonValue> {
+    return await this.client.requestRuntime("asyncJobs");
+  }
+
+  async inspectAsyncJob(id: string): Promise<JsonValue> {
+    return await this.client.requestRuntime("inspectAsyncJob", { id });
+  }
+
+  async cancelAsyncJob(id: string): Promise<JsonValue> {
+    return await this.client.requestRuntime("cancelAsyncJob", { id });
+  }
+
   async listSkills(): Promise<JsonValue> {
     const resources = await this.discoverResources();
     return requireResourceList(resources, 'skills');

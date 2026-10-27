@@ -24,6 +24,8 @@ export interface PiCapabilities {
   mcp: boolean
   worktree: boolean
   config: boolean
+  backgroundJobs: boolean
+  backgroundJobCancel: boolean
 }
 
 const unavailable: PiCapabilities = {
@@ -49,6 +51,8 @@ const unavailable: PiCapabilities = {
   mcp: false,
   worktree: false,
   config: false,
+  backgroundJobs: false,
+  backgroundJobCancel: false,
 }
 
 /**
@@ -79,6 +83,8 @@ const COMMAND_MAP: Record<keyof PiCapabilities, string | null> = {
   mcp: null,
   worktree: null,
   config: 'settings.get',
+  backgroundJobs: 'asyncJobs.get',
+  backgroundJobCancel: 'asyncJobs.cancel',
 }
 
 let cachedRegistry: unknown = undefined

@@ -65,6 +65,23 @@
     "replyToAgentMobile": "回复 Agent...",
     "replyToAgent": "回复 Agent（输入 @ 提及，/ 执行命令）"
   },
+  "backgroundJobs": {
+    "runningCount": "{{count}} 个后台任务运行中",
+    "panelTitle": "进行中",
+    "recentTitle": "已完成",
+    "details": "查看输出",
+    "stop": "停止后台任务",
+    "stopFailed": "停止失败：{{message}}",
+    "notCancelled": "后台任务未能停止，可能已经结束",
+    "detailsFailed": "读取输出失败：{{message}}",
+    "refreshFailed": "刷新后台任务失败：{{message}}",
+    "loadingDetails": "正在读取…",
+    "noOutput": "暂无输出",
+    "exitCode": "退出码 {{code}}",
+    "elapsedSeconds": "{{seconds}} 秒",
+    "elapsedMinutes": "{{minutes}} 分 {{seconds}} 秒",
+    "elapsedHours": "{{hours}} 小时 {{minutes}} 分 {{seconds}} 秒"
+  },
   "goalBar": {
     "messageSet": "设为目标",
     "messageContinuation": "继续执行目标",

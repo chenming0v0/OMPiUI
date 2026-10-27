@@ -781,6 +781,18 @@ export function getPiSkills(sessionId: string, signal?: AbortSignal): Promise<Sk
   return postPiSessionCommand(sessionId, 'skills.list', undefined, signal)
 }
 
+export function getPiAsyncJobs(sessionId: string, signal?: AbortSignal): Promise<JsonValue> {
+  return postPiSessionCommand(sessionId, 'asyncJobs.get', undefined, signal)
+}
+
+export function inspectPiAsyncJob(sessionId: string, id: string, signal?: AbortSignal): Promise<JsonValue> {
+  return postPiSessionCommand(sessionId, 'asyncJobs.inspect', { jobId: id }, signal)
+}
+
+export function cancelPiAsyncJob(sessionId: string, id: string, signal?: AbortSignal): Promise<JsonValue> {
+  return postPiSessionCommand(sessionId, 'asyncJobs.cancel', { jobId: id }, signal)
+}
+
 export function getPiPrompts(sessionId: string, signal?: AbortSignal): Promise<PromptTemplate[]> {
   return postPiSessionCommand(sessionId, 'prompts.list', undefined, signal)
 }

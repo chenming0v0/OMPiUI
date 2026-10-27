@@ -1092,7 +1092,7 @@ class PiEventStream {
         if ('toolCallId' in event && typeof event.toolCallId === 'string') {
           const accepted = piBranchStore.patchToolExecution(sessionId, event.toolCallId, {
             isRunning: true,
-            ...(typeof event.toolName === 'string' ? { call: { type: 'toolCall' as const, id: event.toolCallId, name: event.toolName, arguments: event.args ?? {} } } : {}),
+            ...(typeof event.toolName === 'string' && isJsonObject(event.args) ? { call: { type: 'toolCall' as const, id: event.toolCallId, name: event.toolName, arguments: event.args } } : {}),
           })
           if (!accepted) break
           const text = extractToolExecutionText('partialResult' in event ? event.partialResult : undefined)
