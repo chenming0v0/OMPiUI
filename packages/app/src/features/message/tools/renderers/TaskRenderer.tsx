@@ -225,26 +225,6 @@ export const TaskRenderer = memo(function TaskRenderer({ execution: rawExecution
   )
 })
 
-function TaskBatchSummary({ statuses }: { statuses: TaskSlotStatus[] }) {
-  const { t } = useTranslation('message')
-  const count = (status: TaskSlotStatus) => statuses.filter(value => value === status).length
-  const items: Array<[string, number, string]> = [
-    ['task.batchRunning', count('running'), 'text-accent-main-100'],
-    ['task.batchQueued', count('pending'), 'text-text-400'],
-    ['task.batchCompleted', count('completed'), 'text-success-100'],
-    ['task.batchFailed', count('error'), 'text-danger-100'],
-    ['task.batchUnknown', count('unknown'), 'text-text-400'],
-  ]
-  return (
-    <div data-testid="task-batch-summary" className="flex flex-wrap items-center gap-x-3 gap-y-0.5 pb-1 text-[length:var(--fs-xxs)] text-text-400">
-      <span className="font-medium text-text-300">{t('task.batchTotal', { count: statuses.length })}</span>
-      {items.filter(([, value]) => value > 0).map(([key, value, tone]) => (
-        <span key={key} className={tone}>{t(key, { count: value })}</span>
-      ))}
-    </div>
-  )
-}
-
 function SubagentTask({ slot, status, runtimeStopped, execution, partKey, intent, targetSessionId, showAggregateOutput, aggregateError, onFullscreenChange }: {
   slot: TaskSlot
   status: TaskSlotStatus
@@ -306,9 +286,6 @@ function SubagentTask({ slot, status, runtimeStopped, execution, partKey, intent
     slot.progress?.description,
     intent,
   )
-  const description = name && detail && name !== detail
-    ? `${name} · ${detail}`
-    : name || detail || t('task.subtask')
   const prompt = liveRun?.isFollowUp ? liveRun.task : typeof slot.input.prompt === 'string' ? slot.input.prompt
     : typeof slot.input.task === 'string' ? slot.input.task
       : slot.result?.assignment || slot.progress?.assignment || subagentRun?.task || ''

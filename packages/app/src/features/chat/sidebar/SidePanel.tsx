@@ -542,20 +542,71 @@ export function SidePanel({
   }, [folderProjectGroups, currentDirectory, currentProject, globalFolderProject, globalFolderIndex])
   const canShowFolderRecents = sidebarFolderRecents && !search && folderProjects.length > 0
 
+  // Worktree 只在真的装着会话时才进侧边栏：git worktree 列表动辄上百条（多为
+  // 无会话的临时 checkout），全部铺开既看不清也把每行各自的 Git 读取压上来。
+  // 完整列表仍可在「Git worktrees」对话框里查看和切换。
+  // 归一化成小写集合做精确查表：worktree 上百条时，逐条 isSameDirectory 遍历
+  // 全部会话会是 O(worktree × session) 的每次渲染开销。
+  const sessionDirectorySet = useMemo(
+    () =>
+      new Set(
+        sessions
+          .map(session => normalizeToForwardSlash(session.directory).replace(/\/+$/, ''))
+          .filter(Boolean)
+          .map(directory => (/^[a-z]:/i.test(directory) ? directory.toLowerCase() : directory)),
+      ),
+    [sessions],
+  )
+  const directoryHasSessions = useCallback(
+    (directory: string) => {
+      const normalized = normalizeToForwardSlash(directory).replace(/\/+$/, '')
+      return sessionDirectorySet.has(/^[a-z]:/i.test(normalized) ? normalized.toLowerCase() : normalized)
+    },
+    [sessionDirectorySet],
+  )
+  const filterWorkspaceDirectories = useCallback(
+    (directories: string[]) => {
+      if (directories.length <= 1) return directories
+
+      const visible = directories.filter(
+        (directory, index) =>
+          index === 0 ||
+          (!!normalizedCurrentDirectory && isSameDirectory(directory, normalizedCurrentDirectory)) ||
+          directoryHasSessions(directory),
+      )
+
+      return visible.length > 0 ? visible : directories.slice(0, 1)
+    },
+    [directoryHasSessions, normalizedCurrentDirectory],
+  )
+
   const workspaceDirectoriesByProjectId = useMemo(() => {
     const map = new Map<string, string[]>()
     for (const project of folderProjects) {
-      if (project.workspaceDirectories && project.workspaceDirectories.length > 1) {
-        map.set(project.id, project.workspaceDirectories)
-      }
+      if (!project.workspaceDirectories || project.workspaceDirectories.length <= 1) continue
+      const directories = filterWorkspaceDirectories(project.workspaceDirectories)
+      if (directories.length > 1) map.set(project.id, directories)
     }
     return map
-  }, [folderProjects])
+  }, [folderProjects, filterWorkspaceDirectories])
 
   const currentProjectWorkspaceDirectories = useMemo(
-    () => currentProject.workspaceDirectories ?? [],
-    [currentProject.workspaceDirectories],
+    () => filterWorkspaceDirectories(currentProject.workspaceDirectories ?? []),
+    [currentProject.workspaceDirectories, filterWorkspaceDirectories],
   )
+
+  const workspaceBranchByDirectory = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const project of folderProjects) {
+      if (!project.workspaceDirectories?.length) continue
+      const meta = gitWorkspaceCatalog.get(normalizeToForwardSlash(project.path))
+      if (!meta?.isGit) continue
+      meta.workspaceBranches.forEach((branch, directory) => {
+        if (branch) map.set(directory, branch)
+      })
+    }
+    return map
+  }, [folderProjects, gitWorkspaceCatalog])
   const shouldRenderWorkspaceTreeOnly =
     !search && currentProjectWorkspaceDirectories.length > 1 && currentProject.id !== 'global'
   const shouldWaitForWorkspaceResolution =
@@ -1265,6 +1316,7 @@ export function SidePanel({
                   {...commonFolderRecentListProps}
                   onReorderProject={handleReorderProjectGroup}
                   workspaceDirectoriesByProjectId={workspaceDirectoriesByProjectId}
+                  workspaceBranchByDirectory={workspaceBranchByDirectory}
                   pinnedSessions={resolvedPinnedSessions}
                   unavailablePinnedEntries={unavailablePinnedEntries}
                   inlineChildSessions={childrenByParent}
