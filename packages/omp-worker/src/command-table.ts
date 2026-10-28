@@ -360,6 +360,9 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
   }),
   "registry.get": async (ctx) => ctx.requireRuntime().getRegistry(),
   "skills.list": async (ctx) => ctx.requireRuntime().listSkills(),
+  "asyncJobs.get": async (ctx) => ctx.requireRuntime().getAsyncJobs(),
+  "asyncJobs.inspect": async (ctx, p) => ctx.requireRuntime().inspectAsyncJob(P.reqString(p, "jobId")),
+  "asyncJobs.cancel": async (ctx, p) => ctx.requireRuntime().cancelAsyncJob(P.reqString(p, "jobId")),
   "prompts.list": async (ctx) => ctx.requireRuntime().listPrompts(),
   "agentsFiles.list": async (ctx) => ctx.requireRuntime().listAgentsFiles(),
   "attachment.get": async (ctx, p) =>

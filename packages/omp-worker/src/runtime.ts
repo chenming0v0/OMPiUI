@@ -30,6 +30,9 @@ export interface SessionRuntime {
   getSubagentMessages(params: import("@ompiui/protocol").SubagentMessagesParams): JsonValue | Promise<JsonValue>
   getRegistry(): RegistrySnapshot | Promise<RegistrySnapshot>
   listSkills(): JsonValue | Promise<JsonValue>
+  getAsyncJobs(): JsonValue | Promise<JsonValue>
+  inspectAsyncJob(id: string): JsonValue | Promise<JsonValue>
+  cancelAsyncJob(id: string): JsonValue | Promise<JsonValue>
   listPrompts(): JsonValue | Promise<JsonValue>
   listAgentsFiles(): JsonValue | Promise<JsonValue>
 

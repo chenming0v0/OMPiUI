@@ -6,6 +6,8 @@ import { MessageRenderer } from './MessageRenderer'
 import { buildVisibleTimelineEntries } from '../chat/chatAreaVisibility'
 import type { PiAssistantMessageItem } from '../../omp/domain/index.js'
 import { FullscreenProvider } from '../../contexts'
+import { SessionNavigationContext } from '../../contexts/SessionNavigationContext'
+import type { PiTimelineItem } from '../../omp/domain/index.js'
 const toolTheme = vi.hoisted(() => ({ descriptiveToolSteps: false }))
 
 vi.mock('motion/mini', () => ({ animate: () => Promise.resolve() }))
@@ -176,6 +178,69 @@ describe('contiguous assistant tool groups', () => {
     expect(screen.getAllByRole('button', { name: /^2\/2/ })).toHaveLength(2)
     expect(screen.getByText('New reasoning')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^4\/4/ })).toBeNull()
+  })
+
+  it('folds a background job delivery between tool runs into the same connected group', () => {
+    const job = (id: string, name: string) => ({
+      kind: 'custom_message' as const, entryId: id, timestamp: 250, rawEntry: fixture()[0].rawEntry,
+      customType: 'async-result', display: true, content: 'done',
+      details: { jobId: name, type: 'bash', label: name, status: 'completed' },
+    })
+    const [first, failed, completed] = fixture()
+    const entries = buildVisibleTimelineEntries([first, job('job-a', 'watch-a'), job('job-b', 'watch-b'), failed, completed])
+    expect(entries.map(entry => entry.sourceIds)).toEqual([['first', 'job-a', 'job-b', 'eval-failed-message', 'eval-completed-message']])
+    render(<FullscreenProvider><MessageRenderer item={entries[0].item} processContentScope="inline" /></FullscreenProvider>)
+    expect(screen.getByRole('button', { name: /^8\/8/ })).toBeInTheDocument()
+  })
+
+  it('keeps a background job after visible text as its own entry', () => {
+    const text = assistant('answer', [{ type: 'text', text: 'All done' }], 100)
+    const delivery = {
+      kind: 'custom_message' as const, entryId: 'late-job', timestamp: 200, rawEntry: text.rawEntry,
+      customType: 'async-result', display: true, content: 'ok', details: { jobId: 'late' },
+    }
+    expect(buildVisibleTimelineEntries([text, delivery]).map(entry => entry.sourceIds)).toEqual([['answer'], ['late-job']])
+  })
+
+  it('keeps completed orphan output collapsed until explicitly opened', () => {
+    const toolCall = call('orphan-default-call', 'eval')
+    const item = assistant('orphan-default-owner', [toolCall], 100)
+    render(<FullscreenProvider><MessageRenderer item={{ kind: 'tool_result', entryId: 'orphan-default-result', timestamp: 101,
+      execution: { call: toolCall, argumentsUnknown: true, isRunning: true, result: item.toolResults[toolCall.id] } }} /></FullscreenProvider>)
+    const header = screen.getByRole('button', { name: /^Eval/ })
+    expect(header).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('orphan-default-call')).toBeNull()
+    fireEvent.click(header)
+    expect(screen.getByText('orphan-default-call')).toBeInTheDocument()
+  })
+
+  it('preserves user disclosure through orphan pairing, regrouping and session changes', () => {
+    const toolCall = call('handover-disclosure-call', 'eval')
+    const owner = assistant('handover-owner', [toolCall], 100)
+    const orphan: PiTimelineItem = { kind: 'tool_result', entryId: 'handover-result', timestamp: 101,
+      execution: { call: toolCall, argumentsUnknown: true, result: owner.toolResults[toolCall.id] } }
+    const surface = (item: PiTimelineItem, sessionId = 'handover-disclosure-session') => (
+      <FullscreenProvider><SessionNavigationContext.Provider value={{ currentSessionId: sessionId, navigateToSession: () => {} }}>
+        <MessageRenderer item={item} processContentScope="inline" />
+      </SessionNavigationContext.Provider></FullscreenProvider>
+    )
+    const { rerender } = render(surface(orphan))
+    fireEvent.click(screen.getByRole('button', { name: /^Eval/ }))
+    rerender(surface(owner))
+    expect(screen.getByRole('button', { name: /^Eval/ })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText(toolCall.id)).toBeInTheDocument()
+    // Adjacent assistant merging can change the owner/group id as well.
+    rerender(surface({ ...owner, entryId: 'earlier-group-owner' }))
+    expect(screen.getByRole('button', { name: /^Eval/ })).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(screen.getByRole('button', { name: /^Eval/ }))
+    rerender(surface(orphan))
+    expect(screen.getByRole('button', { name: /^Eval/ })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText(toolCall.id)).toBeNull()
+    rerender(surface(orphan, 'independent-disclosure-session'))
+    fireEvent.click(screen.getByRole('button', { name: /^Eval/ }))
+    expect(screen.getByRole('button', { name: /^Eval/ })).toHaveAttribute('aria-expanded', 'true')
+    rerender(surface(owner))
+    expect(screen.getByRole('button', { name: /^Eval/ })).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('never joins tools across a user boundary, even an empty user entry', () => {

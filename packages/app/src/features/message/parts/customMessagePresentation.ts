@@ -42,6 +42,8 @@ export function readAgentMessage(item: PiCustomMessageItem): { sender: string; b
 
 export interface BackgroundJobView {
   id: string
+  /** 原生 job 类型（bash / task …），决定沿用哪个工具卡片的图标与渲染器 */
+  type?: string
   name: string
   status: string
   durationMs?: number
@@ -138,7 +140,8 @@ export function readBackgroundJobs(item: PiCustomMessageItem): BackgroundJobView
     if (result.supplement) body += `\n\n${result.supplement}`
     const errors = [...new Set([...result.errors, string(schema?.error), string(job.error)].filter((error): error is string => Boolean(error)))]
     return {
-      id, name: string(job.label) ?? string(job.jobId) ?? section?.id ?? result.id ?? string(job.type) ?? id,
+      id, type: string(job.type),
+      name: string(job.label) ?? string(job.jobId) ?? section?.id ?? result.id ?? string(job.type) ?? id,
       status: string(job.status) ?? result.status ?? 'completed',
       durationMs: typeof job.durationMs === 'number' ? job.durationMs : undefined,
       duration: result.duration,

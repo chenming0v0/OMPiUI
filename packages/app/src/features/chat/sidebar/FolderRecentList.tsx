@@ -13,7 +13,7 @@ import {
 } from '../../../components/Icons'
 import { ExpandableSection } from '../../../components/ui'
 import { ConfirmDialog } from '../../../components/ui/ConfirmDialog'
-import { useDelayedRender, useSessions, useVcsInfo } from '../../../hooks'
+import { useDelayedRender, useSessions } from '../../../hooks'
 import { useInputCapabilities } from '../../../hooks/useInputCapabilities'
 import { useInView } from '../../../hooks/useInView'
 import { getDirectoryName, isSameDirectory, normalizeToForwardSlash } from '../../../utils'
@@ -50,6 +50,7 @@ interface FolderRecentListProps {
   inlineChildSessions?: Map<string, UiSession[]>
   onSelectChildSession?: (session: UiSession) => void
   workspaceDirectoriesByProjectId?: Map<string, string[]>
+  workspaceBranchByDirectory?: Map<string, string>
   pinnedSessions?: UiSession[]
   unavailablePinnedEntries?: PinnedSessionEntry[]
   // ---- 编辑模式 ----
@@ -170,19 +171,29 @@ function getCurrentProjectId(projects: FolderRecentProject[], currentDirectory?:
   return projects.find(project => isSameDirectory(project.path, currentDirectory))?.id
 }
 
+// 手风琴语义：同时只展开一个文件夹。worktree 动辄上百条，多开几个就会把侧边栏
+// 撑成一面墙，所以展开新的一个就收起上一个；点当前这个则收起（全部收起）。
 function reconcileExpandedProjectIds(prev: string[], projects: FolderRecentProject[], currentDirectory?: string) {
-  const next = prev.filter(id => projects.some(project => project.id === id))
-  const fallback = next.length > 0 ? next : getInitialExpandedProjectIds(projects, currentDirectory)
-  return areProjectIdListsEqual(fallback, prev) ? prev : fallback
+  const valid = prev.filter(id => projects.some(project => project.id === id))
+  const currentProjectId = getCurrentProjectId(projects, currentDirectory)
+
+  const next =
+    currentProjectId && valid.includes(currentProjectId)
+      ? [currentProjectId]
+      : valid.length > 0
+        ? [valid[0]]
+        : getInitialExpandedProjectIds(projects, currentDirectory).slice(0, 1)
+
+  return areProjectIdListsEqual(next, prev) ? prev : next
 }
 
 function expandProjectId(prev: string[], projectId?: string) {
   if (!projectId || prev.includes(projectId)) return prev
-  return [projectId, ...prev]
+  return [projectId]
 }
 
 function toggleProjectId(prev: string[], projectId: string) {
-  return prev.includes(projectId) ? prev.filter(id => id !== projectId) : [...prev, projectId]
+  return prev.includes(projectId) ? [] : [projectId]
 }
 
 function createDirectoryProject(directory: string, sectionKind: FolderRecentProject['sectionKind'] = 'project') {
@@ -425,6 +436,7 @@ export function FolderRecentList({
   inlineChildSessions,
   onSelectChildSession,
   workspaceDirectoriesByProjectId,
+  workspaceBranchByDirectory,
   pinnedSessions = [],
   unavailablePinnedEntries = [],
   isEditMode = false,
@@ -587,6 +599,7 @@ export function FolderRecentList({
                   onSelectChildSession={onSelectChildSession}
                   workspaceDirectories={workspaceDirectoriesByProjectId?.get(project.id)}
                   workspaceFolderStatusByDirectory={folderStatusByWorkspaceDirectory}
+                  workspaceBranchByDirectory={workspaceBranchByDirectory}
                   draggableWorkspaceDirectories={project.memberDirectories}
                   onReorderWorkspace={onReorderProject}
                   sectionKind={project.sectionKind ?? 'project'}
@@ -788,6 +801,10 @@ interface FolderRecentSectionProps {
   onSelectChildSession?: (session: UiSession) => void
   workspaceDirectories?: string[]
   workspaceFolderStatusByDirectory?: Map<string, FolderStatus>
+  /** 目录 → 分支名（来自 git worktree 目录元数据） */
+  workspaceBranchByDirectory?: Map<string, string>
+  /** 折叠行标题用的分支名（来自 git worktree 目录元数据） */
+  workspaceBranch?: string | null
   draggableWorkspaceDirectories?: string[]
   onReorderWorkspace?: (draggedPath: string, targetPath: string) => void
   sectionKind?: 'project' | 'workspace'
@@ -829,6 +846,8 @@ function FolderRecentSection({
   onSelectChildSession,
   workspaceDirectories = [],
   workspaceFolderStatusByDirectory,
+  workspaceBranchByDirectory,
+  workspaceBranch,
   draggableWorkspaceDirectories,
   onReorderWorkspace,
   sectionKind = 'project',
@@ -852,7 +871,9 @@ function FolderRecentSection({
   const shouldRenderBody = useDelayedRender(isExpanded)
   const hasWorkspaceTree = workspaceDirectories.length > 0
   const workspaceFallbackName = getDirectoryName(project.path) || project.path
-  const { vcsInfo, isLoading: isBranchLoading } = useVcsInfo(sectionKind === 'workspace' ? project.path : undefined)
+  // 分支名走 git worktree 目录元数据，不在每个 worktree 上各开一条 useVcsInfo：
+  // 上百条 worktree 时那就是上百个并发 Git 读取 + 15s 轮询。
+  const branchLabel = workspaceBranch
 
   useEffect(() => {
     if (isExpanded && inView) {
@@ -900,7 +921,7 @@ function FolderRecentSection({
 
   const projectName =
     sectionKind === 'workspace'
-      ? (vcsInfo?.branch ?? (isBranchLoading ? '...' : workspaceFallbackName))
+      ? (branchLabel ?? workspaceFallbackName)
       : project.name || workspaceFallbackName
   const FolderDisplayIcon =
     project.id === 'global'
@@ -980,6 +1001,10 @@ function FolderRecentSection({
             >
               {projectName}
             </span>
+            <ChevronDownIcon
+              size={12}
+              className={`shrink-0 text-text-500/70 transition-transform duration-150 ${isExpanded ? '' : '-rotate-90'}`}
+            />
             {folderStatus && (
               <span
                 className="relative shrink-0 flex items-center justify-center w-3 h-3"
@@ -1050,6 +1075,7 @@ function FolderRecentSection({
                   selectedSessionIds={selectedSessionIds}
                   onToggleSessionSelection={onToggleSessionSelection}
                   folderStatusByWorkspaceDirectory={workspaceFolderStatusByDirectory}
+                  workspaceBranchByDirectory={workspaceBranchByDirectory}
                   draggableWorkspaceDirectories={draggableWorkspaceDirectories}
                   onReorderWorkspace={onReorderWorkspace}
                 />
@@ -1164,6 +1190,7 @@ interface WorkspaceFolderListProps {
   selectedSessionIds?: Set<string>
   onToggleSessionSelection?: (sessionId: string, options?: { shiftKey?: boolean }) => void
   folderStatusByWorkspaceDirectory?: Map<string, FolderStatus>
+  workspaceBranchByDirectory?: Map<string, string>
   draggableWorkspaceDirectories?: string[]
   onReorderWorkspace?: (draggedPath: string, targetPath: string) => void
 }
@@ -1184,6 +1211,7 @@ function WorkspaceFolderList({
   selectedSessionIds,
   onToggleSessionSelection,
   folderStatusByWorkspaceDirectory,
+  workspaceBranchByDirectory,
   draggableWorkspaceDirectories,
   onReorderWorkspace,
 }: WorkspaceFolderListProps) {
@@ -1272,6 +1300,7 @@ function WorkspaceFolderList({
             inlineChildSessions={inlineChildSessions}
             onSelectChildSession={onSelectChildSession}
             workspaceDirectories={[]}
+            workspaceBranch={workspaceBranchByDirectory?.get(workspaceProject.path) ?? null}
             sectionKind="workspace"
             canDrag={!!workspaceProject.canReorder && !isEditMode}
             isDragged={draggedId === workspaceProject.id}

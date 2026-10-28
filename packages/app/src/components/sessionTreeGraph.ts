@@ -39,6 +39,11 @@ export interface SessionTreeGraph {
 const NODE_WIDTH = 240
 const MESSAGE_HEIGHT = 78
 const EVENT_HEIGHT = 54
+// dagre 的 acyclic DFS 是递归实现，深链超过这个层数会 RangeError。
+const DAGRE_MAX_DEPTH = 400
+const RANKSEP = 68
+const NODESEP = 36
+const MARGIN = 40
 
 function asRecord(value: JsonValue | undefined): NativeEntry {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
@@ -202,14 +207,25 @@ export function buildSessionTreeGraph(
   const detailEntriesById = new Map<string, NativeEntry[]>()
   const orderedIds: string[] = []
 
-  const indexRawTree = (node: NativeTreeNode, parentId: string | null) => {
-    const rawId = nodeEntry(node).id
-    const entryId = typeof rawId === 'string' ? rawId : ''
-    if (!entryId || rawParentById.has(entryId)) return
-    rawParentById.set(entryId, parentId)
-    for (const child of nodeChildren(node)) indexRawTree(child, entryId)
+  // 递归改显式栈：长会话是深链而不是宽树（实测 3410 条条目、
+  // 最大深度 3407），递归会在几百层内就把调用栈打爆。
+  const indexRawTree = (roots: NativeTreeNode[]) => {
+    const stack: Array<{ node: NativeTreeNode; parentId: string | null }> = []
+    for (let index = roots.length - 1; index >= 0; index--) stack.push({ node: roots[index], parentId: null })
+    while (stack.length > 0) {
+      const { node, parentId } = stack.pop()!
+      const rawId = nodeEntry(node).id
+      const entryId = typeof rawId === 'string' ? rawId : ''
+      if (entryId && !rawParentById.has(entryId)) {
+        rawParentById.set(entryId, parentId)
+        const children = nodeChildren(node)
+        for (let index = children.length - 1; index >= 0; index--) {
+          stack.push({ node: children[index], parentId: entryId })
+        }
+      }
+    }
   }
-  for (const root of tree) indexRawTree(root, null)
+  indexRawTree(tree)
 
   let visualLeafId = leafId
   while (visualLeafId && !isTreeVisibleEntry(findSessionTreeNode(tree, visualLeafId)?.entry ?? {}, visualLeafId)) {
@@ -226,11 +242,33 @@ export function buildSessionTreeGraph(
     })
   }
 
-  const visit = (node: NativeTreeNode, visibleParentId: string | null, pendingDetails: NativeEntry[]) => {
+  // 同样改显式栈。注意这里要保序（父先于子、兄弟按原顺序），所以按逆序压栈，
+  // 且每个子节点都带上父节点算出的 (visibleParentId, pendingDetails)。
+  const visitAll = (roots: NativeTreeNode[]) => {
+    const stack: Array<{ node: NativeTreeNode; visibleParentId: string | null; pendingDetails: NativeEntry[] }> = []
+    for (let index = roots.length - 1; index >= 0; index--) {
+      stack.push({ node: roots[index], visibleParentId: null, pendingDetails: [] })
+    }
+    while (stack.length > 0) {
+      const { node, visibleParentId, pendingDetails } = stack.pop()!
+      const next = visit(node, visibleParentId, pendingDetails)
+      if (!next) continue
+      const children = nodeChildren(node)
+      for (let index = children.length - 1; index >= 0; index--) {
+        stack.push({ node: children[index], visibleParentId: next.visibleParentId, pendingDetails: next.pendingDetails })
+      }
+    }
+  }
+
+  const visit = (
+    node: NativeTreeNode,
+    visibleParentId: string | null,
+    pendingDetails: NativeEntry[],
+  ): { visibleParentId: string | null; pendingDetails: NativeEntry[] } | null => {
     const entry = nodeEntry(node)
     const rawId = entry.id
     const entryId = typeof rawId === 'string' ? rawId : ''
-    if (!entryId) return
+    if (!entryId) return null
     let nextVisibleParentId = visibleParentId
     let nextPendingDetails = pendingDetails
     if (isTreeVisibleEntry(entry, visualLeafId) && !nodeById.has(entryId)) {
@@ -264,9 +302,9 @@ export function buildSessionTreeGraph(
       ])
       nextPendingDetails = []
     }
-    for (const child of nodeChildren(node)) visit(child, nextVisibleParentId, nextPendingDetails)
+    return { visibleParentId: nextVisibleParentId, pendingDetails: nextPendingDetails }
   }
-  for (const root of tree) visit(root, null, [])
+  visitAll(tree)
 
   const activePath = new Set<string>()
   let cursor = visualLeafId
@@ -275,12 +313,51 @@ export function buildSessionTreeGraph(
     cursor = parentById.get(cursor) ?? null
   }
 
-  dagre.layout(graph)
+  // dagre 自身在 acyclic DFS 里递归：实测超过 ~1200 层的链会栈溢出，而长会话
+  // 恰恰是深链（3410 条条目 / 深度 3407）。深树改用同一套 rank 的简化分层布局：
+  // 每层一行、同层按出现顺序横向排开——视觉上与 dagre 的 TB 结果一致，
+  // 但没有递归。
+  const layoutPositions = new Map<string, { x: number; y: number; height: number }>()
+  const depthById = new Map<string, number>()
+  let maxDepth = 0
+  for (const entryId of orderedIds) {
+    const parent = parentById.get(entryId) ?? null
+    const depth = parent ? (depthById.get(parent) ?? 0) + 1 : 0
+    depthById.set(entryId, depth)
+    if (depth > maxDepth) maxDepth = depth
+  }
+
+  if (maxDepth > DAGRE_MAX_DEPTH) {
+    const rowIndexById = new Map<string, number>()
+    const centers = new Map<number, number>()
+    for (const entryId of orderedIds) centers.set(depthById.get(entryId)!, (centers.get(depthById.get(entryId)!) ?? 0) + 1)
+    const used = new Map<number, number>()
+    for (const entryId of orderedIds) {
+      const type = typeof nodeEntry(nodeById.get(entryId)!).type === 'string' ? String(nodeEntry(nodeById.get(entryId)!).type) : 'unknown'
+      const height = type !== 'message' && type !== 'custom_message' && type !== 'branch_summary' ? EVENT_HEIGHT : MESSAGE_HEIGHT
+      const depth = depthById.get(entryId)!
+      const rowCount = centers.get(depth) ?? 1
+      const index = used.get(depth) ?? 0
+      used.set(depth, index + 1)
+      rowIndexById.set(entryId, index)
+      layoutPositions.set(entryId, {
+        x: MARGIN + (index - (rowCount - 1) / 2) * (NODE_WIDTH + NODESEP) + NODE_WIDTH / 2,
+        y: MARGIN + depth * (MESSAGE_HEIGHT + RANKSEP) + height / 2,
+        height,
+      })
+    }
+  } else {
+    dagre.layout(graph)
+    for (const entryId of orderedIds) {
+      const layout = graph.node(entryId)
+      layoutPositions.set(entryId, { x: layout.x, y: layout.y, height: layout.height })
+    }
+  }
 
   const nodes: SessionGraphNode[] = orderedIds.map(entryId => {
     const source = nodeById.get(entryId)!
     const sourceEntry = nodeEntry(source)
-    const layout = graph.node(entryId)
+    const layout = layoutPositions.get(entryId)!
     const type = typeof sourceEntry.type === 'string' ? sourceEntry.type : 'unknown'
     const message = asRecord(sourceEntry.message)
     const role = type === 'message' && typeof message.role === 'string' ? message.role : undefined

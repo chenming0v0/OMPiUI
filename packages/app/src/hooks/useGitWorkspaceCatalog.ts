@@ -10,6 +10,9 @@ export interface GitWorkspaceMeta {
   rootDirectory: string
   // root workspace 放第一位，后面才是 sandbox worktree
   workspaces: string[]
+  // 目录 → 分支名。来自同一次 `git worktree list`，避免侧边栏为每个
+  // worktree 单独发起 git 读取。
+  workspaceBranches: Map<string, string>
 }
 
 export type GitWorkspaceCatalog = Map<string, GitWorkspaceMeta>
@@ -100,17 +103,36 @@ export function useGitWorkspaceCatalog(directories: string[]) {
             isGit: false,
             rootDirectory: directory,
             workspaces: [directory],
+            workspaceBranches: new Map(),
           })
         }
       }
 
       const rootToWorkspaces = new Map<string, string[]>()
+      const rootToBranches = new Map<string, Map<string, string>>()
       for (const rootDirectory of rootDirectories) {
         const native = projectResults.find(result => result.status === 'fulfilled' &&
           result.value.git && normalizeToForwardSlash(result.value.git.primaryRoot) === rootDirectory)
-        rootToWorkspaces.set(rootDirectory, native?.status === 'fulfilled' && native.value.git
-          ? native.value.git.worktrees.filter(tree => !tree.bare && !tree.prunable).map(tree => normalizeToForwardSlash(tree.path))
-          : previousWorkspacesByRoot.get(rootDirectory) ?? [rootDirectory])
+        const trees = native?.status === 'fulfilled' && native.value.git
+          ? native.value.git.worktrees.filter(tree => !tree.bare && !tree.prunable)
+          : null
+
+        if (trees) {
+          rootToWorkspaces.set(rootDirectory, trees.map(tree => normalizeToForwardSlash(tree.path)))
+          rootToBranches.set(
+            rootDirectory,
+            new Map(
+              trees.map(tree => [
+                normalizeToForwardSlash(tree.path),
+                (tree.branch ?? '').replace(/^refs\/heads\//, '') || (tree.head ? tree.head.slice(0, 8) : ''),
+              ] as [string, string]),
+            ),
+          )
+        } else {
+          const fallback = previousWorkspacesByRoot.get(rootDirectory) ?? [rootDirectory]
+          rootToWorkspaces.set(rootDirectory, fallback)
+          rootToBranches.set(rootDirectory, new Map(fallback.map(path => [normalizeToForwardSlash(path), ''] as [string, string])))
+        }
       }
 
       for (const [directory, rootDirectory] of directoryToRoot) {
@@ -118,6 +140,7 @@ export function useGitWorkspaceCatalog(directories: string[]) {
           isGit: true,
           rootDirectory,
           workspaces: rootToWorkspaces.get(rootDirectory) ?? [rootDirectory],
+          workspaceBranches: rootToBranches.get(rootDirectory) ?? new Map(),
         })
       }
 

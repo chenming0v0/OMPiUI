@@ -308,8 +308,8 @@ export class OmpRpcSession implements SessionRuntime {
     try {
       // ready 帧由协议保证是第一个 stdout 帧；协商 v2 以支持 >1MiB 分帧
       await this.client.waitForReady(30_000);
-      // 版本门禁：< 18.2.11 缺 get_entries 等命令且错误响应不带 id，只能烧
-      // 超时（打开会话卡 ~150s）——立刻失败并提示升级（issue #5）
+      // Older runtimes can resume queued steering from abort cleanup; require
+      // the native client-owned continuation gate before opening a writable runtime.
       const detected = await versionProbe;
       if (detected && !isOmpVersionSupported(detected)) {
         throw ompTooOldError(detected);
@@ -1318,6 +1318,18 @@ export class OmpRpcSession implements SessionRuntime {
     return value;
   }
 
+  async getAsyncJobs(): Promise<JsonValue> {
+    return await this.client.requestRuntime("asyncJobs");
+  }
+
+  async inspectAsyncJob(id: string): Promise<JsonValue> {
+    return await this.client.requestRuntime("inspectAsyncJob", { id });
+  }
+
+  async cancelAsyncJob(id: string): Promise<JsonValue> {
+    return await this.client.requestRuntime("cancelAsyncJob", { id });
+  }
+
   async listSkills(): Promise<JsonValue> {
     const resources = await this.discoverResources();
     return requireResourceList(resources, 'skills');
@@ -1381,6 +1393,7 @@ export class OmpRpcSession implements SessionRuntime {
       if (shouldSubmit) return;
       throw Object.assign(new Error("Session replaced before prompt submission"), { code: "SESSION_REPLACED" });
     }
+    await this.client.requestRuntime("resumeStoppedSession", {});
     const command: JsonObject = { type: "prompt", message: text };
     // Let the native session decide at dispatch time whether this starts a turn
     // or joins its queue; event-side streaming state can lag admitted prompts.
@@ -1404,6 +1417,7 @@ export class OmpRpcSession implements SessionRuntime {
     await this.abortInFlight;
     if (epoch !== this.eventEpoch)
       throw Object.assign(new Error("Session replaced before queue submission"), { code: "SESSION_REPLACED" });
+    await this.client.requestRuntime("resumeStoppedSession", {});
     const command: JsonObject = { type, message: text };
     if (images?.length) command.images = images.map((image) => ({ ...image }));
     unwrapResponse(await this.client.request(command, 60_000));
@@ -1493,16 +1507,15 @@ export class OmpRpcSession implements SessionRuntime {
     const epoch = this.eventEpoch;
     this.abortIntentEpoch = epoch;
     const flight = (async () => {
+      await this.client.requestRuntime("prepareStop", {});
       const result = unwrapResponse(
         await this.client.request({ type: "abort" }, 30_000),
       );
       if (epoch !== this.eventEpoch) return toJson(result) ?? undefined;
       // An abort ACK is not proof of full settle: async work and retained native
       // user queues still belong to the session. Only native settle emits it.
-      void this.buildState().then(() => {
-        if (epoch === this.eventEpoch) this.emitActivityIfChanged();
-      }).catch((error) => this.reportEntrySyncError(error));
-      void this.syncEntriesNow().catch((error) => this.reportEntrySyncError(error));
+      await Promise.all([this.buildState(), this.syncEntriesNow()]);
+      if (epoch === this.eventEpoch) this.emitActivityIfChanged();
       return toJson(result) ?? undefined;
     })();
     this.abortInFlight = flight;

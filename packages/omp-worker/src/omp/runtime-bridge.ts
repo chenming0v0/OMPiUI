@@ -6,7 +6,7 @@ import { nativeExtensionResourcesSource } from './resource-registry.js'
 import { NATIVE_PROMPT_ADMISSION_IMPORT, NATIVE_PROMPT_ADMISSION_SOURCE } from './native-prompt-admission.js'
 import { NATIVE_WORKTREE_IMPORTS, NATIVE_WORKTREE_SOURCE } from './native-worktree.js'
 
-export type RuntimeBridgeOperation = "capabilities" | "identity" | "queue" | "clearQueue" | "removeQueuedMessage" | "sendQueuedMessage" | "submitUserMessage" | "navigateTree" | "abortBranchSummary" | "fork" | "branch" | "reload" | "setLabel" | "setScopedModels" | "cycleModel" | "resources" | "tree" | "asyncJobs" | "goal" | "moveSession" | "worktreeState"
+export type RuntimeBridgeOperation = "capabilities" | "identity" | "queue" | "clearQueue" | "removeQueuedMessage" | "sendQueuedMessage" | "submitUserMessage" | "prepareStop" | "resumeStoppedSession" | "navigateTree" | "abortBranchSummary" | "fork" | "branch" | "reload" | "setLabel" | "setScopedModels" | "cycleModel" | "resources" | "tree" | "asyncJobs" | "inspectAsyncJob" | "cancelAsyncJob" | "goal" | "moveSession" | "worktreeState"
 const RESPONSE_PREFIX = "\u001eompiui-runtime:"
 
 /** Correlates managed command results without exposing control traffic as chat/UI events. */
@@ -148,11 +148,35 @@ export default function (pi) {
   ${nativeExtensionResourcesSource}
   ${NATIVE_PROMPT_ADMISSION_SOURCE}
   ${NATIVE_WORKTREE_SOURCE}
+  // 手动 Stop 的门禁：官方 client-owned continuation 开关必须在 abort 之前打开，
+  // 否则官方中止清理会重新启动下一轮；只读刷新不解除，明确提交／立即发送／恢复目标才解除。
+  const queueControlKey = Symbol.for("ompiui.queueControl");
+  function queueControl(session) {
+    return session[queueControlKey] ??= { paused: false };
+  }
+  function prepareStop(session) {
+    if (typeof session.setClientBridge !== "function") throw Object.assign(new Error("The selected OMP runtime cannot suspend queued continuation"), { code: "CAPABILITY_DISABLED" });
+    const control = queueControl(session);
+    if (!control.paused) { control.originalClientBridge = session.clientBridge; control.paused = true; }
+    const original = control.originalClientBridge;
+    // 不改队列内容：不消费、不替换、不复制、不回填草稿。
+    session.setClientBridge({ ...original, capabilities: original?.capabilities ?? {}, deferAgentInitiatedTurns: true });
+    return identity(session);
+  }
+  function resumeStoppedSession(session) {
+    const control = session[queueControlKey];
+    if (!control?.paused) return;
+    session.setClientBridge(control.originalClientBridge);
+    control.paused = false;
+    delete control.originalClientBridge;
+  }
   async function execute(operation, args, ctx) {
     const session = ownSession(ctx);
     switch (operation) {
-      case "capabilities": return { operations: ["identity", "queue", "clearQueue", "removeQueuedMessage", "sendQueuedMessage", "submitUserMessage", "navigateTree", "abortBranchSummary", "fork", "branch", "reload", "setLabel", "setScopedModels", "cycleModel", "resources", "tree", "asyncJobs", "goal", ...(typeof session.moveSession === "function" && typeof session.sessionManager.isSessionOnDisk === "function" ? ["moveSession", "worktreeState"] : [])] };
+      case "capabilities": return { operations: ["identity", "queue", "clearQueue", "removeQueuedMessage", "sendQueuedMessage", "submitUserMessage", "prepareStop", "resumeStoppedSession", "navigateTree", "abortBranchSummary", "fork", "branch", "reload", "setLabel", "setScopedModels", "cycleModel", "resources", "tree", "asyncJobs", "inspectAsyncJob", "cancelAsyncJob", "goal", ...(typeof session.moveSession === "function" && typeof session.sessionManager.isSessionOnDisk === "function" ? ["moveSession", "worktreeState"] : [])] };
       case "identity": return identity(session);
+      case "prepareStop": return prepareStop(session);
+      case "resumeStoppedSession": resumeStoppedSession(session); return identity(session);
       case "worktreeState": {
         if (typeof session.moveSession !== "function" || typeof session.sessionManager.isSessionOnDisk !== "function") throw Object.assign(new Error("Native worktree session relocation is unavailable"), { code: "CAPABILITY_DISABLED" });
         return { ...identity(session), sessionFileReady: session.sessionManager.isSessionOnDisk() };
@@ -246,6 +270,15 @@ export default function (pi) {
       case "cycleModel": return await session.cycleModel(args.direction === "backward" ? "backward" : "forward") ?? null;
       case "tree": return { ...identity(session), entries: session.sessionManager.getEntries(), tree: session.sessionManager.getTree() };
       case "asyncJobs": return ctx.getAsyncJobSnapshot();
+      case "inspectAsyncJob": {
+        if (typeof session.inspectAsyncJob !== "function") throw Object.assign(new Error("The selected OMP runtime cannot inspect background jobs"), { code: "CAPABILITY_DISABLED" });
+        const job = session.inspectAsyncJob(String(args.id));
+        return job ? { command: job.command, cwd: job.cwd, pids: job.pids, exitCode: job.exitCode, output: job.output, artifactId: job.artifactId } : null;
+      }
+      case "cancelAsyncJob": {
+        if (typeof session.cancelAsyncJob !== "function") throw Object.assign(new Error("The selected OMP runtime cannot cancel background jobs"), { code: "CAPABILITY_DISABLED" });
+        return { cancelled: session.cancelAsyncJob(String(args.id)) };
+      }
       case "goal": {
         // Native RPC owns create/get/pause/resume/drop and the only continuation
         // driver. The supported AgentSession GoalRuntime supplies the operations

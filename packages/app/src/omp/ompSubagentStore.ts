@@ -380,6 +380,7 @@ class OmpSubagentStore {
         agent: str(payload.agent) ?? run.agent,
         isFollowUp: typeof payload.isFollowUp === 'boolean' ? payload.isFollowUp : run.isFollowUp,
         description: subagentDisplayTitle(str(payload.description)) ?? run.description,
+        task: str(payload.task) ?? str(payload.assignment) ?? run.task,
         status,
         sessionFile: str(payload.sessionFile) ?? run.sessionFile,
         index: typeof payload.index === 'number' ? payload.index : run.index,
@@ -410,8 +411,8 @@ class OmpSubagentStore {
       const status = mergeStatus(run.status, incomingStatus)
       return {
         ...run,
-        task: str(payload.task) ?? run.task,
-        description: subagentDisplayTitle(str(payload.description), str(payload.assignment)) ?? run.description,
+        task: str(payload.task) ?? str(payload.assignment) ?? run.task,
+        description: subagentDisplayTitle(str(payload.description)) ?? run.description,
         parentToolCallId: str(payload.parentToolCallId) ?? run.parentToolCallId,
         sessionFile: str(payload.sessionFile) ?? run.sessionFile,
         agent: str(payload.agent) ?? run.agent,
@@ -523,7 +524,7 @@ class OmpSubagentStore {
           agent: str(record.agent) ?? run.agent,
           isFollowUp: typeof record.isFollowUp === 'boolean' ? record.isFollowUp : run.isFollowUp,
           description: subagentDisplayTitle(str(record.description)) ?? run.description,
-          task: str(record.task) ?? run.task,
+          task: str(record.task) ?? str(record.assignment) ?? run.task,
           status,
           sessionFile: str(record.sessionFile) ?? run.sessionFile,
           index: typeof record.index === 'number' ? record.index : run.index,

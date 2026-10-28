@@ -11,6 +11,7 @@ import {
 } from '../../components/Icons'
 import { IconButton } from '../../components/ui'
 import { ModelSelector, type ModelSelectorHandle } from './ModelSelector'
+import { SessionBackgroundJobs } from './input/BackgroundJobsIndicator'
 import { usePiCapabilities } from '../../omp/capabilities'
 import { useLayoutStore, layoutStore } from '../../store/layoutStore'
 import { useSessionContext } from '../../contexts/useSessionContext'
@@ -240,6 +241,8 @@ export function Header({
             isLoading={modelsLoading}
           />
         )}
+
+        <SessionBackgroundJobs sessionId={sessionId} />
 
         {isCompact && <div className="min-w-0">{titleControl}</div>}
       </div>

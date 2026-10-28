@@ -678,6 +678,32 @@ describe('session configuration and stop synchronization', () => {
   })
 })
 
+describe('tool_execution_update progress frames', () => {
+  afterEach(() => {
+    piBranchStore.clear('progress-session')
+    vi.restoreAllMocks()
+  })
+  it('keeps existing call arguments when a progress frame carries no args', () => {
+    const internal = piEventStream as unknown as {
+      handlePiEvent(sessionId: string, payload: unknown): void
+      scheduleBranchRefresh(sessionId: string): void
+      scheduleStateRefresh(sessionId: string): void
+    }
+    const branchRefresh = vi.spyOn(internal, 'scheduleBranchRefresh').mockImplementation(() => undefined)
+    vi.spyOn(internal, 'scheduleStateRefresh').mockImplementation(() => undefined)
+    piBranchStore.setData('progress-session', fakeBranchPage('progress-session'))
+    const args = { path: 'xd://task', content: '{"tasks":[{"name":"A","task":"x"}]}' }
+    internal.handlePiEvent('progress-session', { event: { type: 'tool_execution_start', toolCallId: 'call-1', toolName: 'write', args } })
+    branchRefresh.mockClear()
+    internal.handlePiEvent('progress-session', { event: { type: 'tool_execution_update', toolCallId: 'call-1', toolName: 'write', partialResult: { content: [{ type: 'text', text: 'Running agent' }] } } })
+    expect(piBranchStore.getData('progress-session')?.client?.toolExecutions?.['call-1']?.call).toMatchObject({ name: 'write', arguments: args })
+    expect(branchRefresh).not.toHaveBeenCalled()
+    const next = { path: 'xd://task', content: '{"tasks":[]}' }
+    internal.handlePiEvent('progress-session', { event: { type: 'tool_execution_update', toolCallId: 'call-1', toolName: 'write', args: next } })
+    expect(piBranchStore.getData('progress-session')?.client?.toolExecutions?.['call-1']?.call?.arguments).toEqual(next)
+  })
+})
+
 describe('native notices and protocol feedback', () => {
   afterEach(() => { commandFeedbackStore.reset(); notificationStore.clearAll(); vi.restoreAllMocks() })
 

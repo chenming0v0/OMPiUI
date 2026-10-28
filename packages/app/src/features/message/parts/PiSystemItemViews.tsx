@@ -12,14 +12,15 @@ import type {
   PiUnknownItem,
 } from '../../../omp/domain/index.js'
 import { MarkdownRenderer } from '../../../components/MarkdownRenderer'
-import { ChevronDownIcon } from '../../../components/Icons'
+import { ChevronDownIcon, UsersIcon } from '../../../components/Icons'
 import { useUiDisclosureState } from '../../../utils/uiDisclosureState'
 import { useDisclosureScrollLock } from '../../../hooks'
 import { useNow } from '../../../hooks/useNow'
 import { chevronClass, MessageExpandPanel, useMessageExpandRender } from '../messageExpand'
+import { MSG_SPACING } from '../messageSpacing'
 import { ToolGroup } from './ToolGroup'
-import { formatDuration } from '../../../utils/formatUtils'
-import { customMessageText, readAgentMessage, readBackgroundJobs, type BackgroundJobView } from './customMessagePresentation'
+import { customMessageText, readAgentMessage, readBackgroundJobs } from './customMessagePresentation'
+import { backgroundJobExecutions } from './backgroundJobExecution'
 
 // ============================================
 // Pi system timeline item views
@@ -178,60 +179,33 @@ function CustomMessageItemView({ item }: { item: PiCustomMessageItem }) {
   const agent = readAgentMessage(item)
   if (agent) {
     return (
-      <section className="min-w-0 rounded-md border border-border-200 bg-bg-100/50 px-3 py-2" aria-label={t('system.agentMessage', { name: agent.sender })}>
-        <div className="mb-1 text-[length:var(--fs-xs)] font-medium text-text-400">{t('system.agentMessage', { name: agent.sender })}</div>
-        <MarkdownRenderer content={agent.body} />
+      <section className={`min-w-0 ${MSG_SPACING.item}`} aria-label={t('system.agentMessage', { name: agent.sender })}>
+        <div className="min-w-0 border-l-2 border-accent-main-100/40 pl-3">
+          <div className="flex items-center gap-1.5 pb-1 text-[length:var(--fs-xs)] text-text-400">
+            <UsersIcon size={12} className="shrink-0" />
+            <span className="min-w-0 truncate">{t('system.agentMessageFrom', { name: agent.sender })}</span>
+          </div>
+          <MarkdownRenderer content={agent.body} />
+        </div>
       </section>
     )
   }
-  const jobs = readBackgroundJobs(item)
-  if (jobs) {
-    return <div className="min-w-0 space-y-2">{jobs.map((job, index) => <BackgroundJobCard key={`${job.id}:${index}`} job={job} partKey={`${item.entryId}:${job.id}:${index}`} />)}</div>
-  }
+  const jobs = backgroundJobExecutions(item)
+  if (jobs) return <BackgroundJobGroup item={item} executions={jobs} />
   const text = customMessageText(item)
   return text.trim() ? <MarkdownRenderer content={text} /> : null
 }
 
-function BackgroundJobCard({ job, partKey }: { job: BackgroundJobView; partKey: string }) {
+/** 后台任务投递沿用普通工具卡片（同样的图标列、title、耗时、折叠）。
+ *  紧跟在工具链后面的投递已在 chatAreaVisibility 并进那条工具链；
+ *  走到这里的是前面没有工具行的独立投递，按普通工具组渲染。 */
+function BackgroundJobGroup({ item, executions }: { item: PiCustomMessageItem; executions: PiToolExecution[] }) {
   const { t } = useTranslation('message')
-  const [expanded, setExpanded] = useUiDisclosureState(`pi:${partKey}:job-result`, false)
-  const shouldRenderBody = useMessageExpandRender(expanded)
-  const { rootRef, headerRef, withScrollLock } = useDisclosureScrollLock()
-  const duration = job.durationMs !== undefined ? formatDuration(job.durationMs) : job.duration
-  const status = job.status === 'completed' ? t('system.jobCompleted') : job.status
-  const body = job.body.trim()
-  const structured = body.startsWith('[') || body.startsWith('{')
-
+  const isStreaming = executions.some(execution => execution.isRunning)
+  const name = readBackgroundJobs(item)?.map(job => job.name).join(', ') ?? ''
   return (
-    <section ref={rootRef} className="min-w-0 rounded-md border border-border-200 bg-bg-100/50 px-3 py-2" aria-label={t('system.backgroundJob', { name: job.name })}>
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[length:var(--fs-xs)] text-text-400">
-        <span className="font-medium text-text-200 break-all">{job.name}</span>
-        <span>{status}</span>
-        {duration && <span className="tabular-nums">{duration}</span>}
-      </div>
-      {job.summary && !job.errors.length && <p className="mt-1 line-clamp-3 whitespace-pre-wrap break-words text-[length:var(--fs-sm)] text-text-300">{job.summary}</p>}
-      {job.errors.map((error, index) => <p key={index} className="mt-1 whitespace-pre-wrap break-words text-[length:var(--fs-sm)] text-danger-100">{error}</p>)}
-      {(job.body || job.metadata && Object.keys(job.metadata).length > 0) && (
-        <>
-          <button ref={headerRef} type="button" aria-expanded={expanded} onClick={() => withScrollLock(() => setExpanded(!expanded))} className="mt-2 inline-flex items-center gap-1 text-[length:var(--fs-xs)] text-text-400 hover:text-text-200 focus-visible:outline-2 focus-visible:outline-primary-100">
-            <ChevronDownIcon size={12} className={chevronClass(expanded)} />
-            {t('system.jobResult')}
-          </button>
-          <MessageExpandPanel open={expanded} innerClassName="overflow-hidden">
-            {shouldRenderBody && (
-              <div className="mt-2 min-w-0">
-                {structured
-                  ? <pre className="whitespace-pre-wrap break-words text-[length:var(--fs-sm)] font-mono">{job.body}</pre>
-                  : <MarkdownRenderer content={job.body} />}
-                {job.metadata && Object.keys(job.metadata).length > 0 && (
-                  <pre className="mt-2 whitespace-pre-wrap break-words text-[length:var(--fs-xs)] font-mono text-text-400">{JSON.stringify(job.metadata, null, 2)}</pre>
-                )}
-              </div>
-            )}
-          </MessageExpandPanel>
-        </>
-      )}
-      {job.fullOutput && <p className="mt-1 break-all text-[length:var(--fs-xs)] text-text-400">{t('system.jobFullOutput', { path: job.fullOutput })}</p>}
+    <section className="min-w-0" aria-label={t('system.backgroundJob', { name })}>
+      <ToolGroup groupId={item.entryId} executions={executions} isStreaming={isStreaming} plain />
     </section>
   )
 }

@@ -102,7 +102,7 @@ describe('branch sync over HTTP', () => {
     expect(piBranchStore.getData('sync')?.beforeCursor).toBe('renewed-b')
   })
 
-  it('keeps the 400-entry reading window through repeated empty syncs and later pagination', async () => {
+  it('keeps the latest suffix through older pagination and repeated empty syncs', async () => {
     const ids = Array.from({ length: 400 }, (_, index) => `entry-${index}`)
     piBranchStore.setData('sync', { ...page(ids, 'base'), hasMore: true })
     const fetch = vi.spyOn(transport, 'getPiBranchPage')
@@ -117,9 +117,7 @@ describe('branch sync over HTTP', () => {
 
     await loadMorePiBranchEntries('sync')
     const windowed = piBranchStore.getData('sync')!
-    expect(windowed.items).toHaveLength(400)
-    expect(windowed.items[0].id).toBe('older')
-    expect(windowed.items.at(-1)?.id).toBe('entry-398')
+    expect(windowed.items.map(item => item.id)).toEqual(['older', ...ids])
     expect(windowed.client?.historyWindowed).toBe(true)
 
     await refreshPiBranch('sync')
@@ -134,11 +132,31 @@ describe('branch sync over HTTP', () => {
 
     await loadMorePiBranchEntries('sync')
     const paged = piBranchStore.getData('sync')!
-    expect(paged.items).toHaveLength(400)
-    expect(paged.items.slice(0, 2).map(item => item.id)).toEqual(['oldest', 'older'])
+    expect(paged.items.map(item => item.id)).toEqual(['oldest', 'older', ...ids])
     expect(paged.hasMore).toBe(false)
     expect(paged.syncCursor).toBe('base')
     expect(fetch.mock.calls[3]?.[1]).toMatchObject({ beforeId: 'older' })
+  })
+
+  it('keeps hydrated tool output and the latest message when older pages exceed the byte cache budget', async () => {
+    const output = 'build output\n'.repeat(8 * 1024)
+    const latest = page(['latest'], 'base')
+    latest.hasMore = true
+    piBranchStore.setData('sync', latest)
+    const older = page(Array.from({ length: 90 }, (_, i) => `result-${i}`))
+    older.items = older.items.map(entry => ({
+      type: 'message', id: entry.id, parentId: null, timestamp: '',
+      message: {
+        role: 'toolResult', toolCallId: `call-${entry.id}`, toolName: 'bash',
+        content: [{ type: 'text', text: output }], isError: false, timestamp: 1,
+      },
+    }))
+    vi.spyOn(transport, 'getPiBranchPage').mockResolvedValueOnce(older)
+    await loadMorePiBranchEntries('sync')
+    const loaded = piBranchStore.getData('sync')!
+    expect(loaded.items).toEqual([...older.items, ...latest.items])
+    expect(loaded.head.leafId).toBe(loaded.items.at(-1)?.id)
+    expect(loaded.hasMore).toBe(false)
   })
 
   it('ignores stale concurrent responses instead of appending entries twice', async () => {

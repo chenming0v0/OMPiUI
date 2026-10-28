@@ -693,7 +693,10 @@ export const ChatArea = memo(
       }
 
       // ── 历史加载（prepend 锚点） ──
-      const prependAnchor = useRef<{ key: string; offset: number; scrollTop: number } | undefined>(undefined)
+      // 分页补偿保持锚行的视口偏移；wheel / touchstart 立即取消。
+      // expectedScrollTop 跟踪自己的补偿写入；其它位置变化时保守退出，
+      // 不在 scroll 事件到达前把用户的拖动、键盘或惯性滚动拉回。
+      const prependAnchor = useRef<{ key: string; offset: number; expectedScrollTop: number } | undefined>(undefined)
       const prependFrame = useRef<number | undefined>(undefined)
       const prependLoading = useRef(false)
 
@@ -715,7 +718,7 @@ export const ChatArea = memo(
           prependAnchor.current = {
             key: anchor.el.dataset.timelineKey,
             offset: anchor.rect.top - view.top,
-            scrollTop: root.scrollTop,
+            expectedScrollTop: root.scrollTop,
           }
         }
       }, [])
@@ -729,24 +732,27 @@ export const ChatArea = memo(
           prependFrame.current = undefined
           const a = prependAnchor.current
           if (!a) return
-          // 内容重排才需要补偿；手势、惯性或虚拟列表已移动滚动位置时不再拉回。
-          if (Math.abs(root.scrollTop - a.scrollTop) > 0.5) {
-            clearPrepend()
+          // 滚动位置和「上次写入的期望值」不符：滚动条拖动、键盘或其它程序
+          // 在滚动——用户意图优先，放弃补偿。
+          if (Math.abs(root.scrollTop - a.expectedScrollTop) > 0.5) {
+            prependAnchor.current = undefined
             return
           }
           const el = root.querySelector<HTMLElement>(`[data-timeline-key="${CSS.escape(a.key)}"]`)
-          const delta = el ? el.getBoundingClientRect().top - root.getBoundingClientRect().top - a.offset : undefined
-          if (delta !== undefined && Math.abs(delta) > 0.5) {
+          // 锚行被虚拟列表卸载（滚出渲染窗口）：无法继续补偿，结束循环。
+          if (!el) { prependAnchor.current = undefined; return }
+          const delta = el.getBoundingClientRect().top - root.getBoundingClientRect().top - a.offset
+          if (Math.abs(delta) > 0.5) {
             root.scrollTop += delta
-            a.scrollTop = root.scrollTop
+            a.expectedScrollTop = root.scrollTop
             stable = 0
           }
           else stable++
-          if (++frames >= 180 || stable >= 30) { if (!prependLoading.current) prependAnchor.current = undefined; return }
+          if (++frames >= 180 || stable >= 30) { prependAnchor.current = undefined; return }
           prependFrame.current = requestAnimationFrame(apply)
         }
         apply()
-      }, [clearPrepend])
+      }, [])
 
       const capturePrepend = useCallback(() => {
         prependLoading.current = true
@@ -840,7 +846,9 @@ export const ChatArea = memo(
       const onScroll = useCallback(() => {
         // 包括松手后的惯性滚动；先更新离底状态，首次到顶也能触发分页。
         autoHandleScroll()
-        if (prependLoading.current) updatePrependAnchor()
+        // 补偿循环进行中不重取锚：重取会把锚偏移改成当前（已被补偿/测量修正
+        // 移动过的）位置，锚点漂移后永不稳定，循环也会一直和内容重排赛跑。
+        if (prependLoading.current && prependFrame.current === undefined) updatePrependAnchor()
         computeScrollState()
         prefetchHistory()
         if (

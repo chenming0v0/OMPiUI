@@ -23,11 +23,9 @@ server-stderr.log
 .zcode/
 
 # BEGIN oh-my-opencode-slim worktrees
-.slim/worktrees/
-.slim/worktrees.json
+# 整个 .slim 都是本地工作区/日志产物，不入库
+.slim/
 # END oh-my-opencode-slim worktrees
-.slim/deepwork/
-.slim/artifacts/
 packages/app/src-tauri/gen/android/app/libs/ompiui-tailscale.aar
 packages/app/src-tauri/gen/android/app/libs/ompiui-tailscale-sources.jar
 packages/app/src-tauri/gen/android/app/src/main/assets/tailscale/

@@ -3,11 +3,16 @@ import type { PiBranchPage } from './domain'
 const sizes = new WeakMap<object, number>()
 const encoder = new TextEncoder()
 
-/** 历史窗口只限制浏览器缓存；向前阅读保留较早一侧，实时视图保留最新一侧。 */
+/** 最新页缓存有界；主动加载历史后保留完整连续区间，不能丢掉仍需下滚阅读的后缀。 */
 export function windowBranch(page: PiBranchPage, older = false): PiBranchPage {
+  if (older) {
+    return page.client?.historyWindowed
+      ? page
+      : { ...page, client: { ...page.client, historyWindowed: true } }
+  }
   let bytes = 0
   let count = 0
-  const ordered = older ? page.items : [...page.items].reverse()
+  const ordered = [...page.items].reverse()
   for (const entry of ordered) {
     let size = sizes.get(entry)
     if (size === undefined) {
@@ -19,15 +24,14 @@ export function windowBranch(page: PiBranchPage, older = false): PiBranchPage {
     count++
   }
   if (count === page.items.length) return page
-  const items = older ? page.items.slice(0, count) : page.items.slice(-count)
+  const items = page.items.slice(-count)
   const ids = new Set(items.map(entry => entry.id))
   return {
     ...page,
     items,
-    hasMore: older ? page.hasMore : true,
+    hasMore: true,
     client: {
       ...page.client,
-      historyWindowed: older || page.client?.historyWindowed,
       stableEntryIds: page.client?.stableEntryIds
         ? Object.fromEntries(Object.entries(page.client.stableEntryIds).filter(([id]) => ids.has(id)))
         : undefined,

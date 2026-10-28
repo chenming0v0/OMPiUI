@@ -510,6 +510,19 @@ interface MockEntry extends JsonObject {}
 
 type QueuedUserMessage = { entryId: string; text: string; images?: ImageInput[] };
 
+type MockAsyncJob = {
+  id: string;
+  type: "bash" | "task";
+  status: "running" | "completed" | "failed" | "cancelled";
+  label: string;
+  command?: string;
+  cwd?: string;
+  agentId?: string;
+  startTime: number;
+  endTime?: number;
+  output: string;
+};
+
 export class MockPiSession implements SessionRuntime {
   private header: JsonObject | null;
   private entries: MockEntry[];
@@ -798,6 +811,42 @@ export class MockPiSession implements SessionRuntime {
 
   listSkills(): JsonValue {
     return [];
+  }
+
+  getAsyncJobs(): JsonValue {
+    const jobs = this.mockAsyncJobs();
+    const item = ({ output: _output, cwd: _cwd, ...job }: MockAsyncJob) => job;
+    return {
+      running: jobs.filter(job => job.status === "running").map(item),
+      recent: jobs.filter(job => job.status !== "running").map(item),
+    };
+  }
+
+  inspectAsyncJob(id: string): JsonValue {
+    const job = this.mockAsyncJobs().find(entry => entry.id === id);
+    if (!job) return null;
+    return { command: job.command, cwd: job.cwd, pids: job.status === "running" ? [4242] : [], output: job.output };
+  }
+
+  cancelAsyncJob(id: string): JsonValue {
+    const job = this.mockAsyncJobs().find(entry => entry.id === id);
+    if (!job || job.status !== "running") return { cancelled: false };
+    job.status = "cancelled";
+    job.endTime = Date.now();
+    return { cancelled: true };
+  }
+
+  private asyncJobs?: MockAsyncJob[];
+
+  private mockAsyncJobs(): MockAsyncJob[] {
+    if (!this.asyncJobs) {
+      const now = Date.now();
+      this.asyncJobs = [
+        { id: "bg_1", type: "bash", status: "running", label: "node prototypes/serve.js", command: "node prototypes/serve.js", cwd: process.cwd(), startTime: now - 740_000, output: "Serving prototypes on http://127.0.0.1:4173\nGET / 200 3ms\n" },
+        { id: "bg_2", type: "task", status: "running", label: "explore: map session storage layout", agentId: "explore-1", startTime: now - 95_000, output: "Reading packages/server/src/omp/session-host.ts\n" },
+      ];
+    }
+    return this.asyncJobs;
   }
 
   listPrompts(): JsonValue {

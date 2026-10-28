@@ -65,6 +65,24 @@
     "replyToAgentMobile": "Reply to Agent...",
     "replyToAgent": "Reply to Agent (type @ to mention, / for commands)"
   },
+  "backgroundJobs": {
+    "runningCount_one": "{{count}} background job running",
+    "runningCount_other": "{{count}} background jobs running",
+    "panelTitle": "In progress",
+    "recentTitle": "Completed",
+    "details": "Show output",
+    "stop": "Stop background job",
+    "stopFailed": "Failed to stop: {{message}}",
+    "notCancelled": "The background job could not be stopped; it may have already finished",
+    "detailsFailed": "Failed to read output: {{message}}",
+    "refreshFailed": "Failed to refresh background jobs: {{message}}",
+    "loadingDetails": "Loading…",
+    "noOutput": "No output yet",
+    "exitCode": "Exit code {{code}}",
+    "elapsedSeconds": "{{seconds}}s",
+    "elapsedMinutes": "{{minutes}}m {{seconds}}s",
+    "elapsedHours": "{{hours}}h {{minutes}}m {{seconds}}s"
+  },
   "goalBar": {
     "messageSet": "Set as goal",
     "messageContinuation": "Continuing goal",

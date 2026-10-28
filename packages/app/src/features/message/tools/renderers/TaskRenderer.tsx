@@ -7,7 +7,7 @@ import { useDisclosureScrollLock } from '../../../../hooks'
 import { useSessionNavigation } from '../../../../contexts/SessionNavigationContext'
 import { abortPiOperation, openSubagentSession } from '../../../../omp/controllers/index.js'
 import { getOmpSubagentMessages } from '../../../../omp/transport/index.js'
-import { piSessionStateStore } from '../../../../omp/state/index.js'
+import { piBranchStore, piSessionStateStore } from '../../../../omp/state/index.js'
 import { activeSessionStore } from '../../../../store/activeSessionStore'
 import {
   ompSubagentStore,
@@ -15,7 +15,17 @@ import {
   type OmpSubagentRun,
   type OmpSubagentTranscriptItem,
 } from '../../../../omp/ompSubagentStore'
-import { subagentDisplayTitle } from '../../../../omp/ompSubagentFormat'
+import { formatCompactDuration, subagentDisplayTitle } from '../../../../omp/ompSubagentFormat'
+import { useNow } from '../../../../hooks/useNow'
+import {
+  extractTaskProgress,
+  findAsyncTaskResult,
+  getTaskToolView,
+  indexAsyncTaskResults,
+  isAsyncTaskDispatch,
+  type AsyncTaskResult,
+  type TaskProgressEntry,
+} from '../taskToolData'
 import { buildPersistedSubagentRun, deriveChildSessionFile, extractPersistedResults, type PersistedSubagentResult } from './persistedSubagentRun'
 import { useUiDisclosureState } from '../../../../utils/uiDisclosureState'
 import type { ToolRendererProps } from '../types'
@@ -40,15 +50,52 @@ type TaskSlot = {
   input: Record<string, unknown>
   result?: PersistedSubagentResult
   liveRun?: OmpSubagentRun
+  progress?: TaskProgressEntry
 }
 
-export const TaskRenderer = memo(function TaskRenderer({ execution, partKey, data, onFullscreenChange }: ToolRendererProps) {
+export type TaskSlotStatus = 'pending' | 'running' | 'completed' | 'error' | 'unknown'
+
+type TaskSlotContext = {
+  executionStatus: ReturnType<typeof getToolExecutionStatus>
+  outerResult: boolean
+  outerFailed: boolean
+  runtimeStopped: boolean
+  hasLiveRuns: boolean
+  hasResults: boolean
+  /** 异步派发：外层只是派发回执，子代理结果另行投递。 */
+  asyncPending?: boolean
+}
+
+/** 每个子任务只按自身证据定状态；外层调用返回不等于子任务完成。 */
+export function deriveTaskSlotStatus(slot: TaskSlot, ctx: TaskSlotContext): TaskSlotStatus {
+  const run = slot.liveRun
+  if (isTaskSlotFailed(slot.result, run, ctx.outerFailed)) return 'error'
+  if (slot.result || run?.status === 'completed') return 'completed'
+  if (run && (run.status === 'running' || run.status === 'pending')) {
+    if (ctx.runtimeStopped && !run.detached) return ctx.outerResult ? 'unknown' : 'error'
+    return run.status
+  }
+  if (ctx.outerResult && ctx.asyncPending) return ctx.runtimeStopped ? 'unknown' : 'running'
+  if (ctx.outerResult) return ctx.hasResults ? 'unknown' : 'completed'
+  if (ctx.executionStatus === 'pending') return 'pending'
+  if (ctx.runtimeStopped) return 'error'
+  return ctx.hasLiveRuns ? 'pending' : 'running'
+}
+
+export const TaskRenderer = memo(function TaskRenderer({ execution: rawExecution, partKey, data, onFullscreenChange, taskSlotIndex }: ToolRendererProps) {
   const { currentSessionId } = useSessionNavigation()
   const { t } = useTranslation('message')
+  const view = useMemo(() => getTaskToolView(rawExecution), [rawExecution])
+  const execution = view?.execution ?? rawExecution
   const input = isJsonObject(execution.call.arguments) ? execution.call.arguments : undefined
   const metadata = isJsonObject(execution.result?.details) ? execution.result.details : undefined
   const results = useMemo(() => extractPersistedResults(metadata), [metadata])
+  const progress = useMemo(() => extractTaskProgress(metadata), [metadata])
+  const asyncDispatch = isAsyncTaskDispatch(metadata)
+  const asyncResults = useAsyncTaskResults(currentSessionId, asyncDispatch)
+  const dispatchedAt = typeof execution.result?.timestamp === 'number' ? execution.result.timestamp : undefined
   const liveRuns = useOmpSubagentRuns(execution.call.id, currentSessionId)
+  const runtimeStopped = useTaskRuntimeStopped()
   const slots = useMemo(() => {
     const byIndex = new Map<number, TaskSlot>()
     const inputs = Array.isArray(input?.tasks) ? input.tasks.filter(isJsonObject) : [input ?? {}]
@@ -59,6 +106,18 @@ export const TaskRenderer = memo(function TaskRenderer({ execution, partKey, dat
       slot.result = result
       byIndex.set(index, slot)
     })
+    for (const entry of progress) {
+      const slot = [...byIndex.values()].find(item => item.input.name === entry.id) ?? byIndex.get(entry.index) ?? { index: entry.index, input: {} }
+      slot.progress = entry
+      byIndex.set(slot.index, slot)
+    }
+    if (asyncResults) {
+      for (const slot of byIndex.values()) {
+        const jobId = typeof slot.input.name === 'string' ? slot.input.name : slot.progress?.id
+        const delivered = !slot.result && jobId ? findAsyncTaskResult(asyncResults, jobId, dispatchedAt) : undefined
+        if (delivered) slot.result = asyncResultToPersisted(delivered, slot)
+      }
+    }
     for (const run of liveRuns) {
       const named = [...byIndex.values()].find(slot => slot.input.name === run.id || slot.result?.id === run.id)
       const index = named?.index ?? run.index
@@ -68,33 +127,108 @@ export const TaskRenderer = memo(function TaskRenderer({ execution, partKey, dat
     }
     if (byIndex.size === 0) byIndex.set(0, { index: 0, input: {} })
     return [...byIndex.values()].sort((a, b) => a.index - b.index)
-  }, [input, results, liveRuns])
-  const intent = typeof input?.i === 'string' ? input.i : typeof input?.description === 'string' ? input.description : undefined
+  }, [input, results, progress, asyncResults, dispatchedAt, liveRuns])
+  const executionStatus = getToolExecutionStatus(execution)
+  const statuses = slots.map(slot => deriveTaskSlotStatus(slot, {
+    executionStatus,
+    outerResult: Boolean(execution.result) || executionStatus === 'completed',
+    outerFailed: executionStatus === 'error' || Boolean(execution.result?.isError),
+    runtimeStopped,
+    hasLiveRuns: liveRuns.length > 0,
+    hasResults: results.length > 0,
+    asyncPending: asyncDispatch,
+  }))
+  // xd 投影的 description 是外层标题（多任务时为名字拼接），不能回落成每个子任务的副标题。
+  const intent = typeof input?.i === 'string' ? input.i
+    : view?.source !== 'xd-write' && typeof input?.description === 'string' ? input.description : undefined
   const sessionId = typeof metadata?.sessionId === 'string' ? metadata.sessionId : undefined
-  return (
-    <div className="min-w-0 space-y-2">
-      {slots.map(slot => (
+  const rawCall = view?.source === 'xd-write' && (
+    <div className="pt-1 font-mono text-[length:var(--fs-xxs)] text-text-500" data-testid="task-raw-call">
+      {view.rawCall.name} → {view.rawCall.path}
+    </div>
+  )
+
+  if (view?.argumentsState === 'streaming' && !execution.result) {
+    return (
+      <div className="min-w-0">
+        <div role="status" aria-busy="true" className="flex items-center gap-2 py-1 text-[length:var(--fs-sm)] text-text-400">
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-text-400 animate-pulse" />
+          <span className="reasoning-shimmer-text">{t('task.argumentsStreaming')}</span>
+        </div>
+        {rawCall}
+      </div>
+    )
+  }
+
+  if (view?.argumentsState === 'invalid') {
+    const upstreamError = data.error || (execution.result ? toolResultText(execution.result) : undefined)
+    return (
+      <div className="min-w-0 space-y-1">
+        <InvalidTaskCall
+          partKey={partKey}
+          names={view.attemptedNames}
+          error={[upstreamError, view.argumentsError].filter(value => typeof value === 'string' && value.trim()).join('\n\n')}
+          rawContent={view.rawCall.content}
+          onFullscreenChange={onFullscreenChange}
+        />
+        {rawCall}
+      </div>
+    )
+  }
+
+  if (taskSlotIndex !== undefined) {
+    const position = slots.findIndex(slot => slot.index === taskSlotIndex)
+    const slot = slots[position]
+    if (!slot) return null
+    return (
+      <div className="min-w-0" data-testid="task-slot-row">
         <SubagentTask
-          key={slot.index}
           slot={slot}
+          status={statuses[position]}
+          runtimeStopped={runtimeStopped}
           execution={execution}
-          partKey={`${partKey}:${slot.index}`}
+          partKey={partKey}
           intent={intent}
-          targetSessionId={slots.length === 1 ? sessionId : undefined}
-          showAggregateOutput={slots.length === 1}
+          showAggregateOutput={false}
           onFullscreenChange={onFullscreenChange}
           aggregateError={data.error}
         />
-      ))}
-      {slots.length > 1 && (data.error || (execution.result && toolResultText(execution.result))) && (
+      </div>
+    )
+  }
+
+  const isBatch = slots.length > 1
+  return (
+    <div className="min-w-0 space-y-1">
+      <div className={isBatch ? 'divide-y divide-border-200/40' : undefined}>
+        {slots.map((slot, position) => (
+          <SubagentTask
+            key={slot.index}
+            slot={slot}
+            status={statuses[position]}
+            runtimeStopped={runtimeStopped}
+            execution={execution}
+            partKey={`${partKey}:${slot.index}`}
+            intent={intent}
+            targetSessionId={isBatch ? undefined : sessionId}
+            showAggregateOutput={!isBatch && !asyncDispatch}
+            onFullscreenChange={onFullscreenChange}
+            aggregateError={data.error}
+          />
+        ))}
+      </div>
+      {isBatch && (data.error || (execution.result && toolResultText(execution.result))) && (
         <ContentBlock label={t(data.error ? 'task.error' : 'task.result')} stateKey={`message:${partKey}:aggregate-result`} content={data.error || toolResultText(execution.result)} variant={data.error ? 'error' : undefined} defaultCollapsed={!data.error} onFullscreenChange={onFullscreenChange} fullscreenId={`task:${partKey}:aggregate-result`} />
       )}
+      {rawCall}
     </div>
   )
 })
 
-function SubagentTask({ slot, execution, partKey, intent, targetSessionId, showAggregateOutput, aggregateError, onFullscreenChange }: {
+function SubagentTask({ slot, status, runtimeStopped, execution, partKey, intent, targetSessionId, showAggregateOutput, aggregateError, onFullscreenChange }: {
   slot: TaskSlot
+  status: TaskSlotStatus
+  runtimeStopped: boolean
   execution: ToolRendererProps['execution']
   partKey: string
   intent?: string
@@ -105,9 +239,7 @@ function SubagentTask({ slot, execution, partKey, intent, targetSessionId, showA
 }) {
   const { t } = useTranslation('message')
   const { navigateToSession, currentDirectory, currentSessionId } = useSessionNavigation()
-  // 先确认运行状态，再按展开状态读取历史；中断且没有结果的任务不能永久计时。
   const liveRun = slot.liveRun
-  const runtimeStopped = useTaskRuntimeStopped()
   const executionStatus = getToolExecutionStatus(execution)
   const hasStarted = executionStatus !== 'pending' || (liveRun !== undefined && liveRun.status !== 'pending')
   const isRunning = liveRun
@@ -145,22 +277,29 @@ function SubagentTask({ slot, execution, partKey, intent, targetSessionId, showA
   const name = subagentDisplayTitle(
     typeof slot.input.name === 'string' ? slot.input.name : undefined,
     slot.result?.id,
+    liveRun?.id,
   )
   const detail = subagentDisplayTitle(
     slot.result?.description,
     subagentRun?.description,
     typeof slot.input.description === 'string' ? slot.input.description : undefined,
+    slot.progress?.description,
     intent,
   )
-  const description = name && detail && name !== detail
-    ? `${name} · ${detail}`
-    : name || detail || t('task.subtask')
   const prompt = liveRun?.isFollowUp ? liveRun.task : typeof slot.input.prompt === 'string' ? slot.input.prompt
     : typeof slot.input.task === 'string' ? slot.input.task
-      : slot.result?.assignment || subagentRun?.task || ''
+      : slot.result?.assignment || slot.progress?.assignment || subagentRun?.task || ''
   const agentType = subagentRun?.agent || (typeof slot.input.agent === 'string' ? slot.input.agent : undefined)
-    || (typeof slot.input.subagent_type === 'string' ? slot.input.subagent_type : undefined) || 'task'
+    || (typeof slot.input.subagent_type === 'string' ? slot.input.subagent_type : undefined) || slot.progress?.agent || 'task'
   const sessionFile = subagentRun?.sessionFile
+  const progress = liveRun?.progress
+  const activity = isRunning
+    ? progress?.currentTool ? [progress.currentTool, progress.currentToolArgs].filter(Boolean).join(' ') : progress?.lastIntent
+    : undefined
+  const now = useNow(1000, isRunning && Boolean(liveRun))
+  const durationMs = liveRun
+    ? (liveRun.endedAt ?? (isRunning ? now : undefined)) !== undefined ? Math.max(0, (liveRun.endedAt ?? now) - liveRun.startedAt) : undefined
+    : slot.result?.durationMs
 
   const handleOpenSubagent = useCallback(async (event: React.MouseEvent) => {
     event.stopPropagation()
@@ -199,11 +338,14 @@ function SubagentTask({ slot, execution, partKey, intent, targetSessionId, showA
   }, [isRunning, setExpanded])
 
   return (
-    <div ref={rootRef} className="min-w-0">
+    <div ref={rootRef} className="min-w-0" data-testid="task-slot" data-status={status}>
       <TaskHeader
         agentType={agentType}
-        description={description}
-        status={isRunning ? 'running' : isError ? 'error' : isCompleted ? 'completed' : 'pending'}
+        description={name || detail || t('task.subtask')}
+        detail={name && detail && name !== detail ? detail : undefined}
+        activity={activity}
+        duration={durationMs !== undefined ? formatCompactDuration(durationMs) : undefined}
+        status={status}
         expanded={expanded}
         headerRef={headerRef}
         onToggle={() => withScrollLock(() => setExpanded(!expanded))}
@@ -214,7 +356,7 @@ function SubagentTask({ slot, execution, partKey, intent, targetSessionId, showA
       {openError && <p role="alert" className="pt-1 text-[length:var(--fs-xs)] text-danger-100 break-words">{openError}</p>}
       <MessageExpandPanel open={effectiveExpanded} innerClassName="overflow-hidden">
         {shouldRenderBody && (
-          <div className="pt-2 space-y-3">
+          <div className="ml-[9px] border-l border-border-200/50 pl-3 pt-1 pb-2 space-y-3">
             {prompt && <div className="text-[length:var(--fs-xs)] text-text-500 leading-relaxed whitespace-nowrap overflow-hidden text-ellipsis">{prompt}</div>}
             {prompt && subagentRun && <hr className="border-border-200/30" />}
             {hasStarted && (subagentRun || previewLoading || !isError) && <SubagentSessionPreview run={subagentRun} loading={previewLoading} onLoadMore={persistedRun ? reloadPreview : undefined} />}
@@ -238,6 +380,9 @@ function SubagentTask({ slot, execution, partKey, intent, targetSessionId, showA
 interface TaskHeaderProps {
   agentType: string
   description: string
+  detail?: string
+  activity?: string
+  duration?: string
   status: string
   expanded: boolean
   onToggle: () => void
@@ -252,6 +397,9 @@ interface TaskHeaderProps {
 export const TaskHeader = memo(function TaskHeader({
   agentType,
   description,
+  detail,
+  activity,
+  duration,
   status,
   expanded,
   onToggle,
@@ -275,7 +423,9 @@ export const TaskHeader = memo(function TaskHeader({
   const isRunning = status === 'running'
   const isError = status === 'error'
   const isCompleted = status === 'completed'
+  const statusLabel = status === 'pending' ? t('toolPart.pending') : status === 'unknown' ? t('toolPart.unknown') : undefined
 
+  // OpenCode 行为：派发即绿色（主色），完成转蓝色（辅助色），失败红色。
   const agentBadgeClass = `shrink-0 px-1.5 py-0.5 text-[length:var(--fs-xxs)] font-medium rounded-xs ${
     isRunning
       ? 'bg-accent-main-100/20 text-accent-main-100'
@@ -296,7 +446,6 @@ export const TaskHeader = memo(function TaskHeader({
         title={expanded ? t('showLess') : t('showMore')}
         className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-sm text-text-400 transition-colors hover:bg-bg-200/70 hover:text-text-100 bg-transparent border-none p-0"
       >
-        {/* Expand icon */}
         <span className={`text-text-400 transition-transform ${expanded ? 'rotate-90' : ''}`}>
           <ChevronRightIcon size={12} />
         </span>
@@ -321,16 +470,19 @@ export const TaskHeader = memo(function TaskHeader({
         type="button"
         onClick={onToggle}
         aria-expanded={expanded}
-        className="group/title flex min-w-0 flex-1 self-stretch items-center text-left bg-transparent border-none p-0"
+        aria-label={[description, detail].filter(Boolean).join(' · ')}
+        className="group/title flex min-w-0 flex-1 self-stretch items-baseline gap-2 text-left bg-transparent border-none p-0"
         title={expanded ? t('showLess') : t('showMore')}
       >
-        <span className="min-w-0 truncate text-[length:var(--fs-sm)] text-text-300 group-hover/title:text-text-100">
+        <span className={`shrink-0 max-w-[50%] truncate text-[length:var(--fs-sm)] font-medium group-hover/title:text-text-100 ${isError ? 'text-danger-100' : 'text-text-200'}`}>
           {description}
         </span>
+        {detail && <span className="min-w-0 truncate text-[length:var(--fs-xs)] text-text-400">{detail}</span>}
+        {activity && <span className="min-w-0 truncate font-mono text-[length:var(--fs-xxs)] text-text-500" data-testid="task-activity">{activity}</span>}
       </button>
-      {status === 'pending' && <span className="text-[length:var(--fs-xxs)] text-text-400">{t('toolPart.pending')}</span>}
+      {statusLabel && <span className="shrink-0 text-[length:var(--fs-xxs)] text-text-400">{statusLabel}</span>}
+      {duration && <span className="shrink-0 tabular-nums text-[length:var(--fs-xxs)] text-text-500">{duration}</span>}
 
-      {/* Stop button (running) */}
       {onStop && (
         <button
           type="button"
@@ -343,7 +495,6 @@ export const TaskHeader = memo(function TaskHeader({
         </button>
       )}
 
-      {/* Open session */}
       {(sessionId || onOpenSession) && (
         <button
           type="button"
@@ -444,6 +595,67 @@ function usePersistedSubagentRun(
       reload,
     }),
     [baseRun, loaded, enabled, revision, reload],
+  )
+}
+
+// ============================================
+// 异步派发（write xd://task 默认 async）：结果经 async-result 自定义消息投递，
+// 按 jobId 从已加载的父会话条目里只读查找。
+// ============================================
+
+function useAsyncTaskResults(sessionId: string | null | undefined, enabled: boolean): Map<string, AsyncTaskResult[]> | undefined {
+  const getItems = useCallback(() => (enabled && sessionId ? piBranchStore.getData(sessionId)?.items ?? null : null), [enabled, sessionId])
+  const items = useSyncExternalStore(piBranchStore.subscribe, getItems, getItems)
+  return useMemo(() => (items ? indexAsyncTaskResults(items) : undefined), [items])
+}
+
+function asyncResultToPersisted(result: AsyncTaskResult, slot: TaskSlot): PersistedSubagentResult {
+  const failed = result.status === 'failed' || result.errors.length > 0
+  const aborted = result.status === 'cancelled' || result.status === 'aborted' || result.status === 'killed'
+  return {
+    index: slot.index,
+    id: result.jobId,
+    agent: slot.progress?.agent ?? (typeof slot.input.agent === 'string' ? slot.input.agent : undefined),
+    task: typeof slot.input.task === 'string' ? slot.input.task : undefined,
+    assignment: slot.progress?.assignment,
+    durationMs: result.durationMs,
+    output: result.output || undefined,
+    ...(aborted ? { aborted: true } : {}),
+    ...(failed ? { error: result.errors.join('\n') || result.status } : {}),
+  }
+}
+
+function InvalidTaskCall({ partKey, names, error, rawContent, onFullscreenChange }: {
+  partKey: string
+  names?: string[]
+  error: string
+  rawContent?: string
+  onFullscreenChange?: ToolRendererProps['onFullscreenChange']
+}) {
+  const { t } = useTranslation('message')
+  const [expanded, setExpanded] = useUiDisclosureState(`message:${partKey}:task-invalid`, false)
+  const title = names?.length ? names.join(' · ') : t('task.invalidArguments')
+  return (
+    <div className="min-w-0" data-testid="task-invalid" data-status="error">
+      <TaskHeader
+        agentType="task"
+        description={title}
+        detail={names?.length ? t('task.invalidArguments') : undefined}
+        status="error"
+        expanded={expanded}
+        onToggle={() => setExpanded(!expanded)}
+      />
+      <MessageExpandPanel open={expanded} innerClassName="overflow-hidden">
+        {expanded && (
+          <div className="ml-[9px] border-l border-border-200/50 pl-3 pt-1 pb-2 space-y-3">
+            <ContentBlock label={t('task.invalidArguments')} stateKey={`message:${partKey}:task-arguments`} content={error || t('task.taskFailed')} variant="error" onFullscreenChange={onFullscreenChange} fullscreenId={`task:${partKey}:arguments`} />
+            {rawContent && (
+              <ContentBlock label={t('task.rawArguments')} stateKey={`message:${partKey}:task-raw-arguments`} content={rawContent} defaultCollapsed onFullscreenChange={onFullscreenChange} fullscreenId={`task:${partKey}:raw-arguments`} />
+            )}
+          </div>
+        )}
+      </MessageExpandPanel>
+    </div>
   )
 }
 

@@ -59,17 +59,26 @@ export function mergeLatestBranchPage(current: PiBranchPage | null, latest: PiBr
       : { ...page.client?.toolExecutions }
     const persistedStarts = new Set<string>()
     const persistedResults = new Set<string>()
+    const persistedCalls = new Set<string>()
     for (const entry of page.items) {
       if (entry.type === 'custom' && entry.customType === 'tool_execution_start') {
         const data = entry.data as { toolCallId?: unknown } | undefined
         if (typeof data?.toolCallId === 'string') persistedStarts.add(data.toolCallId)
       } else if (entry.type === 'message' && entry.message.role === 'toolResult') {
         persistedResults.add(entry.message.toolCallId)
+      } else if (entry.type === 'message' && entry.message.role === 'assistant') {
+        for (const block of entry.message.content) {
+          if (block.type === 'toolCall') persistedCalls.add(block.id)
+        }
       }
     }
     for (const id of persistedResults) {
-      if (persistedStarts.has(id) || toolExecutions[id]?.startedAt === undefined) delete toolExecutions[id]
-      else toolExecutions[id] = { startedAt: toolExecutions[id].startedAt }
+      const execution = toolExecutions[id]
+      const startedAt = persistedStarts.has(id) ? undefined : execution?.startedAt
+      // A result settles live state, but its owner can be outside this page.
+      const call = persistedCalls.has(id) ? undefined : execution?.call
+      if (startedAt === undefined && !call) delete toolExecutions[id]
+      else toolExecutions[id] = { ...(startedAt !== undefined ? { startedAt } : {}), ...(call ? { call } : {}) }
     }
     const hasToolExecutions = Object.keys(toolExecutions).length > 0
     const localIsNewer =

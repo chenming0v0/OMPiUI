@@ -20,9 +20,9 @@ interface InputToolbarProps {
   onFilesSelected: (files: File[]) => void
 
   isStreaming?: boolean
-  /** 兜底：session 在活跃列表中时即使 isStreaming 为 false 也显示停止按钮 */
+  /** Foreground activity keeps Stop available when there is no sendable draft. */
   sessionActive?: boolean
-  /** 上下文压缩进行中：发送按钮变为停止按钮（取消压缩） */
+  /** Context compaction can be cancelled through the same action slot. */
   isCompacting?: boolean
   isSending?: boolean
   isStopping?: boolean
@@ -81,6 +81,7 @@ export function InputToolbar({
   const caps = fileCapabilities ?? { image: false, pdf: false, audio: false, video: false }
   const supportsAnyFile = caps.image || caps.pdf || caps.audio || caps.video
   const controlsDisabled = isSending
+  const showStop = isStopping || Boolean((isCompacting || isStreaming || sessionActive) && (!canSend || isSending))
   const effortDisabled = controlsDisabled || variantsDisabled || (variants.length === 1 && variants[0] === 'off')
   const displayedVariant = variants.length === 1 && variants[0] === 'off' ? 'off' : selectedVariant
 
@@ -471,7 +472,7 @@ export function InputToolbar({
             </IconButton>
           </>
         </AnimatedPresence>
-        {(isCompacting || isStreaming || sessionActive || isStopping) && (
+        {showStop ? (
           <IconButton
             aria-label={t('inputToolbar.stopGeneration')}
             variant="solid"
@@ -480,8 +481,7 @@ export function InputToolbar({
           >
             {isStopping ? <SpinnerIcon className="animate-spin" /> : <StopIcon />}
           </IconButton>
-        )}
-        {canSend || !isStreaming && !sessionActive && !isCompacting && !isStopping ? (
+        ) : (
           <IconButton
             aria-label={isSending ? t('inputToolbar.sendingMessage') : t('inputToolbar.sendMessage')}
             variant="solid"
@@ -490,7 +490,7 @@ export function InputToolbar({
           >
             {isSending ? <SpinnerIcon className="animate-spin" /> : <SendIcon />}
           </IconButton>
-        ) : null}
+        )}
       </div>
     </div>
   )

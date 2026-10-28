@@ -8,6 +8,7 @@ import { getToolExecutionStatus } from '../../../omp/domain/index.js'
 import { useCompositorExpand, useDisclosureScrollLock } from '../../../hooks'
 import { useNow } from '../../../hooks/useNow'
 import { serverStore } from '../../../store/serverStore'
+import { useSessionNavigation } from '../../../contexts/SessionNavigationContext'
 import { useTheme } from '../../../hooks/useTheme'
 import { formatToolName, formatDuration } from '../../../utils/formatUtils'
 import { useUiDisclosureState } from '../../../utils/uiDisclosureState'
@@ -25,6 +26,7 @@ import {
 import { MSG_SPACING } from '../messageSpacing'
 import { MessageExpandPanel, useMessageExpandRender } from '../messageExpand'
 import { ToolResultImages, ToolResultNotice } from '../tools/renderers/DefaultRenderer'
+import { resolveTaskExecution } from '../tools/taskToolData'
 
 // ============================================
 // ToolPartView - 单个工具调用
@@ -32,7 +34,7 @@ import { ToolResultImages, ToolResultNotice } from '../tools/renderers/DefaultRe
 
 interface ToolPartViewProps {
   execution: PiToolExecution
-  /** Stable key for expand-state persistence (entry id + block index) */
+  /** Fallback disclosure identity for surfaces without a session context. */
   partKey: string
   isFirst?: boolean
   isLast?: boolean
@@ -46,26 +48,38 @@ interface ToolPartViewProps {
   /** 初始即展开（用户发起的 bash 等：发命令就是为了看输出）。仅影响初始
    *  状态；用户手动折叠后保持折叠（respectUser）。 */
   defaultExpanded?: boolean
+  /** 批量 task 拆行：本行对应的子任务序号与标题 */
+  taskSlotIndex?: number
+  taskSlotTitle?: string
 }
 
 export const ToolPartView = memo(function ToolPartView({
-  execution,
-  partKey,
+  execution: rawExecution,
+  partKey: fallbackPartKey,
   isFirst = false,
   isLast = false,
   compact = false,
   descriptive = false,
   isStreaming = false,
   defaultExpanded = false,
+  taskSlotIndex,
+  taskSlotTitle,
 }: ToolPartViewProps) {
   const { t } = useTranslation('message')
+  const { currentSessionId } = useSessionNavigation()
+  // Ownership/grouping changes as history loads; disclosure belongs to the call.
+  const partKey = currentSessionId
+    ? `${serverStore.getActiveServerId()}:session:${currentSessionId}:tool:${rawExecution.call.id}${taskSlotIndex === undefined ? '' : `:slot:${taskSlotIndex}`}`
+    : fallbackPartKey
+  const execution = useMemo(() => resolveTaskExecution(rawExecution), [rawExecution])
   const { call, result } = execution
   const toolName = call.name
   const status = getToolExecutionStatus(execution)
   // title 显示工具调用实质（命令/路径/模式），而不是重复工具名——
   // OMP RPC 的工具调用事件只有 toolName + args，没有工具描述字段；
   // formatToolName(toolName) 已展示工具名，title 再显示同名就是冗余。
-  const title = execution.argumentsUnknown ? t('toolPart.argumentsUnknown') : extractToolTitle(toolName, execution)
+  // 批量 task 拆行时用子任务标题；上游的 argumentsUnknown 提示优先于空白标题。
+  const title = taskSlotTitle ?? (execution.argumentsUnknown ? t('toolPart.argumentsUnknown') : extractToolTitle(toolName, execution))
 
   const isActive = status === 'running'
   const isQueued = status === 'pending'
@@ -73,13 +87,16 @@ export const ToolPartView = memo(function ToolPartView({
   const failureLabel = t(!result && execution.interruption === 'cancelled' ? 'toolPart.cancelled' : !result && execution.interruption === 'unknown' ? 'toolPart.unknown' : 'toolPart.failed')
   // Yield 完成工具：行名直接展示任务状态（提交中/完成/失败），不显示工具名
   const isYield = !execution.argumentsUnknown && isYieldTool(toolName)
-  const displayName = isYield && !isQueued
-    ? isActive
-      ? t('yield.submitting')
-      : isError
-        ? t('yield.failed')
-        : t('yield.completed')
-    : formatToolName(toolName)
+  // 后台任务投递合成的执行：行首显示「后台任务」，不显示合成的内部工具名
+  const displayName = rawExecution.backgroundJob
+    ? t('system.jobLabel')
+    : isYield && !isQueued
+      ? isActive
+        ? t('yield.submitting')
+        : isError
+          ? t('yield.failed')
+          : t('yield.completed')
+      : formatToolName(toolName)
   const now = useNow(250, isActive)
   const startTime = execution.startedAt
   const calibratedNow = isActive ? serverStore.getActiveCalibratedNow() : undefined
@@ -161,7 +178,7 @@ export const ToolPartView = memo(function ToolPartView({
 
   const bodyContent = (
     <>
-      <ToolBody execution={execution} partKey={partKey} data={toolData} onFullscreenChange={handleFullscreenChange} />
+      <ToolBody execution={rawExecution} partKey={partKey} data={toolData} onFullscreenChange={handleFullscreenChange} taskSlotIndex={taskSlotIndex} />
     </>
   )
 
@@ -187,6 +204,7 @@ export const ToolPartView = memo(function ToolPartView({
         <button
           type="button"
           ref={headerRef}
+          aria-expanded={effectiveExpanded}
           className={`flex w-full items-center gap-3 rounded-md px-0 ${MSG_SPACING.header} text-left hover:bg-bg-200/30 transition-colors group/header`}
           onClick={toggleExpanded}
         >
@@ -255,6 +273,7 @@ export const ToolPartView = memo(function ToolPartView({
           <button
             type="button"
             ref={headerRef}
+            aria-expanded={effectiveExpanded}
             className="flex items-center gap-2 w-full h-9 text-left pl-2 pr-0 hover:bg-bg-200/40 rounded-sm transition-colors group/header"
             onClick={toggleExpanded}
           >
@@ -340,6 +359,7 @@ export const ToolPartView = memo(function ToolPartView({
         <button
           type="button"
           ref={headerRef}
+          aria-expanded={effectiveExpanded}
           className="flex items-center gap-2.5 w-full h-9 text-left pl-2 pr-0 hover:bg-bg-200/40 rounded-sm transition-colors group/header"
           onClick={toggleExpanded}
         >
@@ -466,13 +486,15 @@ const ToolBody = memo(function ToolBody({
   partKey,
   data,
   onFullscreenChange,
+  taskSlotIndex,
 }: {
   execution: PiToolExecution
   partKey: string
   data: ReturnType<typeof extractToolData>
   onFullscreenChange?: (isFullscreen: boolean) => void
+  taskSlotIndex?: number
 }) {
-  const tool = execution.call.name
+  const tool = resolveTaskExecution(execution).call.name
   const lowerTool = tool.toLowerCase()
   // Without the original call, specialized views must not infer its target
   // or substitute a success summary for the actual orphan output.
@@ -486,7 +508,7 @@ const ToolBody = memo(function ToolBody({
   const specialized = (content: ReactNode) => <>{content}<ToolResultNotice data={data} /><ToolResultImages tool={tool} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} /></>
 
   if (lowerTool === 'task') {
-    return specialized(<TaskRenderer execution={execution} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} />)
+    return specialized(<TaskRenderer execution={execution} partKey={partKey} data={data} onFullscreenChange={onFullscreenChange} taskSlotIndex={taskSlotIndex} />)
   }
 
   if (lowerTool.includes('todo') && hasTodos(execution)) {

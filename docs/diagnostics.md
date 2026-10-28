@@ -101,6 +101,9 @@ npm run diagnostics -- --session <sessionId> --out diagnostic-report.jsonl
 伪造完全结束。清除或取回排队消息使用显式队列操作，不要发新消息“解除卡住”，
 那会真正启动下一轮。真正的异步工作、压缩与重试仍保留停止入口。
 
+受管 runtime 从 OMP `18.12.6` 起，GUI 的手动 Stop 在原生 abort 前启用 client-owned continuation 门禁，队列保持原对象及顺序但不自动续跑；只读刷新不解除暂停。明确提交新消息、队列「立即发送」或恢复目标才解除。未启用门禁的旧实现可能出现 `abort → aborted → agent_end → queue_update → agent_start`，这是真实的新回合，不是按钮假忙。
+
+普通完成不会启用暂停门禁：受管会话首次提交默认采用原生 `all` 模式（仅当前进程，不修改全局配置），当本轮完成时，尚未消费的消息按 FIFO 在下一轮一起进入模型上下文。排队区在实际原生消费前独占消息显示，不能把排队准入当成历史已发送。
 普通 async bash 的启动结果只是官方 job ACK。OMP 18.12.6 实测父回合会发
 `agent_end { isTerminal:false, yielded:true, awaitingAsyncWork:true }`：前台已 yield，
 但 `hasPendingAsyncWork=true`、`isSettled=false`，不可显示已完全完成或发送 idle 通知。

@@ -151,6 +151,26 @@ describe('buildSessionTreeGraph', () => {
     expect(graph.detailEntriesById.get('user')?.map(entry => entry.id)).toEqual(['user', 'assistant-tool', 'result'])
   })
 
+  it('lays out a very deep chain without blowing the stack', () => {
+    // 真实长会话是深链而不是宽树（本机有一条 3410 条目、深度 3407 的会话）：
+    // 之前的递归建图 + dagre 递归分层都会在这里 RangeError。
+    const depth = 3400
+    const root = messageNode('deep-0', null, 'user', 'start')
+    let cursor = root
+    for (let index = 1; index < depth; index += 1) {
+      const next = messageNode(`deep-${index}`, `deep-${index - 1}`, 'user', `step ${index}`)
+      cursor.children = [next]
+      cursor = next
+    }
+
+    const graph = buildSessionTreeGraph([root], `deep-${depth - 1}`, label)
+
+    expect(graph.nodes).toHaveLength(depth)
+    expect(graph.edges).toHaveLength(depth - 1)
+    expect(graph.nodes.filter(node => node.data.currentLeaf)).toHaveLength(1)
+    expect(graph.nodes[depth - 1].position.y).toBeGreaterThan(graph.nodes[0].position.y)
+  })
+
   it('treats whitespace-only assistant text as hidden tool activity', () => {
     const whitespaceAssistant: NativeTreeNode = {
       entry: {

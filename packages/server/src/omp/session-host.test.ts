@@ -129,6 +129,34 @@ test("viewing an OMP terminal history and syncing a draft never opens a writer",
   assert.equal(opens, 0)
 })
 
+test("background job queries on a previewed OMP session never open a writer", async t => {
+  const file = join(tmpdir(), `ompiui-jobs-${randomUUID()}.jsonl`)
+  writeFileSync(file, '{"type":"session","id":"terminal-session"}\n')
+  const previous = process.env.OMPIUI_DRIVER
+  process.env.OMPIUI_DRIVER = "omp"
+  let opens = 0
+  const supervisor = {
+    onEvent: () => () => {},
+    open: async () => { opens++; throw new Error("Background job queries must not start a writer") },
+    catalogCommand: async (type: string, params?: JsonObject) => {
+      if (type === "session.findByFile") return { id: "terminal-session", cwd: ".", sessionFile: file }
+      if (type === "session.read" && params?.query === "state.get") return { diskPreview: true, readOnly: false }
+      throw new Error(`Unexpected catalog command ${type}`)
+    },
+  } as unknown as RuntimeSupervisor
+  const host = new SessionHost(supervisor, new EventHub())
+  t.after(() => {
+    host.dispose()
+    if (previous === undefined) delete process.env.OMPIUI_DRIVER
+    else process.env.OMPIUI_DRIVER = previous
+    rmSync(file, { force: true })
+  })
+  await host.openSession(".", file)
+  await assert.rejects(host.sessionQuery("terminal-session", "asyncJobs.get"), { code: "CAPABILITY_DISABLED" })
+  await assert.rejects(host.sessionQuery("terminal-session", "asyncJobs.inspect", { jobId: "bg_1" }), { code: "CAPABILITY_DISABLED" })
+  assert.equal(opens, 0)
+})
+
 test("an explicit message attaches a previewed OMP session using its latest history", async t => {
   const file = join(tmpdir(), `ompiui-send-${randomUUID()}.jsonl`)
   const bytes = '{"type":"session","id":"terminal-session"}\n'

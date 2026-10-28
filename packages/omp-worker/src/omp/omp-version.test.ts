@@ -3,7 +3,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { describe, it, type TestContext } from "node:test"
-import { MIN_OMP_VERSION, compareOmpVersions, detectOmpVersion, detectOmpVersionSync, isOmpVersionSupported, parseOmpVersion } from "./omp-version.js"
+import { compareOmpVersions, detectOmpVersion, detectOmpVersionSync, isOmpVersionSupported, parseOmpVersion } from './omp-version.js'
 
 /** 标准 npm shim 位于带空格的目录（CI 的 `omp npm config`），入口必须按 argv 直接拉起。 */
 function versionShim(t: TestContext) {
@@ -38,12 +38,10 @@ describe("omp-version", () => {
     assert.equal(compareOmpVersions("18.2.11-beta.1", "18.2.11"), 0)
   })
 
-  it("enforces the documented minimum version", () => {
-    assert.equal(MIN_OMP_VERSION, "18.2.11")
-    assert.equal(isOmpVersionSupported("18.0.6"), false)
-    assert.equal(isOmpVersionSupported("18.2.10"), false)
-    assert.equal(isOmpVersionSupported("18.2.11"), true)
-    assert.equal(isOmpVersionSupported("18.4.4"), true)
+  it('rejects runtimes before the native client-owned queue continuation gate', () => {
+    assert.equal(isOmpVersionSupported('18.12.5'), false)
+    assert.equal(isOmpVersionSupported('18.12.6'), true)
+    assert.equal(isOmpVersionSupported('19.0.0'), true)
   })
 
   it("probes an npm shim under a directory with spaces", {

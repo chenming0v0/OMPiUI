@@ -82,6 +82,8 @@ export interface ToolRendererProps {
   data: ExtractedToolData
   /** 子组件全屏状态变化时回调，用于阻止父级自动收起 */
   onFullscreenChange?: (isFullscreen: boolean) => void
+  /** 批量 task 拆成多行时，本行只渲染这个子任务 */
+  taskSlotIndex?: number
 }
 
 /**

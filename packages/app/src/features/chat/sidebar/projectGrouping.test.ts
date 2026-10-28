@@ -6,6 +6,10 @@ const gitMeta: GitWorkspaceMeta = {
   isGit: true,
   rootDirectory: '/workspace/project-root',
   workspaces: ['/workspace/project-root', '/workspace/project-worktree'],
+  workspaceBranches: new Map([
+    ['/workspace/project-root', 'main'],
+    ['/workspace/project-worktree', 'feature/x'],
+  ]),
 }
 
 describe('getProjectGroupIdentity', () => {

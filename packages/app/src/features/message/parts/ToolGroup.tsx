@@ -12,6 +12,7 @@ import { MessageExpandPanel, useMessageExpandRender } from '../messageExpand'
 import { MSG_SPACING } from '../messageSpacing'
 import { ToolPartView } from './ToolPartView'
 import { useTaskRuntimeStopped } from '../tools/useTaskRuntimeStopped'
+import { getTaskBatchTitles, resolveTaskExecution } from '../tools/taskToolData'
 
 // ============================================
 // Tool Group (连续的 tool parts)
@@ -28,6 +29,9 @@ interface ToolGroupProps {
   /** 组内工具初始即展开（用户发起的 bash：发命令就是为了看输出）。
    *  仅影响初始状态；用户手动折叠后保持折叠（respectUser）。 */
   defaultExpanded?: boolean
+  /** 忽略全局「描述型步骤」设置，始终用单行工具卡片。后台任务不是 agent 的
+   *  步骤序列，套上「4/4 steps」摘要行只会多一层无意义外壳。 */
+  plain?: boolean
 }
 
 /** 用户需要阅读/交互的工具：沉浸模式下这些工具完成后保持展开 */
@@ -43,19 +47,28 @@ export const ToolGroup = memo(function ToolGroup({
   isStreaming,
   modelLabel,
   defaultExpanded = false,
+  plain = false,
 }: ToolGroupProps) {
   const { t } = useTranslation('message')
-  const { descriptiveToolSteps, immersiveMode, processCollapseEnabled } = useTheme()
+  const viewExecutions = useMemo(() => executions.map(resolveTaskExecution), [executions])
+  const theme = useTheme()
+  const { immersiveMode, processCollapseEnabled } = theme
+  const descriptiveToolSteps = theme.descriptiveToolSteps && !plain
 
-  const doneCount = executions.filter(e => {
+  const doneCount = viewExecutions.filter(e => {
     const status = getToolExecutionStatus(e)
     return status === 'completed' || status === 'error'
   }).length
+  // 批量 task 按子任务拆成多行（对齐 OpenCode：每个子代理一条 Task）
+  const rows = useMemo(() => executions.flatMap(execution => {
+    const titles = getTaskBatchTitles(execution)
+    return titles ? titles.map((title, slot) => ({ execution, slot, title })) : [{ execution, slot: undefined as number | undefined, title: undefined as string | undefined }]
+  }), [executions])
   const totalCount = executions.length
   const isAllDone = doneCount === totalCount
-  const taskStopped = useTaskRuntimeStopped(executions.some(e => e.call.name === 'task'))
-  const hasActiveTools = executions.some(e => getToolExecutionStatus(e) === 'running' && !(e.call.name === 'task' && taskStopped))
-  const stepsSummary = descriptiveToolSteps ? buildDescriptiveToolStepsSummary(executions, t) : undefined
+  const taskStopped = useTaskRuntimeStopped(viewExecutions.some(e => e.call.name === 'task'))
+  const hasActiveTools = viewExecutions.some(e => getToolExecutionStatus(e) === 'running' && !(e.call.name === 'task' && taskStopped))
+  const stepsSummary = descriptiveToolSteps ? buildDescriptiveToolStepsSummary(viewExecutions, t) : undefined
 
   // 汇总所有成功完成的工具的 diff stats（失败的不算）
   const totalDiffStats = useMemo(() => {
@@ -75,7 +88,7 @@ export const ToolGroup = memo(function ToolGroup({
   }, [descriptiveToolSteps, executions])
 
   // 沉浸模式下：判断工具组是否包含需要用户阅读的工具
-  const hasReadableTools = immersiveMode && executions.some(e => isReadableTool(e.call.name))
+  const hasReadableTools = immersiveMode && viewExecutions.some(e => isReadableTool(e.call.name))
   // 过程折叠：steps 默认收起；其它模式：活跃/流式/可读工具时展开。
   // defaultExpanded（用户发起的 bash）优先于一切，直接展开。
   const shouldStartExpanded = defaultExpanded
@@ -144,20 +157,22 @@ export const ToolGroup = memo(function ToolGroup({
 
   // compact: 单工具时用紧凑布局（图标内联，无 timeline 连接线）
   // 不区分 streaming 状态 — 单工具始终 compact，第二个工具到来时再自然过渡到 timeline
-  const isSingleCompact = totalCount === 1 && !descriptiveToolSteps
+  const isSingleCompact = rows.length === 1 && !descriptiveToolSteps
   // steps header: 多工具始终显示；描述型 steps 模式下，单工具也显示
-  const showStepsHeader = totalCount > 1 || descriptiveToolSteps
+  const showStepsHeader = rows.length > 1 || descriptiveToolSteps
 
   // 只 map 一次：有 header 时受 expand mount 控制，无 header 时始终挂载
   const toolParts =
     !showStepsHeader || shouldRenderBody
-      ? executions.map((execution, idx) => (
+      ? rows.map(({ execution, slot, title }, idx) => (
           <ToolPartView
-            key={execution.call.id}
+            key={slot === undefined ? execution.call.id : `${execution.call.id}:${slot}`}
             execution={execution}
-            partKey={`${groupId}:${execution.call.id}`}
+            partKey={slot === undefined ? `${groupId}:${execution.call.id}` : `${groupId}:${execution.call.id}:${slot}`}
+            taskSlotIndex={slot}
+            taskSlotTitle={title}
             isFirst={idx === 0}
-            isLast={idx === executions.length - 1}
+            isLast={idx === rows.length - 1}
             compact={isSingleCompact}
             descriptive={descriptiveToolSteps}
             isStreaming={isStreaming}
