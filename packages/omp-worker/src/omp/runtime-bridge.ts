@@ -170,6 +170,18 @@ export default function (pi) {
     control.paused = false;
     delete control.originalClientBridge;
   }
+  // 进程内原生 all 模式：该方向全部未消费消息在同一轮进入模型上下文，只改
+  // 本次会话的原生对象，不写官方全局设置。运行时不提供该能力时保持默认队列
+  // 行为并继续提交，能力缺口不能挡住用户消息。
+  async function configureQueueBatching(session) {
+    for (const [method, key] of [["setSteeringMode", "steeringMode"], ["setFollowUpMode", "followUpMode"]]) {
+      if (session[key] === "all") continue;
+      try {
+        if (typeof session[method] === "function") await session[method]("all");
+        else session[key] = "all";
+      } catch {}
+    }
+  }
   async function execute(operation, args, ctx) {
     const session = ownSession(ctx);
     switch (operation) {
@@ -208,7 +220,7 @@ export default function (pi) {
         const moved = next.splice(selected.start, selected.userIndex - selected.start + 1);
         // Keep original normalized content/hidden image companions. Promote a
         // follow-up to the native steer queue; never clear/re-enqueue user text.
-        const steering = args.kind === "steering" ? [...moved, ...next] : [...moved, ...selected.steering];
+        const steering = args.kind === "steering" ? [...moved, ...next] : [...selected.steering, ...moved];
         const followUp = args.kind === "followUp" ? next : selected.followUp.slice();
         session.agent.replaceQueues(steering, followUp);
         if (!session.isStreaming) {

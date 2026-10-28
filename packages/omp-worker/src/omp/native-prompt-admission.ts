@@ -19,7 +19,7 @@ export const NATIVE_PROMPT_ADMISSION_SOURCE = `
       throw Object.assign(new Error("Session replaced while waiting for native admission"), { code: "SESSION_REPLACED" });
     }
     resumeStoppedSession(session);
-    configureQueueBatching(session);
+    await configureQueueBatching(session);
     const scope = {};
     const previous = new Set([...session.agent.peekSteeringQueue(), ...session.agent.peekFollowUpQueue()]);
     const initialMessageCount = session.agent.state.messages.length;
