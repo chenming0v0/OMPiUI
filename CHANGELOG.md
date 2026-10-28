@@ -1,5 +1,6 @@
-## [未发布]
+## [v0.6.44] - 2026-10-28
 
+- fix(scripts): 临时目录清理容忍 Windows 文件占用；CI 的 OMP 版本验收改用支持版本而非写死 18.8.0。
 - fix(worker): 修复「发一条消息就报内部错误、之后所有提交 30 秒超时」的致命故障。桥扩展是注入官方 OMP 进程执行的源码，宿主与 worker 编译产物版本不一致时，同作用域的可选辅助函数可能缺席，旧产物因此抛出 `ReferenceError: configureQueueBatching is not defined`，每次提交 8ms 内失败；失败又会永久占住会话级提交准入锁，后续提交全部排队到 30s 桥超时。现在可选辅助函数按 `typeof` 守卫调用，缺失只降级不再阻断发送；原生提交准入增加有界等待（`OMPIUI_NATIVE_ADMISSION_TIMEOUT_MS`，默认 20s），单次卡住即释放锁，一次失败不再毒化整个会话。
 - fix(worker): worker 出站错误不再把内部码统一压成 `INTERNAL`：`OMP_TIMEOUT`／`OMP_EXITED`／`OMP_STDIN_ERROR`／`SESSION_REPLACED`／`SUBMISSION_NOT_ADMITTED`／`QUEUE_SELECTION_STALE`／`OMP_SOURCE_*` 显式映射为协议码并保留真实 message，客户端能区分「未接纳」「进程退出」「源码版本不匹配」。
 - fix(diagnostics): `worker.request.failed` 增加 `nativeCode` 字段（仅 `^[A-Za-z0-9_.-]{1,64}$` 的机器码，非自由文本），保留原有「不记录错误正文」的隐私红线。
