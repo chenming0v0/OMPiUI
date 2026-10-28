@@ -13,6 +13,24 @@ import { managedSessionDirectory } from "../packages/omp-worker/dist/omp/managed
 import { nativeOmpSessionDirectory } from "../packages/omp-worker/dist/omp/omp-directories.js"
 import { detectOmpVersion } from "../packages/omp-worker/dist/omp/omp-version.js"
 
+// Windows 上退出的 OMP 子进程可能还短暂持有 agent.db，删除临时目录会 EBUSY。
+// 清理不属于验收结论：短暂重试后仍失败只提示，不把已经通过的断言判成失败。
+async function removeTempRoot(target) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    try {
+      rmSync(target, { recursive: true, force: true })
+      return
+    } catch (error) {
+      const retryable = error?.code === "EBUSY" || error?.code === "EPERM" || error?.code === "ENOTEMPTY"
+      if (!retryable || attempt === 9) {
+        console.warn(`WARN: kept temporary verification directory ${target}: ${error?.message ?? error}`)
+        return
+      }
+      await delay(200)
+    }
+  }
+}
+
 // 真实 OMP 离线验收：本地假服务提供一条回复用于落盘，不调用真实模型服务。
 const root = mkdtempSync(path.join(tmpdir(), "ompiui-session-safety-"))
 const agent = path.join(root, "agent")
@@ -201,5 +219,5 @@ try {
   await catalog.control.close()
   fixtureServer.closeAllConnections()
   await new Promise(resolve => fixtureServer.close(resolve))
-  rmSync(root, { recursive: true, force: true })
+  await removeTempRoot(root)
 }
