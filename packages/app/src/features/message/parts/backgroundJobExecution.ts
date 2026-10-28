@@ -4,24 +4,28 @@ import { readBackgroundJobs, type BackgroundJobView } from './customMessagePrese
 const RUNNING_JOB_STATUSES = new Set(['running', 'pending', 'started', 'queued'])
 
 /**
- * 把后台任务投递合成工具执行：name 作为行内 title，type 只用于取图标。
+ * 把后台任务投递合成工具执行。
+ *
+ * type 决定沿用哪个渲染器，但只允许 bash：bash 类型的投递带的是命令和
+ * 终端输出，正好是 BashRenderer 需要的，渲染出来和普通 Bash 行完全一样。
+ * task 类型不能冒用 TaskRenderer——它要的是真实子任务 progress 和全屏
+ * 上下文，合成执行一概没有，会渲染成一张自成一体的怪卡片。其余一律用
+ * 通用工具名 job。
+ *
  * 没有真实起止时间，用 0 → durationMs 表示耗时，只影响时长显示。
  * backgroundJob 标记让行首显示「后台任务」而不是合成的工具名。
- *
- * 工具名固定是 job：后台任务投递不是真正的工具调用。冒用 bash / task 会让
- * ToolBody 选中 BashRenderer / TaskRenderer——它们要的是真实调用参数、子任务
- * 进度和全屏上下文，合成执行一概没有，结果就是一张自成一体的背景卡片：
- * 和上下行对不齐，也接不上组内连线。统一走 DefaultRenderer 的 Input/Output
- * 折叠，外观才和其它工具行完全一致。
  */
 export function backgroundJobExecution(job: BackgroundJobView, callId: string): PiToolExecution {
-  const toolName = 'job'
   const rawType = (job.type ?? '').trim().toLowerCase()
+  const isBash = rawType === 'bash'
+  const toolName = isBash ? 'bash' : 'job'
   const call: PiToolExecution['call'] = {
     type: 'toolCall',
     id: callId,
     name: toolName,
-    arguments: { description: job.name, ...(rawType ? { kind: rawType } : {}) },
+    arguments: isBash
+      ? { command: job.name }
+      : { description: job.name, ...(rawType ? { kind: rawType } : {}) },
   }
   if (RUNNING_JOB_STATUSES.has(job.status)) return { call, isRunning: true, startedAt: 0, backgroundJob: true }
 

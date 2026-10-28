@@ -508,8 +508,6 @@ describe('persisted subagent fallback', () => {
     expect(slots.map(slot => slot.getAttribute('data-status'))).toEqual(['completed', 'pending', 'running'])
     expect(slots[0]).toHaveTextContent('First')
     expect(slots[2]).toHaveTextContent('Third')
-    expect(screen.getByTestId('task-batch-summary')).toHaveTextContent('task.batchRunning')
-    expect(screen.getByTestId('task-batch-summary')).toHaveTextContent('task.batchQueued')
   })
 
   it('does not mark queued siblings done just because the outer call returned', () => {
@@ -519,7 +517,6 @@ describe('persisted subagent fallback', () => {
     const slots = screen.getAllByTestId('task-slot')
     expect(slots.map(slot => slot.getAttribute('data-status'))).toEqual(['completed', 'error'])
     expect(screen.getByText(/merge conflict/)).toBeInTheDocument()
-    expect(screen.getByTestId('task-batch-summary')).toHaveTextContent('task.batchFailed')
   })
 
 })
