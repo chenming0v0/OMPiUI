@@ -41,7 +41,9 @@ export const NATIVE_PROMPT_ADMISSION_SOURCE = `
         { code: "SUBMISSION_NOT_ADMITTED" },
       ));
     }, admissionTimeoutMs);
-    admissionTimer.unref?.();
+    // 不能 unref：准入超时必须能把等待中的提交结算掉。unref 后事件循环一旦没有
+    // 其它句柄就会先排空，挂住的提交既不会被释放也不会被拒绝（CI 上表现为
+    // "Promise resolution is still pending but the event loop has already resolved"）。
     const assertIdentity = () => {
       if (session.sessionManager.getSessionId() !== expectedId || session.sessionManager.getSessionFile() !== expectedFile) {
         throw Object.assign(new Error("Session replaced before native message admission"), { code: "SESSION_REPLACED" });
