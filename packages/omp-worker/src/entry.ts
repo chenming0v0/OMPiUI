@@ -5,7 +5,8 @@ import { installWorkerFileLogging } from "./worker-logger.js"
 installWorkerFileLogging()
 
 import type { JsonObject, JsonValue, PiRegistrySnapshot } from "@ompiui/protocol"
-import { isJsonObject, problemFromError, PROTOCOL_VERSION, validateParams } from "@ompiui/protocol"
+import { isJsonObject, PROTOCOL_VERSION, validateParams } from "@ompiui/protocol"
+import { workerProblemFromError } from "./worker-error-problem.js"
 import { OmpRpcSession, type OmpSessionOptions } from "./omp/omp-session.js"
 import { OmpCatalog } from "./omp/omp-catalog.js"
 import { OmpPackages } from "./omp/omp-packages.js"
@@ -515,7 +516,7 @@ process.on("message", (value: unknown) => {
           id: request.id,
           generation: workerGeneration,
           ok: false,
-          error: problemFromError(error),
+          error: workerProblemFromError(error),
         }, () => process.exit(1))
         setTimeout(() => process.exit(1), 1_000).unref()
       },
@@ -525,7 +526,7 @@ process.on("message", (value: unknown) => {
   void schedule(request).catch(error => {
     sendControl({
       kind: "response", id: request.id, generation: workerGeneration, ok: false,
-      error: problemFromError(error),
+      error: workerProblemFromError(error),
     })
   })
 })

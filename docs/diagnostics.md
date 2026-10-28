@@ -76,6 +76,10 @@ npm run diagnostics -- --session <sessionId> --out diagnostic-report.jsonl
 - `worker.request.started.command=abort`：确实向 Agent 发送中止。
 - `worker.request.failed.reason=caller_cancelled_request_not_agent_abort`：
   只取消等待请求响应，不代表 Agent 已收到 abort。
+- `worker.request.failed.nativeCode`：失败请求的原始机器码（仅当形如
+  `OMP_TIMEOUT`／`OMP_SOURCE_VERSION_MISMATCH` 这类 `[A-Za-z0-9_.-]{1,64}`
+  白名单值时才出现）。只有 `errorCode` 时，"提交未被原生接纳"与"OMP 进程退出"
+  在日志里长得一模一样，故障无法定位；错误正文仍不落盘。
 - `session.close.requested.reason=idle_ttl`：空闲回收触发关闭。
 - `session.reaper.kept`：状态查询失败、缺少明确 idle／settled 答复或仍有工作，保留运行实例。回收还会复查查询期间的访问、活动、命令及运行实例身份，旧空闲答复不能回收新活动。
 - `server.stopping / worker.dispose / session.host.disposed`：
@@ -183,6 +187,8 @@ OMPiUI 新启动的受管 runtime 通过显式进程级扩展，在执行前拒�
 
 记录器使用固定字段白名单，不记录聊天正文、命令参数、工具输出、完整 URL、
 认证头、令牌或错误堆栈。字符串限制长度，并对常见令牌格式脱敏。
+`worker.request.failed.nativeCode` 是这条规则下唯一记录的错误标识：它不是
+自由文本，而是校验过 `^[A-Za-z0-9_.-]{1,64}$` 的机器码，不含路径、URL 或用户内容。
 浏览器诊断必须通过现有 WebSocket 认证，只接受订阅会话，每连接每分钟最多
 120 条。浏览器事件是客户端自报，不作为业务状态的权威来源。
 

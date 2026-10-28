@@ -46,7 +46,15 @@
     "openQueueInSideChat": "Open in side chat",
     "openQueueMenu": "Open queued message menu",
     "queueOptions": "Queued message actions",
-    "queuedImages": "{{count}} queued image(s)"
+    "queuedImages": "{{count}} queued image(s)",
+    "sendFailedTitle": "Message not sent",
+    "sendFailedBody": "The message was not sent: {{detail}}. Your input is kept so you can retry.",
+    "sendFailedBodyNoDetail": "The message was not sent. Your input is kept so you can retry.",
+    "sendTimedOutBody": "Timed out waiting for the server to accept the message, so it was not sent. The worker may be unresponsive; your input is kept so you can retry.",
+    "sendNotSyncedTitle": "Message accepted but the session did not update",
+    "sendNotSyncedBody": "The server accepted this message, but the session history did not update within {{seconds}}s. The pending indicator has stopped.",
+    "retrySend": "Retry send",
+    "dismissSendError": "Dismiss"
   },
   "emptyState": {
     "title": "Start a new conversation",

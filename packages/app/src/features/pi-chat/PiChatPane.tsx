@@ -51,13 +51,16 @@ import {
   getPiTree,
 } from '../../omp/transport/index.js'
 import { layoutStore } from '../../store/layoutStore'
+import { notificationStore } from '../../store/notificationStore'
 import { serverStore } from '../../store/serverStore'
 import { useSessionActiveEntry } from '../../store/activeSessionStore'
 import type { PiImageInput } from '../../omp/transport/index.js'
 import type { DeliveryMode } from '../../types/ui'
 import { attachmentToImage, imageInputToAttachment, interruptAttachmentsToImages } from './attachmentToImage'
-import { appendPendingSends, appendPendingQueueEntries, createPendingSend, reconcilePendingSends, reconcileQueuedPendingSends, withoutQueueEntry, type PendingSend } from './pendingSend'
+import { appendPendingSends, appendPendingQueueEntries, createPendingSend, reconcilePendingSends, reconcileQueuedPendingSends, withoutQueueEntry } from './pendingSend'
 import { hasStoppableSessionActivity } from './sessionActivity'
+import { pendingSendStore, type PendingSendAlert } from './pendingSendStore'
+import { describeSendFailure } from './sendFailure'
 import { SessionStopCoordinator } from './sessionStopCoordinator'
 import { composerDraftKey, getComposerDraft, moveComposerDraft, updateComposerDraft } from '../chat/input/composerDraftStore'
 import type { ComposerQueueEntry } from '../chat/input/QueuedUserMessageQueue'
@@ -94,6 +97,11 @@ import {
 
 /** 稳定空数组引用：避免 `?? []` 每次渲染新建数组导致 ChatArea memo 失效 */
 const EMPTY_QUEUE: readonly ComposerQueueEntry[] = []
+
+/** 发送失败的可见提示；retry 只在服务端明确没有受理时给出。 */
+interface PendingSendAlertState extends PendingSendAlert {
+  retry?: { text: string; attachments: Attachment[]; delivery?: DeliveryMode }
+}
 
 
 
@@ -354,7 +362,10 @@ export function PiChatPane({
   // Timeline items from this session's keyed branch; home (no session)
   // shows an empty flow — user types and sends to create one.
   const baseItems = useMemo(() => selectPiTimelineItemsCached(sessionId, branch), [sessionId, branch])
-  const [pendingSends, setPendingSends] = useState<PendingSend[]>([])
+  // 在途发送由模块级 store 持有：组件重挂载不再吞掉 pending，也不会留下永久挂起态。
+  const pendingSends = useSyncExternalStore(pendingSendStore.subscribe, pendingSendStore.getSnapshot)
+  const [sendAlert, setSendAlert] = useState<PendingSendAlertState | null>(null)
+  useEffect(() => pendingSendStore.onAlert(setSendAlert), [])
   const displayedQueues = useMemo(() => {
     const visible = reconcilePendingSends(pendingSends.filter(send => send.serverGeneration === activeServerGeneration && send.sessionId === sessionId), baseItems)
     const remaining = reconcileQueuedPendingSends(visible, [...queuedSteering, ...queuedFollowUps])
@@ -370,7 +381,7 @@ export function PiChatPane({
           if (paneIdentityRef.current !== capturedIdentity) throw new Error('Session changed before queue selection')
           return removeQueuedMessage(sessionId, { kind, index, entryId })
         })
-        setPendingSends(current => withoutQueueEntry(current, activeServerGeneration, sessionId, entryId))
+        pendingSendStore.update(current => withoutQueueEntry(current, activeServerGeneration, sessionId, entryId))
         const key = composerDraftKey(activeServer, sessionId, '', '')
         const draft = getComposerDraft(key)
         const text = draft.text.trim() ? `${draft.text}\n\n${entry.text}` : entry.text
@@ -410,7 +421,7 @@ export function PiChatPane({
         [...queuedSteering, ...queuedFollowUps],
         'steering',
       )
-      setPendingSends(current => [...withoutQueueEntry(current, activeServerGeneration, sessionId, entryId), pending])
+      pendingSendStore.update(current => [...withoutQueueEntry(current, activeServerGeneration, sessionId, entryId), pending])
       let accepted = false
       try {
         await stopCoordinatorRef.current.submit(JSON.stringify([activeServerGeneration, sessionId]), () => {
@@ -418,12 +429,15 @@ export function PiChatPane({
           return sendQueuedMessage(sessionId, { kind, index, entryId })
         })
         accepted = true
-        setPendingSends(current => current.map(send => send.id === pending.id && send.phase === 'submitting' ? { ...send, phase: 'accepted' } : send))
+        pendingSendStore.accept(pending.id)
         if (paneIdentityRef.current.activeServerGeneration === activeServerGeneration) void Promise.all([refreshPiSessionState(sessionId), refreshPiBranch(sessionId)]).catch(() => undefined)
       } catch (error) {
         uiErrorHandler('send queued message', error)
+        // 排队消息的“立即发送”失败时队列原样保留，但用户必须看见失败。
+        const text = describeSendFailure(error)
+        notificationStore.push('error', text.title, text.message, sessionId)
       } finally {
-        if (!accepted) setPendingSends(current => current.filter(send => send.id !== pending.id))
+        if (!accepted) pendingSendStore.settle(pending.id)
       }
     },
     [sessionId, activeServerGeneration, baseItems, queuedSteering, queuedFollowUps],
@@ -438,7 +452,7 @@ export function PiChatPane({
           if (paneIdentityRef.current !== capturedIdentity) throw new Error('Session changed before queue selection')
           return discardQueuedMessage(sessionId, { kind, index, entryId })
         })
-        setPendingSends(current => withoutQueueEntry(current, activeServerGeneration, sessionId, entryId))
+        pendingSendStore.update(current => withoutQueueEntry(current, activeServerGeneration, sessionId, entryId))
         if (paneIdentityRef.current.activeServerGeneration === activeServerGeneration) void refreshPiSessionState(sessionId).catch(() => undefined)
       } catch (error) {
         uiErrorHandler('remove queued message', error)
@@ -458,8 +472,7 @@ export function PiChatPane({
 
   useEffect(() => {
     // Native history/queue arrival takes ownership of the display-only send.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setPendingSends(current => {
+    pendingSendStore.update(current => {
       const sameServer = current.filter(send => send.serverGeneration === activeServerGeneration)
       const visible = sameServer.filter(send => send.sessionId === sessionId)
       const remaining = reconcileQueuedPendingSends(reconcilePendingSends(visible, baseItems), [...queuedSteering, ...queuedFollowUps])
@@ -1050,6 +1063,7 @@ export function PiChatPane({
       )
       let pendingId: string | undefined
       let accepted = false
+      const deliverAs = options?.delivery ?? 'followUp'
       try {
         // Only explicitly UI-namespaced actions are local. Official names,
         // aliases, arguments and image inputs always reach the native prompt.
@@ -1084,7 +1098,6 @@ export function PiChatPane({
             return true
           }
         }
-        const deliverAs = options?.delivery ?? 'followUp'
         const images = deliverAs === 'abortAndPrompt'
           ? await interruptAttachmentsToImages(attachments)
           : attachments.map(attachmentToImage).filter((image): image is PiImageInput => image !== null)
@@ -1093,7 +1106,7 @@ export function PiChatPane({
           : undefined
         const pending = createPendingSend(targetSessionId, capturedServerGeneration, text, images, baseItems, undefined, [...queuedSteering, ...queuedFollowUps], queueKind)
         pendingId = pending.id
-        setPendingSends(current => [...current, pending])
+        pendingSendStore.begin(pending)
 
         if (!targetSessionId) {
           const directory = currentDirectoryRef.current || (await resolveWorkspacePath())
@@ -1105,7 +1118,7 @@ export function PiChatPane({
           const sessionDir = opened.cwd ?? directory
           targetSessionId = opened.sessionId
           const sid = targetSessionId
-          setPendingSends(current => current.map(send => send.id === pendingId ? { ...send, sessionId: sid } : send))
+          pendingSendStore.patch(pendingId, send => ({ ...send, sessionId: sid }))
           trackPiSession(targetSessionId, sessionDir)
           registerSessionRef.current({
             id: targetSessionId,
@@ -1146,9 +1159,8 @@ export function PiChatPane({
           return sendPiUserMessage(sid, text, images.length ? images : undefined, deliverAs)
         })
         accepted = true
-        setPendingSends(current => text.startsWith('/')
-          ? current.filter(send => send.id !== pendingId)
-          : current.map(send => send.id === pendingId ? { ...send, phase: 'accepted' } : send))
+        if (text.startsWith('/')) pendingSendStore.settle(pendingId)
+        else pendingSendStore.accept(pendingId)
         if (!isCurrentIdentity() || paneIdentityRef.current.sessionId !== sid) return true
         const currentText = inputBoxRef.current?.getEditorText() ?? localComposerTextRef.current ?? text
         const remainingText = currentText === text ? '' : currentText
@@ -1162,11 +1174,27 @@ export function PiChatPane({
       } catch (error) {
         if (isCurrentIdentity()) {
           uiErrorHandler('send message', error)
+          // 失败必须立刻结束 pending 并让用户看见：uiErrorHandler 只写控制台。
+          if (pendingId) pendingSendStore.fail(pendingId, error)
+          setSendAlert({
+            sessionId: targetSessionId ?? sessionId,
+            serverGeneration: capturedServerGeneration,
+            ...describeSendFailure(error),
+            retry: { text, attachments, ...(deliverAs ? { delivery: deliverAs } : {}) },
+          })
+          // 服务端没受理，消息仍归用户所有：把内容写回本地草稿，重挂载也不会丢。
+          const restoreKey = targetSessionId && targetSessionId !== sessionId
+            ? composerDraftKey(activeServer, targetSessionId, '', '')
+            : sourceDraftKey
+          if (!getComposerDraft(restoreKey).text.trim()) {
+            updateComposerDraft(restoreKey, draft => ({ ...draft, text, attachments, ready: true }))
+          }
+          if (targetSessionId) setSessionEditorDraft(targetSessionId, text, { attachments, sync: false })
           if (targetSessionId) scheduleDelayedRefresh(targetSessionId)
         }
         return false
       } finally {
-        if (!accepted && pendingId) setPendingSends(current => current.filter(send => send.id !== pendingId))
+        if (!accepted && pendingId) pendingSendStore.settle(pendingId)
       }
     },
     [sessionId, activeServer, activeServerGeneration, currentDirectory, paneId, baseItems, queuedSteering, queuedFollowUps, isStreaming, models, scheduleDelayedRefresh, onOpenSettings, onOpenSettingsTab, onOpenSidebar],
@@ -1519,6 +1547,37 @@ export function PiChatPane({
             <p role="alert" className="pointer-events-auto mx-4 mb-2 rounded-lg bg-bg-100 px-3 py-2 whitespace-pre-wrap text-[length:var(--fs-sm)] text-danger-100 [overflow-wrap:anywhere]">
               {modelCycleError.message}
             </p>
+          ) : null}
+          {sendAlert && sendAlert.sessionId === sessionId && sendAlert.serverGeneration === activeServerGeneration ? (
+            <div
+              role="alert"
+              className="pointer-events-auto mx-4 mb-2 rounded-lg border border-border-200 bg-bg-100 px-3 py-2 text-[length:var(--fs-sm)] text-danger-100"
+            >
+              <p className="font-medium">{sendAlert.title}</p>
+              <p className="mt-0.5 whitespace-pre-wrap [overflow-wrap:anywhere]">{sendAlert.message}</p>
+              <div className="mt-1.5 flex items-center gap-3">
+                {sendAlert.retry ? (
+                  <button
+                    type="button"
+                    className="rounded border border-border-200 px-2 py-0.5 text-text-100 hover:bg-bg-200"
+                    onClick={() => {
+                      const retry = sendAlert.retry
+                      setSendAlert(null)
+                      if (retry) void handleSend(retry.text, retry.attachments, retry.delivery ? { delivery: retry.delivery } : undefined)
+                    }}
+                  >
+                    {t('chat:chatArea.retrySend')}
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="text-text-400 hover:text-text-200"
+                  onClick={() => setSendAlert(null)}
+                >
+                  {t('chat:chatArea.dismissSendError')}
+                </button>
+              </div>
+            </div>
           ) : null}
           <InputBox
             ref={inputBoxRef}

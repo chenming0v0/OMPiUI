@@ -18,13 +18,30 @@ export const NATIVE_PROMPT_ADMISSION_SOURCE = `
       if (admissionFlights.get(session) === admissionFinished) admissionFlights.delete(session);
       throw Object.assign(new Error("Session replaced while waiting for native admission"), { code: "SESSION_REPLACED" });
     }
-    resumeStoppedSession(session);
-    await configureQueueBatching(session);
+    // 桥扩展是注入到官方进程里执行的源码，宿主可能与 worker 编译产物版本不一致；
+    // 同作用域的辅助函数缺席时 typeof 不会抛，绝不能让一个可选优化挡住发消息
+    // （线上曾因旧 dist 缺少 configureQueueBatching 定义而整条提交链路彻底发不出去）。
+    if (typeof resumeStoppedSession === "function") resumeStoppedSession(session);
+    if (typeof configureQueueBatching === "function") await configureQueueBatching(session);
     const scope = {};
     const previous = new Set([...session.agent.peekSteeringQueue(), ...session.agent.peekFollowUpQueue()]);
     const initialMessageCount = session.agent.state.messages.length;
     let delivered = false;
     const { promise: acceptance, resolve, reject } = Promise.withResolvers();
+    // 一次卡住的提交不能永久占住会话的准入锁：官方 prompt 既不 resolve 也不
+    // 发 agent_start 时 acceptance 永不结算，finally 就永不执行，之后每次提交
+    // 都排在它后面直到 worker 的 30s 超时——「发一次失败，之后所有消息都发不
+    // 出去」正是这条路径。给准入一个有界等待，超时即结算并释放锁。
+    const admissionTimeoutMs = Number(process.env.OMPIUI_NATIVE_ADMISSION_TIMEOUT_MS) > 0
+      ? Math.floor(Number(process.env.OMPIUI_NATIVE_ADMISSION_TIMEOUT_MS))
+      : 20_000;
+    const admissionTimer = setTimeout(() => {
+      reject(Object.assign(
+        new Error("Native prompt admission timed out after " + admissionTimeoutMs + "ms; the submission lock was released and your draft is preserved"),
+        { code: "SUBMISSION_NOT_ADMITTED" },
+      ));
+    }, admissionTimeoutMs);
+    admissionTimer.unref?.();
     const assertIdentity = () => {
       if (session.sessionManager.getSessionId() !== expectedId || session.sessionManager.getSessionFile() !== expectedFile) {
         throw Object.assign(new Error("Session replaced before native message admission"), { code: "SESSION_REPLACED" });
@@ -55,6 +72,7 @@ export const NATIVE_PROMPT_ADMISSION_SOURCE = `
       else reject(Object.assign(new Error("Native prompt was not admitted; your draft is preserved"), { code: "SUBMISSION_NOT_ADMITTED" }));
     }, error => { if (!delivered) reject(error); }).catch(reject);
     try { return await acceptance; } finally {
+      clearTimeout(admissionTimer);
       unsubscribe();
       finishAdmission();
       if (admissionFlights.get(session) === admissionFinished) admissionFlights.delete(session);
