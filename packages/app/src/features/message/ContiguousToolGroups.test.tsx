@@ -6,6 +6,8 @@ import { MessageRenderer } from './MessageRenderer'
 import { buildVisibleTimelineEntries } from '../chat/chatAreaVisibility'
 import type { PiAssistantMessageItem } from '../../omp/domain/index.js'
 import { FullscreenProvider } from '../../contexts'
+import { SessionNavigationContext } from '../../contexts/SessionNavigationContext'
+import type { PiTimelineItem } from '../../omp/domain/index.js'
 const toolTheme = vi.hoisted(() => ({ descriptiveToolSteps: false }))
 
 vi.mock('motion/mini', () => ({ animate: () => Promise.resolve() }))
@@ -198,6 +200,47 @@ describe('contiguous assistant tool groups', () => {
       customType: 'async-result', display: true, content: 'ok', details: { jobId: 'late' },
     }
     expect(buildVisibleTimelineEntries([text, delivery]).map(entry => entry.sourceIds)).toEqual([['answer'], ['late-job']])
+  })
+
+  it('keeps completed orphan output collapsed until explicitly opened', () => {
+    const toolCall = call('orphan-default-call', 'eval')
+    const item = assistant('orphan-default-owner', [toolCall], 100)
+    render(<FullscreenProvider><MessageRenderer item={{ kind: 'tool_result', entryId: 'orphan-default-result', timestamp: 101,
+      execution: { call: toolCall, argumentsUnknown: true, isRunning: true, result: item.toolResults[toolCall.id] } }} /></FullscreenProvider>)
+    const header = screen.getByRole('button', { name: /^Eval/ })
+    expect(header).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('orphan-default-call')).toBeNull()
+    fireEvent.click(header)
+    expect(screen.getByText('orphan-default-call')).toBeInTheDocument()
+  })
+
+  it('preserves user disclosure through orphan pairing, regrouping and session changes', () => {
+    const toolCall = call('handover-disclosure-call', 'eval')
+    const owner = assistant('handover-owner', [toolCall], 100)
+    const orphan: PiTimelineItem = { kind: 'tool_result', entryId: 'handover-result', timestamp: 101,
+      execution: { call: toolCall, argumentsUnknown: true, result: owner.toolResults[toolCall.id] } }
+    const surface = (item: PiTimelineItem, sessionId = 'handover-disclosure-session') => (
+      <FullscreenProvider><SessionNavigationContext.Provider value={{ currentSessionId: sessionId, navigateToSession: () => {} }}>
+        <MessageRenderer item={item} processContentScope="inline" />
+      </SessionNavigationContext.Provider></FullscreenProvider>
+    )
+    const { rerender } = render(surface(orphan))
+    fireEvent.click(screen.getByRole('button', { name: /^Eval/ }))
+    rerender(surface(owner))
+    expect(screen.getByRole('button', { name: /^Eval/ })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText(toolCall.id)).toBeInTheDocument()
+    // Adjacent assistant merging can change the owner/group id as well.
+    rerender(surface({ ...owner, entryId: 'earlier-group-owner' }))
+    expect(screen.getByRole('button', { name: /^Eval/ })).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(screen.getByRole('button', { name: /^Eval/ }))
+    rerender(surface(orphan))
+    expect(screen.getByRole('button', { name: /^Eval/ })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText(toolCall.id)).toBeNull()
+    rerender(surface(orphan, 'independent-disclosure-session'))
+    fireEvent.click(screen.getByRole('button', { name: /^Eval/ }))
+    expect(screen.getByRole('button', { name: /^Eval/ })).toHaveAttribute('aria-expanded', 'true')
+    rerender(surface(owner))
+    expect(screen.getByRole('button', { name: /^Eval/ })).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('never joins tools across a user boundary, even an empty user entry', () => {

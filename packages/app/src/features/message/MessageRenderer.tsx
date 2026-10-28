@@ -297,7 +297,7 @@ export const MessageRenderer = memo(function MessageRenderer({
     )
   }
   if (item.kind === 'tool_result') {
-    return <ToolPartView execution={item.execution} partKey={item.entryId} compact defaultExpanded />
+    return <ToolPartView execution={item.execution} partKey={item.entryId} compact />
   }
 
   return <PiSystemItemView item={item} />

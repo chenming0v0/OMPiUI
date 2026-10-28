@@ -8,6 +8,7 @@ import { getToolExecutionStatus } from '../../../omp/domain/index.js'
 import { useCompositorExpand, useDisclosureScrollLock } from '../../../hooks'
 import { useNow } from '../../../hooks/useNow'
 import { serverStore } from '../../../store/serverStore'
+import { useSessionNavigation } from '../../../contexts/SessionNavigationContext'
 import { useTheme } from '../../../hooks/useTheme'
 import { formatToolName, formatDuration } from '../../../utils/formatUtils'
 import { useUiDisclosureState } from '../../../utils/uiDisclosureState'
@@ -33,7 +34,7 @@ import { resolveTaskExecution } from '../tools/taskToolData'
 
 interface ToolPartViewProps {
   execution: PiToolExecution
-  /** Stable key for expand-state persistence (entry id + block index) */
+  /** Fallback disclosure identity for surfaces without a session context. */
   partKey: string
   isFirst?: boolean
   isLast?: boolean
@@ -54,7 +55,7 @@ interface ToolPartViewProps {
 
 export const ToolPartView = memo(function ToolPartView({
   execution: rawExecution,
-  partKey,
+  partKey: fallbackPartKey,
   isFirst = false,
   isLast = false,
   compact = false,
@@ -65,6 +66,11 @@ export const ToolPartView = memo(function ToolPartView({
   taskSlotTitle,
 }: ToolPartViewProps) {
   const { t } = useTranslation('message')
+  const { currentSessionId } = useSessionNavigation()
+  // Ownership/grouping changes as history loads; disclosure belongs to the call.
+  const partKey = currentSessionId
+    ? `${serverStore.getActiveServerId()}:session:${currentSessionId}:tool:${rawExecution.call.id}${taskSlotIndex === undefined ? '' : `:slot:${taskSlotIndex}`}`
+    : fallbackPartKey
   const execution = useMemo(() => resolveTaskExecution(rawExecution), [rawExecution])
   const { call, result } = execution
   const toolName = call.name
