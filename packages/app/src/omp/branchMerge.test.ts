@@ -3,6 +3,7 @@ import type { SessionEntry } from './vendor/pi-coding-agent'
 import type { PiBranchPage, PiLiveMessage } from './domain/index.js'
 import { mergeLatestBranchPage } from './branchMerge.js'
 import { selectPiTimelineItems } from './selectors/index.js'
+import { getToolExecutionStatus } from './domain/index.js'
 
 function entry(id: string): SessionEntry {
   return { type: 'model_change', id, parentId: null, timestamp: '2026-01-01T00:00:00Z', provider: 'p', modelId: id } as SessionEntry
@@ -329,6 +330,35 @@ describe('mergeLatestBranchPage', () => {
     const latest = page(['a'], { checkpoint: { position: { epoch: 'new-runtime', sequence: 1 } } })
     expect(mergeLatestBranchPage(current, latest).checkpoint).toBe(latest.checkpoint)
   })
+  it.each([
+    { persistedStart: false, localStart: undefined },
+    { persistedStart: false, localStart: 900 },
+    { persistedStart: true, localStart: 900 },
+  ])('retains known orphan arguments while settling stale live evidence (%j)', ({ persistedStart, localStart }) => {
+    const call = { type: 'toolCall' as const, id: 'orphan-call', name: 'read', arguments: { path: 'src/main.ts' } }
+    const result = { role: 'toolResult' as const, toolCallId: call.id, toolName: call.name,
+      content: [{ type: 'text' as const, text: 'export const value = 742' }], isError: false, timestamp: 1_000 }
+    const resultEntry: SessionEntry = { type: 'message', id: 'orphan-result', parentId: null,
+      timestamp: new Date(1_000).toISOString(), message: result }
+    const startEntry: SessionEntry = { type: 'custom', customType: 'tool_execution_start', id: 'orphan-start', parentId: null,
+      timestamp: new Date(900).toISOString(), data: { toolCallId: call.id, startedAt: 900 } }
+    const current = page(['a'], { client: { toolExecutions: { [call.id]: {
+      call, startedAt: localStart, isRunning: true, error: 'stale failure', completedAt: 800, endedAt: 800,
+    } } } })
+    const latest = page(['a'], { items: [entry('a'), ...(persistedStart ? [startEntry] : []), resultEntry] })
+    const merged = mergeLatestBranchPage(current, latest)
+    const orphan = selectPiTimelineItems(merged).find(item => item.kind === 'tool_result')
+    expect(orphan?.kind).toBe('tool_result')
+    if (orphan?.kind !== 'tool_result') throw new Error('Missing orphan result')
+    expect(orphan.execution.argumentsUnknown).toBe(false)
+    expect(orphan.execution.call.arguments).toEqual({ path: 'src/main.ts' })
+    expect(orphan.execution.error).toBeUndefined()
+    expect(orphan.execution.completedAt).toBeUndefined()
+    expect(orphan.execution.endedAt).toBeUndefined()
+    expect(orphan.execution.startedAt).toBe(persistedStart ? 900 : localStart)
+    expect(getToolExecutionStatus(orphan.execution)).toBe('completed')
+  })
+
   it('drops prior runtime live tool evidence on event epoch changes', () => {
     const current = page(['a'], { checkpoint: { position: { epoch: 'old-runtime', sequence: 20 } },
       client: { toolExecutions: { bash: { startedAt: 10_000, isRunning: true } } } })
