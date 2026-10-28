@@ -46,7 +46,15 @@
     "openQueueInSideChat": "在侧边聊天中打开",
     "openQueueMenu": "打开排队消息菜单",
     "queueOptions": "排队消息操作",
-    "queuedImages": "{{count}} 张排队图片"
+    "queuedImages": "{{count}} 张排队图片",
+    "sendFailedTitle": "消息发送失败",
+    "sendFailedBody": "消息没有发出：{{detail}}。输入内容已保留，可以直接重试。",
+    "sendFailedBodyNoDetail": "消息没有发出。输入内容已保留，可以直接重试。",
+    "sendTimedOutBody": "等待服务端受理超时，消息没有发出。工作进程可能已无响应，输入内容已保留，可以重试。",
+    "sendNotSyncedTitle": "消息已受理但会话没有更新",
+    "sendNotSyncedBody": "服务端已受理这条消息，但 {{seconds}} 秒内会话历史没有更新，界面已停止显示“正在提交”。",
+    "retrySend": "重试发送",
+    "dismissSendError": "关闭提示"
   },
   "emptyState": {
     "title": "开始新对话",

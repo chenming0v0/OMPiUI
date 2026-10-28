@@ -1,4 +1,5 @@
-import { jsonByteSize, problemFromError, type JsonObject, type JsonValue } from "@ompiui/protocol"
+import { jsonByteSize, type JsonObject, type JsonValue } from "@ompiui/protocol"
+import { workerProblemFromError } from "./worker-error-problem.js"
 import type { WorkerRequest, WorkerResponse } from "./ipc.js"
 import type { WorkerIpcSender, WorkerResponseReservation } from "./worker-ipc-sender.js"
 
@@ -88,7 +89,7 @@ export function createWorkerCommandScheduler(
       response = { kind: "response", id: job.request.id, generation, ok: true, data: data === undefined ? undefined : data }
     } catch (error) {
       if (job.cancelled) return
-      response = { kind: "response", id: job.request.id, generation, ok: false, error: problemFromError(error) }
+      response = { kind: "response", id: job.request.id, generation, ok: false, error: workerProblemFromError(error) }
     }
     // 预留持续到 process.send 回调，而非缓存或磁盘读取结束；
     // 已生成的页面不另设等待队列。

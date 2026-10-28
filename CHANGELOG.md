@@ -1,3 +1,12 @@
+## [v0.6.44] - 2026-10-28
+
+- fix(scripts): 临时目录清理容忍 Windows 文件占用；CI 的 OMP 版本验收改用支持版本而非写死 18.8.0。
+- fix(worker): 修复「发一条消息就报内部错误、之后所有提交 30 秒超时」的致命故障。桥扩展是注入官方 OMP 进程执行的源码，宿主与 worker 编译产物版本不一致时，同作用域的可选辅助函数可能缺席，旧产物因此抛出 `ReferenceError: configureQueueBatching is not defined`，每次提交 8ms 内失败；失败又会永久占住会话级提交准入锁，后续提交全部排队到 30s 桥超时。现在可选辅助函数按 `typeof` 守卫调用，缺失只降级不再阻断发送；原生提交准入增加有界等待（`OMPIUI_NATIVE_ADMISSION_TIMEOUT_MS`，默认 20s），单次卡住即释放锁，一次失败不再毒化整个会话。
+- fix(worker): worker 出站错误不再把内部码统一压成 `INTERNAL`：`OMP_TIMEOUT`／`OMP_EXITED`／`OMP_STDIN_ERROR`／`SESSION_REPLACED`／`SUBMISSION_NOT_ADMITTED`／`QUEUE_SELECTION_STALE`／`OMP_SOURCE_*` 显式映射为协议码并保留真实 message，客户端能区分「未接纳」「进程退出」「源码版本不匹配」。
+- fix(diagnostics): `worker.request.failed` 增加 `nativeCode` 字段（仅 `^[A-Za-z0-9_.-]{1,64}$` 的机器码，非自由文本），保留原有「不记录错误正文」的隐私红线。
+- fix(chat): 发送失败不再静默。pending 发送从组件 state 提升为模块级 store，由真实请求生命周期驱动；失败立即结束 pending、恢复输入内容、给出通知中心 toast 与输入框上方 `role="alert"` 横幅并提供「重试发送」；已受理但历史迟迟不落盘时 45s 后不再假装「正在提交消息」。切换会话不再丢在途状态或假进度。
+- verification: 真实官方 OMP（`omp --mode rpc-ui` + 注入桥扩展）端到端复测——修复前 `sendUserMessage` 89ms 返回 `INTERNAL`（`configureQueueBatching is not defined`），重建 worker 产物后 125ms／107ms 连续两次提交成功并写入原生会话历史；server 317/318、omp-worker 284 项、app pi-chat 44 项通过。
+
 ## [v0.6.43] - 2026-10-28
 
 - fix(message): 孤立工具结果与正常工具行采用相同的默认折叠规则；工具展开状态按服务器／会话／调用 ID 保存，历史补齐或相邻消息重分组不再丢失手动操作。刷新只清除已落盘结果的旧运行／失败状态，调用方不在当前页时保留已收到的原始参数；真正缺失参数时仍可手动展开查看原始输出。Chromium 隔离组件界面已复现修复前自动展开与折叠丢失，并验证修复后的双向切换；不据此推断具体会话的断连原因。

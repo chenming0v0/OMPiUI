@@ -21,6 +21,8 @@ export type DiagnosticFields = {
   previousStatus?: string
   reason?: string
   errorCode?: string
+  /** 失败请求的底层机器码（严格白名单，非自由文本）：用于区分失败类别。 */
+  nativeCode?: string
   eventType?: string
   toolName?: string
   toolCallId?: string
@@ -44,7 +46,7 @@ const FILE_PATTERN = /^diagnostic-\d{4}-\d{2}-\d{2}_[a-f0-9-]+_\d+\.jsonl$/
 const STRING_FIELDS = [
   "sessionId", "sourceSessionId", "targetSessionId", "commandId", "requestId",
   "connectionId", "clientId", "command", "status", "previousStatus", "reason",
-  "errorCode", "eventType", "toolName", "toolCallId", "signal", "epoch",
+  "errorCode", "nativeCode", "eventType", "toolName", "toolCallId", "signal", "epoch",
   "driver", "visibility", "navigation",
 ] as const
 const NUMBER_FIELDS = [
@@ -72,6 +74,20 @@ export function diagnosticErrorCode(error: unknown): string {
     if (typeof candidate.name === "string") return candidate.name
   }
   return "UNKNOWN"
+}
+
+/** 机器码白名单：只接受形如 OMP_TIMEOUT / ENOENT / SESSION_BUSY 的短机器码。 */
+const NATIVE_CODE = /^[A-Za-z0-9_.-]{1,64}$/
+
+/**
+ * 取一个可用于诊断的**机器码**。
+ * 诊断不记录错误正文（可能夹带路径、URL、用户内容），所以任何不像机器码的
+ * 值一律丢弃，只保留能区分失败类别的短标识。
+ */
+export function diagnosticNativeCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object") return undefined
+  const code = (error as { code?: unknown }).code
+  return typeof code === "string" && NATIVE_CODE.test(code) ? code : undefined
 }
 
 function safeText(value: string): string {

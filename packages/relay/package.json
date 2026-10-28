@@ -1,6 +1,6 @@
 {
   "name": "@ompiui/relay",
-  "version": "0.6.43",
+  "version": "0.6.44",
   "private": true,
   "type": "module",
   "description": "OMPiUI 自建中转（反向隧道）服务端：桌面端主动拨出，公网浏览器经它访问内网 OMPiUI 服务。",
@@ -23,7 +23,7 @@
     "relay": "node dist/cli.js"
   },
   "dependencies": {
-    "@ompiui/tui": "0.6.43",
+    "@ompiui/tui": "0.6.44",
     "ws": "^8.21.1"
   },
   "devDependencies": {
