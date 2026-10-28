@@ -729,6 +729,13 @@ export class MockPiSession implements SessionRuntime {
     );
   }
 
+  getEntryContent(entryId: string, offset = 0, etag?: string): JsonObject {
+    const entry = this.entries.find((item) => item.id === entryId);
+    if (!entry)
+      throw Object.assign(new Error("entry not found"), { code: "NOT_FOUND" });
+    return entryContentChunk(entry, projectEntryAttachments(entry, this.getHead()), offset, etag);
+  }
+
   getTree(params?: { cursor?: string; limit?: number; maxBytes?: number }): JsonValue {
     if (params) return sessionTreePage(this.entries, this.getHead(), params);
     return buildSessionTreeFromEntries(this.entries, true);

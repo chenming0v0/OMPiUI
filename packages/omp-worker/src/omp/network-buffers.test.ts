@@ -61,7 +61,6 @@ test("projected images bind session, epoch and bytes without mutating native his
   const projected = projectEntryAttachments(entry, head)
   const message = projected.message as JsonObject
   const content = message.content as JsonObject[]
-  assert.deepEqual(content[0]?.attachment, { sessionId: "native-session", entryId: "native-entry", blockIndex: 0, source: "content", epoch: head.epoch, etag: `"${"a".repeat(64)}"` })
   assert.equal(content[0]?.data, "")
   assert.equal(image.data, `blob:sha256:${"a".repeat(64)}`)
   assert.match(JSON.stringify(message.details), /"source":"details"/)

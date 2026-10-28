@@ -694,7 +694,7 @@ export async function previewPiSession(
 ): Promise<PiSessionPreviewResult> {
   const generation = serverStore.getActiveServerGeneration()
   const result = await postPiGlobalCommand<PiSessionPreviewResult>('session.preview', { sessionId, ...params }, signal)
-  return { ...result, branch: await hydratePiBranchPage(sessionId, result.branch, signal, generation) }
+  return { ...result, branch: await hydratePiEntryPage(sessionId, result.branch, result.state.diskPreview === true ? 'disk' : 'session', signal, generation) }
 }
 
 export function openPiSession(params: PiSessionOpenParams, signal?: AbortSignal): Promise<PiSessionOpenResult> {
@@ -775,22 +775,26 @@ export async function getPiBranchPage(
 }
 
 export function hydratePiBranchPage(sessionId: string, page: PiBranchPage, signal?: AbortSignal, generation = serverStore.getActiveServerGeneration()): Promise<PiBranchPage> {
+  return hydratePiEntryPage(sessionId, page, 'session', signal, generation)
+}
+
+function hydratePiEntryPage(sessionId: string, page: PiBranchPage, source: 'session' | 'disk', signal: AbortSignal | undefined, generation: number): Promise<PiBranchPage> {
   if (serverStore.getActiveServerGeneration() !== generation) return Promise.reject(new DOMException('Server changed', 'AbortError'))
   return hydrateEntryContent(page, (entryId, offset, etag) => {
     if (serverStore.getActiveServerGeneration() !== generation) throw new DOMException('Server changed', 'AbortError')
-    return postPiGlobalCommand<JsonObject>('session.read', {
-      sessionId, query: 'entry.get', params: { entryId, offset, etag },
-    }, signal)
+    return source === 'disk'
+      ? postPiGlobalCommand<JsonObject>('session.read', { sessionId, query: 'entry.get', params: { entryId, offset, etag } }, signal)
+      : postPiSessionCommand<JsonObject>(sessionId, 'entry.get', { entryId, offset, etag }, signal)
   }, signal)
 }
 
-/** Tree pages contain previews only; selected details use bounded native disk reads. */
+/** Tree pages contain previews only; selected details use bounded session entry reads. */
 export async function getPiEntry(sessionId: string, entryId: string, signal?: AbortSignal): Promise<PiBranchPage['items'][number]> {
   const generation = serverStore.getActiveServerGeneration()
-  const first = await postPiGlobalCommand<JsonObject>('session.read', { sessionId, query: 'entry.get', params: { entryId, offset: 0 } }, signal)
+  const first = await postPiSessionCommand<JsonObject>(sessionId, 'entry.get', { entryId, offset: 0 }, signal)
   const page = await hydrateEntryContent({ items: [{ type: 'ompiui.entry_ref', id: entryId, contentRef: { etag: first.etag, totalChars: first.totalChars } }] } as unknown as PiBranchPage, async (id, offset, etag) => {
     if (serverStore.getActiveServerGeneration() !== generation) throw new DOMException('Server changed', 'AbortError')
-    return offset === 0 ? first : postPiGlobalCommand<JsonObject>('session.read', { sessionId, query: 'entry.get', params: { entryId: id, offset, etag } }, signal)
+    return offset === 0 ? first : postPiSessionCommand<JsonObject>(sessionId, 'entry.get', { entryId: id, offset, etag }, signal)
   }, signal)
   return page.items[0]!
 }

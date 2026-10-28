@@ -355,6 +355,12 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
           includeLiveMessage: P.optBoolean(p, "includeLiveMessage"),
         },
       ),
+  "entry.get": async (ctx, p) =>
+    ctx.requireRuntime().getEntryContent(
+      P.reqString(p, "entryId"),
+      p.offset === undefined ? 0 : P.reqNonNegativeInteger(p, "offset"),
+      P.optString(p, "etag"),
+    ),
   "tree.get": async (ctx, p) => ctx.requireRuntime().getTree({
     cursor: P.optString(p, "cursor"), limit: P.optNumber(p, "limit"), maxBytes: P.optNumber(p, "maxBytes"),
   }),

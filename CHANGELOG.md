@@ -1,5 +1,7 @@
 ## [v0.6.44] - 2026-10-28
 
+- fix(history): 修复 `snapcompact` 压缩含图片的上下文后会话打不开、刷新反复报 `STALE_REVISION`：分页和大条目分片统一读取同一运行时或磁盘来源，不再拿运行时展开图片后的校验值读取磁盘 blob 引用；图片引用身份不随后续历史追加或缓存淘汰变化。保留原有页大小、内容上限和真实版本冲突校验，只读浏览不启动 Agent、不改写官方历史。
+- verification(history): 统一构建、37 项 protocol／worker／server 回归及 20 项前端分页回归通过；原故障压缩记录的隔离副本经真实官方 OMP 与生产 Web UI 完成加载、运行时刷新、关闭自有 runtime 后只读刷新，历史字节／mtime 不变。官方会话双向发现、同文件继续、只读浏览与备份 smoke 通过，未重启或中止用户会话。
 - fix(scripts): 临时目录清理容忍 Windows 文件占用；CI 的 OMP 版本验收改用支持版本而非写死 18.8.0。
 - fix(worker): 修复「发一条消息就报内部错误、之后所有提交 30 秒超时」的致命故障。桥扩展是注入官方 OMP 进程执行的源码，宿主与 worker 编译产物版本不一致时，同作用域的可选辅助函数可能缺席，旧产物因此抛出 `ReferenceError: configureQueueBatching is not defined`，每次提交 8ms 内失败；失败又会永久占住会话级提交准入锁，后续提交全部排队到 30s 桥超时。现在可选辅助函数按 `typeof` 守卫调用，缺失只降级不再阻断发送；原生提交准入增加有界等待（`OMPIUI_NATIVE_ADMISSION_TIMEOUT_MS`，默认 20s），单次卡住即释放锁，一次失败不再毒化整个会话。
 - fix(worker): worker 出站错误不再把内部码统一压成 `INTERNAL`：`OMP_TIMEOUT`／`OMP_EXITED`／`OMP_STDIN_ERROR`／`SESSION_REPLACED`／`SUBMISSION_NOT_ADMITTED`／`QUEUE_SELECTION_STALE`／`OMP_SOURCE_*` 显式映射为协议码并保留真实 message，客户端能区分「未接纳」「进程退出」「源码版本不匹配」。

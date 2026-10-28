@@ -13,6 +13,7 @@ import { isJsonObject, utf8Prefix } from "@ompiui/protocol";
 import {
   entriesPageFromEntries,
   imageAttachmentFromEntry,
+  projectEntryAttachments,
   sessionHeadFromParts,
   type BranchCheckpoint,
   type EntriesPage,
@@ -20,6 +21,7 @@ import {
   type SessionHead,
 } from "../runtime/pagination.js";
 import { buildSessionTreeFromEntries, sessionTreePage } from "../runtime/session-tree.js";
+import { entryContentChunk } from "../runtime/entry-content.js";
 import type { PiEventMeta, SessionRuntime, Unsubscribe } from "../runtime.js";
 import {
   normalizeCwd,
@@ -1026,6 +1028,15 @@ export class OmpRpcSession implements SessionRuntime {
       { cursor, limit, maxBytes, checkpoint, ...sync },
       (entry) => entry as unknown as JsonObject,
     );
+  }
+
+  async getEntryContent(entryId: string, offset = 0, etag?: string): Promise<JsonObject> {
+    await this.ensureSynced();
+    const entry = this.entries.find((item) => item.id === entryId);
+    if (!entry)
+      throw Object.assign(new Error("entry not found"), { code: "NOT_FOUND" });
+    const serialized = entry as unknown as JsonObject;
+    return entryContentChunk(serialized, projectEntryAttachments(serialized, this.getHead()), offset, etag);
   }
 
   async getTree(params?: { cursor?: string; limit?: number; maxBytes?: number }): Promise<JsonValue> {

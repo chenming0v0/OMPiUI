@@ -25,6 +25,7 @@ export interface SessionRuntime {
   getState(): JsonObject | Promise<JsonObject>
   getEntriesPage(cursor: string | undefined, limit: number, maxBytes: number): JsonObject | Promise<JsonObject>
   getBranchPage(cursor: string | undefined, limit: number, maxBytes: number, sync?: BranchSyncRequest): JsonObject | Promise<JsonObject>
+  getEntryContent(entryId: string, offset?: number, etag?: string): JsonObject | Promise<JsonObject>
   getTree(params?: { cursor?: string; limit?: number; maxBytes?: number }): JsonValue | Promise<JsonValue>
   getAttachment(entryId: string, blockIndex: number, offset?: number, source?: "content" | "details"): JsonObject | Promise<JsonObject>
   getSubagentMessages(params: import("@ompiui/protocol").SubagentMessagesParams): JsonValue | Promise<JsonValue>

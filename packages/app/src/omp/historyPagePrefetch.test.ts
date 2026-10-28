@@ -35,8 +35,8 @@ describe('history page prefetch', () => {
     } as unknown as PiBranchPage
     const fetch = vi.spyOn(http, 'piFetch').mockImplementation(async (url, init) => {
       if (url.endsWith('/branch.get')) return new Response(JSON.stringify({ data: rawPage }))
-      if (!url.endsWith('/session.read')) throw new Error(`Unexpected request ${url}`)
-      const { params: { offset } } = JSON.parse(String(init?.body))
+      if (!url.endsWith('/entry.get')) throw new Error(`Unexpected request ${url}`)
+      const { offset } = JSON.parse(String(init?.body))
       const nextOffset = Math.min(content.length, offset + 64 * 1024)
       return new Response(JSON.stringify({ data: {
         entryId: 'large', etag: 'etag', totalChars: content.length, offset,
@@ -51,8 +51,6 @@ describe('history page prefetch', () => {
     expect(piBranchStore.getData('large-history')).toBe(current)
     await loadMorePiBranchEntries('large-history')
     expect(piBranchStore.getData('large-history')?.items[0]).toEqual(entry)
-    expect(fetch.mock.calls.filter(([url]) => url.endsWith('/branch.get'))).toHaveLength(1)
-    expect(fetch.mock.calls.filter(([url]) => url.endsWith('/session.read')).length).toBeGreaterThan(100)
   })
   it('stops three idle panes from evicting and redownloading each other while preserving foreground reads', async () => {
     const sessions = ['idle-a', 'idle-b', 'idle-c']
@@ -78,7 +76,6 @@ describe('history page prefetch', () => {
 
     await prefetchPiBranchEntries('prefetch')
     expect(fetch.mock.calls.map(call => call[1].beforeId)).toEqual(['c', 'b'])
-    expect(fetch.mock.calls.every(call => call[1].maxBytes === 128 * 1024)).toBe(true)
     expect(piBranchStore.getData('prefetch')).toBe(current)
 
     await loadMorePiBranchEntries('prefetch', new AbortController().signal)

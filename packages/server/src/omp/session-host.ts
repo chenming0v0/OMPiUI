@@ -553,6 +553,7 @@ export class SessionHost {
             "state.get": true,
             "branch.get": true,
             "entries.get": true,
+            "entry.get": true,
             "tree.get": true,
             "attachment.get": true,
             "subagent.messages": true,
