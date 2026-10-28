@@ -12,11 +12,12 @@ afterEach(() => piBranchStore.clearAll())
 
 it('evicts inactive histories without dropping another active pane', () => {
   piBranchStore.retain('active')
-  piBranchStore.setData('active', page(500))
+  const loaded = { ...page(500), client: { historyWindowed: true } }
+  piBranchStore.setData('active', loaded)
   for (let index = 0; index < 10; index++) piBranchStore.setData(`old-${index}`, page(10))
   expect(piBranchStore.getData('old-0')).toBeNull()
   expect(piBranchStore.getData('old-9')).not.toBeNull()
-  expect(piBranchStore.getData('active')?.items.length).toBe(400)
+  expect(piBranchStore.getData('active')?.items).toEqual(loaded.items)
   piBranchStore.release('active')
   expect(piBranchStore.getData('active')).toBeNull()
 })
