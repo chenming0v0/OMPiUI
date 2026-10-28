@@ -194,12 +194,15 @@ jobs:
       - name: Verify Windows entry resolution under Bun
         run: bun test packages/omp-worker/src/omp/omp-config-command.test.ts packages/omp-worker/src/omp/rpc-launch.test.ts
 
-      # 固定 issue #79 的真实 npm 版本，覆盖 Node 与打包 Bun 后端。
+      # 覆盖 issue #79 的真实 npm 版本，Node 与打包 Bun 后端都要走通。版本取自
+      # worker 里标定的 OMP_SDK_VERSION：写死的旧版本低于支持下限会直接被拒。
       - name: Install npm OMP and verify model role configuration
         shell: pwsh
         run: |
           $prefix = Join-Path $env:RUNNER_TEMP 'omp npm config'
-          npm install --prefix $prefix --no-save --package-lock=false @oh-my-pi/pi-coding-agent@18.8.0
+          $version = (Select-String -Path packages/omp-worker/src/omp/constants.ts -Pattern 'OMP_SDK_VERSION = "([0-9.]+)"').Matches[0].Groups[1].Value
+          if (-not $version) { throw 'Cannot read the supported OMP SDK version' }
+          npm install --prefix $prefix --no-save --package-lock=false "@oh-my-pi/pi-coding-agent@$version"
           if ($LASTEXITCODE -ne 0) { throw 'Cannot install npm OMP fixture' }
           $shim = Join-Path $prefix 'node_modules/.bin/omp.cmd'
           $cli = Join-Path $prefix 'node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js'
