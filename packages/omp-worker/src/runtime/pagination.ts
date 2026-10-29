@@ -199,13 +199,16 @@ function buildEntriesPage<T>(
 export function projectEntryAttachments(entry: JsonObject, head: SessionHead): JsonObject {
   const message = asRecord(entry.message);
   let changed = false;
+  let attachmentEpoch: string | undefined;
   const project = (value: JsonValue, blockIndex: number, source: "content" | "details"): JsonValue => {
     const block = asRecord(value);
     if (typeof block.data !== "string" || !isImageBlock(block) ||
       (!block.data.startsWith("blob:sha256:") && block.data.length <= 64 * 1024)) return value;
     changed = true;
     const hash = /^blob:sha256:([a-f0-9]{64})$/.exec(block.data)?.[1];
-    return { ...block, data: "", attachment: { sessionId: head.header?.id, entryId: entry.id, blockIndex, source, epoch: head.epoch, etag: hash ? `"${hash}"` : imageEtag(block) } };
+    // Content references survive later appends and cache eviction; page epochs do not.
+    attachmentEpoch ??= sessionHeadFromParts(head, [head.header?.id, entry.id]).epoch;
+    return { ...block, data: "", attachment: { sessionId: head.header?.id, entryId: entry.id, blockIndex, source, epoch: attachmentEpoch, etag: hash ? `"${hash}"` : imageEtag(block) } };
   };
   const content = Array.isArray(message.content)
     ? message.content.map((value, index) => project(value, index, "content")) : message.content;

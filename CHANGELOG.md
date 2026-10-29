@@ -1,5 +1,16 @@
+## [v0.6.45] - 2026-10-29
+
+- fix(history): 修复 `snapcompact` 压缩图片上下文后分页反复 `STALE_REVISION`：分页与大条目分片统一读取相同运行时或磁盘来源，保留只读历史、不放宽原有内容及版本校验边界（cc2f04c）。
+- verification(session): 补齐 #356 的真实专项证据：双窗格从图片消息 Fork 后身份／文字／图片草稿同步，左右窗格后续消息只写新原生日志；Undo 后新发沿同文件 parent 形成另一子分支，树面板双向切分支、逐回合 Redo、刷新图片草稿／Redo 恢复通过。新增可重复原生验收脚本与生产网页隔离入口、双 composer 永久回归；不重写已有原生接口。
+- diagnostics(session): #361 保留上游来源阻塞。官方 OMP 18.12.6 旧扩展回调在 new 后报错的原始帧仍无源 session／prompt／generation；最新 18.13.3 RPC 源码核对也仍只转发路径／事件／错误。专项 exit 2 明确未完成隔离，不以全忽略错误或文本猜测冒充修复。详见 `docs/session-transition-acceptance.md`。
+- fix(feedback): 本地 RPC 协议错误按影响分级送达：分片丢失、超时、缓冲超限、长度不符等导致整条重组消息丢失的失败改为 `rpc_stream_error`（前端既有 handler 激活，语义＝流中止有数据丢失），单帧解码失败、嵌套分片、非对象帧等只丢一帧的保持 `rpc_frame_error`；两类共用既有 20 条/60s 防风暴窗口。不伪造官方协议帧——官方 runtime 的 `rpc_stream_error` emitter 仍按上游接口缺失标注（#367）。
+- verification(feedback): worker `rpc-chunks.test.ts` 11 项通过（含新增 stream/frame kind 断言：无效 UTF-8→frame、长度不符/无效 count→stream），omp-worker typecheck 0 error；会话级 `open_url` 归属经 `eventStream.test.ts:710` 既有回归确认（link 通知按 `sessionId` 落到所属会话），无需改动。
+- verification(release): 集成后的 `npm run validate` 全流程通过：前端 211 文件／1677 项通过，worker 288 通过／13 跳过，server 317 通过／1 跳过，protocol／admin／relay／tui 零失败；全工作区类型检查与生产构建通过，lint 0 error／36 条既有 warning。发布路由 12 项回归及隔离官方 OMP 历史矩阵通过；#361 与 #367 的已知上游边界仍保留，不随发版宣称解决。
+
 ## [v0.6.44] - 2026-10-28
 
+- fix(history): 修复 `snapcompact` 压缩含图片的上下文后会话打不开、刷新反复报 `STALE_REVISION`：分页和大条目分片统一读取同一运行时或磁盘来源，不再拿运行时展开图片后的校验值读取磁盘 blob 引用；图片引用身份不随后续历史追加或缓存淘汰变化。保留原有页大小、内容上限和真实版本冲突校验，只读浏览不启动 Agent、不改写官方历史。
+- verification(history): 统一构建、37 项 protocol／worker／server 回归及 20 项前端分页回归通过；原故障压缩记录的隔离副本经真实官方 OMP 与生产 Web UI 完成加载、运行时刷新、关闭自有 runtime 后只读刷新，历史字节／mtime 不变。官方会话双向发现、同文件继续、只读浏览与备份 smoke 通过，未重启或中止用户会话。
 - fix(scripts): 临时目录清理容忍 Windows 文件占用；CI 的 OMP 版本验收改用支持版本而非写死 18.8.0。
 - fix(worker): 修复「发一条消息就报内部错误、之后所有提交 30 秒超时」的致命故障。桥扩展是注入官方 OMP 进程执行的源码，宿主与 worker 编译产物版本不一致时，同作用域的可选辅助函数可能缺席，旧产物因此抛出 `ReferenceError: configureQueueBatching is not defined`，每次提交 8ms 内失败；失败又会永久占住会话级提交准入锁，后续提交全部排队到 30s 桥超时。现在可选辅助函数按 `typeof` 守卫调用，缺失只降级不再阻断发送；原生提交准入增加有界等待（`OMPIUI_NATIVE_ADMISSION_TIMEOUT_MS`，默认 20s），单次卡住即释放锁，一次失败不再毒化整个会话。
 - fix(worker): worker 出站错误不再把内部码统一压成 `INTERNAL`：`OMP_TIMEOUT`／`OMP_EXITED`／`OMP_STDIN_ERROR`／`SESSION_REPLACED`／`SUBMISSION_NOT_ADMITTED`／`QUEUE_SELECTION_STALE`／`OMP_SOURCE_*` 显式映射为协议码并保留真实 message，客户端能区分「未接纳」「进程退出」「源码版本不匹配」。

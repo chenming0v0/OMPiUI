@@ -200,6 +200,12 @@ Windows 安装器固定使用当前 Tauri NSIS 模板，在旧卸载器删除快
 
 实际通过记录：[Windows installed upgrade smoke run 40237794673](https://github.com/chenming0v0/OMPiUI/actions/runs/40237794673)。候选为源码 `69649f46a332019f171f69e8f8240001f4578d1a`／预构建 run `40225030721` 的 `OMPiUI_0.6.42_x64-setup-lite.exe`，SHA-256 `B421C8409567D65BC0A02FA31135B2069F542B057C8BA92D4EB4CC86F6396808`；旧版为已发布 0.6.41，两次真实 `/P` 安装／升级均 exit 0。原生 GUI 经实际项目对话框保存 original-project 并正常关闭停止后端；桌面与开始菜单 `.lnk` 的 TargetPath／WorkingDirectory／Arguments／IconLocation／WindowStyle 及完整文件 SHA-256 均保留。升级后经参数为空、起始目录为另一个目录的保留桌面快捷方式启动，保存的 original-project 仍生效；新原生会话 `01a17512-3878-7638-84bd-00937415c8a5` 的 GUI 路由与 JSONL header ID 一致、cwd 为原项目，实际 GUI 两轮 user／assistant 同文件落盘、原历史字节前缀保留。官方 OMP 为 18.12.6／Bun 1.3.14，模型输出来自明确标注的自有确定性 HTTP 测试 provider，不宣称厂商账号／模型验收。该记录只覆盖此候选安装器，不等于后续集成源码已发布；最终重建安装器须按自身源码／artifact 身份再次验收。
 
+## 会话树、Fork 与替换隔离验收
+
+#356 的双窗格 Fork 身份／图片草稿迁移、切换其它子分支、Undo 后新发同身份分支已在隔离官方 OMP 18.12.6／Bun 1.3.14 和生产网页实跑补齐；持久化草稿／Redo 刷新恢复及双向原生会话继续也通过。新增 `scripts/verify-session-transitions.mjs --history-only` 可重复运行历史矩阵，`scripts/preview-session-transitions.mjs` 提供实际 GUI 验收服务。
+
+#361 仍为上游来源阻塞：旧扩展定时回调在成功 new 后抛错的官方原始 `extension_error` 只有路径／事件／错误，没有源 session／prompt／generation；2026-10-29 核对最新官方 18.13.3 RPC 源码仍未保留这些字段。完整专项默认以 exit 2 明确阻塞，不通过忽略全部错误、文本猜测或内部 runner 改写冒充完成。详见 [专项步骤与真实证据](session-transition-acceptance.md)。
+
 ## 开发与验证
 
 ```bash

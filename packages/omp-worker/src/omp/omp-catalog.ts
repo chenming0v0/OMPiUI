@@ -821,7 +821,7 @@ export class OmpCatalog implements CatalogProvider {
       const head = sessionHeadFromParts({
         sdkVersion: OMP_SDK_VERSION, revision: summary.modified, header: { id: summary.id },
         leafId: null, entryCount: entries.length,
-      });
+      }, [summary.id, summary.path]);
       return entryContentChunk(entry, projectEntryAttachments(entry, head),
         typeof params.offset === "number" ? params.offset : 0,
         typeof params.etag === "string" ? params.etag : undefined);

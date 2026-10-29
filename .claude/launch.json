@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "isolated-session-transitions",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--import", "tsx", "scripts/preview-session-transitions.mjs"],
+      "port": 8796
+    }
+  ]
+}

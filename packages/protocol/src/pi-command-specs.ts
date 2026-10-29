@@ -581,6 +581,21 @@ export const PI_COMMAND_SPECS = [
     idempotent: true,
   },
   {
+    name: "entry.get",
+    scope: "session",
+    description: "Read a bounded chunk of an OMP session entry",
+    paramsSchema: objectSchema(
+      {
+        entryId: byteString(4096),
+        offset: { type: "integer", minimum: 0 },
+        etag: byteString(128),
+      },
+      ["entryId"],
+    ),
+    queue: "immediate",
+    idempotent: true,
+  },
+  {
     name: "branch.get",
     scope: "session",
     description: "Read a page of the active OMP branch",
@@ -1062,6 +1077,7 @@ export const RUNTIME_TARGETS = {
   "extensionUi.tuiRedraw": "extensionTuiRedraw",
   "state.get": "getState",
   "entries.get": "getEntriesPage",
+  "entry.get": "getEntryContent",
   "branch.get": "getBranchPage",
   "tree.get": "getTree",
   "registry.get": "getRegistry",
@@ -1097,6 +1113,7 @@ export type PiCommandParams = CoreCommandParams & {
   removeQueuedMessage: { kind: "steering" | "followUp"; index: number; entryId: string; returnContent?: boolean };
   "state.get": Record<string, never>;
   "entries.get": PiPageParams;
+  "entry.get": { entryId: string; offset?: number; etag?: string };
   "branch.get": PiPageParams & BranchSyncRequest;
   "tree.get": PiPageParams;
   "registry.get": Record<string, never>;

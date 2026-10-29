@@ -114,6 +114,7 @@ test("viewing an OMP terminal history and syncing a draft never opens a writer",
   await host.sessionQuery("terminal-session", "state.get")
   await host.sessionQuery("terminal-session", "branch.get")
   await host.sessionQuery("terminal-session", "entries.get")
+  await host.sessionQuery("terminal-session", "entry.get", { entryId: "latest-tui-answer", offset: 0 });
   await host.sessionQuery("terminal-session", "tree.get")
   await host.sessionQuery("terminal-session", "attachment.get", { entryId: "image", blockIndex: 0 })
   await host.sessionQuery("terminal-session", "subagent.messages", { sessionFile: file })

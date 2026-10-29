@@ -322,7 +322,7 @@ export class OmpRpcClient extends EventEmitter {
     const byteLength = typeof frame.byteLength === "number" ? frame.byteLength : 0
     const data = typeof frame.data === "string" ? frame.data : ""
     if (Buffer.byteLength(chunkId) > MAX_CHUNK_ID_BYTES) {
-      this.emitProtocolError("rpc chunk id exceeds metadata limit", "rpc_chunk")
+      this.emitProtocolError("rpc chunk id exceeds metadata limit", "rpc_chunk", "stream")
       return
     }
     if (!chunkId || !Number.isSafeInteger(count) || count < 1 || count > MAX_CHUNK_COUNT) {
@@ -351,7 +351,7 @@ export class OmpRpcClient extends EventEmitter {
     if (!entry) {
       const metadataBytes = Buffer.byteLength(chunkId)
       if (this.chunks.size >= MAX_CHUNK_ENTRIES || this.chunkBytes + metadataBytes + bytes.byteLength > MAX_TOTAL_CHUNK_BYTES) {
-        this.emitProtocolError("rpc chunk buffer limit reached", "rpc_chunk")
+        this.emitProtocolError("rpc chunk buffer limit reached", "rpc_chunk", "stream")
         return
       }
       const timer = this.outputPausedAt === undefined
@@ -386,14 +386,14 @@ export class OmpRpcClient extends EventEmitter {
     this.chunks.delete(chunkId)
     this.chunkBytes -= entry.receivedBytes + entry.metadataBytes
     if (entry.byteLength > 0 && entry.receivedBytes !== entry.byteLength) {
-      this.emitProtocolError(`rpc chunk ${chunkId} length mismatch: got ${entry.receivedBytes} expected ${entry.byteLength}`, "rpc_chunk")
+      this.emitProtocolError(`rpc chunk ${chunkId} length mismatch: got ${entry.receivedBytes} expected ${entry.byteLength}`, "rpc_chunk", "stream")
       return
     }
     const ordered: Buffer[] = []
     for (let i = 0; i < entry.count; i++) {
       const part = entry.parts.get(i)
       if (!part) {
-        this.emitProtocolError(`rpc chunk ${chunkId} missing index ${i}`, "rpc_chunk")
+        this.emitProtocolError(`rpc chunk ${chunkId} missing index ${i}`, "rpc_chunk", "stream")
         return
       }
       ordered.push(part)
@@ -432,15 +432,17 @@ export class OmpRpcClient extends EventEmitter {
       this.chunks.delete(chunkId)
       this.chunkBytes -= entry.receivedBytes + entry.metadataBytes
     }
-    this.emitProtocolError(`${reason} (${chunkId.slice(0, 128)})`, "rpc_chunk")
+    this.emitProtocolError(`${reason} (${chunkId.slice(0, 128)})`, "rpc_chunk", "stream")
   }
 
-  private emitProtocolError(message: string, originalType?: string): void {
+  private emitProtocolError(message: string, originalType?: string, kind: "frame" | "stream" = "frame"): void {
     this.stderrBuffer.push(`[omp-rpc] ${message}\n`)
     if (this.stderrBuffer.length > 200) this.stderrBuffer.splice(0, this.stderrBuffer.length - 200)
     // Surface local protocol failures (chunk loss, decode errors) to the host
     // session so they reach the UI instead of only the exit stderr tail (#367).
-    this.emit("protocolError", message, originalType)
+    // kind tells the host whether a single frame was dropped ("frame") or the
+    // reassembled message stream was aborted with data loss ("stream").
+    this.emit("protocolError", message, originalType, kind)
   }
 
   private getStdinSender(): OmpStdinSender {

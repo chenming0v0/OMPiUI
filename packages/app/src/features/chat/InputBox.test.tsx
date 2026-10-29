@@ -392,6 +392,31 @@ describe('InputBox slash command selection', () => {
     expect(screen.getByRole('textbox')).toHaveValue('draft A')
   })
 
+  it('moves both same-session composers to one fork image draft and sends only to the target', async () => {
+    const source = 'shared-fork-source'
+    const target = 'shared-fork-target'
+    const image = { id: 'native-image', type: 'file' as const, displayName: 'image.webp', url: 'data:image/webp;base64,bmF0aXZl', mime: 'image/webp' }
+    updateComposerDraft(source, () => ({ text: 'old draft', attachments: [], ready: true }))
+    const sendLeft = vi.fn().mockResolvedValue(true)
+    const sendRight = vi.fn().mockResolvedValue(true)
+    const panes = (key: string) => <>
+      <InputBox paneId="left" sessionId={key} draftKey={key} onSend={sendLeft} />
+      <InputBox paneId="right" sessionId={key} draftKey={key} onSend={sendRight} />
+    </>
+    const { rerender } = render(panes(source))
+    expect(screen.getAllByRole('textbox').map(input => (input as HTMLTextAreaElement).value)).toEqual(['old draft', 'old draft'])
+    act(() => { updateComposerDraft(target, () => ({ text: 'native selected message', attachments: [image], ready: true })) })
+    rerender(panes(target))
+    expect(screen.getAllByRole('textbox').map(input => (input as HTMLTextAreaElement).value)).toEqual(['native selected message', 'native selected message'])
+    expect(getComposerDraft(target).attachments).toEqual([image])
+    fireEvent.click(screen.getAllByRole('button', { name: 'send' })[1]!)
+    await waitFor(() => expect(screen.getAllByRole('textbox').map(input => (input as HTMLTextAreaElement).value)).toEqual(['', '']))
+    expect(sendLeft).not.toHaveBeenCalled()
+    expect(sendRight).toHaveBeenCalledWith('native selected message', [image], expect.anything())
+    expect(getComposerDraft(target).attachments).toEqual([])
+    expect(getComposerDraft(source).text).toBe('old draft')
+  })
+
   it('preserves failed sends across a composer remount', async () => {
     const draftKey = 'failed-send'
     const first = render(<InputBox paneId="pane-test" draftKey={draftKey} onSend={vi.fn().mockResolvedValue(false)} />)
