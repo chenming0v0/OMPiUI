@@ -13,7 +13,7 @@ type Harness = {
   failAllPending(): void
   setOutputPaused(paused: boolean): void
   on(event: "frame", listener: (frame: { text: string }) => void): void
-  on(event: "protocolError", listener: (message: string, originalType?: string) => void): void
+  on(event: "protocolError", listener: (message: string, originalType?: string, kind?: "frame" | "stream") => void): void
 }
 
 function harness(): Harness {
@@ -143,6 +143,23 @@ test("local protocol errors surface as events while the runtime is alive, not on
   assert.equal(errors.length, 1)
   assert.match(errors[0]!, /length mismatch/)
   assert.match(rpc.stderrBuffer.join(""), /length mismatch/)
+})
+
+test("stream-aborting chunk failures report kind stream; single-frame decode failures stay frame (#367)", () => {
+  const rpc = harness()
+  const errors: Array<{ message: string; originalType?: string; kind?: string }> = []
+  rpc.on("protocolError", (message, originalType, kind) => errors.push({ message, originalType, kind }))
+  // Reassembled fully but invalid UTF-8: one frame dropped, stream continues.
+  rpc.handleChunk(chunk("utf8", 0, 1, 1, Buffer.from([0xff])))
+  // A declared length mismatch loses the whole reassembled message.
+  rpc.handleChunk(chunk("mismatch", 0, 1, 10, Buffer.from("x")))
+  // Invalid count aborts the chunk group before assembly.
+  rpc.handleChunk(chunk("count", 0, 4097, 8192, Buffer.from("x")))
+  assert.equal(errors.length, 3)
+  assert.equal(errors[0]!.kind, "frame")
+  assert.equal(errors[1]!.kind, "stream")
+  assert.equal(errors[2]!.kind, "stream")
+  assert.equal(rpc.chunkBytes, 0)
 })
 
 test("rejected initial chunks and malformed stdout deliver errors without retaining bytes", () => {

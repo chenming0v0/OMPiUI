@@ -1,3 +1,8 @@
+## [Unreleased]
+
+- fix(feedback): 本地 RPC 协议错误按影响分级送达：分片丢失、超时、缓冲超限、长度不符等导致整条重组消息丢失的失败改为 `rpc_stream_error`（前端既有 handler 激活，语义＝流中止有数据丢失），单帧解码失败、嵌套分片、非对象帧等只丢一帧的保持 `rpc_frame_error`；两类共用既有 20 条/60s 防风暴窗口。不伪造官方协议帧——官方 runtime 的 `rpc_stream_error` emitter 仍按上游接口缺失标注（#367）。
+- verification(feedback): worker `rpc-chunks.test.ts` 11 项通过（含新增 stream/frame kind 断言：无效 UTF-8→frame、长度不符/无效 count→stream），omp-worker typecheck 0 error；会话级 `open_url` 归属经 `eventStream.test.ts:710` 既有回归确认（link 通知按 `sessionId` 落到所属会话），无需改动。
+
 ## [v0.6.44] - 2026-10-28
 
 - fix(history): 修复 `snapcompact` 压缩含图片的上下文后会话打不开、刷新反复报 `STALE_REVISION`：分页和大条目分片统一读取同一运行时或磁盘来源，不再拿运行时展开图片后的校验值读取磁盘 blob 引用；图片引用身份不随后续历史追加或缓存淘汰变化。保留原有页大小、内容上限和真实版本冲突校验，只读浏览不启动 Agent、不改写官方历史。
