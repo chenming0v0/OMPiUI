@@ -2,6 +2,8 @@
 
 - verification(session): 补齐 #356 的真实专项证据：双窗格从图片消息 Fork 后身份／文字／图片草稿同步，左右窗格后续消息只写新原生日志；Undo 后新发沿同文件 parent 形成另一子分支，树面板双向切分支、逐回合 Redo、刷新图片草稿／Redo 恢复通过。新增可重复原生验收脚本与生产网页隔离入口、双 composer 永久回归；不重写已有原生接口。
 - diagnostics(session): #361 保留上游来源阻塞。官方 OMP 18.12.6 旧扩展回调在 new 后报错的原始帧仍无源 session／prompt／generation；最新 18.13.3 RPC 源码核对也仍只转发路径／事件／错误。专项 exit 2 明确未完成隔离，不以全忽略错误或文本猜测冒充修复。详见 `docs/session-transition-acceptance.md`。
+- fix(feedback): 本地 RPC 协议错误按影响分级送达：分片丢失、超时、缓冲超限、长度不符等导致整条重组消息丢失的失败改为 `rpc_stream_error`（前端既有 handler 激活，语义＝流中止有数据丢失），单帧解码失败、嵌套分片、非对象帧等只丢一帧的保持 `rpc_frame_error`；两类共用既有 20 条/60s 防风暴窗口。不伪造官方协议帧——官方 runtime 的 `rpc_stream_error` emitter 仍按上游接口缺失标注（#367）。
+- verification(feedback): worker `rpc-chunks.test.ts` 11 项通过（含新增 stream/frame kind 断言：无效 UTF-8→frame、长度不符/无效 count→stream），omp-worker typecheck 0 error；会话级 `open_url` 归属经 `eventStream.test.ts:710` 既有回归确认（link 通知按 `sessionId` 落到所属会话），无需改动。
 
 ## [v0.6.44] - 2026-10-28
 
