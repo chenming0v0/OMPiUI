@@ -62,7 +62,7 @@ import { hasStoppableSessionActivity } from './sessionActivity'
 import { pendingSendStore, type PendingSendAlert } from './pendingSendStore'
 import { describeSendFailure } from './sendFailure'
 import { SessionStopCoordinator } from './sessionStopCoordinator'
-import { composerDraftKey, getComposerDraft, moveComposerDraft, updateComposerDraft } from '../chat/input/composerDraftStore'
+import { acceptComposerDraft, composerDraftKey, getComposerDraft, moveComposerDraft, updateComposerDraft, type ComposerDraft } from '../chat/input/composerDraftStore'
 import type { ComposerQueueEntry } from '../chat/input/QueuedUserMessageQueue'
 import { piBranchStore, piSessionStateStore } from '../../omp/state/index.js'
 import { captureRedoCheckpoints, commitRedoPlan, redoPlanStore, type RedoPlan } from '../../omp/redoPlanStore'
@@ -100,7 +100,12 @@ const EMPTY_QUEUE: readonly ComposerQueueEntry[] = []
 
 /** 发送失败的可见提示；retry 只在服务端明确没有受理时给出。 */
 interface PendingSendAlertState extends PendingSendAlert {
-  retry?: { text: string; attachments: Attachment[]; delivery?: DeliveryMode }
+  retry?: {
+    text: string
+    attachments: Attachment[]
+    delivery?: DeliveryMode
+    composerSnapshot: Pick<ComposerDraft, 'text' | 'attachments'>
+  }
 }
 
 
@@ -1051,10 +1056,13 @@ export function PiChatPane({
     [sessionId],
   )
   const handleSend = useCallback(
-    async (text: string, attachments: Attachment[], options?: { delivery?: DeliveryMode }) => {
+    async (text: string, attachments: Attachment[], options?: { delivery?: DeliveryMode }, retrySnapshot?: Pick<ComposerDraft, 'text' | 'attachments'>) => {
       const capturedServerGeneration = activeServerGeneration
       const capturedIdentity = paneIdentityRef.current
       const sourceDraftKey = composerDraftKey(activeServer, sessionId, currentDirectory ?? '', paneId)
+      // InputBox omits command chips from the RPC payload. Keep their original
+      // identities separately so retry can accept that same composer snapshot.
+      const composerSnapshot = retrySnapshot ?? { text, attachments: getComposerDraft(sourceDraftKey).attachments }
       let targetSessionId = sessionId
       const isCurrentIdentity = () => paneIdentityRef.current === capturedIdentity || (
         targetSessionId !== sessionId && paneIdentityRef.current.epoch === capturedIdentity.epoch + 1 &&
@@ -1162,7 +1170,15 @@ export function PiChatPane({
         if (text.startsWith('/')) pendingSendStore.settle(pendingId)
         else pendingSendStore.accept(pendingId)
         if (!isCurrentIdentity() || paneIdentityRef.current.sessionId !== sid) return true
-        const currentText = inputBoxRef.current?.getEditorText() ?? localComposerTextRef.current ?? text
+        // The alert retry bypasses InputBox.runSubmit. Apply its acceptance
+        // cleanup here, using the failed snapshot rather than the current draft.
+        const targetDraftKey = composerDraftKey(activeServer, sid, '', '')
+        // Compare before acceptance clears text, so an unchanged retry also
+        // clears the restore marker instead of replaying it on the next mount.
+        const currentText = retrySnapshot
+          ? getComposerDraft(targetDraftKey).text
+          : inputBoxRef.current?.getEditorText() ?? localComposerTextRef.current ?? text
+        if (retrySnapshot) acceptComposerDraft(targetDraftKey, retrySnapshot)
         const remainingText = currentText === text ? '' : currentText
         localComposerTextRef.current = remainingText
         lastEditorTextRef.current = remainingText
@@ -1180,16 +1196,11 @@ export function PiChatPane({
             sessionId: targetSessionId ?? sessionId,
             serverGeneration: capturedServerGeneration,
             ...describeSendFailure(error),
-            retry: { text, attachments, ...(deliverAs ? { delivery: deliverAs } : {}) },
+            retry: { text, attachments, composerSnapshot, ...(deliverAs ? { delivery: deliverAs } : {}) },
           })
-          // 服务端没受理，消息仍归用户所有：把内容写回本地草稿，重挂载也不会丢。
-          const restoreKey = targetSessionId && targetSessionId !== sessionId
-            ? composerDraftKey(activeServer, targetSessionId, '', '')
-            : sourceDraftKey
-          if (!getComposerDraft(restoreKey).text.trim()) {
-            updateComposerDraft(restoreKey, draft => ({ ...draft, text, attachments, ready: true }))
-          }
-          if (targetSessionId) setSessionEditorDraft(targetSessionId, text, { attachments, sync: false })
+          // InputBox keeps the live shared draft until acceptance, including
+          // edits/deletions made while awaiting this request and home migration.
+          // Do not replay the submitted snapshot through the Undo/Fork bridge.
           if (targetSessionId) scheduleDelayedRefresh(targetSessionId)
         }
         return false
@@ -1563,7 +1574,7 @@ export function PiChatPane({
                     onClick={() => {
                       const retry = sendAlert.retry
                       setSendAlert(null)
-                      if (retry) void handleSend(retry.text, retry.attachments, retry.delivery ? { delivery: retry.delivery } : undefined)
+                      if (retry) void handleSend(retry.text, retry.attachments, retry.delivery ? { delivery: retry.delivery } : undefined, retry.composerSnapshot)
                     }}
                   >
                     {t('chat:chatArea.retrySend')}

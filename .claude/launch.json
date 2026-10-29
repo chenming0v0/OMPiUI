@@ -6,6 +6,18 @@
       "runtimeExecutable": "node",
       "runtimeArgs": ["--import", "tsx", "scripts/preview-session-transitions.mjs", "--runtime-dir", ".slim/issue-repair-native-runtime"],
       "port": 8796
+    },
+    {
+      "name": "isolated-command-images",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--import", "tsx", "scripts/preview-command-images.mjs", "--runtime-dir", ".slim/issue-repair-native-runtime"],
+      "port": 8797
+    },
+    {
+      "name": "isolated-tool-interaction",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--import", "tsx", "scripts/preview-tool-interaction.mjs", "--runtime-dir", ".slim/issue-repair-native-runtime"],
+      "port": 8798
     }
   ]
 }
