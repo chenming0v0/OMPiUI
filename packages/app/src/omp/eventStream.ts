@@ -20,6 +20,7 @@ import { piBranchStore, piCommandStore, piSessionStateStore } from './state/inde
 import { extensionUiStore } from './extensionUiStore'
 import { extensionTuiStore } from './extensionTuiStore'
 import { commandFeedbackStore } from './commandFeedbackStore'
+import { extensionDiagnosticStore } from './extensionDiagnosticStore'
 import { notificationStore } from '../store/notificationStore'
 import i18n from '../i18n'
 import { liveToolOutputStore, extractToolExecutionText } from './liveToolOutput'
@@ -291,6 +292,7 @@ class PiEventStream {
     ompSubagentStore.clearAll()
     for (const sessionId of this.refCounts.keys()) extensionUiStore.remove(sessionId)
     extensionUiStore.reset()
+    extensionDiagnosticStore.reset()
     bashPendingStore.clearAll()
     liveToolOutputStore.clearAll()
     this.liveRecoveryAt.clear()
@@ -626,6 +628,9 @@ class PiEventStream {
         recordClientDiagnostic('worker_payload_omitted', { sessionId, errorCode: 'WORKER_EVENT_TOO_LARGE' })
         this.queueResync(eventStreamKey(envelope.stream))
         if (!sessionId && isJsonObject(envelope.payload) && envelope.payload.channel === 'models.updated') refreshModelSettings()
+        break
+      case 'omp.extension_error':
+        if (envelope.stream.kind === 'server') extensionDiagnosticStore.addNativeEvent(envelope.payload)
         break
       case 'pi.event':
         if (sessionId) this.handlePiEvent(sessionId, envelope.payload as unknown as PiEventPayload)

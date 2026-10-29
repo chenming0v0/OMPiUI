@@ -20,6 +20,7 @@ import * as http from './httpClient.js'
 import { serverStore } from '../store/serverStore'
 import { notificationStore } from '../store/notificationStore'
 import { commandFeedbackStore } from './commandFeedbackStore'
+import { extensionDiagnosticStore } from './extensionDiagnosticStore'
 import * as transport from './transport/index.js'
 
 // Retain the real controller before sibling scenarios install module spies.
@@ -705,7 +706,20 @@ describe('tool_execution_update progress frames', () => {
 })
 
 describe('native notices and protocol feedback', () => {
-  afterEach(() => { commandFeedbackStore.reset(); notificationStore.clearAll(); vi.restoreAllMocks() })
+  afterEach(() => { commandFeedbackStore.reset(); extensionDiagnosticStore.reset(); notificationStore.clearAll(); vi.restoreAllMocks() })
+
+  it('retains global extension errors without assigning any session feedback or session notification', () => {
+    const push = vi.spyOn(notificationStore, 'push').mockImplementation(() => {})
+    const payload = { workerGeneration: 'worker', runtimeId: 'runtime', frame: { type: 'extension_error', extensionPath: '<timer>', event: 'timeout_callback', error: 'old callback\nlast line' } }
+    handleEvent({ stream: { kind: 'server', id: 'server' }, channel: 'omp.extension_error', cursor: { epoch: 'diagnostic', sequence: 1 }, payload })
+    expect(extensionDiagnosticStore.getSnapshot()[0]).toMatchObject({ message: payload.frame.error, runtimeId: 'runtime' })
+    expect(commandFeedbackStore.getSnapshot().sessions).toEqual({})
+    expect(push).not.toHaveBeenCalled()
+    handleEvent({ stream: { kind: 'session', id: 'wrong' }, channel: 'omp.extension_error', cursor: { epoch: 'diagnostic', sequence: 2 }, payload })
+    expect(extensionDiagnosticStore.getSnapshot()).toHaveLength(1)
+    piEventStream.disconnectAll()
+    expect(extensionDiagnosticStore.getSnapshot()).toEqual([])
+  })
 
   it('keeps native open_url notifications within supported informational severity', () => {
     notificationStore.clearAll()

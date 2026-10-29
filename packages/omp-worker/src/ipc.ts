@@ -46,6 +46,7 @@ export type WorkerEvent =
   | { kind: "event"; generation: string; sessionId: string; channel: "extension.ui"; event: JsonObject }
   | { kind: "event"; generation: string; sessionId: string; channel: "omp.subagent"; event: JsonObject }
   | { kind: "event"; generation: string; sessionId: string; channel: "registry.updated"; event: JsonObject }
+  | { kind: "event"; generation: string; channel: "omp.extension_error"; runtimeId: string; event: JsonObject }
   | { kind: "event"; generation: string; channel: "provider.auth"; event: JsonObject }
   | { kind: "event"; generation: string; channel: "models.updated"; event: JsonObject }
   | { kind: "event"; generation: string; channel: "packages.progress"; event: JsonObject }

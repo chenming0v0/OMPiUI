@@ -17,6 +17,7 @@ export interface SessionRuntime {
   onHead(listener: (head: JsonObject) => void): Unsubscribe
   onActivity?(listener: (status: SessionActivityStatus | null) => void): Unsubscribe
   onExtensionUi?(listener: (event: JsonObject) => void): Unsubscribe
+  onExtensionDiagnostic?(listener: (event: JsonObject) => void): Unsubscribe
   onResourcesChanged?(listener: () => void): Unsubscribe
   onReplacement?(listener: (replacement: JsonObject) => void | Promise<void>): Unsubscribe
   onCrash?(listener: (error: Error) => void): Unsubscribe

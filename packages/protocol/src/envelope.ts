@@ -46,6 +46,7 @@ export type EventChannel =
   | "payload.omitted"
   | "pi.event"
   | "omp.subagent"
+  | "omp.extension_error"
   | "session.head"
   | "command.updated"
   | "extension.ui"

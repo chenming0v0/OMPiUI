@@ -176,6 +176,7 @@ export class OmpRpcSession implements SessionRuntime {
     if (buffered.epoch === this.eventEpoch && buffered.historyGeneration === this.historyGeneration)
       this.messageStream.push(buffered.event, buffered.live);
   });
+  private readonly extensionDiagnosticListeners = new Set<(event: JsonObject) => void>();
   private readonly crashListeners = new Set<(error: Error) => void>();
   private readonly closeListeners = new Set<() => void>();
   private outputPaused = false;
@@ -572,7 +573,12 @@ export class OmpRpcSession implements SessionRuntime {
         this.extensionUi.handleOmpRequest(frame);
         return;
       }
-      case "extension_error":
+      case "extension_error": {
+        // The official wire has no callback origin. Receipt-time session/epoch
+        // must not turn a host error into a result belonging to the new session.
+        for (const listener of this.extensionDiagnosticListeners) listener(frame);
+        return;
+      }
       case "available_commands_update":
       case "command_output":
       case "session_info_update":
@@ -2238,6 +2244,11 @@ export class OmpRpcSession implements SessionRuntime {
     return () => this.piEventListeners.delete(listener);
   }
 
+  onExtensionDiagnostic(listener: (event: JsonObject) => void): Unsubscribe {
+    this.extensionDiagnosticListeners.add(listener);
+    return () => this.extensionDiagnosticListeners.delete(listener);
+  }
+
   onHead(listener: (head: SessionHead) => void): Unsubscribe {
     this.headListeners.add(listener);
     // 迟到订阅者立即拿到当前 head
@@ -2267,6 +2278,7 @@ export class OmpRpcSession implements SessionRuntime {
     this.extensionUi.cancelAll("runtime_disposed");
     this.piEvents.flush();
     this.piEventListeners.clear();
+    this.extensionDiagnosticListeners.clear();
     this.messageStream.clear();
     this.headListeners.clear();
     this.activityListeners.clear();

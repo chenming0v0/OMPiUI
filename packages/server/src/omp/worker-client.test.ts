@@ -31,6 +31,23 @@ test("peekHandshake is a non-blocking snapshot: undefined while booting, hello a
   }
 })
 
+test("worker host diagnostics bypass session handles over real IPC", async () => {
+  const host = startHost("hello-ok")
+  try {
+    const session = await host.open(".")
+    const global: unknown[] = [], local: unknown[] = []
+    host.onEvent(event => global.push(event))
+    session.onEvent(event => local.push(event))
+    await session.command("fixture.extensionError")
+    assert.equal(local.length, 0)
+    assert.deepEqual(global, [{ kind: "event", generation: "fixture-gen", runtimeId: "fixture-runtime", channel: "omp.extension_error", event: {
+      type: "extension_error", extensionPath: "<timer>", event: "timeout_callback", error: "delayed host error",
+    } }])
+  } finally {
+    await host.dispose()
+  }
+})
+
 test("WorkerSession fulfills a command on a healthy worker", async () => {
   const catalog = startCatalog("hello-ok")
   try {

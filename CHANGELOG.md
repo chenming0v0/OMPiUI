@@ -1,5 +1,6 @@
 ## [Unreleased]
 
+- fix(diagnostics): 无来源的官方 `extension_error` 不再按接收时刻归入新会话，改走无 sessionId 的宿主诊断通道；扩展面板保留完整错误、事件与独立 runtime 标识，清空诊断不影响会话，切换后端清理。保留原生命令失败与草稿语义，不按文本／同名命令猜来源，不改官方内部 runner。`--local-isolation` 可单独验证迟到错误不进会话流；默认完整专项仍 exit 2 保留 #361 上游来源归属阻塞。详见 `docs/session-transition-acceptance.md`。
 - fix(release): 命中 lite 预构建时，全量版任务使用显式 `always()`／取消与成功依赖门禁，避免间接 skipped 构建让已发布成功后的全量版也被默认 `success()` 跳过；保留预构建／只验收不发布／失败／取消边界。补入现有发布路由 CI 回归，不移动已发布 tag，手动补构建仍绑定原 tag 源码。
 
 ## [v0.6.45] - 2026-10-29

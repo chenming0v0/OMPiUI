@@ -1314,6 +1314,17 @@ export class SessionHost {
   }
 
   private routeCatalogEvent(event: WorkerEvent): void {
+    if (event.channel === "omp.extension_error") {
+      // Diagnostics on disk keep only metadata, never error text or paths.
+      diagnostics.record("worker.extension_error", {
+        epoch: event.generation,
+        eventType: typeof event.event.event === "string" ? event.event.event : "extension_error",
+      }, "error");
+      this.hub.publish({ kind: "server", id: "server" }, "omp.extension_error", {
+        workerGeneration: event.generation, runtimeId: event.runtimeId, frame: event.event,
+      });
+      return;
+    }
     if (event.channel === "payload.omitted") {
       diagnostics.record("worker.payload_omitted", { eventType: String(event.event.channel), count: Number(event.event.originalBytes) }, "warn");
       this.hub.publish({ kind: "server", id: "server" }, "payload.omitted", event.event);

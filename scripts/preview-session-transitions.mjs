@@ -3,6 +3,12 @@ import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { createTransitionFixture, testImage } from './session-transition-fixture.mjs'
 
+// Explicit test runtime selection; never download or change user configuration.
+const args = process.argv.slice(2)
+if (args.length) {
+  if (args.length !== 2 || args[0] !== '--runtime-dir') throw new Error('Usage: preview-session-transitions.mjs [--runtime-dir <path>]')
+  process.env.OMPI_OMP_RUNTIME_DIR = path.resolve(args[1])
+}
 const { resolveInstalledOmpRuntime, installedOmpExecutable } = await import('../packages/omp-worker/src/omp/omp-runtime.ts')
 const runtime = resolveInstalledOmpRuntime()
 if (runtime) {

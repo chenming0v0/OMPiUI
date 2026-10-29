@@ -204,7 +204,7 @@ Windows 安装器固定使用当前 Tauri NSIS 模板，在旧卸载器删除快
 
 #356 的双窗格 Fork 身份／图片草稿迁移、切换其它子分支、Undo 后新发同身份分支已在隔离官方 OMP 18.12.6／Bun 1.3.14 和生产网页实跑补齐；持久化草稿／Redo 刷新恢复及双向原生会话继续也通过。新增 `scripts/verify-session-transitions.mjs --history-only` 可重复运行历史矩阵，`scripts/preview-session-transitions.mjs` 提供实际 GUI 验收服务。
 
-#361 仍为上游来源阻塞：旧扩展定时回调在成功 new 后抛错的官方原始 `extension_error` 只有路径／事件／错误，没有源 session／prompt／generation；2026-10-29 核对最新官方 18.13.3 RPC 源码仍未保留这些字段。完整专项默认以 exit 2 明确阻塞，不通过忽略全部错误、文本猜测或内部 runner 改写冒充完成。详见 [专项步骤与真实证据](session-transition-acceptance.md)。
+#361 的本地错误隔离已补齐：无来源的原始 `extension_error` 走无 sessionId 的宿主诊断通道，扩展面板保留原文和独立 runtime 标识，不落入新会话事件流；原生命令拒绝／草稿处理不变，不虚构会话或通知目标。`scripts/verify-session-transitions.mjs --local-isolation` 专门验收这一本地边界。官方仍缺 source session／prompt／generation，不能精确路由回源会话；2026-10-29 对最新 18.13.3 的核对仅是源码。默认完整专项仍 exit 2，不能以本地子集通过宣称 #361 全部完成。详见 [专项步骤与真实证据](session-transition-acceptance.md)。
 
 ## 开发与验证
 

@@ -158,6 +158,14 @@ const pendingHostCalls = new Map<string, {
 
 function subscribeRuntimeEvents(current: SessionRuntime): Array<() => void> {
   const unsubs: Array<() => void> = []
+  // Stable host identity, not a session id: the same runtime can replace sessions.
+  const diagnosticRuntimeId = randomUUID()
+  if (current.onExtensionDiagnostic) {
+    unsubs.push(current.onExtensionDiagnostic(event => send({
+      kind: "event", generation: workerGeneration, runtimeId: diagnosticRuntimeId,
+      channel: "omp.extension_error", event,
+    })))
+  }
   unsubs.push(current.onPiEvent((event, meta) => {
     if (event.type === "available_commands_update") {
       void queueRegistryChangeCheck(current, "available_commands_update").catch(error => console.error("[omp-worker] registry refresh failed", error));
