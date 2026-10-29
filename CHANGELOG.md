@@ -1,3 +1,8 @@
+## [Unreleased]
+
+- verification(session): 补齐 #356 的真实专项证据：双窗格从图片消息 Fork 后身份／文字／图片草稿同步，左右窗格后续消息只写新原生日志；Undo 后新发沿同文件 parent 形成另一子分支，树面板双向切分支、逐回合 Redo、刷新图片草稿／Redo 恢复通过。新增可重复原生验收脚本与生产网页隔离入口、双 composer 永久回归；不重写已有原生接口。
+- diagnostics(session): #361 保留上游来源阻塞。官方 OMP 18.12.6 旧扩展回调在 new 后报错的原始帧仍无源 session／prompt／generation；最新 18.13.3 RPC 源码核对也仍只转发路径／事件／错误。专项 exit 2 明确未完成隔离，不以全忽略错误或文本猜测冒充修复。详见 `docs/session-transition-acceptance.md`。
+
 ## [v0.6.44] - 2026-10-28
 
 - fix(history): 修复 `snapcompact` 压缩含图片的上下文后会话打不开、刷新反复报 `STALE_REVISION`：分页和大条目分片统一读取同一运行时或磁盘来源，不再拿运行时展开图片后的校验值读取磁盘 blob 引用；图片引用身份不随后续历史追加或缓存淘汰变化。保留原有页大小、内容上限和真实版本冲突校验，只读浏览不启动 Agent、不改写官方历史。
