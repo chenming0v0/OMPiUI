@@ -83,6 +83,7 @@ const REPLACEMENT_OPS = {
 };
 
 const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
+  toolInteraction: async (ctx, p) => ctx.requireRuntime().toolInteraction(p),
   prompt: async (ctx, p) => {
     await ctx.requireRuntime().prompt(P.reqString(p, "text"), P.optImages(p), {
       expandPromptTemplates: P.optBoolean(p, "expandPromptTemplates"),

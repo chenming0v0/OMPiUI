@@ -181,7 +181,7 @@ OMP 18.12.6 实测普通 `rpc` 无 ask，托管 `rpc-ui` 有 ask；`rpc-ui --no-
 
 已确认的一类阻塞是模型用 `bash` 的 `pty:true, timeout:0` 在前台启动常驻服务。官方 OMP 的自动后台机制排除 PTY 调用，`timeout:0` 又取消执行期限，因此服务一直等标准输入或退出，后续工具也不能开始。这不是模型连续推理了数小时。
 
-OMPiUI 新启动的受管 runtime 通过显式进程级扩展，在执行前拒绝没有 `name`、没有 `async:true` 的这一组合，返回真实错误，不启动命令、不终止 Agent。有限交互命令使用正数 `timeout`；已启用服务能力时，常驻服务使用 `name` 和有界 `ready.timeout`，省略命令 `timeout`，通过 `read proc://<name>` 查看、`write proc://<name>` 输入；已启用异步能力时非交互后台任务可显式使用 `async:true`。能力由官方实际全局／项目设置决定；遗留 `omp-compat.yml` 已不加载，显式 false 应保留官方错误和实际 schema，不能假称已后台启动.
+OMPiUI 新启动的受管 runtime 在正式工具 PTY 适配器与受认证通道就绪时，允许该前台调用通过网页交互，并把真实退出结果返回原调用；关闭工具视图仅 detach，不停止进程。未支持/未就绪时仍通过显式进程级扩展，在执行前拒绝没有 `name`、没有 `async:true` 的这一组合，返回真实错误，不启动命令、不终止 Agent。能力与 ACK/控制权/恢复边界见 [工具 PTY](tool-interaction.md)。有限交互命令使用正数 `timeout`；已启用服务能力时，常驻服务使用 `name` 和有界 `ready.timeout`，省略命令 `timeout`，通过 `read proc://<name>` 查看、`write proc://<name>` 输入；已启用异步能力时非交互后台任务可显式使用 `async:true`。能力由官方实际全局／项目设置决定；遗留 `omp-compat.yml` 已不加载，显式 false 应保留官方错误和实际 schema，不能假称已后台启动.
 
 不修改官方全局配置、普通非 PTY 命令或用户主动的 Bash RPC；已有运行实例不会热加载限制，不为应用修复强制中止正在工作的会话。
 

@@ -533,6 +533,9 @@ export class SessionHost {
       (async () => {
         let session = this.runtimes.get(sessionId);
         if (!session) {
+          if (type === "toolInteraction") {
+            throw Object.assign(new Error("No live tool interaction; session preview is read-only"), { code: "CAPABILITY_DISABLED" });
+          }
           // 草稿同步是浏览动作，不能为了 no-op 编辑器命令启动写入进程。
           if (type === "setExtensionEditorState" && getDriverMode() === "omp")
             return undefined;
@@ -1504,6 +1507,7 @@ export class SessionHost {
         state.isCompacting === true ||
         state.isRetrying === true ||
         state.isBashRunning === true ||
+        Number(state.activeToolInteractions ?? 0) > 0 ||
         state.hasPendingAsyncWork === true ||
         Number(state.pendingMessageCount ?? 0) > 0;
       if (stillBusy) {

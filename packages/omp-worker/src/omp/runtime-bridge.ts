@@ -5,6 +5,7 @@ import type { OmpRpcClient, OmpRpcFrame } from "./rpc-client.js"
 import { nativeExtensionResourcesSource } from './resource-registry.js'
 import { NATIVE_PROMPT_ADMISSION_IMPORT, NATIVE_PROMPT_ADMISSION_SOURCE } from './native-prompt-admission.js'
 import { NATIVE_WORKTREE_IMPORTS, NATIVE_WORKTREE_SOURCE } from './native-worktree.js'
+import { nativeToolInteractionImports, nativeToolInteractionSource } from './native-tool-interaction.js'
 
 export type RuntimeBridgeOperation = "capabilities" | "identity" | "queue" | "clearQueue" | "removeQueuedMessage" | "sendQueuedMessage" | "submitUserMessage" | "prepareStop" | "resumeStoppedSession" | "navigateTree" | "abortBranchSummary" | "fork" | "branch" | "reload" | "setLabel" | "setScopedModels" | "cycleModel" | "resources" | "tree" | "asyncJobs" | "inspectAsyncJob" | "cancelAsyncJob" | "goal" | "moveSession" | "worktreeState"
 const RESPONSE_PREFIX = "\u001eompiui-runtime:"
@@ -88,6 +89,7 @@ import { isUserQueuedMessage, isHiddenUserCompanion, toRestoredQueuedMessage } f
 import { resolveModelScope, getModelMatchPreferences, formatModelStringWithRouting } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { cfgDisabledExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/settings";
 ${NATIVE_WORKTREE_IMPORTS}
+${nativeToolInteractionImports}
 export default function (pi) {
   const prefix = ${JSON.stringify(RESPONSE_PREFIX)};
   const queueEntryIds = new WeakMap();
@@ -109,6 +111,7 @@ export default function (pi) {
     if (!ref) throw Object.assign(new Error("Current managed session is not registered"), { code: "CAPABILITY_DISABLED" });
     return ref.session;
   }
+  ${nativeToolInteractionSource}
   function identity(session) {
     return { sessionId: session.sessionManager.getSessionId(), sessionFile: session.sessionFile ?? null, leafId: session.sessionManager.getLeafId(), cwd: session.sessionManager.getCwd() };
   }

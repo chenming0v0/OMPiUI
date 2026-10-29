@@ -34,6 +34,23 @@
     "unknown": "Outcome unknown",
     "argumentsUnknown": "Arguments unknown — call not loaded"
   },
+  "toolInteraction": {
+    "claim": "Take control",
+    "release": "Release control",
+    "cancel": "Cancel command",
+    "terminal": "Tool terminal",
+    "fullscreen": "Fullscreen",
+    "exitFullscreen": "Exit fullscreen",
+    "replay": "Replay terminal (read-only)",
+    "inputFull": "Input not sent: pending input is limited to 1 MiB. Wait or paste less.",
+    "inputNotSent": "Input not sent: take control after the connection is ready.",
+    "inputPaused": "Input paused: delivery or control is unknown. Pending input is retained.",
+    "connectionLost": "Connection lost. Input paused; reopen this view to reconnect.",
+    "identityMismatch": "This stream does not belong to this tool execution.",
+    "unavailable": "This execution is no longer available. No new process was started.",
+    "replayReset": "Older output expired. The viewport was reset from the retained raw output; an ANSI TUI may need to redraw.",
+    "discardPending": "Discard pending input (some may already have been accepted)"
+  },
   "toolSteps": {
     "separator": ", ",
     "pending_one": "{{count}} tool waiting to execute",

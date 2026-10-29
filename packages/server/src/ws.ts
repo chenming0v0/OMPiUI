@@ -16,6 +16,12 @@ import {
   isErrorCode,
   type TerminalStreamClientFrame,
   type TerminalStreamServerFrame,
+  TOOL_INTERACTION_MAX_FRAME_BYTES,
+  TOOL_INTERACTION_MAX_INPUT_BYTES,
+  type ToolInteractionServerFrame,
+  type ToolInteractionClientFrame,
+  type ToolInteractionLease,
+  type ToolInteractionRead,
 } from "@ompiui/protocol";
 import type { EventHub } from "./event-hub.ts";
 import { eventWireFrame, omittedEventWireFrame } from "./event-hub.ts";
@@ -34,6 +40,12 @@ import { splitTerminalOutput } from "./terminal-output.ts";
 import { WebSocketSendBudget, type SendAdmission } from "./ws-send-budget.ts";
 import { WebSocketIngressBudget } from "./ws-ingress-budget.ts";
 import { TerminalOutputFlow } from "./terminal-output-flow.ts";
+import {
+  getToolInteractionProxy,
+  toolInteractionAuthScope,
+  type ToolInteractionProxy,
+  type ToolInteractionTicketBinding,
+} from "./omp/tool-interaction-proxy.ts";
 
 // 除解析前的原始帧速率预算外，仍保留聚合载荷上限。
 const MAX_MESSAGE_BYTES = 1024 * 1024;
@@ -45,6 +57,7 @@ const subscribeGlobalBudget = new RateBudget(240, 120);
 const ingressGlobalFrames = new RateBudget(4096, 2048);
 const ingressGlobalBytes = new RateBudget(32 * 1024 * 1024, 16 * 1024 * 1024);
 const TERMINAL_PATH = /^\/api\/v1\/host\/terminals\/([^/]+)\/stream$/;
+const TOOL_INTERACTION_PATH = /^\/api\/v1\/sessions\/([^/]+)\/tool-interactions\/([^/]+)\/stream$/;
 
 export interface EventWebSocketOptions {
   eventHub: EventHub;
@@ -58,6 +71,7 @@ export interface EventWebSocketOptions {
   /** Called after a client (re)subscribes — push per-connection snapshots */
   onSubscribe?: (send: (message: EventServerMessage) => void) => void;
   terminalManager?: TerminalManager;
+  toolInteractionProxy?: ToolInteractionProxy;
   maxConnections?: number;
 }
 
@@ -85,6 +99,9 @@ export function attachEventWebSocket(
     { terminalId: string; workspacePath: string }
   >();
 
+  const toolInteractionProxy = options.toolInteractionProxy ?? getToolInteractionProxy(server);
+  const interactionConnections = new WeakMap<IncomingMessage, ToolInteractionTicketBinding>();
+
   server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     let url: URL;
     try {
@@ -103,11 +120,13 @@ export function attachEventWebSocket(
         wsToken !== null &&
         timingSafeTokenEquals(wsToken, authToken));
     const terminalMatch = TERMINAL_PATH.exec(url.pathname);
+    const interactionMatch = TOOL_INTERACTION_PATH.exec(url.pathname);
     const isEventPath = url.pathname === "/api/v1/events";
     if (
-      (!isEventPath && !terminalMatch) ||
+      (!isEventPath && !terminalMatch && !interactionMatch) ||
       !requestHasAllowedOrigin(req, options.allowedOrigins) ||
-      !hasToken
+      (!interactionMatch && !hasToken) ||
+      (interactionMatch && wsToken !== null)
     ) {
       socket.write(
         "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
@@ -139,6 +158,19 @@ export function attachEventWebSocket(
       );
       socket.destroy();
       return;
+    }
+    if (interactionMatch) {
+      const ticket = url.searchParams.get("ticket");
+      const binding = ticket && toolInteractionProxy?.consumeTicket(
+        decodePathSegment(interactionMatch[1]!), decodePathSegment(interactionMatch[2]!),
+        ticket, toolInteractionAuthScope(authToken),
+      );
+      if (!binding) {
+        socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      interactionConnections.set(req, binding);
     }
     if (terminalMatch) {
       if (!options.terminalManager) {
@@ -198,6 +230,11 @@ export function attachEventWebSocket(
     // errors (oversized frames, bad UTF-8, invalid opcodes) and Node throws,
     // crashing the whole process. Swallow per-socket errors; close handles the rest.
     ws.on("error", () => undefined);
+    const interaction = interactionConnections.get(req);
+    if (interaction && toolInteractionProxy) {
+      attachToolInteractionConnection(ws, toolInteractionProxy, interaction, req, admit);
+      return;
+    }
     const terminal = terminalConnections.get(req);
     if (terminal && options.terminalManager) {
       attachTerminalConnection(
@@ -966,6 +1003,202 @@ function attachTerminalConnection(
     }
   });
   resumeOutput();
+}
+
+function attachToolInteractionConnection(
+  ws: WebSocket,
+  proxy: ToolInteractionProxy,
+  binding: ToolInteractionTicketBinding,
+  req: IncomingMessage,
+  admit: (bytes: number) => boolean,
+): void {
+  const identity = binding.identity;
+  const cursorValue = new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get("cursor");
+  let cursor = cursorValue === null ? undefined : Number(cursorValue);
+  let closed = false;
+  let lease: ToolInteractionLease | undefined;
+  let inputUnknown = false;
+  let queuedBytes = 0;
+  let working = false;
+  let ackTimer: NodeJS.Timeout | undefined;
+  let timer: NodeJS.Timeout | undefined;
+  let wake: (() => void) | undefined;
+  let sendChain = Promise.resolve(true);
+  const frames: Array<{ frame: Exclude<ToolInteractionClientFrame, { type: "output_ack" }>; bytes: number }> = [];
+  const malformed = new RateBudget(16, 1);
+  const outputFlow = new TerminalOutputFlow(true);
+  const attachment = proxy.attach(identity);
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    clearTimeout(timer);
+    clearTimeout(ackTimer);
+    wake?.();
+    frames.length = 0;
+    queuedBytes = 0;
+    // Writer ownership belongs to the native execution, not this connection.
+    attachment.detach();
+    sendBudget.discardQueued(ws);
+  };
+  discardConnectionQueues.set(ws, cleanup);
+  ws.on("close", cleanup);
+  const close = (code: number, reason: string) => { cleanup(); closeSocket(ws, code, reason); };
+  const pause = (ms: number) => new Promise<void>(resolve => {
+    if (closed) { resolve(); return; }
+    wake = resolve;
+    timer = setTimeout(() => { timer = undefined; wake = undefined; resolve(); }, ms);
+    timer.unref();
+  });
+  const resetAckTimer = () => {
+    clearTimeout(ackTimer);
+    ackTimer = undefined;
+    if (!outputFlow.hasPendingAcknowledgements) return;
+    ackTimer = setTimeout(() => close(1013, "tool output acknowledgement stalled"), 5000);
+    ackTimer.unref();
+  };
+  // Share terminal transport budgets/watchdogs, without changing shell semantics.
+  // At most one output read and one control response await this bounded sender.
+  const sendFrame = (frame: ToolInteractionServerFrame): Promise<boolean> => {
+    const sendNext = async () => {
+      const data = JSON.stringify(frame);
+      const bytes = Buffer.byteLength(data) + 10;
+      if (bytes > TOOL_INTERACTION_MAX_FRAME_BYTES) {
+        close(1011, "tool interaction response exceeds frame limit");
+        return false;
+      }
+      const started = Date.now();
+      while (!closed && ws.readyState === WebSocket.OPEN) {
+        const delay = frame.type === "output" ? outputFlow.retryAfterMs(bytes) : 0;
+        if (delay === 0) {
+          const admission = reserveWire(ws, bytes);
+          if (admission === "connection_full") { close(1013, "tool viewer too slow"); return false; }
+          if (admission === "accepted") {
+            if (frame.type === "output") {
+              outputFlow.sent(frame.cursor, bytes);
+              if (!ackTimer) resetAckTimer();
+            }
+            return new Promise<boolean>(resolve => {
+              sendReserved(ws, bytes, done => ws.send(data, done), () => resolve(!closed));
+            });
+          }
+        }
+        if (Date.now() - started >= 5000) { close(1013, "tool viewer output stalled"); return false; }
+        // Separate short wait from the read-loop timer so close cancels both paths.
+        await new Promise<void>(resolve => { const retry = setTimeout(resolve, Math.min(50, Number.isFinite(delay) && delay > 0 ? delay : 50)); retry.unref(); });
+      }
+      return false;
+    };
+    const result = sendChain.then(sendNext);
+    sendChain = result.catch(() => false);
+    return result;
+  };
+  const problem = (error: unknown) => sendFrame({
+    type: "problem", code: errorCode(error),
+    message: error instanceof Error ? error.message : String(error),
+  });
+  const invalid = () => {
+    if (!malformed.allow(1)) { close(1008, "invalid tool interaction frames"); return; }
+    void problem(Object.assign(new Error("invalid tool interaction frame"), { code: "INVALID_REQUEST" }));
+  };
+  const ready = (async () => {
+    if (cursor !== undefined && (!Number.isSafeInteger(cursor) || cursor < 0))
+      throw Object.assign(new Error("tool interaction cursor must be an integer >= 0"), { code: "INVALID_REQUEST" });
+    const descriptor = await proxy.describe(identity);
+    if (descriptor.cwd !== binding.workspacePath)
+      throw Object.assign(new Error("tool interaction workspace changed"), { code: "FORBIDDEN" });
+    return sendFrame({ type: "hello", descriptor });
+  })().catch(async error => { await problem(error); close(1008, "tool interaction unavailable"); return false; });
+
+  const processFrames = async () => {
+    if (working) return;
+    working = true;
+    try {
+      if (!await ready) return;
+      while (!closed && frames.length) {
+        const { frame, bytes } = frames.shift()!;
+        try {
+          if (frame.type === "claim") {
+            lease = await proxy.claim(identity, frame.writerId, frame.writerEpoch);
+            inputUnknown = false;
+            await sendFrame({ type: "lease", lease });
+          } else {
+            if (!lease) throw Object.assign(new Error("claim a writer lease before modifying this execution"), { code: "TOOL_INTERACTION_NOT_WRITER" });
+            if (inputUnknown) throw Object.assign(new Error("previous input acceptance is unknown; reclaim the lease to query its accepted sequence"), { code: "TOOL_INTERACTION_INPUT_UNKNOWN" });
+            const writer = { writerId: lease.writerId, writerEpoch: lease.writerEpoch };
+            if (frame.type === "input") {
+              const ack = await proxy.input(identity, lease, frame.sequence, frame.data);
+              lease.lastAcceptedSequence = ack.lastAcceptedSequence;
+              await sendFrame({ type: "input_ack", ...ack });
+            } else if (frame.type === "release") {
+              await proxy.execute({ operation: "release", ...identity, ...writer });
+              lease = undefined;
+              await sendFrame({ type: "lease", lease: null });
+            } else if (frame.type === "resize") {
+              await proxy.execute({ operation: "resize", ...identity, ...writer, cols: frame.cols, rows: frame.rows });
+            } else if (frame.type === "cancel") {
+              await proxy.execute({ operation: "cancel", ...identity, ...writer });
+            }
+          }
+        } catch (error) {
+          // A rejected request may already have written PTY bytes. Never invent an ACK
+          // or automatically re-execute. Reclaim queries the native sequence instead.
+          if (frame.type === "input") inputUnknown = true;
+          await problem(error);
+        } finally { queuedBytes -= bytes; }
+      }
+    } finally { working = false; }
+  };
+  ws.on("message", (raw, binary) => {
+    const bytes = rawBytes(raw);
+    if (closed || !admit(bytes)) return;
+    if (binary || bytes > TOOL_INTERACTION_MAX_FRAME_BYTES) { close(1008, "tool interaction frame too large or binary"); return; }
+    let frame: unknown;
+    try { frame = JSON.parse(String(raw)); } catch { invalid(); return; }
+    if (!isJsonObject(frame)) { invalid(); return; }
+    if (frame.type === "output_ack") {
+      if (!outputFlow.acknowledge(Number(frame.cursor))) { invalid(); return; }
+      resetAckTimer();
+      return;
+    }
+    const boundedId = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 256;
+    const valid =
+      (frame.type === "claim" && boundedId(frame.writerId) && (frame.writerEpoch === undefined || boundedId(frame.writerEpoch))) ||
+      frame.type === "release" || frame.type === "cancel" ||
+      (frame.type === "input" && Number.isSafeInteger(frame.sequence) && Number(frame.sequence) >= 1 &&
+        typeof frame.data === "string" && Buffer.byteLength(frame.data) <= TOOL_INTERACTION_MAX_INPUT_BYTES) ||
+      (frame.type === "resize" && Number.isSafeInteger(frame.cols) && Number(frame.cols) >= 1 && Number(frame.cols) <= 500 &&
+        Number.isSafeInteger(frame.rows) && Number(frame.rows) >= 1 && Number(frame.rows) <= 500);
+    if (!valid) { invalid(); return; }
+    if (queuedBytes + bytes > 1024 * 1024 || frames.length >= 256) { close(1013, "tool interaction input queue exceeded"); return; }
+    queuedBytes += bytes;
+    frames.push({ frame: frame as Exclude<ToolInteractionClientFrame, { type: "output_ack" }>, bytes });
+    void processFrames();
+  });
+  void (async () => {
+    if (!await ready) return;
+    while (!closed) {
+      const read: ToolInteractionRead = await attachment.read(cursor);
+      let next = read.fromCursor;
+      const chunks = splitTerminalOutput(read.data);
+      if (!chunks.length && read.reset) chunks.push("");
+      for (const [index, data] of chunks.entries()) {
+        const end = next + data.length;
+        if (!await sendFrame({ type: "output", fromCursor: next, cursor: end, data, reset: index === 0 && read.reset })) return;
+        next = end;
+      }
+      cursor = read.cursor;
+      if (read.descriptor.status === "exited" && cursor === read.descriptor.cursor) {
+        while (!closed && outputFlow.hasPendingAcknowledgements) await pause(50);
+        if (!closed && await sendFrame({ type: "exit", descriptor: read.descriptor })) close(1000, "tool execution exited");
+        return;
+      }
+      await pause(read.data ? 80 : 250);
+    }
+  })().catch(async error => {
+    if (closed) return;
+    await problem(error);
+    close(1011, "tool interaction read failed");
+  });
 }
 
 function sendTerminalProblem(ws: WebSocket, code: string, message: string): void {

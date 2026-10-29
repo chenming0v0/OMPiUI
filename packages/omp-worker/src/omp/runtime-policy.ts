@@ -17,6 +17,8 @@ export const SHELL_POLICY_EXTENSION = `export default function (pi) {
     if (event.toolName !== "bash") return;
     const input = event.input;
     if (input.pty !== true || input.timeout !== 0 || input.async === true || input.name !== undefined) return;
+    const interaction = globalThis[Symbol.for("ompiui.nativeToolInteraction.v1")];
+    if (interaction?.available === true && interaction.server && !interaction.closed) return;
     return {
       block: true,
       reason: "The managed RPC UI has no local interactive PTY: this foreground pty:true timeout:0 command was not started. Named services remain available through bash name + ready.timeout and proc:// stdin; async:true non-interactive jobs are also available. No command or agent was stopped.",

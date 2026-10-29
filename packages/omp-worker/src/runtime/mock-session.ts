@@ -843,6 +843,10 @@ export class MockPiSession implements SessionRuntime {
     return { cancelled: true };
   }
 
+  toolInteraction(_params: JsonObject): JsonValue {
+    return { protocolVersion: 1, runtimeId: "mock", available: false, reason: "Mock sessions do not own real tool PTYs", executions: [] };
+  }
+
   private asyncJobs?: MockAsyncJob[];
 
   private mockAsyncJobs(): MockAsyncJob[] {

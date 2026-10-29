@@ -1,6 +1,7 @@
 import type { JsonObject } from "./json.js";
 import type { CoreCommandParams, ImageInput, SubagentMessagesParams } from "./commands.js";
 import type { BranchSyncRequest } from "./session-page.js";
+import type { ToolInteractionOperation } from "./tool-interaction.js";
 import type {
   PiCapability,
   PiCapabilityQueue,
@@ -630,6 +631,25 @@ export const PI_COMMAND_SPECS = [
     idempotent: true,
   },
   {
+    name: "toolInteraction",
+    scope: "session",
+    source: "ompiui-adapter",
+    description: "Interact with an existing model tool PTY; never start a runtime or command",
+    paramsSchema: objectSchema({
+      operation: { enum: ["list", "describe", "read", "claim", "release", "input", "resize", "cancel"] },
+      runtimeId: byteString(256), sessionId: byteString(256),
+      toolCallId: byteString(256), executionId: byteString(256),
+      writerId: byteString(256), writerEpoch: byteString(256),
+      sequence: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+      data: byteString(32 * 1024),
+      cursor: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+      maxBytes: { type: "integer", minimum: 1, maximum: 32 * 1024 },
+      cols: { type: "integer", minimum: 2, maximum: 500 },
+      rows: { type: "integer", minimum: 2, maximum: 200 },
+    }, ["operation"]),
+    queue: "immediate",
+  },
+  {
     name: "asyncJobs.get",
     scope: "session",
     description: "Read running and recent OMP background jobs",
@@ -1085,6 +1105,7 @@ export const RUNTIME_TARGETS = {
   "asyncJobs.get": "getAsyncJobs",
   "asyncJobs.inspect": "inspectAsyncJob",
   "asyncJobs.cancel": "cancelAsyncJob",
+  toolInteraction: "toolInteraction",
   "prompts.list": "listPrompts",
   "agentsFiles.list": "listAgentsFiles",
   "attachment.get": "getAttachment",
@@ -1121,6 +1142,7 @@ export type PiCommandParams = CoreCommandParams & {
   "asyncJobs.get": Record<string, never>;
   "asyncJobs.inspect": { jobId: string };
   "asyncJobs.cancel": { jobId: string };
+  toolInteraction: ToolInteractionOperation;
   "prompts.list": Record<string, never>;
   "agentsFiles.list": Record<string, never>;
   "attachment.get": { entryId: string; blockIndex: number; offset?: number; source?: "content" | "details" };

@@ -35,6 +35,7 @@ export interface SessionRuntime {
   getAsyncJobs(): JsonValue | Promise<JsonValue>
   inspectAsyncJob(id: string): JsonValue | Promise<JsonValue>
   cancelAsyncJob(id: string): JsonValue | Promise<JsonValue>
+  toolInteraction(params: JsonObject): JsonValue | Promise<JsonValue>
   listPrompts(): JsonValue | Promise<JsonValue>
   listAgentsFiles(): JsonValue | Promise<JsonValue>
 
