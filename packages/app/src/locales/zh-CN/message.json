@@ -34,6 +34,23 @@
     "unknown": "结果未知",
     "argumentsUnknown": "参数未知 — 调用尚未加载"
   },
+  "toolInteraction": {
+    "claim": "取得控制权",
+    "release": "释放控制权",
+    "cancel": "取消此命令",
+    "terminal": "工具终端",
+    "fullscreen": "全屏",
+    "exitFullscreen": "退出全屏",
+    "replay": "回放终端（只读）",
+    "inputFull": "输入未发送：待确认输入最多 1 MiB，请等待或减少粘贴内容。",
+    "inputNotSent": "输入未发送：连接就绪后请先取得控制权。",
+    "inputPaused": "输入已暂停：送达或控制权状态未知，待确认输入已保留。",
+    "connectionLost": "连接已断开，输入已暂停；重新打开此视图可重连。",
+    "identityMismatch": "此输出流不属于当前工具执行。",
+    "unavailable": "此执行已不可用，未启动新的进程。",
+    "replayReset": "早期输出已过期，已用保留的原始输出重置视口；ANSI 全屏程序可能需要重绘。",
+    "discardPending": "丢弃待确认输入（其中部分可能已受理）"
+  },
   "toolSteps": {
     "separator": "，",
     "pending": "{{count}} 个工具等待执行",

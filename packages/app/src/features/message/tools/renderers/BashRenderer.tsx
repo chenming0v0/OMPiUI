@@ -8,7 +8,7 @@
  * - exit code 内联在输出末尾
  */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 import { MaximizeIcon, MinimizeIcon } from '../../../../components/Icons'
 import { CopyButton } from '../../../../components/ui'
@@ -20,12 +20,68 @@ import { copyTextToClipboard, clipboardErrorHandler } from '../../../../utils'
 import { useLiveToolOutput } from '../../../../omp/liveToolOutput'
 import { getToolExecutionStatus } from '../../../../omp/domain/index.js'
 import type { ToolRendererProps } from '../types'
+import { useSessionNavigation } from '../../../../contexts/SessionNavigationContext'
+import { serverStore } from '../../../../store/serverStore'
+import { descriptorFromDetails, listToolInteractions } from '../../../../omp/toolInteraction'
+import { toolInteractionStore, useToolInteractionDescriptor } from '../../../../omp/toolInteractionStore'
+import { ToolInteractionTerminal } from './ToolInteractionTerminal'
 
 // ============================================
 // Main
 // ============================================
 
-export function BashRenderer({ execution, partKey, data, onFullscreenChange }: ToolRendererProps) {
+export function BashRenderer(props: ToolRendererProps) {
+  const { execution, onFullscreenChange } = props
+  const { currentSessionId } = useSessionNavigation()
+  const serverId = useSyncExternalStore(
+    listener => serverStore.subscribe(listener), () => serverStore.getActiveServerId() ?? '',
+  )
+  const live = useToolInteractionDescriptor(serverId, currentSessionId, execution.call.id)
+  const completed = !!execution.result || getToolExecutionStatus(execution) === 'completed'
+  const saved = currentSessionId ? descriptorFromDetails(execution.result?.details, currentSessionId, execution.call.id) : undefined
+  const descriptor = completed ? saved : live
+  const [replay, setReplay] = useState(false)
+  const { t } = useTranslation('message')
+  const args = execution.call.arguments as { pty?: unknown } | undefined
+  const probe = !!currentSessionId && !completed && !execution.argumentsUnknown &&
+    getToolExecutionStatus(execution) === 'running' && args?.pty === true && !live
+
+  useEffect(() => {
+    if (!probe || !currentSessionId) return
+    const abort = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let attempts = 0
+    const poll = async () => {
+      try {
+        const snapshot = await listToolInteractions(currentSessionId, abort.signal)
+        if (abort.signal.aborted || !snapshot.available) return
+        const registered = snapshot.executions.find(item => item.toolCallId === execution.call.id &&
+          item.sessionId === currentSessionId && item.runtimeId === snapshot.runtimeId)
+        if (registered) { toolInteractionStore.set(execution.call.id, currentSessionId, registered, serverId); return }
+        if (++attempts < 30) timer = setTimeout(() => { void poll() }, 1000)
+      } catch { /* Unsupported/cold sessions never spawn or retry a failed command. */ }
+    }
+    void poll()
+    return () => { abort.abort(); clearTimeout(timer) }
+  }, [currentSessionId, execution.call.id, probe, serverId])
+
+  // A result is static by default, even when its preserved descriptor describes a former PTY.
+  // A terminal already attached while running may drain its exit replay without being remounted.
+  const [attachedIdentity, setAttachedIdentity] = useState<string | null>(null)
+  const identity = descriptor ? `${serverId}:${descriptor.executionId}` : null
+  const showTerminal = !!descriptor && (!completed || replay || attachedIdentity === identity)
+  useEffect(() => { if (showTerminal && identity) setAttachedIdentity(identity) }, [identity, showTerminal])
+  if (showTerminal && descriptor) return <>
+    <ToolInteractionTerminal descriptor={descriptor} serverId={serverId} readOnly={completed} onFullscreenChange={onFullscreenChange} />
+    {completed && <StaticBashRenderer {...props} onFullscreenChange={undefined} />}
+  </>
+  return <>
+    <StaticBashRenderer {...props} />
+    {saved && <button type="button" className="mt-1 text-[length:var(--fs-xs)] text-text-500 hover:text-text-100" onClick={() => setReplay(true)}>{t('toolInteraction.replay')}</button>}
+  </>
+}
+
+function StaticBashRenderer({ execution, partKey, data, onFullscreenChange }: ToolRendererProps) {
   const { t } = useTranslation(['components'])
   const isActive = getToolExecutionStatus(execution) === 'running'
   const hasError = !!data.error

@@ -44,6 +44,7 @@ OMP 原生模型与凭据配置来自 `~/.omp/agent/models.yml`、`config.yml`�
 - 最低及打包 OMP 版本为 `18.12.6`；旧版用户中止后仍可能续跑遗留 steering，不能用假 idle 或重复 abort 兜底。运行 `node --import tsx scripts/verify-stop-queue.mjs` 可在隔离官方 runtime 与本地模型上验证批量上下文、立即发送顺序、完整历史、Stop 队列身份与只读刷新。
 - Slash 的 `prompt`／`sendUserMessage` 与原子中断一样等待本次原生 `prompt_result`，HTTP 保持到原生 300 秒处理期限之后（330 秒），不能在普通 20 秒网络期限后把仍可完成的原生对话当失败而留下可重复提交的旧命令。普通消息仍使用准入回执与原有短期限；本地草稿只在真实成功后按提交快照清理，更新后的文字／图片和原生拒绝保留。
 - Slash 菜单 chip 只标记文字范围，提交仍发送原文与独立图片；替换／删除 chip 按范围调整后续 @file 标记，不删除图片。等待接受时仍可贴图、上传或删除附件；失败保留当前草稿，成功只移除接受快照里的附件，新增／替换附件与修改后文字上的 chip 保留。原生 consumed 命令可以只产出文字输出，不代表图片已进入模型。
+- #375 的关闭范围为菜单／图片传输与草稿保护，不包含真实视觉识别。失败不广播旧提交为 Undo/Fork 恢复；重试成功按原 composer 快照清理，保留在飞编辑并清理已接受的恢复 marker。普通 `@file` 内容已送达 provider，`message:fileMention` 专用显示未支持独立披露。没有额外真实／付费视觉调用，不将送达当作看图理解；专项矩阵见 [菜单图片与草稿验收](command-images-acceptance.md)。
 - 当前会话的 `immediate`／`wait` 只控制 Steer 对工具的干预，不控制显式 Stop／`abort_and_prompt`。OMP 18.12.6 隔离工具验收中，Immediate 让前台 bash 提前转后台并保留后续结果，Wait 等待该工作完成后注入消息；两种模式的纯等待均允许原生提前结束。设置以 `get_state.interruptMode` 读回为准，不写全局设置，不用默认值冒充不可用的原生值。
 - “中断并提交”只发一次官方 `abort_and_prompt`，浏览器 blob 图片在发送前完整转为原生图片；不可读图片在中断前报错。官方 ACK 早于提示词准备，客户端等待本次 ID 的 `prompt_result`，保持草稿可编辑直到受理结论可确定；提交前失败保留文本和附件。原生已受理的回合失败仍由运行事件显示，不恢复成可重复投递的草稿。没有 `abort` → 普通 `prompt` 模拟，也不清理原生队列。
 - `abortAndPrompt` 与 `prompt`／`sendUserMessage` 同属回合级 worker 请求，不用默认 60 秒命令期限丢弃仍等待原生终态的原子操作；调用方取消、原生处理期限、心跳看门狗和显式配置的 worker 期限继续生效。
@@ -157,6 +158,8 @@ Git 变更面板内提供明确勾选文件的暂存／取消暂存、完整文�
 
 公网基址同时用于分享地址和 Origin 校验。入口链接中的 `?token=` 会在首屏读取后移出地址栏，后续请求使用 `Authorization`；公开分享链接前必须移除真实令牌。
 
+模型工具同次调用的网页 PTY 使用公开扩展执行器与受认证私有 socket/pipe：原命令只启动一次，网页在 Bash 正文中交互，真实结果回原调用；普通 Bash/async/name 服务不改为第二 shell。能力边界、控制权、恢复和隔离验收见 [工具 PTY](tool-interaction.md)。
+
 受管写入会话使用官方 `rpc-ui` 与公共扩展桥；普通 `rpc`（含 `--no-ui`）不提供该桥，也不承诺相同扩展 UI 能力。浏览、刷新与草稿同步仍走只读历史路径，不应为了查看后台状态启动写入 runtime。
 
 启动已停止读取遗留 `~/.ompiui/omp-compat.yml`。UI 的进程级配置仅设置 `autoResume: false`，不覆盖官方全局／项目的 `async.enabled`、`launch.enabled` 或子代理递归深度，也不修改这些原生配置文件。普通异步 bash 与命名服务分别遵守原生 async／launch 开关；task／eval 沿用官方各自的后台执行规则，不能把所有工作强制转为同步。个别 OpenAI 兼容网关曾对 `wait` 返回 0-token 空响应；遗留兼容文件不是现行解决方案，网关是否支持连续工具调用仍须用其实际 provider 验证。
@@ -204,7 +207,7 @@ Windows 安装器固定使用当前 Tauri NSIS 模板，在旧卸载器删除快
 
 #356 的双窗格 Fork 身份／图片草稿迁移、切换其它子分支、Undo 后新发同身份分支已在隔离官方 OMP 18.12.6／Bun 1.3.14 和生产网页实跑补齐；持久化草稿／Redo 刷新恢复及双向原生会话继续也通过。新增 `scripts/verify-session-transitions.mjs --history-only` 可重复运行历史矩阵，`scripts/preview-session-transitions.mjs` 提供实际 GUI 验收服务。
 
-#361 仍为上游来源阻塞：旧扩展定时回调在成功 new 后抛错的官方原始 `extension_error` 只有路径／事件／错误，没有源 session／prompt／generation；2026-10-29 核对最新官方 18.13.3 RPC 源码仍未保留这些字段。完整专项默认以 exit 2 明确阻塞，不通过忽略全部错误、文本猜测或内部 runner 改写冒充完成。详见 [专项步骤与真实证据](session-transition-acceptance.md)。
+#361 的本地错误隔离已补齐：无来源的原始 `extension_error` 走无 sessionId 的宿主诊断通道，扩展面板保留原文和独立 runtime 标识，不落入新会话事件流；原生命令拒绝／草稿处理不变，不虚构会话或通知目标。`scripts/verify-session-transitions.mjs --local-isolation` 专门验收这一本地边界。官方仍缺 source session／prompt／generation，不能精确路由回源会话；2026-10-29 对最新 18.13.3 的核对仅是源码。默认完整专项仍 exit 2，不能以本地子集通过宣称 #361 全部完成。详见 [专项步骤与真实证据](session-transition-acceptance.md)。
 
 ## 开发与验证
 

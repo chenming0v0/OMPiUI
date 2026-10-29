@@ -89,6 +89,59 @@ async function sessionFixture(t: TestContext) {
 
 const image = (data: string): ImageInput => ({ type: "image", data, mimeType: "image/png" })
 
+describe("OmpRpcSession extension diagnostics", () => {
+  it("keeps delayed extension errors outside session streams across new, switch and fork", async t => {
+    const { session, frame } = await sessionFixture(t)
+    const root = mkdtempSync(path.join(tmpdir(), "ompiui-diagnostics-"))
+    const previous = process.env.OMPIUI_DATA_DIR
+    process.env.OMPIUI_DATA_DIR = root
+    mkdirSync(path.join(root, "sessions"))
+    const targetPath = path.join(root, "sessions", "target.jsonl")
+    writeFileSync(targetPath, "")
+    t.after(() => {
+      if (previous === undefined) delete process.env.OMPIUI_DATA_DIR
+      else process.env.OMPIUI_DATA_DIR = previous
+      rmSync(root, { recursive: true, force: true })
+    })
+    const events: JsonObject[] = []
+    const diagnostics: JsonObject[] = []
+    session.onPiEvent(event => events.push(event))
+    const unsubscribe = session.onExtensionDiagnostic(event => diagnostics.push(event))
+    for (const replace of [() => session.newSession(), () => session.switchSession(targetPath), () => session.fork("entry", "before")]) {
+      await replace()
+      const error = { type: "extension_error", extensionPath: "<timer>", event: "timeout_callback", error: "old callback\noriginal details" }
+      frame(error)
+      assert.deepEqual(diagnostics.at(-1), error)
+    }
+    await new Promise(resolve => setTimeout(resolve, 50))
+    assert.equal(events.some(event => event.type === "extension_error"), false)
+    assert.equal(diagnostics.length, 3)
+    unsubscribe()
+    frame({ type: "extension_error", extensionPath: "<timer>", event: "timeout_callback", error: "unsubscribed" })
+    assert.equal(diagnostics.length, 3)
+  })
+
+  it("retains command-handler errors as host diagnostics while native prompt rejection still preserves the draft", async t => {
+    const { session, rpc, frame } = await sessionFixture(t)
+    const diagnostics: JsonObject[] = []
+    const events: JsonObject[] = []
+    session.onExtensionDiagnostic(event => diagnostics.push(event))
+    session.onPiEvent(event => events.push(event))
+    rpc.onRequest = command => {
+      if (command.type !== "prompt") return
+      const error = { type: "extension_error", event: "command", extensionPath: "command:review", error: "Permission denied" }
+      frame(error)
+      rpc.emit("frame", error)
+      rpc.emit("frame", { type: "prompt_result", id: command.id, status: "completed", agentInvoked: false })
+      return { data: { agentInvoked: false } }
+    }
+    await assert.rejects(session.sendUserMessage("/review draft"), /Permission denied/)
+    await new Promise(resolve => setTimeout(resolve, 50))
+    assert.equal(events.some(event => event.type === "extension_error"), false)
+    assert.equal(diagnostics[0]?.error, "Permission denied")
+  })
+})
+
 describe("OmpRpcSession worktree relocation admission", () => {
   it("rejects every immediate submission throughout move and leaves explicit Stop available", async t => {
     const { session, rpc, commands, native } = await sessionFixture(t)

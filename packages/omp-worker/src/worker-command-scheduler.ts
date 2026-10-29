@@ -15,7 +15,7 @@ export interface SchedulerCommand {
 const SMALL_RESPONSES: Record<string, true> = {
   prompt: true, steer: true, followUp: true, sendUserMessage: true,
   abort: true, abortBash: true, abortCompaction: true, abortBranchSummary: true, abortRetry: true,
-  "session.close": true,
+  "session.close": true, toolInteraction: true,
 }
 const RESPONSE_BYTES = 4 * 1024 * 1024 + 64 * 1024
 const CONTROL_RESPONSE_BYTES = 64 * 1024

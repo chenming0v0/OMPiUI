@@ -6,7 +6,8 @@ import { detectOmpVersion } from '../packages/omp-worker/src/omp/omp-version.ts'
 import { createTransitionFixture, nativeEntries, messageText, testImage } from './session-transition-fixture.mjs'
 
 const historyOnly = process.argv.includes('--history-only')
-if (process.argv.slice(2).some(arg => arg !== '--history-only')) throw new Error('Usage: verify-session-transitions.mjs [--history-only]')
+const localIsolation = process.argv.includes('--local-isolation')
+if (process.argv.slice(2).some(arg => !['--history-only', '--local-isolation'].includes(arg)) || (historyOnly && localIsolation)) throw new Error('Usage: verify-session-transitions.mjs [--history-only | --local-isolation]')
 const fixture = await createTransitionFixture()
 const evidence = { root: fixture.root, ompVersion: await detectOmpVersion(), provider: 'deterministic loopback only', checks: [], extensionError: null }
 let session
@@ -14,7 +15,9 @@ const snapshot = file => ({ bytes: readFileSync(file), mtime: statSync(file).mti
 const unchanged = (file, before) => { assert.deepEqual(readFileSync(file), before.bytes); assert.equal(statSync(file).mtimeMs, before.mtime) }
 try {
   session = await OmpRpcSession.open(fixture.cwd)
-  const rawErrors = []
+  const rawErrors = [], sessionErrors = [], diagnostics = []
+  session.onPiEvent(event => { if (event.type === 'extension_error') sessionErrors.push(event) })
+  session.onExtensionDiagnostic(event => diagnostics.push(event))
   // Inspect the actual native wire, before OMPiUI adds its consumer epoch.
   session.client.on('frame', frame => { if (frame.type === 'extension_error') rawErrors.push(frame) })
   async function send(text, images) { await session.sendUserMessage(text, images); await session.waitForIdle() }
@@ -121,21 +124,27 @@ try {
     for (let attempt = 0; attempt < 100 && !rawErrors.length; attempt++) await delay(50)
     assert.ok(rawErrors.length, 'Native delayed extension error was not observed')
     const oldError = rawErrors.at(-1)
-    evidence.extensionError = { sourceSessionId: id, currentSessionId: session.getSessionId(), rawFrame: oldError, hasSourceIdentity: typeof oldError.sessionId === 'string' || typeof oldError.sourceSessionId === 'string' }
+    await delay(100) // Drain the normal pi.event buffer before checking absence.
+    assert.equal(sessionErrors.length, 0, 'Unattributed extension error entered a session stream')
+    assert.deepEqual(diagnostics.at(-1), oldError, 'Native error was not retained in host diagnostics')
+    evidence.extensionError = { sourceSessionId: id, currentSessionId: session.getSessionId(), rawFrame: oldError, hasSourceIdentity: typeof oldError.sessionId === 'string' || typeof oldError.sourceSessionId === 'string', sessionErrorCount: sessionErrors.length, diagnosticCount: diagnostics.length }
+    evidence.checks.push('real delayed callback error remains visible in host diagnostics and never enters a session stream')
   }
-  // Do not claim isolation when the official wire cannot distinguish origins.
+  // Host isolation does not recover the source identity still missing upstream.
   evidence.checks.push('cancelled new preserves source goal; committed new clears it and restores source goal on switch back')
   await session.switchSession(file)
   assert.equal((await session.getState()).goal.objective, 'source paused goal')
-  evidence.status = historyOnly ? 'HISTORY_PASS_ISOLATION_NOT_RUN' : evidence.extensionError.hasSourceIdentity ? 'SOURCE_FIELDS_PRESENT_REQUIRES_ROUTING_VERIFICATION' : 'HISTORY_PASS_ISOLATION_UPSTREAM_BLOCKED'
+  evidence.status = historyOnly ? 'HISTORY_PASS_ISOLATION_NOT_RUN' : evidence.extensionError.hasSourceIdentity ? 'SOURCE_FIELDS_PRESENT_REQUIRES_ROUTING_VERIFICATION' : 'LOCAL_ISOLATION_PASS_SOURCE_ATTRIBUTION_UPSTREAM_BLOCKED'
   fixture.save('evidence.json', evidence)
   fixture.save('provider-requests.json', fixture.requests)
   console.info(JSON.stringify(evidence, null, 2))
-  if (!historyOnly) {
+  if (!historyOnly && (!localIsolation || evidence.extensionError.hasSourceIdentity)) {
     console.error(evidence.extensionError.hasSourceIdentity
-      ? 'BLOCKED #361: source fields appeared; routing must be verified before claiming isolation.'
-      : 'BLOCKED #361: native extension_error has no source identity. History checks passed; isolation is not complete.')
+      ? 'BLOCKED #361: source fields appeared; precise routing requires separate verification.'
+      : 'BLOCKED #361: local host-error isolation passed, but official source attribution is still unavailable. Use --local-isolation for the local-only verdict.')
     process.exitCode = 2
+  } else if (localIsolation) {
+    console.info('PASS: local host-error isolation verified. This does not establish complete #361 acceptance.')
   }
 } catch (error) {
   evidence.status = 'FAILED'; evidence.error = String(error)

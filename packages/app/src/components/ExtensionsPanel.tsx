@@ -6,6 +6,7 @@ import { commandFeedbackStore, type CommandFeedbackEntry, type CommandFeedbackSt
 import { ExtensionUiDialogCard } from '../features/chat/ExtensionUiDialogCard'
 import { ExtensionTuiView } from './ExtensionTuiView'
 import { stripAnsi } from '../utils/ansiUtils'
+import { extensionDiagnosticStore } from '../omp/extensionDiagnosticStore'
 import { usePiSessionRuntimeState } from '../omp/hooks'
 import { isJsonObject } from '@ompiui/protocol'
 
@@ -42,12 +43,17 @@ export function ExtensionsPanel({ sessionId }: { sessionId: string | null }) {
     commandFeedbackStore.getSnapshot,
     commandFeedbackStore.getSnapshot,
   )
+  const diagnostics = useSyncExternalStore(
+    extensionDiagnosticStore.subscribe,
+    extensionDiagnosticStore.getSnapshot,
+    extensionDiagnosticStore.getSnapshot,
+  )
   const state = sessionId ? snapshot.sessions[sessionId]?.state : undefined
   const pending = sessionId ? snapshot.sessions[sessionId]?.pending ?? [] : []
   const panels = sessionId ? tuiSnapshot.sessions[sessionId]?.panels ?? [] : []
   const feedback = sessionId ? feedbackSnapshot.sessions[sessionId] ?? [] : []
 
-  if (!sessionId) {
+  if (!sessionId && diagnostics.length === 0) {
     return <div className="flex items-center justify-center h-full text-text-400 text-[length:var(--fs-sm)]">{t('rightPanel.noActiveSession')}</div>
   }
 
@@ -59,7 +65,7 @@ export function ExtensionsPanel({ sessionId }: { sessionId: string | null }) {
     .filter(widget => widget.text.trim())
   const hasWorking = Boolean(state?.workingMessage || state?.workingIndicator || state?.title)
 
-  if (!askUi && !hasWorking && statuses.length === 0 && widgets.length === 0 && pending.length === 0 && panels.length === 0 && feedback.length === 0) {
+  if (!askUi && !hasWorking && statuses.length === 0 && widgets.length === 0 && pending.length === 0 && panels.length === 0 && feedback.length === 0 && diagnostics.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-text-400 text-[length:var(--fs-sm)] px-4 text-center">
         {t('extensionsPanel.empty', 'No extension state')}
@@ -94,7 +100,7 @@ export function ExtensionsPanel({ sessionId }: { sessionId: string | null }) {
             <SectionLabel>{t('extensionsPanel.commandFeedback', 'Command Feedback')}</SectionLabel>
             <button
               type="button"
-              onClick={() => commandFeedbackStore.remove(sessionId)}
+              onClick={() => { if (sessionId) commandFeedbackStore.remove(sessionId) }}
               className="shrink-0 rounded px-1.5 py-0.5 text-[length:var(--fs-xxs)] text-text-500 hover:text-danger-100 hover:bg-bg-200/60 transition-colors"
             >
               {t('extensionsPanel.clear', 'Clear')}
@@ -108,8 +114,30 @@ export function ExtensionsPanel({ sessionId }: { sessionId: string | null }) {
         </section>
       )}
 
+      {diagnostics.length > 0 && (
+        <section className="min-w-0" aria-label={t('extensionsPanel.diagnostics')}>
+          <div className="mb-1.5 flex items-center justify-between">
+            <SectionLabel>{t('extensionsPanel.diagnostics')}</SectionLabel>
+            <button type="button" onClick={() => extensionDiagnosticStore.reset()}
+              aria-label={t('extensionsPanel.clearDiagnostics')}
+              className="shrink-0 rounded px-1.5 py-0.5 text-[length:var(--fs-xxs)] text-text-500 hover:text-danger-100 hover:bg-bg-200/60 transition-colors">
+              {t('extensionsPanel.clear', 'Clear')}
+            </button>
+          </div>
+          <p className="mb-2 text-[length:var(--fs-xs)] text-text-400">{t('extensionsPanel.diagnosticsHint')}</p>
+          <div className="flex flex-col gap-1.5">
+            {diagnostics.map(entry => (
+              <div key={entry.id}>
+                <div className="mb-1 break-all font-mono text-[length:var(--fs-xxs)] text-text-500">runtime: {entry.runtimeId}</div>
+                <CommandFeedbackItem entry={entry} />
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Offscreen extension TUI mirror (component widgets / custom() / footer / header) */}
-      {panels.length > 0 && (
+      {sessionId && panels.length > 0 && (
         <section>
           <SectionLabel>{t('extensionsPanel.tui', 'Extension TUI')}</SectionLabel>
           <div className="rounded-md border border-border-200/60 bg-bg-000/60 overflow-hidden">
@@ -168,7 +196,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   return <div className="mb-1.5 text-[length:var(--fs-xs)] uppercase tracking-wide text-text-500">{children}</div>
 }
 
-function CommandFeedbackItem({ entry }: { entry: CommandFeedbackEntry }) {
+function CommandFeedbackItem({ entry }: { entry: Omit<CommandFeedbackEntry, 'sessionId'> }) {
   const config = feedbackStatusConfig[entry.status]
   const at = new Date(entry.at)
   const time = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}:${String(at.getSeconds()).padStart(2, '0')}`

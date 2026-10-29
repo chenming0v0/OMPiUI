@@ -20,9 +20,11 @@ import { piBranchStore, piCommandStore, piSessionStateStore } from './state/inde
 import { extensionUiStore } from './extensionUiStore'
 import { extensionTuiStore } from './extensionTuiStore'
 import { commandFeedbackStore } from './commandFeedbackStore'
+import { extensionDiagnosticStore } from './extensionDiagnosticStore'
 import { notificationStore } from '../store/notificationStore'
 import i18n from '../i18n'
 import { liveToolOutputStore, extractToolExecutionText } from './liveToolOutput'
+import { toolInteractionStore } from './toolInteractionStore'
 import { ompSubagentStore } from './ompSubagentStore'
 import { activeSessionStore } from '../store/activeSessionStore'
 import { serverStore } from '../store/serverStore'
@@ -221,6 +223,7 @@ class PiEventStream {
       this.diagnostics.forget(sessionId)
       this.clearRefreshTimers(sessionId)
       liveToolOutputStore.clearSession(sessionId)
+      toolInteractionStore.clearSession(sessionId)
       ompSubagentStore.clearSession(sessionId)
       extensionUiStore.remove(sessionId)
       bashPendingStore.clearSession(sessionId)
@@ -291,8 +294,10 @@ class PiEventStream {
     ompSubagentStore.clearAll()
     for (const sessionId of this.refCounts.keys()) extensionUiStore.remove(sessionId)
     extensionUiStore.reset()
+    extensionDiagnosticStore.reset()
     bashPendingStore.clearAll()
     liveToolOutputStore.clearAll()
+    toolInteractionStore.clearAll()
     this.liveRecoveryAt.clear()
     this.liveRecoveryFlights.clear()
     for (const recovery of this.commandRecoveries.values()) recovery.controller?.abort()
@@ -627,6 +632,9 @@ class PiEventStream {
         this.queueResync(eventStreamKey(envelope.stream))
         if (!sessionId && isJsonObject(envelope.payload) && envelope.payload.channel === 'models.updated') refreshModelSettings()
         break
+      case 'omp.extension_error':
+        if (envelope.stream.kind === 'server') extensionDiagnosticStore.addNativeEvent(envelope.payload)
+        break
       case 'pi.event':
         if (sessionId) this.handlePiEvent(sessionId, envelope.payload as unknown as PiEventPayload)
         break
@@ -771,6 +779,7 @@ class PiEventStream {
       piCommandStore.clearSession(payload.sourceSessionId)
       ompSubagentStore.clearSession(payload.sourceSessionId)
       liveToolOutputStore.clearSession(payload.sourceSessionId)
+      toolInteractionStore.clearSession(payload.sourceSessionId)
       extensionUiStore.remove(payload.sourceSessionId)
       activeSessionStore.removeSession(payload.sourceSessionId)
       this.liveRecoveryAt.delete(payload.sourceSessionId)
@@ -1080,6 +1089,7 @@ class PiEventStream {
         if (event.message.role === 'toolResult') {
           piBranchStore.patchToolExecution(sessionId, event.message.toolCallId, { isRunning: false, result: event.message })
           liveToolOutputStore.delete(event.message.toolCallId)
+          toolInteractionStore.delete(event.message.toolCallId, sessionId)
         }
         this.scheduleBranchRefresh(sessionId)
         break
@@ -1100,6 +1110,7 @@ class PiEventStream {
       case 'tool_execution_end':
         if ('toolCallId' in event && typeof event.toolCallId === 'string') {
           liveToolOutputStore.delete(event.toolCallId)
+          toolInteractionStore.delete(event.toolCallId, sessionId)
           const timestamp = serverStore.getActiveCalibratedNow() ?? Date.now()
           piBranchStore.patchToolExecution(sessionId, event.toolCallId, {
             isRunning: false, completedAt: timestamp,
@@ -1129,7 +1140,11 @@ class PiEventStream {
             ...(typeof event.toolName === 'string' && isJsonObject(event.args) ? { call: { type: 'toolCall' as const, id: event.toolCallId, name: event.toolName, arguments: event.args } } : {}),
           })
           if (!accepted) break
-          const text = extractToolExecutionText('partialResult' in event ? event.partialResult : undefined)
+          const partial = 'partialResult' in event ? event.partialResult : undefined
+          if (isJsonObject(partial) && isJsonObject(partial.details)) {
+            toolInteractionStore.set(event.toolCallId, sessionId, partial.details.toolInteraction)
+          }
+          const text = extractToolExecutionText(partial)
           if (text) liveToolOutputStore.set(event.toolCallId, sessionId, text)
         }
         // 输出进度由事件直接更新；状态在工具结束等边界刷新，避免每帧再拉完整快照。

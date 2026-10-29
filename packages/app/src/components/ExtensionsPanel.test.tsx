@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { ExtensionsPanel } from './ExtensionsPanel'
 import { commandFeedbackStore } from '../omp/commandFeedbackStore'
+import { extensionDiagnosticStore } from '../omp/extensionDiagnosticStore'
 import { extensionUiStore } from '../omp/extensionUiStore'
 import { extensionTuiStore } from '../omp/extensionTuiStore'
 import i18n from '../i18n'
@@ -9,11 +10,30 @@ import i18n from '../i18n'
 describe('native command feedback panel', () => {
   beforeEach(async () => {
     commandFeedbackStore.reset()
+    extensionDiagnosticStore.reset()
     extensionUiStore.reset()
     extensionTuiStore.reset()
     await i18n.changeLanguage('en')
   })
   afterEach(cleanup)
+
+  it('shows host diagnostics across session switches and with no active session, clearing them independently', () => {
+    commandFeedbackStore.addNativeEvent('a', { type: 'command_output', text: 'session feedback' })
+    extensionDiagnosticStore.addNativeEvent({ workerGeneration: 'worker', runtimeId: 'host-a', frame: {
+      type: 'extension_error', extensionPath: '<timer>', event: 'timeout_callback', error: 'original error\nlast line',
+    } })
+    const { rerender } = render(<ExtensionsPanel sessionId="a" />)
+    expect(screen.getByRole('region', { name: 'Runtime Extension Diagnostics' })).toBeInTheDocument()
+    expect(screen.getByText('runtime: host-a')).toBeInTheDocument()
+    rerender(<ExtensionsPanel sessionId="b" />)
+    expect(screen.queryByText('session feedback')).toBeNull()
+    expect(screen.getByText(/original error/)).toBeInTheDocument()
+    rerender(<ExtensionsPanel sessionId={null} />)
+    expect(screen.getByText(/last line/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Clear runtime diagnostics' }))
+    expect(screen.queryByText(/original error/)).toBeNull()
+    expect(commandFeedbackStore.getSnapshot().sessions.a?.[0]?.message).toBe('session feedback')
+  })
 
   it('shows every line including the final line without an assistant message or toast', () => {
     const message = Array.from({ length: 120 }, (_, index) => `workspace ${index}: C:/工作区/directory-${index}`).join('\n') + '\n'

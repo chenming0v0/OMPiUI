@@ -176,6 +176,7 @@ export class OmpRpcSession implements SessionRuntime {
     if (buffered.epoch === this.eventEpoch && buffered.historyGeneration === this.historyGeneration)
       this.messageStream.push(buffered.event, buffered.live);
   });
+  private readonly extensionDiagnosticListeners = new Set<(event: JsonObject) => void>();
   private readonly crashListeners = new Set<(error: Error) => void>();
   private readonly closeListeners = new Set<() => void>();
   private outputPaused = false;
@@ -232,7 +233,25 @@ export class OmpRpcSession implements SessionRuntime {
   private thinkingLevelsGeneration = 0;
   private availableCommandsCache: JsonValue = [];
 
+  private toolInteractionAvailable = false;
+  private toolInteractionReason = "Tool interaction handshake has not completed";
+
   private constructor() {}
+
+  async toolInteraction(params: JsonObject): Promise<JsonValue> {
+    const channel = this.client.toolInteractionChannel;
+    if (!channel || !this.toolInteractionAvailable) {
+      if (params.operation === "list") return {
+        protocolVersion: 1, runtimeId: channel?.runtimeId ?? "unavailable",
+        available: false, reason: this.toolInteractionReason, executions: [],
+      };
+      throw Object.assign(new Error(this.toolInteractionReason), { code: "CAPABILITY_DISABLED" });
+    }
+    if (params.sessionId !== undefined && params.sessionId !== this.sessionId) {
+      throw Object.assign(new Error("Tool interaction belongs to another session"), { code: "CAPABILITY_DISABLED" });
+    }
+    return channel.request({ ...params, sessionId: this.sessionId });
+  }
 
   static async open(
     cwd: string,
@@ -333,6 +352,16 @@ export class OmpRpcSession implements SessionRuntime {
         type: "set_subagent_subscription", level: "events",
       }));
       await this.refreshIdentity();
+      if (this.client.toolInteractionChannel) {
+        try {
+          const snapshot = await this.client.toolInteractionChannel.request({ operation: "list", sessionId: this.sessionId });
+          this.toolInteractionAvailable = isJsonObject(snapshot) && snapshot.available === true;
+          this.toolInteractionReason = isJsonObject(snapshot) && typeof snapshot.reason === "string"
+            ? snapshot.reason : "Selected runtime has no supported tool interaction adapter";
+        } catch {
+          this.toolInteractionReason = "Tool interaction handshake failed in the selected runtime";
+        }
+      }
       this.extensionUi.bind(this.sessionId, (response) =>
         this.client.writeExtensionUiResponse(response),
       );
@@ -345,7 +374,9 @@ export class OmpRpcSession implements SessionRuntime {
       await this.getState();
     } catch (error) {
       // 启动中途失败：杀掉子进程，避免留下孤儿 omp 进程
+      const stderr = this.client.stderrTail;
       this.client.kill("startup_failed");
+      if (stderr) console.error(`[omp-worker] runtime startup failed: ${stderr}`);
       throw error;
     }
   }
@@ -572,7 +603,12 @@ export class OmpRpcSession implements SessionRuntime {
         this.extensionUi.handleOmpRequest(frame);
         return;
       }
-      case "extension_error":
+      case "extension_error": {
+        // The official wire has no callback origin. Receipt-time session/epoch
+        // must not turn a host error into a result belonging to the new session.
+        for (const listener of this.extensionDiagnosticListeners) listener(frame);
+        return;
+      }
       case "available_commands_update":
       case "command_output":
       case "session_info_update":
@@ -1125,6 +1161,14 @@ export class OmpRpcSession implements SessionRuntime {
       ? native.dumpTools.filter(isJsonObject).map(tool => String(tool.name ?? "")).filter(Boolean)
       : [];
     const askAvailable = activeTools.includes("ask") && !this.client.hasExited;
+    let interactions: JsonObject | undefined;
+    if (this.toolInteractionAvailable) {
+      try {
+        const snapshot = await this.toolInteraction({ operation: "list" });
+        if (isJsonObject(snapshot)) interactions = snapshot;
+      } catch { /* The native streaming state remains authoritative if the optional channel is unavailable. */ }
+    }
+    this.assertEventEpoch(epoch);
     return {
       sessionId: this.sessionId,
       sessionFile: this.sessionFile ?? null,
@@ -1168,6 +1212,9 @@ export class OmpRpcSession implements SessionRuntime {
       // 恒为 false；后台作业通过 hasPendingAsyncWork 透出。
       hasPendingAsyncWork: Boolean(native.hasPendingAsyncWork),
       isBashRunning: false,
+      toolInteraction: interactions ?? { protocolVersion: 1, available: false, reason: this.toolInteractionReason, executions: [] },
+      activeToolInteractions: Array.isArray(interactions?.executions)
+        ? interactions.executions.filter(value => isJsonObject(value) && value.status !== "exited").length : 0,
       hasPendingBashMessages: false,
       isRetrying:
         this.retryShadow.phase === "waiting" ||
@@ -2238,6 +2285,11 @@ export class OmpRpcSession implements SessionRuntime {
     return () => this.piEventListeners.delete(listener);
   }
 
+  onExtensionDiagnostic(listener: (event: JsonObject) => void): Unsubscribe {
+    this.extensionDiagnosticListeners.add(listener);
+    return () => this.extensionDiagnosticListeners.delete(listener);
+  }
+
   onHead(listener: (head: SessionHead) => void): Unsubscribe {
     this.headListeners.add(listener);
     // 迟到订阅者立即拿到当前 head
@@ -2267,6 +2319,7 @@ export class OmpRpcSession implements SessionRuntime {
     this.extensionUi.cancelAll("runtime_disposed");
     this.piEvents.flush();
     this.piEventListeners.clear();
+    this.extensionDiagnosticListeners.clear();
     this.messageStream.clear();
     this.headListeners.clear();
     this.activityListeners.clear();

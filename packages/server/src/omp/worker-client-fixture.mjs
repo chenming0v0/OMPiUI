@@ -113,6 +113,11 @@ if (mode === "silent" || mode === "wrong-protocol") {
       }
       if (message.command?.type === "session.close") sessions.delete(message.sessionId)
       if (message.command?.type === "fixture.sessions") reply.data = { active: sessions.size }
+      if (message.command?.type === "fixture.extensionError") {
+        send({ kind: "event", generation, runtimeId: "fixture-runtime", channel: "omp.extension_error", event: {
+          type: "extension_error", extensionPath: "<timer>", event: "timeout_callback", error: "delayed host error",
+        } })
+      }
       if (message.command?.type === "fixture.crash") {
         sessions.delete(message.sessionId)
         send({ kind: "event", generation, sessionId: message.sessionId, channel: "session.crashed", event: {

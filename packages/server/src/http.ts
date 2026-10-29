@@ -43,6 +43,11 @@ import { createStaticServer } from "./static.ts";
 import { FaultReportService } from "./diagnostics/fault-reports.ts";
 import type { TrustedProxies } from "@ompiui/relay";
 import { reserveHttpOutput, writeHttpOutput } from "./http-output.ts";
+import {
+  ToolInteractionProxy,
+  registerToolInteractionProxy,
+  toolInteractionAuthScope,
+} from "./omp/tool-interaction-proxy.ts";
 
 const CORS_HEADERS: Record<string, string> = {
   "access-control-allow-methods": "GET,POST,OPTIONS",
@@ -428,6 +433,7 @@ export interface AppServer {
   sessionHost: SessionHost;
   supervisor: RuntimeSupervisor;
   terminals: TerminalManager;
+  toolInteractions: ToolInteractionProxy;
   dispose(): Promise<void>;
 }
 
@@ -438,6 +444,7 @@ export function createAppServer(
   const hub = options.eventHub ?? new EventHub();
   const supervisor = options.supervisor ?? new RuntimeSupervisor();
   const sessions = options.sessionHost ?? new SessionHost(supervisor, hub);
+  const toolInteractions = new ToolInteractionProxy(sessions);
   const reportClients = new Map<string, number>();
   const watcher = new WorkspaceWatcher(hub);
   const terminals = new TerminalManager({
@@ -872,6 +879,22 @@ export function createAppServer(
         return sendJson(res, 200, await sessions.piRegistry(scope.signal));
       }
 
+      const interactionTicketMatch = p.match(
+        /^\/api\/v1\/sessions\/([^/]+)\/tool-interactions\/([^/]+)\/stream-ticket$/,
+      );
+      if (interactionTicketMatch && method === "POST") {
+        const body = await readBody(req, scope.signal, 4096);
+        const identity = {
+          sessionId: safeDecode(interactionTicketMatch[1]!),
+          executionId: safeDecode(interactionTicketMatch[2]!),
+          runtimeId: typeof body.runtimeId === "string" ? body.runtimeId : "",
+          toolCallId: typeof body.toolCallId === "string" ? body.toolCallId : "",
+        };
+        const ticket = await toolInteractions.issueTicket(identity, toolInteractionAuthScope(authToken));
+        res.setHeader("cache-control", "no-store");
+        return sendJson(res, 200, ticket);
+      }
+
       const piCommandMatch = p.match(/^\/api\/v1\/pi\/commands\/([^/]+)$/);
       if (piCommandMatch && method === "POST") {
         const body = await readBody(req, scope.signal, MAX_PROMPT_BODY_BYTES);
@@ -961,12 +984,14 @@ export function createAppServer(
     }
   });
 
+  registerToolInteractionProxy(server, toolInteractions);
   return {
     server,
     eventHub: hub,
     sessionHost: sessions,
     supervisor,
     terminals,
+    toolInteractions,
     dispose: async () => {
       if (disposal) return disposal;
       disposal = (async () => {
@@ -975,6 +1000,7 @@ export function createAppServer(
         // 等待之后，而等待又在等终端流结束（Windows CI 上实测挂死 8 分钟）。
         // shutdown() 同步杀终端，真实 PTY 退出稍后才兑现；等真实 PTY 退出后再释放 supervisor，避免孤儿进程。
         // 立即挂 catch，避免 10s 超时在被 await 前变成未处理拒绝。
+        toolInteractions.dispose();
         const terminalsDown = terminals.shutdown().catch((error) => {
           console.error("[ompiui-server] owned terminals did not exit cleanly", error);
         });
@@ -1011,6 +1037,7 @@ function allowedMethodsForPath(pathname: string): string | undefined {
   )
     return "POST";
   if (
+    /^\/api\/v1\/sessions\/[^/]+\/tool-interactions\/[^/]+\/stream-ticket$/.test(pathname) ||
     /^\/api\/v1\/pi\/commands\/[^/]+$/.test(pathname) ||
     /^\/api\/v1\/pi\/sessions\/[^/]+\/commands\/[^/]+$/.test(pathname)
   )

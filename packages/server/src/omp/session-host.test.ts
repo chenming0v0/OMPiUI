@@ -10,6 +10,26 @@ import { getDriverMode } from "@ompiui/omp-worker"
 import type { WorkerSession } from "./worker-client.ts"
 import type { RuntimeSupervisor } from "./supervisor.ts"
 import { SessionHost } from "./session-host.ts"
+import type { WorkerEvent } from "@ompiui/omp-worker"
+
+test("unattributed extension errors go only to the server stream, not the currently attached session", t => {
+  let receive!: (event: WorkerEvent) => void
+  const supervisor = { onEvent: (listener: (event: WorkerEvent) => void) => { receive = listener; return () => {} } } as unknown as RuntimeSupervisor
+  const hub = new EventHub()
+  const host = new SessionHost(supervisor, hub)
+  t.after(() => host.dispose())
+  const server = { kind: "server" as const, id: "server" }
+  const session = { kind: "session" as const, id: "new-session" }
+  const start = hub.getCursor(server)
+  const sessionStart = hub.getCursor(session)
+  const frame = { type: "extension_error", extensionPath: "<timer>", event: "timeout_callback", error: "original error\nlast line\n" }
+  receive({ kind: "event", channel: "omp.extension_error", generation: "worker", runtimeId: "runtime", event: frame })
+  const events = hub.replaySince(server, start).events
+  assert.equal(events.length, 1)
+  assert.deepEqual(events[0]?.payload, { workerGeneration: "worker", runtimeId: "runtime", frame })
+  assert.equal(events[0]?.channel, "omp.extension_error")
+  assert.equal(hub.replaySince(session, sessionStart).events.length, 0)
+})
 
 test("relocation rejects immediate submissions before worker capacity and preserves Stop and other sessions", async t => {
   const previous = process.env.OMPIUI_DRIVER

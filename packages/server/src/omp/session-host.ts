@@ -533,6 +533,9 @@ export class SessionHost {
       (async () => {
         let session = this.runtimes.get(sessionId);
         if (!session) {
+          if (type === "toolInteraction") {
+            throw Object.assign(new Error("No live tool interaction; session preview is read-only"), { code: "CAPABILITY_DISABLED" });
+          }
           // 草稿同步是浏览动作，不能为了 no-op 编辑器命令启动写入进程。
           if (type === "setExtensionEditorState" && getDriverMode() === "omp")
             return undefined;
@@ -1314,6 +1317,17 @@ export class SessionHost {
   }
 
   private routeCatalogEvent(event: WorkerEvent): void {
+    if (event.channel === "omp.extension_error") {
+      // Diagnostics on disk keep only metadata, never error text or paths.
+      diagnostics.record("worker.extension_error", {
+        epoch: event.generation,
+        eventType: typeof event.event.event === "string" ? event.event.event : "extension_error",
+      }, "error");
+      this.hub.publish({ kind: "server", id: "server" }, "omp.extension_error", {
+        workerGeneration: event.generation, runtimeId: event.runtimeId, frame: event.event,
+      });
+      return;
+    }
     if (event.channel === "payload.omitted") {
       diagnostics.record("worker.payload_omitted", { eventType: String(event.event.channel), count: Number(event.event.originalBytes) }, "warn");
       this.hub.publish({ kind: "server", id: "server" }, "payload.omitted", event.event);
@@ -1493,6 +1507,7 @@ export class SessionHost {
         state.isCompacting === true ||
         state.isRetrying === true ||
         state.isBashRunning === true ||
+        Number(state.activeToolInteractions ?? 0) > 0 ||
         state.hasPendingAsyncWork === true ||
         Number(state.pendingMessageCount ?? 0) > 0;
       if (stillBusy) {

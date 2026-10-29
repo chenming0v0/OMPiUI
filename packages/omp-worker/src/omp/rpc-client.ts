@@ -8,6 +8,7 @@ import { RpcLineReader } from "./rpc-line-reader.js"
 import { OmpStdinSender, type StdinWriteHandle } from "./stdin-sender.js"
 import { ompCommandEnvironment, resolveOmpCommand } from "./omp-command.js"
 import { RuntimeBridgeTransport, type RuntimeBridgeOperation } from "./runtime-bridge.js"
+import { ToolInteractionChannel } from "./tool-interaction-channel.js"
 
 
 /**
@@ -63,6 +64,7 @@ const MAX_CHUNK_ID_BYTES = 256
 
 export class OmpRpcClient extends EventEmitter {
   readonly proc: ChildProcess
+  readonly toolInteractionChannel?: ToolInteractionChannel
   private readonly stdoutReader: RpcLineReader
   private stdinSender?: OmpStdinSender
   private nextId = 0
@@ -99,6 +101,10 @@ export class OmpRpcClient extends EventEmitter {
     super()
     this.setMaxListeners(100)
     const env = ompCommandEnvironment(options.env)
+    if (options.applyRuntimePolicy && !options.args?.includes("--no-ui")) {
+      this.toolInteractionChannel = new ToolInteractionChannel()
+      Object.assign(env, this.toolInteractionChannel.environment())
+    }
     // 与配置命令共用入口解析，脚本由解释器执行，不经过 shell 或 Windows 文件关联。
     const invocation = resolveOmpCommand(options.bin ?? env.OMPI_OMP_BIN, env)
     // --no-ui disables extension UI only; native rpc-ui tool UI remains enabled.
@@ -125,7 +131,9 @@ export class OmpRpcClient extends EventEmitter {
       this.stderrBuffer.push(chunk)
       if (this.stderrBuffer.length > 200) this.stderrBuffer.splice(0, this.stderrBuffer.length - 200)
     })
+    this.proc.once("exit", () => this.toolInteractionChannel?.close())
     this.proc.on("error", error => {
+      this.toolInteractionChannel?.close()
       this.exitError = error
       this.exitReason = "spawn_error"
     })

@@ -17,6 +17,7 @@ export interface SessionRuntime {
   onHead(listener: (head: JsonObject) => void): Unsubscribe
   onActivity?(listener: (status: SessionActivityStatus | null) => void): Unsubscribe
   onExtensionUi?(listener: (event: JsonObject) => void): Unsubscribe
+  onExtensionDiagnostic?(listener: (event: JsonObject) => void): Unsubscribe
   onResourcesChanged?(listener: () => void): Unsubscribe
   onReplacement?(listener: (replacement: JsonObject) => void | Promise<void>): Unsubscribe
   onCrash?(listener: (error: Error) => void): Unsubscribe
@@ -34,6 +35,7 @@ export interface SessionRuntime {
   getAsyncJobs(): JsonValue | Promise<JsonValue>
   inspectAsyncJob(id: string): JsonValue | Promise<JsonValue>
   cancelAsyncJob(id: string): JsonValue | Promise<JsonValue>
+  toolInteraction(params: JsonObject): JsonValue | Promise<JsonValue>
   listPrompts(): JsonValue | Promise<JsonValue>
   listAgentsFiles(): JsonValue | Promise<JsonValue>
 

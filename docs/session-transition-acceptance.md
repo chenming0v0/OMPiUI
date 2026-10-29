@@ -3,7 +3,7 @@
 ## 结论
 
 - **#356 本轮缺失的专项证据已补齐**：真实双窗格消息 Fork 的身份／文字／图片同步、另一子分支切换、Undo 后新发同身份分支，均实跑通过。没有重写已有原生接口，也没有确认新的生产故障。
-- **#361 保留上游阻塞**：本地状态代次／缓存隔离回归、取消保持及目标自身 Goal 恢复通过；官方 OMP 18.12.6 的旧扩展定时回调错误仍没有来源身份，不能可靠归属。2026-10-29 核对最新官方 18.13.3 的 RPC 源码也仍仅转发 `extensionPath/event/error`；这不是 18.13.3 的运行验收。
+- **#361 本地宿主错误隔离已补齐，严格来源归属仍阻塞**：不再将无来源的官方 `extension_error` 打上接收时刻 sessionId／epoch 放入会话流；独立宿主诊断通道保留错误原文、runtime 标识和事件类型，生产网页扩展面板可查看及独立清空。真实旧定时回调在 new 后的原始帧仍没有来源身份，因此不能精确路由回源会话，也不宣布 #361 全部完成。2026-10-29 对最新官方 18.13.3 的核对仅是源码，不是运行验收。
 - 所有原生运行仅使用新建的隔离 HOME、配置、工作区及本机确定性 HTTP provider。没有使用真实厂商账号、付费请求、用户工作会话、终端接管或子代理执行本次工作。没有推送、发布或关闭 GitHub issue。
 
 ## 可重复原生验收
@@ -20,9 +20,15 @@ node --import tsx scripts/verify-session-transitions.mjs
 
 脚本在 `.slim/transition-acceptance/run-*` 创建独立目录并保留 `evidence.json`、原生日志和本地 provider 请求：
 
-- exit **0**：`--history-only` 的历史／取消／Goal 恢复检查通过；**没有运行错误来源隔离，不表示 #361 完成**。
+- exit **0**：`--history-only` 仅证明历史／取消／Goal 恢复；`--local-isolation` 另断言真实迟到帧进入宿主诊断、不进入任何会话 `pi.event` 流。**这两个显式子集都不表示 #361 完成**。
 - exit **1**：断言／运行失败。
-- exit **2**：历史检查通过但 #361 仍阻塞。未来上游若加入来源字段，也必须单独验证路由，不能仅因字段存在就退出 0。
+- exit **2**：默认完整专项即使本地隔离通过，仍明确保留上游来源归属阻塞。未来上游若加入来源字段，也必须单独验证路由，不能仅因字段存在就退出 0。
+
+仅验收本地隔离时使用：
+
+```bash
+node --import tsx scripts/verify-session-transitions.mjs --local-isolation
+```
 
 2026-10-29 官方 **OMP 18.12.6 / Bun 1.3.14** 完整运行：`run-vAcx9z/evidence.json`，exit 2；最终复跑 `run-053aee/evidence.json` 同样 exit 2、原始错误仍无来源；独立历史运行：`run-MFaTMk/evidence.json`，exit 0。
 
@@ -68,7 +74,17 @@ node --import tsx scripts/verify-session-transitions.mjs
 
 官方源码核对：[18.13.3 rpc-mode.ts](https://github.com/can1357/oh-my-pi/blob/v18.13.3/packages/coding-agent/src/modes/rpc/rpc-mode.ts) 的 `initializeExtensions.reportRuntimeError` 仍只输出上述三项错误字段。
 
-## 回归与安全边界
+## 2026-10-29 本地诊断隔离补验
+
+- 实现没有虚构会话桶／通知跳转目标，也没有按同名在飞命令推断来源；所有原始 `extension_error` 统一进入无 sessionId 的 `omp.extension_error` 宿主通道。既有 `native-rpc-prompt` 的命令失败处理保持不变，原生命令真实抛错仍拒绝提交并保留草稿。
+- 独立诊断最多保留最近 100 条完整错误；切换后端清空，不随会话替换清空。清空诊断不清空会话反馈。服务器磁盘诊断只记录元数据，不记录路径／错误正文；完整原文仅在现有鉴权事件流和浏览器内存展示。
+- **官方 OMP 18.12.6 / Bun 1.3.14**：`run-1hco1Y/evidence.json`，`--local-isolation` exit 0；`run-nfZjoL/evidence.json`，默认完整专项 exit 2。两者均 `sessionErrorCount=0`、`diagnosticCount=1`、`hasSourceIdentity=false`。不是把验收标准改成忽略错误。
+- **生产网页**：`run-ZH1EaD/gui-diagnostic-evidence.json`。源 `01a187d4-80e1-74ca-a7c6-54644338069a` 注册迟到回调；图片消息 Fork 到 `01a187d8-736f-7146-a176-535c9e3b3817` 后释放。诊断区显示原文 `isolated extension callback error`、`<timer>`、`event: timeout_callback` 和宿主 runtimeId；聊天内容无该错误。恢复的文字／图片在 target 成功发送，target 最后用户条目含 1 张图片；清空诊断后回复／历史不变，控制台无错误。
+- 源文件原字节完整保留，但显式 GUI 命令／Fork 的官方生命周期追加了一条 `custom: session_exit`；本轮没有把它描述成全文件字节／mtime 不变。只读浏览与双向继续由独立 `verify-session-safety.mjs` 再次通过。
+- **未执行的证明**：本轮没有重跑生产双窗格全矩阵（前一轮 #356 记录仍保留）；Browser pane 未显示，截图工具返回 `page is not compositing frames`，因此未取得截图／非零布局测量。实际生产 DOM、诊断原文、图片发送、清空交互和控制台通过，不将截图或视觉布局记为通过。
+- 前端完整套件 **212 文件 / 1683 项通过**；worker **290 通过 / 13 既有跳过 / 0 失败**；server 路由与真实 IPC **35 项通过**。类型检查与生产构建通过；lint **0 错误 / 36 既有警告**。不宣称本轮执行了完整 server 套件。
+
+## 回归与安全边界（此前专项）
 
 - 95 项前端回归通过，包括新增双 composer Fork 图片／目标发送回归、真实 router 全窗格 remap、draft、Redo 和事件消费者回归。
 - 59 项 worker／server 专项通过，包括原生回执、取消／失败保留、目标投影及迟到代次失效。
