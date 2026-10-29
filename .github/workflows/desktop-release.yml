@@ -440,7 +440,14 @@ jobs:
   desktop-full:
     name: desktop full runtime ${{ matrix.name }}
     needs: [prepare, publish]
-    if: needs.prepare.outputs.publish == 'true' && needs.publish.result == 'success'
+    # 命中预构建时 desktop/android 会 skipped；显式状态检查避免间接依赖
+    # 的默认 success() 让已经发布成功的全量版也被跳过。
+    if: >-
+      always() &&
+      !cancelled() &&
+      needs.prepare.result == 'success' &&
+      needs.prepare.outputs.publish == 'true' &&
+      needs.publish.result == 'success'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     permissions:

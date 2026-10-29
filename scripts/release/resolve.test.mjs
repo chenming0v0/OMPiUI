@@ -7,7 +7,29 @@ import { join } from "node:path"
 import { after, test } from "node:test"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
+import { runInNewContext } from "node:vm"
 import { artifactNames, findPrebuiltRun, resolveSource } from "./resolve.mjs"
+
+test("full runtime runs after reused lite publication despite skipped build ancestors", () => {
+  const workflow = readFileSync(new URL("../../.github/workflows/desktop-release.yml", import.meta.url), "utf8")
+  const full = workflow.slice(workflow.indexOf("\n  desktop-full:"))
+  const condition = full.match(/\n    if: >-\n([\s\S]*?)\n    runs-on:/)?.[1]?.trim()
+  assert.ok(condition, "full runtime needs an explicit folded job condition")
+  assert.match(condition, /\balways\(\)/, "override implicit success() for skipped indirect dependencies")
+  assert.match(condition, /!cancelled\(\)/, "do not publish after workflow cancellation")
+  const evaluate = ({ publish = "true", prepareResult = "success", publishResult = "success", cancelled = false } = {}) => runInNewContext(condition, {
+    always: () => true,
+    cancelled: () => cancelled,
+    needs: { prepare: { result: prepareResult, outputs: { publish } }, publish: { result: publishResult } },
+  })
+  assert.equal(evaluate(), true)
+  assert.equal(evaluate({ publish: "false" }), false)
+  assert.equal(evaluate({ cancelled: true }), false)
+  for (const result of ["failure", "skipped", "cancelled"]) {
+    assert.equal(evaluate({ prepareResult: result }), false)
+    assert.equal(evaluate({ publishResult: result }), false)
+  }
+})
 
 const directory = mkdtempSync(join(tmpdir(), "ompiui-release-test-"))
 after(() => rmSync(directory, { recursive: true, force: true }))
