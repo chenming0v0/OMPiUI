@@ -20,6 +20,7 @@ import {
 } from './icons'
 import { detectLanguage } from '../../../utils/languageUtils'
 import { resolveTaskExecution } from './taskToolData'
+import { getTaskExecutionOutcome, taskResultDetails } from '../../../omp/taskOutcome'
 
 // ============================================
 // Tool Matchers (复用的匹配函数)
@@ -447,6 +448,17 @@ function editExtractData(execution: PiToolExecution): ExtractedToolData {
 // 按优先级排列，第一个匹配的配置生效
 // ============================================
 
+function taskExtractData(execution: PiToolExecution): ExtractedToolData {
+  const data = defaultExtractData(execution)
+  const details = taskResultDetails(execution)
+  // Keep native stderr/stdout, failure details and recovery paths; do not replace the generic extractor.
+  if (getTaskExecutionOutcome(execution).presentationStatus === 'error') {
+    const errors = [data.error, details?.stdout, details?.stderr, details?.error, details?.mergeError]
+    data.error = [...new Set(errors.filter((value): value is string => typeof value === 'string' && Boolean(value.trim())))].join('\n') || data.error
+  }
+  return data
+}
+
 export const toolRegistry: ToolRegistry = [
   // Bash 工具专用渲染器（终端风格：$ 命令、ANSI 输出、退出码、全屏）。
   // 外壳（ToolPartView compact/timeline、工具组 steps）与助手工具完全一致。
@@ -475,6 +487,7 @@ export const toolRegistry: ToolRegistry = [
   {
     match: exact('task'),
     icon: <TaskIcon />,
+    extractData: taskExtractData,
   },
 
   // Read file

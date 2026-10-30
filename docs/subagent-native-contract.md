@@ -2,8 +2,8 @@
 
 > 状态：原生完整契约的本地提案，未实现、未提交上游。关联 OMPiUI [#373](https://github.com/chenming0v0/OMPiUI/issues/373)、[#374](https://github.com/chenming0v0/OMPiUI/issues/374)。
 >
-> 范围澄清：下文解释的是官方 RPC 缺少完整原生身份／合并结算契约，不代表 OMPiUI 无法做客户端兼容。维护者已明确不改 OMP；后续优先评估公开 `AgentSession.subscribeRunState()`／registry 观察结合 OMPiUI 自有代次，并区分执行完成与合并未确认。该兼容方案尚未实现或验收，不能在本次提交中记为 #373/#374 已完成；上游提案也不代表已获对外提交授权。
-> 本轮仅核对固定源码、读取历史证据；没有运行 native、执行子任务或重试合并，没有修改业务代码、私有 runner 或 `node_modules`。
+> 范围澄清：下文是完整原生契约的提案，不代表 OMPiUI 无法做客户端兼容。2026-10-30 已实现不改 OMP 的公开运行观察／本地代次隔离，以及执行与整体合并未确认的独立展示；实际客户端验收和残余边界见 [subagent-compat-acceptance.md](subagent-compat-acceptance.md)。这不补造原生 runId 或 merge settlement；#373/#374 已按维护者确认的客户端兼容范围结案，不以本提案的完整原生契约为关闭前提。上游提案仍未获对外提交授权。
+> 本文其余源码／历史证据分析保持原始提案语境；它们不是客户端本轮运行验收。
 
 ## 1. 结论与版本边界
 
@@ -185,7 +185,7 @@ interface NativeSettledFields extends SubagentRunIdentity {
 - `tool_result` 可以修改已经返回的工具结果，但 native TaskTool 丢字段后，没有可供恢复的 typed authority；`tool_execution_end` 同理。参见 [extensions/types.ts L1550–1556、L1593–1601](https://github.com/can1357/oh-my-pi/blob/338d2ce6658dfdbfba19efe0f006f0d5a8edd66d/packages/coding-agent/src/extensibility/extensions/types.ts#L1550-L1601)。
 - `ctx.invokeTool` 委托 native 不等于保留原 parent toolCallId。当前 [extensions/runner.ts L739–753](https://github.com/can1357/oh-my-pi/blob/338d2ce6658dfdbfba19efe0f006f0d5a8edd66d/packages/coding-agent/src/extensibility/extensions/runner.ts#L739-L753) 生成新的 `invoke-${name}-…` call id。即使继承 caller context、signal/onUpdate，也不能假定子帧仍属于外层 parent；应由上游定义显式 causal mapping。
 - 不通过解析 XML、summary、任意 output 或提示词合成 mergeError；不重试保留分支的合并来“探测”已知失败；不创建 GUI 自有 `runStructuredSubagent` dispatcher、shadow controller 或 fork 私有 runner。
-- 本地过滤乱序帧、重建世代计数、换色或增加终端入口，都不能补回原生缺失的运行/结算事实，也不构成 #373/#374 完成。
+- 本地过滤乱序帧和代次隔离不能补回完整原生因果身份，但可以交付“旧无身份终态不结束当前执行”的客户端安全边界；合并换色必须对应独立事实或明确未确认，不能伪称识别全部失败。客户端验收与完整原生契约验收分别记录，不添加官方终端入口。
 
 ## 7. 上游验收矩阵（待实现后执行）
 
@@ -205,4 +205,4 @@ interface NativeSettledFields extends SubagentRunIdentity {
 | 同一官方会话在 TUI 与 OMPiUI 打开并继续 | 同一原生 JSONL，不创建 GUI 私有权威副本 | 浏览/刷新只读，不启动 native、不重试 merge；双向继续写入可见 |
 | 旧 18.12.6 / v18.14.0 或无契约历史 | 显式能力/契约版本缺失，不生成假 runId/merge status | 保留 legacy 可读性，明确接口阻塞，不宣布完成 |
 
-**交付边界：本轮完成的只是这份原生契约提案。完整原生契约需官方提供；OMPiUI 客户端兼容另按公开接口观察和保守显示方案评估、实施及验收，不修改 OMP，也不因这份文档把 #373/#374 关闭或记为已完成。**
+**交付边界：这份文档仍是完整原生契约提案，不修改 OMP。OMPiUI 的公开运行观察和保守展示已在客户端实现，实际通过范围见 [subagent-compat-acceptance.md](subagent-compat-acceptance.md)；原生权威身份、所有 root/nested 合并结算未补齐；#373/#374 已按维护者确认的客户端兼容交付范围结案，这些原生能力限制另行保留。**

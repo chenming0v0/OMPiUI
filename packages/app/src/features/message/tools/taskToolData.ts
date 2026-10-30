@@ -1,8 +1,7 @@
 import { isJsonObject, type JsonObject } from '@ompiui/protocol'
 import type { PiToolExecution } from '../../../omp/domain/index.js'
 import { getToolExecutionStatus } from '../../../omp/domain/index.js'
-import type { PiCustomMessageItem } from '../../../omp/domain/index.js'
-import { readBackgroundJobs } from '../parts/customMessagePresentation'
+import { deriveTaskOutcome, type TaskOutcome } from '../../../omp/taskOutcome'
 
 export const XD_TASK_ADDRESS = 'xd://task'
 
@@ -123,6 +122,9 @@ export interface AsyncTaskResult {
   output: string
   errors: string[]
   timestamp: number
+  /** Only structured job fields, never attributes parsed from the delivery body. */
+  details: Record<string, unknown>
+  outcome: TaskOutcome
 }
 
 const asyncResultIndex = new WeakMap<readonly unknown[], Map<string, AsyncTaskResult[]>>()
@@ -141,16 +143,18 @@ export function indexAsyncTaskResults(entries: readonly unknown[]): Map<string, 
   for (const entry of entries) {
     if (!isJsonObject(entry) || entry.type !== 'custom_message' || entry.customType !== 'async-result') continue
     const details = isJsonObject(entry.details) ? entry.details : undefined
-    const taskJobs = new Set((Array.isArray(details?.jobs) ? details.jobs : [])
-      .filter(isJsonObject).filter(job => job.type === 'task').map(job => job.jobId).filter((id): id is string => typeof id === 'string'))
-    if (!taskJobs.size) continue
-    const item = { kind: 'custom_message', entryId: String(entry.id ?? ''), timestamp: entryTime(entry.timestamp), rawEntry: entry,
-      customType: 'async-result', content: entry.content, display: entry.display !== false, details: entry.details } as unknown as PiCustomMessageItem
-    for (const job of readBackgroundJobs(item) ?? []) {
-      if (!taskJobs.has(job.id)) continue
-      const list = index.get(job.id) ?? []
-      list.push({ jobId: job.id, status: job.status, durationMs: job.durationMs, output: job.body, errors: job.errors, timestamp: item.timestamp })
-      index.set(job.id, list)
+    const jobs = (Array.isArray(details?.jobs) ? details.jobs : []).filter(isJsonObject)
+      .filter(job => job.type === 'task' && typeof job.jobId === 'string')
+    const output = typeof entry.content === 'string' ? entry.content : Array.isArray(entry.content)
+      ? entry.content.filter(isJsonObject).filter(block => block.type === 'text' && typeof block.text === 'string').map(block => block.text).join('\n') : ''
+    for (const job of jobs) {
+      const jobId = String(job.jobId)
+      const structured = { ...(isJsonObject(job.meta) ? job.meta : {}), ...job }
+      const errors = typeof structured.error === 'string' && structured.error.trim() ? [structured.error] : []
+      const list = index.get(jobId) ?? []
+      list.push({ jobId, status: stringField(job.status) ?? 'unknown', durationMs: typeof job.durationMs === 'number' ? job.durationMs : undefined,
+        output, errors, timestamp: entryTime(entry.timestamp), details: structured, outcome: deriveTaskOutcome(structured) })
+      index.set(jobId, list)
     }
   }
   asyncResultIndex.set(entries, index)

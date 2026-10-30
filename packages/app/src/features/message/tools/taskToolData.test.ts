@@ -62,6 +62,28 @@ describe('getTaskToolView', () => {
   })
 })
 
+describe('structured async task outcome', () => {
+  it('keeps structured fields and opaque output without parsing XML into status', () => {
+    const content = '<task-result status="failed"><error>Text-only error</error><merge-summary>merged</merge-summary><preview full-output="agent://A">raw</preview></task-result>'
+    const entries = [{ type: 'custom_message', customType: 'async-result', timestamp: 10, content,
+      details: { jobs: [{ jobId: 'A', type: 'task', status: 'completed', meta: { exitCode: 0, mergeError: 'Conflict', changesApplied: false,
+        stdout: 'execution output', stderr: 'diagnostic', outputPath: 'C:/sessions/A.md', recovery: { branch: 'keep-me' } } }] } }]
+    const result = findAsyncTaskResult(indexAsyncTaskResults(entries), 'A', 5)!
+    expect(result.output).toBe(content)
+    expect(result.errors).toEqual([])
+    expect(result.details).toMatchObject({ exitCode: 0, stdout: 'execution output', stderr: 'diagnostic', outputPath: 'C:/sessions/A.md', recovery: { branch: 'keep-me' } })
+    expect(result.outcome).toMatchObject({ executionStatus: 'completed', mergeStatus: 'failed', presentationStatus: 'error' })
+    expect(indexAsyncTaskResults(entries)).toBe(indexAsyncTaskResults(entries))
+  })
+
+  it('does not invent structured completion or merge evidence from delivery text', () => {
+    const entries = [{ type: 'custom_message', customType: 'async-result', timestamp: 10,
+      content: '<task-result status="completed"><merge-summary>All changes applied</merge-summary></task-result>',
+      details: { jobs: [{ jobId: 'A', type: 'task' }] } }]
+    expect(findAsyncTaskResult(indexAsyncTaskResults(entries), 'A', 5)).toMatchObject({ status: 'unknown', outcome: { executionStatus: 'unknown', mergeStatus: 'unconfirmed' } })
+  })
+})
+
 describe('async xd://task dispatch (real OMP 18.12.6 fixture)', () => {
   const view = getTaskToolView({ call: xdTaskAsyncCall, result: xdTaskAsyncResult })!
 

@@ -955,6 +955,9 @@ class PiEventStream {
       if (this.subagentSeen.size > 1024) this.subagentSeen.delete(this.subagentSeen.values().next().value!)
     }
     switch (kind) {
+      case 'observation':
+        ompSubagentStore.applyObservation(sessionId, inner)
+        break
       case 'lifecycle':
         ompSubagentStore.applyLifecycle(sessionId, inner)
         break

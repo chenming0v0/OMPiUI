@@ -75,6 +75,7 @@ export type {
 // OMPiUI-specific derived view models (not domain types)
 // ============================================================
 
+import { getTaskExecutionOutcome, isTaskExecution } from '../taskOutcome'
 import type { SessionEntry } from '../vendor/pi-coding-agent'
 import type { AgentMessage } from '../vendor/pi-agent-core'
 import type {
@@ -210,7 +211,8 @@ export type PiToolExecution = PiToolExecutionState & {
   argumentsUnknown?: boolean
 }
 
-export function getToolExecutionStatus(execution: PiToolExecution): 'pending' | 'running' | 'completed' | 'error' {
+export function getToolExecutionStatus(execution: PiToolExecution): 'pending' | 'running' | 'completed' | 'error' | 'unknown' {
+  if (isTaskExecution(execution)) return getTaskExecutionOutcome(execution).presentationStatus
   if (execution.result) {
     type FailureDetails = { error?: unknown; mergeError?: unknown; service?: { state?: unknown } }
     const details = execution.result.details as (FailureDetails & { nativeDetails?: FailureDetails; results?: Array<{ error?: unknown; mergeError?: unknown; aborted?: boolean; exitCode?: number }> }) | undefined

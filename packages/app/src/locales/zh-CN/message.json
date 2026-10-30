@@ -115,6 +115,12 @@
     "rawResult": "原始结果"
   },
   "task": {
+    "rawDetails": "原始详情 / 恢复引用",
+    "outcome": {
+      "execution": { "pending": "执行待开始", "running": "执行中", "completed": "执行完成", "failed": "执行失败", "aborted": "执行中断", "unknown": "执行未确认" },
+      "merge": { "unconfirmed": "整体合并未确认", "failed": "合并失败" },
+      "rootMerge": { "confirmed": "根任务变更已应用", "skipped": "根任务合并已跳过", "failed": "根任务合并失败" }
+    },
     "partialTranscript": "仅显示部分转录",
     "loadMoreTranscript": "继续读取",
     "subtask": "Subtask",

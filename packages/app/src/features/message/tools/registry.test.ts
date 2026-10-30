@@ -188,6 +188,30 @@ describe('defaultExtractData', () => {
   })
 })
 
+describe('task execution versus merge extraction', () => {
+  it.each([undefined, true, null] as const)('keeps a completed execution neutral for root changesApplied=%s', changesApplied => {
+    const execution: PiToolExecution = { call: { type: 'toolCall', id: 'task-outcome', name: 'task', arguments: {} },
+      result: { role: 'toolResult', toolCallId: 'task-outcome', toolName: 'task', timestamp: 1, isError: false,
+        content: [{ type: 'text', text: 'Execution finished' }], details: { exitCode: 0, ...(changesApplied !== undefined ? { changesApplied } : {}) } } }
+    expect(getToolExecutionStatus(execution)).toBe('unknown')
+    expect(extractToolData(execution)).toMatchObject({ output: 'Execution finished' })
+    expect(extractToolData(execution).error).toBeUndefined()
+  })
+
+  it('preserves stdout/stderr and generic output-path/image extraction on merge failure', () => {
+    const execution: PiToolExecution = { call: { type: 'toolCall', id: 'task-outcome', name: 'task', arguments: {} },
+      result: { role: 'toolResult', toolCallId: 'task-outcome', toolName: 'task', timestamp: 1, isError: true,
+        content: [{ type: 'text', text: 'Execution finished' }, { type: 'image', data: 'inline', mimeType: 'image/png' }],
+        details: { exitCode: 0, changesApplied: false, mergeError: 'Conflict', stdout: 'stdout', stderr: 'stderr', truncated: true, fullOutputPath: 'C:/full.log' } } }
+    const data = extractToolData(execution)
+    expect(getToolExecutionStatus(execution)).toBe('error')
+    expect(data.error).toContain('Conflict')
+    expect(data.error).toContain('stdout')
+    expect(data.error).toContain('stderr')
+    expect(data).toMatchObject({ truncated: true, fullOutputPath: 'C:/full.log', images: [{ mimeType: 'image/png' }] })
+  })
+})
+
 describe('write destinations', () => {
   function writeExecution(path: string, details?: unknown): PiToolExecution {
     return {

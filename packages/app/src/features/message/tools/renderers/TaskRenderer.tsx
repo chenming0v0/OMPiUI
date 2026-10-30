@@ -30,6 +30,7 @@ import { buildPersistedSubagentRun, deriveChildSessionFile, extractPersistedResu
 import { useUiDisclosureState } from '../../../../utils/uiDisclosureState'
 import type { ToolRendererProps } from '../types'
 import { getToolExecutionStatus } from '../../../../omp/domain/index.js'
+import { getTaskExecutionOutcome, type TaskOutcome } from '../../../../omp/taskOutcome'
 import { toolResultText } from '../toolResultContent'
 import { MessageExpandPanel, useMessageExpandRender } from '../../messageExpand'
 import { SubagentSessionPreview } from './SubagentSessionPreview'
@@ -54,33 +55,6 @@ type TaskSlot = {
 }
 
 export type TaskSlotStatus = 'pending' | 'running' | 'completed' | 'error' | 'unknown'
-
-type TaskSlotContext = {
-  executionStatus: ReturnType<typeof getToolExecutionStatus>
-  outerResult: boolean
-  outerFailed: boolean
-  runtimeStopped: boolean
-  hasLiveRuns: boolean
-  hasResults: boolean
-  /** 异步派发：外层只是派发回执，子代理结果另行投递。 */
-  asyncPending?: boolean
-}
-
-/** 每个子任务只按自身证据定状态；外层调用返回不等于子任务完成。 */
-export function deriveTaskSlotStatus(slot: TaskSlot, ctx: TaskSlotContext): TaskSlotStatus {
-  const run = slot.liveRun
-  if (isTaskSlotFailed(slot.result, run, ctx.outerFailed)) return 'error'
-  if (slot.result || run?.status === 'completed') return 'completed'
-  if (run && (run.status === 'running' || run.status === 'pending')) {
-    if (ctx.runtimeStopped && !run.detached) return ctx.outerResult ? 'unknown' : 'error'
-    return run.status
-  }
-  if (ctx.outerResult && ctx.asyncPending) return ctx.runtimeStopped ? 'unknown' : 'running'
-  if (ctx.outerResult) return ctx.hasResults ? 'unknown' : 'completed'
-  if (ctx.executionStatus === 'pending') return 'pending'
-  if (ctx.runtimeStopped) return 'error'
-  return ctx.hasLiveRuns ? 'pending' : 'running'
-}
 
 export const TaskRenderer = memo(function TaskRenderer({ execution: rawExecution, partKey, data, onFullscreenChange, taskSlotIndex }: ToolRendererProps) {
   const { currentSessionId } = useSessionNavigation()
@@ -128,15 +102,8 @@ export const TaskRenderer = memo(function TaskRenderer({ execution: rawExecution
     if (byIndex.size === 0) byIndex.set(0, { index: 0, input: {} })
     return [...byIndex.values()].sort((a, b) => a.index - b.index)
   }, [input, results, progress, asyncResults, dispatchedAt, liveRuns])
-  const executionStatus = getToolExecutionStatus(execution)
-  const statuses = slots.map(slot => deriveTaskSlotStatus(slot, {
-    executionStatus,
-    outerResult: Boolean(execution.result) || executionStatus === 'completed',
-    outerFailed: executionStatus === 'error' || Boolean(execution.result?.isError),
-    runtimeStopped,
-    hasLiveRuns: liveRuns.length > 0,
-    hasResults: results.length > 0,
-    asyncPending: asyncDispatch,
+  const outcomes = slots.map(slot => getTaskExecutionOutcome(execution, {
+    slotIndex: slot.index, result: slot.result, liveRun: slot.liveRun, runtimeStopped, hasLiveRuns: liveRuns.length > 0,
   }))
   // xd 投影的 description 是外层标题（多任务时为名字拼接），不能回落成每个子任务的副标题。
   const intent = typeof input?.i === 'string' ? input.i
@@ -184,7 +151,7 @@ export const TaskRenderer = memo(function TaskRenderer({ execution: rawExecution
       <div className="min-w-0" data-testid="task-slot-row">
         <SubagentTask
           slot={slot}
-          status={statuses[position]}
+          outcome={outcomes[position]}
           runtimeStopped={runtimeStopped}
           execution={execution}
           partKey={partKey}
@@ -205,7 +172,7 @@ export const TaskRenderer = memo(function TaskRenderer({ execution: rawExecution
           <SubagentTask
             key={slot.index}
             slot={slot}
-            status={statuses[position]}
+            outcome={outcomes[position]}
             runtimeStopped={runtimeStopped}
             execution={execution}
             partKey={`${partKey}:${slot.index}`}
@@ -225,9 +192,9 @@ export const TaskRenderer = memo(function TaskRenderer({ execution: rawExecution
   )
 })
 
-function SubagentTask({ slot, status, runtimeStopped, execution, partKey, intent, targetSessionId, showAggregateOutput, aggregateError, onFullscreenChange }: {
+function SubagentTask({ slot, outcome, runtimeStopped, execution, partKey, intent, targetSessionId, showAggregateOutput, aggregateError, onFullscreenChange }: {
   slot: TaskSlot
-  status: TaskSlotStatus
+  outcome: TaskOutcome
   runtimeStopped: boolean
   execution: ToolRendererProps['execution']
   partKey: string
@@ -240,17 +207,12 @@ function SubagentTask({ slot, status, runtimeStopped, execution, partKey, intent
   const { t } = useTranslation('message')
   const { navigateToSession, currentDirectory, currentSessionId } = useSessionNavigation()
   const liveRun = slot.liveRun
+  const status = outcome.presentationStatus
   const executionStatus = getToolExecutionStatus(execution)
   const hasStarted = executionStatus !== 'pending' || (liveRun !== undefined && liveRun.status !== 'pending')
-  const isRunning = liveRun
-    ? liveRun.status === 'running' && (liveRun.isFollowUp || !execution.result || liveRun.detached) && (!runtimeStopped || liveRun.detached || liveRun.isFollowUp)
-    : executionStatus === 'running' && !runtimeStopped
-  // 运行中与失败都默认展开：失败说明（聚合结果、mergeError）不能折叠隐藏，
-  // 否则 exitCode=0 但合并失败的子代理会看起来像全流程成功（#364/#374）。
-  // 这里用不依赖子代理历史的先行判定作展开默认值。
-  const prelimIsError = isTaskSlotFailed(liveRun?.isFollowUp ? undefined : slot.result, liveRun,
-    !liveRun?.isFollowUp && (executionStatus === 'error' || Boolean(execution.result?.isError)))
-  const [expanded, setExpanded] = useUiDisclosureState(`message:${partKey}:task-body:${liveRun?.runId ?? 'persisted'}`, isRunning || prelimIsError)
+  const isRunning = status === 'running'
+  const isError = status === 'error'
+  const [expanded, setExpanded] = useUiDisclosureState(`message:${partKey}:task-body:${liveRun?.runId ?? 'persisted'}`, isRunning || isError)
   const [isContentFullscreen, setIsContentFullscreen] = useState(false)
   const [opening, setOpening] = useState(false)
   const [openError, setOpenError] = useState<string | null>(null)
@@ -270,10 +232,7 @@ function SubagentTask({ slot, status, runtimeStopped, execution, partKey, intent
     !slot.result ? runtimeStopped ? 'aborted' : isRunning ? 'running' : 'pending' : undefined,
   )
   const subagentRun = liveRun ?? persistedRun
-  // 中断且无结果的任务（runtime 已停）也算失败；其余全部走 isTaskSlotFailed。
-  const isError = prelimIsError || (!liveRun?.isFollowUp && !isRunning && hasStarted && !execution.result && runtimeStopped)
-  const isCompleted = !isRunning && !isError && (liveRun?.isFollowUp
-    ? liveRun.status === 'completed' : Boolean(slot.result || execution.result || subagentRun?.status === 'completed'))
+  const executionCompleted = outcome.executionStatus === 'completed'
   const name = subagentDisplayTitle(
     typeof slot.input.name === 'string' ? slot.input.name : undefined,
     slot.result?.id,
@@ -321,8 +280,12 @@ function SubagentTask({ slot, status, runtimeStopped, execution, partKey, intent
     }
   }, [opening, sessionFile, subagentRun?.sessionId, targetSessionId, currentDirectory, navigateToSession])
 
-  const resultOutput = liveRun?.isFollowUp ? '' : [...new Set([slot.result?.output, slot.result?.error, slot.result?.mergeError, execution.error,
+  const resultOutput = liveRun?.isFollowUp ? liveRun.mergeError ?? '' : [...new Set([slot.result?.output, slot.result?.stdout, slot.result?.stderr,
+    slot.result?.error, slot.result?.mergeError, liveRun?.mergeError, execution.error,
     showAggregateOutput ? aggregateError || (execution.result ? toolResultText(execution.result) : undefined) : undefined].filter(value => typeof value === 'string' && value.trim()))].join('\n')
+  const rawDetails = !liveRun?.isFollowUp && (slot.result || (showAggregateOutput && execution.result?.details))
+  const outcomeText = [t(`task.outcome.execution.${outcome.executionStatus}`), t(`task.outcome.merge.${outcome.mergeStatus}`),
+    outcome.rootMergeStatus !== 'unconfirmed' ? t(`task.outcome.rootMerge.${outcome.rootMergeStatus}`) : undefined].filter(Boolean).join(' · ')
   const handleContentFullscreenChange = useCallback((isFullscreen: boolean) => {
     setIsContentFullscreen(isFullscreen)
     onFullscreenChange?.(isFullscreen)
@@ -353,6 +316,7 @@ function SubagentTask({ slot, status, runtimeStopped, execution, partKey, intent
         opening={opening}
         onStop={isRunning && targetSessionId ? handleStop : undefined}
       />
+      {hasStarted && <p data-testid="task-outcome" className={`pl-7 text-[length:var(--fs-xxs)] ${isError ? 'text-danger-100' : 'text-text-400'}`}>{outcomeText}</p>}
       {openError && <p role="alert" className="pt-1 text-[length:var(--fs-xs)] text-danger-100 break-words">{openError}</p>}
       <MessageExpandPanel open={effectiveExpanded} innerClassName="overflow-hidden">
         {shouldRenderBody && (
@@ -360,19 +324,19 @@ function SubagentTask({ slot, status, runtimeStopped, execution, partKey, intent
             {prompt && <div className="text-[length:var(--fs-xs)] text-text-500 leading-relaxed whitespace-nowrap overflow-hidden text-ellipsis">{prompt}</div>}
             {prompt && subagentRun && <hr className="border-border-200/30" />}
             {hasStarted && (subagentRun || previewLoading || !isError) && <SubagentSessionPreview run={subagentRun} loading={previewLoading} onLoadMore={persistedRun ? reloadPreview : undefined} />}
-            {isCompleted && resultOutput && (
+            {!isError && (executionCompleted || status === 'unknown') && resultOutput && (
               <ContentBlock label={t('task.result')} stateKey={`message:${partKey}:task-result`} content={resultOutput} defaultCollapsed onFullscreenChange={handleContentFullscreenChange} fullscreenId={`task:${partKey}:result`} />
             )}
             {isError && (
               <ContentBlock label={t('task.error')} stateKey={`message:${partKey}:task-error`} content={resultOutput || t('task.taskFailed')} variant="error" onFullscreenChange={handleContentFullscreenChange} fullscreenId={`task:${partKey}:error`} />
             )}
+            {rawDetails && <ContentBlock label={t('task.rawDetails')} stateKey={`message:${partKey}:task-details`} content={JSON.stringify(rawDetails, null, 2)} defaultCollapsed onFullscreenChange={handleContentFullscreenChange} fullscreenId={`task:${partKey}:details`} />}
           </div>
         )}
       </MessageExpandPanel>
     </div>
   )
 }
-
 // ============================================
 // Task Header
 // ============================================
@@ -597,7 +561,6 @@ function usePersistedSubagentRun(
     [baseRun, loaded, enabled, revision, reload],
   )
 }
-
 // ============================================
 // 异步派发（write xd://task 默认 async）：结果经 async-result 自定义消息投递，
 // 按 jobId 从已加载的父会话条目里只读查找。
@@ -610,18 +573,18 @@ function useAsyncTaskResults(sessionId: string | null | undefined, enabled: bool
 }
 
 function asyncResultToPersisted(result: AsyncTaskResult, slot: TaskSlot): PersistedSubagentResult {
-  const failed = result.status === 'failed' || result.errors.length > 0
-  const aborted = result.status === 'cancelled' || result.status === 'aborted' || result.status === 'killed'
   return {
+    ...result.details,
+    status: result.outcome.executionStatus,
     index: slot.index,
     id: result.jobId,
     agent: slot.progress?.agent ?? (typeof slot.input.agent === 'string' ? slot.input.agent : undefined),
     task: typeof slot.input.task === 'string' ? slot.input.task : undefined,
     assignment: slot.progress?.assignment,
     durationMs: result.durationMs,
-    output: result.output || undefined,
-    ...(aborted ? { aborted: true } : {}),
-    ...(failed ? { error: result.errors.join('\n') || result.status } : {}),
+    output: [...new Set([typeof result.details.output === 'string' ? result.details.output : undefined, result.output].filter(Boolean))].join('\n\n') || undefined,
+    ...(result.outcome.executionStatus === 'aborted' ? { aborted: true } : {}),
+    ...(result.errors.length ? { error: result.errors.join('\n') } : {}),
   }
 }
 
@@ -657,27 +620,4 @@ function InvalidTaskCall({ partKey, names, error, rawContent, onFullscreenChange
       </MessageExpandPanel>
     </div>
   )
-}
-
-// ============================================
-// Icons & Helpers
-// ============================================
-
-/**
- * 子任务失败判定（#400）：有自身结果或实时 run 时只看自身，
- * 两者都缺才回退聚合状态，避免批量 task 一个失败全员标红。
- * exitCode=0 但 mergeError 存在仍算失败（#374）。
- * 落盘回退 run 的状态是合成的（fallbackStatus），不算自身证据。
- */
-function isTaskSlotFailed(
-  result: PersistedSubagentResult | undefined,
-  liveRun: OmpSubagentRun | undefined,
-  aggregateFailed: boolean,
-): boolean {
-  const runFailed = liveRun?.status === 'failed' || liveRun?.status === 'aborted'
-  // 非终态的实时 run 不算自身证据：聚合已结束而 run 仍停在 running 时要回退聚合
-  if (!result && !runFailed && liveRun?.status !== 'completed') return aggregateFailed
-  const resultFailed = Boolean(result && (result.aborted || result.error || result.mergeError ||
-    (result.exitCode !== undefined && result.exitCode !== 0)))
-  return resultFailed || runFailed
 }

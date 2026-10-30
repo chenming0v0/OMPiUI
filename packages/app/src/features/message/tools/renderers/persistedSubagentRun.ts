@@ -1,5 +1,6 @@
 import { subagentDisplayTitle } from '../../../../omp/ompSubagentFormat'
-import type { OmpSubagentRun, OmpSubagentStatus } from '../../../../omp/ompSubagentStore'
+import type { OmpSubagentRun } from '../../../../omp/ompSubagentStore'
+import { deriveTaskOutcome } from '../../../../omp/taskOutcome'
 
 /**
  * 落盘回退 —— 注册表为空时从持久化结果重建子代理 run。
@@ -23,6 +24,12 @@ export interface PersistedSubagentResult {
   aborted?: boolean
   error?: string
   mergeError?: string
+  changesApplied?: boolean | null
+  status?: string
+  stdout?: string
+  stderr?: string
+  /** Retain unknown native details and recovery references for inspection. */
+  [key: string]: unknown
   tokens?: number
   durationMs?: number
   outputPath?: string
@@ -70,11 +77,8 @@ export function buildPersistedSubagentRun(
   parentSessionId: string,
 ): OmpSubagentRun | undefined {
   if (typeof result.id !== 'string' || !result.id) return undefined
-  const status: OmpSubagentStatus = result.aborted === true
-    ? 'aborted'
-    : result.error || result.mergeError || (result.exitCode !== undefined && result.exitCode !== 0)
-      ? 'failed'
-      : 'completed'
+  const outcome = deriveTaskOutcome(result)
+  const status = outcome.executionStatus
   return {
     id: `persisted:${callId}:${result.id}`,
     sessionId: parentSessionId,
@@ -83,6 +87,9 @@ export function buildPersistedSubagentRun(
     description: subagentDisplayTitle(result.description),
     task: typeof result.task === 'string' ? result.task : typeof result.assignment === 'string' ? result.assignment : '',
     status,
+    mergeStatus: outcome.mergeStatus,
+    mergeError: result.mergeError,
+    changesApplied: result.changesApplied,
     sessionFile,
     index: typeof result.index === 'number' ? result.index : 0,
     detached: false,

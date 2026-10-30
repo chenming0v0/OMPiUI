@@ -52,6 +52,7 @@ import { getPreviewSettings } from "./preview-settings.js";
 import { projectPreviewMessage } from "./subagent-preview.js";
 import { requireResourceList, registryFromResources } from './resource-registry.js';
 import { requestNativePromptAcceptance } from './native-rpc-prompt.js';
+import { SUBAGENT_OBSERVATION_PREFIX } from './native-subagent-observation.js';
 
 /**
  * OmpRpcSession —— SessionRuntime 契约的 OMP 实现。
@@ -600,6 +601,13 @@ export class OmpRpcSession implements SessionRuntime {
         return;
       }
       case "extension_ui_request": {
+        if (frame.method === "notify" && typeof frame.message === "string" && frame.message.startsWith(SUBAGENT_OBSERVATION_PREFIX)) {
+          try {
+            const observation: unknown = JSON.parse(frame.message.slice(SUBAGENT_OBSERVATION_PREFIX.length));
+            if (isJsonObject(observation)) this.trackSubagentObservation(observation);
+          } catch { /* Invalid control traffic must not appear as a user notification. */ }
+          return;
+        }
         this.extensionUi.handleOmpRequest(frame);
         return;
       }
@@ -1268,6 +1276,8 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   private readonly subagentRuns = new Map<string, JsonObject>();
+  private readonly subagentObservations = new Map<string, JsonObject>();
+  private readonly retiredSubagentObservations = new Set<string>();
   private readonly supersededSubagentParents = new Map<string, Set<string>>();
   private subagentRunSequence = 0;
   private readonly MAX_SUBAGENT_RUNS = 200;
@@ -1297,7 +1307,20 @@ export class OmpRpcSession implements SessionRuntime {
     if (parentChanged && !(kind === "lifecycle" && payload.status === "started")) return;
     const terminal = existing?.status === "completed" || existing?.status === "failed" || existing?.status === "aborted";
     if (typeof payload.runId === "string" && existing && payload.runId !== existing.runId) return;
-    const restart = kind === "lifecycle" && payload.status === "started" && (parentChanged || terminal);
+    const started = kind === "lifecycle" && payload.status === "started";
+    const restart = started && Boolean(existing && (existing.nativeStarted === true || parentChanged || terminal));
+    const incomingStatus = kind === "progress" && isJsonObject(payload.progress) ? payload.progress.status : payload.status;
+    if (!started && existing?.identityAmbiguous === true && typeof payload.runId !== "string" &&
+      (incomingStatus === "completed" || incomingStatus === "failed" || incomingStatus === "aborted")) {
+      const previous = Array.isArray(existing.unassignedTerminals) ? existing.unassignedTerminals : [];
+      this.rememberSubagent(id, {
+        ...existing,
+        ...(!this.subagentObservations.has(id) ? { status: "unknown", activity: "unavailable" } : {}),
+        unassignedTerminals: [...previous, { kind, payload }].slice(-8),
+      });
+      this.subagentEvents.push("unassigned", { id, kind, evidence: payload });
+      return;
+    }
     if (restart && parent) this.supersededSubagentParents.get(id)?.delete(parent);
     if (parentChanged && typeof existing?.parentToolCallId === "string") {
       const superseded = this.supersededSubagentParents.get(id) ?? new Set<string>();
@@ -1309,6 +1332,7 @@ export class OmpRpcSession implements SessionRuntime {
       ? `${this.eventEpoch}:${id}:${++this.subagentRunSequence}`
       : String(existing.runId);
     const tracked: JsonObject = { ...payload, runId };
+    if (started) tracked.startToken = runId;
     if (kind === "event") {
       if (!existing) this.rememberSubagent(id, { id, runId });
       return tracked;
@@ -1316,7 +1340,10 @@ export class OmpRpcSession implements SessionRuntime {
     const merged: JsonObject = restart || !existing ? { id, runId } : { ...existing, runId };
     if (restart) merged.isFollowUp = typeof parent === "string" && parent === existing?.parentToolCallId &&
       typeof payload.sessionFile === "string" && payload.sessionFile === existing?.sessionFile;
+    merged.identityAmbiguous = existing?.identityAmbiguous === true || restart;
+    if (started) { merged.nativeStarted = true; merged.startToken = runId; }
     tracked.isFollowUp = merged.isFollowUp;
+    tracked.identityAmbiguous = merged.identityAmbiguous;
     for (const key of ["agent", "agentSource", "description", "task", "assignment",
       "sessionFile", "parentToolCallId", "index", "detached"]) {
       if (payload[key] !== undefined) merged[key] = payload[key];
@@ -1331,8 +1358,57 @@ export class OmpRpcSession implements SessionRuntime {
         merged.status = status;
       }
     }
+    const observed = this.subagentObservations.get(id);
+    if (observed) {
+      this.applySubagentActivity(merged, observed);
+      for (const key of ["observationEpoch", "observationId", "activityVersion", "observationSequence", "activity", "pendingAsync"]) tracked[key] = merged[key];
+    } else if (merged.identityAmbiguous === true && !started) merged.status = "unknown";
     this.rememberSubagent(id, merged);
     return tracked;
+  }
+
+  private applySubagentActivity(run: JsonObject, observation: JsonObject): void {
+    for (const key of ["observationEpoch", "observationId", "activityVersion", "observationSequence", "activity", "pendingAsync"]) {
+      run[key] = observation[key];
+    }
+    const terminal = run.status === "completed" || run.status === "failed" || run.status === "aborted";
+    if (observation.activity === "running") run.status = "running";
+    else if (!terminal || run.identityAmbiguous === true) {
+      run.status = observation.activity === "idle" && observation.pendingAsync === true ? "pending" : "unknown";
+    }
+  }
+
+  private trackSubagentObservation(observation: JsonObject): void {
+    if (observation.protocolVersion !== 1 || observation.rootSessionId !== this.sessionId ||
+      observation.rootSessionFile !== (this.sessionFile ?? null) || typeof observation.id !== "string" ||
+      typeof observation.observationEpoch !== "string" || typeof observation.observationId !== "string" ||
+      !Number.isSafeInteger(observation.observationSequence) || Number(observation.observationSequence) < 1 ||
+      !Number.isSafeInteger(observation.activityVersion) || Number(observation.activityVersion) < 1 ||
+      !["running", "idle", "unavailable"].includes(String(observation.activity)) ||
+      typeof observation.pendingAsync !== "boolean") return;
+    const id = observation.id;
+    const identity = `${observation.observationEpoch}:${observation.observationId}`;
+    if (this.retiredSubagentObservations.has(identity)) return;
+    const previous = this.subagentObservations.get(id);
+    if (previous && Number(observation.observationSequence) <= Number(previous.observationSequence)) return;
+    const previousIdentity = previous ? `${previous.observationEpoch}:${previous.observationId}` : undefined;
+    if (identity === previousIdentity && Number(observation.activityVersion) <= Number(previous?.activityVersion)) return;
+    if (previousIdentity && previousIdentity !== identity) {
+      this.retiredSubagentObservations.add(previousIdentity);
+      if (this.retiredSubagentObservations.size > 512) this.retiredSubagentObservations.delete(this.retiredSubagentObservations.values().next().value!);
+    }
+    const existing = this.subagentRuns.get(id);
+    if (existing?.sessionFile && observation.sessionFile && existing.sessionFile !== observation.sessionFile) return;
+    this.subagentObservations.set(id, observation);
+    while (this.subagentObservations.size > this.MAX_SUBAGENT_RUNS) this.subagentObservations.delete(this.subagentObservations.keys().next().value!);
+    const merged: JsonObject = existing ? { ...existing } : {
+      id, runId: `${this.eventEpoch}:${id}:${++this.subagentRunSequence}`, status: "unknown",
+      ...(typeof observation.sessionFile === "string" ? { sessionFile: observation.sessionFile } : {}),
+    };
+    this.applySubagentActivity(merged, observation);
+    this.rememberSubagent(id, merged);
+    // runId here locates the UI projection; the observation never claims a native monitor identity.
+    this.subagentEvents.push("observation", { ...observation, runId: merged.runId, status: merged.status, identityAmbiguous: merged.identityAmbiguous ?? false });
   }
 
   private resolveModelDescriptor(
@@ -1739,6 +1815,8 @@ export class OmpRpcSession implements SessionRuntime {
     this.scopedModels = [];
     this.scopedModelPatterns = [];
     this.subagentRuns.clear();
+    this.subagentObservations.clear();
+    this.retiredSubagentObservations.clear();
     this.supersededSubagentParents.clear();
     this.subagentRunSequence = 0;
     this.subagentEvents.clear();
@@ -2185,10 +2263,15 @@ export class OmpRpcSession implements SessionRuntime {
           const restart = Boolean(existing && (ownerChanged || (terminal && active)));
           const runId = !existing || restart
             ? `${this.eventEpoch}:${item.id}:${++this.subagentRunSequence}` : existing.runId;
-          this.rememberSubagent(item.id, {
+          const merged: JsonObject = {
             ...(!restart ? existing : undefined), ...item, runId,
+            identityAmbiguous: existing?.identityAmbiguous === true || restart,
             isFollowUp: restart ? !ownerChanged : existing?.isFollowUp,
-          });
+          };
+          const observation = this.subagentObservations.get(item.id);
+          if (observation) this.applySubagentActivity(merged, observation);
+          else if (merged.identityAmbiguous === true && (item.status === "completed" || item.status === "failed" || item.status === "aborted" || existing?.status === "unknown")) merged.status = "unknown";
+          this.rememberSubagent(item.id, merged);
         }
       }
       return this.getSubagentsSnapshot();

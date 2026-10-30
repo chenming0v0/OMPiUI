@@ -5,6 +5,33 @@ import { test } from "node:test"
 import type { JsonObject } from "@ompiui/protocol"
 import type { OmpRpcClient, OmpRpcResponse } from "./rpc-client.js"
 import { runtimeBridgeExtension, RuntimeBridgeTransport } from "./runtime-bridge.js"
+import { SUBAGENT_OBSERVATION_PREFIX, type SubagentObservationPayload } from "./native-subagent-observation.js"
+
+test("child observation receipts stay separate from managed command transport", () => {
+  const transport = new RuntimeBridgeTransport()
+  const payload: SubagentObservationPayload = {
+    protocolVersion: 1, rootSessionId: "root", rootSessionFile: "root.jsonl",
+    id: "child", sessionFile: "child.jsonl", observationEpoch: "epoch",
+    observationId: "attachment", activityVersion: 1, observationSequence: 1, activity: "idle", pendingAsync: true,
+  }
+  assert.equal(transport.handleFrame({
+    type: "extension_ui_request", method: "notify", level: "info",
+    message: SUBAGENT_OBSERVATION_PREFIX + JSON.stringify(payload),
+  }), false, "the session coordinator, not runtime command receipts, owns observation frames")
+  assert.equal(transport.handleFrame({
+    type: "extension_ui_request", method: "notify", message: "ompiui-runtime:" + JSON.stringify({ id: "unknown", success: true }),
+  }), true)
+  transport.close(new Error("fixture closed"))
+})
+
+test("generated bridge exposes observation reconcile only through existing control dispatch", () => {
+  const source = runtimeBridgeExtension()
+  assert.match(source, /const session = ownSession\(ctx\)/)
+  assert.match(source, /async function execute\(operation, args, ctx\) \{\s*reconcileSubagentObservation\(ctx\)/)
+  assert.match(source, /pi\.on\("session_start",/)
+  assert.match(source, /pi\.on\("session_shutdown",/)
+  assert.doesNotMatch(source, /case "(?:refreshSubagents|observeSubagents|subagentObservation)"/)
+})
 
 test("a native command failure arriving before its prompt ACK rejects the managed operation", async () => {
   const transport = new RuntimeBridgeTransport()
