@@ -1,7 +1,8 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TFunction } from 'i18next'
-import { BackgroundJobsIndicator, SessionBackgroundJobs, formatElapsed } from './BackgroundJobsIndicator'
+import { BackgroundJobsIndicator, SessionBackgroundJobs } from './BackgroundJobsIndicator'
+import { formatElapsed } from './formatElapsed'
 import { BACKGROUND_JOB_POLL_MS, parseAsyncJobSnapshot } from '../../../omp/backgroundJobs'
 
 const { getJobs, inspectJob, cancelJob, state, capabilities } = vi.hoisted(() => ({

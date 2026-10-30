@@ -21,24 +21,109 @@ function pendingLookup() {
 function renderEditor(overrides: Partial<ComponentProps<typeof ProviderModelEditorDialog>> = {}) {
   const onSave = vi.fn()
   const onClose = vi.fn()
-  render(
-    <ProviderModelEditorDialog
-      isOpen
-      providerName="Demo relay"
-      model={null}
-      siblings={[]}
-      onClose={onClose}
-      onSave={onSave}
-      {...overrides}
-    />,
-  )
-  return { onSave, onClose }
+  const props: ComponentProps<typeof ProviderModelEditorDialog> = {
+    isOpen: true,
+    providerName: 'Demo relay',
+    model: null,
+    siblings: [],
+    onClose,
+    onSave,
+    ...overrides,
+  }
+  const view = render(<ProviderModelEditorDialog {...props} />)
+  return {
+    onSave,
+    onClose,
+    rerender: (next: Partial<typeof props>) => view.rerender(<ProviderModelEditorDialog {...props} {...next} />),
+  }
 }
 
 describe('ProviderModelEditorDialog', () => {
   beforeEach(() => {
     vi.mocked(lookupModelsDevModel).mockReset().mockResolvedValue({ found: false })
   })
+
+  it.each([true, false])('blocks saving a seeded new model on opening (initially open: %s)', async initiallyOpen => {
+    const pending = pendingLookup()
+    vi.mocked(lookupModelsDevModel).mockReturnValueOnce(pending.promise)
+    const { onSave, rerender } = renderEditor({ isOpen: initiallyOpen, model: blankModelDraft('gpt-seeded') })
+    if (!initiallyOpen) rerender({ isOpen: true })
+
+    expect(lookupModelsDevModel).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(onSave).not.toHaveBeenCalled()
+    await act(async () => {})
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+  })
+
+  it('blocks saving when smart config is enabled and ignores a cancelled lookup', async () => {
+    const pending = pendingLookup()
+    vi.mocked(lookupModelsDevModel).mockReturnValueOnce(pending.promise)
+    renderEditor({ model: { ...blankModelDraft('gpt-seeded'), originalId: 'gpt-seeded' } })
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('switch', { name: 'Smart config' }))
+    expect(lookupModelsDevModel).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    const contextWindow = (screen.getByLabelText(/Context window/) as HTMLInputElement).value
+    fireEvent.click(screen.getByRole('switch', { name: 'Smart config' }))
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+    expect(vi.mocked(lookupModelsDevModel).mock.calls[0]![1]!.aborted).toBe(true)
+    await act(async () => pending.resolve({ found: true, contextWindow: 999_999 }))
+    expect(screen.getByLabelText(/Context window/)).toHaveValue(Number(contextWindow))
+  })
+
+  it.each([
+    { providerId: 'other-provider' },
+    { providerApi: 'openai-responses' },
+    { model: blankModelDraft('gpt-other') },
+    { model: blankModelDraft('gpt-seeded') },
+  ])('marks a new lookup pending when editor inputs change: %j', async next => {
+    const previous = pendingLookup()
+    const current = pendingLookup()
+    vi.mocked(lookupModelsDevModel).mockReturnValueOnce(previous.promise).mockReturnValueOnce(current.promise)
+    const { rerender } = renderEditor({
+      providerId: 'demo',
+      providerApi: 'openai-completions',
+      model: blankModelDraft('gpt-seeded'),
+    })
+    const oldSignal = vi.mocked(lookupModelsDevModel).mock.calls[0]![1]!
+    rerender(next)
+    expect(lookupModelsDevModel).toHaveBeenCalledTimes(2)
+    expect(lookupModelsDevModel).toHaveBeenLastCalledWith(
+      {
+        modelId: next.model?.id ?? 'gpt-seeded',
+        providerHint: next.providerId ?? 'demo',
+        api: next.providerApi ?? 'openai-completions',
+      },
+      expect.any(AbortSignal),
+    )
+    expect(oldSignal.aborted).toBe(true)
+    await act(async () => previous.resolve({ found: true, contextWindow: 999_999 }))
+    expect(screen.getByLabelText(/Context window/)).not.toHaveValue(999_999)
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    await act(async () => current.resolve({ found: false }))
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+  })
+
+  it.each([{ providerId: 'other-provider' }, { providerApi: 'openai-responses' }])(
+    'blocks saving on provider identity changes after the previous lookup finishes: %j',
+    async next => {
+      const pending = pendingLookup()
+      vi.mocked(lookupModelsDevModel).mockResolvedValueOnce({ found: false }).mockReturnValueOnce(pending.promise)
+      const { rerender } = renderEditor({
+        providerId: 'demo',
+        providerApi: 'openai-completions',
+        model: blankModelDraft('gpt-seeded'),
+      })
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled())
+      rerender(next)
+      expect(lookupModelsDevModel).toHaveBeenCalledTimes(2)
+      expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+      await act(async () => {})
+      expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    },
+  )
 
   it('starts with smart config enabled, applies defaults and looks up model metadata', async () => {
     const { onSave } = renderEditor()
@@ -144,7 +229,9 @@ describe('ProviderModelEditorDialog', () => {
     await waitFor(() => expect(screen.getByLabelText(/Context window/)).toHaveValue(202_752))
     await act(async () => pending.resolve({ found: true, contextWindow: 1_050_000 }))
     expect(screen.getByLabelText(/Context window/)).toHaveValue(202_752)
-    expect(screen.getByText('The model supports reasoning but lists no configurable levels.')).toBeVisible()
+    await waitFor(() =>
+      expect(screen.getByText('The model supports reasoning but lists no configurable levels.')).toBeVisible(),
+    )
   })
 
   it('restores the original draft and cancels lookup when reset is clicked', async () => {

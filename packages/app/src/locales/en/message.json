@@ -142,6 +142,12 @@
     "rawResult": "Raw result"
   },
   "task": {
+    "rawDetails": "Raw details / recovery references",
+    "outcome": {
+      "execution": { "pending": "Execution pending", "running": "Execution running", "completed": "Execution completed", "failed": "Execution failed", "aborted": "Execution interrupted", "unknown": "Execution unconfirmed" },
+      "merge": { "unconfirmed": "Overall merge unconfirmed", "failed": "Merge failed" },
+      "rootMerge": { "confirmed": "Root changes applied", "skipped": "Root merge skipped", "failed": "Root merge failed" }
+    },
     "partialTranscript": "Partial transcript",
     "loadMoreTranscript": "Read more",
     "subtask": "Subtask",

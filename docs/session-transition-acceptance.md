@@ -1,10 +1,18 @@
-# 会话树、Fork 与替换隔离验收（2026-10-29）
+# 会话树、Fork 与替换隔离验收
+
+## 2026-10-30 结案范围
+
+维护者确认 #361 按原「旧身份不污染目标会话」范围 completed 关闭；#382 同次模型工具网页 PTY 也已完成并关闭，验收见 [工具 PTY](tool-interaction.md)。未知来源的官方 `extension_error` 保留于无 sessionId 的宿主诊断，不猜测或虚构源会话；精确回源仍未提供，但不再作为 #361 的额外结案前提。
+
+2026-10-30 本轮使用隔离官方 **OMP 18.12.6 / Bun 1.3.14** 重跑默认专项：`run-Ji0YPs/evidence.json`，exit 0、`HISTORY_AND_HOST_ISOLATION_PASS`。实际迟到旧回调 `sessionErrorCount=0`、`diagnosticCount=1`、`hasSourceIdentity=false`；只读历史／导航取消／图片 Fork／Goal 恢复断言全部通过。显式 `--require-source-attribution` 另跑 `run-yOsFWZ/evidence.json`，按预期 exit 2：宿主隔离通过，额外来源能力仍未提供，不把它记作目标污染或精确回源通过。新增 stream 反馈消费者回归所在 `eventStream.test.ts` 共 36 项通过，单测不冒充 GUI。
+
+下文原生／网页记录属于 2026-10-29 历史证据，不因结案改写成今天重新执行或全部 GUI 矩阵通过。旧默认 exit 2 的记录保留；现在默认脚本按历史和宿主隔离断言结算，来源归属改为显式附加检查。
 
 ## 结论
 
 - **#356 本轮缺失的专项证据已补齐**：真实双窗格消息 Fork 的身份／文字／图片同步、另一子分支切换、Undo 后新发同身份分支，均实跑通过。没有重写已有原生接口，也没有确认新的生产故障。
-- **#361 本地宿主错误隔离已补齐，严格来源归属仍阻塞**：不再将无来源的官方 `extension_error` 打上接收时刻 sessionId／epoch 放入会话流；独立宿主诊断通道保留错误原文、runtime 标识和事件类型，生产网页扩展面板可查看及独立清空。真实旧定时回调在 new 后的原始帧仍没有来源身份，因此不能精确路由回源会话，也不宣布 #361 全部完成。2026-10-29 对最新官方 18.13.3 的核对仅是源码，不是运行验收。
-- 所有原生运行仅使用新建的隔离 HOME、配置、工作区及本机确定性 HTTP provider。没有使用真实厂商账号、付费请求、用户工作会话、终端接管或子代理执行本次工作。没有推送、发布或关闭 GitHub issue。
+- **#361 本地宿主错误隔离已补齐**：不再将无来源的官方 `extension_error` 打上接收时刻 sessionId／epoch 放入会话流；独立宿主诊断通道保留错误原文、runtime 标识和事件类型，生产网页扩展面板可查看及独立清空。真实旧定时回调在 new 后的原始帧仍没有来源身份，因此不能精确路由回源会话。2026-10-29 曾将这一额外能力列为结案阻塞；2026-10-30 维护者确认按原隔离范围结案，不将精确回源记为已实现。对官方 18.13.3 的核对仅是源码，不是运行验收。
+- 下文所有历史原生运行仅使用新建的隔离 HOME、配置、工作区及本机确定性 HTTP provider，没有真实厂商账号、付费请求、用户工作会话或终端接管；2026-10-29 该专项没有推送、发布或关闭 issue。2026-10-30 已按维护者确认关闭 #361/#382，仍没有推送或发布代码。
 
 ## 可重复原生验收
 
@@ -20,17 +28,23 @@ node --import tsx scripts/verify-session-transitions.mjs
 
 脚本在 `.slim/transition-acceptance/run-*` 创建独立目录并保留 `evidence.json`、原生日志和本地 provider 请求：
 
-- exit **0**：`--history-only` 仅证明历史／取消／Goal 恢复；`--local-isolation` 另断言真实迟到帧进入宿主诊断、不进入任何会话 `pi.event` 流。**这两个显式子集都不表示 #361 完成**。
+- exit **0**：默认及兼容的 `--local-isolation` 验证历史／取消／Goal 恢复，以及真实迟到帧进入宿主诊断、不进入任何会话 `pi.event` 流；不声称精确回源。`--history-only` 仅证明历史子集，不运行迟到错误隔离。
 - exit **1**：断言／运行失败。
-- exit **2**：默认完整专项即使本地隔离通过，仍明确保留上游来源归属阻塞。未来上游若加入来源字段，也必须单独验证路由，不能仅因字段存在就退出 0。
+- exit **2**：仅 `--require-source-attribution` 的附加精确归属检查未满足。未来上游加入字段也必须单独验证路由，不能仅因字段存在就退出 0；这不是再次检测到目标会话污染。
 
-仅验收本地隔离时使用：
+兼容的本地隔离入口：
 
 ```bash
 node --import tsx scripts/verify-session-transitions.mjs --local-isolation
 ```
 
-2026-10-29 官方 **OMP 18.12.6 / Bun 1.3.14** 完整运行：`run-vAcx9z/evidence.json`，exit 2；最终复跑 `run-053aee/evidence.json` 同样 exit 2、原始错误仍无来源；独立历史运行：`run-MFaTMk/evidence.json`，exit 0。
+需要明确检查额外来源能力时使用：
+
+```bash
+node --import tsx scripts/verify-session-transitions.mjs --require-source-attribution
+```
+
+历史结果（当时默认脚本仍要求精确来源）：2026-10-29 官方 **OMP 18.12.6 / Bun 1.3.14** 完整运行：`run-vAcx9z/evidence.json`，exit 2；最终复跑 `run-053aee/evidence.json` 同样 exit 2、原始错误仍无来源；独立历史运行：`run-MFaTMk/evidence.json`，exit 0。
 
 通过的原生检查：
 
@@ -57,7 +71,7 @@ node --import tsx scripts/verify-session-transitions.mjs --local-isolation
 - Undo 新分支后刷新网页，URL 身份、文字／图片草稿及持久化 Redo 保留；点击 Redo 恢复正确新分支，未新增会话。刷新不会持久化分屏布局，本次不把布局恢复作为身份／草稿验收。
 - 实际截图已查看；最终浏览器错误日志为空。启动未带 token 的早期 401 不计作业务失败，带测试 token 后真实交互通过。
 
-## #361 的明确阻塞证据
+## 精确来源归属的历史缺口（不再阻塞 #361 原隔离范围）
 
 源 `01a186ec-fa53-7090-9a0a-7e9f9e0d1522` 通过受支持扩展命令注册 `ctx.setTimeout`，回调等待测试释放；成功 new 到 `01a186ed-0cb8-76c9-bfa5-2c391158a56a` 后释放旧回调。**在 OMPiUI 添加消费 epoch 之前**捕获的官方原始帧：
 
@@ -70,7 +84,7 @@ node --import tsx scripts/verify-session-transitions.mjs --local-isolation
 }
 ```
 
-缺少 source session／prompt／generation；给接收时的当前身份打 epoch 无法恢复丢失的原始归属。不能全忽略此类错误、从错误文本推测来源、启用旧回调模拟成功或替换官方内部 runner。需要上游在回调开始／注册时捕获来源并通过 RPC 保留可关联身份；本地不能因此将 #361 标为完成。
+缺少 source session／prompt／generation；给接收时的当前身份打 epoch 无法恢复丢失的原始归属。不能全忽略此类错误、从错误文本推测来源、启用旧回调模拟成功或替换官方内部 runner。精确回源需要上游在回调开始／注册时捕获来源并通过 RPC 保留可关联身份；本地已通过独立宿主通道满足 #361 的不污染要求，但没有恢复这些缺失身份。
 
 官方源码核对：[18.13.3 rpc-mode.ts](https://github.com/can1357/oh-my-pi/blob/v18.13.3/packages/coding-agent/src/modes/rpc/rpc-mode.ts) 的 `initializeExtensions.reportRuntimeError` 仍只输出上述三项错误字段。
 

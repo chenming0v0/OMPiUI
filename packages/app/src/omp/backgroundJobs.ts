@@ -69,14 +69,26 @@ export function useBackgroundJobs(sessionId: string | null | undefined, enabled:
     })
   }, [sessionId, enabled])
 
-  useEffect(() => {
+  // Reset when the session changes; adjusted during render so callers never
+  // observe another session's jobs.
+  const [prevSessionId, setPrevSessionId] = useState(sessionId)
+  if (prevSessionId !== sessionId) {
+    setPrevSessionId(sessionId)
     setSnapshot(EMPTY)
     setError(null)
-  }, [sessionId])
+  }
+
+  // Clear jobs for sessions without an active runtime; adjusted during render
+  // so the hook never displays jobs of a dead runtime.
+  const runtimeInactive = !sessionId || !enabled || (!!sessionId && !runtimeActive(sessionId))
+  const [prevInactive, setPrevInactive] = useState(runtimeInactive)
+  if (prevInactive !== runtimeInactive) {
+    setPrevInactive(runtimeInactive)
+    if (runtimeInactive) setSnapshot(EMPTY)
+  }
 
   useEffect(() => {
     if (!sessionId || !enabled || !runtimeActive(sessionId)) {
-      setSnapshot(EMPTY)
       return
     }
     const controller = new AbortController()

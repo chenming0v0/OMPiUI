@@ -52,6 +52,94 @@ describe('ompSubagentStore state', () => {
     expect(ompSubagentStore.runsForSession('session-a')[0]?.status).toBe('running')
   })
 
+  it('keeps observed reused tasks unconfirmed rather than settling them from an empty native snapshot', () => {
+    const start = { id: 'reuse', parentToolCallId: 'call', sessionFile: 'reuse.jsonl', status: 'started' }
+    ompSubagentStore.applyLifecycle('session-a', { ...start, runId: 'first' })
+    ompSubagentStore.applyLifecycle('session-a', { ...start, runId: 'second', identityAmbiguous: true, isFollowUp: true })
+    const observation = { id: 'reuse', rootSessionId: 'session-a', runId: 'second', observationEpoch: 'epoch',
+      observationId: 'attachment', activityVersion: 1, activity: 'running', pendingAsync: false }
+    ompSubagentStore.applyObservation('session-a', observation)
+    ompSubagentStore.applyEvent('session-a', { id: 'reuse', runId: 'second', event: { type: 'tool_execution_start', toolCallId: 'read', toolName: 'read' } })
+    ompSubagentStore.applyLifecycle('session-a', { ...start, status: 'completed' })
+    ompSubagentStore.applySnapshot('session-a', [], true)
+    let run = ompSubagentStore.runsForSession('session-a')[0]!
+    expect(run.status).toBe('running')
+    expect(run.endedAt).toBeUndefined()
+    expect(run.transcript[0]?.toolStatus).toBe('running')
+    ompSubagentStore.applyObservation('session-a', { ...observation, activityVersion: 2, activity: 'idle' })
+    run = ompSubagentStore.runsForSession('session-a')[0]!
+    expect(run.status).toBe('unknown')
+    expect(run.endedAt).toBeUndefined()
+    expect(run.transcript[0]?.toolStatus).toBe('running')
+    ompSubagentStore.applyObservation('session-a', observation)
+    expect(ompSubagentStore.runsForSession('session-a')[0]?.status).toBe('unknown')
+    ompSubagentStore.applyObservation('session-a', { ...observation, observationId: 'replacement' })
+    ompSubagentStore.applyObservation('session-a', { ...observation, activityVersion: 99, activity: 'idle' })
+    expect(ompSubagentStore.runsForSession('session-a')[0]?.status).toBe('running')
+  })
+
+  it.each(['observation', 'snapshot'] as const)('rejects an unseen older observer epoch arriving through %s with the same task runId', source => {
+    const observation = {
+      id: 'observer-only', runId: 'same-task-run', rootSessionId: 'session-a', sessionFile: 'child.jsonl',
+      observationEpoch: 'epoch-B', observationId: 'attachment-B', observationSequence: 20,
+      activityVersion: 1, activity: 'running', pendingAsync: false,
+    }
+    ompSubagentStore.applyObservation('session-a', observation)
+    ompSubagentStore.applyEvent('session-a', { id: observation.id, runId: observation.runId,
+      event: { type: 'tool_execution_start', toolCallId: 'active-read', toolName: 'read' } })
+    const late = { ...observation, observationEpoch: 'epoch-A', observationId: 'attachment-A',
+      observationSequence: 19, activityVersion: 99, activity: 'idle', status: 'unknown' }
+    if (source === 'observation') ompSubagentStore.applyObservation('session-a', late)
+    else ompSubagentStore.applySnapshot('session-a', [late], true)
+    let current = ompSubagentStore.runsForSession('session-a')[0]!
+    expect(current).toMatchObject({ runId: observation.runId, observationEpoch: 'epoch-B', observationId: 'attachment-B',
+      observationSequence: 20, activityVersion: 1, activity: 'running', status: 'running', endedAt: undefined,
+      transcript: [{ toolCallId: 'active-read', toolStatus: 'running' }] })
+    ompSubagentStore.applyObservation('session-a', { ...observation,
+      observationSequence: 21, activityVersion: 2, activity: 'idle', pendingAsync: true })
+    current = ompSubagentStore.runsForSession('session-a')[0]!
+    expect(current).toMatchObject({ runId: observation.runId, observationEpoch: 'epoch-B', observationSequence: 21,
+      status: 'pending', pendingAsync: true, endedAt: undefined })
+    ompSubagentStore.applyObservation('session-a', { ...observation, observationSequence: 22, activityVersion: 3 })
+    expect(ompSubagentStore.runsForSession('session-a')[0]).toMatchObject({ runId: observation.runId,
+      observationEpoch: 'epoch-B', observationSequence: 22, status: 'running', endedAt: undefined,
+      transcript: [{ toolCallId: 'active-read', toolStatus: 'running' }] })
+  })
+
+  it.each(['lifecycle', 'progress', 'snapshot'] as const)('never seals an observation-only active transcript on identityless terminal %s', source => {
+    const observation = {
+      id: 'observer-only', runId: 'observed-task', rootSessionId: 'session-a', sessionFile: 'child.jsonl',
+      observationEpoch: 'epoch', observationId: 'attachment', observationSequence: 1,
+      activityVersion: 1, activity: 'running', pendingAsync: false, identityAmbiguous: false,
+    }
+    // No native started frame or startToken has been observed for this projection.
+    ompSubagentStore.applyObservation('session-a', observation)
+    ompSubagentStore.applyEvent('session-a', { id: observation.id, runId: observation.runId,
+      event: { type: 'message_update', message: { role: 'assistant', content: [{ type: 'text', text: 'Still working' }] } } })
+    ompSubagentStore.applyEvent('session-a', { id: observation.id, runId: observation.runId,
+      event: { type: 'tool_execution_start', toolCallId: 'active-read', toolName: 'read' } })
+    const initial = ompSubagentStore.runsForSession('session-a')[0]!
+    expect(initial.startToken).toBeUndefined()
+    expect(initial.transcript.find(item => item.text === 'Still working')?.streaming).toBe(true)
+    const transcript = initial.transcript
+    for (const status of ['completed', 'failed', 'aborted']) {
+      const terminal = { id: observation.id, sessionFile: observation.sessionFile, status }
+      if (source === 'lifecycle') ompSubagentStore.applyLifecycle('session-a', terminal)
+      if (source === 'progress') ompSubagentStore.applyProgress('session-a', { id: observation.id, progress: { status } })
+      if (source === 'snapshot') ompSubagentStore.applySnapshot('session-a', [terminal], true)
+      const current = ompSubagentStore.runsForSession('session-a')[0]!
+      expect(current).toMatchObject({ runId: observation.runId, status: 'running', activity: 'running',
+        identityAmbiguous: false, endedAt: undefined })
+      expect(current.startToken).toBeUndefined()
+      expect(current.transcript).toBe(transcript)
+      expect(current.transcript.find(item => item.text === 'Still working')?.streaming).toBe(true)
+      expect(current.transcript.find(item => item.toolCallId === 'active-read')?.toolStatus).toBe('running')
+    }
+    ompSubagentStore.applyObservation('session-a', { ...observation, observationSequence: 2, activityVersion: 2 })
+    expect(ompSubagentStore.runsForSession('session-a')[0]).toMatchObject({ status: 'running', endedAt: undefined })
+    expect(ompSubagentStore.runsForSession('session-a')[0].transcript).toBe(transcript)
+  })
+
   it('accepts the official progress.id identity without requiring an outer id', () => {
     ompSubagentStore.applyLifecycle('session-a', { id: 'native-progress', parentToolCallId: 'call-native', status: 'started', index: 0 })
     ompSubagentStore.applyProgress('session-a', {

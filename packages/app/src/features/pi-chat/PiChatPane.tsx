@@ -377,6 +377,17 @@ export function PiChatPane({
     return { steering: appendPendingQueueEntries(queuedSteering, remaining, 'steering'), followUp: appendPendingQueueEntries(queuedFollowUps, remaining, 'followUp') }
   }, [pendingSends, activeServerGeneration, sessionId, baseItems, queuedSteering, queuedFollowUps])
 
+  // Latest-identity ref for async callbacks below; synced after commit in an
+  // effect declared before every hook that captures it (refs must not be
+  // written during render, and writes must not mutate values already passed
+  // to earlier hooks).
+  const paneIdentityRef = useRef({ sessionId, activeServerGeneration, epoch: 0 })
+  useEffect(() => {
+    if (paneIdentityRef.current.sessionId !== sessionId || paneIdentityRef.current.activeServerGeneration !== activeServerGeneration) {
+      paneIdentityRef.current = { sessionId, activeServerGeneration, epoch: paneIdentityRef.current.epoch + 1 }
+    }
+  }, [sessionId, activeServerGeneration])
+
   const handleQueueBackToInput = useCallback(
     async (kind: 'steering' | 'followUp', index: number, entryId: string) => {
       if (!sessionId) return
@@ -508,10 +519,6 @@ export function PiChatPane({
   const stopKey = JSON.stringify([activeServerGeneration, sessionId])
   const [stoppingKey, setStoppingKey] = useState<string | null>(null)
   const isStopping = stoppingKey === stopKey
-  const paneIdentityRef = useRef({ sessionId, activeServerGeneration, epoch: 0 })
-  if (paneIdentityRef.current.sessionId !== sessionId || paneIdentityRef.current.activeServerGeneration !== activeServerGeneration) {
-    paneIdentityRef.current = { sessionId, activeServerGeneration, epoch: paneIdentityRef.current.epoch + 1 }
-  }
   const handleAbort = useCallback(async () => {
     if (!sessionId) return
     const sid = sessionId

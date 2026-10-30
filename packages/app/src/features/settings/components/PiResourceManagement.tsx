@@ -24,7 +24,9 @@ export function PiResourceManagement({ sessionId, workspacePath }: { sessionId: 
   const serverGeneration = useSyncExternalStore(listener => serverStore.subscribe(listener), () => serverStore.getActiveServerGeneration(), () => serverStore.getActiveServerGeneration())
   const scope = JSON.stringify([serverGeneration, sessionId, workspacePath])
   const currentScope = useRef(scope)
-  currentScope.current = scope
+  useEffect(() => {
+    currentScope.current = scope
+  }, [scope])
   const request = useRef<AbortController | null>(null)
   const [data, setData] = useState<{
     scope: string

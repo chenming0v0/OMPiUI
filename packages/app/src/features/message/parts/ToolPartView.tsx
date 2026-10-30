@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 import { diffLines } from 'diff'
 import { ChevronDownIcon, ChevronRightIcon } from '../../../components/Icons'
@@ -27,6 +27,8 @@ import { MSG_SPACING } from '../messageSpacing'
 import { MessageExpandPanel, useMessageExpandRender } from '../messageExpand'
 import { ToolResultImages, ToolResultNotice } from '../tools/renderers/DefaultRenderer'
 import { resolveTaskExecution } from '../tools/taskToolData'
+import { getTaskExecutionOutcome } from '../../../omp/taskOutcome'
+import { ompSubagentStore } from '../../../omp/ompSubagentStore'
 
 // ============================================
 // ToolPartView - 单个工具调用
@@ -74,7 +76,15 @@ export const ToolPartView = memo(function ToolPartView({
   const execution = useMemo(() => resolveTaskExecution(rawExecution), [rawExecution])
   const { call, result } = execution
   const toolName = call.name
-  const status = getToolExecutionStatus(execution)
+  const getLiveRun = useCallback(() => {
+    if (toolName !== 'task') return undefined
+    const runs = ompSubagentStore.getRunsForToolCall(call.id, currentSessionId)
+    return taskSlotIndex !== undefined ? runs.find(run => run.index === taskSlotIndex) : runs.length === 1 ? runs[0] : undefined
+  }, [toolName, call.id, currentSessionId, taskSlotIndex])
+  const liveRun = useSyncExternalStore(ompSubagentStore.subscribe, getLiveRun, getLiveRun)
+  const status = toolName === 'task'
+    ? getTaskExecutionOutcome(execution, { slotIndex: taskSlotIndex, liveRun }).presentationStatus
+    : getToolExecutionStatus(execution)
   // title 显示工具调用实质（命令/路径/模式），而不是重复工具名——
   // OMP RPC 的工具调用事件只有 toolName + args，没有工具描述字段；
   // formatToolName(toolName) 已展示工具名，title 再显示同名就是冗余。

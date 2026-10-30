@@ -42,12 +42,18 @@ export function PiPackageManagement({ workspacePath }: { workspacePath: string }
     }
   }, [workspacePath, applySnapshot])
 
-  useEffect(() => {
+  // Clear transient state when the workspace changes, during render so stale
+  // package data never paints for the new workspace.
+  const [prevWorkspacePath, setPrevWorkspacePath] = useState(workspacePath)
+  if (prevWorkspacePath !== workspacePath) {
+    setPrevWorkspacePath(workspacePath)
     setPackages([])
     setMarketplaces([])
     setUpdates([])
     setResolved(null)
     setInstalledPaths({})
+  }
+  useEffect(() => {
     const controller = new AbortController()
     const timer = window.setTimeout(() => { void load(controller.signal) }, 0)
     return () => { window.clearTimeout(timer); controller.abort() }

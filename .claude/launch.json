@@ -18,6 +18,19 @@
       "runtimeExecutable": "node",
       "runtimeArgs": ["--import", "tsx", "scripts/preview-tool-interaction.mjs", "--runtime-dir", ".slim/issue-repair-native-runtime"],
       "port": 8798
+    },
+    {
+      "name": "isolated-rpc-stream-errors",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--import", "tsx", "scripts/preview-rpc-stream-errors.mjs", "--runtime-dir", ".slim/issue-repair-native-runtime"],
+      "port": 8799,
+      "autoPort": true
+    },
+    {
+      "name": "isolated-subagent-compat",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--import", "tsx", "scripts/preview-subagent-compat.mjs", "--runtime-dir", ".slim/issue-repair-native-runtime"],
+      "port": 8800
     }
   ]
 }

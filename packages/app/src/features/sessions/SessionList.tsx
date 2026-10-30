@@ -404,7 +404,8 @@ export function SessionListItem({
   onToggleCheck,
 }: SessionListItemProps) {
   const { t } = useTranslation(['commands', 'common', 'chat'])
-  const sessionGeneration = useMemo(() => serverStore.getActiveServerGeneration(), [session])
+  // Read at render time; handlers below re-check against the live value on click.
+  const sessionGeneration = serverStore.getActiveServerGeneration()
   const { sessionRename: canRename, sessionDelete: canDelete } = usePiCapabilities()
   const [isEditing, setIsEditing] = useState(false)
   const [editTitle, setEditTitle] = useState(session.title || '')

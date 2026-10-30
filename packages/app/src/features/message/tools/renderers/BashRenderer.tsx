@@ -70,7 +70,9 @@ export function BashRenderer(props: ToolRendererProps) {
   const [attachedIdentity, setAttachedIdentity] = useState<string | null>(null)
   const identity = descriptor ? `${serverId}:${descriptor.executionId}` : null
   const showTerminal = !!descriptor && (!completed || replay || attachedIdentity === identity)
-  useEffect(() => { if (showTerminal && identity) setAttachedIdentity(identity) }, [identity, showTerminal])
+  // Record the attach identity during render so the terminal survives without
+  // an effect-driven extra render.
+  if (showTerminal && identity && attachedIdentity !== identity) setAttachedIdentity(identity)
   if (showTerminal && descriptor) return <>
     <ToolInteractionTerminal descriptor={descriptor} serverId={serverId} readOnly={completed} onFullscreenChange={onFullscreenChange} />
     {completed && <StaticBashRenderer {...props} onFullscreenChange={undefined} />}

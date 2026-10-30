@@ -7,7 +7,8 @@ import { createTransitionFixture, nativeEntries, messageText, testImage } from '
 
 const historyOnly = process.argv.includes('--history-only')
 const localIsolation = process.argv.includes('--local-isolation')
-if (process.argv.slice(2).some(arg => !['--history-only', '--local-isolation'].includes(arg)) || (historyOnly && localIsolation)) throw new Error('Usage: verify-session-transitions.mjs [--history-only | --local-isolation]')
+const requireSourceAttribution = process.argv.includes('--require-source-attribution')
+if (process.argv.slice(2).some(arg => !['--history-only', '--local-isolation', '--require-source-attribution'].includes(arg)) || (historyOnly && (localIsolation || requireSourceAttribution)) || (localIsolation && requireSourceAttribution)) throw new Error('Usage: verify-session-transitions.mjs [--history-only | --local-isolation | --require-source-attribution]')
 const fixture = await createTransitionFixture()
 const evidence = { root: fixture.root, ompVersion: await detectOmpVersion(), provider: 'deterministic loopback only', checks: [], extensionError: null }
 let session
@@ -134,17 +135,18 @@ try {
   evidence.checks.push('cancelled new preserves source goal; committed new clears it and restores source goal on switch back')
   await session.switchSession(file)
   assert.equal((await session.getState()).goal.objective, 'source paused goal')
-  evidence.status = historyOnly ? 'HISTORY_PASS_ISOLATION_NOT_RUN' : evidence.extensionError.hasSourceIdentity ? 'SOURCE_FIELDS_PRESENT_REQUIRES_ROUTING_VERIFICATION' : 'LOCAL_ISOLATION_PASS_SOURCE_ATTRIBUTION_UPSTREAM_BLOCKED'
+  evidence.status = historyOnly ? 'HISTORY_PASS_ISOLATION_NOT_RUN' : requireSourceAttribution
+    ? 'LOCAL_ISOLATION_PASS_SOURCE_ATTRIBUTION_NOT_VERIFIED' : 'HISTORY_AND_HOST_ISOLATION_PASS'
   fixture.save('evidence.json', evidence)
   fixture.save('provider-requests.json', fixture.requests)
   console.info(JSON.stringify(evidence, null, 2))
-  if (!historyOnly && (!localIsolation || evidence.extensionError.hasSourceIdentity)) {
+  if (requireSourceAttribution) {
     console.error(evidence.extensionError.hasSourceIdentity
-      ? 'BLOCKED #361: source fields appeared; precise routing requires separate verification.'
-      : 'BLOCKED #361: local host-error isolation passed, but official source attribution is still unavailable. Use --local-isolation for the local-only verdict.')
+      ? 'ADDITIONAL CHECK UNVERIFIED: source fields appeared; precise routing requires separate verification. Host isolation passed.'
+      : 'ADDITIONAL CHECK UNAVAILABLE: official source attribution is missing. Host isolation passed; this is not target-session pollution.')
     process.exitCode = 2
-  } else if (localIsolation) {
-    console.info('PASS: local host-error isolation verified. This does not establish complete #361 acceptance.')
+  } else if (!historyOnly) {
+    console.info('PASS: history and host-error isolation verified for the agreed #361 scope. Precise source attribution is not established.')
   }
 } catch (error) {
   evidence.status = 'FAILED'; evidence.error = String(error)

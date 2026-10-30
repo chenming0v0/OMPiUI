@@ -374,6 +374,21 @@ describe('SessionChangesPanel', () => {
     expect(mainViewer()).toHaveTextContent('fresh src/a.ts')
   })
 
+  it('disables stale staging actions until an external Git refresh finishes', async () => {
+    render(<GitStagingPanel directory="/repo" onSelectFile={vi.fn()} onChanged={vi.fn()} />)
+    await act(async () => { await Promise.resolve() })
+    const file = screen.getAllByRole('button', { name: 'src/z.ts' })[0]!
+    expect(file).not.toBeDisabled()
+    const status = Promise.withResolvers<unknown>()
+    getHostGitStatus.mockReturnValueOnce(status.promise)
+    act(() => window.dispatchEvent(new CustomEvent('ompiui:workspace-git-updated', { detail: { workspacePath: '/repo' } })))
+    expect(file).toBeDisabled()
+    fireEvent.click(file)
+    expect(getHostGitFileDiff).not.toHaveBeenCalled()
+    await act(async () => status.resolve({ items: [{ path: 'src/z.ts', staged: false, unstaged: true, indexStatus: ' ', worktreeStatus: 'M' }] }))
+    expect(screen.getByRole('button', { name: 'src/z.ts' })).not.toBeDisabled()
+  })
+
   it.each(['selection', 'patch', 'pending patch', 'preview', 'pending preview'])('invalidates %s on an active URL edit and requires a fresh selection', async state => {
     const status = Promise.withResolvers<unknown>()
     const preview = Promise.withResolvers<unknown>()

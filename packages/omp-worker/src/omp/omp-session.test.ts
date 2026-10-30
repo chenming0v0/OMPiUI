@@ -8,6 +8,7 @@ import type { ImageInput, JsonObject } from "@ompiui/protocol"
 import { OmpExtensionUiBridge } from "./omp-extension-ui.js"
 import { OmpRpcSession } from "./omp-session.js"
 import type { OmpRpcFrame } from "./rpc-client.js"
+import { SUBAGENT_OBSERVATION_PREFIX } from "./native-subagent-observation.js"
 
 
 // Exercise consumer-visible session projection and transitions with a controlled
@@ -480,6 +481,126 @@ describe("OmpRpcSession authoritative lifecycle", () => {
     const snapshot = await reading as JsonObject[]
     assert.equal(snapshot[0]!.status, "running")
     assert.equal(((await session.getState()).subagents as JsonObject[])[0]!.runId, snapshot[0]!.runId)
+  })
+
+  it("keeps a same-owner running restart alive through identity-less old terminals and read-only refresh", async t => {
+    const { session, frame, native, commands } = await sessionFixture(t)
+    const emitted: JsonObject[] = []
+    session.onSubagentFrame(event => emitted.push(event))
+    const started = { id: "reviewer", parentToolCallId: "task", sessionFile: "reviewer.jsonl", status: "started" }
+    let observationSequence = 0
+    const observe = (version: number, activity: string, pendingAsync = false, observationId = "attachment") => frame({
+      type: "extension_ui_request", method: "notify", message: SUBAGENT_OBSERVATION_PREFIX + JSON.stringify({
+        protocolVersion: 1, rootSessionId: native.sessionId, rootSessionFile: native.sessionFile,
+        id: "reviewer", sessionFile: "reviewer.jsonl", observationEpoch: "observer", observationId,
+        observationSequence: ++observationSequence, activityVersion: version, activity, pendingAsync,
+      }),
+    })
+    frame({ type: "subagent_lifecycle", payload: started })
+    const first = ((await session.getState()).subagents as JsonObject[])[0]!.runId
+    observe(1, "idle", true)
+    observe(2, "running")
+    assert.equal(((await session.getState()).subagents as JsonObject[])[0]!.runId, first, "activity is not a monitor boundary")
+    frame({ type: "subagent_lifecycle", payload: started })
+    const current = ((await session.getState()).subagents as JsonObject[])[0]!
+    assert.notEqual(current.runId, first)
+    frame({ type: "subagent_progress", payload: { ...started, progress: { status: "completed", tokens: 999 } } })
+    frame({ type: "subagent_lifecycle", payload: { ...started, status: "completed" } })
+    assert.equal(((await session.getState()).subagents as JsonObject[])[0]!.status, "running")
+    assert.equal(emitted.filter(event => event.kind === "unassigned").length, 2)
+    assert.equal(((await session.getState()).subagents as JsonObject[])[0]!.progress, undefined)
+    observe(3, "idle")
+    const idle = ((await session.getState()).subagents as JsonObject[])[0]!
+    assert.equal(idle.status, "unknown")
+    assert.equal(idle.runId, current.runId)
+    observe(2, "running")
+    assert.equal(((await session.getState()).subagents as JsonObject[])[0]!.status, "unknown", "old observation version rejected")
+    observe(1, "running", false, "replacement")
+    observe(99, "idle")
+    assert.equal(((await session.getState()).subagents as JsonObject[])[0]!.status, "running", "retired attachment rejected")
+    assert.ok(commands.every(command => command.type !== "prompt" && command.type !== "submitUserMessage"))
+  })
+
+  it("rejects a previously unseen older observer epoch without retiring the current task projection", async t => {
+    const { session, frame, native, commands } = await sessionFixture(t)
+    const emitted: JsonObject[] = []
+    session.onSubagentFrame(event => emitted.push(event))
+    const observe = (epoch: string, sequence: number, version: number, activity: string, pendingAsync = false) => frame({
+      type: "extension_ui_request", method: "notify", message: SUBAGENT_OBSERVATION_PREFIX + JSON.stringify({
+        protocolVersion: 1, rootSessionId: native.sessionId, rootSessionFile: native.sessionFile,
+        id: "reviewer", sessionFile: "reviewer.jsonl", observationEpoch: epoch, observationId: `${epoch}-attachment`,
+        observationSequence: sequence, activityVersion: version, activity, pendingAsync,
+      }),
+    })
+    observe("epoch-B", 20, 1, "running")
+    const current = ((await session.getState()).subagents as JsonObject[])[0]!
+    const projectionRunId = current.runId
+    assert.equal(current.nativeStarted, undefined)
+    observe("epoch-A", 19, 99, "idle")
+    const afterLate = ((await session.getState()).subagents as JsonObject[])[0]!
+    assert.equal(afterLate.runId, projectionRunId)
+    assert.equal(afterLate.observationEpoch, "epoch-B")
+    assert.equal(afterLate.observationSequence, 20)
+    assert.equal(afterLate.status, "running")
+    assert.equal(emitted.filter(event => event.kind === "observation").length, 1)
+    observe("epoch-B", 21, 2, "idle", true)
+    const idle = ((await session.getState()).subagents as JsonObject[])[0]!
+    assert.equal(idle.runId, projectionRunId)
+    assert.equal(idle.status, "pending", "late unseen A must not retire B")
+    observe("epoch-B", 22, 3, "running")
+    const resumed = ((await session.getState()).subagents as JsonObject[])[0]!
+    assert.equal(resumed.runId, projectionRunId)
+    assert.equal(resumed.status, "running")
+    assert.equal(resumed.observationSequence, 22)
+    assert.ok(commands.every(command => String(command.type).startsWith("get_") || ["identity", "queue", "resources"].includes(String(command.type))),
+      `unexpected non-read-only commands: ${JSON.stringify(commands.map(command => command.type))}`)
+  })
+
+  it("keeps an observation-only active child running through identityless terminal frames and registry reads", async t => {
+    const { session, frame, native, rpc, commands } = await sessionFixture(t)
+    const emitted: JsonObject[] = []
+    session.onSubagentFrame(event => emitted.push(event))
+    const observation = {
+      protocolVersion: 1, rootSessionId: native.sessionId, rootSessionFile: native.sessionFile,
+      id: "reviewer", sessionFile: "reviewer.jsonl", observationEpoch: "observer", observationId: "attachment",
+      observationSequence: 1, activityVersion: 1, activity: "running", pendingAsync: false,
+    }
+    frame({ type: "extension_ui_request", method: "notify", message: SUBAGENT_OBSERVATION_PREFIX + JSON.stringify(observation) })
+    const first = ((await session.getState()).subagents as JsonObject[])[0]!
+    const runId = first.runId
+    assert.equal(first.nativeStarted, undefined)
+    assert.equal(first.identityAmbiguous, undefined)
+    frame({ type: "subagent_event", payload: { id: "reviewer", event: { type: "tool_execution_start", toolCallId: "live-read", toolName: "read" } } })
+    for (const terminal of ["completed", "failed", "aborted"]) {
+      for (const type of ["subagent_lifecycle", "subagent_progress"]) {
+        frame({ type, payload: { id: "reviewer", sessionFile: "reviewer.jsonl",
+          ...(type === "subagent_progress" ? { progress: { status: terminal } } : { status: terminal }) } })
+        const current = ((await session.getState()).subagents as JsonObject[])[0]!
+        assert.equal(current.runId, runId)
+        assert.equal(current.status, "running", `${type} ${terminal} cannot terminate independently observed activity`)
+        assert.equal(current.activity, "running")
+        assert.equal(current.nativeStarted, undefined)
+        assert.equal(current.startToken, undefined)
+        assert.equal(current.endedAt, undefined)
+      }
+    }
+    rpc.onRequest = command => command.type === "get_subagents"
+      ? { data: { subagents: [{ id: "reviewer", sessionFile: "reviewer.jsonl", status: "completed" }] } } : undefined
+    const snapshot = await session.listSubagents() as JsonObject[]
+    assert.equal(snapshot[0]!.runId, runId)
+    assert.equal(snapshot[0]!.status, "running")
+    // Progress snapshots are coalesced; a boundary flushes the final pending progress.
+    frame({ type: "subagent_event", payload: { id: "reviewer", event: { type: "tool_execution_start", toolCallId: "next-read", toolName: "read" } } })
+    const terminalEvents = emitted.filter(event => event.kind === "lifecycle" || event.kind === "progress")
+    assert.equal(terminalEvents.length, 6)
+    for (const event of terminalEvents) {
+      const payload = event.payload as JsonObject
+      assert.equal(payload.runId, runId)
+      assert.equal(payload.activity, "running", "consumer must receive the independent active observation")
+      assert.equal(payload.observationSequence, 1)
+    }
+    assert.ok(commands.every(command => String(command.type).startsWith("get_") || ["identity", "queue", "resources"].includes(String(command.type))),
+      `unexpected non-read-only commands: ${JSON.stringify(commands.map(command => command.type))}`)
   })
 
   it("keeps goal and subagents on cancelled replacement and clears both after success", async t => {

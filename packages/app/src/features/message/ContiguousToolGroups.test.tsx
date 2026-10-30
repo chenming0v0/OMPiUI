@@ -1,6 +1,9 @@
 import type { ComponentProps } from 'react'
 import { ToolGroup } from './parts/ToolGroup'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { ompSubagentStore } from '../../omp/ompSubagentStore'
+import { piBranchStore } from '../../omp/state/index.js'
+import { xdTaskAsyncCall, xdTaskAsyncResult } from './tools/__fixtures__/xdTaskAsyncDispatch'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MessageRenderer } from './MessageRenderer'
 import { buildVisibleTimelineEntries } from '../chat/chatAreaVisibility'
@@ -134,6 +137,46 @@ describe('contiguous assistant tool groups', () => {
     expect(summary).toHaveTextContent('toolSteps.pending')
     expect(summary).not.toHaveTextContent('toolSteps.readActive')
     expect(summary.querySelectorAll('.reasoning-shimmer-text')).toHaveLength(1)
+  })
+
+  it('updates task summary from reused live activity without treating the old async receipt as running', async () => {
+    toolTheme.descriptiveToolSteps = true
+    ompSubagentStore.clearAll()
+    const item = assistant('task-summary-owner', [{ ...call('task-summary', 'task'), arguments: { tasks: [{ name: 'Reused' }] } }], 1)
+    item.toolResults['task-summary'].details = { async: { state: 'running' }, results: [] }
+    const frame = { id: 'Reused', parentToolCallId: 'task-summary', index: 0, runId: 'next', isFollowUp: true,
+      observationEpoch: 'epoch', observationId: 'Reused', activityVersion: 1, activity: 'running', status: 'running' }
+    ompSubagentStore.applyLifecycle('summary-parent', frame)
+    render(<SessionNavigationContext.Provider value={{ currentSessionId: 'summary-parent', currentDirectory: '', navigateToSession: vi.fn() }}>
+      <MessageRenderer item={item} processContentScope="inline" />
+    </SessionNavigationContext.Provider>)
+    expect(screen.getByRole('button', { name: /toolSteps.taskActive/ })).toBeInTheDocument()
+    act(() => ompSubagentStore.applyObservation('summary-parent', { ...frame, rootSessionId: 'summary-parent', activityVersion: 2, activity: 'idle', status: 'unknown' }))
+    expect(ompSubagentStore.getRunsForToolCall('task-summary', 'summary-parent')[0]?.status).toBe('unknown')
+    await waitFor(() => expect(screen.queryByRole('button', { name: /toolSteps.taskActive/ })).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: /task.outcome.merge.unconfirmed/ })).toBeInTheDocument()
+    act(() => ompSubagentStore.applyObservation('summary-parent', { ...frame, rootSessionId: 'summary-parent', activityVersion: 3 }))
+    expect(await screen.findByRole('button', { name: /toolSteps.taskActive/ })).toBeInTheDocument()
+    act(() => ompSubagentStore.clearAll())
+  })
+
+  it('updates task summary from structured async delivery without a live run', () => {
+    toolTheme.descriptiveToolSteps = true
+    const item = assistant('async-summary-owner', [xdTaskAsyncCall], 1)
+    item.toolResults = { [xdTaskAsyncCall.id]: xdTaskAsyncResult }
+    piBranchStore.clear('async-summary-parent')
+    render(<SessionNavigationContext.Provider value={{ currentSessionId: 'async-summary-parent', currentDirectory: '', navigateToSession: vi.fn() }}>
+      <MessageRenderer item={item} processContentScope="inline" />
+    </SessionNavigationContext.Provider>)
+    expect(screen.getByRole('button', { name: /toolSteps.taskActive/ })).toBeInTheDocument()
+    act(() => piBranchStore.setData('async-summary-parent', { items: [{ type: 'custom_message', customType: 'async-result', timestamp: xdTaskAsyncResult.timestamp + 1,
+      content: 'opaque delivery', details: { jobs: [
+        { type: 'task', jobId: 'ReviewNativeIntegration', status: 'completed' },
+        { type: 'task', jobId: 'ReviewGuiGitIntegration', status: 'completed' },
+      ] } }] } as never))
+    expect(screen.queryByRole('button', { name: /toolSteps.taskActive/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /task.outcome.merge.unconfirmed/ })).toBeInTheDocument()
+    act(() => piBranchStore.clear('async-summary-parent'))
   })
 
   it.each([false, true])('counts interrupted ordinary tools as terminal without hiding completed neighbors (descriptive=%s)', descriptive => {

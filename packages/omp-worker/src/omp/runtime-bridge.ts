@@ -6,6 +6,7 @@ import { nativeExtensionResourcesSource } from './resource-registry.js'
 import { NATIVE_PROMPT_ADMISSION_IMPORT, NATIVE_PROMPT_ADMISSION_SOURCE } from './native-prompt-admission.js'
 import { NATIVE_WORKTREE_IMPORTS, NATIVE_WORKTREE_SOURCE } from './native-worktree.js'
 import { nativeToolInteractionImports, nativeToolInteractionSource } from './native-tool-interaction.js'
+import { nativeSubagentObservationPrelude, nativeSubagentObservationSource } from './native-subagent-observation.js'
 
 export type RuntimeBridgeOperation = "capabilities" | "identity" | "queue" | "clearQueue" | "removeQueuedMessage" | "sendQueuedMessage" | "submitUserMessage" | "prepareStop" | "resumeStoppedSession" | "navigateTree" | "abortBranchSummary" | "fork" | "branch" | "reload" | "setLabel" | "setScopedModels" | "cycleModel" | "resources" | "tree" | "asyncJobs" | "inspectAsyncJob" | "cancelAsyncJob" | "goal" | "moveSession" | "worktreeState"
 const RESPONSE_PREFIX = "\u001eompiui-runtime:"
@@ -90,6 +91,7 @@ import { resolveModelScope, getModelMatchPreferences, formatModelStringWithRouti
 import { cfgDisabledExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/settings";
 ${NATIVE_WORKTREE_IMPORTS}
 ${nativeToolInteractionImports}
+${nativeSubagentObservationPrelude}
 export default function (pi) {
   const prefix = ${JSON.stringify(RESPONSE_PREFIX)};
   const queueEntryIds = new WeakMap();
@@ -111,6 +113,7 @@ export default function (pi) {
     if (!ref) throw Object.assign(new Error("Current managed session is not registered"), { code: "CAPABILITY_DISABLED" });
     return ref.session;
   }
+  ${nativeSubagentObservationSource}
   ${nativeToolInteractionSource}
   function identity(session) {
     return { sessionId: session.sessionManager.getSessionId(), sessionFile: session.sessionFile ?? null, leafId: session.sessionManager.getLeafId(), cwd: session.sessionManager.getCwd() };
@@ -186,6 +189,7 @@ export default function (pi) {
     }
   }
   async function execute(operation, args, ctx) {
+    reconcileSubagentObservation(ctx);
     const session = ownSession(ctx);
     switch (operation) {
       case "capabilities": return { operations: ["identity", "queue", "clearQueue", "removeQueuedMessage", "sendQueuedMessage", "submitUserMessage", "prepareStop", "resumeStoppedSession", "navigateTree", "abortBranchSummary", "fork", "branch", "reload", "setLabel", "setScopedModels", "cycleModel", "resources", "tree", "asyncJobs", "inspectAsyncJob", "cancelAsyncJob", "goal", ...(typeof session.moveSession === "function" && typeof session.sessionManager.isSessionOnDisk === "function" ? ["moveSession", "worktreeState"] : [])] };
@@ -262,7 +266,11 @@ export default function (pi) {
         const completed = await session.fork(args.entryId);
         return { ...identity(session), cancelled: !completed, selectedText: "", selectedImages: [] };
       }
-      case "reload": await ctx.reload(); await session.refreshSkillsAndCommands(); return identity(session);
+      case "reload": {
+        stopSubagentObservation();
+        try { await ctx.reload(); await session.refreshSkillsAndCommands(); return identity(session); }
+        finally { reconcileSubagentObservation(ctx); }
+      }
       case "resources": {
         const extensions = extensionResources(session);
         let contextFiles = null;

@@ -66,12 +66,23 @@ export const GoalBar = memo(function GoalBar({ sessionId, isCompact, onSetGoal, 
   const rootRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const identity = useRef({ sessionId, epoch: 0 })
-  if (identity.current.sessionId !== sessionId) identity.current = { sessionId, epoch: identity.current.epoch + 1 }
+  // Reset editor state when switching sessions. Done during render (not in an
+  // effect) so the UI never paints a stale editor for the previous session.
+  const [prevSessionId, setPrevSessionId] = useState(sessionId)
+  if (prevSessionId !== sessionId) {
+    setPrevSessionId(sessionId)
+    setEditorOpen(false)
+    setBusy(false)
+    setError(null)
+  }
+  useEffect(() => {
+    if (identity.current.sessionId !== sessionId) {
+      identity.current = { sessionId, epoch: identity.current.epoch + 1 }
+    }
+  }, [sessionId])
   const validBudget = budget.trim() === '' || (/^\d+$/.test(budget) && Number.isSafeInteger(Number(budget)) && Number(budget) > 0)
   const canReplace = !goal || (enabled && (goal.status === 'active' || goal.status === 'budget-limited'))
   const canOperate = !!sessionId || !!onSetGoal
-
-  useEffect(() => { setEditorOpen(false); setBusy(false); setError(null) }, [sessionId])
   useEffect(() => {
     if (editorOpen) textareaRef.current?.focus()
   }, [editorOpen])

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { toolInteractionKey, type ToolInteractionDescriptor } from '@ompiui/protocol'
@@ -18,8 +18,10 @@ const EXTRA_KEYS = [
 
 /** Moves a single stable portal target, not its xterm/controller, between inline and fullscreen hosts. */
 function ViewportHost({ container, fullHeight = false }: { container: HTMLElement; fullHeight?: boolean }) {
-  const attach = useCallback((host: HTMLDivElement | null) => { if (host) host.appendChild(container) }, [container])
-  return <div ref={attach} className={fullHeight ? 'h-full min-h-0 p-4' : 'min-h-0'} />
+  const attach = useCallback((host: HTMLDivElement | null) => {
+    if (host) host.appendChild(container)
+  }, [container])
+  return <div ref={attach} className={fullHeight ? 'h-full min-h-0 p-4 [&>div]:h-full [&>div]:min-h-0' : 'min-h-0 [&>div]:min-h-0'} />
 }
 
 export function ToolInteractionTerminal({ descriptor, serverId, readOnly = false, onFullscreenChange }: {
@@ -34,13 +36,19 @@ export function ToolInteractionTerminal({ descriptor, serverId, readOnly = false
   const [notice, setNotice] = useState<string | null>(null)
   const [connection, setConnection] = useState<'connecting' | 'connected' | 'disconnected' | 'closed'>('connecting')
   const [exited, setExited] = useState(descriptor.status === 'exited')
-  const input = useMemo(() => getToolInteractionInput(serverId, descriptor), [serverId, descriptor.runtimeId, descriptor.sessionId, descriptor.toolCallId, descriptor.executionId])
+  // getToolInteractionInput caches by (serverId, descriptor key) and returns
+  // the same instance for the same tool execution, so a direct call is stable.
+  const input = getToolInteractionInput(serverId, descriptor)
   const inputState = useSyncExternalStore(input.subscribe, input.getSnapshot)
   const viewportRef = useRef<ReturnType<typeof createTerminalViewport> | null>(null)
   const readOnlyRef = useRef(readOnly)
-  readOnlyRef.current = readOnly
   const descriptorRef = useRef(descriptor)
-  descriptorRef.current = descriptor
+  useEffect(() => {
+    // Latest-value refs: event/socket callbacks below read these without
+    // resubscribing the connection effect on every keystroke or prop change.
+    readOnlyRef.current = readOnly
+    descriptorRef.current = descriptor
+  }, [readOnly, descriptor])
   const fullscreenId = `tool-interaction:${serverId}:${toolInteractionKey(descriptor)}`
   const { activeId, openFullscreen, closeFullscreen } = useFullscreen()
   const fullscreen = activeId === fullscreenId
@@ -191,11 +199,8 @@ export function ToolInteractionTerminal({ descriptor, serverId, readOnly = false
   useEffect(() => {
     if (readOnly || exited) input.close()
     if (viewportRef.current) viewportRef.current.terminal.options.disableStdin = !canWrite
-  }, [canWrite, exited, input, readOnly])
-  useLayoutEffect(() => {
-    container.className = fullscreen ? 'h-full min-h-0' : 'min-h-0'
     viewportRef.current?.fit()
-  }, [container, fullscreen])
+  }, [canWrite, exited, input, readOnly, fullscreen])
 
   const toggleFullscreen = () => {
     if (fullscreen) closeFullscreen(fullscreenId)

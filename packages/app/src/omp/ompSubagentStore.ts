@@ -19,7 +19,7 @@ export { transcriptItemsFromMessages, type OmpSubagentTranscriptItem } from './o
  * 更新一律不可变替换 run 对象（useSyncExternalStore 按 Object.is 判变化）。
  */
 
-export type OmpSubagentStatus = 'pending' | 'running' | 'completed' | 'failed' | 'aborted'
+export type OmpSubagentStatus = 'pending' | 'running' | 'completed' | 'failed' | 'aborted' | 'unknown'
 
 export type OmpSubagentToolBadge = {
   tool: string
@@ -51,6 +51,17 @@ export type OmpSubagentRun = {
   runId?: string
   /** Derived from an observed new start with the same native owner/file; not a native run ID. */
   isFollowUp?: boolean
+  identityAmbiguous?: boolean
+  startToken?: string
+  observationEpoch?: string
+  observationId?: string
+  activityVersion?: number
+  observationSequence?: number
+  activity?: 'running' | 'idle' | 'unavailable'
+  pendingAsync?: boolean
+  mergeStatus?: 'unconfirmed' | 'failed'
+  mergeError?: string
+  changesApplied?: boolean | null
   sessionId: string
   parentToolCallId?: string
   agent: string
@@ -95,6 +106,8 @@ function normalizeStatus(value: unknown): OmpSubagentStatus {
       return 'failed'
     case 'aborted':
       return 'aborted'
+    case 'unknown':
+      return 'unknown'
     default:
       return 'pending'
   }
@@ -160,6 +173,7 @@ class OmpSubagentStore {
   /** 防止重连/双流把同一份子代理事件重复追加到转录。 */
   private eventFingerprints = new Map<string, Set<string>>()
   private retiredRuns = new Set<string>()
+  private retiredObservations = new Set<string>()
   private revision = 0
   private listeners = new Set<() => void>()
   /** useSyncExternalStore 要求 getSnapshot 返回稳定引用：按 revision 缓存 */
@@ -254,6 +268,7 @@ class OmpSubagentStore {
     this.byToolCall.clear()
     this.eventFingerprints.clear()
     this.retiredRuns.clear()
+    this.retiredObservations.clear()
     this.keyCache.clear()
     this.keyVersions.clear()
     this.bump()
@@ -351,6 +366,9 @@ class OmpSubagentStore {
     const incoming = str(payload.runId)
     const current = this.runs.get(runKey(sessionId, id))
     if (incoming && this.retiredRuns.has(incoming)) return false
+    const sameRuntime = !incoming || !current?.runId || incoming.split(':')[0] === current.runId.split(':')[0]
+    if (sameRuntime && typeof payload.observationSequence === 'number' && current?.observationSequence !== undefined &&
+      payload.observationSequence < current.observationSequence) return false
     const parent = str(payload.parentToolCallId)
     if (!incoming && !started && current?.parentToolCallId && parent && current.parentToolCallId !== parent) return false
     const replacement = incoming ? incoming !== current?.runId : started && current &&
@@ -362,20 +380,64 @@ class OmpSubagentStore {
       id, runId: incoming, sessionId, agent: 'task', task: '', status: 'pending',
       index: typeof payload.index === 'number' ? payload.index : current?.index ?? this.runs.size,
       detached: false, transcript: [], historyLoaded: false, startedAt: Date.now(),
+      ...(sameRuntime ? {
+        observationEpoch: current?.observationEpoch, observationId: current?.observationId,
+        observationSequence: current?.observationSequence,
+        activityVersion: current?.activityVersion, activity: current?.activity, pendingAsync: current?.pendingAsync,
+      } : {}),
     }))
     this.eventFingerprints.delete(runKey(sessionId, id))
     return true
   }
 
+  private withObservation(run: OmpSubagentRun, payload: JsonObject): OmpSubagentRun {
+    const epoch = str(payload.observationEpoch)
+    const id = str(payload.observationId)
+    const version = typeof payload.activityVersion === 'number' ? payload.activityVersion : undefined
+    const sequence = typeof payload.observationSequence === 'number' ? payload.observationSequence : undefined
+    if (run.observationSequence !== undefined && sequence !== undefined && sequence < run.observationSequence) return run
+    const identity = epoch && id ? `${epoch}:${id}` : undefined
+    const previousIdentity = run.observationEpoch && run.observationId ? `${run.observationEpoch}:${run.observationId}` : undefined
+    if (identity && this.retiredObservations.has(identity)) return run
+    if (identity && identity === previousIdentity && version !== undefined && version < (run.activityVersion ?? 0)) return run
+    if (identity && previousIdentity && identity !== previousIdentity) {
+      this.retiredObservations.add(previousIdentity)
+      if (this.retiredObservations.size > 512) this.retiredObservations.delete(this.retiredObservations.values().next().value!)
+    }
+    const activity = payload.activity === 'running' || payload.activity === 'idle' || payload.activity === 'unavailable'
+      ? payload.activity : run.activity
+    const pendingAsync = typeof payload.pendingAsync === 'boolean' ? payload.pendingAsync : run.pendingAsync
+    const status = activity === 'running' ? 'running' : activity && (!isTerminalStatus(run.status) || run.identityAmbiguous)
+      ? activity === 'idle' && pendingAsync ? 'pending' : 'unknown'
+      : run.status
+    return { ...run, observationEpoch: epoch ?? run.observationEpoch, observationId: id ?? run.observationId,
+      observationSequence: sequence ?? run.observationSequence,
+      activityVersion: version ?? run.activityVersion, activity, pendingAsync, status,
+      endedAt: status === 'running' || status === 'pending' || status === 'unknown' ? undefined : run.endedAt }
+  }
+
+  applyObservation(sessionId: string, payload: JsonObject): void {
+    const id = str(payload.id)
+    if (!id || payload.rootSessionId !== sessionId || !this.acceptRun(sessionId, id, payload)) return
+    this.upsert(sessionId, id, run => this.withObservation({
+      ...run, sessionFile: str(payload.sessionFile) ?? run.sessionFile,
+      identityAmbiguous: typeof payload.identityAmbiguous === 'boolean' ? payload.identityAmbiguous : run.identityAmbiguous,
+    }, payload))
+  }
+
   applyLifecycle(sessionId: string, payload: JsonObject): void {
     const id = str(payload.id)
     if (!id) return
+    const current = this.runs.get(runKey(sessionId, id))
+    if (!payload.runId && current?.identityAmbiguous && isTerminalStatus(normalizeStatus(payload.status))) return
     if (!this.acceptRun(sessionId, id, payload, payload.status === 'started')) return
     this.upsert(sessionId, id, run => {
       const incomingStatus = payload.status === undefined ? run.status : normalizeStatus(payload.status)
       const status = mergeStatus(run.status, incomingStatus)
-      return {
+      return this.withObservation({
         ...run,
+        identityAmbiguous: typeof payload.identityAmbiguous === 'boolean' ? payload.identityAmbiguous : run.identityAmbiguous,
+        startToken: str(payload.startToken) ?? run.startToken,
         parentToolCallId: str(payload.parentToolCallId) ?? run.parentToolCallId,
         agent: str(payload.agent) ?? run.agent,
         isFollowUp: typeof payload.isFollowUp === 'boolean' ? payload.isFollowUp : run.isFollowUp,
@@ -386,7 +448,7 @@ class OmpSubagentStore {
         index: typeof payload.index === 'number' ? payload.index : run.index,
         detached: typeof payload.detached === 'boolean' ? payload.detached : run.detached,
         endedAt: isTerminalStatus(status) && !run.endedAt ? Date.now() : run.endedAt,
-      }
+      }, payload)
     })
   }
 
@@ -397,6 +459,8 @@ class OmpSubagentStore {
       id = this.runsForSession(sessionId).find(run => run.index === payload.index)?.id
     }
     if (!id) return
+    const current = this.runs.get(runKey(sessionId, id))
+    if (!payload.runId && current?.identityAmbiguous && isTerminalStatus(normalizeStatus(asRecord(payload.progress)?.status))) return
     if (!this.acceptRun(sessionId, id, payload)) return
     this.upsert(sessionId, id, run => {
       const rawProgress = asRecord(payload.progress)
@@ -409,8 +473,9 @@ class OmpSubagentStore {
       }
       const incomingStatus = progress?.status && progress.status !== 'pending' ? progress.status : run.status
       const status = mergeStatus(run.status, incomingStatus)
-      return {
+      return this.withObservation({
         ...run,
+        identityAmbiguous: typeof payload.identityAmbiguous === 'boolean' ? payload.identityAmbiguous : run.identityAmbiguous,
         task: str(payload.task) ?? str(payload.assignment) ?? run.task,
         description: subagentDisplayTitle(str(payload.description)) ?? run.description,
         parentToolCallId: str(payload.parentToolCallId) ?? run.parentToolCallId,
@@ -420,7 +485,7 @@ class OmpSubagentStore {
         progress,
         status,
         endedAt: isTerminalStatus(status) && !run.endedAt ? Date.now() : run.endedAt,
-      }
+      }, payload)
     })
   }
 
@@ -457,7 +522,9 @@ class OmpSubagentStore {
   markSessionCrashed(sessionId: string): void {
     for (const run of this.runsForSession(sessionId)) {
       if (isTerminalStatus(run.status)) continue
-      this.settleRun(sessionId, run.id, 'failed')
+      if (run.observationId || run.identityAmbiguous) {
+        this.upsert(sessionId, run.id, current => ({ ...current, status: 'unknown', activity: 'unavailable', pendingAsync: false }))
+      } else this.settleRun(sessionId, run.id, 'failed')
     }
   }
 
@@ -518,8 +585,10 @@ class OmpSubagentStore {
       this.upsert(sessionId, id, run => {
         const incomingStatus = record.status === undefined ? run.status : normalizeStatus(record.status)
         const status = mergeStatus(run.status, incomingStatus)
-        return {
+        return this.withObservation({
           ...run,
+          identityAmbiguous: typeof record.identityAmbiguous === 'boolean' ? record.identityAmbiguous : run.identityAmbiguous,
+          startToken: str(record.startToken) ?? run.startToken,
           parentToolCallId: str(record.parentToolCallId) ?? run.parentToolCallId,
           agent: str(record.agent) ?? run.agent,
           isFollowUp: typeof record.isFollowUp === 'boolean' ? record.isFollowUp : run.isFollowUp,
@@ -531,13 +600,16 @@ class OmpSubagentStore {
           detached: typeof record.detached === 'boolean' ? record.detached : run.detached,
           progress: normalizeProgress(record.progress) ?? run.progress,
           endedAt: isTerminalStatus(status) && !run.endedAt ? Date.now() : run.endedAt,
-        }
+        }, record)
       })
     }
     // 只在后端已确认空闲时处理缺失条目；忙碌期间的部分快照不能中止新任务。
     if (settled) {
       for (const run of this.runsForSession(sessionId)) {
-        if (!present.has(run.id) && !run.detached && !isTerminalStatus(run.status)) this.settleRun(sessionId, run.id, 'aborted')
+        if (!present.has(run.id) && !run.detached && !isTerminalStatus(run.status)) {
+          if (run.observationId || run.identityAmbiguous) this.upsert(sessionId, run.id, current => ({ ...current, status: current.activity === 'running' ? 'running' : 'unknown' }))
+          else this.settleRun(sessionId, run.id, 'aborted')
+        }
       }
     }
   }

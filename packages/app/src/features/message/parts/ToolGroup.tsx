@@ -1,4 +1,5 @@
-import { memo, useEffect, useMemo, useRef } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
+import { isJsonObject } from '@ompiui/protocol'
 import { useTranslation } from 'react-i18next'
 import { diffLines } from 'diff'
 import { ChevronDownIcon, ChevronRightIcon } from '../../../components/Icons'
@@ -12,7 +13,11 @@ import { MessageExpandPanel, useMessageExpandRender } from '../messageExpand'
 import { MSG_SPACING } from '../messageSpacing'
 import { ToolPartView } from './ToolPartView'
 import { useTaskRuntimeStopped } from '../tools/useTaskRuntimeStopped'
-import { getTaskBatchTitles, resolveTaskExecution } from '../tools/taskToolData'
+import { findAsyncTaskResult, getTaskBatchTitles, indexAsyncTaskResults, isAsyncTaskDispatch, resolveTaskExecution } from '../tools/taskToolData'
+import { useSessionNavigation } from '../../../contexts/SessionNavigationContext'
+import { ompSubagentStore } from '../../../omp/ompSubagentStore'
+import { piBranchStore } from '../../../omp/state/index.js'
+import { getTaskExecutionOutcome, taskResultDetails, type TaskPresentationStatus } from '../../../omp/taskOutcome'
 
 // ============================================
 // Tool Group (连续的 tool parts)
@@ -55,10 +60,38 @@ export const ToolGroup = memo(function ToolGroup({
   const { immersiveMode, processCollapseEnabled } = theme
   const descriptiveToolSteps = theme.descriptiveToolSteps && !plain
 
-  const doneCount = viewExecutions.filter(e => {
-    const status = getToolExecutionStatus(e)
-    return status === 'completed' || status === 'error'
-  }).length
+  const { currentSessionId } = useSessionNavigation()
+  const taskStopped = useTaskRuntimeStopped(viewExecutions.some(e => e.call.name === 'task'))
+  const subscribeStatuses = useCallback((notify: () => void) => {
+    if (!viewExecutions.some(execution => execution.call.name === 'task')) return () => undefined
+    const unsubscribeRuns = ompSubagentStore.subscribe(notify)
+    const unsubscribeBranch = piBranchStore.subscribe(notify)
+    return () => { unsubscribeRuns(); unsubscribeBranch() }
+  }, [viewExecutions])
+  // Primitive status fingerprint: transcript/token updates and unrelated sessions do not rerender the group.
+  const getStatusFingerprint = useCallback(() => viewExecutions.map(execution => {
+    if (execution.call.name !== 'task') return getToolExecutionStatus(execution)
+    const runs = ompSubagentStore.getRunsForToolCall(execution.call.id, currentSessionId)
+    const details = taskResultDetails(execution)
+    const args = execution.call.arguments
+    const tasks = Array.isArray(args?.tasks) ? args.tasks.filter(isJsonObject) : [args ?? {}]
+    const deliveryIndex = isAsyncTaskDispatch(details) && currentSessionId
+      ? indexAsyncTaskResults(piBranchStore.getData(currentSessionId)?.items ?? []) : undefined
+    const indices = new Set([...tasks.map((_, index) => index), ...runs.map(run => run.index)])
+    const statuses = [...indices].map(index => {
+      const task = tasks[index]
+      const run = runs.find(run => run.index === index || (typeof task?.name === 'string' && run.id === task.name))
+      const jobId = typeof task?.name === 'string' ? task.name : run?.id
+      const delivery = deliveryIndex && jobId ? findAsyncTaskResult(deliveryIndex, jobId, execution.result?.timestamp) : undefined
+      return getTaskExecutionOutcome(execution, { slotIndex: index, liveRun: run, result: delivery?.details,
+        runtimeStopped: taskStopped, hasLiveRuns: runs.length > 0 }).presentationStatus
+    })
+    return statuses.includes('running') ? 'running' : statuses.includes('error') ? 'error'
+      : statuses.includes('unknown') ? 'unknown' : statuses.includes('pending') ? 'pending' : 'unknown'
+  }).join('|'), [viewExecutions, currentSessionId, taskStopped])
+  const statusFingerprint = useSyncExternalStore(subscribeStatuses, getStatusFingerprint, getStatusFingerprint)
+  const statuses = useMemo(() => statusFingerprint.split('|') as TaskPresentationStatus[], [statusFingerprint])
+  const doneCount = statuses.filter(status => status === 'completed' || status === 'error').length
   // 批量 task 按子任务拆成多行（对齐 OpenCode：每个子代理一条 Task）
   const rows = useMemo(() => executions.flatMap(execution => {
     const titles = getTaskBatchTitles(execution)
@@ -66,9 +99,8 @@ export const ToolGroup = memo(function ToolGroup({
   }), [executions])
   const totalCount = executions.length
   const isAllDone = doneCount === totalCount
-  const taskStopped = useTaskRuntimeStopped(viewExecutions.some(e => e.call.name === 'task'))
-  const hasActiveTools = viewExecutions.some(e => getToolExecutionStatus(e) === 'running' && !(e.call.name === 'task' && taskStopped))
-  const stepsSummary = descriptiveToolSteps ? buildDescriptiveToolStepsSummary(viewExecutions, t) : undefined
+  const hasActiveTools = statuses.includes('running')
+  const stepsSummary = descriptiveToolSteps ? buildDescriptiveToolStepsSummary(viewExecutions, t, statuses) : undefined
 
   // 汇总所有成功完成的工具的 diff stats（失败的不算）
   const totalDiffStats = useMemo(() => {
@@ -290,6 +322,7 @@ interface SummarySegment {
 function buildDescriptiveToolStepsSummary(
   executions: PiToolExecution[],
   t: (key: string, opts?: Record<string, unknown>) => string,
+  statuses: TaskPresentationStatus[],
 ): SummarySegment[] {
   const sep = t('toolSteps.separator')
   const segments: SummarySegment[] = []
@@ -301,7 +334,7 @@ function buildDescriptiveToolStepsSummary(
   const failedMap = new Map<ToolSummaryCategory, number>()
   const activeMap = new Map<ToolSummaryCategory, number>()
 
-  for (const execution of executions) {
+  for (const [index, execution] of executions.entries()) {
     const cat = getToolSummaryCategory(execution.call.name)
     if (!doneMap.has(cat)) {
       categoryOrder.push(cat)
@@ -309,7 +342,7 @@ function buildDescriptiveToolStepsSummary(
       failedMap.set(cat, 0)
       activeMap.set(cat, 0)
     }
-    const status = getToolExecutionStatus(execution)
+    const status = statuses[index]
     if (status === 'completed') doneMap.set(cat, (doneMap.get(cat) || 0) + 1)
     else if (status === 'error') failedMap.set(cat, (failedMap.get(cat) || 0) + 1)
     else if (status === 'running') activeMap.set(cat, (activeMap.get(cat) || 0) + 1)
@@ -361,10 +394,15 @@ function buildDescriptiveToolStepsSummary(
     if (segments.length > 0) segments.push({ text: sep, type: 'normal' })
     segments.push({ text: formatToolSummarySegment(cat, activeMap.get(cat) || 0, 'active', t), type: 'active' })
   }
-  const pendingCount = executions.filter(execution => getToolExecutionStatus(execution) === 'pending').length
+  const pendingCount = statuses.filter(status => status === 'pending').length
   if (pendingCount > 0) {
     if (segments.length > 0) segments.push({ text: sep, type: 'normal' })
     segments.push({ text: t('toolSteps.pending', { count: pendingCount }), type: 'normal' })
+  }
+
+  if (executions.some((execution, index) => execution.call.name === 'task' && statuses[index] === 'unknown')) {
+    if (segments.length > 0) segments.push({ text: sep, type: 'normal' })
+    segments.push({ text: t('task.outcome.merge.unconfirmed'), type: 'normal' })
   }
 
   if (segments.length === 0) {

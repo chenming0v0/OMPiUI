@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionNavigationContext } from '../../../../contexts/SessionNavigationContext'
 import { piBranchStore, piSessionStateStore } from '../../../../omp/state/index.js'
@@ -29,7 +30,7 @@ vi.mock('../../../../omp/controllers/index.js', () => ({
 vi.mock('../../../../utils/uiDisclosureState', () => ({
   // Respect the caller's fallback: TaskRenderer expands running/failed tasks,
   // ContentBlock keeps its own defaultCollapsed semantics.
-  useUiDisclosureState: (key: string, fallback: boolean) => [key.includes(':task-body') ? true : fallback, vi.fn()],
+  useUiDisclosureState: (key: string, fallback: boolean) => useState(key.includes(':task-body') ? true : fallback),
 }))
 
 vi.mock('../../../../contexts', () => ({
@@ -165,7 +166,7 @@ function renderTask(execution: PiToolExecution, navigateToSession = vi.fn()) {
 
 describe('persisted subagent fallback', () => {
   beforeEach(() => {
-    getOmpSubagentMessagesMock.mockReset()
+    getOmpSubagentMessagesMock.mockReset().mockResolvedValue({ messages: [] })
     piSessionStateStore.clearAll()
     ompSubagentStore.clearAll()
     openSubagentSessionMock.mockReset()
@@ -245,7 +246,7 @@ describe('persisted subagent fallback', () => {
     getOmpSubagentMessagesMock.mockResolvedValue({ messages: [] })
     const execution = completedTaskExecution()
     execution.result!.details = { results: [{ id: 'MergeScout', exitCode: 0, mergeError: 'Merge conflicted in src/app.ts', output: 'Analysis finished' }] }
-    expect(buildPersistedSubagentRun('call', { id: 'MergeScout', exitCode: 0, mergeError: 'Merge conflicted' }, undefined, 'parent-session')?.status).toBe('failed')
+    expect(buildPersistedSubagentRun('call', { id: 'MergeScout', exitCode: 0, mergeError: 'Merge conflicted' }, undefined, 'parent-session')).toMatchObject({ status: 'completed', mergeStatus: 'failed' })
     renderTask(execution)
     expect(await screen.findByText(/Merge conflicted in src\/app.ts/)).toBeInTheDocument()
     expect(screen.getByText('task.error')).toBeInTheDocument()
@@ -266,7 +267,8 @@ describe('persisted subagent fallback', () => {
     ] }
     renderTask(execution)
     expect(await screen.findByText(/Reviewer crashed/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'scout' })).toHaveClass('text-accent-secondary-100')
+    expect(screen.getByRole('button', { name: 'scout' })).toHaveClass('text-text-300')
+    expect(screen.getAllByTestId('task-outcome')[0]).toHaveTextContent('task.outcome.execution.completed')
     expect(screen.getByRole('button', { name: 'reviewer' })).toHaveClass('text-danger-100')
     expect(screen.getByRole('button', { name: 'scout' })).not.toHaveClass('text-danger-100')
   })
@@ -473,7 +475,7 @@ describe('persisted subagent fallback', () => {
     try {
       renderTask({ call: xdTaskAsyncCall, result: xdTaskAsyncResult })
       const slots = screen.getAllByTestId('task-slot')
-      expect(slots.map(slot => slot.getAttribute('data-status'))).toEqual(['running', 'completed'])
+      expect(slots.map(slot => slot.getAttribute('data-status'))).toEqual(['running', 'unknown'])
       fireEvent.click(screen.getByRole('button', { name: /ReviewGuiGitIntegration/ }))
       expect(screen.getAllByText(/# Target/).length).toBeGreaterThan(0)
       expect(screen.getAllByText('task.result').length).toBeGreaterThan(0)
@@ -481,6 +483,77 @@ describe('persisted subagent fallback', () => {
     } finally {
       piBranchStore.clear('parent-session')
     }
+  })
+
+  it.each([
+    [undefined, 'unconfirmed'], [false, 'failed'], [true, 'confirmed'], [null, 'skipped'],
+  ] as const)('shows execution and merge independently for root changesApplied=%s', (changesApplied, rootStatus) => {
+    const execution = completedTaskExecution()
+    execution.result!.details = { ...(changesApplied !== undefined ? { changesApplied } : {}), results: [{ id: 'ReadmeScout', exitCode: 0, output: 'Finished output' }] }
+    renderTask(execution)
+    expect(screen.getByTestId('task-slot')).toHaveAttribute('data-status', 'unknown')
+    expect(screen.getByTestId('task-outcome')).toHaveTextContent('task.outcome.execution.completed')
+    expect(screen.getByTestId('task-outcome')).toHaveTextContent('task.outcome.merge.unconfirmed')
+    if (rootStatus !== 'unconfirmed') expect(screen.getByTestId('task-outcome')).toHaveTextContent(`task.outcome.rootMerge.${rootStatus}`)
+    expect(screen.getByTestId('task-outcome')).not.toHaveClass('text-danger-100')
+  })
+
+  it('keeps missing children unknown and renders merge failure without losing raw recovery details', async () => {
+    const execution = completedTaskExecution()
+    execution.call.arguments = { tasks: [{ name: 'A' }, { name: 'B' }, { name: 'C' }] }
+    execution.result!.details = { results: [{ index: 0, id: 'A', exitCode: 0, stdout: 'stdout data', stderr: 'stderr data', mergeError: 'Apply conflict',
+      outputPath: 'C:/sessions/A.md', recovery: { branch: 'recover-A' } }, { index: 1, id: 'B', exitCode: 0 }] }
+    renderTask(execution)
+    const slots = screen.getAllByTestId('task-slot')
+    expect(slots.map(slot => slot.getAttribute('data-status'))).toEqual(['error', 'unknown', 'unknown'])
+    expect(screen.getAllByTestId('task-outcome')[0]).toHaveTextContent('task.outcome.execution.completed')
+    expect(screen.getAllByTestId('task-outcome')[2]).toHaveTextContent('task.outcome.execution.unknown')
+    expect(screen.getByText('stdout data')).toBeInTheDocument()
+    expect(screen.getByText('stderr data')).toBeInTheDocument()
+    expect(screen.getByText('Apply conflict')).toBeInTheDocument()
+    fireEvent.click(screen.getAllByText('task.rawDetails')[0])
+    expect(await screen.findByText(/recover-A/)).toBeInTheDocument()
+    expect(screen.getByText(/C:\/sessions\/A.md/)).toBeInTheDocument()
+  })
+
+  it('retains raw async output and marks exit0 merge failure independently', () => {
+    const content = '<task-result status="failed"><preview full-output="agent://ReviewGuiGitIntegration">Opaque report</preview></task-result>'
+    piBranchStore.setData('parent-session', { items: [{ type: 'custom_message', customType: 'async-result', timestamp: xdTaskAsyncResult.timestamp + 1, content,
+      details: { jobs: [{ jobId: 'ReviewGuiGitIntegration', type: 'task', status: 'completed', meta: { exitCode: 0, mergeError: 'Async conflict', stdout: 'Async stdout', stderr: 'Async stderr', outputPath: 'C:/async.md' } }] } }] } as unknown as PiBranchPage)
+    try {
+      renderTask({ call: xdTaskAsyncCall, result: xdTaskAsyncResult })
+      expect(screen.getAllByTestId('task-slot').map(slot => slot.getAttribute('data-status'))).toEqual(['running', 'error'])
+      expect(screen.getAllByTestId('task-outcome')[1]).toHaveTextContent('task.outcome.execution.completed')
+      expect(screen.getByText(/Opaque report/)).toHaveTextContent('agent://ReviewGuiGitIntegration')
+      expect(screen.getByText('Async stdout')).toBeInTheDocument()
+      expect(screen.getByText('Async stderr')).toBeInTheDocument()
+      expect(screen.getByText(/Async conflict/)).toBeInTheDocument()
+    } finally { piBranchStore.clear('parent-session') }
+  })
+
+  it('shows unknown interruption neutrally while retaining its raw diagnostic', () => {
+    const execution: PiToolExecution = { call: { type: 'toolCall', id: 'unknown-interruption', name: 'task', arguments: {} },
+      startedAt: 1, endedAt: 2, interruption: 'unknown', error: 'No terminal result observed' }
+    renderTask(execution)
+    expect(screen.getByTestId('task-slot')).toHaveAttribute('data-status', 'unknown')
+    expect(screen.getByTestId('task-outcome')).toHaveTextContent('task.outcome.execution.unknown')
+    expect(screen.getByTestId('task-outcome')).not.toHaveClass('text-danger-100')
+    fireEvent.click(screen.getByText('task.result'))
+    expect(screen.getByText('No terminal result observed')).toBeInTheDocument()
+    expect(screen.queryByText('task.error')).not.toBeInTheDocument()
+  })
+
+  it('does not terminate a reused live follow-up from the old parent failure', () => {
+    const execution = completedTaskExecution()
+    execution.result!.isError = true
+    execution.result!.details = { results: [{ id: 'ReadmeScout', exitCode: 0, mergeError: 'Old merge conflict' }] }
+    ompSubagentStore.applyLifecycle('parent-session', { id: 'ReadmeScout', parentToolCallId: execution.call.id, status: 'started', runId: 'first', sessionFile: 'C:/child.jsonl' })
+    ompSubagentStore.applyLifecycle('parent-session', { id: 'ReadmeScout', parentToolCallId: execution.call.id, status: 'completed', runId: 'first', sessionFile: 'C:/child.jsonl' })
+    ompSubagentStore.applyLifecycle('parent-session', { id: 'ReadmeScout', parentToolCallId: execution.call.id, status: 'started', runId: 'next', isFollowUp: true, sessionFile: 'C:/child.jsonl' })
+    renderTask(execution)
+    expect(screen.getByTestId('task-slot')).toHaveAttribute('data-status', 'running')
+    expect(screen.getByTestId('task-outcome')).toHaveTextContent('task.outcome.execution.running')
+    expect(screen.queryByText(/Old merge conflict/)).not.toBeInTheDocument()
   })
 
   it('shows upstream-rejected content as a collapsible invalid task row', () => {
@@ -495,7 +568,7 @@ describe('persisted subagent fallback', () => {
     expect(screen.getByRole('button', { name: /RepairCiWorktreePaths/ })).toBeInTheDocument()
     expect(screen.queryByText(/Unterminated string/)).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /RepairCiWorktreePaths/ }))
-    expect(screen.getByText('task.invalidArguments')).toBeInTheDocument()
+    expect(screen.getAllByText('task.invalidArguments').length).toBeGreaterThan(0)
   })
 
   it('keeps tasks[] order and per-slot status when progress arrives out of order', () => {
@@ -505,7 +578,7 @@ describe('persisted subagent fallback', () => {
       { name: 'First', task: 'a' }, { name: 'Second', task: 'b' }, { name: 'Third', task: 'c' },
     ] } }, startedAt: 1, isRunning: true })
     const slots = screen.getAllByTestId('task-slot')
-    expect(slots.map(slot => slot.getAttribute('data-status'))).toEqual(['completed', 'pending', 'running'])
+    expect(slots.map(slot => slot.getAttribute('data-status'))).toEqual(['unknown', 'pending', 'running'])
     expect(slots[0]).toHaveTextContent('First')
     expect(slots[2]).toHaveTextContent('Third')
   })
@@ -515,7 +588,7 @@ describe('persisted subagent fallback', () => {
       result: { role: 'toolResult', toolCallId: 'outer-done', toolName: 'task', content: [{ type: 'text', text: 'partial' }], isError: false, timestamp: 2,
         details: { results: [{ index: 0, id: 'A', exitCode: 0 }, { index: 1, id: 'B', exitCode: 0, mergeError: 'merge conflict' }] } } })
     const slots = screen.getAllByTestId('task-slot')
-    expect(slots.map(slot => slot.getAttribute('data-status'))).toEqual(['completed', 'error'])
+    expect(slots.map(slot => slot.getAttribute('data-status'))).toEqual(['unknown', 'error'])
     expect(screen.getByText(/merge conflict/)).toBeInTheDocument()
   })
 

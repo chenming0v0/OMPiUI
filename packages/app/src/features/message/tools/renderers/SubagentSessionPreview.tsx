@@ -61,7 +61,7 @@ export const SubagentSessionPreview = memo(function SubagentSessionPreview({
   const isAtBottomRef = useRef(true)
   const maxHeight = useResponsiveMaxHeight(0.25, 120, 240)
   const transcript = run?.transcript ?? EMPTY_TRANSCRIPT
-  const isRunning = run?.status === 'running'
+  const isRunning = run?.activity === 'running' || (!run?.activity && run?.status === 'running')
   const progress = run?.progress
   const isLoading = loading || Boolean(!run?.isFollowUp && run?.sessionFile && !run.historyLoaded && transcript.length === 0 && !history.error)
   const identity = run?.runId ?? run?.id

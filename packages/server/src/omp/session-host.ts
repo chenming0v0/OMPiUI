@@ -1292,7 +1292,7 @@ export class SessionHost {
       // 全局 HUD 靠这条镜像维持列表。event/转录帧体量大，仍只在会话流内。
       if (
         isJsonObject(event.event) &&
-        (event.event.kind === "lifecycle" || event.event.kind === "progress")
+        (event.event.kind === "lifecycle" || event.event.kind === "progress" || event.event.kind === "observation")
       ) {
         this.hub.publish({ kind: "server", id: "server" }, "omp.subagent", {
           kind: event.event.kind,
