@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { lstat, readFile } from "node:fs/promises";
-import { statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -89,6 +89,7 @@ const REPLAY_BYTE_LIMIT = 1024 * 1024;
 const PENDING_BYTE_LIMIT = 1024 * 1024;
 const EXITED_SESSION_LIMIT = 25;
 const TERMINAL_LIMIT = 32;
+const FORCE_KILL_DELAY_MS = 1_000;
 const TICKET_TTL_MS = 60_000;
 const MAX_TICKETS = 1024;
 const execFileAsync = promisify(execFile);
@@ -123,6 +124,14 @@ type ActiveTerminal = {
   listeners: Array<{ dispose(): void }>;
 };
 
+type OwnedProcess = {
+  exited: Promise<void>;
+  stopRequested: boolean;
+  exitObserved: boolean;
+  linuxStartTime?: string;
+  forceKillTimer?: NodeJS.Timeout;
+};
+
 type TerminalTicket = {
   terminalId: string;
   workspacePath: string;
@@ -150,7 +159,7 @@ export class TerminalManager {
   private readonly exitedOrder: string[] = [];
   private readonly tickets = new Map<string, TerminalTicket>();
   /** Retained after tab/workspace removal until the owned PTY reports real exit. */
-  private readonly ownedProcesses = new Map<PtyProcess, { exited: Promise<void>; stopRequested: boolean }>();
+  private readonly ownedProcesses = new Map<PtyProcess, OwnedProcess>();
   private readonly exitErrors: unknown[] = [];
   /** Creates still awaiting async cwd resolution; counts toward the limit. */
   private pendingCreates = 0;
@@ -304,13 +313,21 @@ export class TerminalManager {
     };
     this.terminals.set(id, terminal);
     const { promise: exited, resolve: resolveExit } = Promise.withResolvers<void>();
-    this.ownedProcesses.set(child, { exited, stopRequested: false });
+    const owned: OwnedProcess = {
+      exited,
+      stopRequested: false,
+      exitObserved: false,
+      linuxStartTime: !isBunRuntime && process.platform === "linux"
+        ? readOwnedLinuxProcessStartTime(child.pid) : undefined,
+    };
+    this.ownedProcesses.set(child, owned);
     // This listener is deliberately not in terminal.listeners: removing a tab
     // must not lose the actual exit barrier.
-    let exitObserved = false;
     const exitListener = child.onExit(({ exitCode }) => {
-      if (exitObserved) return;
-      exitObserved = true;
+      if (owned.exitObserved) return;
+      owned.exitObserved = true;
+      clearTimeout(owned.forceKillTimer);
+      owned.forceKillTimer = undefined;
       // bun-pty emits onExit synchronously from kill(), and also on read EOF.
       // Neither proves child.wait completed. Confirm disappearance of this
       // exact owned PID; never signal a PID that may have been reused.
@@ -744,13 +761,33 @@ export class TerminalManager {
 
   private stopOwnedProcess(process: PtyProcess): void {
     const owned = this.ownedProcesses.get(process);
-    if (!owned || owned.stopRequested) return;
+    if (!owned || owned.stopRequested || owned.exitObserved) return;
     // ConPTY kill releases native handles before its delayed onExit callback.
     // Repeated dispose/shutdown must not close those handles again.
     owned.stopRequested = true;
+    // Node's Linux adapter sends only one SIGHUP. Bash can lose an early HUP
+    // during startup or deliberately ignore it, so retain a bounded fallback.
+    // Do not use this path for ConPTY or bun-pty (kill also closes handles).
+    if (owned.linuxStartTime !== undefined) {
+      owned.forceKillTimer = setTimeout(() => {
+        owned.forceKillTimer = undefined;
+        // node-pty may defer onExit until after waitpid/socket close. Recheck
+        // identity and live state rather than trusting a retained numeric PID.
+        if (this.ownedProcesses.get(process) !== owned || owned.exitObserved ||
+          readOwnedLinuxProcessStartTime(process.pid) !== owned.linuxStartTime) return;
+        try {
+          process.kill("SIGKILL");
+        } catch {
+          // A signal racing exit is not proof of reaping; await the real onExit.
+        }
+      }, FORCE_KILL_DELAY_MS);
+      owned.forceKillTimer.unref();
+    }
     try {
       process.kill();
     } catch {
+      clearTimeout(owned.forceKillTimer);
+      owned.forceKillTimer = undefined;
       owned.stopRequested = false;
       // Do not treat a failed signal as exit. Keep the handle until onExit,
       // and retry this owned handle on a later dispose/shutdown.
@@ -787,6 +824,23 @@ export class TerminalManager {
     this.options.publish?.(terminal.workspacePath, channel, {
       ...terminal.info,
     });
+  }
+}
+
+function readOwnedLinuxProcessStartTime(pid: number): string | undefined {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    // comm is parenthesized and may itself contain spaces or ')'. Fields after
+    // its final ')' start at field 3 (state); field 22 is the birth timestamp.
+    const commEnd = stat.lastIndexOf(")");
+    if (!stat.startsWith(`${pid} (`) || commEnd < stat.indexOf("(") || stat[commEnd + 1] !== " ") return;
+    const fields = stat.slice(commEnd + 2).trim().split(/\s+/);
+    if (!/^[A-Za-z]$/.test(fields[0] ?? "") || Number(fields[1]) !== process.pid ||
+      ["Z", "X", "x"].includes(fields[0] ?? "")) return;
+    return /^\d+$/.test(fields[19] ?? "") ? fields[19] : undefined;
+  } catch {
+    // Missing /proc, access denied, or a reaped child: fail closed.
+    return undefined;
   }
 }
 

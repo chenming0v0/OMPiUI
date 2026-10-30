@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
-import { mkdtempSync, rmSync } from "node:fs"
+import fs, { mkdtempSync, rmSync } from "node:fs"
+import { syncBuiltinESMExports } from "node:module"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { after, test } from "node:test"
@@ -167,6 +168,158 @@ test("enforces the terminal limit under concurrent creates", async () => {
     await removeWithRetry(root)
   }
 })
+
+test("repeated cleanup kills a native handle once and cancels escalation after exit", async t => {
+  const root = mkdtempSync(path.join(tmpdir(), "ompiui-terminal-kill-once-"))
+  const manager = new TerminalManager()
+  try {
+    const created = await manager.create(root)
+    // Await a prompt/output so Unix shells have finished early signal setup.
+    await waitFor(() => manager.get(root, created.id).cursor > 0)
+    const child = ownedProcess(manager, created.id)
+    const owned = child.ownedProcesses.get(child.process)!
+    const originalKill = child.process.kill.bind(child.process)
+    const signals: Array<string | undefined> = []
+    t.mock.method(child.process, "kill", (signal?: string) => {
+      signals.push(signal)
+      originalKill(signal)
+    })
+    manager.remove(root, created.id)
+    manager.dispose()
+    await manager.shutdown()
+    assert.equal(owned.forceKillTimer, undefined)
+    await new Promise(resolve => setTimeout(resolve, 1_100))
+    assert.deepEqual(signals, [undefined])
+    assert.equal(child.ownedProcesses.size, 0)
+  } finally {
+    await manager.shutdown()
+    await removeWithRetry(root)
+  }
+})
+
+if (process.platform === "linux") {
+  test("Linux escalation fails closed for reused, zombie, non-child, or unreadable PIDs", t => {
+    const manager = new TerminalManager()
+    type Owned = { exited: Promise<void>; stopRequested: boolean; exitObserved: boolean; linuxStartTime?: string; forceKillTimer?: NodeJS.Timeout }
+    const internals = manager as unknown as {
+      ownedProcesses: Map<{ pid: number; kill(signal?: string): void }, Owned>
+      stopOwnedProcess(child: { pid: number; kill(signal?: string): void }): void
+    }
+    t.mock.timers.enable({ apis: ["setTimeout"] })
+    const originalRead = fs.readFileSync
+    const procStat = (state: string, parent: number, startTime: string) =>
+      `123 (shell with ) spaces) ${[state, String(parent), ...Array(17).fill("0"), startTime].join(" ")}`
+    let currentStat: string | undefined
+    const read = t.mock.method(fs, "readFileSync", (...args: Parameters<typeof fs.readFileSync>) => {
+      if (args[0] !== "/proc/123/stat") return originalRead(...args)
+      if (currentStat === undefined) throw Object.assign(new Error("missing process"), { code: "ENOENT" })
+      return currentStat
+    })
+    syncBuiltinESMExports()
+    try {
+      for (const stat of [
+        procStat("S", process.pid, "different"),
+        procStat("S", process.pid, "456"),
+        procStat("Z", process.pid, "123"),
+        procStat("X", process.pid, "123"),
+        procStat("S", process.pid + 1, "123"),
+        "malformed",
+        procStat("S", process.pid, "123").replace("123 (", "124 ("),
+        procStat("S", process.pid, "123").replaceAll(")", ""),
+        procStat("?", process.pid, "123"),
+        undefined,
+      ]) {
+        const signals: Array<string | undefined> = []
+        const child = { pid: 123, kill: (signal?: string) => signals.push(signal) }
+        internals.ownedProcesses.set(child, { exited: Promise.resolve(), stopRequested: false, exitObserved: false, linuxStartTime: "123" })
+        internals.stopOwnedProcess(child)
+        internals.stopOwnedProcess(child)
+        currentStat = stat
+        t.mock.timers.tick(1_000)
+        assert.deepEqual(signals, [undefined])
+        internals.ownedProcesses.delete(child)
+      }
+      const signals: Array<string | undefined> = []
+      const child = { pid: 123, kill: (signal?: string) => signals.push(signal) }
+      internals.ownedProcesses.set(child, { exited: Promise.resolve(), stopRequested: false, exitObserved: false, linuxStartTime: "123" })
+      currentStat = procStat("S", process.pid, "123")
+      internals.stopOwnedProcess(child)
+      t.mock.timers.tick(1_000)
+      assert.deepEqual(signals, [undefined, "SIGKILL"], "same live direct child can be escalated")
+      internals.ownedProcesses.delete(child)
+
+      let resolved = false
+      const racingChild = { pid: 123, kill(signal?: string) {
+        if (signal === "SIGKILL") throw Object.assign(new Error("process exited during signal"), { code: "ESRCH" })
+      } }
+      const racingOwned = { exited: new Promise<void>(() => {}).then(() => { resolved = true }), stopRequested: false, exitObserved: false, linuxStartTime: "123" }
+      internals.ownedProcesses.set(racingChild, racingOwned)
+      internals.stopOwnedProcess(racingChild)
+      assert.doesNotThrow(() => t.mock.timers.tick(1_000))
+      assert.equal(internals.ownedProcesses.get(racingChild), racingOwned, "failed signal must not release the real exit barrier")
+      assert.equal(resolved, false)
+      internals.ownedProcesses.delete(racingChild)
+    } finally {
+      read.mock.restore()
+      syncBuiltinESMExports()
+      manager.dispose()
+    }
+  })
+
+  test("shutdown reaps a removed shell that ignores SIGHUP without stopping another workspace", async t => {
+    const root = mkdtempSync(path.join(tmpdir(), "ompiui-terminal-resistant-"))
+    const other = mkdtempSync(path.join(tmpdir(), "ompiui-terminal-unrelated-"))
+    const manager = new TerminalManager()
+    const unrelatedManager = new TerminalManager()
+    let child: ReturnType<typeof ownedProcess> | undefined
+    try {
+      const created = await manager.create(root, { shell: "/bin/bash" })
+      const unrelated = await unrelatedManager.create(other, { shell: "/bin/bash" })
+      child = ownedProcess(manager, created.id)
+      const originalKill = child.process.kill.bind(child.process)
+      const signals: Array<string | undefined> = []
+      t.mock.method(child.process, "kill", (signal?: string) => {
+        signals.push(signal)
+        originalKill(signal)
+      })
+      let output = ""
+      const attachment = manager.attach(root, created.id, 0, data => (output += data), () => {})
+      attachment.activate()
+      manager.write(root, created.id, "trap '' HUP TERM; printf '\\n%s%s\\n' resistant- ready\r")
+      await waitFor(() => output.includes("resistant-ready"))
+      attachment.detach()
+
+      manager.closeWorkspace(root)
+      manager.dispose()
+      manager.closeWorkspace(root)
+      assert.deepEqual(manager.list(root), [])
+      assert.deepEqual(signals, [undefined], "repeated cleanup must not repeat the initial kill")
+      assert.doesNotThrow(() => process.kill(created.pid!, 0), "SIGHUP was ignored, not mistaken for exit")
+      await manager.shutdown()
+
+      assert.deepEqual(signals, [undefined, "SIGKILL"])
+      assert.throws(() => process.kill(created.pid!, 0), { code: "ESRCH" })
+      assert.doesNotThrow(() => process.kill(unrelated.pid!, 0))
+      assert.equal(unrelatedManager.get(other, unrelated.id).status, "running")
+    } finally {
+      // Also reap the fixture when running this regression against the old code.
+      if (child && child.ownedProcesses.has(child.process)) process.kill(child.process.pid, "SIGKILL")
+      await manager.shutdown()
+      await unrelatedManager.shutdown()
+      await removeWithRetry(root)
+      await removeWithRetry(other)
+    }
+  })
+}
+
+function ownedProcess(manager: TerminalManager, id: string) {
+  type Process = { pid: number; kill(signal?: string): void }
+  const internals = manager as unknown as {
+    terminals: Map<string, { process: Process }>
+    ownedProcesses: Map<Process, { forceKillTimer?: NodeJS.Timeout }>
+  }
+  return { process: internals.terminals.get(id)!.process, ownedProcesses: internals.ownedProcesses }
+}
 
 async function waitFor(predicate: () => boolean): Promise<void> {
   // CI runner 负载高时 pty 退出信号会迟到，5s 不够用
