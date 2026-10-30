@@ -5,25 +5,25 @@
 - fix(app): 清理 React Hooks／Compiler 与热更新规则的 41 条 lint 警告；表单、会话与目录重置保持作用域隔离。补充元数据查询期间保存禁用、模型列表重试 loading、外部 Git 刷新期间操作禁用及终端全屏稳定容器高度回归，保留移动端增删模型不重拉列表的行为。
 - fix(pty): 修复 Linux Node PTY 的首次 SIGHUP 在 shell 启动阶段丢失或被忽略后，32 个并发终端关闭超时。仅对本服务创建、仍为直接子进程且 `/proc` 启动时间匹配的存活 shell，在 1 秒后升级停止；真实 onExit 屏障与 Windows／Bun 单次原生句柄关闭保持不变，不扫描或停止其他终端。
 
-- fix(subagents): #373/#374 客户端兼容：通过公开 AgentRegistry/subscribeRunState 观察真实子会话活动，本地 started 代次与观察版本独立隔离；复用后的无身份终态保留未归属证据，不终结新运行。执行／整体合并／根合并事实分离，缺字段显示未确认，明确合并错误显示失败，保留输出与恢复引用，不改 OMP、不重试合并。真实官方 18.12.6 的 warm reuse/IRC wake、旧完成晚到、新回复、exit0 合并冲突及只读刷新验收见 `docs/subagent-compat-acceptance.md`；完整原生因果身份与 nested 结算仍不保证；维护者确认按客户端兼容范围完成，两项已结案。
-- verification(feedback): #367 的真实官方 stdout 分片→生产 decoder→worker→server→网页反馈闭环已验收，新增透明传输故障夹具（不是最终事件注入）。官方 OMP 18.12.6/Bun 1.3.14 的正常字节保留、length mismatch→stream、非法 UTF-8→frame、真实 30 秒丢片超时、后续消息与双会话隔离通过；生产网页鉴权事件流和扩展面板保留完整原文、originalType、会话归属及通知定位。原生专项与 GUI 证据分开，压缩 warning 不隐藏；见 `docs/rpc-stream-error-acceptance.md`。
-- verification: 最终集成 `npm run validate` 全流程通过：前端 216 文件／1765 项，worker 324 通过／13 跳过，server 322 通过／1 跳过，其余工作区零失败；类型检查、生产构建通过，lint 0 error／0 warning。发布路由 13 项回归通过；Linux 100 轮／3200 个原生终端压力测试关闭零失败、无自有 PID 残留。生产网页隔离官方运行时验证终端内联／全屏切换、桌面／手机高度、控制权／resize、中文输入与原模型续答；不替代远端平台 CI 和安装升级验收。#373/#374 的客户端公开运行观察／保守合并状态兼容已实现并结案，完整原生身份与 typed root/nested 合并结算不冒充已补齐，见 `docs/subagent-compat-acceptance.md` 与 `docs/subagent-native-contract.md`。
-- verification(session): #361 按维护者确认的原「旧身份不污染目标会话」范围结案；默认原生专项验证历史／取消／图片 Fork／Goal 恢复及宿主错误隔离后 exit 0，`--require-source-attribution` 明确作为额外未提供的能力检查保留 exit 2，不把无来源错误猜归到新会话。本轮官方 OMP 18.12.6/Bun 1.3.14 实跑两入口，均保留原始错误且会话错误数为 0、宿主诊断数为 1；历史 GUI 证据不冒充本轮重跑。见 `docs/session-transition-acceptance.md`。
-- verification(tools): #382 已随 v0.6.46 交付并结案；本轮两个隔离原生 PTY 专项及 14 项身份／控制权回归通过，不再按历史「无同次工具 PTY 接口」描述当前实现。受支持公开扩展在原工具执行前分配唯一 PTY；厂商模型、Linux/macOS 真机及移动设备未测范围仍按 `docs/tool-interaction.md` 披露。
+- fix(subagents): #373/#374 客户端兼容：通过公开 AgentRegistry/subscribeRunState 观察真实子会话活动，本地 started 代次与观察版本独立隔离；复用后的无身份终态保留未归属证据，不终结新运行。执行／整体合并／根合并事实分离，缺字段显示未确认，明确合并错误显示失败，保留输出与恢复引用，不改 OMP、不重试合并。真实官方 18.12.6 的 warm reuse/IRC wake、旧完成晚到、新回复、exit0 合并冲突及只读刷新验收见提交历史；完整原生因果身份与 nested 结算仍不保证；维护者确认按客户端兼容范围完成，两项已结案。
+- verification(feedback): #367 的真实官方 stdout 分片→生产 decoder→worker→server→网页反馈闭环已验收，新增透明传输故障夹具（不是最终事件注入）。官方 OMP 18.12.6/Bun 1.3.14 的正常字节保留、length mismatch→stream、非法 UTF-8→frame、真实 30 秒丢片超时、后续消息与双会话隔离通过；生产网页鉴权事件流和扩展面板保留完整原文、originalType、会话归属及通知定位。原生专项与 GUI 证据分开，压缩 warning 不隐藏；见提交历史。
+- verification: 最终集成 `npm run validate` 全流程通过：前端 216 文件／1765 项，worker 324 通过／13 跳过，server 322 通过／1 跳过，其余工作区零失败；类型检查、生产构建通过，lint 0 error／0 warning。发布路由 13 项回归通过；Linux 100 轮／3200 个原生终端压力测试关闭零失败、无自有 PID 残留。生产网页隔离官方运行时验证终端内联／全屏切换、桌面／手机高度、控制权／resize、中文输入与原模型续答；不替代远端平台 CI 和安装升级验收。#373/#374 的客户端公开运行观察／保守合并状态兼容已实现并结案，完整原生身份与 typed root/nested 合并结算不冒充已补齐，见提交历史。
+- verification(session): #361 按维护者确认的原「旧身份不污染目标会话」范围结案；默认原生专项验证历史／取消／图片 Fork／Goal 恢复及宿主错误隔离后 exit 0，`--require-source-attribution` 明确作为额外未提供的能力检查保留 exit 2，不把无来源错误猜归到新会话。本轮官方 OMP 18.12.6/Bun 1.3.14 实跑两入口，均保留原始错误且会话错误数为 0、宿主诊断数为 1；历史 GUI 证据不冒充本轮重跑。见提交历史。
+- verification(tools): #382 已随 v0.6.46 交付并结案；本轮两个隔离原生 PTY 专项及 14 项身份／控制权回归通过，不再按历史「无同次工具 PTY 接口」描述当前实现。受支持公开扩展在原工具执行前分配唯一 PTY；厂商模型、Linux/macOS 真机及移动设备未测范围仍按提交历史披露。
 
 ## [v0.6.46] - 2026-10-30
 
-- feat(tools): 模型前台 Bash PTY 可在原工具正文交互；公开扩展执行前创建唯一进程，中文/Enter/方向与控制键/resize、writer 控制权、受认证 socket/pipe 与一次性 WebSocket 票据、输入 ACK 恢复去重和有界输出回放接通。真实退出/非零/超时/取消返回原 toolCallId，模型继续；不打开官方 OMP TUI、不另建 shell、不重跑命令，普通 Bash/async/name 服务沿用官方路径，历史浏览只读。官方 18.12.6/Bun 1.3.14 的隔离模型循环、真实 PTY、网页刷新/输入/续答及 WebSocket 四类终态验收通过，平台与厂商模型未测范围见 `docs/tool-interaction.md`。
+- feat(tools): 模型前台 Bash PTY 可在原工具正文交互；公开扩展执行前创建唯一进程，中文/Enter/方向与控制键/resize、writer 控制权、受认证 socket/pipe 与一次性 WebSocket 票据、输入 ACK 恢复去重和有界输出回放接通。真实退出/非零/超时/取消返回原 toolCallId，模型继续；不打开官方 OMP TUI、不另建 shell、不重跑命令，普通 Bash/async/name 服务沿用官方路径，历史浏览只读。官方 18.12.6/Bun 1.3.14 的隔离模型循环、真实 PTY、网页刷新/输入/续答及 WebSocket 四类终态验收通过，平台与厂商模型未测范围见提交历史。
 - fix(composer): 发送失败不再通过 Undo/Fork editor 桥重放旧快照、覆盖等待期间的新文字／图片或复活已删除附件；重试成功按原 composer 快照清理（包括 command chip），保留后来的编辑，并清理已接受的原生恢复 marker，重挂载不复活。真实 InputBox＋PiChatPane 18 项组合／85 项聚焦、原生接受 helper 5 项、类型检查与生产构建通过。
-- verification(commands): #375 明确收敛为菜单／图片传输与草稿保护；隔离官方 OMP 18.12.6＋本地 provider 实测菜单／手输原文与归一化图片一致、@file 正文送达、23 秒原生拒绝／接受时新草稿保护及真实重试／刷新。没有真实视觉模型读图调用，`message:fileMention` 专用显示未支持独立披露；Browser pane 未显示，截图未取得，不冒充视觉布局证明。详见 `docs/command-images-acceptance.md`。已集成到本版本。
-- fix(diagnostics): 无来源的官方 `extension_error` 不再按接收时刻归入新会话，改走无 sessionId 的宿主诊断通道；扩展面板保留完整错误、事件与独立 runtime 标识，清空诊断不影响会话，切换后端清理。保留原生命令失败与草稿语义，不按文本／同名命令猜来源，不改官方内部 runner。`--local-isolation` 可单独验证迟到错误不进会话流；默认完整专项仍 exit 2 保留 #361 上游来源归属阻塞。详见 `docs/session-transition-acceptance.md`。
+- verification(commands): #375 明确收敛为菜单／图片传输与草稿保护；隔离官方 OMP 18.12.6＋本地 provider 实测菜单／手输原文与归一化图片一致、@file 正文送达、23 秒原生拒绝／接受时新草稿保护及真实重试／刷新。没有真实视觉模型读图调用，`message:fileMention` 专用显示未支持独立披露；Browser pane 未显示，截图未取得，不冒充视觉布局证明。详见提交历史。已集成到本版本。
+- fix(diagnostics): 无来源的官方 `extension_error` 不再按接收时刻归入新会话，改走无 sessionId 的宿主诊断通道；扩展面板保留完整错误、事件与独立 runtime 标识，清空诊断不影响会话，切换后端清理。保留原生命令失败与草稿语义，不按文本／同名命令猜来源，不改官方内部 runner。`--local-isolation` 可单独验证迟到错误不进会话流；默认完整专项仍 exit 2 保留 #361 上游来源归属阻塞。详见提交历史。
 - fix(release): 命中 lite 预构建时，全量版任务使用显式 `always()`／取消与成功依赖门禁，避免间接 skipped 构建让已发布成功后的全量版也被默认 `success()` 跳过；保留预构建／只验收不发布／失败／取消边界。补入现有发布路由 CI 回归，不移动已发布 tag，手动补构建仍绑定原 tag 源码。
 
 ## [v0.6.45] - 2026-10-29
 
 - fix(history): 修复 `snapcompact` 压缩图片上下文后分页反复 `STALE_REVISION`：分页与大条目分片统一读取相同运行时或磁盘来源，保留只读历史、不放宽原有内容及版本校验边界（cc2f04c）。
 - verification(session): 补齐 #356 的真实专项证据：双窗格从图片消息 Fork 后身份／文字／图片草稿同步，左右窗格后续消息只写新原生日志；Undo 后新发沿同文件 parent 形成另一子分支，树面板双向切分支、逐回合 Redo、刷新图片草稿／Redo 恢复通过。新增可重复原生验收脚本与生产网页隔离入口、双 composer 永久回归；不重写已有原生接口。
-- diagnostics(session): #361 保留上游来源阻塞。官方 OMP 18.12.6 旧扩展回调在 new 后报错的原始帧仍无源 session／prompt／generation；最新 18.13.3 RPC 源码核对也仍只转发路径／事件／错误。专项 exit 2 明确未完成隔离，不以全忽略错误或文本猜测冒充修复。详见 `docs/session-transition-acceptance.md`。
+- diagnostics(session): #361 保留上游来源阻塞。官方 OMP 18.12.6 旧扩展回调在 new 后报错的原始帧仍无源 session／prompt／generation；最新 18.13.3 RPC 源码核对也仍只转发路径／事件／错误。专项 exit 2 明确未完成隔离，不以全忽略错误或文本猜测冒充修复。详见提交历史。
 - fix(feedback): 本地 RPC 协议错误按影响分级送达：分片丢失、超时、缓冲超限、长度不符等导致整条重组消息丢失的失败改为 `rpc_stream_error`（前端既有 handler 激活，语义＝流中止有数据丢失），单帧解码失败、嵌套分片、非对象帧等只丢一帧的保持 `rpc_frame_error`；两类共用既有 20 条/60s 防风暴窗口。不伪造官方协议帧——官方 runtime 的 `rpc_stream_error` emitter 仍按上游接口缺失标注（#367）。
 - verification(feedback): worker `rpc-chunks.test.ts` 11 项通过（含新增 stream/frame kind 断言：无效 UTF-8→frame、长度不符/无效 count→stream），omp-worker typecheck 0 error；会话级 `open_url` 归属经 `eventStream.test.ts:710` 既有回归确认（link 通知按 `sessionId` 落到所属会话），无需改动。
 - verification(release): 集成后的 `npm run validate` 全流程通过：前端 211 文件／1677 项通过，worker 288 通过／13 跳过，server 317 通过／1 跳过，protocol／admin／relay／tui 零失败；全工作区类型检查与生产构建通过，lint 0 error／36 条既有 warning。发布路由 12 项回归及隔离官方 OMP 历史矩阵通过；#361 与 #367 的已知上游边界仍保留，不随发版宣称解决。
@@ -420,7 +420,7 @@
 - fix: RPC、IPC、事件历史、终端与桌面桥设置字节预算；终端使用块窗口与短窗口合并，relay 配额等待、实际帧计量、升级前缓冲及上游 drain 背压保护慢连接。
 - fix: 原生 JSONL 使用异步增量扫描、摘要索引与有界缓存；历史阅读窗口最多 400 条或 8 MiB，可继续读取更早历史及返回最新；大图按需分片，树导航采用轻量平铺传输并保留原拓扑。
 - fix: 附件及文件写入上传前验证容量，队列单条删除不重传剩余图片；文件/Git 事件合并，搜索与诊断报告有界，静态资源支持 gzip、304 与 Range。
-- docs: 57 项全部逐条评论关闭，4 项按不成立的故障前提说明复核依据；修复范围与验证说明见 `docs/network-release-audit.md` 和逐项记录。
+- docs: 57 项全部逐条评论关闭，4 项按不成立的故障前提说明复核依据；修复范围与验证说明见提交历史 和逐项记录。
 - verification: 类型检查、相关 Node 与前端回归、前端生产构建及 Rust 编译通过；隔离官方 OMP 验证确认终端与 UI 双向续写及浏览只读。安装包实机升级、设备长期锁屏与线上负载不以源码验证或发布构建冒充验收。
 - chore: 根包、全部 workspace、互依赖、npm 锁文件及 Tauri/Cargo 统一为 `0.6.22`。本批升级到协议 2（`ompiui.events.v2`），前端、服务端与 worker 必须配套升级；官方会话目录和文件格式不变。
 
