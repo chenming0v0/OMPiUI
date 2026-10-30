@@ -1,8 +1,10 @@
 ## [Unreleased]
 
+## [v0.6.47] - 2026-10-30
+
 - fix(subagents): #373/#374 客户端兼容：通过公开 AgentRegistry/subscribeRunState 观察真实子会话活动，本地 started 代次与观察版本独立隔离；复用后的无身份终态保留未归属证据，不终结新运行。执行／整体合并／根合并事实分离，缺字段显示未确认，明确合并错误显示失败，保留输出与恢复引用，不改 OMP、不重试合并。真实官方 18.12.6 的 warm reuse/IRC wake、旧完成晚到、新回复、exit0 合并冲突及只读刷新验收见 `docs/subagent-compat-acceptance.md`；完整原生因果身份与 nested 结算仍不保证；维护者确认按客户端兼容范围完成，两项已结案。
 - verification(feedback): #367 的真实官方 stdout 分片→生产 decoder→worker→server→网页反馈闭环已验收，新增透明传输故障夹具（不是最终事件注入）。官方 OMP 18.12.6/Bun 1.3.14 的正常字节保留、length mismatch→stream、非法 UTF-8→frame、真实 30 秒丢片超时、后续消息与双会话隔离通过；生产网页鉴权事件流和扩展面板保留完整原文、originalType、会话归属及通知定位。原生专项与 GUI 证据分开，压缩 warning 不隐藏；见 `docs/rpc-stream-error-acceptance.md`。
-- verification: 本轮 `npm run validate` 全流程通过：前端 214 文件／1708 项，worker 305 通过／13 跳过，server 321 通过／1 跳过，其余工作区零失败；类型检查、生产构建通过，lint 0 error／42 warning。#373/#374 的完整原生身份与 typed 合并结算契约在正式 18.14.0 源码中仍缺失，见 `docs/subagent-native-contract.md`；不修改 OMP 的客户端运行观察／保守状态兼容方案另待实施验收，不把接口缺口说成客户端无法补救，也不冒称本轮已实现。
+- verification: 发布准备 `npm run validate` 全流程通过：前端 215 文件／1743 项，worker 324 通过／13 跳过，server 321 通过／1 跳过，其余工作区零失败；类型检查、生产构建通过，lint 0 error／41 warning。发布路由 13 项回归通过。#373/#374 的客户端公开运行观察／保守合并状态兼容已实现并结案，完整原生身份与 typed root/nested 合并结算不冒充已补齐，见 `docs/subagent-compat-acceptance.md` 与 `docs/subagent-native-contract.md`。
 - verification(session): #361 按维护者确认的原「旧身份不污染目标会话」范围结案；默认原生专项验证历史／取消／图片 Fork／Goal 恢复及宿主错误隔离后 exit 0，`--require-source-attribution` 明确作为额外未提供的能力检查保留 exit 2，不把无来源错误猜归到新会话。本轮官方 OMP 18.12.6/Bun 1.3.14 实跑两入口，均保留原始错误且会话错误数为 0、宿主诊断数为 1；历史 GUI 证据不冒充本轮重跑。见 `docs/session-transition-acceptance.md`。
 - verification(tools): #382 已随 v0.6.46 交付并结案；本轮两个隔离原生 PTY 专项及 14 项身份／控制权回归通过，不再按历史「无同次工具 PTY 接口」描述当前实现。受支持公开扩展在原工具执行前分配唯一 PTY；厂商模型、Linux/macOS 真机及移动设备未测范围仍按 `docs/tool-interaction.md` 披露。
 
