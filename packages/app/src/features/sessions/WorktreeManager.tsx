@@ -53,8 +53,12 @@ export function WorktreeManager({ sessionId, directory }: { sessionId?: string; 
     } finally { if (version === readVersion.current) setLoading(false) }
   }, [directory, t])
   useEffect(() => {
-    if (open) void refresh()
-    return () => { ++readVersion.current; readAbort.current?.abort() }
+    if (!open) return
+    // Deferred so the effect body itself never triggers a cascading render.
+    const scheduled = setTimeout(() => { void refresh() }, 0)
+    const version = readVersion
+    const abort = readAbort
+    return () => { clearTimeout(scheduled); ++version.current; abort.current?.abort() }
   }, [open, refresh])
   useEffect(() => serverStore.onServerChange(() => {
     endpointGeneration.current = serverStore.getActiveServerGeneration()

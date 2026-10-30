@@ -50,8 +50,7 @@ export const RightPanel = memo(function RightPanel({
   sessionId,
   inline = false,
   renderPanelContent = true,
-  onNavigateSession,
-  onNewChat
+  onNavigateSession
 }: RightPanelProps) {
   const { t } = useTranslation(['components', 'common'])
   const { rightPanelOpen, rightPanelWidth } = useLayoutStore()
@@ -219,7 +218,7 @@ export const RightPanel = memo(function RightPanel({
         </>
       )
     },
-    [normalizedDirectory, workspacePath, isRestoring, sessionId, isPanelResizing, t, onNavigateSession, onNewChat]
+    [normalizedDirectory, workspacePath, isRestoring, sessionId, isPanelResizing, t, onNavigateSession]
   )
 
   if (inline) {

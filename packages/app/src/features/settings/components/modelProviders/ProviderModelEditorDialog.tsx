@@ -93,12 +93,52 @@ export function ProviderModelEditorDialog({
   const [jsonError, setJsonError] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(true)
   const [smartConfig, setSmartConfig] = useState(true)
-  const [smartConfigState, setSmartConfigState] = useState<'idle' | 'loading' | 'matched' | 'fallback'>('idle')
+  const [lookupState, setLookupState] = useState<'idle' | 'matched' | 'fallback'>('idle')
+  const [lookupPending, setLookupPending] = useState(false)
+  // 'loading' is derived so entering it costs no effect-body setState.
+  const smartConfigState = lookupPending ? 'loading' as const : lookupState
   const [customLevel, setCustomLevel] = useState('')
   const [customLevelOpen, setCustomLevelOpen] = useState(false)
   const nameInputRef = useRef<HTMLInputElement>(null)
   const lookupSequenceRef = useRef(0)
   const lookupAbortRef = useRef<AbortController | null>(null)
+
+  // Provider hint changes start a new lookup without discarding the draft.
+  const [prevProviderId, setPrevProviderId] = useState(providerId)
+  if (prevProviderId !== providerId) {
+    setPrevProviderId(providerId)
+    if (isOpen && smartConfig && draft?.id.trim()) {
+      setLookupState('idle')
+      setLookupPending(true)
+    }
+  }
+
+  // Reset the editor when it opens or its inputs change; adjusted during render
+  // so the dialog never paints the previous model's draft. The null sentinel
+  // makes the first render always sync (mount with isOpen=true still resets).
+  const [prevResetKey, setPrevResetKey] = useState<{ isOpen: boolean; model: typeof model; providerApi: typeof providerApi } | null>(null)
+  if (prevResetKey === null || prevResetKey.isOpen !== isOpen || prevResetKey.model !== model || prevResetKey.providerApi !== providerApi) {
+    setPrevResetKey({ isOpen, model, providerApi })
+    if (isOpen) {
+      const next = model ? cloneDraft(model) : blankModelDraft()
+      const autoConfigure = !next.originalId
+      setDraft({
+        ...next,
+        ...(autoConfigure && next.id.trim() ? inferModelDefaults(next.id) : {}),
+        ...(!next.thinkingConfigured ? { thinkingMode: inferThinkingModeForApi(providerApi) } : {}),
+      })
+      setInitial(cloneDraft(next))
+      setEffortMapText(effortMapToText(next.effortMap))
+      setError(null)
+      setJsonError(false)
+      setSmartConfig(autoConfigure)
+      setLookupState('idle')
+      setLookupPending(autoConfigure && Boolean(next.id.trim()))
+      setCustomLevel('')
+      setCustomLevelOpen(false)
+      setAdvancedOpen(true)
+    }
+  }
 
   useEffect(() => {
     if (!isOpen) {
@@ -106,22 +146,6 @@ export function ProviderModelEditorDialog({
       lookupSequenceRef.current += 1
       return
     }
-    const next = model ? cloneDraft(model) : blankModelDraft()
-    const autoConfigure = !next.originalId
-    setDraft({
-      ...next,
-      ...(autoConfigure && next.id.trim() ? inferModelDefaults(next.id) : {}),
-      ...(!next.thinkingConfigured ? { thinkingMode: inferThinkingModeForApi(providerApi) } : {}),
-    })
-    setInitial(cloneDraft(next))
-    setEffortMapText(effortMapToText(next.effortMap))
-    setError(null)
-    setJsonError(false)
-    setSmartConfig(autoConfigure)
-    setSmartConfigState('idle')
-    setCustomLevel('')
-    setCustomLevelOpen(false)
-    setAdvancedOpen(true)
     return () => {
       lookupAbortRef.current?.abort()
       lookupSequenceRef.current += 1
@@ -144,7 +168,7 @@ export function ProviderModelEditorDialog({
       lookupAbortRef.current?.abort()
       lookupSequenceRef.current += 1
       setSmartConfig(false)
-      setSmartConfigState('idle')
+      setLookupState('idle'); setLookupPending(false)
     }
     const configKeys: Array<keyof ModelDraft> = ['thinkingMode', 'efforts', 'defaultLevel', 'effortMap']
     const configChanged = configKeys.some(key => key in patch)
@@ -192,7 +216,8 @@ export function ProviderModelEditorDialog({
       const controller = new AbortController()
       lookupAbortRef.current = controller
       const sequence = ++lookupSequenceRef.current
-      setSmartConfigState('loading')
+      // Pending was already marked optimistically by the change handler / open
+      // reset; this only resolves it.
       void lookupModelsDevModel(
         {
           modelId: id,
@@ -204,7 +229,7 @@ export function ProviderModelEditorDialog({
         .then(result => {
           if (sequence !== lookupSequenceRef.current || controller.signal.aborted) return
           if (!result.found) {
-            setSmartConfigState('fallback')
+            setLookupState('fallback'); setLookupPending(false)
             return
           }
           const remote = modelDraftDefaultsFromModelsDev(result, providerApi)
@@ -217,10 +242,13 @@ export function ProviderModelEditorDialog({
             }
             return next
           })
-          setSmartConfigState('matched')
+          setLookupState('matched'); setLookupPending(false)
         })
         .catch(() => {
-          if (sequence === lookupSequenceRef.current && !controller.signal.aborted) setSmartConfigState('fallback')
+          if (sequence === lookupSequenceRef.current && !controller.signal.aborted) {
+            setLookupState('fallback')
+            setLookupPending(false)
+          }
         })
     },
     [providerId, providerApi],
@@ -232,18 +260,24 @@ export function ProviderModelEditorDialog({
       lookupSequenceRef.current += 1
       return
     }
+    // applySmartConfig only aborts the previous lookup and starts the fetch;
+    // pending was set optimistically at event time, and resolution happens in
+    // the promise callbacks, so no setState runs in this effect body.
     applySmartConfig(draft.id)
     return () => {
       lookupAbortRef.current?.abort()
       lookupSequenceRef.current += 1
     }
-  }, [isOpen, smartConfig, draft?.id, applySmartConfig])
+  }, [isOpen, model, smartConfig, draft?.id, applySmartConfig])
 
   const handleModelIdChange = (value: string) => {
     if (!draft) return
     lookupAbortRef.current?.abort()
     lookupSequenceRef.current += 1
-    setSmartConfigState('idle')
+    setLookupState('idle')
+    // Event-time optimistic pending: the lookup effect fires right after commit,
+    // so Save must already treat the model as in-flight here.
+    setLookupPending(smartConfig && value.trim() !== '')
     const next = {
       ...(smartConfig ? blankModelDraft(value) : draft),
       originalId: draft.originalId,
@@ -284,7 +318,7 @@ export function ProviderModelEditorDialog({
     setError(null)
     setJsonError(false)
     setSmartConfig(false)
-    setSmartConfigState('idle')
+    setLookupState('idle'); setLookupPending(false)
   }
 
   if (!draft) return null
@@ -353,11 +387,12 @@ export function ProviderModelEditorDialog({
               aria-label={t('providers.smartConfig')}
               onClick={() => {
                 const next = !smartConfig
+                lookupAbortRef.current?.abort()
+                lookupSequenceRef.current += 1
                 setSmartConfig(next)
-                if (!next) {
-                  lookupAbortRef.current?.abort()
-                  setSmartConfigState('idle')
-                } else {
+                setLookupState('idle')
+                setLookupPending(next && Boolean(draft.id.trim()))
+                if (next) {
                   setDraft(current => (current ? { ...current, ...inferModelDefaults(current.id) } : current))
                 }
               }}

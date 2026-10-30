@@ -109,14 +109,20 @@ function AddProviderDialog({
   const [apiKey, setApiKey] = useState('')
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    if (!isOpen) return
-    setName('')
-    setBaseUrl('')
-    setApi('anthropic-messages')
-    setApiKey('')
-    setError(null)
-  }, [isOpen])
+  // Reset the create form when the dialog opens; adjusted during render so the
+  // dialog never paints the previous attempt's values. The null sentinel makes
+  // the first render always sync (mount with isOpen=true still resets).
+  const [prevIsOpen, setPrevIsOpen] = useState<boolean | null>(null)
+  if (prevIsOpen !== isOpen) {
+    setPrevIsOpen(isOpen)
+    if (isOpen) {
+      setName('')
+      setBaseUrl('')
+      setApi('anthropic-messages')
+      setApiKey('')
+      setError(null)
+    }
+  }
 
   const submit = () => {
     const nextName = name.trim()

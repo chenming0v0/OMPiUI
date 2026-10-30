@@ -296,9 +296,13 @@ export function InputToolbar({
     return () => clearTimeout(timerId)
   }, [variantMenuOpen, focusMenuItem])
 
-  useEffect(() => {
+  // Close the variant menu when its trigger disappears; adjusted during render
+  // to avoid an effect-driven repaint.
+  const [prevMenuKey, setPrevMenuKey] = useState({ effortDisabled, variantCount: variants.length })
+  if (prevMenuKey.effortDisabled !== effortDisabled || prevMenuKey.variantCount !== variants.length) {
+    setPrevMenuKey({ effortDisabled, variantCount: variants.length })
     if (effortDisabled || variants.length === 0) setVariantMenuOpen(false)
-  }, [effortDisabled, variants])
+  }
   const activeDeliveryMode: DeliveryMode = deliveryMode === 'steer' && canSteer
     ? 'steer'
     : deliveryMode === 'abortAndPrompt' && canInterruptAndPrompt

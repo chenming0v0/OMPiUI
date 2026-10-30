@@ -30,58 +30,77 @@ function ScopedGitStagingPanel({ directory, onSelectFile, onChanged, serverGener
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  const generation = useRef(0)
   const operationActive = useRef(false)
   const workspace = useRef<string | null>(null)
   const mounted = useRef(true)
+  const generationRef = useRef(0)
   const isCurrent = useCallback(() => mounted.current && serverStore.getActiveServerGeneration() === serverGeneration, [serverGeneration])
 
   const refresh = useCallback(async () => {
     if (!isCurrent()) return
-    const request = ++generation.current
-    setLoading(true)
+    const request = ++generationRef.current
     try {
       const root = await resolveWorkspacePath(directory)
-      if (!isCurrent() || generation.current !== request) return
+      if (!isCurrent() || generationRef.current !== request) return
       if (!root) throw new Error(t('gitStaging.noWorkspace'))
       const status = await getHostGitStatus(root)
-      if (!isCurrent() || generation.current !== request) return
+      if (!isCurrent() || generationRef.current !== request) return
       workspace.current = root
       setItems(status.items)
       setSelection(new Set())
       setPatch(null)
       setPreview(null)
+      setLoading(false)
     } catch (cause) {
-      if (isCurrent() && generation.current === request) setError(cause instanceof Error ? cause.message : String(cause))
-    } finally {
-      if (isCurrent() && generation.current === request) setLoading(false)
+      if (isCurrent() && generationRef.current === request) {
+        setError(cause instanceof Error ? cause.message : String(cause))
+        setLoading(false)
+      }
     }
   }, [directory, isCurrent, t])
 
-  useEffect(() => {
-    mounted.current = true
-    workspace.current = null
+  const refreshWithSpinner = useCallback(() => {
+    setLoading(true)
+    void refresh()
+  }, [refresh])
+
+  // Clear transient state when the directory changes, during render so the
+  // panel never paints the previous directory's data. The workspace ref itself
+  // is reset in the effect below (no ref access at render).
+  const [prevDirectory, setPrevDirectory] = useState(directory)
+  if (prevDirectory !== directory) {
+    setPrevDirectory(directory)
     setItems([])
     setMessage('')
     setError(null)
     setNotice(null)
-    void refresh()
+  }
+  useEffect(() => {
+    mounted.current = true
+    workspace.current = null
+    // Defer the initial refresh and cancel it if this scoped panel detaches.
+    let active = true
+    queueMicrotask(() => { if (active) void refresh() })
     const changed = (event: Event) => {
       const root = (event as CustomEvent<{ workspacePath: string }>).detail?.workspacePath
-      if (root === workspace.current && !operationActive.current) void refresh()
+      if (root === workspace.current && !operationActive.current) refreshWithSpinner()
     }
     window.addEventListener('ompiui:workspace-git-updated', changed)
+    const pending = generationRef
     return () => {
+      active = false
       mounted.current = false
-      ++generation.current
+      ++pending.current
       window.removeEventListener('ompiui:workspace-git-updated', changed)
     }
-  }, [refresh])
+  }, [refresh, refreshWithSpinner])
 
   const operate = async (action: (root: string) => Promise<string | void>, mutation = false) => {
-    if (!isCurrent() || operationActive.current || loading || !workspace.current) return
-    operationActive.current = true
+    if (!isCurrent() || operationActive.current || loading) return
+    // Read the workspace at event time (handlers may access refs freely).
     const root = workspace.current
+    if (!root) return
+    operationActive.current = true
     setBusy(true)
     setError(null)
     setNotice(null)
@@ -111,6 +130,16 @@ function ScopedGitStagingPanel({ directory, onSelectFile, onChanged, serverGener
   }
 
   const selected = (staged: boolean) => items.filter(item => (staged ? item.staged : item.unstaged) && selection.has(`${staged}:${item.path}`)).map(item => item.path)
+  const toggleStaged = (staged: boolean) => void operate(async root => {
+    const paths = selected(staged)
+    if (staged) await unstageHostGitFiles(root, paths)
+    else await stageHostGitFiles(root, paths)
+    return t(staged ? 'gitStaging.unstagedSuccess' : 'gitStaging.stagedSuccess', { count: paths.length })
+  }, true)
+  const toggleHunk = (hunk: number, file: string, staged: boolean, patchText: string) => void operate(async root => {
+    await changeHostGitHunk(root, file, staged, hunk, patchText)
+    return t('gitStaging.hunkSuccess')
+  }, true)
   const openPatch = (item: GitStatusItem, staged: boolean) => void operate(async root => {
     onSelectFile(item.path, staged)
     const loaded = await getHostGitFileDiff(root, item.path, staged ? 'staged' : 'unstaged')
@@ -124,7 +153,7 @@ function ScopedGitStagingPanel({ directory, onSelectFile, onChanged, serverGener
     <section aria-label={t('gitStaging.manage')} className="shrink-0 max-h-[45vh] overflow-auto border-b border-border-200 px-3 py-2 space-y-2 text-[length:var(--fs-xs)]">
       <div className="flex items-center justify-between gap-2">
         <strong>{t('gitStaging.manage')}</strong>
-        <button type="button" className={buttonClass} disabled={disabled} onClick={() => { setError(null); void refresh() }}>{t('gitStaging.refresh')}</button>
+        <button type="button" className={buttonClass} disabled={disabled} onClick={() => { setError(null); refreshWithSpinner() }}>{t('gitStaging.refresh')}</button>
       </div>
       {loading && <p role="status">{t('gitStaging.loading')}</p>}
       {error && <p role="alert" className="text-danger-100 whitespace-pre-wrap break-words">{error}</p>}
@@ -133,12 +162,7 @@ function ScopedGitStagingPanel({ directory, onSelectFile, onChanged, serverGener
         <div key={String(staged)} className="space-y-1">
           <div className="flex items-center justify-between gap-2">
             <strong>{t(staged ? 'gitStaging.staged' : 'gitStaging.unstaged')}</strong>
-            <button type="button" className={buttonClass} disabled={disabled || !!preview || selected(staged).length === 0} onClick={() => void operate(async root => {
-              const paths = selected(staged)
-              if (staged) await unstageHostGitFiles(root, paths)
-              else await stageHostGitFiles(root, paths)
-              return t(staged ? 'gitStaging.unstagedSuccess' : 'gitStaging.stagedSuccess', { count: paths.length })
-            }, true)}>{t(staged ? 'gitStaging.unstageSelected' : 'gitStaging.stageSelected')}</button>
+            <button type="button" className={buttonClass} disabled={disabled || !!preview || selected(staged).length === 0} onClick={() => toggleStaged(staged)}>{t(staged ? 'gitStaging.unstageSelected' : 'gitStaging.stageSelected')}</button>
           </div>
           {items.filter(item => staged ? item.staged : item.unstaged).map(item => {
             const key = `${staged}:${item.path}`
@@ -159,10 +183,7 @@ function ScopedGitStagingPanel({ directory, onSelectFile, onChanged, serverGener
       {patch && <details open className="space-y-1">
         <summary className="break-all">{patch.file} · {t(patch.mode === 'staged' ? 'gitStaging.staged' : 'gitStaging.unstaged')}</summary>
         {canHunk ? hunkStarts.map((start, hunk) => <div key={hunk} className="border border-border-200 rounded p-1 space-y-1">
-          <button type="button" className={buttonClass} disabled={disabled || !!preview} onClick={() => void operate(async root => {
-            await changeHostGitHunk(root, patch.file, patch.mode === 'staged', hunk, patch.patch)
-            return t('gitStaging.hunkSuccess')
-          }, true)}>{t(patch.mode === 'staged' ? 'gitStaging.unstageHunk' : 'gitStaging.stageHunk', { number: hunk + 1 })}</button>
+          <button type="button" className={buttonClass} disabled={disabled || !!preview} onClick={() => toggleHunk(hunk, patch.file, patch.mode === 'staged', patch.patch)}>{t(patch.mode === 'staged' ? 'gitStaging.unstageHunk' : 'gitStaging.stageHunk', { number: hunk + 1 })}</button>
           <pre className="overflow-auto max-h-36 whitespace-pre font-mono">{patch.patch.slice(start, hunkStarts[hunk + 1] ?? patch.patch.length)}</pre>
         </div>) : <p className="text-text-400">{t('gitStaging.wholeFile')}</p>}
       </details>}

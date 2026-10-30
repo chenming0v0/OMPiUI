@@ -50,4 +50,13 @@ export default defineConfig([
       'react-refresh/only-export-components': 'warn',
     },
   },
+  {
+    // Standalone QA/smoke entry points (browser fixture pages, not HMR components).
+    // They render at module scope and are never imported by app code, so Fast
+    // Refresh's component-only export rule does not apply to them.
+    files: ['.slim/**/*.tsx', 'src/subagent-smoke.tsx'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
+  },
 ])

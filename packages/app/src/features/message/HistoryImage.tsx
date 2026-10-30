@@ -20,9 +20,15 @@ export const HistoryImage = memo(function HistoryImage(props: HistoryImageProps)
   const generation = useSyncExternalStore(listener => serverStore.subscribe(listener), () => serverStore.getActiveServerGeneration(), () => serverStore.getActiveServerGeneration())
   const reference = (props.block as ImageContent & { attachment?: ImageReference }).attachment
   const key = JSON.stringify([generation, props.id, props.block.data, props.block.mimeType, reference?.sessionId ?? currentSessionId, reference?.entryId, reference?.blockIndex, reference?.source, reference?.epoch, reference?.etag])
-  const previous = useRef(key)
-  const changed = previous.current !== key
-  useEffect(() => { previous.current = key }, [key])
+  const [previousKey, setPreviousKey] = useState(key)
+  const changed = previousKey !== key
+  useEffect(() => {
+    if (previousKey === key) return
+    // Commit the new key on a microtask after this render has painted with the
+    // one-frame "changed" signal (a render-phase update would discard it).
+    const scheduled = setTimeout(() => setPreviousKey(key), 0)
+    return () => clearTimeout(scheduled)
+  }, [key, previousKey])
   return <HistoryImageContent key={key} {...props} initialError={changed ? 'Image reference or server changed; reload image' : ''} />
 })
 

@@ -44,7 +44,7 @@ function PanelFallback() {
   )
 }
 
-export const BottomPanel = memo(function BottomPanel({ directory, onNavigateSession, onNewChat }: BottomPanelProps) {
+export const BottomPanel = memo(function BottomPanel({ directory, onNavigateSession }: BottomPanelProps) {
   const { t } = useTranslation(['components', 'common'])
   const { bottomPanelOpen, bottomPanelHeight } = useLayoutStore()
   const sessionId = useFocusedSessionId()
@@ -212,7 +212,7 @@ export const BottomPanel = memo(function BottomPanel({ directory, onNavigateSess
         </>
       )
     },
-    [directory, workspacePath, sessionId, isPanelResizing, isRestoring, t, handleNewTerminal, onNavigateSession, onNewChat]
+    [directory, workspacePath, sessionId, isPanelResizing, isRestoring, t, handleNewTerminal, onNavigateSession]
   )
 
   return (

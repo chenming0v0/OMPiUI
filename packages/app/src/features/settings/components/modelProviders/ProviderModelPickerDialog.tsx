@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Dialog } from '../../../../components/ui/Dialog'
 import { Button } from '../../../../components/ui/Button'
@@ -75,27 +75,58 @@ export function ProviderModelPickerDialog({
   const baseUrl = provider.baseUrl.trim()
   const hasKey = provider.apiKey.trim().length > 0
 
-  useEffect(() => {
-    if (!isOpen) return
-    setTab('new')
-    setQuery('')
-    setSelectedNew(new Set())
-    setSelectedRemoved(new Set())
-    setUpstream([])
-    setRemoved([])
-    setError(null)
-    if (!baseUrl) {
-      setError(t('providers.pickerNoBaseUrl'))
-      setLoading(false)
-      return
+  // Reset picker state when the dialog opens; adjusted during render so the
+  // dialog never paints the previous provider's selections. The null sentinel
+  // makes the first render always sync (mount with isOpen=true still resets).
+  const [prevIsOpen, setPrevIsOpen] = useState<boolean | null>(null)
+  if (prevIsOpen !== isOpen) {
+    setPrevIsOpen(isOpen)
+    if (isOpen) {
+      setTab('new')
+      setQuery('')
+      setSelectedNew(new Set())
+      setSelectedRemoved(new Set())
+      setUpstream([])
+      setRemoved([])
     }
+  }
+
+  // Every dependency that starts a fetch must enter loading before commit,
+  // including retries and provider changes while the dialog stays open.
+  const fetchKey = { isOpen, baseUrl, api: provider.api, apiKey: provider.apiKey, knownModelKey, reloadToken, t }
+  const [prevFetchKey, setPrevFetchKey] = useState<typeof fetchKey | null>(null)
+  if (
+    prevFetchKey === null ||
+    prevFetchKey.isOpen !== isOpen ||
+    prevFetchKey.baseUrl !== baseUrl ||
+    prevFetchKey.api !== provider.api ||
+    prevFetchKey.apiKey !== provider.apiKey ||
+    prevFetchKey.knownModelKey !== knownModelKey ||
+    prevFetchKey.reloadToken !== reloadToken ||
+    prevFetchKey.t !== t
+  ) {
+    setPrevFetchKey(fetchKey)
+    if (isOpen) {
+      setLoading(Boolean(baseUrl))
+      setError(baseUrl ? null : t('providers.pickerNoBaseUrl'))
+    }
+  }
+
+  // Latest configured models for the fetch effect without adding the array
+  // identity as a dependency: knownModelKey already encodes membership changes.
+  const configuredModelsRef = useRef(provider.models)
+  useEffect(() => {
+    configuredModelsRef.current = provider.models
+  }, [provider.models])
+
+  useEffect(() => {
+    if (!isOpen || !baseUrl) return
     let cancelled = false
-    setLoading(true)
     void fetchModelProviderModels({
       baseUrl,
       api: provider.api,
       ...(hasKey ? { apiKey: provider.apiKey.trim() } : {}),
-      knownModelIds: provider.models.map(model => model.id),
+      knownModelIds: configuredModelsRef.current.map(model => model.id),
     })
       .then(result => {
         if (cancelled) return
