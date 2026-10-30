@@ -15,6 +15,7 @@ import { isTauri, isTauriMobile } from './utils/tauri'
 import { globalErrorHandler } from './utils/errorHandling'
 import { serviceStore } from './store/serviceStore'
 import { startDesktopServiceIfAllowed } from './services/desktopService'
+import { restorePaneRoute } from './store/restorePaneRoute'
 
 // Polyfill: randomUUID 在非 HTTPS 环境可能缺失（如局域网 HTTP）
 // 统一补齐，避免业务层 scattered fallback。
@@ -132,6 +133,7 @@ async function startApp() {
   // Match the desktop shell behavior: render immediately, then bring the
   // managed service up in the background. Backend bootstrap retries while the
   // service starts and server changes trigger an immediate reconnect.
+  restorePaneRoute()
   bootstrap()
 
   const { initializePiBackend, installPiBackendServerSwitch } = await import('./omp/bootstrapMockChat')

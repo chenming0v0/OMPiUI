@@ -190,6 +190,8 @@ export type PiBashExecutionGroupItem = {
 
 /** Per-call execution evidence from persisted starts or the live event stream. */
 export type PiToolExecutionState = {
+  /** Restored client evidence is displayed as unknown until a native snapshot arrives. */
+  awaitingSnapshot?: boolean
   startedAt?: number
   /** Updates prove execution without inventing a start time when the start frame was missed. */
   isRunning?: boolean
@@ -212,6 +214,7 @@ export type PiToolExecution = PiToolExecutionState & {
 }
 
 export function getToolExecutionStatus(execution: PiToolExecution): 'pending' | 'running' | 'completed' | 'error' | 'unknown' {
+  if (execution.awaitingSnapshot) return 'unknown'
   if (isTaskExecution(execution)) return getTaskExecutionOutcome(execution).presentationStatus
   if (execution.result) {
     type FailureDetails = { error?: unknown; mergeError?: unknown; service?: { state?: unknown } }

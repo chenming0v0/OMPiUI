@@ -76,6 +76,7 @@ export function getTaskExecutionOutcome(execution: PiToolExecution, options: {
   hasLiveRuns?: boolean
 } = {}): TaskOutcome {
   const details = taskResultDetails(execution)
+  if (execution.awaitingSnapshot) return deriveTaskOutcome({ status: 'unknown' }, details)
   const live = isJsonObject(options.liveRun) ? options.liveRun : undefined
   const slotResult = options.result ?? (options.slotIndex !== undefined ? taskResultAt(details, options.slotIndex) : undefined)
   if (live?.isFollowUp) return deriveTaskOutcome(live)

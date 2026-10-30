@@ -24,6 +24,7 @@ import { composerDraftKey, updateComposerDraft } from '../../features/chat/input
 import { imageInputToAttachment } from '../../features/pi-chat/attachmentToImage'
 import { notificationStore } from '../../store/notificationStore'
 import { commandFeedbackStore } from '../commandFeedbackStore'
+import { loadCachedPiBranch, removeCachedPiBranch } from '../branchCache'
 import i18n from '../../i18n'
 
 /**
@@ -114,7 +115,10 @@ function sharedSessionList(
  * Delete a Pi session file.
  */
 export async function deletePiSession(cwd: string, sessionFile: string, signal?: AbortSignal): Promise<void> {
+  const generation = serverStore.getActiveServerGeneration()
+  const cachedSessionId = piSessionInfoStore.getAll().find(session => session.path === sessionFile)?.id
   await transport.deletePiSession(cwd, sessionFile, signal)
+  if (cachedSessionId && serverStore.getActiveServerGeneration() === generation) await removeCachedPiBranch(cachedSessionId)
 }
 
 /**
@@ -288,8 +292,18 @@ export async function loadPiSessionData(sessionId: string, signal?: AbortSignal)
 async function loadPiSessionDataOnce(sessionId: string, signal?: AbortSignal): Promise<void> {
   const serverGeneration = serverStore.getActiveServerGeneration()
   const requestVersion = piSessionStateStore.beginRequest(sessionId)
-  const branchVersion = piBranchStore.beginRequest(sessionId)
+  let branchVersion = piBranchStore.beginRequest(sessionId)
   try {
+    if (!piBranchStore.getData(sessionId) && typeof indexedDB !== 'undefined') {
+      const cached = await loadCachedPiBranch(sessionId)
+      signal?.throwIfAborted()
+      if (serverStore.getActiveServerGeneration() !== serverGeneration) return
+      if (cached && piBranchStore.isRequestCurrent(sessionId, branchVersion)) {
+        // Hydrate before the network returns, without changing runtime state.
+        piBranchStore.setDataIfCurrent(sessionId, cached, branchVersion)
+        branchVersion = piBranchStore.beginRequest(sessionId)
+      }
+    }
     const current = piBranchStore.getData(sessionId)
     const preview = await retryUnavailable(
       () =>

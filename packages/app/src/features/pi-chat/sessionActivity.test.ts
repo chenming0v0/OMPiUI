@@ -9,8 +9,11 @@ describe('foreground stop affordance', () => {
     expect(hasStoppableSessionActivity(state({ isIdle: false, isSettled: false, pendingMessageCount: 1 }), true)).toBe(false)
     expect(hasStoppableSessionActivity(state({ isStreaming: true, pendingMessageCount: 1 }), false)).toBe(true)
   })
-  it.each(['isCompacting', 'isRetrying', 'hasPendingAsyncWork', 'isBashRunning'])('retains Stop for real %s work', field => {
-    expect(hasStoppableSessionActivity(state({ [field]: true }), false)).toBe(true)
+  it('does not offer Stop for background-only work even while the sidebar remains active', () => {
+    expect(hasStoppableSessionActivity(state({ hasPendingAsyncWork: true, isIdle: false, isSettled: false }), true)).toBe(false)
+  })
+  it.each(['isStreaming', 'isCompacting', 'isRetrying', 'isBashRunning'])('retains Stop for real foreground %s work alongside background jobs', field => {
+    expect(hasStoppableSessionActivity(state({ [field]: true, hasPendingAsyncWork: true }), false)).toBe(true)
   })
   it('uses sidebar activity only when an authoritative runtime streaming flag is unavailable', () => {
     expect(hasStoppableSessionActivity(undefined, true)).toBe(true)

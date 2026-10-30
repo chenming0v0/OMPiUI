@@ -1,0 +1,81 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+beforeEach(() => {
+  vi.resetModules()
+  localStorage.clear()
+  sessionStorage.clear()
+  window.history.replaceState(null, '', '/')
+})
+afterEach(() => vi.restoreAllMocks())
+
+describe('cold-start pane restoration', () => {
+  it('restores split tree, ratios, focus and fullscreen without reusing pane IDs', async () => {
+    const { paneLayoutStore: original } = await import('./paneLayoutStore')
+    original.reset()
+    original.setFocusedSession('session-a')
+    const second = original.splitPane('pane-1', 'horizontal', 'session-b')!
+    original.splitPane(second, 'vertical', 'session-c')
+    const root = original.getRoot()
+    original.setRatio(root.id, 0.65)
+    original.enterPaneFullscreen(second)
+    const snapshot = original.getSnapshot()
+    vi.resetModules()
+    const { paneLayoutStore: restored } = await import('./paneLayoutStore')
+    expect(restored.getSnapshot()).toEqual(snapshot)
+    const next = restored.splitPane(second, 'horizontal', 'session-d')
+    expect(next).toBe('pane-4')
+    expect(new Set(restored.allLeaves().map(leaf => leaf.id)).size).toBe(4)
+  })
+
+  it('restores a native empty-hash route but never overrides an explicit session or Home link', async () => {
+    const { paneLayoutStore } = await import('./paneLayoutStore')
+    const { serverStorage } = await import('../utils/perServerStorage')
+    const { STORAGE_KEY_LAST_DIRECTORY } = await import('../constants/storage')
+    const { restorePaneRoute } = await import('./restorePaneRoute')
+    paneLayoutStore.setFocusedSession('last-session')
+    serverStorage.set(STORAGE_KEY_LAST_DIRECTORY, '/project space')
+    restorePaneRoute()
+    expect(window.location.hash).toBe('#/session/last-session?dir=%2Fproject%20space')
+    window.history.replaceState(null, '', '#/session/explicit')
+    restorePaneRoute()
+    expect(window.location.hash).toBe('#/session/explicit')
+    window.history.replaceState(null, '', '#/')
+    restorePaneRoute()
+    expect(window.location.hash).toBe('#/')
+  })
+
+  it('isolates layouts between servers and ignores temporary local runtime URLs', async () => {
+    const { paneLayoutStore } = await import('./paneLayoutStore')
+    const { serverStore } = await import('./serverStore')
+    paneLayoutStore.setFocusedSession('local-session')
+    serverStore.setLocalServerRuntimeUrl('http://127.0.0.1:58231')
+    expect(paneLayoutStore.getFocusedSessionId()).toBe('local-session')
+    const remote = serverStore.addServer({ name: 'Remote', url: 'http://remote.example' })
+    serverStore.setActiveServer(remote.id)
+    expect(paneLayoutStore.getFocusedSessionId()).toBeNull()
+    paneLayoutStore.setFocusedSession('remote-session')
+    serverStore.setActiveServer('local')
+    expect(paneLayoutStore.getFocusedSessionId()).toBe('local-session')
+    serverStore.setActiveServer(remote.id)
+    expect(paneLayoutStore.getFocusedSessionId()).toBe('remote-session')
+    serverStore.updateServer(remote.id, { url: 'http://other.example' })
+    expect(paneLayoutStore.getFocusedSessionId()).toBeNull()
+  })
+
+  it('falls back safely for malformed layouts and missing focused panes', async () => {
+    const { serverStorage } = await import('../utils/perServerStorage')
+    const { serverStore } = await import('./serverStore')
+    const scope = JSON.stringify(['local', serverStore.getStoredServers()[0].url])
+    serverStorage.setJSON('ompiui-pane-layout', { version: 1, scope, root: { type: 'split', id: 'bad' } })
+    const { paneLayoutStore } = await import('./paneLayoutStore')
+    expect(paneLayoutStore.getSnapshot().paneCount).toBe(1)
+    paneLayoutStore.reset()
+    paneLayoutStore.setFocusedSession('kept')
+    const stored = serverStorage.getJSON<Record<string, unknown>>('ompiui-pane-layout')!
+    serverStorage.setJSON('ompiui-pane-layout', { ...stored, focusedPaneId: 'missing', fullscreenPaneId: 'missing' })
+    vi.resetModules()
+    const restored = (await import('./paneLayoutStore')).paneLayoutStore
+    expect(restored.getFocusedSessionId()).toBe('kept')
+    expect(restored.getFullscreenPaneId()).toBeNull()
+  })
+})

@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   models: [] as Model<Api>[],
   state: null as { model: { provider: string; id: string }; thinkingLevel: string; supportedThinkingLevels?: string[] } | null,
   branch: { items: [] },
+  branchError: null as (Error & { code?: string; status?: number }) | null,
   sessions: [],
   loadModels: vi.fn(),
   loadSession: vi.fn(),
@@ -25,7 +26,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../omp/hooks/index.js', () => ({
   usePiModels: () => ({ models: mocks.models, isLoading: false }),
   usePiBranchData: () => mocks.branch,
-  usePiBranchError: () => null,
+  usePiBranchError: () => mocks.branchError,
   usePiSessionRuntimeState: (sessionId: string | null) => sessionId ? mocks.state : null,
 }))
 vi.mock('../../omp/controllers/index.js', () => ({
@@ -126,6 +127,7 @@ describe('PiChatPane effort controls', () => {
     serverStore.setActiveServer(LOCAL_SERVER_ID)
     localStorage.clear()
     vi.clearAllMocks()
+    mocks.branchError = null
     await i18n.changeLanguage('en')
     mocks.models = [model('preview-model', ['off', 'low', 'max']), model('next-model', ['low', 'medium'])]
     mocks.state = { model: { provider: 'openai', id: 'preview-model' }, thinkingLevel: 'low' }
@@ -135,6 +137,14 @@ describe('PiChatPane effort controls', () => {
     mocks.setThinking.mockResolvedValue(undefined)
     mocks.refreshState.mockResolvedValue(undefined)
     setPreferredModelKey('openai:preview-model')
+  })
+
+  it.each([{ code: 'SESSION_NOT_FOUND' }, { status: 401 }, { status: 403 }])('does not hide an authoritative unavailable error behind cached history: %j', async error => {
+    mocks.branchError = Object.assign(new Error('unavailable'), error)
+    render(<PiChatPane paneId="cached-unavailable" sessionId="native-session" />)
+    expect(screen.getByText(i18n.t('code' in error ? 'chat:chatArea.sessionNotFound' : 'chat:chatArea.sessionLoadFailed'), { exact: true })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Select preview-model' })).not.toBeInTheDocument()
+    expect(mocks.loadSession).not.toHaveBeenCalled()
   })
 
   it('offers catalog efforts on home before first send and retains the selected preference', async () => {

@@ -306,8 +306,9 @@ export function PiChatPane({
   }, [sessionId, allSessions, currentDirectory])
   // 只有服务端明确返回找不到会话时才显示“不存在”；网络、鉴权和服务端
   // 启动中的临时错误不能被误报成已删除。
-  const sessionUnavailable = Boolean(sessionId && !branch && branchError && isSessionNotFoundError(branchError))
-  const sessionLoadError = Boolean(sessionId && !branch && branchError && !sessionUnavailable)
+  const sessionUnavailable = Boolean(sessionId && branchError && isSessionNotFoundError(branchError))
+  const sessionAccessDenied = Boolean(branchError && 'status' in branchError && (branchError.status === 401 || branchError.status === 403))
+  const sessionLoadError = Boolean(sessionId && branchError && (!branch || sessionAccessDenied) && !sessionUnavailable)
   const sessionBusy = Boolean(sessionId && !branch && branchError && isSessionBusyError(branchError))
   useEffect(() => {
     sessionUnavailableRef.current = sessionUnavailable || sessionLoadError
@@ -357,7 +358,9 @@ export function PiChatPane({
     return configureSessionEditorDraftSync((sid, text) => setPiExtensionEditorState(sid, text).catch(() => undefined))
   }, [])
 
-  const isStreaming = Boolean(state?.isStreaming) || (sessionActive && !compacting)
+  // Streaming is not a synonym for stoppable work (retry/foreground bash),
+  // nor for a runtime kept alive by background jobs. Trust an explicit flag.
+  const isStreaming = typeof state?.isStreaming === 'boolean' ? state.isStreaming : Boolean(sessionEntry) && !compacting
   // 队列操作在 worker 内完成，前端不重传未修改条目的图片。
   const queue = state?.queue as PiQueueSnapshot | undefined
 
@@ -875,10 +878,11 @@ export function PiChatPane({
   const navigationPendingRef = useRef(false)
   const [navigationPending, setNavigationPending] = useState(false)
 
-  const canUndo = Boolean(sessionId && !isStreaming && !navigationPending && items.some(item => item.kind === 'user_message'))
+  // History mutation waits for foreground work, without calling it streaming.
+  const canUndo = Boolean(sessionId && !sessionActive && !navigationPending && items.some(item => item.kind === 'user_message'))
   const canRedo = Boolean(
     sessionId &&
-    !isStreaming &&
+    !sessionActive &&
     !navigationPending &&
     revertState &&
     revertState.restored < revertState.checkpoints.length &&
@@ -972,7 +976,7 @@ export function PiChatPane({
 
   const handleUndo = useCallback(
     async (entryId: string) => {
-      if (!sessionId || isStreaming || navigationPendingRef.current) return
+      if (!sessionId || sessionActive || navigationPendingRef.current) return
       navigationPendingRef.current = true
       setNavigationPending(true)
       try {
@@ -988,11 +992,11 @@ export function PiChatPane({
         setNavigationPending(false)
       }
     },
-    [sessionId, isStreaming],
+    [sessionId, sessionActive],
   )
 
   const handleRedoStep = useCallback(async () => {
-    if (!sessionId || !revertState || isStreaming || navigationPendingRef.current) return
+    if (!sessionId || !revertState || sessionActive || navigationPendingRef.current) return
     const target = revertState.checkpoints[revertState.restored]
     if (!target) return
     navigationPendingRef.current = true
@@ -1009,10 +1013,10 @@ export function PiChatPane({
       navigationPendingRef.current = false
       setNavigationPending(false)
     }
-  }, [sessionId, revertState, isStreaming, updateRevertState])
+  }, [sessionId, revertState, sessionActive, updateRevertState])
 
   const handleRedoAll = useCallback(async () => {
-    if (!sessionId || !revertState || isStreaming || navigationPendingRef.current) return
+    if (!sessionId || !revertState || sessionActive || navigationPendingRef.current) return
     const target = revertState.checkpoints[revertState.checkpoints.length - 1]
     if (!target) return
     navigationPendingRef.current = true
@@ -1027,7 +1031,7 @@ export function PiChatPane({
       navigationPendingRef.current = false
       setNavigationPending(false)
     }
-  }, [sessionId, revertState, isStreaming, updateRevertState])
+  }, [sessionId, revertState, sessionActive, updateRevertState])
 
   const refreshTimerRefs = useRef(new Set<number>())
   const scheduleDelayedRefresh = useCallback((sid: string) => {
@@ -1597,7 +1601,7 @@ export function PiChatPane({
               </div>
             </div>
           ) : null}
-          <InputBox
+          {!sessionUnavailable && !sessionLoadError && <InputBox
             ref={inputBoxRef}
             paneId={paneId}
             sessionId={sessionId}
@@ -1660,7 +1664,7 @@ export function PiChatPane({
                   }
                 : undefined
             }
-          />
+          />}
           <ExtensionUiSurface sessionId={sessionId} placement="belowEditor" />
         </div>
       </div>

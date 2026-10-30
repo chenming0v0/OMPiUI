@@ -51,6 +51,8 @@ import { loadPiSessionData, refreshPiBranch, refreshPiSessionState, settlePiLive
 import { SessionActivityWatchdog } from './sessionActivityWatchdog.js'
 
 const PING_INTERVAL_MS = 25_000
+const PONG_TIMEOUT_MS = 10_000
+const SOCKET_STALE_MS = 2 * PING_INTERVAL_MS
 const RECONNECT_DELAY_MS = 1_000
 const MAX_RECONNECT_ATTEMPTS = 10
 const RECONNECT_PROBE_MS = 60_000
@@ -122,15 +124,13 @@ type SessionsUpdatedPayload = {
 class PiEventStream {
   constructor() {
     queueMicrotask(() => this.ensureManagementWatch())
-    const resume = () => {
-      if (!navigator.onLine || document.visibilityState === 'hidden' || !this.hasSubscriptions() || this.ws) return
-      this.reconnectAttempts = 0
-      if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
-      this.reconnectTimer = null
-      this.ensureSocket()
-    }
+    const resume = () => this.resume()
     window.addEventListener('online', resume)
-    document.addEventListener('visibilitychange', resume)
+    window.addEventListener('pageshow', resume)
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') this.clearPing(true)
+      else resume()
+    })
   }
 
   private ws: PiSocket | null = null
@@ -142,6 +142,9 @@ class PiEventStream {
   private cursors = new Map<string, EventCursor>()
   private pendingLiveMessages = new Map<string, { liveMessage: PiLiveMessage; position: EventCursor }>()
   private pingTimer: ReturnType<typeof setInterval> | null = null
+  private pongTimer: ReturnType<typeof setTimeout> | null = null
+  private pongDeadline: number | null = null
+  private lastInboundAt = 0
   private readonly activityWatchdog = new SessionActivityWatchdog(
     () => this.refCounts.keys(),
     async (sessionId, signal) => {
@@ -152,7 +155,7 @@ class PiEventStream {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private branchRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private stateRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
-  private diskRefreshTimers = new Map<string, { timer: number; delay: number }>()
+  private diskRefreshTimers = new Map<string, { timer: number; delay: number; running: boolean; schedule(): void }>()
   private reconnectAttempts = 0
   private stableTimer: ReturnType<typeof setTimeout> | null = null
   private subscribeQueued = false
@@ -177,9 +180,17 @@ class PiEventStream {
     this.refCounts.set(sessionId, (this.refCounts.get(sessionId) ?? 0) + 1)
     if (this.refCounts.get(sessionId) === 1) {
       this.activityWatchdog.start()
-      const poll = { timer: 0, delay: 1500 }
+      const poll = {
+        timer: 0, delay: 1500, running: false,
+        schedule: () => {
+          clearTimeout(poll.timer)
+          if (!poll.running && this.diskRefreshTimers.get(sessionId) === poll)
+            poll.timer = window.setTimeout(() => void refresh(), retryDelay(0, poll.delay, poll.delay))
+        },
+      }
       const refresh = async () => {
         if (this.diskRefreshTimers.get(sessionId) !== poll) return
+        poll.running = true
         const state = piSessionStateStore.getState(sessionId)
         if (
           navigator.onLine &&
@@ -195,11 +206,11 @@ class PiEventStream {
             poll.delay = Math.min(30_000, poll.delay * 2)
           }
         }
-        if (this.diskRefreshTimers.get(sessionId) === poll)
-          poll.timer = window.setTimeout(() => void refresh(), retryDelay(0, poll.delay, poll.delay))
+        poll.running = false
+        poll.schedule()
       }
       this.diskRefreshTimers.set(sessionId, poll)
-      poll.timer = window.setTimeout(() => void refresh(), poll.delay)
+      poll.schedule()
       this.ensureSocket()
       if (this.ws?.readyState === PI_SOCKET_OPEN) this.sendSubscribe()
     }
@@ -341,6 +352,46 @@ class PiEventStream {
     }
   }
 
+  /** Resume reads even if the OS left an apparently open, half-dead socket. */
+  private resume(): void {
+    if (!navigator.onLine || document.visibilityState === 'hidden' || !this.hasSubscriptions()) return
+    this.reconnectAttempts = 0
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
+    this.reconnectTimer = null
+    const stale = this.ws && (
+      (this.pongDeadline !== null && Date.now() >= this.pongDeadline) ||
+      Date.now() - this.lastInboundAt >= SOCKET_STALE_MS
+    )
+    this.clearPing()
+    if (stale) this.reconnectSocket('heartbeat_timeout')
+    else {
+      this.ensureSocket()
+      if (this.ws?.readyState === PI_SOCKET_OPEN) this.startPing()
+    }
+
+    // Discard delayed background callbacks, not their logical refresh demand.
+    // Current panes need both snapshots even if no resync control frame arrives.
+    if (this.resyncTimer) clearTimeout(this.resyncTimer)
+    this.resyncTimer = null
+    for (const key of this.resyncRetries.keys()) this.clearResyncRetry(key)
+    for (const [sessionId, timer] of this.branchRefreshTimers) {
+      clearTimeout(timer)
+      this.queueResync(eventStreamKey({ kind: 'session', id: sessionId }))
+    }
+    this.branchRefreshTimers.clear()
+    for (const sessionId of this.refCounts.keys()) {
+      const poll = this.diskRefreshTimers.get(sessionId)
+      if (poll) { poll.delay = 1500; poll.schedule() }
+      this.queueResync(eventStreamKey({ kind: 'session', id: sessionId }))
+    }
+    for (const key of this.incompleteResync) this.pendingResync.add(key)
+    if (this.resyncTimer) clearTimeout(this.resyncTimer)
+    this.resyncTimer = null
+    this.drainResync()
+    for (const sessionId of new Set([...this.stateRefreshTimers.keys(), ...this.refCounts.keys()]))
+      this.scheduleStateRefresh(sessionId, true)
+  }
+
   private ensureSocket(): void {
     if (this.ws && this.ws.readyState !== PI_SOCKET_CLOSED && this.ws.readyState !== PI_SOCKET_CLOSING) return
     if (this.reconnectTimer || !navigator.onLine) return
@@ -367,6 +418,8 @@ class PiEventStream {
     this.diagnostics.record('disconnect', { reason })
     const ws = this.ws
     this.ws = null
+    if (this.stableTimer) clearTimeout(this.stableTimer)
+    this.stableTimer = null
     this.clearPing()
     this.sentStreams.clear()
     if (this.reconnectTimer) {
@@ -386,6 +439,7 @@ class PiEventStream {
 
     const ws = openPiSocket(url.toString())
     this.ws = ws
+    this.lastInboundAt = Date.now()
 
     ws.onopen = () => {
       if (this.ws !== ws) return
@@ -397,27 +451,31 @@ class PiEventStream {
         this.clearResyncRetry(key)
         this.queueResync(key)
       }
+      if (this.lastCloseCode !== undefined)
+        for (const sessionId of this.refCounts.keys()) this.queueResync(eventStreamKey({ kind: 'session', id: sessionId }))
       notifyReconnected()
       this.stableTimer = setTimeout(() => {
         this.reconnectAttempts = 0
         this.lastProblemCode = undefined
       }, 30_000)
       if (this.lastCloseCode !== undefined) refreshModelSettings()
-      this.pingTimer = setInterval(() => {
-        this.send({ type: 'ping', protocolVersion: PROTOCOL_VERSION })
-      }, PING_INTERVAL_MS)
+      this.lastInboundAt = Date.now()
+      this.startPing()
     }
     ws.onmessage = e => {
       // A stale socket may still deliver buffered frames after closeSocket()
       // swapped this.ws (server switch). Ignore messages from any socket that
       // is no longer the active one, mirroring the onclose identity check.
       if (this.ws !== ws) return
+      this.lastInboundAt = Date.now()
       this.handleRaw(String(e.data), e.annotateTraffic)
     }
     ws.onclose = event => {
       if (this.ws !== ws) return
       faultSocketClosed(event.code)
       setEventStreamState('disconnected', this.reconnectAttempts)
+      if (this.stableTimer) clearTimeout(this.stableTimer)
+      this.stableTimer = null
       this.clearPing()
       this.ws = null
       this.sentStreams.clear()
@@ -511,6 +569,12 @@ class PiEventStream {
       return
     }
     annotateTraffic?.(message)
+    if ('type' in message && message.type === 'pong' && message.protocolVersion === PROTOCOL_VERSION) {
+      if (this.pongTimer) clearTimeout(this.pongTimer)
+      this.pongTimer = null
+      this.pongDeadline = null
+      return
+    }
     if ('channel' in message && message.channel === 'control' && message.type === 'payload_omitted') {
       this.handleOmittedPayload(message)
       return
@@ -1270,7 +1334,10 @@ class PiEventStream {
     if (stream.kind !== 'session') this.incompleteResync.delete(key)
     if (stream.kind === 'session') {
       const existing = this.resyncFlights.get(stream.id)
-      if (existing) return existing
+      if (existing) {
+        this.queueResync(key)
+        return existing
+      }
       const generation = this.resyncGeneration
       const controller = new AbortController()
       this.resyncControllers.set(stream.id, controller)
@@ -1281,7 +1348,7 @@ class PiEventStream {
         : loadPiSessionData(stream.id, controller.signal)
       const flight = refresh
         .then(() => {
-          if (this.resyncGeneration !== generation || controller.signal.aborted) return
+          if (this.resyncGeneration !== generation || controller.signal.aborted || this.pendingResync.has(key)) return
           this.incompleteResync.delete(key)
           this.clearResyncRetry(key)
           return this.diagnostics.state(stream.id, piSessionStateStore.getState(stream.id))
@@ -1299,6 +1366,7 @@ class PiEventStream {
         .finally(() => {
           if (this.resyncFlights.get(stream.id) === flight) this.resyncFlights.delete(stream.id)
           if (this.resyncControllers.get(stream.id) === controller) this.resyncControllers.delete(stream.id)
+          if (this.resyncGeneration === generation) this.drainResync()
         })
       this.resyncFlights.set(stream.id, flight)
       // 状态刷新不能挂在 branch 请求之后：branch 慢或挂起时，实时消息的
@@ -1354,7 +1422,13 @@ class PiEventStream {
   private drainResync(): void {
     const generation = this.resyncGeneration
     while (this.resyncActive < this.RESYNC_CONCURRENCY && this.pendingResync.size > 0) {
-      const key = this.pendingResync.values().next().value!
+      // Keep a dirty tail queued until this session's current read settles.
+      // Counting the same flight twice would consume slots and lose the tail.
+      const key = [...this.pendingResync].find(candidate => {
+        const stream = parseEventStreamKey(candidate)
+        return stream?.kind !== 'session' || !this.resyncFlights.has(stream.id)
+      })
+      if (!key) return
       this.pendingResync.delete(key)
       this.resyncActive++
       void this.handleResync(key).finally(() => {
@@ -1385,9 +1459,14 @@ class PiEventStream {
       .finally(() => this.liveRecoveryFlights.delete(sessionId))
   }
 
-  private scheduleStateRefresh(sessionId: string): void {
-    if (this.stateRefreshTimers.has(sessionId)) return
-    const timer = setTimeout(() => {
+  private scheduleStateRefresh(sessionId: string, immediate = false): void {
+    const existing = this.stateRefreshTimers.get(sessionId)
+    if (existing && !immediate) return
+    if (existing) {
+      clearTimeout(existing)
+      this.stateRefreshTimers.delete(sessionId)
+    }
+    const refresh = () => {
       this.stateRefreshTimers.delete(sessionId)
       const serverGeneration = serverStore.getActiveServerGeneration()
       void refreshPiSessionState(sessionId)
@@ -1397,13 +1476,50 @@ class PiEventStream {
           this.diagnostics.state(sessionId, piSessionStateStore.getState(sessionId))
         })
         .catch(error => this.diagnostics.error('state_error', sessionId, error))
-    }, REFRESH_DEBOUNCE_MS)
-    this.stateRefreshTimers.set(sessionId, timer)
+    }
+    if (immediate) refresh()
+    else this.stateRefreshTimers.set(sessionId, setTimeout(refresh, REFRESH_DEBOUNCE_MS))
   }
 
-  private clearPing(): void {
-    if (this.stableTimer) clearTimeout(this.stableTimer)
-    this.stableTimer = null
+  private reconnectSocket(reason: string): void {
+    // Only replace the transport: no session.close/abort/open write command.
+    this.closeSocket(reason)
+    this.lastCloseCode = 1006
+    markModelSettingsDisconnected()
+    this.ensureSocket()
+  }
+
+  private startPing(): void {
+    if (document.visibilityState === 'hidden' || this.ws?.readyState !== PI_SOCKET_OPEN) return
+    if (this.pingTimer) clearInterval(this.pingTimer)
+    this.pingTimer = setInterval(() => this.ping(), PING_INTERVAL_MS)
+    this.ping()
+  }
+
+  private ping(): void {
+    if (!navigator.onLine || document.visibilityState === 'hidden' || this.ws?.readyState !== PI_SOCKET_OPEN) return
+    if (this.pongDeadline !== null) {
+      if (Date.now() >= this.pongDeadline) this.reconnectSocket('heartbeat_timeout')
+      return
+    }
+    const ws = this.ws
+    this.pongDeadline = Date.now() + PONG_TIMEOUT_MS
+    this.pongTimer = setTimeout(() => {
+      this.pongTimer = null
+      if (this.ws === ws && document.visibilityState !== 'hidden' && navigator.onLine && this.pongDeadline !== null)
+        this.reconnectSocket('heartbeat_timeout')
+    }, PONG_TIMEOUT_MS)
+    try {
+      this.send({ type: 'ping', protocolVersion: PROTOCOL_VERSION })
+    } catch {
+      this.reconnectSocket('heartbeat_send_failed')
+    }
+  }
+
+  private clearPing(preserveDeadline = false): void {
+    if (this.pongTimer) clearTimeout(this.pongTimer)
+    this.pongTimer = null
+    if (!preserveDeadline) this.pongDeadline = null
     if (this.pingTimer) {
       clearInterval(this.pingTimer)
       this.pingTimer = null

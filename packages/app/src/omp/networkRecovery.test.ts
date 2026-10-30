@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { PROTOCOL_VERSION } from '@ompiui/protocol'
 import type { PiBranchPage } from './domain/index.js'
 import { piBranchStore, piSessionStateStore } from './state/index.js'
 import { retryDelay, waitNetworkDelay } from './networkRetry'
@@ -21,6 +22,7 @@ type Socket = {
   readyState: number
   onopen?: () => void
   onclose?: (event: { code: number }) => void
+  onmessage?: (event: { data: string }) => void
   send: ReturnType<typeof vi.fn>
   close: ReturnType<typeof vi.fn>
 }
@@ -37,6 +39,15 @@ type Internals = {
 }
 const internals = piEventStream as unknown as Internals
 let socket: Socket
+function respondingSocket(): Socket {
+  const next: Socket = { readyState: 0, send: vi.fn(), close: vi.fn() }
+  next.send.mockImplementation((raw: string) => {
+    if (JSON.parse(raw).type === 'ping') queueMicrotask(() => next.onmessage?.({
+      data: JSON.stringify({ type: 'pong', protocolVersion: PROTOCOL_VERSION, t: Date.now() }),
+    }))
+  })
+  return next
+}
 
 describe('network recovery', () => {
   beforeEach(() => {
@@ -47,7 +58,7 @@ describe('network recovery', () => {
     network.load.mockReset().mockResolvedValue(undefined)
     network.state.mockReset().mockResolvedValue(undefined)
     network.open.mockReset().mockImplementation(() => {
-      socket = { readyState: 0, send: vi.fn(), close: vi.fn() }
+      socket = respondingSocket()
       return socket
     })
   })
@@ -172,7 +183,7 @@ describe('network recovery', () => {
   it('recovers after five minutes of failed sockets without losing its cursor or needing a visibility change', async () => {
     let available = false
     network.open.mockImplementation(() => {
-      socket = { readyState: 0, send: vi.fn(), close: vi.fn() }
+      socket = respondingSocket()
       const attempt = socket
       queueMicrotask(() => {
         attempt.readyState = available ? 1 : 3
@@ -202,6 +213,191 @@ describe('network recovery', () => {
     expect(network.load).toHaveBeenCalledTimes(1)
     expect(network.state).toHaveBeenCalled()
     expect(internals.cursors.get('session:network-session')).toEqual({ epoch: 'e', sequence: 3 })
+  })
+
+  it('calibrates every pane immediately on foreground/pageshow even with a live socket', async () => {
+    let visibility: DocumentVisibilityState = 'visible'
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility)
+    piEventStream.connect('network-session')
+    piEventStream.connect('second-pane')
+    socket.readyState = 1
+    socket.onopen!()
+    await vi.advanceTimersByTimeAsync(0)
+    piBranchStore.setData('network-session', { items: [], hasMore: false, syncCursor: 'cached' } as unknown as PiBranchPage)
+    network.branch.mockClear()
+    network.load.mockClear()
+    network.state.mockClear()
+    const live = socket
+    visibility = 'hidden'
+    document.dispatchEvent(new Event('visibilitychange'))
+    visibility = 'visible'
+    document.dispatchEvent(new Event('visibilitychange'))
+    // No timer advance: the old debounce is not part of foreground recovery.
+    expect(network.branch).toHaveBeenCalledWith('network-session', expect.any(AbortSignal), { includeLiveMessage: true })
+    expect(network.load).toHaveBeenCalledWith('second-pane', expect.any(AbortSignal))
+    expect(network.state.mock.calls.map(([id]) => id).sort()).toEqual(['network-session', 'second-pane'])
+    expect(live.close).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(0)
+    network.branch.mockClear()
+    network.load.mockClear()
+    window.dispatchEvent(new Event('pageshow'))
+    expect(network.branch).toHaveBeenCalledTimes(1)
+    expect(network.load).toHaveBeenCalledTimes(1)
+  })
+
+  it('replaces a half-open socket at the pong deadline and ignores its later frames', async () => {
+    piEventStream.connect('network-session')
+    socket.send.mockImplementation(() => {})
+    socket.readyState = 1
+    socket.onopen!()
+    const halfOpen = socket
+    await vi.advanceTimersByTimeAsync(9_999)
+    expect(halfOpen.close).not.toHaveBeenCalled()
+    // An event is not the acknowledgement for the outstanding application ping.
+    halfOpen.onmessage!({ data: JSON.stringify({ channel: 'event', event: {
+      channel: 'registry.updated', stream: { kind: 'session', id: 'network-session' },
+      cursor: { epoch: 'before-reconnect', sequence: 3 }, payload: {},
+    } }) })
+    await vi.advanceTimersByTimeAsync(1)
+    expect(halfOpen.close).toHaveBeenCalledTimes(1)
+    expect(network.open).toHaveBeenCalledTimes(2)
+    halfOpen.onmessage!({ data: JSON.stringify({ channel: 'event', event: {
+      channel: 'registry.updated', stream: { kind: 'session', id: 'network-session' },
+      cursor: { epoch: 'stale-socket', sequence: 100 }, payload: {},
+    } }) })
+    expect(internals.cursors.get('session:network-session')).toEqual({ epoch: 'before-reconnect', sequence: 3 })
+    socket.readyState = 1
+    socket.onopen!()
+    await vi.advanceTimersByTimeAsync(150)
+    expect(network.load).toHaveBeenCalledWith('network-session', expect.any(AbortSignal))
+  })
+
+  it('accepts pong and keeps a responsive socket alive across heartbeat intervals', async () => {
+    piEventStream.connect('network-session')
+    socket.readyState = 1
+    socket.onopen!()
+    await vi.advanceTimersByTimeAsync(80_000)
+    expect(network.open).toHaveBeenCalledTimes(1)
+    expect(socket.close).not.toHaveBeenCalled()
+    expect(socket.send.mock.calls.filter(([raw]) => JSON.parse(raw).type === 'ping').length).toBeGreaterThan(1)
+  })
+
+  it('preserves the stable-connection cleanup across foreground heartbeat resets', async () => {
+    piEventStream.connect('network-session')
+    const internal = piEventStream as unknown as { lastProblemCode?: string }
+    internal.lastProblemCode = 'PREVIOUS_FAILURE'
+    socket.readyState = 1
+    socket.onopen!()
+    await vi.advanceTimersByTimeAsync(5000)
+    window.dispatchEvent(new Event('pageshow'))
+    await vi.advanceTimersByTimeAsync(25_000)
+    expect(internal.lastProblemCode).toBeUndefined()
+    expect(socket.close).not.toHaveBeenCalled()
+  })
+
+  it('discards frozen debounce timers and reconnects a stale socket before immediately reading panes', async () => {
+    let visibility: DocumentVisibilityState = 'visible'
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility)
+    piEventStream.connect('network-session')
+    socket.readyState = 1
+    socket.onopen!()
+    await vi.advanceTimersByTimeAsync(0)
+    const stale = socket
+    const timers = piEventStream as unknown as {
+      branchRefreshTimers: Map<string, ReturnType<typeof setTimeout>>
+      stateRefreshTimers: Map<string, ReturnType<typeof setTimeout>>
+      resyncTimer: ReturnType<typeof setTimeout> | null
+    }
+    const obsolete = vi.fn()
+    timers.branchRefreshTimers.set('network-session', setTimeout(obsolete, 150))
+    timers.stateRefreshTimers.set('network-session', setTimeout(obsolete, 150))
+    timers.resyncTimer = setTimeout(obsolete, 150)
+    visibility = 'hidden'
+    document.dispatchEvent(new Event('visibilitychange'))
+    // Advance wall time, not callbacks, to model an OS-frozen browser page.
+    vi.setSystemTime(Date.now() + 120_000)
+    network.load.mockClear()
+    network.state.mockClear()
+    visibility = 'visible'
+    window.dispatchEvent(new Event('pageshow'))
+    expect(stale.close).toHaveBeenCalledTimes(1)
+    expect(network.open).toHaveBeenCalledTimes(2)
+    expect(network.load).toHaveBeenCalledTimes(1)
+    expect(network.state).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(150)
+    expect(obsolete).not.toHaveBeenCalled()
+    expect(network.load).toHaveBeenCalledTimes(1)
+  })
+
+  it('reconnects an expired pending ping on return before the inbound-stale threshold', async () => {
+    let visibility: DocumentVisibilityState = 'visible'
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility)
+    piEventStream.connect('network-session')
+    socket.send.mockImplementation(() => {})
+    socket.readyState = 1
+    socket.onopen!()
+    const halfOpen = socket
+    visibility = 'hidden'
+    document.dispatchEvent(new Event('visibilitychange'))
+    vi.setSystemTime(Date.now() + 11_000)
+    visibility = 'visible'
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(halfOpen.close).toHaveBeenCalledTimes(1)
+    expect(network.open).toHaveBeenCalledTimes(2)
+    expect(network.load).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(0)
+  })
+
+  it('does not refresh or replace transport while offline or still hidden', () => {
+    const online = vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(true)
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    piEventStream.connect('network-session')
+    network.load.mockClear()
+    network.state.mockClear()
+    visibility.mockReturnValue('hidden')
+    window.dispatchEvent(new Event('pageshow'))
+    visibility.mockReturnValue('visible')
+    online.mockReturnValue(false)
+    window.dispatchEvent(new Event('online'))
+    expect(network.load).not.toHaveBeenCalled()
+    expect(network.state).not.toHaveBeenCalled()
+    expect(network.open).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a racing resync as one dirty tail without stealing another session slot', async () => {
+    const first = Promise.withResolvers<void>()
+    network.branch.mockImplementation((id: string) => id === 'network-session' && network.branch.mock.calls.filter(([key]) => key === id).length === 1
+      ? first.promise : Promise.resolve())
+    for (const id of ['network-session', 'other-resync'])
+      piBranchStore.setData(id, { items: [], hasMore: false } as unknown as PiBranchPage)
+    internals.queueResync('session:network-session')
+    await vi.advanceTimersByTimeAsync(150)
+    internals.queueResync('session:network-session')
+    internals.queueResync('session:network-session')
+    internals.queueResync('session:other-resync')
+    await vi.advanceTimersByTimeAsync(150)
+    expect(network.branch.mock.calls.map(([id]) => id)).toEqual(['network-session', 'other-resync'])
+    expect(internals.incompleteResync.has('session:network-session')).toBe(true)
+    first.resolve()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(network.branch.mock.calls.map(([id]) => id)).toEqual(['network-session', 'other-resync', 'network-session'])
+    expect(internals.incompleteResync.has('session:network-session')).toBe(false)
+  })
+
+  it('keeps a racing foreground resync after the older request fails', async () => {
+    const first = Promise.withResolvers<void>()
+    network.load.mockReturnValueOnce(first.promise).mockResolvedValue(undefined)
+    internals.queueResync('session:network-session')
+    await vi.advanceTimersByTimeAsync(150)
+    internals.queueResync('session:network-session')
+    await vi.advanceTimersByTimeAsync(150)
+    first.reject(new TypeError('connection was suspended'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(network.load).toHaveBeenCalledTimes(2)
+    expect(internals.incompleteResync.has('session:network-session')).toBe(false)
+    // Successful dirty tail cancels the older flight's scheduled retry.
+    await vi.advanceTimersByTimeAsync(1500)
+    expect(network.load).toHaveBeenCalledTimes(2)
   })
 
   it('retry jitter stays bounded and an aborted wait leaves no timer', async () => {
