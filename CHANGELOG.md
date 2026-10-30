@@ -1,5 +1,10 @@
 ## [Unreleased]
 
+- verification(feedback): #367 的真实官方 stdout 分片→生产 decoder→worker→server→网页反馈闭环已验收，新增透明传输故障夹具（不是最终事件注入）。官方 OMP 18.12.6/Bun 1.3.14 的正常字节保留、length mismatch→stream、非法 UTF-8→frame、真实 30 秒丢片超时、后续消息与双会话隔离通过；生产网页鉴权事件流和扩展面板保留完整原文、originalType、会话归属及通知定位。原生专项与 GUI 证据分开，压缩 warning 不隐藏；见 `docs/rpc-stream-error-acceptance.md`。
+- verification: 本轮 `npm run validate` 全流程通过：前端 214 文件／1708 项，worker 305 通过／13 跳过，server 321 通过／1 跳过，其余工作区零失败；类型检查、生产构建通过，lint 0 error／42 warning。#373/#374 的完整原生身份与 typed 合并结算契约在正式 18.14.0 源码中仍缺失，见 `docs/subagent-native-contract.md`；不修改 OMP 的客户端运行观察／保守状态兼容方案另待实施验收，不把接口缺口说成客户端无法补救，也不冒称本轮已实现。
+- verification(session): #361 按维护者确认的原「旧身份不污染目标会话」范围结案；默认原生专项验证历史／取消／图片 Fork／Goal 恢复及宿主错误隔离后 exit 0，`--require-source-attribution` 明确作为额外未提供的能力检查保留 exit 2，不把无来源错误猜归到新会话。本轮官方 OMP 18.12.6/Bun 1.3.14 实跑两入口，均保留原始错误且会话错误数为 0、宿主诊断数为 1；历史 GUI 证据不冒充本轮重跑。见 `docs/session-transition-acceptance.md`。
+- verification(tools): #382 已随 v0.6.46 交付并结案；本轮两个隔离原生 PTY 专项及 14 项身份／控制权回归通过，不再按历史「无同次工具 PTY 接口」描述当前实现。受支持公开扩展在原工具执行前分配唯一 PTY；厂商模型、Linux/macOS 真机及移动设备未测范围仍按 `docs/tool-interaction.md` 披露。
+
 ## [v0.6.46] - 2026-10-30
 
 - feat(tools): 模型前台 Bash PTY 可在原工具正文交互；公开扩展执行前创建唯一进程，中文/Enter/方向与控制键/resize、writer 控制权、受认证 socket/pipe 与一次性 WebSocket 票据、输入 ACK 恢复去重和有界输出回放接通。真实退出/非零/超时/取消返回原 toolCallId，模型继续；不打开官方 OMP TUI、不另建 shell、不重跑命令，普通 Bash/async/name 服务沿用官方路径，历史浏览只读。官方 18.12.6/Bun 1.3.14 的隔离模型循环、真实 PTY、网页刷新/输入/续答及 WebSocket 四类终态验收通过，平台与厂商模型未测范围见 `docs/tool-interaction.md`。

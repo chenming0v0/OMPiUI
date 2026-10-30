@@ -744,6 +744,18 @@ describe('native notices and protocol feedback', () => {
     expect(commandFeedbackStore.getSnapshot().sessions['notice-a']?.map(entry => entry.status)).toEqual(['error', 'warning', 'info'])
   })
 
+  it('retains stream-loss errors and routes feedback only to their owning session', () => {
+    const push = vi.spyOn(notificationStore, 'push').mockImplementation(() => {})
+    const internal = piEventStream as unknown as { handlePiEvent(sessionId: string, payload: unknown): void }
+    const error = 'rpc chunk isolated-stream length mismatch: got 1048577 expected 1048578\n'
+    internal.handlePiEvent('stream-owner', { event: { type: 'rpc_stream_error', error, text: 'bounded suppression context', originalType: 'rpc_chunk' }, meta: {} })
+    expect(commandFeedbackStore.getSnapshot().sessions['stream-owner']?.[0]).toMatchObject({ source: 'OMP runtime', status: 'error', message: error, originalType: 'rpc_chunk', context: 'bounded suppression context' })
+    expect(commandFeedbackStore.getSnapshot().sessions['stream-other']).toBeUndefined()
+    expect(push).toHaveBeenLastCalledWith('error', 'OMP runtime', error, 'stream-owner', undefined, { target: 'extensions' })
+    internal.handlePiEvent('stream-owner', { event: { type: 'notice', level: 'info', message: 'normal feedback after stream loss', source: 'native-source' }, meta: {} })
+    expect(commandFeedbackStore.getSnapshot().sessions['stream-owner']?.map(entry => entry.status)).toEqual(['info', 'error'])
+  })
+
   it('does not turn extension warnings or informational native output into success', () => {
     const push = vi.spyOn(notificationStore, 'push').mockImplementation(() => {})
     const internal = piEventStream as unknown as { handleExtensionUiEvent(sessionId: string, event: unknown): void; handlePiEvent(sessionId: string, payload: unknown): void }

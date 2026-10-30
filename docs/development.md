@@ -207,7 +207,9 @@ Windows 安装器固定使用当前 Tauri NSIS 模板，在旧卸载器删除快
 
 #356 的双窗格 Fork 身份／图片草稿迁移、切换其它子分支、Undo 后新发同身份分支已在隔离官方 OMP 18.12.6／Bun 1.3.14 和生产网页实跑补齐；持久化草稿／Redo 刷新恢复及双向原生会话继续也通过。新增 `scripts/verify-session-transitions.mjs --history-only` 可重复运行历史矩阵，`scripts/preview-session-transitions.mjs` 提供实际 GUI 验收服务。
 
-#361 的本地错误隔离已补齐：无来源的原始 `extension_error` 走无 sessionId 的宿主诊断通道，扩展面板保留原文和独立 runtime 标识，不落入新会话事件流；原生命令拒绝／草稿处理不变，不虚构会话或通知目标。`scripts/verify-session-transitions.mjs --local-isolation` 专门验收这一本地边界。官方仍缺 source session／prompt／generation，不能精确路由回源会话；2026-10-29 对最新 18.13.3 的核对仅是源码。默认完整专项仍 exit 2，不能以本地子集通过宣称 #361 全部完成。详见 [专项步骤与真实证据](session-transition-acceptance.md)。
+#361 的本地错误隔离已补齐并经维护者确认按原不污染范围结案：无来源的原始 `extension_error` 走无 sessionId 的宿主诊断通道，扩展面板保留原文和独立 runtime 标识，不落入新会话事件流；原生命令拒绝／草稿处理不变，不虚构会话或通知目标。默认 `scripts/verify-session-transitions.mjs` 及兼容的 `--local-isolation` 验证历史／宿主隔离后 exit 0；`--history-only` 只验历史子集。官方仍缺 source session／prompt／generation，不能精确路由回源会话；显式 `--require-source-attribution` 保留这一额外未提供能力的 exit 2，不代表发现新的目标污染。详见 [专项步骤与真实证据](session-transition-acceptance.md)。
+
+#367 的本地 stream/frame 错误从实际官方分片故障到生产网页反馈已补齐，重复入口、原生／GUI 证据与共享限流边界见 [RPC 分片故障验收](rpc-stream-error-acceptance.md)。#373/#374 的完整官方运行身份、历史 endcap 和 typed root/nested 合并结算在正式 18.14.0 源码中仍缺失；这不排除客户端通过公开运行观察与保守状态显示修正自身界面。维护者要求不改 OMP，客户端兼容方案另待实施验收，不以私改 runner 或文本猜测替代。原生契约缺口、兼容范围澄清和待验矩阵见 [子代理原生契约提案](subagent-native-contract.md)。
 
 ## 开发与验证
 
