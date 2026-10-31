@@ -1,5 +1,10 @@
 ## [Unreleased]
 
+## [v0.6.50] - 2026-11-01
+
+- refactor(app): 认证页 UI 重做（电脑端认证／对接界面 + 手机端登录与配对）：新增 `AuthPanelUI`（AuthCard / AuthStatusPill / AuthAlert / 主次按钮样式）作为两端统一视觉外壳。桌面端连接方式改为带图标的分段选项卡、网卡／端口改为左右对齐设置行，「连接手机」改为二维码 + 倒计时胶囊 + 手动配对码卡片 + 横排三步指引，未就绪时显示居中虚线空态；手机端登录与「连接电脑」卡片风格一致，扫码提升为主按钮、粘贴降为分隔线下的次要路径，诊断折叠并入卡片底部；TailscaleControls 状态行改为圆点状态胶囊、登录为实心主按钮、断开为描边按钮，授权链接兜底收进折叠面板（链接框 + 复制按钮）。事件语义不变（`status` / `alert` / `qr` testid / 按钮文案全部保留），不回退 0.6.48 的登录流程逻辑。
+- verification: app typecheck、touched-file lint、settings 套件 277 项测试通过；桌面（667px）与手机（375px）预览在 mock transport 下检查，无横向溢出。原生浏览器与相机接口未在真机验证。
+
 ## [v0.6.48] - 2026-10-31
 
 - feat(tailscale): 登录「虚拟组网」按钮贯穿整个登录过程，不再点一下就还原。新增 `useTailscaleLoginFlow` 状态机（starting → waitingAuthUrl → authorizing）：1 秒短轮询等待授权链接、30 秒超时明确报错并可重试；拿到链接后按钮变为「打开官方授权页」可随时重开浏览器，并保留可点击链接、复制按钮和二维码兜底。手机端与桌面端共用同一 hook，删除各自的 waitingForAuth 隐藏标志；server `/api/v1/host/tailscale/login` 响应直接带出 `authUrl`，桌面端不再空等一轮状态轮询。

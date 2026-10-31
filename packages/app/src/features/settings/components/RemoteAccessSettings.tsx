@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
+import type React from 'react'
 import { useTranslation } from 'react-i18next'
+import { CircleCheck, Clock, Globe, Network, QrCode as QrCodeIcon, Server, Smartphone, Wifi } from 'lucide-react'
 import type { HostNetworkInfo, PairInviteInfo, TunnelStatus } from '@ompiui/protocol'
 import { CheckIcon, CopyIcon, RetryIcon, SpinnerIcon } from '../../../components/Icons'
 import { QrCode } from '../../../components/QrCode'
@@ -17,6 +19,7 @@ import { useServerStore } from '../../../hooks'
 import { useTailscaleLoginFlow } from '../../../hooks/useTailscaleLoginFlow'
 import { settingsFieldClass, SettingsSection } from './SettingsUI'
 import { TailscaleControls } from './TailscaleControls'
+import { AuthCard, AuthStatusPill, authSecondaryButtonClass } from './AuthPanelUI'
 import { openTailscaleLogin } from '../../../utils/tailscaleLogin'
 import { isTauri, isTauriMobile } from '../../../utils/tauri'
 
@@ -244,8 +247,8 @@ function RemoteAccessPanel() {
   const tailscalePanel = tailscale && (
     <div className="grid min-w-0 gap-3">
       <div>
-        <h3 className="text-[length:var(--fs-sm)] font-medium text-text-100">{t('settings:service.remoteServerLoginTitle')}</h3>
-        <p className="mt-1 text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('settings:service.remoteServerLoginDesc')}</p>
+        <h4 className="text-[length:var(--fs-sm)] font-medium text-text-200">{t('settings:service.remoteServerLoginTitle')}</h4>
+        <p className="mt-0.5 text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('settings:service.remoteServerLoginDesc')}</p>
       </div>
       <TailscaleControls state={tailscale.backendState}
         authUrl={tailscaleFlow.authUrl}
@@ -266,197 +269,211 @@ function RemoteAccessPanel() {
     </div>
   )
 
+  const tabs: Array<[RemoteTab, string, React.ReactNode]> = [
+    ['lan', t('settings:service.remoteTabLan'), <Wifi size={14} />],
+    ['tailscale', t('settings:service.remoteTabTailscale'), <Globe size={14} />],
+    ['relay', t('settings:service.remoteTabRelay'), <Server size={14} />],
+  ]
+  const steps = [t('settings:service.remoteStep1'), t('settings:service.remoteStep2'), t('settings:service.remoteStep3')]
+
   return (
     <SettingsSection title={t('settings:authentication.title')} description={t('settings:service.remoteBackendDesc')}>
-      <div className="overflow-hidden rounded-lg border border-border-200/60 bg-bg-100">
-        <section data-testid="remote-network-setup" className="grid min-w-0 gap-4 p-4">
-          <div>
-            <h3 className="text-[length:var(--fs-md)] font-medium text-text-100">{t('settings:service.remoteConnectionTitle')}</h3>
-            <p className="mt-1 text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('settings:service.remoteConnectionDesc')}</p>
-          </div>
+      <div className="grid min-w-0 gap-3">
+        <AuthCard testId="remote-network-setup" icon={<Network size={18} />}
+          title={t('settings:service.remoteConnectionTitle')} description={t('settings:service.remoteConnectionDesc')}>
           <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-1 rounded-lg bg-bg-200/60 p-1">
-              {(
-                [
-                  ['lan', t('settings:service.remoteTabLan')],
-                  ['tailscale', t('settings:service.remoteTabTailscale')],
-                  ['relay', t('settings:service.remoteTabRelay')],
-                ] as Array<[RemoteTab, string]>
-              ).map(([value, label]) => (
+            <div className="grid grid-cols-3 gap-1 rounded-lg bg-bg-200/60 p-1">
+              {tabs.map(([value, label, icon]) => (
                 <button
                   key={value}
                   type="button"
                   onClick={() => switchTab(value)}
                   aria-pressed={tab === value}
-                  className={`min-h-10 flex-1 rounded-md px-3 text-[length:var(--fs-xs)] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-accent-main-100 sm:min-h-8 ${
-                    tab === value ? 'bg-bg-100 text-text-100 shadow-sm' : 'text-text-400 hover:bg-bg-100/50 hover:text-text-200'
+                  className={`inline-flex min-h-10 min-w-0 items-center justify-center gap-1.5 rounded-md px-2 text-[length:var(--fs-xs)] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-accent-main-100 sm:min-h-8 ${
+                    tab === value ? 'bg-bg-100 text-text-100 shadow-sm ring-1 ring-border-200/60' : 'text-text-400 hover:bg-bg-100/50 hover:text-text-200'
                   }`}
                 >
-                  {label}
+                  <span className={`shrink-0 ${tab === value ? 'text-accent-main-100' : ''}`}>{icon}</span>
+                  <span className="truncate">{label}</span>
                 </button>
               ))}
             </div>
 
             {tab === 'lan' && (
-              <div className="mt-3 grid gap-2.5">
-                <div>
-                  <div className="text-[length:var(--fs-sm)] font-medium text-text-200">{t('settings:service.remoteNic')}</div>
-                  <div className="text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('settings:service.remoteNicDesc')}</div>
+              <div className="mt-4 grid divide-y divide-border-200/60">
+                <div className="grid gap-2 pb-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-4">
+                  <div className="min-w-0">
+                    <div className="text-[length:var(--fs-sm)] font-medium text-text-200">{t('settings:service.remoteNic')}</div>
+                    <div className="text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('settings:service.remoteNicDesc')}</div>
+                  </div>
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <select
+                      value={selectedAddress}
+                      aria-label={t('settings:service.remoteNic')}
+                      disabled={networkLoading || interfaces.length === 0}
+                      className={`${settingsFieldClass} sm:w-60`}
+                      onChange={event => setSelectedAddress(event.target.value)}
+                    >
+                      {interfaces.length === 0 && <option value="">{t('settings:service.remoteNoNetwork')}</option>}
+                      {interfaces.map(item => (
+                        <option key={item.address} value={item.address}>
+                          {item.name} · {item.address}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border-200 text-text-400 transition-colors hover:bg-bg-200 hover:text-text-200 disabled:opacity-50"
+                      title={t('common:refresh')}
+                      aria-label={t('common:refresh')}
+                      disabled={networkLoading}
+                      onClick={() => {
+                        setNetwork(null)
+                        setNetworkLoading(true)
+                        setNetworkRefresh(value => value + 1)
+                      }}
+                    >
+                      <RetryIcon size={13} className={networkLoading ? 'animate-spin' : undefined} />
+                    </button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-1.5">
-                  <select
-                    value={selectedAddress}
-                    aria-label={t('settings:service.remoteNic')}
-                    disabled={networkLoading || interfaces.length === 0}
-                    className={`${settingsFieldClass} max-w-64`}
-                    onChange={event => setSelectedAddress(event.target.value)}
-                  >
-                    {interfaces.length === 0 && <option value="">{t('settings:service.remoteNoNetwork')}</option>}
-                    {interfaces.map(item => (
-                      <option key={item.address} value={item.address}>
-                        {item.name} · {item.address}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    className="flex h-7 w-7 items-center justify-center rounded-md text-text-400 hover:bg-bg-200/70 hover:text-text-200"
-                    title={t('common:refresh')}
-                    aria-label={t('common:refresh')}
-                    disabled={networkLoading}
-                    onClick={() => {
-                      setNetwork(null)
-                      setNetworkLoading(true)
-                      setNetworkRefresh(value => value + 1)
-                    }}
-                  >
-                    <RetryIcon size={13} />
-                  </button>
-                </div>
-                <div>
-                  <div className="text-[length:var(--fs-sm)] font-medium text-text-200">{t('settings:service.remotePort')}</div>
-                  <div className="text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('settings:service.remoteServerPortDesc')}</div>
-                  <div aria-label={t('settings:service.remotePort')} className="mt-1 font-mono text-[length:var(--fs-sm)] text-text-200">
+                <div className="grid gap-2 pt-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-4">
+                  <div className="min-w-0">
+                    <div className="text-[length:var(--fs-sm)] font-medium text-text-200">{t('settings:service.remotePort')}</div>
+                    <div className="text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('settings:service.remoteServerPortDesc')}</div>
+                  </div>
+                  <div aria-label={t('settings:service.remotePort')}
+                    className="w-fit rounded-md border border-border-200/60 bg-bg-200/60 px-2.5 py-1 font-mono text-[length:var(--fs-sm)] text-text-200">
                     {listenPort ?? '—'}
                   </div>
                   {!networkLoading && !listenPort && (
-                    <p role="status" className="mt-1 text-[length:var(--fs-xs)] leading-relaxed text-text-400">
+                    <p role="status" className="text-[length:var(--fs-xs)] leading-relaxed text-text-400 sm:col-span-2">
                       {t('settings:service.remotePortUnavailable')}
                     </p>
                   )}
                 </div>
                 {lanUnavailable && (
-                  <p role="status" className="break-words text-[length:var(--fs-xs)] leading-relaxed text-warning-100/80">
-                    {lanUnavailable}
-                  </p>
+                  <div className="pt-3">
+                    <p role="status" className="break-words rounded-lg border border-warning-100/25 bg-warning-100/10 px-3 py-2 text-[length:var(--fs-xs)] leading-relaxed text-warning-100">
+                      {lanUnavailable}
+                    </p>
+                  </div>
                 )}
               </div>
             )}
 
             {tab === 'relay' && (
-              <div className="mt-3 text-[length:var(--fs-xs)] leading-relaxed">
+              <div className="mt-4 text-[length:var(--fs-xs)] leading-relaxed">
                 {!tunnel ? (
-                  <span className="text-text-400">{tunnel === undefined
+                  <AuthStatusPill tone="idle">{tunnel === undefined
                     ? t('settings:service.backendStatusLoading')
-                    : t('settings:service.backendStatusUnavailable')}</span>
+                    : t('settings:service.backendStatusUnavailable')}</AuthStatusPill>
                 ) : !tunnel.enabled ? (
-                  <span className="text-text-400">{t(desktop ? 'settings:service.remoteRelayNotConfigured' : 'settings:service.remoteRelayManageHint')}</span>
+                  <p className="rounded-lg bg-bg-200/50 px-3 py-2.5 text-text-400">{t(desktop ? 'settings:service.remoteRelayNotConfigured' : 'settings:service.remoteRelayManageHint')}</p>
                 ) : tunnel.state === 'connected' ? (
-                  <span className="break-all text-success-100">
-                    {t('settings:service.remoteRelayConnected')}
-                    <span className="ml-1 font-mono text-text-500">{tunnel.publicUrl}</span>
-                  </span>
+                  <div className="grid gap-2">
+                    <AuthStatusPill tone="success">{t('settings:service.remoteRelayConnected')}</AuthStatusPill>
+                    <span className="break-all font-mono text-text-400">{tunnel.publicUrl}</span>
+                  </div>
                 ) : (
-                  <span className="text-warning-100/80">{t('settings:service.remoteRelayOffline')}</span>
+                  <AuthStatusPill tone="warning">{t('settings:service.remoteRelayOffline')}</AuthStatusPill>
                 )}
               </div>
             )}
             {tab === 'tailscale' && (
-              <div className="mt-3">
+              <div className="mt-4">
                 {tailscalePanel ?? <p role="status" className="text-[length:var(--fs-xs)] text-text-400">
                   {t('settings:service.backendStatusUnavailable')}
                 </p>}
               </div>
             )}
           </div>
-        </section>
+        </AuthCard>
 
-        <section data-testid="remote-device-pairing" className="grid min-w-0 gap-4 border-t border-border-200/60 p-4">
-          <div>
-            <h3 className="text-[length:var(--fs-md)] font-medium text-text-100">{t('settings:service.remoteConnectPhoneTitle')}</h3>
-            <p className="mt-1 text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('settings:service.remoteConnectPhoneDesc')}</p>
-          </div>
-          <div className="flex flex-col items-start gap-4 sm:flex-row">
-            {pairUrl && <div className="shrink-0"><QrCode text={pairUrl} size={176} /></div>}
-            <div className="grid min-w-0 flex-1 gap-2">
-            {!pairUrl && (
-              <div role="status" className="rounded-md bg-bg-200/60 px-3 py-2.5 text-[length:var(--fs-xs)] leading-relaxed text-text-400">
+        <AuthCard testId="remote-device-pairing" icon={<Smartphone size={18} />}
+          title={t('settings:service.remoteConnectPhoneTitle')} description={t('settings:service.remoteConnectPhoneDesc')}>
+          {invite?.redeemed && (
+            <div className="flex items-center gap-2 rounded-lg border border-success-100/25 bg-success-100/10 px-3 py-2.5 text-[length:var(--fs-sm)] text-success-100">
+              <CircleCheck size={16} className="shrink-0" />{t('settings:service.remoteApproved')}
+            </div>
+          )}
+          {!pairUrl && !invite?.redeemed && (
+            <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-border-200 bg-bg-200/30 px-4 py-6 text-center">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-bg-200 text-text-400">
+                {pairPending && !(tab === 'lan' && lanUnavailable) && !(tab === 'tailscale' && !base)
+                  ? <SpinnerIcon size={18} className="animate-spin" />
+                  : <QrCodeIcon size={18} />}
+              </div>
+              <div role="status" className="max-w-sm text-[length:var(--fs-xs)] leading-relaxed text-text-400">
                 {tab === 'lan' && lanUnavailable
                   ? t('settings:service.remoteQrUnavailable')
                   : tab === 'tailscale' && !base
                   ? t(tailscale?.backendState === 'NeedsMachineAuth' ? 'settings:service.remotePairApprovalRequired' : 'settings:service.remotePairServerLoginRequired')
                   : pairPending
-                  ? <span className="flex items-center gap-2"><SpinnerIcon size={16} className="shrink-0 animate-spin" />{t('settings:service.backendStatusLoading')}</span>
+                  ? t('settings:service.backendStatusLoading')
                   : t('settings:service.remoteQrUnavailable')}
               </div>
-            )}
-            {pairUrl && invite && (
-              <div className="text-[length:var(--fs-xs)] text-text-400">
-                {t('settings:service.remoteExpiresLater', { time: formatCountdown(invite.expiresAt, now) })}
-                <button type="button" className="ml-2 text-accent-main-100 hover:underline" onClick={reMint}>
-                  {t('settings:service.remoteRefresh')}
+              {invite && expired && !invite.redeemed && (
+                <div className="text-[length:var(--fs-xs)] text-warning-100">
+                  {t('settings:service.remoteExpired')}
+                  <button type="button" className="ml-1 font-medium text-accent-main-100 hover:underline" onClick={reMint}>
+                    {t('settings:service.remoteRefresh')}
+                  </button>
+                </div>
+              )}
+              {inviteGone && (
+                <button type="button" className={`${authSecondaryButtonClass} min-h-9 text-[length:var(--fs-xs)]`} onClick={reMint}>
+                  <RetryIcon size={12} />{t('settings:service.remoteRefresh')}
                 </button>
-              </div>
-            )}
-            {invite && expired && !invite.redeemed && (
-              <div className="text-[length:var(--fs-xs)] text-warning-100/80">
-                {t('settings:service.remoteExpired')}
-                <button type="button" className="ml-2 text-accent-main-100 hover:underline" onClick={reMint}>
-                  {t('settings:service.remoteRefresh')}
-                </button>
-              </div>
-            )}
-            {invite?.redeemed && <div className="text-[length:var(--fs-xs)] text-success-100">{t('settings:service.remoteApproved')}</div>}
-            {inviteGone && (
-              <button type="button" className="text-[length:var(--fs-xs)] text-accent-main-100 hover:underline" onClick={reMint}>
-                {t('settings:service.remoteRefresh')}
-              </button>
-            )}
-            {pairUrl && invite && (
-              <div className="text-[length:var(--fs-xs)] text-text-300">
-                {t('settings:service.remoteManualCode', { code: groupedCode(invite.code) })}
-              </div>
-            )}
-            {pairUrl && <button
-              type="button"
-              className="flex min-h-10 w-fit items-center gap-1.5 rounded-md px-3 py-1 text-[length:var(--fs-xs)] text-text-300 transition-colors hover:bg-bg-200 focus-visible:outline-2 focus-visible:outline-accent-main-100"
-              onClick={() => void copyInvite()}
-            >
-              {copied ? <CheckIcon size={12} className="text-success-100" /> : <CopyIcon size={12} />}
-              {copied ? t('settings:service.remoteCopied') : t('settings:service.remoteCopyInvite')}
-            </button>}
+              )}
             </div>
-          </div>
+          )}
 
-        {pairUrl && <ol className="grid gap-1.5 text-[length:var(--fs-xs)] leading-relaxed text-text-400">
-          <li className="flex gap-2">
-            <span className="font-medium text-text-300">1</span>
-            <span>{t('settings:service.remoteStep1')}</span>
-          </li>
-          <li className="flex gap-2">
-            <span className="font-medium text-text-300">2</span>
-            <span>{t('settings:service.remoteStep2')}</span>
-          </li>
-          <li className="flex gap-2">
-            <span className="font-medium text-text-300">3</span>
-            <span>{t('settings:service.remoteStep3')}</span>
-          </li>
-        </ol>}
+          {pairUrl && invite && (
+            <div className="flex flex-col items-center gap-5 sm:flex-row sm:items-stretch">
+              <div className="shrink-0 rounded-xl bg-white p-2 shadow-sm ring-1 ring-black/5">
+                <QrCode text={pairUrl} size={176} />
+              </div>
+              <div className="flex w-full min-w-0 flex-1 flex-col justify-between gap-4">
+                <div className="grid gap-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <AuthStatusPill tone="progress" icon={<Clock size={12} className="shrink-0" />}>
+                      {t('settings:service.remoteExpiresLater', { time: formatCountdown(invite.expiresAt, now) })}
+                    </AuthStatusPill>
+                    <button type="button" className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[length:var(--fs-xs)] font-medium text-accent-main-100 hover:bg-accent-main-100/10" onClick={reMint}>
+                      <RetryIcon size={12} />{t('settings:service.remoteRefresh')}
+                    </button>
+                  </div>
+                  <div className="rounded-lg border border-border-200/60 bg-bg-200/40 px-3 py-2.5 font-mono text-[length:var(--fs-sm)] tracking-wide text-text-200">
+                    {t('settings:service.remoteManualCode', { code: groupedCode(invite.code) })}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className={`${authSecondaryButtonClass} min-h-10 w-full text-[length:var(--fs-xs)] sm:w-fit`}
+                  onClick={() => void copyInvite()}
+                >
+                  {copied ? <CheckIcon size={12} className="text-success-100" /> : <CopyIcon size={12} />}
+                  {copied ? t('settings:service.remoteCopied') : t('settings:service.remoteCopyInvite')}
+                </button>
+              </div>
+            </div>
+          )}
 
-        {pairUrl && <div className="break-all text-[length:var(--fs-xs)] text-text-500">
-          {t('settings:service.remoteWaiting', { url: pairUrl })}
-        </div>}
-        </section>
+          {pairUrl && <ol className="grid gap-2 sm:grid-cols-3">
+            {steps.map((step, index) => (
+              <li key={index} className="flex gap-2.5 rounded-lg bg-bg-200/40 p-3 text-[length:var(--fs-xs)] leading-relaxed text-text-400">
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent-main-100/15 text-[11px] font-semibold text-accent-main-100">{index + 1}</span>
+                <span>{step}</span>
+              </li>
+            ))}
+          </ol>}
+
+          {pairUrl && <div className="flex min-w-0 items-start gap-2 text-[length:var(--fs-xs)] text-text-500">
+            <span aria-hidden className="mt-1.5 h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent-main-100" />
+            <span className="min-w-0 break-all">{t('settings:service.remoteWaiting', { url: pairUrl })}</span>
+          </div>}
+        </AuthCard>
       </div>
     </SettingsSection>
   )
