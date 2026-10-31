@@ -389,10 +389,11 @@ jobs:
           fi
           echo "$BODY" > /tmp/release-body.md
           {
-            printf '\n---\n\n**Lite (no bundled runtime):** Windows (.zip, .exe), Linux (.tar.gz, .deb), macOS (.tar.gz, .dmg) — uses your own OMP CLI (`OMPI_OMP_BIN` or PATH)\n'
-            printf '**Full runtime (开箱即用):** assets without the `-lite` suffix bundle the complete official OMP runtime; they are attached to this release automatically a few minutes after publishing\n'
+            printf '\n---\n\n**全量版（开箱即用）：** 文件名不带 `-lite` 后缀，内置完整官方 OMP runtime，下载后直接能用，无需自己安装 OMP。\n'
+            printf '**轻量版：** 文件名带 `-lite` 后缀，不内置 runtime，体积更小；需要你自己安装 OMP CLI，并通过 `OMPI_OMP_BIN` 或 PATH 指定。\n'
+            printf '**区别：** 全量版省去安装 OMP 的步骤，适合新用户；轻量版适合已装有 OMP、或想自己控制版本的用户。\n'
             if compgen -G "release-assets/*android*.apk" > /dev/null; then
-              printf '**Mobile:** Android (.apk) — arm64, armeabi-v7a\n'
+              printf '**移动端：** Android (.apk) — arm64、armeabi-v7a\n'
             fi
           } >> /tmp/release-body.md
 
