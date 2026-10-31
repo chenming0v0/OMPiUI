@@ -1,5 +1,13 @@
 ## [Unreleased]
 
+## [v0.6.48] - 2026-10-31
+
+- feat(tailscale): 登录「虚拟组网」按钮贯穿整个登录过程，不再点一下就还原。新增 `useTailscaleLoginFlow` 状态机（starting → waitingAuthUrl → authorizing）：1 秒短轮询等待授权链接、30 秒超时明确报错并可重试；拿到链接后按钮变为「打开官方授权页」可随时重开浏览器，并保留可点击链接、复制按钮和二维码兜底。手机端与桌面端共用同一 hook，删除各自的 waitingForAuth 隐藏标志；server `/api/v1/host/tailscale/login` 响应直接带出 `authUrl`，桌面端不再空等一轮状态轮询。
+- fix(tailscale): 取消过期的登录／状态响应并串行化轮询，区分「等待浏览器打开」与「等待手动授权」；手机登录与电脑配对分开，移除这两个流程中易混淆的授权二维码，保留显式浏览器链接兜底与诊断。授权链接校验放宽为 https 且不含用户信息（前端、`TailscaleBrowser.kt`、server `mapStatusJson` 三处同步），自建 Headscale 不再被拦截。
+- fix(app): 恢复移动端会话（#413／#414／#415）：只读校准前恢复持久化的窗格布局与有界分支缓存，检测失效事件 socket 并在回前台时重新同步可见窗格，保留竞争中的刷新需求；后台活动与前台 Stop 按钮分离，不把缓存工具当作实时权威，也不隐藏会话不可用错误。
+- chore: 删除 `docs/` 下 21 个已用完的计划／审计／验收／调研文档及 `PLAN.md`（保留 tunnel／tui／diagnostics／development 及 images），删除孤儿脚本 `scripts/resolve-network-issues.mjs`；CHANGELOG 中 10 处指向已删文档的死链改为「见提交历史」；AGENTS.md 新增「文档纪律」。
+- verification: 发布准备 `npm run validate` 全流程通过：前端 220 文件／1881 项，worker 324 通过／13 跳过，server 322 通过／1 跳过，protocol 26、admin 19、relay 59、tui 16 全部通过；类型检查、生产构建通过，lint 0 error／0 warning。移动端恢复在浏览器预览覆盖发送按钮状态与冷启动／恢复；Tailscale 原生浏览器与相机接口在预览中为 mock，未在真机验证，Android 进程被杀测试未执行。
+
 ## [v0.6.47] - 2026-10-30
 
 - fix(app): 清理 React Hooks／Compiler 与热更新规则的 41 条 lint 警告；表单、会话与目录重置保持作用域隔离。补充元数据查询期间保存禁用、模型列表重试 loading、外部 Git 刷新期间操作禁用及终端全屏稳定容器高度回归，保留移动端增删模型不重拉列表的行为。
