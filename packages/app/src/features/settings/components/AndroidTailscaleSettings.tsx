@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Copy, Share2, Smartphone } from 'lucide-react'
+import { ChevronRight, Copy, Share2, Smartphone } from 'lucide-react'
+import { SpinnerIcon } from '../../../components/Icons'
+import { AuthCard, AuthStatusPill, authSecondaryButtonClass } from './AuthPanelUI'
 import {
   disconnectAndroidTailscale, getAndroidTailscaleStatus, isAndroidTailscalePlatform,
   loginAndroidTailscale, type AndroidTailscaleStatus,
@@ -52,17 +54,11 @@ function AndroidTailscalePanel() {
     }).finally(() => { if (mounted.current) setBusy(false) })
   }
   return (
-    <section data-testid="phone-tailscale-login" className="grid min-w-0 gap-4 rounded-xl border border-border-200/60 bg-bg-100 p-4">
-      <div className="flex items-start gap-3">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent-main-100/10 text-accent-main-100"><Smartphone size={22} /></div>
-        <div className="min-w-0">
-          <h3 className="text-[length:var(--fs-md)] font-medium text-text-100">{t('service.remoteTailscalePhoneTitle')}</h3>
-          <p className="mt-1 text-[length:var(--fs-xs)] leading-relaxed text-text-300">{t('service.remoteTailscalePhoneDesc')}</p>
-        </div>
-      </div>
-      {!status && !statusError ? <p role="status" className="text-[length:var(--fs-xs)] text-text-400">
+    <AuthCard testId="phone-tailscale-login" icon={<Smartphone size={18} />}
+      title={t('service.remoteTailscalePhoneTitle')} description={t('service.remoteTailscalePhoneDesc')}>
+      {!status && !statusError ? <AuthStatusPill role="status" tone="idle" icon={<SpinnerIcon size={12} className="shrink-0 animate-spin" />}>
         {t('service.backendStatusLoading')}
-      </p> : <TailscaleControls state={status?.BackendState}
+      </AuthStatusPill> : <TailscaleControls state={status?.BackendState}
         authUrl={flow.authUrl}
         ips={status?.TailscaleIPs ?? []}
         enabled={status?.enabled ?? false} available={status !== null} busy={busy}
@@ -79,24 +75,27 @@ function AndroidTailscalePanel() {
             if (mounted.current) serverStore.checkAllHealth()
           })
         }} />}
-      <details open={Boolean(error || statusError || flow.error || status?.startupInterrupted) || undefined} className="min-w-0 border-t border-border-200/60 pt-3">
-        <summary className="w-fit cursor-pointer py-1 text-[length:var(--fs-xs)] text-text-400 hover:text-text-200 focus-visible:outline-2 focus-visible:outline-accent-main-100">{t('service.remoteTailscalePhoneTroubleshooting')}</summary>
-      <div className="mt-2 flex flex-wrap items-center gap-3">
+      <details open={Boolean(error || statusError || flow.error || status?.startupInterrupted) || undefined} className="group -mx-4 -mb-4 min-w-0 border-t border-border-200/60 px-4 pb-1">
+        <summary className="flex min-h-11 w-full cursor-pointer list-none items-center gap-1.5 text-[length:var(--fs-xs)] text-text-400 hover:text-text-200 focus-visible:outline-2 focus-visible:outline-accent-main-100 [&::-webkit-details-marker]:hidden">
+          <ChevronRight size={14} className="shrink-0 transition-transform group-open:rotate-90" />
+          {t('service.remoteTailscalePhoneTroubleshooting')}
+        </summary>
+      <div className="grid grid-cols-2 gap-2 pb-3">
         <button type="button" disabled={busy} onClick={() => run(async () => {
           await copyAndroidTailscaleDiagnostics()
           setDiagnosticsCopied(true)
-        })} className="inline-flex min-h-11 items-center gap-1.5 text-[length:var(--fs-xs)] text-text-300 hover:text-text-100 disabled:opacity-50">
+        })} className={`${authSecondaryButtonClass} min-h-11 text-[length:var(--fs-xs)]`}>
           <Copy size={14} />{t('service.remoteTailscaleCopyDiagnostics')}
         </button>
         <button type="button" disabled={busy} onClick={() => run(exportAndroidTailscaleDiagnostics)}
-          className="inline-flex min-h-11 items-center gap-1.5 text-[length:var(--fs-xs)] text-text-300 hover:text-text-100 disabled:opacity-50">
+          className={`${authSecondaryButtonClass} min-h-11 text-[length:var(--fs-xs)]`}>
           <Share2 size={14} />{t('service.remoteTailscaleExportDiagnostics')}
         </button>
       </div>
-      {diagnosticsCopied && <p role="status" className="text-[length:var(--fs-xs)] text-text-300">
+      {diagnosticsCopied && <p role="status" className="pb-3 text-[length:var(--fs-xs)] text-success-100">
         {t('service.remoteTailscaleDiagnosticsCopied')}
       </p>}
       </details>
-    </section>
+    </AuthCard>
   )
 }
