@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Copy, Share2 } from 'lucide-react'
 import {
@@ -6,6 +6,7 @@ import {
   loginAndroidTailscale, type AndroidTailscaleStatus,
   copyAndroidTailscaleDiagnostics, exportAndroidTailscaleDiagnostics,
 } from '../../../utils/androidTailscale'
+import { useTailscaleLoginFlow } from '../../../hooks/useTailscaleLoginFlow'
 import { serverStore } from '../../../store/serverStore'
 import { TailscaleControls } from './TailscaleControls'
 import { openTailscaleLogin } from '../../../utils/tailscaleLogin'
@@ -21,7 +22,21 @@ function AndroidTailscalePanel() {
   const [error, setError] = useState('')
   const [statusError, setStatusError] = useState('')
   const [diagnosticsCopied, setDiagnosticsCopied] = useState(false)
-  const waitingForAuth = useRef(false)
+  const flow = useTailscaleLoginFlow({
+    // 拿到授权链接前 busy 一直可见：点击后界面持续推进，不再"转一下就还原"。
+    start: async () => {
+      const next = await loginAndroidTailscale()
+      setStatus(next)
+      return { backendState: next.BackendState, authUrl: next.AuthURL ?? null }
+    },
+    poll: async () => {
+      const next = await getAndroidTailscaleStatus()
+      setStatus(next)
+      return { backendState: next.BackendState, authUrl: next.AuthURL ?? null }
+    },
+    open: openTailscaleLogin,
+    timeoutMessage: t('service.remoteTailscaleAuthUrlTimeout'),
+  })
   useEffect(() => {
     let cancelled = false
     const load = () => {
@@ -30,13 +45,6 @@ function AndroidTailscalePanel() {
       if (!cancelled) {
         setStatus(next)
         setStatusError('')
-        if (next.BackendState === 'Running') {
-          waitingForAuth.current = false
-        }
-        if (waitingForAuth.current && next.AuthURL) {
-          waitingForAuth.current = false
-          void openTailscaleLogin(next.AuthURL).catch(err => setError(err instanceof Error ? err.message : String(err)))
-        }
       }
       }).catch(err => {
       if (!cancelled) setStatusError(err instanceof Error ? err.message : String(err))
@@ -49,34 +57,32 @@ function AndroidTailscalePanel() {
     return () => { cancelled = true; window.clearInterval(timer); document.removeEventListener('visibilitychange', resume) }
   }, [])
 
+  // 登录完成（或进入设备批准阶段）后把授权流程状态清回 idle。
+  const { reset: resetAuthFlow } = flow
+  useEffect(() => {
+    if (status?.BackendState === 'Running' || status?.BackendState === 'NeedsMachineAuth') resetAuthFlow()
+  }, [resetAuthFlow, status?.BackendState])
+
   const run = (action: () => Promise<void>) => {
     setBusy(true)
     setError('')
     void action().catch(err => setError(err instanceof Error ? err.message : String(err))).finally(() => setBusy(false))
-  }
-  const login = async () => {
-    const next = await loginAndroidTailscale()
-    setStatus(next)
-    if (next.BackendState === 'Running') {
-      waitingForAuth.current = false
-      return
-    }
-    if (next.AuthURL) await openTailscaleLogin(next.AuthURL)
-    else waitingForAuth.current = next.BackendState !== 'Running'
   }
   return (
     <div className="grid min-w-0 gap-3">
       <h3 className="text-[length:var(--fs-sm)] font-medium text-text-200">{t('service.remoteTailscalePhoneTitle')}</h3>
       {!status && !statusError ? <p role="status" className="text-[length:var(--fs-xs)] text-text-400">
         {t('service.backendStatusLoading')}
-      </p> : <TailscaleControls state={status?.BackendState} authUrl={status?.AuthURL} ips={status?.TailscaleIPs ?? []}
+      </p> : <TailscaleControls state={status?.BackendState}
+        authUrl={status?.BackendState === 'Running' ? null : flow.authUrl ?? status?.AuthURL ?? null}
+        ips={status?.TailscaleIPs ?? []}
         enabled={status?.enabled ?? false} available={status !== null} busy={busy}
-        error={error || statusError || (status?.startupInterrupted ? t('service.remoteTailscaleStartupInterrupted') : status?.lastError)}
-        showAuthQr={false}
-        onLogin={() => run(login)}
+        authPhase={flow.phase} onOpenAuthUrl={url => { void flow.reopenAuthPage(url) }}
+        error={error || statusError || flow.error || (status?.startupInterrupted ? t('service.remoteTailscaleStartupInterrupted') : status?.lastError)}
+        onLogin={() => { void flow.beginLogin() }}
         onDisconnect={() => run(async () => {
           await disconnectAndroidTailscale()
-          waitingForAuth.current = false
+          flow.reset()
           setStatus(await getAndroidTailscaleStatus())
           serverStore.checkAllHealth()
         })} />}

@@ -44,11 +44,17 @@ describe('Tailscale authorization browser', () => {
     await openTailscaleLogin(url)
     expect(open).toHaveBeenCalledWith(url, '_blank', 'noopener,noreferrer')
   })
-  it.each(['https://example.com/a/device', 'javascript:alert(1)', 'https://login.tailscale.com.evil/a'])(
-    'rejects unrelated authorization URLs: %s', async input => {
+  it.each(['javascript:alert(1)', 'http://login.tailscale.com/a/device', 'https://user:pass@login.tailscale.com/a/device', 'not a url'])(
+    'rejects unsafe authorization URLs: %s', async input => {
       await expect(openTailscaleLogin(input)).rejects.toThrow('Invalid Tailscale authorization URL')
       expect(mocks.nativeOpen).not.toHaveBeenCalled()
       expect(mocks.desktopOpen).not.toHaveBeenCalled()
     },
   )
+  it('allows self-hosted control server authorization links (Headscale)', async () => {
+    const url = 'https://headscale.example.com/a/device'
+    await openTailscaleLogin(url)
+    expect(mocks.nativeOpen).toHaveBeenCalledWith(url)
+    expect(mocks.desktopOpen).not.toHaveBeenCalled()
+  })
 })

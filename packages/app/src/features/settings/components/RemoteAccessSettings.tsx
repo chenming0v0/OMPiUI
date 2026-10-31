@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { HostNetworkInfo, PairInviteInfo, TunnelStatus } from '@ompiui/protocol'
 import { CheckIcon, CopyIcon, RetryIcon, SpinnerIcon } from '../../../components/Icons'
@@ -14,6 +14,7 @@ import {
 } from '../../../omp/transport/index.js'
 import { serverStorage } from '../../../utils'
 import { useServerStore } from '../../../hooks'
+import { useTailscaleLoginFlow } from '../../../hooks/useTailscaleLoginFlow'
 import { settingsFieldClass, SettingsSection } from './SettingsUI'
 import { TailscaleControls } from './TailscaleControls'
 import { openTailscaleLogin } from '../../../utils/tailscaleLogin'
@@ -62,8 +63,28 @@ function RemoteAccessPanel() {
   const [tailscale, setTailscale] = useState<import('@ompiui/protocol').TailscaleInfo | null>(null)
   const [tailscaleBusy, setTailscaleBusy] = useState(false)
   const [tailscaleError, setTailscaleError] = useState('')
-  const waitingForAuth = useRef(false)
   const [copied, setCopied] = useState(false)
+  const tailscaleFlow = useTailscaleLoginFlow({
+    // 与手机端一致：拿到授权链接前持续显示进行中状态，而不是转一下就还原。
+    start: async () => {
+      const result = await startTailscaleLogin()
+      const next = await fetchTailscale()
+      setTailscale(next)
+      return { backendState: next.backendState, authUrl: result.authUrl ?? next.authUrl ?? null }
+    },
+    poll: async () => {
+      const next = await fetchTailscale()
+      setTailscale(next)
+      return { backendState: next.backendState, authUrl: next.authUrl ?? null }
+    },
+    open: openTailscaleLogin,
+    timeoutMessage: t('settings:service.remoteTailscaleAuthUrlTimeout'),
+  })
+  // 登录完成（或进入设备批准阶段）后把授权流程状态清回 idle。
+  const { reset: resetAuthFlow } = tailscaleFlow
+  useEffect(() => {
+    if (tailscale?.backendState === 'Running' || tailscale?.backendState === 'NeedsMachineAuth') resetAuthFlow()
+  }, [tailscale?.backendState, resetAuthFlow])
 
   const interfaces = network?.interfaces ?? []
   const port = network?.port
@@ -156,13 +177,7 @@ function RemoteAccessPanel() {
         })
       void fetchTailscale()
         .then(next => {
-          if (!cancelled) {
-            setTailscale(next)
-            if (waitingForAuth.current && next.authUrl) {
-              waitingForAuth.current = false
-              void openTailscaleLogin(next.authUrl).catch(error => setTailscaleError(error instanceof Error ? error.message : String(error)))
-            }
-          }
+          if (!cancelled) setTailscale(next)
         })
         .catch(() => {
           if (!cancelled) setTailscale(null)
@@ -231,21 +246,16 @@ function RemoteAccessPanel() {
   const tailscalePanel = tailscale && (
     <div className="mt-1 grid gap-1.5">
       <div className="text-[length:var(--fs-sm)] font-medium text-text-200">{t('settings:service.remoteTailscaleTitle')}</div>
-      <TailscaleControls state={tailscale.backendState} authUrl={tailscale.authUrl} ips={tailscale.ips}
+      <TailscaleControls state={tailscale.backendState}
+        authUrl={tailscale.backendState === 'Running' ? null : tailscaleFlow.authUrl ?? tailscale.authUrl ?? null}
+        ips={tailscale.ips}
         enabled={tailscale.enabled} available={tailscale.mode === 'embedded' && tailscale.installed}
-        busy={tailscaleBusy} error={tailscaleError || tailscale.lastError}
-        showAuthQr={false}
-        onLogin={() => runTailscaleAction(async () => {
-          if (tailscale.authUrl) { await openTailscaleLogin(tailscale.authUrl); return }
-          await startTailscaleLogin()
-          const next = await fetchTailscale()
-          setTailscale(next)
-          if (next.authUrl) await openTailscaleLogin(next.authUrl)
-          else waitingForAuth.current = next.backendState !== 'Running'
-        })}
+        busy={tailscaleBusy} error={tailscaleError || tailscaleFlow.error || tailscale.lastError}
+        authPhase={tailscaleFlow.phase} onOpenAuthUrl={url => { void tailscaleFlow.reopenAuthPage(url) }}
+        onLogin={() => { void tailscaleFlow.beginLogin() }}
         onDisconnect={() => runTailscaleAction(async () => {
           await disconnectTailscale()
-          waitingForAuth.current = false
+          tailscaleFlow.reset()
           setTailscale(await fetchTailscale())
         })} />
     </div>

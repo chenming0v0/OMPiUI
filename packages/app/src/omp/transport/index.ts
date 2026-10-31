@@ -185,8 +185,8 @@ export async function startTailscaleInstall(): Promise<void> {
   })
 }
 
-export async function startTailscaleLogin(): Promise<void> {
-  await readJson<{ ok: boolean }>(`${getApiBase()}/api/v1/host/tailscale/login`, {
+export async function startTailscaleLogin(): Promise<{ ok: boolean; authUrl?: string | null }> {
+  return await readJson<{ ok: boolean; authUrl?: string | null }>(`${getApiBase()}/api/v1/host/tailscale/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: '{}',

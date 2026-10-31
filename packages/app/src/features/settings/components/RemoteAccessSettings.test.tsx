@@ -175,12 +175,15 @@ describe('RemoteAccessSettings authoritative addresses', () => {
     })
     render(<RemoteAccessSettings />)
     expect(await screen.findByText('Connecting / awaiting sign-in')).toBeInTheDocument()
-    expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
     expect(screen.getAllByText('Complete Tailscale sign-in first')).toHaveLength(2)
     expect(screen.getByRole('button', { name: 'Copy full pairing info' })).toBeDisabled()
     if (authUrl) {
+      // 授权链接以二维码和可点击链接兜底展示，浏览器没打开也能手动完成授权
+      expect(screen.getByTestId('qr')).toHaveAttribute('data-url', authUrl)
       fireEvent.click(screen.getByRole('button', { name: 'Open official authorization' }))
       await waitFor(() => expect(mocks.openLogin).toHaveBeenCalledWith(authUrl))
+    } else {
+      expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
     }
   })
 
@@ -194,7 +197,8 @@ describe('RemoteAccessSettings authoritative addresses', () => {
     try {
       await act(async () => { render(<RemoteAccessSettings />) })
       expect(screen.getByText('Connecting / awaiting sign-in')).toBeInTheDocument()
-      expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
+      // 授权等待阶段只显示授权链接的二维码，配对二维码不可用
+      expect(screen.getByTestId('qr')).toHaveAttribute('data-url', 'https://login.tailscale.com/a/test')
       mocks.tailscale.mockResolvedValue({
         mode: 'embedded', installed: true, enabled: true, backendState: 'Running',
         ips: ['100.101.2.3'], url: 'http://100.101.2.3:9292', authUrl: null, lastError: null,

@@ -111,4 +111,40 @@ describe('phone independent Tailscale enrollment', () => {
     expect(screen.queryByRole('button', { name: 'Add server connection' })).not.toBeInTheDocument()
     expect(mocks.open).not.toHaveBeenCalled()
   })
+
+  it('keeps a visible waiting state until the authorization link arrives', async () => {
+    vi.useFakeTimers()
+    try {
+      mocks.login.mockResolvedValue({ enabled: true, BackendState: 'NeedsLogin' })
+      render(<AndroidTailscaleSettings />)
+      await act(async () => {})
+      await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Log in to Tailscale' })))
+      expect(screen.getByText('Sign-in started, fetching the authorization link…')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Log in to Tailscale' })).toBeDisabled()
+      mocks.status.mockResolvedValue({ enabled: true, BackendState: 'NeedsLogin', AuthURL: 'https://login.tailscale.com/a/phone' })
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+      expect(mocks.open).toHaveBeenCalledWith('https://login.tailscale.com/a/phone')
+      expect(screen.getByText('Browser opened, complete authorization in the popped-up page…')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Open official authorization' })).toBeEnabled()
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows a timeout error and lets the user retry instead of silently reverting', async () => {
+    vi.useFakeTimers()
+    try {
+      mocks.login.mockResolvedValue({ enabled: true, BackendState: 'NeedsLogin' })
+      render(<AndroidTailscaleSettings />)
+      await act(async () => {})
+      await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Log in to Tailscale' })))
+      await act(async () => { await vi.advanceTimersByTimeAsync(31_000) })
+      expect(screen.getByRole('alert')).toHaveTextContent('No authorization link within 30 seconds')
+      expect(screen.getByRole('button', { name: 'Log in to Tailscale' })).toBeEnabled()
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
 })
