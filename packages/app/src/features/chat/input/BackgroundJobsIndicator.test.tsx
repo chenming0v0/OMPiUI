@@ -84,6 +84,30 @@ describe('BackgroundJobsIndicator', () => {
     expect(await screen.findByText('listening')).toBeInTheDocument()
     expect(onInspect).toHaveBeenCalledWith('bg_1')
   })
+
+  it('stays open on outside clicks and folds back only via its collapse button', () => {
+    render(<BackgroundJobsIndicator running={[bash]} />)
+    fireEvent.click(screen.getByRole('button', { name: 'backgroundJobs.runningCount:count=1' }))
+    fireEvent.pointerDown(document.body)
+    expect(screen.getByRole('dialog', { name: 'backgroundJobs.panelTitle' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'backgroundJobs.collapse' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByRole('button', { name: 'backgroundJobs.runningCount:count=1' })).toBeInTheDocument()
+  })
+
+  it('maximizes to show uncapped output and re-reads output on refresh', async () => {
+    const onInspect = vi.fn()
+      .mockResolvedValueOnce({ command: 'sleep 600', output: 'first' })
+      .mockResolvedValueOnce({ command: 'sleep 600', output: 'second' })
+    render(<BackgroundJobsIndicator running={[bash]} onInspect={onInspect} />)
+    fireEvent.click(screen.getByRole('button', { name: 'backgroundJobs.runningCount:count=1' }))
+    fireEvent.click(screen.getByRole('button', { name: 'backgroundJobs.maximize' }))
+    fireEvent.click(screen.getByRole('button', { name: 'backgroundJobs.details' }))
+    expect((await screen.findByText('first')).className).not.toContain('max-h-48')
+    fireEvent.click(screen.getByRole('button', { name: 'backgroundJobs.refreshOutput' }))
+    expect(await screen.findByText('second')).toBeInTheDocument()
+    expect(onInspect).toHaveBeenCalledTimes(2)
+  })
 })
 
 describe('SessionBackgroundJobs', () => {

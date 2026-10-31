@@ -75,7 +75,7 @@
   },
   "backgroundJobs": {
     "runningCount": "{{count}} 个后台任务运行中",
-    "panelTitle": "进行中",
+    "panelTitle": "后台任务",
     "recentTitle": "已完成",
     "details": "查看输出",
     "stop": "停止后台任务",
@@ -88,7 +88,11 @@
     "exitCode": "退出码 {{code}}",
     "elapsedSeconds": "{{seconds}} 秒",
     "elapsedMinutes": "{{minutes}} 分 {{seconds}} 秒",
-    "elapsedHours": "{{hours}} 小时 {{minutes}} 分 {{seconds}} 秒"
+    "elapsedHours": "{{hours}} 小时 {{minutes}} 分 {{seconds}} 秒",
+    "maximize": "展开完整视图",
+    "restore": "还原大小",
+    "collapse": "收起",
+    "refreshOutput": "刷新输出"
   },
   "goalBar": {
     "messageSet": "设为目标",

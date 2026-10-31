@@ -242,8 +242,6 @@ export function Header({
           />
         )}
 
-        <SessionBackgroundJobs sessionId={sessionId} />
-
         {isCompact && <div className="min-w-0">{titleControl}</div>}
       </div>
 
@@ -295,6 +293,12 @@ export function Header({
 
 
       <div data-chat-header-shadow className="absolute top-full left-0 right-0 h-8 bg-gradient-to-b from-bg-100 to-transparent pointer-events-none z-10" />
+
+      {/* Floating background-jobs capsule: overlays the transcript's top-right
+          corner so it never pushes the title or reserves scroll height. */}
+      <div className={`pointer-events-none absolute top-full mt-1.5 z-30 flex max-w-[calc(100%-1rem)] flex-col items-end ${isCompact ? 'right-2' : 'right-4'}`}>
+        <SessionBackgroundJobs sessionId={sessionId} />
+      </div>
     </div>
   )
 }
