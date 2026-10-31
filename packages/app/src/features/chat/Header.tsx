@@ -16,7 +16,7 @@ import { usePiCapabilities } from '../../omp/capabilities'
 import { useLayoutStore, layoutStore } from '../../store/layoutStore'
 import { useSessionContext } from '../../contexts/useSessionContext'
 import { renamePiSession, loadPiSessions } from '../../omp/controllers/index.js'
-import { usePiSessionTitle } from '../../omp/hooks/index.js'
+import { usePiSessionTitle, usePiSessionDocumentTitle } from '../../omp/hooks/index.js'
 import { uiErrorHandler } from '../../utils'
 import { useChatViewport } from './chatViewport'
 import type { Model, Api } from '../../omp/vendor/pi-ai'
@@ -155,13 +155,7 @@ export function Header({
   const sessionTitle = currentSessionTitle || listedTitle || t('header.newChat')
   const isCompact = presentation.isCompact
 
-  useEffect(() => {
-    const docTitle = currentSessionTitle || listedTitle
-    document.title = docTitle ? `${docTitle} - OMPiUI` : 'OMPiUI'
-    return () => {
-      document.title = 'Pi'
-    }
-  }, [currentSessionTitle, listedTitle])
+  usePiSessionDocumentTitle(currentSessionTitle || listedTitle)
 
   // 会话切换时重置标题编辑状态：setIsEditingTitle 是父组件的 setter，
   // 无法用渲染期调整表达，属「响应 prop 变化的外部同步」

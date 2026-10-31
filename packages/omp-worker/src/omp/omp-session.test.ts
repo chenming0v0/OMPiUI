@@ -90,6 +90,53 @@ async function sessionFixture(t: TestContext) {
 
 const image = (data: string): ImageInput => ({ type: "image", data, mimeType: "image/png" })
 
+describe("OmpRpcSession native titles", () => {
+  it("does not let a pre-title state read erase a newer native name", async t => {
+    const { session, frame, native, rpc } = await sessionFixture(t)
+    const started = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    let first = true
+    rpc.onRequest = command => {
+      if (command.type !== "get_state" || !first) return
+      first = false
+      const stale = structuredClone(native)
+      started.resolve()
+      return release.promise.then(() => ({ data: stale }))
+    }
+    const reading = session.getState()
+    await started.promise
+    native.sessionName = "更新后的原生标题"
+    frame({ type: "session_info_update", title: native.sessionName })
+    release.resolve()
+    assert.equal((await reading).sessionName, "更新后的原生标题")
+  })
+
+  it("updates cached metadata before forwarding a native title and preserves it on state refresh", async t => {
+    const { session, native, frame } = await sessionFixture(t)
+    const events: JsonObject[] = []
+    session.onPiEvent(event => {
+      if (event.type === "session_info_update") {
+        if (typeof event.title === "string") assert.equal(session.getHead().header?.name, event.title)
+        events.push(event)
+      }
+    })
+    for (const title of ["修复会话自动命名", "更新后的自动标题"]) {
+      native.sessionName = title
+      const update = { type: "session_info_update", sessionId: session.getSessionId(), title }
+      frame(update)
+      assert.equal(session.getHead().header?.name, title)
+      assert.equal((await session.getState()).sessionName, title)
+      await new Promise(resolve => setTimeout(resolve, 50))
+      assert.deepEqual(events.at(-1), update)
+    }
+    frame({ type: "session_info_update", sessionId: "other-session", title: "其他会话标题" })
+    assert.equal(session.getHead().header?.name, "更新后的自动标题")
+    frame({ type: "session_info_update", title: 42 })
+    frame({ type: "session_info_update" })
+    assert.equal(session.getHead().header?.name, "更新后的自动标题")
+  })
+})
+
 describe("OmpRpcSession extension diagnostics", () => {
   it("keeps delayed extension errors outside session streams across new, switch and fork", async t => {
     const { session, frame } = await sessionFixture(t)

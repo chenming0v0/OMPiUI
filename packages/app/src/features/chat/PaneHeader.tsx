@@ -20,7 +20,7 @@ import {
 import { IconButton } from '../../components/ui'
 import { paneLayoutStore } from '../../store/paneLayoutStore'
 import { layoutStore, useLayoutStore } from '../../store/layoutStore'
-import { usePiSessionTitle } from '../../omp/hooks/index.js'
+import { usePiSessionTitle, usePiSessionDocumentTitle } from '../../omp/hooks/index.js'
 import { renamePiSession, loadPiSessions } from '../../omp/controllers/index.js'
 import { uiErrorHandler } from '../../utils'
 import { useChatViewport, canUseSplitPane } from './chatViewport'
@@ -64,6 +64,7 @@ export function PaneHeader({
   const viewport = useChatViewport()
   const canRename = usePiCapabilities().sessionRename
   const sessionTitle = usePiSessionTitle(sessionId)
+  usePiSessionDocumentTitle(sessionTitle, isFocused)
   const { rightPanelOpen, bottomPanelOpen } = useLayoutStore()
   const [isEditing, setIsEditing] = useState(false)
 
