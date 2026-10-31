@@ -7,11 +7,21 @@ import { createInterface } from "node:readline"
 import { fileURLToPath } from "node:url"
 import type { TailscaleInfo } from "@ompiui/protocol"
 
+/** 授权链接可能来自自建控制服务器（Headscale 等），只要求 https 且不含用户信息。 */
+export function isValidAuthUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === "https:" && !!url.hostname && !url.username && !url.password
+  } catch {
+    return false
+  }
+}
+
 export function mapStatusJson(raw: unknown) {
   const body = raw as { BackendState?: string; AuthURL?: string; TailscaleIPs?: string[]; Version?: string; Self?: { DNSName?: string } } | null
   return {
     backendState: typeof body?.BackendState === "string" ? body.BackendState : null,
-    authUrl: typeof body?.AuthURL === "string" && body.AuthURL.startsWith("https://login.tailscale.com/") ? body.AuthURL : null,
+    authUrl: typeof body?.AuthURL === "string" && isValidAuthUrl(body.AuthURL) ? body.AuthURL : null,
     ips: Array.isArray(body?.TailscaleIPs) ? body.TailscaleIPs.filter(ip => typeof ip === "string") : [],
     hostName: typeof body?.Self?.DNSName === "string" ? body.Self.DNSName.replace(/\.+$/, "") : null,
     version: typeof body?.Version === "string" ? body.Version.split("-")[0] : null,
@@ -126,7 +136,7 @@ export class TailscaleManager {
     }
   }
 
-  async startLogin(): Promise<{ ok: boolean; error?: string }> {
+  async startLogin(): Promise<{ ok: boolean; authUrl?: string | null; error?: string }> {
     if (!await this.startEmbedded()) return { ok: false, error: this.lastError ?? "内嵌 Tailscale 启动失败" }
     this.enabled = true
     this.persistEnabled()
@@ -140,9 +150,10 @@ export class TailscaleManager {
         return { ok: false, error: this.lastError }
       }
     }
+    // 把授权链接随响应带回，前端无需等下一轮状态轮询才能打开浏览器。
     this.statusAt = 0
-    await this.detailStatus()
-    return { ok: true }
+    const final = await this.detailStatus()
+    return { ok: true, authUrl: final.authUrl ?? null }
   }
 
   async disconnect(): Promise<void> {

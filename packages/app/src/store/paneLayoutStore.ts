@@ -11,6 +11,8 @@
  */
 
 import { useSyncExternalStore } from 'react'
+import { serverStore } from './serverStore'
+import { serverStorage } from '../utils/perServerStorage'
 
 // ============================================
 // Types
@@ -201,11 +203,47 @@ function updateRatio(node: PaneNode, splitId: string, ratio: number): PaneNode {
 // ============================================
 
 type Listener = () => void
+const STORAGE_KEY = 'ompiui-pane-layout'
+
+function layoutScope(): string {
+  const id = serverStore.getActiveServerId()
+  const server = serverStore.getStoredServers().find(item => item.id === id)
+  return JSON.stringify([id, server?.url])
+}
+
+function readLayout(): Pick<PaneLayoutSnapshot, 'root' | 'focusedPaneId' | 'fullscreenPaneId'> | null {
+  const saved = serverStorage.getJSON<{ version: number; scope: string; root: unknown; focusedPaneId: string; fullscreenPaneId: string | null }>(STORAGE_KEY)
+  if (!saved || saved.version !== 1 || saved.scope !== layoutScope()) return null
+  const ids = new Set<string>()
+  function validNode(value: unknown, depth = 0): value is PaneNode {
+    if (!value || typeof value !== 'object' || depth > 16) return false
+    const node = value as Record<string, unknown>
+    if (typeof node.id !== 'string' || !node.id || ids.has(node.id)) return false
+    ids.add(node.id)
+    if (node.type === 'leaf') return node.sessionId === null || typeof node.sessionId === 'string'
+    return node.type === 'split' && (node.direction === 'horizontal' || node.direction === 'vertical') &&
+      typeof node.ratio === 'number' && node.ratio >= 0.15 && node.ratio <= 0.85 &&
+      validNode(node.first, depth + 1) && validNode(node.second, depth + 1)
+  }
+  if (!validNode(saved.root)) return null
+  const leaves = allLeaves(saved.root)
+  for (const leaf of leaves) {
+    const number = /^pane-(\d+)$/.exec(leaf.id)
+    if (number) _nextPaneId = Math.max(_nextPaneId, Number(number[1]) + 1)
+  }
+  return {
+    root: saved.root,
+    focusedPaneId: leaves.some(leaf => leaf.id === saved.focusedPaneId) ? saved.focusedPaneId : leaves[0].id,
+    fullscreenPaneId: leaves.some(leaf => leaf.id === saved.fullscreenPaneId) ? saved.fullscreenPaneId : null,
+  }
+}
 
 function createPaneLayoutStore() {
-  let _root: PaneNode = { type: 'leaf', id: genPaneId(), sessionId: null }
-  let _focusedPaneId: string | null = _root.id
-  let _fullscreenPaneId: string | null = null
+  const restored = readLayout()
+  let _scope = layoutScope()
+  let _root: PaneNode = restored?.root ?? { type: 'leaf', id: genPaneId(), sessionId: null }
+  let _focusedPaneId: string | null = restored?.focusedPaneId ?? _root.id
+  let _fullscreenPaneId: string | null = restored?.fullscreenPaneId ?? null
   const _listeners = new Set<Listener>()
 
   function _notify() {
@@ -230,8 +268,21 @@ function createPaneLayoutStore() {
 
   function _refreshSnapshot() {
     _cachedSnapshot = _snapshot()
+    // Layout is tiny and must survive an immediate Android process kill.
+    serverStorage.setJSON(STORAGE_KEY, { version: 1, scope: _scope, root: _root, focusedPaneId: _focusedPaneId, fullscreenPaneId: _fullscreenPaneId })
     _notify()
   }
+
+  serverStore.onServerChange(() => {
+    const scope = layoutScope()
+    if (scope === _scope) return // Tauri runtime URL reattachment is not a different workspace.
+    _scope = scope
+    const saved = readLayout()
+    _root = saved?.root ?? { type: 'leaf', id: genPaneId(), sessionId: null }
+    _focusedPaneId = saved?.focusedPaneId ?? _root.id
+    _fullscreenPaneId = saved?.fullscreenPaneId ?? null
+    _refreshSnapshot()
+  })
 
   return {
     // ---- useSyncExternalStore API ----

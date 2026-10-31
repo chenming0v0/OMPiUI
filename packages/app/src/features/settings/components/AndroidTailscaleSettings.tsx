@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Copy, Share2 } from 'lucide-react'
+import { Copy, Share2, Smartphone } from 'lucide-react'
 import {
   disconnectAndroidTailscale, getAndroidTailscaleStatus, isAndroidTailscalePlatform,
   loginAndroidTailscale, type AndroidTailscaleStatus,
   copyAndroidTailscaleDiagnostics, exportAndroidTailscaleDiagnostics,
 } from '../../../utils/androidTailscale'
+import { useTailscaleLoginFlow } from '../../../hooks/useTailscaleLoginFlow'
 import { serverStore } from '../../../store/serverStore'
 import { TailscaleControls } from './TailscaleControls'
 import { openTailscaleLogin } from '../../../utils/tailscaleLogin'
@@ -21,66 +22,66 @@ function AndroidTailscalePanel() {
   const [error, setError] = useState('')
   const [statusError, setStatusError] = useState('')
   const [diagnosticsCopied, setDiagnosticsCopied] = useState(false)
-  const waitingForAuth = useRef(false)
+  const mounted = useRef(true)
   useEffect(() => {
-    let cancelled = false
-    const load = () => {
-      if (document.visibilityState === 'hidden') return
-      void getAndroidTailscaleStatus().then(next => {
-      if (!cancelled) {
-        setStatus(next)
-        setStatusError('')
-        if (next.BackendState === 'Running') {
-          waitingForAuth.current = false
-        }
-        if (waitingForAuth.current && next.AuthURL) {
-          waitingForAuth.current = false
-          void openTailscaleLogin(next.AuthURL).catch(err => setError(err instanceof Error ? err.message : String(err)))
-        }
-      }
-      }).catch(err => {
-      if (!cancelled) setStatusError(err instanceof Error ? err.message : String(err))
-      })
-    }
-    load()
-    const timer = window.setInterval(load, 3_000)
-    const resume = () => { if (document.visibilityState === 'visible') load() }
-    document.addEventListener('visibilitychange', resume)
-    return () => { cancelled = true; window.clearInterval(timer); document.removeEventListener('visibilitychange', resume) }
+    mounted.current = true
+    return () => { mounted.current = false }
   }, [])
+  const acceptStatus = (next: AndroidTailscaleStatus, signal: AbortSignal) => {
+    if (!signal.aborted) {
+      setStatus(next)
+      setStatusError('')
+    }
+    return { backendState: next.BackendState, authUrl: next.AuthURL ?? null }
+  }
+  const flow = useTailscaleLoginFlow({
+    start: async signal => acceptStatus(await loginAndroidTailscale(), signal),
+    poll: async signal => acceptStatus(await getAndroidTailscaleStatus(), signal),
+    open: openTailscaleLogin,
+    timeoutMessage: t('service.remoteTailscaleAuthUrlTimeout'),
+    statusPollMs: 3_000,
+    paused: busy,
+    onPollError: err => setStatusError(err instanceof Error ? err.message : String(err)),
+  })
 
   const run = (action: () => Promise<void>) => {
     setBusy(true)
     setError('')
-    void action().catch(err => setError(err instanceof Error ? err.message : String(err))).finally(() => setBusy(false))
-  }
-  const login = async () => {
-    const next = await loginAndroidTailscale()
-    setStatus(next)
-    if (next.BackendState === 'Running') {
-      waitingForAuth.current = false
-      return
-    }
-    if (next.AuthURL) await openTailscaleLogin(next.AuthURL)
-    else waitingForAuth.current = next.BackendState !== 'Running'
+    void action().catch(err => {
+      if (mounted.current) setError(err instanceof Error ? err.message : String(err))
+    }).finally(() => { if (mounted.current) setBusy(false) })
   }
   return (
-    <div className="grid min-w-0 gap-3">
-      <h3 className="text-[length:var(--fs-sm)] font-medium text-text-200">{t('service.remoteTailscalePhoneTitle')}</h3>
+    <section data-testid="phone-tailscale-login" className="grid min-w-0 gap-4 rounded-xl border border-border-200/60 bg-bg-100 p-4">
+      <div className="flex items-start gap-3">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent-main-100/10 text-accent-main-100"><Smartphone size={22} /></div>
+        <div className="min-w-0">
+          <h3 className="text-[length:var(--fs-md)] font-medium text-text-100">{t('service.remoteTailscalePhoneTitle')}</h3>
+          <p className="mt-1 text-[length:var(--fs-xs)] leading-relaxed text-text-300">{t('service.remoteTailscalePhoneDesc')}</p>
+        </div>
+      </div>
       {!status && !statusError ? <p role="status" className="text-[length:var(--fs-xs)] text-text-400">
         {t('service.backendStatusLoading')}
-      </p> : <TailscaleControls state={status?.BackendState} authUrl={status?.AuthURL} ips={status?.TailscaleIPs ?? []}
+      </p> : <TailscaleControls state={status?.BackendState}
+        authUrl={flow.authUrl}
+        ips={status?.TailscaleIPs ?? []}
         enabled={status?.enabled ?? false} available={status !== null} busy={busy}
-        error={error || statusError || (status?.startupInterrupted ? t('service.remoteTailscaleStartupInterrupted') : status?.lastError)}
-        showAuthQr={false}
-        onLogin={() => run(login)}
-        onDisconnect={() => run(async () => {
-          await disconnectAndroidTailscale()
-          waitingForAuth.current = false
-          setStatus(await getAndroidTailscaleStatus())
-          serverStore.checkAllHealth()
-        })} />}
-      <div className="flex flex-wrap items-center gap-3">
+        authPhase={flow.phase} layout="phone" showAuthQr={false}
+        onOpenAuthUrl={url => { setError(''); void flow.reopenAuthPage(url) }}
+        error={error || statusError || flow.error || (status?.startupInterrupted ? t('service.remoteTailscaleStartupInterrupted') : status?.lastError)}
+        onLogin={() => { setError(''); void flow.beginLogin() }}
+        onDisconnect={() => {
+          const signal = flow.reset()
+          run(async () => {
+            await disconnectAndroidTailscale()
+            if (signal.aborted) return
+            await flow.refreshStatus(true)
+            if (mounted.current) serverStore.checkAllHealth()
+          })
+        }} />}
+      <details open={Boolean(error || statusError || flow.error || status?.startupInterrupted) || undefined} className="min-w-0 border-t border-border-200/60 pt-3">
+        <summary className="w-fit cursor-pointer py-1 text-[length:var(--fs-xs)] text-text-400 hover:text-text-200 focus-visible:outline-2 focus-visible:outline-accent-main-100">{t('service.remoteTailscalePhoneTroubleshooting')}</summary>
+      <div className="mt-2 flex flex-wrap items-center gap-3">
         <button type="button" disabled={busy} onClick={() => run(async () => {
           await copyAndroidTailscaleDiagnostics()
           setDiagnosticsCopied(true)
@@ -95,6 +96,7 @@ function AndroidTailscalePanel() {
       {diagnosticsCopied && <p role="status" className="text-[length:var(--fs-xs)] text-text-300">
         {t('service.remoteTailscaleDiagnosticsCopied')}
       </p>}
-    </div>
+      </details>
+    </section>
   )
 }

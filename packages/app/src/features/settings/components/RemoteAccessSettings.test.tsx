@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HostNetworkInfo, PairInviteInfo, TunnelStatus } from '@ompiui/protocol'
 import { serviceStore } from '../../../store/serviceStore'
@@ -14,12 +14,15 @@ const mocks = vi.hoisted(() => ({
   tunnel: vi.fn(),
   tailscale: vi.fn(),
   openLogin: vi.fn(),
+  login: vi.fn(), disconnect: vi.fn(),
   get: vi.fn(),
 }))
 vi.mock('../../../hooks', () => ({ useServerStore: () => ({ activeServerGeneration: mocks.generation }) }))
 vi.mock('../../../utils/tauri', () => ({ isTauri: () => mocks.desktop, isTauriMobile: () => false }))
 vi.mock('../../../utils', () => ({ serverStorage: { get: mocks.get, set: vi.fn() } }))
-vi.mock('../../../utils/tailscaleLogin', () => ({ openTailscaleLogin: mocks.openLogin }))
+vi.mock('../../../utils/tailscaleLogin', async importOriginal => ({
+  ...await importOriginal<typeof import('../../../utils/tailscaleLogin')>(), openTailscaleLogin: mocks.openLogin,
+}))
 vi.mock('../../../omp/transport/index.js', () => ({
   fetchHostNetwork: mocks.network,
   mintPairInvite: mocks.mint,
@@ -27,8 +30,8 @@ vi.mock('../../../omp/transport/index.js', () => ({
   fetchHostTunnel: mocks.tunnel,
   fetchTailscale: mocks.tailscale,
   startTailscaleInstall: vi.fn(),
-  startTailscaleLogin: vi.fn(),
-  disconnectTailscale: vi.fn(),
+  startTailscaleLogin: mocks.login,
+  disconnectTailscale: mocks.disconnect,
 }))
 // Observe the exact payload given to the QR encoder, not its SVG internals.
 vi.mock('../../../components/QrCode', () => ({ QrCode: ({ text }: { text: string }) => <div data-testid="qr" data-url={text} /> }))
@@ -63,6 +66,140 @@ beforeEach(async () => {
 
 afterEach(async () => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); await i18n.changeLanguage('en') })
 
+const signInStatus = { mode: 'embedded', installed: true, enabled: true, backendState: 'NeedsLogin', ips: [], url: null, authUrl: null, lastError: null }
+const authUrl = 'https://headscale.example.com/a/device'
+
+describe('remote Tailscale sign-in', () => {
+  beforeEach(() => {
+    mocks.get.mockReturnValue('tailscale')
+    mocks.tailscale.mockReset().mockResolvedValue(signInStatus)
+    mocks.login.mockReset().mockResolvedValue({ ok: true, authUrl })
+    mocks.disconnect.mockReset().mockResolvedValue(undefined)
+  })
+
+  it('separates server sign-in from phone pairing and never shows an authorization QR', async () => {
+    mocks.tailscale.mockResolvedValue({ ...signInStatus, authUrl })
+    render(<RemoteAccessSettings />)
+    const networkSetup = screen.getByTestId('remote-network-setup')
+    const phonePairing = screen.getByTestId('remote-device-pairing')
+    expect(await within(networkSetup).findByRole('heading', { name: 'Server sign-in' })).toBeInTheDocument()
+    expect(within(networkSetup).getByRole('link', { name: 'Open official authorization' })).toHaveAttribute('href', authUrl)
+    expect(within(networkSetup).queryByTestId('qr')).not.toBeInTheDocument()
+    expect(within(phonePairing).getByRole('heading', { name: 'Connect your phone' })).toBeInTheDocument()
+    expect(within(phonePairing).queryByRole('link')).not.toBeInTheDocument()
+    expect(within(phonePairing).queryByTestId('qr')).not.toBeInTheDocument()
+    expect(within(phonePairing).queryByText(/1234 5678|expires in/)).not.toBeInTheDocument()
+  })
+
+  it('shows only a phone pairing QR once the server connects', async () => {
+    mocks.tailscale.mockResolvedValue({ ...signInStatus, backendState: 'Running', ips: ['100.101.2.3'], url: 'http://100.101.2.3:9292' })
+    render(<RemoteAccessSettings />)
+    expect(await within(screen.getByTestId('remote-device-pairing')).findByTestId('qr')).toHaveAttribute('data-url', 'http://100.101.2.3:9292/?pair=first.secret')
+    expect(within(screen.getByTestId('remote-network-setup')).queryByTestId('qr')).not.toBeInTheDocument()
+    expect(screen.getAllByTestId('qr')).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Copy full pairing info' })).toBeEnabled()
+  })
+
+  it('opens a URL-bearing POST without waiting for another GET', async () => {
+    mocks.desktop = true
+    await act(async () => { render(<RemoteAccessSettings />) })
+    mocks.tailscale.mockRejectedValue(new Error('GET failed'))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Log in to Tailscale' })))
+    expect(mocks.openLogin).toHaveBeenCalledWith(authUrl)
+    expect(mocks.tailscale).toHaveBeenCalledOnce()
+    expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
+    expect(screen.getByText(authUrl)).toBeInTheDocument()
+  })
+
+  it('offers a direct web authorization link without claiming a browser was opened', async () => {
+    mocks.openLogin.mockResolvedValue('manual')
+    await act(async () => { render(<RemoteAccessSettings />) })
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Log in to Tailscale' })))
+    expect(screen.getByRole('link', { name: 'Open official authorization' })).toHaveAttribute('href', authUrl)
+    fireEvent.click(screen.getByText("Browser didn't open? Use the sign-in link"))
+    expect(screen.getByRole('link', { name: authUrl })).toHaveAttribute('rel', 'noopener noreferrer')
+    expect(screen.getByText('Authorization link ready. Open it to complete sign-in.')).toBeInTheDocument()
+    expect(screen.queryByText(/Browser opened/)).not.toBeInTheDocument()
+  })
+
+  it('fetches status only as fallback when POST has no authorization URL', async () => {
+    mocks.desktop = true
+    mocks.login.mockResolvedValue({ ok: true })
+    await act(async () => { render(<RemoteAccessSettings />) })
+    mocks.tailscale.mockResolvedValue({ ...signInStatus, authUrl })
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Log in to Tailscale' })))
+    expect(mocks.tailscale).toHaveBeenCalledTimes(2)
+    expect(mocks.openLogin).toHaveBeenCalledWith(authUrl)
+  })
+
+  it('ignores pending POST and status responses after a server switch', async () => {
+    mocks.desktop = true
+    const oldLogin = deferred<{ ok: boolean; authUrl: string }>()
+    const view = render(<RemoteAccessSettings />)
+    await act(async () => {})
+    mocks.login.mockReturnValueOnce(oldLogin.promise)
+    fireEvent.click(screen.getByRole('button', { name: 'Log in to Tailscale' }))
+    mocks.generation++
+    view.rerender(<RemoteAccessSettings />)
+    await act(async () => {})
+    await act(async () => oldLogin.resolve({ ok: true, authUrl }))
+    expect(mocks.openLogin).not.toHaveBeenCalled()
+    expect(screen.queryByText(authUrl)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Log in to Tailscale' })).toBeEnabled()
+  })
+
+  it('cancels login before awaiting disconnect and does not reopen a stale URL', async () => {
+    mocks.desktop = true
+    const oldLogin = deferred<{ ok: boolean; authUrl: string }>()
+    const disconnect = deferred<void>()
+    mocks.login.mockReturnValueOnce(oldLogin.promise)
+    mocks.disconnect.mockReturnValueOnce(disconnect.promise)
+    await act(async () => { render(<RemoteAccessSettings />) })
+    fireEvent.click(screen.getByRole('button', { name: 'Log in to Tailscale' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }))
+    await act(async () => oldLogin.resolve({ ok: true, authUrl }))
+    expect(mocks.openLogin).not.toHaveBeenCalled()
+    expect(screen.queryByText(authUrl)).not.toBeInTheDocument()
+    mocks.tailscale.mockResolvedValue({ ...signInStatus, enabled: false, backendState: 'Stopped' })
+    await act(async () => disconnect.resolve())
+    expect(screen.getByRole('button', { name: 'Log in to Tailscale' })).toBeEnabled()
+  })
+
+  it('preserves a usable POST URL during GET failure and clears action errors on retry', async () => {
+    mocks.desktop = true
+    vi.useFakeTimers()
+    await act(async () => { render(<RemoteAccessSettings />) })
+    mocks.disconnect.mockRejectedValue(new Error('disconnect failed'))
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Disconnect' })))
+    expect(screen.getByRole('alert')).toHaveTextContent('disconnect failed')
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Log in to Tailscale' })))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    mocks.tailscale.mockRejectedValue(new Error('GET failed'))
+    await act(async () => vi.advanceTimersByTimeAsync(5_000))
+    expect(screen.getByRole('alert')).toHaveTextContent('GET failed')
+    expect(screen.getByRole('button', { name: 'Open official authorization' })).toBeEnabled()
+    expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
+    expect(screen.getByText(authUrl)).toBeInTheDocument()
+  })
+
+  it('replaces and clears cached POST URLs with authoritative status', async () => {
+    vi.useFakeTimers()
+    await act(async () => { render(<RemoteAccessSettings />) })
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Log in to Tailscale' })))
+    const rotated = 'https://headscale.example.com/a/rotated'
+    mocks.tailscale.mockResolvedValue({ ...signInStatus, authUrl: rotated })
+    await act(async () => vi.advanceTimersByTimeAsync(5_000))
+    expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText("Browser didn't open? Use the sign-in link"))
+    expect(screen.getByRole('link', { name: rotated })).toHaveAttribute('href', rotated)
+    expect(screen.queryByText(authUrl)).not.toBeInTheDocument()
+    mocks.tailscale.mockResolvedValue(signInStatus)
+    await act(async () => vi.advanceTimersByTimeAsync(5_000))
+    expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Log in to Tailscale' })).toBeEnabled()
+  })
+})
+
 describe('pairing invitation polling', () => {
   it('pauses while hidden, resumes once, and stops permanently after redemption', async () => {
     vi.useFakeTimers()
@@ -96,9 +233,9 @@ describe('RemoteAccessSettings authoritative addresses', () => {
     mocks.network.mockResolvedValue({ ...network(), host })
     render(<RemoteAccessSettings />)
     expect(await screen.findByText('QR code unavailable')).toBeInTheDocument()
-    expect(screen.getAllByText(/not the selected LAN adapter/)).toHaveLength(2)
+    expect(screen.getAllByText(/not the selected LAN adapter/)).toHaveLength(1)
     expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Copy full pairing info' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Copy full pairing info' })).not.toBeInTheDocument()
     expect(serviceStore.envVarsRecord).not.toHaveProperty('OMPIUI_HOST')
   })
 
@@ -112,7 +249,7 @@ describe('RemoteAccessSettings authoritative addresses', () => {
     mocks.network.mockResolvedValue({ ...network(), host: undefined })
     render(<RemoteAccessSettings />)
     expect(await screen.findByText('QR code unavailable')).toBeInTheDocument()
-    expect(screen.getAllByText(/did not report its listening address/)).toHaveLength(2)
+    expect(screen.getAllByText(/did not report its listening address/)).toHaveLength(1)
     expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
   })
 
@@ -138,7 +275,7 @@ describe('RemoteAccessSettings authoritative addresses', () => {
     await screen.findByTestId('qr')
     fireEvent.change(screen.getByRole('combobox', { name: 'Network adapter' }), { target: { value: '172.31.48.1' } })
     expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Copy full pairing info' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Copy full pairing info' })).not.toBeInTheDocument()
   })
 
   it('renders Chinese adapter names and the loopback listener warning', async () => {
@@ -149,7 +286,7 @@ describe('RemoteAccessSettings authoritative addresses', () => {
     })
     render(<RemoteAccessSettings />)
     expect(await screen.findByRole('option', { name: '以太网 · 192.168.50.10' })).toBeInTheDocument()
-    expect(screen.getAllByText(/未开放所选网卡的局域网访问/)).toHaveLength(2)
+    expect(screen.getAllByText(/未开放所选网卡的局域网访问/)).toHaveLength(1)
     expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
   })
 
@@ -174,13 +311,19 @@ describe('RemoteAccessSettings authoritative addresses', () => {
       ips: [], url: null, authUrl, lastError: null,
     })
     render(<RemoteAccessSettings />)
-    expect(await screen.findByText('Connecting / awaiting sign-in')).toBeInTheDocument()
-    expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
-    expect(screen.getAllByText('Complete Tailscale sign-in first')).toHaveLength(2)
-    expect(screen.getByRole('button', { name: 'Copy full pairing info' })).toBeDisabled()
+    expect(await screen.findByText(authUrl ? 'Authorization link ready. Open it to complete sign-in.' : 'Connecting / awaiting sign-in')).toBeInTheDocument()
+    expect(screen.getByText("Sign in to Tailscale above first. Your phone's pairing code will appear here once the server connects.")).toBeInTheDocument()
+    expect(screen.queryByText(/Cannot scan\?/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/expires in/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Copy full pairing info' })).not.toBeInTheDocument()
     if (authUrl) {
-      fireEvent.click(screen.getByRole('button', { name: 'Open official authorization' }))
-      await waitFor(() => expect(mocks.openLogin).toHaveBeenCalledWith(authUrl))
+      // 浏览器授权保留直接链接，不与手机配对二维码混用。
+      expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
+      expect(screen.getByText(authUrl)).toBeInTheDocument()
+      expect(screen.getByRole('link', { name: 'Open official authorization' })).toHaveAttribute('href', authUrl)
+      expect(mocks.openLogin).not.toHaveBeenCalled()
+    } else {
+      expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
     }
   })
 
@@ -193,18 +336,20 @@ describe('RemoteAccessSettings authoritative addresses', () => {
     vi.useFakeTimers()
     try {
       await act(async () => { render(<RemoteAccessSettings />) })
-      expect(screen.getByText('Connecting / awaiting sign-in')).toBeInTheDocument()
+      expect(screen.getByText('Authorization link ready. Open it to complete sign-in.')).toBeInTheDocument()
+      // 登录区域只提供浏览器授权入口；二维码仅用于服务器连接后的手机配对。
       expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
+      expect(screen.getByText('https://login.tailscale.com/a/test')).toBeInTheDocument()
       mocks.tailscale.mockResolvedValue({
         mode: 'embedded', installed: true, enabled: true, backendState: 'Running',
         ips: ['100.101.2.3'], url: 'http://100.101.2.3:9292', authUrl: null, lastError: null,
       })
-      fireEvent.click(screen.getByRole('button', { name: 'Open official authorization' }))
+      expect(screen.getByRole('link', { name: 'Open official authorization' })).toHaveAttribute('href', 'https://login.tailscale.com/a/test')
       await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
       expect(screen.getAllByTestId('qr')).toHaveLength(1)
       expect(screen.getByTestId('qr')).toHaveAttribute('data-url', 'http://100.101.2.3:9292/?pair=first.secret')
-      expect(screen.queryByText('Complete Tailscale sign-in first')).not.toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: 'Open official authorization' })).not.toBeInTheDocument()
+      expect(screen.queryByText(/Sign in to Tailscale above first/)).not.toBeInTheDocument()
+      expect(screen.queryByRole('link', { name: 'Open official authorization' })).not.toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'Copy full pairing info' })).toBeEnabled()
     } finally {
       cleanup()
@@ -226,7 +371,7 @@ describe('RemoteAccessSettings authoritative addresses', () => {
     expect(await screen.findByText(/The server did not report a listening port/)).toBeInTheDocument()
     expect(screen.getByText('QR code unavailable')).toBeInTheDocument()
     expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Copy full pairing info' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Copy full pairing info' })).not.toBeInTheDocument()
     expect(screen.getByLabelText('Listen port')).toHaveTextContent('—')
     expect(screen.queryByText(/8787|7777/)).not.toBeInTheDocument()
   })
@@ -353,6 +498,6 @@ describe('RemoteAccessSettings authoritative addresses', () => {
     render(<RemoteAccessSettings />)
     expect(await screen.findByText('QR code unavailable')).toBeInTheDocument()
     expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Copy full pairing info' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Copy full pairing info' })).not.toBeInTheDocument()
   })
 })

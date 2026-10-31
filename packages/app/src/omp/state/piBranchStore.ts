@@ -1,5 +1,6 @@
 import type { PiBranchCheckpoint, PiBranchPage, PiToolExecutionState } from '../domain/index.js'
 import { windowBranch } from '../branchWindow'
+import { cachePiBranch } from '../branchCache'
 
 interface BranchEntry {
   data: PiBranchPage | null
@@ -56,6 +57,10 @@ class PiBranchStore {
   }
 
   private notify(): void {
+    for (const id of this.activeSessions) {
+      const data = this.bySessionId.get(id)?.data
+      if (data) cachePiBranch(id, data)
+    }
     this.listeners.forEach(l => l())
   }
 
@@ -120,7 +125,7 @@ class PiBranchStore {
     const entry = this.entry(sessionId)
     const previous = entry.data?.client?.toolExecutions?.[toolCallId] ?? entry.pendingToolExecutions?.[toolCallId]
     if ((previous?.result || previous?.completedAt !== undefined || previous?.error) && !patch.result) return false
-    const next = { ...previous, ...patch }
+    const next = { ...previous, ...patch, awaitingSnapshot: undefined }
     if (patch.result) {
       next.error = undefined
       next.interruption = undefined
@@ -134,7 +139,7 @@ class PiBranchStore {
       next.interruption = entry.toolInterruption.kind
       next.endedAt = Date.now()
     }
-    if (previous && Object.keys(patch).every(key => previous[key as keyof PiToolExecutionState] === next[key as keyof PiToolExecutionState])) return true
+    if (previous && !previous.awaitingSnapshot && Object.keys(patch).every(key => previous[key as keyof PiToolExecutionState] === next[key as keyof PiToolExecutionState])) return true
     if (!entry.data) {
       entry.pendingToolExecutions = { ...entry.pendingToolExecutions, [toolCallId]: next }
       return !next.error || Boolean(patch.result)

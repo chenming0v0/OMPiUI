@@ -854,7 +854,7 @@ export function createAppServer(
             ),
           );
         }
-        return sendJson(res, 200, { ok: true });
+        return sendJson(res, 200, { ok: true, authUrl: result.authUrl ?? null });
       }
 
       if (method === "POST" && p === "/api/v1/host/tailscale/disconnect") {

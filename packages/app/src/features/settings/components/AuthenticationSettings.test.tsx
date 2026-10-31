@@ -37,6 +37,8 @@ describe('AuthenticationSettings', () => {
     expect(screen.getByRole('heading', { name: 'Authentication' })).toBeInTheDocument()
     expect(screen.queryByText('Desktop pairing')).not.toBeInTheDocument()
     expect(screen.queryByText('Relay configuration')).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Connect to your computer' })).toBeInTheDocument()
+    expect(screen.getByText('Scan the pairing code on your computer, or paste its pairing link.')).toBeInTheDocument()
     expect(screen.getByText('Phone pairing input and scanner')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Phone pairing input and scanner' }))
     expect(completed).toHaveBeenCalledOnce()

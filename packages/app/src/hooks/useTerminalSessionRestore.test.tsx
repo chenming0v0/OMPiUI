@@ -24,6 +24,7 @@ vi.mock('../store/serverStore', () => ({
     onServerChange: onServerChangeMock,
     subscribe: vi.fn(() => () => {}),
     getServers: vi.fn(() => serverSnapshot),
+    getStoredServers: vi.fn(() => serverSnapshot),
     getActiveServer: vi.fn(() => activeServerSnapshot),
     getActiveServerId: vi.fn(() => activeServerSnapshot.id),
     getActiveServerGeneration: vi.fn(() => 0),

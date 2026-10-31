@@ -264,6 +264,21 @@ describe('InputToolbar file selection', () => {
     expect(screen.queryByRole('button', { name: 'Stop generation' })).toBeNull()
   })
 
+  it('returns to Send after Stop completes without streaming, including an empty draft', () => {
+    const props = { onFilesSelected: vi.fn(), onSend: vi.fn(), onAbort: vi.fn() }
+    const view = render(<InputToolbar {...props} isStopping canSend={false} />)
+    expect(screen.getByRole('button', { name: 'Stop generation' })).toBeDisabled()
+
+    view.rerender(<InputToolbar {...props} isStreaming={false} sessionActive={false} canSend={false} />)
+    expect(screen.queryByRole('button', { name: 'Stop generation' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
+
+    view.rerender(<InputToolbar {...props} isStreaming={false} sessionActive={false} canSend />)
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    expect(props.onSend).toHaveBeenCalledTimes(1)
+    expect(props.onAbort).not.toHaveBeenCalled()
+  })
+
   it('shows Stop while compacting and the input is empty', () => {
     render(
       <InputToolbar

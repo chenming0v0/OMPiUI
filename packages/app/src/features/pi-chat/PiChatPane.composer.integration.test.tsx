@@ -3,6 +3,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import i18n from '../../i18n'
 import type { Model, Api } from '../../omp/vendor/pi-ai'
+import type { PiSessionRuntimeState } from '../../omp/domain'
+import { SessionBackgroundJobs } from '../chat/input/BackgroundJobsIndicator'
 import { serverStore, LOCAL_SERVER_ID } from '../../store/serverStore'
 import { notificationStore } from '../../store/notificationStore'
 import { clearSessionEditorDraft, setSessionEditorDraft } from '../../omp/sessionEditorDraftStore'
@@ -13,11 +15,13 @@ import { PiChatPane } from './PiChatPane'
 
 const mocks = vi.hoisted(() => ({
   models: [] as Model<Api>[],
-  state: null as { model: { provider: string; id: string }; thinkingLevel: string; isStreaming?: boolean } | null,
+  state: null as Partial<PiSessionRuntimeState> | null,
+  listedActive: false,
   branch: { items: [] },
   loadModels: vi.fn(), loadSession: vi.fn(), setModel: vi.fn(), setThinking: vi.fn(),
   refreshState: vi.fn(), refreshBranch: vi.fn(), openSession: vi.fn(), sendMessage: vi.fn(),
-  interrupt: vi.fn(), editorState: vi.fn(), slashCommands: vi.fn(), completions: vi.fn(),
+  interrupt: vi.fn(), abort: vi.fn(), abortCompaction: vi.fn(), getJobs: vi.fn(),
+  editorState: vi.fn(), slashCommands: vi.fn(), completions: vi.fn(),
 }))
 
 // Only the data/transport boundary and unrelated pane surfaces are replaced.
@@ -37,17 +41,18 @@ vi.mock('../../omp/controllers/index.js', () => ({
   openPiSession: mocks.openSession, sendPiUserMessage: mocks.sendMessage,
   abortAndPrompt: mocks.interrupt, setPiExtensionEditorState: mocks.editorState,
   loadPiSlashCommands: mocks.slashCommands,
-  abortPiOperation: vi.fn(), abortPiCompaction: vi.fn(), cyclePiModel: vi.fn(),
+  abortPiOperation: mocks.abort, abortPiCompaction: mocks.abortCompaction, cyclePiModel: vi.fn(),
   cyclePiThinkingLevel: vi.fn(), forkPiSession: vi.fn(), loadMorePiBranchEntries: vi.fn(),
   prefetchPiBranchEntries: vi.fn(), returnToLatestPiBranch: vi.fn(), navigatePiTree: vi.fn(),
 }))
 vi.mock('../../omp/transport/index.js', () => ({
-  getPiCommandCompletions: mocks.completions,
+  getPiCommandCompletions: mocks.completions, getPiAsyncJobs: mocks.getJobs,
+  inspectPiAsyncJob: vi.fn(), cancelPiAsyncJob: vi.fn(),
   manageSessionGoal: vi.fn(), removeQueuedMessage: vi.fn(), discardQueuedMessage: vi.fn(),
   sendQueuedMessage: vi.fn(), waitHostCommand: vi.fn(), getPiTree: vi.fn(),
 }))
 vi.mock('../../omp/capabilities', () => ({
-  usePiCapabilities: () => ({ promptSteer: true, promptFollowUp: true, promptInterrupt: true }),
+  usePiCapabilities: () => ({ promptSteer: true, promptFollowUp: true, promptInterrupt: true, backgroundJobs: true }),
 }))
 vi.mock('../../omp/eventStream.js', () => ({ piEventStream: { connect: vi.fn(), disconnect: vi.fn() } }))
 vi.mock('../../omp/state/index.js', () => ({
@@ -57,7 +62,7 @@ vi.mock('../../omp/state/index.js', () => ({
 vi.mock('../../omp/managementEventStore', () => ({ useManagementEvents: () => ({ providerRevision: 0 }) }))
 vi.mock('../../contexts/useDirectory', () => ({ useDirectory: () => ({ currentDirectory: '/workspace', addDirectory: vi.fn() }) }))
 vi.mock('../../contexts/useSessionContext', () => ({ useSessionContext: () => ({ sessions: [], registerSession: vi.fn() }) }))
-vi.mock('../../store/activeSessionStore', () => ({ useSessionActiveEntry: () => null }))
+vi.mock('../../store/activeSessionStore', () => ({ useSessionActiveEntry: () => mocks.listedActive ? { status: { type: 'busy' } } : null }))
 vi.mock('../../omp/redoPlanStore', () => ({
   redoPlanStore: { subscribe: () => () => {}, getPlan: () => null },
   captureRedoCheckpoints: vi.fn(), commitRedoPlan: vi.fn(),
@@ -74,7 +79,8 @@ vi.mock('../chat/FolderProjectDropOverlay.js', () => ({ FolderProjectDropOverlay
 vi.mock('../chat/useFolderProjectDrop.js', () => ({ useFolderProjectDrop: () => false }))
 vi.mock('../chat/index.js', async () => ({
   InputBox: (await import('../chat/InputBox')).InputBox,
-  ChatArea: forwardRef(() => null), Header: () => null,
+  ChatArea: forwardRef(({ isStreaming, canUndo }: { isStreaming?: boolean; canUndo?: boolean }, _ref) => <div data-testid="transcript" data-streaming={String(isStreaming)} data-can-undo={String(canUndo)} />),
+  Header: ({ sessionId }: { sessionId: string | null }) => <SessionBackgroundJobs sessionId={sessionId} />,
 }))
 
 const sentImage: Attachment = {
@@ -135,7 +141,9 @@ beforeEach(async () => {
     cost: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 }, contextWindow: 128000, maxTokens: 32000,
   }]
   mocks.state = { model: { provider: 'openai', id: 'preview-model' }, thinkingLevel: 'off' }
-  for (const mock of [mocks.loadSession, mocks.refreshState, mocks.refreshBranch, mocks.setModel, mocks.setThinking, mocks.editorState]) mock.mockResolvedValue(undefined)
+  mocks.listedActive = false
+  mocks.getJobs.mockResolvedValue({ running: [], recent: [] })
+  for (const mock of [mocks.loadSession, mocks.refreshState, mocks.refreshBranch, mocks.setModel, mocks.setThinking, mocks.editorState, mocks.abort, mocks.abortCompaction]) mock.mockResolvedValue(undefined)
   mocks.loadModels.mockResolvedValue(mocks.models)
   mocks.slashCommands.mockResolvedValue([{ name: 'export', description: 'Export session', source: 'builtin' }])
   mocks.completions.mockResolvedValue([])
@@ -155,6 +163,83 @@ afterEach(() => {
 })
 
 describe('PiChatPane with the real composer', () => {
+  it.each(['isStreaming', 'isCompacting', 'isRetrying'] as const)(
+    'returns to Send when %s ends with background jobs still running (#413)', async foreground => {
+      const job = { id: 'bg_413', type: 'bash', status: 'running', label: 'build assets', startTime: Date.now() }
+      mocks.getJobs.mockResolvedValue({ running: [job], recent: [] })
+      mocks.state = { ...mocks.state, isStreaming: false, [foreground]: true, hasPendingAsyncWork: true, isIdle: false, isSettled: false }
+      mocks.listedActive = true
+      const view = render(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+      const indicator = await screen.findByRole('button', { name: i18n.t('chat:backgroundJobs.runningCount', { count: 1 }) })
+      expect(screen.getByRole('button', { name: i18n.t('chat:inputToolbar.stopGeneration') })).toBeEnabled()
+      expect(screen.getByTestId('transcript')).toHaveAttribute('data-streaming', String(foreground === 'isStreaming'))
+
+      mocks.state = { ...mocks.state, [foreground]: false }
+      const backgroundState = mocks.state
+      view.rerender(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+      expect(screen.queryByRole('button', { name: i18n.t('chat:inputToolbar.stopGeneration') })).toBeNull()
+      expect(screen.getByRole('button', { name: i18n.t('chat:inputToolbar.sendMessage') })).toBeDisabled()
+      expect(screen.getByTestId('transcript')).toHaveAttribute('data-streaming', 'false')
+      expect(indicator).toBeInTheDocument()
+      expect(mocks.state).toBe(backgroundState)
+      expect(mocks.state).toMatchObject({ hasPendingAsyncWork: true, isIdle: false, isSettled: false })
+      expect(mocks.abort).not.toHaveBeenCalled()
+      expect(mocks.abortCompaction).not.toHaveBeenCalled()
+
+      fireEvent.change(screen.getByRole('textbox'), { target: { value: 'continue the main task' } })
+      expect(screen.getByRole('button', { name: i18n.t('chat:inputToolbar.sendMessage') })).toBeEnabled()
+      await waitFor(() => expect(screen.queryByRole('button', { name: /Running message timing/ })).toBeNull())
+      mocks.sendMessage.mockResolvedValue(undefined)
+      send()
+      await waitFor(() => expect(mocks.sendMessage).toHaveBeenCalledWith(sessionId, 'continue the main task', undefined, 'followUp'))
+      expect(indicator).toBeInTheDocument()
+    },
+  )
+
+  it('keeps Stop pending until the foreground abort completes, then shows Send alongside background jobs (#413)', async () => {
+    mocks.state = { ...mocks.state, isStreaming: true, hasPendingAsyncWork: true, isIdle: false, isSettled: false }
+    mocks.listedActive = true
+    mocks.getJobs.mockResolvedValue({ running: [{ id: 'bg_stop', type: 'task', status: 'running', label: 'background check', startTime: Date.now() }], recent: [] })
+    const abort = Promise.withResolvers<void>()
+    mocks.abort.mockReturnValue(abort.promise)
+    const view = render(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+    const indicator = await screen.findByRole('button', { name: i18n.t('chat:backgroundJobs.runningCount', { count: 1 }) })
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('chat:inputToolbar.stopGeneration') }))
+    await waitFor(() => expect(mocks.abort).toHaveBeenCalledWith(sessionId))
+    mocks.state = { ...mocks.state, isStreaming: false }
+    view.rerender(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+    expect(screen.getByRole('button', { name: i18n.t('chat:inputToolbar.stopGeneration') })).toBeDisabled()
+    await act(async () => { abort.resolve() })
+    expect(screen.queryByRole('button', { name: i18n.t('chat:inputToolbar.stopGeneration') })).toBeNull()
+    expect(screen.getByRole('button', { name: i18n.t('chat:inputToolbar.sendMessage') })).toBeDisabled()
+    expect(indicator).toBeInTheDocument()
+    expect(mocks.state).toMatchObject({ isStreaming: false, hasPendingAsyncWork: true, isIdle: false, isSettled: false })
+  })
+
+  it.each(['isCompacting', 'isRetrying', 'isBashRunning'] as const)('still guards Undo during foreground %s without using streaming (#413)', foreground => {
+    mocks.state = {
+      ...mocks.state, isStreaming: false, [foreground]: true,
+      submittedMessages: [{ id: 'user-413', message: { role: 'user', timestamp: 413, content: [{ type: 'text', text: 'original task' }] } }],
+    }
+    const view = render(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+    expect(screen.getByTestId('transcript')).toHaveAttribute('data-streaming', 'false')
+    expect(screen.getByTestId('transcript')).toHaveAttribute('data-can-undo', 'false')
+    mocks.state = { ...mocks.state, [foreground]: false }
+    view.rerender(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+    expect(screen.getByTestId('transcript')).toHaveAttribute('data-can-undo', 'true')
+  })
+
+  it('retains Stop for true foreground bash without pretending it is streaming (#413)', () => {
+    mocks.state = { ...mocks.state, isStreaming: false, isBashRunning: true, hasPendingAsyncWork: true }
+    const view = render(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+    expect(screen.getByRole('button', { name: i18n.t('chat:inputToolbar.stopGeneration') })).toBeEnabled()
+    expect(screen.getByTestId('transcript')).toHaveAttribute('data-streaming', 'false')
+    mocks.state = { ...mocks.state, isBashRunning: false }
+    view.rerender(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+    expect(screen.queryByRole('button', { name: i18n.t('chat:inputToolbar.stopGeneration') })).toBeNull()
+    expect(screen.getByRole('button', { name: i18n.t('chat:inputToolbar.sendMessage') })).toBeDisabled()
+  })
+
   it.each(['modified text', 'new image', 'deleted image', 'pure image', 'empty draft'] as const)(
     'keeps pending edits after a rejected slash command: %s, including remount', async edit => {
       seed(commandText, [sentImage])

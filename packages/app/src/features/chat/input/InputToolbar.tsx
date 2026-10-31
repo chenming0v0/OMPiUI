@@ -20,7 +20,7 @@ interface InputToolbarProps {
   onFilesSelected: (files: File[]) => void
 
   isStreaming?: boolean
-  /** Foreground activity keeps Stop available when there is no sendable draft. */
+  /** Foreground activity (including retry/bash), never background jobs, keeps Stop available without a sendable draft. */
   sessionActive?: boolean
   /** Context compaction can be cancelled through the same action slot. */
   isCompacting?: boolean

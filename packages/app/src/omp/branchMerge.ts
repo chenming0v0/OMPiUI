@@ -54,9 +54,11 @@ export function mergeLatestBranchPage(current: PiBranchPage | null, latest: PiBr
     const localPosition = current.checkpoint?.position
     const remotePosition = page.checkpoint?.position
     const sameStream = !remotePosition || localPosition?.epoch === remotePosition.epoch
+    const cachedExecutions = Object.fromEntries(Object.entries(current.client?.toolExecutions ?? {}).filter(([, execution]) => !execution.awaitingSnapshot))
+    const snapshotExecutions = Object.fromEntries(Object.entries(page.client?.toolExecutions ?? {}).filter(([, execution]) => !execution.awaitingSnapshot))
     const toolExecutions = sameStream
-      ? { ...page.client?.toolExecutions, ...current.client?.toolExecutions }
-      : { ...page.client?.toolExecutions }
+      ? { ...snapshotExecutions, ...cachedExecutions }
+      : { ...snapshotExecutions }
     const persistedStarts = new Set<string>()
     const persistedResults = new Set<string>()
     const persistedCalls = new Set<string>()

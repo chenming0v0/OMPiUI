@@ -38,7 +38,7 @@ describe("embedded Tailscale lifecycle", () => {
     const node = manager(dir)
     try {
       await node.resume(9191)
-      assert.deepEqual(await node.startLogin(), { ok: true })
+      assert.deepEqual(await node.startLogin(), { ok: true, authUrl: "https://login.tailscale.com/a/test-node" })
       const status = await node.detailStatus()
       assert.equal(status.authUrl, "https://login.tailscale.com/a/test-node")
       assert.equal(status.backendState, "NeedsLogin")
@@ -92,14 +92,16 @@ describe("embedded Tailscale lifecycle", () => {
 })
 
 describe("Tailscale status mapping", () => {
-  it("maps native payloads and never accepts a non-official authorization link", () => {
+  it("maps native payloads and keeps https authorization links from any control server", () => {
     assert.deepEqual(mapStatusJson({
       BackendState: "Running", TailscaleIPs: ["100.101.1.2"], Version: "1.104.1-build",
-      AuthURL: "https://unexpected.example/auth", Self: { DNSName: "my-pc.example.ts.net." },
+      AuthURL: "https://headscale.example.com/auth", Self: { DNSName: "my-pc.example.ts.net." },
     }), {
       backendState: "Running", ips: ["100.101.1.2"], version: "1.104.1",
-      authUrl: null, hostName: "my-pc.example.ts.net",
+      authUrl: "https://headscale.example.com/auth", hostName: "my-pc.example.ts.net",
     })
+    assert.equal(mapStatusJson({ AuthURL: "http://headscale.example.com/auth" }).authUrl, null)
+    assert.equal(mapStatusJson({ AuthURL: "https://user@login.tailscale.com/auth" }).authUrl, null)
     assert.equal(mapStatusJson(null).backendState, null)
   })
 })
