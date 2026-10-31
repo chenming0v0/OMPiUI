@@ -41,7 +41,7 @@ describe('Tailscale authorization browser', () => {
     mocks.android.mockReturnValue(false)
     mocks.tauri.mockReturnValue(false)
     const open = vi.spyOn(window, 'open').mockReturnValue(null)
-    await openTailscaleLogin(url)
+    await expect(openTailscaleLogin(url)).resolves.toBe('manual')
     expect(open).toHaveBeenCalledWith(url, '_blank', 'noopener,noreferrer')
   })
   it.each(['javascript:alert(1)', 'http://login.tailscale.com/a/device', 'https://user:pass@login.tailscale.com/a/device', 'not a url'])(
