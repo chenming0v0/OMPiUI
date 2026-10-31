@@ -496,7 +496,7 @@ describe('RemoteAccessSettings authoritative addresses', () => {
       redeemed: state === 'redeemed',
     })
     render(<RemoteAccessSettings />)
-    expect(await screen.findByText('QR code unavailable')).toBeInTheDocument()
+    expect(await screen.findByText(state === 'redeemed' ? 'Approved — phone connected' : 'QR code unavailable')).toBeInTheDocument()
     expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Copy full pairing info' })).not.toBeInTheDocument()
   })

@@ -1,4 +1,6 @@
 import { useTranslation } from 'react-i18next'
+import { Monitor } from 'lucide-react'
+import { AuthCard } from './AuthPanelUI'
 import { isAndroidTailscalePlatform } from '../../../utils/androidTailscale'
 import { AndroidTailscaleSettings } from './AndroidTailscaleSettings'
 import { RemoteAccessSettings } from './RemoteAccessSettings'
@@ -11,11 +13,12 @@ export function AuthenticationSettings({ onPaired }: { onPaired?: () => void }) 
   if (isAndroidTailscalePlatform()) {
     return (
       <SettingsSection title={t('authentication.title')}>
-        <AndroidTailscaleSettings />
-        <div data-testid="phone-computer-pairing" className="mt-4 rounded-xl border border-border-200/60 bg-bg-100 p-4">
-          <h3 className="text-[length:var(--fs-md)] font-medium text-text-100">{t('authentication.phoneConnectComputer')}</h3>
-          <p className="mt-1 text-[length:var(--fs-xs)] leading-relaxed text-text-300">{t('authentication.phoneConnectComputerDesc')}</p>
-          <PhonePairingForm onPaired={onPaired} />
+        <div className="grid min-w-0 gap-3">
+          <AndroidTailscaleSettings />
+          <AuthCard testId="phone-computer-pairing" icon={<Monitor size={18} />}
+            title={t('authentication.phoneConnectComputer')} description={t('authentication.phoneConnectComputerDesc')}>
+            <PhonePairingForm onPaired={onPaired} />
+          </AuthCard>
         </div>
       </SettingsSection>
     )

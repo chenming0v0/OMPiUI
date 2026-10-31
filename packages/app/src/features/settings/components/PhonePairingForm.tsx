@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Link2, LoaderCircle, ScanLine } from 'lucide-react'
-import { Button } from '../../../components/ui/Button'
+import { CircleCheck, Link2, LoaderCircle, ScanLine } from 'lucide-react'
+import { AuthAlert, authPrimaryButtonClass, authSecondaryButtonClass } from './AuthPanelUI'
 import { useRouter, useServerStore } from '../../../hooks'
 import { parseConnectionLink, resolveConnectionLink } from '../../../utils/connectionLink'
 import { scanPairingQr } from '../../../utils/qrScanner'
@@ -61,8 +61,14 @@ export function PhonePairingForm({ onPaired }: { onPaired?: () => void }) {
 
   return (
     <form onSubmit={event => { event.preventDefault(); void run(false) }}
-      aria-busy={busy !== null} className="mt-4 grid min-w-0 gap-3 border-t border-border-200/60 pt-4">
-      <label htmlFor="phone-pairing-link" className="text-[length:var(--fs-sm)] font-medium text-text-200">
+      aria-busy={busy !== null} className="grid min-w-0 gap-3">
+      <button type="button" disabled={busy !== null} onClick={() => void run(true)}
+        className={`${authPrimaryButtonClass} min-h-12 w-full text-[length:var(--fs-sm)]`}>
+        {busy === 'scanning' ? <LoaderCircle size={18} className="animate-spin" /> : <ScanLine size={18} />}
+        {t('authentication.scan')}
+      </button>
+      <label htmlFor="phone-pairing-link"
+        className="flex items-center gap-3 pt-1 text-[length:var(--fs-xs)] text-text-400 before:h-px before:flex-1 before:bg-border-200/60 after:h-px after:flex-1 after:bg-border-200/60">
         {t('authentication.pairingInfo')}
       </label>
       <textarea id="phone-pairing-link" rows={3} value={input} disabled={busy !== null}
@@ -85,22 +91,19 @@ export function PhonePairingForm({ onPaired }: { onPaired?: () => void }) {
           event.preventDefault()
           void run(false)
         }}
-        className={`${settingsFieldAreaClass} break-all font-mono`} />
-      {parsed && <p className="break-all text-[length:var(--fs-xs)] text-text-300">{parsed.url}</p>}
-      {error && <p role="alert" className="break-words text-[length:var(--fs-xs)] text-danger-100">{error}</p>}
-      {connected && <p role="status" className="text-[length:var(--fs-xs)] text-success-100">
-        {t('authentication.connected')}
+        className={`${settingsFieldAreaClass} break-all font-mono text-[length:var(--fs-xs)]`} />
+      {parsed && <p className="flex min-w-0 items-center gap-1.5 break-all rounded-md bg-bg-200/50 px-2.5 py-1.5 font-mono text-[length:var(--fs-xs)] text-text-300">
+        <Link2 size={13} className="shrink-0 text-accent-main-100" />{parsed.url}
       </p>}
-      <div className="flex flex-wrap gap-2">
-        <Button type="button" variant="secondary" className="min-h-11" disabled={busy !== null} onClick={() => void run(true)}>
-          {busy === 'scanning' ? <LoaderCircle size={16} className="animate-spin" /> : <ScanLine size={16} />}
-          {t('authentication.scan')}
-        </Button>
-        <Button type="submit" className="min-h-11" disabled={busy !== null || !input.trim()}>
-          {busy === 'connecting' ? <LoaderCircle size={16} className="animate-spin" /> : <Link2 size={16} />}
-          {t('authentication.connect')}
-        </Button>
-      </div>
+      {error && <AuthAlert>{error}</AuthAlert>}
+      {connected && <p role="status" className="flex items-center gap-2 rounded-lg border border-success-100/25 bg-success-100/10 px-3 py-2 text-[length:var(--fs-xs)] text-success-100">
+        <CircleCheck size={14} className="shrink-0" />{t('authentication.connected')}
+      </p>}
+      <button type="submit" disabled={busy !== null || !input.trim()}
+        className={`${authSecondaryButtonClass} min-h-11 w-full text-[length:var(--fs-sm)]`}>
+        {busy === 'connecting' ? <LoaderCircle size={16} className="animate-spin" /> : <Link2 size={16} />}
+        {t('authentication.connect')}
+      </button>
     </form>
   )
 }
