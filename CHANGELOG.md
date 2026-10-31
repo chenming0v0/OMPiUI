@@ -1,3 +1,8 @@
+## [v0.6.49] - 2026-10-31
+
+- docs(release): note auth UI rework in changelog for 0.6.49 (f13dcaa)
+- refactor(app): unify auth and pairing screens visual language (660bbda)
+
 ## [Unreleased]
 
 ## [v0.6.49] - 2026-11-01
