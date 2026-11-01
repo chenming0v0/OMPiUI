@@ -1,8 +1,6 @@
 {
   "worktrees": {
     "title": "Git worktrees", "loading": "Reading Git worktrees…", "noWorkspace": "No workspace is available",
-    "nativeContract": "Switch moves this native session and its artifacts to the selected checkout, retaining its ID. Other sessions are not copied or moved. Branches and user changes are never force-deleted.",
-    "workspaceContract": "Choose the checkout for your next native session. Browsing and workspace selection do not start an Agent or save chat history.",
     "refresh": "Refresh (read-only)",
     "detached": "detached", "current": "current", "locked": "locked", "missing": "missing",
     "switch": "Switch native session here", "selectWorkspace": "Use this workspace", "remove": "Remove…",
@@ -12,7 +10,7 @@
     "confirmCreate": "Create linked Git worktree?", "confirmMove": "Move this native session?", "confirmWorkspace": "Switch workspace?", "confirmRemove": "Remove this clean linked worktree?",
     "unavailableTarget": "Selected worktree is no longer available",
     "identityMismatch": "Native worktree switch did not return the same session identity",
-    "listTitle": "Worktrees", "refreshShort": "Refresh", "empty": "No worktrees found", "primary": "main", "removeHint": "Only clean linked worktrees (no uncommitted changes) can be removed", "createTitle": "New worktree", "branchPlaceholder": "e.g. feature/login", "pathPlaceholder": "Choose or type a folder", "browse": "Browse…", "pathHint": "Suggested from the branch name; absolute or relative to the current workspace.", "pickCurrent": "Use this folder", "pickItem": "Select"
+    "listTitle": "Worktrees", "refreshShort": "Refresh", "empty": "No worktrees found", "primary": "main", "removeHint": "Only clean linked worktrees (no uncommitted changes) can be removed", "createTitle": "New worktree", "branchPlaceholder": "e.g. login-fix", "pathPlaceholder": "Choose or type a folder", "browse": "Browse…", "pickCurrent": "Use this folder", "pickItem": "Select", "branchPrefix": "Branch prefix", "branchPrefixPlaceholder": "None", "branchPreview": "Branch"
   },
   "gitStaging": {
     "manage": "Manage Git staging and commit", "manageShort": "Commit",

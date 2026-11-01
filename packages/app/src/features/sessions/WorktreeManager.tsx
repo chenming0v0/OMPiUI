@@ -17,7 +17,7 @@ import { useRouter } from '../../hooks/useRouter'
 type Action = { kind: 'move' | 'remove'; tree: GitWorktree } | { kind: 'create' }
 
 /** Read-only browser until the user confirms an explicit Git/session write. */
-export function WorktreeManager({ sessionId, directory }: { sessionId?: string; directory?: string }) {
+export function WorktreeManager({ sessionId, directory, variant = 'compact' }: { sessionId?: string; directory?: string; variant?: 'compact' | 'sidebar' }) {
   const { t } = useTranslation('components')
   const capabilities = usePiCapabilities()
   const { setDirectory } = useRouter()
@@ -33,7 +33,14 @@ export function WorktreeManager({ sessionId, directory }: { sessionId?: string; 
   const [manualPath, setManualPath] = useState<string | null>(null)
   const [pickedParent, setPickedParent] = useState<string | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
-  const [branch, setBranch] = useState('')
+  const [branch, setBranch] = useState(defaultBranchName)
+  // Like Claude's `claude/<name>`: new branches default to `omp/<name>`; an
+  // empty prefix means none. Remembered per browser.
+  const [branchPrefix, setBranchPrefix] = useState(readBranchPrefix)
+  const updateBranchPrefix = (value: string) => {
+    setBranchPrefix(value)
+    try { localStorage.setItem(BRANCH_PREFIX_KEY, value) } catch { /* storage unavailable */ }
+  }
   const readVersion = useRef(0)
   const readAbort = useRef<AbortController | null>(null)
   const workspace = useRef<string | null>(null)
@@ -84,11 +91,11 @@ export function WorktreeManager({ sessionId, directory }: { sessionId?: string; 
     setError(null)
     try {
       if (selected.kind === 'create') {
-        const next = await createHostGitWorktree(cwd, targetPath.trim(), branch.trim())
+        const next = await createHostGitWorktree(cwd, targetPath.trim(), fullBranch)
         if (generation !== serverStore.getActiveServerGeneration()) return
         setCatalog(next)
         setManualPath(null)
-        setBranch('')
+        setBranch(defaultBranchName())
       } else if (selected.kind === 'remove') {
         const next = await removeHostGitWorktree(cwd, selected.tree.path)
         if (generation !== serverStore.getActiveServerGeneration()) return
@@ -128,15 +135,22 @@ export function WorktreeManager({ sessionId, directory }: { sessionId?: string; 
   const parentDir = pickedParent ?? (catalog ? parentOf(catalog.primaryRoot) : '')
   const repoName = catalog ? baseName(catalog.primaryRoot) : ''
   const branchSlug = slugifyBranch(branch)
+  const fullBranch = branch.trim() ? `${branchPrefix.trim()}${branch.trim()}` : ''
   const targetPath = manualPath ?? (parentDir && branchSlug ? `${parentDir}/${repoName ? `${repoName}-` : ''}${branchSlug}` : '')
   const inputClass = 'h-9 w-full min-w-0 rounded-md border border-border-200 bg-bg-000/40 px-3 text-[length:var(--fs-sm)] text-text-100 outline-none placeholder:text-text-400 transition-colors hover:border-border-300 focus:border-accent-main-100/60 disabled:opacity-50'
   const cwdPath = normalizeDir(directory)
   return <>
-    <button type="button" className="inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs hover:bg-bg-200" onClick={() => setOpen(true)} aria-label={label}>
-      <GitWorktreeIcon size={14} aria-hidden="true" />{label}
-    </button>
+    {variant === 'sidebar' ? (
+      <button type="button" className="flex h-8 w-full items-center overflow-hidden rounded-lg px-1.5 text-text-300 transition-all duration-300 hover:bg-bg-200 hover:text-text-100 active:scale-[0.98]" onClick={() => setOpen(true)} aria-label={label} title={label}>
+        <span className="flex size-5 shrink-0 items-center justify-center"><GitWorktreeIcon size={16} aria-hidden="true" /></span>
+        <span className="ml-2 min-w-0 flex-1 truncate text-left text-[length:var(--fs-base)]">{label}</span>
+      </button>
+    ) : (
+      <button type="button" className="inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs hover:bg-bg-200" onClick={() => setOpen(true)} aria-label={label}>
+        <GitWorktreeIcon size={14} aria-hidden="true" />{label}
+      </button>
+    )}
     <Dialog isOpen={open} onClose={() => { if (!writing && !pickerOpen) { setAction(null); setOpen(false) } }} title={label} width={640}>
-      <p className="mb-4 text-[length:var(--fs-xs)] leading-5 text-text-400">{sessionId ? t('worktrees.nativeContract', { defaultValue: 'Switch moves this native session and its artifacts to the selected checkout, retaining its ID. Other sessions are not copied or moved. Branches and user changes are never force-deleted.' }) : t('worktrees.workspaceContract', { defaultValue: 'Choose the checkout for your next native session. Browsing and workspace selection do not start an Agent or save chat history.' })}</p>
 
       <div className="mb-2 flex items-center justify-between">
         <h3 className="text-[length:var(--fs-sm)] font-medium text-text-200">
@@ -179,24 +193,29 @@ export function WorktreeManager({ sessionId, directory }: { sessionId?: string; 
         })}
       </ul>
 
-      <form className="mt-5 border-t border-border-200/40 pt-4" onSubmit={event => { event.preventDefault(); if (targetPath.trim() && branch.trim()) setAction({ kind: 'create' }) }}>
+      <form className="mt-5 border-t border-border-200/40 pt-4" onSubmit={event => { event.preventDefault(); if (targetPath.trim() && fullBranch) setAction({ kind: 'create' }) }}>
         <h3 className="mb-3 text-[length:var(--fs-sm)] font-medium text-text-200">{t('worktrees.createTitle', { defaultValue: 'New worktree' })}</h3>
-        <div className="grid gap-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-          <label className="block min-w-0 text-[length:var(--fs-xs)] text-text-300">{t('worktrees.branch', { defaultValue: 'New branch name' })}
-            <input className={`${inputClass} mt-1`} value={branch} onChange={event => setBranch(event.target.value)} disabled={writing} placeholder={t('worktrees.branchPlaceholder', { defaultValue: 'e.g. feature/login' })} autoComplete="off" spellCheck={false} required />
+        <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+          <label className="block min-w-0 text-[length:var(--fs-xs)] text-text-300">{t('worktrees.branchPrefix', { defaultValue: 'Branch prefix' })}
+            <input className={`${inputClass} mt-1 font-mono`} value={branchPrefix} onChange={event => updateBranchPrefix(event.target.value)} disabled={writing} placeholder={t('worktrees.branchPrefixPlaceholder', { defaultValue: 'None' })} autoComplete="off" spellCheck={false} />
           </label>
-          <label className="block min-w-0 text-[length:var(--fs-xs)] text-text-300">{t('worktrees.path', { defaultValue: 'Location' })}
-            <div className="mt-1 flex gap-1.5">
-              <input className={`${inputClass} font-mono`} value={targetPath} onChange={event => setManualPath(event.target.value)} disabled={writing} placeholder={t('worktrees.pathPlaceholder', { defaultValue: 'Choose or type a folder' })} title={targetPath} autoComplete="off" spellCheck={false} required />
-              <Button type="button" variant="secondary" className="h-9 shrink-0" disabled={writing || !catalog} onClick={() => setPickerOpen(true)} title={t('worktrees.browse', { defaultValue: 'Browse…' })}>
-                <FolderOpenIcon size={14} aria-hidden="true" />{t('worktrees.browse', { defaultValue: 'Browse…' })}
-              </Button>
-            </div>
+          <label className="block min-w-0 text-[length:var(--fs-xs)] text-text-300">{t('worktrees.branch', { defaultValue: 'Branch name' })}
+            <input className={`${inputClass} mt-1 font-mono`} value={branch} onChange={event => setBranch(event.target.value)} disabled={writing} placeholder={t('worktrees.branchPlaceholder', { defaultValue: 'e.g. feature/login' })} autoComplete="off" spellCheck={false} required />
           </label>
         </div>
+        <label className="mt-3 block min-w-0 text-[length:var(--fs-xs)] text-text-300">{t('worktrees.path', { defaultValue: 'Location' })}
+          <div className="mt-1 flex gap-1.5">
+            <input className={`${inputClass} font-mono`} value={targetPath} onChange={event => setManualPath(event.target.value)} disabled={writing} placeholder={t('worktrees.pathPlaceholder', { defaultValue: 'Choose or type a folder' })} title={targetPath} autoComplete="off" spellCheck={false} required />
+            <Button type="button" variant="secondary" className="h-9 shrink-0" disabled={writing || !catalog} onClick={() => setPickerOpen(true)} title={t('worktrees.browse', { defaultValue: 'Browse…' })}>
+              <FolderOpenIcon size={14} aria-hidden="true" />{t('worktrees.browse', { defaultValue: 'Browse…' })}
+            </Button>
+          </div>
+        </label>
         <div className="mt-3 flex items-center justify-between gap-3">
-          <p className="text-[length:var(--fs-xxs)] text-text-400">{t('worktrees.pathHint', { defaultValue: 'Absolute, or relative to the current workspace.' })}</p>
-          <Button type="submit" size="sm" className="shrink-0" disabled={writing || loading || !catalog || !targetPath.trim() || !branch.trim()}>
+          <p className="min-w-0 truncate text-[length:var(--fs-xxs)] text-text-400" title={fullBranch}>
+            {fullBranch && <>{t('worktrees.branchPreview', { defaultValue: 'Branch' })} <span className="font-mono text-text-200">{fullBranch}</span></>}
+          </p>
+          <Button type="submit" size="sm" className="shrink-0" disabled={writing || loading || !catalog || !targetPath.trim() || !fullBranch}>
             <PlusIcon size={13} aria-hidden="true" />{t('worktrees.create', { defaultValue: 'Create worktree…' })}
           </Button>
         </div>
@@ -212,7 +231,7 @@ export function WorktreeManager({ sessionId, directory }: { sessionId?: string; 
       confirmLabel={t('worktrees.pickCurrent', { defaultValue: 'Use this folder' })}
       itemActionLabel={t('worktrees.pickItem', { defaultValue: 'Select' })}
     />
-    <ConfirmDialog isOpen={action !== null} onClose={() => { if (!writing) setAction(null) }} onConfirm={() => void commitAction()} isLoading={writing} variant={action?.kind === 'remove' ? 'danger' : 'info'} title={action?.kind === 'create' ? t('worktrees.confirmCreate', { defaultValue: 'Create linked Git worktree?' }) : action?.kind === 'move' ? (sessionId ? t('worktrees.confirmMove', { defaultValue: 'Move this native session?' }) : t('worktrees.confirmWorkspace', { defaultValue: 'Switch workspace?' })) : t('worktrees.confirmRemove', { defaultValue: 'Remove this clean linked worktree?' })} description={action?.kind === 'create' ? `${targetPath} · ${branch}` : action?.tree.path} />
+    <ConfirmDialog isOpen={action !== null} onClose={() => { if (!writing) setAction(null) }} onConfirm={() => void commitAction()} isLoading={writing} variant={action?.kind === 'remove' ? 'danger' : 'info'} title={action?.kind === 'create' ? t('worktrees.confirmCreate', { defaultValue: 'Create linked Git worktree?' }) : action?.kind === 'move' ? (sessionId ? t('worktrees.confirmMove', { defaultValue: 'Move this native session?' }) : t('worktrees.confirmWorkspace', { defaultValue: 'Switch workspace?' })) : t('worktrees.confirmRemove', { defaultValue: 'Remove this clean linked worktree?' })} description={action?.kind === 'create' ? `${targetPath} · ${fullBranch}` : action?.tree.path} />
   </>
 }
 
@@ -235,6 +254,20 @@ function baseName(path: string): string {
 /** Folder-safe version of a branch name, used to suggest the worktree directory. */
 function slugifyBranch(branch: string): string {
   return branch.trim().replace(/[\\/:*?"<>|\s]+/g, '-').replace(/^[-.]+|[-.]+$/g, '')
+}
+
+const BRANCH_PREFIX_KEY = 'ompiui:worktree-branch-prefix'
+const DEFAULT_BRANCH_PREFIX = 'omp/'
+
+function readBranchPrefix(): string {
+  try { return localStorage.getItem(BRANCH_PREFIX_KEY) ?? DEFAULT_BRANCH_PREFIX } catch { return DEFAULT_BRANCH_PREFIX }
+}
+
+/** Prefilled so the location preview works before the user names the branch. */
+function defaultBranchName(): string {
+  const random = new Uint8Array(3)
+  globalThis.crypto.getRandomValues(random)
+  return `worktree-${Array.from(random, byte => byte.toString(16).padStart(2, '0')).join('')}`
 }
 
 function Badge({ tone = 'neutral', title, children }: { tone?: 'neutral' | 'accent' | 'warning' | 'danger'; title?: string; children: React.ReactNode }) {

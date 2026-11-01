@@ -1,8 +1,6 @@
 {
   "worktrees": {
     "title": "Git 工作树", "loading": "正在读取 Git 工作树…", "noWorkspace": "没有可用工作区",
-    "nativeContract": "切换会把当前原生会话及其产物移动到所选检出目录，会话 ID 保持不变。其他会话不会被复制或移动；分支和你的改动绝不会被强制删除。",
-    "workspaceContract": "选择下一个原生会话使用的检出目录。浏览和选择工作区不会启动 Agent，也不会保存聊天记录。",
     "refresh": "刷新（只读）",
     "detached": "分离 HEAD", "current": "当前", "locked": "已锁定", "missing": "目录缺失",
     "switch": "切换会话到此处", "selectWorkspace": "使用此工作区", "remove": "移除…",
@@ -12,7 +10,7 @@
     "confirmCreate": "创建关联的 Git 工作树？", "confirmMove": "移动这个原生会话？", "confirmWorkspace": "切换工作区？", "confirmRemove": "移除这个干净的关联工作树？",
     "unavailableTarget": "所选工作树已不可用",
     "identityMismatch": "原生工作树切换返回的会话身份不一致",
-    "listTitle": "工作树", "refreshShort": "刷新", "empty": "没有找到工作树", "primary": "主工作树", "removeHint": "只能移除没有未提交改动的关联工作树", "createTitle": "新建工作树", "branchPlaceholder": "例如 feature/login", "pathPlaceholder": "选择或输入文件夹", "browse": "浏览…", "pathHint": "默认按分支名生成，可改为绝对路径或相对当前工作区的路径。", "pickCurrent": "放在当前目录", "pickItem": "选择"
+    "listTitle": "工作树", "refreshShort": "刷新", "empty": "没有找到工作树", "primary": "主工作树", "removeHint": "只能移除没有未提交改动的关联工作树", "createTitle": "新建工作树", "branchPlaceholder": "例如 login-fix", "pathPlaceholder": "选择或输入文件夹", "browse": "浏览…", "pickCurrent": "放在当前目录", "pickItem": "选择", "branchPrefix": "分支前缀", "branchPrefixPlaceholder": "留空则不加前缀", "branchPreview": "将创建分支"
   },
   "gitStaging": {
     "manage": "管理 Git 暂存与提交", "manageShort": "提交",
