@@ -9,6 +9,7 @@ import { OmpExtensionUiBridge } from "./omp-extension-ui.js"
 import { OmpRpcSession } from "./omp-session.js"
 import type { OmpRpcFrame } from "./rpc-client.js"
 import { SUBAGENT_OBSERVATION_PREFIX } from "./native-subagent-observation.js"
+import { SESSION_TITLE_PREFIX } from "./native-session-title.js"
 
 
 // Exercise consumer-visible session projection and transitions with a controlled
@@ -91,6 +92,17 @@ async function sessionFixture(t: TestContext) {
 const image = (data: string): ImageInput => ({ type: "image", data, mimeType: "image/png" })
 
 describe("OmpRpcSession native titles", () => {
+  it("consumes title observer notifications without displaying private control traffic", async t => {
+    const { session, frame } = await sessionFixture(t)
+    const events: JsonObject[] = []
+    session.onPiEvent(event => events.push(event))
+    frame({ type: "extension_ui_request", method: "notify", message: SESSION_TITLE_PREFIX + JSON.stringify({ type: "session_info_update", sessionId: session.getSessionId(), title: "原生自动标题" }) })
+    assert.equal(session.getHead().header?.name, "原生自动标题")
+    frame({ type: "extension_ui_request", method: "notify", message: SESSION_TITLE_PREFIX + JSON.stringify({ type: "session_info_update", sessionId: "other-session", title: "其他标题" }) })
+    frame({ type: "extension_ui_request", method: "notify", message: SESSION_TITLE_PREFIX + "not json" })
+    await new Promise(resolve => setTimeout(resolve, 50))
+    assert.deepEqual(events, [{ type: "session_info_update", sessionId: session.getSessionId(), title: "原生自动标题" }])
+  })
   it("does not let a pre-title state read erase a newer native name", async t => {
     const { session, frame, native, rpc } = await sessionFixture(t)
     const started = Promise.withResolvers<void>()

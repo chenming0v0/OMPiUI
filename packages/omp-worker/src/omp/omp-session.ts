@@ -53,6 +53,7 @@ import { projectPreviewMessage } from "./subagent-preview.js";
 import { requireResourceList, registryFromResources } from './resource-registry.js';
 import { requestNativePromptAcceptance } from './native-rpc-prompt.js';
 import { SUBAGENT_OBSERVATION_PREFIX } from './native-subagent-observation.js';
+import { SESSION_TITLE_PREFIX } from './native-session-title.js';
 
 /**
  * OmpRpcSession —— SessionRuntime 契约的 OMP 实现。
@@ -602,6 +603,15 @@ export class OmpRpcSession implements SessionRuntime {
         return;
       }
       case "extension_ui_request": {
+        if (frame.method === "notify" && typeof frame.message === "string" && frame.message.startsWith(SESSION_TITLE_PREFIX)) {
+          try {
+            const update: unknown = JSON.parse(frame.message.slice(SESSION_TITLE_PREFIX.length));
+            if (isJsonObject(update) && update.type === "session_info_update" && update.sessionId === this.sessionId) {
+              this.handleFrame(update as OmpRpcFrame);
+            }
+          } catch { /* Malformed private title updates are not user notifications. */ }
+          return;
+        }
         if (frame.method === "notify" && typeof frame.message === "string" && frame.message.startsWith(SUBAGENT_OBSERVATION_PREFIX)) {
           try {
             const observation: unknown = JSON.parse(frame.message.slice(SUBAGENT_OBSERVATION_PREFIX.length));
