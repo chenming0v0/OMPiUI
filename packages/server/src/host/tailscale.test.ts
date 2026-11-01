@@ -19,6 +19,28 @@ function manager(dataDir: string, running = false) {
 }
 
 describe("embedded Tailscale lifecycle", () => {
+  it('passes discovery identity and opt-out without changing the application port', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ompiui-discovery-tsnet-'))
+    let captured: string[] = []
+    const node = new TailscaleManager({ dataDir: dir, embeddedBridgePath: fixture,
+      discovery: { displayName: 'My computer', instanceId: 'a'.repeat(32), enabled: false },
+      launch: (_binary, args, token) => {
+        captured = args
+        return spawn(process.execPath, [fixture, ...args], {
+          stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: { ...process.env, OMPIUI_BRIDGE_TOKEN: token },
+        })
+      },
+    })
+    try {
+      await node.resume(9292)
+      await node.startLogin()
+      assert.equal(captured[captured.indexOf('--listen') + 1], ':9292')
+      assert.equal(captured[captured.indexOf('--discovery-id') + 1], 'a'.repeat(32))
+      assert.equal(captured[captured.indexOf('--discovery-name') + 1], 'My computer')
+      assert.ok(captured.includes('--discovery-disabled'))
+    } finally { await node.dispose(); rmSync(dir, { recursive: true, force: true }) }
+  })
+
   it("does not install a client or spawn a node before explicit enable", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ompiui-tsnet-"))
     const node = manager(dir)

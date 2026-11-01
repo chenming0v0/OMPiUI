@@ -15,6 +15,10 @@ interface ProjectDialogProps {
   onClose: () => void
   onSelect: (path: string) => void
   initialPath?: string
+  /** Footer button label; defaults to "add current folder". */
+  confirmLabel?: string
+  /** Per-row quick action label; defaults to "add". */
+  itemActionLabel?: string
 }
 
 interface FileItem {
@@ -60,7 +64,7 @@ function getFilterText(path: string): string {
 // Component
 // ============================================
 
-export function ProjectDialog({ isOpen, onClose, onSelect, initialPath = '' }: ProjectDialogProps) {
+export function ProjectDialog({ isOpen, onClose, onSelect, initialPath = '', confirmLabel, itemActionLabel }: ProjectDialogProps) {
   const { t } = useTranslation(['chat', 'common'])
   // State
   const [inputValue, setInputValue] = useState('')
@@ -387,7 +391,7 @@ export function ProjectDialog({ isOpen, onClose, onSelect, initialPath = '' }: P
                       className="flex items-center gap-1 text-[length:var(--fs-xxs)] bg-accent-main-100 hover:bg-accent-main-200 px-2 py-0.5 rounded text-oncolor-100 font-medium transition-colors"
                     >
                       <PlusIcon className="w-2.5 h-2.5" />
-                      {t('common:add')}
+                      {itemActionLabel ?? t('common:add')}
                     </button>
                   )
                 }
@@ -408,7 +412,7 @@ export function ProjectDialog({ isOpen, onClose, onSelect, initialPath = '' }: P
           className="flex items-center gap-1.5 px-3 py-1.5 bg-bg-000/40 hover:bg-accent-main-100/10 border border-border-200/60 hover:border-accent-main-100/30 text-text-200 hover:text-accent-main-100 rounded-md transition-colors text-[length:var(--fs-sm)] font-medium shrink-0 whitespace-nowrap"
         >
           <PlusIcon className="w-3 h-3" />
-          {t('projectDialog.addCurrent')}
+          {confirmLabel ?? t('projectDialog.addCurrent')}
         </button>
       </div>
     </Dialog>

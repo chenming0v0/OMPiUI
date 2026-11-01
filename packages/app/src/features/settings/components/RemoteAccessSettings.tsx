@@ -444,8 +444,12 @@ function RemoteAccessPanel() {
                       <RetryIcon size={12} />{t('settings:service.remoteRefresh')}
                     </button>
                   </div>
-                  <div className="rounded-lg border border-border-200/60 bg-bg-200/40 px-3 py-2.5 font-mono text-[length:var(--fs-sm)] tracking-wide text-text-200">
-                    {t('settings:service.remoteManualCode', { code: groupedCode(invite.code) })}
+                  <div className="grid min-w-0 gap-2 rounded-lg border border-border-200/60 bg-bg-200/40 px-3 py-2.5 text-[length:var(--fs-xs)] text-text-300">
+                    <p>{t('settings:service.remoteManualHint')}</p>
+                    <p className="break-all font-mono">{t('settings:service.remoteManualAddress', { url: base })}</p>
+                    <p className="font-mono text-[length:var(--fs-sm)] tracking-wide text-text-200">
+                      {t('settings:service.remoteManualCode', { code: groupedCode(invite.code) })}
+                    </p>
                   </div>
                 </div>
                 <button

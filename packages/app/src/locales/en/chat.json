@@ -76,7 +76,7 @@
   "backgroundJobs": {
     "runningCount_one": "{{count}} background job running",
     "runningCount_other": "{{count}} background jobs running",
-    "panelTitle": "In progress",
+    "panelTitle": "Background jobs",
     "recentTitle": "Completed",
     "details": "Show output",
     "stop": "Stop background job",
@@ -89,7 +89,11 @@
     "exitCode": "Exit code {{code}}",
     "elapsedSeconds": "{{seconds}}s",
     "elapsedMinutes": "{{minutes}}m {{seconds}}s",
-    "elapsedHours": "{{hours}}h {{minutes}}m {{seconds}}s"
+    "elapsedHours": "{{hours}}h {{minutes}}m {{seconds}}s",
+    "maximize": "Expand to full view",
+    "restore": "Restore size",
+    "collapse": "Collapse",
+    "refreshOutput": "Refresh output"
   },
   "goalBar": {
     "messageSet": "Set as goal",

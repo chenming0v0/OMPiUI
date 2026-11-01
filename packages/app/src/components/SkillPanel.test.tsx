@@ -27,6 +27,13 @@ describe('SkillPanel', () => {
     ])
   })
 
+  it('keeps a native dependency failure visible instead of saying the session must be started', async () => {
+    getSkillsMock.mockRejectedValue(Object.assign(new Error('OMP_SOURCE_MISSING: matching sources unavailable'), { code: 'CAPABILITY_DISABLED' }))
+    render(<SkillPanel sessionId="cold-session" />)
+    expect(await screen.findByText(/OMP_SOURCE_MISSING/)).toBeInTheDocument()
+    expect(screen.queryByText(/Send a message|发送一条消息/)).not.toBeInTheDocument()
+  })
+
   it('expands the discovered skill to show its native path and details', async () => {
     render(<SkillPanel sessionId="session-1" />)
     const itemButton = await screen.findByRole('button', { name: /deploy-to-vercel/i })

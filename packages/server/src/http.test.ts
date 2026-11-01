@@ -386,6 +386,10 @@ describe("http api", () => {
     assert.equal(modelsList?.queue, "immediate")
     assert.equal(modelsList?.idempotent, true)
     assert.ok(registry.json.globalCommands.some((command: any) => command.name === "session.open"))
+    const controls = registry.json.sessionCommands.find((command: any) => command.name === "controls.get")
+    assert.equal(controls?.queue, "immediate")
+    assert.equal(controls?.idempotent, true)
+    assert.ok(registry.json.sessionCommands.some((command: any) => command.name === "session.initialize"))
     const prompt = registry.json.sessionCommands.find((command: any) => command.name === "prompt")
     assert.equal(prompt?.paramsSchema.properties.text.type, "string")
     assert.equal(prompt?.streaming, true)
@@ -406,6 +410,17 @@ describe("http api", () => {
     const opened = await request(port, "POST", "/api/v1/pi/commands/session.open", { body: { cwd: mockHome } })
     assert.equal(opened.status, 200)
     const sessionId = opened.json.data.sessionId as string
+
+    const controlsResponse = await request(port, "POST", `/api/v1/pi/sessions/${sessionId}/commands/controls.get`)
+    assert.equal(controlsResponse.status, 200)
+    assert.equal(controlsResponse.json.data.sessionId, sessionId)
+    const initialized = await request(port, "POST", `/api/v1/pi/sessions/${sessionId}/commands/session.initialize`)
+    assert.equal(initialized.status, 200)
+    assert.equal(initialized.json.data.isStreaming, false)
+    for (const type of ["controls.get", "session.initialize"]) {
+      const invalid = await request(port, "POST", `/api/v1/pi/sessions/${sessionId}/commands/${type}`, { body: { unexpected: true } })
+      assert.equal(invalid.status, 400, type)
+    }
 
     const allSessions = await request(port, "POST", "/api/v1/pi/commands/session.listAll")
     assert.equal(allSessions.status, 200)
@@ -444,7 +459,7 @@ describe("http api", () => {
       assert.equal(globalThroughSession.json.code, "UNKNOWN_COMMAND", type)
     }
 
-    for (const type of ["prompt", "state.get", "branch.get"]) {
+    for (const type of ["prompt", "state.get", "branch.get", "controls.get", "session.initialize"]) {
       const sessionThroughGlobal = await request(port, "POST", `/api/v1/pi/commands/${type}`)
       assert.equal(sessionThroughGlobal.status, 404, type)
       assert.equal(sessionThroughGlobal.json.code, "UNKNOWN_COMMAND", type)

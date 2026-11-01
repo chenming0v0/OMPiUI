@@ -35,7 +35,7 @@ import {
   setPiInterruptMode,
   setPiSteeringMode,
 } from '../omp/controllers/index.js'
-import { getPiEntry, getPiTree, type PiForkResult } from '../omp/transport/index.js'
+import { getPiEntry, getPiTree, getPiSessionControls, initializePiSession, type PiForkResult } from '../omp/transport/index.js'
 import { captureRedoCheckpoints, commitRedoPlan } from '../omp/redoPlanStore'
 import { usePiSessionRuntimeState } from '../omp/hooks/index.js'
 import { selectPiTimelineItems } from '../omp/selectors/index.js'
@@ -120,6 +120,13 @@ export const SessionTreePanel = memo(function SessionTreePanel({
   const [nativeLoadError, setNativeLoadError] = useState<string | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
   const [tools, setTools] = useState<ToolDescriptor[]>([])
+  const [toolStatus, setToolStatus] = useState<{ scope: string; loading: boolean; error: string | null } | null>(null)
+  const [previewControls, setPreviewControls] = useState<{ scope: string; value?: JsonObject; error?: string } | null>(null)
+  const [controlsRevision, setControlsRevision] = useState(0)
+  const diskPreview = state?.diskPreview === true
+  const runtimeLoaded = state != null && !diskPreview
+  const configuredControls = diskPreview && capabilities.sessionControlsRead && previewControls?.scope === interruptScope ? previewControls.value : undefined
+  const controlsError = diskPreview && capabilities.sessionControlsRead && previewControls?.scope === interruptScope ? previewControls.error : undefined
   const headFingerprintRef = useRef<string | undefined>(undefined)
   const nativeRequestRef = useRef(0)
   const {
@@ -139,8 +146,8 @@ export const SessionTreePanel = memo(function SessionTreePanel({
   })
 
   // Runtime state views
-  const compaction = useMemo(() => record(state?.compaction) as CompactionView, [state])
-  const retry = useMemo(() => record(state?.retry) as RetryView, [state])
+  const compaction = useMemo(() => record(configuredControls?.compaction ?? state?.compaction) as CompactionView, [configuredControls, state])
+  const retry = useMemo(() => record(configuredControls?.retry ?? state?.retry) as RetryView, [configuredControls, state])
   const queue = useMemo(() => record(state?.queue) as QueueView, [state])
   const activeTools = useMemo(
     () => (Array.isArray(state?.activeTools) ? state.activeTools.filter((name): name is string => typeof name === 'string') : []),
@@ -201,15 +208,32 @@ export const SessionTreePanel = memo(function SessionTreePanel({
     compactionBusyRef.current = busy
   }, [compactionOperation, loadNativeTree, mode])
 
-  // Tools list for the controls tab (registry.get, immediate)
+  useEffect(() => {
+    if (mode !== 'controls' || !diskPreview || !capabilities.sessionControlsRead) return
+    const controller = new AbortController()
+    setPreviewControls({ scope: interruptScope })
+    void getPiSessionControls(sessionId, controller.signal)
+      .then(value => { if (!controller.signal.aborted) setPreviewControls({ scope: interruptScope, value }) })
+      .catch(cause => { if (!controller.signal.aborted) setPreviewControls({ scope: interruptScope, error: cause instanceof Error ? cause.message : String(cause) }) })
+    return () => controller.abort()
+  }, [capabilities.sessionControlsRead, controlsRevision, diskPreview, interruptScope, mode, sessionId])
+
+  // Only a running runtime can enumerate the complete builtin/extension/MCP tool roster.
   useEffect(() => {
     if (mode !== 'controls') return
-    let cancelled = false
-    void loadPiSessionTools(sessionId)
-      .then(descriptors => { if (!cancelled) setTools(descriptors) })
-      .catch(() => { if (!cancelled) setTools([]) })
-    return () => { cancelled = true }
-  }, [mode, sessionId, state])
+    setTools([])
+    if (!runtimeLoaded) { setToolStatus(null); return }
+    const controller = new AbortController()
+    setToolStatus({ scope: interruptScope, loading: true, error: null })
+    void loadPiSessionTools(sessionId, controller.signal)
+      .then(descriptors => {
+        if (controller.signal.aborted) return
+        setTools(descriptors)
+        setToolStatus({ scope: interruptScope, loading: false, error: null })
+      })
+      .catch(cause => { if (!controller.signal.aborted) setToolStatus({ scope: interruptScope, loading: false, error: cause instanceof Error ? cause.message : String(cause) }) })
+    return () => controller.abort()
+  }, [interruptScope, mode, runtimeLoaded, sessionId, state])
 
   const treeGraph = useMemo(
     () => buildSessionTreeGraph(nativeTree, leafId, type => t(`sessionTree.entryTypes.${type}`)),
@@ -421,6 +445,18 @@ export const SessionTreePanel = memo(function SessionTreePanel({
   const activeToolCount = activeTools.length
   const totalToolCount = tools.length
   const runtimeBusy = compactionOperation !== 'none' || retryPhase === 'waiting' || retryPhase === 'running'
+  const interruptMode = configuredControls?.interruptMode ?? state?.interruptMode
+  const toolsVisible = toolStatus?.scope === interruptScope ? toolStatus : null
+  const toolsKnown = runtimeLoaded && toolsVisible?.loading === false && toolsVisible.error === null
+
+  const initializeRuntime = () => runRuntimeCommand('initialize', async () => {
+    if (!capabilities.sessionInitialize) return
+    const generation = serverGeneration
+    await initializePiSession(sessionId)
+    if (serverStore.getActiveServerGeneration() !== generation) return
+    await refreshPiSessionState(sessionId)
+    if (serverStore.getActiveServerGeneration() === generation) window.dispatchEvent(new CustomEvent('ompiui:registry-updated', { detail: { sessionId } }))
+  })
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-bg-100">
@@ -442,6 +478,18 @@ export const SessionTreePanel = memo(function SessionTreePanel({
             </div>
           ) : null}
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+            {!state ? <p className="mb-4 text-[length:var(--fs-xs)] text-text-400">{t('common:loading')}</p> : null}
+            {diskPreview ? <p className="mb-4 text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('sessionTree.previewControlsHint')}</p> : null}
+            {diskPreview && !capabilities.sessionControlsRead ? <p role="status" className="mb-4 text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('sessionTree.previewControlsUnsupported')}</p> : null}
+            {controlsError ? (
+              <div className="mb-4 space-y-2">
+                <p role="alert" className="break-words text-[length:var(--fs-xs)] text-danger-100">{controlsError}</p>
+                <button type="button" onClick={() => setControlsRevision(value => value + 1)}
+                  className="h-8 rounded-md bg-bg-200 px-3 text-[length:var(--fs-sm)] text-text-200 hover:bg-bg-300">
+                  {t('sessionTree.reloadControls')}
+                </button>
+              </div>
+            ) : null}
       {state && (capabilities.compactionManage || capabilities.retryManage) ? (
         <SettingsSection title={t('sessionTree.runtimeControls')} description={t('sessionTree.runtimeControlsHint')}>
           {capabilities.compactionManage ? (
@@ -451,7 +499,7 @@ export const SessionTreePanel = memo(function SessionTreePanel({
             >
               <Toggle
                 enabled={compaction.autoEnabled === true}
-                disabled={runtimePending !== null}
+                disabled={runtimePending !== null || typeof compaction.autoEnabled !== 'boolean'}
                 onChange={() => void runRuntimeCommand(
                   'auto-compaction',
                   () => setPiAutoCompaction(sessionId, compaction.autoEnabled !== true),
@@ -466,7 +514,7 @@ export const SessionTreePanel = memo(function SessionTreePanel({
             >
               <Toggle
                 enabled={retry.autoEnabled === true}
-                disabled={runtimePending !== null}
+                disabled={runtimePending !== null || typeof retry.autoEnabled !== 'boolean'}
                 onChange={() => void runRuntimeCommand(
                   'auto-retry',
                   () => setPiAutoRetry(sessionId, retry.autoEnabled !== true),
@@ -600,6 +648,7 @@ export const SessionTreePanel = memo(function SessionTreePanel({
             <div className="w-56 max-w-full">
               <SettingsSelect
                 value={queue.steeringMode ?? undefined}
+                placeholder={t(diskPreview ? 'sessionTree.queuePreview' : 'sessionTree.controlUnavailable')}
                 ariaLabel={t('sessionTree.steering')}
                 disabled={runtimePending !== null}
                 options={[
@@ -617,6 +666,7 @@ export const SessionTreePanel = memo(function SessionTreePanel({
             <div className="w-56 max-w-full">
               <SettingsSelect
                 value={queue.followUpMode ?? undefined}
+                placeholder={t(diskPreview ? 'sessionTree.queuePreview' : 'sessionTree.controlUnavailable')}
                 ariaLabel={t('sessionTree.followUp')}
                 disabled={runtimePending !== null}
                 options={[
@@ -638,7 +688,7 @@ export const SessionTreePanel = memo(function SessionTreePanel({
           <SettingField label={t('sessionTree.interruptMode')} description={t('sessionTree.interruptModeDetail')}>
             <div className="w-56 max-w-full">
               <SettingsSelect<'immediate' | 'wait'>
-                value={state.interruptMode === 'immediate' || state.interruptMode === 'wait' ? state.interruptMode : undefined}
+                value={interruptMode === 'immediate' || interruptMode === 'wait' ? interruptMode : undefined}
                 placeholder={t('sessionTree.interruptUnavailable')}
                 ariaLabel={t('sessionTree.interruptMode')}
                 disabled={interruptVisible?.pending === true || runtimePending !== null}
@@ -660,11 +710,22 @@ export const SessionTreePanel = memo(function SessionTreePanel({
           description={t('sessionTree.toolsHint')}
           actions={(
             <span className="text-[length:var(--fs-xs)] text-text-400">
-              {t('sessionTree.activeTools', { active: activeToolCount, total: totalToolCount })}
+              {toolsKnown ? t('sessionTree.activeTools', { active: activeToolCount, total: totalToolCount }) : t('sessionTree.controlUnavailable')}
             </span>
           )}
         >
-          {tools.map(tool => (
+          {diskPreview ? (
+            <div className="space-y-3">
+              <p className="text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('sessionTree.toolsPreviewHint')}</p>
+              {!capabilities.sessionInitialize ? <p className="text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('sessionTree.initializeUnsupported')}</p> : null}
+              <button type="button" disabled={runtimePending !== null || !capabilities.sessionInitialize} onClick={() => void initializeRuntime()}
+                className="h-8 rounded-md bg-bg-200 px-3 text-[length:var(--fs-sm)] text-text-200 hover:bg-bg-300 disabled:opacity-40">
+                {t('sessionTree.initializeRuntime')}
+              </button>
+            </div>
+          ) : toolsVisible?.error ? <p role="alert" className="break-words text-[length:var(--fs-xs)] text-danger-100">{toolsVisible.error}</p>
+            : !toolsKnown ? <p className="text-[length:var(--fs-xs)] text-text-400">{t('common:loading')}</p> : null}
+          {toolsKnown ? tools.map(tool => (
             <SettingRow
               key={tool.name}
               label={tool.name}
@@ -680,7 +741,7 @@ export const SessionTreePanel = memo(function SessionTreePanel({
                 )}
               />
             </SettingRow>
-          ))}
+          )) : null}
         </SettingsSection>
       ) : null}
 

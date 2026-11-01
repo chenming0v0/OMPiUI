@@ -2,6 +2,30 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "controls-get-real-preview",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--import", "tsx", ".slim/start-controls-get-real-preview.mjs"],
+      "port": 5203
+    },
+    {
+      "name": "cold-session-real-preview",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--import", "tsx", ".slim/start-cold-session-preview.mjs"],
+      "port": 5198
+    },
+    {
+      "name": "no-git-commit-real-preview",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--import", "tsx", ".slim/start-no-git-commit-preview.mjs"],
+      "port": 5197
+    },
+    {
+      "name": "ompiui-real-independent",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--import", "tsx", ".slim/start-real-ompiui.mjs"],
+      "port": 5192
+    },
+    {
       "name": "isolated-session-transitions",
       "runtimeExecutable": "node",
       "runtimeArgs": ["--import", "tsx", "scripts/preview-session-transitions.mjs", "--runtime-dir", ".slim/issue-repair-native-runtime"],

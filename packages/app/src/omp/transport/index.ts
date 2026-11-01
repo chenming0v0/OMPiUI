@@ -16,8 +16,6 @@ import type {
   GitFileDiffResponse,
   GitInfoResponse,
   GitStatusResponse,
-  GitCommitPreview,
-  GitCommitResponse,
   GitWorktreeCatalog,
   FileCreateRequest,
   FileListResponse,
@@ -153,13 +151,21 @@ export async function fetchPairInvite(id: string, signal?: AbortSignal): Promise
 }
 
 /** 无鉴权：手机扫码后兑换访问令牌（服务端一次性 + 频控）。 */
-export async function redeemPairCode(pair: string, origin: string, signal?: AbortSignal): Promise<PairRedeemResult> {
+export function redeemPairCode(pair: string, origin: string, signal?: AbortSignal): Promise<PairRedeemResult> {
+  return redeemPairing({ pair }, origin, signal)
+}
+
+export function redeemDisplayCode(code: string, origin: string, signal?: AbortSignal): Promise<PairRedeemResult> {
+  return redeemPairing({ code }, origin, signal)
+}
+
+async function redeemPairing(input: { pair: string } | { code: string }, origin: string, signal?: AbortSignal): Promise<PairRedeemResult> {
   const f = await getHttpFetch()
   const url = await resolveAndroidTailscaleUrl(`${origin}/api/v1/host/pair/redeem`)
   const init: RequestInit = {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ pair }),
+    body: JSON.stringify(input),
     signal,
   }
   const response = await auditHttpRequest(`${origin}/api/v1/host/pair/redeem`, init, () => f(url, init))
@@ -232,10 +238,12 @@ export async function postPiGlobalCommand<
   return (response.data !== undefined ? response.data : response.command) as T extends undefined ? null : T
 }
 
-export async function postPiSessionCommand<T = JsonValue | undefined, K extends PiCommandName = PiCommandName>(
+type ServerSessionCommandName = 'controls.get' | 'session.initialize'
+
+export async function postPiSessionCommand<T = JsonValue | undefined, K extends PiCommandName | ServerSessionCommandName = PiCommandName | ServerSessionCommandName>(
   sessionId: string,
   name: K,
-  params?: PiParamsFor<K>,
+  params?: K extends PiCommandName ? PiParamsFor<K> : Record<string, never>,
   signal?: AbortSignal,
   timeoutMs?: number,
 ): Promise<T extends undefined ? null : T> {
@@ -372,26 +380,6 @@ export function getHostGitFileDiff(
   signal?: AbortSignal,
 ): Promise<GitFileDiffResponse> {
   return postHostCommand('git.fileDiff', { workspacePath, path, mode }, signal)
-}
-
-export function stageHostGitFiles(workspacePath: string, paths: string[]): Promise<{ ok: true }> {
-  return postHostCommand('git.stage', { workspacePath, paths })
-}
-
-export function unstageHostGitFiles(workspacePath: string, paths: string[]): Promise<{ ok: true }> {
-  return postHostCommand('git.unstage', { workspacePath, paths })
-}
-
-export function changeHostGitHunk(workspacePath: string, path: string, staged: boolean, hunk: number, expectedPatch: string): Promise<{ ok: true }> {
-  return postHostCommand('git.hunk', { workspacePath, path, staged, hunk, expectedPatch })
-}
-
-export function previewHostGitCommit(workspacePath: string): Promise<GitCommitPreview> {
-  return postHostCommand('git.commitPreview', { workspacePath })
-}
-
-export function commitHostGit(workspacePath: string, message: string, fingerprint: string): Promise<GitCommitResponse> {
-  return postHostCommand('git.commit', { workspacePath, message, fingerprint })
 }
 
 // Host file commands (files.*), workspace-scoped
@@ -831,6 +819,14 @@ export function getPiSessionRegistry(sessionId: string, signal?: AbortSignal): P
 
 export function getPiSkills(sessionId: string, signal?: AbortSignal): Promise<Skill[]> {
   return postPiSessionCommand(sessionId, 'skills.list', undefined, signal)
+}
+
+export function getPiSessionControls(sessionId: string, signal?: AbortSignal): Promise<JsonObject> {
+  return postPiSessionCommand(sessionId, 'controls.get', undefined, signal)
+}
+
+export function initializePiSession(sessionId: string, signal?: AbortSignal): Promise<JsonObject> {
+  return postPiSessionCommand(sessionId, 'session.initialize', undefined, signal)
 }
 
 export function getPiAsyncJobs(sessionId: string, signal?: AbortSignal): Promise<JsonValue> {

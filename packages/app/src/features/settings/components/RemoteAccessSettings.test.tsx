@@ -98,6 +98,8 @@ describe('remote Tailscale sign-in', () => {
     expect(within(screen.getByTestId('remote-network-setup')).queryByTestId('qr')).not.toBeInTheDocument()
     expect(screen.getAllByTestId('qr')).toHaveLength(1)
     expect(screen.getByRole('button', { name: 'Copy full pairing info' })).toBeEnabled()
+    expect(within(screen.getByTestId('remote-device-pairing')).getByText('Server address: http://100.101.2.3:9292')).toBeInTheDocument()
+    expect(within(screen.getByTestId('remote-device-pairing')).getByText('Pairing code: 1234 5678')).toBeInTheDocument()
   })
 
   it('opens a URL-bearing POST without waiting for another GET', async () => {
@@ -360,6 +362,7 @@ describe('RemoteAccessSettings authoritative addresses', () => {
   it('uses the backend non-default port even when local desktop settings differ', async () => {
     render(<RemoteAccessSettings />)
     expect(await screen.findByTestId('qr')).toHaveAttribute('data-url', 'http://192.168.50.10:9191/?pair=first.secret')
+    expect(screen.getByText('Server address: http://192.168.50.10:9191')).toBeInTheDocument()
     expect(screen.getByLabelText('Listen port')).toHaveTextContent('9191')
     expect(screen.getByLabelText('Listen port').tagName).not.toBe('INPUT')
     expect(screen.queryByText(/change it in Network listening below/)).not.toBeInTheDocument()

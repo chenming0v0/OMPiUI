@@ -11,6 +11,8 @@ import {
   mintPairInvite,
   promptPi,
   readHostFile,
+  redeemDisplayCode,
+  redeemPairCode,
   sendPiUserMessage,
   setPiExtensionEditorState,
   writeHostFile,
@@ -23,6 +25,35 @@ vi.mock('../../utils/tauri', () => ({
   isTauri: () => false,
   getHttpFetch: () => Promise.resolve(nativeFetchMock),
 }))
+
+describe('pairing redemption', () => {
+  beforeEach(() => nativeFetchMock.mockReset())
+  afterEach(() => { vi.restoreAllMocks(); nativeFetchMock.mockReset() })
+
+  it.each([
+    ['display code', () => redeemDisplayCode('00123456', 'https://relay.test/backend'), { code: '00123456' }],
+    ['QR credential', () => redeemPairCode('once.secret', 'https://relay.test/backend'), { pair: 'once.secret' }],
+  ] as const)('posts the %s to the chosen server without bearer authentication', async (_name, send, body) => {
+    vi.spyOn(serverStore, 'getActiveToken').mockReturnValue('unrelated-server-token')
+    const result = { url: 'https://relay.test/backend', token: 'paired-token' }
+    nativeFetchMock.mockResolvedValueOnce(Response.json(result))
+    await expect(send()).resolves.toEqual(result)
+    expect(nativeFetchMock).toHaveBeenCalledOnce()
+    const [url, init] = nativeFetchMock.mock.calls[0]
+    expect(url).toBe('https://relay.test/backend/api/v1/host/pair/redeem')
+    expect(init.method).toBe('POST')
+    expect(init.headers).toEqual({ 'content-type': 'application/json' })
+    expect(JSON.parse(init.body)).toEqual(body)
+  })
+
+  it('preserves the abort signal and does not retry rejected display codes', async () => {
+    const signal = new AbortController().signal
+    nativeFetchMock.mockResolvedValueOnce(new Response('invalid or expired code', { status: 400 }))
+    await expect(redeemDisplayCode('50328191', 'http://remote.test', signal)).rejects.toThrow('pair redeem failed: 400 invalid or expired code')
+    expect(nativeFetchMock.mock.calls[0][1].signal).toBe(signal)
+    expect(nativeFetchMock).toHaveBeenCalledOnce()
+  })
+})
 
 describe('getHostTerminalWebSocketUrl', () => {
   afterEach(() => {

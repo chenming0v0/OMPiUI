@@ -4,7 +4,21 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { resolveOmpCommand } from "./omp-command.js"
+import { resolveInstalledOmpRuntime } from "./omp-runtime.js"
 import { OmpRpcClient } from "./rpc-client.js"
+
+/**
+ * 已安装的 OMP runtime（repo 根的 omp-runtime/）在解析时永远优先于 PATH shim。
+ * 准备过 runtime 的开发机上无法到达「裸名走 PATH/npm shim」的解析路径，
+ * 这组用例只在没有安装 runtime 的环境（CI）运行；runtime 存在或损坏都视为接管。
+ */
+function installedRuntimeTakesPrecedence(): boolean {
+  try {
+    return resolveInstalledOmpRuntime({}) !== undefined
+  } catch {
+    return true
+  }
+}
 
 /**
  * Windows 临时目录可能带 8.3 短名（CI 的 TEMP 是 RUNNER~1），而 where.exe 返回规范长路径。
@@ -26,7 +40,7 @@ function canonicalInvocation(invocation: { command: string; args: string[] }): {
 
 for (const entry of ["script", "environment-script", "npm-shim", "path-shim", "runtime-shim"] as const) {
   test(`RPC launches through ${entry} without shell interpretation`, {
-    skip: process.platform !== "win32",
+    skip: process.platform !== "win32" || installedRuntimeTakesPrecedence(),
     timeout: 15_000,
   }, async t => {
     const root = mkdtempSync(path.join(tmpdir(), "ompiui rpc space-"))

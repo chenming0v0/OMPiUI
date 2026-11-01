@@ -25,6 +25,18 @@ test("execute rejects malformed params at the edge before reaching handlers", as
   )
 })
 
+test("Git change viewing remains registered without staging or commit commands", async () => {
+  const runtime = new HostRuntime({} as never)
+  const commands = new Set(runtime.registry().commands.map(command => command.name))
+  for (const name of ["git.info", "git.status", "git.diff", "git.fileDiff", "git.worktrees"]) {
+    assert.ok(commands.has(name), `${name} must remain available`)
+  }
+  for (const name of ["git.stage", "git.unstage", "git.hunk", "git.commitPreview", "git.commit"]) {
+    assert.ok(!commands.has(name), `${name} must not be advertised`)
+    await assert.rejects(runtime.execute(name, {}), { code: "UNKNOWN_COMMAND" })
+  }
+})
+
 test("implicit workspace uses the user home rather than executable or launch directory", async () => {
   const directory = mkdtempSync(path.join(tmpdir(), "ompiui-workspace-default-"))
   const previous = process.cwd()

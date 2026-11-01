@@ -20,6 +20,7 @@ export * from "./tool-interaction.js"
 export * from "./goal-message.js"
 export * from "./image-budget.js"
 export * from "./utf8.js"
+export * from "./device-discovery.js"
 
 export type HealthResponse = {
   ok: true

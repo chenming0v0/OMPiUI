@@ -307,7 +307,9 @@ export function PiChatPane({
   // 只有服务端明确返回找不到会话时才显示“不存在”；网络、鉴权和服务端
   // 启动中的临时错误不能被误报成已删除。
   const sessionUnavailable = Boolean(sessionId && branchError && isSessionNotFoundError(branchError))
-  const sessionAccessDenied = Boolean(branchError && 'status' in branchError && (branchError.status === 401 || branchError.status === 403))
+  // plugin-http 的传输失败以字符串 reject，不能直接对它用 `in`。
+  const branchErrorStatus = typeof branchError === 'object' && branchError !== null && 'status' in branchError ? branchError.status : undefined
+  const sessionAccessDenied = branchErrorStatus === 401 || branchErrorStatus === 403
   const sessionLoadError = Boolean(sessionId && branchError && (!branch || sessionAccessDenied) && !sessionUnavailable)
   const sessionBusy = Boolean(sessionId && !branch && branchError && isSessionBusyError(branchError))
   useEffect(() => {

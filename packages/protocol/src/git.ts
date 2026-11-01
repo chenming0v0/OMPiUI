@@ -63,13 +63,6 @@ export type GitFileDiffResponse = GitDiffItem & {
   truncated: boolean;
 };
 
-export type GitCommitPreview = {
-  fingerprint: string;
-  headOid: string | null;
-  files: string[];
-};
-
-export type GitCommitResponse = { headOid: string; output: string };
 export type GitWorktree = {
   path: string;
   head: string | null;

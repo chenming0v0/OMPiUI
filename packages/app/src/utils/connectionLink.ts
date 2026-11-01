@@ -27,6 +27,24 @@ export function parseConnectionLink(input: string): ConnectionLink | null {
   return null
 }
 
+export function parseDisplayCode(input: string): string | null {
+  if (!/^[\d\s-]+$/.test(input.trim())) return null
+  const code = input.replace(/[\s-]/g, '')
+  return /^\d{8}$/.test(code) ? code : null
+}
+
+export function parsePairingServerAddress(input: string): string | null {
+  const value = input.trim()
+  if (!/^https?:\/\//i.test(value) || /[?#]/.test(value)) return null
+  try {
+    const url = new URL(value)
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) return null
+    return `${url.origin}${url.pathname.replace(/\/+$/, '')}`
+  } catch {
+    return null
+  }
+}
+
 export async function resolveConnectionLink(link: ConnectionLink): Promise<{ url: string; token?: string }> {
   if (link.pair) return redeemPairCode(link.pair, link.url, AbortSignal.timeout(15_000))
   return { url: link.url, token: link.token }

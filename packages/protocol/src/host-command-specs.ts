@@ -13,7 +13,6 @@ import {
   STRING,
   objectSchema,
   byteString,
-  STRING_ARRAY,
 } from "./json-schema.js";
 
 /**
@@ -350,30 +349,6 @@ export const HOST_COMMAND_SPECS = [
     idempotent: true,
   },
   {
-    name: "git.stage", domain: "git", description: "Stage only explicitly selected changed files",
-    paramsSchema: objectSchema({ ...WORKSPACE_PATH, paths: STRING_ARRAY }, ["workspacePath", "paths"]),
-    mutatesWorkspace: true,
-  },
-  {
-    name: "git.unstage", domain: "git", description: "Unstage only explicitly selected files without changing working files",
-    paramsSchema: objectSchema({ ...WORKSPACE_PATH, paths: STRING_ARRAY }, ["workspacePath", "paths"]),
-    mutatesWorkspace: true,
-  },
-  {
-    name: "git.hunk", domain: "git", description: "Stage or unstage one selected hunk from the displayed patch",
-    paramsSchema: objectSchema({ ...WORKSPACE_PATH, ...RELATIVE_PATH, staged: BOOLEAN, hunk: { type: "integer", minimum: 0 }, expectedPatch: byteString(4 * 1024 * 1024) }, ["workspacePath", "path", "staged", "hunk", "expectedPatch"]),
-    mutatesWorkspace: true,
-  },
-  {
-    name: "git.commitPreview", domain: "git", description: "Read the exact current staged commit scope",
-    paramsSchema: objectSchema(WORKSPACE_PATH, ["workspacePath"]), idempotent: true,
-  },
-  {
-    name: "git.commit", domain: "git", description: "Commit the explicitly confirmed unchanged index; run repository hooks",
-    paramsSchema: objectSchema({ ...WORKSPACE_PATH, message: byteString(64 * 1024), fingerprint: STRING }, ["workspacePath", "message", "fingerprint"]),
-    mutatesWorkspace: true,
-  },
-  {
     name: "git.worktrees",
     domain: "git",
     description: "List real Git worktrees without starting an Agent",
@@ -515,11 +490,6 @@ export type HostCommandParams = {
   "git.status": { workspacePath: string };
   "git.diff": { workspacePath: string; mode?: GitDiffMode };
   "git.fileDiff": { workspacePath: string; path: string; mode?: GitDiffMode };
-  "git.stage": { workspacePath: string; paths: string[] };
-  "git.unstage": { workspacePath: string; paths: string[] };
-  "git.hunk": { workspacePath: string; path: string; staged: boolean; hunk: number; expectedPatch: string };
-  "git.commitPreview": { workspacePath: string };
-  "git.commit": { workspacePath: string; message: string; fingerprint: string };
   "git.worktrees": { workspacePath: string };
   "git.worktreeCreate": { workspacePath: string; path: string; branch: string };
   "git.worktreeRemove": { workspacePath: string; path: string };

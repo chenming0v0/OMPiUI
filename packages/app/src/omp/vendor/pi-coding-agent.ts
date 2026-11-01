@@ -315,6 +315,11 @@ export type AgentSessionEvent =
       name: string | undefined
     }
   | {
+      type: 'session_info_update'
+      title?: string
+      sessionId: string
+    }
+  | {
       type: 'model_changed'
     }
   | {

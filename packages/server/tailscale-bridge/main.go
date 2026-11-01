@@ -13,21 +13,26 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/chenming0v0/ompiui-tailscale-bridge/internal/discovery"
 	"github.com/chenming0v0/ompiui-tailscale-bridge/internal/gateway"
 	"tailscale.com/tsnet"
 )
 
 type config struct {
-	stateDir    string
-	hostname    string
-	controlAddr string
-	listenAddr  string
-	upstream    string
+	stateDir          string
+	hostname          string
+	controlAddr       string
+	listenAddr        string
+	upstream          string
+	discoveryName     string
+	discoveryID       string
+	discoveryDisabled bool
 }
 
 type readyMessage struct {
@@ -42,6 +47,9 @@ func main() {
 	flag.StringVar(&cfg.controlAddr, "control-listen", "127.0.0.1:0", "local control HTTP address")
 	flag.StringVar(&cfg.listenAddr, "listen", "", "tailnet listener address, for example :8787")
 	flag.StringVar(&cfg.upstream, "upstream", "", "local OMPiUI HTTP origin to reverse proxy")
+	flag.StringVar(&cfg.discoveryName, "discovery-name", "", "discovery display name (defaults to hostname)")
+	flag.StringVar(&cfg.discoveryID, "discovery-id", "", "discovery instance ID (defaults to random lowercase hex)")
+	flag.BoolVar(&cfg.discoveryDisabled, "discovery-disabled", false, "disable Tailnet discovery advertisement")
 	flag.Parse()
 
 	if cfg.stateDir == "" {
@@ -63,6 +71,7 @@ func main() {
 	}
 
 	var proxyListener net.Listener
+	var discoveryServer *http.Server
 	if cfg.listenAddr != "" {
 		if cfg.upstream == "" {
 			log.Fatal("--upstream is required when --listen is set")
@@ -76,7 +85,12 @@ func main() {
 			log.Fatalf("tailnet listen: %v", err)
 		}
 		proxy := gateway.Proxy(target, (&net.Dialer{}).DialContext, true, os.Getenv("OMPIUI_BRIDGE_FORWARDING_TOKEN"))
-		proxyServer := proxyHTTPServer(proxy)
+		var handler http.Handler = proxy
+		handler, discoveryServer, err = configureDiscovery(cfg, proxyListener, proxy, ts.Listen)
+		if err != nil {
+			log.Printf("tailnet discovery unavailable: %v", err)
+		}
+		proxyServer := proxyHTTPServer(handler)
 		go func() {
 			if err := proxyServer.Serve(gateway.WithIdleTimeout(proxyListener, gateway.IdleTimeout)); err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
 				log.Printf("tailnet proxy stopped: %v", err)
@@ -128,10 +142,63 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_ = controlServer.Shutdown(ctx)
+	if discoveryServer != nil {
+		_ = discoveryServer.Close()
+	}
 	if proxyListener != nil {
 		_ = proxyListener.Close()
 	}
 	_ = ts.Close()
+}
+
+// listen is the tsnet listener factory, never a host-network listener.
+func configureDiscovery(cfg config, app net.Listener, proxy http.Handler, listen func(string, string) (net.Listener, error)) (http.Handler, *http.Server, error) {
+	if cfg.discoveryDisabled || cfg.listenAddr == "" || cfg.upstream == "" {
+		return proxy, nil, nil
+	}
+	_, portText, err := net.SplitHostPort(app.Addr().String())
+	if err != nil {
+		_, portText, err = net.SplitHostPort(cfg.listenAddr)
+	}
+	if err != nil {
+		return proxy, nil, fmt.Errorf("application port: %w", err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		return proxy, nil, fmt.Errorf("application port: %w", err)
+	}
+	name := cfg.discoveryName
+	if name == "" {
+		name = cfg.hostname
+	}
+	advertisement, err := discovery.New(name, cfg.discoveryID, port)
+	if err != nil {
+		return proxy, nil, err
+	}
+	handler, err := discovery.Handler(advertisement)
+	if err != nil {
+		return proxy, nil, err
+	}
+	if port == discovery.Port {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == discovery.Path {
+				handler.ServeHTTP(w, r)
+			} else {
+				proxy.ServeHTTP(w, r)
+			}
+		}), nil, nil
+	}
+	listener, err := listen("tcp", ":"+strconv.Itoa(discovery.Port))
+	if err != nil {
+		return proxy, nil, err
+	}
+	server := discovery.Server(handler)
+	go func() {
+		if err := server.Serve(discovery.LimitListener(listener)); err != nil && err != http.ErrServerClosed {
+			log.Printf("tailnet discovery stopped: %v", err)
+		}
+	}()
+	return proxy, server, nil
 }
 
 func proxyHTTPServer(handler http.Handler) *http.Server {

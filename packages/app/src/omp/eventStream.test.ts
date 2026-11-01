@@ -588,6 +588,26 @@ describe('session configuration and stop synchronization', () => {
     expect(controllers.refreshPiSessionState).toHaveBeenCalledWith('session-stop')
   })
 
+  it.each(['session_info_update', 'session_info_changed'])('refreshes the title and sidebar on %s without accepting an older state read', async type => {
+    vi.mocked(controllers.refreshPiSessionState).mockImplementation(readNativeSessionState)
+    vi.spyOn(transport, 'getPiSessionState').mockResolvedValueOnce({ sessionName: '修复会话自动命名', isStreaming: false })
+    const changed = vi.fn()
+    window.addEventListener('ompiui:sessions-changed', changed)
+    try {
+      piSessionStateStore.patchState('session-stop', { sessionName: '第一条用户消息' })
+      const old = piSessionStateStore.beginRequest('session-stop')
+      event(type === 'session_info_update' ? { type, sessionId: 'session-stop', title: '修复会话自动命名' } : { type, name: '修复会话自动命名' })
+      expect(piSessionStateStore.isRequestCurrent('session-stop', old)).toBe(false)
+      expect(changed).toHaveBeenCalledOnce()
+      await vi.advanceTimersByTimeAsync(200)
+      expect(transport.getPiSessionState).toHaveBeenCalledWith('session-stop', undefined)
+      expect(piSessionStateStore.getState('session-stop')?.sessionName).toBe('修复会话自动命名')
+      expect(piSessionStateStore.getState('another-session')).toBeNull()
+    } finally {
+      window.removeEventListener('ompiui:sessions-changed', changed)
+    }
+  })
+
   it('applies config_update from native slash commands to the correct session immediately', () => {
     event({ type: 'config_update', model: { provider: 'custom', id: 'correct' }, thinkingLevel: 'xhigh' })
     expect(piSessionStateStore.getState('session-stop')).toMatchObject({

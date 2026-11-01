@@ -762,6 +762,8 @@ export const PI_COMMAND_SPECS = [
             "entries.get",
             "entry.get",
             "tree.get",
+            "skills.list",
+            "controls.get",
             "attachment.get",
             "subagent.messages",
           ],
@@ -1167,6 +1169,8 @@ export type PiCommandParams = CoreCommandParams & {
       | "entries.get"
       | "entry.get"
       | "tree.get"
+      | "skills.list"
+      | "controls.get"
       | "attachment.get"
       | "subagent.messages";
     params?: JsonObject;

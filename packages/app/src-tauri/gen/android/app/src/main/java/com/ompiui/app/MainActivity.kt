@@ -24,6 +24,7 @@ class MainActivity : TauriActivity() {
   private var themeSyncRunnable: Runnable? = null
   private var cachedWebView: WebView? = null
   private var tailscaleBridge: TailscaleBridge? = null
+  private var deviceDiscoveryBridge: DeviceDiscoveryBridge? = null
   private val qrScannerBridge = QrScannerBridge(this) { cachedWebView }
 
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -92,10 +93,14 @@ class MainActivity : TauriActivity() {
 
   override fun onPause() {
     stopThemeSync()
+    deviceDiscoveryBridge?.cancelDiscoveries()
+    tailscaleBridge?.cancelDiscoveries()
     super.onPause()
   }
 
   override fun onDestroy() {
+    deviceDiscoveryBridge?.dispose()
+    deviceDiscoveryBridge = null
     tailscaleBridge?.dispose()
     tailscaleBridge = null
     super.onDestroy()
@@ -301,6 +306,11 @@ class MainActivity : TauriActivity() {
     try {
       webView.addJavascriptInterface(SystemBarBridge(), "__ompiui_android")
       webView.addJavascriptInterface(qrScannerBridge, "__ompiui_qr_scanner")
+      if (deviceDiscoveryBridge == null) {
+        val bridge = DeviceDiscoveryBridge(applicationContext, webView)
+        webView.addJavascriptInterface(bridge, "__ompiui_device_discovery")
+        deviceDiscoveryBridge = bridge
+      }
       if (tailscaleBridge == null) {
         val bridge = TailscaleBridge(applicationContext, webView)
         tailscaleBridge = bridge

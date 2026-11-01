@@ -1040,7 +1040,7 @@ export function SidePanel({
           />
         </button>
         {!selectedSessionId && currentDirectory && showLabels && (
-          <WorktreeManager directory={currentDirectory} />
+          <WorktreeManager directory={currentDirectory} variant="sidebar" />
         )}
 
         {/* Projects Dropdown */}

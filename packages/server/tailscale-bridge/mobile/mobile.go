@@ -13,7 +13,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chenming0v0/ompiui-tailscale-bridge/internal/discovery"
 	"github.com/chenming0v0/ompiui-tailscale-bridge/internal/gateway"
+	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tsnet"
 )
 
@@ -25,6 +27,66 @@ type route struct {
 var lock sync.Mutex
 var node *tsnet.Server
 var routes = map[string]route{}
+var discoveryRequests discovery.Requests
+
+// Discover probes existing Tailnet peers without starting a node or logging in.
+func Discover(requestID string) (result string, err error) {
+	defer recoverNativeError("discover", &err)
+	lock.Lock()
+	s := node
+	if s == nil {
+		lock.Unlock()
+		return "", fmt.Errorf("Tailscale discovery unavailable: node is stopped; start and sign in first")
+	}
+	// Register while holding the node lock so Stop cannot miss this request.
+	ctx, finish, err := discoveryRequests.Begin(requestID)
+	lock.Unlock()
+	if err != nil {
+		return "", err
+	}
+	defer finish()
+	results, err := discovery.Discover(ctx, func(ctx context.Context) (discovery.Status, error) {
+		client, err := s.LocalClient()
+		if err != nil {
+			return discovery.Status{}, err
+		}
+		status, err := client.Status(ctx)
+		if err != nil {
+			return discovery.Status{}, err
+		}
+		return discoveryStatus(status), nil
+	}, s.Dial)
+	if err != nil {
+		return "", err
+	}
+	data, err := json.Marshal(results)
+	return string(data), err
+}
+
+// CancelDiscovery affects only the matching active discovery request.
+func CancelDiscovery(requestID string) {
+	discoveryRequests.Cancel(requestID)
+}
+
+func discoveryStatus(status *ipnstate.Status) discovery.Status {
+	if status == nil {
+		return discovery.Status{}
+	}
+	result := discovery.Status{BackendState: status.BackendState, SelfIPs: append([]netip.Addr(nil), status.TailscaleIPs...)}
+	if status.Self != nil {
+		result.SelfIPs = append(result.SelfIPs, status.Self.TailscaleIPs...)
+	}
+	for _, peer := range status.Peer {
+		if peer == nil {
+			continue
+		}
+		if status.Self != nil && (peer == status.Self || status.Self.ID != "" && peer.ID == status.Self.ID) {
+			continue
+		}
+		result.Peers = append(result.Peers, discovery.Peer{IPs: append([]netip.Addr(nil), peer.TailscaleIPs...), Online: peer.Online})
+	}
+	return result
+}
 
 // Start 在应用私有目录中恢复节点，不创建 Android VpnService。
 func Start(stateDir, hostname string) (err error) {
@@ -125,6 +187,7 @@ func OpenRoute(origin string) (string, error) {
 func Stop() error {
 	lock.Lock()
 	defer lock.Unlock()
+	discoveryRequests.CancelAll()
 	for _, r := range routes {
 		r.server.Close()
 	}
