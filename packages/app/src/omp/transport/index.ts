@@ -153,13 +153,21 @@ export async function fetchPairInvite(id: string, signal?: AbortSignal): Promise
 }
 
 /** 无鉴权：手机扫码后兑换访问令牌（服务端一次性 + 频控）。 */
-export async function redeemPairCode(pair: string, origin: string, signal?: AbortSignal): Promise<PairRedeemResult> {
+export function redeemPairCode(pair: string, origin: string, signal?: AbortSignal): Promise<PairRedeemResult> {
+  return redeemPairing({ pair }, origin, signal)
+}
+
+export function redeemDisplayCode(code: string, origin: string, signal?: AbortSignal): Promise<PairRedeemResult> {
+  return redeemPairing({ code }, origin, signal)
+}
+
+async function redeemPairing(input: { pair: string } | { code: string }, origin: string, signal?: AbortSignal): Promise<PairRedeemResult> {
   const f = await getHttpFetch()
   const url = await resolveAndroidTailscaleUrl(`${origin}/api/v1/host/pair/redeem`)
   const init: RequestInit = {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ pair }),
+    body: JSON.stringify(input),
     signal,
   }
   const response = await auditHttpRequest(`${origin}/api/v1/host/pair/redeem`, init, () => f(url, init))
