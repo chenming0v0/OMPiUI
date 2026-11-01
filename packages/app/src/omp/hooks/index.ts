@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react'
+import { useEffect, useSyncExternalStore } from 'react'
 import { goalMessagePreview } from '@ompiui/protocol'
 import { useMemo } from 'react'
 import { piSessionInfoStore, piBranchStore, piSessionStateStore, piModelsStore } from '../state/index.js'
@@ -125,6 +125,17 @@ export function usePiModels() {
     () => 'unknown' as const,
   )
   return { models, isLoading, isSynced, syncStatus }
+}
+
+export function usePiSessionDocumentTitle(title: string | null, isFocused = true): void {
+  useEffect(() => {
+    if (!isFocused) return
+    const documentTitle = title ? `${title} - OMPiUI` : 'OMPiUI'
+    document.title = documentTitle
+    return () => {
+      if (document.title === documentTitle) document.title = 'OMPiUI'
+    }
+  }, [title, isFocused])
 }
 
 /**

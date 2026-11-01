@@ -101,6 +101,9 @@ export class OmpRpcClient extends EventEmitter {
     super()
     this.setMaxListeners(100)
     const env = ompCommandEnvironment(options.env)
+    if (options.applyRuntimePolicy) {
+      env.OMPIUI_AUTO_TITLE_ENABLED = env.PI_NO_TITLE || options.args?.includes("--no-title") ? "0" : "1"
+    }
     if (options.applyRuntimePolicy && !options.args?.includes("--no-ui")) {
       this.toolInteractionChannel = new ToolInteractionChannel()
       Object.assign(env, this.toolInteractionChannel.environment())

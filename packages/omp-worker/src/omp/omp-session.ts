@@ -53,6 +53,7 @@ import { projectPreviewMessage } from "./subagent-preview.js";
 import { requireResourceList, registryFromResources } from './resource-registry.js';
 import { requestNativePromptAcceptance } from './native-rpc-prompt.js';
 import { SUBAGENT_OBSERVATION_PREFIX } from './native-subagent-observation.js';
+import { SESSION_TITLE_PREFIX } from './native-session-title.js';
 
 /**
  * OmpRpcSession —— SessionRuntime 契约的 OMP 实现。
@@ -146,6 +147,7 @@ export class OmpRpcSession implements SessionRuntime {
   private sessionFile: string | undefined;
   private cwd = "";
   private sessionName: string | null = null;
+  private sessionNameGeneration = 0;
   private closed = false;
   private protocolErrorWindowStart = 0;
   private protocolErrorCount = 0;
@@ -601,6 +603,15 @@ export class OmpRpcSession implements SessionRuntime {
         return;
       }
       case "extension_ui_request": {
+        if (frame.method === "notify" && typeof frame.message === "string" && frame.message.startsWith(SESSION_TITLE_PREFIX)) {
+          try {
+            const update: unknown = JSON.parse(frame.message.slice(SESSION_TITLE_PREFIX.length));
+            if (isJsonObject(update) && update.type === "session_info_update" && update.sessionId === this.sessionId) {
+              this.handleFrame(update as OmpRpcFrame);
+            }
+          } catch { /* Malformed private title updates are not user notifications. */ }
+          return;
+        }
         if (frame.method === "notify" && typeof frame.message === "string" && frame.message.startsWith(SUBAGENT_OBSERVATION_PREFIX)) {
           try {
             const observation: unknown = JSON.parse(frame.message.slice(SUBAGENT_OBSERVATION_PREFIX.length));
@@ -617,9 +628,17 @@ export class OmpRpcSession implements SessionRuntime {
         for (const listener of this.extensionDiagnosticListeners) listener(frame);
         return;
       }
+      case "session_info_update": {
+        if (typeof frame.sessionId === "string" && frame.sessionId !== this.sessionId) return;
+        if (typeof frame.title === "string") {
+          this.sessionName = frame.title;
+          this.sessionNameGeneration += 1;
+        }
+        this.emitPiEvent(frame);
+        return;
+      }
       case "available_commands_update":
       case "command_output":
-      case "session_info_update":
       case "config_update":
       case "advisor_cost_changed":
       case "host_tool_call":
@@ -1128,6 +1147,7 @@ export class OmpRpcSession implements SessionRuntime {
     const historyGeneration = this.historyGeneration;
     const modelsGeneration = this.modelsGeneration;
     const activityGeneration = this.activityGeneration;
+    const sessionNameGeneration = this.sessionNameGeneration;
     const [native] = await Promise.all([
       this.fetchState(),
       this.ensureSynced(),
@@ -1135,7 +1155,10 @@ export class OmpRpcSession implements SessionRuntime {
     ]);
     this.assertEventEpoch(epoch);
     if (epoch !== this.eventEpoch || historyGeneration !== this.historyGeneration || modelsGeneration !== this.modelsGeneration || activityGeneration !== this.activityGeneration) return this.buildState();
-    this.sessionName = typeof native.sessionName === "string" ? native.sessionName : null;
+    // A title event may arrive while get_state still holds the previous name.
+    if (sessionNameGeneration === this.sessionNameGeneration) {
+      this.sessionName = typeof native.sessionName === "string" ? native.sessionName : null;
+    }
     this.currentStreaming = Boolean(native.isStreaming);
     this.nativeSettled = native.isSettled === true ||
       (native.isSettled === undefined && native.isStreaming === false &&
@@ -1881,6 +1904,7 @@ export class OmpRpcSession implements SessionRuntime {
   async setSessionName(name: string): Promise<void> {
     unwrapResponse(await this.client.request({ type: "set_session_name", name }, 30_000));
     this.sessionName = name;
+    this.sessionNameGeneration += 1;
     this.nativeFingerprint = "";
     this.emitHeadIfChanged();
   }

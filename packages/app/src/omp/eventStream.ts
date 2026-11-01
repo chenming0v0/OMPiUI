@@ -1261,11 +1261,15 @@ class PiEventStream {
       case 'model_changed':
       case 'thinking_level_changed':
       case 'session_info_changed':
+      case 'session_info_update':
       case 'queue_update':
       case 'compaction_start':
       case 'compaction_end':
         piSessionStateStore.beginRequest(sessionId)
         this.scheduleStateRefresh(sessionId)
+        if (event.type === 'session_info_update' || event.type === 'session_info_changed') {
+          window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
+        }
         // 压缩结束会改写会话（插入 compaction 摘要条目）：强制刷新分支，
         // 让"上下文已压缩"分隔线出现在聊天流里，而不是等不可靠的
         // entry_appended 事件。

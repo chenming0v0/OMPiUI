@@ -7,6 +7,7 @@ import { NATIVE_PROMPT_ADMISSION_IMPORT, NATIVE_PROMPT_ADMISSION_SOURCE } from '
 import { NATIVE_WORKTREE_IMPORTS, NATIVE_WORKTREE_SOURCE } from './native-worktree.js'
 import { nativeToolInteractionImports, nativeToolInteractionSource } from './native-tool-interaction.js'
 import { nativeSubagentObservationPrelude, nativeSubagentObservationSource } from './native-subagent-observation.js'
+import { nativeSessionTitleImports, nativeSessionTitleSource } from './native-session-title.js'
 
 export type RuntimeBridgeOperation = "capabilities" | "identity" | "queue" | "clearQueue" | "removeQueuedMessage" | "sendQueuedMessage" | "submitUserMessage" | "prepareStop" | "resumeStoppedSession" | "navigateTree" | "abortBranchSummary" | "fork" | "branch" | "reload" | "setLabel" | "setScopedModels" | "cycleModel" | "resources" | "tree" | "asyncJobs" | "inspectAsyncJob" | "cancelAsyncJob" | "goal" | "moveSession" | "worktreeState"
 const RESPONSE_PREFIX = "\u001eompiui-runtime:"
@@ -91,6 +92,7 @@ import { resolveModelScope, getModelMatchPreferences, formatModelStringWithRouti
 import { cfgDisabledExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/settings";
 ${NATIVE_WORKTREE_IMPORTS}
 ${nativeToolInteractionImports}
+${nativeSessionTitleImports}
 ${nativeSubagentObservationPrelude}
 export default function (pi) {
   const prefix = ${JSON.stringify(RESPONSE_PREFIX)};
@@ -115,6 +117,7 @@ export default function (pi) {
   }
   ${nativeSubagentObservationSource}
   ${nativeToolInteractionSource}
+  ${nativeSessionTitleSource}
   function identity(session) {
     return { sessionId: session.sessionManager.getSessionId(), sessionFile: session.sessionFile ?? null, leafId: session.sessionManager.getLeafId(), cwd: session.sessionManager.getCwd() };
   }

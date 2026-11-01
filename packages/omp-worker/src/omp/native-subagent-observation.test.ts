@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import { runInNewContext } from 'node:vm'
 import { SUBAGENT_OBSERVATION_PREFIX, type SubagentObservationPayload } from './native-subagent-observation.js'
 import { runtimeBridgeExtension } from './runtime-bridge.js'
+import { nativeSessionTitleSource } from './native-session-title.js'
 
 type Activity = 'running' | 'idle'
 class PublicSession {
@@ -102,6 +103,7 @@ function observationHarness() {
     },
   }
   const source = runtimeBridgeExtension()
+    .replace(nativeSessionTitleSource, '')
     .replace(/^import[^\n]+\n/gm, '')
     .replace('export default function (pi)', 'function extension(pi)') + '\nextension'
   const globals = {
