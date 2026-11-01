@@ -166,7 +166,7 @@ export function WorktreeManager({ sessionId, directory, variant = 'compact' }: {
       {catalog && catalog.worktrees.length === 0 && <p className="py-6 text-center text-[length:var(--fs-sm)] text-text-400">{t('worktrees.empty', { defaultValue: 'No worktrees found' })}</p>}
       <ul className="max-h-72 space-y-1.5 overflow-auto custom-scrollbar">
         {catalog?.worktrees.map(tree => {
-          const treePath = normalizeDir(tree.path)
+          const treePath = normalizeDir(tree.path) ?? tree.path
           const current = /^[a-z]:\//i.test(treePath) ? treePath.toLowerCase() === cwdPath?.toLowerCase() : treePath === cwdPath
           const primary = tree.path === catalog.primaryRoot
           const protectedTree = primary || tree.bare || tree.locked || tree.prunable || current
@@ -180,7 +180,7 @@ export function WorktreeManager({ sessionId, directory, variant = 'compact' }: {
                 {current && <Badge tone="accent">{t('worktrees.current', { defaultValue: 'current' })}</Badge>}
                 {primary && <Badge>{t('worktrees.primary', { defaultValue: 'main' })}</Badge>}
                 {tree.detached && <Badge>{t('worktrees.detached', { defaultValue: 'detached' })}</Badge>}
-                {tree.locked && <Badge tone="warning" title={tree.lockReason}>{t('worktrees.locked', { defaultValue: 'locked' })}</Badge>}
+                {tree.locked && <Badge tone="warning" title={tree.lockReason ?? undefined}>{t('worktrees.locked', { defaultValue: 'locked' })}</Badge>}
                 {tree.prunable && <Badge tone="danger">{t('worktrees.missing', { defaultValue: 'missing' })}</Badge>}
               </div>
               <div className="mt-0.5 truncate font-mono text-[length:var(--fs-xxs)] text-text-400" title={tree.path}>{treePath}</div>
