@@ -136,6 +136,8 @@ test("viewing an OMP terminal history and syncing a draft never opens a writer",
   await host.sessionQuery("terminal-session", "entries.get")
   await host.sessionQuery("terminal-session", "entry.get", { entryId: "latest-tui-answer", offset: 0 });
   await host.sessionQuery("terminal-session", "tree.get")
+  await host.sessionQuery("terminal-session", "skills.list")
+  await host.sessionQuery("terminal-session", "controls.get")
   await host.sessionQuery("terminal-session", "attachment.get", { entryId: "image", blockIndex: 0 })
   await host.sessionQuery("terminal-session", "subagent.messages", { sessionFile: file })
   await host.sessionQuery("terminal-session", "subagent.messages", {
@@ -176,6 +178,45 @@ test("background job queries on a previewed OMP session never open a writer", as
   await assert.rejects(host.sessionQuery("terminal-session", "asyncJobs.get"), { code: "CAPABILITY_DISABLED" })
   await assert.rejects(host.sessionQuery("terminal-session", "asyncJobs.inspect", { jobId: "bg_1" }), { code: "CAPABILITY_DISABLED" })
   assert.equal(opens, 0)
+})
+
+test("explicit management initialization restores a cold session without sending a prompt", async t => {
+  const file = join(tmpdir(), `ompiui-initialize-${randomUUID()}.jsonl`)
+  writeFileSync(file, '{"type":"session","id":"management-session"}\n')
+  const previous = process.env.OMPIUI_DRIVER
+  process.env.OMPIUI_DRIVER = "omp"
+  const commands: string[] = []
+  let opens = 0
+  const worker = {
+    command: async (type: string) => { commands.push(type); return { sessionId: "management-session", isStreaming: false } },
+    getSessionId: () => "management-session", getSessionFile: () => file, getCwd: () => ".",
+    onEvent: () => () => {}, onCrash: () => () => {}, onClose: () => () => {}, dispose: async () => {},
+  } as unknown as WorkerSession
+  const supervisor = {
+    onEvent: () => () => {}, open: async () => { opens++; return worker },
+    catalogCommand: async (type: string) => {
+      if (type === "session.findByFile") return { id: "management-session", cwd: ".", sessionFile: file }
+      if (type === "session.listAll") return [{ id: "management-session", cwd: ".", path: file }]
+      if (type === "session.read") return { source: "configuration", compaction: { autoEnabled: false } }
+      throw new Error(`Unexpected catalog command ${type}`)
+    },
+  } as unknown as RuntimeSupervisor
+  const host = new SessionHost(supervisor, new EventHub())
+  t.after(() => {
+    host.dispose()
+    if (previous === undefined) delete process.env.OMPIUI_DRIVER
+    else process.env.OMPIUI_DRIVER = previous
+    rmSync(file, { force: true })
+  })
+  await host.openSession(".", file)
+  await host.executeSessionCommand("management-session", "controls.get")
+  assert.equal(opens, 0)
+  await host.executeSessionCommand("management-session", "session.initialize")
+  assert.equal(opens, 1)
+  assert.ok(commands.every(type => type === "state.get"))
+  await host.executeSessionCommand("management-session", "controls.get")
+  assert.equal(commands.at(-1), "state.get")
+  assert.equal(opens, 1)
 })
 
 test("an explicit message attaches a previewed OMP session using its latest history", async t => {

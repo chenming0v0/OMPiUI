@@ -41,6 +41,22 @@ describe("OMP capability registry", () => {
     expect(caps.mcp).toBe(false)
   })
 
+  it("advertises cold configuration and initialization only when supported", () => {
+    piNativeStatusForTest({ sessionCommands: [], globalCommands: [] })
+    expect(getPiCapabilities().sessionControlsRead).toBe(false)
+    expect(getPiCapabilities().sessionInitialize).toBe(false)
+
+    piNativeStatusForTest({
+      sessionCommands: [
+        { name: "controls.get", scope: "session", source: "ompiui-adapter" },
+        { name: "session.initialize", scope: "session", source: "ompiui-adapter" },
+      ],
+      globalCommands: [],
+    })
+    expect(getPiCapabilities().sessionControlsRead).toBe(true)
+    expect(getPiCapabilities().sessionInitialize).toBe(true)
+  })
+
   it("is unavailable without a registry", () => {
     expect(getPiCapabilities().fork).toBe(false)
     expect(getPiCapabilities().sessionDelete).toBe(false)

@@ -35,12 +35,11 @@ export const SkillPanel = memo(function SkillPanel({ isResizing: _isResizing, se
   const currentScope = useRef(scope)
   currentScope.current = scope
   const request = useRef<AbortController | null>(null)
-  const [snapshot, setSnapshot] = useState<{ scope: string; skills: Skill[]; loading: boolean; error: string | null; previewOnly?: boolean } | null>(null)
+  const [snapshot, setSnapshot] = useState<{ scope: string; skills: Skill[]; loading: boolean; error: string | null } | null>(null)
   const visible = snapshot?.scope === scope ? snapshot : null
   const skills = visible?.skills ?? []
   const loading = visible?.loading ?? true
   const error = visible?.error ?? null
-  const previewOnly = visible?.previewOnly === true
   const [filter, setFilter] = useState('')
 
   const loadSkills = useCallback(async () => {
@@ -55,11 +54,6 @@ export const SkillPanel = memo(function SkillPanel({ isResizing: _isResizing, se
       if (!controller.signal.aborted && currentScope.current === scope) setSnapshot({ scope, skills: data, loading: false, error: null })
     } catch (err) {
       if (controller.signal.aborted || currentScope.current !== scope) return
-      // 未运行的会话只是磁盘预览：浏览必须只读，不能为列 Skills 启动 runtime。
-      if (typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'CAPABILITY_DISABLED') {
-        setSnapshot({ scope, skills: [], loading: false, error: null, previewOnly: true })
-        return
-      }
       apiErrorHandler('load skills', err)
       setSnapshot({ scope, skills: [], loading: false, error: err instanceof Error ? err.message : String(err) })
     }
@@ -88,7 +82,7 @@ export const SkillPanel = memo(function SkillPanel({ isResizing: _isResizing, se
       <div className="relative flex h-10 items-center justify-between px-3">
           <div className="flex h-6 min-w-0 items-center gap-1.5 text-text-100 text-[length:var(--fs-xs)] font-medium">
           <span>{t('skillPanel.title')}</span>
-          {!loading && !error && !previewOnly && <span className="inline-flex h-4 items-center text-[length:var(--fs-xs)] leading-none text-text-400">({skills.length})</span>}
+          {!loading && !error && <span className="inline-flex h-4 items-center text-[length:var(--fs-xs)] leading-none text-text-400">({skills.length})</span>}
         </div>
         <button
           type="button"
@@ -143,7 +137,7 @@ export const SkillPanel = memo(function SkillPanel({ isResizing: _isResizing, se
         ) : filteredSkills.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-text-400 text-[length:var(--fs-base)] gap-2 px-4 text-center">
             <TeachIcon size={24} className="opacity-30" />
-            <span>{t(previewOnly ? 'skillPanel.previewOnly' : 'skillPanel.noSkills')}</span>
+            <span>{t('skillPanel.noSkills')}</span>
           </div>
         ) : (
           <div className="p-1">

@@ -17,6 +17,8 @@ export interface PiCapabilities {
   retryManage: boolean
   compactionManage: boolean
   toolsManage: boolean
+  sessionControlsRead: boolean
+  sessionInitialize: boolean
   fileWrite: boolean
   gitDiff: boolean
   sessionRename: boolean
@@ -44,6 +46,8 @@ const unavailable: PiCapabilities = {
   retryManage: false,
   compactionManage: false,
   toolsManage: false,
+  sessionControlsRead: false,
+  sessionInitialize: false,
   fileWrite: false,
   gitDiff: false,
   sessionRename: false,
@@ -76,6 +80,8 @@ const COMMAND_MAP: Record<keyof PiCapabilities, string | null> = {
   retryManage: 'setAutoRetry',
   compactionManage: 'compact',
   toolsManage: 'setActiveTools',
+  sessionControlsRead: 'controls.get',
+  sessionInitialize: 'session.initialize',
   fileWrite: 'files.write',
   gitDiff: 'git.diff',
   sessionRename: 'setSessionName',

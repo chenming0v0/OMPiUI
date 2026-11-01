@@ -79,6 +79,23 @@ const SERVER_GLOBAL_CAPABILITIES: PiCapability[] = [
 
 const SERVER_SESSION_CAPABILITIES: PiCapability[] = [
   {
+    name: "controls.get",
+    scope: "session",
+    source: "ompiui-adapter",
+    description: "Read configured session controls without starting an Agent",
+    paramsSchema: { type: "object", additionalProperties: false, properties: {} },
+    queue: "immediate",
+    idempotent: true,
+  },
+  {
+    name: "session.initialize",
+    scope: "session",
+    source: "ompiui-adapter",
+    description: "Explicitly restore this session for runtime management without sending a prompt",
+    paramsSchema: { type: "object", additionalProperties: false, properties: {} },
+    queue: "immediate",
+  },
+  {
     name: "session.close",
     scope: "session",
     source: "ompiui-adapter",
@@ -553,6 +570,8 @@ export class SessionHost {
             );
           }
           const diskQueries: Record<string, true> = {
+            "controls.get": true,
+            "skills.list": true,
             "state.get": true,
             "branch.get": true,
             "entries.get": true,
@@ -580,6 +599,7 @@ export class SessionHost {
           }
           session = await this.ensureAttached(sessionId, signal);
         }
+        if (type === "controls.get" || type === "session.initialize") type = "state.get";
         this.touch(session.sessionId);
         if (this.executor.isClosing(sessionId)) {
           throw Object.assign(new Error("session runtime is closing"), {
