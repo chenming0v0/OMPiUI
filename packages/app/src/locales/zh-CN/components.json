@@ -258,7 +258,8 @@
     "filterPlaceholder": "筛选 Skills...",
     "loadingSkills": "加载 Skills...",
     "failedToLoad": "加载 Skills 失败",
-    "noSkills": "暂无 Skills"
+    "noSkills": "暂无 Skills",
+    "previewOnly": "会话未运行。发送一条消息启动后，点刷新即可查看 Skills。"
   },
   "toast": {
     "clearAll": "清除全部"

@@ -260,7 +260,8 @@
     "filterPlaceholder": "Filter skills...",
     "loadingSkills": "Loading skills...",
     "failedToLoad": "Failed to load skills",
-    "noSkills": "No skills found"
+    "noSkills": "No skills found",
+    "previewOnly": "This session isn't running. Send a message to start it, then refresh to see its skills."
   },
   "toast": {
     "clearAll": "Clear all"
