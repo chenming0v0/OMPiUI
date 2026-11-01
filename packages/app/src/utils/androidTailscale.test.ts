@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   disconnectAndroidTailscale, isTailnetUrl, openAndroidTailscaleLogin, resolveAndroidTailscaleUrl,
-  copyAndroidTailscaleDiagnostics, exportAndroidTailscaleDiagnostics,
+  copyAndroidTailscaleDiagnostics, exportAndroidTailscaleDiagnostics, discoverAndroidTailscale,
 } from './androidTailscale'
 
 vi.mock('./tauri', () => ({ isTauri: () => true }))
@@ -23,6 +23,18 @@ afterEach(async () => {
 })
 
 describe('Android embedded Tailscale transport', () => {
+  it('discovers and cancels peers without invoking login or route', async () => {
+    request.mockImplementation(() => {})
+    const controller = new AbortController()
+    const discovery = discoverAndroidTailscale(controller.signal)
+    const rejected = expect(discovery).rejects.toMatchObject({ name: 'AbortError' })
+    controller.abort()
+    await rejected
+    expect(request.mock.calls.map(call => call[1])).toEqual(['discover', 'cancelDiscovery'])
+    expect(JSON.parse(request.mock.calls[1][2])).toEqual({ requestId: request.mock.calls[0][0] })
+    request.mockImplementation(id => queueMicrotask(() => window.dispatchEvent(new CustomEvent('ompiui-tailscale-result', { detail: { id, result: { ok: true } } }))))
+  })
+
   it('requests local diagnostics without login or opening a route', async () => {
     await copyAndroidTailscaleDiagnostics()
     await exportAndroidTailscaleDiagnostics()

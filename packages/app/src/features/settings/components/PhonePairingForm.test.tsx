@@ -1,12 +1,17 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PhonePairingForm } from './PhonePairingForm'
 
 const mocks = vi.hoisted(() => ({
+  discover: vi.fn(), discoverySupported: false,
   redeem: vi.fn(), redeemCode: vi.fn(), scan: vi.fn(), addServer: vi.fn(), setActiveServer: vi.fn(),
   checkHealth: vi.fn(), clearSession: vi.fn(), navigateHome: vi.fn(),
 }))
 vi.mock('../../../omp/transport', () => ({ redeemPairCode: mocks.redeem, redeemDisplayCode: mocks.redeemCode }))
+vi.mock('../../../utils/deviceDiscovery', async original => ({
+  ...await original<typeof import('../../../utils/deviceDiscovery')>(),
+  discoverDevices: mocks.discover, supportsDeviceDiscovery: () => mocks.discoverySupported,
+}))
 vi.mock('../../../utils/qrScanner', () => ({ scanPairingQr: mocks.scan }))
 vi.mock('../../../utils/sessionLifecycle', () => ({ clearSessionRuntimeState: mocks.clearSession }))
 vi.mock('../../../hooks', () => ({
@@ -17,6 +22,8 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => k
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mocks.discoverySupported = false
+  mocks.discover.mockReset().mockResolvedValue([])
   mocks.redeem.mockReset().mockResolvedValue({ url: 'http://remote.test', token: 'server-token' })
   mocks.redeemCode.mockReset().mockResolvedValue({ url: 'http://remote.test', token: 'server-token' })
   mocks.scan.mockReset()
@@ -29,6 +36,27 @@ const submit = async () => {
 }
 
 describe('PhonePairingForm', () => {
+  it('selects a discovered computer, focuses the code and redeems only after explicit submission', async () => {
+    mocks.discoverySupported = true
+    const device = { marker: 'ompiui', discoveryVersion: 1, displayName: 'Discovered computer', instanceId: 'a'.repeat(32),
+      address: '192.168.1.50', port: 9292, pairing: true, network: 'lan' }
+    mocks.discover.mockImplementation(network => Promise.resolve(network === 'lan' ? [device] : []))
+    render(<PhonePairingForm />)
+    fireEvent.click(await screen.findByRole('button', { name: /Discovered computer/ }))
+    expect(screen.getByLabelText('authentication.serverAddress')).toHaveValue('http://192.168.1.50:9292')
+    expect(input()).toHaveFocus()
+    expect(mocks.redeemCode).not.toHaveBeenCalled()
+    expect(mocks.addServer).not.toHaveBeenCalled()
+    await submit()
+    expect(mocks.redeemCode).not.toHaveBeenCalled()
+    fireEvent.change(input(), { target: { value: '0012 3456' } })
+    await submit()
+    expect(mocks.redeemCode).toHaveBeenCalledWith('00123456', 'http://192.168.1.50:9292', expect.any(AbortSignal))
+    expect(mocks.redeemCode).toHaveBeenCalledOnce()
+    expect(mocks.addServer).toHaveBeenCalledOnce()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'authentication.discoveryRefresh' })).toBeDisabled())
+  })
+
   it.each(['50328191', '5032 8191', '5032-8191', '0012 3456'])('redeems a display code with an explicit address: %s', async value => {
     const completed = vi.fn()
     render(<PhonePairingForm onPaired={completed} />)

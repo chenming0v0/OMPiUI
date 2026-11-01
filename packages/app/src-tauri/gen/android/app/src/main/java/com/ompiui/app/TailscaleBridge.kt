@@ -10,12 +10,15 @@ import com.ompiui.tailscale.mobile.Mobile
 import java.io.File
 import java.util.concurrent.Executors
 import org.json.JSONObject
+import org.json.JSONArray
 
 class TailscaleBridge(private val context: Context, private val webView: WebView) {
   private val executor = Executors.newSingleThreadExecutor()
+  private val discoveryExecutor = Executors.newSingleThreadExecutor()
+  private val discoveryRequests = java.util.Collections.synchronizedSet(mutableSetOf<String>())
   private val handler = Handler(Looper.getMainLooper())
   private val preferences = context.getSharedPreferences("ompiui-tailscale", Context.MODE_PRIVATE)
-  private var disposed = false
+  @Volatile private var disposed = false
   private val diagnostics = TailscaleDiagnostics(context)
   private var diagnosticsPrepared = false
   private val networkMonitor = TailscaleNetworkMonitor(context, ::refreshNetworkState)
@@ -74,6 +77,42 @@ class TailscaleBridge(private val context: Context, private val webView: WebView
 
   @JavascriptInterface
   fun request(id: String, method: String, payload: String) {
+    if (method == "cancelDiscovery") {
+      if (disposed) return
+      synchronized(discoveryRequests) {
+        val requestId = try { JSONObject(payload).getString("requestId") } catch (_: Exception) { return }
+        discoveryRequests.remove(requestId)
+        Mobile.cancelDiscovery(requestId)
+      }
+      handler.post { sendResponse(JSONObject().put("id", id).put("result", JSONObject().put("ok", true))) }
+      return
+    }
+    if (method == "discover") {
+      if (disposed || !preferences.getBoolean("enabled", false)) {
+        handler.post { sendResponse(JSONObject().put("id", id).put("error", "discoveryTailscaleLogin")) }
+        return
+      }
+      synchronized(discoveryRequests) {
+        if (discoveryRequests.isNotEmpty()) {
+          handler.post { sendResponse(JSONObject().put("id", id).put("error", "discoveryBusy")) }
+          return
+        }
+        discoveryRequests.add(id)
+      }
+      discoveryExecutor.execute {
+        val response = JSONObject().put("id", id)
+        try {
+          if (!discoveryRequests.contains(id)) return@execute
+          response.put("result", JSONArray(Mobile.discover(id)))
+        } catch (error: Exception) {
+          response.put("error", error.message ?: "discoveryFailed")
+        } finally {
+          discoveryRequests.remove(id)
+        }
+        handler.post { if (!disposed) sendResponse(response) }
+      }
+      return
+    }
     if (method in listOf("openLogin", "copyDiagnostics", "exportDiagnostics")) {
       handler.post {
         val response = JSONObject().put("id", id)
@@ -110,6 +149,7 @@ class TailscaleBridge(private val context: Context, private val webView: WebView
           "disconnect" -> {
             preferences.edit().putBoolean("enabled", false).apply()
             networkMonitor.stop()
+            cancelDiscoveries()
             core("stop") { Mobile.stop() }
             JSONObject().put("ok", true)
           }
@@ -132,13 +172,21 @@ class TailscaleBridge(private val context: Context, private val webView: WebView
   }
 
   private fun sendResponse(response: JSONObject) {
+    val json = JSONObject.quote(response.toString()).replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
     webView.evaluateJavascript(
-      "window.dispatchEvent(new CustomEvent('ompiui-tailscale-result',{detail:$response}));",
+      "window.dispatchEvent(new CustomEvent('ompiui-tailscale-result',{detail:JSON.parse($json)}));",
       null
     )
   }
 
+  fun cancelDiscoveries() {
+    val ids = synchronized(discoveryRequests) { discoveryRequests.toList().also { discoveryRequests.clear() } }
+    ids.forEach { Mobile.cancelDiscovery(it) }
+  }
+
   fun dispose() {
+    cancelDiscoveries()
+    discoveryExecutor.shutdownNow()
     synchronized(executor) {
       disposed = true
       executor.execute {

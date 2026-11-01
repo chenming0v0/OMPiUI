@@ -29,6 +29,20 @@
     "advanced": "高级"
   },
   "authentication": {
+    "discoveryTitle": "发现电脑",
+    "discoveryRefresh": "刷新",
+    "discoveryHint": "点选发现的电脑，再输入它的8位配对码。发现设备不代表已授权连接。",
+    "discoveryNetwork": { "lan": "局域网", "tailscale": "Tailscale" },
+    "discoveryEmpty": {
+      "lan": "未发现电脑。请连接同一 Wi-Fi，并在电脑开启网络监听；访客网络可能阻止设备发现。",
+      "tailscale": "未发现 OMPiUI 电脑。双方需登录 Tailscale、使用支持发现的新版本，且网络策略允许互通。"
+    },
+    "discoveryUnavailable": "当前安装包不支持设备发现，请更新手机端，或扫码、粘贴完整链接。",
+    "discoveryTimeout": "设备发现超时，请刷新或使用完整配对链接。",
+    "discoveryPermissionDenied": "未获得局域网发现权限，请允许访问，或使用配对链接。",
+    "discoveryTailscaleLogin": "先在手机登录 Tailscale，才能发现跨网络的电脑。",
+    "discoveryBusy": "上一次发现正在结束，请稍后刷新。",
+    "discoveryFailed": "无法发现电脑，请刷新或使用完整配对链接。",
     "phoneConnectComputer": "连接电脑",
     "phoneConnectComputerDesc": "扫描电脑上的配对二维码、粘贴完整配对链接，或输入8位配对码并填写电脑地址。",
     "title": "认证",
@@ -37,7 +51,7 @@
     "pairingPlaceholder": "粘贴完整配对链接、连接分享信息，或输入8位配对码",
     "serverAddress": "电脑服务器地址",
     "serverAddressPlaceholder": "http://100.x.x.x:8787",
-    "manualCodeHint": "填写电脑配对卡片显示的服务器地址。8位码只用于验证，不能定位电脑；不要填写手机的 localhost。",
+    "manualCodeHint": "点选发现的电脑，或填写电脑配对卡片上的地址。8位码只用于验证；不要填写手机的 localhost。",
     "addressRequired": "使用8位配对码时，请填写电脑服务器地址。",
     "invalidAddress": "请输入完整的 http:// 或 https:// 服务器地址，不含账号密码、查询参数或 # 片段。完整配对链接请粘贴到配对信息中。",
     "invalidCode": "配对码必须是8位数字，允许空格或短横线分组。",

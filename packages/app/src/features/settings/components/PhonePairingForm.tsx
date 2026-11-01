@@ -8,6 +8,8 @@ import { redeemDisplayCode } from '../../../omp/transport'
 import { scanPairingQr } from '../../../utils/qrScanner'
 import { clearSessionRuntimeState } from '../../../utils/sessionLifecycle'
 import { settingsFieldAreaClass, settingsFieldClass } from './SettingsUI'
+import { PhoneDeviceDiscovery } from './PhoneDeviceDiscovery'
+import { deviceDiscoveryUrl } from '../../../utils/deviceDiscovery'
 
 export function PhonePairingForm({ onPaired }: { onPaired?: () => void }) {
   const { t } = useTranslation('settings')
@@ -17,6 +19,7 @@ export function PhonePairingForm({ onPaired }: { onPaired?: () => void }) {
   const [error, setError] = useState('')
   const [connected, setConnected] = useState(false)
   const inFlight = useRef(false)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
   const { addServer, setActiveServer, checkHealth } = useServerStore()
   const { navigateHome, sessionId } = useRouter()
   const parsed = parseConnectionLink(input)
@@ -70,6 +73,13 @@ export function PhonePairingForm({ onPaired }: { onPaired?: () => void }) {
   return (
     <form onSubmit={event => { event.preventDefault(); void run(false) }}
       aria-busy={busy !== null} className="grid min-w-0 gap-3">
+      <PhoneDeviceDiscovery address={address} disabled={busy !== null || connected} onSelect={device => {
+        setAddress(deviceDiscoveryUrl(device))
+        setError('')
+        setConnected(false)
+        if (parsed) setInput('')
+        inputRef.current?.focus()
+      }} />
       <button type="button" disabled={busy !== null} onClick={() => void run(true)}
         className={`${authPrimaryButtonClass} min-h-12 w-full text-[length:var(--fs-sm)]`}>
         {busy === 'scanning' ? <LoaderCircle size={18} className="animate-spin" /> : <ScanLine size={18} />}
@@ -79,7 +89,7 @@ export function PhonePairingForm({ onPaired }: { onPaired?: () => void }) {
         className="flex items-center gap-3 pt-1 text-[length:var(--fs-xs)] text-text-400 before:h-px before:flex-1 before:bg-border-200/60 after:h-px after:flex-1 after:bg-border-200/60">
         {t('authentication.pairingInfo')}
       </label>
-      <textarea id="phone-pairing-link" rows={3} value={input} disabled={busy !== null}
+      <textarea ref={inputRef} id="phone-pairing-link" rows={3} value={input} disabled={busy !== null}
         autoCapitalize="none" autoCorrect="off" spellCheck={false}
         placeholder={t('authentication.pairingPlaceholder')}
         onChange={event => { setInput(event.target.value); setError(''); setConnected(false) }}
@@ -100,7 +110,7 @@ export function PhonePairingForm({ onPaired }: { onPaired?: () => void }) {
           void run(false)
         }}
         className={`${settingsFieldAreaClass} break-all font-mono text-[length:var(--fs-xs)]`} />
-      {manualCode && <div className="grid min-w-0 gap-2">
+      {(manualCode || address) && <div className="grid min-w-0 gap-2">
         <label htmlFor="phone-pairing-address" className="text-[length:var(--fs-xs)] font-medium text-text-200">
           {t('authentication.serverAddress')}
         </label>

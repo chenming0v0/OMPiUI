@@ -35,36 +35,54 @@ export function isTailnetUrl(input: string): boolean {
   }
 }
 
-async function nativeRequest<T>(method: string, payload: Record<string, unknown> = {}): Promise<T> {
+async function nativeRequest<T>(method: string, payload: Record<string, unknown> = {}, signal?: AbortSignal): Promise<T> {
   // Android 在 WebView 创建后注入桥，冷启动时等待它就绪。
   for (let attempt = 0; !window.__ompiui_tailscale && attempt < 30; attempt++) {
+    signal?.throwIfAborted()
     await new Promise(resolve => setTimeout(resolve, 100))
   }
+  signal?.throwIfAborted()
   const bridge = window.__ompiui_tailscale
   if (!bridge) throw new Error('This Android build does not include the Tailscale component')
   return new Promise((resolve, reject) => {
     const id = crypto.randomUUID()
+    const cleanup = () => {
+      window.removeEventListener('ompiui-tailscale-result', listener)
+      signal?.removeEventListener('abort', abort)
+      clearTimeout(timer)
+    }
+    const abort = () => {
+      cleanup()
+      try { bridge.request(crypto.randomUUID(), 'cancelDiscovery', JSON.stringify({ requestId: id })) } catch { /* Bridge may already be disposed. */ }
+      reject(signal?.reason ?? new DOMException('Cancelled', 'AbortError'))
+    }
     const listener = (event: Event) => {
       const detail = (event as CustomEvent<{ id: string; result?: T; error?: string }>).detail
       if (detail.id !== id) return
-      window.removeEventListener('ompiui-tailscale-result', listener)
-      clearTimeout(timer)
+      cleanup()
       if (detail.error) reject(new Error(detail.error))
       else resolve(detail.result as T)
     }
     const timer = setTimeout(() => {
-      window.removeEventListener('ompiui-tailscale-result', listener)
+      cleanup()
+      if (method === 'discover') {
+        try { bridge.request(crypto.randomUUID(), 'cancelDiscovery', JSON.stringify({ requestId: id })) } catch { /* Bridge may already be disposed. */ }
+      }
       reject(new Error('Tailscale native operation timed out'))
     }, 30_000)
     window.addEventListener('ompiui-tailscale-result', listener)
+    signal?.addEventListener('abort', abort, { once: true })
     try {
       bridge.request(id, method, JSON.stringify(payload))
     } catch (error) {
-      clearTimeout(timer)
-      window.removeEventListener('ompiui-tailscale-result', listener)
+      cleanup()
       reject(error)
     }
   })
+}
+
+export function discoverAndroidTailscale(signal: AbortSignal): Promise<unknown> {
+  return nativeRequest('discover', {}, signal)
 }
 
 export function getAndroidTailscaleStatus(): Promise<AndroidTailscaleStatus> {

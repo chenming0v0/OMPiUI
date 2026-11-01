@@ -23,6 +23,7 @@
     "@ompiui/omp-worker": "0.6.50",
     "@ompiui/protocol": "0.6.50",
     "@ompiui/relay": "0.6.50",
+    "bonjour-service": "1.4.4",
     "bun-pty": "^0.4.8",
     "chokidar": "^4.0.3",
     "ws": "^8.21.1",

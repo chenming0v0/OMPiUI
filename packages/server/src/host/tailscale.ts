@@ -31,6 +31,7 @@ export function mapStatusJson(raw: unknown) {
 type Options = {
   dataDir: string
   forwardingToken?: string
+  discovery?: { displayName: string; instanceId: string; enabled: boolean }
   log?: (line: string) => void
   embeddedBridgePath?: string
   launch?: (binary: string, args: string[], token: string) => ChildProcess
@@ -207,6 +208,8 @@ export class TailscaleManager {
       "--hostname", `ompiui-${hostname().toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 48)}`,
       "--listen", `:${this.localPort}`,
       "--upstream", `http://${host}:${this.localPort}`,
+      ...(this.options.discovery ? ["--discovery-name", this.options.discovery.displayName, "--discovery-id", this.options.discovery.instanceId,
+        ...(!this.options.discovery.enabled ? ["--discovery-disabled"] : [])] : []),
     ]
     return new Promise<boolean>(resolve => {
       let child: ChildProcess

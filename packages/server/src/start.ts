@@ -1,6 +1,8 @@
 import { PROTOCOL_VERSION } from "@ompiui/protocol"
 import { getDriverMode } from "@ompiui/omp-worker"
 import { randomBytes } from "node:crypto"
+import { hostname } from "node:os"
+import { advertiseDevice } from "./host/discovery.ts"
 import { existsSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -265,8 +267,11 @@ export async function startOmpiUiServer(
   }
   // 手机远程：一次性配对 + 内置 Tailscale（与 server 同生命周期）
   const pairing = new PairingStore()
+  const discovery = { displayName: hostname().replace(/[\x00-\x1f\x7f]/g, "").slice(0, 128) || "OMPiUI",
+    instanceId: randomBytes(16).toString("hex"), enabled: process.env.OMPIUI_DISCOVERY_ADVERTISE !== "false" }
+  let lanDiscovery: ReturnType<typeof advertiseDevice> | undefined
   const tailscale = new TailscaleManager({
-    dataDir: dataRoot(), forwardingToken: tunnelForwardingToken,
+    dataDir: dataRoot(), forwardingToken: tunnelForwardingToken, discovery,
     log: line => { console.info(line); logToFile(line) },
   })
   const app = createAppServer({
@@ -314,6 +319,7 @@ export async function startOmpiUiServer(
       diagnostics.record("server.stopping", { signal, reason: signal ?? "stop_requested", port: config.port })
       if (signal) console.info(`[ompiui-server] received ${signal}, shutting down`)
       tunnelClient?.stop()
+      await lanDiscovery?.stop()
       await tailscale.dispose()
       await shutdownAppServer(app.server, eventServer, {
         timeoutMs: config.shutdownTimeoutMs,
@@ -373,6 +379,12 @@ export async function startOmpiUiServer(
     return { server: app.server, config, stop }
   }
 
+  if (discovery.enabled && boundAddress && typeof boundAddress === "object") {
+    lanDiscovery = advertiseDevice(config.host, {
+      marker: "ompiui", discoveryVersion: 1, displayName: discovery.displayName,
+      instanceId: discovery.instanceId, port: boundAddress.port, pairing: true,
+    }, { log: error => console.warn("[ompiui-server] LAN discovery unavailable", error) })
+  }
   console.info(`[ompiui-server] listening http://${config.host}:${config.port}`)
   logToFile(`[ompiui-server] listening http://${config.host}:${config.port} (pid=${process.pid})`)
   diagnostics.record("server.started", { port: config.port, driver: config.driver })
