@@ -5,6 +5,20 @@ import path from "node:path"
 import { test, type TestContext } from "node:test"
 import { OmpCatalog } from "./omp-catalog.js"
 import { resolveOmpConfigCommand, resolveWindowsNpmShim } from "./omp-config-command.js"
+import { resolveInstalledOmpRuntime } from "./omp-runtime.js"
+
+/**
+ * 已安装的 OMP runtime（repo 根的 omp-runtime/）在解析时优先于 PATH shim 与本地解释器，
+ * bun 入口脚本尤其永远走已安装 runtime。准备过 runtime 的开发机上这些解析路径不可达，
+ * 相关用例只在没有安装 runtime 的环境（CI）运行；runtime 存在或损坏都视为接管。
+ */
+function installedRuntimeTakesPrecedence(): boolean {
+  try {
+    return resolveInstalledOmpRuntime({}) !== undefined
+  } catch {
+    return true
+  }
+}
 
 /**
  * Windows 临时目录可能带 8.3 短名（CI 的 TEMP 是 RUNNER~1），而 where.exe 返回规范长路径。
@@ -96,7 +110,7 @@ test("explicit native executable is not replaced with PATH's OMP", t => {
 })
 
 test("npm-installed Bun resolves through its executable shim before passing JSON", {
-  skip: process.platform !== "win32",
+  skip: process.platform !== "win32" || installedRuntimeTakesPrecedence(),
 }, async t => {
   const f = fixture(t)
   const runtime = path.join(f.binDir, "node_modules", "bun", "bin", "bun.exe")
@@ -127,7 +141,7 @@ test("npm shim pointing directly to a native executable does not select an inter
 })
 
 test("unknown runtime wrappers fail before JSON can reach a batch file", {
-  skip: process.platform !== "win32",
+  skip: process.platform !== "win32" || installedRuntimeTakesPrecedence(),
 }, t => {
   const f = fixture(t)
   writeFileSync(f.script, "#!/usr/bin/env bun\n")
@@ -139,7 +153,8 @@ test("unknown runtime wrappers fail before JSON can reach a batch file", {
 
 for (const entry of ["script", "npm-shim", "path-shim"] as const) {
   test(`model roles save and read back through ${entry} with JSON preserved`, {
-    skip: entry !== "script" && process.platform !== "win32",
+    skip: entry !== "script" && (process.platform !== "win32"
+      || (entry === "path-shim" && installedRuntimeTakesPrecedence())),
   }, async t => {
     const f = fixture(t)
     if (entry === "path-shim") {
