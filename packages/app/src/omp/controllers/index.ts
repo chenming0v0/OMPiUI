@@ -40,7 +40,7 @@ export async function loadPiSlashCommands(sessionId: string, signal?: AbortSigna
  * Load a session's native tool descriptors from the runtime registry.
  */
 export async function loadPiSessionTools(sessionId: string, signal?: AbortSignal): Promise<ToolDescriptor[]> {
-  const registry = await loadSessionRegistryCached(sessionId, signal)
+  const registry = await loadSessionRegistryOnce(sessionId, signal)
   return registry?.tools ?? []
 }
 
