@@ -53,7 +53,7 @@ import { projectPreviewMessage } from "./subagent-preview.js";
 import { requireResourceList, registryFromResources } from './resource-registry.js';
 import { requestNativePromptAcceptance } from './native-rpc-prompt.js';
 import { SUBAGENT_OBSERVATION_PREFIX } from './native-subagent-observation.js';
-import { SESSION_TITLE_PREFIX } from './native-session-title.js';
+import { SESSION_TITLE_FAILURE_PREFIX, SESSION_TITLE_PREFIX } from './native-session-title.js';
 
 /**
  * OmpRpcSession —— SessionRuntime 契约的 OMP 实现。
@@ -180,6 +180,7 @@ export class OmpRpcSession implements SessionRuntime {
       this.messageStream.push(buffered.event, buffered.live);
   });
   private readonly extensionDiagnosticListeners = new Set<(event: JsonObject) => void>();
+  private readonly titleFailureListeners = new Set<(failure: { stage: "generate" | "apply" }) => void>();
   private readonly crashListeners = new Set<(error: Error) => void>();
   private readonly closeListeners = new Set<() => void>();
   private outputPaused = false;
@@ -610,6 +611,16 @@ export class OmpRpcSession implements SessionRuntime {
               this.handleFrame(update as OmpRpcFrame);
             }
           } catch { /* Malformed private title updates are not user notifications. */ }
+          return;
+        }
+        if (frame.method === "notify" && typeof frame.message === "string" && frame.message.startsWith(SESSION_TITLE_FAILURE_PREFIX)) {
+          // 自动标题失败的结构化诊断（元数据 only）；用户可见 toast 走原 warning 通知。
+          try {
+            const failure: unknown = JSON.parse(frame.message.slice(SESSION_TITLE_FAILURE_PREFIX.length));
+            if (isJsonObject(failure) && (failure.stage === "generate" || failure.stage === "apply")) {
+              for (const listener of this.titleFailureListeners) listener({ stage: failure.stage });
+            }
+          } catch { /* Malformed private diagnostics are not user notifications. */ }
           return;
         }
         if (frame.method === "notify" && typeof frame.message === "string" && frame.message.startsWith(SUBAGENT_OBSERVATION_PREFIX)) {
@@ -2250,6 +2261,12 @@ export class OmpRpcSession implements SessionRuntime {
     return () => this.subagentListeners.delete(listener);
   }
 
+  /** 自动标题失败监听（worker 转发到 omp.title_failed 诊断通道） */
+  onTitleFailed(listener: (failure: { stage: "generate" | "apply" }) => void): Unsubscribe {
+    this.titleFailureListeners.add(listener);
+    return () => this.titleFailureListeners.delete(listener);
+  }
+
   setOutputPaused(paused: boolean): void {
     this.outputPaused = paused;
     this.messageStream.setPaused(this.outputPaused);
@@ -2427,6 +2444,7 @@ export class OmpRpcSession implements SessionRuntime {
     this.piEvents.flush();
     this.piEventListeners.clear();
     this.extensionDiagnosticListeners.clear();
+    this.titleFailureListeners.clear();
     this.messageStream.clear();
     this.headListeners.clear();
     this.activityListeners.clear();

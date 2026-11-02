@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { runInNewContext } from 'node:vm'
 import { test } from 'node:test'
-import { nativeSessionTitleSource, SESSION_TITLE_PREFIX } from './native-session-title.js'
+import { nativeSessionTitleSource, SESSION_TITLE_FAILURE_PREFIX, SESSION_TITLE_PREFIX } from './native-session-title.js'
 
 function fixture(options: { enabled?: boolean; kind?: string; generator?: string; icons?: string } = {}) {
   const handlers = new Map<string, (event: any, ctx: any) => void>()
@@ -82,6 +82,27 @@ test('failed fork falls back to the official title model and adds the configured
   f.user(); f.reply(); await f.settle()
   assert.deepEqual(f.calls, ['fork', 'tiny', 'tiny'])
   assert.equal(f.saved[0]?.title, '🏷️ TITLE: Generated title')
+})
+
+test('a failed generation reports the generate stage through the private diagnostic prefix', async () => {
+  const f = fixture({ generator: 'tiny' })
+  f.session.generateTitle = async () => { throw new Error('provider quota exhausted') }
+  f.user(); f.reply(); await f.settle()
+  const diagnostic = f.notifications.find(message => message.startsWith(SESSION_TITLE_FAILURE_PREFIX))
+  assert.ok(diagnostic)
+  assert.deepEqual(JSON.parse(diagnostic.slice(SESSION_TITLE_FAILURE_PREFIX.length)), { stage: 'generate' })
+  assert.ok(f.notifications.some(message => message.startsWith('Automatic session title failed: provider quota exhausted')))
+  assert.deepEqual(f.saved, [])
+})
+
+test('a failed rename reports the apply stage through the private diagnostic prefix', async () => {
+  const f = fixture()
+  f.manager.setSessionName = async () => { throw new Error('session file is locked') }
+  f.user(); f.reply(); await f.settle()
+  const diagnostic = f.notifications.find(message => message.startsWith(SESSION_TITLE_FAILURE_PREFIX))
+  assert.ok(diagnostic)
+  assert.deepEqual(JSON.parse(diagnostic.slice(SESSION_TITLE_FAILURE_PREFIX.length)), { stage: 'apply' })
+  assert.ok(f.notifications.some(message => message.includes("session file is locked")))
 })
 
 test('greetings, local commands, passive session starts, disabled titles and subagents do not generate titles', async () => {
