@@ -9,7 +9,7 @@ import { OmpExtensionUiBridge } from "./omp-extension-ui.js"
 import { OmpRpcSession } from "./omp-session.js"
 import type { OmpRpcFrame } from "./rpc-client.js"
 import { SUBAGENT_OBSERVATION_PREFIX } from "./native-subagent-observation.js"
-import { SESSION_TITLE_PREFIX } from "./native-session-title.js"
+import { SESSION_TITLE_FAILURE_PREFIX, SESSION_TITLE_PREFIX } from "./native-session-title.js"
 
 
 // Exercise consumer-visible session projection and transitions with a controlled
@@ -102,6 +102,16 @@ describe("OmpRpcSession native titles", () => {
     frame({ type: "extension_ui_request", method: "notify", message: SESSION_TITLE_PREFIX + "not json" })
     await new Promise(resolve => setTimeout(resolve, 50))
     assert.deepEqual(events, [{ type: "session_info_update", sessionId: session.getSessionId(), title: "原生自动标题" }])
+  })
+  it("raises structured title failures to diagnostics listeners without echoing them as notifications", async t => {
+    const { session, frame } = await sessionFixture(t)
+    const failures: JsonObject[] = []
+    session.onTitleFailed(failure => failures.push(failure as unknown as JsonObject))
+    frame({ type: "extension_ui_request", method: "notify", message: SESSION_TITLE_FAILURE_PREFIX + JSON.stringify({ stage: "apply" }) })
+    frame({ type: "extension_ui_request", method: "notify", message: SESSION_TITLE_FAILURE_PREFIX + "not json" })
+    frame({ type: "extension_ui_request", method: "notify", message: SESSION_TITLE_FAILURE_PREFIX + JSON.stringify({ stage: "somewhere-else" }) })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.deepEqual(failures, [{ stage: "apply" }])
   })
   it("does not let a pre-title state read erase a newer native name", async t => {
     const { session, frame, native, rpc } = await sessionFixture(t)

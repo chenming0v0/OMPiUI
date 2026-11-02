@@ -204,6 +204,10 @@ function subscribeRuntimeEvents(current: SessionRuntime): Array<() => void> {
     })))
   }
   if (current instanceof OmpRpcSession) {
+    unsubs.push(current.onTitleFailed(failure => send({
+      kind: "event", generation: workerGeneration, sessionId: current.getSessionId(),
+      channel: "omp.title_failed", event: failure as unknown as JsonObject,
+    })))
     // OMP 子代理帧（lifecycle/progress/event）→ omp.subagent 通道
     unsubs.push(current.onSubagentFrame(event => send({
       kind: "event",

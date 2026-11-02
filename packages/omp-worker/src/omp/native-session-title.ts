@@ -1,6 +1,7 @@
 import { nativeTitleCardPrompt, nativeTitleForkPrompt } from './native-title-prompts.js'
 
 export const SESSION_TITLE_PREFIX = '\u001eompiui-session-title:'
+export const SESSION_TITLE_FAILURE_PREFIX = '\u001eompiui-session-title-failure:'
 
 export const nativeSessionTitleImports = String.raw`
 import { operatorTitleText as nstOperatorText, buildReplanTitleContext as nstContext, titleContextWordCount as nstWords } from "@oh-my-pi/pi-coding-agent/session/messages";
@@ -13,6 +14,7 @@ import { prompt as nstPrompt } from "@oh-my-pi/pi-utils";
 // session, change the CLI's global PI_NO_TITLE flag, or run inference in the worker.
 export const nativeSessionTitleSource = String.raw`
   const nstPrefix = ${JSON.stringify(SESSION_TITLE_PREFIX)};
+  const nstFailurePrefix = ${JSON.stringify(SESSION_TITLE_FAILURE_PREFIX)};
   const titleForkPrompt = ${JSON.stringify(nativeTitleForkPrompt)};
   const titleCardPrompt = ${JSON.stringify(nativeTitleCardPrompt)};
   const nstEnabled = globalThis.process?.env?.OMPIUI_AUTO_TITLE_ENABLED === "1";
@@ -118,10 +120,18 @@ export const nativeSessionTitleSource = String.raw`
         if (binding.manager.titleRevision !== revision || binding.manager.titleSource === "user") return;
         if (!replan && binding.session.sessionName) return;
         if (replan && !nstRefresh.get(binding.session.settings)) return;
-        await binding.manager.setSessionName(title, "auto", replan ? "replan" : undefined);
-      })
+        try {
+          await binding.manager.setSessionName(title, "auto", replan ? "replan" : undefined);
+        } catch (applyError) {
+          // 诊断事件只带阶段，不带正文；正文仍走用户 warning 通知。
+          throw Object.assign(applyError instanceof Error ? applyError : new Error(String(applyError)), { nstStage: "apply" });
+        }      })
       .catch(error => {
-        if (!signal.aborted && nstCurrent(binding)) binding.ctx.ui.notify("Automatic session title failed: " + (error instanceof Error ? error.message : String(error)), "warning");
+        if (!signal.aborted && nstCurrent(binding)) {
+          const message = error?.message ?? String(error);
+          binding.ctx.ui.notify(nstFailurePrefix + JSON.stringify({ stage: error?.nstStage === "apply" ? "apply" : "generate" }), "warning");
+          binding.ctx.ui.notify("Automatic session title failed: " + message, "warning");
+        }
       })
       .finally(() => {
         if (binding.flight === flight) binding.flight = null;

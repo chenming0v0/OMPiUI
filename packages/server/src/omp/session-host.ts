@@ -1348,6 +1348,14 @@ export class SessionHost {
       });
       return;
     }
+    if (event.channel === "omp.title_failed") {
+      // 自动标题失败只落阶段元数据；报错正文不进诊断盘（与 extension_error 同纪律）。
+      diagnostics.record("session.title_failed", {
+        sessionId: event.sessionId,
+        epoch: event.generation,
+      }, "warn");
+      return;
+    }
     if (event.channel === "payload.omitted") {
       diagnostics.record("worker.payload_omitted", { eventType: String(event.event.channel), count: Number(event.event.originalBytes) }, "warn");
       this.hub.publish({ kind: "server", id: "server" }, "payload.omitted", event.event);
