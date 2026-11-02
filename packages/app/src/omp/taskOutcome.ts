@@ -76,7 +76,10 @@ export function getTaskExecutionOutcome(execution: PiToolExecution, options: {
   hasLiveRuns?: boolean
 } = {}): TaskOutcome {
   const details = taskResultDetails(execution)
-  if (execution.awaitingSnapshot) return deriveTaskOutcome({ status: 'unknown' }, details)
+  // 与 getToolExecutionStatus 同纪律：awaitingSnapshot 不覆盖已有终态证据。
+  if (execution.awaitingSnapshot && !execution.result && execution.completedAt === undefined && !execution.error) {
+    return deriveTaskOutcome({ status: 'unknown' }, details)
+  }
   const live = isJsonObject(options.liveRun) ? options.liveRun : undefined
   const slotResult = options.result ?? (options.slotIndex !== undefined ? taskResultAt(details, options.slotIndex) : undefined)
   if (live?.isFollowUp) return deriveTaskOutcome(live)
