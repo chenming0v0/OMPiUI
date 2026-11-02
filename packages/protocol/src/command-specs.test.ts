@@ -37,6 +37,18 @@ test("serialized pi commands are not marked idempotent", () => {
   }
 })
 
+test("skill metadata queries accept discovered identity in live and cold routes", () => {
+  const spec = PI_COMMAND_SPECS.find(item => item.name === "skills.get")!
+  const identity = { name: "example", filePath: "C:\\skills\\example\\SKILL.md" }
+  assert.equal(spec.source, "ompiui-adapter")
+  assert.equal(spec.idempotent, true)
+  assert.equal(spec.queue, "immediate")
+  validateParams(spec.paramsSchema, identity)
+  assert.throws(() => validateParams(spec.paramsSchema, { filePath: identity.filePath }), { code: "INVALID_REQUEST" })
+  const read = PI_COMMAND_SPECS.find(item => item.name === "session.read")!
+  validateParams(read.paramsSchema, { sessionId: "cold", query: "skills.get", params: identity })
+})
+
 test("goal schema accepts a positive integer tokenBudget (#396)", () => {
   const spec = PI_COMMAND_SPECS.find(item => item.name === "goal") as { paramsSchema: JsonObject } | undefined
   assert.ok(spec)

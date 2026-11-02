@@ -7,6 +7,7 @@ import {
   type PiCapabilityScope,
   type RegistrySnapshot,
 } from "@ompiui/protocol";
+import { readDiscoveredSkill } from "./omp/omp-skill-details.js";
 import type { CatalogProvider, SessionRuntime } from "./runtime.js";
 import * as P from "./params.js";
 import {
@@ -367,6 +368,10 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
   }),
   "registry.get": async (ctx) => ctx.requireRuntime().getRegistry(),
   "skills.list": async (ctx) => ctx.requireRuntime().listSkills(),
+  "skills.get": async (ctx, p) => {
+    const runtime = ctx.requireRuntime();
+    return readDiscoveredSkill(runtime.getCwd(), await runtime.listSkills(), P.reqString(p, "name"), P.reqString(p, "filePath"));
+  },
   "asyncJobs.get": async (ctx) => ctx.requireRuntime().getAsyncJobs(),
   "asyncJobs.inspect": async (ctx, p) => ctx.requireRuntime().inspectAsyncJob(P.reqString(p, "jobId")),
   "asyncJobs.cancel": async (ctx, p) => ctx.requireRuntime().cancelAsyncJob(P.reqString(p, "jobId")),

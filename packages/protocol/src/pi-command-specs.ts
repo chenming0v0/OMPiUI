@@ -631,6 +631,15 @@ export const PI_COMMAND_SPECS = [
     idempotent: true,
   },
   {
+    name: "skills.get",
+    scope: "session",
+    source: "ompiui-adapter",
+    description: "Read metadata of a discovered skill without starting an agent",
+    paramsSchema: objectSchema({ name: byteString(4096), filePath: byteString(4096) }, ["name", "filePath"]),
+    queue: "immediate",
+    idempotent: true,
+  },
+  {
     name: "toolInteraction",
     scope: "session",
     source: "ompiui-adapter",
@@ -763,6 +772,7 @@ export const PI_COMMAND_SPECS = [
             "entry.get",
             "tree.get",
             "skills.list",
+            "skills.get",
             "controls.get",
             "attachment.get",
             "subagent.messages",
@@ -770,6 +780,8 @@ export const PI_COMMAND_SPECS = [
         },
         params: {
           ...pageParams({
+            name: byteString(4096),
+            filePath: byteString(4096),
             syncCursor: byteString(4096),
             beforeId: byteString(4096),
             includeLiveMessage: BOOLEAN,
@@ -1104,6 +1116,8 @@ export const RUNTIME_TARGETS = {
   "tree.get": "getTree",
   "registry.get": "getRegistry",
   "skills.list": "listSkills",
+  // The adapter authorizes metadata reads against the runtime's discovered skills.
+  "skills.get": "listSkills",
   "asyncJobs.get": "getAsyncJobs",
   "asyncJobs.inspect": "inspectAsyncJob",
   "asyncJobs.cancel": "cancelAsyncJob",
@@ -1141,6 +1155,7 @@ export type PiCommandParams = CoreCommandParams & {
   "tree.get": PiPageParams;
   "registry.get": Record<string, never>;
   "skills.list": Record<string, never>;
+  "skills.get": { name: string; filePath: string };
   "asyncJobs.get": Record<string, never>;
   "asyncJobs.inspect": { jobId: string };
   "asyncJobs.cancel": { jobId: string };
@@ -1170,6 +1185,7 @@ export type PiCommandParams = CoreCommandParams & {
       | "entry.get"
       | "tree.get"
       | "skills.list"
+      | "skills.get"
       | "controls.get"
       | "attachment.get"
       | "subagent.messages";

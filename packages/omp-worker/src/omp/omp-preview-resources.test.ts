@@ -5,6 +5,7 @@ import path from "node:path"
 import { test } from "node:test"
 import type { JsonObject } from "@ompiui/protocol"
 import { getOmpPreviewControls, getOmpPreviewSkills } from "./omp-preview-resources.js"
+import { readDiscoveredSkill } from "./omp-skill-details.js"
 import { resolveOmpPackageRoot } from "./omp-native-script.js"
 
 const integration = process.env.OMPI_OMP_SETTINGS_INTEGRATION === "1"
@@ -48,7 +49,10 @@ test("cold configuration and Skills use the official read-only loaders without m
   // Configured modes must not impersonate the managed runtime's per-process all policy.
   assert.equal(controls.queue, undefined)
   const skills = await getOmpPreviewSkills(workspace) as JsonObject[]
-  assert.ok(skills.some(skill => skill.name === "preview-fixture"))
+  const fixture = skills.find(skill => skill.name === "preview-fixture")!
+  assert.ok(fixture)
+  const details = await readDiscoveredSkill(workspace, skills, String(fixture.name), String(fixture.filePath))
+  assert.equal((details.frontmatter as JsonObject).description, "Read-only discovery fixture")
   for (const original of before) {
     assert.deepEqual(readFileSync(original.file), original.bytes)
     assert.equal(statSync(original.file).mtimeMs, original.mtime)

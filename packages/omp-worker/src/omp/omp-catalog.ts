@@ -53,6 +53,7 @@ import { readSubagentPreview } from "./subagent-preview.js";
 import { readSubagentSync } from "./subagent-sync.js";
 import type { SubagentSyncRequest } from "@ompiui/protocol";
 import { getOmpSettings, patchOmpSettings } from "./omp-settings.js";
+import { readDiscoveredSkill } from "./omp-skill-details.js";
 import { getOmpPreviewControls, getOmpPreviewSkills } from "./omp-preview-resources.js";
 import { withSupportedThinkingLevels } from "./model-thinking.js";
 
@@ -787,6 +788,10 @@ export class OmpCatalog implements CatalogProvider {
         code: "SESSION_NOT_FOUND",
       });
     if (query === "skills.list") return getOmpPreviewSkills(summary.cwd);
+    if (query === "skills.get") {
+      if (typeof params.name !== "string" || typeof params.filePath !== "string") throw Object.assign(new Error("Skill identity is required"), { code: "INVALID_REQUEST" });
+      return readDiscoveredSkill(summary.cwd, await getOmpPreviewSkills(summary.cwd), params.name, params.filePath);
+    }
     if (query === "controls.get") return getOmpPreviewControls(summary.cwd);
     const pageParams = {
       cursor: typeof params.cursor === "string" ? params.cursor : undefined,
