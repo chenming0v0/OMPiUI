@@ -1,3 +1,8 @@
+## [v0.6.53] - 2026-11-02
+
+- fix(app): keep tool execution counts stable across snapshot merges (e7c5845)
+- verification: 发布准备 `npm run validate` 全流程通过：worker 355 项（332 通过／23 跳过）、server 327 项（326 通过／1 跳过）、app 37、protocol 19、relay 59、tui 16 全部通过；类型检查与生产构建通过。闪烁复现测试锁定「有结果 + awaitingSnapshot 保持已结算计数」；实机冷会话高频采样计数恒定无翻转。
+
 ## [v0.6.52] - 2026-11-02
 
 - feat(omp-worker): record automatic title failures as structured diagnostics (dcda63e)

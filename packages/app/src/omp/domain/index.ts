@@ -214,7 +214,10 @@ export type PiToolExecution = PiToolExecutionState & {
 }
 
 export function getToolExecutionStatus(execution: PiToolExecution): 'pending' | 'running' | 'completed' | 'error' | 'unknown' {
-  if (execution.awaitingSnapshot) return 'unknown'
+  // awaitingSnapshot 是 disk preview / 缓存水印：只对没有终态证据的执行降为
+  // unknown。已有 result/completedAt 的执行若也打回 unknown，快照合并与正式
+  // 数据交替应用时计数会 0↔N 闪烁（工具行来回跳变）。
+  if (execution.awaitingSnapshot && !execution.result && execution.completedAt === undefined && !execution.error) return 'unknown'
   if (isTaskExecution(execution)) return getTaskExecutionOutcome(execution).presentationStatus
   if (execution.result) {
     type FailureDetails = { error?: unknown; mergeError?: unknown; service?: { state?: unknown } }
