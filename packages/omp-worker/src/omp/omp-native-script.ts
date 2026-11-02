@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from "node:child_process"
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs"
+import { homedir } from "node:os"
 import path from "node:path"
 import { locateExecutable, ompCommandEnvironment, resolveOmpBunCommand, resolveOmpCommand } from "./omp-command.js"
 import { resolveInstalledOmpRuntime } from "./omp-runtime.js"
@@ -39,6 +40,10 @@ export function resolveOmpPackageRoot(bin?: string, env: NodeJS.ProcessEnv = pro
       candidates.push(directory, path.join(directory, "node_modules", packageName))
       if (directory === path.dirname(directory)) break
     }
+    // bun 全局安装的 CLI 是 trampoline（$BUN_INSTALL/bin/omp.exe），回溯不到包体；
+    // 按文档化的安装布局直接补上 install/global 根。
+    const bunInstall = env.BUN_INSTALL?.trim() || path.join(homedir(), ".bun")
+    candidates.push(path.join(bunInstall, "install", "global", "node_modules", packageName))
     if (runtime) candidates.push(path.join(runtime.root, "node_modules", packageName))
   }
   const incompatible: string[] = []

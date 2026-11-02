@@ -32,7 +32,7 @@ function fixture(t: TestContext) {
 
 test("native source resolver follows selected CLI instead of ambient installations", { skip: ambientRuntimePresent }, t => {
   const f = fixture(t)
-  const env = { ...process.env, OMPI_OMP_RUNTIME_DIR: undefined, OMPI_OMP_PACKAGE_ROOT: undefined }
+  const env = { ...process.env, OMPI_OMP_RUNTIME_DIR: undefined, OMPI_OMP_PACKAGE_ROOT: undefined, BUN_INSTALL: path.join(f.directory, "absent-bun") }
   assert.equal(resolveOmpPackageRoot(f.cli, env), realpathSync(f.root))
   const unknown = path.join(f.directory, "unknown.mjs")
   writeFileSync(unknown, '#!/usr/bin/env node\nconsole.log("omp 18.3.1 (fixture)")\n')
@@ -64,4 +64,23 @@ test("an explicit source root does not bypass selected CLI version verification"
   assert.throws(() => resolveOmpPackageRoot(path.join(f.directory, "missing.exe"), {
     ...process.env, OMPI_OMP_PACKAGE_ROOT: f.root,
   }), (error: unknown) => error instanceof Error && "code" in error && error.code === "OMP_VERSION_UNVERIFIED")
+})
+
+test("bun global installation root is searched when the CLI entry cannot be backtracked", t => {
+  const f = fixture(t)
+  const bunPackage = path.join(f.directory, "bun-home", "install", "global", "node_modules", "@oh-my-pi", "pi-coding-agent")
+  mkdirSync(path.join(bunPackage, "src", "config"), { recursive: true })
+  writeFileSync(path.join(bunPackage, "package.json"), JSON.stringify({ name: "@oh-my-pi/pi-coding-agent", version: "18.3.1" }))
+  writeFileSync(path.join(bunPackage, "src", "config", "settings.ts"), "export {}\n")
+  const unknown = path.join(f.directory, "unknown.mjs")
+  writeFileSync(unknown, '#!/usr/bin/env node\nconsole.log("omp 18.3.1 (fixture)")\n')
+  const env = { ...process.env, OMPI_OMP_RUNTIME_DIR: undefined, OMPI_OMP_PACKAGE_ROOT: undefined, BUN_INSTALL: path.join(f.directory, "bun-home") }
+  assert.equal(resolveOmpPackageRoot(unknown, env), realpathSync(bunPackage))
+  // 版本不符时落进 incompatible，报错从含糊的 OMP_SOURCE_MISSING 升级为明确的版本不匹配。
+  writeFileSync(path.join(bunPackage, "package.json"), JSON.stringify({ name: "@oh-my-pi/pi-coding-agent", version: "18.8.0" }))
+  assert.throws(() => resolveOmpPackageRoot(unknown, env), (error: unknown) => {
+    assert.ok(error instanceof Error && "code" in error)
+    assert.equal(error.code, "OMP_SOURCE_VERSION_MISMATCH")
+    return true
+  })
 })
