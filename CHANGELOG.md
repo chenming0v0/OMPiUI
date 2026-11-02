@@ -1,3 +1,7 @@
+## [v0.6.54] - 2026-11-02
+
+- fix(app): 会话工具列表仅在 registry 变化时刷新 (20e8884)
+
 ## [v0.6.53] - 2026-11-02
 
 - fix(app): keep tool execution counts stable across snapshot merges (e7c5845)
