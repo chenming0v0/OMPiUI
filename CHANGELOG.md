@@ -1,3 +1,9 @@
+## [v0.6.52] - 2026-11-02
+
+- feat(omp-worker): record automatic title failures as structured diagnostics (dcda63e)
+- fix(omp-worker): resolve OMP package root from the bun global install root (08c671c)
+- verification: 发布准备 `npm run validate` 全流程通过：worker 355 项（332 通过／23 跳过）、server 327 项（326 通过／1 跳过）、app 37、protocol 19、relay 59、tui 16 全部通过；类型检查与生产构建通过。#424 的 bun 全局根解析在轻量模拟（runtime 移开）下实机验证：controls/skills 冷预览面板即时正常；#425 标题失败可诊断化覆盖 generate/apply 两阶段单测。
+
 ## [v0.6.51] - 2026-11-01
 
 - test(worker): skip shim launch tests when an installed OMP runtime takes precedence (0218ba1)
