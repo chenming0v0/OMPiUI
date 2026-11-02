@@ -76,7 +76,10 @@ export function MobileProvidersSettings({
     <>
       <section className="min-w-0">
         <header className="mb-4 flex items-center justify-between gap-2">
-          <h2 className="text-base font-semibold text-text-100">{t('providers.title')}</h2>
+          <div className="flex min-w-0 items-center gap-2">
+            <h2 className="text-base font-semibold text-text-100">{t('providers.title')}</h2>
+            <ModelSyncStatus status={syncStatus} />
+          </div>
           <div className="flex items-center gap-1">
             <button
               type="button"
@@ -99,7 +102,6 @@ export function MobileProvidersSettings({
             </button>
           </div>
         </header>
-        <ModelSyncStatus status={syncStatus} />
         {loadError && (
           <p role="alert" className="mb-3 break-words text-sm text-danger-100">
             {t('providers.loadFailedWith', { message: loadError })}
