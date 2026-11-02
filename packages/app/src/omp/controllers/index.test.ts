@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { JsonObject } from '@ompiui/protocol'
 import type { PiBranchPage } from '../domain/index.js'
 import * as transport from '../transport/index.js'
-import { loadPiSessionData, refreshPiSessionState, refreshPiBranch, returnToLatestPiBranch, forkPiSession, navigatePiTree } from './index.js'
+import { loadPiSessionTools, loadPiSessionRegistry, loadPiSessionData, refreshPiSessionState, refreshPiBranch, returnToLatestPiBranch, forkPiSession, navigatePiTree } from './index.js'
 import { piSessionStateStore, piBranchStore } from '../state/index.js'
 import { ompSubagentStore } from '../ompSubagentStore'
 import { composerDraftKey, getComposerDraft, updateComposerDraft } from '../../features/chat/input/composerDraftStore'
@@ -22,6 +22,16 @@ describe('session state response ordering', () => {
     piSessionStateStore.clearAll()
     piBranchStore.clear('session-a')
     ompSubagentStore.clearAll()
+  })
+
+  it('reads fresh tools after registry changes even when the general registry cache is warm', async () => {
+    const registry = { sdkVersion: 'test', tools: [{ name: 'read' }], activeTools: ['read'], commands: [], extensions: null, eventHandlers: null }
+    const load = vi.spyOn(transport, 'getPiSessionRegistry')
+      .mockResolvedValueOnce(registry)
+      .mockResolvedValueOnce({ ...registry, tools: [{ name: 'read' }, { name: 'bash' }] })
+    await loadPiSessionRegistry('registry-tools-refresh')
+    expect(await loadPiSessionTools('registry-tools-refresh')).toEqual([{ name: 'read' }, { name: 'bash' }])
+    expect(load).toHaveBeenCalledTimes(2)
   })
 
   it('does not let an older state read overwrite newer model, thinking and idle state', async () => {

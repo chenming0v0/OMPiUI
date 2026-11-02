@@ -119,8 +119,8 @@ export const SessionTreePanel = memo(function SessionTreePanel({
   const [nativeLoading, setNativeLoading] = useState(false)
   const [nativeLoadError, setNativeLoadError] = useState<string | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
-  const [tools, setTools] = useState<ToolDescriptor[]>([])
-  const [toolStatus, setToolStatus] = useState<{ scope: string; loading: boolean; error: string | null } | null>(null)
+  const [toolSnapshot, setToolSnapshot] = useState<{ scope: string; tools?: ToolDescriptor[]; error: string | null } | null>(null)
+  const [toolsRevision, setToolsRevision] = useState(0)
   const [previewControls, setPreviewControls] = useState<{ scope: string; value?: JsonObject; error?: string } | null>(null)
   const [controlsRevision, setControlsRevision] = useState(0)
   const diskPreview = state?.diskPreview === true
@@ -218,22 +218,41 @@ export const SessionTreePanel = memo(function SessionTreePanel({
     return () => controller.abort()
   }, [capabilities.sessionControlsRead, controlsRevision, diskPreview, interruptScope, mode, sessionId])
 
-  // Only a running runtime can enumerate the complete builtin/extension/MCP tool roster.
+  // Registry changes, not streaming/queue/head state, invalidate the tool roster.
+  useEffect(() => {
+    if (mode !== 'controls' || !runtimeLoaded) return
+    let timer: ReturnType<typeof window.setTimeout> | undefined
+    const updated = (event: Event) => {
+      if ((event as CustomEvent<{ sessionId?: string }>).detail?.sessionId !== sessionId) return
+      window.clearTimeout(timer)
+      timer = window.setTimeout(() => setToolsRevision(value => value + 1), 200)
+    }
+    window.addEventListener('ompiui:registry-updated', updated)
+    return () => {
+      window.clearTimeout(timer)
+      window.removeEventListener('ompiui:registry-updated', updated)
+    }
+  }, [interruptScope, mode, runtimeLoaded, sessionId])
+
+  // Keep the last roster visible during a same-session refresh, including failures.
   useEffect(() => {
     if (mode !== 'controls') return
-    setTools([])
-    if (!runtimeLoaded) { setToolStatus(null); return }
+    if (!runtimeLoaded) { setToolSnapshot(null); return }
     const controller = new AbortController()
-    setToolStatus({ scope: interruptScope, loading: true, error: null })
     void loadPiSessionTools(sessionId, controller.signal)
-      .then(descriptors => {
-        if (controller.signal.aborted) return
-        setTools(descriptors)
-        setToolStatus({ scope: interruptScope, loading: false, error: null })
+      .then(tools => {
+        if (!controller.signal.aborted) setToolSnapshot({ scope: interruptScope, tools, error: null })
       })
-      .catch(cause => { if (!controller.signal.aborted) setToolStatus({ scope: interruptScope, loading: false, error: cause instanceof Error ? cause.message : String(cause) }) })
+      .catch(cause => {
+        if (controller.signal.aborted) return
+        setToolSnapshot(current => ({
+          scope: interruptScope,
+          tools: current?.scope === interruptScope ? current.tools : undefined,
+          error: cause instanceof Error ? cause.message : String(cause),
+        }))
+      })
     return () => controller.abort()
-  }, [interruptScope, mode, runtimeLoaded, sessionId, state])
+  }, [interruptScope, mode, runtimeLoaded, sessionId, toolsRevision])
 
   const treeGraph = useMemo(
     () => buildSessionTreeGraph(nativeTree, leafId, type => t(`sessionTree.entryTypes.${type}`)),
@@ -442,12 +461,13 @@ export const SessionTreePanel = memo(function SessionTreePanel({
   }, [applyReplacement, capabilities.sessionImport, importCwd, importPath, runEntryCommand, sessionId])
 
   const queuedCount = (queue.steering?.length ?? 0) + (queue.followUp?.length ?? 0)
+  const toolsVisible = toolSnapshot?.scope === interruptScope ? toolSnapshot : null
+  const tools = toolsVisible?.tools ?? []
+  const toolsKnown = runtimeLoaded && toolsVisible?.tools !== undefined
   const activeToolCount = activeTools.length
   const totalToolCount = tools.length
   const runtimeBusy = compactionOperation !== 'none' || retryPhase === 'waiting' || retryPhase === 'running'
   const interruptMode = configuredControls?.interruptMode ?? state?.interruptMode
-  const toolsVisible = toolStatus?.scope === interruptScope ? toolStatus : null
-  const toolsKnown = runtimeLoaded && toolsVisible?.loading === false && toolsVisible.error === null
 
   const initializeRuntime = () => runRuntimeCommand('initialize', async () => {
     if (!capabilities.sessionInitialize) return

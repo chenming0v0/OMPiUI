@@ -1,5 +1,7 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import type { ToolDescriptor } from '@ompiui/protocol'
+import { serverStore } from '../store/serverStore'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionTreePanel } from './SessionTreePanel'
 
 const fixtures = vi.hoisted(() => ({
@@ -91,6 +93,122 @@ describe('cold session controls', () => {
     render(<SessionTreePanel sessionId="live" mode="controls" />)
     expect(await screen.findByRole('alert')).toHaveTextContent('Runtime resources unavailable')
     expect(screen.queryByText(/0\/0/)).not.toBeInTheDocument()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('keeps tool rows mounted through polling, streaming, queue and active-tool changes', async () => {
+    fixtures.state = { isIdle: true, activeTools: ['read'], queue: {} }
+    const view = render(<SessionTreePanel sessionId="live" mode="controls" />)
+    const row = await screen.findByText('read')
+    for (const patch of [
+      { head: { revision: 2 } }, { isIdle: false, isStreaming: true },
+      { queue: { steering: ['next'] } }, { activeTools: [] },
+      { isIdle: true, isStreaming: false },
+    ]) {
+      fixtures.state = { ...fixtures.state, ...patch }
+      view.rerender(<SessionTreePanel sessionId="live" mode="controls" onNavigateSession={vi.fn()} />)
+      expect(screen.getByText('read')).toBe(row)
+      expect(row).toBeInTheDocument()
+    }
+    expect(screen.getByText(/0\/1/)).toBeInTheDocument()
+    expect(fixtures.tools).toHaveBeenCalledTimes(1)
+  })
+
+  it('debounces registry notifications and keeps rows while a refresh is pending', async () => {
+    fixtures.state = { isIdle: true, activeTools: ['read'], queue: {} }
+    render(<SessionTreePanel sessionId="live" mode="controls" />)
+    const row = await screen.findByText('read')
+    const pending = Promise.withResolvers<ToolDescriptor[]>()
+    fixtures.tools.mockReturnValueOnce(pending.promise)
+    vi.useFakeTimers()
+    const updated = (sessionId: string) => window.dispatchEvent(new CustomEvent('ompiui:registry-updated', { detail: { sessionId } }))
+    await act(async () => { updated('other'); await vi.advanceTimersByTimeAsync(250) })
+    expect(fixtures.tools).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      updated('live')
+      await vi.advanceTimersByTimeAsync(150)
+      updated('live')
+      await vi.advanceTimersByTimeAsync(150)
+      updated('live')
+      await vi.advanceTimersByTimeAsync(199)
+    })
+    expect(fixtures.tools).toHaveBeenCalledTimes(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+    expect(fixtures.tools).toHaveBeenCalledTimes(2)
+    expect(screen.getByText('read')).toBe(row)
+    expect(screen.getByText(/1\/1/)).toBeInTheDocument()
+    await act(async () => { pending.resolve([{ name: 'read' }, { name: 'bash' }]) })
+    expect(screen.getByText('read')).toBe(row)
+    expect(screen.getByText('bash')).toBeInTheDocument()
+    expect(screen.getByText(/1\/2/)).toBeInTheDocument()
+  })
+
+  it('preserves the last roster on refresh failure and recovers on the next registry update', async () => {
+    fixtures.state = { isIdle: true, activeTools: ['read'], queue: {} }
+    render(<SessionTreePanel sessionId="live" mode="controls" />)
+    const row = await screen.findByText('read')
+    fixtures.tools.mockRejectedValueOnce(new Error('Registry temporarily unavailable'))
+    vi.useFakeTimers()
+    const updated = () => window.dispatchEvent(new CustomEvent('ompiui:registry-updated', { detail: { sessionId: 'live' } }))
+    await act(async () => { updated(); await vi.advanceTimersByTimeAsync(200) })
+    expect(screen.getByRole('alert')).toHaveTextContent('Registry temporarily unavailable')
+    expect(screen.getByText('read')).toBe(row)
+    expect(screen.getByText(/1\/1/)).toBeInTheDocument()
+    await act(async () => { updated(); await vi.advanceTimersByTimeAsync(200) })
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.getByText('read')).toBe(row)
+  })
+
+  it('cancels stale loads and debounce timers when switching sessions', async () => {
+    fixtures.state = { isIdle: true, activeTools: ['read'], queue: {} }
+    const pending = Promise.withResolvers<ToolDescriptor[]>()
+    fixtures.tools.mockReturnValueOnce(pending.promise)
+    const view = render(<SessionTreePanel sessionId="first" mode="controls" />)
+    const signal = fixtures.tools.mock.calls[0][1] as AbortSignal
+    vi.useFakeTimers()
+    act(() => { window.dispatchEvent(new CustomEvent('ompiui:registry-updated', { detail: { sessionId: 'first' } })) })
+    fixtures.tools.mockResolvedValueOnce([{ name: 'bash' }])
+    await act(async () => { view.rerender(<SessionTreePanel sessionId="second" mode="controls" />) })
+    expect(signal.aborted).toBe(true)
+    await act(async () => { pending.resolve([{ name: 'old-tool' }]); await vi.advanceTimersByTimeAsync(300) })
+    expect(screen.getByText('bash')).toBeInTheDocument()
+    expect(screen.queryByText('old-tool')).not.toBeInTheDocument()
+    expect(fixtures.tools).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not expose the previous server roster while the new server is loading', async () => {
+    let generation = 100
+    vi.spyOn(serverStore, 'getActiveServerGeneration').mockImplementation(() => generation)
+    fixtures.state = { isIdle: true, activeTools: ['read'], queue: {} }
+    const view = render(<SessionTreePanel sessionId="live" mode="controls" />)
+    await screen.findByText('read')
+    const pending = Promise.withResolvers<ToolDescriptor[]>()
+    fixtures.tools.mockReturnValueOnce(pending.promise)
+    generation++
+    view.rerender(<SessionTreePanel sessionId="live" mode="controls" onNavigateSession={vi.fn()} />)
+    expect(screen.queryByText('read')).not.toBeInTheDocument()
+    await act(async () => { pending.resolve([{ name: 'new-server-tool' }]) })
+    expect(screen.getByText('new-server-tool')).toBeInTheDocument()
+  })
+
+  it('clears the live roster in disk preview and reloads it only on explicit runtime availability', async () => {
+    fixtures.state = { isIdle: true, activeTools: ['read'], queue: {} }
+    const view = render(<SessionTreePanel sessionId="live" mode="controls" />)
+    await screen.findByText('read')
+    fixtures.state = { ...fixtures.state, diskPreview: true }
+    view.rerender(<SessionTreePanel sessionId="live" mode="controls" onNavigateSession={vi.fn()} />)
+    await waitFor(() => expect(fixtures.controls).toHaveBeenCalled())
+    expect(screen.queryByText('read')).not.toBeInTheDocument()
+    expect(fixtures.tools).toHaveBeenCalledTimes(1)
+    expect(fixtures.initialize).not.toHaveBeenCalled()
+    fixtures.state = { ...fixtures.state, diskPreview: false }
+    view.rerender(<SessionTreePanel sessionId="live" mode="controls" onNavigateSession={vi.fn()} />)
+    expect(await screen.findByText('read')).toBeInTheDocument()
+    expect(fixtures.tools).toHaveBeenCalledTimes(2)
   })
 
   it('preserves configuration read errors', async () => {
