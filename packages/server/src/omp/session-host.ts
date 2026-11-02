@@ -572,6 +572,7 @@ export class SessionHost {
           const diskQueries: Record<string, true> = {
             "controls.get": true,
             "skills.list": true,
+            "skills.get": true,
             "state.get": true,
             "branch.get": true,
             "entries.get": true,

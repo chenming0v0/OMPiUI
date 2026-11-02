@@ -252,7 +252,23 @@
     "filterPlaceholder": "筛选 Skills...",
     "loadingSkills": "加载 Skills...",
     "failedToLoad": "加载 Skills 失败",
-    "noSkills": "暂无 Skills"
+    "noSkills": "暂无 Skills",
+    "name": "名称",
+    "description": "描述",
+    "otherParameters": "其他参数",
+    "discoveryInfo": "发现信息",
+    "file": "文件",
+    "directory": "目录",
+    "source": "来源",
+    "modelInvocation": "模型调用",
+    "modelInvocationEnabled": "允许",
+    "modelInvocationDisabled": "禁用",
+    "loadingDetails": "读取元数据…",
+    "detailsFailed": "无法读取 Skill 元数据",
+    "noOtherParameters": "没有其他参数",
+    "emptyString": "空字符串",
+    "emptyArray": "空列表",
+    "emptyObject": "空对象"
   },
   "toast": {
     "clearAll": "清除全部"

@@ -254,7 +254,23 @@
     "filterPlaceholder": "Filter skills...",
     "loadingSkills": "Loading skills...",
     "failedToLoad": "Failed to load skills",
-    "noSkills": "No skills found"
+    "noSkills": "No skills found",
+    "name": "Name",
+    "description": "Description",
+    "otherParameters": "Other parameters",
+    "discoveryInfo": "Discovery information",
+    "file": "File",
+    "directory": "Directory",
+    "source": "Source",
+    "modelInvocation": "Model invocation",
+    "modelInvocationEnabled": "Allowed",
+    "modelInvocationDisabled": "Disabled",
+    "loadingDetails": "Reading metadata…",
+    "detailsFailed": "Unable to read skill metadata",
+    "noOtherParameters": "No other parameters",
+    "emptyString": "Empty string",
+    "emptyArray": "Empty list",
+    "emptyObject": "Empty object"
   },
   "toast": {
     "clearAll": "Clear all"

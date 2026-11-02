@@ -821,6 +821,10 @@ export function getPiSkills(sessionId: string, signal?: AbortSignal): Promise<Sk
   return postPiSessionCommand(sessionId, 'skills.list', undefined, signal)
 }
 
+export function getPiSkillDetails(sessionId: string, skill: Pick<Skill, 'name' | 'filePath'>, signal?: AbortSignal): Promise<{ frontmatter: JsonObject }> {
+  return postPiSessionCommand(sessionId, 'skills.get', { name: skill.name, filePath: skill.filePath }, signal)
+}
+
 export function getPiSessionControls(sessionId: string, signal?: AbortSignal): Promise<JsonObject> {
   return postPiSessionCommand(sessionId, 'controls.get', undefined, signal)
 }
