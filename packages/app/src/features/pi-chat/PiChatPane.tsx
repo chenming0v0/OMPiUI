@@ -377,8 +377,8 @@ export function PiChatPane({
   const [sendAlert, setSendAlert] = useState<PendingSendAlertState | null>(null)
   useEffect(() => pendingSendStore.onAlert(setSendAlert), [])
   const displayedQueues = useMemo(() => {
-    const visible = reconcilePendingSends(pendingSends.filter(send => send.serverGeneration === activeServerGeneration && send.sessionId === sessionId), baseItems)
-    const remaining = reconcileQueuedPendingSends(visible, [...queuedSteering, ...queuedFollowUps])
+    const visible = pendingSends.filter(send => send.serverGeneration === activeServerGeneration && send.sessionId === sessionId)
+    const remaining = reconcilePendingSends(reconcileQueuedPendingSends(visible, [...queuedSteering, ...queuedFollowUps]), baseItems)
     return { steering: appendPendingQueueEntries(queuedSteering, remaining, 'steering'), followUp: appendPendingQueueEntries(queuedFollowUps, remaining, 'followUp') }
   }, [pendingSends, activeServerGeneration, sessionId, baseItems, queuedSteering, queuedFollowUps])
 
@@ -397,6 +397,8 @@ export function PiChatPane({
     async (kind: 'steering' | 'followUp', index: number, entryId: string) => {
       if (!sessionId) return
       const capturedIdentity = paneIdentityRef.current
+      index = (kind === 'steering' ? queuedSteering : queuedFollowUps).findIndex(entry => entry.entryId === entryId)
+      if (index < 0) return
       try {
         const entry = await stopCoordinatorRef.current.submit(JSON.stringify([activeServerGeneration, sessionId]), () => {
           if (paneIdentityRef.current !== capturedIdentity) throw new Error('Session changed before queue selection')
@@ -418,7 +420,7 @@ export function PiChatPane({
         uiErrorHandler('remove queued message', error)
       }
     },
-    [sessionId, activeServer, activeServerGeneration],
+    [sessionId, activeServer, activeServerGeneration, queuedSteering, queuedFollowUps],
   )
   /**
    * 立即提交队列中的一条（本轮 steer / 下一轮 prompt）。worker 端原子地
@@ -430,18 +432,22 @@ export function PiChatPane({
       if (!sessionId) return
       const capturedIdentity = paneIdentityRef.current
       const entries = kind === 'steering' ? queuedSteering : queuedFollowUps
+      index = entries.findIndex(entry => entry.entryId === entryId)
       const selected = entries[index]
-      if (!selected || selected.entryId !== entryId) return
-      const pending = createPendingSend(
-        sessionId,
-        activeServerGeneration,
-        selected.text,
-        selected.images?.map(image => ({ mimeType: image.mimeType })) ?? [],
-        baseItems,
-        entryId,
-        [...queuedSteering, ...queuedFollowUps],
-        'steering',
-      )
+      if (!selected) return
+      const pending = {
+        ...createPendingSend(
+          sessionId,
+          activeServerGeneration,
+          selected.text,
+          selected.images?.map(image => ({ mimeType: image.mimeType })) ?? [],
+          baseItems,
+          entryId,
+          [...queuedSteering, ...queuedFollowUps],
+          'steering',
+        ),
+        showInTimeline: true,
+      }
       pendingSendStore.update(current => [...withoutQueueEntry(current, activeServerGeneration, sessionId, entryId), pending])
       let accepted = false
       try {
@@ -468,6 +474,8 @@ export function PiChatPane({
     async (kind: 'steering' | 'followUp', index: number, entryId: string) => {
       if (!sessionId) return
       const capturedIdentity = paneIdentityRef.current
+      index = (kind === 'steering' ? queuedSteering : queuedFollowUps).findIndex(entry => entry.entryId === entryId)
+      if (index < 0) return
       try {
         await stopCoordinatorRef.current.submit(JSON.stringify([activeServerGeneration, sessionId]), () => {
           if (paneIdentityRef.current !== capturedIdentity) throw new Error('Session changed before queue selection')
@@ -479,7 +487,7 @@ export function PiChatPane({
         uiErrorHandler('remove queued message', error)
       }
     },
-    [sessionId, activeServerGeneration],
+    [sessionId, activeServerGeneration, queuedSteering, queuedFollowUps],
   )
 
   const handleQueueOpenInSideChat = useCallback(
@@ -496,7 +504,7 @@ export function PiChatPane({
     pendingSendStore.update(current => {
       const sameServer = current.filter(send => send.serverGeneration === activeServerGeneration)
       const visible = sameServer.filter(send => send.sessionId === sessionId)
-      const remaining = reconcileQueuedPendingSends(reconcilePendingSends(visible, baseItems), [...queuedSteering, ...queuedFollowUps])
+      const remaining = reconcilePendingSends(reconcileQueuedPendingSends(visible, [...queuedSteering, ...queuedFollowUps]), baseItems)
       if (sameServer.length === current.length && remaining === visible) return current
       // 按 id 回写：存活 pending 可能带着更新后的 baselineTimestamps。
       const next = new Map(remaining.map(send => [send.id, send]))

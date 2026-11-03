@@ -604,7 +604,7 @@ const UserMessageView = memo(function UserMessageView({
 
         {item.submissionStatus && (
           <div role="status" className="text-[length:var(--fs-xs)] text-text-400">
-            {t(item.submissionStatus === 'submitting' ? 'chat:chatArea.submittingMessage' : 'chat:chatArea.submittedMessage')}
+            {t(item.submissionStatus === 'queued' ? 'chat:chatArea.waitingMessage' : item.submissionStatus === 'submitting' ? 'chat:chatArea.submittingMessage' : 'chat:chatArea.submittedMessage')}
           </div>
         )}
 

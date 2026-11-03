@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import i18n from '../../i18n'
 import type { Model, Api } from '../../omp/vendor/pi-ai'
-import type { PiSessionRuntimeState } from '../../omp/domain'
+import type { PiSessionRuntimeState, PiTimelineItem, SessionMessageEntry } from '../../omp/domain'
 import { SessionBackgroundJobs } from '../chat/input/BackgroundJobsIndicator'
 import { serverStore, LOCAL_SERVER_ID } from '../../store/serverStore'
 import { notificationStore } from '../../store/notificationStore'
@@ -17,11 +17,13 @@ const mocks = vi.hoisted(() => ({
   models: [] as Model<Api>[],
   state: null as Partial<PiSessionRuntimeState> | null,
   listedActive: false,
-  branch: { items: [] },
+  branch: { items: [] as SessionMessageEntry[] },
   loadModels: vi.fn(), loadSession: vi.fn(), setModel: vi.fn(), setThinking: vi.fn(),
   refreshState: vi.fn(), refreshBranch: vi.fn(), openSession: vi.fn(), sendMessage: vi.fn(),
   interrupt: vi.fn(), abort: vi.fn(), abortCompaction: vi.fn(), getJobs: vi.fn(),
   editorState: vi.fn(), slashCommands: vi.fn(), completions: vi.fn(),
+  sendQueued: vi.fn(), discardQueued: vi.fn(), removeQueued: vi.fn(),
+  touch: false,
 }))
 
 // Only the data/transport boundary and unrelated pane surfaces are replaced.
@@ -48,8 +50,11 @@ vi.mock('../../omp/controllers/index.js', () => ({
 vi.mock('../../omp/transport/index.js', () => ({
   getPiCommandCompletions: mocks.completions, getPiAsyncJobs: mocks.getJobs,
   inspectPiAsyncJob: vi.fn(), cancelPiAsyncJob: vi.fn(),
-  manageSessionGoal: vi.fn(), removeQueuedMessage: vi.fn(), discardQueuedMessage: vi.fn(),
-  sendQueuedMessage: vi.fn(), waitHostCommand: vi.fn(), getPiTree: vi.fn(),
+  manageSessionGoal: vi.fn(), removeQueuedMessage: mocks.removeQueued, discardQueuedMessage: mocks.discardQueued,
+  sendQueuedMessage: mocks.sendQueued, waitHostCommand: vi.fn(), getPiTree: vi.fn(),
+}))
+vi.mock('../../hooks/useInputCapabilities', () => ({
+  useInputCapabilities: () => ({ canHover: !mocks.touch, hasCoarsePointer: mocks.touch, hasTouch: mocks.touch, preferTouchUi: mocks.touch }),
 }))
 vi.mock('../../omp/capabilities', () => ({
   usePiCapabilities: () => ({ promptSteer: true, promptFollowUp: true, promptInterrupt: true, backgroundJobs: true }),
@@ -79,7 +84,15 @@ vi.mock('../chat/FolderProjectDropOverlay.js', () => ({ FolderProjectDropOverlay
 vi.mock('../chat/useFolderProjectDrop.js', () => ({ useFolderProjectDrop: () => false }))
 vi.mock('../chat/index.js', async () => ({
   InputBox: (await import('../chat/InputBox')).InputBox,
-  ChatArea: forwardRef(({ isStreaming, canUndo }: { isStreaming?: boolean; canUndo?: boolean }, _ref) => <div data-testid="transcript" data-streaming={String(isStreaming)} data-can-undo={String(canUndo)} />),
+  ChatArea: forwardRef(({ isStreaming, canUndo, items }: { isStreaming?: boolean; canUndo?: boolean; items: PiTimelineItem[] }, _ref) => (
+    <div data-testid="transcript" data-streaming={String(isStreaming)} data-can-undo={String(canUndo)}>
+      {items.filter(item => item.kind === 'user_message').map(item => (
+        <div key={item.entryId} data-entry-id={item.entryId} data-submission-status={item.submissionStatus}>
+          {item.blocks.filter(block => block.type === 'text').map(block => block.text).join('')}
+        </div>
+      ))}
+    </div>
+  )),
   Header: ({ sessionId }: { sessionId: string | null }) => <SessionBackgroundJobs sessionId={sessionId} />,
 }))
 
@@ -142,6 +155,11 @@ beforeEach(async () => {
   }]
   mocks.state = { model: { provider: 'openai', id: 'preview-model' }, thinkingLevel: 'off' }
   mocks.listedActive = false
+  mocks.touch = false
+  mocks.branch = { items: [] }
+  mocks.sendQueued.mockResolvedValue({ accepted: true })
+  mocks.discardQueued.mockResolvedValue(undefined)
+  mocks.removeQueued.mockResolvedValue({ text: 'remaining queued message' })
   mocks.getJobs.mockResolvedValue({ running: [], recent: [] })
   for (const mock of [mocks.loadSession, mocks.refreshState, mocks.refreshBranch, mocks.setModel, mocks.setThinking, mocks.editorState, mocks.abort, mocks.abortCompaction]) mock.mockResolvedValue(undefined)
   mocks.loadModels.mockResolvedValue(mocks.models)
@@ -163,6 +181,71 @@ afterEach(() => {
 })
 
 describe('PiChatPane with the real composer', () => {
+  it.each([false, true])('shows Send now in the transcript while thinking, through ACK, remount and history handoff (touch=%s)', async touch => {
+    mocks.touch = touch
+    const entry = { entryId: 'waiting-entry', text: 'join after thinking' }
+    mocks.state = { ...mocks.state, isStreaming: true, queue: { steeringEntries: [], followUpEntries: [entry] } }
+    const accepting = Promise.withResolvers<void>()
+    mocks.sendQueued.mockReturnValue(accepting.promise)
+    const view = render(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('chat:chatArea.sendQueuedNow') }))
+    await waitFor(() => expect(mocks.sendQueued).toHaveBeenCalledWith(sessionId, { kind: 'followUp', index: 0, entryId: entry.entryId }))
+    const transcript = screen.getByTestId('transcript')
+    const preview = within(transcript).getByText(entry.text)
+    expect(preview).toHaveAttribute('data-submission-status', 'queued')
+    expect(screen.getAllByText(entry.text)).toHaveLength(1)
+    expect(transcript).toHaveAttribute('data-streaming', 'true')
+    const previewId = preview.getAttribute('data-entry-id')
+    await act(async () => { accepting.resolve() })
+    mocks.state = { ...mocks.state, queue: { steeringEntries: [entry], followUpEntries: [] } }
+    view.rerender(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+    view.unmount()
+    const remounted = render(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+    expect(within(screen.getByTestId('transcript')).getByText(entry.text)).toHaveAttribute('data-entry-id', previewId)
+    mocks.state = { ...mocks.state, queue: { steeringEntries: [], followUpEntries: [] } }
+    remounted.rerender(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+    expect(within(screen.getByTestId('transcript')).getByText(entry.text)).toHaveAttribute('data-submission-status', 'queued')
+    mocks.branch = { items: [{ type: 'message', id: 'native-user', parentId: null, timestamp: new Date(123456).toISOString(), message: { role: 'user', timestamp: 123456, content: [{ type: 'text', text: entry.text }] } }] }
+    remounted.rerender(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+    expect(screen.getAllByText(entry.text)).toHaveLength(1)
+    expect(within(screen.getByTestId('transcript')).getByText(entry.text)).toHaveAttribute('data-entry-id', 'native-user')
+    expect(pendingSendStore.getSnapshot()).toEqual([])
+    expect(mocks.sendMessage).not.toHaveBeenCalled()
+    expect(mocks.interrupt).not.toHaveBeenCalled()
+    expect(mocks.abort).not.toHaveBeenCalled()
+  })
+
+  it('restores the original queue on Send now failure without leaving a transcript preview', async () => {
+    mocks.touch = true
+    const entry = { entryId: 'failed-entry', text: 'keep queued' }
+    mocks.state = { ...mocks.state, isStreaming: true, queue: { followUpEntries: [entry] } }
+    mocks.sendQueued.mockRejectedValue(new Error('Native queue selection rejected'))
+    render(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('chat:chatArea.sendQueuedNow') }))
+    await waitFor(() => expect(mocks.sendQueued).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByRole('button', { name: i18n.t('chat:chatArea.sendQueuedNow') })).toBeEnabled())
+    expect(within(screen.getByTestId('transcript')).queryByText(entry.text)).toBeNull()
+    expect(screen.getByText(entry.text)).toBeVisible()
+    expect(pendingSendStore.getSnapshot()).toEqual([])
+  })
+
+  it.each(['send', 'clear', 'edit'])('uses the native index for a queue sibling after a Send now preview is hidden: %s', async action => {
+    const entries = [{ entryId: 'promoted', text: 'shown in transcript' }, { entryId: 'sibling', text: 'remaining queued message' }]
+    mocks.state = { ...mocks.state, isStreaming: true, queue: { steeringEntries: entries } }
+    render(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+    fireEvent.click(screen.getAllByRole('button', { name: i18n.t('chat:chatArea.sendQueuedNow') })[0])
+    await waitFor(() => expect(mocks.sendQueued).toHaveBeenCalledTimes(1))
+    const rail = document.querySelector('[data-message-queue="current"]')! as HTMLElement
+    if (action === 'edit') {
+      fireEvent.click(within(rail).getByRole('button', { name: i18n.t('chat:chatArea.openQueueMenu') }))
+      fireEvent.click(await screen.findByText(i18n.t('chat:chatArea.editQueueItem')))
+    } else {
+      fireEvent.click(within(rail).getByRole('button', { name: i18n.t(action === 'send' ? 'chat:chatArea.sendQueuedNow' : 'chat:chatArea.clearQueueItem') }))
+    }
+    const command = action === 'send' ? mocks.sendQueued : action === 'clear' ? mocks.discardQueued : mocks.removeQueued
+    await waitFor(() => expect(command).toHaveBeenLastCalledWith(sessionId, { kind: 'steering', index: 1, entryId: 'sibling' }))
+  })
+
   it.each(['isStreaming', 'isCompacting', 'isRetrying'] as const)(
     'returns to Send when %s ends with background jobs still running (#413)', async foreground => {
       const job = { id: 'bg_413', type: 'bash', status: 'running', label: 'build assets', startTime: Date.now() }

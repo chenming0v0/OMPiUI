@@ -20,6 +20,7 @@
   "chatArea": {
     "submittingMessage": "正在提交消息…",
     "submittedMessage": "已提交，正在同步会话…",
+    "waitingMessage": "等待追加，不打断当前回复…",
     "historyWindow": "正在阅读较早历史",
     "returnToLatest": "返回最新",
     "loadingSession": "加载会话中...",

@@ -55,15 +55,42 @@ describe('pending user message handoff', () => {
     expect(reconcileQueuedPendingSends(bound, [])).toEqual([])
   })
 
-  it('keeps Send now in the native queue until history takes ownership', () => {
+  it('shows Send now below the current thinking before ACK and while the native queue waits', () => {
     const queued = { entryId: 'q2', text: 'now please' }
-    const promoted = createPendingSend('session', 1, queued.text, [], [], queued.entryId, [queued], 'steering')
-    const before = reconcileQueuedPendingSends([promoted], [queued])
-    expect(appendPendingSends([], before, 'session', label)).toEqual([])
-    expect(appendPendingQueueEntries([queued], before, 'steering')).toEqual([queued])
-    expect(appendPendingSends([], [promoted], 'session', label)).toEqual([])
+    const promoted = { ...createPendingSend('session', 1, queued.text, [], [], queued.entryId, [queued], 'steering'), showInTimeline: true }
+    const live = { kind: 'assistant_message', entryId: 'thinking', isStreaming: true } as PiTimelineItem
+    const before = appendPendingSends([live], [promoted], 'session', label)
+    expect(before[0]).toBe(live)
+    expect(before[1]).toMatchObject({ kind: 'user_message', submissionStatus: 'queued', blocks: [{ type: 'text', text: queued.text }] })
+
+    const pending = reconcileQueuedPendingSends([promoted], [queued])
+    expect(appendPendingSends([live], pending, 'session', label)[1].entryId).toBe(before[1].entryId)
+    expect(appendPendingQueueEntries([queued], pending, 'steering')).toEqual([])
+    expect(appendPendingQueueEntries([queued], pending, 'followUp')).toEqual([])
     const rows = [native(queued.text, 102)]
-    expect(appendPendingSends(rows, reconcilePendingSends([promoted], rows), 'session', label)).toBe(rows)
+    const consumed = reconcileQueuedPendingSends(pending, [])
+    expect(reconcilePendingSends(consumed, rows)).toEqual([])
+    expect(appendPendingSends(rows, consumed, 'session', label)).toBe(rows)
+  })
+
+  it('does not let an identical native message steal a Send now preview still in the queue', () => {
+    const queued = { entryId: 'waiting-repeat', text: 'same request' }
+    const promoted = { ...createPendingSend('session', 1, queued.text, [], [], queued.entryId, [queued], 'steering'), showInTimeline: true }
+    const bound = reconcileQueuedPendingSends([promoted], [queued])
+    const earlierMessage = [native(queued.text, 101)]
+    expect(reconcilePendingSends(bound, earlierMessage)).toBe(bound)
+    expect(appendPendingSends([], bound, 'session', label)).toHaveLength(1)
+  })
+
+  it('bridges queue consumption to native history without losing the Send now preview', () => {
+    const queued = { entryId: 'q-gap', text: '', images: [{ mimeType: 'image/png' }] }
+    const promoted = { ...createPendingSend('session', 1, queued.text, queued.images, [], queued.entryId, [queued], 'steering'), showInTimeline: true }
+    const bound = reconcileQueuedPendingSends([promoted], [queued])
+    const consumed = reconcileQueuedPendingSends(bound, [])
+    expect(consumed).toMatchObject([{ id: promoted.id, phase: 'accepted' }])
+    expect(appendPendingSends([], consumed, 'session', label)).toMatchObject([{ entryId: `submitted:local:${promoted.id}`, submissionStatus: 'queued', blocks: [{ type: 'text', text: '1 image(s)' }] }])
+    const history = [native('', 103, [{ type: 'image', mimeType: 'image/webp', data: 'native' }])]
+    expect(reconcilePendingSends(consumed, history)).toEqual([])
   })
 
   it('renders before session creation and keeps a stable timestamp without changing native history', () => {

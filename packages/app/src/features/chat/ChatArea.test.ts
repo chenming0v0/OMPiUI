@@ -629,6 +629,17 @@ describe('buildProcessTimeline', () => {
     expect(timeline.some(i => i.kind === 'message' && i.key === 'user-2')).toBe(true)
   })
 
+  it('does not arm a Working shell for a Send now message still waiting in the native queue', () => {
+    const waiting = { ...createUserItem('submitted:local:waiting', 2000), submissionStatus: 'queued' as const }
+    const timeline = buildProcessTimeline([waiting], {
+      turnDurationMap: new Map(),
+      sessionIsStreaming: true,
+      messageHasProcess: hasProcess,
+      messageHasFinal: hasFinal,
+    })
+    expect(timeline).toEqual([{ kind: 'message', key: waiting.entryId, item: waiting }])
+  })
+
   it('only arms the earliest empty turn when multiple users are pending', () => {
     // 快速连发：两轮都还没 assistant → 只在最早 user 下挂 Working
     const items = [
