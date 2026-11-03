@@ -11,7 +11,7 @@ vi.mock('../../i18n', () => ({
 }))
 
 import { ACCEPTED_SYNC_TIMEOUT_MS, pendingSendStore, type PendingSendAlert } from './pendingSendStore'
-import { createPendingSend } from './pendingSend'
+import { createPendingSend, reconcileQueuedPendingSends } from './pendingSend'
 
 function begin(overrides: { sessionId?: string | null; serverGeneration?: number; text?: string } = {}) {
   const send = createPendingSend(
@@ -86,6 +86,23 @@ describe('pendingSendStore', () => {
     expect(alerts).toHaveLength(1)
     expect(alerts[0].kind).toBe('not-synced')
     off()
+  })
+
+  it('does not expire a Send now preview while thinking, but times out a missing history handoff after consumption', () => {
+    vi.useFakeTimers()
+    const entry = { entryId: 'native-waiting', text: 'next request' }
+    const send = { ...createPendingSend('session-a', 1, entry.text, [], [], entry.entryId, [entry], 'steering'), showInTimeline: true }
+    pendingSendStore.begin(send)
+    pendingSendStore.accept(send.id)
+    pendingSendStore.update(current => reconcileQueuedPendingSends(current, [entry]))
+    vi.advanceTimersByTime(ACCEPTED_SYNC_TIMEOUT_MS * 2)
+    expect(pendingSendStore.getSnapshot()).toMatchObject([{ id: send.id, phase: 'queued' }])
+    expect(push).not.toHaveBeenCalled()
+    pendingSendStore.update(current => reconcileQueuedPendingSends(current, []))
+    expect(pendingSendStore.getSnapshot()[0].phase).toBe('accepted')
+    vi.advanceTimersByTime(ACCEPTED_SYNC_TIMEOUT_MS)
+    expect(pendingSendStore.getSnapshot()).toEqual([])
+    expect(push).toHaveBeenCalledTimes(1)
   })
 
   it('settles accepted sends when the native history owns them (no leftover pending)', () => {

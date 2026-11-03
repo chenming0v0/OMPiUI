@@ -20,6 +20,7 @@
   "chatArea": {
     "submittingMessage": "Submitting message…",
     "submittedMessage": "Submitted; waiting for session update…",
+    "waitingMessage": "Waiting to join; current reply continues…",
     "historyWindow": "Reading earlier history",
     "returnToLatest": "Return to latest",
     "loadingSession": "Loading session...",

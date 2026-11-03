@@ -73,7 +73,6 @@ class PendingSendStore {
     const current = this.find(id)
     if (!current || current.phase !== 'submitting') return
     this.patch(id, send => ({ ...send, phase: 'accepted' }))
-    this.armSyncTimeout(current)
   }
 
   /** 成功落入历史或被显式清理。 */
@@ -109,14 +108,19 @@ class PendingSendStore {
   }
 
   private commit(next: readonly PendingSend[]): void {
-    const live = new Set(next.map(send => send.id))
+    const previous = new Map(this.sends.map(send => [send.id, send]))
+    const live = new Map(next.map(send => [send.id, send]))
     for (const [id, timer] of [...this.syncTimers]) {
-      if (!live.has(id)) {
+      if (live.get(id)?.phase !== 'accepted') {
         clearTimeout(timer)
         this.syncTimers.delete(id)
       }
     }
     this.sends = next
+    // 原生队列中等待不算历史同步超时；出队后才开始等待历史接手。
+    for (const send of next) {
+      if (send.phase === 'accepted' && previous.get(send.id)?.phase !== 'accepted') this.armSyncTimeout(send)
+    }
     this.listeners.forEach(listener => listener())
   }
 

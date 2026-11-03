@@ -899,6 +899,10 @@ export function buildProcessTimeline(
   let current: TurnBag | null = null
 
   for (const item of visibleItems) {
+    if (item.kind === 'user_message' && item.submissionStatus === 'queued') {
+      segments.push({ kind: 'message', key: itemRenderKey(item), item })
+      continue
+    }
     if (item.kind === 'user_message') {
       current = { kind: 'turn', user: item, assistants: [] }
       segments.push(current)

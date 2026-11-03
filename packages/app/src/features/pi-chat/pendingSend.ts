@@ -13,12 +13,14 @@ export interface PendingSend {
   serverGeneration: number
   text: string
   images: readonly PendingSendImage[]
-  /** queued：普通发送已出现在原生队列并绑定 queueEntryId，由队列 UI 展示。 */
+  /** queued：发送绑定原生 queueEntryId，等待原生循环消费。 */
   phase: 'submitting' | 'accepted' | 'queued'
   baselineTimestamps: ReadonlySet<number>
   baselineQueueIds: ReadonlySet<string>
   queueEntryId?: string
   queueKind?: 'steering' | 'followUp'
+  /** 立即发送：显示在对话末尾，但仍由原生队列决定何时进入模型。 */
+  showInTimeline?: boolean
 }
 
 /** Display-only state. Never write a synthetic entry or timestamp to history. */
@@ -49,7 +51,7 @@ export function reconcilePendingSends<T extends PendingSend>(pending: readonly T
 
   const consumed = new Set<number>()
   const remaining = pending.filter(send => {
-    // 已绑定队列条目的发送只由队列生命周期清理，不被历史中的同文本行抢走。
+    // 仍在原生队列中的消息不被其他同文本历史行认领；出队后才交给历史。
     if (send.phase === 'queued') return true
     const native = items.find(item => {
       if (item.kind !== 'user_message' || send.baselineTimestamps.has(item.timestamp) || consumed.has(item.timestamp)) return false
@@ -81,7 +83,12 @@ export function reconcileQueuedPendingSends(
   const claimed = new Set(pending.flatMap(send => send.phase === 'queued' && send.queueEntryId ? [send.queueEntryId] : []))
   let changed = false
   const next = pending.flatMap(send => {
-    if (send.phase === 'queued') return live.has(send.queueEntryId ?? '') ? [send] : (changed = true, [])
+    if (send.phase === 'queued') {
+      if (live.has(send.queueEntryId ?? '')) return [send]
+      changed = true
+      // 立即发送出队后仍保留预览，直到用户消息事件/历史接手，避免同步间隙消失。
+      return send.showInTimeline ? [{ ...send, phase: 'accepted' as const }] : []
+    }
     if (send.queueEntryId) {
       if (!live.has(send.queueEntryId)) return [send]
       changed = true
@@ -103,11 +110,9 @@ export function withoutQueueEntry(pending: readonly PendingSend[], serverGenerat
   return pending.filter(send => send.serverGeneration !== serverGeneration || send.sessionId !== sessionId || send.queueEntryId !== entryId)
 }
 
-type VisiblePendingSend = PendingSend & { phase: 'submitting' | 'accepted' }
-
 export function appendPendingSends(items: PiTimelineItem[], pending: readonly PendingSend[], sessionId: string | null, imageLabel: (count: number) => string): PiTimelineItem[] {
-  // 已排队的普通发送由队列 UI 展示，不在时间线重复出现。
-  const visible = pending.filter((send): send is VisiblePendingSend => send.sessionId === sessionId && send.phase !== 'queued' && !send.queueKind)
+  // 普通排队留在输入栏；立即发送则在对话末尾等待原生消费。
+  const visible = pending.filter(send => send.sessionId === sessionId && (send.showInTimeline || (send.phase !== 'queued' && !send.queueKind)))
   const appended = reconcilePendingSends(visible, items)
     .map(send => {
       const timestamp = send.timestamp
@@ -116,7 +121,7 @@ export function appendPendingSends(items: PiTimelineItem[], pending: readonly Pe
       const text = send.images.length > previewImages.length ? `${send.text}${send.text ? '\n' : ''}${imageLabel(send.images.length)}` : send.text
       const blocks = [{ type: 'text' as const, text }, ...previewImages]
       return {
-        kind: 'user_message', entryId: id, timestamp, submissionStatus: send.phase,
+        kind: 'user_message', entryId: id, timestamp, submissionStatus: send.showInTimeline ? 'queued' : send.phase,
         rawEntry: { type: 'message', id, parentId: null, timestamp: new Date(timestamp).toISOString(), message: { role: 'user' as const, content: blocks, timestamp } },
         message: { role: 'user' as const, content: blocks, timestamp }, blocks,
       } as PiUserMessageItem
@@ -126,6 +131,8 @@ export function appendPendingSends(items: PiTimelineItem[], pending: readonly Pe
 
 /** Keep busy submissions in the queue rail from their first render through native admission. */
 export function appendPendingQueueEntries(entries: readonly ComposerQueueEntry[], pending: readonly PendingSend[], kind: 'steering' | 'followUp'): readonly ComposerQueueEntry[] {
-  const local = reconcileQueuedPendingSends(pending, entries).filter(send => send.queueKind === kind && send.phase !== 'queued')
-  return local.length === 0 ? entries : [...entries, ...local.map(send => ({ entryId: `submitted:local:${send.id}`, text: send.text, images: send.images, pending: true }))]
+  const inTimeline = new Set(pending.filter(send => send.showInTimeline).map(send => send.queueEntryId))
+  const queued = entries.some(entry => inTimeline.has(entry.entryId)) ? entries.filter(entry => !inTimeline.has(entry.entryId)) : entries
+  const local = reconcileQueuedPendingSends(pending, entries).filter(send => !send.showInTimeline && send.queueKind === kind && send.phase !== 'queued')
+  return local.length === 0 ? queued : [...queued, ...local.map(send => ({ entryId: `submitted:local:${send.id}`, text: send.text, images: send.images, pending: true }))]
 }
