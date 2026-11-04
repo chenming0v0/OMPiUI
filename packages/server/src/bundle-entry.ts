@@ -1,6 +1,11 @@
 /**
  * Public executable entry for the web server and its worker subprocesses.
  */
+if (process.argv[2] === "inspect-runtime") {
+  // 只导入解析/检查模块；不加载 server、worker entry 或 Agent 模块。
+  const { inspectOmpRuntimes } = await import("../../omp-worker/dist/omp/omp-runtime-inspection.js")
+  process.stdout.write(`${JSON.stringify(await inspectOmpRuntimes())}\n`)
+} else {
 const { dirname, join } = await import("node:path")
 const { existsSync } = await import("node:fs")
 // 原生模块（PTY）从 exe 旁的 node_modules 按绝对路径加载；
@@ -61,4 +66,5 @@ if (isWatcher) {
 } else {
   console.error("OMPiUI drives the OMP CLI (omp). Install it first: bun install -g @oh-my-pi/pi-coding-agent")
   process.exit(1)
+}
 }

@@ -56,8 +56,21 @@ pub struct ServiceDiagnostics {
     events: Vec<StartupEvent>,
     reachable: Option<bool>,
     worker_ready: Option<bool>,
+    omp_version: Option<String>,
     health_error: Option<String>,
     output: Vec<String>,
+}
+
+impl ServiceDiagnostics {
+    fn apply_health(&mut self, health: super::HealthResponse) {
+        self.reachable = Some(true);
+        self.worker_ready = health.worker_ready;
+        self.omp_version = health.omp_version;
+        self.pid = health.process_id;
+        if health.started_at.is_some() {
+            self.spawned_at = health.started_at;
+        }
+    }
 }
 
 fn now() -> u64 {
@@ -140,27 +153,15 @@ async fn read_diagnostics(
     let mut snapshot = state.startup.snapshot();
     if !snapshot.phase.busy() {
         let config = ServiceConfig::new(env_vars);
-        let url = state
-            .service_url
-            .lock()
-            .map_err(|error| error.to_string())?
-            .clone()
-            .unwrap_or(config.url);
+        let (url, token) = state.connection_snapshot()?.unwrap_or((config.url, config.initial_token));
         match service_health_with_timeout(
             &url,
-            config.initial_token.as_deref(),
+            token.as_deref(),
             Duration::from_secs(2),
         )
         .await
         {
-            Ok(health) => {
-                snapshot.reachable = Some(true);
-                snapshot.worker_ready = health.worker_ready;
-                snapshot.pid = health.process_id;
-                if health.started_at.is_some() {
-                    snapshot.spawned_at = health.started_at;
-                }
-            }
+            Ok(health) => snapshot.apply_health(health),
             Err(failure) => {
                 snapshot.reachable = Some(false);
                 snapshot.health_error = Some(match failure {
@@ -187,6 +188,26 @@ async fn read_diagnostics(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn health_omp_version_is_forwarded_independently_of_worker_ready() {
+        for version in [serde_json::json!("14.0.0"), serde_json::Value::Null] {
+            let health = serde_json::from_value(serde_json::json!({
+                "processId": 42, "workerReady": true, "ompVersion": version, "startedAt": 1234
+            })).unwrap();
+            let mut diagnostics = ServiceDiagnostics::default();
+            diagnostics.apply_health(health);
+            let value = serde_json::to_value(diagnostics).unwrap();
+            assert_eq!(value["ompVersion"], version);
+            assert_eq!(value["workerReady"], true);
+            assert_eq!(value["spawnedAt"], 1234);
+        }
+        let health = serde_json::from_value(serde_json::json!({"workerReady": true})).unwrap();
+        let mut diagnostics = ServiceDiagnostics::default();
+        diagnostics.apply_health(health);
+        assert!(serde_json::to_value(diagnostics).unwrap()["ompVersion"].is_null());
+        assert!(serde_json::to_value(ServiceDiagnostics::default()).unwrap()["ompVersion"].is_null());
+    }
 
     #[test]
     fn failed_launch_is_visible_before_a_process_exists_and_retry_clears_it() {

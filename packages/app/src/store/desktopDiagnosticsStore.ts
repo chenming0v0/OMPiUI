@@ -13,6 +13,8 @@ export interface DesktopServiceDiagnostics {
   events: { time: number; phase: DesktopServicePhase }[]
   reachable: boolean | null
   workerReady: boolean | null
+  /** 工作进程握手探测到的 OMP 版本，不以 IPC 就绪代替运行时可用。 */
+  ompVersion?: string | null
   healthError: string | null
   output: string[]
 }

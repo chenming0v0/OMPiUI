@@ -2,11 +2,26 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DesktopServiceStatus } from './DesktopServiceStatus'
 import { desktopDiagnosticsStore, type DesktopServiceDiagnostics } from '../store/desktopDiagnosticsStore'
+import { serviceStore } from '../store/serviceStore'
 import i18n from '../i18n'
 
-const mocks = vi.hoisted(() => ({ desktop: true, mobile: false, read: vi.fn() }))
+const mocks = vi.hoisted(() => ({
+  desktop: true,
+  mobile: false,
+  read: vi.fn(),
+  catalog: vi.fn(),
+  start: vi.fn(),
+  stop: vi.fn(),
+  restart: vi.fn(),
+}))
 vi.mock('../utils/tauri', () => ({ isTauri: () => mocks.desktop, isTauriMobile: () => mocks.mobile }))
-vi.mock('../services/desktopService', () => ({ readDesktopServiceDiagnostics: mocks.read }))
+vi.mock('../services/desktopService', () => ({
+  readDesktopServiceDiagnostics: mocks.read,
+  getDesktopRuntimeCatalog: mocks.catalog,
+  startDesktopService: mocks.start,
+  stopDesktopService: mocks.stop,
+  restartDesktopService: mocks.restart,
+}))
 
 const native: DesktopServiceDiagnostics = {
   revision: 1,
@@ -30,6 +45,24 @@ describe('desktop backend indicator', () => {
     mocks.desktop = true
     mocks.mobile = false
     mocks.read.mockReset().mockResolvedValue(native)
+    mocks.catalog
+      .mockReset()
+      .mockResolvedValue({
+        available: {
+          selected: null,
+          candidates: [],
+          bundled: false,
+          error: null,
+          configuredBin: null,
+          configuredRuntimeDir: null,
+        },
+        current: null,
+      })
+    mocks.start.mockReset()
+    mocks.stop.mockReset()
+    mocks.restart.mockReset()
+    serviceStore.setStarting(false)
+    serviceStore.setStartedByUs(false)
     desktopDiagnosticsStore.finish()
     desktopDiagnosticsStore.receive(native)
     await i18n.changeLanguage('zh-CN')
@@ -56,7 +89,7 @@ describe('desktop backend indicator', () => {
     await act(async () => {
       vi.advanceTimersByTime(1000)
     })
-    expect(screen.getByRole('dialog', { name: '本地后端' })).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: '本地后端与运行时' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /检查已有服务/ })).toHaveTextContent('71 秒')
     expect(screen.getByText('本次启动记录')).toBeInTheDocument()
     expect(screen.getByText('暂无后端输出。进程尚未创建时，请查看上面的启动阶段。')).toBeInTheDocument()
@@ -87,8 +120,24 @@ describe('desktop backend indicator', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(27_000)
     })
-    expect(screen.getByText('已就绪')).toBeInTheDocument()
+    expect(screen.getByText('工作进程已连接')).toBeInTheDocument()
+    expect(screen.queryByText('已就绪')).toBeNull()
+    expect(screen.getByRole('button', { name: /查看本地后端与运行时/ })).toHaveTextContent('OMP 不可用')
     expect(screen.queryByText('初始化中')).toBeNull()
+  })
+
+  it.each(['stop', 'restart'] as const)('requires confirmation before %s can interrupt an owned backend', async action => {
+    serviceStore.setStartedByUs(true)
+    mocks.read.mockResolvedValue({ ...native, phase: 'running', reachable: true, workerReady: true, ompVersion: '18.12.6' })
+    render(<DesktopServiceStatus />)
+    await act(async () => {})
+    fireEvent.click(screen.getByRole('button', { name: /查看本地后端与运行时/ }))
+    fireEvent.click(screen.getByRole('button', { name: action === 'stop' ? '停止后端' : '重启后端' }))
+    expect(mocks[action]).not.toHaveBeenCalled()
+    expect(mocks.start).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: action === 'stop' ? '确认停止' : '确认重启' }))
+    await act(async () => {})
+    expect(mocks[action]).toHaveBeenCalledTimes(1)
   })
 
   it('backs off sustained running-but-unready diagnostics instead of polling every second', async () => {
@@ -96,11 +145,17 @@ describe('desktop backend indicator', () => {
     render(<DesktopServiceStatus />)
     await act(async () => {})
     expect(mocks.read).toHaveBeenCalledTimes(1)
-    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000)
+    })
     expect(mocks.read).toHaveBeenCalledTimes(2)
-    await act(async () => { await vi.advanceTimersByTimeAsync(59_000) })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(59_000)
+    })
     expect(mocks.read).toHaveBeenCalledTimes(2)
-    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
     expect(mocks.read).toHaveBeenCalledTimes(3)
   })
 

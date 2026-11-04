@@ -17,9 +17,11 @@ use tauri::{AppHandle, Manager, State};
 mod marker;
 mod process;
 mod diagnostics;
+mod runtime;
 pub mod background;
 
 pub use diagnostics::get_ompiui_service_diagnostics;
+pub use runtime::get_ompiui_runtime_catalog;
 use diagnostics::{Phase, StartupDiagnostics};
 
 use process::{
@@ -48,6 +50,12 @@ pub struct ServiceState {
 }
 
 impl ServiceState {
+    fn connection_snapshot(&self) -> Result<Option<(String, Option<String>)>, String> {
+        let url = self.service_url.lock().map_err(|error| error.to_string())?;
+        let token = self.service_token.lock().map_err(|error| error.to_string())?;
+        Ok(url.clone().map(|url| (url, token.clone())))
+    }
+
     pub fn should_confirm_close(&self) -> bool {
         let pid = self.child_pid.load(Ordering::SeqCst);
         (self.started_by_us.load(Ordering::SeqCst) && pid > 0 && is_process_alive(pid))
@@ -183,6 +191,8 @@ pub struct ServiceStatusResult {
 struct HealthResponse {
     process_id: Option<u32>,
     worker_ready: Option<bool>,
+    #[serde(default)]
+    omp_version: Option<String>,
     started_at: Option<u64>,
 }
 
@@ -510,6 +520,7 @@ async fn try_reuse_existing_service(
         // 健康但 pid 不符 = 我们的子进程已死、端口被外部服务接管，必须
         // 走下面的外部服务分支（started_by_us=false），绝不能继续认领。
         if pid > 0 && service_matches_pid(&url, config.initial_token.as_deref(), pid).await {
+            *state.service_token.lock().map_err(|error| error.to_string())? = config.initial_token.clone();
             return Ok(ReuseOutcome::Ready(StartServiceResult {
                 started: false,
                 started_by_us: true,
@@ -544,6 +555,7 @@ async fn try_reuse_existing_service(
             .service_url
             .lock()
             .map_err(|error| error.to_string())? = Some(config.url.clone());
+        *state.service_token.lock().map_err(|error| error.to_string())? = config.initial_token.clone();
         return Ok(ReuseOutcome::Ready(StartServiceResult {
             started: false,
             started_by_us: false,
@@ -696,6 +708,7 @@ async fn start_service_after_prepare(
             Ok(health) if health.process_id == Some(pid) => {
                 // 身份确认：端口上活着的确实是刚 spawn 的进程。
                 let _lifecycle = state.lifecycle.lock().await;
+                *state.service_token.lock().map_err(|error| error.to_string())? = current_token.clone();
                 state.is_starting.store(false, Ordering::SeqCst);
                 return Ok(StartServiceResult {
                     started: true,
@@ -1143,7 +1156,7 @@ mod tests {
 
     #[test]
     fn tray_classifies_only_verified_pid_as_application_owned() {
-        let health = |pid| Ok(HealthResponse { process_id: pid, worker_ready: Some(true), started_at: None });
+        let health = |pid| Ok(HealthResponse { process_id: pid, worker_ready: Some(true), omp_version: None, started_at: None });
         assert_eq!(classify_tray_health(health(Some(42)), Some(42), |_| true), TrayServiceStatus::Running);
         assert_eq!(classify_tray_health(health(Some(43)), Some(42), |_| true), TrayServiceStatus::External);
         assert_eq!(classify_tray_health(health(Some(42)), None, |_| true), TrayServiceStatus::External);

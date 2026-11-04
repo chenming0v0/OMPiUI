@@ -87,21 +87,109 @@ fn server_binary(resource: &Path) -> Result<PathBuf, String> {
     bundled_server_binary(resource)
 }
 
-pub(super) fn prepare_server(app: &AppHandle) -> Result<PreparedServer, String> {
-    let resource = resource_root(app)?;
+pub(super) fn prepare_backend(resource: PathBuf) -> Result<PreparedServer, String> {
     let binary = server_binary(&resource)?;
     let native_modules = resource.join("node_modules");
-    if !native_modules.join("bun-pty").is_dir() {
-        return Err(format!(
-            "bun-pty was not bundled in {}",
-            native_modules.display()
-        ));
-    }
     Ok(PreparedServer {
         binary,
         resource,
         native_modules,
     })
+}
+
+pub(super) fn prepare_server(app: &AppHandle) -> Result<PreparedServer, String> {
+    let prepared = prepare_backend(resource_root(app)?)?;
+    if !prepared.native_modules.join("bun-pty").is_dir() {
+        return Err(format!(
+            "bun-pty was not bundled in {}",
+            prepared.native_modules.display()
+        ));
+    }
+    Ok(prepared)
+}
+
+// inspection 与服务启动共用 binary、cwd、继承环境及 Windows 无窗口标志。
+fn backend_command(
+    prepared: &PreparedServer,
+    subcommand: &str,
+    custom_environment: &BTreeMap<String, String>,
+) -> Command {
+    let mut command = Command::new(&prepared.binary);
+    command
+        .arg(subcommand)
+        .current_dir(&prepared.resource)
+        .envs(service_environment(Some(&prepared.native_modules), custom_environment));
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    command
+}
+
+pub(super) fn inspect_runtime(
+    prepared: PreparedServer,
+    custom_environment: &BTreeMap<String, String>,
+) -> Result<Vec<u8>, String> {
+    let command = backend_command(&prepared, "inspect-runtime", custom_environment);
+    inspection_output(command, Duration::from_secs(15))
+}
+
+// 两条管道并行读取，避免 stdout/stderr 填满阻塞子进程；等待和读取共用截止时间。
+fn inspection_output(mut command: Command, timeout: Duration) -> Result<Vec<u8>, String> {
+    use std::sync::mpsc;
+    use std::time::Instant;
+
+    fn read_pipe(reader: impl Read + Send + 'static) -> mpsc::Receiver<std::io::Result<Vec<u8>>> {
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let result = BufReader::new(reader).read_to_end(&mut bytes).map(|_| bytes);
+            let _ = sender.send(result);
+        });
+        receiver
+    }
+
+    let deadline = Instant::now() + timeout;
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("failed to inspect OMPiUI runtime: {error}"))?;
+    let stdout = read_pipe(child.stdout.take().expect("piped stdout"));
+    let stderr = read_pipe(child.stderr.take().expect("piped stderr"));
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(25).min(deadline.saturating_duration_since(Instant::now())));
+            }
+            result => {
+                // 只终止本次 inspection 子进程，不清场或操作任何服务/Agent。
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(match result {
+                    Err(error) => format!("failed to wait for runtime inspection: {error}"),
+                    _ => "OMPiUI runtime inspection timed out".to_string(),
+                });
+            }
+        }
+    };
+    let receive = |pipe: mpsc::Receiver<std::io::Result<Vec<u8>>>| {
+        pipe.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .map_err(|_| "OMPiUI runtime inspection output timed out".to_string())?
+            .map_err(|error| format!("failed to read runtime inspection: {error}"))
+    };
+    let stdout = receive(stdout)?;
+    let stderr = receive(stderr)?;
+    if !status.success() {
+        return Err(format!(
+            "OMPiUI runtime inspection exited with {status}: {}",
+            String::from_utf8_lossy(&stderr).trim()
+        ));
+    }
+    Ok(stdout)
 }
 
 fn spawn_output_reader<R>(reader: R, output: Arc<Mutex<VecDeque<String>>>)
@@ -125,20 +213,10 @@ pub(super) fn spawn_server(
     output: Arc<Mutex<VecDeque<String>>>,
     custom_environment: &BTreeMap<String, String>,
 ) -> Result<Child, String> {
-    let environment = service_environment(Some(&prepared.native_modules), custom_environment);
-    let mut command = Command::new(&prepared.binary);
+    let mut command = backend_command(&prepared, "web", custom_environment);
     command
-        .arg("web")
-        .current_dir(&prepared.resource)
-        .envs(environment)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
 
     let mut child = command
         .spawn()
@@ -226,3 +304,49 @@ pub(super) fn is_process_alive(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inspection_and_server_commands_share_environment_and_resource_cwd() {
+        let prepared = PreparedServer {
+            binary: PathBuf::from("C:/installed/omp-worker.exe"),
+            resource: PathBuf::from("C:/installed"),
+            native_modules: PathBuf::from("C:/installed/node_modules"),
+        };
+        let custom = BTreeMap::from([
+            ("OMPI_OMP_BIN".to_string(), "C:/external/omp.exe".to_string()),
+            ("OMPIUI_NATIVE_MODULES".to_string(), "C:/custom/node_modules".to_string()),
+            ("PATH".to_string(), "C:/external/bin".to_string()),
+        ]);
+        let web = backend_command(&prepared, "web", &custom);
+        let inspection = backend_command(&prepared, "inspect-runtime", &custom);
+        assert_eq!(web.get_program(), inspection.get_program());
+        assert_eq!(web.get_current_dir(), inspection.get_current_dir());
+        assert_eq!(inspection.get_current_dir(), Some(prepared.resource.as_path()));
+        assert_eq!(web.get_envs().collect::<Vec<_>>(), inspection.get_envs().collect::<Vec<_>>());
+        assert_eq!(inspection.get_args().collect::<Vec<_>>(), vec![std::ffi::OsStr::new("inspect-runtime")]);
+        let environment = inspection.get_envs().collect::<BTreeMap<_, _>>();
+        assert_eq!(environment[std::ffi::OsStr::new("OMPIUI_DRIVER")], Some(std::ffi::OsStr::new("omp")));
+        assert_eq!(environment[std::ffi::OsStr::new("PATH")], Some(std::ffi::OsStr::new("C:/external/bin")));
+        assert_eq!(environment[std::ffi::OsStr::new("OMPIUI_NATIVE_MODULES")], Some(std::ffi::OsStr::new("C:/custom/node_modules")));
+    }
+
+    #[test]
+    fn inspection_preparation_does_not_require_pty_or_omp_resources() {
+        let resource = env::temp_dir().join(format!(
+            "ompiui-inspection-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir(&resource).unwrap();
+        let binary = resource.join(if cfg!(windows) { "omp-worker.exe" } else { "omp-worker" });
+        // 仅构造安装目录，不执行这个空文件，也不创建 OMP 或 PTY 资源。
+        std::fs::write(&binary, []).unwrap();
+        let prepared = prepare_backend(resource.clone()).unwrap();
+        assert_eq!(prepared.resource, resource);
+        assert!(!prepared.native_modules.exists());
+        assert!(!resource.join("omp-runtime").exists());
+        std::fs::remove_dir_all(resource).unwrap();
+    }
+}

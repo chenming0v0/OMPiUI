@@ -8,23 +8,25 @@ export interface OmpRuntime {
   bunVersion: string
 }
 
+/** Standard application locations, independent of user environment overrides. */
+export function installedOmpRuntimeRoots(): string[] {
+  const candidates = [path.join(path.dirname(process.execPath), "omp-runtime")]
+  const starts = [process.cwd()]
+  if (import.meta.url.startsWith("file:")) starts.push(path.dirname(fileURLToPath(import.meta.url)))
+  for (const start of starts) {
+    for (let directory = start; ; directory = path.dirname(directory)) {
+      candidates.push(path.join(directory, "omp-runtime"))
+      if (directory === path.dirname(directory)) break
+    }
+  }
+  return [...new Set(candidates)]
+}
+
 /** Installed at build/install time only; resolving a runtime never downloads or writes. */
 export function resolveInstalledOmpRuntime(env: NodeJS.ProcessEnv = process.env): OmpRuntime | undefined {
   const explicit = env.OMPI_OMP_RUNTIME_DIR?.trim()
-  const candidates = explicit ? [path.resolve(explicit)] : [
-    path.join(path.dirname(process.execPath), "omp-runtime"),
-  ]
-  if (!explicit) {
-    const starts = [process.cwd()]
-    if (import.meta.url.startsWith("file:")) starts.push(path.dirname(fileURLToPath(import.meta.url)))
-    for (const start of starts) {
-      for (let directory = start; ; directory = path.dirname(directory)) {
-        candidates.push(path.join(directory, "omp-runtime"))
-        if (directory === path.dirname(directory)) break
-      }
-    }
-  }
-  for (const root of new Set(candidates)) {
+  const candidates = explicit ? [path.resolve(explicit)] : installedOmpRuntimeRoots()
+  for (const root of candidates) {
     const file = path.join(root, "runtime.json")
     if (!existsSync(file) && !explicit) continue
     try {
