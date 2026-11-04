@@ -404,12 +404,6 @@ $$
     expect(container.querySelector('#fn-ref2')).toHaveTextContent('第二个脚注')
   })
 
-  it('accepts isStreaming prop without crashing', () => {
-    render(<MarkdownRenderer content={'Hello **world**'} isStreaming={true} />)
-
-    expect(screen.getByRole('paragraph')).toHaveTextContent('Hello world')
-  })
-
   it('keeps streaming plain-text appends and settles without losing content', async () => {
     const view = render(<MarkdownRenderer content={'你好'} isStreaming />)
     expect(screen.getByRole('paragraph')).toHaveTextContent('你好')

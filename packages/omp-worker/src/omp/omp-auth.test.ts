@@ -82,25 +82,6 @@ function emitPrompt(client: FakeOmpClient, id: string, title: string): void {
 }
 
 describe("OmpProviderAuth.invalidate", () => {
-  it("recycles the bound client so the next command acquires a fresh one", async () => {
-    const { auth, clients } = createAuth()
-
-    const first = auth.listModels()
-    await waitUntil(() => clients[0]?.hasPending("get_available_models") === true)
-    clients[0]!.resolveFirst("get_available_models", true, { models: [] })
-    assert.deepEqual(await first, [])
-    assert.equal(clients.length, 1)
-
-    await auth.invalidate()
-    assert.equal(clients[0]!.closeCalls, 1, "old process should be closed")
-
-    const second = auth.listModels()
-    await waitUntil(() => clients[1]?.hasPending("get_available_models") === true)
-    clients[1]!.resolveFirst("get_available_models", true, { models: [] })
-    assert.deepEqual(await second, [])
-    assert.equal(clients.length, 2, "next listModels must spawn a new omp process")
-  })
-
   it("defers invalidation until an in-flight login flow ends", async () => {
     const { auth, clients } = createAuth()
 

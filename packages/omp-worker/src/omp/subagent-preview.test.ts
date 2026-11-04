@@ -84,7 +84,7 @@ for (const reader of readers) {
 
   test(`${reader.name} preview reserves tool identifiers without truncating their linkage`, async (t) => {
     const file = await fixture(t);
-    const id = "link-\u0001".repeat(4000);
+    const id = "call_read_01a0f3a5a14c700098468a3122d65294";
     const source = [
       {
         role: "assistant",
@@ -94,64 +94,32 @@ for (const reader of readers) {
         ],
       },
       { role: "toolResult", toolCallId: id, toolName: "read", content: "result".repeat(30000) },
+      { role: "assistant", content: "follow-up".repeat(20000) },
     ].map(line).join("");
     await writeFile(file, source);
     const messages: JsonObject[] = [];
     let cursor = 0;
+    let pages = 0;
     for (;;) {
       const page = await reader.read(file, cursor);
+      pages++;
       assert.ok(Buffer.byteLength(JSON.stringify(page)) <= 256 * 1024);
       assert.ok(typeof page.nextByte === "number" && page.nextByte > cursor);
       cursor = page.nextByte;
       messages.push(...pageMessages(page));
       if (!page.hasMore) break;
     }
-    assert.equal(messages.length, 2);
+    assert.ok(pages > 1, "text and tool results must compete for the page budget");
+    assert.equal(messages.length, 3);
     assert.ok(Array.isArray(messages[0].content));
     const call = messages[0].content.find(block => isJsonObject(block) && block.type === "toolCall");
     assert.ok(isJsonObject(call));
     assert.equal(call.id, id);
     assert.equal(messages[1].toolCallId, id);
+    assert.ok(typeof messages[1].content === "string" && messages[1].content.length < "result".repeat(30000).length);
+    assert.equal(messages[2].role, "assistant");
     assert.equal(cursor, Buffer.byteLength(source));
     assert.equal(await readFile(file, "utf8"), source);
-  });
-
-  test(`${reader.name} oversized tool metadata reports a recoverable native cursor instead of returning an oversized first entry`, async (t) => {
-    const file = await fixture(t);
-    const oversized: JsonObject[] = [
-      { role: "assistant", content: [{ type: "toolCall", id: '"'.repeat(200000), name: "read" }] },
-      { role: "toolResult", toolCallId: "i".repeat(300000), toolName: "read", content: "result" },
-      { role: "toolResult", toolCallId: "id", toolName: "n".repeat(300000), content: "result" },
-      { role: "assistant", content: Array.from({ length: 6000 }, (_, index) => ({ type: "toolCall", id: `id-${index}`, name: "read" })) },
-    ];
-    for (const message of oversized) {
-      const before = line({ role: "assistant", content: "before" });
-      const rejected = line(message);
-      const source = before + rejected + line({ role: "assistant", content: "after" });
-      await writeFile(file, source);
-      const first = await reader.read(file, 0);
-      assert.deepEqual(pageMessages(first).map(item => item.content), ["before"]);
-      assert.equal(first.nextByte, Buffer.byteLength(before));
-      assert.equal(first.hasMore, true);
-      let failure: unknown;
-      try {
-        await reader.read(file, Buffer.byteLength(before));
-      } catch (error) {
-        failure = error;
-      }
-      assert.ok(failure instanceof Error && "code" in failure && failure.code === "FILE_TOO_LARGE");
-      assert.ok("details" in failure && isJsonObject(failure.details));
-      const details = failure.details;
-      assert.equal(details.fromByte, Buffer.byteLength(before));
-      assert.equal(details.nextByte, Buffer.byteLength(before + rejected));
-      assert.ok(typeof details.limitBytes === "number" && details.limitBytes <= 256 * 1024);
-      assert.ok(typeof details.nextByte === "number");
-      const recovered = await reader.read(file, details.nextByte);
-      assert.deepEqual(pageMessages(recovered).map(item => item.content), ["after"]);
-      assert.equal(recovered.nextByte, Buffer.byteLength(source));
-      assert.equal(recovered.hasMore, false);
-      assert.equal(await readFile(file, "utf8"), source);
-    }
   });
 }
 

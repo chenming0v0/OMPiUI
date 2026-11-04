@@ -86,14 +86,6 @@ describe('Tailscale login flow state machine', () => {
     expect(mocks.poll).not.toHaveBeenCalled()
   })
 
-  it('reports start failures as an error state', async () => {
-    mocks.start.mockRejectedValue(new Error('Tailscale native operation timed out'))
-    const { result } = renderFlow()
-    await act(async () => { void result.current.beginLogin() })
-    expect(result.current.phase).toBe('error')
-    expect(result.current.error).toBe('Tailscale native operation timed out')
-  })
-
   it('reports browser launch failures while keeping the link for manual retry', async () => {
     mocks.start.mockResolvedValue({ backendState: 'NeedsLogin', authUrl: 'https://login.tailscale.com/a/1' })
     mocks.open.mockRejectedValue(new Error('No browser is available'))

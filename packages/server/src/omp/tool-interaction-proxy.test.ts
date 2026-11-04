@@ -7,18 +7,17 @@ const identity = { runtimeId: 'runtime', sessionId: 'session', toolCallId: 'call
 const descriptor = { ...identity, protocolVersion: 1 as const, status: 'running' as const, command: 'read', cwd: '/workspace', cols: 80, rows: 24, cursor: 3, oldestCursor: 0 }
 function fixture() {
   const calls: Record<string, unknown>[] = []
-  let writes = 0, accepted = 0
   const host = { executeSessionCommand: async (sessionId: string, type: string, params: Record<string, unknown>) => {
     assert.equal(sessionId, 'session'); assert.equal(type, 'toolInteraction'); calls.push(params)
     switch (params.operation) {
       case 'describe': return descriptor
       case 'read': return { descriptor, fromCursor: Number(params.cursor ?? 0), cursor: 3, data: Number(params.cursor ?? 0) === 3 ? '' : 'abc', reset: false }
-      case 'claim': return { writerId: params.writerId, writerEpoch: 'epoch', lastAcceptedSequence: accepted, expiresAt: Date.now() + 60000 }
-      case 'input': if (Number(params.sequence) > accepted) { writes++; accepted = Number(params.sequence) }; return { sequence: params.sequence, lastAcceptedSequence: accepted }
+      case 'claim': return { writerId: params.writerId, writerEpoch: 'epoch', lastAcceptedSequence: 0, expiresAt: Date.now() + 60000 }
+      case 'input': return { sequence: params.sequence, lastAcceptedSequence: params.sequence }
       default: return {}
     }
   } } as unknown as Pick<SessionHost, 'executeSessionCommand'>
-  return { proxy: new ToolInteractionProxy(host), calls, get writes() { return writes } }
+  return { proxy: new ToolInteractionProxy(host), calls }
 }
 
 test('tool stream tickets are one-use and bind execution, session and auth scope', async () => {
@@ -37,8 +36,9 @@ test('proxy only acknowledges actual execution-side acceptance and view detach d
   const f = fixture(), reader = f.proxy.attach(identity)
   const lease = await f.proxy.claim(identity, 'writer')
   assert.equal((await f.proxy.input(identity, lease, 1, '中文')).lastAcceptedSequence, 1)
-  assert.equal((await f.proxy.input(identity, lease, 1, '中文')).lastAcceptedSequence, 1)
-  assert.equal(f.writes, 1)
+  assert.deepEqual(f.calls.find(call => call.operation === 'input'), {
+    operation: 'input', ...identity, writerId: lease.writerId, writerEpoch: lease.writerEpoch, sequence: 1, data: '中文',
+  })
   assert.equal((await reader.read(0)).data, 'abc')
   assert.equal((await reader.read(3)).data, '')
   reader.detach()

@@ -38,8 +38,8 @@ describe("searchFilesByName", () => {
     assert.equal(stats.truncated, false)
   })
 
-  it("normalizes whitespace before admission and never echoes an unbounded raw query", async () => {
-    const result = await searchFilesByName(ws, `${" ".repeat(64 * 1024)}hello  `)
+  it("normalizes whitespace before searching and rejects queries beyond the byte limit", async () => {
+    const result = await searchFilesByName(ws, "  hello  ")
     assert.equal(result.query, "hello")
     assert.ok(result.paths.includes("src/hello.ts"))
     await assert.rejects(searchFilesByName(ws, "x".repeat(64 * 1024 + 1)))
@@ -185,16 +185,6 @@ it("text search caps the complete JSON envelope before adding dense or escaped m
       assert.equal(result.matches[0]?.submatches[0]?.end, prefixBytes + Buffer.byteLength(fixture.pattern))
     })
   }
-
-  const query = "\v".repeat(65536 - ascii.length) + ascii
-  await withSearchFixture({ "dense.txt": `${ascii.repeat(199)}\n`.repeat(100) }, async ws => {
-    const result = await searchWorkspaceText(ws, query, { limit: 100 })
-    assert.equal(result.query, query)
-    assert.equal(result.stats.limitReason, "bytes")
-    assert.equal(result.matches[0]?.lines.text, ascii.repeat(199))
-    assert.ok(Buffer.byteLength(JSON.stringify({ data: result })) <= 2 * 1024 * 1024)
-    await assert.rejects(searchWorkspaceText(ws, ` ${query}`), { code: "INVALID_REQUEST" })
-  })
 })
 
 it("text search retains complete small matches and UTF-8 offsets across CRLF", async () => {

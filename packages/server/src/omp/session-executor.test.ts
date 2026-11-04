@@ -40,40 +40,23 @@ test("SessionExecutor runs session commands immediately without lanes", async ()
     order.push("b1")
     return 3
   })
+  const catalog = executor.submit(envelope("four", undefined, "session.list"), async () => {
+    order.push("catalog")
+    return undefined
+  })
 
   // Native semantics: no per-session queue — every command starts immediately,
   // even while another session command is still running.
   await second.promise
   await other.promise
-  assert.deepEqual(order, ["a1:start", "a2", "b1"])
+  await catalog.promise
+  assert.deepEqual(order, ["a1:start", "a2", "b1", "catalog"])
   assert.equal(second.record.status, "completed")
   release()
   await first.promise
-  assert.deepEqual(order, ["a1:start", "a2", "b1", "a1:end"])
+  assert.deepEqual(order, ["a1:start", "a2", "b1", "catalog", "a1:end"])
   assert.equal(first.record.status, "completed")
   assert.equal(first.record.result, 1)
-})
-
-test("SessionExecutor runs catalog commands without waiting for session work", async () => {
-  const executor = new SessionExecutor()
-  let release!: () => void
-  const gate = new Promise<void>(resolve => { release = resolve })
-  const order: string[] = []
-
-  const prompt = executor.submit(envelope("one", "a", "prompt"), async () => {
-    order.push("prompt")
-    await gate
-    return undefined
-  })
-  const catalog = executor.submit(envelope("two", undefined, "session.list"), async () => {
-    order.push("catalog")
-    return undefined
-  })
-
-  await catalog.promise
-  assert.deepEqual(order, ["prompt", "catalog"])
-  release()
-  await prompt.promise
 })
 
 test("SessionExecutor reuses command id and records failures", async () => {

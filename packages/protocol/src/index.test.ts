@@ -8,7 +8,7 @@ import {
   requireJsonValue,
   toJsonValue,
   CORE_COMMAND_TYPES,
-  type CoreCommandParams,
+  TERMINAL_STREAM_PROTOCOL_VERSION,
 } from "./index.js";
 
 describe("protocol foundation", () => {
@@ -63,17 +63,7 @@ describe("protocol foundation", () => {
     assert.ok(CORE_COMMAND_TYPES.includes("prompt"));
   });
 
-  it("models the native prompt and user-message delivery options", () => {
-    const prompt: CoreCommandParams["prompt"] = {
-      text: "hello",
-      streamingBehavior: "followUp",
-    };
-    const userMessage: CoreCommandParams["sendUserMessage"] = {
-      text: "hello",
-      deliverAs: "steer",
-    };
-
-    assert.equal(prompt.streamingBehavior, "followUp");
-    assert.equal(userMessage.deliverAs, "steer");
+  it("keeps the terminal stream protocol version stable", () => {
+    assert.equal(TERMINAL_STREAM_PROTOCOL_VERSION, 2);
   });
 });

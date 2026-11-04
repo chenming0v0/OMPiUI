@@ -87,47 +87,6 @@ test("backend settings persist without exposing the tunnel key", () => {
   assert.match(readFileSync(join(root, "admin.json"), "utf8"), /secret-key/)
 })
 
-test("start and stop manage a real child process", async t => {
-  const root = mkdtempSync(join(tmpdir(), "ompiui-admin-spawn-")); roots.push(root)
-  const env = { ...process.env, OMPIUI_DATA_DIR: root, OMPIUI_ADMIN_DATA_DIR: root, OMPIUI_AUTH_TOKEN: "backend" }
-  const config: AdminConfig = {
-    ...loadAdminConfig(env),
-    serverCommand: process.execPath,
-    serverArgs: ["-e", "setInterval(() => {}, 1000)"],
-    serverUrl: "http://127.0.0.1:1",
-  }
-  const manager = new ServiceManager({ config, env })
-  t.after(() => manager.stop())
-  await manager.start()
-  assert.equal(manager.isRunning(), true)
-  const started = await manager.status()
-  assert.equal(typeof started.pid, "number")
-  assert.notEqual(started.pid, null)
-
-  await manager.stop()
-  assert.equal(manager.isRunning(), false)
-  const status = await manager.status()
-  assert.equal(status.lifecycle, "stopped")
-})
-
-test("start refuses when the configured backend is already serving", async () => {
-  const root = mkdtempSync(join(tmpdir(), "ompiui-admin-external-")); roots.push(root)
-  const env = { ...process.env, OMPIUI_DATA_DIR: root, OMPIUI_ADMIN_DATA_DIR: root, OMPIUI_AUTH_TOKEN: "backend" }
-  const backend = createServer((_request, response) => {
-    response.writeHead(200, { "content-type": "application/json" })
-    response.end(JSON.stringify({ ok: true, service: "ompiui-server" }))
-  })
-  await new Promise<void>(resolve => backend.listen(0, "127.0.0.1", () => resolve()))
-  const port = (backend.address() as AddressInfo).port
-  try {
-    const config: AdminConfig = { ...loadAdminConfig(env), serverUrl: `http://127.0.0.1:${port}` }
-    const manager = new ServiceManager({ config, env })
-    await assert.rejects(() => manager.start(), /already answering/)
-  } finally {
-    backend.close()
-  }
-})
-
 test("start refuses when an unrelated backend answers 401 on the target address", async () => {
   const root = mkdtempSync(join(tmpdir(), "ompiui-admin-foreign-")); roots.push(root)
   const env = { ...process.env, OMPIUI_DATA_DIR: root, OMPIUI_ADMIN_DATA_DIR: root, OMPIUI_AUTH_TOKEN: "backend" }
@@ -217,8 +176,11 @@ test("concurrent starts share one spawn and a failed start can run again", async
   assert.deepEqual(readdirSync(marks).filter(name => /^\d+$/.test(name)), pids)
   assert.equal(pids.length, 1)
   assert.equal(manager.isRunning(), true)
+  const started = await manager.status()
+  assert.equal(started.pid, Number(pids[0]))
   await manager.stop()
   assert.equal(manager.isRunning(), false)
+  assert.equal((await manager.status()).lifecycle, "stopped")
   const pid = Number(pids[0])
   await new Promise(resolve => setTimeout(resolve, 50))
   assert.throws(() => process.kill(pid, 0))

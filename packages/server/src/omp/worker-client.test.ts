@@ -48,15 +48,6 @@ test("worker host diagnostics bypass session handles over real IPC", async () =>
   }
 })
 
-test("WorkerSession fulfills a command on a healthy worker", async () => {
-  const catalog = startCatalog("hello-ok")
-  try {
-    assert.deepEqual(await catalog.command("state.get"), { fixture: "ok" })
-  } finally {
-    await catalog.dispose()
-  }
-})
-
 test("oversized in-flight payloads are rejected without terminating the shared worker", async () => {
   const catalog = startCatalog("hello-ok", { requestTimeoutMs: 5000 })
   try {

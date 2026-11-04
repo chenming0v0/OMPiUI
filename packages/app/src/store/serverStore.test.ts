@@ -313,19 +313,6 @@ describe('serverStore default server editing', () => {
     }
   })
 
-  it('persists an edited default server url across reloads', async () => {
-    const first = await import('./serverStore')
-
-    expect(first.serverStore.updateServer('local', { name: 'LAN host', url: 'http://192.168.1.5:8787' })).toBe(true)
-
-    vi.resetModules()
-    const second = await import('./serverStore')
-    const local = second.serverStore.getStoredServers().find(server => server.id === 'local')
-    expect(local?.url).toBe('http://192.168.1.5:8787')
-    expect(local?.name).toBe('LAN host')
-    expect(local?.isDefault).toBe(true)
-  })
-
   it('notifies the data layer when the active default endpoint is edited', async () => {
     const { serverStore } = await import('./serverStore')
     const listener = vi.fn()

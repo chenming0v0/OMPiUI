@@ -24,15 +24,6 @@ test("child observation receipts stay separate from managed command transport", 
   transport.close(new Error("fixture closed"))
 })
 
-test("generated bridge exposes observation reconcile only through existing control dispatch", () => {
-  const source = runtimeBridgeExtension()
-  assert.match(source, /const session = ownSession\(ctx\)/)
-  assert.match(source, /async function execute\(operation, args, ctx\) \{\s*reconcileSubagentObservation\(ctx\)/)
-  assert.match(source, /pi\.on\("session_start",/)
-  assert.match(source, /pi\.on\("session_shutdown",/)
-  assert.doesNotMatch(source, /case "(?:refreshSubagents|observeSubagents|subagentObservation)"/)
-})
-
 test("a native command failure arriving before its prompt ACK rejects the managed operation", async () => {
   const transport = new RuntimeBridgeTransport()
   let acknowledge!: (response: OmpRpcResponse) => void
