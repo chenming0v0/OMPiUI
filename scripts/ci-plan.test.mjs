@@ -16,7 +16,6 @@ import {
   sourceFingerprint,
   verifiedArtifactName,
   waitForVerifiedCi,
-  writeCiProof,
 } from "./ci-plan.mjs"
 
 const directory = mkdtempSync(join(tmpdir(), "ompiui-ci-plan-test-"))
@@ -83,6 +82,7 @@ const twin = git(...identity, "commit-tree", git("rev-parse", `${merge}^{tree}`)
 checkout("main")
 
 const repository = "ompiui/fixture"
+const latestVersion = "18.13.0"
 const fingerprint = "a".repeat(64)
 const otherFingerprint = "b".repeat(64)
 
@@ -120,7 +120,7 @@ function createApi({ runs = [], artifacts = {} } = {}) {
 }
 
 function wait(options = {}) {
-  return waitForVerifiedCi({ fingerprint, repository, ...options })
+  return waitForVerifiedCi({ fingerprint, repository, latestVersion, ...options })
 }
 
 test("根目录文档与 docs/ 之外的 Markdown 才影响源码指纹", () => {
@@ -181,16 +181,16 @@ test("手动触发强制 full，只有文档变更走 docs，源码变更先查�
 test("只接受同一源码的新鲜证明产物", async () => {
   const accepted = createApi({
     runs: [ciRun()],
-    artifacts: { 100: [artifact(sourceArtifactName(fingerprint)), artifact(verifiedArtifactName(fingerprint))] },
+    artifacts: { 100: [artifact(sourceArtifactName(fingerprint, latestVersion)), artifact(verifiedArtifactName(fingerprint, latestVersion))] },
   })
   assert.deepEqual(await wait({ request: accepted.request }), { runId: "100" })
 
   const rejected = [
-    [artifact(verifiedArtifactName(fingerprint))],
-    [artifact(sourceArtifactName(fingerprint)), artifact(verifiedArtifactName(fingerprint), { expired: true })],
-    [artifact(sourceArtifactName(fingerprint)), artifact(verifiedArtifactName(fingerprint), { size_in_bytes: 0 })],
-    [artifact(sourceArtifactName(fingerprint)), artifact(verifiedArtifactName(otherFingerprint))],
-    [artifact(sourceArtifactName(fingerprint))],
+    [artifact(verifiedArtifactName(fingerprint, latestVersion))],
+    [artifact(sourceArtifactName(fingerprint, latestVersion)), artifact(verifiedArtifactName(fingerprint, latestVersion), { expired: true })],
+    [artifact(sourceArtifactName(fingerprint, latestVersion)), artifact(verifiedArtifactName(fingerprint, latestVersion), { size_in_bytes: 0 })],
+    [artifact(sourceArtifactName(fingerprint, latestVersion)), artifact(verifiedArtifactName(otherFingerprint, latestVersion))],
+    [artifact(sourceArtifactName(fingerprint, latestVersion))],
   ]
   for (const entries of rejected) {
     const api = createApi({ runs: [ciRun()], artifacts: { 100: entries } })
@@ -202,8 +202,8 @@ test("同一源码最新失败不会被更早的绿色证明掩盖", async () =>
   const api = createApi({
     runs: [ciRun({ id: 200, conclusion: "failure" }), ciRun({ id: 100 })],
     artifacts: {
-      200: [artifact(sourceArtifactName(fingerprint))],
-      100: [artifact(sourceArtifactName(fingerprint)), artifact(verifiedArtifactName(fingerprint))],
+      200: [artifact(sourceArtifactName(fingerprint, latestVersion))],
+      100: [artifact(sourceArtifactName(fingerprint, latestVersion)), artifact(verifiedArtifactName(fingerprint, latestVersion))],
     },
   })
   await assert.rejects(
@@ -220,14 +220,14 @@ test("同源 CI 失败时规划立即失败，不再启动一套完整检查", a
   const writes = []
   const api = createApi({
     runs: [ciRun({ id: 1900, conclusion: "failure" })],
-    artifacts: { 1900: [artifact(sourceArtifactName(expectedFingerprint))] },
+    artifacts: { 1900: [artifact(sourceArtifactName(expectedFingerprint, latestVersion))] },
   })
   try {
     await assert.rejects(planCi({
       env: { GITHUB_EVENT_NAME: "push", GITHUB_EVENT_PATH: eventPath, GITHUB_REPOSITORY: repository, GITHUB_RUN_ID: "2000" },
       runGit: git,
       request: api.request,
-      latestRequest: async () => ({ tag_name: "v18.12.6" }),
+      latestRequest: async () => ({ tag_name: `v${latestVersion}` }),
       writeFile: (...args) => writes.push(args),
       appendFile: (...args) => writes.push(args),
       out: () => {},
@@ -242,8 +242,8 @@ test("更新的已验证运行可以取代更早的失败", async () => {
   const api = createApi({
     runs: [ciRun({ id: 300 }), ciRun({ id: 200, conclusion: "timed_out" })],
     artifacts: {
-      300: [artifact(sourceArtifactName(fingerprint)), artifact(verifiedArtifactName(fingerprint))],
-      200: [artifact(sourceArtifactName(fingerprint))],
+      300: [artifact(sourceArtifactName(fingerprint, latestVersion)), artifact(verifiedArtifactName(fingerprint, latestVersion))],
+      200: [artifact(sourceArtifactName(fingerprint, latestVersion))],
     },
   })
   assert.deepEqual(await wait({ request: api.request }), { runId: "300" })
@@ -253,15 +253,15 @@ test("取消的运行不算验证，也不冒充失败", async () => {
   const superseded = createApi({
     runs: [ciRun({ id: 400, conclusion: "cancelled" }), ciRun({ id: 300 })],
     artifacts: {
-      400: [artifact(sourceArtifactName(fingerprint))],
-      300: [artifact(sourceArtifactName(fingerprint)), artifact(verifiedArtifactName(fingerprint))],
+      400: [artifact(sourceArtifactName(fingerprint, latestVersion))],
+      300: [artifact(sourceArtifactName(fingerprint, latestVersion)), artifact(verifiedArtifactName(fingerprint, latestVersion))],
     },
   })
   assert.deepEqual(await wait({ request: superseded.request }), { runId: "300" })
 
   const cancelledOnly = createApi({
     runs: [ciRun({ id: 400, conclusion: "cancelled" })],
-    artifacts: { 400: [artifact(sourceArtifactName(fingerprint))] },
+    artifacts: { 400: [artifact(sourceArtifactName(fingerprint, latestVersion))] },
   })
   assert.equal(await wait({ request: cancelledOnly.request }), null)
 })
@@ -274,7 +274,7 @@ test("同一分支上被更新运行取代的排队运行不再等待", async ()
     ],
     artifacts: {
       1500: [],
-      1400: [artifact(sourceArtifactName(fingerprint))],
+      1400: [artifact(sourceArtifactName(fingerprint, latestVersion))],
     },
   })
   const sleeps = []
@@ -294,7 +294,7 @@ test("同一分支上被更新运行取代的排队运行不再等待", async ()
     ],
     artifacts: {
       1700: [],
-      1600: [artifact(sourceArtifactName(fingerprint))],
+      1600: [artifact(sourceArtifactName(fingerprint, latestVersion))],
     },
   })
   assert.equal(await wait({
@@ -312,7 +312,7 @@ test("最早的 plan 不等待后来创建的同源运行，避免跨 ref 互等
       ciRun({ id: 2000, status: "in_progress", conclusion: null, head_branch: "main" }),
       ciRun({ id: 1000, status: "in_progress", conclusion: null, head_branch: "dev" }),
     ],
-    artifacts: { 2000: [artifact(sourceArtifactName(fingerprint))], 1000: [] },
+    artifacts: { 2000: [artifact(sourceArtifactName(fingerprint, latestVersion))], 1000: [] },
   })
   assert.equal(await wait({
     request: api.request,
@@ -324,19 +324,19 @@ test("最早的 plan 不等待后来创建的同源运行，避免跨 ref 互等
 test("当前运行与外部仓库的运行都不采用", async () => {
   const current = createApi({
     runs: [ciRun({ id: 500 })],
-    artifacts: { 500: [artifact(sourceArtifactName(fingerprint)), artifact(verifiedArtifactName(fingerprint))] },
+    artifacts: { 500: [artifact(sourceArtifactName(fingerprint, latestVersion)), artifact(verifiedArtifactName(fingerprint, latestVersion))] },
   })
   assert.equal(await wait({ request: current.request, excludeRunId: 500 }), null)
 
   const foreignHead = createApi({
     runs: [ciRun({ id: 600, head_repository: { full_name: "someone/fork" } })],
-    artifacts: { 600: [artifact(sourceArtifactName(fingerprint)), artifact(verifiedArtifactName(fingerprint))] },
+    artifacts: { 600: [artifact(sourceArtifactName(fingerprint, latestVersion)), artifact(verifiedArtifactName(fingerprint, latestVersion))] },
   })
   assert.equal(await wait({ request: foreignHead.request }), null)
 
   const foreignOwner = createApi({
     runs: [ciRun({ id: 700, repository: { full_name: "someone/fork" } })],
-    artifacts: { 700: [artifact(sourceArtifactName(fingerprint)), artifact(verifiedArtifactName(fingerprint))] },
+    artifacts: { 700: [artifact(sourceArtifactName(fingerprint, latestVersion)), artifact(verifiedArtifactName(fingerprint, latestVersion))] },
   })
   assert.equal(await wait({ request: foreignOwner.request }), null)
 })
@@ -349,12 +349,12 @@ test("等待正在运行的同源检查后采用成功证明", async () => {
       if (match[1] === "900") {
         return {
           artifacts: [
-            artifact(sourceArtifactName(fingerprint)),
-            ...(phase === "verified" ? [artifact(verifiedArtifactName(fingerprint))] : []),
+            artifact(sourceArtifactName(fingerprint, latestVersion)),
+            ...(phase === "verified" ? [artifact(verifiedArtifactName(fingerprint, latestVersion))] : []),
           ],
         }
       }
-      if (match[1] === "800") return { artifacts: [artifact(sourceArtifactName(otherFingerprint))] }
+      if (match[1] === "800") return { artifacts: [artifact(sourceArtifactName(otherFingerprint, latestVersion))] }
       throw new Error(`Unexpected artifact lookup ${path}`)
     }
     return {
@@ -381,7 +381,7 @@ test("dev push 排队中可按实际 head 源码识别，PR head 不会这样推
       return {
         artifacts: phase === "queued"
           ? []
-          : [artifact(sourceArtifactName(fingerprint)), artifact(verifiedArtifactName(fingerprint))],
+          : [artifact(sourceArtifactName(fingerprint, latestVersion)), artifact(verifiedArtifactName(fingerprint, latestVersion))],
       }
     }
     return {
@@ -427,7 +427,7 @@ test("dev push 排队中可按实际 head 源码识别，PR head 不会这样推
 test("同源 CI 超时会报错，而不是另起重复检查", async () => {
   let elapsed = 0
   const request = async path => (path.endsWith("/artifacts?per_page=100")
-    ? { artifacts: [artifact(sourceArtifactName(fingerprint))] }
+    ? { artifacts: [artifact(sourceArtifactName(fingerprint, latestVersion))] }
     : { workflow_runs: [ciRun({ id: 1200, status: "in_progress", conclusion: null })] })
   await assert.rejects(wait({
     request,
@@ -443,7 +443,7 @@ test("等待期间匹配运行失败会立即失败", async () => {
   let phase = "queued"
   const request = async path => {
     if (path.endsWith("/artifacts?per_page=100")) {
-      return { artifacts: [artifact(sourceArtifactName(fingerprint))] }
+      return { artifacts: [artifact(sourceArtifactName(fingerprint, latestVersion))] }
     }
     return {
       workflow_runs: [ciRun({
@@ -469,8 +469,8 @@ test("更新的同源检查仍在运行时不能提前采用旧绿色证明", as
   const request = async path => {
     if (path.endsWith("/artifacts?per_page=100")) {
       return { artifacts: [
-        artifact(sourceArtifactName(fingerprint)),
-        ...(path.includes("/1800/") ? [artifact(verifiedArtifactName(fingerprint))] : []),
+        artifact(sourceArtifactName(fingerprint, latestVersion)),
+        ...(path.includes("/1800/") ? [artifact(verifiedArtifactName(fingerprint, latestVersion))] : []),
       ] }
     }
     return { workflow_runs: [
@@ -537,4 +537,28 @@ test("full 模式补充 latest 通道，版本相同时折叠", async () => {
     await resolveOmpMatrix({ mode: "full", supportedVersion: "18.13.0", request: async () => ({ tag_name: "v18.13.0" }) }),
     [{ channel: "supported", version: "18.13.0" }],
   )
+})
+
+test("同一源码受测 latest 已过期时不能复用绿色证明", async () => {
+  const previousVersion = "18.12.6"
+  const api = createApi({
+    runs: [ciRun()],
+    artifacts: { 100: [
+      artifact(sourceArtifactName(fingerprint, previousVersion)),
+      artifact(verifiedArtifactName(fingerprint, previousVersion)),
+    ] },
+  })
+  assert.equal(await wait({ request: api.request }), null)
+})
+
+test("同一源码的旧 latest 正在运行时不等待另一套测试输入", async () => {
+  const api = createApi({
+    runs: [ciRun({ status: "in_progress", conclusion: null })],
+    artifacts: { 100: [artifact(sourceArtifactName(fingerprint, "18.12.6"))] },
+  })
+  assert.equal(await wait({
+    request: api.request,
+    sleep: async () => { throw new Error("Cannot wait for an obsolete latest version") },
+    fingerprintCommit: async () => fingerprint,
+  }), null)
 })

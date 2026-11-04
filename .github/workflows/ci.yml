@@ -23,12 +23,13 @@ jobs:
   plan:
     name: plan CI
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 40
     outputs:
       mode: ${{ steps.route.outputs.mode }}
       fingerprint: ${{ steps.route.outputs.fingerprint }}
       verified_run: ${{ steps.route.outputs.verified_run }}
       supported_version: ${{ steps.route.outputs.supported_version }}
+      latest_version: ${{ steps.route.outputs.latest_version }}
       omp_matrix: ${{ steps.route.outputs.omp_matrix }}
     steps:
       - uses: actions/checkout@v6
@@ -46,7 +47,7 @@ jobs:
         if: steps.route.outputs.mode == 'full'
         uses: actions/upload-artifact@v4
         with:
-          name: ci-source-${{ steps.route.outputs.fingerprint }}
+          name: ci-source-${{ steps.route.outputs.fingerprint }}-${{ steps.route.outputs.latest_version }}
           path: ${{ runner.temp }}/ci-source.json
           retention-days: 7
           if-no-files-found: error
@@ -282,12 +283,13 @@ jobs:
         if: matrix.platform == 'ubuntu' && needs.plan.outputs.mode == 'full'
         env:
           CI_EXPECTED_FINGERPRINT: ${{ needs.plan.outputs.fingerprint }}
+          CI_LATEST_OMP_VERSION: ${{ needs.plan.outputs.latest_version }}
         run: node scripts/ci-plan.mjs proof
       - name: Record verified source
         if: matrix.platform == 'ubuntu' && needs.plan.outputs.mode == 'full'
         uses: actions/upload-artifact@v4
         with:
-          name: ci-verified-${{ needs.plan.outputs.fingerprint }}
+          name: ci-verified-${{ needs.plan.outputs.fingerprint }}-${{ needs.plan.outputs.latest_version }}
           path: ${{ runner.temp }}/ci-proof.json
           retention-days: 7
           if-no-files-found: error

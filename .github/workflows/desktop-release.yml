@@ -48,7 +48,7 @@ jobs:
   prepare:
     name: resolve source and prebuilt artifacts
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 40
     outputs:
       publish: ${{ steps.source.outputs.publish }}
       deliver: ${{ steps.source.outputs.deliver }}

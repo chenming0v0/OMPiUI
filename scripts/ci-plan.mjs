@@ -3,8 +3,8 @@
  *
  * 源码身份来自实际检出的提交树（忽略根目录文档与 docs/），不看提交 ID：
  * PR merge 提交与它对应的分支提交树相同，就应该复用同一份证明。
- * 证明以 ci.yml 运行产物为准：ci-source-<fingerprint> 在 full 运行开始时写入，
- * ci-verified-<fingerprint> 只在该运行的完整检查全部通过后写入。
+ * 证明同时绑定源码指纹与受测 latest OMP 版本：full 开始写入 ci-source，
+ * 完整检查全部通过后写入 ci-verified；官方 latest 更新后不能复用旧版本证明。
  */
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
@@ -20,8 +20,9 @@ export const OMP_CONSTANTS_FILE = "packages/omp-worker/src/omp/constants.ts"
 export const DOCUMENTATION_FILES = ["AGENTS.md", "README.md", "CHANGELOG.md"]
 export const DOCUMENTATION_PREFIXES = ["docs/"]
 export const RUN_SCAN_LIMIT = 30
-export const WAIT_TIMEOUT_MS = 12 * 60_000
-export const WAIT_POLL_MS = 10_000
+// 等待覆盖最慢 full job（25 分钟）及 GitHub 结果更新；不改变测试本身的超时。
+export const WAIT_TIMEOUT_MS = 35 * 60_000
+export const WAIT_POLL_MS = 30_000
 
 const FINGERPRINT_SCHEMA = "ompiui-ci-source-v1"
 const STABLE_VERSION = /^\d+\.\d+\.\d+$/
@@ -145,12 +146,12 @@ export function routePlan({ eventName, changedPaths } = {}) {
   return { mode: "reuse", reason: "源码有变更，查找同一源码的已验证 full CI" }
 }
 
-export function sourceArtifactName(fingerprint) {
-  return `ci-source-${fingerprint}`
+export function sourceArtifactName(fingerprint, latestVersion) {
+  return `ci-source-${fingerprint}-${latestVersion}`
 }
 
-export function verifiedArtifactName(fingerprint) {
-  return `ci-verified-${fingerprint}`
+export function verifiedArtifactName(fingerprint, latestVersion) {
+  return `ci-verified-${fingerprint}-${latestVersion}`
 }
 
 /** 从 worker 常量源码读取受支持的精确版本，不依赖编译产物。 */
@@ -211,13 +212,14 @@ export async function resolveLatestOmpVersion({ request, token, apiUrl, fetchImp
 /**
  * 跳过模式只产出受支持版本；full 模式再补 latest 通道，版本完全相同时折叠成单一通道。
  */
-export async function resolveOmpMatrix({ mode, supportedVersion, ...latestOptions } = {}) {
+export async function resolveOmpMatrix({ mode, supportedVersion, latestVersion, ...latestOptions } = {}) {
   if (!STABLE_VERSION.test(String(supportedVersion ?? ""))) {
     throw new Error(`Invalid supported OMP version: ${supportedVersion}`)
   }
   const matrix = [{ channel: "supported", version: supportedVersion }]
   if (mode !== "full") return matrix
-  const latest = await resolveLatestOmpVersion(latestOptions)
+  const latest = latestVersion ?? await resolveLatestOmpVersion(latestOptions)
+  if (!STABLE_VERSION.test(String(latest))) throw new Error(`Invalid latest OMP version: ${latest}`)
   if (latest !== supportedVersion) matrix.push({ channel: "latest", version: latest })
   return matrix
 }
@@ -268,6 +270,7 @@ const defaultSleep = milliseconds => new Promise(resolve => setTimeout(resolve, 
  */
 export async function waitForVerifiedCi({
   fingerprint,
+  latestVersion,
   repository,
   token,
   excludeRunId,
@@ -286,6 +289,8 @@ export async function waitForVerifiedCi({
   }
   const repo = String(repository ?? process.env.GITHUB_REPOSITORY ?? "").trim()
   if (!repo) throw new Error("GITHUB_REPOSITORY is required to query full CI runs")
+  const latest = latestVersion ?? await resolveLatestOmpVersion({ token })
+  if (!STABLE_VERSION.test(String(latest))) throw new Error(`Invalid latest OMP version: ${latest}`)
   const send = request ?? createRequest({
     repository: repo,
     token: token ?? process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN,
@@ -294,8 +299,8 @@ export async function waitForVerifiedCi({
   const excluded = new Set(
     [excludeRunId, process.env.GITHUB_RUN_ID, process.env.RUN_ID].filter(value => value !== undefined && value !== null && String(value) !== "").map(String),
   )
-  const sourceName = sourceArtifactName(fingerprint)
-  const verifiedName = verifiedArtifactName(fingerprint)
+  const sourceName = sourceArtifactName(fingerprint, latest)
+  const verifiedName = verifiedArtifactName(fingerprint, latest)
   const terminalRuns = new Map()
   const headFingerprints = new Map()
   const started = now()
@@ -346,6 +351,11 @@ export async function waitForVerifiedCi({
     const terminal = run.status === "completed"
     const artifacts = await availableArtifacts(id)
     let attributed = artifacts.has(sourceName)
+    if (!attributed && [...artifacts].some(name => name.startsWith(`ci-source-${fingerprint}-`))) {
+      // 已标明受测版本但与本次 latest 不同，不等待或复用另一套测试输入。
+      if (terminal) terminalRuns.set(id, { ignored: true })
+      return null
+    }
     if (!attributed) {
       // 排队中的 dev/main push 还没有 source 产物时，可以用它的实际 head 源码确认身份；
       // PR 的 head SHA 不是被测 merge 提交，永不这样推断。
@@ -457,6 +467,11 @@ export async function planCi({
   const commit = runGit("rev-parse", "--verify", "HEAD")
   const route = routePlan({ eventName, changedPaths: readChangedPaths({ eventName, event, runGit }) })
   const repository = String(env.GITHUB_REPOSITORY ?? "")
+  const supportedVersion = readSupportedOmpVersion(readFile)
+  const latestVersion = route.mode === 'docs' ? '' : await resolveLatestOmpVersion({
+    request: latestRequest,
+    token: env.GH_TOKEN ?? env.GITHUB_TOKEN,
+  })
 
   let mode = route.mode
   let verifiedRun = ""
@@ -464,6 +479,7 @@ export async function planCi({
   if (mode === "reuse") {
     const proof = await waitForVerifiedCi({
       fingerprint,
+      latestVersion,
       repository,
       token: env.GH_TOKEN ?? env.GITHUB_TOKEN,
       excludeRunId: env.GITHUB_RUN_ID ?? env.RUN_ID,
@@ -484,12 +500,11 @@ export async function planCi({
     }
   }
 
-  const supportedVersion = readSupportedOmpVersion(readFile)
-  const matrix = await resolveOmpMatrix({ mode, supportedVersion, request: latestRequest })
+  const matrix = await resolveOmpMatrix({ mode, supportedVersion, latestVersion })
 
   if (mode === "full") {
     const runnerTemp = String(env.RUNNER_TEMP ?? tmpdir())
-    writeFile(join(runnerTemp, "ci-source.json"), `${JSON.stringify({ commit, fingerprint }, null, 2)}\n`)
+    writeFile(join(runnerTemp, "ci-source.json"), `${JSON.stringify({ commit, fingerprint, latestVersion }, null, 2)}\n`)
   }
 
   const outputs = {
@@ -497,6 +512,7 @@ export async function planCi({
     fingerprint,
     verified_run: verifiedRun,
     supported_version: supportedVersion,
+    latest_version: latestVersion,
     omp_matrix: JSON.stringify(matrix),
   }
   const outputFile = String(env.GITHUB_OUTPUT ?? "")
@@ -513,6 +529,7 @@ export async function planCi({
     fingerprint,
     verifiedRun,
     supportedVersion,
+    latestVersion,
     ompMatrix: matrix,
     commit,
     message,
@@ -529,11 +546,15 @@ export function writeCiProof({ env = process.env, runGit = defaultGit, writeFile
   if (expected && expected !== fingerprint) {
     throw new Error(`Checked-out source fingerprint ${fingerprint} does not match the planned ${expected}; refusing to write the CI proof`)
   }
+  const latestVersion = String(env.CI_LATEST_OMP_VERSION ?? '').trim()
+  if (!STABLE_VERSION.test(latestVersion)) {
+    throw new Error(`Invalid tested latest OMP version: ${latestVersion || '<missing>'}; refusing to write the CI proof`)
+  }
   const commit = runGit("rev-parse", "--verify", "HEAD")
   const directory = runnerTemp ?? String(env.RUNNER_TEMP ?? tmpdir())
   const file = join(directory, "ci-proof.json")
-  writeFile(file, `${JSON.stringify({ commit, fingerprint }, null, 2)}\n`)
-  return { commit, fingerprint, file }
+  writeFile(file, `${JSON.stringify({ commit, fingerprint, latestVersion }, null, 2)}\n`)
+  return { commit, fingerprint, latestVersion, file }
 }
 
 async function main(argv = process.argv, env = process.env) {
