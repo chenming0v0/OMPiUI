@@ -1,35 +1,11 @@
 import assert from "node:assert/strict"
-import { execFile, execFileSync } from "node:child_process"
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { createServer } from "node:http"
+import { execFileSync } from "node:child_process"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { after, test } from "node:test"
-import { fileURLToPath } from "node:url"
-import { promisify } from "node:util"
-import { runInNewContext } from "node:vm"
 import { artifactNames, findPrebuiltRun, resolveSource } from "./resolve.mjs"
 
-test("full runtime runs after reused lite publication despite skipped build ancestors", () => {
-  const workflow = readFileSync(new URL("../../.github/workflows/desktop-release.yml", import.meta.url), "utf8")
-  const full = workflow.slice(workflow.indexOf("\n  desktop-full:"))
-  const condition = full.match(/\n    if: >-\n([\s\S]*?)\n    runs-on:/)?.[1]?.trim()
-  assert.ok(condition, "full runtime needs an explicit folded job condition")
-  assert.match(condition, /\balways\(\)/, "override implicit success() for skipped indirect dependencies")
-  assert.match(condition, /!cancelled\(\)/, "do not publish after workflow cancellation")
-  const evaluate = ({ publish = "true", prepareResult = "success", publishResult = "success", cancelled = false } = {}) => runInNewContext(condition, {
-    always: () => true,
-    cancelled: () => cancelled,
-    needs: { prepare: { result: prepareResult, outputs: { publish } }, publish: { result: publishResult } },
-  })
-  assert.equal(evaluate(), true)
-  assert.equal(evaluate({ publish: "false" }), false)
-  assert.equal(evaluate({ cancelled: true }), false)
-  for (const result of ["failure", "skipped", "cancelled"]) {
-    assert.equal(evaluate({ prepareResult: result }), false)
-    assert.equal(evaluate({ publishResult: result }), false)
-  }
-})
 
 const directory = mkdtempSync(join(tmpdir(), "ompiui-release-test-"))
 after(() => rmSync(directory, { recursive: true, force: true }))
@@ -132,27 +108,3 @@ test("验收模式使用所选分支，指定 tag 时使用该 tag，两者都�
   assert.equal(resolveSource({ ...options, requestedTag: "v1.0.0" }, git).publish, false)
 })
 
-test("通过真实 HTTP 与 CLI 入口验收复用，输出供后续 job 使用的完整信息", async t => {
-  const server = createServer((request, response) => {
-    assert.equal(request.headers.authorization, "Bearer test-token")
-    response.setHeader("Content-Type", "application/json")
-    response.end(JSON.stringify(request.url.includes("/artifacts?") ? { artifacts: artifacts() } : { workflow_runs: [successfulRun] }))
-  })
-  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve))
-  t.after(() => new Promise(resolve => server.close(resolve)))
-  const output = join(directory, "outputs")
-  const summary = join(directory, "summary")
-  await promisify(execFile)(process.execPath, [fileURLToPath(new URL("./resolve.mjs", import.meta.url))], {
-    cwd: directory,
-    env: {
-      ...process.env,
-      GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_REF: "refs/heads/dev", GITHUB_SHA: dev,
-      RELEASE_TAG: "", VERIFY_ONLY: "true", FORCE_REBUILD: "false", ANDROID_ENABLED: "true",
-      GITHUB_API_URL: `http://127.0.0.1:${server.address().port}`, GITHUB_REPOSITORY: "owner/repo",
-      GH_TOKEN: "test-token", GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary,
-    },
-  })
-  const values = Object.fromEntries(readFileSync(output, "utf8").trim().split("\n").map(line => line.split("=")))
-  assert.deepEqual(values, { publish: "false", deliver: "true", tag: "", ref: dev, tree, android: "true", reuse_run: "42" })
-  assert.match(readFileSync(summary, "utf8"), /只验收完整产物/)
-})

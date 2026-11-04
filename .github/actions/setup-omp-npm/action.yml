@@ -1,0 +1,86 @@
+name: Set up npm OMP fixture
+description: 在 Windows 上按精确 OMP 版本恢复或安装 npm 公共包夹具，保留含空格的路径与原始 npm install 语义
+inputs:
+  version:
+    description: 父流程已解析的精确稳定 OMP 版本（x.y.z）
+    required: true
+outputs:
+  prefix:
+    description: 夹具安装前缀的绝对路径（$RUNNER_TEMP/omp npm config）
+    value: ${{ steps.omp-npm.outputs.prefix }}
+  shim:
+    description: 公共包生成的 omp.cmd shim 绝对路径
+    value: ${{ steps.omp-npm.outputs.shim }}
+  entry:
+    description: 公共包 dist/cli.js 入口绝对路径
+    value: ${{ steps.omp-npm.outputs.entry }}
+  version:
+    description: 已校验的精确 OMP 版本
+    value: ${{ steps.omp-npm.outputs.version }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v6
+      with:
+        node-version: 22
+
+    - name: Validate Windows npm fixture request
+      shell: bash
+      env:
+        OMP_VERSION: ${{ inputs.version }}
+      run: |
+        node --input-type=module - <<'NODE'
+        const version = (process.env.OMP_VERSION ?? "").trim()
+        if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error(`An exact stable OMP version is required, got ${JSON.stringify(version)}`)
+        if (process.platform !== "win32") throw new Error(`The npm OMP fixture is Windows-only, got ${process.platform}`)
+        NODE
+
+    # 缓存键固定 Windows、Node 22、精确 OMP 版本与动作定义；
+    # 路径刻意保留空格，以维持 issue #79 的覆盖。
+    - name: Restore npm OMP fixture cache
+      id: omp-npm-cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/omp npm config
+        key: omp-npm-${{ runner.os }}-node22-${{ inputs.version }}-${{ hashFiles('.github/actions/setup-omp-npm/action.yml') }}
+
+    - name: Install public npm OMP package
+      if: steps.omp-npm-cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        OMP_VERSION: ${{ inputs.version }}
+        OMP_NPM_PREFIX: ${{ runner.temp }}/omp npm config
+      run: npm install --prefix "$OMP_NPM_PREFIX" --no-save --package-lock=false "@oh-my-pi/pi-coding-agent@$OMP_VERSION"
+
+    # 命中缓存同样校验精确版本、shim 与公共 CLI 入口，残缺恢复必须失败而不是放行。
+    - name: Verify npm fixture and publish outputs
+      id: omp-npm
+      shell: bash
+      env:
+        OMP_VERSION: ${{ inputs.version }}
+        OMP_CACHE_HIT: ${{ steps.omp-npm-cache.outputs.cache-hit }}
+      run: |
+        node --input-type=module - <<'NODE'
+        import { appendFileSync, existsSync, readFileSync } from "node:fs"
+        import { join, resolve } from "node:path"
+
+        const version = (process.env.OMP_VERSION ?? "").trim()
+        if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error(`An exact stable OMP version is required, got ${JSON.stringify(version)}`)
+        const cacheHit = process.env.OMP_CACHE_HIT === "true"
+        const source = cacheHit ? "Restored npm OMP fixture cache" : "npm OMP fixture install"
+        const prefix = resolve(process.env.RUNNER_TEMP ?? ".", "omp npm config")
+        const packageRoot = join(prefix, "node_modules", "@oh-my-pi", "pi-coding-agent")
+        const shim = join(prefix, "node_modules", ".bin", "omp.cmd")
+        const entry = join(packageRoot, "dist", "cli.js")
+        let installed
+        try {
+          installed = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"))
+        } catch (error) {
+          throw new Error(`${source} is unusable: ${error.message}`)
+        }
+        if (installed.version !== version) throw new Error(`${source} version ${installed.version} does not match requested ${version}`)
+        if (!existsSync(shim)) throw new Error(`${source} is missing the npm shim: ${shim}`)
+        if (!existsSync(entry)) throw new Error(`${source} is missing the public CLI entry: ${entry}`)
+        appendFileSync(process.env.GITHUB_OUTPUT, `prefix=${prefix}\nshim=${shim}\nentry=${entry}\nversion=${version}\n`)
+        console.info(`[omp-npm] ${cacheHit ? "cache hit" : "cache miss"}: OMP ${version} at ${prefix}`)
+        NODE

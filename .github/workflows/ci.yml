@@ -3,8 +3,9 @@ name: CI
 on:
   push:
     branches: [dev, main]
-    tags: ["v*"]
   pull_request:
+    branches: [dev, main]
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -12,70 +13,63 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
 
 defaults:
   run:
     shell: bash
 
 jobs:
-  # 第一层：每种系统只构建一次共享依赖，后续任务恢复同一次运行的产物。
-  build-deps:
-    name: build dependencies ${{ matrix.platform }}
-    runs-on: ${{ matrix.platform }}-latest
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: [ubuntu, windows]
+  plan:
+    name: plan CI
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      mode: ${{ steps.route.outputs.mode }}
+      fingerprint: ${{ steps.route.outputs.fingerprint }}
+      verified_run: ${{ steps.route.outputs.verified_run }}
+      supported_version: ${{ steps.route.outputs.supported_version }}
+      omp_matrix: ${{ steps.route.outputs.omp_matrix }}
     steps:
       - uses: actions/checkout@v6
-      - uses: ./.github/actions/setup-workspace
-
-      - name: Build shared workspaces
-        run: |
-          npm run build -w @ompiui/protocol
-          npm run build -w @ompiui/omp-worker
-          npm run build -w @ompiui/tui
-          npm run build -w @ompiui/relay
-          npm run build -w @ompiui/server
-          npm run build -w @ompiui/admin
-
-      - uses: actions/upload-artifact@v4
         with:
-          name: ci-build-${{ matrix.platform }}
-          path: |
-            packages/protocol/dist
-            packages/omp-worker/dist
-            packages/relay/dist
-            packages/server/dist
-            packages/admin/dist
-            packages/tui/dist
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Select required checks
+        id: route
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci-plan.mjs
+      - name: Record full CI source
+        if: steps.route.outputs.mode == 'full'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-source-${{ steps.route.outputs.fingerprint }}
+          path: ${{ runner.temp }}/ci-source.json
+          retention-days: 7
           if-no-files-found: error
-          retention-days: 1
-          compression-level: 1
           overwrite: true
 
-  # 第二层：基础模块、服务端、前端分片和前端构建分别占用独立 runner。
+  # 各任务独立恢复编译缓存，不再等待另一个平台的前置构建。
   test-backend:
-    name: test ${{ matrix.suite }} ${{ matrix.platform }}
-    needs: build-deps
+    name: test core ${{ matrix.platform }}
+    if: needs.plan.outputs.mode == 'full'
+    needs: plan
     runs-on: ${{ matrix.platform }}-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         platform: [ubuntu, windows]
-        suite: [core]
     env:
       OMPIUI_DRIVER: mock
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup-workspace
-        with:
-          build-artifact: ci-build-${{ matrix.platform }}
 
       - name: Check and test core workspaces
-        if: matrix.suite == 'core'
         run: |
           npm run typecheck -w @ompiui/tui
           npm run typecheck -w @ompiui/relay
@@ -86,87 +80,57 @@ jobs:
           npm run test -w @ompiui/admin
           npm run test -w @ompiui/tui
 
-  # server 套件在 Windows 上是 15 倍于 Linux 的病态慢（PTY/子进程 + 逐文件 tsx
-  # 编译）；按文件轮转分片到 4 个 runner 并发，和 app 套件同一策略。
+      - name: Lint app and test CI release guards
+        if: matrix.platform == 'ubuntu'
+        run: |
+          npm run lint
+          node --test scripts/ci-plan.test.mjs scripts/release/resolve.test.mjs
+
+  # 两片覆盖全部文件；Windows 分片内部仍由 test-shard 保持串行 PTY 测试。
   test-server:
-    name: test server ${{ matrix.platform }} ${{ matrix.shard }}/4
-    needs: build-deps
+    name: test server ${{ matrix.platform }} ${{ matrix.shard }}/2
+    if: needs.plan.outputs.mode == 'full'
+    needs: plan
     runs-on: ${{ matrix.platform }}-latest
-    # Windows 的 ConPTY 套件单分片实测可达 14 分钟，15 分钟会被误杀。
     timeout-minutes: ${{ matrix.platform == 'windows' && 25 || 15 }}
     strategy:
       fail-fast: false
       matrix:
         platform: [ubuntu, windows]
-        shard: [1, 2, 3, 4]
+        shard: [1, 2]
     env:
       OMPIUI_DRIVER: mock
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup-workspace
-        with:
-          build-artifact: ci-build-${{ matrix.platform }}
 
       - name: Typecheck server
         if: matrix.shard == 1
         run: npm run typecheck -w @ompiui/server
 
       - name: Test server shard
-        run: npm run test:shard -w @ompiui/server -- ${{ matrix.shard }} 4
+        run: npm run test:shard -w @ompiui/server -- ${{ matrix.shard }} 2
 
   test-omp-interop:
-    name: OMP interop ${{ matrix.omp }} ${{ matrix.platform }}
-    needs: build-deps
+    name: OMP interop ${{ matrix.omp.channel }} ${{ matrix.platform }}
+    if: needs.plan.outputs.mode == 'full'
+    needs: plan
     runs-on: ${{ matrix.platform }}-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         platform: [ubuntu, windows]
-        omp: [supported, latest]
+        omp: ${{ fromJSON(needs.plan.outputs.omp_matrix) }}
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup-workspace
-        with:
-          build-artifact: ci-build-${{ matrix.platform }}
 
-      # Supported/latest keep the official standalone binary under test, but
-      # stage its exact npm public sources, native dependencies and private Bun.
-      - name: Install official OMP binary and matching public runtime
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          OMP_TEST_CHANNEL: ${{ matrix.omp }}
-        run: |
-          if ($env:OMP_TEST_CHANNEL -eq 'supported') {
-            $ompTestVersion = node --input-type=module -e "import { OMP_SDK_VERSION } from './packages/omp-worker/dist/omp/constants.js'; console.log(OMP_SDK_VERSION)"
-            if ($LASTEXITCODE -ne 0) { throw 'Cannot read supported OMP version' }
-            $ompTestRelease = "v$ompTestVersion"
-          } else {
-            $ompTestRelease = gh api repos/can1357/oh-my-pi/releases/latest --jq .tag_name
-            if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve latest OMP release' }
-          }
-          $ompTestAsset = if ($IsWindows) { 'omp-windows-x64.exe' } else { 'omp-linux-x64' }
-          $ompTestName = if ($IsWindows) { 'omp.exe' } else { 'omp' }
-          $ompTestDirectory = Join-Path $env:RUNNER_TEMP 'omp-interop-bin'
-          New-Item -ItemType Directory -Path $ompTestDirectory -Force | Out-Null
-          gh release download $ompTestRelease --repo can1357/oh-my-pi --pattern $ompTestAsset --dir $ompTestDirectory
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot download official OMP binary' }
-          $ompTestBinary = Join-Path $ompTestDirectory $ompTestName
-          Move-Item -LiteralPath (Join-Path $ompTestDirectory $ompTestAsset) -Destination $ompTestBinary
-          if (-not $IsWindows) {
-            chmod +x $ompTestBinary
-            if ($LASTEXITCODE -ne 0) { throw 'Cannot make OMP executable' }
-          }
-          $ompTestVersion = $ompTestRelease -replace '^v', ''
-          $ompRuntime = Join-Path $env:RUNNER_TEMP 'omp-interop-runtime'
-          node scripts/prepare-omp-runtime.mjs --version $ompTestVersion --out $ompRuntime --binary $ompTestBinary
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot prepare same-version public OMP runtime' }
-          "OMPI_OMP_RUNTIME_DIR=$ompRuntime" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "OMPI_OMP_BIN=$(Join-Path $ompRuntime "bin/$ompTestName")" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Testing official binary and npm public sources from OMP release $ompTestRelease"
-          & $ompTestBinary --version
-          if ($LASTEXITCODE -ne 0) { throw 'Official OMP binary cannot start' }
+      # 两通道版本相同时只验证一次；缓存仍校验官方二进制与同版本公开源码。
+      - uses: ./.github/actions/setup-omp-test
+        id: omp
+        with:
+          version: ${{ matrix.omp.version }}
 
       - name: Verify native and migrated session interoperability
         run: node scripts/verify-session-safety.mjs
@@ -178,35 +142,34 @@ jobs:
         run: node scripts/verify-packaged-omp-runtime.mjs --runtime "$OMPI_OMP_RUNTIME_DIR"
 
   test-omp-config-windows:
-    name: OMP npm config windows
-    needs: build-deps
+    name: OMP npm roles windows
+    if: needs.plan.outputs.mode == 'full'
+    needs: plan
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup-workspace
-        with:
-          build-artifact: ci-build-windows
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
+      - uses: ./.github/actions/setup-omp-npm
+        id: fixture
+        with:
+          version: ${{ needs.plan.outputs.supported_version }}
 
       - name: Verify Windows entry resolution under Bun
         run: bun test packages/omp-worker/src/omp/omp-config-command.test.ts packages/omp-worker/src/omp/rpc-launch.test.ts
 
-      # 覆盖 issue #79 的真实 npm 版本，Node 与打包 Bun 后端都要走通。版本取自
-      # worker 里标定的 OMP_SDK_VERSION：写死的旧版本低于支持下限会直接被拒。
-      - name: Install npm OMP and verify model role configuration
+      - name: Verify npm model roles and session safety
         shell: pwsh
+        env:
+          OMP_TEST_SHIM: ${{ steps.fixture.outputs.shim }}
+          OMP_TEST_ENTRY: ${{ steps.fixture.outputs.entry }}
         run: |
-          $prefix = Join-Path $env:RUNNER_TEMP 'omp npm config'
-          $version = (Select-String -Path packages/omp-worker/src/omp/constants.ts -Pattern 'OMP_SDK_VERSION = "([0-9.]+)"').Matches[0].Groups[1].Value
-          if (-not $version) { throw 'Cannot read the supported OMP SDK version' }
-          npm install --prefix $prefix --no-save --package-lock=false "@oh-my-pi/pi-coding-agent@$version"
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot install npm OMP fixture' }
-          $shim = Join-Path $prefix 'node_modules/.bin/omp.cmd'
-          $cli = Join-Path $prefix 'node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js'
-          $env:PATH = "$(Join-Path $prefix 'node_modules/.bin');$env:PATH"
+          $shim = $env:OMP_TEST_SHIM
+          $cli = $env:OMP_TEST_ENTRY
+          $env:PATH = "$(Split-Path $shim);$env:PATH"
           node scripts/verify-model-roles.mjs omp $shim $cli
           if ($LASTEXITCODE -ne 0) { throw 'Node model role round trip failed' }
           bun scripts/verify-model-roles.mjs omp $shim $cli
@@ -216,92 +179,124 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Cannot compile Bun configuration fixture' }
           & $compiled omp $shim $cli
           if ($LASTEXITCODE -ne 0) { throw 'Compiled Bun model role round trip failed' }
-          node scripts/verify-omp-rpc-entry.mjs omp $shim $cli
-          if ($LASTEXITCODE -ne 0) { throw 'Node RPC entry verification failed' }
-          bun scripts/verify-omp-rpc-entry.mjs omp $shim $cli
-          if ($LASTEXITCODE -ne 0) { throw 'Bun RPC entry verification failed' }
-          $rpcCompiled = Join-Path $env:RUNNER_TEMP 'verify-omp-rpc-entry.exe'
-          bun build scripts/verify-omp-rpc-entry.mjs --compile --outfile $rpcCompiled
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot compile Bun RPC entry fixture' }
-          & $rpcCompiled omp $shim $cli
-          if ($LASTEXITCODE -ne 0) { throw 'Compiled Bun RPC entry verification failed' }
           $env:OMPI_OMP_BIN = $shim
           node scripts/verify-session-safety.mjs
           if ($LASTEXITCODE -ne 0) { throw 'npm OMP session interoperability failed' }
 
+  test-omp-rpc-windows:
+    name: OMP npm RPC windows
+    if: needs.plan.outputs.mode == 'full'
+    needs: plan
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-workspace
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: ./.github/actions/setup-omp-npm
+        id: fixture
+        with:
+          version: ${{ needs.plan.outputs.supported_version }}
+      - name: Verify npm RPC under Node and Bun
+        shell: pwsh
+        env:
+          OMP_TEST_SHIM: ${{ steps.fixture.outputs.shim }}
+          OMP_TEST_ENTRY: ${{ steps.fixture.outputs.entry }}
+        run: |
+          $shim = $env:OMP_TEST_SHIM
+          $cli = $env:OMP_TEST_ENTRY
+          $env:PATH = "$(Split-Path $shim);$env:PATH"
+          node scripts/verify-omp-rpc-entry.mjs omp $shim $cli
+          if ($LASTEXITCODE -ne 0) { throw 'Node RPC entry verification failed' }
+          bun scripts/verify-omp-rpc-entry.mjs omp $shim $cli
+          if ($LASTEXITCODE -ne 0) { throw 'Bun RPC entry verification failed' }
+          $compiled = Join-Path $env:RUNNER_TEMP 'verify-omp-rpc-entry.exe'
+          bun build scripts/verify-omp-rpc-entry.mjs --compile --outfile $compiled
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot compile Bun RPC entry fixture' }
+          & $compiled omp $shim $cli
+          if ($LASTEXITCODE -ne 0) { throw 'Compiled Bun RPC entry verification failed' }
+
+
   test-app:
-    name: test app ${{ matrix.platform }} ${{ matrix.shard }}/4
-    needs: build-deps
+    name: test app ${{ matrix.platform }} ${{ matrix.shard }}/2
+    if: needs.plan.outputs.mode == 'full'
+    needs: plan
     runs-on: ${{ matrix.platform }}-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         platform: [ubuntu, windows]
-        shard: [1, 2, 3, 4]
+        shard: [1, 2]
     env:
       OMPIUI_DRIVER: mock
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup-workspace
-        with:
-          build-artifact: ci-build-${{ matrix.platform }}
+      - name: Build frontend
+        if: matrix.shard == 1
+        run: npm run build -w @ompiui/app
       - name: Test frontend shard
-        run: npm run test:run -w @ompiui/app -- --shard=${{ matrix.shard }}/4
+        run: npm run test:run -w @ompiui/app -- --shard=${{ matrix.shard }}/2
 
-  build-app:
-    name: build app ${{ matrix.platform }}
-    needs: build-deps
-    runs-on: ${{ matrix.platform }}-latest
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: [ubuntu, windows]
-    steps:
-      - uses: actions/checkout@v6
-      - uses: ./.github/actions/setup-workspace
-        with:
-          build-artifact: ci-build-${{ matrix.platform }}
-      # build 已包含完整的前端 TypeScript 检查，无需再单独执行一次。
-      - run: npm run build -w @ompiui/app
 
-  lint:
-    name: lint
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v6
-      - uses: ./.github/actions/setup-workspace
-      - run: npm run lint
-      - name: Validate release artifact selection
-        run: node --test scripts/release/resolve.test.mjs
-
-  # 第三层：保留分支保护使用的检查名称，任何上游失败或跳过都不能放行。
+  # 计划跳过与失败分开处理；只有完整成功的检查才生成可复用证明。
   validate:
     name: validate ${{ matrix.platform }}
-    if: always()
-    needs: [build-deps, test-backend, test-server, test-omp-interop, test-omp-config-windows, test-app, build-app, lint]
+    if: ${{ !cancelled() }}
+    needs: [plan, test-backend, test-server, test-omp-interop, test-omp-config-windows, test-omp-rpc-windows, test-app, tauri-check]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     strategy:
       matrix:
         platform: [ubuntu, windows]
     steps:
-      - name: Require all validation jobs
+      - name: Require selected validation jobs
         env:
           JOB_RESULTS: ${{ toJSON(needs) }}
         run: |
           node --input-type=module <<'JS'
           const results = JSON.parse(process.env.JOB_RESULTS)
-          const failures = Object.entries(results).filter(([, job]) => job.result !== 'success')
-          for (const [name, job] of failures) console.error(`${name}: ${job.result}`)
+          const plan = results.plan
+          const mode = plan.outputs.mode
+          if (plan.result !== 'success' || !['full', 'docs', 'reuse'].includes(mode)) {
+            throw new Error(`CI plan did not succeed: ${plan.result}`)
+          }
+          if (!/^[a-f0-9]{64}$/.test(plan.outputs.fingerprint)) throw new Error('Invalid source fingerprint')
+          if (mode === 'reuse' && !plan.outputs.verified_run) throw new Error('No verified CI run supplied')
+          const requiredResult = mode === 'full' ? 'success' : 'skipped'
+          const failures = Object.entries(results).filter(([name, job]) => name !== 'plan' && job.result !== requiredResult)
+          for (const [name, job] of failures) console.error(`${name}: ${job.result}, expected ${requiredResult}`)
           if (failures.length) process.exit(1)
-          console.log('All validation jobs passed')
+          console.log(mode === 'full' ? 'All validation jobs passed' : `CI checks intentionally skipped: ${mode}`)
           JS
+      - uses: actions/checkout@v6
+        if: matrix.platform == 'ubuntu' && needs.plan.outputs.mode == 'full'
+      - uses: actions/setup-node@v6
+        if: matrix.platform == 'ubuntu' && needs.plan.outputs.mode == 'full'
+        with:
+          node-version: 22
+      - name: Write full CI proof
+        if: matrix.platform == 'ubuntu' && needs.plan.outputs.mode == 'full'
+        env:
+          CI_EXPECTED_FINGERPRINT: ${{ needs.plan.outputs.fingerprint }}
+        run: node scripts/ci-plan.mjs proof
+      - name: Record verified source
+        if: matrix.platform == 'ubuntu' && needs.plan.outputs.mode == 'full'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-verified-${{ needs.plan.outputs.fingerprint }}
+          path: ${{ runner.temp }}/ci-proof.json
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: true
 
   tauri-check:
     name: tauri check
+    if: needs.plan.outputs.mode == 'full'
+    needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

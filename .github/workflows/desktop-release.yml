@@ -4,6 +4,16 @@ on:
   push:
     branches: [dev]
     tags: ["v*"]
+    paths:
+      - 'packages/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'patches/**'
+      - 'scripts/**'
+      - '!scripts/ci-plan.mjs'
+      - '!scripts/**/*.test.mjs'
+      - '.github/workflows/desktop-release.yml'
+      - 'LICENSE'
   workflow_dispatch:
     inputs:
       tag:
@@ -38,7 +48,7 @@ jobs:
   prepare:
     name: resolve source and prebuilt artifacts
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 15
     outputs:
       publish: ${{ steps.source.outputs.publish }}
       deliver: ${{ steps.source.outputs.deliver }}

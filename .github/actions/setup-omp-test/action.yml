@@ -1,0 +1,91 @@
+name: Set up OMP interop runtime
+description: 按精确 OMP 版本恢复或装配官方独立运行时（公共 npm 源码 + 私有 Bun），供现有互操作验证脚本直接使用
+inputs:
+  version:
+    description: 父流程已解析的精确稳定 OMP 版本（x.y.z）
+    required: true
+outputs:
+  runtime-dir:
+    description: 运行时资源目录的绝对路径（$RUNNER_TEMP/omp-interop-runtime）
+    value: ${{ steps.omp-runtime.outputs.runtime-dir }}
+  binary:
+    description: 官方 OMP 独立可执行文件的绝对路径
+    value: ${{ steps.omp-runtime.outputs.binary }}
+  version:
+    description: 已校验的精确 OMP 版本
+    value: ${{ steps.omp-runtime.outputs.version }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v6
+      with:
+        node-version: 22
+
+    - name: Validate requested OMP version
+      shell: bash
+      env:
+        OMP_VERSION: ${{ inputs.version }}
+      run: |
+        node --input-type=module - <<'NODE'
+        const version = (process.env.OMP_VERSION ?? "").trim()
+        if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error(`An exact stable OMP version is required, got ${JSON.stringify(version)}`)
+        NODE
+
+    # 缓存键固定了 runner OS/架构、精确 OMP 版本与装配脚本内容：
+    # 装配脚本内置私有 Bun 版本和公开源码装配语义，任一变化都必须重新装配。
+    - name: Restore interop runtime cache
+      id: omp-runtime-cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/omp-interop-runtime
+        key: omp-interop-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}-${{ hashFiles('scripts/prepare-omp-runtime.mjs', '.github/actions/setup-omp-test/action.yml') }}
+
+    # 装配脚本自行下载并校验官方独立二进制、同版本公共 npm 源码、原生依赖与私有 Bun。
+    - name: Prepare public OMP runtime
+      if: steps.omp-runtime-cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        OMP_VERSION: ${{ inputs.version }}
+        OMP_RUNTIME_DIR: ${{ runner.temp }}/omp-interop-runtime
+      run: node scripts/prepare-omp-runtime.mjs --version "$OMP_VERSION" --out "$OMP_RUNTIME_DIR"
+
+    # 命中缓存时也必须走同一套严格校验：资源缺失、JSON 损坏或版本不符一律失败，
+    # 不允许用残缺的恢复结果绕过官方二进制与公共源码校验。
+    - name: Verify runtime resources and publish outputs
+      id: omp-runtime
+      shell: bash
+      env:
+        OMP_VERSION: ${{ inputs.version }}
+        OMP_CACHE_HIT: ${{ steps.omp-runtime-cache.outputs.cache-hit }}
+      run: |
+        node --input-type=module - <<'NODE'
+        import { execFileSync } from "node:child_process"
+        import { appendFileSync } from "node:fs"
+        import { join, resolve } from "node:path"
+        import { pathToFileURL } from "node:url"
+
+        const version = (process.env.OMP_VERSION ?? "").trim()
+        if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error(`An exact stable OMP version is required, got ${JSON.stringify(version)}`)
+        const cacheHit = process.env.OMP_CACHE_HIT === "true"
+        const source = cacheHit ? "Restored OMP runtime cache" : "Prepared OMP runtime"
+        const runtimeDir = resolve(process.env.RUNNER_TEMP ?? ".", "omp-interop-runtime")
+        const binary = join(runtimeDir, "bin", process.platform === "win32" ? "omp.exe" : "omp")
+        const { inspectOmpRuntime } = await import(pathToFileURL(join(process.cwd(), "scripts", "prepare-omp-runtime.mjs")).href)
+        let manifest
+        try {
+          manifest = inspectOmpRuntime(runtimeDir)
+        } catch (error) {
+          throw new Error(`${source} is unusable: ${error.message}`)
+        }
+        if (manifest.version !== version) throw new Error(`${source} version ${manifest.version} does not match requested ${version}`)
+        let reported
+        try {
+          reported = execFileSync(binary, ["--version"], { encoding: "utf8", timeout: 30_000, windowsHide: true }).trim()
+        } catch (error) {
+          throw new Error(`${source} cannot start the official OMP binary ${binary}: ${error.message}`)
+        }
+        if (reported.match(/\b\d+\.\d+\.\d+\b/)?.[0] !== version) throw new Error(`Official OMP binary reported ${reported} instead of ${version}`)
+        appendFileSync(process.env.GITHUB_OUTPUT, `runtime-dir=${runtimeDir}\nbinary=${binary}\nversion=${version}\n`)
+        appendFileSync(process.env.GITHUB_ENV, `OMPI_OMP_RUNTIME_DIR=${runtimeDir}\nOMPI_OMP_BIN=${binary}\n`)
+        console.info(`[omp-interop] ${cacheHit ? "cache hit" : "cache miss"}: OMP ${version} at ${runtimeDir}`)
+        NODE

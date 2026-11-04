@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process"
 import { appendFileSync } from "node:fs"
 import { pathToFileURL } from "node:url"
+import { sourceFingerprint, waitForVerifiedCi } from "../ci-plan.mjs"
 
 const workflow = "desktop-release.yml"
 const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim()
@@ -54,6 +55,16 @@ async function main() {
     requestedTag: process.env.RELEASE_TAG?.trim(),
     verifyOnly,
   })
+  const verified = await waitForVerifiedCi({
+    fingerprint: sourceFingerprint(source.commit),
+    repository: process.env.GITHUB_REPOSITORY,
+    token: process.env.GH_TOKEN,
+    excludeRunId: process.env.GITHUB_RUN_ID,
+  })
+  if (!verified) throw new Error(`No successful full CI proof for release source ${source.commit}; CI must pass before preparing artifacts`)
+  console.info(`Verified release source with CI run ${verified.runId}`)
+  appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+    `### CI 验证\n\n[源码 CI ${verified.runId}](https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${verified.runId}) 已通过；随后才启动预构建或发布。\n\n`)
   const android = process.env.ANDROID_ENABLED === "true"
   let reuseRun = ""
   if ((source.publish || verifyOnly) && process.env.FORCE_REBUILD !== "true") {
