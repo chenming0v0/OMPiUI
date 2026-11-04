@@ -218,6 +218,8 @@ npm run dev:app
 
 准备脚本支持 Windows、glibc Linux、macOS 的 x64／arm64，必须在目标系统与架构上安装原生依赖；桌面打包同样拒绝跨宿主平台／架构准备。此范围是 stage 支持范围，不代表每个平台的发布产物已验收。musl Linux 与 Android 不提供本地引擎打包；Android 仅作为客户端连接桌面／服务器主机。正常桌面打包、服务器安装与 Docker 镜像构建会显式准备运行时，服务启动和只读浏览不会补装依赖。
 
+测试、smoke 和验收脚本只在 GitHub Actions CI 执行，禁止在本地先运行 `npm test`、`npm run validate` 或临时验证脚本。以下是 CI 使用的验证命令，不是本地测试步骤：
+
 ```bash
 npm run typecheck
 npm test
@@ -225,9 +227,17 @@ npm run lint
 npm run build
 ```
 
-TUI 的定向测试和真实 PTY 截图验收见 [终端管理界面的验证章节](tui.md#验证)。截图脚本以临时目录、随机本机端口和 mock 后端运行，不访问真实用户会话或凭证。
+TUI 的定向测试和真实 PTY 截图验收同样仅在 CI 执行，工具用法见 [终端管理界面的验证章节](tui.md#验证)。截图脚本以临时目录、随机本机端口和 mock 后端运行，不访问真实用户会话或凭证。
 
 新增 workspace 依赖时，应同时检查根构建顺序、CI 产物与版本同步脚本。`tui` 必须先于依赖它的 `relay` 和 `admin` 构建。
+
+### GitHub Actions CI
+
+- `dev`／`main` push 和面向这两个分支的 PR 按变更选择 `full`、`reuse` 或 `docs`。只有根目录 `AGENTS.md`、`README.md`、`CHANGELOG.md` 与 `docs/` 属于文档级变更；技能和夹具中的 Markdown 仍参与源码身份。
+- 源码身份来自实际检出的 Git 树，忽略上述文档。只有同一源码且受测 latest OMP 版本相同的成功完整 CI 能被复用；同源检查仍在运行就等待，最新真实失败直接报错，不另起一套检查掩盖失败。
+- `full` 保留 Linux／Windows core、服务端、前端及 OMP 互通验证，以及 lint、Tauri 检查／测试和 Windows npm 角色／RPC 验证。前端与服务端各两片；各 job 恢复共享编译缓存，不再等待统一的 `build-deps` job。OMP 缓存按系统、架构和精确版本区分。
+- 需要重新验证同一源码时，手动派发 `CI`：`gh workflow run ci.yml --ref dev`。`workflow_dispatch` 始终执行完整检查，不复用旧结果。
+- tag 仅触发发布工作流，不重复运行 CI。发布预构建先等待所选源码的完整 CI 成功，再开始桌面／移动端打包；发布等待器的超时不是测试运行时限，也不把尚未完成的运行视为成功。
 
 ### 原生 `/compact` 验收
 

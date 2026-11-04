@@ -79,13 +79,15 @@ TUI 只控制在本次界面内启动的中转，不接管已经独立运行的 
 
 ## 验证
 
+以下测试和 PTY／截图验收命令只允许在 GitHub Actions CI 中执行，禁止在本地运行：
+
 ```bash
 npm run test -w @ompiui/tui
 npm run test -w @ompiui/admin
 npm run test -w @ompiui/relay
 ```
 
-实际 PTY 和截图验收需要安装 Playwright 及 Chromium，并先构建 `tui`、`relay`、`admin`、`protocol`、`omp-worker`、`server`：
+在 CI runner 中进行实际 PTY 和截图验收时，需要安装 Playwright 及 Chromium，并先构建 `tui`、`relay`、`admin`、`protocol`、`omp-worker`、`server`：
 
 ```bash
 node scripts/verify-tui.mjs
