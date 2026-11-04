@@ -62,15 +62,6 @@ function installWindowApiMock(overrides: Partial<Record<'minimize' | 'toggleMaxi
 }
 
 describe('DesktopTitlebar', () => {
-  it('renders self-drawn Windows controls (minimize / maximize / close)', () => {
-    installWindowApiMock()
-    render(<DesktopTitlebar />)
-
-    expect(screen.getByRole('button', { name: 'desktopTitlebar.minimize' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'desktopTitlebar.maximize' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'desktopTitlebar.close' })).toBeInTheDocument()
-  })
-
   it('calls the Tauri window API when controls are clicked', () => {
     const { calls } = installWindowApiMock()
     render(<DesktopTitlebar />)

@@ -17,6 +17,9 @@ const mocks = vi.hoisted(() => ({
   restart: vi.fn(),
   stop: vi.fn(),
   storageSet: vi.fn(),
+  getBackground: vi.fn(),
+  getTray: vi.fn(),
+  setTray: vi.fn(),
 }))
 
 vi.mock('../../../utils/tauri', () => ({ isTauri: () => mocks.desktop, isTauriMobile: () => mocks.mobile }))
@@ -30,6 +33,10 @@ vi.mock('../../../services/desktopService', () => ({
   startDesktopService: mocks.start,
   restartDesktopService: mocks.restart,
   stopDesktopService: mocks.stop,
+  getDesktopBackgroundStatus: mocks.getBackground,
+  getDesktopTraySettings: mocks.getTray,
+  setDesktopTraySettings: mocks.setTray,
+  redactBackgroundError: (error: string) => error,
 }))
 // 认证页面独立验证；服务页面不应再挂载它。
 vi.mock('./RemoteAccessSettings', () => ({ RemoteAccessSettings: () => <div>Authentication panel</div> }))
@@ -58,6 +65,9 @@ beforeEach(async () => {
   mocks.start.mockResolvedValue({ status })
   mocks.restart.mockResolvedValue({ status })
   mocks.stop.mockResolvedValue(status)
+  mocks.getBackground.mockResolvedValue({ supported: false })
+  mocks.getTray.mockReset().mockResolvedValue({ supported: true, closeToTray: false })
+  mocks.setTray.mockReset().mockResolvedValue({ supported: true, closeToTray: true })
   serviceStore.setEnvVars([
     { key: 'OMPIUI_PORT', value: '7777' },
     { key: 'OMPIUI_TUNNEL_URL', value: 'wss://local-only.example.test' },
@@ -75,6 +85,47 @@ afterEach(async () => {
 })
 
 describe('ServiceSettings ownership of configuration', () => {
+  it('loads the native tray preference and changes only after a successful save', async () => {
+    mocks.desktop = true
+    let resolveSave!: (value: { supported: boolean; closeToTray: boolean }) => void
+    mocks.setTray.mockReturnValueOnce(new Promise(resolve => { resolveSave = resolve }))
+    render(<ServiceSettings />)
+    const toggle = await screen.findByRole('switch', { name: 'Close window to system tray' })
+    await waitFor(() => expect(toggle).toBeEnabled())
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(toggle)
+    expect(mocks.setTray).toHaveBeenCalledWith(true, 'en')
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    expect(toggle).toBeDisabled()
+    await act(async () => resolveSave({ supported: true, closeToTray: true }))
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+    expect(toggle).toBeEnabled()
+  })
+
+  it('keeps the last effective tray preference when native persistence fails', async () => {
+    mocks.desktop = true
+    mocks.getTray.mockResolvedValue({ supported: true, closeToTray: true })
+    mocks.setTray.mockRejectedValue(new Error('cannot save tray settings'))
+    render(<ServiceSettings />)
+    const toggle = await screen.findByRole('switch', { name: 'Close window to system tray' })
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'))
+    fireEvent.click(toggle)
+    expect(await screen.findByRole('alert')).toHaveTextContent('cannot save tray settings')
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+    expect(toggle).toBeEnabled()
+  })
+
+  it('disables hiding when the native environment has no tray', async () => {
+    mocks.desktop = true
+    mocks.getTray.mockResolvedValue({ supported: false, closeToTray: false })
+    render(<ServiceSettings />)
+    expect(await screen.findByText(/The system tray is unavailable/)).toBeInTheDocument()
+    const toggle = screen.getByRole('switch', { name: 'Close window to system tray' })
+    expect(toggle).toBeDisabled()
+    fireEvent.click(toggle)
+    expect(mocks.setTray).not.toHaveBeenCalled()
+  })
+
   it.each(['browser', 'mobile'])('%s shows actual remote status without no-op configuration forms', async platform => {
     mocks.desktop = platform === 'mobile'
     mocks.mobile = platform === 'mobile'
@@ -95,6 +146,8 @@ describe('ServiceSettings ownership of configuration', () => {
     expect(localStorage.getItem('ompiui-service-env-vars')).toBe(saved)
     expect(mocks.start).not.toHaveBeenCalled()
     expect(mocks.refresh).not.toHaveBeenCalled()
+    expect(mocks.getTray).not.toHaveBeenCalled()
+    expect(screen.queryByRole('switch', { name: 'Close window to system tray' })).not.toBeInTheDocument()
 
     expect(screen.getByText(/Saved on this device, separately for each server/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Terminal shell' }))

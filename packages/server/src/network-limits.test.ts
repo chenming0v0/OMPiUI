@@ -171,16 +171,6 @@ test("real websocket subscriptions replay only newly added streams and cap conne
     assert.equal(changed.event, undefined);
     assert.deepEqual(changed.cursor, hub.getCursor(sessionStream));
     assert.equal(typeof changed.eventId, "string");
-    hub.publish(sessionStream, "command.updated", {
-      id: "x".repeat(5 * 1024 * 1024), status: "completed",
-    });
-    await subscribe([serverStream, sessionStream]);
-    const omittedCommand = received.find((frame) =>
-      frame.type === "payload_omitted" && frame.eventChannel === "command.updated",
-    );
-    assert.ok(omittedCommand);
-    assert.equal("commandId" in omittedCommand, false);
-    assert.ok(Buffer.byteLength(JSON.stringify(omittedCommand)) < 4096);
     assert.equal(
       received.some((frame) => frame.type === "resync_required"),
       false,

@@ -185,7 +185,7 @@ describe('ProviderModelPickerDialog responsive flows', () => {
 
   it('keeps the mobile sheet and query open after adding and removing without refetching', async () => {
     render(<LivePicker />)
-    await screen.findByRole('button', { name: 'Add model gpt-new' })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add model gpt-new' })).toBeVisible())
     fireEvent.change(screen.getByRole('textbox', { name: 'Filter by model name' }), { target: { value: 'gpt-new' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add model gpt-new' }))
     expect(screen.getByRole('button', { name: 'Delete model gpt-new' })).toBeVisible()

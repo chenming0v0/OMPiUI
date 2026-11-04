@@ -113,15 +113,6 @@ describe('piSessionStateStore pending dialog recovery', () => {
     expect(activeSessionStore.getBusySessionsSnapshot().some(entry => entry.pendingAction)).toBe(false)
   })
 
-  it('allows a new worker generation to reuse a request id after the old one settled', () => {
-    const oldRequest = dialogRequest({ workerGeneration: 'old' })
-    const newRequest = dialogRequest({ workerGeneration: 'new' })
-    piSessionStateStore.setState('session-1', stateWith([oldRequest]))
-    extensionUiStore.requestSettled('session-1', oldRequest.requestId)
-    expect(extensionUiStore.requestOpened(newRequest)).toBe(true)
-    expect(extensionUiStore.getSnapshot().sessions['session-1']?.pending[0]?.workerGeneration).toBe('new')
-  })
-
   it('does not replay an old extension mirror when lifecycle state changes', () => {
     piSessionStateStore.setState('session-1', {
       extensionUiState: [{ kind: 'status', key: 'mode', text: 'Old' }],

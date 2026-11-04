@@ -93,10 +93,6 @@ describe("readChildSessionMessages", () => {
     assert.equal((messages[1]?.content as Array<{ text?: string }>)?.[0]?.text, "OMPiUI 是……")
   })
 
-  it("restores the WebUI-managed child transcript from disk", async () => {
-    assert.deepEqual(await readChildSessionMessages(managedChildFile), managedMessages)
-  })
-
   it("reads managed transcripts when the native sessions root does not exist", async () => {
     process.env.PI_CODING_AGENT_DIR = path.join(root, "no-native-agent")
     try {

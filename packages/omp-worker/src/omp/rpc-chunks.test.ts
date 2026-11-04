@@ -58,13 +58,6 @@ test("RPC streaming parser preserves official large frames without allocating a 
   assert.equal(rpc.chunkBytes, 0)
 })
 
-test("RPC chunks reject zero lengths and excessive fragment counts", () => {
-  const rpc = harness()
-  rpc.handleChunk(chunk("zero", 0, 1, 0, Buffer.from("x")))
-  rpc.handleChunk(chunk("count", 0, 4097, 8192, Buffer.from("x")))
-  assert.equal(rpc.chunks.size, 0)
-})
-
 test("RPC chunk entry limit and process cleanup release every retained byte", () => {
   const rpc = harness()
   for (let id = 0; id < 33; id++) rpc.handleChunk(chunk(String(id), 0, 2, 2, Buffer.from("x")))

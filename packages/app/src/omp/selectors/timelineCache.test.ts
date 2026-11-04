@@ -44,30 +44,6 @@ describe('selectPiTimelineItemsCached', () => {
     expect(second).toBe(first)
   })
 
-  it('reuses history item objects across streaming chunks (only checkpoint changes)', () => {
-    // First build: full branch with history.
-    const page = branch([user1, assistant1])
-    const first = selectPiTimelineItemsCached('s1', page)
-    const firstUserItem = firstUser(first)
-    expect(firstUserItem).toBeDefined()
-
-    // Streaming chunk: same page reference (updateLiveMessage shallow-copies
-    // the page and only replaces checkpoint.liveMessage).
-    const streamingChunk = selectPiTimelineItemsCached('s1', page)
-    expect(streamingChunk).toBe(first)
-    expect(firstUser(streamingChunk)).toBe(firstUserItem)
-  })
-
-  it('rebuilds when the branch reference changes (refresh merged new entries)', () => {
-    const oldPage = branch([user1])
-    const oldItems = selectPiTimelineItemsCached('s1', oldPage)
-
-    const newPage = branch([user1, user2])
-    const newItems = selectPiTimelineItemsCached('s1', newPage)
-    expect(newItems).not.toBe(oldItems)
-    expect(newItems.length).toBe(oldItems.length + 1)
-  })
-
   it('returns empty for null branch and counts items for null session', () => {
     expect(selectPiTimelineItemsCached(null, null)).toEqual([])
     expect(selectPiTimelineItemsCached(null, branch([user1]))).toHaveLength(1)

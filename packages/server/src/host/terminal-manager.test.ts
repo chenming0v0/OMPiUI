@@ -26,10 +26,14 @@ test("TerminalManager creates, streams, replays, and removes a terminal", async 
     assert.match(replayed.replay, /ompiui-terminal/)
     replayed.detach()
     assert.match(output.join(""), /ompiui-terminal/)
+    const cursor = manager.get(root, created.id).cursor
+    assert.throws(() => manager.attach(root, created.id, cursor + 10, () => {}, () => {}), { code: "INVALID_REQUEST" })
 
     manager.update(root, created.id, { title: "Renamed terminal" })
     assert.deepEqual(titles, ["Renamed terminal"])
+    const ticket = manager.issueConnectToken(root, created.id).token
     manager.remove(root, created.id)
+    assert.equal(manager.consumeConnectToken(created.id, ticket), undefined)
     assert.deepEqual(manager.list(root), [])
   } finally {
     manager.dispose()
@@ -67,6 +71,7 @@ test("closeWorkspace kills owned terminals and consumes their tickets", async ()
     const ticket = manager.issueConnectToken(root, first.id).token
 
     manager.closeWorkspace(root)
+    manager.closeWorkspace(root)
 
     assert.deepEqual(manager.list(root), [])
     assert.equal(manager.consumeConnectToken(first.id, ticket), undefined)
@@ -77,50 +82,6 @@ test("closeWorkspace kills owned terminals and consumes their tickets", async ()
     await manager.shutdown()
     await removeWithRetry(root)
     await removeWithRetry(other)
-  }
-})
-
-test("closing an already-closed workspace is a no-op", async () => {
-  const root = mkdtempSync(path.join(tmpdir(), "omompiui-terminal-close-idem-"))
-  const manager = new TerminalManager()
-  try {
-    await manager.create(root, { title: "still-running" })
-    manager.closeWorkspace(root)
-    manager.closeWorkspace(root)
-    assert.deepEqual(manager.list(root), [])
-  } finally {
-    await manager.shutdown()
-    await removeWithRetry(root)
-  }
-})
-
-test("removing a terminal invalidates its connect ticket", async () => {
-  const root = mkdtempSync(path.join(tmpdir(), "omompiui-terminal-ticket-"))
-  const manager = new TerminalManager()
-  try {
-    const created = await manager.create(root, { title: "ticketed" })
-    const ticket = manager.issueConnectToken(root, created.id).token
-    manager.remove(root, created.id)
-    assert.equal(manager.consumeConnectToken(created.id, ticket), undefined)
-  } finally {
-    await manager.shutdown()
-    await removeWithRetry(root)
-  }
-})
-
-test("attach rejects a future cursor", async () => {
-  const root = mkdtempSync(path.join(tmpdir(), "omompiui-terminal-future-"))
-  const manager = new TerminalManager()
-  try {
-    const created = await manager.create(root, { title: "future" })
-    manager.write(root, created.id, process.platform === "win32" ? "echo future-cursor\r\n" : "printf future-cursor\\n")
-    await waitFor(() => manager.get(root, created.id).cursor > 0)
-    const cursor = manager.get(root, created.id).cursor
-    assert.throws(() => manager.attach(root, created.id, cursor + 10, () => {}, () => {}), (error: unknown) =>
-      (error as { code?: string }).code === "INVALID_REQUEST")
-  } finally {
-    await manager.shutdown()
-    await removeWithRetry(root)
   }
 })
 
