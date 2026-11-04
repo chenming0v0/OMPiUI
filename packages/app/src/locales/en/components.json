@@ -374,7 +374,9 @@
     "title": "Close OMPiUI",
     "description": "The backend service started by OMPiUI is still running. Stop it too?",
     "closeAndStop": "Close and stop backend",
-    "closeKeepRunning": "Close and keep backend running"
+    "closeKeepRunning": "Close and keep backend running",
+    "hideKeepRunning": "Hide to tray and keep backend running",
+    "trayDescription": "The backend started by OMPiUI is still running. Hide to the tray to keep it running, or close and stop the backend."
   },
   "markdown": {
     "mermaidRenderFailed": "Mermaid render failed",

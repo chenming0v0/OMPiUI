@@ -63,6 +63,31 @@ export async function refreshDesktopServiceStatus(): Promise<DesktopServiceStatu
   return applyStatus(await invoke<DesktopServiceStatus>('get_ompiui_service_status', environmentArgs()))
 }
 
+export interface DesktopTraySettings {
+  supported: boolean
+  closeToTray: boolean
+}
+
+export async function getDesktopTraySettings(language: string): Promise<DesktopTraySettings> {
+  const invoke = await getInvoke()
+  return invoke<DesktopTraySettings>('get_ompiui_tray_settings', { ...environmentArgs(), language })
+}
+
+export async function setDesktopTraySettings(closeToTray: boolean, language: string): Promise<DesktopTraySettings> {
+  const invoke = await getInvoke()
+  return invoke<DesktopTraySettings>('set_ompiui_tray_settings', { closeToTray, ...environmentArgs(), language })
+}
+
+/** 托盘启动和 GUI 启动使用同一连接同步路径，不再次启动后端。 */
+export function applyDesktopServiceStart(result: DesktopServiceStartResult): void {
+  if (!result.url || !result.token) {
+    throw new Error('OMPiUI server did not return a usable URL and auth token')
+  }
+  applyLocalServerConfig(result.url, result.token)
+  serviceStore.setRunning(true)
+  serviceStore.setStartedByUs(result.startedByUs)
+}
+
 export async function readDesktopServiceDiagnostics(): Promise<DesktopServiceDiagnostics> {
   const invoke = await getInvoke()
   return invoke<DesktopServiceDiagnostics>('get_ompiui_service_diagnostics', environmentArgs())
@@ -75,12 +100,7 @@ async function startOrRestartDesktopService(
     desktopDiagnosticsStore.begin('preparing')
     const invoke = await getInvoke()
     const result = await invoke<DesktopServiceStartResult>(command, environmentArgs())
-    if (!result.url || !result.token) {
-      throw new Error('OMPiUI server did not return a usable URL and auth token')
-    }
-    applyLocalServerConfig(result.url, result.token)
-    serviceStore.setRunning(true)
-    serviceStore.setStartedByUs(result.startedByUs)
+    applyDesktopServiceStart(result)
     return { result, status: await refreshDesktopServiceStatus() }
   })
 }

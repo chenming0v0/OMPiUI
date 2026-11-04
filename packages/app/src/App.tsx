@@ -41,6 +41,7 @@ import { trackPiSession } from './omp/ompSessionIndex'
 import { piEventStream } from './omp/eventStream.js'
 import { useSessionContext } from './contexts/useSessionContext'
 import { useCloseServiceDialog } from './hooks/useCloseServiceDialog'
+import { useDesktopTray } from './hooks/useDesktopTray'
 import { useSessionReplacement } from './hooks/useSessionReplacement'
 import { FaultReportDialog } from './features/diagnostics/FaultReportDialog'
 
@@ -58,7 +59,8 @@ type MobilePagerPage = 'left' | 'chat' | 'right'
 
 function App() {
   const { t } = useTranslation(['commands', 'chat', 'common', 'components'])
-  const { showCloseDialog, confirmClose, cancelClose } = useCloseServiceDialog()
+  const { showCloseDialog, closeToTray, confirmClose, cancelClose } = useCloseServiceDialog()
+  useDesktopTray()
   const router = useRouter()
   const {
     sessionId: routeSessionId,
@@ -1023,7 +1025,7 @@ function App() {
 
         <Suspense fallback={null}>
           <SettingsDialog isOpen={settingsDialogOpen} onClose={closeSettings} initialTab={settingsInitialTab} />
-          <CloseServiceDialog isOpen={showCloseDialog} onConfirm={confirmClose} onCancel={cancelClose} />
+          <CloseServiceDialog isOpen={showCloseDialog} closeToTray={closeToTray} onConfirm={confirmClose} onCancel={cancelClose} />
           <CommandPalette
             isOpen={commandPaletteOpen}
             onClose={() => setCommandPaletteOpen(false)}

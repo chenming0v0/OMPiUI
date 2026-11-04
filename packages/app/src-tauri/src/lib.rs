@@ -4,6 +4,8 @@ mod commands;
 mod dir_state;
 #[cfg(desktop)]
 mod service;
+#[cfg(desktop)]
+mod tray;
 
 use tauri::{Emitter, Manager, WebviewWindowBuilder};
 
@@ -328,6 +330,7 @@ pub fn run() {
         }))
         .manage(OpenDirectoryState::default())
         .manage(ServiceState::default())
+        .manage(tray::TrayState::default())
         .plugin(tauri_plugin_decorum::init())
         .plugin(
             tauri_plugin_log::Builder::default()
@@ -339,11 +342,21 @@ pub fn run() {
                 tauri::WindowEvent::CloseRequested { api, .. } => {
                     save_window_state(window);
 
-                    let is_last = window.app_handle().webview_windows().len() <= 1;
+                    let is_last = tray::is_last_visible_window(window);
                     let state = window.state::<ServiceState>();
-                    if is_last && state.should_confirm_close() {
+                    let close_to_tray = tray::close_to_tray(window.app_handle());
+                    if is_last && (state.should_confirm_close() || tray::has_owned_backend(window.app_handle())) {
                         api.prevent_close();
-                        let _ = window.emit("close-requested", ());
+                        let _ = window.emit("close-requested", tray::CloseRequested { close_to_tray, exit_app: false });
+                    } else if close_to_tray {
+                        api.prevent_close();
+                        if let Err(error) = tray::hide_window(window) {
+                            let _ = window.emit("desktop-service-error", error);
+                        }
+                    } else if is_last {
+                        // 可能仍有隐藏窗口；最后一个可见窗口关闭仍要真正退出。
+                        api.prevent_close();
+                        window.app_handle().exit(0);
                     }
                 }
                 tauri::WindowEvent::Resized(_) => {
@@ -411,6 +424,7 @@ pub fn run() {
             let main_window = create_main_window(app.handle())?;
             finish_desktop_window_setup(&main_window);
             restore_window_state(&main_window);
+            tray::init(app.handle());
 
             // 冷启动时从 CLI 参数提取目录（右键 "Open with OMPiUI" / 拖到图标），
             // 存入 pending，前端首帧后 get_cli_directory 一次性消费。
@@ -436,6 +450,8 @@ pub fn run() {
             get_ompiui_background_status,
             set_ompiui_background_settings,
             confirm_close_app,
+            tray::get_ompiui_tray_settings,
+            tray::set_ompiui_tray_settings,
             desktop_window_ready,
             open_new_window,
             dir_state::get_cli_directory,

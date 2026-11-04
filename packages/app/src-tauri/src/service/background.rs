@@ -319,6 +319,14 @@ pub async fn status() -> Result<BackgroundStatus, String> {
         lifecycle, pid: config.backend_pid.filter(|_| running), last_error: config.last_error })
 }
 
+/// 托盘只读快照：不改 desired、不启动 supervisor，不写凭据或环境。
+pub(super) fn backend_snapshot() -> Result<(BTreeMap<String, String>, Option<u32>), String> {
+    if !cfg!(windows) { return Ok((BTreeMap::new(), None)); }
+    let config = read_config()?;
+    let environment = if config.backend_environment.is_empty() { config.environment } else { config.backend_environment };
+    Ok((environment, config.backend_pid))
+}
+
 pub async fn connection() -> Result<Option<(u32, String, String)>, String> {
     let config = read_config()?;
     let Some(pid) = config.backend_pid else { return Ok(None); };
@@ -695,6 +703,15 @@ mod tests {
         config.pause_update(Some((42, 100)));
         config.resume_update();
         assert!(!config.desired && !config.paused_for_update);
+    }
+
+    #[test]
+    fn tray_stop_intent_survives_reload_with_crash_recovery_enabled() {
+        let mut config = Config { crash_recovery: true, desired: true, ..Config::default() };
+        config.stop_intent(false);
+        let reloaded: Config = serde_json::from_slice(&serde_json::to_vec(&config).unwrap()).unwrap();
+        assert!(configured(&reloaded));
+        assert!(!reloaded.desired && !reloaded.restore_after_update);
     }
 
     #[test]

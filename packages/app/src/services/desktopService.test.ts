@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { restartDesktopService, startDesktopService, stopDesktopService } from './desktopService'
+import { applyDesktopServiceStart, getDesktopTraySettings, setDesktopTraySettings, restartDesktopService, startDesktopService, stopDesktopService } from './desktopService'
 import { desktopDiagnosticsStore } from '../store/desktopDiagnosticsStore'
 
 const { invokeMock, applyLocalServerConfigMock, serviceStoreMock } = vi.hoisted(() => ({
@@ -32,6 +32,29 @@ describe('desktopService', () => {
     serviceStoreMock.setRunning.mockReset()
     serviceStoreMock.setStartedByUs.mockReset()
     serviceStoreMock.setStarting.mockReset()
+  })
+
+  it('reads and saves tray settings with the current desktop environment and language', async () => {
+    invokeMock.mockResolvedValue({ supported: true, closeToTray: false })
+    await expect(getDesktopTraySettings('zh-CN')).resolves.toEqual({ supported: true, closeToTray: false })
+    expect(invokeMock).toHaveBeenLastCalledWith('get_ompiui_tray_settings', {
+      envVars: serviceStoreMock.envVarsRecord, language: 'zh-CN',
+    })
+    invokeMock.mockResolvedValue({ supported: true, closeToTray: true })
+    await expect(setDesktopTraySettings(true, 'en')).resolves.toEqual({ supported: true, closeToTray: true })
+    expect(invokeMock).toHaveBeenLastCalledWith('set_ompiui_tray_settings', {
+      closeToTray: true, envVars: serviceStoreMock.envVarsRecord, language: 'en',
+    })
+    invokeMock.mockRejectedValue(new Error('disk full'))
+    await expect(setDesktopTraySettings(false, 'en')).rejects.toThrow('disk full')
+  })
+
+  it('applies credentials from a tray start without starting another service', () => {
+    applyDesktopServiceStart({ started: true, startedByUs: true, url: runningStatus.url, token: 'tray-token' })
+    expect(applyLocalServerConfigMock).toHaveBeenCalledWith(runningStatus.url, 'tray-token')
+    expect(serviceStoreMock.setRunning).toHaveBeenCalledWith(true)
+    expect(serviceStoreMock.setStartedByUs).toHaveBeenCalledWith(true)
+    expect(invokeMock).not.toHaveBeenCalled()
   })
 
   it('starts the service, applies credentials, and synchronizes status', async () => {

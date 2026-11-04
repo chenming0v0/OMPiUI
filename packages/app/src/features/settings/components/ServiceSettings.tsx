@@ -19,6 +19,7 @@ import {
 import { fetchHostTunnel, listHostShells } from '../../../omp/transport/index.js'
 import { serverStorage } from '../../../utils'
 import { useServerStore } from '../../../hooks'
+import { DesktopTraySettings } from './DesktopTraySettings'
 import { settingsFieldClass, SettingField, SettingRow, SettingsSection, SettingsSelect, Toggle } from './SettingsUI'
 
 const TERMINAL_SHELL_STORAGE_KEY = 'ompiui-terminal-shell'
@@ -351,6 +352,7 @@ export function ServiceSettings() {
     <>
       {backendStatus}
       {listenSettings}
+      <DesktopTraySettings />
       <SettingsSection
         title={t('service.localServiceTitle')}
         description={t('service.localServiceDesc')}

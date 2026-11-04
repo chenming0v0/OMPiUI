@@ -33,11 +33,11 @@ pub struct ServiceState {
     child: Mutex<Option<Child>>,
     child_pid: AtomicU32,
     started_by_us: AtomicBool,
-    allow_close: AtomicBool,
     /// 用户在关闭确认里选择「保留后台服务」：退出兜底不再强杀子进程。
     keep_on_exit: AtomicBool,
     lifecycle: tokio::sync::Mutex<()>,
     operations: tokio::sync::Mutex<()>,
+    is_operating: AtomicBool,
     startup: StartupDiagnostics,
     /// 有 start 命令正在等 health，其他命令不要把它当僵死进程杀掉。
     is_starting: AtomicBool,
@@ -49,7 +49,9 @@ pub struct ServiceState {
 
 impl ServiceState {
     pub fn should_confirm_close(&self) -> bool {
-        self.started_by_us.load(Ordering::SeqCst) && !self.allow_close.swap(false, Ordering::SeqCst)
+        let pid = self.child_pid.load(Ordering::SeqCst);
+        (self.started_by_us.load(Ordering::SeqCst) && pid > 0 && is_process_alive(pid))
+            || self.is_operating.load(Ordering::SeqCst)
     }
 
     /// 应用退出前的最后兜底（RunEvent::Exit）：无论前端确认弹窗是否走到，
@@ -127,16 +129,27 @@ impl ServiceState {
     }
 }
 
+struct OperationGuard<'a>(&'a AtomicBool);
+impl<'a> OperationGuard<'a> {
+    fn new(state: &'a ServiceState) -> Self {
+        state.is_operating.store(true, Ordering::SeqCst);
+        Self(&state.is_operating)
+    }
+}
+impl Drop for OperationGuard<'_> {
+    fn drop(&mut self) { self.0.store(false, Ordering::SeqCst); }
+}
+
 impl Default for ServiceState {
     fn default() -> Self {
         Self {
             child: Mutex::new(None),
             child_pid: AtomicU32::new(0),
             started_by_us: AtomicBool::new(false),
-            allow_close: AtomicBool::new(false),
             keep_on_exit: AtomicBool::new(false),
             lifecycle: tokio::sync::Mutex::new(()),
             operations: tokio::sync::Mutex::new(()),
+            is_operating: AtomicBool::new(false),
             startup: StartupDiagnostics::default(),
             is_starting: AtomicBool::new(false),
             service_url: Mutex::new(None),
@@ -146,7 +159,7 @@ impl Default for ServiceState {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartServiceResult {
     pub started: bool,
@@ -549,6 +562,20 @@ pub async fn start_ompiui_service(
     env_vars: BTreeMap<String, String>,
 ) -> Result<StartServiceResult, String> {
     let _operation = state.operations.lock().await;
+    let result = start_service_locked(&app, &state, env_vars).await;
+    drop(_operation);
+    crate::tray::refresh_async(&app);
+    result
+}
+
+async fn start_service_locked(
+    app: &AppHandle,
+    state: &ServiceState,
+    env_vars: BTreeMap<String, String>,
+) -> Result<StartServiceResult, String> {
+    let _busy = OperationGuard::new(state);
+    crate::tray::refresh_async(app);
+    state.keep_on_exit.store(false, Ordering::SeqCst);
     if background::enabled()? {
         let existing = state.started_by_us.load(Ordering::SeqCst)
             .then_some(state.child_pid.load(Ordering::SeqCst)).filter(|pid| *pid > 0);
@@ -788,6 +815,22 @@ pub async fn stop_ompiui_service(
     state: State<'_, ServiceState>,
 ) -> Result<(), String> {
     let _operation = state.operations.lock().await;
+    let result = stop_service_locked(&app, &state).await;
+    drop(_operation);
+    crate::tray::refresh_async(&app);
+    result
+}
+
+async fn stop_service_locked(app: &AppHandle, state: &ServiceState) -> Result<(), String> {
+    let _busy = OperationGuard::new(state);
+    crate::tray::refresh_async(app);
+    // 冷启动托盘可能只读发现了留驻进程，明确 Stop 时才收养已核验身份。
+    if !state.started_by_us.load(Ordering::SeqCst) {
+        let environment = crate::tray::environment(app)?;
+        let snapshot = tray_snapshot(app, state, &environment).await?;
+        adopt_tray_snapshot(state, snapshot)?;
+    }
+    // 先落盘 stop intent，再关进程，避免 crash recovery 将主动停止当作崩溃。
     background::stop().await?;
     state.startup.begin(Phase::Stopping);
     let mut lifecycle = Some(state.lifecycle.lock().await);
@@ -810,8 +853,14 @@ pub async fn restart_ompiui_service(
     state: State<'_, ServiceState>,
     env_vars: BTreeMap<String, String>,
 ) -> Result<StartServiceResult, String> {
-    stop_ompiui_service(app.clone(), state.clone()).await?;
-    start_ompiui_service(app, state, env_vars).await
+    let _operation = state.operations.lock().await;
+    let result = async {
+        stop_service_locked(&app, &state).await?;
+        start_service_locked(&app, &state, env_vars).await
+    }.await;
+    drop(_operation);
+    crate::tray::refresh_async(&app);
+    result
 }
 
 #[tauri::command]
@@ -879,26 +928,151 @@ pub async fn confirm_close_app(
     window: tauri::Window,
     state: State<'_, ServiceState>,
     stop_service: bool,
+    exit_app: Option<bool>,
 ) -> Result<(), String> {
-    // 记录用户对后台服务的处置意愿：退出兜底（stop_service_on_exit）据此
-    // 决定是否强杀子进程——选了「保留」就不能杀。
-    state.keep_on_exit.store(!stop_service, Ordering::SeqCst);
+    let _operation = state.operations.lock().await;
     if stop_service {
-        background::stop().await?;
-        let mut lifecycle = Some(state.lifecycle.lock().await);
-        loop {
-            if state.is_starting.load(Ordering::SeqCst) {
-                drop(lifecycle.take().unwrap());
-                wait_for_start_to_complete(&state).await;
-                lifecycle = Some(state.lifecycle.lock().await);
-                continue;
+        stop_service_locked(window.app_handle(), &state).await?;
+    }
+    let close_to_tray = crate::tray::close_to_tray(window.app_handle());
+    match crate::tray::confirmed_close_action(close_to_tray, stop_service, exit_app.unwrap_or(false)) {
+        crate::tray::CloseAction::Hide => crate::tray::hide_window(&window),
+        crate::tray::CloseAction::Exit => {
+            state.keep_on_exit.store(!stop_service, Ordering::SeqCst);
+            window.app_handle().exit(0);
+            Ok(())
+        }
+        crate::tray::CloseAction::Destroy => {
+            state.keep_on_exit.store(!stop_service, Ordering::SeqCst);
+            // 隐藏窗口不应阻挡最后一个可见窗口的退出。
+            if crate::tray::is_last_visible_window(&window) {
+                window.app_handle().exit(0);
+                Ok(())
+            } else {
+                window.destroy().map_err(|error| error.to_string())
             }
-            stop_ompiui_service_process(window.app_handle(), &state).await;
-            break;
         }
     }
-    state.allow_close.store(true, Ordering::SeqCst);
-    window.destroy().map_err(|error| error.to_string())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TrayServiceStatus {
+    Stopped,
+    Running,
+    External,
+    Busy,
+    Unavailable,
+}
+
+struct TraySnapshot {
+    status: TrayServiceStatus,
+    connection: Option<(u32, String, Option<String>)>,
+}
+
+// 只读探测，不调用 adopt_persisted_service（它会清理/杀掉不健康进程）。
+async fn tray_snapshot(
+    app: &AppHandle,
+    state: &ServiceState,
+    env_vars: &BTreeMap<String, String>,
+) -> Result<TraySnapshot, String> {
+    let (recorded_environment, recorded_pid) = background::backend_snapshot()?;
+    let marker = marker::read(app)?;
+    let state_pid = state.child_pid.load(Ordering::SeqCst);
+    let owned_pid = recorded_pid
+        .or_else(|| state.started_by_us.load(Ordering::SeqCst).then_some(state_pid).filter(|pid| *pid > 0))
+        .or_else(|| marker.as_ref().map(|marker| marker.pid));
+    let config = ServiceConfig::new(if recorded_pid.is_some() { recorded_environment } else { env_vars.clone() });
+    let url = if recorded_pid.is_some() {
+        config.url.clone()
+    } else {
+        state.service_url.lock().map_err(|error| error.to_string())?.clone()
+            .or_else(|| marker.as_ref().map(|marker| marker.url.clone()))
+            .unwrap_or(config.url)
+    };
+    let token = if recorded_pid.is_some() {
+        config.initial_token
+    } else {
+        state.service_token.lock().map_err(|error| error.to_string())?.clone().or(config.initial_token)
+    };
+    let health = service_health_with_timeout(&url, token.as_deref(), Duration::from_secs(2)).await;
+    let status = classify_tray_health(health, owned_pid, is_process_alive);
+    let connection = if status == TrayServiceStatus::Running {
+        owned_pid.map(|pid| (pid, url, token))
+    } else { None };
+    Ok(TraySnapshot { status, connection })
+}
+
+fn classify_tray_health(
+    health: Result<HealthResponse, HealthFailure>,
+    owned_pid: Option<u32>,
+    is_alive: impl FnOnce(u32) -> bool,
+) -> TrayServiceStatus {
+    match health {
+        Ok(health) if owned_pid.is_some() && health.process_id == owned_pid => TrayServiceStatus::Running,
+        Ok(_) => TrayServiceStatus::External,
+        Err(HealthFailure::Rejected(_)) => TrayServiceStatus::Unavailable,
+        Err(HealthFailure::Unreachable) => {
+            if owned_pid.is_some_and(is_alive) { TrayServiceStatus::Busy } else { TrayServiceStatus::Stopped }
+        }
+    }
+}
+
+fn adopt_tray_snapshot(state: &ServiceState, snapshot: TraySnapshot) -> Result<(), String> {
+    if let Some((pid, url, token)) = snapshot.connection {
+        state.child_pid.store(pid, Ordering::SeqCst);
+        state.started_by_us.store(true, Ordering::SeqCst);
+        *state.service_url.lock().map_err(|error| error.to_string())? = Some(url);
+        *state.service_token.lock().map_err(|error| error.to_string())? = token;
+    }
+    Ok(())
+}
+
+pub(crate) fn tray_owned_process_alive(app: &AppHandle) -> bool {
+    let state = app.state::<ServiceState>();
+    let pid = background::backend_snapshot().ok().and_then(|(_, pid)| pid)
+        .or_else(|| state.started_by_us.load(Ordering::SeqCst)
+            .then_some(state.child_pid.load(Ordering::SeqCst)).filter(|pid| *pid > 0))
+        .or_else(|| marker::read(app).ok().flatten().map(|marker| marker.pid));
+    pid.is_some_and(is_process_alive)
+}
+
+pub(crate) fn tray_lifecycle_busy(app: &AppHandle) -> bool {
+    app.state::<ServiceState>().is_operating.load(Ordering::SeqCst)
+}
+
+pub(crate) async fn tray_service_status(app: &AppHandle, env_vars: &BTreeMap<String, String>) -> Result<TrayServiceStatus, String> {
+    let state = app.state::<ServiceState>();
+    let Ok(_operation) = state.operations.try_lock() else { return Ok(TrayServiceStatus::Busy); };
+    Ok(tray_snapshot(app, &state, env_vars).await?.status)
+}
+
+pub(crate) async fn tray_start_service(app: &AppHandle, env_vars: BTreeMap<String, String>) -> Result<StartServiceResult, String> {
+    let state = app.state::<ServiceState>();
+    let _operation = state.operations.lock().await;
+    let snapshot = tray_snapshot(app, &state, &env_vars).await?;
+    match snapshot.status {
+        TrayServiceStatus::External => return Err("An external backend is running; the tray cannot control it".to_string()),
+        TrayServiceStatus::Unavailable => return Err("Backend identity could not be verified".to_string()),
+        TrayServiceStatus::Busy => return Err("Backend is busy".to_string()),
+        _ => {}
+    }
+    adopt_tray_snapshot(&state, snapshot)?;
+    start_service_locked(app, &state, env_vars).await
+}
+
+pub(crate) async fn tray_stop_service(app: &AppHandle, env_vars: &BTreeMap<String, String>) -> Result<(), String> {
+    let state = app.state::<ServiceState>();
+    let _operation = state.operations.lock().await;
+    let snapshot = tray_snapshot(app, &state, env_vars).await?;
+    if snapshot.status != TrayServiceStatus::Running {
+        return Err("No verified application-owned backend is running".to_string());
+    }
+    adopt_tray_snapshot(&state, snapshot)?;
+    stop_service_locked(app, &state).await
+}
+
+pub(crate) fn tray_environment() -> Result<BTreeMap<String, String>, String> {
+    background::backend_snapshot().map(|(environment, _)| environment)
 }
 
 #[tauri::command]
@@ -917,6 +1091,7 @@ pub async fn set_ompiui_background_settings(
     env_vars: BTreeMap<String, String>,
 ) -> Result<background::BackgroundStatus, String> {
     let _operation = state.operations.lock().await;
+    let _busy = OperationGuard::new(&state);
     let existing = state.started_by_us.load(Ordering::SeqCst)
         .then_some(state.child_pid.load(Ordering::SeqCst)).filter(|pid| *pid > 0);
     background::settings(login_start, crash_recovery, env_vars, existing).await
@@ -964,6 +1139,65 @@ mod tests {
             environment.get("OMPI_OMP_BIN").map(String::as_str),
             Some("/opt/omp/bin/omp")
         );
+    }
+
+    #[test]
+    fn tray_classifies_only_verified_pid_as_application_owned() {
+        let health = |pid| Ok(HealthResponse { process_id: pid, worker_ready: Some(true), started_at: None });
+        assert_eq!(classify_tray_health(health(Some(42)), Some(42), |_| true), TrayServiceStatus::Running);
+        assert_eq!(classify_tray_health(health(Some(43)), Some(42), |_| true), TrayServiceStatus::External);
+        assert_eq!(classify_tray_health(health(Some(42)), None, |_| true), TrayServiceStatus::External);
+        assert_eq!(classify_tray_health(Err(HealthFailure::Unreachable), Some(42), |_| false), TrayServiceStatus::Stopped);
+        assert_eq!(classify_tray_health(Err(HealthFailure::Unreachable), Some(42), |_| true), TrayServiceStatus::Busy);
+        assert_eq!(classify_tray_health(Err(HealthFailure::Rejected("401".to_string())), Some(42), |_| true), TrayServiceStatus::Unavailable);
+    }
+
+    #[test]
+    fn read_only_poll_does_not_require_close_confirmation_but_lifecycle_does() {
+        let state = ServiceState::default();
+        let _read = state.operations.try_lock().unwrap();
+        assert!(!state.should_confirm_close());
+        let operation = OperationGuard::new(&state);
+        assert!(state.should_confirm_close());
+        drop(operation);
+        assert!(!state.should_confirm_close());
+        state.started_by_us.store(true, Ordering::SeqCst);
+        state.child_pid.store(std::process::id(), Ordering::SeqCst);
+        assert!(state.should_confirm_close());
+        state.child_pid.store(0, Ordering::SeqCst);
+        assert!(!state.should_confirm_close(), "stale ownership without a live backend must not prompt");
+    }
+
+    #[test]
+    fn tray_health_probe_is_authenticated_read_only_loopback_get() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                let count = stream.read(&mut buffer).unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&buffer[..count]);
+            }
+            let request = String::from_utf8(request).unwrap();
+            assert!(request.starts_with("GET /api/v1/host/health HTTP/1.1\r\n"));
+            assert!(request.to_lowercase().contains("authorization: bearer tray-test-token\r\n"));
+            let body = format!("{{\"processId\":{},\"workerReady\":true}}", std::process::id());
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        });
+        let health = tauri::async_runtime::block_on(service_health_with_timeout(&format!("http://{address}"), Some("tray-test-token"), Duration::from_secs(2)));
+        assert_eq!(classify_tray_health(health, Some(std::process::id()), is_process_alive), TrayServiceStatus::Running);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn tray_started_event_preserves_full_native_connection_contract() {
+        let result = StartServiceResult { started: true, started_by_us: true, url: Some("http://127.0.0.1:8815".to_string()), token: Some("tray-test-token".to_string()) };
+        assert_eq!(serde_json::to_value(result).unwrap(), serde_json::json!({ "started": true, "startedByUs": true, "url": "http://127.0.0.1:8815", "token": "tray-test-token" }));
     }
 
     #[test]

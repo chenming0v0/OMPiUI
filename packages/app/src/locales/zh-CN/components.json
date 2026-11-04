@@ -371,7 +371,9 @@
     "title": "关闭 OMPiUI",
     "description": "OMPiUI 启动的后端服务正在运行，要同时停止它吗？",
     "closeAndStop": "关闭并停止后端",
-    "closeKeepRunning": "关闭但保留后端"
+    "closeKeepRunning": "关闭但保留后端",
+    "hideKeepRunning": "收进托盘并保留后端",
+    "trayDescription": "OMPiUI 启动的后端服务正在运行。可以收进托盘并保留后端，也可以关闭并停止后端。"
   },
   "markdown": {
     "mermaidRenderFailed": "Mermaid 渲染失败",
