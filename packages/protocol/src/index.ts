@@ -22,6 +22,26 @@ export * from "./image-budget.js"
 export * from "./utf8.js"
 export * from "./device-discovery.js"
 
+export type OmpRuntimeCandidate = {
+  path: string
+  source: "environment" | "bundled" | "path"
+  version: string | null
+  command: string
+  args: string[]
+  error: string | null
+  /** 配套 manifest 运行时目录；独立 CLI 为 null。 */
+  runtimeRoot?: string | null
+}
+
+export type OmpRuntimeInspection = {
+  selected: OmpRuntimeCandidate | null
+  candidates: OmpRuntimeCandidate[]
+  bundled: boolean
+  error: string | null
+  configuredBin: string | null
+  configuredRuntimeDir: string | null
+}
+
 export type HealthResponse = {
   ok: true
   protocolVersion: typeof import("./version.js").PROTOCOL_VERSION

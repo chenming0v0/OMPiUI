@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   getBackground: vi.fn(),
   getTray: vi.fn(),
   setTray: vi.fn(),
+  runtimeCatalog: vi.fn(),
 }))
 
 vi.mock('../../../utils/tauri', () => ({ isTauri: () => mocks.desktop, isTauriMobile: () => mocks.mobile }))
@@ -36,6 +37,7 @@ vi.mock('../../../services/desktopService', () => ({
   getDesktopBackgroundStatus: mocks.getBackground,
   getDesktopTraySettings: mocks.getTray,
   setDesktopTraySettings: mocks.setTray,
+  getDesktopRuntimeCatalog: mocks.runtimeCatalog,
   redactBackgroundError: (error: string) => error,
 }))
 // 认证页面独立验证；服务页面不应再挂载它。
@@ -66,6 +68,7 @@ beforeEach(async () => {
   mocks.restart.mockResolvedValue({ status })
   mocks.stop.mockResolvedValue(status)
   mocks.getBackground.mockResolvedValue({ supported: false })
+  mocks.runtimeCatalog.mockResolvedValue({ available: { selected: null, candidates: [], bundled: false, configuredBin: null, configuredRuntimeDir: null, error: null }, current: null })
   mocks.getTray.mockReset().mockResolvedValue({ supported: true, closeToTray: false })
   mocks.setTray.mockReset().mockResolvedValue({ supported: true, closeToTray: true })
   serviceStore.setEnvVars([

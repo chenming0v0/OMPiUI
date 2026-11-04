@@ -17,16 +17,23 @@ export function ompCommandEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS
 
 /** Search only the supplied PATH; native bundles must work without where/which. */
 export function locateExecutable(bin: string, env: NodeJS.ProcessEnv): string | undefined {
-  if (path.isAbsolute(bin) || /[/\\]/.test(bin)) return existsSync(path.resolve(bin)) ? path.resolve(bin) : undefined
+  return executablePaths(bin, env).next().value
+}
+
+/** Enumerate in exactly the same extension/PATH order as the launch resolver. */
+export function* executablePaths(bin: string, env: NodeJS.ProcessEnv): Generator<string> {
+  if (path.isAbsolute(bin) || /[/\\]/.test(bin)) {
+    if (existsSync(path.resolve(bin))) yield path.resolve(bin)
+    return
+  }
   const extensions = process.platform === "win32" && !path.extname(bin) ? [".exe", ".cmd", ".bat"] : [""]
   const directories = (env.PATH ?? env.Path ?? "").split(path.delimiter).filter(Boolean)
   for (const extension of extensions) {
     for (const directory of directories) {
       const executable = path.resolve(directory.replace(/^"|"$/g, ""), bin + extension)
-      if (existsSync(executable)) return executable
+      if (existsSync(executable)) yield executable
     }
   }
-  return undefined
 }
 
 

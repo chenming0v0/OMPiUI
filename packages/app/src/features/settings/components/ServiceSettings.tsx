@@ -20,6 +20,7 @@ import { fetchHostTunnel, listHostShells } from '../../../omp/transport/index.js
 import { serverStorage } from '../../../utils'
 import { useServerStore } from '../../../hooks'
 import { DesktopTraySettings } from './DesktopTraySettings'
+import { DesktopRuntimePanel } from '../../../components/DesktopRuntimePanel'
 import { settingsFieldClass, SettingField, SettingRow, SettingsSection, SettingsSelect, Toggle } from './SettingsUI'
 
 const TERMINAL_SHELL_STORAGE_KEY = 'ompiui-terminal-shell'
@@ -430,9 +431,7 @@ export function ServiceSettings() {
       )}
       {backgroundError && <p className="break-all text-[length:var(--fs-xs)] text-danger-100">{backgroundError}</p>}
 
-      <SettingField label={t('service.ompRuntime')}>
-        <p className="text-[length:var(--fs-xs)] leading-relaxed text-text-300">{t('service.ompRuntimeDesc')}</p>
-      </SettingField>
+      <DesktopRuntimePanel backendRunning={running} busy={isBusy} refreshKey={status?.pid} />
 
       <SettingRow
         label={t('service.serviceStatus')}

@@ -20,6 +20,7 @@ import {
   type ShareInfo,
   type TunnelStatus,
 } from "@ompiui/protocol";
+import { inspectOmpRuntimes } from "@ompiui/omp-worker";
 import { EventHub } from "./event-hub.ts";
 import { RuntimeSupervisor } from "./omp/supervisor.ts";
 import { SessionHost } from "./omp/session-host.ts";
@@ -680,6 +681,11 @@ export function createAppServer(
         return sendJson(res, 200, body);
       }
 
+      if (method === "GET" && p === "/api/v1/host/omp-runtime") {
+        // 当前后端自身的 env/cwd；不读取待生效配置，也不孵化 worker。
+        return sendJson(res, 200, await inspectOmpRuntimes({ ...process.env }));
+      }
+
       if (method === "POST" && p === "/api/v1/host/shutdown") {
         // 先 flush 响应再触发关闭：进程退出不能让客户端读不到 200。
         sendJson(res, 200, { ok: true });
@@ -1018,6 +1024,7 @@ export function createAppServer(
 function allowedMethodsForPath(pathname: string): string | undefined {
   if (
     pathname === "/api/v1/host/health" ||
+    pathname === "/api/v1/host/omp-runtime" ||
     pathname === "/api/v1/host/share" ||
     pathname === "/api/v1/host/tunnel" ||
     pathname === "/api/v1/host/network" ||

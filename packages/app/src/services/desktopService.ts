@@ -1,3 +1,4 @@
+import type { OmpRuntimeInspection } from '@ompiui/protocol'
 import { applyLocalServerConfig } from '../store/serverStore'
 import { serviceStore } from '../store/serviceStore'
 import { desktopDiagnosticsStore, type DesktopServiceDiagnostics } from '../store/desktopDiagnosticsStore'
@@ -86,6 +87,55 @@ export function applyDesktopServiceStart(result: DesktopServiceStartResult): voi
   applyLocalServerConfig(result.url, result.token)
   serviceStore.setRunning(true)
   serviceStore.setStartedByUs(result.startedByUs)
+}
+
+export interface DesktopRuntimeCatalog {
+  available: OmpRuntimeInspection
+  current: OmpRuntimeInspection | null
+  currentError?: string | null
+}
+
+/** 即使后端未启动也可只读检查安装，current 仅来自正在运行的后端。 */
+export async function getDesktopRuntimeCatalog(): Promise<DesktopRuntimeCatalog> {
+  const invoke = await getInvoke()
+  return invoke<DesktopRuntimeCatalog>('get_ompiui_runtime_catalog', environmentArgs())
+}
+
+const runtimeEnvironmentKeys = new Set([
+  'OMPI_OMP_BIN',
+  'OMPI_OMP_RUNTIME_DIR',
+  'OMPI_OMP_PACKAGE_ROOT',
+  'OMPI_BUN_BIN',
+])
+
+/** 保存配套启动环境，不重启服务；后台恢复和托盘启动也使用同一选择。 */
+export async function saveDesktopRuntimeSelection(path: string | null, runtimeRoot?: string | null): Promise<void> {
+  const next = serviceStore.envVars.filter(item => !runtimeEnvironmentKeys.has(item.key.trim().toUpperCase()))
+  if (path) {
+    next.push(
+      { key: 'OMPI_OMP_BIN', value: path },
+      { key: 'OMPI_OMP_RUNTIME_DIR', value: runtimeRoot ?? '' },
+      { key: 'OMPI_OMP_PACKAGE_ROOT', value: '' },
+      { key: 'OMPI_BUN_BIN', value: '' },
+    )
+  }
+  const invoke = await getInvoke()
+  if (path) {
+    const checked = await invoke<DesktopRuntimeCatalog>('get_ompiui_runtime_catalog', {
+      envVars: Object.fromEntries(next.map(item => [item.key.trim(), item.value])),
+    })
+    const error = checked.available.error || checked.available.selected?.error
+    if (error || !checked.available.selected?.version) throw new Error(error || 'OMP runtime could not be verified')
+  }
+  const background = await getDesktopBackgroundStatus()
+  if (background.supported) {
+    await invoke('set_ompiui_background_settings', {
+      loginStart: background.loginStart,
+      crashRecovery: background.crashRecovery,
+      envVars: Object.fromEntries(next.map(item => [item.key.trim(), item.value])),
+    })
+  }
+  serviceStore.setEnvVars(next)
 }
 
 export async function readDesktopServiceDiagnostics(): Promise<DesktopServiceDiagnostics> {
