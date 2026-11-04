@@ -2,6 +2,18 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "tray-native-real-preview",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--import", "tsx", ".slim/start-tray-real-preview.mjs"],
+      "port": 5193
+    },
+    {
+      "name": "skills-mobile-real-preview",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--import", "tsx", ".slim/start-skill-mobile-preview.mjs"],
+      "port": 5226
+    },
+    {
       "name": "controls-get-real-preview",
       "runtimeExecutable": "node",
       "runtimeArgs": ["--import", "tsx", ".slim/start-controls-get-real-preview.mjs"],
