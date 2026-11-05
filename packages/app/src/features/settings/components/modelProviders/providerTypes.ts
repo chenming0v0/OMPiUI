@@ -308,6 +308,12 @@ const FAMILY_MATCHERS: Array<{ group: string; test: (id: string) => boolean }> =
   { group: 'MiniMax', test: id => id.includes('minimax') },
 ]
 
+/** 已知模型家族名（头像配色用），未知返回 null。 */
+export function modelFamily(id: string): string | null {
+  const normalized = id.trim().toLowerCase()
+  return FAMILY_MATCHERS.find(matcher => matcher.test(normalized))?.group ?? null
+}
+
 /**
  * 拉取结果的展示分组：先按已知模型家族归类，带 `vendor/` 前缀的 id 归到
  * vendor 组，其余进「其他」。顺序稳定（已知家族 → 前缀组 → 其他）。

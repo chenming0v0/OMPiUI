@@ -48,6 +48,8 @@ import { usePiModels } from '../../../../omp/hooks/index.js'
 import { ModelSyncStatus } from '../ModelSyncStatus'
 import { useIsMobile } from '../../../../hooks'
 import { MobileProvidersSettings } from './MobileProvidersSettings'
+import { ProviderAvatar, ProviderModelAvatar } from './ProviderModelSummary'
+import './providers.css'
 
 type SaveState = 'idle' | 'saving' | 'error'
 
@@ -671,22 +673,24 @@ export function ProvidersSettings() {
                             setMenuOpen(false)
                           }}
                           aria-current={active ? 'true' : undefined}
-                          className="min-w-0 flex-1 px-2.5 py-2 text-left"
+                          className="flex min-w-0 flex-1 items-center gap-2.5 px-2 py-2 text-left"
                         >
-                          <div className="flex min-w-0 items-center gap-2">
-                            <PlugIcon size={14} className={active ? 'text-accent-main-100' : 'text-text-400'} />
-                            <span className="min-w-0 flex-1 truncate text-[length:var(--fs-md)] font-medium text-text-100">
-                              {draft.name}
-                            </span>
-                            <span
-                              className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                                summary.missingKey ? 'bg-warning-100' : 'bg-success-100'
-                              }`}
-                              title={summary.missingKey ? t('providers.missingKey') : t('providers.configured')}
-                            />
-                          </div>
-                          <div className="mt-0.5 truncate pl-[22px] text-[length:var(--fs-xxs)] text-text-500">
-                            {summary.apiPath} · {t('providers.modelsCount', { count: summary.modelCount })}
+                          <ProviderAvatar label={draft.name} size="sm" />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <span className="min-w-0 flex-1 truncate text-[length:var(--fs-md)] font-medium text-text-100">
+                                {draft.name}
+                              </span>
+                              <span
+                                className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                                  summary.missingKey ? 'bg-warning-100' : 'bg-success-100'
+                                }`}
+                                title={summary.missingKey ? t('providers.missingKey') : t('providers.configured')}
+                              />
+                            </div>
+                            <div className="mt-0.5 truncate text-[length:var(--fs-xxs)] text-text-500">
+                              {summary.apiPath} · {t('providers.modelsCount', { count: summary.modelCount })}
+                            </div>
                           </div>
                         </button>
                       </div>
@@ -705,9 +709,7 @@ export function ProvidersSettings() {
                 <div className="space-y-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="flex min-w-0 items-center gap-2.5">
-                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-bg-200 text-accent-main-100">
-                        <PlugIcon size={17} />
-                      </div>
+                      <ProviderAvatar label={selected.name} />
                       <div className="min-w-0">
                         <h3 className="truncate text-[length:var(--fs-base)] font-semibold text-text-100">
                           {selected.name}
@@ -906,13 +908,15 @@ export function ProvidersSettings() {
                       </div>
                     ) : (
                       <div className="divide-y divide-border-200/40 rounded-lg border border-border-200/50">
-                        {selected.models.map(model => {
+                        {selected.models.map((model, index) => {
                           const context = formatModelContext(model.contextWindow)
                           return (
                             <div
                               key={model.id}
-                              className="group flex items-center gap-2 px-2.5 py-2 transition-colors hover:bg-bg-200/40"
+                              style={{ '--stagger': index } as React.CSSProperties}
+                              className="provider-rise group flex items-center gap-2.5 px-2.5 py-2 transition-colors hover:bg-bg-200/40"
                             >
+                              <ProviderModelAvatar id={model.id} size="sm" />
                               <button
                                 type="button"
                                 onClick={() =>
