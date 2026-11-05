@@ -2,6 +2,12 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "runtime-panel-preview",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["node_modules/vite/bin/vite.js", "packages/app", "--port", "5241", "--strictPort"],
+      "port": 5241
+    },
+    {
       "name": "tray-native-real-preview",
       "runtimeExecutable": "node",
       "runtimeArgs": ["--import", "tsx", ".slim/start-tray-real-preview.mjs"],
