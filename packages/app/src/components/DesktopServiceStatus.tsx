@@ -18,7 +18,7 @@ import { isTauri, isTauriMobile } from '../utils/tauri'
 import { Dialog } from './ui/Dialog'
 import { Button } from './ui/Button'
 import { PlayIcon, RetryIcon, SpinnerIcon, StopIcon, WifiIcon } from './Icons'
-import { DesktopRuntimePanel } from './DesktopRuntimePanel'
+import { DesktopRuntimeInUse, DesktopRuntimeSelector, StatusCard } from './DesktopRuntimePanel'
 
 function DesktopServiceIndicator() {
   const { t, i18n } = useTranslation('components')
@@ -51,6 +51,8 @@ function DesktopServiceIndicator() {
   const duration = elapsed === null ? '—' : t('desktopService.seconds', { count: elapsed })
   const formatTime = (value?: number | null) =>
     value ? new Date(value).toLocaleString(i18n.language, { hour12: false }) : '—'
+  const formatClock = (value: number) =>
+    new Date(value).toLocaleTimeString(i18n.language, { hour12: false, hour: '2-digit', minute: '2-digit' })
   const ompMissing = running && native?.workerReady === true && !native.ompVersion
   const color = running
     ? ompMissing
@@ -103,24 +105,40 @@ function DesktopServiceIndicator() {
         </span>
         {busy && <span className="shrink-0 tabular-nums text-text-300">{duration}</span>}
       </button>
-      <Dialog isOpen={open} onClose={close} title={t('desktopService.title')} width={720}>
+      <Dialog isOpen={open} onClose={close} title={t('desktopService.title')} width={680}>
         <div className="space-y-5 text-sm text-text-200">
-          <section aria-label={t('desktopService.backend')} className="space-y-3 border-b border-border-200/60 pb-5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-bg-200">
-                  <WifiIcon size={18} className={running ? 'text-success-100' : 'text-text-300'} />
-                </span>
-                <div>
-                  <h3 className="text-xs text-text-300">{t('desktopService.backend')}</h3>
-                  <div role="status" className="mt-1 flex items-center gap-2 font-semibold text-text-100">
-                    {t(`desktopService.phase.${phase}`)}
-                    {busy && <span className="text-xs font-normal tabular-nums text-text-300">{duration}</span>}
-                  </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <StatusCard
+              label={t('desktopService.backend')}
+              icon={<WifiIcon size={14} />}
+              tone={busy ? 'busy' : running ? 'success' : ['failed', 'unreachable'].includes(phase) ? 'danger' : 'idle'}
+            >
+              <div className="flex min-w-0 flex-col gap-1.5">
+                <div role="status" className="flex items-center gap-2 text-base font-semibold text-text-100">
+                  {busy ? (
+                    <SpinnerIcon size={14} className="animate-spin text-accent-main-100" />
+                  ) : (
+                    <span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${color}`} />
+                  )}
+                  {t(`desktopService.phase.${phase}`)}
+                  {busy && <span className="text-xs font-normal tabular-nums text-text-300">{duration}</span>}
                 </div>
+                <p className="text-xs leading-relaxed text-text-300">
+                  {busy
+                    ? t('desktopService.busyHint')
+                    : running
+                    ? [
+                        t(`desktopService.${startedByUs ? 'startedByApp' : 'startedExternally'}`),
+                        native?.pid ? t('desktopService.pid', { pid: native.pid }) : null,
+                        native?.spawnedAt ? t('desktopService.since', { time: formatClock(native.spawnedAt) }) : null,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')
+                    : t('desktopService.backendHint')}
+                </p>
               </div>
-              <div className="flex flex-wrap gap-1.5">
-                {!running && (
+              <div className="mt-auto flex flex-wrap gap-1.5">
+                {!running && !busy && (
                   <Button
                     size="sm"
                     variant="secondary"
@@ -132,64 +150,54 @@ function DesktopServiceIndicator() {
                   </Button>
                 )}
                 {running && startedByUs && (
+                  <Button size="sm" variant="secondary" disabled={busy} onClick={() => setConfirmation('restart')}>
+                    <RetryIcon size={13} />
+                    {t('desktopService.restart')}
+                  </Button>
+                )}
+                {running && startedByUs && (
                   <Button size="sm" variant="ghost" disabled={busy} onClick={() => setConfirmation('stop')}>
                     <StopIcon size={13} />
                     {t('desktopService.stop')}
                   </Button>
                 )}
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  disabled={busy || (running && !startedByUs)}
-                  onClick={() => setConfirmation('restart')}
-                >
-                  <RetryIcon size={13} />
-                  {t('desktopService.restart')}
-                </Button>
               </div>
+            </StatusCard>
+            <DesktopRuntimeInUse />
+          </div>
+          {running && !startedByUs && <p className="text-xs text-text-300">{t('desktopService.externalBackend')}</p>}
+          {confirmation && (
+            <div className="flex flex-wrap items-center gap-3 rounded-lg border border-warning-100/30 bg-warning-100/5 px-3 py-2.5">
+              <p className="min-w-0 flex-1 text-xs leading-relaxed text-warning-100">
+                {t(`desktopService.${confirmation === 'restart' ? 'restartWarning' : 'stopWarning'}`)}
+              </p>
+              <Button size="sm" variant="ghost" onClick={() => setConfirmation(null)}>
+                {t('common:cancel')}
+              </Button>
+              <Button size="sm" variant="danger" disabled={busy} onClick={() => void control(confirmation)}>
+                {t(`desktopService.${confirmation === 'restart' ? 'confirmRestart' : 'confirmStop'}`)}
+              </Button>
             </div>
-            <p className="text-xs leading-relaxed text-text-300">{t('desktopService.backendHint')}</p>
-            {running && !startedByUs && <p className="text-xs text-text-300">{t('desktopService.externalBackend')}</p>}
-            {confirmation && (
-              <div className="space-y-3 rounded-lg border border-warning-100/30 bg-warning-100/5 p-3">
-                <p className="text-xs leading-relaxed text-warning-100">
-                  {t(`desktopService.${confirmation === 'restart' ? 'restartWarning' : 'stopWarning'}`)}
-                </p>
-                <div className="flex gap-2">
-                  <Button size="sm" variant="danger" disabled={busy} onClick={() => void control(confirmation)}>
-                    {t(`desktopService.${confirmation === 'restart' ? 'confirmRestart' : 'confirmStop'}`)}
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setConfirmation(null)}>
-                    {t('common:cancel')}
-                  </Button>
-                </div>
-              </div>
-            )}
-            {queryError && (
-              <p role="alert" className="text-xs text-danger-100">
-                {t('desktopService.queryFailed')}
-              </p>
-            )}
-            {native?.healthError === 'rejected' && (
-              <p role="alert" className="text-xs text-danger-100">
-                {t('desktopService.healthRejected')}
-              </p>
-            )}
-            {error && (
-              <pre
-                role="alert"
-                className="max-h-28 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-danger-100/10 p-3 text-xs text-danger-100"
-              >
-                {error}
-              </pre>
-            )}
-          </section>
-          <DesktopRuntimePanel
-            backendRunning={running}
-            busy={busy}
-            refreshKey={native?.spawnedAt}
-            onApply={running && startedByUs ? () => setConfirmation('restart') : undefined}
-          />
+          )}
+          {queryError && (
+            <p role="alert" className="text-xs text-danger-100">
+              {t('desktopService.queryFailed')}
+            </p>
+          )}
+          {native?.healthError === 'rejected' && (
+            <p role="alert" className="text-xs text-danger-100">
+              {t('desktopService.healthRejected')}
+            </p>
+          )}
+          {error && (
+            <pre
+              role="alert"
+              className="max-h-28 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-danger-100/10 p-3 text-xs text-danger-100"
+            >
+              {error}
+            </pre>
+          )}
+          <DesktopRuntimeSelector onRestart={startedByUs ? () => control('restart') : undefined} />
           <details className="border-t border-border-200/60 pt-4">
             <summary className="cursor-pointer text-xs font-medium text-text-200">
               {t('desktopService.diagnostics')}
