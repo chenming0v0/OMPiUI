@@ -146,7 +146,7 @@ describe('provider settings persistence', () => {
         id: 'B', cost: { input: 7, output: 11 }, compat: { reasoningContentField: 'reasoning_content' },
       })])
       expect(screen.getByLabelText('Base URL')).toHaveValue('https://edited.test/v1')
-      expect(screen.getByText('B')).toBeVisible()
+      expect(screen.getByText('Model B')).toBeVisible()
     } finally {
       cleanup()
       await finishSaves()
@@ -193,7 +193,7 @@ describe('provider settings persistence', () => {
       expect(stored.models).toEqual([expect.objectContaining({
         id: 'D', cost: { input: 7, output: 11 }, compat: { reasoningContentField: 'reasoning_content' },
       })])
-      expect(screen.getByText('D')).toBeVisible()
+      expect(screen.getByText('Model D')).toBeVisible()
     } finally {
       firstSave.resolve()
       secondSave.resolve()
@@ -246,7 +246,7 @@ describe('provider settings persistence', () => {
     expect(screen.getByLabelText('Model ID')).toHaveValue('C')
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Save' })))
     expect(mocks.saveProvider.mock.lastCall![0].models[0]).toMatchObject({ id: 'C', originalId: 'B' })
-    expect(screen.getByText('C')).toBeVisible()
+    expect(screen.getByText('Model C')).toBeVisible()
   })
 
   it.each(['notification', 'manual'] as const)('keeps pending edits on %s refresh while clean providers update', async mode => {
@@ -275,7 +275,7 @@ describe('provider settings persistence', () => {
     fireEvent.click(screen.getByRole('button', { name: /^clean/ }))
     expect(screen.getByLabelText('Base URL')).toHaveValue('https://external.test/v1')
     fireEvent.click(screen.getByRole('button', { name: /^Demo/ }))
-    expect(screen.getByText('B')).toBeVisible()
+    expect(screen.getByText('Model B')).toBeVisible()
   })
 
   it('does not let a pre-save refresh erase the successful rename', async () => {
@@ -288,7 +288,7 @@ describe('provider settings persistence', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
     await act(async () => firstSave.resolve(snapshot([{ ...provider(), models: [{ id: 'B' }] }])))
     await act(async () => staleRead.resolve(snapshot([provider()])))
-    expect(screen.getByText('B')).toBeVisible()
+    expect(screen.getByText('Model B')).toBeVisible()
     fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: 'https://after.test/v1' } })
     await debounce()
     expect(mocks.saveProvider.mock.lastCall![0].models[0]).toMatchObject({ id: 'B', originalId: 'B' })
@@ -312,7 +312,7 @@ describe('provider settings persistence', () => {
     expect(mocks.saveProvider.mock.calls.map(call => call[0].models[0].id)).toEqual(['B'])
     expect(mocks.saveProvider.mock.calls[0]![1].aborted).toBe(true)
     expect(screen.getByLabelText('Base URL')).toHaveValue('https://second.test/v1')
-    expect(screen.getByText('A')).toBeVisible()
+    expect(screen.getByText('Model A')).toBeVisible()
   })
 
   it('lets queued writes finish on unmount', async () => {
@@ -365,7 +365,7 @@ describe('provider settings persistence', () => {
     expect(mocks.deleteProvider).not.toHaveBeenCalled()
     expect(mocks.saveProvider.mock.calls.map(call => call[0].models[0].id)).toEqual(['B'])
     await act(async () => view.rerender(<ProvidersSettings />))
-    expect(screen.getByText('A')).toBeVisible()
+    expect(screen.getByText('Model A')).toBeVisible()
   })
 
   it('ignores a delete result from the previous server', async () => {
@@ -380,7 +380,7 @@ describe('provider settings persistence', () => {
     await act(async () => view.rerender(<ProvidersSettings />))
     await act(async () => deletion.resolve(snapshot([])))
     expect(screen.getByLabelText('Base URL')).toHaveValue('https://second.test/v1')
-    expect(screen.getByText('A')).toBeVisible()
+    expect(screen.getByText('Model A')).toBeVisible()
   })
 
   it('ignores old-server reads and out-of-order refresh results', async () => {
@@ -423,15 +423,15 @@ describe('provider settings persistence', () => {
     expect(screen.getByRole('button', { name: 'Retry save' })).toHaveAttribute('title', 'write denied')
     mocks.listProviders.mockResolvedValueOnce({ ...snapshot([]), error: 'invalid YAML' })
     await act(async () => window.dispatchEvent(new Event('ompiui:models-updated')))
-    expect(screen.getByText('B')).toBeVisible()
+    expect(screen.getByText('Model B')).toBeVisible()
     expect(screen.getByText(/invalid YAML/)).toBeVisible()
     mocks.listProviders.mockRejectedValueOnce(new Error('network unavailable'))
     await act(async () => window.dispatchEvent(new Event('ompiui:models-updated')))
-    expect(screen.getByText('B')).toBeVisible()
+    expect(screen.getByText('Model B')).toBeVisible()
     expect(screen.getByText(/network unavailable/)).toBeVisible()
     mocks.listProviders.mockResolvedValueOnce(snapshot([provider()]))
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Reload' })))
-    expect(screen.getByText('B')).toBeVisible()
+    expect(screen.getByText('Model B')).toBeVisible()
     expect(screen.queryByText(/network unavailable/)).not.toBeInTheDocument()
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Retry save' })))
     expect(mocks.saveProvider.mock.lastCall![0].models[0]).toMatchObject({ id: 'B', originalId: 'A' })
