@@ -26,6 +26,10 @@ vi.mock('../../../hooks', async () => {
 
 vi.mock('../../../omp/hooks/index.js', () => ({
   useFocusedSessionId: () => 'session-1',
+  usePiSessionRuntimeState: () => ({ autoCompactionEnabled: true, contextMaintenance: {
+    thresholdTokens: 100000, contextWindow: 200000, supersedeReads: true, dropUseless: true,
+    midTurnEnabled: true, asyncEnabled: true, prunedResults: 2, speculation: 'armed', thresholdSource: 'global',
+  } }),
   usePiBranchData: () => ({
     items: [
       {
@@ -93,6 +97,9 @@ describe('ContextDetailsDialog', () => {
     expect(screen.getByText('200.0k')).toBeInTheDocument()
     expect(screen.getByText('64.0k')).toBeInTheDocument()
     expect(screen.getByText('32%')).toBeInTheDocument()
+    expect(screen.getByText('100.0k (50.0%)')).toBeInTheDocument()
+    expect(screen.getByText('pi.contextReady')).toBeInTheDocument()
+    expect(screen.getByText('2')).toBeInTheDocument()
     // 总费用 + assistant 明细行都会显示 $0.42
     expect(screen.getAllByText('$0.42').length).toBeGreaterThan(0)
     // assistant 消息的 token 明细

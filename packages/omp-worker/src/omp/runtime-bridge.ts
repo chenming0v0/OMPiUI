@@ -8,6 +8,7 @@ import { NATIVE_WORKTREE_IMPORTS, NATIVE_WORKTREE_SOURCE } from './native-worktr
 import { nativeToolInteractionImports, nativeToolInteractionSource } from './native-tool-interaction.js'
 import { nativeSubagentObservationPrelude, nativeSubagentObservationSource } from './native-subagent-observation.js'
 import { nativeSessionTitleImports, nativeSessionTitleSource } from './native-session-title.js'
+import { nativeContextMaintenanceImports, nativeContextMaintenanceSource } from './native-context-maintenance.js'
 
 export type RuntimeBridgeOperation = "capabilities" | "identity" | "queue" | "clearQueue" | "removeQueuedMessage" | "sendQueuedMessage" | "submitUserMessage" | "prepareStop" | "resumeStoppedSession" | "navigateTree" | "abortBranchSummary" | "fork" | "branch" | "reload" | "setLabel" | "setScopedModels" | "cycleModel" | "resources" | "tree" | "asyncJobs" | "inspectAsyncJob" | "cancelAsyncJob" | "goal" | "moveSession" | "worktreeState"
 const RESPONSE_PREFIX = "\u001eompiui-runtime:"
@@ -93,6 +94,7 @@ import { cfgDisabledExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/s
 ${NATIVE_WORKTREE_IMPORTS}
 ${nativeToolInteractionImports}
 ${nativeSessionTitleImports}
+${nativeContextMaintenanceImports}
 ${nativeSubagentObservationPrelude}
 export default function (pi) {
   const prefix = ${JSON.stringify(RESPONSE_PREFIX)};
@@ -118,6 +120,7 @@ export default function (pi) {
   ${nativeSubagentObservationSource}
   ${nativeToolInteractionSource}
   ${nativeSessionTitleSource}
+  ${nativeContextMaintenanceSource}
   function identity(session) {
     return { sessionId: session.sessionManager.getSessionId(), sessionFile: session.sessionFile ?? null, leafId: session.sessionManager.getLeafId(), cwd: session.sessionManager.getCwd() };
   }
@@ -205,7 +208,7 @@ export default function (pi) {
       }
       case "moveSession": return await moveWorktreeSession(session, args, ctx);
       case "submitUserMessage": return await submitUserMessage(session, args);
-      case "queue": return queue(session);
+      case "queue": return { ...queue(session), ...contextMaintenance(session, args.pruningRevision) };
       case "clearQueue": {
         const result = queue(session, true);
         budget(result, args.maxResultBytes);

@@ -26,6 +26,8 @@ import {
 import { PiPackageManagement } from './PiPackageManagement'
 import { PiResourceManagement } from './PiResourceManagement'
 import { PiSessionManagement } from './PiSessionManagement'
+import { ContextMaintenanceSettings } from './ContextMaintenanceSettings'
+import { contextSettingKeys, contextSettingValue } from './contextMaintenanceSettingsModel'
 
 // The form edits only global overrides; effective/project values remain inspectable below.
 type SettingsDraft = Record<string, string>
@@ -34,6 +36,7 @@ const formKeys = [
   'modelRoles.default', 'defaultThinkingLevel', 'steeringMode', 'followUpMode',
   'compaction.enabled', 'retry.enabled', 'skills.enableSkillCommands', 'images.blockImages',
   'shellPath', 'theme.dark', 'theme.light',
+  ...contextSettingKeys,
 ] as const
 
 function draftFromSnapshot(snapshot: PiSettingsSnapshot): SettingsDraft {
@@ -52,7 +55,8 @@ function patchFromDraft(snapshot: PiSettingsSnapshot, draft: SettingsDraft): Jso
     if (draft[key] === previous[key]) continue
     const value = draft[key].trim()
     if (value === previous[key]) continue
-    patch[key] = value === '' ? null : ['compaction.enabled', 'retry.enabled', 'skills.enableSkillCommands', 'images.blockImages'].includes(key) ? value === 'true' : value
+    patch[key] = contextSettingKeys.includes(key as typeof contextSettingKeys[number]) ? contextSettingValue(key, value)
+      : value === '' ? null : ['compaction.enabled', 'retry.enabled', 'skills.enableSkillCommands', 'images.blockImages'].includes(key) ? value === 'true' : value
   }
   return patch
 }
@@ -201,6 +205,8 @@ function PiManagementSettingsPanel({ directory }: { directory: string | undefine
                 ))}
               </div>
             </SettingsSubgroup>
+
+            <ContextMaintenanceSettings snapshot={settings} draft={draft} onChange={(key, value) => setDraft({ ...draft, [key]: value })} />
 
             <SettingsDisclosure
               className="border-t border-border-200/60 pt-4"
