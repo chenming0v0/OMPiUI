@@ -9,7 +9,10 @@ const settings = {
   project: { compaction: { enabled: true } },
   errors: [],
   effective: { compaction: { enabled: true } },
-  definitions: [{ id: 'defaultThinkingLevel', type: 'enum', values: ['low', 'high', 'auto'] }],
+  definitions: [{ id: 'defaultThinkingLevel', type: 'enum', values: ['low', 'high', 'auto'] },
+    ...['thresholdTokens', 'thresholdPercent', 'keepRecentTokens'].map(name => ({ id: `compaction.${name}`, type: 'number' })),
+    ...['midTurnEnabled', 'asyncEnabled', 'supersedeReads', 'dropUseless'].map(name => ({ id: `compaction.${name}`, type: 'boolean' })),
+  ],
 }
 
 vi.mock('../../../hooks', () => ({ useCurrentDirectory: () => scope.directory, useServerStore: () => ({ activeServerGeneration: scope.generation }) }))
@@ -56,6 +59,27 @@ describe('PiManagementSettings', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Settings write conflict')
     expect(model).toHaveValue('provider/unsaved')
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('saves native pruning switches and numeric thresholds without pinning other defaults', async () => {
+    render(<PiManagementSettings />)
+    const threshold = await screen.findByRole('spinbutton', { name: 'Compaction token threshold' })
+    fireEvent.change(threshold, { target: { value: '100000' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Prune stale reads each turn' }))
+    fireEvent.click(screen.getByRole('option', { name: 'On' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await screen.findByRole('status')
+    expect(patchSettingsMock).toHaveBeenCalledWith('/workspace', { 'compaction.thresholdTokens': 100000, 'compaction.supersedeReads': true })
+  })
+
+  it('rejects an invalid percentage without discarding the draft or writing settings', async () => {
+    render(<PiManagementSettings />)
+    const threshold = await screen.findByRole('spinbutton', { name: 'Compaction percentage threshold' })
+    fireEvent.change(threshold, { target: { value: '150' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Invalid value for compaction.thresholdPercent')
+    expect(threshold).toHaveValue(150)
+    expect(patchSettingsMock).not.toHaveBeenCalled()
   })
 
   it('retains a rejected advanced patch for correction and clears prior success feedback', async () => {

@@ -139,6 +139,9 @@ jobs:
       - name: Verify native OMP model role configuration
         run: node scripts/verify-model-roles.mjs
 
+      - name: Verify native per-turn pruning and automatic compaction
+        run: node scripts/verify-context-maintenance.mjs
+
       - name: Verify isolated Node and compiled Bun runtime continuation
         run: node scripts/verify-packaged-omp-runtime.mjs --runtime "$OMPI_OMP_RUNTIME_DIR"
 

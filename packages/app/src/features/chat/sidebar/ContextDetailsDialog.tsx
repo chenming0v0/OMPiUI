@@ -7,6 +7,7 @@ import type { AssistantMessage } from '../../../omp/vendor/pi-ai'
 import type { SessionEntry } from '../../../omp/domain'
 import { useFocusedSessionId, usePiBranchData } from '../../../omp/hooks/index.js'
 import { useSessionStats, formatTokens, formatCost } from '../../../hooks'
+import { ContextMaintenanceStatus } from './ContextMaintenanceStatus'
 
 interface ContextDetailsDialogProps {
   isOpen: boolean
@@ -132,6 +133,8 @@ function ContextDetailsBody({ contextLimit }: { contextLimit: number }) {
           />
           <Stat label={t('contextDetails.totalCost')} value={formatCost(stats.totalCost)} />
         </div>
+
+        <ContextMaintenanceStatus sessionId={sessionId} />
 
         {contextUsage && (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3 rounded-lg border border-border-200/50 bg-bg-200/20">

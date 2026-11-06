@@ -207,9 +207,12 @@ export class OmpRpcSession implements SessionRuntime {
 
   private retryShadow: JsonObject = { phase: "idle" };
   private compactionShadow: JsonObject = {
-    autoEnabled: true,
+    autoEnabled: null,
     operation: { type: "none" },
   };
+  private contextMaintenance: JsonObject | null = null;
+  private pruningRevision: string | undefined;
+  private entryContentRevision = 0;
   // Queue execution and editing are native operations, never later prompts.
   private nativeQueue: { steering: JsonObject[]; followUp: JsonObject[] } = { steering: [], followUp: [] };
   private queueGeneration = 0;
@@ -852,14 +855,38 @@ export class OmpRpcSession implements SessionRuntime {
     // RPC state already exposes the queue; never submit a control prompt here.
     const value = state.isCompacting
       ? state.queuedMessages
-      : await this.client.requestRuntime("queue");
+      : await this.client.requestRuntime("queue", this.pruningRevision ? { pruningRevision: this.pruningRevision } : {});
     if (epoch !== this.eventEpoch || generation !== this.queueGeneration) return;
     if (isJsonObject(value)) {
+      this.applyContextMaintenance(value);
       this.trackNativeQueue(value);
       if (Array.isArray(value.scopedModels)) this.scopedModels = value.scopedModels;
       if (Array.isArray(value.scopedModelPatterns)) this.scopedModelPatterns = value.scopedModelPatterns.filter((pattern): pattern is string => typeof pattern === "string");
     }
     if (publish) this.emitPiEvent({ type: "queue_update", ...this.getNativeQueueSnapshot() });
+  }
+
+  private applyContextMaintenance(value: JsonObject): void {
+    if (!isJsonObject(value.contextMaintenance)) return;
+    this.contextMaintenance = value.contextMaintenance;
+    this.pruningRevision = typeof value.contextMaintenance.pruningRevision === "string" ? value.contextMaintenance.pruningRevision : undefined;
+    if (!Array.isArray(value.prunedEntries)) return;
+    const replacements = new Map(value.prunedEntries.filter(isJsonObject).map(entry => [entry.id, entry]));
+    let changed = false;
+    this.entries = this.entries.map(entry => {
+      const replacement = replacements.get(entry.id);
+      if (!replacement || !isJsonObject(entry.message) || entry.message.role !== "toolResult" ||
+        typeof replacement.prunedAt !== "number" || !Array.isArray(replacement.content)) return entry;
+      if (entry.message.prunedAt === replacement.prunedAt &&
+        JSON.stringify(entry.message.content) === JSON.stringify(replacement.content)) return entry;
+      changed = true;
+      return this.recordEntry({ ...entry, message: { ...entry.message, content: replacement.content, prunedAt: replacement.prunedAt } });
+    });
+    if (!changed) return;
+    // 原地改写必须推进分支版本，旧分页游标不能继续返回清理前的工具内容。
+    this.entryContentRevision += 1;
+    this.branchPages.clear();
+    this.emitHeadIfChanged();
   }
 
   private emitActivityIfChanged(): void {
@@ -982,6 +1009,7 @@ export class OmpRpcSession implements SessionRuntime {
         // 历史被改写（压缩/切换）：全量重播种
         this.entriesSeeded = false;
         this.entries = [];
+        this.pruningRevision = undefined;
         this.branchPages.clear();
         await this.doSyncEntries();
         return;
@@ -1024,7 +1052,7 @@ export class OmpRpcSession implements SessionRuntime {
 
   private getNativeFingerprint(): string {
     const last = this.entries.at(-1);
-    return `${this.entries.length}:${this.leafId ?? ""}:${last?.id ?? ""}:${last?.timestamp ?? ""}`;
+    return `${this.entries.length}:${this.leafId ?? ""}:${last?.id ?? ""}:${last?.timestamp ?? ""}:${this.entryContentRevision}`;
   }
 
   private emitHeadIfChanged(): void {
@@ -1293,7 +1321,8 @@ export class OmpRpcSession implements SessionRuntime {
       contextUsage,
       sessionStats,
       retry: this.retryShadow,
-      compaction: this.compactionShadow,
+      compaction: { ...this.compactionShadow, autoEnabled: typeof native.autoCompactionEnabled === "boolean" ? native.autoCompactionEnabled : null },
+      contextMaintenance: this.contextMaintenance,
       head,
       // OMP 扩展：子代理注册表快照 + todo 阶段（前端子代理面板重连恢复用）
       subagents: this.getSubagentsSnapshot(),
@@ -1822,6 +1851,8 @@ export class OmpRpcSession implements SessionRuntime {
     this.messageStream.clear();
     this.entries = [];
     this.entriesSeeded = false;
+    this.pruningRevision = undefined;
+    this.contextMaintenance = null;
     this.branchPages.clear();
     this.liveMessage = undefined;
     this.nativeFingerprint = "";
@@ -1841,7 +1872,10 @@ export class OmpRpcSession implements SessionRuntime {
     this.eventEpoch = randomUUID();
     this.eventSequence = 0;
     this.retryShadow = { phase: "idle" };
-    this.compactionShadow = { autoEnabled: true, operation: { type: "none" } };
+    this.compactionShadow = { autoEnabled: null, operation: { type: "none" } };
+    this.contextMaintenance = null;
+    this.pruningRevision = undefined;
+    this.entryContentRevision = 0;
     this.nativeQueue = { steering: [], followUp: [] };
     this.pendingAsyncWork = undefined;
     this.nativeSettled = true;
