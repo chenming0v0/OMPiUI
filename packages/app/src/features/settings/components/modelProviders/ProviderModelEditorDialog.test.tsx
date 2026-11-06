@@ -133,6 +133,8 @@ describe('ProviderModelEditorDialog', () => {
     await waitFor(() =>
       expect(lookupModelsDevModel).toHaveBeenCalledWith({ modelId: 'claude-opus-4-6' }, expect.any(AbortSignal)),
     )
+    // 等 setLookupPending(false) 刷新后再点保存
+    await act(async () => {})
 
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     expect(onSave).toHaveBeenCalledTimes(1)

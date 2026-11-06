@@ -15,7 +15,7 @@ import { groupModelIds, type ProviderDraft } from './providerTypes'
 import { settingsFieldClass } from '../SettingsUI'
 import { useIsMobile } from '../../../../hooks'
 import { MobileProviderModelPicker } from './MobileProviderModelPicker'
-import './mobileProviders.css'
+import './providers.css'
 
 export type ProviderModelPickerDialogProps = {
   isOpen: boolean
@@ -313,13 +313,17 @@ export function ProviderModelPickerDialog({
             <div className="py-16 text-center text-[length:var(--fs-sm)] text-text-400">{t('providers.pickerEmpty')}</div>
           ) : (
             <div className="space-y-1">
-              {filteredGroups.map(group => {
+              {filteredGroups.map((group, groupIndex) => {
                 const isCollapsed = !normalizedQuery && collapsed.has(group.name)
                 const selectedInGroup = group.models.filter(id => selection.has(id)).length
                 const allInGroup = selectedInGroup === group.models.length
                 const partial = selectedInGroup > 0 && !allInGroup
                 return (
-                  <section key={group.name} className="rounded-lg border border-border-200/40">
+                  <section
+                    key={group.name}
+                    style={{ '--stagger': groupIndex } as React.CSSProperties}
+                    className="provider-rise rounded-lg border border-border-200/40"
+                  >
                     <div className="flex items-center gap-2 px-2 py-1.5">
                       <button
                         type="button"
