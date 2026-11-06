@@ -431,7 +431,7 @@ export function ServiceSettings() {
       )}
       {backgroundError && <p className="break-all text-[length:var(--fs-xs)] text-danger-100">{backgroundError}</p>}
 
-      <DesktopRuntimePanel backendRunning={running} busy={isBusy} refreshKey={status?.pid} />
+      <DesktopRuntimePanel onRestart={running && startedByUs ? () => start('restart') : undefined} />
 
       <SettingRow
         label={t('service.serviceStatus')}

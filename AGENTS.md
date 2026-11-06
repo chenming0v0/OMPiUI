@@ -25,6 +25,12 @@ git push origin v<version>
 - `v*` tag 触发 Desktop And Mobile Release。Android 签名 secrets：`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`。
 - 应用内更新检查读本仓库 `releases/latest`，不是 PiUI。
 
+## 测试验证
+
+- 禁止在本地运行测试，包括单元测试、集成测试、端到端测试，以及以临时脚本、smoke 或验收脚本形式执行的改动验证。
+- 测试只在 GitHub Actions CI 中运行；修改后通过 CI 结果、日志和任务／步骤耗时验证，不得在本地先跑一遍测试再推送。
+- 排查已知 CI 失败时读取 CI 日志，不得为了确认同一个失败在本地重跑测试。
+
 ## 工具调用渲染
 
 - 新增工具、改工具行布局/连线、把非 toolCall 条目显示成工具行之前，先读 `.claude/skills/ompiui-tool-rendering/SKILL.md`。工具行外壳只有 `ToolGroup` / `ToolPartView` 一套；要连线就并进同一组，不要自绘卡片或加补线开关。

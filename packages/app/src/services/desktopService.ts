@@ -108,8 +108,14 @@ const runtimeEnvironmentKeys = new Set([
   'OMPI_BUN_BIN',
 ])
 
-/** 保存配套启动环境，不重启服务；后台恢复和托盘启动也使用同一选择。 */
-export async function saveDesktopRuntimeSelection(path: string | null, runtimeRoot?: string | null): Promise<void> {
+/**
+ * 保存配套启动环境，不重启服务；后台恢复和托盘启动也使用同一选择。
+ * 指定安装时返回校验所用的检测结果，调用方可直接沿用，免去再检测一次。
+ */
+export async function saveDesktopRuntimeSelection(
+  path: string | null,
+  runtimeRoot?: string | null,
+): Promise<DesktopRuntimeCatalog | null> {
   const next = serviceStore.envVars.filter(item => !runtimeEnvironmentKeys.has(item.key.trim().toUpperCase()))
   if (path) {
     next.push(
@@ -120,8 +126,9 @@ export async function saveDesktopRuntimeSelection(path: string | null, runtimeRo
     )
   }
   const invoke = await getInvoke()
+  let checked: DesktopRuntimeCatalog | null = null
   if (path) {
-    const checked = await invoke<DesktopRuntimeCatalog>('get_ompiui_runtime_catalog', {
+    checked = await invoke<DesktopRuntimeCatalog>('get_ompiui_runtime_catalog', {
       envVars: Object.fromEntries(next.map(item => [item.key.trim(), item.value])),
     })
     const error = checked.available.error || checked.available.selected?.error
@@ -136,6 +143,7 @@ export async function saveDesktopRuntimeSelection(path: string | null, runtimeRo
     })
   }
   serviceStore.setEnvVars(next)
+  return checked
 }
 
 export async function readDesktopServiceDiagnostics(): Promise<DesktopServiceDiagnostics> {

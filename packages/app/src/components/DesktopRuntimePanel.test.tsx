@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { OmpRuntimeCandidate, OmpRuntimeInspection } from '@ompiui/protocol'
 import { DesktopRuntimePanel } from './DesktopRuntimePanel'
 import { serviceStore } from '../store/serviceStore'
+import { desktopDiagnosticsStore, type DesktopServiceDiagnostics } from '../store/desktopDiagnosticsStore'
+import { desktopRuntimeStore } from '../store/desktopRuntimeStore'
 import i18n from '../i18n'
 
 const mocks = vi.hoisted(() => ({ catalog: vi.fn(), save: vi.fn() }))
@@ -36,94 +38,163 @@ const inspection: OmpRuntimeInspection = {
   configuredBin: null,
   configuredRuntimeDir: null,
 }
+const running: DesktopServiceDiagnostics = {
+  revision: 1,
+  phase: 'running',
+  requestedAt: 1_791_721_000_000,
+  spawnedAt: 1_791_721_001_000,
+  completedAt: 1_791_721_002_000,
+  pid: 42,
+  error: null,
+  events: [],
+  reachable: true,
+  workerReady: true,
+  ompVersion: '18.12.6',
+  healthError: null,
+  output: [],
+}
+const switched = { available: { ...inspection, selected: external, configuredBin: external.path }, current: inspection }
 
-async function show(backendRunning = true, onApply = vi.fn()) {
-  render(<DesktopRuntimePanel backendRunning={backendRunning} onApply={onApply} />)
-  await act(async () => {})
-  return onApply
+// 检测与保存都是 Promise 链，等一个宏任务让整条链跑完再断言。
+function flush() {
+  return act(async () => {
+    await new Promise(resolve => setTimeout(resolve, 0))
+  })
+}
+
+async function show(onRestart?: () => Promise<void>) {
+  render(<DesktopRuntimePanel onRestart={onRestart} />)
+  await flush()
+}
+
+function inUseCard() {
+  return screen.getByRole('region', { name: '正在使用的运行时' })
 }
 
 describe('desktop runtime panel', () => {
   beforeEach(async () => {
+    desktopRuntimeStore.reset()
     serviceStore.setEnvVars([])
+    serviceStore.setStartedByUs(true)
+    serviceStore.setStarting(false)
+    desktopDiagnosticsStore.finish()
+    desktopDiagnosticsStore.receive(running)
     mocks.catalog.mockReset().mockResolvedValue({ available: inspection, current: inspection, currentError: null })
-    mocks.save.mockReset().mockResolvedValue(undefined)
+    mocks.save.mockReset().mockImplementation(async (path: string | null) => {
+      serviceStore.setEnvVars(path ? [{ key: 'OMPI_OMP_BIN', value: path }] : [])
+      return path === external.path ? switched : null
+    })
     await i18n.changeLanguage('zh-CN')
   })
   afterEach(cleanup)
 
-  it('shows actual runtime version, source, executable and all detected installations without writing', async () => {
+  it('shows the runtime in use with its kind and path and lists every installation without writing', async () => {
     await show()
-    expect(screen.getByText('当前后端使用')).toBeInTheDocument()
-    expect(screen.getByText('OMP v18.12.6')).toBeInTheDocument()
-    expect(screen.getByText('已附带内置 OMP 运行时。')).toBeInTheDocument()
-    const list = screen.getByRole('list', { name: '已检测到' })
-    expect(within(list).getAllByRole('button')).toHaveLength(2)
-    expect(within(list).getByText(external.path)).toBeInTheDocument()
+    expect(within(inUseCard()).getByText('OMP 18.12.6')).toBeInTheDocument()
+    expect(within(inUseCard()).getByText('应用内置')).toBeInTheDocument()
+    expect(within(inUseCard()).getByText(bundled.path)).toBeInTheDocument()
+    const options = within(screen.getByRole('radiogroup', { name: '选择运行时' })).getAllByRole('radio')
+    expect(options).toHaveLength(4)
+    expect(options[0]).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByText(external.path)).toBeInTheDocument()
     expect(screen.queryByText(external.command)).toBeNull()
     expect(mocks.save).not.toHaveBeenCalled()
   })
 
-  it('does not call a healthy backend an available runtime when no OMP was found', async () => {
-    const missing = { ...inspection, selected: null, candidates: [], bundled: false, error: 'OMP executable not found' }
-    mocks.catalog.mockResolvedValue({ available: missing, current: missing, currentError: null })
+  it('reuses the cached detection when reopened for the same backend and environment', async () => {
     await show()
-    expect(screen.getByText('未检测到运行时')).toBeInTheDocument()
-    expect(screen.getByText('此安装未附带 OMP 运行时。')).toBeInTheDocument()
-    expect(screen.getByText(/后端已启动不代表可以执行任务/)).toBeInTheDocument()
-    expect(screen.queryByText('OMP executable not found')).toBeNull()
-    expect(screen.queryByText('已就绪')).toBeNull()
+    cleanup()
+    await show()
+    expect(mocks.catalog).toHaveBeenCalledTimes(1)
+    expect(within(inUseCard()).getByText('OMP 18.12.6')).toBeInTheDocument()
   })
 
-  it('labels discovery as the next startup choice when the backend is stopped', async () => {
-    mocks.catalog.mockResolvedValue({ available: inspection, current: null })
-    await show(false)
-    expect(screen.getByText('下次启动使用')).toBeInTheDocument()
-    expect(screen.queryByText('当前后端使用')).toBeNull()
-    expect(screen.getByText('OMP v18.12.6')).toBeInTheDocument()
-  })
-
-  it('saves a candidate without relabeling the active runtime or automatically restarting', async () => {
-    const apply = await show()
-    fireEvent.change(screen.getByRole('combobox', { name: '快捷选择运行时' }), { target: { value: external.path } })
-    expect(mocks.save).not.toHaveBeenCalled()
+  it('warns only when a ready worker reports no OMP', async () => {
+    desktopDiagnosticsStore.receive({ ...running, ompVersion: null })
     mocks.catalog.mockResolvedValue({
-      available: { ...inspection, selected: external, configuredBin: external.path },
-      current: inspection,
+      available: { ...inspection, selected: null, candidates: [], bundled: false, error: 'OMP executable not found' },
+      current: null,
     })
-    fireEvent.click(screen.getByRole('button', { name: '保存选择' }))
-    await act(async () => {})
-    expect(mocks.save).toHaveBeenCalledWith(external.path, undefined)
-    expect(screen.getByText('OMP v18.12.6')).toBeInTheDocument()
-    expect(screen.getByText('已保存的选择尚未应用到当前后端。')).toBeInTheDocument()
-    expect(apply).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: '应用并重启后端' }))
-    expect(apply).toHaveBeenCalledTimes(1)
+    await show()
+    expect(within(inUseCard()).getByText('OMP 不可用')).toBeInTheDocument()
+    expect(screen.getByText(/没有可用的 OMP/)).toBeInTheDocument()
+    expect(screen.getByText(/此安装未附带 OMP 运行时/)).toBeInTheDocument()
   })
 
-  it('retains the active runtime and reports a failed save', async () => {
-    mocks.save.mockRejectedValue(new Error('Cannot verify OMP executable'))
+  it('shows the switch target instead of a warning while the backend restarts', async () => {
     await show()
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: ':custom:' } })
+    act(() => desktopDiagnosticsStore.begin('preparing'))
+    expect(within(inUseCard()).getByText('正在启动后端')).toBeInTheDocument()
+    expect(within(inUseCard()).getByText('将使用 OMP 18.12.6 · 应用内置')).toBeInTheDocument()
+    expect(screen.queryByText('OMP 不可用')).toBeNull()
+    expect(mocks.catalog).toHaveBeenCalledTimes(1)
+  })
+
+  it('describes the next start when the backend is stopped', async () => {
+    desktopDiagnosticsStore.receive({ ...running, phase: 'stopped', reachable: false, ompVersion: null })
+    await show()
+    expect(within(inUseCard()).getByText('后端未运行')).toBeInTheDocument()
+    expect(within(inUseCard()).getByText('下次启动将使用 OMP 18.12.6 · 应用内置')).toBeInTheDocument()
+  })
+
+  it('switches with one action: saves the selection and restarts an owned backend', async () => {
+    const restart = vi.fn().mockResolvedValue(undefined)
+    await show(restart)
+    fireEvent.click(screen.getByRole('radio', { name: /OMP 18\.13\.0/ }))
+    expect(screen.getByText('切换到 OMP 18.13.0 · 独立安装')).toBeInTheDocument()
+    expect(mocks.save).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '切换并重启后端' }))
+    await flush()
+    expect(mocks.save).toHaveBeenCalledWith(external.path, undefined)
+    expect(restart).toHaveBeenCalledTimes(1)
+    // 保存时的校验结果直接复用，不重复检测。
+    expect(mocks.catalog).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('radio', { name: /OMP 18\.13\.0/ })).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('saves without restarting a backend the app does not own and shows what is still in use', async () => {
+    serviceStore.setStartedByUs(false)
+    const restart = vi.fn()
+    await show(restart)
+    fireEvent.click(screen.getByRole('radio', { name: /OMP 18\.13\.0/ }))
+    fireEvent.click(screen.getByRole('button', { name: '保存选择' }))
+    await flush()
+    expect(restart).not.toHaveBeenCalled()
+    expect(
+      screen.getByText('已选择 OMP 18.13.0 · 独立安装，但后端仍在使用 OMP 18.12.6 · 应用内置。'),
+    ).toBeInTheDocument()
+    expect(within(inUseCard()).getByText('OMP 18.12.6')).toBeInTheDocument()
+  })
+
+  it('matches a saved path regardless of Windows case and separators', async () => {
+    serviceStore.setEnvVars([{ key: 'OMPI_OMP_BIN', value: 'c:/tools/OMP.cmd' }])
+    await show()
+    expect(screen.getByRole('radio', { name: /OMP 18\.13\.0/ })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.queryByText(/切换到/)).toBeNull()
+  })
+
+  it('keeps the active runtime and reports a failed save', async () => {
+    mocks.save.mockRejectedValue(new Error('Cannot verify OMP executable'))
+    await show(vi.fn())
+    fireEvent.click(screen.getByRole('radio', { name: /指定路径/ }))
     fireEvent.change(screen.getByRole('textbox', { name: 'OMP 可执行文件路径' }), {
       target: { value: 'C:\\Missing\\omp.exe' },
     })
-    fireEvent.click(screen.getByRole('button', { name: '保存选择' }))
-    await act(async () => {})
+    fireEvent.click(screen.getByRole('button', { name: '切换并重启后端' }))
+    await flush()
     expect(screen.getByRole('alert')).toHaveTextContent('Cannot verify OMP executable')
-    expect(screen.getByText('OMP v18.12.6')).toBeInTheDocument()
-    expect(screen.queryByText('选择已保存，下次启动或重启后端时生效。')).toBeNull()
+    expect(within(inUseCard()).getByText('OMP 18.12.6')).toBeInTheDocument()
   })
 
-  it('does not present future configuration as current when the backend query fails', async () => {
+  it('falls back to the worker-reported version when the backend cannot report its runtime', async () => {
     mocks.catalog.mockResolvedValue({
       available: inspection,
       current: null,
       currentError: 'Backend does not provide runtime information',
     })
     await show()
-    expect(screen.getByText('无法确认运行时')).toBeInTheDocument()
-    expect(screen.queryByText('OMP v18.12.6')).toBeNull()
+    expect(within(inUseCard()).getByText('OMP 18.12.6')).toBeInTheDocument()
+    expect(within(inUseCard()).getByText('后端未返回运行时路径。')).toBeInTheDocument()
     expect(screen.getByRole('alert')).toHaveTextContent('Backend does not provide runtime information')
   })
 })

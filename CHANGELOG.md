@@ -1,3 +1,21 @@
+## [v0.6.60] - 2026-11-06
+
+- test(app): 等 lookup 微任务 resolve 后再点 Save (90635f2)
+- test(app): 模型改名不改变显示名称，断言统一用 Model A (4fa0f9e)
+- test(app): 供应商持久化用例改用完整模型名定位，避免与首字头像重复 (71a2ae6)
+- feat(app): 重新设计添加模型界面并加入动效 (3920020)
+- refactor(app): 重写本地后端与运行时面板 (d438aa1)
+- docs: explain selective CI and CI-only verification (4f64953)
+- ci: bind reused verification to tested OMP version (c8b3988)
+- ci: reduce duplicate runs and runner contention (75abbf4)
+
+## [Unreleased]
+
+- ci: Linux／Windows 保持完整验证，前端和服务端各使用两片并行；缓存共享 workspace 编译与精确版本的 OMP 测试资源，拆分 Windows npm 角色和 RPC 验证。
+- ci: 按源码指纹及受测 latest OMP 版本复用成功的完整 CI；根目录文档和 `docs/` 变更跳过重型检查，手动派发仍强制完整检查，tag 不再重复触发 CI。
+- ci: 发布预构建等待源码 CI 真正成功后再启动；等待窗口覆盖完整任务及 GitHub 结果更新，不把运行中、取消或失败当作通过。
+- chore: 禁止本地运行测试、smoke 和验收脚本，改为仅在 GitHub Actions 验证。
+
 ## [v0.6.59] - 2026-11-04
 
 - feat(app): 本地后端面板区分后端与 OMP 运行时并支持切换 (3c1e43c)
@@ -52,8 +70,6 @@
 - feat(app): localize worktree dialog and float background jobs capsule (c9078f2)
 - docs: localize release notes Lite/Full/Mobile section to Chinese (3b7aa24)
 - verification: 发布准备 `npm run validate` 全流程通过：前端 223 文件／1950 项、worker 315 通过／23 跳过、server 326 通过，protocol 19、relay 59、tui 16 全部通过；类型检查与生产构建通过。已安装 omp-runtime 的开发机上，PATH/npm-shim 启动解析与 ambient 缺失报错用例按既有模式跳过（CI 不准备 runtime，覆盖不受影响）。
-
-## [Unreleased]
 
 ## [v0.6.50] - 2026-11-01
 

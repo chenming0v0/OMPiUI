@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DesktopServiceStatus } from './DesktopServiceStatus'
 import { desktopDiagnosticsStore, type DesktopServiceDiagnostics } from '../store/desktopDiagnosticsStore'
 import { serviceStore } from '../store/serviceStore'
+import { desktopRuntimeStore } from '../store/desktopRuntimeStore'
 import i18n from '../i18n'
 
 const mocks = vi.hoisted(() => ({
@@ -18,6 +19,7 @@ vi.mock('../utils/tauri', () => ({ isTauri: () => mocks.desktop, isTauriMobile: 
 vi.mock('../services/desktopService', () => ({
   readDesktopServiceDiagnostics: mocks.read,
   getDesktopRuntimeCatalog: mocks.catalog,
+  saveDesktopRuntimeSelection: vi.fn(),
   startDesktopService: mocks.start,
   stopDesktopService: mocks.stop,
   restartDesktopService: mocks.restart,
@@ -63,6 +65,7 @@ describe('desktop backend indicator', () => {
     mocks.restart.mockReset()
     serviceStore.setStarting(false)
     serviceStore.setStartedByUs(false)
+    desktopRuntimeStore.reset()
     desktopDiagnosticsStore.finish()
     desktopDiagnosticsStore.receive(native)
     await i18n.changeLanguage('zh-CN')

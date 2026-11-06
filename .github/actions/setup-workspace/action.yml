@@ -1,10 +1,5 @@
 name: Set up workspace
-description: 安装 Node 依赖并按需恢复当前 CI 的编译产物
-inputs:
-  build-artifact:
-    description: 同一工作流中当前系统的编译产物名称
-    required: false
-    default: ''
+description: 安装 Node 依赖并缓存共享编译产物，各任务独立启动
 runs:
   using: composite
   steps:
@@ -23,10 +18,26 @@ runs:
       shell: bash
       run: npm ci
 
-    - name: Restore workspace builds
-      if: inputs.build-artifact != ''
-      uses: actions/download-artifact@v4
+    - name: Restore shared workspace builds
+      id: shared-builds
+      uses: actions/cache@v4
       with:
-        name: ${{ inputs.build-artifact }}
-        # 上传时多个 dist 目录的公共根目录为 packages。
-        path: packages
+        path: |
+          packages/protocol/dist
+          packages/omp-worker/dist
+          packages/tui/dist
+          packages/relay/dist
+          packages/server/dist
+          packages/admin/dist
+        key: shared-builds-${{ runner.os }}-node22-${{ hashFiles('package.json', 'package-lock.json', 'patches/**', '.github/actions/setup-workspace/action.yml', 'packages/*/package.json', 'packages/*/tsconfig*.json', 'packages/*/scripts/**', 'packages/protocol/src/**', 'packages/omp-worker/src/**', 'packages/tui/src/**', 'packages/relay/src/**', 'packages/server/src/**', 'packages/admin/src/**') }}
+
+    - name: Build shared workspaces on cache miss
+      if: steps.shared-builds.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        npm run build -w @ompiui/protocol
+        npm run build -w @ompiui/omp-worker
+        npm run build -w @ompiui/tui
+        npm run build -w @ompiui/relay
+        npm run build -w @ompiui/server
+        npm run build -w @ompiui/admin
