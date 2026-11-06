@@ -19,7 +19,7 @@ type PageOptions = BranchSyncRequest & {
   checkpoint?: BranchCheckpoint;
 };
 
-/** OMP 已落盘条目只追加；重新播种时对象会整体替换，自动退回完整分页。 */
+/** 原生历史可追加或原地清理；条目对象替换后自动退回完整分页。 */
 export class BranchPageReader<T extends { id: string }> {
   // 少量快照支持多个页面同时读取；只保留条目引用，不复制正文。
   private readonly snapshots = new Map<string, readonly T[]>();

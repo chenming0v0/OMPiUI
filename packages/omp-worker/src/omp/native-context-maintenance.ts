@@ -32,7 +32,9 @@ export const nativeContextMaintenanceSource = String.raw`
         prunedResults: entries.length,
         pruningRevision,
       },
-      ...(previousPruningRevision === pruningRevision ? {} : { prunedEntries: entries }),
+      ...(previousPruningRevision === pruningRevision ? {} : {
+        prunedEntries: entries.map(entry => ({ id: entry.id, content: entry.message.content, prunedAt: entry.message.prunedAt })),
+      }),
     };
   }
 `;

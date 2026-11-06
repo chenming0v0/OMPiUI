@@ -103,10 +103,11 @@ describe("OmpRpcSession context maintenance", () => {
   it("updates pruned entries with unchanged IDs and invalidates branch snapshots", async t => {
     const { session, entries, rpc, commands } = await sessionFixture(t)
     entries.push({ id: "read-result", parentId: null, type: "message", timestamp: "2026-11-07T00:00:00Z",
-      message: { role: "toolResult", toolCallId: "read-1", toolName: "read", content: [{ type: "text", text: "stale file body" }] } })
+      message: { role: "toolResult", toolCallId: "read-1", toolName: "read", content: [{ type: "text", text: "stale file body" }],
+        details: { displayContent: { text: "original display text" } } } })
     const before = await session.getBranchPage(undefined, 100, 100000)
     const revision = session.getHead().revision
-    const pruned = { ...entries[0]!, message: { ...(entries[0]!.message as JsonObject), content: [{ type: "text", text: "[Superseded read]" }], prunedAt: 123 } }
+    const pruned = { id: "read-result", content: [{ type: "text", text: "[Superseded read]" }], prunedAt: 123 }
     rpc.onRequest = command => command.type === "queue" ? { data: {
       contextMaintenance: { autoEnabled: true, supersedeReads: true, pruningRevision: "pruned-1", prunedResults: 1 },
       ...(command.pruningRevision === "pruned-1" ? {} : { prunedEntries: [pruned] }),
@@ -114,10 +115,12 @@ describe("OmpRpcSession context maintenance", () => {
     const state = await session.getState()
     assert.equal((state.contextMaintenance as JsonObject).prunedResults, 1)
     assert.ok(session.getHead().revision > revision)
-    const after = await session.getBranchPage(undefined, 100, 100000)
+    const after = await session.getBranchPage(undefined, 100, 100000, { syncCursor: before.syncCursor, beforeId: "read-result" })
+    assert.equal(after.deltaFrom, undefined)
     assert.match(JSON.stringify(before), /stale file body/)
     assert.doesNotMatch(JSON.stringify(after), /stale file body/)
     assert.match(JSON.stringify(after), /Superseded read/)
+    assert.deepEqual((after.items[0]?.message as JsonObject).details, { displayContent: { text: "original display text" } })
     const updatedRevision = session.getHead().revision
     await session.getState()
     assert.equal(session.getHead().revision, updatedRevision)

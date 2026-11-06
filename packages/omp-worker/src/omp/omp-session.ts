@@ -875,11 +875,12 @@ export class OmpRpcSession implements SessionRuntime {
     let changed = false;
     this.entries = this.entries.map(entry => {
       const replacement = replacements.get(entry.id);
-      if (!replacement || !isJsonObject(replacement.message)) return entry;
-      if (isJsonObject(entry.message) && entry.message.prunedAt === replacement.message.prunedAt &&
-        JSON.stringify(entry.message.content) === JSON.stringify(replacement.message.content)) return entry;
+      if (!replacement || !isJsonObject(entry.message) || entry.message.role !== "toolResult" ||
+        typeof replacement.prunedAt !== "number" || !Array.isArray(replacement.content)) return entry;
+      if (entry.message.prunedAt === replacement.prunedAt &&
+        JSON.stringify(entry.message.content) === JSON.stringify(replacement.content)) return entry;
       changed = true;
-      return this.recordEntry(replacement);
+      return this.recordEntry({ ...entry, message: { ...entry.message, content: replacement.content, prunedAt: replacement.prunedAt } });
     });
     if (!changed) return;
     // 原地改写必须推进分支版本，旧分页游标不能继续返回清理前的工具内容。

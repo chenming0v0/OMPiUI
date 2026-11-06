@@ -67,8 +67,12 @@ try {
   assert.equal(state.contextMaintenance.supersedeReads, true)
   assert.ok(state.contextMaintenance.prunedResults >= 1, 'Official per-turn pruning must actually run below the summary threshold')
   const branch = await session.getBranchPage(undefined, 100, 2 * 1024 * 1024)
-  assert.doesNotMatch(JSON.stringify(branch), /original implementation details/, 'GUI projection must replace the old same-ID result')
-  assert.doesNotMatch(readFileSync(file, 'utf8'), /original implementation details/, 'Official file must agree with the GUI projection')
+  const oldRead = branch.items.find(entry => entry.type === 'message' && entry.message?.toolCallId === 'read-first-read')
+  assert.ok(oldRead?.message.prunedAt, 'GUI must carry the native pruning marker on the original result')
+  assert.doesNotMatch(JSON.stringify(oldRead.message.content), /original implementation details/, 'GUI context content must replace the old same-ID result')
+  // 官方保留 details.displayContent 供历史展示，真正送入模型的是已清理的 content。
+  const persistedRead = readFileSync(file, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)).find(entry => entry.id === oldRead.id)
+  assert.deepEqual(oldRead.message.content, persistedRead.message.content, 'Official persisted context and GUI context must agree')
   await session.setAutoCompaction(false)
   assert.equal((await session.getState()).compaction.autoEnabled, false)
   await session.dispose(); session = undefined
@@ -88,6 +92,8 @@ try {
   assert.match(readFileSync(file, 'utf8'), /"type":"compaction"/)
   assert.equal(final.isSettled, true)
   assert.ok(requests.filter(request => request.stage === 'compact').length >= 2, 'Summary and continued conversation must both reach the provider')
+  assert.ok(requests.filter(request => request.stage === 'compact').every(request =>
+    !JSON.stringify(request.body.messages).includes('original implementation details')), 'Pruned original text must not return to the provider on continuation')
   console.info('PASS: native per-turn pruning, same-ID GUI history updates, native off state, 40k automatic summary, and continued same-file conversation')
 } finally {
   await session?.dispose()
