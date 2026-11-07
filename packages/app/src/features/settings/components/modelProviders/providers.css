@@ -1,4 +1,4 @@
-/* 模型供应商设置：共享动效 + 移动端整页 / 底部弹层。 */
+/* 模型供应商设置：共享动效 + 窄窗口整页 / 底部弹层。 */
 
 @keyframes provider-rise {
   from {
@@ -193,7 +193,7 @@
   }
 }
 
-@media (max-width: 767px) {
+@media (max-width: 1023px) {
   .dialog-safe-region:has(> .provider-mobile-page),
   .dialog-safe-region:has(> .provider-model-sheet),
   .dialog-safe-region:has(> .provider-editor) {

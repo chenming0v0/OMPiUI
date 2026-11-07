@@ -29,6 +29,7 @@ import { ToolResultImages, ToolResultNotice } from '../tools/renderers/DefaultRe
 import { resolveTaskExecution } from '../tools/taskToolData'
 import { getTaskExecutionOutcome } from '../../../omp/taskOutcome'
 import { ompSubagentStore } from '../../../omp/ompSubagentStore'
+import { NativeAskSlot, useInlineAskRequest } from '../../chat/InlineAskRequests'
 
 // ============================================
 // ToolPartView - 单个工具调用
@@ -75,6 +76,7 @@ export const ToolPartView = memo(function ToolPartView({
     : fallbackPartKey
   const execution = useMemo(() => resolveTaskExecution(rawExecution), [rawExecution])
   const { call, result } = execution
+  const pendingAsk = useInlineAskRequest(call.id)
   const toolName = call.name
   const getLiveRun = useCallback(() => {
     if (toolName !== 'task') return undefined
@@ -188,7 +190,9 @@ export const ToolPartView = memo(function ToolPartView({
 
   const bodyContent = (
     <>
-      <ToolBody execution={rawExecution} partKey={partKey} data={toolData} onFullscreenChange={handleFullscreenChange} taskSlotIndex={taskSlotIndex} />
+      {pendingAsk && effectiveExpanded
+        ? <NativeAskSlot request={pendingAsk} inline />
+        : <ToolBody execution={rawExecution} partKey={partKey} data={toolData} onFullscreenChange={handleFullscreenChange} taskSlotIndex={taskSlotIndex} />}
     </>
   )
 

@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next'
 import { extensionUiStore } from '../omp/extensionUiStore'
 import { extensionTuiStore } from '../omp/extensionTuiStore'
 import { commandFeedbackStore, type CommandFeedbackEntry, type CommandFeedbackStatus } from '../omp/commandFeedbackStore'
-import { ExtensionUiDialogCard } from '../features/chat/ExtensionUiDialogCard'
 import { ExtensionTuiView } from './ExtensionTuiView'
 import { stripAnsi } from '../utils/ansiUtils'
 import { extensionDiagnosticStore } from '../omp/extensionDiagnosticStore'
@@ -18,10 +17,8 @@ const feedbackStatusConfig: Record<CommandFeedbackStatus, { label: string; class
 }
 
 /**
- * Extensions panel — extension UI for the current session: interactive
- * dialogs inline, the offscreen extension TUI mirror (component widgets /
- * custom() / footer / header) rendered with xterm.js, plus read-only state
- * (statuses, text widgets, working indicator, title).
+ * 当前会话的扩展输出：待处理交互只显示摘要，应答由消息流或输入区承载。
+ * 其余区域保留扩展 TUI 镜像、命令反馈和只读状态。
  */
 export function ExtensionsPanel({ sessionId }: { sessionId: string | null }) {
   const { t } = useTranslation('components')
@@ -83,12 +80,15 @@ export function ExtensionsPanel({ sessionId }: { sessionId: string | null }) {
           ? t(askUi.surface === 'ask' ? 'dialog.askAvailable' : 'dialog.askBasicAvailable')
           : t(askUi.reason === 'runtime_unavailable' ? 'dialog.askRuntimeUnavailable' : 'dialog.askInactive')}</p>
       </section>}
-      {/* Interactive dialogs inline (the floating cards above the composer stay too) */}
+      {/* 右栏不创建第二份表单，避免独立答案状态与重复提交入口。 */}
       {sortedPending.length > 0 && (
         <section className="flex flex-col gap-2">
           <SectionLabel>{t('extensionsPanel.dialogs', 'Dialog')}</SectionLabel>
+          <p className="text-[length:var(--fs-xs)] text-text-400">{t('extensionsPanel.dialogsHint')}</p>
           {sortedPending.map(request => (
-            <ExtensionUiDialogCard key={JSON.stringify([request.sessionId, request.workerGeneration, request.requestId])} request={request} compact />
+            <p key={JSON.stringify([request.sessionId, request.workerGeneration, request.requestId])} className="whitespace-pre-wrap break-words text-[length:var(--fs-sm)] text-text-300">
+              {request.kind === 'ask' ? request.questions.map(question => question.question).join('\n') : request.title}
+            </p>
           ))}
         </section>
       )}

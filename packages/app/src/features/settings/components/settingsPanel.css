@@ -1,0 +1,29 @@
+.settings-panel-footer-reserve {
+  position: relative;
+  background: rgb(34, 44, 53);
+}
+
+.settings-panel-footer-reserve[data-dock='true'] {
+  padding-bottom: 12px;
+}
+
+.settings-panel-footer-reserve[data-mode='docked'] {
+  height: 0;
+  padding: 0;
+}
+
+.settings-panel-footer-position {
+  position: relative;
+  z-index: 10;
+}
+
+.settings-panel-footer-anchor {
+  flex-shrink: 0;
+  margin: 0 -19px -17px;
+}
+
+@media (max-width: 640px) {
+  .settings-panel-footer-anchor {
+    margin: 0 -15px -15px;
+  }
+}

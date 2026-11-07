@@ -17,10 +17,12 @@ import { ExtensionUiDialogCard } from './ExtensionUiDialogCard'
  */
 export function ExtensionUiDialogHost({
   sessionId,
+  pendingRequests,
   collapsed,
   onCollapsedChange,
 }: {
   sessionId: string | null
+  pendingRequests?: ExtensionUiDialogRequest[]
   collapsed?: boolean
   onCollapsedChange?: (collapsed: boolean) => void
 }) {
@@ -30,8 +32,8 @@ export function ExtensionUiDialogHost({
     extensionUiStore.getSnapshot,
   )
   const pending = useMemo(
-    () => (sessionId ? snapshot.sessions[sessionId]?.pending ?? [] : []),
-    [sessionId, snapshot],
+    () => pendingRequests ?? (sessionId ? snapshot.sessions[sessionId]?.pending ?? [] : []),
+    [pendingRequests, sessionId, snapshot],
   )
   const sorted = useMemo(
     () => [...pending].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
