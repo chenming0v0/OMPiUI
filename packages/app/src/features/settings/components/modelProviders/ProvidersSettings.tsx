@@ -655,7 +655,7 @@ export function ProvidersSettings() {
                   </span>
                   <span className="text-[length:var(--fs-xxs)] tabular-nums text-text-500">{drafts.length}</span>
                 </div>
-                <div className="max-h-[420px] space-y-0.5 overflow-y-auto custom-scrollbar p-1">
+                <div className="space-y-0.5 p-1">
                   {drafts.map(draft => {
                     const summary = providerSummary(draft)
                     const active = draft.id === selectedId
