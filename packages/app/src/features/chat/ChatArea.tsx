@@ -45,6 +45,7 @@ import { useTheme } from '../../hooks/useTheme'
 import { getStreamingHotIndexes, getTimelineRowYClass, guardVirtualizerRange, mergeVirtualRangeIndexes } from './chatAreaUtils'
 import { useAutoScroll } from './virtual/useAutoScroll'
 import { useEmptyWorkingShellGate } from './virtual/useEmptyWorkingShellGate'
+import { TimelineRowLayoutContext } from './virtual/TimelineRowLayoutContext'
 import { HistoryPrefetchScheduler } from './virtual/historyPrefetchScheduler'
 import type { HistoryPrefetchMode } from '../../omp/historyPagePrefetch'
 import { perfMark, perfRecordRender, isPerfEnabled } from '../../utils/perf'
@@ -235,7 +236,7 @@ const VirtualRow = memo(function VirtualRow({
     perfMark('ompiui:measure-row:end')
   }, [measureElement])
 
-  useLayoutEffect(() => {
+  const remeasure = useCallback(() => {
     // item 引用变化（打断/折叠/错误条出现/流式 chunk，A 步保证只有变化行变）
     // 时强制按真实 DOM 高度重测。
     //
@@ -249,9 +250,12 @@ const VirtualRow = memo(function VirtualRow({
     if (!el) return
     const height = el.offsetHeight
     if (height > 0) resizeItem(virtualItem.index, height)
-  }, [virtualItem.index, item.key, rowYClass, item, resizeItem])
+  }, [virtualItem.index, resizeItem])
+
+  useLayoutEffect(remeasure, [item.key, rowYClass, item, remeasure])
 
   return (
+    <TimelineRowLayoutContext.Provider value={remeasure}>
     <div
       ref={setRef}
       data-timeline-key={item.key}
@@ -319,6 +323,7 @@ const VirtualRow = memo(function VirtualRow({
         )}
       </div>
     </div>
+    </TimelineRowLayoutContext.Provider>
   )
 }, (prev, next) =>
   prev.virtualItem.index === next.virtualItem.index &&

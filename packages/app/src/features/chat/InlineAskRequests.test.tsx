@@ -7,7 +7,8 @@ import { setUiDisclosureState } from '../../utils/uiDisclosureState'
 import { ExtensionsPanel } from '../../components/ExtensionsPanel'
 import { ToolPartView } from '../message/parts/ToolPartView'
 import { ExtensionUiDialogHost } from './ExtensionUiDialogHost'
-import { InlineAskRequestsContext, useInlineAskRequests } from './InlineAskRequests'
+import { useInlineAskRequests } from './InlineAskRequests'
+import { InlineAskRequestsContext } from './nativeAskContext'
 import { matchNativeAskRequests, type NativeAskRequest } from './nativeAskMatching'
 import i18n from '../../i18n'
 
@@ -56,7 +57,17 @@ afterEach(() => { cleanup(); vi.restoreAllMocks() })
 describe('native ask ownership', () => {
   it('matches an assistant tool using native question identity without optional-field differences', () => {
     const call = { ...execution.call, arguments: { questions: [{ ...request.questions[0], header: '', multi: false }] } }
-    const assistant = { kind: 'assistant_message', blocks: [call], toolResults: {}, toolExecutions: {} } as PiAssistantMessageItem
+    const message: PiAssistantMessageItem['message'] = {
+      role: 'assistant', content: [call], stopReason: 'toolUse', timestamp: 1,
+      api: 'openai-completions', provider: 'test', model: 'test',
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    }
+    const assistant: PiAssistantMessageItem = {
+      kind: 'assistant_message', entryId: 'assistant-ask', timestamp: 1,
+      rawEntry: { type: 'message', id: 'assistant-ask', parentId: null, timestamp: new Date(1).toISOString(), message },
+      message,
+      blocks: [call], toolResults: {}, toolExecutions: {},
+    }
     expect(matchNativeAskRequests([assistant], [request]).get(call.id)).toBe(request)
     const result = { role: 'toolResult' as const, toolCallId: call.id, toolName: 'ask', content: [], isError: false, timestamp: 2 }
     expect(matchNativeAskRequests([{ ...assistant, toolResults: { [call.id]: result } }], [request]).size).toBe(0)

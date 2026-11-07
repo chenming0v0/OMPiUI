@@ -1,4 +1,4 @@
-import { useRef, useState, type KeyboardEvent } from 'react'
+import { useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import type { ExtensionUiDialogResponse, NativeAskAnswer } from '@ompiui/protocol'
@@ -9,7 +9,11 @@ import { NativeAskQuestion } from './NativeAskQuestion'
 import type { NativeAskRequest } from './nativeAskMatching'
 
 /** 状态位于 Portal 之上，工具折叠、虚拟列表卸载和队列切换不会重置答案。 */
-export function NativeAskDialogCard({ request, target }: { request: NativeAskRequest; target?: HTMLElement | null }) {
+export function NativeAskDialogCard({ request, target, onLayoutChange }: {
+  request: NativeAskRequest
+  target?: HTMLElement | null
+  onLayoutChange?: () => void
+}) {
   const { t } = useTranslation(['common', 'components'])
   const [answers, setAnswers] = useState<NativeAskAnswer[]>(() => request.questions.map(question => ({ id: question.id, selectedOptions: [] })))
   const [custom, setCustom] = useState(() => request.questions.map(() => false))
@@ -18,6 +22,8 @@ export function NativeAskDialogCard({ request, target }: { request: NativeAskReq
   const submittingRef = useRef(false)
   const composing = useRef(false)
   const [responseId] = useState(() => crypto.randomUUID())
+  // Portal 不会触发行组件的渲染；首挂和表单变化都要在绘制前重测实际所在行。
+  useLayoutEffect(() => { onLayoutChange?.() })
   const canSubmit = request.questions.every((question, index) => question.multi || answers[index].selectedOptions.length === 1 || Boolean(answers[index].customInput?.trim()))
   const send = async (response: ExtensionUiDialogResponse) => {
     if (submittingRef.current || !extensionUiStore.getSnapshot().sessions[request.sessionId]?.pending.some(item => item.requestId === request.requestId && item.workerGeneration === request.workerGeneration)) return

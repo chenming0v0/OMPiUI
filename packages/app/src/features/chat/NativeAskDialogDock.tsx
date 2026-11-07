@@ -1,7 +1,8 @@
 import { useContext } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, QuestionIcon } from '../../components/Icons'
-import { InlineAskRequestsContext, NativeAskSlot } from './InlineAskRequests'
+import { NativeAskSlot } from './InlineAskRequests'
+import { InlineAskRequestsContext } from './nativeAskContext'
 import { NativeAskDialogCard } from './NativeAskDialogCard'
 import type { NativeAskRequest } from './nativeAskMatching'
 
