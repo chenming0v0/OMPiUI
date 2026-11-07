@@ -26,7 +26,7 @@ import {
   assistantHasProcessContent,
 } from '../message'
 import { MessageErrorView } from '../message/parts'
-import { RetryIcon, SpinnerIcon } from '../../components/Icons'
+import { RetryIcon } from '../../components/Icons'
 import type { MessageError } from '../../types/message'
 import type { PiTimelineItem } from '../../omp/domain/index.js'
 import { RetryStatusInline, type RetryStatusInlineData } from './RetryStatusInline'
@@ -47,6 +47,8 @@ import { useAutoScroll } from './virtual/useAutoScroll'
 import { useEmptyWorkingShellGate } from './virtual/useEmptyWorkingShellGate'
 import { TimelineRowLayoutContext } from './virtual/TimelineRowLayoutContext'
 import { HistoryPrefetchScheduler } from './virtual/historyPrefetchScheduler'
+import { TimelineEntryNavigation, useTimelineEntryNavigation } from './virtual/TimelineEntryNavigation'
+import { CompactionStatusInline } from './CompactionStatusInline'
 import type { HistoryPrefetchMode } from '../../omp/historyPagePrefetch'
 import { perfMark, perfRecordRender, isPerfEnabled } from '../../utils/perf'
 
@@ -1083,6 +1085,18 @@ export const ChatArea = memo(
         updateVisibleSection()
       }, [updateVisibleSection, timeline])
 
+      const scrollToEntryIndex = useCallback((index: number) => {
+        // 主动跳转接管滚动，结束分页加载时的原位置保持，防止随后又被拉回。
+        prependAnchor.current = undefined
+        if (prependFrame.current !== undefined) cancelAnimationFrame(prependFrame.current)
+        autoPause()
+        virtualizer.scrollToIndex(index, { align: 'center' })
+      }, [autoPause, virtualizer])
+      const entryNavigation = useTimelineEntryNavigation({
+        indexes: messageIdToTimelineIndex, hasMore: hasMoreHistory, loading: isLoadingMore,
+        failed: historyLoadFailed, loadMore, scroll: scrollToEntryIndex,
+      })
+
       // ── 命令式接口 ──
       useImperativeHandle(ref, () => ({
         scrollToBottom: () => {
@@ -1129,6 +1143,7 @@ export const ChatArea = memo(
       }
 
       return (
+        <TimelineEntryNavigation.Provider value={entryNavigation}>
         <div className="h-full overflow-hidden contain-strict relative">
           {loadState === 'loading' && visibleItems.length === 0 && (
             <div className="absolute inset-0 z-10 flex items-center justify-center">
@@ -1246,24 +1261,16 @@ export const ChatArea = memo(
               </div>
             )}
 
-            {/* 压缩进行中：消息流底部的行内指示——沿用"历史已压缩"分隔线视觉
-                （居中标签 + 两侧细线），中间换成 spinner；取消走输入框停止按钮 */}
             {isCompacting && sessionId && (
               <div className={`w-full ${maxWidthClass} mx-auto ${paddingClass}`}>
-                <div className="flex w-full items-center gap-2 px-3 py-1.5 text-[length:var(--fs-sm)] text-text-500">
-                  <span className="flex-1 h-px bg-border-200/70" />
-                  <span className="shrink-0 inline-flex items-center gap-1.5 text-[length:var(--fs-xs)] leading-none text-text-400">
-                    <SpinnerIcon className="animate-spin" size={12} />
-                    {t('chatArea.compacting')}
-                  </span>
-                  <span className="flex-1 h-px bg-border-200/70" />
-                </div>
+                <CompactionStatusInline sessionId={sessionId} />
               </div>
             )}
 
             <div style={{ height: spacerHeight }} aria-hidden="true" />
           </div>
         </div>
+        </TimelineEntryNavigation.Provider>
       )
     },
   ),

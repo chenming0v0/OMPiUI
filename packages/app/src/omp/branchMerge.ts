@@ -1,9 +1,11 @@
 import type { PiBranchPage } from './domain/index.js'
+import { isInjectedMessage, matchesInjectedMessage } from './injectedMessage'
 
 function matchesLiveMessage(
   entry: PiBranchPage['items'][number],
   live: NonNullable<NonNullable<PiBranchPage['checkpoint']>['liveMessage']>,
 ): boolean {
+  if (isInjectedMessage(live.message)) return matchesInjectedMessage(entry, live)
   if (entry.type !== 'message' || entry.message.role !== live.message.role) return false
   if (entry.id === live.id) return true
   // 流式参数可能还没生成完整，调用 ID 比内容比较更可靠。

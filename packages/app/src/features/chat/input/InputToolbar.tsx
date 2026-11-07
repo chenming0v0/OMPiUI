@@ -22,7 +22,7 @@ interface InputToolbarProps {
   isStreaming?: boolean
   /** Foreground activity (including retry/bash), never background jobs, keeps Stop available without a sendable draft. */
   sessionActive?: boolean
-  /** Context compaction can be cancelled through the same action slot. */
+  /** 当前原生 RPC 尚不支持独立取消压缩。 */
   isCompacting?: boolean
   isSending?: boolean
   isStopping?: boolean
@@ -478,9 +478,9 @@ export function InputToolbar({
         </AnimatedPresence>
         {showStop ? (
           <IconButton
-            aria-label={t('inputToolbar.stopGeneration')}
+            aria-label={isCompacting ? t('message:compaction.cancelUnavailable') : t('inputToolbar.stopGeneration')}
             variant="solid"
-            disabled={isStopping}
+            disabled={isStopping || isCompacting}
             onClick={onAbort}
           >
             {isStopping ? <SpinnerIcon className="animate-spin" /> : <StopIcon />}

@@ -238,6 +238,9 @@ export type PiCompactionItem = {
   timestamp: number
   rawEntry: SessionEntry
   summary: string
+  shortSummary?: string
+  method?: string
+  tokensAfter?: number
   tokensBefore: number
   firstKeptEntryId: string
   details?: unknown
@@ -262,6 +265,8 @@ export type PiCustomMessageItem = {
   content: string | (TextContent | ImageContent)[]
   display: boolean
   details?: unknown
+  injectedRole?: 'developer' | 'custom' | 'hookMessage'
+  attribution?: 'user' | 'agent'
 }
 
 /**

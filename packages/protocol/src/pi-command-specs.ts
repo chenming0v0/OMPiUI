@@ -317,7 +317,7 @@ export const PI_COMMAND_SPECS = [
     name: "compact",
     scope: "session",
     description: "Start OMP compaction",
-    paramsSchema: objectSchema({ customInstructions: STRING }),
+    paramsSchema: objectSchema({ customInstructions: STRING, mode: { enum: ["soft", "remote", "snapcompact"] } }),
     queue: "serialized",
     cancellable: true,
   },

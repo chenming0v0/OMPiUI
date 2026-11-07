@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { JsonObject, JsonValue, ToolDescriptor } from '@ompiui/protocol'
+import type { CompactParams, JsonObject, JsonValue, ToolDescriptor } from '@ompiui/protocol'
+import { compactionMethodKey } from '../omp/compaction'
 import type { SessionEntry } from '../omp/domain'
 import {
   CheckIcon,
@@ -61,10 +62,12 @@ interface SessionTreePanelProps {
 // defined by the worker's shadows — not SDK types — so local views it is.
 interface CompactionView {
   autoEnabled?: boolean
-  operation?: { type?: string }
+  operation?: { type?: string; method?: string }
+  canAbort?: boolean
+  lastMethod?: string | null
   lastNotice?: string | null
   lastError?: string | null
-  lastResult?: { summary?: string; tokensBefore?: number; estimatedTokensAfter?: number | null } | null
+  lastResult?: { shortSummary?: string; method?: string; tokensBefore?: number; tokensAfter?: number; estimatedTokensAfter?: number | null } | null
 }
 
 interface RetryView {
@@ -96,6 +99,7 @@ export const SessionTreePanel = memo(function SessionTreePanel({
   onNavigateSession,
 }: SessionTreePanelProps) {
   const { t } = useTranslation('components')
+  const { t: tm } = useTranslation('message')
   const capabilities = usePiCapabilities()
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLDivElement>(null)
@@ -107,6 +111,7 @@ export const SessionTreePanel = memo(function SessionTreePanel({
   const [importPath, setImportPath] = useState('')
   const [importCwd, setImportCwd] = useState('')
   const [compactInstructions, setCompactInstructions] = useState('')
+  const [compactMode, setCompactMode] = useState<CompactParams['mode']>()
   const [runtimePending, setRuntimePending] = useState<string | null>(null)
   const serverGeneration = useSyncExternalStore(listener => serverStore.subscribe(listener), () => serverStore.getActiveServerGeneration(), () => serverStore.getActiveServerGeneration())
   const interruptScope = JSON.stringify([serverGeneration, sessionId])
@@ -548,17 +553,30 @@ export const SessionTreePanel = memo(function SessionTreePanel({
               description={t('sessionTree.compactHint')}
             >
               <form
-                className="flex items-center gap-2"
+                className="flex flex-wrap items-center gap-2"
                 onSubmit={event => {
                   event.preventDefault()
                   void runRuntimeCommand('compact', () => compactPiSession(
                     sessionId,
-                    compactInstructions.trim() || undefined,
+                    compactMode === 'snapcompact' ? undefined : compactInstructions.trim() || undefined,
+                    undefined,
+                    compactMode,
                   ).then(() => undefined))
                 }}
               >
+                <select aria-label={tm('compaction.mode')} value={compactMode ?? ''}
+                  onChange={event => setCompactMode(event.target.value as CompactParams['mode'] || undefined)}
+                  disabled={runtimePending !== null || compactionOperation !== 'none'}
+                  className="h-8 w-full rounded-md border border-border-200 bg-bg-100 px-2 text-[length:var(--fs-sm)] text-text-200">
+                  <option value="">{tm('compaction.methods.auto')}</option>
+                  <option value="soft">{tm('compaction.methods.soft')}</option>
+                  <option value="snapcompact">{tm('compaction.methods.snapcompact')}</option>
+                  <option value="remote">{tm('compaction.methods.remote')}</option>
+                </select>
+                <p className="w-full text-[length:var(--fs-xs)] text-text-400">{tm(!compactMode ? 'compaction.autoHint' : compactMode === 'snapcompact' ? 'compaction.archiveFocusHint' : 'compaction.streamingUnavailable')}</p>
                 <input
                   value={compactInstructions}
+                  disabled={compactMode === 'snapcompact' || runtimePending !== null}
                   onChange={event => setCompactInstructions(event.target.value)}
                   aria-label={t('sessionTree.compactInstructions')}
                   placeholder={t('sessionTree.compactInstructions')}
@@ -576,7 +594,8 @@ export const SessionTreePanel = memo(function SessionTreePanel({
                 ) : (
                   <button
                     type="button"
-                    disabled={runtimePending !== null}
+                    disabled={(runtimePending !== null && runtimePending !== 'compact') || (compactionOperation !== 'branchSummary' && compaction.canAbort === false)}
+                    title={compactionOperation !== 'branchSummary' && compaction.canAbort === false ? tm('compaction.cancelUnavailable') : undefined}
                     onClick={() => void runRuntimeCommand(
                       'abort-summary',
                       () => compactionOperation === 'branchSummary'
@@ -590,6 +609,10 @@ export const SessionTreePanel = memo(function SessionTreePanel({
                   </button>
                 )}
               </form>
+              {compactionOperation === 'compaction' && <p className="mt-2 text-[length:var(--fs-xs)] text-text-400">
+                {tm(compactionMethodKey(compaction.operation?.method), { method: compaction.operation?.method })}
+                {compaction.canAbort === false ? ` · ${tm('compaction.cancelUnavailable')}` : ''}
+              </p>}
             </SettingField>
           ) : null}
           {retryPhase === 'waiting' || retryPhase === 'running' ? (
@@ -628,10 +651,11 @@ export const SessionTreePanel = memo(function SessionTreePanel({
               ) : compaction.lastError ? (
                 <p className="text-danger-100">{compaction.lastError}</p>
               ) : compaction.lastResult ? (
-                <p className="truncate text-text-400" title={compaction.lastResult.summary}>
+                <p className="text-text-400" title={compaction.lastResult.shortSummary}>
+                  {tm(compactionMethodKey(compaction.lastResult.method ?? compaction.lastMethod), { method: compaction.lastResult.method ?? compaction.lastMethod })} ·{' '}
                   {t('sessionTree.compactionResult', {
                     before: compaction.lastResult.tokensBefore,
-                    after: compaction.lastResult.estimatedTokensAfter ?? '?',
+                    after: compaction.lastResult.tokensAfter ?? compaction.lastResult.estimatedTokensAfter ?? '?',
                   })}
                 </p>
               ) : null}

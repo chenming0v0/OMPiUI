@@ -6,6 +6,7 @@ import type {
   RegistrySnapshot,
   CommandDescriptor,
   ToolDescriptor,
+  CompactParams,
 } from '@ompiui/protocol'
 import { isJsonObject } from '@ompiui/protocol'
 import type { SessionInfo } from '../vendor/pi-coding-agent'
@@ -695,9 +696,10 @@ export async function compactPiSession(
   sessionId: string,
   customInstructions?: string,
   signal?: AbortSignal,
+  mode?: CompactParams['mode'],
 ): Promise<JsonValue> {
   try {
-    const submitted = await transport.compactPi(sessionId, customInstructions, signal)
+    const submitted = await transport.compactPi(sessionId, customInstructions, signal, mode)
     // 压缩经常超过默认 30s 的 waitHostCommand 超时（会误报 Command timed out，
     // 但压缩其实还在跑）。给它 15 分钟，让结果由 compaction_end 事件/轮询正常落地。
     return await transport.waitHostCommand(submitted.id, signal, 15 * 60_000)

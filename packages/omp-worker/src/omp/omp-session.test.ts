@@ -92,6 +92,44 @@ async function sessionFixture(t: TestContext) {
 const image = (data: string): ImageInput => ({ type: "image", data, mimeType: "image/png" })
 
 describe("OmpRpcSession context maintenance", () => {
+  it("publishes manual compaction lifecycle and keeps the native result metadata", async t => {
+    const { session, rpc, commands } = await sessionFixture(t)
+    const events: JsonObject[] = []
+    session.onPiEvent(event => events.push(event))
+    let complete!: (response: JsonObject) => void
+    rpc.onRequest = command => command.type === "compact" ? new Promise(resolve => { complete = resolve }) : undefined
+    const pending = session.compact("保留文件修改", "soft")
+    const running = await session.getState()
+    assert.equal(running.isCompacting, true)
+    assert.equal((running.compaction as JsonObject).canAbort, false)
+    assert.ok(commands.some(command => command.type === "compact" && command.mode === "soft" && command.customInstructions === "保留文件修改"))
+    assert.equal(commands.some(command => command.type === "queue"), false)
+    const result = { summary: "full", shortSummary: "short", firstKeptEntryId: "kept", tokensBefore: 45000, tokensAfter: 1800, method: "soft" }
+    complete({ data: result })
+    assert.deepEqual(await pending, { status: "completed", result })
+    assert.equal(events[0]?.type, "compaction_start")
+    assert.ok(events.some(event => event.type === "compaction_end" && (event.result as JsonObject).tokensAfter === 1800))
+    assert.deepEqual(((await session.getState()).compaction as JsonObject).lastResult, result)
+  })
+
+  it("fails independent cancellation without stopping the agent or changing queues", async t => {
+    const { session, commands } = await sessionFixture(t)
+    commands.length = 0
+    await assert.rejects(session.abortCompaction(), { code: "CAPABILITY_DISABLED" })
+    assert.deepEqual(commands, [])
+  })
+
+  it("retains automatic action and resets manual state on a skipped operation", async t => {
+    const { session, rpc, frame } = await sessionFixture(t)
+    frame({ type: "auto_compaction_start", action: "snapcompact", reason: "threshold" })
+    assert.equal((((await session.getState()).compaction as JsonObject).operation as JsonObject).method, "snapcompact")
+    frame({ type: "auto_compaction_end", action: "snapcompact", aborted: false })
+    rpc.onRequest = command => command.type === "compact" ? { success: false, error: "Already compacted" } : undefined
+    assert.equal((await session.compact() as JsonObject).status, "skipped")
+    assert.equal(((await session.getState()).compaction as JsonObject).lastError, null)
+    assert.equal((((await session.getState()).compaction as JsonObject).operation as JsonObject).type, "none")
+  })
+
   it("projects the native disabled switch instead of an optimistic shadow", async t => {
     const { session, native } = await sessionFixture(t)
     native.autoCompactionEnabled = false
