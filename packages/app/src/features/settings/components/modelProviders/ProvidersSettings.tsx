@@ -233,7 +233,7 @@ function AddProviderDialog({
 
 export function ProvidersSettings() {
   const { t } = useTranslation('settings')
-  const isMobile = useIsMobile()
+  const isMobile = useIsMobile(1024)
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false)
   const { activeServer, activeServerGeneration } = useServerStore()
   const { syncStatus } = usePiModels()
@@ -646,7 +646,7 @@ export function ProvidersSettings() {
             </Button>
           </div>
         ) : (
-          <div className="grid min-h-0 grid-cols-1 gap-4 lg:grid-cols-[236px_minmax(0,1fr)]">
+          <div className="grid min-h-0 grid-cols-[236px_minmax(0,1fr)] gap-4">
             <aside className="min-w-0">
               <div className="overflow-hidden rounded-lg border border-border-200/50">
                 <div className="flex items-center justify-between border-b border-border-200/40 px-2.5 py-2">

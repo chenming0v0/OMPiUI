@@ -430,18 +430,94 @@
     "showModel": "Show {{name}}",
     "hideModel": "Hide {{name}}",
     "rolesTitle": "Agent model configuration",
-    "rolesDesc": "Assign models to OMP functions. Unassigned roles use automatic selection; save to apply to later sessions.",
+    "rolesDesc": "Assign models to individual functions. Unassigned roles follow their inheritance or fallback rules; save to apply to later sessions.",
     "rolesChatGroup": "Chat roles",
     "rolesKindGroup": "Other capabilities",
-    "roleAuto": "Select model (automatic if unset)",
+    "rolesModelColumn": "Model",
+    "rolesUnsaved": "Unsaved changes",
+    "roleFallbacks": {
+      "startup": {
+        "label": "Use startup selection",
+        "hint": "No default role is assigned. OMP selects a new session's model from its startup configuration and available models."
+      },
+      "inheritDefault": {
+        "label": "Inherit Default",
+        "hint": "Inherit the configured Default role. When Default is unassigned, use this role's own model priority list."
+      },
+      "fastPriority": {
+        "label": "Use fast model priority list",
+        "hint": "Default is unassigned, so OMP selects an available model from its built-in fast model priority list."
+      },
+      "thinkingPriority": {
+        "label": "Use thinking model priority list",
+        "hint": "Default is unassigned, so OMP selects an available model from its built-in thinking model priority list."
+      },
+      "advisorPriority": {
+        "label": "Use thinking model priority list",
+        "hint": "Thinking is not explicitly configured. Advisor uses the built-in thinking model priority list, never Default through an unassigned Thinking role."
+      },
+      "inheritFast": {
+        "label": "Inherit Fast",
+        "hint": "Tiny → Fast. Fast resolves through its explicit assignment, Default, or the built-in fast model priority list."
+      },
+      "inheritTiny": {
+        "label": "Inherit Tiny",
+        "hint": "Memory → Tiny → Fast. Explicit assignments take precedence; otherwise OMP continues through its fast model selection rules."
+      },
+      "inheritThinking": {
+        "label": "Inherit Thinking",
+        "hint": "Advisor inherits the explicitly configured Thinking role. If Thinking is unassigned, it uses the built-in thinking model priority list."
+      },
+      "vision": {
+        "label": "Default → Session → Vision models",
+        "hint": "Image questions try Default, the active session, and then available vision models from the active provider and other providers. Candidates must support image input."
+      },
+      "plan": {
+        "label": "No Architect model assigned",
+        "hint": "OMP defines no built-in model fallback chain for Architect. Assign a model to use this role."
+      },
+      "commit": {
+        "label": "Fast → Configured chat roles",
+        "hint": "Commit generation tries an explicitly configured Fast role, then configured chat roles in Default, Fast, Thinking, and subsequent role order."
+      },
+      "task": {
+        "label": "Use parent session model",
+        "hint": "Unassigned subtasks use the parent's current model. Explicit model choices in the subagent definition or task request take precedence."
+      },
+      "image": {
+        "label": "Use image model priority list",
+        "hint": "Use OMP's built-in image generation model priority list, without inheriting the default chat model."
+      },
+      "web": {
+        "label": "Use search model priority list",
+        "hint": "Use OMP's built-in web search model priority list, without inheriting the default chat model."
+      },
+      "speech": {
+        "label": "Use speech model priority list",
+        "hint": "Use OMP's built-in text-to-speech model priority list, without inheriting the default chat model."
+      },
+      "dictation": {
+        "label": "Use dictation model priority list",
+        "hint": "Use OMP's built-in speech-to-text model priority list, without inheriting the default chat model."
+      },
+      "judge": {
+        "label": "Judge models → Tiny → Fast → Default",
+        "hint": "Try OMP's preferred dedicated judge models, then resolve Tiny, Fast, and Default in order."
+      },
+      "unassigned": {
+        "label": "No model assigned",
+        "hint": "No model is assigned to this role."
+      }
+    },
     "roleClear": "Clear",
-    "roleClearDesc": "Remove the assignment and let OMP choose automatically.",
+    "roleClearDesc": "Remove the assignment. {{fallback}}",
     "roleOptions": "Role options",
+    "roleHelp": "{{role}} role help",
     "rolesCopyValue": "Copy raw value",
     "roleLevelNone": "Default",
     "roleVariant": "variant",
     "roleDefault": "Default",
-    "roleDefaultDesc": "Main model for regular chat; also the fallback when other roles are unassigned.",
+    "roleDefaultDesc": "Main model for regular chat; also inherited by unassigned Fast and Thinking roles.",
     "roleSmol": "Fast",
     "roleSmolDesc": "Fast lightweight requests such as titles and summaries.",
     "roleSlow": "Thinking",

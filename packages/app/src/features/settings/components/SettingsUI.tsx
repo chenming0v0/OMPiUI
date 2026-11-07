@@ -164,12 +164,14 @@ export function SettingsDisclosure({
   defaultOpen = false,
   className,
   children,
+  onOpenChange,
 }: {
   title: React.ReactNode
   count?: number
   defaultOpen?: boolean
   className?: string
   children: React.ReactNode
+  onOpenChange?: (isOpen: boolean) => void
 }) {
   const [isOpen, setIsOpen] = useState(defaultOpen)
   // 展开过一次就保持挂载
@@ -177,10 +179,10 @@ export function SettingsDisclosure({
   const panelId = useId()
 
   const toggle = () => {
-    setIsOpen(value => {
-      if (!value) setHasOpened(true)
-      return !value
-    })
+    const nextOpen = !isOpen
+    if (nextOpen) setHasOpened(true)
+    setIsOpen(nextOpen)
+    onOpenChange?.(nextOpen)
   }
 
   return (
@@ -420,10 +422,11 @@ export interface SettingsSectionProps {
   children: React.ReactNode
   className?: string
   collapsible?: boolean
+  onOpenChange?: (isOpen: boolean) => void
   status?: React.ReactNode
 }
 
-export function SettingsSection({ title, description, actions, children, className, collapsible = false, status }: SettingsSectionProps) {
+export function SettingsSection({ title, description, actions, children, className, collapsible = false, onOpenChange, status }: SettingsSectionProps) {
   const heading = (
     <div className="min-w-0 flex-1 text-left">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -442,7 +445,7 @@ export function SettingsSection({ title, description, actions, children, classNa
   return (
     <section data-setting-label={title} className={`settings-section mb-4 last:mb-0 ${className || ''}`}>
       {collapsible ? (
-        <SettingsDisclosure title={heading} defaultOpen className="settings-section-disclosure">
+        <SettingsDisclosure title={heading} defaultOpen onOpenChange={onOpenChange} className="settings-section-disclosure">
           {actions && <div className="flex justify-end gap-1.5 px-4 pt-3">{actions}</div>}
           {content}
         </SettingsDisclosure>

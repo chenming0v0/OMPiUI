@@ -360,7 +360,6 @@ export function ModelsSettings() {
         </div>
       )}
 
-      <p className="text-[length:var(--fs-xs)] text-text-400">{t('models.keepOneEnabled')}</p>
       </SettingsSection>
     </div>
   )

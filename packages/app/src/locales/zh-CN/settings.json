@@ -430,18 +430,94 @@
     "showModel": "显示 {{name}}",
     "hideModel": "隐藏 {{name}}",
     "rolesTitle": "Agent 模型配置",
-    "rolesDesc": "为 OMP 的不同功能指定模型。留空时自动选择；点保存后对之后的会话生效。",
+    "rolesDesc": "为不同功能指定模型。未指定时遵循各角色的继承或回退规则；保存后对之后的会话生效。",
     "rolesChatGroup": "对话角色",
     "rolesKindGroup": "其他能力",
-    "roleAuto": "选择模型（留空时自动选择）",
+    "rolesModelColumn": "使用的模型",
+    "rolesUnsaved": "有未保存的修改",
+    "roleFallbacks": {
+      "startup": {
+        "label": "按启动规则选择",
+        "hint": "未指定默认角色；新会话由 OMP 按启动配置和可用模型选择。"
+      },
+      "inheritDefault": {
+        "label": "继承默认角色",
+        "hint": "继承当前配置的默认角色；默认角色未配置时，改用该角色自己的模型优先列表。"
+      },
+      "fastPriority": {
+        "label": "按快速模型优先列表选择",
+        "hint": "默认角色未配置，按 OMP 内置的快速模型优先列表选择可用模型。"
+      },
+      "thinkingPriority": {
+        "label": "按思考模型优先列表选择",
+        "hint": "默认角色未配置，按 OMP 内置的思考模型优先列表选择可用模型。"
+      },
+      "advisorPriority": {
+        "label": "按思考模型优先列表选择",
+        "hint": "思考角色未显式配置，顾问使用内置思考模型优先列表，不经由空的思考角色继承默认模型。"
+      },
+      "inheritFast": {
+        "label": "继承快速角色",
+        "hint": "轻量 → 快速；快速再使用其显式配置、默认角色或内置快速模型优先列表。"
+      },
+      "inheritTiny": {
+        "label": "继承轻量角色",
+        "hint": "记忆 → 轻量 → 快速；途中遇到显式配置时使用该配置，否则继续按 OMP 的快速模型规则解析。"
+      },
+      "inheritThinking": {
+        "label": "继承思考角色",
+        "hint": "顾问继承显式配置的思考角色；思考角色未配置时，改用内置思考模型优先列表。"
+      },
+      "vision": {
+        "label": "默认 → 当前会话 → 视觉模型",
+        "hint": "图像问答依次尝试默认角色、当前会话、当前供应商及其他可用的视觉模型；候选必须支持图片输入。"
+      },
+      "plan": {
+        "label": "未指定架构模型",
+        "hint": "OMP 没有为架构角色定义内置模型回退链；需要使用该角色时请显式指定模型。"
+      },
+      "commit": {
+        "label": "快速 → 已配置的对话角色",
+        "hint": "提交生成先尝试显式配置的快速角色，再按默认、快速、思考等对话角色的顺序寻找可用配置。"
+      },
+      "task": {
+        "label": "跟随父会话模型",
+        "hint": "子任务未指定模型时沿用父会话当前模型；子代理定义或任务请求中的显式模型仍优先。"
+      },
+      "image": {
+        "label": "按图像模型优先列表选择",
+        "hint": "按 OMP 内置的图像生成模型优先列表选择，不继承对话默认模型。"
+      },
+      "web": {
+        "label": "按搜索模型优先列表选择",
+        "hint": "按 OMP 内置的网页搜索模型优先列表选择，不继承对话默认模型。"
+      },
+      "speech": {
+        "label": "按语音合成优先列表选择",
+        "hint": "按 OMP 内置的语音合成模型优先列表选择，不继承对话默认模型。"
+      },
+      "dictation": {
+        "label": "按语音识别优先列表选择",
+        "hint": "按 OMP 内置的语音识别模型优先列表选择，不继承对话默认模型。"
+      },
+      "judge": {
+        "label": "专用评审 → 轻量 → 快速 → 默认",
+        "hint": "先尝试 OMP 优先列表中的专用评审模型，再依次解析轻量、快速和默认角色。"
+      },
+      "unassigned": {
+        "label": "未指定模型",
+        "hint": "此角色未指定模型。"
+      }
+    },
     "roleClear": "清除",
-    "roleClearDesc": "清除指派，恢复由 OMP 自动选择。",
+    "roleClearDesc": "清除指派。{{fallback}}",
     "roleOptions": "角色选项",
+    "roleHelp": "{{role}}角色说明",
     "rolesCopyValue": "复制原始值",
     "roleLevelNone": "默认",
     "roleVariant": "强度",
     "roleDefault": "默认",
-    "roleDefaultDesc": "常规对话的主模型，其他角色未指派时也由它兜底。",
+    "roleDefaultDesc": "常规对话的主模型，也是快速和思考角色未指派时的继承来源。",
     "roleSmol": "快速",
     "roleSmolDesc": "标题、摘要等轻量快速的辅助请求。",
     "roleSlow": "思考",

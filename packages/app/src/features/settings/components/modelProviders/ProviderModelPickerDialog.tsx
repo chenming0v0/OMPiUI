@@ -56,7 +56,7 @@ export function ProviderModelPickerDialog({
   onRetrySave,
 }: ProviderModelPickerDialogProps) {
   const { t } = useTranslation('settings')
-  const isMobile = useIsMobile()
+  const isMobile = useIsMobile(1024)
   const [tab, setTab] = useState<PickerTab>('new')
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(false)

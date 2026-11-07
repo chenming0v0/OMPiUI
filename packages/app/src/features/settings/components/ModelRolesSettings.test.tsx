@@ -29,12 +29,14 @@ vi.mock('../../../omp/transport/index.js', () => ({
 vi.mock('../../chat/ModelSelector', () => ({
   ModelSelector: (props: {
     selectedModelKey: string | null
+    placeholder?: string
     models: Array<{ provider: string; id: string }>
     onSelect: (key: string, model: unknown) => void
   }) => (
     <button
       type="button"
       data-testid="model-selector-stub"
+      data-placeholder={props.placeholder}
       onClick={() => {
         const model = props.models[0]
         props.onSelect(`${model.provider}:${model.id}`, model)
@@ -94,6 +96,8 @@ describe('ModelRolesSettings', () => {
     await waitFor(() => {
       expect(screen.getAllByTestId('model-selector-stub').length).toBeGreaterThan(0)
     })
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument()
     fireEvent.click(screen.getAllByTestId('model-selector-stub')[0]) // DEFAULT 角色行
     expect(setPiModelRolesMock).not.toHaveBeenCalled()
 
@@ -122,6 +126,96 @@ describe('ModelRolesSettings', () => {
     await waitFor(() => {
       expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4o-mini')
     })
+    expect(setPiModelRolesMock).not.toHaveBeenCalled()
+  })
+
+  it('hides the save bar when collapsed and retains the draft after expanding', async () => {
+    getPiModelRolesMock.mockResolvedValue({ default: 'openai/gpt-4o-mini:low' })
+    render(<ModelRolesSettings />)
+    await waitFor(() => expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4o-mini'))
+
+    fireEvent.click(screen.getAllByTestId('model-selector-stub')[0])
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+    const section = screen.getByRole('button', { name: /^Agent model configuration/ })
+    fireEvent.click(section)
+    expect(section).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument()
+
+    fireEvent.click(section)
+    expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4.1')
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+    expect(setPiModelRolesMock).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(setPiModelRolesMock).toHaveBeenCalledWith({ default: 'openai/gpt-4.1:low' }))
+  })
+
+  it('updates inheritance hints with the draft without saving inherited assignments', async () => {
+    render(<ModelRolesSettings />)
+    await waitFor(() => expect(screen.getAllByTestId('model-selector-stub')).toHaveLength(15))
+    const selectors = screen.getAllByTestId('model-selector-stub')
+    expect(selectors[1]).toHaveAttribute('data-placeholder', 'Use fast model priority list')
+    expect(selectors[2]).toHaveAttribute('data-placeholder', 'Use thinking model priority list')
+    expect(selectors[6]).toHaveAttribute('data-placeholder', 'Inherit Fast')
+    expect(selectors[7]).toHaveAttribute('data-placeholder', 'Inherit Tiny')
+
+    fireEvent.click(selectors[0])
+    expect(selectors[1]).toHaveAttribute('data-placeholder', 'Inherit Default')
+    expect(selectors[2]).toHaveAttribute('data-placeholder', 'Inherit Default')
+    expect(selectors[9]).toHaveAttribute('data-placeholder', 'Use thinking model priority list')
+    expect(setPiModelRolesMock).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(setPiModelRolesMock).toHaveBeenCalledWith({ default: 'openai/gpt-4.1' }))
+  })
+
+  it('opens role help on click and dismisses it on focus loss without changing assignments', async () => {
+    render(<ModelRolesSettings />)
+    const help = await screen.findByRole('button', { name: 'Default role help' })
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+
+    fireEvent.click(help)
+    expect(help).toHaveAttribute('aria-expanded', 'true')
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Main model for regular chat')
+
+    fireEvent.blur(help)
+    expect(help).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+
+    fireEvent.click(help)
+    expect(await screen.findByRole('tooltip')).toBeInTheDocument()
+    fireEvent.blur(window)
+    expect(help).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+
+    fireEvent.click(help)
+    expect(await screen.findByRole('tooltip')).toBeInTheDocument()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+    expect(help).toHaveFocus()
+
+    fireEvent.click(help)
+    expect(await screen.findByRole('tooltip')).toBeInTheDocument()
+    fireEvent.pointerDown(document.body)
+    expect(help).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+    expect(setPiModelRolesMock).not.toHaveBeenCalled()
+  })
+
+  it('only inherits an explicitly assigned Thinking role for Advisor and restores it on cancel', async () => {
+    getPiModelRolesMock.mockResolvedValue({ default: 'openai/gpt-4.1', slow: 'openai/gpt-4o-mini:low' })
+    render(<ModelRolesSettings />)
+    await waitFor(() => expect(screen.getAllByTestId('model-selector-stub')).toHaveLength(15))
+    const advisor = screen.getAllByTestId('model-selector-stub')[9]
+    expect(advisor).toHaveAttribute('data-placeholder', 'Inherit Thinking')
+
+    const thinking = screen.getByRole('group', { name: 'Thinking' })
+    fireEvent.click(within(thinking).getByRole('button', { name: 'Role options' }))
+    fireEvent.click(await screen.findByText('Clear'))
+    expect(advisor).toHaveAttribute('data-placeholder', 'Use thinking model priority list')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(advisor).toHaveAttribute('data-placeholder', 'Inherit Thinking')
     expect(setPiModelRolesMock).not.toHaveBeenCalled()
   })
 
@@ -181,7 +275,7 @@ describe('ModelRolesSettings', () => {
     expect(effort).toHaveTextContent('max')
     expect(setPiModelRolesMock).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled())
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument())
     expect(persisted).toEqual({ default: 'openai/gpt-4.1:max' })
     first.unmount()
     render(<ModelRolesSettings />)
@@ -198,7 +292,7 @@ describe('ModelRolesSettings', () => {
     render(<ModelRolesSettings />)
     const effort = await screen.findByRole('button', { name: 'Default variant' })
     await waitFor(() => expect(effort).toHaveTextContent(level))
-    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
     fireEvent.click(effort)
     const menu = screen.getByRole('listbox', { name: 'Default variant' })
     expect(within(menu).queryByRole('option', { name: level })).not.toBeInTheDocument()
@@ -248,7 +342,7 @@ describe('ModelRolesSettings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(readModelRolesCache()).toEqual({ default: 'openai/gpt-4.1' }))
     resolve({ default: 'openai/gpt-4o-mini' })
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled())
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument())
     expect(readModelRolesCache()).toEqual({ default: 'openai/gpt-4.1' })
   })
 

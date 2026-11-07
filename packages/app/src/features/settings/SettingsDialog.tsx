@@ -32,6 +32,7 @@ import { PiManagementSettings } from './components/PiManagementSettings'
 import { ServiceSettings } from './components/ServiceSettings'
 import { TrafficAuditSettings } from './components/TrafficAuditSettings'
 import { AuthenticationSettings } from './components/AuthenticationSettings'
+import { SettingsPanel } from './components/SettingsPanel'
 import { SettingsSearch } from './SettingsSearch'
 import { SETTINGS_SEARCH_DEFINITIONS, type SettingsSearchItem } from './settingsSearchCatalog'
 import { usePiCapabilities } from '../../omp/capabilities'
@@ -419,18 +420,17 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
           </div>
 
           {/* Content */}
-          <div
+          <SettingsPanel
             id={activePanelId}
-            role="tabpanel"
-            aria-labelledby={`settings-tab-${tab}`}
-            ref={scrollRef}
-            className="flex-1 min-h-0 p-3 overflow-y-auto custom-scrollbar overscroll-contain"
+            labelledBy={`settings-tab-${tab}`}
+            scrollRef={scrollRef}
+            scrollClassName="flex-1 min-h-0 p-3 overflow-y-auto custom-scrollbar overscroll-contain"
           >
             {/* key 按 tab 重挂载：单个面板崩溃只降级当前页，不拖垮整个应用 */}
             <ErrorBoundary key={tab}>
               <TabContent tab={tab} onPaired={handlePaired} />
             </ErrorBoundary>
-          </div>
+          </SettingsPanel>
         </div>
       </Dialog>
     )
@@ -517,18 +517,17 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
         </nav>
 
         {/* 右侧独立滚动；外层不再依赖大片留白区分设置组。 */}
-        <div
+        <SettingsPanel
           id={activePanelId}
-          role="tabpanel"
-          aria-labelledby={`settings-tab-${tab}`}
-          ref={scrollRef}
-          className="flex-1 min-w-0 min-h-0 overflow-y-auto custom-scrollbar px-5 pb-5 pt-14"
+          labelledBy={`settings-tab-${tab}`}
+          scrollRef={scrollRef}
+          scrollClassName="flex-1 min-w-0 min-h-0 overflow-y-auto custom-scrollbar px-5 pb-5 pt-14"
         >
           {/* key 按 tab 重挂载：单个面板崩溃只降级当前页，不拖垮整个应用 */}
           <ErrorBoundary key={tab}>
             <TabContent tab={tab} onPaired={nativeMobile ? handlePaired : undefined} />
           </ErrorBoundary>
-        </div>
+        </SettingsPanel>
       </div>
     </Dialog>
   )

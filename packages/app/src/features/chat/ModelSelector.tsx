@@ -46,6 +46,8 @@ interface ModelSelectorProps {
   trigger?: 'header' | 'toolbar'
   /** 未选择模型时触发按钮显示的文案（缺省用 chat 命名空间的通用文案） */
   placeholder?: string
+  /** 触发按钮的完整说明，用于角色继承等无法在按钮内完整展示的提示。 */
+  triggerTitle?: string
   /** 弹出层 z-index，默认 100；在 Dialog 等高 z-index 容器内使用时需要调高 */
   zIndex?: number
 }
@@ -357,6 +359,7 @@ export const ModelSelector = memo(
       constrainToRef,
       trigger = 'header',
       placeholder,
+      triggerTitle,
       zIndex,
     },
     ref,
@@ -811,7 +814,7 @@ export const ModelSelector = memo(
           disabled={disabled || isLoading}
           aria-expanded={isOpen}
           className="group flex items-center gap-2 px-2 py-1.5 text-text-200 rounded-lg hover:bg-bg-200 hover:text-text-100 transition-all duration-150 active:scale-95 cursor-pointer text-[length:var(--fs-base)]"
-          title={displayName}
+          title={triggerTitle ?? displayName}
         >
           <span className="font-medium truncate max-w-[240px]">{displayName}</span>
           <div className={`opacity-50 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}>
@@ -834,7 +837,7 @@ export const ModelSelector = memo(
           disabled={disabled || isLoading}
           aria-expanded={isOpen}
           className="flex items-center px-2 py-1.5 text-[length:var(--fs-base)] rounded-lg transition-all duration-150 hover:bg-bg-200 active:scale-95 cursor-pointer min-w-0 overflow-hidden w-full"
-          title={selectedModelName || t('modelSelector.selectModel')}
+          title={triggerTitle ?? (selectedModelName || t('modelSelector.selectModel'))}
         >
           <span className="text-[length:var(--fs-sm)] text-text-300 truncate">{displayName}</span>
         </button>

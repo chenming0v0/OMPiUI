@@ -1,0 +1,282 @@
+.model-roles-section {
+  container: model-roles / inline-size;
+}
+
+.model-roles-section .settings-section-content {
+  gap: 24px;
+}
+
+.model-role-group-heading,
+.model-role-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.85fr);
+  align-items: center;
+  gap: 20px;
+  padding-inline: 12px;
+}
+
+.model-role-group-heading {
+  margin-bottom: 10px;
+}
+
+.model-role-group-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: hsl(var(--text-200));
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+.model-role-group-count {
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: hsl(var(--bg-200) / 0.65);
+  color: hsl(var(--text-400));
+  font-size: var(--fs-xxs);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.model-role-column-labels,
+.model-role-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 5.5rem 36px;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-role-column-labels {
+  color: hsl(var(--text-400));
+  font-size: var(--fs-xxs);
+}
+
+.model-role-column-labels > span {
+  padding-left: 10px;
+}
+
+.model-role-row {
+  min-height: 56px;
+  padding-block: 8px;
+  border-top: 1px solid hsl(var(--border-200) / 0.45);
+}
+
+.model-role-row[data-primary='true'] {
+  border-top-color: transparent;
+  border-radius: 10px;
+  background: hsl(var(--accent-main-100) / 0.055);
+}
+
+.model-role-row[data-primary='true'] + .model-role-row {
+  border-top-color: transparent;
+}
+
+.model-role-label {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.model-role-icon {
+  display: flex;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: hsl(var(--bg-200) / 0.6);
+  color: hsl(var(--text-300));
+}
+
+.model-role-row[data-primary='true'] .model-role-icon {
+  background: hsl(var(--accent-main-100) / 0.13);
+  color: hsl(var(--accent-main-100));
+}
+
+.model-role-name {
+  color: hsl(var(--text-100));
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.role-model-field {
+  position: relative;
+  min-width: 0;
+  border: 1px solid hsl(var(--border-200) / 0.65);
+  border-radius: 8px;
+  background: hsl(var(--bg-200) / 0.4);
+  transition: border-color 150ms, background-color 150ms;
+}
+
+.model-role-row[data-assigned='true'] .role-model-field {
+  border-color: hsl(var(--border-300) / 0.8);
+  background: hsl(var(--bg-200) / 0.85);
+}
+
+.model-roles-section .role-model-field:hover {
+  border-color: hsl(var(--border-300));
+}
+
+.model-roles-section .role-model-field:focus-within {
+  border-color: hsl(var(--accent-main-100));
+  box-shadow: 0 0 0 2px hsl(var(--accent-main-100) / 0.15);
+}
+
+.role-model-field > div > button {
+  min-height: 36px;
+  padding: 7px 32px 7px 12px;
+  border-radius: 7px;
+  text-align: left;
+  outline: none;
+}
+
+.role-model-field > div > button:hover {
+  background: transparent;
+}
+
+.role-model-field > div > button:active {
+  transform: none;
+}
+
+.role-model-field .truncate {
+  min-width: 0;
+  flex: 1;
+}
+
+.role-model-field > div > button > span {
+  color: hsl(var(--text-400));
+}
+
+.model-role-row[data-assigned='true'] .role-model-field > div > button > span {
+  color: hsl(var(--text-100));
+}
+
+.role-model-field > div > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+button.role-variant-select {
+  min-width: 0;
+  height: 38px;
+  padding: 0 10px;
+  border-radius: 8px;
+  font-size: var(--fs-xs);
+  background: hsl(var(--bg-200) / 0.4);
+}
+
+button.role-variant-select:disabled {
+  border-color: transparent;
+  background: transparent;
+}
+
+button.role-variant-select > span {
+  min-width: 0;
+}
+
+button.role-variant-select svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* 保存栏由面板保留底部背景，存在草稿时可归位到评审行下方。 */
+.model-roles-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 20px;
+  border: 1px solid hsl(var(--border-200));
+  border-radius: 0 0 16px 16px;
+  background: hsl(var(--bg-100));
+}
+
+.model-roles-save-state {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: hsl(var(--accent-main-100));
+  font-size: var(--fs-xs);
+}
+
+.model-roles-state-dot {
+  width: 5px;
+  height: 5px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* 按面板实际宽度切换，兼顾窄窗口和移动端的设置页。 */
+@container model-roles (max-width: 620px) {
+  .model-role-group-heading {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .model-role-row {
+    grid-template-columns: minmax(0, 1fr) 5.5rem 36px;
+    gap: 8px;
+    padding-block: 12px;
+  }
+
+  .model-role-label {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .model-role-controls {
+    display: contents;
+  }
+
+  .role-model-field {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .role-variant-select {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .model-role-kebab {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .model-role-column-labels {
+    display: none;
+  }
+}
+
+@container model-roles (max-width: 380px) {
+  .model-role-row {
+    grid-template-columns: minmax(0, 1fr) 4.5rem 32px;
+    column-gap: 6px;
+    padding-inline: 8px;
+  }
+
+  .model-role-label {
+    gap: 8px;
+  }
+
+  .model-role-icon {
+    width: 28px;
+    height: 28px;
+  }
+
+  .model-role-kebab > button {
+    width: 32px;
+  }
+}
+
+@media (max-width: 640px) {
+  .model-roles-footer {
+    padding: 12px;
+  }
+
+}
