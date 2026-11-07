@@ -240,7 +240,6 @@ describe('InputToolbar file selection', () => {
   it.each([
     { isStreaming: true },
     { sessionActive: true },
-    { isCompacting: true },
   ])('uses one action slot through draft and submission transitions: %j', activity => {
     const props = { onFilesSelected: vi.fn(), onSend: vi.fn(), onAbort: vi.fn() }
     const view = render(<InputToolbar {...props} {...activity} canSend={false} />)
@@ -279,20 +278,29 @@ describe('InputToolbar file selection', () => {
     expect(props.onAbort).not.toHaveBeenCalled()
   })
 
-  it('shows Stop while compacting and the input is empty', () => {
-    render(
+  it('disables unsupported independent compaction cancellation while keeping draft submission available', () => {
+    const onAbort = vi.fn()
+    const props = { onFilesSelected: vi.fn(), onSend: vi.fn(), onAbort }
+    const view = render(
       <InputToolbar
+        {...props}
         fileCapabilities={{ image: false, pdf: false, audio: false, video: false }}
-        onFilesSelected={vi.fn()}
         isCompacting
         canSend={false}
-        onSend={vi.fn()}
-        onAbort={vi.fn()}
       />,
     )
 
-    expect(screen.getByRole('button', { name: /stop|停止/i })).toBeInTheDocument()
+    const stop = screen.getByRole('button', { name: 'This OMP interface cannot stop compaction independently.' })
+    expect(stop).toBeDisabled()
+    fireEvent.click(stop)
+    expect(onAbort).not.toHaveBeenCalled()
     expect(screen.queryByRole('button', { name: /send|发送/i })).toBeNull()
+    view.rerender(<InputToolbar {...props} isCompacting canSend />)
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled()
+    view.rerender(<InputToolbar {...props} isCompacting canSend isSending />)
+    expect(screen.getByRole('button', { name: 'This OMP interface cannot stop compaction independently.' })).toBeDisabled()
+    view.rerender(<InputToolbar {...props} canSend={false} />)
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
   })
 
   it('keeps Stop clickable while Send is awaiting acceptance', () => {
