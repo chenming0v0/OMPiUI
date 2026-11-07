@@ -72,6 +72,7 @@
   "extensionsPanel": {
     "empty": "No extension output for this session",
     "dialogs": "Pending Interactions",
+    "dialogsHint": "Respond in the conversation or above the message input.",
     "commandFeedback": "Command Feedback",
     "diagnostics": "Runtime Extension Diagnostics",
     "diagnosticsHint": "The official runtime does not identify the originating session. These errors are recorded at the extension host level, without assigning them to the current session.",

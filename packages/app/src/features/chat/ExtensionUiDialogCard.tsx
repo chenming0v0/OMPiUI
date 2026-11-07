@@ -5,17 +5,15 @@ import { QuestionIcon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRight
 import { CodePreview } from '../../components/CodePreview'
 import { extensionUiStore } from '../../omp/extensionUiStore'
 import { respondPiExtensionUi } from '../../omp/controllers/index.js'
-import { NativeAskDialogCard } from './NativeAskDialogCard'
+import { NativeAskDialogDock } from './NativeAskDialogDock'
 
 export function ExtensionUiDialogCard(props: Omit<Parameters<typeof BasicExtensionUiDialogCard>[0], 'request'> & { request: ExtensionUiDialogRequest }) {
-  if (props.request.kind === 'ask') return <NativeAskDialogCard request={props.request} compact={props.compact} onCollapse={props.onCollapse} />
+  if (props.request.kind === 'ask') return <NativeAskDialogDock {...props} request={props.request} />
   return <BasicExtensionUiDialogCard {...props} request={props.request} />
 }
 
 /**
- * Interactive card for one pending extension UI dialog
- * (select/confirm/input/editor). Shared by the floating host above the
- * composer and the inline list in the right-sidebar extension panel.
+ * 输入框上方的扩展交互卡片（select/confirm/input/editor）。
  *
  * 设计原则（对齐 TUI / OpenCodeUI 对复杂内容的消费方式——默认只给决策
  * 所需的最小信息，长内容按需展开）：

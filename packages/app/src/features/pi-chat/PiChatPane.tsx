@@ -12,6 +12,7 @@ import { FolderProjectDropOverlay } from '../chat/FolderProjectDropOverlay.js'
 import { ChatViewportProvider, useChatViewportMaybe, type ChatViewportValue } from '../chat/chatViewport.js'
 import type { Attachment } from '../attachment/index.js'
 import { ExtensionUiDialogHost } from '../chat/ExtensionUiDialogHost.js'
+import { InlineAskRequestsContext, useInlineAskRequests } from '../chat/InlineAskRequests'
 import { ExtensionUiSurface } from '../chat/ExtensionUiSurface'
 import { OutlineIndex } from '../../components/OutlineIndex'
 import type { NativeTreeNode } from '../../components/sessionTreeGraph'
@@ -616,15 +617,8 @@ export function PiChatPane({
   }, [paneId, sessionId, contextLimit, isStreaming])
 
   // 扩展 UI 弹窗（权限/问题/选择/输入）：可收起为输入框上方胶囊（FloatingActions）
-  const extensionDialogSnapshot = useSyncExternalStore(
-    extensionUiStore.subscribe,
-    extensionUiStore.getSnapshot,
-    extensionUiStore.getSnapshot,
-  )
-  const pendingDialogs = useMemo(
-    () => (sessionId ? (extensionDialogSnapshot.sessions[sessionId]?.pending ?? []) : []),
-    [sessionId, extensionDialogSnapshot],
-  )
+  const inlineAsk = useInlineAskRequests(sessionId, items)
+  const pendingDialogs = inlineAsk.pending
   const dialogRequest = useMemo(
     () => [...pendingDialogs].sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0] ?? null,
     [pendingDialogs],
@@ -1568,7 +1562,7 @@ export function PiChatPane({
         onScrollToMessageId={handleOutlineScrollToMessage}
       />
 
-      <ExtensionUiDialogHost sessionId={sessionId} collapsed={dialogCollapsed} onCollapsedChange={setDialogCollapsed} />
+      <ExtensionUiDialogHost sessionId={sessionId} pendingRequests={pendingDialogs} collapsed={dialogCollapsed} onCollapsedChange={setDialogCollapsed} />
 
 
       <div ref={inputBoxWrapperRef} className="absolute bottom-0 left-0 right-0 z-10 pointer-events-none">
@@ -1712,7 +1706,10 @@ export function PiChatPane({
             onFocus={handlePaneFocus}
           />
         )}
-        {chatContent}
+        <InlineAskRequestsContext.Provider value={inlineAsk.value}>
+          {chatContent}
+          {inlineAsk.dialogs}
+        </InlineAskRequestsContext.Provider>
         <PaneDropOverlay ref={overlayRef} />
         <FolderProjectDropOverlay active={isFolderDropActive} />
       </div>

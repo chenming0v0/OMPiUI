@@ -72,6 +72,7 @@
   "extensionsPanel": {
     "empty": "此会话暂无扩展输出",
     "dialogs": "待处理交互",
+    "dialogsHint": "请在对话中或输入框上方作答。",
     "commandFeedback": "命令反馈",
     "diagnostics": "运行时扩展诊断",
     "diagnosticsHint": "官方运行时未提供来源会话身份。这些错误记录在扩展宿主层，不归属到当前会话。",
