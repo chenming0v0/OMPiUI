@@ -17,6 +17,7 @@ import type {
 } from '../domain/index.js'
 import type { PiToolExecutionState } from '../domain/index.js'
 import { piSessionInfoStore } from '../state/index.js'
+import { injectedMessageItem, matchesInjectedMessage } from '../injectedMessage'
 
 /**
  * Select Pi session rows from raw session info.
@@ -57,9 +58,9 @@ export function selectPiTimelineItems(branch: PiBranchPage): PiTimelineItem[] {
 function visibleLiveMessage(branch: PiBranchPage) {
   const live = branch.checkpoint?.liveMessage
   if (!live) return undefined
-  const persistedVisible = branch.items.some(entry => entry.type === 'message'
+  const persistedVisible = branch.items.some(entry => matchesInjectedMessage(entry, live) || (entry.type === 'message'
     && entry.message.role === live.message.role
-    && (entry.id === live.id || branch.client?.stableEntryIds?.[entry.id] === live.id))
+    && (entry.id === live.id || branch.client?.stableEntryIds?.[entry.id] === live.id)))
   return persistedVisible ? undefined : live
 }
 
@@ -151,9 +152,13 @@ export function buildPiHistoryItems(branch: PiBranchPage): PiTimelineItem[] {
           items.push(lastBashGroup)
         }
       } else {
-        // The vendored union may not include future runtime message roles.
-        const unknownMessage: { role: string } = message
-        items.push({ kind: 'unknown', entryId: entry.id, timestamp, rawEntry: entry, entryType: `message:${unknownMessage.role}` })
+        const injected = injectedMessageItem(entry)
+        if (injected) items.push({ ...injected, renderKey })
+        else {
+          const unknownMessage: { role: string } = message
+          items.push({ kind: 'unknown', entryId: entry.id, timestamp, rawEntry: entry, entryType: `message:${unknownMessage.role}` })
+        }
+        lastBashGroup = undefined
       }
       // Preserve future message roles rather than silently losing their content.
     } else if (entry.type === 'custom' && entry.customType === 'tool_execution_start') {
@@ -169,6 +174,9 @@ export function buildPiHistoryItems(branch: PiBranchPage): PiTimelineItem[] {
         timestamp,
         rawEntry: entry,
         summary: entry.summary,
+        shortSummary: entry.shortSummary,
+        method: entry.method,
+        tokensAfter: entry.tokensAfter,
         tokensBefore: entry.tokensBefore,
         firstKeptEntryId: entry.firstKeptEntryId,
         details: entry.details,
@@ -192,9 +200,12 @@ export function buildPiHistoryItems(branch: PiBranchPage): PiTimelineItem[] {
         timestamp,
         rawEntry: entry,
         customType: entry.customType,
+        renderKey,
         content: entry.content,
         display: entry.display,
         details: entry.details,
+        attribution: entry.attribution,
+        injectedRole: 'custom',
       } as PiCustomMessageItem)
       lastBashGroup = undefined
     } else if ((entry as { type?: string }).type === 'mode_change') {
@@ -307,6 +318,11 @@ export function buildPiLiveItems(branch: PiBranchPage): PiTimelineItem[] {
   const items: PiTimelineItem[] = []
   // Keep the live row until its matching persisted entry is actually loaded.
   const live = visibleLiveMessage(branch)
+  if (live) {
+    const raw = liveRawEntry(live)
+    const injected = raw.type === 'message' ? injectedMessageItem(raw) : undefined
+    if (injected) items.push(injected)
+  }
   if (live && live.message.role === 'user' && live.phase === 'streaming') {
     const message = live.message
     const text = typeof message.content === 'string'

@@ -193,7 +193,7 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
   },
 
   compact: async (ctx, p) =>
-    ctx.requireRuntime().compact(P.optString(p, "customInstructions")),
+    ctx.requireRuntime().compact(P.optString(p, "customInstructions"), p.mode as 'soft' | 'remote' | 'snapcompact' | undefined),
   abortCompaction: async (ctx) => ctx.requireRuntime().abortCompaction(),
   abortBranchSummary: async (ctx) => ctx.requireRuntime().abortBranchSummary(),
   setAutoCompaction: async (ctx, p) => {

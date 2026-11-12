@@ -110,6 +110,9 @@ export interface ModelChangeEntry extends SessionEntryBase {
 export interface CompactionEntry<T = unknown> extends SessionEntryBase {
   type: 'compaction'
   summary: string
+  shortSummary?: string
+  method?: string
+  tokensAfter?: number
   firstKeptEntryId: string
   tokensBefore: number
   /** Extension-specific data (e.g., ArtifactIndex, version markers for structured compaction) */
@@ -161,6 +164,7 @@ export interface SessionInfoEntry extends SessionEntryBase {
  */
 export interface CustomMessageEntry<T = unknown> extends SessionEntryBase {
   type: 'custom_message'
+  attribution?: 'user' | 'agent'
   customType: string
   content: string | (TextContent | ImageContent)[]
   details?: T
@@ -220,6 +224,9 @@ export interface SessionInfo {
 
 export interface CompactionResult<T = unknown> {
   summary: string
+  shortSummary?: string
+  method?: string
+  tokensAfter?: number
   firstKeptEntryId: string
   tokensBefore: number
   estimatedTokensAfter?: number
@@ -305,6 +312,8 @@ export type AgentSessionEvent =
   | {
       type: 'compaction_start'
       reason: 'manual' | 'threshold' | 'overflow'
+      action?: string
+      mode?: string
     }
   | {
       type: 'entry_appended'
@@ -328,6 +337,7 @@ export type AgentSessionEvent =
     }
   | {
       type: 'compaction_end'
+      action?: string
       reason: 'manual' | 'threshold' | 'overflow'
       result: CompactionResult | undefined
       aborted: boolean

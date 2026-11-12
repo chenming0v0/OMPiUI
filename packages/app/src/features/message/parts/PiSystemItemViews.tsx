@@ -4,7 +4,6 @@ import type {
   PiBashExecutionGroupItem,
   PiBashExecutionItem,
   PiBranchSummaryItem,
-  PiCompactionItem,
   PiCustomMessageItem,
   PiModeChangeItem,
   PiTimelineItem,
@@ -21,6 +20,7 @@ import { MSG_SPACING } from '../messageSpacing'
 import { ToolGroup } from './ToolGroup'
 import { customMessageText, readAgentMessage, readBackgroundJobs } from './customMessagePresentation'
 import { backgroundJobExecutions } from './backgroundJobExecution'
+import { CompactionItemView } from './CompactionItemView'
 
 // ============================================
 // Pi system timeline item views
@@ -164,11 +164,6 @@ function bashItemToExecution(item: PiBashExecutionItem): PiToolExecution {
   }
 }
 
-function CompactionItemView({ item }: { item: PiCompactionItem }) {
-  const { t } = useTranslation('message')
-  return <DividerRow partKey={item.entryId} label={t('system.contextCompacted')} detail={item.summary} />
-}
-
 function BranchSummaryItemView({ item }: { item: PiBranchSummaryItem }) {
   const { t } = useTranslation('message')
   return <DividerRow partKey={item.entryId} label={t('system.branchSummary')} detail={item.summary} />
@@ -193,6 +188,8 @@ function CustomMessageItemView({ item }: { item: PiCustomMessageItem }) {
   const jobs = backgroundJobExecutions(item)
   if (jobs) return <BackgroundJobGroup item={item} executions={jobs} />
   const text = customMessageText(item)
+  if (item.injectedRole) return <DividerRow partKey={item.entryId}
+    label={t(item.attribution === 'user' ? 'system.userAttributedNotice' : 'system.automaticNotice', { role: item.injectedRole })} detail={text} />
   return text.trim() ? <MarkdownRenderer content={text} /> : null
 }
 

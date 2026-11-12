@@ -10,7 +10,7 @@ import { nativeSubagentObservationPrelude, nativeSubagentObservationSource } fro
 import { nativeSessionTitleImports, nativeSessionTitleSource } from './native-session-title.js'
 import { nativeContextMaintenanceImports, nativeContextMaintenanceSource } from './native-context-maintenance.js'
 
-export type RuntimeBridgeOperation = "capabilities" | "identity" | "queue" | "clearQueue" | "removeQueuedMessage" | "sendQueuedMessage" | "submitUserMessage" | "prepareStop" | "resumeStoppedSession" | "navigateTree" | "abortBranchSummary" | "fork" | "branch" | "reload" | "setLabel" | "setScopedModels" | "cycleModel" | "resources" | "tree" | "asyncJobs" | "inspectAsyncJob" | "cancelAsyncJob" | "goal" | "moveSession" | "worktreeState"
+export type RuntimeBridgeOperation = "capabilities" | "compact" | "identity" | "queue" | "clearQueue" | "removeQueuedMessage" | "sendQueuedMessage" | "submitUserMessage" | "prepareStop" | "resumeStoppedSession" | "navigateTree" | "abortBranchSummary" | "fork" | "branch" | "reload" | "setLabel" | "setScopedModels" | "cycleModel" | "resources" | "tree" | "asyncJobs" | "inspectAsyncJob" | "cancelAsyncJob" | "goal" | "moveSession" | "worktreeState"
 const RESPONSE_PREFIX = "\u001eompiui-runtime:"
 
 /** Correlates managed command results without exposing control traffic as chat/UI events. */
@@ -198,8 +198,14 @@ export default function (pi) {
     reconcileSubagentObservation(ctx);
     const session = ownSession(ctx);
     switch (operation) {
-      case "capabilities": return { operations: ["identity", "queue", "clearQueue", "removeQueuedMessage", "sendQueuedMessage", "submitUserMessage", "prepareStop", "resumeStoppedSession", "navigateTree", "abortBranchSummary", "fork", "branch", "reload", "setLabel", "setScopedModels", "cycleModel", "resources", "tree", "asyncJobs", "inspectAsyncJob", "cancelAsyncJob", "goal", ...(typeof session.moveSession === "function" && typeof session.sessionManager.isSessionOnDisk === "function" ? ["moveSession", "worktreeState"] : [])] };
+      case "capabilities": return { operations: ["identity", "compact", "queue", "clearQueue", "removeQueuedMessage", "sendQueuedMessage", "submitUserMessage", "prepareStop", "resumeStoppedSession", "navigateTree", "abortBranchSummary", "fork", "branch", "reload", "setLabel", "setScopedModels", "cycleModel", "resources", "tree", "asyncJobs", "inspectAsyncJob", "cancelAsyncJob", "goal", ...(typeof session.moveSession === "function" && typeof session.sessionManager.isSessionOnDisk === "function" ? ["moveSession", "worktreeState"] : [])] };
       case "identity": return identity(session);
+      case "compact": {
+        const result = await session.compact(args.customInstructions, { mode: args.mode });
+        // 原生返回值没有方法和压缩后 token；从刚提交的原生记录读取，不能用请求方法冒充实际方法。
+        const entry = session.sessionManager.getBranch().findLast(entry => entry.type === "compaction");
+        return { ...result, ...(entry ? { entryId: entry.id, method: entry.method, tokensAfter: entry.tokensAfter } : {}) };
+      }
       case "prepareStop": return prepareStop(session);
       case "resumeStoppedSession": resumeStoppedSession(session); return identity(session);
       case "worktreeState": {

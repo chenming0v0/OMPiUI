@@ -50,6 +50,18 @@ export interface CustomMessage<T = unknown> {
   content: string | (TextContent | ImageContent)[]
   display: boolean
   details?: T
+  attribution?: 'user' | 'agent'
+  timestamp: number
+}
+
+/** OMP 自动注入的提示保留真实角色和归属，不伪装成用户发言。 */
+export interface InjectedMessage {
+  role: 'developer' | 'hookMessage'
+  content: string | (TextContent | ImageContent)[]
+  attribution?: 'user' | 'agent'
+  customType?: string
+  display?: boolean
+  details?: unknown
   timestamp: number
 }
 
@@ -72,6 +84,7 @@ export type AgentMessage =
   | Message
   | BashExecutionMessage
   | CustomMessage
+  | InjectedMessage
   | BranchSummaryMessage
   | CompactionSummaryMessage
 

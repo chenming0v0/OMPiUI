@@ -204,7 +204,37 @@
     },
     "rawOutput": "Raw result"
   },
+  "compaction": {
+    "completed": "Context maintenance result",
+    "running": "Maintaining context",
+    "methods": {
+      "auto": "Follow session settings",
+      "snapcompact": "Archive snapshot (snapcompact)",
+      "soft": "Model summary (soft)",
+      "remote": "Server compaction (remote)",
+      "handoff": "Handoff summary (handoff)",
+      "shake": "Prune recoverable content (shake)",
+      "unknown": "Method not provided",
+      "other": "Context maintenance ({{method}})"
+    },
+    "mode": "Maintenance method",
+    "autoHint": "Follows session settings; may archive history without calling a model.",
+    "archiveHint": "History was archived as snapshots for the model to read. No model summary was generated.",
+    "archiveFocusHint": "Archive snapshots do not accept focus instructions. Choose model summary to specify a focus.",
+    "streamingUnavailable": "This OMP interface does not expose summary deltas. Results appear when complete.",
+    "cancelUnavailable": "This OMP interface cannot stop compaction independently.",
+    "summary": "Conversation summary",
+    "archiveInstructions": "Archive reading instructions for the model (internal format)",
+    "internalHint": "This content tells the model how to read the archive; it is not a summary of the work.",
+    "firstKept": "First retained entry:",
+    "jump": "Jump to retained history",
+    "locating": "Locating…",
+    "entryUnavailable": "Could not locate the retained entry. Load history and try again.",
+    "unknownTokens": "Unknown"
+  },
   "system": {
+    "automaticNotice": "System notice · {{role}}",
+    "userAttributedNotice": "User action notice · {{role}}",
     "agentMessage": "Agent · {{name}}",
     "agentMessageFrom": "From {{name}}",
     "backgroundJob": "Background job · {{name}}",

@@ -94,7 +94,23 @@ try {
   assert.ok(requests.filter(request => request.stage === 'compact').length >= 2, 'Summary and continued conversation must both reach the provider')
   assert.ok(requests.filter(request => request.stage === 'compact').every(request =>
     !JSON.stringify(request.body.messages).includes('original implementation details')), 'Pruned original text must not return to the provider on continuation')
-  console.info('PASS: native per-turn pruning, same-ID GUI history updates, native off state, 40k automatic summary, and continued same-file conversation')
+  // 复用真实原生会话，验证手动模式通过桥接到达 AgentSession，并保留落盘元数据。
+  await session.setAutoCompaction(false)
+  stage = 'manual-read'; calls = 0
+  await session.sendUserMessage('Read sample.txt once more and keep the updated implementation for the next task.')
+  await session.waitForIdle()
+  stage = 'compact'
+  const manual = await session.compact('Preserve the latest sample file changes.', 'soft')
+  assert.equal(manual.status, 'completed')
+  assert.equal(manual.result.method, 'soft')
+  assert.equal(typeof manual.result.tokensAfter, 'number')
+  const persisted = readFileSync(file, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)).findLast(entry => entry.type === 'compaction')
+  assert.equal(manual.result.entryId, persisted.id)
+  assert.equal(manual.result.tokensAfter, persisted.tokensAfter)
+  assert.equal(manual.result.shortSummary, persisted.shortSummary)
+  assert.ok(events.some(event => event.type === 'compaction_start' && event.reason === 'manual' && event.mode === 'soft'))
+  await assert.rejects(session.abortCompaction(), { code: 'CAPABILITY_DISABLED' })
+  console.info('PASS: native pruning, automatic and manual compaction, persisted method/token metadata, and same-file continuation')
 } finally {
   await session?.dispose()
   provider.closeAllConnections()

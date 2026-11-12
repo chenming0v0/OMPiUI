@@ -139,6 +139,7 @@ export type SetQueueModeParams = {
 
 export type CompactParams = {
   customInstructions?: string
+  mode?: 'soft' | 'remote' | 'snapcompact'
 }
 
 export type SetEnabledParams = {

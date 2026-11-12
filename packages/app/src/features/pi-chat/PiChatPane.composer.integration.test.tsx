@@ -254,7 +254,13 @@ describe('PiChatPane with the real composer', () => {
       mocks.listedActive = true
       const view = render(<PiChatPane paneId={paneId} sessionId={sessionId} />)
       const indicator = await screen.findByRole('button', { name: i18n.t('chat:backgroundJobs.runningCount', { count: 1 }) })
-      expect(screen.getByRole('button', { name: i18n.t('chat:inputToolbar.stopGeneration') })).toBeEnabled()
+      if (foreground === 'isCompacting') {
+        const stop = screen.getByRole('button', { name: i18n.t('message:compaction.cancelUnavailable') })
+        expect(stop).toBeDisabled()
+        fireEvent.click(stop)
+        expect(mocks.abort).not.toHaveBeenCalled()
+        expect(mocks.abortCompaction).not.toHaveBeenCalled()
+      } else expect(screen.getByRole('button', { name: i18n.t('chat:inputToolbar.stopGeneration') })).toBeEnabled()
       expect(screen.getByTestId('transcript')).toHaveAttribute('data-streaming', String(foreground === 'isStreaming'))
 
       mocks.state = { ...mocks.state, [foreground]: false }

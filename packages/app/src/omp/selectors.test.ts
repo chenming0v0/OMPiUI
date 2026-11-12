@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { SessionEntry, SessionMessageEntry } from './vendor/pi-coding-agent'
 import { getToolExecutionStatus, type PiBranchPage, type PiBashExecutionGroupItem, type PiTimelineItem, type PiAssistantMessageItem } from './domain/index.js'
 import { selectPiTimelineItems } from './selectors/index.js'
+import { mergeLatestBranchPage } from './branchMerge'
 
 function bashEntry(id: string, command: string): SessionEntry {
   return {
@@ -38,6 +39,45 @@ function page(entries: SessionEntry[]): PiBranchPage {
     hasMore: false,
   }
 }
+
+describe('native compaction and injected messages', () => {
+  it('projects persisted method, token counts and display summary without replacing archive instructions', () => {
+    const entry: SessionEntry = { type: 'compaction', id: 'compact', parentId: null, timestamp: new Date(1000).toISOString(),
+      summary: 'Resume prior conversation. FILES / HISTORY', shortSummary: 'Read and updated sample.txt',
+      method: 'snapcompact', tokensBefore: 45000, tokensAfter: 3500, firstKeptEntryId: 'kept' }
+    expect(selectPiTimelineItems(page([entry]))).toMatchObject([{ kind: 'compaction', method: 'snapcompact',
+      tokensBefore: 45000, tokensAfter: 3500, shortSummary: 'Read and updated sample.txt', summary: entry.summary, firstKeptEntryId: 'kept' }])
+  })
+
+  it.each(['developer', 'custom', 'hookMessage'] as const)('renders %s as an attributed system notice', role => {
+    const entry: SessionEntry = { type: 'message', id: 'notice', parentId: null, timestamp: new Date(1000).toISOString(),
+      message: { role, content: 'Continue working', customType: 'maintenance', display: true, attribution: 'user', timestamp: 1000 } }
+    expect(selectPiTimelineItems(page([entry]))).toMatchObject([{ kind: 'custom_message', injectedRole: role, attribution: 'user', content: 'Continue working' }])
+  })
+
+  it('deduplicates stream and custom_message persistence but retains a later identical notice', () => {
+    const persisted: SessionEntry = { type: 'custom_message', id: 'persisted', parentId: null, timestamp: new Date(1000).toISOString(),
+      customType: 'maintenance', content: 'Continue working', display: true, attribution: 'agent' }
+    const current = page([])
+    current.checkpoint = { position: { epoch: 'events', sequence: 2 }, liveMessage: { id: 'live', revision: 1, phase: 'persisting',
+      message: { role: 'custom', content: 'Continue working', customType: 'maintenance', display: true, attribution: 'agent', timestamp: 1000 } } }
+    const latest = page([persisted])
+    latest.checkpoint = { position: { epoch: 'events', sequence: 1 } }
+    const merged = mergeLatestBranchPage(current, latest)
+    expect(selectPiTimelineItems(merged)).toHaveLength(1)
+    expect(merged.client?.stableEntryIds?.persisted).toBe('live')
+    current.checkpoint.liveMessage!.message.timestamp = 2000
+    expect(selectPiTimelineItems({ ...latest, checkpoint: current.checkpoint })).toHaveLength(2)
+  })
+
+  it('keeps hidden injections hidden and preserves unknown future roles', () => {
+    const entry = { type: 'message', id: 'hidden', parentId: null, timestamp: new Date(1000).toISOString(),
+      message: { role: 'custom', customType: 'hidden', content: 'internal', display: false, timestamp: 1000 } } as SessionEntry
+    expect(selectPiTimelineItems(page([entry]))).toMatchObject([{ kind: 'custom_message', display: false }])
+    const unknown = { ...entry, message: { role: 'future-role', content: 'future', timestamp: 1000 } } as unknown as SessionEntry
+    expect(selectPiTimelineItems(page([unknown]))).toMatchObject([{ kind: 'unknown', entryType: 'message:future-role' }])
+  })
+})
 
 describe('selectPiTimelineItems bash grouping', () => {
   it('merges consecutive bash executions into one tool group', () => {

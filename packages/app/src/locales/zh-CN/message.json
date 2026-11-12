@@ -173,7 +173,37 @@
     },
     "rawOutput": "原始结果"
   },
+  "compaction": {
+    "completed": "上下文整理结果",
+    "running": "正在整理上下文",
+    "methods": {
+      "auto": "按会话设置自动选择",
+      "snapcompact": "归档快照（snapcompact）",
+      "soft": "模型总结（soft）",
+      "remote": "服务端压缩（remote）",
+      "handoff": "交接总结（handoff）",
+      "shake": "清理可恢复内容（shake）",
+      "unknown": "方法未提供",
+      "other": "上下文整理（{{method}}）"
+    },
+    "mode": "整理方法",
+    "autoHint": "按会话设置选择方法；可能直接归档历史，不调用模型。",
+    "archiveHint": "历史已归档为供模型读取的快照，本次未调用模型生成总结。",
+    "archiveFocusHint": "归档快照不接受保留要点；需要指定重点时请选择模型总结。",
+    "streamingUnavailable": "当前 OMP 接口未提供总结增量，完成后会显示结果。",
+    "cancelUnavailable": "当前 OMP 接口不支持单独停止压缩。",
+    "summary": "会话摘要",
+    "archiveInstructions": "模型阅读用的归档说明（内部格式）",
+    "internalHint": "以下内容用于指导模型读取归档，不是本次会话的工作摘要。",
+    "firstKept": "保留段起点：",
+    "jump": "跳转到保留段",
+    "locating": "正在定位…",
+    "entryUnavailable": "未能定位保留条目，请加载历史后重试。",
+    "unknownTokens": "未知"
+  },
   "system": {
+    "automaticNotice": "系统提示 · {{role}}",
+    "userAttributedNotice": "用户操作提示 · {{role}}",
     "agentMessage": "代理 · {{name}}",
     "agentMessageFrom": "来自 {{name}}",
     "backgroundJob": "后台任务 · {{name}}",

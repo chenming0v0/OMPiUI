@@ -14,13 +14,26 @@
 
 - 从 `0.1.0` 起。根包、`app` / `server` / `omp-worker` / `protocol`、Tauri 用同一个号。
 - 发版记录写根目录 `CHANGELOG.md`。`packages/app/CHANGELOG.md` 是上游 PiUI 历史，不参与发版。
-- 升版本：`npm run release:prepare -- <version>`，或 `npm run release:bump -- <version>`。提交留在 `dev`，合并进 `main` 之后再打 tag：
+- 发版按下面这套流程走，默认把当前版本最后一位加一（如 `0.6.61` → `0.6.62`）；用户另指版本时用指定号。
+- 升版本用 `npm run release:prepare -- <version> --skip-validate`（或 `npm run release:bump -- <version>`）。本地禁止跑测试，带 `--skip-validate`，校验交给 CI。提交留在 `dev`，合并进 `main` 之后再打 tag：
+
+```bash
+npm run release:prepare -- <version> --skip-validate
+git add -A
+git commit -m "chore: 发布 <version>"
+git push origin HEAD:dev
+```
+
+- 然后开 `dev` → `main` 的发布 PR 并合并；被必需检查拦住时用 `gh pr merge <pr> --merge --admin`，发布流水线本身会等源码 CI 通过再出产物。
+- 合并后在 `origin/main` 上打 tag 并推送；`v*` tag 触发 Desktop And Mobile Release：
 
 ```bash
 git fetch origin main
 git tag v<version> origin/main
 git push origin v<version>
 ```
+
+- tag 推送后用后台任务等待发布流水线（`gh run watch <run-id> --exit-status`，`run_in_background`），跑完会通知。禁止用 `sleep` 轮询。
 
 - `v*` tag 触发 Desktop And Mobile Release。Android 签名 secrets：`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`。
 - 应用内更新检查读本仓库 `releases/latest`，不是 PiUI。

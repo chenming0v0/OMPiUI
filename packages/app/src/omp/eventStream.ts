@@ -1150,7 +1150,7 @@ class PiEventStream {
         this.updateLiveMessage(sessionId, event.message, meta)
         break
       case 'message_end':
-        if (event.message.role === 'assistant') {
+        if (event.message.role === 'assistant' || event.message.role === 'developer' || event.message.role === 'custom' || event.message.role === 'hookMessage') {
           this.updateLiveMessage(sessionId, event.message, meta, 'persisting')
         }
         if (event.message.role === 'toolResult') {

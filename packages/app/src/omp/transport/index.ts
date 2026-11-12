@@ -877,8 +877,9 @@ export function compactPi(
   sessionId: string,
   customInstructions?: string,
   signal?: AbortSignal,
+  mode?: PiCommandParams['compact']['mode'],
 ): Promise<CommandRecord> {
-  return postPiSessionCommand(sessionId, 'compact', customInstructions ? { customInstructions } : undefined, signal)
+  return postPiSessionCommand(sessionId, 'compact', { ...(customInstructions ? { customInstructions } : {}), ...(mode ? { mode } : {}) }, signal)
 }
 
 export function reloadPiSession(sessionId: string, signal?: AbortSignal): Promise<CommandRecord> {

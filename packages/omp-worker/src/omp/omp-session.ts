@@ -719,7 +719,8 @@ export class OmpRpcSession implements SessionRuntime {
       ? frame.message
       : undefined;
     const role = nativeMessage?.role;
-    if (role !== "user" && role !== "assistant" && role !== "toolResult")
+    if (role !== "user" && role !== "assistant" && role !== "toolResult" &&
+      role !== "developer" && role !== "custom" && role !== "hookMessage")
       return;
     const messageId =
       typeof frame.messageId === "string" ? frame.messageId : undefined;
@@ -770,6 +771,7 @@ export class OmpRpcSession implements SessionRuntime {
             type: "compaction",
             phase: "running",
             reason: toJson(frame.reason) ?? null,
+            method: toJson(frame.action ?? frame.mode) ?? null,
           },
           lastAborted: null,
           lastError: null,
@@ -785,6 +787,8 @@ export class OmpRpcSession implements SessionRuntime {
             toJson(frame.result) ?? this.compactionShadow.lastResult ?? null,
           lastAborted: Boolean(frame.aborted),
           lastError: toJson(frame.errorMessage) ?? null,
+          lastMethod: toJson(frame.action) ?? null,
+          lastNotice: toJson(frame.notice) ?? null,
         };
         break;
       }
@@ -853,7 +857,7 @@ export class OmpRpcSession implements SessionRuntime {
     const state = native ?? await this.fetchState();
     // Extension commands are queued during native compaction. Its readonly
     // RPC state already exposes the queue; never submit a control prompt here.
-    const value = state.isCompacting
+    const value = state.isCompacting || (isJsonObject(this.compactionShadow.operation) && this.compactionShadow.operation.type === "compaction")
       ? state.queuedMessages
       : await this.client.requestRuntime("queue", this.pruningRevision ? { pruningRevision: this.pruningRevision } : {});
     if (epoch !== this.eventEpoch || generation !== this.queueGeneration) return;
@@ -1321,7 +1325,7 @@ export class OmpRpcSession implements SessionRuntime {
       contextUsage,
       sessionStats,
       retry: this.retryShadow,
-      compaction: { ...this.compactionShadow, autoEnabled: typeof native.autoCompactionEnabled === "boolean" ? native.autoCompactionEnabled : null },
+      compaction: { ...this.compactionShadow, canAbort: false, streamingSupported: false, autoEnabled: typeof native.autoCompactionEnabled === "boolean" ? native.autoCompactionEnabled : null },
       contextMaintenance: this.contextMaintenance,
       head,
       // OMP 扩展：子代理注册表快照 + todo 阶段（前端子代理面板重连恢复用）
@@ -2064,16 +2068,26 @@ export class OmpRpcSession implements SessionRuntime {
     return result;
   }
 
-  async compact(customInstructions?: string): Promise<JsonValue | undefined> {
-    const command: JsonObject = { type: "compact" };
-    if (customInstructions) command.customInstructions = customInstructions;
+  async compact(customInstructions?: string, mode?: 'soft' | 'remote' | 'snapcompact'): Promise<JsonValue | undefined> {
+    const publish = (frame: OmpRpcFrame) => {
+      this.trackShadowState(frame);
+      this.emitPiEvent(frame);
+      this.emitActivityIfChanged();
+    };
+    publish({ type: "compaction_start", reason: "manual", ...(mode ? { mode } : {}) });
     try {
-      const response = await this.client.request(command, 300_000);
-      const result = toJson(unwrapResponse(response));
+      const result = await this.client.requestRuntime("compact", {
+        ...(customInstructions ? { customInstructions } : {}), ...(mode ? { mode } : {}),
+      }, 15 * 60_000);
+      publish({ type: "compaction_end", result: result ?? null, aborted: false,
+        ...(isJsonObject(result) && typeof result.method === "string" ? { action: result.method } : {}) });
+      this.scheduleEntrySync();
       return { status: "completed", result };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (/nothing to compact/i.test(message)) {
+      const skipped = /nothing to compact|already compacted/i.test(message);
+      publish({ type: "compaction_end", aborted: false, ...(skipped ? { notice: message } : { errorMessage: message }) });
+      if (skipped) {
         return { status: "skipped", reason: "session_too_small", message };
       }
       throw error;
@@ -2081,8 +2095,9 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async abortCompaction(): Promise<void> {
-    // OMP RPC 无独立 abort compaction：abort 会话运行（含压缩）
-    await this.abort();
+    // 原生方法存在，但 RPC 没有独立请求；扩展 prompt 会被压缩门禁排队。
+    // 禁止回退到 abort，它会中止整个会话并改变队列续跑状态。
+    unsupported("independent compaction cancellation (abort_compaction)");
   }
 
   async abortBranchSummary(): Promise<void> {

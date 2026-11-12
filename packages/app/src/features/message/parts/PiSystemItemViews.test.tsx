@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import type { PiCustomMessageItem } from '../../../omp/domain/index.js'
+import type { PiCompactionItem, PiCustomMessageItem } from '../../../omp/domain/index.js'
 import { PiSystemItemView } from './PiSystemItemViews'
+import { TimelineEntryNavigation } from '../../chat/virtual/TimelineEntryNavigation'
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -50,6 +51,32 @@ function expand(name: string) {
 }
 
 describe('custom message timeline views', () => {
+  it('separates the user summary from closed internal archive instructions and offers retained-history navigation', () => {
+    const jump = vi.fn()
+    const item: PiCompactionItem = { kind: 'compaction', entryId: 'compact', timestamp: 1000,
+      rawEntry: {} as PiCompactionItem['rawEntry'], method: 'snapcompact', summary: 'Resume prior conversation. FILES / HISTORY',
+      shortSummary: 'Updated sample.txt', tokensBefore: 45000, tokensAfter: 3500, firstKeptEntryId: 'kept-entry' }
+    render(<TimelineEntryNavigation.Provider value={{ jump, pending: null, missing: null }}><PiSystemItemView item={item} /></TimelineEntryNavigation.Provider>)
+    expect(screen.getByText('compaction.methods.snapcompact')).toBeInTheDocument()
+    expect(screen.getByText('compaction.archiveHint')).toBeInTheDocument()
+    expect(screen.getByText(/45[,.]?000 → 3[,.]?500 tokens/)).toBeInTheDocument()
+    const archive = screen.getByText(item.summary).closest('details')!
+    expect(archive.open).toBe(false)
+    expect(archive.querySelector('summary')?.textContent).toBe('compaction.archiveInstructions')
+    expect(screen.getByText('Updated sample.txt').closest('details')).not.toBe(archive)
+    fireEvent.click(screen.getByRole('button', { name: 'compaction.jump' }))
+    expect(jump).toHaveBeenCalledWith('kept-entry')
+  })
+
+  it('labels an injected user-attributed notice without turning it into user speech', () => {
+    render(<PiSystemItemView item={{ ...message('injection', 'Continue the pending work'), customType: 'maintenance',
+      injectedRole: 'developer', attribution: 'user' }} />)
+    const toggle = screen.getByRole('button', { name: 'system.userAttributedNotice' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(toggle)
+    expect(screen.getByText('Continue the pending work')).toBeInTheDocument()
+  })
+
   it('renders one delivery with several jobs as one tool group whose rows expand separately', () => {
     render(<PiSystemItemView item={message('batch', '── Job one (task) ──\nFirst result\n── Job two (task) ──\nSecond result', {
       jobs: [{ jobId: 'one', label: 'First job' }, { jobId: 'two', label: 'Second job' }],
