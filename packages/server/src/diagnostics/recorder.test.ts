@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync, rmSync, utimesSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync, rmSync, utimesSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { DiagnosticRecorder, summarizeRunState, type DiagnosticFields } from "./recorder.ts"
@@ -54,6 +54,25 @@ test("diagnostics rotates, caps files, expires old parts and preserves unrelated
   assert.ok(files.includes("keep.txt"))
   assert.ok(!files.includes(old.split(/[\\/]/).at(-1)!))
   assert.ok(read().some(row => row.event === "next.day"))
+})
+
+test("the first critical event is written synchronously even when retention cleanup fails", t => {
+  const { directory, read } = fixture(t)
+  // 匹配名字的目录令现有清理 unlink 失败，不能阻止该分片的首条事件。
+  const staleDirectory = join(directory, "diagnostic-2020-01-01_abcd_000001.jsonl")
+  mkdirSync(staleDirectory)
+  utimesSync(staleDirectory, new Date("2020-01-01"), new Date("2020-01-01"))
+  const recorder = new DiagnosticRecorder({ directory, keepDays: 1, now: () => Date.parse("2026-10-11T12:00:00Z") })
+  recorder.record("session.crashed", { sessionId: "s1", errorCode: "RUNTIME_CRASHED" }, "error")
+  const files = readdirSync(directory).filter(name => statSync(join(directory, name)).isFile())
+  assert.equal(files.length, 1)
+  const records = readFileSync(join(directory, files[0]!), "utf8").trim().split("\n").map(line => JSON.parse(line))
+  assert.equal(records[0]?.event, "session.crashed")
+  assert.equal(records[0]?.seq, 1)
+  assert.equal(recorder.recentFaults()[0]?.sessionId, "s1")
+  rmSync(join(directory, "diagnostic-2020-01-01_abcd_000001.jsonl"), { recursive: true })
+  recorder.record("server.stopping")
+  assert.deepEqual(read().map(record => record.event), ["session.crashed", "server.stopping"])
 })
 
 test("diagnostics honors disabled/level settings and survives write failure", t => {

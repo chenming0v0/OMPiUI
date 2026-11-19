@@ -102,6 +102,7 @@ function safeSystemSummary(line: string): string | undefined {
   return `${time ? `[${time}] ` : ""}[${source}] ${entry[1]}`;
 }
 const MAX_REPORT_BYTES = 8 * 1024 * 1024;
+const MAX_INPUT_BYTES = MAX_REPORT_BYTES;
 const VERSION = (() => {
   try {
     return String(
@@ -151,8 +152,9 @@ function safeRecord(value: unknown): Record<string, unknown> | undefined {
   return result;
 }
 
-async function* readLines(file: string, start = 0): AsyncGenerator<string> {
-  const stream = createReadStream(file, { encoding: "utf8", start });
+async function* readLines(file: string, start: number, end: number): AsyncGenerator<string> {
+  if (end < start) return;
+  const stream = createReadStream(file, { encoding: "utf8", start, end });
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
   stream.on("error", () => lines.close());
   try {
@@ -221,10 +223,11 @@ export class FaultReportService {
 
   private async read(): Promise<{ report: FaultReport; status: FaultStatus }> {
     const sections: string[] = [];
-    const unavailable: string[] = [];
+    const unavailable = new Set<string>();
     const faults: FaultNotice[] = [];
     let files = 0;
     let bytes = 0;
+    let remainingInput = MAX_INPUT_BYTES;
     let filtered = 0;
     const append = (line: string): boolean => {
       const safe = redactDiagnosticText(line);
@@ -238,41 +241,51 @@ export class FaultReportService {
     const logDirs = [
       ...new Set([join(this.root, "logs"), ...this.extraLogDirs]),
     ];
-    for (const [directory, pattern] of [
-      [diagnosticsDir, DIAGNOSTIC_FILE],
-      ...logDirs.map((dir) => [dir, SYSTEM_LOG] as const),
+    // 保留结构化诊断优先级；同类按实际写入时间排序，不能按随机 runId 或目录顺序选取。
+    for (const [directories, pattern] of [
+      [[diagnosticsDir], DIAGNOSTIC_FILE],
+      [logDirs, SYSTEM_LOG],
     ] as const) {
-      let names: string[];
-      try {
-        names = (await readdir(directory))
-          .filter((name) => pattern.test(name))
-          .sort()
-          .reverse();
-      } catch {
-        if (directory === diagnosticsDir)
-          unavailable.push("diagnostic_directory_unavailable");
-        continue;
-      }
-      for (const name of names) {
-        const file = join(directory, name);
+      const candidates: { file: string; name: string; size: number; mtimeMs: number }[] = [];
+      for (const directory of directories) {
+        let names: string[];
         try {
-          const stat = await lstat(file);
-          if (
-            !stat.isFile() ||
-            stat.isSymbolicLink() ||
-            stat.size > 64 * 1024 * 1024
-          ) {
-            unavailable.push(`${name}: unsafe_file_or_size_limit`);
-            continue;
+          names = await readdir(directory);
+        } catch {
+          if (pattern === DIAGNOSTIC_FILE)
+            unavailable.add("diagnostic_directory_unavailable");
+          continue;
+        }
+        for (const name of names) {
+          if (!pattern.test(name)) continue;
+          const file = join(directory, name);
+          try {
+            const stat = await lstat(file);
+            if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024 * 1024) {
+              unavailable.add(`${name}: unsafe_file_or_size_limit`);
+              continue;
+            }
+            candidates.push({ file, name, size: stat.size, mtimeMs: stat.mtimeMs });
+          } catch {
+            unavailable.add(`${name}: read_failed`);
           }
-          if (!append(`\n--- ${name} ---`)) {
-            unavailable.push(`${name}: report_size_limit`);
+        }
+      }
+      candidates.sort((a, b) => b.mtimeMs - a.mtimeMs || b.name.localeCompare(a.name));
+      for (const { file, name, size } of candidates) {
+        try {
+          if (remainingInput === 0 || !append(`\n--- ${name} ---`)) {
+            unavailable.add(`${name}: report_size_limit`);
             continue;
           }
           files++;
-          const start = Math.max(0, stat.size - MAX_REPORT_BYTES);
-          if (start) unavailable.push(`${name}: earlier_records_omitted`);
-          for await (const line of readLines(file, start)) {
+          // 预扣原始字节，过滤掉的内容也计入；固定末端，避免读到并发追加的内容。
+          const length = Math.min(remainingInput, size);
+          remainingInput -= length;
+          const start = size - length;
+          if (start) unavailable.add(`${name}: earlier_records_omitted`);
+          const retained: string[] = [];
+          for await (const line of readLines(file, start, size - 1)) {
             if (pattern === DIAGNOSTIC_FILE) {
               let record: Record<string, unknown> | undefined;
               try {
@@ -282,7 +295,7 @@ export class FaultReportService {
               }
               if (!record) {
                 filtered++;
-                unavailable.push(`${name}: incomplete_records`);
+                unavailable.add(`${name}: incomplete_records`);
                 continue;
               }
               if (
@@ -301,27 +314,32 @@ export class FaultReportService {
                       : undefined,
                 });
               }
-              if (!append(JSON.stringify(record))) {
-                unavailable.push(`${name}: report_size_limit`);
-                break;
-              }
+              retained.push(JSON.stringify(record));
             } else {
               const summary = safeSystemSummary(line);
               if (!summary) filtered++;
-              else if (!append(summary)) {
-                unavailable.push(`${name}: report_size_limit`);
-                break;
-              }
+              else retained.push(summary);
             }
           }
+          // 输出预算也优先留住文件尾部，再恢复该文件原有的时间顺序。
+          const sectionStart = sections.length;
+          for (let index = retained.length - 1; index >= 0; index--) {
+            if (!append(retained[index]!)) {
+              unavailable.add(`${name}: report_size_limit`);
+              break;
+            }
+          }
+          const selected = sections.splice(sectionStart);
+          for (let index = selected.length - 1; index >= 0; index--)
+            sections.push(selected[index]!);
         } catch {
-          unavailable.push(`${name}: read_failed`);
+          unavailable.add(`${name}: read_failed`);
         }
       }
     }
     if (!sections.some((line) => line.includes('"schemaVersion":1')))
-      unavailable.push("no_retained_diagnostic_records");
-    const uniqueUnavailable = [...new Set(unavailable)];
+      unavailable.add("no_retained_diagnostic_records");
+    const uniqueUnavailable = [...unavailable];
     const header = [
       "OMPiUI fault report",
       `Generated: ${new Date().toISOString()}`,
