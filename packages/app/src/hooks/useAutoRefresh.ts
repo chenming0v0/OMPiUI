@@ -16,7 +16,7 @@ export function useAutoRefresh(
   sessionId: string | null,
   refresh: () => void | Promise<void>,
   enabled: boolean = true,
-): void {
+): () => void {
   const refreshRef = useRef(refresh)
   useEffect(() => {
     refreshRef.current = refresh
@@ -61,4 +61,6 @@ export function useAutoRefresh(
       }
     }
   }, [enabled, scheduleRefresh])
+
+  return scheduleRefresh
 }

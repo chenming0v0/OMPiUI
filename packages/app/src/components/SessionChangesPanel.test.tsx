@@ -5,6 +5,8 @@ import { changeScopeStore } from '../store/changeScopeStore'
 import { layoutStore } from '../store/layoutStore'
 import { FullscreenProvider } from '../contexts'
 import { serverStore } from '../store/serverStore'
+import { activeSessionStore } from '../store/activeSessionStore'
+import { notifySessionIdle } from '../hooks/useGlobalEvents'
 
 const { getHostGitInfo, getHostGitDiff, getHostGitFileDiff } = vi.hoisted(() => ({
   getHostGitInfo: vi.fn(),
@@ -106,6 +108,33 @@ describe('SessionChangesPanel', () => {
     expect(screen.getByTestId('diff-viewer')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Change mode: Git changes/ })).toBeInTheDocument()
     expect(screen.getAllByText('git.ts').length).toBeGreaterThan(0)
+  })
+
+  it('defers repeated workspace changes while the session is busy and refreshes once when idle', async () => {
+    renderSessionChangesPanel()
+    await act(async () => { await vi.runAllTimersAsync() })
+    expect(getHostGitDiff).toHaveBeenCalledTimes(1)
+    getHostGitDiff.mockClear()
+
+    const workspaceChanged = () => window.dispatchEvent(new CustomEvent('ompiui:workspace-git-updated', {
+      detail: { workspacePath: '/repo' },
+    }))
+    try {
+      act(() => { activeSessionStore.updateStatus('session-1', { type: 'busy' }) })
+      act(() => { workspaceChanged(); workspaceChanged(); workspaceChanged() })
+      await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+      expect(getHostGitDiff).not.toHaveBeenCalled()
+      expect(screen.getByText('1f')).toBeInTheDocument()
+
+      act(() => {
+        activeSessionStore.updateStatus('session-1', { type: 'idle' })
+        notifySessionIdle('session-1')
+      })
+      await act(async () => { await vi.runAllTimersAsync() })
+      expect(getHostGitDiff).toHaveBeenCalledTimes(1)
+    } finally {
+      act(() => { activeSessionStore.updateStatus('session-1', { type: 'idle' }) })
+    }
   })
 
   it('keeps change viewing controls without staging or commit management', async () => {
