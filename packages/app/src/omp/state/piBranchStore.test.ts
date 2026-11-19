@@ -1,6 +1,11 @@
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
+import { cachePiBranch } from '../branchCache'
 import { piBranchStore } from './piBranchStore'
 import type { PiBranchPage } from '../domain'
+
+vi.mock('../branchCache', () => ({ cachePiBranch: vi.fn() }))
+
+const cacheBranch = vi.mocked(cachePiBranch)
 
 const page = (count: number) =>
   ({
@@ -8,7 +13,52 @@ const page = (count: number) =>
     items: Array.from({ length: count }, (_, index) => ({ id: String(index), parentId: null, timestamp: new Date(index).toISOString(), type: 'message', message: { role: 'user', content: String(index), timestamp: index } })),
     hasMore: false,
   }) as PiBranchPage
-afterEach(() => piBranchStore.clearAll())
+afterEach(() => {
+  piBranchStore.clearAll()
+  cacheBranch.mockClear()
+})
+
+it('queues only the active branch whose streaming checkpoint changed', () => {
+  for (const id of ['streaming', 'unchanged']) {
+    piBranchStore.retain(id)
+    piBranchStore.setData(id, page(1))
+  }
+  cacheBranch.mockClear()
+
+  const checkpoint = { position: { epoch: 'events', sequence: 2 } }
+  piBranchStore.setLiveCheckpoint('streaming', checkpoint)
+  piBranchStore.setLiveCheckpoint('streaming', checkpoint)
+  expect(cacheBranch.mock.calls).toEqual([
+    ['streaming', expect.objectContaining({ checkpoint })],
+  ])
+})
+
+it('notifies listeners for loading and errors without requeuing cached history', () => {
+  piBranchStore.retain('open')
+  piBranchStore.setData('open', page(1))
+  cacheBranch.mockClear()
+  const listener = vi.fn()
+  const unsubscribe = piBranchStore.subscribe(listener)
+  try {
+    piBranchStore.setLoading('open', true)
+    piBranchStore.setError('open', new Error('Projection unavailable'))
+    expect(listener).toHaveBeenCalledTimes(2)
+    expect(cacheBranch).not.toHaveBeenCalled()
+  } finally {
+    unsubscribe()
+  }
+})
+
+it('queues data loaded before subscription when first retained, not when retained again unchanged', () => {
+  const loaded = page(1)
+  piBranchStore.setData('preloaded', loaded)
+  expect(cacheBranch).not.toHaveBeenCalled()
+
+  piBranchStore.retain('preloaded')
+  piBranchStore.release('preloaded')
+  piBranchStore.retain('preloaded')
+  expect(cacheBranch.mock.calls).toEqual([['preloaded', loaded]])
+})
 
 it('evicts inactive histories without dropping another active pane', () => {
   piBranchStore.retain('active')
