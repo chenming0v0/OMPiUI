@@ -137,6 +137,43 @@ describe('SessionChangesPanel', () => {
     }
   })
 
+  it('retries an invalidated loaded scope after a failed read without retrying in a loop', async () => {
+    let failStaged = false
+    let stagedVersion = 'before'
+    getHostGitDiff.mockImplementation(async (_workspace, mode) => {
+      if (mode === 'staged' && failStaged) throw new Error('temporary Git failure')
+      return {
+        mode,
+        files: [{ file: mode === 'staged' ? `src/staged-${stagedVersion}.ts` : 'src/git.ts', status: 'modified', additions: 1, deletions: 1, binary: false }],
+      }
+    })
+    renderSessionChangesPanel()
+    await act(async () => { await vi.runAllTimersAsync() })
+    act(() => { changeScopeStore.setMode('session-1', 'staged') })
+    await act(async () => { await vi.runAllTimersAsync() })
+    expect(screen.getAllByText('staged-before.ts').length).toBeGreaterThan(0)
+    act(() => { changeScopeStore.setMode('session-1', 'git') })
+    await act(async () => { await vi.runAllTimersAsync() })
+    act(() => window.dispatchEvent(new CustomEvent('ompiui:workspace-git-updated', {
+      detail: { workspacePath: '/repo' },
+    })))
+    await act(async () => { await vi.runAllTimersAsync() })
+
+    failStaged = true
+    act(() => { changeScopeStore.setMode('session-1', 'staged') })
+    await act(async () => { await vi.runAllTimersAsync() })
+    expect(getHostGitDiff.mock.calls.filter(([, mode]) => mode === 'staged')).toHaveLength(2)
+    act(() => { changeScopeStore.setMode('session-1', 'git') })
+    await act(async () => { await vi.runAllTimersAsync() })
+    failStaged = false
+    stagedVersion = 'after'
+    act(() => { changeScopeStore.setMode('session-1', 'staged') })
+    await act(async () => { await vi.runAllTimersAsync() })
+    expect(getHostGitDiff.mock.calls.filter(([, mode]) => mode === 'staged')).toHaveLength(3)
+    expect(screen.getAllByText('staged-after.ts').length).toBeGreaterThan(0)
+    expect(screen.queryByText('staged-before.ts')).not.toBeInTheDocument()
+  })
+
   it('keeps change viewing controls without staging or commit management', async () => {
     renderSessionChangesPanel()
     await act(async () => { await vi.runAllTimersAsync() })

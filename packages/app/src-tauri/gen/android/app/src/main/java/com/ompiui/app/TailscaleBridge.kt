@@ -67,17 +67,17 @@ class TailscaleBridge(private val context: Context, private val webView: WebView
     }
     val enabled = preferences.getBoolean("enabled", false)
     if (enabled) start()
-    return JSONObject(Mobile.status()).put("enabled", enabled)
+    return JSONObject(core("status", recordEvents = false) { Mobile.status() }).put("enabled", enabled)
   }
 
-  private fun <T> core(stage: String, action: () -> T): T {
-    diagnostics.begin("core.$stage")
+  private fun <T> core(stage: String, recordEvents: Boolean = true, action: () -> T): T {
+    diagnostics.begin("core.$stage", recordEvents)
     try {
       val result = action()
-      diagnostics.finish("core.$stage")
+      diagnostics.finish("core.$stage", recordEvents = recordEvents)
       return result
     } catch (error: Exception) {
-      diagnostics.finish("core.$stage", error)
+      diagnostics.finish("core.$stage", error, recordEvents)
       throw error
     }
   }
@@ -147,7 +147,7 @@ class TailscaleBridge(private val context: Context, private val webView: WebView
             diagnostics.resumeStartup()
             start()
             preferences.edit().putBoolean("enabled", true).apply()
-            val current = JSONObject(Mobile.status())
+            val current = JSONObject(core("status", recordEvents = false) { Mobile.status() })
             if (current.optString("BackendState") != "Running" && current.optString("AuthURL").isEmpty()) {
               core("login") { Mobile.login() }
             }

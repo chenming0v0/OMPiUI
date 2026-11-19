@@ -203,6 +203,24 @@ describe("OmpCatalog targeted disk reads", () => {
     })
   }
 
+  it("reuses the discovery cache for unknown ids and refreshes it after expiry", async t => {
+    const f = diskFixture(t, "cached-discovery")
+    const catalog = new OmpCatalog()
+    t.after(() => catalog.dispose())
+    let now = Date.now()
+    t.mock.method(Date, "now", () => now)
+    await catalog.listAllSessions()
+    const stat = t.mock.method(fs, "stat")
+    const scannedTarget = () => stat.mock.calls.filter(call => String(call.arguments[0]) === f.sessionFile).length
+
+    assert.equal(await catalog.findSessionById("missing-first"), null)
+    await assert.rejects(catalog.readSession("missing-second", "state.get"), { code: "SESSION_NOT_FOUND" })
+    assert.equal(scannedTarget(), 0)
+    now += 2_001
+    assert.equal(await catalog.findSessionById("missing-after-expiry"), null)
+    assert.equal(scannedTarget(), 1)
+  })
+
   it("revalidates the id and falls back to discovery when the indexed path is replaced", async t => {
     const f = diskFixture(t, "moved-file-preview")
     const catalog = new OmpCatalog()

@@ -978,11 +978,22 @@ export class OmpCatalog implements CatalogProvider {
       if (result) return result;
       if (sessionIdIndex.get(sessionId) === indexed) sessionIdIndex.delete(sessionId);
     }
-    // 索引只是提示。刷新顶层发现，避免命中会话移动前的列表快照。
-    for (const item of await this.summarizeAll(true)) {
-      if (item.id !== sessionId) continue;
-      const result = await tryFile(item.path);
-      if (result) return result;
+    const trySummaries = async (items: SessionFileSummary[]): Promise<T | null> => {
+      for (const item of items) {
+        if (item.id !== sessionId) continue;
+        const result = await tryFile(item.path);
+        if (result) return result;
+      }
+      return null;
+    };
+    // 索引失效才强制刷新；普通无索引查询仍复用两秒的发现快照。
+    const summaries = await this.summarizeAll(Boolean(indexed));
+    const top = await trySummaries(summaries);
+    if (top) return top;
+    if (!indexed && summaries.some((item) => item.id === sessionId)) {
+      // 快照中的候选路径也可能已经移动，不能因此遗漏原生会话。
+      const refreshed = await trySummaries(await this.summarizeAll(true));
+      if (refreshed) return refreshed;
     }
     // 顶层列表不展开原生子代理目录；深链仍可从其文件头发现子会话。
     const candidates = await mapLimited(listSessionFiles(true), async (file) =>

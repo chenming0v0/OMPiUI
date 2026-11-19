@@ -65,9 +65,9 @@ internal class TailscaleDiagnostics(private val context: Context) {
   }
 
   @Synchronized
-  fun begin(stage: String) {
+  fun begin(stage: String, recordEvents: Boolean = true) {
     preferences.edit().putBoolean("pending", true).putString("lastStage", stage).commit()
-    record(stage, "begin")
+    if (recordEvents) record(stage, "begin")
     if (Build.VERSION.SDK_INT >= 30) {
       // 系统可能限制摘要更新频率，不能让可选诊断阻断正常登录。
       try {
@@ -79,9 +79,9 @@ internal class TailscaleDiagnostics(private val context: Context) {
   }
 
   @Synchronized
-  fun finish(stage: String, error: Exception? = null) {
+  fun finish(stage: String, error: Exception? = null, recordEvents: Boolean = true) {
     preferences.edit().putBoolean("pending", false).commit()
-    record(stage, error?.let { sanitize(it.stackTraceToString()) } ?: "ok")
+    if (recordEvents || error != null) record(stage, error?.let { sanitize(it.stackTraceToString()) } ?: "ok")
   }
 
   @Synchronized

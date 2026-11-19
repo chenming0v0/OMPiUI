@@ -420,6 +420,8 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
           setLoadedModes(prev => ({ ...prev, branch: true }))
           return
         }
+        // 请求失败不能把旧列表当作已刷新；保留失效标记，切回范围时重取。
+        staleModesRef.current.add(mode)
         sessionErrorHandler(`load ${mode} diff`, err)
         setError(t('sessionChanges.failedToLoad'))
       } finally {
