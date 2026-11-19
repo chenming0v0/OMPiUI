@@ -472,37 +472,41 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
 
   useEffect(() => {
     if (!directory) return
-    type Change = {
-      workspacePath: string
-      changes: Array<{ path: string; type: 'file' | 'directory' }>
-      rescan: boolean
-    }
+    type FileChange = { path: string; kind: 'created' | 'changed' | 'deleted'; type: 'file' | 'directory' }
+    type ChangeBatch = { workspacePath: string; changes: FileChange[]; rescan: boolean }
+    type PendingBatch = { workspacePath: string; changes: Map<string, FileChange>; rescan: boolean }
+    const changesTree = (change: FileChange) => change.kind !== 'changed' || change.type !== 'file'
     let fileTimer: ReturnType<typeof setTimeout> | undefined
     let gitTimer: ReturnType<typeof setTimeout> | undefined
-    let pending: Change | undefined
-    const applyFiles = (detail: Change) => {
-      if (!detail) return
-      if (!canonicalWorkspaceRef.current || detail.workspacePath !== canonicalWorkspaceRef.current) return
-      invalidateWorkspaceFileCaches(directory)
-      if (detail.rescan || detail.changes.length === 0) {
+    let pending: PendingBatch | undefined
+    const applyFiles = ({ workspacePath, changes, rescan }: PendingBatch) => {
+      if (workspacePath !== canonicalWorkspaceRef.current) return
+      const previewPath = previewPathRef.current
+      if (rescan) {
+        invalidateWorkspaceFileCaches(directory)
         previewCacheRef.current.invalidateAll()
         void softRefresh()
-        const previewPath = previewPathRef.current
         if (previewPath) void loadPreview(previewPath)
         return
       }
-      for (const change of detail.changes) {
-        for (const path of previewCacheRef.current.keys()) {
-          if (path === change.path || (change.type === 'directory' && path.startsWith(`${change.path}/`)))
-            previewCacheRef.current.invalidate(path)
+      const affectsPreview = (path: string) => {
+        if (changes.has(path)) return true
+        for (const change of changes.values()) {
+          if (change.type === 'directory' && path.startsWith(`${change.path}/`)) return true
         }
+        return false
       }
-      const parents = new Set(
-        detail.changes.map(change => {
-          const separator = change.path.lastIndexOf('/')
-          return separator < 0 ? '' : change.path.slice(0, separator)
-        }),
-      )
+      for (const path of previewCacheRef.current.keys()) {
+        if (affectsPreview(path)) previewCacheRef.current.invalidate(path)
+      }
+      // 文件正文更新不改变目录项；只有结构事件才使目录列表失效。
+      const parents = new Set<string>()
+      for (const change of changes.values()) {
+        if (!changesTree(change)) continue
+        const separator = change.path.lastIndexOf('/')
+        parents.add(separator < 0 ? '' : change.path.slice(0, separator))
+      }
+      if (parents.size > 0) invalidateWorkspaceFileCaches(directory)
       if (parents.has('')) void loadRoot()
       for (const parent of parents) {
         if (!parent) continue
@@ -511,25 +515,29 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
           setTree(prev => updateTreeNode(prev, parent, node => ({ ...node, isLoaded: false })))
         }
       }
-      const previewPath = previewPathRef.current
-      if (previewPath && detail.changes.some(change => change.path === previewPath)) void loadPreview(previewPath)
+      if (previewPath && affectsPreview(previewPath)) void loadPreview(previewPath)
     }
     const filesChanged = (event: Event) => {
-      const detail = (event as CustomEvent<Change>).detail
+      const detail = (event as CustomEvent<ChangeBatch>).detail
       if (!detail || detail.workspacePath !== canonicalWorkspaceRef.current) return
-      pending = pending
-        ? {
-            ...detail,
-            rescan: pending.rescan || detail.rescan,
-            changes: [
-              ...new Map([...pending.changes, ...detail.changes].map(change => [change.path, change])).values(),
-            ],
-          }
-        : detail
+      pending ??= { workspacePath: detail.workspacePath, changes: new Map(), rescan: false }
+      pending.rescan ||= detail.rescan || detail.changes.length === 0
+      if (pending.rescan) {
+        pending.changes.clear()
+      } else {
+        for (const change of detail.changes) {
+          const previous = pending.changes.get(change.path)
+          // 合批时保留同一路径的结构变化和目录范围。
+          if (change.type === 'file' && previous && (previous.type === 'directory' ||
+            (changesTree(previous) && !changesTree(change)))) continue
+          pending.changes.set(change.path, change)
+        }
+      }
       fileTimer ??= setTimeout(() => {
         fileTimer = undefined
-        if (pending) applyFiles(pending)
+        const batch = pending
         pending = undefined
+        if (batch) applyFiles(batch)
       }, pending.rescan ? 1500 : 500)
     }
     const gitChanged = (event: Event) => {

@@ -87,7 +87,8 @@ const MAX_SUBMATCHES = 200;
 const MAX_RESULT_STATS: FileSearchStats = {
   visited: MAX_VISIT,
   scannedFiles: MAX_VISIT,
-  scannedBytes: MAX_TEXT_TOTAL_BYTES,
+  // A file can grow after stat; the final read still counts even if it stops the search.
+  scannedBytes: Number.MAX_SAFE_INTEGER,
   durationMs: Number.MAX_VALUE,
   truncated: false,
   limitReason: "results",
@@ -221,9 +222,11 @@ async function searchWorkspaceTextInSlot(
         return true;
       }
       throwIfAborted(opts.signal);
+      // Reads use the same budget whether or not their bytes can be searched as text.
+      scannedBytes += buffer.length;
       if (
         buffer.length > MAX_TEXT_FILE_BYTES ||
-        scannedBytes + buffer.length > MAX_TEXT_TOTAL_BYTES
+        scannedBytes > MAX_TEXT_TOTAL_BYTES
       ) {
         limitReason = "bytes";
         return false;
@@ -241,7 +244,6 @@ async function searchWorkspaceTextInSlot(
         return true;
       }
       scannedFiles++;
-      scannedBytes += buffer.length;
       const clipped = collectTextMatches(
         buffer.toString("utf8"),
         entry.relative,
