@@ -126,6 +126,74 @@ describe('useChildSessions', () => {
     expect(result.current.sessions).toHaveLength(2)
   })
 
+  it('does not reload when refreshed session objects keep the same parent id and path', async () => {
+    listPiChildSessionsMock.mockResolvedValue([
+      { id: 'child-1', cwd: 'C:/proj', name: 'scout', path: 'C:/proj/sessions/abc/scout.jsonl' },
+    ])
+    const { result, rerender } = renderHook(
+      ({ parent }: { parent: UiSession }) => useChildSessions(parent.id, new Map([[parent.id, parent]])),
+      { initialProps: { parent: makeParent() } },
+    )
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
+    const children = result.current.sessions
+    rerender({ parent: { ...makeParent(), title: 'new title', updatedAt: 2, messageCount: 10 } })
+    expect(listPiChildSessionsMock).toHaveBeenCalledTimes(1)
+    expect(result.current.sessions).toBe(children)
+  })
+
+  it('reloads for a changed parent identity even when the path is unchanged', async () => {
+    listPiChildSessionsMock.mockResolvedValue([])
+    const { result, rerender } = renderHook(
+      ({ parent }: { parent: UiSession }) => useChildSessions(parent.id, new Map([[parent.id, parent]])),
+      { initialProps: { parent: makeParent() } },
+    )
+    await waitFor(() => expect(result.current.parentId).toBe('parent-1'))
+    rerender({ parent: { ...makeParent(), id: 'replacement' } })
+    expect(result.current.parentId).toBeNull()
+    await waitFor(() => expect(result.current.parentId).toBe('replacement'))
+    expect(listPiChildSessionsMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not load while hidden and refreshes when shown without losing a selected child', async () => {
+    listPiChildSessionsMock.mockResolvedValue([
+      { id: 'child-1', cwd: 'C:/proj', name: 'scout', path: 'C:/proj/sessions/abc/scout.jsonl' },
+    ])
+    const lookup = new Map([['parent-1', makeParent()]])
+    const { result, rerender } = renderHook(
+      ({ enabled, selectedId }: { enabled: boolean; selectedId: string }) => useChildSessions(selectedId, lookup, enabled),
+      { initialProps: { enabled: false, selectedId: 'parent-1' } },
+    )
+    expect(listPiChildSessionsMock).not.toHaveBeenCalled()
+    rerender({ enabled: true, selectedId: 'parent-1' })
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
+    rerender({ enabled: false, selectedId: 'child-1' })
+    window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
+    expect(listPiChildSessionsMock).toHaveBeenCalledTimes(1)
+    expect(result.current.parentId).toBe('parent-1')
+    rerender({ enabled: true, selectedId: 'child-1' })
+    await waitFor(() => expect(listPiChildSessionsMock).toHaveBeenCalledTimes(2))
+    expect(result.current.sessions[0]?.id).toBe('child-1')
+  })
+
+  it('continues refreshing the owning list while a loaded child is selected', async () => {
+    listPiChildSessionsMock.mockResolvedValue([
+      { id: 'child-1', cwd: 'C:/proj', name: 'scout', path: 'C:/proj/sessions/abc/scout.jsonl' },
+    ])
+    const lookup = new Map([['parent-1', makeParent()]])
+    const { result, rerender } = renderHook(
+      ({ selectedId }: { selectedId: string }) => useChildSessions(selectedId, lookup),
+      { initialProps: { selectedId: 'parent-1' } },
+    )
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
+    rerender({ selectedId: 'child-1' })
+    listPiChildSessionsMock.mockResolvedValue([
+      { id: 'child-1', cwd: 'C:/proj', name: 'updated title', path: 'C:/proj/sessions/abc/scout.jsonl' },
+    ])
+    window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
+    await waitFor(() => expect(result.current.sessions[0]?.title).toBe('updated title'), { timeout: 1500 })
+    expect(result.current.parentId).toBe('parent-1')
+  })
+
   it('uses an explicit name before the first user message', async () => {
     listPiChildSessionsMock.mockResolvedValue([
       {

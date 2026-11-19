@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { subagentDisplayTitle } from '../../../omp/ompSubagentFormat'
 import { listPiChildSessions } from '../../../omp/transport/index.js'
 import { serverStore } from '../../../store/serverStore'
@@ -12,7 +12,7 @@ export interface ChildSessionsResult {
 
 /**
  * 拉取选中会话的 OMP 子代理会话列表。仅在父会话文件路径已知时请求；
- * 会话列表刷新（omompiui:sessions-changed）后重取，让运行中刚落盘的子会话出现。
+ * 会话列表刷新（ompiui:sessions-changed）后重取，让运行中刚落盘的子会话出现。
  *
  * 结果是粘性的：选中子会话本身时（它不在主列表里，解析不出父路径），
  * 保留上一次的列表，让子会话行保持在侧边栏可见、可高亮。
@@ -20,16 +20,16 @@ export interface ChildSessionsResult {
 export function useChildSessions(
   selectedSessionId: string | null | undefined,
   sessionByid: Map<string, UiSession> | undefined,
+  enabled = true,
 ): ChildSessionsResult {
   const [loaded, setLoaded] = useState<{ parentId: string; parentPath: string; list: UiSession[] } | null>(null)
-  const parentSession = useMemo(
-    () => (selectedSessionId ? sessionByid?.get(selectedSessionId) ?? null : null),
-    [selectedSessionId, sessionByid],
-  )
-  const parentPath = parentSession?.path ?? null
+  const parentSession = selectedSessionId ? sessionByid?.get(selectedSessionId) : undefined
+  const viewingLoadedChild = loaded?.list.some(session => session.id === selectedSessionId)
+  const parentId = parentSession?.id ?? (viewingLoadedChild ? loaded?.parentId : null)
+  const parentPath = parentSession?.path ?? (viewingLoadedChild ? loaded?.parentPath : null) ?? null
 
   useEffect(() => {
-    if (!parentPath || !parentSession) return
+    if (!enabled || !parentPath || !parentId) return
     let cancelled = false
     const generation = serverStore.getActiveServerGeneration()
     const load = () => {
@@ -57,7 +57,7 @@ export function useChildSessions(
               isChildSession: true,
             }
           }).filter((session): session is UiSession => session !== null)
-          setLoaded({ parentId: parentSession.id, parentPath, list })
+          setLoaded({ parentId, parentPath, list })
         })
         .catch(() => undefined)
     }
@@ -75,12 +75,12 @@ export function useChildSessions(
       if (timer) clearTimeout(timer)
       window.removeEventListener('ompiui:sessions-changed', onChanged)
     }
-  }, [parentPath, parentSession])
+  }, [enabled, parentPath, parentId])
 
   // parentPath 变化但新数据未到时显示空（派生清空，避免陈旧列表闪现）；
   // parentPath 为 null（选中了子会话）时保留已加载列表
   if (!loaded) return EMPTY_RESULT
-  if (parentPath === null || loaded.parentPath === parentPath) {
+  if (parentPath === null || (loaded.parentPath === parentPath && loaded.parentId === parentId)) {
     return { parentId: loaded.parentId, sessions: loaded.list }
   }
   return EMPTY_RESULT
