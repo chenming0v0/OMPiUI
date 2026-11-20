@@ -205,6 +205,15 @@ interface HistoryPage {
   syncCursor: string
 }
 
+type HistoryEntryChunk = {
+  entryId: string
+  etag: string
+  totalChars: number
+  offset: number
+  nextOffset: number
+  content: string
+}
+
 function readBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
@@ -494,18 +503,14 @@ async function scrollHistoryToTop(port: number, agent: Agent): Promise<{
       const parts: string[] = []
       let offset = 0
       while (offset < item.contentRef.totalChars) {
-        const chunk = await read<{
-          entryId: string
-          etag: string
-          totalChars: number
-          offset: number
-          nextOffset: number
-          content: string
-        }>(`/api/v1/pi/sessions/${HISTORY_SESSION_ID}/commands/entry.get`, {
-          entryId: item.id,
-          offset,
-          etag: item.contentRef.etag,
-        })
+        const chunk: HistoryEntryChunk = await read<HistoryEntryChunk>(
+          `/api/v1/pi/sessions/${HISTORY_SESSION_ID}/commands/entry.get`,
+          {
+            entryId: item.id,
+            offset,
+            etag: item.contentRef.etag,
+          },
+        )
         hydrationRequests++
         assert.equal(chunk.entryId, item.id)
         assert.equal(chunk.etag, item.contentRef.etag)
