@@ -18,7 +18,8 @@ const NATIVE_TO_PROTOCOL_CODE: Record<string, ErrorCode> = {
   SESSION_REPLACED: "SESSION_CONFLICT",
   SUBMISSION_NOT_ADMITTED: "SESSION_BUSY",
   QUEUE_SELECTION_STALE: "STALE_CURSOR",
-  OMP_VERSION_UNVERIFIED: "CAPABILITY_DISABLED",
+  OMP_VERSION_UNVERIFIED: "OMP_VERSION_PROBE_FAILED",
+  OMP_VERSION_PROBE_TIMEOUT: "OMP_VERSION_PROBE_FAILED",
   OMP_SOURCE_MISSING: "CAPABILITY_DISABLED",
   OMP_SOURCE_VERSION_MISMATCH: "CAPABILITY_DISABLED",
 }
@@ -33,6 +34,7 @@ export function workerProblemFromError(error: unknown): Problem {
   return {
     code: NATIVE_TO_PROTOCOL_CODE[nativeCode] ?? "INTERNAL",
     message: `${message} (${nativeCode})`,
+    ...(nativeCode === "OMP_VERSION_UNVERIFIED" || nativeCode === "OMP_VERSION_PROBE_TIMEOUT" ? { retryable: true } : {}),
     details: { nativeCode },
   }
 }

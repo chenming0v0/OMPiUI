@@ -2,6 +2,7 @@ export const ERROR_CODES = [
   "PROTOCOL_VERSION_MISMATCH",
   "WORKER_PROTOCOL_MISMATCH",
   "OMP_RUNTIME_INCOMPATIBLE",
+  "OMP_VERSION_PROBE_FAILED",
   "CAPABILITY_DISABLED",
   "INVALID_REQUEST",
   "UNKNOWN_COMMAND",
@@ -92,8 +93,10 @@ export function problem(
 export function problemFromError(error: unknown, fallbackCode: ErrorCode = "INTERNAL"): Problem {
   const candidate = error && typeof error === "object" && "code" in error ? error.code : undefined
   const code = isErrorCode(candidate) ? candidate : fallbackCode
+  const retryable = error && typeof error === "object" && "retryable" in error && typeof error.retryable === "boolean" ? error.retryable : undefined
   return {
     code,
     message: error instanceof Error ? error.message : String(error),
+    ...(retryable === undefined ? {} : { retryable }),
   }
 }
