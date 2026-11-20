@@ -1,5 +1,19 @@
 /* 模型供应商设置：共享动效 + 窄窗口整页 / 底部弹层。 */
 
+.provider-logo[data-monochrome='true'] {
+  filter: brightness(0) invert(0.16);
+}
+
+:root[data-mode='dark'] .provider-logo[data-monochrome='true'] {
+  filter: brightness(0) invert(0.9);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-mode]) .provider-logo[data-monochrome='true'] {
+    filter: brightness(0) invert(0.9);
+  }
+}
+
 @keyframes provider-rise {
   from {
     opacity: 0;
