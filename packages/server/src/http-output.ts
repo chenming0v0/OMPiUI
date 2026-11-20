@@ -1,4 +1,49 @@
 import type { ServerResponse } from "node:http";
+import { brotliCompress, constants, gzip } from "node:zlib";
+
+export type HttpContentEncoding = "br" | "gzip";
+const BROTLI_QUALITY = 5;
+
+function encodingQuality(header: string | undefined, encoding: HttpContentEncoding): number {
+  let explicit: number | undefined;
+  let wildcard: number | undefined;
+  for (const value of (header ?? "").split(",")) {
+    const [name, ...params] = value.trim().split(";");
+    const token = name?.toLowerCase();
+    if (token !== encoding && token !== "*") continue;
+    const quality = params.find((param) => /^q=/i.test(param.trim()));
+    const parsed = quality ? Number(quality.trim().slice(2)) : 1;
+    const parsedQuality = Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : 0;
+    if (token === encoding) explicit = parsedQuality;
+    else wildcard = parsedQuality;
+  }
+  return explicit ?? wildcard ?? 0;
+}
+
+export function selectHttpEncoding(header: string | undefined): HttpContentEncoding | undefined {
+  const brotli = encodingQuality(header, "br");
+  const gzip = encodingQuality(header, "gzip");
+  if (brotli > 0 && brotli >= gzip) return "br";
+  if (gzip > 0) return "gzip";
+  return undefined;
+}
+
+export function compressHttpJson(data: string, encoding: HttpContentEncoding): Promise<Buffer> {
+  const input = Buffer.from(data);
+  return new Promise((resolve, reject) => {
+    const callback = (error: Error | null, compressed: Buffer) => {
+      if (error) reject(error);
+      else resolve(compressed);
+    };
+    if (encoding === "br") {
+      brotliCompress(input, {
+        params: { [constants.BROTLI_PARAM_QUALITY]: BROTLI_QUALITY },
+      }, callback);
+    } else {
+      gzip(input, callback);
+    }
+  });
+}
 
 let pendingBytes = 0;
 /**
