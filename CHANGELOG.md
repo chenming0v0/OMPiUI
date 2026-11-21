@@ -35,6 +35,7 @@
 
 ## [Unreleased]
 
+- fix: 工具输出超限时改为按需展开会话 artifact；完整输出仅在用户点击后分块读取，不再显示截断行数和 artifact 路径。
 - fix(app/server): Agent idle 时刷新会话历史，恢复移动端漏收的助手回复；跨客户端同步从队列取回的草稿，并广播会话标题更新；记录助手事件与历史刷新结果。
 - ci: Linux／Windows 保持完整验证，前端和服务端各使用两片并行；缓存共享 workspace 编译与精确版本的 OMP 测试资源，拆分 Windows npm 角色和 RPC 验证。
 - ci: 按源码指纹及受测 latest OMP 版本复用成功的完整 CI；根目录文档和 `docs/` 变更跳过重型检查，手动派发仍强制完整检查，tag 不再重复触发 CI。

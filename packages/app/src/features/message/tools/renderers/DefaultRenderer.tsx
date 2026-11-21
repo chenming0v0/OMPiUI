@@ -10,6 +10,7 @@ import { getToolExecutionStatus } from '../../../../omp/domain/index.js'
 import type { ToolRendererProps, ExtractedToolData } from '../types'
 import { AttachmentItem } from '../../../attachment'
 import { HistoryImage } from '../../HistoryImage'
+import { FullOutputControl } from './FullOutputControl'
 
 // ============================================
 // Default Tool Renderer
@@ -86,12 +87,18 @@ export function DefaultRenderer({ execution, partKey, data, onFullscreenChange, 
 }
 
 export function ToolResultNotice({ data }: { data: ExtractedToolData }) {
-  return data.notice ? (
-    <div className="flex items-start gap-1.5 text-[length:var(--fs-xs)] text-warning-100">
-      <AlertCircleIcon size={12} className="mt-0.5 shrink-0" />
-      <span className="whitespace-pre-wrap break-all">{data.notice}</span>
+  if (!data.notice && !(data.truncated && data.fullOutputArtifactId)) return null
+  return (
+    <div className="flex flex-col items-start gap-1.5">
+      {data.notice && (
+        <div className="flex items-start gap-1.5 text-[length:var(--fs-xs)] text-warning-100">
+          <AlertCircleIcon size={12} className="mt-0.5 shrink-0" />
+          <span className="whitespace-pre-wrap break-all">{data.notice}</span>
+        </div>
+      )}
+      {data.truncated && <FullOutputControl artifactId={data.fullOutputArtifactId} />}
     </div>
-  ) : null
+  )
 }
 
 export function ToolResultImages({ tool, partKey, data, onFullscreenChange }: {
