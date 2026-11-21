@@ -134,6 +134,9 @@ describe("OmpCatalog child session lookup", () => {
     assert.ok(Array.isArray(listed))
     const child = listed.find(item => item && typeof item === "object" && (item as { id?: string }).id === "child-1") as { name?: string } | undefined
     assert.equal(child?.name, "Scout the readme")
+    const preview = await catalog.previewSessionById("child-1")
+    assert.ok(isJsonObject(preview) && isJsonObject(preview.state))
+    assert.equal(preview.state.sessionName, "Scout the readme")
     await catalog.dispose()
   })
 })

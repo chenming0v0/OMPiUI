@@ -114,6 +114,13 @@ func Start(stateDir, hostname string) (err error) {
 	return nil
 }
 
+// IsStarted reports whether Start initialized a node, regardless of login state.
+func IsStarted() bool {
+	lock.Lock()
+	defer lock.Unlock()
+	return node != nil
+}
+
 func Status() (result string, err error) {
 	defer recoverNativeError("status", &err)
 	lock.Lock()

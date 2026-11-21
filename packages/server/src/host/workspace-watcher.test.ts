@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { afterEach, describe, it } from "node:test"
 import type { EventEnvelope } from "@ompiui/protocol"
+import type { FSWatcher } from "chokidar"
 import { EventHub } from "../event-hub.ts"
 import { WorkspaceStore, workspacePathKey } from "./workspace-store.ts"
 import { WorkspaceWatcher, countWatchableDirectories } from "./workspace-watcher.ts"
@@ -64,7 +65,7 @@ describe("WorkspaceWatcher", () => {
     const hub = new EventHub()
     const events: EventEnvelope[] = []
     const unsubscribe = hub.subscribe(event => events.push(event))
-    const watcher = new WorkspaceWatcher(hub, undefined, 0)
+    const watcher = new WorkspaceWatcher(hub, undefined, 0, false)
     const workspace = store.resolve(root)
     watcher.watch(workspace)
     try {
@@ -84,8 +85,17 @@ describe("WorkspaceWatcher", () => {
       assert.ok(!events.some(event => event.channel === "workspace.files"))
 
       events.length = 0
-      const states = (watcher as unknown as { watched: Map<string, { watcher: { emit: (event: string, error: Error) => void } }> }).watched
-      states.values().next().value?.watcher.emit("error", new Error("simulated watcher error"))
+      const backend = watchedMap(watcher).get(workspacePathKey(workspace.canonicalRoot))?.watcher
+      assert.ok(backend)
+      const batchPath = path.join(workspace.canonicalRoot, "batch.txt")
+      backend.emit("all", "add", batchPath)
+      backend.emit("all", "change", batchPath)
+      await waitFor(() => events.some(event => event.channel === "workspace.files"))
+      assert.deepEqual((events.find(event => event.channel === "workspace.files")?.payload as { changes?: unknown[] }).changes,
+        [{ path: "batch.txt", kind: "created", type: "file" }])
+
+      events.length = 0
+      backend.emit("error", new Error("simulated watcher error"))
       await waitFor(() => events.some(event => event.channel === "workspace.files" && (event.payload as { rescan?: boolean }).rescan))
 
       events.length = 0
@@ -182,8 +192,8 @@ describe("WorkspaceWatcher", () => {
   })
 })
 
-function watchedMap(watcher: WorkspaceWatcher): Map<string, { watcher?: unknown }> {
-  return (watcher as unknown as { watched: Map<string, { watcher?: unknown }> }).watched
+function watchedMap(watcher: WorkspaceWatcher): Map<string, { watcher?: FSWatcher }> {
+  return (watcher as unknown as { watched: Map<string, { watcher?: FSWatcher }> }).watched
 }
 
 async function waitFor(condition: () => boolean, timeoutMs = 5000): Promise<void> {

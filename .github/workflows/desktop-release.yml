@@ -134,8 +134,16 @@ jobs:
 
       # 轻量版（-lite）：不带官方 OMP 运行时，运行时由外部 OMP CLI 提供。
       # 完整开箱即用版由 desktop-full 在发布成功后异步追加到同一 Release。
-      - name: Build bundled OMPiUI server
-        run: node scripts/package-desktop.mjs --skip-build --skip-runtime --target ${{ matrix.target }}
+      - name: Build bundled OMPiUI server and check lite output with a reused directory
+        run: |
+          # 模拟前一次 full 打包留下的目录；便携包会归档整个 dist-desktop。
+          mkdir -p dist-desktop/omp-runtime
+          printf '%s\n' 'previous full runtime' > dist-desktop/omp-runtime/runtime.json
+          node scripts/package-desktop.mjs --skip-build --skip-runtime --target ${{ matrix.target }}
+          if [[ -e dist-desktop/omp-runtime || -L dist-desktop/omp-runtime ]]; then
+            printf '%s\n' 'Lite portable output still contains omp-runtime' >&2
+            exit 1
+          fi
 
       - name: Prepare Tauri resources
         run: node scripts/prepare-tauri-resources.mjs --skip-runtime

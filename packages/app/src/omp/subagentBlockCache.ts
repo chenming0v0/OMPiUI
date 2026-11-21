@@ -1,4 +1,4 @@
-import type { SubagentDataBlock } from '@ompiui/protocol'
+import { subagentDigest, type SubagentDataBlock } from '@ompiui/protocol'
 
 export type CachedSubagentHistory = {
   key: string
@@ -14,7 +14,9 @@ const STORE = 'histories'
 const META = 'metadata'
 const MAX_BYTES = 64 * 1024 * 1024
 const MAX_RECORDS = 64
+type CacheMetadata = { key: string; bytes: number; accessed: number; fingerprint?: string }
 const memory = new Map<string, CachedSubagentHistory>()
+const recentAccess = new Map<string, number>()
 let database: Promise<IDBDatabase> | undefined
 
 function openDatabase(): Promise<IDBDatabase> {
@@ -38,6 +40,7 @@ function openDatabase(): Promise<IDBDatabase> {
 
 export function clearSubagentBlockMemory(): void {
   memory.clear()
+  recentAccess.clear()
 }
 
 export async function loadSubagentBlocks(key: string): Promise<CachedSubagentHistory | undefined> {
@@ -56,33 +59,59 @@ export async function loadSubagentBlocks(key: string): Promise<CachedSubagentHis
   }
 }
 
-export async function saveSubagentBlocks(history: CachedSubagentHistory): Promise<void> {
-  memory.delete(history.key)
-  memory.set(history.key, history)
+export async function saveSubagentBlocks(history: CachedSubagentHistory, verifiedSaved = false): Promise<void> {
+  const { key } = history
+  memory.delete(key)
+  memory.set(key, history)
   while (memory.size > 8) memory.delete(memory.keys().next().value!)
   try {
-    const bytes = new TextEncoder().encode(JSON.stringify(history)).byteLength
+    // 完整窗口下次刷新不发送旧快照；未读完时快照和游标必须一同保留。
+    const fingerprint = subagentDigest([
+      history.projection, history.nextByte, history.hasMore, history.hasMore ? history.snapshot : null,
+      history.blocks.map(({ fromByte, nextByte, hash }) => [fromByte, nextByte, hash]),
+    ])
     const db = await openDatabase()
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction([STORE, META], 'readwrite')
       const store = tx.objectStore(STORE)
       const metadata = tx.objectStore(META)
-      const request = metadata.getAll()
-      request.onsuccess = () => {
-        const entries = (request.result as { key: string; bytes: number; accessed: number }[])
-          .filter(entry => entry.key !== history.key)
-          .sort((a, b) => a.accessed - b.accessed)
-        let total = entries.reduce((sum, entry) => sum + entry.bytes, bytes)
-        while (entries.length && (total > MAX_BYTES || entries.length >= MAX_RECORDS)) {
-          const removed = entries.shift()!
-          total -= removed.bytes
-          store.delete(removed.key)
-          metadata.delete(removed.key)
+      const accessed = Date.now()
+      const lastAccess = (entry: CacheMetadata) => Math.max(entry.accessed, recentAccess.get(entry.key) ?? 0)
+      const write = () => {
+        const bytes = new TextEncoder().encode(JSON.stringify(history)).byteLength
+        const request = metadata.getAll()
+        request.onsuccess = () => {
+          const entries = (request.result as CacheMetadata[])
+            .filter(entry => entry.key !== key)
+            .sort((a, b) => lastAccess(a) - lastAccess(b))
+          let total = entries.reduce((sum, entry) => sum + entry.bytes, bytes)
+          while (entries.length && (total > MAX_BYTES || entries.length >= MAX_RECORDS)) {
+            const removed = entries.shift()!
+            total -= removed.bytes
+            store.delete(removed.key)
+            metadata.delete(removed.key)
+          }
+          store.put(history, key)
+          metadata.put({ key, bytes, accessed, fingerprint }, key)
         }
-        store.put(history, history.key)
-        metadata.put({ key: history.key, bytes, accessed: Date.now() }, history.key)
       }
-      tx.oncomplete = () => resolve()
+      if (verifiedSaved) {
+        // 在同一事务内判断，以磁盘上的记录为准，避免把失败写入或已淘汰条目当成命中。
+        const request = metadata.get(key)
+        request.onsuccess = () => {
+          const entry = request.result as CacheMetadata | undefined
+          if (entry?.fingerprint !== fingerprint) write()
+        }
+      } else {
+        write()
+      }
+      tx.oncomplete = () => {
+        // 无变化时不写元数据，仍记住本页内的最近访问供淘汰排序。
+        recentAccess.delete(key)
+        recentAccess.set(key, accessed)
+        while (recentAccess.size > MAX_RECORDS) recentAccess.delete(recentAccess.keys().next().value!)
+        resolve()
+      }
       tx.onerror = () => reject(tx.error)
       tx.onabort = () => reject(tx.error)
     })

@@ -205,7 +205,24 @@ it("text search retains complete small matches and UTF-8 offsets across CRLF", a
   })
 })
 
-async function withSearchFixture(files: Record<string, string>, run: (ws: WorkspaceRecord) => Promise<void>): Promise<void> {
+it("counts binary and invalid UTF-8 reads against the text search byte budget", async () => {
+  const fileBytes = 1024 * 1024
+  const binary = Buffer.alloc(fileBytes)
+  const invalidUtf8 = Buffer.alloc(fileBytes, 0xff)
+  const files: Record<string, string | Buffer> = { "32.txt": "needle\n" }
+  for (let index = 0; index < 32; index++) {
+    files[`${String(index).padStart(2, "0")}.dat`] = index % 2 ? invalidUtf8 : binary
+  }
+  await withSearchFixture(files, async ws => {
+    const result = await searchWorkspaceText(ws, "needle")
+    assert.deepEqual(result.matches, [])
+    assert.equal(result.stats.scannedBytes, 32 * fileBytes)
+    assert.equal(result.stats.truncated, true)
+    assert.equal(result.stats.limitReason, "bytes")
+  })
+})
+
+async function withSearchFixture(files: Record<string, string | Buffer>, run: (ws: WorkspaceRecord) => Promise<void>): Promise<void> {
   const root = realpathSync.native(mkdtempSync(path.join(tmpdir(), "ompiui-search-regression-")))
   try {
     for (const [name, content] of Object.entries(files)) writeFileSync(path.join(root, name), content)
