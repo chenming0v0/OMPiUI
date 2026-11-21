@@ -28,7 +28,8 @@ describe('FullOutputControl', () => {
 
     expect(postPiSessionCommand).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'truncation.expandFullOutput' }))
-    expect(await screen.findByText('first line\nsecond line')).toBeInTheDocument()
+    const output = await screen.findByText((_text, element) => element?.tagName === 'PRE')
+    expect(output.textContent).toBe('first line\nsecond line')
     expect(postPiSessionCommand).toHaveBeenCalledWith(
       'session-1', 'toolOutput.get', { artifactId: '3', offset: 0 }, expect.any(AbortSignal), 30_000,
     )
