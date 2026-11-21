@@ -1250,6 +1250,15 @@ export class SessionHost {
     }
     if (event.channel === "pi.event") {
       const type = event.event.type;
+      if (type === "session_info_changed" || type === "session_info_update") {
+        // Session-name changes are in-memory and may not move the disk head.
+        // Broadcast separately so browsers with only the server stream refresh their lists.
+        this.hub.publish(
+          { kind: "server", id: "server" },
+          "sessions.updated",
+          { sessionId: session.sessionId, updated: true },
+        );
+      }
       if (type === 'agent_start') this.toolInterruptions.delete(session.sessionId);
       if (typeof type === "string" && DIAGNOSTIC_AGENT_EVENTS.has(type)) {
         const meta = event.event as unknown as JsonObject;

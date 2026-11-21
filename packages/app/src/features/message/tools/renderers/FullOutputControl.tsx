@@ -109,4 +109,3 @@ export function FullOutputControl({ artifactId }: { artifactId?: string }) {
     </div>
   )
 }
-

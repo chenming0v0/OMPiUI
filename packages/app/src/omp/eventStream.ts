@@ -945,8 +945,12 @@ class PiEventStream {
           state?.hasPendingAsyncWork
         ) {
           // Activity is a sidebar projection, not the native settled predicate.
-          // An omitted/idle agent may still have queued or async work.
+          // An omitted/idle agent may still have queued or async work. The global
+          // idle snapshot can outlive a missed per-session completion event, so
+          // refresh the branch too; otherwise a finished reply stays invisible
+          // until another user action happens to refresh history.
           this.scheduleStateRefresh(sessionId)
+          this.scheduleBranchRefresh(sessionId, 'activity_idle')
         }
         activeSessionStore.updateStatus(sessionId, { type: 'idle' })
         notifySessionIdle(sessionId)
@@ -957,7 +961,6 @@ class PiEventStream {
       for (const id of Object.keys(active)) this.knownActiveSessions.add(id)
     } else this.knownActiveSessions = new Set(Object.keys(active))
   }
-
   private markSessionSettled(sessionId: string, interruption?: { error: string; kind: 'failed' | 'cancelled' | 'unknown' }): void {
     this.activityWatchdog.cancel(sessionId)
     piBranchStore.interruptToolExecutions(sessionId, interruption?.error ?? 'Session settled before this tool returned a result; execution outcome is unknown', interruption?.kind ?? 'unknown')
@@ -1036,6 +1039,11 @@ class PiEventStream {
 
   private handlePiEvent(sessionId: string, payload: PiEventPayload): void {
     const { event, meta } = payload
+    if (event.type === 'agent_settled') {
+      this.diagnostics.record('assistant_event', { sessionId, status: event.type, sequence: meta.sequence })
+    } else if (event.type === 'message_end' && event.message.role === 'assistant') {
+      this.diagnostics.record('assistant_event', { sessionId, status: event.type, reason: event.message.role, sequence: meta.sequence })
+    }
     const patch = event as unknown as JsonObject
     if (patch.type === 'message_patch' && isJsonObject(patch.block)) {
       const current =
@@ -1443,13 +1451,20 @@ class PiEventStream {
     }
   }
 
-  private scheduleBranchRefresh(sessionId: string): void {
+  private scheduleBranchRefresh(sessionId: string, reason?: string): void {
     if (this.branchRefreshTimers.has(sessionId)) return
     const timer = setTimeout(() => {
       this.branchRefreshTimers.delete(sessionId)
+      if (reason) this.diagnostics.record('branch_sync', { sessionId, status: 'started', reason })
       void refreshPiBranch(sessionId)
-        .then(() => this.flushPendingLiveMessage(sessionId))
-        .catch(error => this.diagnostics.error('branch_error', sessionId, error))
+        .then(() => {
+          this.flushPendingLiveMessage(sessionId)
+          if (reason) this.diagnostics.record('branch_sync', { sessionId, status: 'completed', reason })
+        })
+        .catch(error => {
+          if (reason) this.diagnostics.record('branch_sync', { sessionId, status: 'failed', reason })
+          this.diagnostics.error('branch_error', sessionId, error)
+        })
     }, REFRESH_DEBOUNCE_MS)
     this.branchRefreshTimers.set(sessionId, timer)
   }
