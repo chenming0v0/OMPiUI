@@ -13,7 +13,7 @@ export function recordBrowserDiagnostic(
     connectionId, clientId: message.clientId, sessionId: message.sessionId, sessionIds,
     state: message.state, status: message.status, errorCode: message.errorCode,
     visibility: message.visibility, navigation: message.navigation,
-    code: message.code, reason: message.reason,
+    code: message.code, reason: message.reason, sequence: message.sequence,
   }, message.event.endsWith("_error") ? "warn" : "info")
   return message.clientId
 }

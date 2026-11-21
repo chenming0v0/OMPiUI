@@ -56,6 +56,7 @@ import { getOmpSettings, patchOmpSettings } from "./omp-settings.js";
 import { readDiscoveredSkill } from "./omp-skill-details.js";
 import { getOmpPreviewControls, getOmpPreviewSkills } from "./omp-preview-resources.js";
 import { withSupportedThinkingLevels } from "./model-thinking.js";
+import { readSessionToolOutput } from "./tool-output.js";
 
 /**
  * OmpCatalog —— CatalogProvider 的 OMP 实现。
@@ -794,6 +795,20 @@ export class OmpCatalog implements CatalogProvider {
         typeof params.fromByte === "number" ? params.fromByte : 0,
         params.sync as SubagentSyncRequest | undefined,
       );
+    }
+    if (query === "toolOutput.get") {
+      if (typeof params.artifactId !== "string" || typeof params.offset !== "number") {
+        throw Object.assign(new Error("Invalid tool output request"), { code: "INVALID_REQUEST" });
+      }
+      const found = await this.findSessionById(sessionId);
+      if (!found || typeof found.sessionFile !== "string") throw sessionNotFound(sessionId);
+      return requireJsonValue(await readSessionToolOutput(
+        found.sessionFile,
+        sessionId,
+        params.artifactId,
+        params.offset,
+        typeof params.revision === "string" ? params.revision : undefined,
+      ));
     }
     const cache = await this.readDiskById(sessionId);
     if (!cache) throw sessionNotFound(sessionId);

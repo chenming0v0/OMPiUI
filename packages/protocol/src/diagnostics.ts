@@ -13,6 +13,7 @@ export type DiagnosticRunState = {
 
 export const BROWSER_DIAGNOSTIC_EVENTS = [
   "connected", "disconnect", "pagehide", "visibility", "state", "state_error", "branch_error", "activity",
+  "assistant_event", "branch_sync",
 ] as const
 
 export type BrowserDiagnosticMessage = {
@@ -28,4 +29,5 @@ export type BrowserDiagnosticMessage = {
   navigation?: string
   code?: number
   reason?: string
+  sequence?: number
 }
