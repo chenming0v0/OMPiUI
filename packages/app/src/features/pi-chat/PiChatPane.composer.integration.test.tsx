@@ -248,6 +248,7 @@ describe('PiChatPane with the real composer', () => {
   })
   it('syncs a follow-up queue item when it is moved into the composer', async () => {
     const entry = { entryId: 'follow-up-edit', text: 'continue next turn' }
+    mocks.removeQueued.mockResolvedValueOnce({ text: entry.text })
     mocks.touch = true
     mocks.state = { ...mocks.state, isStreaming: true, queue: { steeringEntries: [], followUpEntries: [entry] } }
     render(<PiChatPane paneId={paneId} sessionId={sessionId} />)
