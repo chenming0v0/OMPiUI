@@ -72,7 +72,7 @@ function markProviderOpened(id: string) {
 const iconButton =
   'flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-text-300 transition-colors hover:bg-bg-200 active:bg-bg-300 focus-visible:outline-2 focus-visible:outline-accent-main-100'
 
-const cardClass = 'rounded-2xl border border-border-200/60 bg-bg-000/40'
+const cardClass = 'rounded-xl border border-border-200/60 bg-bg-000/40'
 
 const fieldLabel = 'text-[13px] font-medium text-text-300'
 
@@ -82,17 +82,20 @@ function stagger(index: number) {
 
 function ProviderStatus({ provider }: { provider: ProviderDraft }) {
   const { t } = useTranslation('settings')
-  const { missingKey } = providerSummary(provider)
+  const { missingKey, apiPath } = providerSummary(provider)
   return (
-    <span className="flex min-w-0 items-center gap-1.5 text-xs text-text-400">
-      <span
-        className={`h-1.5 w-1.5 shrink-0 rounded-full ring-[3px] ${
-          missingKey ? 'bg-warning-100 ring-warning-100/20' : 'bg-success-100 ring-success-100/20'
-        }`}
-      />
-      <span className="truncate">{missingKey ? t('providers.missingKey') : t('providers.configured')}</span>
-      <span aria-hidden>·</span>
-      <span className="shrink-0 tabular-nums">{t('providers.modelsCount', { count: provider.models.length })}</span>
+    <span className="block min-w-0">
+      <span className="flex min-w-0 items-center gap-1.5 text-xs text-text-400">
+        <span
+          className={`h-1.5 w-1.5 shrink-0 rounded-full ring-[3px] ${
+            missingKey ? 'bg-warning-100 ring-warning-100/20' : 'bg-success-100 ring-success-100/20'
+          }`}
+        />
+        <span className="truncate">{missingKey ? t('providers.missingKey') : t('providers.configured')}</span>
+        <span aria-hidden>·</span>
+        <span className="shrink-0 tabular-nums">{t('providers.modelsCount', { count: provider.models.length })}</span>
+      </span>
+      <span className="mt-1 block truncate font-mono text-[11px] text-text-500">{apiPath}</span>
     </span>
   )
 }
@@ -199,7 +202,11 @@ export function MobileProvidersSettings({
             <span className="min-w-0 flex-1 break-words text-sm text-danger-100">
               {t('providers.loadFailedWith', { message: loadError })}
             </span>
-            <button type="button" onClick={onRefresh} className="min-h-11 shrink-0 px-1 text-sm font-medium text-danger-100">
+            <button
+              type="button"
+              onClick={onRefresh}
+              className="min-h-11 shrink-0 px-1 text-sm font-medium text-danger-100"
+            >
               {t('providers.retry')}
             </button>
           </div>
@@ -210,9 +217,14 @@ export function MobileProvidersSettings({
               <button
                 type="button"
                 onClick={() => onSelect(provider.id)}
-                className={`provider-press group flex min-h-[76px] w-full items-center gap-3 px-3.5 py-3 text-left shadow-sm active:bg-bg-200/60 ${cardClass}`}
+                className={`provider-press group flex min-h-[82px] w-full items-center gap-3 px-3.5 py-3 text-left shadow-sm active:bg-bg-200/60 ${cardClass}`}
               >
-                <ProviderAvatar label={provider.name} size="lg" />
+                <ProviderAvatar
+                  label={provider.name}
+                  api={provider.api}
+                  providerId={provider.id}
+                  size="lg"
+                />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[15px] font-semibold text-text-100">{provider.name}</span>
                   <span className="mt-1 block">
@@ -264,7 +276,13 @@ export function MobileProvidersSettings({
                 >
                   <ArrowLeft size={22} />
                 </button>
-                <ProviderAvatar label={selected.name} />
+                <ProviderAvatar
+                  label={selected.name}
+                  api={selected.api}
+                  baseUrl={selected.baseUrl}
+                  providerId={selected.id}
+                  editable
+                />
                 <div className="min-w-0 flex-1 pl-2">
                   <h2 className="truncate text-lg font-semibold leading-tight text-text-100" title={selected.name}>
                     {selected.name}
@@ -399,7 +417,10 @@ export function MobileProvidersSettings({
                           value={selected.api}
                           ariaLabel={t('providers.apiFormat')}
                           className="!min-h-12 !rounded-xl"
-                          options={API_FORMAT_OPTIONS.map(option => ({ value: option.value, label: t(option.labelKey) }))}
+                          options={API_FORMAT_OPTIONS.map(option => ({
+                            value: option.value,
+                            label: t(option.labelKey),
+                          }))}
                           onChange={value => onUpdate(draft => ({ ...draft, api: value }), 'immediate')}
                         />
                       </div>
@@ -428,7 +449,9 @@ export function MobileProvidersSettings({
                           </span>
                         </button>
                       </div>
-                      <span className="mt-2 block text-xs leading-relaxed text-text-500">{t('providers.apiKeyHint')}</span>
+                      <span className="mt-2 block text-xs leading-relaxed text-text-500">
+                        {t('providers.apiKeyHint')}
+                      </span>
                     </label>
                   </div>
                   <div className="flex justify-center">
@@ -449,7 +472,9 @@ export function MobileProvidersSettings({
                 <ul key="models" className="space-y-2">
                   {selected.models.map((model, index) => (
                     <li key={model.id} className="provider-rise" style={stagger(index)}>
-                      <div className={`provider-press flex items-center gap-1 py-1.5 pl-3 pr-1 active:bg-bg-200/50 ${cardClass}`}>
+                      <div
+                        className={`provider-press flex items-center gap-1 py-1.5 pl-3 pr-1 active:bg-bg-200/50 ${cardClass}`}
+                      >
                         <button
                           type="button"
                           onClick={() => onEdit(model)}

@@ -63,7 +63,7 @@ function probeSelectedVersion(executable: string, args: string[], env: NodeJS.Pr
   return promise
 }
 
-/** Bun's Windows trampoline stores its selected script at the start of the adjacent .bunx. */
+/** Windows 版 Bun 启动垫片会在相邻的 .bunx 文件开头记录所选脚本。 */
 function selectedSourceEntry(executable: string, args: string[], bunInstall: string): string | undefined {
   if (args[0]) return args[0]
   if (process.platform !== "win32" || path.resolve(executable).toLowerCase() !== path.resolve(bunInstall, "bin", "omp.exe").toLowerCase()) return undefined
@@ -115,7 +115,7 @@ export async function resolveOmpPackageRoot(bin?: string, env: NodeJS.ProcessEnv
     }
     // bun 全局安装的 CLI 是 trampoline（$BUN_INSTALL/bin/omp.exe），回溯不到包体；
     // 按文档化的安装布局直接补上 install/global 根。
-    // The global manifest is only a timeout fallback when .bunx binds this CLI to its entry.
+    // 仅当 .bunx 明确将此 CLI 绑定到对应入口时，才允许以全局清单作为超时回退。
     candidates.push(path.join(bunInstall, "install", "global", "node_modules", packageName))
     if (runtime) candidates.push(path.join(runtime.root, "node_modules", packageName))
   }

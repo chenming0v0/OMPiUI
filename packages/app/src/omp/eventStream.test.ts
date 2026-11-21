@@ -630,6 +630,13 @@ describe('session configuration and stop synchronization', () => {
     expect(controllers.refreshPiSessionState).not.toHaveBeenCalled()
   })
 
+  it('refreshes a session branch when the global activity snapshot settles after a missed runtime event', async () => {
+    activity({ 'session-stop': { type: 'busy' } })
+    activity({})
+    await vi.advanceTimersByTimeAsync(150)
+    expect(controllers.refreshPiBranch).toHaveBeenCalledWith('session-stop')
+  })
+
   it('settles stale streaming only after the native readback confirms the global idle projection', async () => {
     vi.mocked(controllers.refreshPiSessionState).mockImplementation(readNativeSessionState)
     const { promise, resolve } = Promise.withResolvers<JsonObject>()

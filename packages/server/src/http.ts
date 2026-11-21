@@ -5,7 +5,6 @@ import {
   type ServerResponse,
 } from "node:http";
 import { networkInterfaces } from "node:os";
-import { gzip } from "node:zlib";
 import {
   PROTOCOL_VERSION,
   hostCommandBodyLimit,
@@ -43,7 +42,12 @@ import type { TailscaleManager } from "./host/tailscale.ts";
 import { createStaticServer } from "./static.ts";
 import { FaultReportService } from "./diagnostics/fault-reports.ts";
 import type { TrustedProxies } from "@ompiui/relay";
-import { reserveHttpOutput, writeHttpOutput } from "./http-output.ts";
+import {
+  compressHttpJson,
+  reserveHttpOutput,
+  selectHttpEncoding,
+  writeHttpOutput,
+} from "./http-output.ts";
 import {
   ToolInteractionProxy,
   registerToolInteractionProxy,
@@ -69,14 +73,15 @@ function sendJson(res: ServerResponse, status: number, body: unknown): boolean {
     return false;
   }
   const data = JSON.stringify(body);
-  const finish = (payload: string | Buffer, compressed = false) => {
+  const uncompressedBytes = Buffer.byteLength(data);
+  const finish = (payload: string | Buffer, encoding?: "br" | "gzip") => {
     if (res.destroyed || res.writableEnded) return false;
     try {
       res.writeHead(status, {
         "content-type": "application/json; charset=utf-8",
         "content-length": Buffer.byteLength(payload),
         vary: "Accept-Encoding",
-        ...(compressed ? { "content-encoding": "gzip" } : {}),
+        ...(encoding ? { "content-encoding": encoding } : {}),
         ...CORS_HEADERS,
       });
       if ((status === 413 || status === 503) && !res.req.complete) {
@@ -106,21 +111,15 @@ function sendJson(res: ServerResponse, status: number, body: unknown): boolean {
       return false;
     }
   };
-  const acceptsGzip = String(res.req.headers["accept-encoding"] ?? "")
-    .split(",")
-    .some((value) => {
-      const [name, ...params] = value.trim().split(";");
-      const quality = params.find((param) => param.trim().startsWith("q="));
-      return (
-        name === "gzip" && (!quality || Number(quality.trim().slice(2)) > 0)
-      );
-    });
-  if (acceptsGzip && Buffer.byteLength(data) >= 4096) {
+  const encoding = selectHttpEncoding(res.req.headers["accept-encoding"]);
+  if (encoding && uncompressedBytes >= 4096) {
     const encodingDone = reservation.hold();
-    gzip(data, (error, compressed) => {
-      finish(error ? data : compressed, !error);
-      encodingDone();
-    });
+    void compressHttpJson(data, encoding)
+      .then(compressed => {
+        const smaller = compressed.length < uncompressedBytes;
+        finish(smaller ? compressed : data, smaller ? encoding : undefined);
+      }, () => finish(data))
+      .finally(encodingDone);
     return true;
   }
   return finish(data);

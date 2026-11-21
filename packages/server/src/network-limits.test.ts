@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer, request } from "node:http";
 import { once } from "node:events";
-import { gunzipSync } from "node:zlib";
+import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import test from "node:test";
 import { WebSocket } from "ws";
 import { PROTOCOL_VERSION, eventStreamKey } from "@ompiui/protocol";
@@ -376,13 +376,20 @@ test("HTTP compresses negotiated JSON and all three command routes reject bodies
   try {
     const gzip = await get("gzip");
     assert.equal(gzip.encoding, "gzip");
+    const brotli = await get("br, gzip");
+    assert.equal(brotli.encoding, "br");
     const plain = await get("gzip;q=0");
     assert.equal(plain.encoding, "");
     assert.deepEqual(
       JSON.parse(gunzipSync(gzip.body).toString()),
       JSON.parse(plain.body.toString()),
     );
+    assert.deepEqual(
+      JSON.parse(brotliDecompressSync(brotli.body).toString()),
+      JSON.parse(plain.body.toString()),
+    );
     assert.ok(plain.body.length > gzip.body.length);
+    assert.ok(plain.body.length > brotli.body.length);
     for (const route of [
       "/api/v1/pi/commands/noop",
       "/api/v1/pi/sessions/s/commands/noop",

@@ -276,9 +276,9 @@ test("an explicit message attaches a previewed OMP session using its latest hist
   assert.deepEqual(commands, ["state.get", "sendUserMessage"])
 })
 
-test("SessionHost notifies the session list when the session file materializes on disk", async () => {
+test("SessionHost notifies the session list when sessions materialize and titles change", async () => {
   const sessionFile = join(tmpdir(), `piui-session-host-${randomUUID()}.jsonl`)
-  let emitEvent!: (event: { channel: string; head?: unknown }) => void
+  let emitEvent!: (event: { channel: string; head?: unknown; event?: { type?: string; title?: string }; meta?: unknown }) => void
   process.env.OMPIUI_DRIVER = "mock"
   const worker = {
     command: async () => ({}),
@@ -286,7 +286,7 @@ test("SessionHost notifies the session list when the session file materializes o
     getSessionFile: () => sessionFile,
     getCwd: () => ".",
     updateSessionIdentity: () => {},
-    onEvent: (listener: (event: { channel: string; head?: unknown }) => void) => {
+    onEvent: (listener: (event: { channel: string; head?: unknown; event?: { type?: string; title?: string }; meta?: unknown }) => void) => {
       emitEvent = listener
       return () => {}
     },
@@ -328,12 +328,18 @@ test("SessionHost notifies the session list when the session file materializes o
     materialized: true,
   })
 
-  // 原生语义：后续 head 推进（新消息）不再广播列表事件——列表 = 磁盘扫描，
-  // 文件已存在，重扫结果不会变；排序/消息数由下一次生命周期事件或显式
-  // 刷新时更新。
+  emitEvent({
+    channel: "pi.event",
+    event: { type: "session_info_update", title: "Renamed title" },
+    meta: { epoch: "test", sequence: 1 },
+  })
+  assert.equal(updated.length, 2)
+  assert.deepEqual(updated[1], { sessionId: "session-1", updated: true })
+
+  // 新消息推进 head 本身不广播，标题由独立事件通知全局列表。
   emitEvent({ channel: "session.head", head: { revision: 3 } })
   emitEvent({ channel: "session.head", head: { revision: 4, entryCount: 4 } })
-  assert.equal(updated.length, 1)
+  assert.equal(updated.length, 2)
 
   delete process.env.OMPIUI_DRIVER
   off()
