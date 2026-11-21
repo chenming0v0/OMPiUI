@@ -253,8 +253,9 @@
     "unknownErrorDesc": "发生未知错误。"
   },
   "truncation": {
-    "linesShown": "已显示 {{count}} 行",
-    "outputTruncated": "输出已截断",
-    "fullOutput": "完整输出：{{path}}"
+    "expandFullOutput": "展开完整输出",
+    "loadingFullOutput": "正在加载完整输出…",
+    "collapseFullOutput": "收起完整输出",
+    "loadError": "无法加载完整输出"
   }
 }

@@ -1,6 +1,5 @@
 import type { ReactNode } from 'react'
 import { toolResultBlocks, toolResultText } from './toolResultContent'
-import i18n from '../../../i18n'
 import type { PiToolExecution } from '../../../omp/domain/index.js'
 import { getToolExecutionStatus } from '../../../omp/domain/index.js'
 import type { ToolConfig, ToolRegistry, ExtractedToolData, DiagnosticInfo, YieldResultData } from './types'
@@ -122,10 +121,8 @@ export function defaultExtractData(execution: PiToolExecution): ExtractedToolDat
     result.filePath = metadata.resolvedPath
   }
 
-  // Pi 原生截断字段：输出超限时 truncated=true 且给出完整日志路径（bash/read 等通用）
+  // Pi 原生截断字段：输出超限时 truncated=true
   result.truncated = metadata?.truncated === true
-  result.fullOutputPath =
-    typeof metadata?.fullOutputPath === 'string' && metadata.fullOutputPath ? metadata.fullOutputPath : undefined
   if (!result.filePath && inputObj?.filePath) {
     result.filePath = String(inputObj.filePath)
   }
@@ -245,23 +242,16 @@ export function defaultExtractData(execution: PiToolExecution): ExtractedToolDat
   if (!result.diff && typeof patch === 'string') result.diff = patch
   const outputMeta = (nativeDetails?.meta ?? metadata?.meta) as Record<string, unknown> | undefined
   const truncation = (outputMeta?.truncation ?? nativeDetails?.truncation ?? metadata?.truncation) as Record<string, unknown> | undefined
-  const limits = [nativeDetails?.matchLimitReached, nativeDetails?.resultLimitReached, nativeDetails?.entryLimitReached,
-    metadata?.matchLimitReached, metadata?.resultLimitReached, metadata?.entryLimitReached].filter(value => typeof value === 'number')
-  const notices = [metadata?.notice, nativeDetails?.notice].filter((value): value is string => typeof value === 'string' && !!value.trim())
+  const artifactId = typeof truncation?.artifactId === 'string' ? getOutputArtifactId(truncation.artifactId) : undefined
+  const notices = [metadata?.notice, nativeDetails?.notice].filter((value): value is string =>
+    typeof value === 'string' && !!value.trim() && !/truncat|截断|已显示\s*\d+\s*行/iu.test(value),
+  )
   // Public OMP results carry truncation/limits under details.meta; older results
   // and the normalized envelope may still use top-level nativeDetails fields.
   if (truncation && (truncation.truncated === true || typeof truncation.truncatedBy === 'string')) result.truncated = true
-  if (!result.fullOutputPath && typeof nativeDetails?.fullOutputPath === 'string') result.fullOutputPath = nativeDetails.fullOutputPath
-  if (!result.fullOutputPath && typeof truncation?.artifactId === 'string') result.fullOutputPath = `artifact://${truncation.artifactId}`
-  if (result.truncated || limits.length > 0) {
-    const shown = typeof truncation?.outputLines === 'number'
-      ? i18n.t('message:truncation.linesShown', { count: truncation.outputLines })
-      : i18n.t('message:truncation.outputTruncated')
-    notices.push(`${shown}${result.fullOutputPath ? ` · ${i18n.t('message:truncation.fullOutput', { path: result.fullOutputPath })}` : ''}`)
-    // Retain exact bounds, direction, partial-line/artifact limits and suggestions.
-    if (truncation) notices.push(JSON.stringify(truncation))
-    if (limits.length) notices.push(`Limits: ${limits.join(', ')}`)
-  }
+  const fullOutputPath = typeof nativeDetails?.fullOutputPath === 'string' ? nativeDetails.fullOutputPath : typeof metadata?.fullOutputPath === 'string' ? metadata.fullOutputPath : undefined
+  const artifactPath = fullOutputPath ?? (artifactId ? `artifact://${artifactId}` : undefined)
+  result.fullOutputArtifactId = artifactId ?? getOutputArtifactId(artifactPath)
   if (outputMeta?.limits) notices.push(`Limits: ${JSON.stringify(outputMeta.limits)}`)
   if (outputMeta?.artifactError) notices.push(JSON.stringify(outputMeta.artifactError))
   if (notices.length) result.notice = [...new Set(notices)].join('\n')
@@ -306,6 +296,13 @@ export function defaultExtractData(execution: PiToolExecution): ExtractedToolDat
   }
 
   return result
+}
+function getOutputArtifactId(fullOutputPath?: string): string | undefined {
+  if (!fullOutputPath) return undefined
+  const path = fullOutputPath.replace(/^artifact:\/\//, '').replace(/^local:\/\//, '')
+  const filename = path.split(/[\\/]/u).at(-1) ?? path
+  const match = /^(0|[1-9]\d*)(?:\.[A-Za-z0-9_-]+)?\.log$/u.exec(filename) ?? /^(0|[1-9]\d*)$/u.exec(filename)
+  return match?.[1]
 }
 
 // ============================================
