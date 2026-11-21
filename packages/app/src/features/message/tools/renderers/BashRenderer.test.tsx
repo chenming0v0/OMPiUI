@@ -8,11 +8,7 @@ import type { PiToolExecution } from '../../../../omp/domain/index.js'
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (key: string, options?: Record<string, unknown>) => {
-      if (key === 'bash.truncatedNotice') return `Output truncated — full log at ${options?.path ?? ''}`
-      if (key === 'contentBlock.exitCode') return `exit ${options?.code ?? ''}`
-      return key
-    },
+    t: (key: string, options?: Record<string, unknown>) => key === 'contentBlock.exitCode' ? `exit ${options?.code ?? ''}` : key,
   }),
 }))
 
@@ -100,19 +96,20 @@ describe('BashRenderer', () => {
   })
 
   it('prefers the persisted result output once the tool completes', async () => {
-    renderBash(completedExecution(), { output: 'final output', truncated: true, fullOutputPath: '/tmp/pi-bash-abc.log' })
+    renderBash(completedExecution(), { output: 'final output', truncated: true })
 
     expect(await screen.findByText(/final output/)).toBeInTheDocument()
   })
 
-  it('shows a native truncation notice with the full log path', async () => {
-    renderBash(completedExecution(), { output: 'truncated output...', truncated: true, fullOutputPath: '/tmp/pi-bash-abc.log' })
+  it('offers lazy expansion when a full output artifact is available', async () => {
+    renderBash(completedExecution(), { output: 'truncated output...', truncated: true, fullOutputArtifactId: '7' })
 
-    expect(await screen.findByText('Output truncated — full log at /tmp/pi-bash-abc.log')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'truncation.expandFullOutput' })).toBeInTheDocument()
   })
 
-  it('hides the truncation notice when there is no full log path', () => {
+  it('does not show a truncation label when no readable artifact is available', () => {
     renderBash(completedExecution(), { output: 'truncated output...', truncated: true })
     expect(screen.queryByText(/Output truncated/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'truncation.expandFullOutput' })).not.toBeInTheDocument()
   })
 })

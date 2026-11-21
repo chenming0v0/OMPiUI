@@ -48,7 +48,7 @@ describe('defaultExtractData', () => {
     ])
   })
 
-  it('extracts native bash truncation fields from result details', () => {
+  it('extracts native bash truncation state without exposing an unreadable path', () => {
     const execution: PiToolExecution = {
       call: {
         type: 'toolCall',
@@ -75,8 +75,22 @@ describe('defaultExtractData', () => {
 
     expect(extracted.cwd).toBeUndefined()
     expect(extracted.truncated).toBe(true)
-    expect(extracted.fullOutputPath).toBe('/tmp/pi-bash-abc.log')
+    expect(extracted.fullOutputArtifactId).toBeUndefined()
   })
+  it('extracts a session artifact id without turning truncation metadata into a notice', () => {
+    const execution: PiToolExecution = {
+      call: { type: 'toolCall', id: 'call-3', name: 'grep', arguments: { pattern: 'needle' } },
+      result: {
+        role: 'toolResult', toolCallId: 'call-3', toolName: 'grep', content: [{ type: 'text', text: 'partial matches' }],
+        isError: false, timestamp: 0,
+        details: { meta: { truncation: { truncated: true, artifactId: '3', outputLines: 20 } } },
+      },
+    }
+    const extracted = extractToolData(execution)
+    expect(extracted).toMatchObject({ truncated: true, fullOutputArtifactId: '3', output: 'partial matches' })
+    expect(extracted.notice).toBeUndefined()
+  })
+
 
   it.each([
     { name: 'bash', state: 'failed', timedOut: false, status: 'error' },
@@ -208,7 +222,7 @@ describe('task execution versus merge extraction', () => {
     expect(data.error).toContain('Conflict')
     expect(data.error).toContain('stdout')
     expect(data.error).toContain('stderr')
-    expect(data).toMatchObject({ truncated: true, fullOutputPath: 'C:/full.log', images: [{ mimeType: 'image/png' }] })
+    expect(data).toMatchObject({ truncated: true, images: [{ mimeType: 'image/png' }] })
   })
 })
 

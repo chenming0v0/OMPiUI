@@ -107,6 +107,24 @@ const SERVER_SESSION_CAPABILITIES: PiCapability[] = [
     },
     queue: "immediate",
   },
+  {
+    name: "toolOutput.get",
+    scope: "session",
+    source: "ompiui-adapter",
+    description: "Read a stored tool output artifact without starting an Agent",
+    paramsSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        artifactId: { type: "string", pattern: "^(0|[1-9]\\d*)$" },
+        offset: { type: "integer", minimum: 0 },
+        revision: { type: "string" },
+      },
+      required: ["artifactId", "offset"],
+    },
+    queue: "immediate",
+    idempotent: true,
+  },
 ];
 
 const DEFAULT_IDLE_RUNTIME_TTL_MS = 2 * 60_000;
@@ -548,6 +566,13 @@ export class SessionHost {
   ): Promise<JsonValue | undefined> {
     return withAbort(
       (async () => {
+        if (type === "toolOutput.get") {
+          return this.catalogCommand(
+            "session.read",
+            { sessionId, query: type, params: params ?? {} },
+            { idempotent: true, signal },
+          );
+        }
         let session = this.runtimes.get(sessionId);
         if (!session) {
           if (type === "toolInteraction") {

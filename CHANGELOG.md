@@ -35,6 +35,7 @@
 
 ## [Unreleased]
 
+- fix: 工具输出超限时改为按需展开会话 artifact；完整输出仅在用户点击后分块读取，不再显示截断行数和 artifact 路径。
 - ci: Linux／Windows 保持完整验证，前端和服务端各使用两片并行；缓存共享 workspace 编译与精确版本的 OMP 测试资源，拆分 Windows npm 角色和 RPC 验证。
 - ci: 按源码指纹及受测 latest OMP 版本复用成功的完整 CI；根目录文档和 `docs/` 变更跳过重型检查，手动派发仍强制完整检查，tag 不再重复触发 CI。
 - ci: 发布预构建等待源码 CI 真正成功后再启动；等待窗口覆盖完整任务及 GitHub 结果更新，不把运行中、取消或失败当作通过。

@@ -56,6 +56,7 @@ import { getOmpSettings, patchOmpSettings } from "./omp-settings.js";
 import { readDiscoveredSkill } from "./omp-skill-details.js";
 import { getOmpPreviewControls, getOmpPreviewSkills } from "./omp-preview-resources.js";
 import { withSupportedThinkingLevels } from "./model-thinking.js";
+import { readSessionToolOutput } from "./tool-output.js";
 
 /**
  * OmpCatalog —— CatalogProvider 的 OMP 实现。
@@ -787,6 +788,18 @@ export class OmpCatalog implements CatalogProvider {
       throw Object.assign(new Error("session file not found"), {
         code: "SESSION_NOT_FOUND",
       });
+    if (query === "toolOutput.get") {
+      if (typeof params.artifactId !== "string" || typeof params.offset !== "number") {
+        throw Object.assign(new Error("Invalid tool output request"), { code: "INVALID_REQUEST" });
+      }
+      return requireJsonValue(await readSessionToolOutput(
+        summary.path,
+        summary.id,
+        params.artifactId,
+        params.offset,
+        typeof params.revision === "string" ? params.revision : undefined,
+      ));
+    }
     if (query === "skills.list") return getOmpPreviewSkills(summary.cwd);
     if (query === "skills.get") {
       if (typeof params.name !== "string" || typeof params.filePath !== "string") throw Object.assign(new Error("Skill identity is required"), { code: "INVALID_REQUEST" });
