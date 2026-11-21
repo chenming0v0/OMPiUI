@@ -37,6 +37,18 @@ test("browser diagnostics accept only known events for subscribed sessions", (t)
     ),
     undefined,
   );
-  assert.equal(calls.length, 1);
+  assert.equal(
+    recordBrowserDiagnostic(
+      { ...base, event: "assistant_event", status: "message_end", sequence: 42 },
+      "connection-1",
+      ["session-1"],
+    ),
+    "page-1",
+  );
+  assert.equal(calls.length, 2);
   assert.equal(calls[0][0], "browser.state");
+  assert.equal(calls[1][0], "browser.assistant_event");
+  const logged = calls[1]?.[1];
+  assert.ok(logged && typeof logged === "object" && "sequence" in logged);
+  assert.equal(logged.sequence, 42);
 });
