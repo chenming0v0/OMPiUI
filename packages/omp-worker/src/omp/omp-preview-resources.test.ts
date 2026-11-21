@@ -11,7 +11,7 @@ import { resolveOmpPackageRoot } from "./omp-native-script.js"
 const integration = process.env.OMPI_OMP_SETTINGS_INTEGRATION === "1"
 
 test("cold configuration and Skills use the official read-only loaders without modifying history or settings", { skip: !integration }, async t => {
-  const packageRoot = resolveOmpPackageRoot()
+  const packageRoot = await resolveOmpPackageRoot()
   const root = mkdtempSync(path.join(tmpdir(), "ompiui-preview-resources-"))
   const agent = path.join(root, "agent")
   const workspace = path.join(root, "workspace")
