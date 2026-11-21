@@ -13,8 +13,8 @@ type Resources = { extensions: Array<{ path: string; source: string; enabled: bo
 
 // Opt-in integration proof uses the installed native managers in a fresh child
 // HOME/profile. No package downloads, user configuration, or live sessions.
-function fixture(t: TestContext) {
-  const officialRoot = resolveOmpPackageRoot()
+async function fixture(t: TestContext) {
+  const officialRoot = await resolveOmpPackageRoot()
   const root = mkdtempSync(path.join(tmpdir(), "ompiui-plugin-fixture-"))
   const keys = ["HOME", "USERPROFILE", "OMP_PROFILE", "PI_PROFILE", "PI_CODING_AGENT_DIR", "PI_CONFIG_FILES", "PI_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "OMPI_OMP_PACKAGE_ROOT"]
   const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]))
@@ -73,7 +73,7 @@ async function linkFixture(t: TestContext, f: { cwd: string; home: string; sourc
 }
 
 test("native link lifecycle resolves real manifest resources without executing them", native, async t => {
-  const f = fixture(t)
+  const f = await fixture(t)
   const inspectedBeforeInstall = await f.packages.resolveSources(f.cwd, [f.source]) as unknown as Resources
   assert.equal(inspectedBeforeInstall.extensions[0]?.path, path.join(f.source, "extension.ts"))
   assert.equal(existsSync(path.join(f.home, ".omp", "plugins", "omp-plugins.lock.json")), false)
@@ -115,7 +115,7 @@ test("native link lifecycle resolves real manifest resources without executing t
 })
 
 test("native marketplace install and upgrade preserve independent user and project scope", native, async t => {
-  const f = fixture(t)
+  const f = await fixture(t)
   const added = await f.packages.changeSource(f.cwd, f.market, "add") as unknown as PackageSnapshot
   assert.deepEqual(added.marketplaces.map(({ name, source }) => ({ name, source })), [{ name: "fixture", source: f.market }])
   await assert.rejects(f.packages.changeSource(f.cwd, f.market, "add", true), /not project-local/)
@@ -155,7 +155,7 @@ test("native marketplace install and upgrade preserve independent user and proje
 })
 
 test("native bulk project update ignores read-only project links and reports an empty managed scope", native, async t => {
-  const f = fixture(t)
+  const f = await fixture(t)
   await assert.rejects(f.packages.manage(f.cwd, "empty-update", "update", undefined, true), /No managed plugins.*project scope/)
   await f.packages.changeSource(f.cwd, f.market, "add")
   await f.packages.manage(f.cwd, "user-install", "install", "demo@fixture")
@@ -182,7 +182,7 @@ test("native bulk project update ignores read-only project links and reports an 
 })
 
 test("selected marketplace update does not fetch an unrelated broken catalog", native, async t => {
-  const f = fixture(t)
+  const f = await fixture(t)
   await f.packages.changeSource(f.cwd, f.market, "add")
   await f.packages.manage(f.cwd, "install", "install", "demo@fixture")
   const unrelated = path.join(f.root, "unrelated", ".omp-plugin")
@@ -198,7 +198,7 @@ test("selected marketplace update does not fetch an unrelated broken catalog", n
 })
 
 test("portable MCP inspection does not create native launch data or execute servers", native, async t => {
-  const f = fixture(t)
+  const f = await fixture(t)
   writeFileSync(path.join(f.source, "plugin.json"), JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "portable-fixture" }))
   writeFileSync(path.join(f.source, "mcp.json"), JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json", mcpServers: { demo: { type: "stdio", command: "must-not-run-during-inspection" } } }))
   const resources = await f.packages.resolveSources(f.cwd, [f.source]) as unknown as { mcpServers: Array<{ path: string; name: string; enabled: boolean }> }
@@ -208,7 +208,7 @@ test("portable MCP inspection does not create native launch data or execute serv
 })
 
 test("native link updates preserve feature selection and project override resolution", native, async t => {
-  const f = fixture(t)
+  const f = await fixture(t)
   writeFileSync(path.join(f.source, "package.json"), JSON.stringify({ name: "parity-fixture", version: "1.0.0", omp: { extensions: ["extension.ts"], features: {
     defaults: { default: true, extensions: ["default-feature.ts"] }, selected: { extensions: ["selected-feature.ts"] },
   } } }))

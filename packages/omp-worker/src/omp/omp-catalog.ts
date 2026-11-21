@@ -56,6 +56,7 @@ import { getOmpSettings, patchOmpSettings } from "./omp-settings.js";
 import { readDiscoveredSkill } from "./omp-skill-details.js";
 import { getOmpPreviewControls, getOmpPreviewSkills } from "./omp-preview-resources.js";
 import { withSupportedThinkingLevels } from "./model-thinking.js";
+import { readSessionToolOutput } from "./tool-output.js";
 
 /**
  * OmpCatalog —— CatalogProvider 的 OMP 实现。
@@ -115,17 +116,20 @@ const subagentTitleCache = new Map<
   { mtime: number; titles: Map<string, string>; position?: JsonlPosition }
 >();
 /** 子会话摘要缓存：文件没变就复用（历史子会话挂载时不再次 JSON.parse） */
-const sessionSummaryCache = new Map<
-  string,
-  {
-    mtime: number;
-    titlesStamp: string;
-    summary: SessionFileSummary | null;
-    position?: JsonlPosition;
-    fallbackTitle?: boolean;
-  }
->();
+type SessionSummarySnapshot = {
+  summary: SessionFileSummary;
+  position: JsonlPosition;
+  fallbackTitle: boolean;
+  childTitle?: string;
+};
+const sessionSummaryCache = new Map<string, SessionSummarySnapshot>();
 const sessionIdIndex = new Map<string, string>();
+
+function rememberSession({ summary: { id, path } }: SessionSummarySnapshot): void {
+  sessionIdIndex.set(id, path);
+  if (sessionIdIndex.size > 4096)
+    sessionIdIndex.delete(sessionIdIndex.keys().next().value!);
+}
 
 /**
  * 会话 JSONL 行 → 预览条目。元数据行（title/title_change/session/
@@ -210,169 +214,133 @@ type DiskPageParams = BranchSyncRequest & {
 };
 
 type DiskBranchCache = {
-  modified: number;
+  snapshot: SessionSummarySnapshot;
   entries: readonly DiskBranchEntry[];
   reader: BranchPageReader<DiskBranchEntry>;
   allEntries: JsonObject[];
-  position?: JsonlPosition;
 };
 
-async function summarizeSessionFile(
-  filePath: string,
-  childTitles?: Map<string, string>,
-): Promise<SessionFileSummary | null> {
-  const cached = sessionSummaryCache.get(filePath);
-  let id = cached?.summary?.id ?? "";
-  let cwd = cached?.summary?.cwd ?? "";
-  let created = cached?.summary?.created ?? null;
-  let name = cached?.summary?.name ?? null;
-  let firstMessage = cached?.summary?.firstMessage ?? null;
-  let messageCount = cached?.summary?.messageCount ?? 0;
+function sessionSummaryScan(filePath: string, cached?: SessionSummarySnapshot) {
+  let id = cached?.summary.id ?? "";
+  let cwd = cached?.summary.cwd ?? "";
+  let created = cached?.summary.created ?? null;
+  let name = cached?.summary.name ?? null;
+  let firstMessage = cached?.summary.firstMessage ?? null;
+  let messageCount = cached?.summary.messageCount ?? 0;
   let fallbackTitle = cached?.fallbackTitle ?? false;
-  let isSubagent = false;
-  let position: JsonlPosition;
-  try {
-    position = await scanJsonl(
-      filePath,
-      cached?.position,
-      (entry) => {
-        const type = entry.type;
-        if (type === "session") {
-          id = typeof entry.id === "string" ? entry.id : "";
-          cwd = typeof entry.cwd === "string" ? entry.cwd : "";
-          created =
-            typeof entry.timestamp === "string" ? entry.timestamp : null;
-          if (!name) name = firstUsefulTitle(entry.name) ?? name;
-        } else if (type === "title" || type === "title_change") {
-          // title 是固定宽度首行槽；OMP 18.x 的自动/手动标题写在后续 title_change。
-          // 空槽和包装提示词都不能盖掉已有标题；后写入的用户改名覆盖先前的。
-          const titled = firstUsefulTitle(entry.title);
-          if (titled) {
-            name = titled;
-            fallbackTitle = false;
-          }
-        } else if (type === "session_init") {
-          isSubagent = typeof entry.agent === "string" && Boolean(entry.agent);
-          if (!name) {
-            name =
-              firstUsefulTitle(
-                childTitles?.get(path.basename(filePath, ".jsonl")),
-                entry.agent,
-              ) ?? name;
-            fallbackTitle = true;
-          }
-        } else if (type === "message") {
-          messageCount += 1;
-          if (
-            !firstMessage &&
-            isJsonObject(entry.message) &&
-            entry.message.role === "user"
-          ) {
-            const content = entry.message.content;
-            if (typeof content === "string") firstMessage = content;
-            else if (Array.isArray(content)) {
-              const text = content.find(
-                (block) => isJsonObject(block) && block.type === "text",
-              );
-              if (isJsonObject(text) && typeof text.text === "string")
-                firstMessage = text.text;
-            }
+  return {
+    get sessionId() { return id; },
+    consume(entry: JsonObject) {
+      const type = entry.type;
+      if (type === "session") {
+        id = typeof entry.id === "string" ? entry.id : "";
+        cwd = typeof entry.cwd === "string" ? entry.cwd : "";
+        created = typeof entry.timestamp === "string" ? entry.timestamp : null;
+        if (!name) name = firstUsefulTitle(entry.name) ?? name;
+      } else if (type === "title" || type === "title_change") {
+        // 空槽和包装提示词不能覆盖已有标题；后写入的改名覆盖先前的。
+        const titled = firstUsefulTitle(entry.title);
+        if (titled) {
+          name = titled;
+          fallbackTitle = false;
+        }
+      } else if (type === "session_init" && !name) {
+        name = firstUsefulTitle(entry.agent) ?? null;
+        if (!name && typeof entry.agent === "string" && entry.agent)
+          name = path.basename(filePath, ".jsonl");
+        fallbackTitle = Boolean(name);
+      } else if (type === "message") {
+        messageCount += 1;
+        if (!firstMessage && isJsonObject(entry.message) && entry.message.role === "user") {
+          const content = entry.message.content;
+          if (typeof content === "string") firstMessage = content;
+          else if (Array.isArray(content)) {
+            const text = content.find(
+              (block) => isJsonObject(block) && block.type === "text",
+            );
+            if (isJsonObject(text) && typeof text.text === "string")
+              firstMessage = text.text;
           }
         }
-      },
-      () => {
-        id = "";
-        cwd = "";
-        created = null;
-        name = null;
-        firstMessage = null;
-        messageCount = 0;
-        fallbackTitle = false;
-      },
-    );
-  } catch {
-    return null;
-  }
-  if (!name && (isSubagent || childTitles)) {
-    const taskName = path.basename(filePath, ".jsonl");
-    name = firstUsefulTitle(childTitles?.get(taskName), taskName) ?? taskName;
-    fallbackTitle = true;
-  }
-  if (fallbackTitle && childTitles)
-    name =
-      firstUsefulTitle(
-        childTitles.get(path.basename(filePath, ".jsonl")),
-        name,
-      ) ?? name;
-  if (!id || !cwd) return null;
-  const summary = {
-    id,
-    cwd,
-    path: filePath,
-    name: name ? utf8Prefix(name, 512) : name,
-    firstMessage: firstMessage
-      ? utf8Prefix(goalMessagePreview(firstMessage), 1024)
-      : firstMessage,
-    created,
-    modified: position.modified,
-    messageCount,
+      }
+    },
+    reset() {
+      id = "";
+      cwd = "";
+      created = null;
+      name = null;
+      firstMessage = null;
+      messageCount = 0;
+      fallbackTitle = false;
+    },
+    finish(position: JsonlPosition): SessionSummarySnapshot | null {
+      if (cached && position === cached.position) return cached;
+      if (!id || !cwd) return null;
+      return {
+        summary: {
+          id,
+          cwd,
+          path: filePath,
+          name: name ? utf8Prefix(name, 512) : name,
+          firstMessage: firstMessage
+            ? utf8Prefix(goalMessagePreview(firstMessage), 1024)
+            : firstMessage,
+          created,
+          modified: position.modified,
+          messageCount,
+        },
+        position,
+        fallbackTitle,
+      };
+    },
   };
-  sessionSummaryCache.set(filePath, {
-    mtime: position.modified,
-    titlesStamp: "",
-    summary,
-    position,
-    fallbackTitle,
-  });
-  sessionIdIndex.set(id, filePath);
-  if (sessionIdIndex.size > 4096)
-    sessionIdIndex.delete(sessionIdIndex.keys().next().value!);
-  return summary;
 }
 
-async function summarizeSessionFileCached(
-  filePath: string,
-  childTitles?: Map<string, string>,
-): Promise<SessionFileSummary | null> {
-  let mtime = 0;
-  let size = 0;
-  let inode = 0;
+function rememberSummary(snapshot: SessionSummarySnapshot): void {
+  const previous = sessionSummaryCache.get(snapshot.summary.path);
+  if (previous?.summary.id === snapshot.summary.id) snapshot.childTitle ??= previous.childTitle;
+  sessionSummaryCache.set(snapshot.summary.path, snapshot);
+  if (sessionSummaryCache.size > 4096)
+    sessionSummaryCache.delete(sessionSummaryCache.keys().next().value!);
+  rememberSession(snapshot);
+}
+
+async function summarizeSessionFileCached(filePath: string): Promise<SessionSummarySnapshot | null> {
+  const cached = sessionSummaryCache.get(filePath);
   try {
     const stat = await fs.stat(filePath);
-    mtime = stat.mtimeMs;
-    size = stat.size;
-    inode = stat.ino;
+    if (!stat.isFile()) return null;
+    if (
+      cached && cached.position.modified === stat.mtimeMs &&
+      cached.position.size === stat.size && cached.position.inode === stat.ino
+    ) {
+      rememberSession(cached);
+      return cached;
+    }
+    const scan = sessionSummaryScan(filePath, cached);
+    const position = await scanJsonl(filePath, cached?.position, scan.consume, scan.reset);
+    const snapshot = scan.finish(position);
+    if (snapshot) {
+      rememberSummary(snapshot);
+      return snapshot;
+    }
   } catch {
-    sessionSummaryCache.delete(filePath);
-    return null;
+    /* 文件可能已移走或未写完。 */
   }
-  // titlesStamp：父会话标题映射变了才重算 name（子会话文件本身没变）
-  const titlesStamp = childTitles
-    ? [...childTitles.entries()]
-        .map(([id, title]) => `${id}=${title}`)
-        .join("|")
-    : "";
-  const cached = sessionSummaryCache.get(filePath);
-  if (
-    cached &&
-    cached.mtime === mtime &&
-    cached.position?.size === size &&
-    cached.position.inode === inode &&
-    cached.titlesStamp === titlesStamp
-  )
-    return cached.summary;
-  const summary = await summarizeSessionFile(filePath, childTitles);
-  const updated = sessionSummaryCache.get(filePath);
-  sessionSummaryCache.set(filePath, {
-    mtime,
-    titlesStamp,
-    summary,
-    position: updated?.position,
-    fallbackTitle: updated?.fallbackTitle,
-  });
-  while (sessionSummaryCache.size > 4096)
-    sessionSummaryCache.delete(sessionSummaryCache.keys().next().value!);
-  return summary;
+  sessionSummaryCache.delete(filePath);
+  return null;
+}
+
+function displaySummary({ summary, fallbackTitle, childTitle }: SessionSummarySnapshot): SessionFileSummary {
+  return childTitle && (!summary.name || fallbackTitle) ? { ...summary, name: childTitle } : summary;
+}
+
+function childSessionSummary(snapshot: SessionSummarySnapshot, titles: Map<string, string>): SessionFileSummary {
+  const taskName = path.basename(snapshot.summary.path, ".jsonl");
+  const title = firstUsefulTitle(titles.get(taskName));
+  if (title || !snapshot.summary.name)
+    snapshot.childTitle = utf8Prefix(title ?? snapshot.childTitle ?? taskName, 512);
+  return displaySummary(snapshot);
 }
 
 /** 子会话的包装提示词不是标题；从父 task 的具名任务和结果摘要取名。 */
@@ -449,24 +417,38 @@ async function readSubagentTitles(
   return titles;
 }
 
-function listSessionFiles(): string[] {
+function directoryEntries(dir: string) {
+  try {
+    return readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+}
+
+function sessionFilesIn(dir: string, entries = directoryEntries(dir)): string[] {
+  return entries.flatMap((entry) => {
+    if (!entry.name.endsWith(".jsonl")) return [];
+    const file = path.join(dir, entry.name);
+    return entry.isFile() || (entry.isSymbolicLink() && isOmpSessionFile(file)) ? [file] : [];
+  });
+}
+
+function listSessionFiles(nested = false): string[] {
   const files: string[] = [];
-  for (const root of [...ompSessionRoots(), managedSessionsRoot()]) {
-    if (!existsSync(root)) continue;
-    // 配置的 PI_CODING_AGENT_SESSION_DIR 为扁平目录(官方 CLI 直接写入该目录,不建 cwd 子目录)。
-    for (const entry of readdirSync(root, { withFileTypes: true })) {
-      if (entry.isFile() && entry.name.endsWith(".jsonl"))
-        files.push(path.join(root, entry.name));
-    }
-    for (const dir of readdirSync(root, { withFileTypes: true })) {
+  for (const root of new Set([...ompSessionRoots(), managedSessionsRoot()])) {
+    const entries = directoryEntries(root);
+    // 配置的 PI_CODING_AGENT_SESSION_DIR 支持官方 CLI 直接写入的扁平文件。
+    if (!nested) for (const file of sessionFilesIn(root, entries)) files.push(file);
+    for (const dir of entries) {
       if (!dir.isDirectory()) continue;
-      const dirPath = path.join(root, dir.name);
-      try {
-        for (const file of readdirSync(dirPath)) {
-          if (file.endsWith(".jsonl")) files.push(path.join(dirPath, file));
+      const projectDir = path.join(root, dir.name);
+      if (nested) {
+        for (const child of directoryEntries(projectDir)) {
+          if (!child.isDirectory()) continue;
+          for (const file of sessionFilesIn(path.join(projectDir, child.name))) files.push(file);
         }
-      } catch {
-        /* unreadable directory */
+      } else {
+        for (const file of sessionFilesIn(projectDir)) files.push(file);
       }
     }
   }
@@ -556,15 +538,22 @@ export class OmpControlChannel {
 export class OmpCatalog implements CatalogProvider {
   readonly control = new OmpControlChannel();
   private readonly diskBranchCaches = new Map<string, DiskBranchCache>();
-  private readonly diskReads = new Map<string, Promise<DiskBranchCache>>();
+  private readonly diskReads = new Map<string, Promise<DiskBranchCache | null>>();
   private summarizeFlight?: Promise<SessionFileSummary[]>;
 
   async listSessions(cwd: string): Promise<JsonValue> {
     const wanted = pathKey(cwd);
     const summaries = await this.summarizeAll();
-    return summaries
-      .filter((item) => pathKey(item.cwd) === wanted)
-      .map(toSessionInfo);
+    // 同一项目的多份会话共享 cwd；只在本次过滤内复用 realpath。
+    const keys = new Map([[cwd, wanted]]);
+    return summaries.filter((item) => {
+      let key = keys.get(item.cwd);
+      if (key === undefined) {
+        key = pathKey(item.cwd);
+        keys.set(item.cwd, key);
+      }
+      return key === wanted;
+    }).map(toSessionInfo);
   }
 
   async listAllSessions(): Promise<JsonValue> {
@@ -575,19 +564,15 @@ export class OmpCatalog implements CatalogProvider {
   private summarizeCache: { at: number; items: SessionFileSummary[] } | null =
     null;
 
-  private async summarizeAll(): Promise<SessionFileSummary[]> {
+  private async summarizeAll(fresh = false): Promise<SessionFileSummary[]> {
     // 会话列表扫描全量文件是 catalog 里最贵的操作：2s 缓存
-    if (this.summarizeCache && Date.now() - this.summarizeCache.at < 2_000) {
+    if (!fresh && this.summarizeCache && Date.now() - this.summarizeCache.at < 2_000) {
       return this.summarizeCache.items;
     }
     if (this.summarizeFlight) return this.summarizeFlight;
     this.summarizeFlight = (async () => {
-      const results = await mapLimited(listSessionFiles(), (file) =>
-        summarizeSessionFileCached(file),
-      );
-      const items = results.filter(
-        (item): item is SessionFileSummary => item !== null,
-      );
+      const results = await mapLimited(listSessionFiles(), summarizeSessionFileCached);
+      const items = results.flatMap((snapshot) => snapshot ? [displaySummary(snapshot)] : []);
       items.sort((a, b) => b.modified - a.modified);
       this.summarizeCache = { at: Date.now(), items };
       return items;
@@ -610,78 +595,96 @@ export class OmpCatalog implements CatalogProvider {
   ): Promise<JsonValue> {
     const target = resolveUserPath(sessionFile);
     assertOmpSessionFile(target);
-    const summary = await summarizeSessionFileCached(target);
-    if (!summary)
+    const cache = await this.diskEntries(target);
+    if (!cache)
       throw Object.assign(new Error("session file not found"), {
         code: "SESSION_NOT_FOUND",
       });
-    return this.previewSummary(
-      summary,
-      params,
-      (await detectOmpVersion()) ?? OMP_SDK_VERSION,
-    );
+    return this.previewDisk(cache, params, (await detectOmpVersion()) ?? OMP_SDK_VERSION);
   }
 
-  private async diskEntries(
-    summary: SessionFileSummary,
-  ): Promise<DiskBranchCache> {
-    const flight = this.diskReads.get(summary.path);
+  private diskEntries(filePath: string): Promise<DiskBranchCache | null> {
+    const flight = this.diskReads.get(filePath);
     if (flight) return flight;
-    const previous = this.diskBranchCaches.get(summary.path);
-    const reading = (async () => {
-      const cache: DiskBranchCache = previous ?? {
-        modified: 0,
-        entries: [],
-        allEntries: [],
-        reader: new BranchPageReader(),
-      };
-      const position = await scanJsonl(
-        summary.path,
-        cache.position,
-        (entry) =>
-          cache.allEntries.push(
-            previewEntry(entry, summary.id, cache.allEntries.length),
-          ),
-        () => {
-          cache.allEntries = [];
-          cache.reader.clear();
-        },
-      );
-      if (position !== cache.position) {
-        cache.entries = activeBranchFromEntries(cache.allEntries).filter(
-          (entry): entry is DiskBranchEntry => typeof entry.id === "string",
-        );
-        cache.position = position;
-        cache.modified = position.modified;
-      }
-      this.diskBranchCaches.delete(summary.path);
-      this.diskBranchCaches.set(summary.path, cache);
-      let bytes = [...this.diskBranchCaches.values()].reduce(
-        (total, item) => total + (item.position?.size ?? 0),
-        0,
-      );
-      // 淘汰按源文件字节计（解析后堆约其 1.5 倍），当前文件豁免是必要的：它正是本次分页要返回的数据。
-      // 读放大主题见 #199；不要用假想的大会话（如 500MiB）推算 OOM 上报。
-      for (const [key, item] of this.diskBranchCaches) {
-        if (this.diskBranchCaches.size <= 32 && bytes <= 128 * 1024 * 1024)
-          break;
-        if (key === summary.path) continue;
-        bytes -= item.position?.size ?? 0;
-        this.diskBranchCaches.delete(key);
-      }
-      return cache;
-    })().finally(() => this.diskReads.delete(summary.path));
-    this.diskReads.set(summary.path, reading);
+    const reading = this.scanDiskEntries(filePath).finally(() => this.diskReads.delete(filePath));
+    this.diskReads.set(filePath, reading);
     return reading;
   }
 
-  private async previewSummary(
-    summary: SessionFileSummary,
+  private async scanDiskEntries(filePath: string): Promise<DiskBranchCache | null> {
+    const previous = this.diskBranchCaches.get(filePath);
+    const scan = sessionSummaryScan(filePath, previous?.snapshot);
+    const addedEntries: JsonObject[] = [];
+    const generatedIds: number[] = [];
+    let firstIndex = previous?.allEntries.length ?? 0;
+    let reset = false;
+    let position: JsonlPosition;
+    try {
+      // 同一扫描算出摘要并立即投影，不额外保留整份原始历史。
+      position = await scanJsonl(filePath, previous?.snapshot.position, (entry) => {
+        scan.consume(entry);
+        const index = addedEntries.length;
+        addedEntries.push(previewEntry(entry, scan.sessionId, firstIndex + index));
+        if (typeof entry.id !== "string") generatedIds.push(index);
+      }, () => {
+        reset = true;
+        firstIndex = 0;
+        scan.reset();
+      });
+    } catch (error) {
+      if (["ENOENT", "ENOTDIR", "EISDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+        this.diskBranchCaches.delete(filePath);
+        return null;
+      }
+      throw error;
+    }
+    const snapshot = scan.finish(position);
+    if (!snapshot) {
+      this.diskBranchCaches.delete(filePath);
+      return null;
+    }
+    let cache = previous;
+    if (!cache || position !== cache.snapshot.position) {
+      // 固定头前的无 ID 条目也使用最终会话 ID；只回填新投影，不改旧快照引用。
+      for (const index of generatedIds)
+        addedEntries[index]!.id = `${snapshot.summary.id}:${firstIndex + index}`;
+      const previousEntries = reset ? [] : previous?.allEntries ?? [];
+      const allEntries = previousEntries.concat(addedEntries);
+      cache = {
+        snapshot,
+        allEntries,
+        entries: activeBranchFromEntries(allEntries).filter(
+          (entry): entry is DiskBranchEntry => typeof entry.id === "string",
+        ),
+        reader: reset ? new BranchPageReader() : previous?.reader ?? new BranchPageReader(),
+      };
+      rememberSummary(snapshot);
+    } else {
+      rememberSession(snapshot);
+    }
+    this.diskBranchCaches.delete(filePath);
+    this.diskBranchCaches.set(filePath, cache);
+    let bytes = [...this.diskBranchCaches.values()].reduce(
+      (total, item) => total + item.snapshot.position.size,
+      0,
+    );
+    // 按源文件字节淘汰；当前文件正用于返回本次分页，不淘汰。
+    for (const [key, item] of this.diskBranchCaches) {
+      if (this.diskBranchCaches.size <= 32 && bytes <= 128 * 1024 * 1024) break;
+      if (key === filePath) continue;
+      bytes -= item.snapshot.position.size;
+      this.diskBranchCaches.delete(key);
+    }
+    return cache;
+  }
+
+  private previewDisk(
+    cache: DiskBranchCache,
     params: DiskPageParams,
     sdkVersion: string = OMP_SDK_VERSION,
     stateOnly = false,
-  ): Promise<JsonValue> {
-    const cache = await this.diskEntries(summary);
+  ): JsonValue {
+    const summary = displaySummary(cache.snapshot);
     const entries = cache.allEntries;
     const branch = [...cache.entries];
     const config = sessionConfigFromBranch(branch);
@@ -776,23 +779,40 @@ export class OmpCatalog implements CatalogProvider {
     query: string,
     params: JsonObject = {},
   ): Promise<JsonValue> {
-    const found = await this.findSessionById(sessionId);
-    if (!found || typeof found.sessionFile !== "string") {
-      throw Object.assign(new Error("session file not found"), {
-        code: "SESSION_NOT_FOUND",
-      });
+    if (["skills.list", "skills.get", "controls.get", "subagent.messages"].includes(query)) {
+      const found = await this.findSessionById(sessionId);
+      if (!found || typeof found.cwd !== "string") throw sessionNotFound(sessionId);
+      if (query === "skills.list") return getOmpPreviewSkills(found.cwd);
+      if (query === "skills.get") {
+        if (typeof params.name !== "string" || typeof params.filePath !== "string") throw Object.assign(new Error("Skill identity is required"), { code: "INVALID_REQUEST" });
+        return readDiscoveredSkill(found.cwd, await getOmpPreviewSkills(found.cwd), params.name, params.filePath);
+      }
+      if (query === "controls.get") return getOmpPreviewControls(found.cwd);
+      if (typeof params.sessionFile !== "string")
+        throw notFoundError("subagent session file required");
+      return readChildSessionPreviewPage(
+        params.sessionFile,
+        typeof params.fromByte === "number" ? params.fromByte : 0,
+        params.sync as SubagentSyncRequest | undefined,
+      );
     }
-    const summary = await summarizeSessionFileCached(found.sessionFile);
-    if (!summary)
-      throw Object.assign(new Error("session file not found"), {
-        code: "SESSION_NOT_FOUND",
-      });
-    if (query === "skills.list") return getOmpPreviewSkills(summary.cwd);
-    if (query === "skills.get") {
-      if (typeof params.name !== "string" || typeof params.filePath !== "string") throw Object.assign(new Error("Skill identity is required"), { code: "INVALID_REQUEST" });
-      return readDiscoveredSkill(summary.cwd, await getOmpPreviewSkills(summary.cwd), params.name, params.filePath);
+    if (query === "toolOutput.get") {
+      if (typeof params.artifactId !== "string" || typeof params.offset !== "number") {
+        throw Object.assign(new Error("Invalid tool output request"), { code: "INVALID_REQUEST" });
+      }
+      const found = await this.findSessionById(sessionId);
+      if (!found || typeof found.sessionFile !== "string") throw sessionNotFound(sessionId);
+      return requireJsonValue(await readSessionToolOutput(
+        found.sessionFile,
+        sessionId,
+        params.artifactId,
+        params.offset,
+        typeof params.revision === "string" ? params.revision : undefined,
+      ));
     }
-    if (query === "controls.get") return getOmpPreviewControls(summary.cwd);
+    const cache = await this.readDiskById(sessionId);
+    if (!cache) throw sessionNotFound(sessionId);
+    const { summary } = cache.snapshot;
     const pageParams = {
       cursor: typeof params.cursor === "string" ? params.cursor : undefined,
       syncCursor:
@@ -804,25 +824,11 @@ export class OmpCatalog implements CatalogProvider {
         typeof params.maxBytes === "number" ? params.maxBytes : 2 * 1024 * 1024,
     };
     if (query === "state.get" || query === "branch.get") {
-      const preview = await this.previewSummary(
-        summary,
-        pageParams,
-        OMP_SDK_VERSION,
-        query === "state.get",
-      );
+      const preview = this.previewDisk(cache, pageParams, OMP_SDK_VERSION, query === "state.get");
       if (!isJsonObject(preview)) throw new Error("Invalid session preview");
       return preview[query === "state.get" ? "state" : "branch"]!;
     }
-    if (query === "subagent.messages") {
-      if (typeof params.sessionFile !== "string")
-        throw notFoundError("subagent session file required");
-      return readChildSessionPreviewPage(
-        params.sessionFile,
-        typeof params.fromByte === "number" ? params.fromByte : 0,
-        params.sync as SubagentSyncRequest | undefined,
-      );
-    }
-    const entries = (await this.diskEntries(summary)).allEntries;
+    const entries = cache.allEntries;
     if (query === "entry.get") {
       const entry = entries.find(item => item.id === params.entryId);
       if (!entry) throw notFoundError("entry not found");
@@ -919,27 +925,9 @@ export class OmpCatalog implements CatalogProvider {
     sessionId: string,
     params: DiskPageParams = {},
   ): Promise<JsonValue> {
-    const summaries = await this.summarizeAll();
-    const match = summaries.find((item) => item.id === sessionId);
-    if (match)
-      return this.previewSummary(
-        match,
-        params,
-        (await detectOmpVersion()) ?? OMP_SDK_VERSION,
-      );
-    // 顶层扫描没有（OMP 子代理会话嵌套在 <父会话名>/ 目录里）→ 深度查找兜底，
-    // 让子会话在重载/深链后也能按 id 预览
-    const found = await this.findSessionById(sessionId);
-    if (
-      found &&
-      typeof found.sessionFile === "string" &&
-      typeof found.cwd === "string"
-    ) {
-      return this.previewSession(found.cwd, found.sessionFile, params);
-    }
-    throw Object.assign(new Error(`session not found: ${sessionId}`), {
-      code: "SESSION_NOT_FOUND",
-    });
+    const cache = await this.readDiskById(sessionId);
+    if (!cache) throw sessionNotFound(sessionId);
+    return this.previewDisk(cache, params, (await detectOmpVersion()) ?? OMP_SDK_VERSION);
   }
 
   /**
@@ -949,19 +937,13 @@ export class OmpCatalog implements CatalogProvider {
   async listChildSessions(parentSessionFile: string): Promise<JsonValue> {
     assertOmpSessionFile(resolveUserPath(parentSessionFile));
     const dir = childSessionDir(parentSessionFile);
-    if (!dir || !existsSync(dir)) return [];
-    let names: string[] = [];
-    try {
-      names = readdirSync(dir).filter((name) => name.endsWith(".jsonl"));
-    } catch {
-      return [];
-    }
+    if (!dir) return [];
+    const files = sessionFilesIn(dir).filter(isOmpSessionFile);
+    if (!files.length) return [];
     const titles = await readSubagentTitles(resolveUserPath(parentSessionFile));
-    const results = await mapLimited(names, (name) =>
-      summarizeSessionFileCached(path.join(dir, name), titles),
-    );
+    const results = await mapLimited(files, summarizeSessionFileCached);
     return results
-      .filter((item): item is SessionFileSummary => item !== null)
+      .flatMap((snapshot) => snapshot ? [childSessionSummary(snapshot, titles)] : [])
       .sort((a, b) => b.modified - a.modified)
       .map(toSessionInfo);
   }
@@ -973,81 +955,70 @@ export class OmpCatalog implements CatalogProvider {
   async findSessionByFile(sessionFile: string): Promise<JsonObject | null> {
     const target = resolveUserPath(sessionFile);
     if (!target.endsWith(".jsonl") || !isOmpSessionFile(target)) return null;
-    const summary = await summarizeSessionFileCached(target);
-    if (!summary) return null;
-    return {
-      id: summary.id,
-      cwd: summary.cwd,
-      sessionFile: summary.path,
-      name: summary.name,
-    };
+    const snapshot = await summarizeSessionFileCached(target);
+    if (!snapshot) return null;
+    const summary = displaySummary(snapshot);
+    return { ...sessionIdentity(summary), name: summary.name };
   }
 
-  /**
-   * 按 session id 解析会话文件：先查顶层扫描，再扫原生与 WebUI 托管目录
-   * 下的子代理会话。顶层列表仍不包含子会话，重载/深链可按 id 读取。
-   */
   private readonly sessionLookupFlights = new Map<string, Promise<JsonObject | null>>();
 
   async findSessionById(sessionId: string): Promise<JsonObject | null> {
     const existing = this.sessionLookupFlights.get(sessionId);
     if (existing) return existing;
-    const flight = this.findSessionByIdOnce(sessionId).finally(() => {
-      if (this.sessionLookupFlights.get(sessionId) === flight) this.sessionLookupFlights.delete(sessionId);
-    });
+    const flight = this.readById(sessionId, summarizeSessionFileCached, (snapshot) => snapshot.summary.id)
+      .then((snapshot) => snapshot ? sessionIdentity(snapshot.summary) : null)
+      .finally(() => this.sessionLookupFlights.delete(sessionId));
     this.sessionLookupFlights.set(sessionId, flight);
     return flight;
   }
 
-  private async findSessionByIdOnce(sessionId: string): Promise<JsonObject | null> {
+  private readDiskById(sessionId: string): Promise<DiskBranchCache | null> {
+    return this.readById(sessionId, (file) => this.diskEntries(file), (cache) => cache.snapshot.summary.id);
+  }
+
+  private async readById<T>(
+    sessionId: string,
+    read: (file: string) => Promise<T | null>,
+    getId: (value: T) => string,
+  ): Promise<T | null> {
+    const tryFile = async (file: string): Promise<T | null> => {
+      if (!file.endsWith(".jsonl") || !isOmpSessionFile(file)) return null;
+      const result = await read(file);
+      return result && getId(result) === sessionId ? result : null;
+    };
     const indexed = sessionIdIndex.get(sessionId);
-    if (indexed && isOmpSessionFile(indexed)) {
-      const found = await this.findSessionByFile(indexed);
-      if (found?.id === sessionId)
-        return { id: found.id, cwd: found.cwd, sessionFile: found.sessionFile };
-      sessionIdIndex.delete(sessionId);
+    if (indexed) {
+      const result = await tryFile(indexed);
+      if (result) return result;
+      if (sessionIdIndex.get(sessionId) === indexed) sessionIdIndex.delete(sessionId);
     }
-    const top = await this.summarizeAll();
-    const hit = top.find((item) => item.id === sessionId);
-    if (hit) return { id: hit.id, cwd: hit.cwd, sessionFile: hit.path };
-    const candidates: string[] = [];
-    for (const root of [...ompSessionRoots(), managedSessionsRoot()]) {
-      if (!existsSync(root)) continue;
-      let projects: string[] = [];
-      try {
-        projects = readdirSync(root);
-      } catch {
-        continue;
+    const trySummaries = async (items: SessionFileSummary[]): Promise<T | null> => {
+      for (const item of items) {
+        if (item.id !== sessionId) continue;
+        const result = await tryFile(item.path);
+        if (result) return result;
       }
-      for (const project of projects) {
-        const projectPath = path.join(root, project);
-        let entries;
-        try {
-          entries = readdirSync(projectPath, { withFileTypes: true });
-        } catch {
-          continue;
-        }
-        for (const entry of entries) {
-          if (!entry.isDirectory()) continue;
-          const childDir = path.join(projectPath, entry.name);
-          let names: string[] = [];
-          try {
-            names = readdirSync(childDir).filter((name) =>
-              name.endsWith(".jsonl"),
-            );
-          } catch {
-            continue;
-          }
-          for (const name of names) candidates.push(path.join(childDir, name));
-        }
-      }
+      return null;
+    };
+    // 索引失效才强制刷新；普通无索引查询仍复用两秒的发现快照。
+    const summaries = await this.summarizeAll(Boolean(indexed));
+    const top = await trySummaries(summaries);
+    if (top) return top;
+    if (!indexed && summaries.some((item) => item.id === sessionId)) {
+      // 快照中的候选路径也可能已经移动，不能因此遗漏原生会话。
+      const refreshed = await trySummaries(await this.summarizeAll(true));
+      if (refreshed) return refreshed;
     }
-    const matches = await mapLimited(candidates, async filePath => {
-      const header = await sessionFileId(filePath);
-      return header === sessionId ? summarizeSessionFileCached(filePath) : null;
-    });
-    const match = matches.find(item => item?.id === sessionId);
-    if (match) return { id: match.id, cwd: match.cwd, sessionFile: match.path };
+    // 顶层列表不展开原生子代理目录；深链仍可从其文件头发现子会话。
+    const candidates = await mapLimited(listSessionFiles(true), async (file) =>
+      await sessionFileId(file) === sessionId ? file : null,
+    );
+    for (const file of candidates) {
+      if (!file) continue;
+      const result = await tryFile(file);
+      if (result) return result;
+    }
     return null;
   }
 
@@ -1227,6 +1198,14 @@ async function sessionFileId(filePath: string): Promise<string | undefined> {
     /* 文件可能在扫描期间被删除。 */
   }
   return undefined;
+}
+
+function sessionIdentity(summary: SessionFileSummary): JsonObject {
+  return { id: summary.id, cwd: summary.cwd, sessionFile: summary.path };
+}
+
+function sessionNotFound(sessionId: string): Error {
+  return Object.assign(new Error(`session not found: ${sessionId}`), { code: "SESSION_NOT_FOUND" });
 }
 
 function toSessionInfo(summary: SessionFileSummary): JsonObject {

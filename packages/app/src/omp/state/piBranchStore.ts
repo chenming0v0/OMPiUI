@@ -7,6 +7,7 @@ interface BranchEntry {
   loading: boolean
   error: Error | null
   requestVersion: number
+  cacheDirty?: boolean
   pendingToolExecutions?: Record<string, PiToolExecutionState>
   toolInterruption?: { error: string; kind: NonNullable<PiToolExecutionState['interruption']> }
 }
@@ -29,6 +30,7 @@ class PiBranchStore {
     if (entry) {
       this.bySessionId.delete(sessionId)
       this.bySessionId.set(sessionId, entry)
+      this.queueBranchCache(sessionId, entry)
     }
   }
 
@@ -56,11 +58,20 @@ class PiBranchStore {
     return () => this.listeners.delete(listener)
   }
 
+  private queueBranchCache(sessionId: string, entry: BranchEntry): void {
+    if (!entry.cacheDirty || !entry.data || !this.activeSessions.has(sessionId)) return
+    entry.cacheDirty = false
+    cachePiBranch(sessionId, entry.data)
+  }
+
+  private notifyBranchChanged(sessionId: string, entry: BranchEntry): void {
+    // A branch may load before its pane subscribes. Queue it when retained.
+    entry.cacheDirty = true
+    this.queueBranchCache(sessionId, entry)
+    this.notify()
+  }
+
   private notify(): void {
-    for (const id of this.activeSessions) {
-      const data = this.bySessionId.get(id)?.data
-      if (data) cachePiBranch(id, data)
-    }
     this.listeners.forEach(l => l())
   }
 
@@ -110,15 +121,15 @@ class PiBranchStore {
     entry.error = null
     entry.loading = false
     this.trimInactive()
-    this.notify()
+    this.notifyBranchChanged(sessionId, entry)
   }
 
   /** 流式内容不使历史请求失效；响应合并时按事件游标保留较新的 checkpoint。 */
   setLiveCheckpoint(sessionId: string, checkpoint: PiBranchCheckpoint): void {
     const entry = this.bySessionId.get(sessionId)
-    if (!entry?.data) return
+    if (!entry?.data || entry.data.checkpoint === checkpoint) return
     entry.data = { ...entry.data, checkpoint }
-    this.notify()
+    this.notifyBranchChanged(sessionId, entry)
   }
   /** Live tool evidence shares the branch projection and survives checkpoint replacement. */
   patchToolExecution(sessionId: string, toolCallId: string, patch: PiToolExecutionState): boolean {
@@ -148,7 +159,7 @@ class PiBranchStore {
       ...entry.data,
       client: { ...entry.data.client, toolExecutions: { ...entry.data.client?.toolExecutions, [toolCallId]: next } },
     }
-    this.notify()
+    this.notifyBranchChanged(sessionId, entry)
     return !next.error || Boolean(patch.result)
   }
 
@@ -186,9 +197,13 @@ class PiBranchStore {
     }
     if (!changed) return
     entry.requestVersion = ++this.nextVersion
-    if (!entry.data) entry.pendingToolExecutions = executions
-    else entry.data = { ...entry.data, client: { ...entry.data.client, toolExecutions: executions } }
-    this.notify()
+    if (!entry.data) {
+      entry.pendingToolExecutions = executions
+      this.notify()
+    } else {
+      entry.data = { ...entry.data, client: { ...entry.data.client, toolExecutions: executions } }
+      this.notifyBranchChanged(sessionId, entry)
+    }
   }
 
   /** 保留崩溃前收到的正文，但停止流式动画，旧的历史响应不能再将它变回运行中。 */
@@ -202,7 +217,7 @@ class PiBranchStore {
       ...entry.data,
       checkpoint: { ...checkpoint, liveMessage: { ...liveMessage, phase: 'persisting' } },
     }
-    this.notify()
+    this.notifyBranchChanged(sessionId, entry)
   }
 
   beginRequest(sessionId: string): number {

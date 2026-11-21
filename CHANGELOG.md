@@ -1,3 +1,21 @@
+## [v0.6.65] - 2026-11-21
+
+- test(app): match expanded output element (f0d8b76)
+- fix(app): type the full output artifact id (f6fa04e)
+- test(app): use removed follow-up entry content in sync test (32e1ca3)
+- fix(app): lazy-load truncated tool output (82d4ede)
+- fix(app): sync cross-device session updates (781803d)
+- fix(worker): recover transient OMP version probe failures (218805c)
+- 修复：避免桌面校验被依赖下载拖到超时 (734ddaa)
+- 修复：恢复诊断保护并修正刷新缓存一致性 (d4f0185)
+- test: 隔离并发终端槽位验证的原生进程开销 (13953aa)
+- fix: 合并会话预览扫描并优先按已知路径读取 (352eaad)
+- fix: 原子保存恢复备份并限制历史保留 (189676c)
+- fix: 恢复日志清理并限制故障报告读取 (cad81be)
+- fix: 减少目录刷新与移动端重复持久化 (1163f1a)
+- fix: 合并变更面板刷新并清理轻量包残留 (3fc8237)
+- fix: 避免流式会话重复写入无关缓存 (2412acc)
+
 ## [v0.6.64] - 2026-11-21
 
 - feat: 优化供应商与模型图标 (50942db)
@@ -35,6 +53,9 @@
 
 ## [Unreleased]
 
+- fix: 修复 #447：官方 OMP 公共 API 的版本校验改为异步、30 秒预算、合并并发探测并对失败退避 5 秒；超时仅回落到所选 CLI 入口绑定的包或内置 runtime 版本，不借用未经验证的全局源码；暂时无法校验返回可重试 503，不再误报功能不支持。
+- fix: 工具输出超限时改为按需展开会话 artifact；完整输出仅在用户点击后分块读取，不再显示截断行数和 artifact 路径。
+- fix(app/server): Agent idle 时刷新会话历史，恢复移动端漏收的助手回复；跨客户端同步从队列取回的草稿，并广播会话标题更新；记录助手事件与历史刷新结果。
 - ci: Linux／Windows 保持完整验证，前端和服务端各使用两片并行；缓存共享 workspace 编译与精确版本的 OMP 测试资源，拆分 Windows npm 角色和 RPC 验证。
 - ci: 按源码指纹及受测 latest OMP 版本复用成功的完整 CI；根目录文档和 `docs/` 变更跳过重型检查，手动派发仍强制完整检查，tag 不再重复触发 CI。
 - ci: 发布预构建等待源码 CI 真正成功后再启动；等待窗口覆盖完整任务及 GitHub 结果更新，不把运行中、取消或失败当作通过。

@@ -314,7 +314,12 @@ export function SidePanel({
   )
   const sessionLookup = useMemo(() => new Map(sessions.map(session => [session.id, session])), [sessions])
   // 选中会话的 OMP 子代理会话（session.children；OpenCodeUI children 语义）
-  const { parentId: childSessionsParentId, sessions: childSessions } = useChildSessions(selectedSessionId, sessionLookup)
+  const { parentId: childSessionsParentId, sessions: childSessions } = useChildSessions(
+    selectedSessionId,
+    sessionLookup,
+    // 隐藏的历史列表不订阅刷新；重新显示时补取，仍保留当前选中子会话。
+    sidebarTab === 'recents' && showLabels,
+  )
   // OpenCodeUI 语义（未开启“始终显示子会话”）：父会话下只挂
   // ① 正在工作的子代理（结束即消失）② 用户当前正在查看的那个子会话。
   // 其余历史子会话一律不显示。

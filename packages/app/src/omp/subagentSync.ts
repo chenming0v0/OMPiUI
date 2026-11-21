@@ -32,7 +32,8 @@ export async function readSyncedSubagentHistory(
         available.set(block.fromByte, block)
     }
   }
-  const validSaved = Boolean(saved?.blocks.length && available.size === saved.blocks.length)
+  const verifiedSaved = Array.isArray(saved?.blocks) && available.size === saved.blocks.length
+  const validSaved = verifiedSaved && Boolean(saved?.blocks.length)
   const resuming = Boolean(validSaved && saved?.hasMore)
   const retainedWindow = Boolean(validSaved && saved!.blocks[0].fromByte > 0)
   let continuing = resuming || retainedWindow
@@ -175,7 +176,7 @@ export async function readSyncedSubagentHistory(
       blocks,
       nextByte: cursor,
       hasMore,
-    })
+    }, verifiedSaved)
   signal.throwIfAborted()
   const messages: JsonObject[] = blocks.flatMap(block => block.messages).slice(-MESSAGE_LIMIT)
   return {

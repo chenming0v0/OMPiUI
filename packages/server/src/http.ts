@@ -134,7 +134,7 @@ function sendProblem(
   return sendJson(
     res,
     status,
-    problem(isErrorCode(p.code) ? p.code : "INTERNAL", p.message),
+    problem(isErrorCode(p.code) ? p.code : "INTERNAL", p.message, { retryable: p.retryable }),
   );
 }
 
@@ -1127,6 +1127,7 @@ export function statusForError(error: unknown): number {
     case "REGISTRY_UNAVAILABLE":
     case "RATE_LIMITED":
     case "DRIVER_UNAVAILABLE":
+    case "OMP_VERSION_PROBE_FAILED":
     case "WORKER_RESULT_UNKNOWN":
       return 503;
     case "METHOD_NOT_ALLOWED":

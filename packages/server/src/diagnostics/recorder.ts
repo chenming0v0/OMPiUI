@@ -161,12 +161,12 @@ export class DiagnosticRecorder {
         this.day = day
         this.file = join(this.options.directory, `diagnostic-${day}_${this.runId}_${String(++this.part).padStart(6, "0")}.jsonl`)
         this.bytes = 0
-        // 低频生命周期事件同步落盘，进程被 watch 重启时不依赖缓冲区排空。
-        appendFileSync(this.file, "", { mode: 0o600 })
-        this.prune(now)
       }
+      const firstInPart = this.bytes === 0
+      // 同步写入；轮转时由首条事件直接建文件，不依赖缓冲区排空。
       appendFileSync(this.file, line, { mode: 0o600 })
       this.bytes += size
+      if (firstInPart) this.prune(now)
     } catch {
       if (!this.warned) {
         this.warned = true

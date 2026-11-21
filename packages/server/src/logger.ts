@@ -12,7 +12,7 @@
  * 按天轮转，保留最近 N 天（OMPIUI_LOG_KEEP_DAYS，默认 7）。
  */
 
-import { appendFileSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs"
+import { appendFileSync, lstatSync, mkdirSync, readdirSync, unlinkSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 
@@ -20,6 +20,7 @@ let logDir: string | undefined
 let logFile: string | undefined
 let currentDay = ""
 let enabled = false
+let lastCaptured: string | undefined
 
 export function dataRoot(): string {
   const env = process.env.OMPIUI_DATA_DIR?.trim()
@@ -28,35 +29,59 @@ export function dataRoot(): string {
   return join(homedir(), ".ompiui")
 }
 
-function ensureLogFile(): string | undefined {
+function cleanupOldLogs(directory: string, activeName: string): void {
   try {
-    const day = new Date().toISOString().slice(0, 10)
-    if (logFile && currentDay === day) return logFile
-    currentDay = day
-    if (!logDir) {
-      logDir = join(dataRoot(), "logs")
-      mkdirSync(logDir, { recursive: true })
+    const keepDays = Number(process.env.OMPIUI_LOG_KEEP_DAYS ?? 7)
+    const cutoff = Date.now() - (Number.isFinite(keepDays) && keepDays > 0 ? keepDays : 7) * 86_400_000
+    for (const name of readdirSync(directory)) {
+      if (name === activeName || !/^ompiui-server-\d{4}-\d{2}-\d{2}\.log$/.test(name)) continue
+      const file = join(directory, name)
+      try {
+        const stat = lstatSync(file)
+        if (stat.isFile() && stat.mtimeMs < cutoff) unlinkSync(file)
+      } catch {
+        /* worker 也可能正在清理同一个目录。 */
+      }
     }
-    logFile = join(logDir, `ompiui-server-${day}.log`)
+  } catch {
+    /* 清理失败不能影响日志写入。 */
+  }
+}
+
+function ensureLogFile(day: string): string | undefined {
+  try {
+    if (logFile && currentDay === day) return logFile
+    const directory = logDir ?? join(dataRoot(), "logs")
+    mkdirSync(directory, { recursive: true })
+    const name = `ompiui-server-${day}.log`
+    cleanupOldLogs(directory, name)
+    logDir = directory
+    logFile = join(directory, name)
+    currentDay = day
     return logFile
   } catch {
     return undefined
   }
 }
 
-/**
- * 主动写一条日志。所有关键事件（启动、worker 崩溃、shutdown、错误）都应
- * 调用它——这是 bun 打包 exe 下唯一可靠的落盘方式。
- */
+function writeLine(message: string): boolean {
+  const time = new Date().toISOString()
+  const file = ensureLogFile(time.slice(0, 10))
+  if (!file) return false
+  try {
+    appendFileSync(file, `[${time}] ${message}\n`)
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function logToFile(message: string): void {
   if (!enabled) return
-  const file = ensureLogFile()
-  if (!file) return
-  try {
-    appendFileSync(file, `[${new Date().toISOString()}] ${message}\n`)
-  } catch {
-    /* 磁盘满/权限问题时不阻塞主流程 */
-  }
+  // Node 上多个调用点先写 console，再显式写同一条；仅合并本轮已成功捕获的同文记录。
+  const duplicate = lastCaptured === message
+  lastCaptured = undefined
+  if (!duplicate) writeLine(message)
 }
 
 export function logInfo(message: string): void {
@@ -67,50 +92,51 @@ export function logError(message: string): void {
   logToFile(message)
 }
 
-function cleanupOldLogs(): void {
-  try {
-    if (!logDir) return
-    const keepDays = Number(process.env.OMPIUI_LOG_KEEP_DAYS ?? 7)
-    const cutoff = Date.now() - (Number.isFinite(keepDays) && keepDays > 0 ? keepDays : 7) * 24 * 60 * 60 * 1000
-    for (const name of readdirSync(logDir)) {
-      const full = join(logDir, name)
-      try {
-        if (statSync(full).mtimeMs < cutoff) rmSync(full, { force: true })
-      } catch {
-        /* ignore */
-      }
-    }
-  } catch {
-    /* ignore */
-  }
-}
-
-/**
- * 启用文件日志（幂等）。node 模式下额外 patch console 的 stdout/stderr 以
- * 捕获零散输出；bun 下 console 不走 JS 方法，依赖各日志点显式 logToFile。
- */
+/** 启用文件日志（幂等）；首次启用和 UTC 换日时清理过期文件。 */
 export function enableFileLogging(enable = process.env.OMPIUI_FILE_LOG !== "0"): () => void {
-  if (enabled) return () => undefined
-  if (!enable) return () => undefined
+  if (enabled || !enable) return () => undefined
   enabled = true
-  cleanupOldLogs()
-  // node 模式下 console 走 process.stdout.write，patch 可捕获；
-  // bun 下无效但无害（主动 logToFile 是主路径）。
-  try {
-    const origStdoutWrite = process.stdout.write.bind(process.stdout)
-    const origStderrWrite = process.stderr.write.bind(process.stderr)
-    process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => {
-      if (typeof chunk === "string") logToFile(chunk.replace(/\n$/, ""))
-      return origStdoutWrite(chunk as never, ...(rest as never[]))
-    }) as typeof process.stdout.write
-    process.stderr.write = ((chunk: unknown, ...rest: unknown[]) => {
-      if (typeof chunk === "string") logToFile(chunk.replace(/\n$/, ""))
-      return origStderrWrite(chunk as never, ...(rest as never[]))
-    }) as typeof process.stderr.write
-  } catch {
-    /* ignore */
+  ensureLogFile(new Date().toISOString().slice(0, 10))
+  const stdout = process.stdout
+  const stderr = process.stderr
+  const stdoutWrite = stdout.write
+  const stderrWrite = stderr.write
+  if (!process.versions.bun) {
+    let clearScheduled = false
+    const capture = (chunk: unknown) => {
+      lastCaptured = undefined
+      if (typeof chunk !== "string") return
+      const message = chunk.replace(/\n$/, "")
+      if (!writeLine(message)) return
+      lastCaptured = message
+      if (clearScheduled) return
+      clearScheduled = true
+      queueMicrotask(() => {
+        clearScheduled = false
+        if (stdout.write === captureStdout) lastCaptured = undefined
+      })
+    }
+    const captureStdout = ((chunk: unknown, ...rest: unknown[]) => {
+      capture(chunk)
+      return stdoutWrite.call(stdout, chunk as never, ...(rest as never[]))
+    }) as typeof stdout.write
+    const captureStderr = ((chunk: unknown, ...rest: unknown[]) => {
+      capture(chunk)
+      return stderrWrite.call(stderr, chunk as never, ...(rest as never[]))
+    }) as typeof stderr.write
+    stdout.write = captureStdout
+    stderr.write = captureStderr
   }
+  let stopped = false
   return () => {
+    if (stopped) return
+    stopped = true
     enabled = false
+    logDir = logFile = lastCaptured = undefined
+    currentDay = ""
+    if (!process.versions.bun) {
+      stdout.write = stdoutWrite
+      stderr.write = stderrWrite
+    }
   }
 }

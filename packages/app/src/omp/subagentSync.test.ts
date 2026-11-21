@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { subagentBlockHash, type SubagentDataBlock, type SubagentSyncRequest } from '@ompiui/protocol'
 import { readSyncedSubagentHistory } from './subagentSync'
-import { clearSubagentBlockMemory } from './subagentBlockCache'
+import { clearSubagentBlockMemory, saveSubagentBlocks, type CachedSubagentHistory } from './subagentBlockCache'
 
 const projection = 'subagent-preview-v1:thinking-off'
 const records = new Map<string, unknown>()
+const writes: string[] = []
 
 // 独立保留数据库记录，清空模块内存后复现页面刷新时的持久恢复。
 function memoryDatabase() {
@@ -13,12 +14,20 @@ function memoryDatabase() {
       const request = {
         result: {
           transaction: () => {
+            let pending = 0
+            const enqueue = (read: () => void) => {
+              pending++
+              queueMicrotask(() => {
+                read()
+                if (--pending === 0) tx.oncomplete?.()
+              })
+            }
             const tx = {
               oncomplete: null as (() => void) | null,
               objectStore: (store: string) => ({
                 get: (key: string) => {
                   const read = { result: undefined as unknown, onsuccess: null as (() => void) | null }
-                  queueMicrotask(() => {
+                  enqueue(() => {
                     read.result = structuredClone(records.get(`${store}:${key}`))
                     read.onsuccess?.()
                   })
@@ -26,19 +35,20 @@ function memoryDatabase() {
                 },
                 getAll: () => {
                   const read = { result: [] as unknown[], onsuccess: null as (() => void) | null }
-                  queueMicrotask(() => {
+                  enqueue(() => {
                     read.result = [...records]
                       .filter(([key]) => key.startsWith(`${store}:`))
                       .map(([, value]) => structuredClone(value))
                     read.onsuccess?.()
-                    queueMicrotask(() => tx.oncomplete?.())
                   })
                   return read
                 },
                 put: (value: unknown, key: string) => {
+                  writes.push(`${store}:${key}`)
                   records.set(`${store}:${key}`, structuredClone(value))
                 },
                 delete: (key: string) => {
+                  writes.push(`${store}:${key}`)
                   records.delete(`${store}:${key}`)
                 },
               }),
@@ -86,29 +96,85 @@ describe('persistent conditional child history', () => {
   beforeEach(() => {
     clearSubagentBlockMemory()
     records.clear()
+    writes.length = 0
     vi.stubGlobal('indexedDB', memoryDatabase())
   })
   afterEach(() => {
     clearSubagentBlockMemory()
+    vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
 
-  it('restores actual bodies from IndexedDB after refresh and requests hashes, not old bodies', async () => {
+  it('restores bodies after reload without rewriting unchanged complete histories', async () => {
     const body = block('cached history')
     let wire = ''
+    let version = 0
     const fetch = vi.fn(async (_cursor, _signal, sync) => {
-      const page = response([body], sync)
+      const page = response([body], sync, `snapshot-${++version}`)
       wire = JSON.stringify(page)
       return page
     })
     const signal = new AbortController().signal
     await readSyncedSubagentHistory('server/child', undefined, fetch, signal)
+    expect(writes.splice(0)).toEqual(['histories:server/child', 'metadata:server/child'])
+    await readSyncedSubagentHistory('server/child', undefined, fetch, signal)
     clearSubagentBlockMemory()
     const result = await readSyncedSubagentHistory('server/child', undefined, fetch, signal)
     expect(result).toMatchObject({ messages: [{ content: 'cached history' }] })
     expect(wire).not.toContain('cached history')
-    expect(fetch.mock.calls[1][2].knownBlocks).toEqual([{ fromByte: 0, nextByte: 100, hash: body.hash }])
-    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(fetch.mock.calls[2][2]).toMatchObject({
+      snapshot: undefined,
+      knownBlocks: [{ fromByte: 0, nextByte: 100, hash: body.hash }],
+    })
+    expect(writes).toEqual([])
+  })
+
+  it('saves a changed continuation snapshot and clears the checkpoint on completion', async () => {
+    const body = block('cached history')
+    const checkpoint: CachedSubagentHistory = {
+      key: 'child', projection, blocks: [body], nextByte: 100, hasMore: true, snapshot: 'old',
+    }
+    await saveSubagentBlocks(checkpoint)
+    writes.length = 0
+    await saveSubagentBlocks({ ...checkpoint, snapshot: 'current' }, true)
+    expect(writes.splice(0)).toEqual(['histories:child', 'metadata:child'])
+    clearSubagentBlockMemory()
+
+    const fetch = vi.fn(async (_cursor, _signal, _sync) => ({
+      ...response([], undefined, 'current'), fromByte: 100, nextByte: 100,
+    }))
+    const signal = new AbortController().signal
+    expect(await readSyncedSubagentHistory('child', undefined, fetch, signal)).toMatchObject({
+      messages: body.messages, nextByte: 100, hasMore: false,
+    })
+    expect(fetch).toHaveBeenCalledWith(100, signal, { version: 1, snapshot: 'current', knownBlocks: [] })
+    expect(writes).toEqual(['histories:child', 'metadata:child'])
+    expect(records.get('histories:child')).toMatchObject({ nextByte: 100, hasMore: false })
+  })
+
+  it('keeps eviction ordered by recent use without writing on an unchanged refresh', async () => {
+    let now = 0
+    vi.spyOn(Date, 'now').mockImplementation(() => ++now)
+    const fetch = vi.fn(async (_cursor, _signal, sync) => response([block('history')], sync))
+    const signal = new AbortController().signal
+    const read = (key: string) => readSyncedSubagentHistory(key, undefined, fetch, signal)
+    for (let index = 0; index < 64; index++) await read(`child-${index}`)
+    writes.length = 0
+
+    await read('child-0')
+    expect(writes).toEqual([])
+    await read('child-64')
+    expect(writes).toEqual(['histories:child-1', 'metadata:child-1', 'histories:child-64', 'metadata:child-64'])
+    expect(records.size).toBe(128)
+    expect(records.has('histories:child-0')).toBe(true)
+  })
+
+  it('does not persist an explicit cursor read', async () => {
+    const fetch = vi.fn(async () => response([block('tail', 100, 200)]))
+    expect(await readSyncedSubagentHistory('child', 100, fetch, new AbortController().signal)).toMatchObject({
+      messages: [{ content: 'tail' }], fromByte: 100, nextByte: 200,
+    })
+    expect(writes).toEqual([])
   })
 
   it('combines reused blocks with new data and removes stale replaced messages', async () => {
@@ -138,10 +204,13 @@ describe('persistent conditional child history', () => {
     clearSubagentBlockMemory()
     const stored = records.get('histories:child') as { blocks: SubagentDataBlock[] }
     stored.blocks[0].messages[0].content = 'damaged'
+    writes.length = 0
     expect(await readSyncedSubagentHistory('child', undefined, fetch, signal)).toMatchObject({
       messages: [{ content: 'original' }],
     })
     expect(fetch.mock.calls[1][2].knownBlocks).toEqual([])
+    expect(writes).toEqual(['histories:child', 'metadata:child'])
+    expect(records.get('histories:child')).toMatchObject({ blocks: [body] })
   })
 
   it('retries a missing reuse block without declaring it again', async () => {

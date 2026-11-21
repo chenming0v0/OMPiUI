@@ -239,8 +239,14 @@ export class WorkspaceWatcher {
       if (!change) return
       state.gitDirty = true
       if (!state.rescan) {
-        if (state.pending.has(relative) || state.pending.size < MAX_CHANGES_PER_EVENT) state.pending.set(relative, change)
-        else {
+        const previous = state.pending.get(relative)
+        if (previous || state.pending.size < MAX_CHANGES_PER_EVENT) {
+          // Preserve structural changes and directory scope when batching one path.
+          if (!previous || change.type === "directory" ||
+            (previous.type === "file" && (previous.kind === "changed" || change.kind !== "changed"))) {
+            state.pending.set(relative, change)
+          }
+        } else {
           state.pending.clear()
           state.rescan = true
         }

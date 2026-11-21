@@ -25,6 +25,7 @@ import { serverStore } from '../../../../store/serverStore'
 import { descriptorFromDetails, listToolInteractions } from '../../../../omp/toolInteraction'
 import { toolInteractionStore, useToolInteractionDescriptor } from '../../../../omp/toolInteractionStore'
 import { ToolInteractionTerminal } from './ToolInteractionTerminal'
+import { FullOutputControl } from './FullOutputControl'
 
 // ============================================
 // Main
@@ -138,7 +139,7 @@ function StaticBashRenderer({ execution, partKey, data, onFullscreenChange }: To
           onToggleFullscreen={handleCloseFullscreen}
           exitCodeLabel={exitCode !== undefined ? t('contentBlock.exitCode', { code: exitCode }) : undefined}
           truncated={data.truncated}
-          fullOutputPath={data.fullOutputPath}
+          fullOutputArtifactId={data.fullOutputArtifactId}
         />
       </div>
     ),
@@ -147,7 +148,7 @@ function StaticBashRenderer({ execution, partKey, data, onFullscreenChange }: To
       cwd,
       data.error,
       data.truncated,
-      data.fullOutputPath,
+      data.fullOutputArtifactId,
       exitCode,
       handleCloseFullscreen,
       hasError,
@@ -192,7 +193,7 @@ function StaticBashRenderer({ execution, partKey, data, onFullscreenChange }: To
       onToggleFullscreen={handleToggleFullscreen}
       exitCodeLabel={exitCode !== undefined ? t('contentBlock.exitCode', { code: exitCode }) : undefined}
       truncated={data.truncated}
-      fullOutputPath={data.fullOutputPath}
+      fullOutputArtifactId={data.fullOutputArtifactId}
     />
   )
 
@@ -221,7 +222,7 @@ function TerminalSurface({
   onToggleFullscreen,
   exitCodeLabel,
   truncated,
-  fullOutputPath,
+  fullOutputArtifactId,
 }: {
   command?: string
   cwd?: string
@@ -239,7 +240,7 @@ function TerminalSurface({
   onToggleFullscreen?: () => void
   exitCodeLabel?: string
   truncated?: boolean
-  fullOutputPath?: string
+  fullOutputArtifactId?: string
 }) {
   const { t } = useTranslation(['components'])
   const fullscreenLabel = isFullscreen ? t('contentBlock.exitFullscreen') : t('contentBlock.fullscreen')
@@ -320,11 +321,7 @@ function TerminalSurface({
           </div>
         )}
 
-        {truncated && fullOutputPath && (
-          <div className="mt-1 text-[length:var(--fs-xxs)] text-text-500">
-            {t('bash.truncatedNotice', { path: fullOutputPath })}
-          </div>
-        )}
+        {truncated && fullOutputArtifactId && <FullOutputControl artifactId={fullOutputArtifactId} />}
       </div>
     </div>
   )

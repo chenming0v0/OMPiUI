@@ -11,8 +11,8 @@ import { resolveOmpPackageRoot } from "./omp-native-script.js"
 // Opt in to real installed public API integration; every config and HOME lives in a temporary fixture.
 const integration = process.env.OMPI_OMP_SETTINGS_INTEGRATION === "1"
 
-function fixture(t: TestContext) {
-  const packageRoot = resolveOmpPackageRoot()
+async function fixture(t: TestContext) {
+  const packageRoot = await resolveOmpPackageRoot()
   const root = mkdtempSync(path.join(tmpdir(), "ompiui-official-settings-"))
   const agent = path.join(root, "agent")
   const workspace = path.join(root, "workspace")
@@ -40,7 +40,7 @@ function fixture(t: TestContext) {
 }
 
 test("official raw scopes and effective project precedence survive global patches and null resets", { skip: !integration }, async t => {
-  const f = fixture(t)
+  const f = await fixture(t)
   const before = await getOmpSettings(f.workspace) as JsonObject
   assert.equal((before.global as JsonObject).defaultThinkingLevel, "low")
   assert.equal((before.project as JsonObject).defaultThinkingLevel, "high")
@@ -63,7 +63,7 @@ test("official raw scopes and effective project precedence survive global patche
 })
 
 test("invalid and unknown patches reject before any global bytes change", { skip: !integration }, async t => {
-  const f = fixture(t)
+  const f = await fixture(t)
   const original = readFileSync(f.config)
   for (const patch of [
     { defaultThinkingLevel: "invalid", "retry.enabled": false },
@@ -83,7 +83,7 @@ test("invalid and unknown patches reject before any global bytes change", { skip
 })
 
 test("writes preserve external sibling settings and exact pre-write backup bytes", { skip: !integration }, async t => {
-  const f = fixture(t)
+  const f = await fixture(t)
   const original = readFileSync(f.config)
   await patchOmpSettings(f.workspace, { "modelRoles.default": "provider/first" })
   assert.deepEqual(readFileSync(f.config + ".bak"), original)
@@ -107,7 +107,7 @@ test("writes preserve external sibling settings and exact pre-write backup bytes
 })
 
 test("malformed official config fails loudly without modifying it", { skip: !integration }, async t => {
-  const f = fixture(t)
+  const f = await fixture(t)
   const malformed = "modelRoles: [unterminated\n"
   writeFileSync(f.config, malformed)
   await assert.rejects(getOmpSettings(f.workspace), /invalid|failed|parse|Invalid/i)
@@ -116,7 +116,7 @@ test("malformed official config fails loudly without modifying it", { skip: !int
 })
 
 test("malformed global setting groups cannot be silently overwritten by a leaf patch", { skip: !integration }, async t => {
-  const f = fixture(t)
+  const f = await fixture(t)
   const malformed = 'retry: false\nextensionNamespace:\n  keep: untouched\n'
   writeFileSync(f.config, malformed)
   await assert.rejects(getOmpSettings(f.workspace), /Invalid OMP settings group: retry/)
@@ -125,7 +125,7 @@ test("malformed global setting groups cannot be silently overwritten by a leaf p
 })
 
 test("a non-file backup destination rejects before changing the config or relocating the collision", { skip: !integration }, async t => {
-  const f = fixture(t)
+  const f = await fixture(t)
   const original = readFileSync(f.config)
   mkdirSync(f.config + '.bak')
   const marker = path.join(f.config + '.bak', 'keep.txt')

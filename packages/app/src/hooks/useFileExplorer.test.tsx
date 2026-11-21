@@ -180,28 +180,57 @@ describe('useFileExplorer change scope', () => {
     expect(result.current.tree[0]?.children?.map(child => child.path)).toEqual(['src/b.ts'])
   })
 
-  it('refreshes an expanded parent and open preview after a workspace event', async () => {
+  it('refreshes the open preview without reloading the tree after ordinary content changes', async () => {
     listDirectory.mockImplementation(async (parentPath: string) => parentPath === ''
-      ? [{ name: 'src', path: 'src', absolute: '/repo/src', type: 'directory', ignored: false }]
-      : [{ name: 'a.ts', path: 'src/a.ts', absolute: '/repo/src/a.ts', type: 'file', ignored: false }])
-    getFileContent.mockResolvedValueOnce({ type: 'text', content: 'before' })
-      .mockResolvedValueOnce({ type: 'text', content: 'after' })
+      ? [{ name: 'src', path: 'src', type: 'directory' }, { name: 'README.md', path: 'README.md', type: 'file' }]
+      : [{ name: 'a.ts', path: 'src/a.ts', type: 'file' }])
+    getFileContent.mockResolvedValueOnce({ type: 'text', content: 'before', etag: 'old' })
+      .mockResolvedValueOnce({ type: 'text', content: 'after', etag: 'new' })
     const { result } = renderHook(() => useFileExplorer({ directory: '/repo', autoLoad: true }))
     await waitFor(() => expect(result.current.tree[0]?.path).toBe('src'))
     act(() => result.current.toggleExpand('src'))
     await waitFor(() => expect(result.current.tree[0]?.children?.[0]?.path).toBe('src/a.ts'))
     await act(() => result.current.loadPreview('src/a.ts'))
     expect(result.current.previewContent?.content).toBe('before')
+    listDirectory.mockClear()
 
     act(() => window.dispatchEvent(new CustomEvent('ompiui:workspace-files-changed', {
       detail: {
-        workspacePath: '/repo', revision: 1,
-        changes: [{ path: 'src/a.ts', kind: 'changed', type: 'file' }], rescan: false,
+        workspacePath: '/repo', revision: 1, rescan: false,
+        changes: [
+          { path: 'src/a.ts', kind: 'changed', type: 'file' },
+          { path: 'README.md', kind: 'changed', type: 'file' },
+        ],
       },
     })))
     await waitFor(() => expect(result.current.previewContent?.content).toBe('after'))
+    expect(getFileContent).toHaveBeenLastCalledWith('src/a.ts', '/repo', 'old', expect.any(AbortSignal))
+    expect(invalidateWorkspaceFileCaches).not.toHaveBeenCalled()
+    expect(listDirectory).not.toHaveBeenCalled()
+  })
+
+  it('reloads an expanded parent when a content event follows a creation in the same batch', async () => {
+    listDirectory.mockImplementation(async (parentPath: string) => parentPath === ''
+      ? [{ name: 'src', path: 'src', type: 'directory' }]
+      : [])
+    const { result } = renderHook(() => useFileExplorer({ directory: '/repo' }))
+    await waitFor(() => expect(result.current.tree[0]?.path).toBe('src'))
+    act(() => result.current.toggleExpand('src'))
+    await waitFor(() => expect(result.current.tree[0]?.isLoaded).toBe(true))
+    listDirectory.mockClear()
+    listDirectory.mockResolvedValueOnce([{ name: 'a.ts', path: 'src/a.ts', type: 'file' }])
+
+    act(() => {
+      for (const kind of ['created', 'changed']) {
+        window.dispatchEvent(new CustomEvent('ompiui:workspace-files-changed', {
+          detail: { workspacePath: '/repo', changes: [{ path: 'src/a.ts', kind, type: 'file' }], rescan: false },
+        }))
+      }
+    })
+    await waitFor(() => expect(result.current.tree[0]?.children?.[0]?.path).toBe('src/a.ts'))
     expect(invalidateWorkspaceFileCaches).toHaveBeenCalledWith('/repo')
-    expect(listDirectory.mock.calls.filter(call => call[0] === 'src').length).toBeGreaterThanOrEqual(2)
+    expect(listDirectory.mock.calls.map(([parent]) => parent)).toEqual(['src'])
+    expect(getFileContent).not.toHaveBeenCalled()
   })
 
   it.each(['close', 'switch', 'unmount'] as const)('cancels the abandoned preview on %s', async action => {
@@ -234,7 +263,7 @@ describe('useFileExplorer change scope', () => {
     await act(() => result.current.savePreview('a.ts', 'submitted'))
     expect(result.current.previewContent?.content).toBe('submitted')
     act(() => window.dispatchEvent(new CustomEvent('ompiui:workspace-files-changed', {
-      detail: { workspacePath: '/repo', changes: [{ path: 'a.ts', type: 'file' }], rescan: false },
+      detail: { workspacePath: '/repo', changes: [{ path: 'a.ts', kind: 'changed', type: 'file' }], rescan: false },
     })))
     await waitFor(() => expect(getFileContent).toHaveBeenCalledTimes(2))
     expect(getFileContent).toHaveBeenLastCalledWith('a.ts', '/repo', 'new', expect.any(AbortSignal))

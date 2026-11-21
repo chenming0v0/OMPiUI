@@ -238,12 +238,16 @@ export async function postPiGlobalCommand<
   return (response.data !== undefined ? response.data : response.command) as T extends undefined ? null : T
 }
 
-type ServerSessionCommandName = 'controls.get' | 'session.initialize'
+type ServerSessionCommandName = 'controls.get' | 'session.initialize' | 'toolOutput.get'
+
+type ServerSessionCommandParams = {
+  'toolOutput.get': { artifactId: string; offset: number; revision?: string }
+}
 
 export async function postPiSessionCommand<T = JsonValue | undefined, K extends PiCommandName | ServerSessionCommandName = PiCommandName | ServerSessionCommandName>(
   sessionId: string,
   name: K,
-  params?: K extends PiCommandName ? PiParamsFor<K> : Record<string, never>,
+  params?: K extends PiCommandName ? PiParamsFor<K> : K extends keyof ServerSessionCommandParams ? ServerSessionCommandParams[K] : Record<string, never>,
   signal?: AbortSignal,
   timeoutMs?: number,
 ): Promise<T extends undefined ? null : T> {

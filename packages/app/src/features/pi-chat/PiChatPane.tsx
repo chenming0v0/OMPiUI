@@ -415,7 +415,7 @@ export function PiChatPane({
         // The native removal already committed. Save to its original draft even
         // if this pane or backend changed while the response was in flight.
         if (serverStore.getActiveServerGeneration() === activeServerGeneration) {
-          setSessionEditorDraft(sessionId, text, { attachments, delivery: kind === 'steering' ? 'steer' : 'followUp', sync: false })
+          setSessionEditorDraft(sessionId, text, { attachments, delivery: kind === 'steering' ? 'steer' : 'followUp' })
           void refreshPiSessionState(sessionId).catch(() => undefined)
         }
       } catch (error) {

@@ -112,11 +112,25 @@ test("exited terminals replay buffered output and report the exit code", async (
   }
 })
 
-test("enforces the terminal limit under concurrent creates", async () => {
+test("enforces the terminal limit under concurrent creates", async t => {
   const root = mkdtempSync(path.join(tmpdir(), "omompiui-terminal-limit-"))
   const manager = new TerminalManager()
+  let release!: () => void
+  const creating = new Promise<void>(resolve => { release = resolve })
+  let started = 0
+  // 验证等待中的槽位预留，不在 Windows runner 同时启动、关闭 32 个 ConPTY。
+  // 真实 PTY 创建、退出和清理由本文件其他集成用例覆盖。
+  const internals = manager as unknown as { createReserved(workspace: string): Promise<TerminalInfo> }
+  t.mock.method(internals, "createReserved", async (workspace: string): Promise<TerminalInfo> => {
+    const id = `limit-${++started}`
+    await creating
+    return { id, title: "limit", shell: "test", cwd: workspace, status: "running", pid: 0, cursor: 0 }
+  })
   try {
-    const results = await Promise.allSettled(Array.from({ length: 40 }, () => manager.create(root, { title: "limit" })))
+    const pending = Array.from({ length: 40 }, () => manager.create(root, { title: "limit" }))
+    assert.equal(started, 32)
+    release()
+    const results = await Promise.allSettled(pending)
     const ok = results.filter((result): result is PromiseFulfilledResult<TerminalInfo> => result.status === "fulfilled")
     const failed = results.filter((result): result is PromiseRejectedResult => result.status === "rejected")
     assert.equal(ok.length, 32)
@@ -125,6 +139,7 @@ test("enforces the terminal limit under concurrent creates", async () => {
       assert.equal((result.reason as { code?: string }).code, "TERMINAL_LIMIT_REACHED")
     }
   } finally {
+    release()
     await manager.shutdown()
     await removeWithRetry(root)
   }

@@ -21,6 +21,15 @@ describe("workerProblemFromError", () => {
     assert.equal(workerProblemFromError(withCode("missing", "OMP_SOURCE_MISSING")).code, "CAPABILITY_DISABLED")
   })
 
+  it("reports transient CLI version failures as retryable rather than unsupported", () => {
+    for (const nativeCode of ["OMP_VERSION_UNVERIFIED", "OMP_VERSION_PROBE_TIMEOUT"]) {
+      const problem = workerProblemFromError(withCode("CLI probe temporarily unavailable", nativeCode))
+      assert.equal(problem.code, "OMP_VERSION_PROBE_FAILED")
+      assert.equal(problem.retryable, true)
+      assert.deepEqual(problem.details, { nativeCode })
+    }
+  })
+
   it("keeps the real message and the original code for unknown native codes", () => {
     const problem = workerProblemFromError(withCode("Session replaced while waiting for native admission", "SESSION_REPLACED"))
     assert.match(problem.message, /Session replaced while waiting for native admission/)

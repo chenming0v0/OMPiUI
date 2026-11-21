@@ -20,6 +20,14 @@ describe('editor draft synchronization', () => {
     await act(async () => { vi.advanceTimersByTime(500) })
     expect(sync).toHaveBeenCalledExactlyOnceWith('draft', 'edited-99')
   })
+
+  it('syncs a queue item restored into the composer to other session clients', async () => {
+    const sync = vi.fn()
+    configureSessionEditorDraftSync(sync)
+    act(() => setSessionEditorDraft('draft', 'restored queue text', { attachments: [], delivery: 'followUp' }))
+    await act(async () => { vi.advanceTimersByTime(500) })
+    expect(sync).toHaveBeenCalledExactlyOnceWith('draft', 'restored queue text')
+  })
   it('unmounting one pane leaves another pane able to synchronize', () => {
     const first = vi.fn()
     const second = vi.fn()

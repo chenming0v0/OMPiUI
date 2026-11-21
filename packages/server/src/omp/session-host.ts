@@ -107,6 +107,24 @@ const SERVER_SESSION_CAPABILITIES: PiCapability[] = [
     },
     queue: "immediate",
   },
+  {
+    name: "toolOutput.get",
+    scope: "session",
+    source: "ompiui-adapter",
+    description: "Read a stored tool output artifact without starting an Agent",
+    paramsSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        artifactId: { type: "string", pattern: "^(0|[1-9]\\d*)$" },
+        offset: { type: "integer", minimum: 0 },
+        revision: { type: "string" },
+      },
+      required: ["artifactId", "offset"],
+    },
+    queue: "immediate",
+    idempotent: true,
+  },
 ];
 
 const DEFAULT_IDLE_RUNTIME_TTL_MS = 2 * 60_000;
@@ -548,6 +566,13 @@ export class SessionHost {
   ): Promise<JsonValue | undefined> {
     return withAbort(
       (async () => {
+        if (type === "toolOutput.get") {
+          return this.catalogCommand(
+            "session.read",
+            { sessionId, query: type, params: params ?? {} },
+            { idempotent: true, signal },
+          );
+        }
         let session = this.runtimes.get(sessionId);
         if (!session) {
           if (type === "toolInteraction") {
@@ -1225,6 +1250,15 @@ export class SessionHost {
     }
     if (event.channel === "pi.event") {
       const type = event.event.type;
+      if (type === "session_info_changed" || type === "session_info_update") {
+        // Session-name changes are in-memory and may not move the disk head.
+        // Broadcast separately so browsers with only the server stream refresh their lists.
+        this.hub.publish(
+          { kind: "server", id: "server" },
+          "sessions.updated",
+          { sessionId: session.sessionId, updated: true },
+        );
+      }
       if (type === 'agent_start') this.toolInterruptions.delete(session.sessionId);
       if (typeof type === "string" && DIAGNOSTIC_AGENT_EVENTS.has(type)) {
         const meta = event.event as unknown as JsonObject;

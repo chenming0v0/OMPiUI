@@ -143,6 +143,7 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
     busySessionsRef.current = new Set(busySessions.map(s => s.sessionId))
   }, [busySessions])
   const gitDirtyRef = useRef(false)
+  const staleModesRef = useRef(new Set<ChangeMode>())
   const gitRefreshingRef = useRef(false)
   const wasBusyRef = useRef(false)
   const openDiffFilesRef = useRef<string[]>([])
@@ -382,7 +383,8 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
     async (mode: ChangeMode, options?: { force?: boolean; vcs?: GitInfoResponse | null }) => {
       const currentVcs = options?.vcs ?? vcsInfo
       if (!sessionId || !currentVcs || !isCurrentServer()) return
-      if (!options?.force && loadedModes[mode]) return
+      if (!options?.force && (diffAbortRef.current[mode] || (loadedModes[mode] && !staleModesRef.current.has(mode)))) return
+      staleModesRef.current.delete(mode)
 
       const requestId = ++diffRequestIdRef.current[mode]
       diffAbortRef.current[mode]?.abort()
@@ -418,6 +420,8 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
           setLoadedModes(prev => ({ ...prev, branch: true }))
           return
         }
+        // 请求失败不能把旧列表当作已刷新；保留失效标记，切回范围时重取。
+        staleModesRef.current.add(mode)
         sessionErrorHandler(`load ${mode} diff`, err)
         setError(t('sessionChanges.failedToLoad'))
       } finally {
@@ -439,6 +443,8 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
       staged: diffRequestIdRef.current.staged + 1,
       unstaged: diffRequestIdRef.current.unstaged + 1,
     }
+    gitDirtyRef.current = false
+    staleModesRef.current.clear()
     setVcsInfo(null)
     setGitDiffs([])
     setBranchDiffs([])
@@ -497,61 +503,68 @@ export const SessionChangesPanel = memo(function SessionChangesPanel({
         gitDirtyRef.current = false
         const nextVcs = await loadVcsState()
         if (!nextVcs) return
+        for (const mode of ['git', 'branch', 'staged', 'unstaged'] as const) {
+          if (mode !== changeMode) staleModesRef.current.add(mode)
+        }
         await loadDiffMode(changeMode, { force: true, vcs: nextVcs })
-      } while (gitDirtyRef.current)
+      } while (gitDirtyRef.current && !(sessionId && busySessionsRef.current.has(sessionId)))
     } finally {
       gitRefreshingRef.current = false
     }
-  }, [changeMode, loadDiffMode, loadVcsState])
+  }, [changeMode, loadDiffMode, loadVcsState, sessionId])
 
-  // 防抖调度：250ms 窗口内重复事件合并；刷新中则只标 dirty
+  const runGitRefreshRef = useRef(runGitRefresh)
+  useEffect(() => {
+    runGitRefreshRef.current = runGitRefresh
+  }, [runGitRefresh])
+
+  // 防抖调度：250ms 内合并事件；忙碌或刷新期间只标记，不能清空已加载状态触发旁路请求。
   const scheduleGitRefresh = useCallback(() => {
-    if (gitRefreshingRef.current) {
+    if (gitRefreshingRef.current || (sessionId && busySessionsRef.current.has(sessionId))) {
       gitDirtyRef.current = true
       return
     }
     if (gitRefreshTimerRef.current) return
     gitRefreshTimerRef.current = setTimeout(() => {
       gitRefreshTimerRef.current = null
-      void runGitRefresh()
+      if (sessionId && busySessionsRef.current.has(sessionId)) {
+        gitDirtyRef.current = true
+        return
+      }
+      void runGitRefreshRef.current()
     }, 250)
-  }, [runGitRefresh])
+  }, [sessionId])
 
   // 自动刷新：session idle / 窗口聚焦 / SSE 重连（统一走合并串行入口）
-  useAutoRefresh(consumerId, sessionId ?? null, scheduleGitRefresh, !!sessionId)
+  const scheduleAutoRefresh = useAutoRefresh(consumerId, sessionId ?? null, scheduleGitRefresh, !!sessionId)
 
-  // busy → idle 时补刷被抑制的 diff（不依赖 idle 通知的时序）
+  // busy → idle 与全局 idle 通知共用防抖，避免同一轮结束后刷新两遍。
   useEffect(() => {
     const wasBusy = wasBusyRef.current
     const isBusy = sessionId ? busySessionsRef.current.has(sessionId) : false
     wasBusyRef.current = isBusy
     if (wasBusy && !isBusy && gitDirtyRef.current) {
-      scheduleGitRefresh()
+      scheduleAutoRefresh()
     }
     // busySessions 引用由 store 缓存复用，内容不变时不触发
-  }, [busySessions, scheduleGitRefresh, sessionId])
+  }, [busySessions, scheduleAutoRefresh, sessionId])
 
   useEffect(() => {
     const onGitChanged = (event: Event) => {
       const detail = (event as CustomEvent<{ workspacePath: string }>).detail
       if (!canonicalWorkspaceRef.current || detail?.workspacePath !== canonicalWorkspaceRef.current) return
-      setLoadedModes(prev => ({ ...prev, git: false, branch: false, staged: false, unstaged: false }))
-      // agent 活跃中不刷新（diff 高频变动，拉取无意义且昂贵）：只标 dirty，idle 后统一补刷
-      if (sessionId && busySessionsRef.current.has(sessionId)) {
-        gitDirtyRef.current = true
-        return
-      }
       scheduleGitRefresh()
     }
     window.addEventListener('ompiui:workspace-git-updated', onGitChanged)
-    return () => {
-      window.removeEventListener('ompiui:workspace-git-updated', onGitChanged)
-      if (gitRefreshTimerRef.current) {
-        clearTimeout(gitRefreshTimerRef.current)
-        gitRefreshTimerRef.current = null
-      }
+    return () => window.removeEventListener('ompiui:workspace-git-updated', onGitChanged)
+  }, [scheduleGitRefresh])
+
+  useEffect(() => () => {
+    if (gitRefreshTimerRef.current) {
+      clearTimeout(gitRefreshTimerRef.current)
+      gitRefreshTimerRef.current = null
     }
-  }, [scheduleGitRefresh, sessionId])
+  }, [directory, sessionId, serverGeneration])
 
   // 选中文件
   const handleSelectFile = useCallback((file: string) => {

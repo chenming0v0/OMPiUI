@@ -284,8 +284,9 @@
     "unknownErrorDesc": "An unknown error occurred."
   },
   "truncation": {
-    "linesShown": "{{count}} lines shown",
-    "outputTruncated": "Output truncated",
-    "fullOutput": "Full output: {{path}}"
+    "expandFullOutput": "Load full output",
+    "loadingFullOutput": "Loading full output…",
+    "collapseFullOutput": "Collapse full output",
+    "loadError": "Could not load full output"
   }
 }

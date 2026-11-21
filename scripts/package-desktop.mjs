@@ -58,7 +58,13 @@ const goOs = target.includes("windows") ? "windows" : target.includes("darwin") 
 const goArch = target.includes("arm64") ? "arm64" : "amd64"
 const tailscaleOut = join(outDir, "tailscale")
 run(process.execPath, ["scripts/build-tailscale.mjs", "--os", goOs, "--arch", goArch, "--out", tailscaleOut])
-if (!skipRuntime) await prepareOmpRuntime({ out: join(outDir, "omp-runtime") })
+// 便携包直接归档 dist-desktop；复用 full 的输出目录时，lite 必须清掉旧产物。
+const runtimeOut = join(outDir, "omp-runtime")
+if (skipRuntime) {
+  rmSync(runtimeOut, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+} else {
+  await prepareOmpRuntime({ out: runtimeOut })
+}
 rmSync(join(outDir, "runtime"), { recursive: true, force: true })
 rmSync(join(outDir, "piui-server.exe"), { force: true })
 rmSync(join(outDir, "piui-server"), { force: true })
@@ -104,7 +110,7 @@ run("bun", [
   "--outfile", outfile,
 ])
 
-if (!skipRuntime) inspectOmpRuntime(join(outDir, "omp-runtime"), targetPlatform, targetArch)
+if (!skipRuntime) inspectOmpRuntime(runtimeOut, targetPlatform, targetArch)
 const requiredFiles = [
   outfile,
   join(tailscaleOut, `ompiui-tailscale-bridge${goOs === "windows" ? ".exe" : ""}`),
