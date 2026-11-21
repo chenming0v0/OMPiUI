@@ -244,6 +244,18 @@ describe('PiChatPane with the real composer', () => {
     }
     const command = action === 'send' ? mocks.sendQueued : action === 'clear' ? mocks.discardQueued : mocks.removeQueued
     await waitFor(() => expect(command).toHaveBeenLastCalledWith(sessionId, { kind: 'steering', index: 1, entryId: 'sibling' }))
+    if (action === 'edit') await waitFor(() => expect(mocks.editorState).toHaveBeenCalledWith(sessionId, 'remaining queued message'))
+  })
+  it('syncs a follow-up queue item when it is moved into the composer', async () => {
+    const entry = { entryId: 'follow-up-edit', text: 'continue next turn' }
+    mocks.touch = true
+    mocks.state = { ...mocks.state, isStreaming: true, queue: { steeringEntries: [], followUpEntries: [entry] } }
+    render(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+    const rail = document.querySelector('[data-message-queue="next"]')! as HTMLElement
+    fireEvent.click(within(rail).getByRole('button', { name: i18n.t('chat:chatArea.openQueueMenu') }))
+    fireEvent.click(await screen.findByText(i18n.t('chat:chatArea.editQueueItem')))
+    await waitFor(() => expect(mocks.removeQueued).toHaveBeenCalledWith(sessionId, { kind: 'followUp', index: 0, entryId: entry.entryId }))
+    await waitFor(() => expect(mocks.editorState).toHaveBeenCalledWith(sessionId, entry.text))
   })
 
   it.each(['isStreaming', 'isCompacting', 'isRetrying'] as const)(
