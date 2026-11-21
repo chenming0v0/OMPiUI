@@ -35,6 +35,7 @@ export interface ExtractedToolData {
 
   // Bash 截断（Pi 原生字段）
   truncated?: boolean
+  fullOutputArtifactId?: string
 
   // LSP 诊断
   diagnostics?: DiagnosticInfo[]
