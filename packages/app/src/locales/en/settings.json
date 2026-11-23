@@ -412,6 +412,25 @@
     "toolInteraction": "Tool Interaction",
     "toolInteractionDesc": "How tool requests and tool output behave inside conversations"
   },
+  "titlePrompts": {
+    "title": "Title Prompts",
+    "description": "Saved on the current server for future automatic titles; existing titles stay unchanged. Restore defaults saves all three defaults and replaces your draft.",
+    "forkPrompt": "Title generation prompt",
+    "forkPromptDesc": "Default format: emoji + uppercase English code + colon + Chinese description. Preserve the card conditional and <title> XML output format.",
+    "tinyPrompt": "Fallback / replan title prompt",
+    "tinyPromptDesc": "For fallback/replan: return Chinese title text without XML or a prefix. The default preserves the project's TITLE_SYSTEM; custom text takes precedence.",
+    "cardPrompt": "Emoji / code prefix prompt",
+    "cardPromptDesc": "Choose only the emoji and English code; output <title>🅿️ PARK</title> without repeating the description.",
+    "loading": "Loading title prompts from the server…",
+    "loadFailed": "Could not load title prompts: {{error}}",
+    "saveFailed": "Could not save title prompts: {{error}}",
+    "retry": "Retry loading",
+    "emptyPrompt": "All three prompts must contain text before saving.",
+    "save": "Save prompts",
+    "restoreDefaults": "Restore defaults",
+    "saved": "Prompts saved on the server. Future automatic titles will use these values; existing titles are unchanged.",
+    "restored": "All three default prompts saved on the server. Existing titles are unchanged."
+  },
   "models": {
     "defaultThinking": "Thinking level",
     "visibility": "Model Visibility",

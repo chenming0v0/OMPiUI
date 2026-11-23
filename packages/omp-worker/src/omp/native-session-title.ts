@@ -1,9 +1,10 @@
-import { nativeTitleCardPrompt, nativeTitleForkPrompt } from './native-title-prompts.js'
+import { defaultTitlePrompts } from './title-settings.js'
 
 export const SESSION_TITLE_PREFIX = '\u001eompiui-session-title:'
 export const SESSION_TITLE_FAILURE_PREFIX = '\u001eompiui-session-title-failure:'
 
 export const nativeSessionTitleImports = String.raw`
+import { readFileSync as nstReadFileSync } from "node:fs";
 import { operatorTitleText as nstOperatorText, buildReplanTitleContext as nstContext, titleContextWordCount as nstWords } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { cfgTitleGenerator as nstGenerator, cfgTitleIcons as nstIcons, cfgTitleRefreshOnReplan as nstRefresh } from "@oh-my-pi/pi-coding-agent/utils/title-settings";
 import { parseCardTitleReply as nstParseTitle, parseCardReply as nstParseCard, splitCardTitle as nstSplitCard, formatCardTitle as nstFormatCard, keepTitleCard as nstKeepCard } from "@oh-my-pi/pi-coding-agent/utils/title-card";
@@ -15,8 +16,26 @@ import { prompt as nstPrompt } from "@oh-my-pi/pi-utils";
 export const nativeSessionTitleSource = String.raw`
   const nstPrefix = ${JSON.stringify(SESSION_TITLE_PREFIX)};
   const nstFailurePrefix = ${JSON.stringify(SESSION_TITLE_FAILURE_PREFIX)};
-  const titleForkPrompt = ${JSON.stringify(nativeTitleForkPrompt)};
-  const titleCardPrompt = ${JSON.stringify(nativeTitleCardPrompt)};
+  const titleDefaults = ${JSON.stringify(defaultTitlePrompts)};
+  const titleSettingsFile = globalThis.process?.env?.OMPIUI_TITLE_SETTINGS_PATH;
+  function nstReadSettings() {
+    if (!titleSettingsFile) return titleDefaults;
+    let content;
+    try {
+      content = nstReadFileSync(titleSettingsFile, "utf8");
+    } catch (error) {
+      if (error?.code === "ENOENT") return titleDefaults;
+      throw error;
+    }
+    let saved;
+    try { saved = JSON.parse(content); }
+    catch { throw new Error("Invalid title settings in " + titleSettingsFile); }
+    if (!saved || typeof saved !== "object" || Array.isArray(saved)) throw new Error("Title settings must contain all three prompts");
+    for (const key of ["forkPrompt", "tinyPrompt", "cardPrompt"]) {
+      if (typeof saved[key] !== "string" || !saved[key].trim()) throw new Error(key + " must be a nonempty string");
+    }
+    return saved;
+  }
   const nstEnabled = globalThis.process?.env?.OMPIUI_AUTO_TITLE_ENABLED === "1";
   const nstModuleKey = Symbol.for("ompiui.nativeSessionTitle");
   const nstOwners = globalThis[nstModuleKey] ??= new WeakMap();
@@ -77,31 +96,37 @@ export const nativeSessionTitleSource = String.raw`
     // GUI uses the emoji, not terminal-specific Nerd Font glyphs.
     return style === "nf+emoji" ? "emoji" : style;
   }
-  async function nstCard(binding, title, signal) {
+  async function nstCard(binding, title, signal, prompts) {
     const icons = nstIconStyle(binding);
     if (!title || icons === "boring" || nstSplitCard(title)) return title;
-    const reply = await binding.session.generateTitle(title, nstPrompt.render(titleCardPrompt, { nerdFonts: false }), signal);
+    const reply = await binding.session.generateTitle(title, nstPrompt.render(prompts.cardPrompt, { nerdFonts: false }), signal);
     const card = reply && nstParseCard(reply, icons);
     return card ? nstFormatCard(card, title) : title;
   }
   async function nstGenerate(binding, input, signal, replan, retry) {
+    // Snapshot once per request; a concurrent save applies to the next generation,
+    // never halfway through its fork, fallback or card selection.
+    const prompts = nstReadSettings();
     const session = binding.session;
     if (!replan && !retry && nstCards(binding) && session.model) {
       try {
         const result = await session.runEphemeralTurn({
-          promptText: nstPrompt.render(titleForkPrompt, { card: nstIconStyle(binding) !== "boring", nerdFonts: false }),
+          promptText: nstPrompt.render(prompts.forkPrompt, { card: nstIconStyle(binding) !== "boring", nerdFonts: false }),
           signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
         });
         const title = nstParseTitle(result.replyText, nstIconStyle(binding), input);
-        if (title && !signal.aborted) return await nstCard(binding, title, signal);
+        if (title && !signal.aborted) return await nstCard(binding, title, signal, prompts);
       } catch (error) {
         if (signal.aborted) return null;
       }
     }
     if (signal.aborted || (!replan && nstAttachmentOnly(input))) return null;
-    const title = await session.generateTitle(input, undefined, signal);
+    // Reset/default tiny preserves the official project TITLE_SYSTEM override.
+    // Only a deliberately saved non-default tiny prompt supersedes it.
+    const tinyPrompt = session.titleSystemPrompt !== undefined && prompts.tinyPrompt === titleDefaults.tinyPrompt ? undefined : prompts.tinyPrompt;
+    const title = await session.generateTitle(input, tinyPrompt, signal);
     const named = replan && title ? nstKeepCard(session.sessionName, title) : title;
-    return named && nstCards(binding) ? await nstCard(binding, named, signal) : named;
+    return named && nstCards(binding) ? await nstCard(binding, named, signal, prompts) : named;
   }
   function nstStart(binding, input, replan = false, retry = false) {
     if (!nstEnabled || !nstCurrent(binding) || binding.flight || binding.manager.titleSource === "user") return;

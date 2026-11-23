@@ -1,14 +1,31 @@
 import assert from 'node:assert/strict'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { runInNewContext } from 'node:vm'
-import { test } from 'node:test'
+import { test, type TestContext } from 'node:test'
 import { nativeSessionTitleSource, SESSION_TITLE_FAILURE_PREFIX, SESSION_TITLE_PREFIX } from './native-session-title.js'
+import { defaultTitlePrompts, getTitleSettings, setTitleSettings, titleSettingsPath } from './title-settings.js'
 
-function fixture(options: { enabled?: boolean; kind?: string; generator?: string; icons?: string } = {}) {
+function titleSettingsDirectory(t: TestContext) {
+  const directory = mkdtempSync(path.join(tmpdir(), 'ompiui-title-settings-'))
+  const previous = process.env.OMPIUI_DATA_DIR
+  process.env.OMPIUI_DATA_DIR = directory
+  t.after(() => {
+    if (previous === undefined) delete process.env.OMPIUI_DATA_DIR
+    else process.env.OMPIUI_DATA_DIR = previous
+    rmSync(directory, { recursive: true, force: true })
+  })
+  return titleSettingsPath()
+}
+
+function fixture(options: { enabled?: boolean; kind?: string; generator?: string; icons?: string; settingsFile?: string } = {}) {
   const handlers = new Map<string, (event: any, ctx: any) => void>()
   const listeners = new Set<() => void>()
   const saved: Array<{ title: string; source: string; trigger?: string }> = []
   const notifications: string[] = []
   const calls: string[] = []
+  const prompts: Array<{ kind: string; prompt: string | undefined }> = []
   let controller = new AbortController()
   let id = 'native-session'
   let name: string | undefined
@@ -28,12 +45,13 @@ function fixture(options: { enabled?: boolean; kind?: string; generator?: string
     sessionManager: manager, settings: {}, model: {}, titleSystemPrompt: undefined as string | undefined,
     get sessionName() { return name }, get titleGenerationSignal() { return controller.signal },
     agent: { state: { messages: [] as any[] } },
-    async generateTitle(text: string, _prompt?: string, _signal?: AbortSignal): Promise<string | null> { calls.push('tiny'); return 'Generated title' },
-    async runEphemeralTurn(_args: { promptText: string; signal: AbortSignal }) { calls.push('fork'); return { replyText: '<title>Fork title</title>' } },
+    async generateTitle(text: string, prompt?: string, _signal?: AbortSignal): Promise<string | null> { calls.push('tiny'); prompts.push({ kind: 'tiny', prompt }); return 'Generated title' },
+    async runEphemeralTurn(args: { promptText: string; signal: AbortSignal }) { calls.push('fork'); prompts.push({ kind: 'fork', prompt: args.promptText }); return { replyText: '<title>Fork title</title>' } },
   }
   const ctx = { ui: { notify(message: string) { notifications.push(message) } } }
   const globals = {
-    process: { env: { OMPIUI_AUTO_TITLE_ENABLED: options.enabled === false ? '0' : '1' } },
+    process: { env: { OMPIUI_AUTO_TITLE_ENABLED: options.enabled === false ? '0' : '1', OMPIUI_TITLE_SETTINGS_PATH: options.settingsFile } },
+    nstReadFileSync: readFileSync,
     AbortController, AbortSignal,
     ownSession: () => session,
     pi: { getCommands: () => [{ name: 'rename' }], on: (type: string, handler: any) => handlers.set(type, handler), pi: { AgentRegistry: { global: () => ({ list: () => [{ session, kind: options.kind ?? 'main' }] }) } } },
@@ -52,7 +70,7 @@ function fixture(options: { enabled?: boolean; kind?: string; generator?: string
   const reply = (kind = 'text_start') => emit('message_update', { assistantMessageEvent: { type: kind } })
   const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve() }
   emit('session_start')
-  return { session, manager, calls, saved, notifications, controller, listeners, emit, user, reply, settle, resume: () => { controller.abort(); controller = new AbortController() }, replace: () => { id = 'replacement'; name = undefined; titleSource = undefined } }
+  return { session, manager, calls, prompts, saved, notifications, controller, listeners, emit, user, reply, settle, resume: () => { controller.abort(); controller = new AbortController() }, replace: () => { id = 'replacement'; name = undefined; titleSource = undefined } }
 }
 
 test('auto title starts at the first non-thinking reply, using the official fork and auto persistence', async () => {
@@ -62,6 +80,7 @@ test('auto title starts at the first non-thinking reply, using the official fork
   f.reply(); f.reply('toolcall_start')
   await f.settle()
   assert.deepEqual(f.calls, ['fork'])
+  assert.deepEqual(f.prompts, [{ kind: 'fork', prompt: defaultTitlePrompts.forkPrompt }])
   assert.deepEqual(f.saved, [{ title: 'Fork title', source: 'auto', trigger: undefined }])
   assert.deepEqual(JSON.parse(f.notifications[0]!.slice(SESSION_TITLE_PREFIX.length)), { type: 'session_info_update', sessionId: 'native-session', title: 'Fork title' })
 })
@@ -72,6 +91,7 @@ test('tiny setting and TITLE_SYSTEM override use the official title model instea
     if (override) f.session.titleSystemPrompt = 'Project title instructions'
     f.user(); f.reply(); await f.settle()
     assert.deepEqual(f.calls, ['tiny'])
+    assert.deepEqual(f.prompts, [{ kind: 'tiny', prompt: override ? undefined : defaultTitlePrompts.tinyPrompt }])
     assert.equal(f.saved[0]?.source, 'auto')
   }
 })
@@ -130,15 +150,19 @@ test('manual name and session replacement discard a late automatic result', asyn
   }
 })
 
-test('declined title retries once from conversation only after enough assistant context', async () => {
-  const f = fixture({ generator: 'tiny' })
-  f.session.generateTitle = async () => { f.calls.push('tiny'); return null }
+test('declined title retries once with the latest tiny prompt only after enough assistant context', async t => {
+  const file = titleSettingsDirectory(t)
+  await setTitleSettings('custom fork', 'first tiny', 'custom card')
+  const f = fixture({ generator: 'tiny', settingsFile: file })
+  f.session.generateTitle = async (_text, prompt) => { f.calls.push('tiny'); f.prompts.push({ kind: 'tiny', prompt }); return null }
   f.user(); f.reply(); await f.settle()
+  await setTitleSettings('custom fork', 'retry tiny', 'custom card')
   const message = { role: 'assistant', content: Array(40).fill('context').join(' '), stopReason: 'stop' }
   f.session.agent.state.messages.push(message)
   f.emit('message_end', { message }); await f.settle()
   f.emit('message_end', { message }); await f.settle()
   assert.deepEqual(f.calls, ['tiny', 'tiny'])
+  assert.deepEqual(f.prompts, [{ kind: 'tiny', prompt: 'first tiny' }, { kind: 'tiny', prompt: 'retry tiny' }])
 })
 
 test('attachment-only requests wait for assistant context when using the text-only title model', async () => {
@@ -182,4 +206,101 @@ test('successful todo replan refreshes generated titles but not manual titles', 
   assert.equal(f.calls.length, count)
   f.emit('session_shutdown')
   assert.equal(f.listeners.size, 0)
+})
+
+test('title settings persist verbatim outside session directories, reload without mtime caching, and reset to defaults', async t => {
+  const file = titleSettingsDirectory(t)
+  const defaults = getTitleSettings().defaults
+  assert.deepEqual(getTitleSettings(), { ...defaultTitlePrompts, defaults: defaultTitlePrompts })
+  const first = await setTitleSettings(' first fork\n', 'first tiny', 'first card')
+  assert.deepEqual(first, { forkPrompt: ' first fork\n', tinyPrompt: 'first tiny', cardPrompt: 'first card', defaults })
+  assert.deepEqual(getTitleSettings(), first)
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { forkPrompt: first.forkPrompt, tinyPrompt: first.tinyPrompt, cardPrompt: first.cardPrompt })
+  assert.deepEqual(readdirSync(path.dirname(file)), ['title-settings.json'])
+  assert.equal(existsSync(path.join(path.dirname(file), 'sessions')), false)
+  const timestamp = statSync(file)
+  writeFileSync(file, JSON.stringify({ forkPrompt: 'second fork', tinyPrompt: 'second tiny', cardPrompt: 'second card' }))
+  utimesSync(file, timestamp.atime, timestamp.mtime)
+  assert.deepEqual(getTitleSettings(), { forkPrompt: 'second fork', tinyPrompt: 'second tiny', cardPrompt: 'second card', defaults })
+  await assert.rejects(setTitleSettings('valid', ' \n ', 'valid'), /tinyPrompt must be a nonempty string/)
+  assert.equal(getTitleSettings().tinyPrompt, 'second tiny')
+  const reset = await setTitleSettings(defaults.forkPrompt, defaults.tinyPrompt, defaults.cardPrompt)
+  assert.deepEqual(reset, { ...defaults, defaults })
+  assert.deepEqual(getTitleSettings(), reset)
+})
+
+test('invalid saved settings fail both reads and native generation rather than silently using defaults', async t => {
+  const file = titleSettingsDirectory(t)
+  for (const content of ['invalid JSON', 'null', JSON.stringify({ forkPrompt: 'missing other prompts' }), JSON.stringify({ forkPrompt: 'valid', tinyPrompt: '', cardPrompt: 'valid' })]) {
+    writeFileSync(file, content)
+    assert.throws(() => getTitleSettings())
+    const f = fixture({ settingsFile: file })
+    f.user(); f.reply(); await f.settle()
+    assert.deepEqual(f.calls, [])
+    assert.deepEqual(f.saved, [])
+    const diagnostic = f.notifications.find(message => message.startsWith(SESSION_TITLE_FAILURE_PREFIX))
+    assert.ok(diagnostic)
+    assert.deepEqual(JSON.parse(diagnostic.slice(SESSION_TITLE_FAILURE_PREFIX.length)), { stage: 'generate' })
+  }
+  const unreadable = fixture({ settingsFile: path.dirname(file) })
+  unreadable.user(); unreadable.reply(); await unreadable.settle()
+  assert.deepEqual(unreadable.calls, [])
+  assert.ok(unreadable.notifications.some(message => message.startsWith(SESSION_TITLE_FAILURE_PREFIX)))
+})
+
+test('a running native host uses saved fork and card prompts, and a missing file uses defaults', async t => {
+  const file = titleSettingsDirectory(t)
+  const missing = fixture({ generator: 'tiny', settingsFile: file })
+  missing.user(); missing.reply(); await missing.settle()
+  assert.deepEqual(missing.prompts, [{ kind: 'tiny', prompt: defaultTitlePrompts.tinyPrompt }])
+  await setTitleSettings('custom fork', 'custom tiny', 'custom card')
+  const f = fixture({ icons: 'emoji', settingsFile: file })
+  f.user(); f.reply(); await f.settle()
+  assert.deepEqual(f.prompts, [{ kind: 'fork', prompt: 'custom fork' }, { kind: 'tiny', prompt: 'custom card' }])
+  assert.equal(f.saved[0]?.title, '🏷️ TITLE: Fork title')
+})
+
+test('a title request keeps one settings snapshot through fallback and card, while replan hot reloads the next save', async t => {
+  const file = titleSettingsDirectory(t)
+  await setTitleSettings('first fork', 'first tiny', 'first card')
+  const f = fixture({ icons: 'emoji', settingsFile: file })
+  const pending = Promise.withResolvers<{ replyText: string }>()
+  f.session.runEphemeralTurn = async args => { f.calls.push('fork'); f.prompts.push({ kind: 'fork', prompt: args.promptText }); return pending.promise }
+  f.user(); f.reply()
+  assert.deepEqual(f.prompts, [{ kind: 'fork', prompt: 'first fork' }])
+  const messages = [...f.session.agent.state.messages]
+  await setTitleSettings('second fork', 'second tiny', 'second card')
+  assert.deepEqual(f.session.agent.state.messages, messages)
+  assert.deepEqual(f.saved, [])
+  pending.reject(new Error('fork failed'))
+  await f.settle()
+  assert.deepEqual(f.prompts, [
+    { kind: 'fork', prompt: 'first fork' },
+    { kind: 'tiny', prompt: 'first tiny' },
+    { kind: 'tiny', prompt: 'first card' },
+  ])
+  f.emit('tool_result', { toolName: 'todo', input: { op: 'init' }, isError: false }); await f.settle()
+  assert.deepEqual(f.prompts.slice(3), [{ kind: 'tiny', prompt: 'second tiny' }, { kind: 'tiny', prompt: 'second card' }])
+  assert.equal(f.saved.at(-1)?.trigger, 'replan')
+  await f.manager.setSessionName('Manual title', 'user')
+  const count = f.calls.length
+  await setTitleSettings('third fork', 'third tiny', 'third card')
+  assert.equal(f.manager.getSessionName(), 'Manual title')
+  assert.equal(f.calls.length, count)
+})
+
+test('saved non-default tiny supersedes TITLE_SYSTEM, and resetting tiny restores the official override', async t => {
+  const file = titleSettingsDirectory(t)
+  for (const generator of ['fork', 'tiny']) {
+    await setTitleSettings('custom fork', 'custom tiny', 'custom card')
+    const f = fixture({ generator, icons: 'emoji', settingsFile: file })
+    f.session.titleSystemPrompt = 'Project title instructions'
+    f.user(); f.reply(); await f.settle()
+    assert.deepEqual(f.calls, ['tiny'])
+    assert.deepEqual(f.prompts, [{ kind: 'tiny', prompt: 'custom tiny' }])
+    await setTitleSettings('custom fork', defaultTitlePrompts.tinyPrompt, 'custom card')
+    f.emit('tool_result', { toolName: 'todo', input: { op: 'init' }, isError: false }); await f.settle()
+    assert.deepEqual(f.prompts.at(-1), { kind: 'tiny', prompt: undefined })
+    assert.deepEqual(f.calls, ['tiny', 'tiny'])
+  }
 })

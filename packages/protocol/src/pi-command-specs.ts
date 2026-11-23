@@ -742,6 +742,22 @@ export const PI_COMMAND_SPECS = [
     queue: "serialized",
   },
   {
+    name: "title.settings.get",
+    scope: "global",
+    description: "Read automatic session title prompts and defaults",
+    queue: "immediate",
+    idempotent: true,
+  },
+  {
+    name: "title.settings.set",
+    scope: "global",
+    description: "Persist automatic session title prompts",
+    paramsSchema: objectSchema({ forkPrompt: STRING, tinyPrompt: STRING, cardPrompt: STRING }, [
+      "forkPrompt", "tinyPrompt", "cardPrompt",
+    ]),
+    queue: "serialized",
+  },
+  {
     name: "session.create",
     scope: "global",
     description: "Create an OMP session without opening an agent runtime",
@@ -1147,6 +1163,8 @@ export type PiPageParams = {
 export type PiCommandParams = CoreCommandParams & {
   "preview.settings.get": Record<string, never>;
   "preview.settings.set": { subagentThinking: boolean };
+  "title.settings.get": Record<string, never>;
+  "title.settings.set": { forkPrompt: string; tinyPrompt: string; cardPrompt: string };
   removeQueuedMessage: { kind: "steering" | "followUp"; index: number; entryId: string; returnContent?: boolean };
   "state.get": Record<string, never>;
   "entries.get": PiPageParams;

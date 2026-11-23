@@ -14,6 +14,7 @@ import {
   getPreviewSettings,
   setPreviewSettings,
 } from "./omp/preview-settings.js";
+import { getTitleSettings, setTitleSettings } from "./omp/title-settings.js";
 
 export interface ProviderAuthGateway {
   listProviders(): Promise<JsonValue>;
@@ -395,6 +396,9 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
   "preview.settings.get": async () => getPreviewSettings(),
   "preview.settings.set": async (_ctx, p) =>
     setPreviewSettings(P.reqBoolean(p, "subagentThinking")),
+  "title.settings.get": async () => getTitleSettings(),
+  "title.settings.set": async (_ctx, p) =>
+    setTitleSettings(P.reqString(p, "forkPrompt"), P.reqString(p, "tinyPrompt"), P.reqString(p, "cardPrompt")),
   "session.create": async (ctx, p) =>
     ctx.catalog.createSession(P.reqString(p, "cwd")),
   "session.preview": async (ctx, p) =>
