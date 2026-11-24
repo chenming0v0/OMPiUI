@@ -413,7 +413,7 @@
     "toolInteractionDesc": "How tool requests and tool output behave inside conversations.",
     "experimental": "Experimental Features",
     "experimentalDesc": "Affects OMPiUI display only; native session content is not modified.",
-    "reasoningTranslation": "Reasoning translation",
+    "reasoningTranslation": "Thinking Translator",
     "reasoningTranslationDesc": "Translate reasoning into Chinese using the Thinking Translator model. Enabling this sends reasoning and recent conversation context to that model.",
     "reasoningTranslationBudget": "Context budget",
     "reasoningTranslationBudgetDesc": "Maximum input token budget; oldest conversation context is truncated first. Default: 32k."
