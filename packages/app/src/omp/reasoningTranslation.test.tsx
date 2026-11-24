@@ -1,6 +1,6 @@
 import { createElement, type ReactNode } from 'react'
 import { act, renderHook, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ReasoningTranslationContext, useReasoningTranslation, type ContextTimelineItem } from './reasoningTranslation'
 
 const { piFetchMock } = vi.hoisted(() => ({ piFetchMock: vi.fn() }))
@@ -21,7 +21,10 @@ function response(frames: unknown[]) {
 describe('reasoning translation', () => {
   beforeEach(() => {
     piFetchMock.mockReset().mockResolvedValue(response([{ delta: '中文译文' }, { done: true }]))
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => setTimeout(() => callback(performance.now()), 0))
+    vi.stubGlobal('cancelAnimationFrame', (frame: number) => clearTimeout(frame))
   })
+  afterEach(() => vi.unstubAllGlobals())
 
   it('keeps the original without making requests when translation is disabled', async () => {
     const { result } = renderHook(() => useReasoningTranslation('entry', 'entry:0', 'Reasoning', false, false))
@@ -54,6 +57,54 @@ describe('reasoning translation', () => {
     const second = renderHook(() => useReasoningTranslation('entry', 'entry:0', 'First.Second.', false, false), { wrapper: sharedWrapper })
     await waitFor(() => expect(second.result.current.text).toBe('中文译文后续译文'))
     expect(JSON.parse(piFetchMock.mock.calls[1][1].body).text).toBe('Second.')
+  })
+
+  it('keeps later English lines visible as each translated line begins streaming', async () => {
+    let controller!: ReadableStreamDefaultController<Uint8Array>
+    const stream = new ReadableStream<Uint8Array>({ start(value) { controller = value } })
+    piFetchMock.mockResolvedValue(new Response(stream, { headers: { 'content-type': 'application/x-ndjson' } }))
+    const source = 'Inspect Docker logs.\nInspect the config.\nPreserve existing behavior.'
+    const { result } = renderHook(() => useReasoningTranslation('entry', 'entry:0', source, false, false), { wrapper: wrapper() })
+    await waitFor(() => expect(piFetchMock).toHaveBeenCalledTimes(1))
+    const send = async (frame: unknown) => {
+      await act(async () => { controller.enqueue(new TextEncoder().encode(JSON.stringify(frame) + '\n')) })
+    }
+    await send({ delta: 'Docker: ' })
+    expect(result.current.text).toBe('')
+    await send({ delta: '检' })
+    await waitFor(() => expect(result.current.text).toBe('Docker: 检\nInspect the config.\nPreserve existing behavior.'))
+    await send({ delta: '查日志。\n再' })
+    await waitFor(() => expect(result.current.text).toBe('Docker: 检查日志。\n再\nPreserve existing behavior.'))
+    await send({ delta: '检查配置。\n保留现有行为。' })
+    await send({ done: true })
+    await waitFor(() => expect(result.current.text).toBe('Docker: 检查日志。\n再检查配置。\n保留现有行为。'))
+    expect(result.current.pending).toBe(false)
+  })
+
+  it('replaces at most one new line per animation frame even when the entire translation arrives together', async () => {
+    let nextFrame = 0
+    const frames = new Map<number, FrameRequestCallback>()
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.set(++nextFrame, callback); return nextFrame })
+    vi.stubGlobal('cancelAnimationFrame', (frame: number) => frames.delete(frame))
+    piFetchMock.mockResolvedValue(response([{ delta: '第一行。\n第二行。\n第三行。' }, { done: true }]))
+    const source = 'First line.\nSecond line.\nThird line.'
+    const { result } = renderHook(() => useReasoningTranslation('entry', 'entry:0', source, false, false), { wrapper: wrapper() })
+    await waitFor(() => expect(frames.size).toBe(1))
+    expect(result.current.text).toBe('')
+    const advance = async () => {
+      await act(async () => {
+        const [id, callback] = frames.entries().next().value!
+        frames.delete(id)
+        callback(performance.now())
+      })
+    }
+    await advance()
+    expect(result.current.text).toBe('第一行。\nSecond line.\nThird line.')
+    await advance()
+    expect(result.current.text).toBe('第一行。\n第二行。\nThird line.')
+    await advance()
+    expect(result.current.text).toBe('第一行。\n第二行。\n第三行。')
+    expect(frames.size).toBe(0)
   })
 
   it('aborts the active request on pause and resumes from the untranslated excerpt', async () => {
