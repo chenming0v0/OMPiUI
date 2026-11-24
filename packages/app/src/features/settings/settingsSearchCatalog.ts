@@ -51,6 +51,10 @@ export const SETTINGS_SEARCH_DEFINITIONS: SettingsSearchDefinition[] = [
   ]),
   ...definitions('agent', [
     'agent.behavior',
+    'titlePrompts.title',
+    'titlePrompts.forkPrompt',
+    'titlePrompts.tinyPrompt',
+    'titlePrompts.cardPrompt',
     'agent.toolInteraction',
     'chat.queueFollowupMessages',
     'chat.immersiveMode',

@@ -1,3 +1,8 @@
+## [Unreleased]
+
+- feat(app/worker): Agent 设置新增自动标题提示词编辑、服务端保存与恢复默认；覆盖主标题、回退／重规划和 emoji／英文前缀，运行中的会话下次生成时读取最新配置，不改写已有标题。
+- fix(worker): 自动标题默认要求简体中文描述与大写英文前缀，纯文本回退路径也使用中文提示词。
+
 ## [v0.6.65] - 2026-11-21
 
 - test(app): match expanded output element (f0d8b76)

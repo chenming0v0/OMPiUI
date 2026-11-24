@@ -412,6 +412,25 @@
     "toolInteraction": "工具交互",
     "toolInteractionDesc": "控制工具请求和工具输出在对话中的交互方式"
   },
+  "titlePrompts": {
+    "title": "标题提示词",
+    "description": "保存在当前服务器，后续自动生成时生效，不改写已有标题。恢复默认会保存全部三项默认值并替换草稿。",
+    "forkPrompt": "标题生成提示词",
+    "forkPromptDesc": "默认格式：emoji + 大写英文代码 + 冒号 + 中文描述。保留 card 条件分支及 <title> XML 输出格式。",
+    "tinyPrompt": "回退 / 重规划标题提示词",
+    "tinyPromptDesc": "回退／重规划用，只输出中文标题，不加 XML 或前缀。默认值保留项目 TITLE_SYSTEM，自定义值优先。",
+    "cardPrompt": "Emoji / 代码前缀提示词",
+    "cardPromptDesc": "只选择 emoji 和英文代码，输出 <title>🅿️ PARK</title>，不重复标题描述。",
+    "loading": "正在从服务器加载标题提示词…",
+    "loadFailed": "标题提示词加载失败：{{error}}",
+    "saveFailed": "标题提示词保存失败：{{error}}",
+    "retry": "重新加载",
+    "emptyPrompt": "保存前，三项提示词都必须包含非空文本。",
+    "save": "保存提示词",
+    "restoreDefaults": "恢复默认",
+    "saved": "提示词已保存到服务器，后续自动标题将使用这些值；已有标题保持不变。",
+    "restored": "全部三项默认提示词已保存到服务器，已有标题保持不变。"
+  },
   "models": {
     "defaultThinking": "思考强度",
     "visibility": "模型可见性",
