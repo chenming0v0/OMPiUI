@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { themeStore, type ToolCardStyle } from '../../../store/themeStore'
 import { Toggle, SegmentedControl, SettingRow, SettingField, SettingsSection } from './SettingsUI'
+import { TitlePromptSettings } from './TitlePromptSettings'
 
 export function AgentSettings() {
   const { t } = useTranslation(['settings'])
@@ -64,6 +65,8 @@ export function AgentSettings() {
           <Toggle enabled={queueFollowupMessages} onChange={toggleQueueFollowup} />
         </SettingRow>
       </SettingsSection>
+
+      <TitlePromptSettings />
 
       <SettingsSection title={t('agent.toolInteraction')} description={t('agent.toolInteractionDesc')}>
         <SettingRow

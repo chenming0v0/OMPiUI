@@ -9,6 +9,7 @@ import { OmpStdinSender, type StdinWriteHandle } from "./stdin-sender.js"
 import { ompCommandEnvironment, resolveOmpCommand } from "./omp-command.js"
 import { RuntimeBridgeTransport, type RuntimeBridgeOperation } from "./runtime-bridge.js"
 import { ToolInteractionChannel } from "./tool-interaction-channel.js"
+import { titleSettingsPath } from "./title-settings.js"
 
 
 /**
@@ -103,6 +104,7 @@ export class OmpRpcClient extends EventEmitter {
     const env = ompCommandEnvironment(options.env)
     if (options.applyRuntimePolicy) {
       env.OMPIUI_AUTO_TITLE_ENABLED = env.PI_NO_TITLE || options.args?.includes("--no-title") ? "0" : "1"
+      env.OMPIUI_TITLE_SETTINGS_PATH = titleSettingsPath()
     }
     if (options.applyRuntimePolicy && !options.args?.includes("--no-ui")) {
       this.toolInteractionChannel = new ToolInteractionChannel()
