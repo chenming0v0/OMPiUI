@@ -52,6 +52,7 @@
 - ci: reduce duplicate runs and runner contention (75abbf4)
 
 ## [Unreleased]
+- feat: 增加默认关闭的思维链翻译实验功能：OMPiUI 使用独立只读 OMP 模型注册表显式调用 `modelRoles.thinkingTranslator`，不附加会话或改写 JSONL；按 8k/16k/32k 预算发送最近对话上下文并从最早内容截断；Capsule 支持逐条暂停和原文／译文切换。
 
 - fix: 修复 #447：官方 OMP 公共 API 的版本校验改为异步、30 秒预算、合并并发探测并对失败退避 5 秒；超时仅回落到所选 CLI 入口绑定的包或内置 runtime 版本，不借用未经验证的全局源码；暂时无法校验返回可重试 503，不再误报功能不支持。
 - fix: 工具输出超限时改为按需展开会话 artifact；完整输出仅在用户点击后分块读取，不再显示截断行数和 artifact 路径。

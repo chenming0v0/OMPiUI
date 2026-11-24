@@ -1,3 +1,4 @@
+import { useReasoningTranslationSettings, setReasoningTranslationSettings } from '../../../store/reasoningTranslationSettings'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { themeStore, type ToolCardStyle } from '../../../store/themeStore'
@@ -8,6 +9,7 @@ export function AgentSettings() {
   const [queueFollowupMessages, setQueueFollowupMessages] = useState(themeStore.queueFollowupMessages)
   const [descriptiveToolSteps, setDescriptiveToolSteps] = useState(themeStore.descriptiveToolSteps)
   const [toolCardStyle, setToolCardStyle] = useState(themeStore.toolCardStyle)
+  const translation = useReasoningTranslationSettings()
   const [immersiveMode, setImmersiveMode] = useState(themeStore.immersiveMode)
   const [processCollapseEnabled, setProcessCollapseEnabled] = useState(themeStore.processCollapseEnabled)
 
@@ -39,6 +41,20 @@ export function AgentSettings() {
 
   return (
     <div>
+      <SettingsSection title={t('agent.experimental')} description={t('agent.experimentalDesc')}>
+        <SettingRow label={t('agent.reasoningTranslation')} description={t('agent.reasoningTranslationDesc')}>
+          <Toggle enabled={translation.enabled} onChange={() => setReasoningTranslationSettings({ enabled: !translation.enabled })} />
+        </SettingRow>
+        {translation.enabled && (
+          <SettingField label={t('agent.reasoningTranslationBudget')} description={t('agent.reasoningTranslationBudgetDesc')}>
+            <SegmentedControl
+              value={String(translation.budget)}
+              options={[8192, 16384, 32768].map(value => ({ value: String(value), label: `${value / 1024}k` }))}
+              onChange={value => setReasoningTranslationSettings({ budget: Number(value) as 8192 | 16384 | 32768 })}
+            />
+          </SettingField>
+        )}
+      </SettingsSection>
       <SettingsSection title={t('agent.behavior')} description={t('agent.behaviorDesc')}>
         <SettingRow
           label={t('chat.queueFollowupMessages')}

@@ -51,6 +51,7 @@ const CHAT_ROLE_DEFS: ModelRoleDef[] = [
   { id: 'tiny', icon: CpuIcon, nameKey: 'roleTiny', descKey: 'roleTinyDesc', kinds: ['chat', 'tiny'] },
   { id: 'memory', icon: LayersIcon, nameKey: 'roleMemory', descKey: 'roleMemoryDesc', kinds: ['chat', 'tiny'] },
   { id: 'task', icon: UsersIcon, nameKey: 'roleTask', descKey: 'roleTaskDesc', kinds: ['chat'] },
+  { id: 'thinkingTranslator', icon: ThinkingIcon, nameKey: 'roleThinkingTranslator', descKey: 'roleThinkingTranslatorDesc', kinds: ['chat'] },
   { id: 'advisor', icon: LightbulbIcon, nameKey: 'roleAdvisor', descKey: 'roleAdvisorDesc', kinds: ['chat'] },
 ]
 
