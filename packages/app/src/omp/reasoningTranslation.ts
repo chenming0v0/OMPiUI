@@ -1,7 +1,8 @@
-import { createContext, useContext, useEffect, useEffectEvent, useState } from 'react'
+import { createContext, useContext, useEffect, useEffectEvent, useMemo, useState } from 'react'
 import type { PiAssistantMessageItem, PiUserMessageItem } from './domain/index.js'
 import { getApiBase, piFetch } from './httpClient'
 import type { ReasoningTranslationBudget } from '../store/reasoningTranslationSettings'
+import { buildReasoningTranslationLines, composeReasoningTranslationLines, type ReasoningTranslationChunk } from './reasoningTranslationDisplay'
 
 export const ReasoningTranslationContext = createContext<{
   scope: string
@@ -16,7 +17,7 @@ export type ContextTimelineItem = PiAssistantMessageItem | PiUserMessageItem
 const MAX_HISTORY_ITEMS = 9
 const decoder = new TextDecoder()
 const CHUNK_UNITS = 1024
-const completed = new Map<string, { source: string; translation: string }>()
+const completed = new Map<string, { source: string; chunks: ReasoningTranslationChunk[] }>()
 let translationLane: Promise<unknown> = Promise.resolve()
 
 function recentContext(items: readonly ContextTimelineItem[], entryId: string, budget: number): TranslationHistoryItem[] {
@@ -77,12 +78,16 @@ async function requestTranslation(body: { model: string; text: string; history: 
   }
 }
 
-type Progress = { key: string; source: string; translation: string; failed?: boolean }
+type Progress = { key: string; source: string; chunks: ReasoningTranslationChunk[]; failed?: boolean }
 export function useReasoningTranslation(entryId: string | undefined, partKey: string, source: string, streaming: boolean, paused: boolean) {
   const context = useContext(ReasoningTranslationContext)
+  const key = context && entryId ? JSON.stringify([context.scope, context.model, context.budget, partKey]) : ''
   const [progress, setProgress] = useState<Progress | null>(null)
   const [partial, setPartial] = useState<{ key: string; chunk: string; text: string } | null>(null)
-  const key = context && entryId ? JSON.stringify([context.scope, context.model, context.budget, partKey]) : ''
+  const [reveal, setReveal] = useState(() => {
+    const cached = completed.get(key)
+    return { key, source: cached?.source ?? '', line: cached ? cached.source.split(/\r?\n/).length - 1 : -1 }
+  })
   const previous = progress?.key === key ? progress : null
   const cached = key ? completed.get(key) : undefined
   const result = previous && source.startsWith(previous.source) ? previous
@@ -101,7 +106,7 @@ export function useReasoningTranslation(entryId: string | undefined, partKey: st
   const run = useEffectEvent(async (piece: string, signal: AbortSignal) => {
     if (!context || !entryId || !enabled) return
     const baseSource = source.slice(0, offset)
-    const baseTranslation = result?.translation ?? ''
+    const baseChunks = result?.chunks ?? []
     const requestKey = key
     const body = { model: context.model, text: piece, history: recentContext(context.getItems(), entryId, context.budget), budget: context.budget }
     const job = translationLane.then(async () => {
@@ -111,7 +116,7 @@ export function useReasoningTranslation(entryId: string | undefined, partKey: st
           if (!signal.aborted) setPartial({ key: requestKey, chunk: piece, text })
         }) : piece
         if (signal.aborted) return
-        const next = { key: requestKey, source: baseSource + piece, translation: baseTranslation + translated }
+        const next = { key: requestKey, source: baseSource + piece, chunks: [...baseChunks, { source: piece, translation: translated }] }
         setProgress(next)
         setPartial(null)
         completed.set(requestKey, next)
@@ -119,7 +124,7 @@ export function useReasoningTranslation(entryId: string | undefined, partKey: st
       } catch {
         if (!signal.aborted) {
           setPartial(null)
-          setProgress({ key: requestKey, source: baseSource, translation: baseTranslation, failed: true })
+          setProgress({ key: requestKey, source: baseSource, chunks: baseChunks, failed: true })
         }
       }
     })
@@ -134,10 +139,22 @@ export function useReasoningTranslation(entryId: string | undefined, partKey: st
   }, [enabled, key, chunk, offset, failed])
 
   const delta = partial?.key === key && partial.chunk === chunk ? partial.text : ''
+  const lines = useMemo(() => buildReasoningTranslationLines(source, [
+    ...(result?.chunks ?? []), ...(delta ? [{ source: chunk, translation: delta }] : []),
+  ]), [source, result?.chunks, chunk, delta])
+  const revealedThroughLine = reveal.key === key && source.startsWith(reveal.source) ? reveal.line : -1
+  const nextLine = lines.findIndex((line, index) => line.ready && index > revealedThroughLine)
+  const revealNextLine = useEffectEvent(() => setReveal({ key, source, line: nextLine }))
+  useEffect(() => {
+    if (!enabled || nextLine < 0) return
+    // 即使同一网络帧包含多行译文，也每帧只替换一行原文。
+    const frame = requestAnimationFrame(() => revealNextLine())
+    return () => cancelAnimationFrame(frame)
+  }, [enabled, key, nextLine])
   return {
     available: Boolean(key),
     failed: enabled && failed,
     pending: enabled && !failed && Boolean(rest),
-    text: enabled && !failed ? (result?.translation ?? '') + delta : '',
+    text: enabled ? composeReasoningTranslationLines(lines, revealedThroughLine) : '',
   }
 }
