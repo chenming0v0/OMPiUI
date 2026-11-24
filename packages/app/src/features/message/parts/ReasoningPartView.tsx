@@ -6,6 +6,7 @@ import { useDisclosureScrollLock } from '../../../hooks'
 import { useTheme } from '../../../hooks/useTheme'
 import { MarkdownRenderer } from '../../../components/MarkdownRenderer'
 import type { ThinkingContent } from '../../../omp/vendor/pi-ai'
+import { useReasoningTranslation } from '../../../omp/reasoningTranslation'
 import { useUiDisclosureState } from '../../../utils/uiDisclosureState'
 import { MSG_SPACING } from '../messageSpacing'
 import { chevronClass, MessageExpandPanel, useMessageExpandRender } from '../messageExpand'
@@ -17,20 +18,23 @@ interface ReasoningPartViewProps {
   part: ThinkingContent
   /** Stable key for expand-state persistence (entry id + block index) */
   partKey: string
+  entryId?: string
   /** Optional timing for the "thought for Xs" label; omit when unavailable */
   time?: { start: number; end?: number }
   isStreaming?: boolean
 }
 
-export const ReasoningPartView = memo(function ReasoningPartView({ part, partKey, time, isStreaming }: ReasoningPartViewProps) {
+export const ReasoningPartView = memo(function ReasoningPartView({ part, entryId, partKey, time, isStreaming }: ReasoningPartViewProps) {
   const { t } = useTranslation('message')
   const { reasoningDisplayMode } = useTheme()
   const rawText = part.thinking || ''
-
   const isPartStreaming = Boolean(isStreaming && !time?.end)
+  const [translationPaused, setTranslationPaused] = useState(false)
+  const [showOriginal, setShowOriginal] = useState(false)
+  const translation = useReasoningTranslation(entryId, partKey, rawText, isPartStreaming, translationPaused)
+  const displayText = showOriginal || translationPaused || !translation.text ? rawText : translation.text
   const hasContent = !!rawText.trim()
-
-  const displayText = rawText
+  useEffect(() => { setTranslationPaused(false); setShowOriginal(false) }, [partKey])
   const [expanded, setExpanded] = useUiDisclosureState(`message:reasoning:${partKey}`, false)
   const shouldRenderBody = useMessageExpandRender(expanded)
   const { rootRef, headerRef, withScrollLock } = useDisclosureScrollLock()
@@ -43,6 +47,7 @@ export const ReasoningPartView = memo(function ReasoningPartView({ part, partKey
   }, [expanded, setExpanded, withScrollLock])
 
   const collapsedPreview = useMemo(() => (displayText || '').replace(/\s+/g, ' ').trim(), [displayText])
+
   // markdown 折叠只取第一行，避免整段压扁后末尾硬切
   const collapsedMarkdownPreview = useMemo(() => {
     const firstLine = (displayText || '').split(/\r?\n/, 1)[0] ?? ''
@@ -291,7 +296,17 @@ export const ReasoningPartView = memo(function ReasoningPartView({ part, partKey
           <ChevronDownIcon size={12} />
         </span>
       </button>
-
+      {translation.available && (
+        <div className="flex items-center gap-2 px-2 pb-1 text-[length:var(--fs-xs)] text-text-400">
+          <button type="button" className="hover:text-text-100" onClick={() => setShowOriginal(value => !value)}>
+            {showOriginal ? t('reasoning.showTranslation') : t('reasoning.showOriginal')}
+          </button>
+          <button type="button" className="hover:text-text-100" onClick={() => { setTranslationPaused(value => !value); setShowOriginal(false) }}>
+            {translationPaused ? t('reasoning.resumeTranslation') : t('reasoning.pauseTranslation')}
+          </button>
+          {translation.pending && <span>{t('reasoning.translating')}</span>}
+        </div>
+      )}
       <MessageExpandPanel open={expanded} clip>
         {shouldRenderBody && (
           <ScrollArea ref={scrollAreaRef} maxHeight={192} className="border-t border-border-300/20 bg-bg-200/30">

@@ -775,6 +775,7 @@ const AssistantMessageView = memo(function AssistantMessageView({
                 <ReasoningPartView
                   key={`${item.entryId}:${renderItem.blockIndex}`}
                   part={block}
+                  entryId={item.entryId}
                   partKey={`${item.entryId}:${renderItem.blockIndex}`}
                   isStreaming={isStreaming && !thinkingDone}
                 />

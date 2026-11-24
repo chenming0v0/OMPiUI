@@ -410,7 +410,13 @@
     "behavior": "Agent 行为",
     "behaviorDesc": "权限放行和消息排队行为",
     "toolInteraction": "工具交互",
-    "toolInteractionDesc": "控制工具请求和工具输出在对话中的交互方式"
+    "toolInteractionDesc": "控制工具请求和工具输出在对话中的交互方式",
+    "experimental": "实验功能",
+    "experimentalDesc": "仅对 OMPiUI 显示生效，不会修改原生会话内容。",
+    "reasoningTranslation": "思维翻译者",
+    "reasoningTranslationDesc": "使用思维翻译者模型将思考内容翻译成中文；开启后会将思维和近期对话发送给所选模型。",
+    "reasoningTranslationBudget": "上下文预算",
+    "reasoningTranslationBudgetDesc": "最多输入 token 数，超出时从最早的对话内容开始截断。默认 32k。"
   },
   "titlePrompts": {
     "title": "标题提示词",
@@ -564,7 +570,9 @@
     "roleDictation": "语音识别",
     "roleDictationDesc": "语音转文字（STT）。",
     "roleJudge": "评审",
-    "roleJudgeDesc": "对输出结果做评审与打分。"
+    "roleJudgeDesc": "对输出结果做评审与打分。",
+    "roleThinkingTranslator": "思维翻译者",
+    "roleThinkingTranslatorDesc": "仅由 OMPiUI 显式调用，用于翻译思维链；不会由主代理作为子代理调用。"
   },
   "appearance": {
     "themePresets": "主题预设",

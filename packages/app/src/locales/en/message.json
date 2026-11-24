@@ -24,7 +24,12 @@
     "thinking": "Thinking...",
     "thinkingLabel": "Thinking",
     "thoughtFor": "Thought for {{duration}}",
-    "thoughtProcess": "Thought process"
+    "thoughtProcess": "Thought process",
+    "showOriginal": "Show original",
+    "showTranslation": "Show translation",
+    "pauseTranslation": "Stop translating this block",
+    "resumeTranslation": "Resume translation",
+    "translating": "Translating…"
   },
   "toolPart": {
     "running": "Running",

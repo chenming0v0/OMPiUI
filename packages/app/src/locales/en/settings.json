@@ -410,7 +410,13 @@
     "behavior": "Agent Behavior",
     "behaviorDesc": "Permission approval and queued message behavior",
     "toolInteraction": "Tool Interaction",
-    "toolInteractionDesc": "How tool requests and tool output behave inside conversations"
+    "toolInteractionDesc": "How tool requests and tool output behave inside conversations.",
+    "experimental": "Experimental Features",
+    "experimentalDesc": "Affects OMPiUI display only; native session content is not modified.",
+    "reasoningTranslation": "Thinking Translator",
+    "reasoningTranslationDesc": "Translate reasoning into Chinese using the Thinking Translator model. Enabling this sends reasoning and recent conversation context to that model.",
+    "reasoningTranslationBudget": "Context budget",
+    "reasoningTranslationBudgetDesc": "Maximum input token budget; oldest conversation context is truncated first. Default: 32k."
   },
   "titlePrompts": {
     "title": "Title Prompts",
@@ -564,7 +570,9 @@
     "roleDictation": "Dictation",
     "roleDictationDesc": "Speech-to-text.",
     "roleJudge": "Judge",
-    "roleJudgeDesc": "Reviewing and grading outputs."
+    "roleJudgeDesc": "Reviewing and grading outputs.",
+    "roleThinkingTranslator": "Thinking Translator",
+    "roleThinkingTranslatorDesc": "Called explicitly by OMPiUI to translate reasoning; not used as a main-agent subagent role."
   },
   "appearance": {
     "themePresets": "Theme Presets",

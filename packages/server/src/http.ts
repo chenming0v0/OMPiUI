@@ -4,6 +4,7 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http";
+import { once } from "node:events";
 import { networkInterfaces } from "node:os";
 import {
   PROTOCOL_VERSION,
@@ -19,7 +20,7 @@ import {
   type ShareInfo,
   type TunnelStatus,
 } from "@ompiui/protocol";
-import { inspectOmpRuntimes } from "@ompiui/omp-worker";
+import { inspectOmpRuntimes, streamReasoningTranslation } from "@ompiui/omp-worker";
 import { EventHub } from "./event-hub.ts";
 import { RuntimeSupervisor } from "./omp/supervisor.ts";
 import { SessionHost } from "./omp/session-host.ts";
@@ -61,6 +62,7 @@ const CORS_HEADERS: Record<string, string> = {
 const MAX_PENDING_HTTP_INPUT_BYTES = 64 * 1024 * 1024;
 const businessInput = { bytes: 0, limit: MAX_PENDING_HTTP_INPUT_BYTES };
 const pairingInput = { bytes: 0, limit: 4 * 1024 * 1024 };
+let activeReasoningTranslations = 0;
 
 function sendJson(res: ServerResponse, status: number, body: unknown): boolean {
   if (res.destroyed || res.writableEnded) return false;
@@ -900,6 +902,39 @@ export function createAppServer(
         return sendJson(res, 200, ticket);
       }
 
+      if (method === "POST" && p === "/api/v1/pi/reasoning/translate") {
+        const signal = AbortSignal.any([scope.signal, AbortSignal.timeout(120_000)]);
+        const { model, text, history, budget } = await readBody(req, signal, 512 * 1024);
+        if (typeof model !== "string" || !model || model.length > 1024 ||
+          typeof text !== "string" || !text.trim() || Buffer.byteLength(text) > 4096 ||
+          (budget !== 8192 && budget !== 16384 && budget !== 32768) ||
+          !Array.isArray(history) || history.length > 9 ||
+          !history.every(message => message && typeof message === "object" && !Array.isArray(message) &&
+            (message.role === "user" || message.role === "assistant") && typeof message.text === "string")) {
+          throw Object.assign(new Error("Invalid reasoning translation input"), { code: "INVALID_REQUEST" });
+        }
+        if (activeReasoningTranslations >= 4) {
+          throw Object.assign(new Error("Reasoning translation capacity reached"), { code: "RATE_LIMITED" });
+        }
+        // 翻译流只返回给请求客户端，不进入事件回放、会话历史或命令记录。
+        activeReasoningTranslations++;
+        try {
+          res.writeHead(200, { "content-type": "application/x-ndjson", "cache-control": "no-store, no-transform" });
+          res.flushHeaders();
+          const context = history as Array<{ role: 'user' | 'assistant'; text: string }>
+          await streamReasoningTranslation({ model, text, budget, history: context }, signal, async delta => {
+            signal.throwIfAborted();
+            if (!res.write(JSON.stringify({ delta }) + "\n")) await once(res, "drain", { signal });
+          });
+          res.end('{"done":true}\n');
+        } catch {
+          if (!res.destroyed) res.end('{"error":true}\n');
+        } finally {
+          activeReasoningTranslations--;
+        }
+        return;
+      }
+
       const piCommandMatch = p.match(/^\/api\/v1\/pi\/commands\/([^/]+)$/);
       if (piCommandMatch && method === "POST") {
         const body = await readBody(req, scope.signal, MAX_PROMPT_BODY_BYTES);
@@ -1036,6 +1071,7 @@ function allowedMethodsForPath(pathname: string): string | undefined {
     return "GET";
   if (
     pathname === "/api/v1/host/shutdown" ||
+    pathname === "/api/v1/pi/reasoning/translate" ||
     pathname === "/api/v1/host/pair/redeem" ||
     pathname === "/api/v1/host/tailscale/install" ||
     pathname === "/api/v1/host/tailscale/login" ||

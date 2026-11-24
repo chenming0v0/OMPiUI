@@ -24,7 +24,12 @@
     "thinking": "Thinking...",
     "thinkingLabel": "Thinking",
     "thoughtFor": "思考了 {{duration}}",
-    "thoughtProcess": "思考过程"
+    "thoughtProcess": "思考过程",
+    "showOriginal": "查看原文",
+    "showTranslation": "查看译文",
+    "pauseTranslation": "关闭此条翻译",
+    "resumeTranslation": "继续翻译此条",
+    "translating": "翻译中…"
   },
   "toolPart": {
     "running": "运行中",

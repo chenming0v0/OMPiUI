@@ -25,6 +25,8 @@ export type PiRequestInit = RequestInit & {
   timeoutMs?: number
   /** Retry network failures for GET/HEAD only (default true); never enables write retries. */
   retry?: boolean
+  /** 私有辅助模型调用不在流量审计中保留请求和响应正文。 */
+  privateStream?: boolean
 }
 
 function isNetworkLevelError(error: unknown): boolean {
@@ -102,7 +104,7 @@ export function getPiAuthToken(): string | undefined {
 }
 
 export async function piFetch(input: string, init?: PiRequestInit): Promise<Response> {
-  const { retry = true, timeoutMs, ...requestInit } = init ?? {}
+  const { retry = true, timeoutMs, privateStream, ...requestInit } = init ?? {}
   requestInit.signal?.throwIfAborted()
   const method = (requestInit.method ?? 'GET').toUpperCase()
   const canRetry = retry && (method === 'GET' || method === 'HEAD')
@@ -137,17 +139,14 @@ export async function piFetch(input: string, init?: PiRequestInit): Promise<Resp
   for (let attempt = 0; attempt <= NETWORK_RETRY_DELAYS_MS.length; attempt++) {
     signal.throwIfAborted()
     try {
-      return await auditHttpRequest(
-        input,
-        { ...requestInit, signal },
-        async () => {
-          const resolved = await resolveAndroidTailscaleUrl(input)
-          signal.throwIfAborted()
-          return fetchImpl(resolved, { ...requestInit, signal, headers })
-        },
-        input.startsWith('/') ? auditServer : undefined,
-        attempt + 1,
-      )
+      const request = async () => {
+        const resolved = await resolveAndroidTailscaleUrl(input)
+        signal.throwIfAborted()
+        return fetchImpl(resolved, { ...requestInit, signal, headers })
+      }
+      if (privateStream) return await request()
+      return await auditHttpRequest(input, { ...requestInit, signal }, request,
+        input.startsWith('/') ? auditServer : undefined, attempt + 1)
     } catch (error) {
       if (!canRetry || signal.aborted || isAbortError(error) || !isNetworkLevelError(error)) throw error
       lastError = error
