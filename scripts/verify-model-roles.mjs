@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { OmpCatalog } from "../packages/omp-worker/dist/omp/omp-catalog.js"
 import { resolveOmpConfigCommand } from "../packages/omp-worker/dist/omp/omp-config-command.js"
+import { verifyReasoningTranslation } from "./verify-reasoning-translation.mjs"
 
 // 真实 OMP 配置读写验收：只使用隔离目录，不访问模型服务或用户配置。
 const root = mkdtempSync(path.join(tmpdir(), "ompiui-model-roles space-"))
@@ -23,6 +24,7 @@ const roles = {
   memory: "provider/model-memory:max",
   default: "provider/model-default:high",
   judge: "provider/model-judge",
+  thinkingTranslator: "provider/model-translator",
 }
 
 try {
@@ -44,8 +46,9 @@ try {
       assert.deepEqual(await catalog.getModelRoles(), updated)
       await catalog.setModelRoles({})
       assert.deepEqual(await catalog.getModelRoles(), {})
-      console.info(`PASS: 13 roles saved/read/updated/cleared via ${bin}`)
+      console.info(`PASS: 14 roles saved/read/updated/cleared via ${bin}`)
       console.info(`Direct argv command: ${JSON.stringify(resolveOmpConfigCommand())}`)
+      await verifyReasoningTranslation()
     } finally {
       await catalog.dispose()
     }
