@@ -1667,7 +1667,7 @@ export function PiChatPane({
                 ? {
                     label: dialogRequest.title,
                     queueLength: pendingDialogs.length,
-                    onExpand: () => setDialogCollapsed(false),
+                    onExpand: () => { setDialogCollapsed(false); chatAreaRef.current?.scrollToBottom() },
                   }
                 : undefined
             }
