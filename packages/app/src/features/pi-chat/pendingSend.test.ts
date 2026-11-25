@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { appendPendingSends, appendPendingQueueEntries, createPendingSend, reconcilePendingSends, reconcileQueuedPendingSends, withoutQueueEntry } from './pendingSend'
+import { appendPendingSends, appendPendingQueueEntries, createPendingSend, reconcilePendingSends, reconcileQueuedPendingSends, reconcileSubmittedPendingSends, withoutQueueEntry } from './pendingSend'
 import type { PiTimelineItem } from '../../omp/domain'
 
 const label = (count: number) => `${count} image(s)`
@@ -11,6 +11,20 @@ function native(text: string, timestamp: number, images: object[] = []): PiTimel
 }
 
 describe('pending user message handoff', () => {
+  it('hands Send now to shared state by queue identity without hiding an identical sibling', () => {
+    const queue = [{ entryId: 'promoted', text: 'same' }, { entryId: 'sibling', text: 'same' }]
+    const promoted = { ...createPendingSend('session', 1, 'same', [], [], queue[0].entryId, queue, 'steering'), showInTimeline: true }
+    const sibling = createPendingSend('session', 1, 'same', [], [], queue[1].entryId, queue, 'steering')
+    const sharedIds = new Set([queue[0].entryId])
+    const pending = reconcileSubmittedPendingSends([promoted, sibling], sharedIds)
+    expect(pending).toEqual([sibling])
+    expect(reconcileSubmittedPendingSends(pending, sharedIds)).toBe(pending)
+    expect(appendPendingQueueEntries(queue, pending, 'steering', sharedIds)).toEqual([queue[1]])
+    // 独立客户端没有任何本地 pending，也必须按共享状态隐藏被提升项。
+    expect(appendPendingQueueEntries(queue, [], 'steering', sharedIds)).toEqual([queue[1]])
+    expect(appendPendingQueueEntries(queue, [], 'followUp', sharedIds)).toEqual([queue[1]])
+  })
+
   it('keeps two busy submissions out of history across pre-ACK queue arrival and consumption', () => {
     const first = createPendingSend('session', 1, 'first queued', [], [], undefined, [], 'followUp')
     const second = createPendingSend('session', 1, 'second queued', [], [], undefined, [], 'followUp')

@@ -105,6 +105,12 @@ export function reconcileQueuedPendingSends(
   return changed ? next : pending
 }
 
+/** 服务端共享状态接手立即发送预览，不按文字认领其他同内容队列项。 */
+export function reconcileSubmittedPendingSends<T extends PendingSend>(pending: readonly T[], submittedEntryIds: ReadonlySet<string>): readonly T[] {
+  const isSubmitted = (send: T) => Boolean(send.queueEntryId && submittedEntryIds.has(send.queueEntryId))
+  return pending.some(isSubmitted) ? pending.filter(send => !isSubmitted(send)) : pending
+}
+
 /** 删除 / 移回输入框 / 立即发送：按原生队列 entryId 同源清理，不做文本匹配。 */
 export function withoutQueueEntry(pending: readonly PendingSend[], serverGeneration: number, sessionId: string | null, entryId: string): PendingSend[] {
   return pending.filter(send => send.serverGeneration !== serverGeneration || send.sessionId !== sessionId || send.queueEntryId !== entryId)
@@ -129,9 +135,11 @@ export function appendPendingSends(items: PiTimelineItem[], pending: readonly Pe
   return appended.length > 0 ? [...items, ...appended] : items
 }
 
+const EMPTY_SUBMITTED_ENTRY_IDS: ReadonlySet<string> = new Set()
+
 /** Keep busy submissions in the queue rail from their first render through native admission. */
-export function appendPendingQueueEntries(entries: readonly ComposerQueueEntry[], pending: readonly PendingSend[], kind: 'steering' | 'followUp'): readonly ComposerQueueEntry[] {
-  const inTimeline = new Set(pending.filter(send => send.showInTimeline).map(send => send.queueEntryId))
+export function appendPendingQueueEntries(entries: readonly ComposerQueueEntry[], pending: readonly PendingSend[], kind: 'steering' | 'followUp', submittedEntryIds: ReadonlySet<string> = EMPTY_SUBMITTED_ENTRY_IDS): readonly ComposerQueueEntry[] {
+  const inTimeline = new Set([...submittedEntryIds, ...pending.filter(send => send.showInTimeline).map(send => send.queueEntryId)])
   const queued = entries.some(entry => inTimeline.has(entry.entryId)) ? entries.filter(entry => !inTimeline.has(entry.entryId)) : entries
   const local = reconcileQueuedPendingSends(pending, entries).filter(send => !send.showInTimeline && send.queueKind === kind && send.phase !== 'queued')
   return local.length === 0 ? queued : [...queued, ...local.map(send => ({ entryId: `submitted:local:${send.id}`, text: send.text, images: send.images, pending: true }))]

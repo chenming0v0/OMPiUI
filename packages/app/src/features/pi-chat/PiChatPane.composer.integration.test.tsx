@@ -181,6 +181,88 @@ afterEach(() => {
 })
 
 describe('PiChatPane with the real composer', () => {
+  it.each([
+    { kind: 'steering' as const, touch: false }, { kind: 'steering' as const, touch: true },
+    { kind: 'followUp' as const, touch: false }, { kind: 'followUp' as const, touch: true },
+  ])('restores Send now from shared state without local pending ($kind, touch=$touch)', async ({ kind, touch }) => {
+    mocks.touch = touch
+    const entry = { entryId: 'shared-waiting', text: 'submitted on another device' }
+    const sibling = { entryId: 'shared-sibling', text: 'keep waiting in queue' }
+    const submitted = {
+      id: `submitted:${entry.entryId}`, queueEntryId: entry.entryId, submissionStatus: 'queued',
+      message: { role: 'user' as const, timestamp: 123456, content: [{ type: 'text' as const, text: entry.text }] },
+    }
+    const queue = kind === 'steering' ? { steeringEntries: [entry, sibling] } : { followUpEntries: [entry, sibling] }
+    mocks.state = { ...mocks.state, isStreaming: true, queue, submittedMessages: [submitted] }
+    expect(pendingSendStore.getSnapshot()).toEqual([])
+    const view = render(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+    const rail = document.querySelector('[data-message-queue]')! as HTMLElement
+    expect(within(rail).queryByText(entry.text)).toBeNull()
+    expect(within(rail).getByText(sibling.text)).toBeVisible()
+    expect(within(screen.getByTestId('transcript')).getByText(entry.text)).toHaveAttribute('data-submission-status', 'queued')
+    expect(screen.getAllByText(entry.text)).toHaveLength(1)
+
+    // 刷新／重连后的新客户端没有前一个客户端的内存 pending，仍靠快照恢复。
+    view.unmount()
+    pendingSendStore.reset()
+    mocks.state = { ...mocks.state, submittedMessages: [{ ...submitted }] }
+    const restored = render(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+    expect(within(screen.getByTestId('transcript')).getByText(entry.text)).toHaveAttribute('data-entry-id', submitted.id)
+    expect(screen.getAllByText(entry.text)).toHaveLength(1)
+
+    // 原生已出队、历史尚未到达时，共享待消费行不能消失。
+    mocks.state = { ...mocks.state, queue: { steeringEntries: [sibling], followUpEntries: [] } }
+    restored.rerender(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+    expect(within(screen.getByTestId('transcript')).getByText(entry.text)).toHaveAttribute('data-submission-status', 'queued')
+    mocks.branch = { items: [{ type: 'message', id: 'shared-native', parentId: null, timestamp: new Date(123456).toISOString(), message: submitted.message }] }
+    restored.rerender(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+    expect(screen.getAllByText(entry.text)).toHaveLength(1)
+    expect(within(screen.getByTestId('transcript')).getByText(entry.text)).toHaveAttribute('data-entry-id', 'shared-native')
+    mocks.state = { ...mocks.state, submittedMessages: [] }
+    restored.rerender(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+    expect(screen.getAllByText(entry.text)).toHaveLength(1)
+    expect(mocks.sendQueued).not.toHaveBeenCalled()
+    expect(mocks.sendMessage).not.toHaveBeenCalled()
+    expect(mocks.interrupt).not.toHaveBeenCalled()
+  })
+
+  it('hands the operation-side optimistic preview to the shared snapshot before ACK without duplicates', async () => {
+    const entry = { entryId: 'shared-ack', text: 'send once across clients' }
+    mocks.state = { ...mocks.state, isStreaming: true, queue: { followUpEntries: [entry] } }
+    const accepting = Promise.withResolvers<void>()
+    mocks.sendQueued.mockReturnValue(accepting.promise)
+    const view = render(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('chat:chatArea.sendQueuedNow') }))
+    await waitFor(() => expect(mocks.sendQueued).toHaveBeenCalledTimes(1))
+    mocks.state = {
+      ...mocks.state, queue: { steeringEntries: [entry], followUpEntries: [] },
+      submittedMessages: [{ id: `submitted:${entry.entryId}`, queueEntryId: entry.entryId, submissionStatus: 'queued',
+        message: { role: 'user', timestamp: 123456, content: [{ type: 'text', text: entry.text }] } }],
+    }
+    view.rerender(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+    expect(screen.getAllByText(entry.text)).toHaveLength(1)
+    expect(document.querySelector('[data-message-queue]')).toBeNull()
+    expect(pendingSendStore.getSnapshot()).toEqual([])
+    await act(async () => { accepting.resolve() })
+    expect(within(screen.getByTestId('transcript')).getByText(entry.text)).toHaveAttribute('data-entry-id', `submitted:${entry.entryId}`)
+    expect(mocks.sendQueued).toHaveBeenCalledTimes(1)
+  })
+
+  it('removes a shared preview when a later authoritative snapshot clears the native item', () => {
+    const entry = { entryId: 'shared-deleted', text: 'removed by another client' }
+    mocks.state = {
+      ...mocks.state, isStreaming: true, queue: { steeringEntries: [entry] },
+      submittedMessages: [{ id: `submitted:${entry.entryId}`, queueEntryId: entry.entryId, submissionStatus: 'queued',
+        message: { role: 'user', timestamp: 123456, content: [{ type: 'text', text: entry.text }] } }],
+    }
+    const view = render(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+    expect(within(screen.getByTestId('transcript')).getByText(entry.text)).toBeVisible()
+    mocks.state = { ...mocks.state, queue: { steeringEntries: [], followUpEntries: [] }, submittedMessages: [] }
+    view.rerender(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+    expect(screen.queryByText(entry.text)).toBeNull()
+    expect(pendingSendStore.getSnapshot()).toEqual([])
+  })
+
   it.each([false, true])('shows Send now in the transcript while thinking, through ACK, remount and history handoff (touch=%s)', async touch => {
     mocks.touch = touch
     const entry = { entryId: 'waiting-entry', text: 'join after thinking' }

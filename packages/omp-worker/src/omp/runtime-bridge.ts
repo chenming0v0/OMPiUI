@@ -124,7 +124,7 @@ export default function (pi) {
   function identity(session) {
     return { sessionId: session.sessionManager.getSessionId(), sessionFile: session.sessionFile ?? null, leafId: session.sessionManager.getLeafId(), cwd: session.sessionManager.getCwd() };
   }
-  function queue(session, includeImageData = false) {
+  function queue(session, includeImageData = false, submittedQueueEntryIds = []) {
     const restore = message => {
       const entry = toRestoredQueuedMessage(message);
       entry.entryId = queueEntryId(session, message);
@@ -133,7 +133,14 @@ export default function (pi) {
     };
     const steeringEntries = session.agent.peekSteeringQueue().filter(isUserQueuedMessage).map(restore);
     const followUpEntries = session.agent.peekFollowUpQueue().filter(isUserQueuedMessage).map(restore);
-    return { steering: steeringEntries.map(entry => entry.text), followUp: followUpEntries.map(entry => entry.text), steeringEntries, followUpEntries, scopedModels: session.scopedModels, scopedModelPatterns: scopePatterns(session), steeringMode: session.steeringMode, followUpMode: session.followUpMode };
+    const submittedIds = new Set(submittedQueueEntryIds);
+    // appendMessage retains the native message object. Correlate that identity,
+    // not chip text/timestamps, without annotating the original session history.
+    const submittedHistoryEntries = submittedIds.size ? session.sessionManager.getEntries().flatMap(entry => {
+      const queueEntryId = entry.type === "message" ? queueEntryIds.get(entry.message) : undefined;
+      return submittedIds.has(queueEntryId) ? [{ queueEntryId, historyEntryId: entry.id }] : [];
+    }) : [];
+    return { steering: steeringEntries.map(entry => entry.text), followUp: followUpEntries.map(entry => entry.text), steeringEntries, followUpEntries, submittedHistoryEntries, scopedModels: session.scopedModels, scopedModelPatterns: scopePatterns(session), steeringMode: session.steeringMode, followUpMode: session.followUpMode };
   }
   function budget(value, maxBytes) {
     if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 0)) throw new Error("Invalid response capacity");
@@ -214,7 +221,7 @@ export default function (pi) {
       }
       case "moveSession": return await moveWorktreeSession(session, args, ctx);
       case "submitUserMessage": return await submitUserMessage(session, args);
-      case "queue": return { ...queue(session), ...contextMaintenance(session, args.pruningRevision) };
+      case "queue": return { ...queue(session, false, args.submittedQueueEntryIds), ...contextMaintenance(session, args.pruningRevision) };
       case "clearQueue": {
         const result = queue(session, true);
         budget(result, args.maxResultBytes);
@@ -234,6 +241,19 @@ export default function (pi) {
         const selected = selectQueued(session, args);
         if (session.isRetrying || session.isCompacting || session.isGeneratingHandoff) throw new Error("Wait for the current submission before sending queued content");
         const result = { accepted: true };
+        const nativeMessage = selected.source[selected.userIndex];
+        // Only ordinary user turns retain their message object in native history.
+        // Visible custom prompts keep their existing native queue/display behavior.
+        if (nativeMessage.role === "user") {
+          const content = [{ type: "text", text: selected.restored.text }, ...(selected.restored.images ?? []).map(image => {
+            const { data, ...metadata } = image;
+            return { ...metadata, type: "image", data: "", dataOmitted: true };
+          })];
+          result.submittedMessage = {
+            id: "submitted:" + args.entryId, queueEntryId: args.entryId, submissionStatus: "queued",
+            message: { role: "user", timestamp: nativeMessage.timestamp, content },
+          };
+        }
         budget(result, args.maxResultBytes);
         const next = selected.source.slice();
         const moved = next.splice(selected.start, selected.userIndex - selected.start + 1);

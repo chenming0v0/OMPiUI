@@ -91,6 +91,191 @@ async function sessionFixture(t: TestContext) {
 
 const image = (data: string): ImageInput => ({ type: "image", data, mimeType: "image/png" })
 
+async function queuedSessionFixture(t: TestContext, kind: "steering" | "followUp") {
+  const fixture = await sessionFixture(t)
+  const timestamp = 1770000000000
+  const selected: JsonObject = { entryId: "native:chosen", text: "selected", images: [{ type: "image", data: "", mimeType: "image/png", dataOmitted: true }] }
+  const sibling: JsonObject = { entryId: "native:sibling", text: "selected" }
+  const queue: { steering: JsonObject[]; followUp: JsonObject[] } = { steering: [], followUp: [] }
+  queue[kind] = [selected, sibling]
+  const submitted: JsonObject = {
+    id: "submitted:native:chosen", queueEntryId: "native:chosen", submissionStatus: "queued",
+    message: { role: "user", timestamp, content: [{ type: "text", text: "selected" }, { type: "image", data: "", mimeType: "image/png", dataOmitted: true }] },
+  }
+  const historyIdentities: JsonObject[] = []
+  let rejection: string | undefined
+  let queueReadError: Error | undefined
+  fixture.rpc.onRequest = command => {
+    if (command.type === "queue") {
+      if (queueReadError) throw queueReadError
+      return { data: { steeringEntries: queue.steering, followUpEntries: queue.followUp, submittedHistoryEntries: historyIdentities } }
+    }
+    if (["sendQueuedMessage", "removeQueuedMessage", "clearQueue"].includes(String(command.type))) {
+      if (rejection) return { success: false, error: rejection }
+      if (command.type === "clearQueue") {
+        const removed = { steeringEntries: queue.steering, followUpEntries: queue.followUp }
+        queue.steering = []; queue.followUp = []
+        return { data: removed }
+      }
+      const source = queue[command.kind as "steering" | "followUp"]
+      const chosen = source[Number(command.index)]
+      if (!chosen || chosen.entryId !== command.entryId) return { success: false, error: "stale native identity" }
+      source.splice(Number(command.index), 1)
+      if (command.type === "sendQueuedMessage") { queue.steering.unshift(chosen); return { data: { accepted: true, submittedMessage: submitted } } }
+      return { data: { removed: true } }
+    }
+    return undefined
+  }
+  await fixture.session.getState()
+  return {
+    ...fixture, queue, selected, sibling, submitted, historyIdentities,
+    rejectOperations: (error?: string) => { rejection = error },
+    rejectQueueReads: (error?: Error) => { queueReadError = error },
+  }
+}
+
+describe("OmpRpcSession shared Send now display", () => {
+  for (const kind of ["steering", "followUp"] as const) {
+    it(`publishes ${kind} acceptance to every client and survives refreshed snapshots before consumption`, async t => {
+      const { session, queue, sibling, selected, submitted, commands, entries } = await queuedSessionFixture(t, kind)
+      const firstClient: JsonObject[] = []
+      const secondClient: JsonObject[] = []
+      const disconnect = session.onPiEvent(event => firstClient.push(event))
+      session.onPiEvent(event => secondClient.push(event))
+      await session.sendQueuedMessage(kind, 0, "native:chosen")
+      assert.deepEqual(firstClient.filter(event => event.type === "queue_update").at(-1)?.submittedMessages, [submitted])
+      assert.deepEqual(secondClient.filter(event => event.type === "queue_update").at(-1)?.submittedMessages, [submitted])
+      assert.equal(queue.steering[0], selected)
+      assert.ok(queue[kind].includes(sibling), "an unpromoted identical-text sibling remains queued")
+      assert.deepEqual(entries, [], "display acceptance creates no synthetic history")
+      disconnect()
+      const reconnectedEvents: JsonObject[] = []
+      session.onPiEvent(event => reconnectedEvents.push(event))
+      for (let refresh = 0; refresh < 2; refresh++) {
+        const state = await session.getState()
+        assert.deepEqual(state.submittedMessages, [submitted])
+        assert.equal((state.queue as JsonObject).submittedMessages, undefined, "state carries display metadata only at the top level")
+        assert.deepEqual((state.queue as JsonObject).steeringEntries, queue.steering)
+      }
+      assert.deepEqual(reconnectedEvents, [], "read-only refresh does not manufacture acceptance events")
+      assert.ok(commands.some(command => command.type === "queue" && (command.submittedQueueEntryIds as string[] | undefined)?.includes("native:chosen")))
+      assert.equal(commands.some(command => ["prompt", "steer", "follow_up", "submitUserMessage"].includes(String(command.type))), false)
+    })
+  }
+
+  it("retains a consumed projection until its exact native history entry is synchronized", async t => {
+    const { session, queue, submitted, historyIdentities, entries, frame } = await queuedSessionFixture(t, "followUp")
+    const events: JsonObject[] = []
+    session.onPiEvent(event => events.push(event))
+    await session.sendQueuedMessage("followUp", 0, "native:chosen")
+    queue.steering = []
+    frame({ type: "queue_update", steering: [], followUp: ["selected"] })
+    assert.deepEqual((await session.getState()).submittedMessages, [submitted], "queue consumption precedes native history")
+    entries.push({ id: "same-text-sibling-history", type: "message", parentId: null, timestamp: "2026-02-02T00:00:00Z", message: structuredClone(submitted.message) })
+    frame({ type: "message_end", message: submitted.message })
+    assert.deepEqual((await session.getState()).submittedMessages, [submitted], "equal text/timestamp alone cannot retire another identity")
+    historyIdentities.push({ queueEntryId: "native:chosen", historyEntryId: "actual-native-history" })
+    assert.deepEqual((await session.getState()).submittedMessages, [submitted], "native correlation alone cannot outrun worker history sync")
+    entries.push({ id: "actual-native-history", type: "message", parentId: "same-text-sibling-history", timestamp: "2026-02-02T00:00:01Z", message: {
+      role: "user", timestamp: (submitted.message as JsonObject).timestamp, content: [{ type: "text", text: "selected" }, image("AA==")],
+    } })
+    frame({ type: "message_end", message: entries.at(-1)!.message })
+    assert.deepEqual((await session.getState()).submittedMessages, [])
+    assert.deepEqual(events.filter(event => event.type === "queue_update").at(-1)?.submittedMessages, [])
+    assert.equal((entries.at(-1)!.message as JsonObject).timestamp, (submitted.message as JsonObject).timestamp)
+  })
+
+  it("does not publish a ghost on rejection and preserves accepted metadata when removal fails", async t => {
+    const { session, queue, submitted, rejectOperations } = await queuedSessionFixture(t, "steering")
+    const events: JsonObject[] = []
+    session.onPiEvent(event => events.push(event))
+    rejectOperations("native promotion rejected")
+    await assert.rejects(session.sendQueuedMessage("steering", 0, "native:chosen"), /native promotion rejected/)
+    assert.deepEqual((await session.getState()).submittedMessages, [])
+    assert.deepEqual(events, [])
+    assert.equal(queue.steering.length, 2)
+    rejectOperations()
+    await session.sendQueuedMessage("steering", 0, "native:chosen")
+    rejectOperations("native removal rejected")
+    await assert.rejects(session.removeQueuedMessage("steering", 0, "native:chosen"), /native removal rejected/)
+    await assert.rejects(session.clearQueue(), /native removal rejected/)
+    assert.deepEqual((await session.getState()).submittedMessages, [submitted])
+  })
+
+  it("publishes successful removal/clear cleanup and leaves sibling native work alone", async t => {
+    const { session, queue, sibling } = await queuedSessionFixture(t, "steering")
+    const events: JsonObject[] = []
+    session.onPiEvent(event => events.push(event))
+    await session.sendQueuedMessage("steering", 0, "native:chosen")
+    await session.removeQueuedMessage("steering", 0, "native:chosen")
+    assert.deepEqual(queue.steering, [sibling])
+    assert.deepEqual((await session.getState()).submittedMessages, [])
+    assert.deepEqual(events.filter(event => event.type === "queue_update").at(-1)?.submittedMessages, [])
+    // Reinsert the fixture's native message, then exercise a complete clear.
+    queue.steering.unshift({ entryId: "native:chosen", text: "selected" })
+    await session.sendQueuedMessage("steering", 0, "native:chosen")
+    await session.clearQueue()
+    assert.deepEqual((await session.getState()).submittedMessages, [])
+    assert.deepEqual(queue, { steering: [], followUp: [] })
+  })
+
+  it("does not clear consumed display records that are awaiting native history", async t => {
+    const { session, queue, submitted, historyIdentities, entries, frame } = await queuedSessionFixture(t, "followUp")
+    await session.sendQueuedMessage("followUp", 0, "native:chosen")
+    queue.steering = []
+    frame({ type: "queue_update", steering: [], followUp: ["selected"] })
+    await session.clearQueue()
+    assert.deepEqual((await session.getState()).submittedMessages, [submitted])
+    assert.deepEqual(queue, { steering: [], followUp: [] })
+    historyIdentities.push({ queueEntryId: "native:chosen", historyEntryId: "after-clear-history" })
+    entries.push({ id: "after-clear-history", type: "message", parentId: null, timestamp: "2026-02-02T00:00:00Z", message: submitted.message })
+    frame({ type: "message_end", message: submitted.message })
+    assert.deepEqual((await session.getState()).submittedMessages, [])
+  })
+
+  it("publishes accepted display metadata even when queue readback fails", async t => {
+    const { session, submitted, rejectQueueReads } = await queuedSessionFixture(t, "followUp")
+    const events: JsonObject[] = []
+    session.onPiEvent(event => events.push(event))
+    rejectQueueReads(new Error("readback unavailable"))
+    await session.sendQueuedMessage("followUp", 0, "native:chosen")
+    assert.deepEqual(events.filter(event => event.type === "queue_update").at(-1)?.submittedMessages, [submitted])
+    rejectQueueReads()
+    assert.deepEqual((await session.getState()).submittedMessages, [submitted])
+  })
+
+  for (const reset of ["resetHistoryProjection", "resetHistory"] as const) {
+    it(`ignores a late accepted receipt after ${reset}`, async t => {
+      const { session, rpc, submitted } = await queuedSessionFixture(t, "followUp")
+      const started = Promise.withResolvers<void>()
+      const receipt = Promise.withResolvers<JsonObject>()
+      const onRequest = rpc.onRequest
+      rpc.onRequest = command => {
+        if (command.type === "sendQueuedMessage") { started.resolve(); return receipt.promise }
+        return onRequest(command)
+      }
+      const sending = session.sendQueuedMessage("followUp", 0, "native:chosen")
+      const expected = reset === "resetHistory" ? assert.rejects(sending, { code: "SESSION_REPLACED" }) : sending
+      await started.promise
+      ;(session as unknown as Record<typeof reset, () => void>)[reset]()
+      receipt.resolve({ data: { accepted: true, submittedMessage: submitted } })
+      await expected
+      assert.deepEqual((await session.getState()).submittedMessages, [])
+    })
+  }
+
+  it("clears display metadata on same-session projection reset and session replacement", async t => {
+    const { session, queue } = await queuedSessionFixture(t, "steering")
+    await session.sendQueuedMessage("steering", 0, "native:chosen")
+    ;(session as unknown as { resetHistoryProjection(): void }).resetHistoryProjection()
+    assert.deepEqual((await session.getState()).submittedMessages, [])
+    await session.sendQueuedMessage("steering", 0, "native:chosen")
+    queue.steering = []; queue.followUp = []
+    await session.newSession()
+    assert.deepEqual((await session.getState()).submittedMessages, [])
+  })
+})
+
 describe("OmpRpcSession context maintenance", () => {
   it("publishes manual compaction lifecycle and keeps the native result metadata", async t => {
     const { session, rpc, commands } = await sessionFixture(t)

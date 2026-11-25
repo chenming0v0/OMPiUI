@@ -580,6 +580,31 @@ describe('session configuration and stop synchronization', () => {
     })
   }
 
+  it.each(['queue_update', 'snapshot'])('restores the shared Send now state through %s without another submission', async path => {
+    const entry = { entryId: 'promoted-queue', text: 'accepted on the other device' }
+    const submittedMessages = [{ id: `submitted:${entry.entryId}`, queueEntryId: entry.entryId, submissionStatus: 'queued',
+      message: { role: 'user', timestamp: 123456, content: [{ type: 'text', text: entry.text }] } }]
+    vi.mocked(controllers.refreshPiSessionState).mockImplementation(readNativeSessionState)
+    vi.spyOn(transport, 'getPiSessionState').mockResolvedValue({
+      isStreaming: true, queue: { steeringEntries: [entry], followUpEntries: [] }, submittedMessages,
+    })
+    const send = vi.spyOn(transport, 'sendQueuedMessage')
+    if (path === 'queue_update') {
+      const old = piSessionStateStore.beginRequest('session-stop')
+      event({ type: 'queue_update', steeringEntries: [entry], followUpEntries: [], submittedMessages })
+      expect(piSessionStateStore.isRequestCurrent('session-stop', old)).toBe(false)
+      await vi.advanceTimersByTimeAsync(200)
+    } else {
+      // 新端／游标失效恢复只读取权威快照，不依赖曾收到立即发送事件。
+      await readNativeSessionState('session-stop')
+    }
+    expect(piSessionStateStore.getState('session-stop')).toMatchObject({
+      queue: { steeringEntries: [entry], followUpEntries: [] }, submittedMessages,
+    })
+    expect(piSessionStateStore.getState('another-session')).toBeNull()
+    expect(send).not.toHaveBeenCalled()
+  })
+
   it('refreshes the actual model on model_changed and invalidates older reads', async () => {
     const old = piSessionStateStore.beginRequest('session-stop')
     event({ type: 'model_changed' })

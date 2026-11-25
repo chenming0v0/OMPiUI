@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import { AsyncLocalStorage } from "node:async_hooks"
+import { createHash } from "node:crypto"
 import { runInNewContext } from "node:vm"
 import { test } from "node:test"
 import type { JsonObject } from "@ompiui/protocol"
@@ -50,71 +51,150 @@ test("a native command failure arriving before its prompt ACK rejects the manage
   transport.close(new Error("fixture closed"))
 })
 
-test("generated bridge promotes a queued message while a native submission is admitted", async () => {
+function queuedBridgeHarness(streaming = true) {
   const source = runtimeBridgeExtension()
     .replace(/^import[^\n]+\n/gm, "")
     .replace("export default function (pi)", "function extension(pi)")
     + "\nextension"
   let commandHandler!: (text: string, ctx: unknown) => Promise<void>
-  const notifications: string[] = []
-  const replaced: Array<[unknown[], unknown[]]> = []
-  const steering = [{ user: true, text: "already steering" }]
-  const companion = { hidden: true, text: "image description" }
-  const selected = { user: true, text: "selected", images: [{ type: "image", data: "AA==", mimeType: "image/png" }] }
-  const untouched = { user: true, text: "keep following up" }
-  const followUp = [companion, selected, untouched]
+  const replaced: Array<[JsonObject[], JsonObject[]]> = []
+  const user = (text: string, timestamp: number, images: JsonObject[] = []): JsonObject => ({
+    role: "user", timestamp, content: [{ type: "text", text }, ...images],
+  })
+  const sibling = user("already steering", 100)
+  const companion: JsonObject = { role: "custom", display: false, content: "image description" }
+  const selected = user("selected", 200, [{ type: "image", data: "AA==", mimeType: "image/png" }])
+  const untouched = user("keep following up", 300)
+  let steering = [sibling]
+  let followUp = [companion, selected, untouched]
+  const entries: JsonObject[] = []
+  let continuationError: Error | undefined
   const session = {
-    sessionManager: { getSessionId: () => "session", getSessionFile: () => "session.jsonl" },
-    setSteeringMode: () => {},
-    setFollowUpMode: () => {},
+    sessionManager: {
+      getSessionId: () => "session", getSessionFile: () => "session.jsonl",
+      getEntries: () => entries, getBranchView: () => entries,
+    },
+    scopedModels: [],
     agent: {
       peekSteeringQueue: () => steering,
       peekFollowUpQueue: () => followUp,
-      replaceQueues: (nextSteering: unknown[], nextFollowUp: unknown[]) => replaced.push([nextSteering, nextFollowUp]),
-      state: { isStreaming: true },
+      replaceQueues: (nextSteering: JsonObject[], nextFollowUp: JsonObject[]) => {
+        replaced.push([nextSteering, nextFollowUp]); steering = nextSteering; followUp = nextFollowUp
+      },
+      continue: async () => { if (continuationError) throw continuationError },
+      state: { isStreaming: streaming },
     },
-    hasAdmittedSubmission: true,
-    isRetrying: false,
-    isCompacting: false,
-    isGeneratingHandoff: false,
-    isStreaming: true,
+    hasAdmittedSubmission: true, isRetrying: false, isCompacting: false,
+    isGeneratingHandoff: false, isStreaming: streaming,
   }
   const pi = {
     registerCommand: (_name: string, spec: { handler: typeof commandHandler }) => { commandHandler = spec.handler },
     pi: { AgentRegistry: { global: () => ({ list: () => [{ session }] }) } },
   }
-  const context = {
-    randomUUID: () => "runtime-id",
-    AsyncLocalStorage,
-    Buffer,
-    isUserQueuedMessage: (value: unknown) => value !== null && typeof value === "object" && "user" in value && value.user === true,
-    isHiddenUserCompanion: (value: unknown) => value !== null && typeof value === "object" && "hidden" in value && value.hidden === true,
-    toRestoredQueuedMessage: (value: JsonObject) => ({ ...value }),
-    resolveModelScope: async () => [],
-    cfgDisabledExtensions: { get: () => [] },
-    rm: async () => undefined,
-  }
-  const extension = runInNewContext(source, context) as (value: typeof pi) => void
+  const extension = runInNewContext(source, {
+    randomUUID: () => "runtime-id", AsyncLocalStorage, Buffer,
+    isUserQueuedMessage: (value: JsonObject) => value.role === "user" || (value.role === "custom" && value.attribution === "user" && value.display !== false),
+    isHiddenUserCompanion: (value: JsonObject) => value.role === "custom" && value.display === false,
+    toRestoredQueuedMessage: (value: JsonObject) => ({
+      text: typeof value.content === "string" ? value.content : (value.content as JsonObject[]).find(block => block.type === "text")?.text ?? "",
+      images: typeof value.content === "string" ? [] : (value.content as JsonObject[]).filter(block => block.type === "image"),
+    }),
+    contextHash: createHash, contextSettings: () => ({}),
+    resolveModelScope: async () => [], cfgDisabledExtensions: { get: () => [] }, rm: async () => undefined,
+  }) as (value: typeof pi) => void
   extension(pi)
-  const request = JSON.stringify({ id: "request", operation: "sendQueuedMessage", args: { kind: "followUp", index: 0, entryId: "runtime-id:session:1" } })
-  const ctx = {
-    cwd: process.cwd(),
-    sessionManager: session.sessionManager,
-    setTimeout: (callback: () => Promise<void>) => { void callback() },
-    ui: { notify: (message: string) => notifications.push(message) },
+  return {
+    session, selected, companion, sibling, untouched, entries, replaced,
+    failContinuation: (error: Error) => { continuationError = error },
+    async run(operation: string, args: JsonObject = {}): Promise<JsonObject> {
+      const notifications: string[] = []
+      const done = Promise.withResolvers<void>()
+      const ctx = {
+        cwd: process.cwd(), sessionManager: session.sessionManager,
+        setTimeout: (callback: () => Promise<void>) => { void callback().then(done.resolve, done.reject) },
+        ui: { notify: (message: string) => notifications.push(message) },
+      }
+      await commandHandler(JSON.stringify({ id: "request", operation, args }), ctx)
+      await done.promise
+      const response = notifications.find(message => message.startsWith("\u001eompiui-runtime:"))
+      assert.ok(response, "missing runtime response")
+      return JSON.parse(response.slice("\u001eompiui-runtime:".length)) as JsonObject
+    },
   }
-  await commandHandler(request, ctx)
-  const settled = Promise.withResolvers<void>()
-  setImmediate(settled.resolve)
-  await settled.promise
-  assert.equal(notifications.length, 1)
-  const response = JSON.parse(notifications[0]!.slice("\u001eompiui-runtime:".length)) as JsonObject
+}
+
+for (const kind of ["steering", "followUp"] as const) {
+  test(`generated bridge promotes ${kind} without rewriting normalized native messages`, async () => {
+    const harness = queuedBridgeHarness()
+    const queue = (await harness.run("queue")).data as JsonObject
+    const index = 0
+    const selection = (queue[`${kind}Entries`] as JsonObject[])[index]!
+    const original = structuredClone(kind === "steering" ? harness.sibling : harness.selected)
+    const response = await harness.run("sendQueuedMessage", { kind, index, entryId: selection.entryId })
+    assert.equal(response.success, true)
+    const data = response.data as JsonObject
+    assert.deepEqual(data.submittedMessage, {
+      id: `submitted:${selection.entryId}`, queueEntryId: selection.entryId, submissionStatus: "queued",
+      message: { role: "user", timestamp: original.timestamp, content: kind === "steering"
+        ? [{ type: "text", text: "already steering" }]
+        : [{ type: "text", text: "selected" }, { type: "image", data: "", mimeType: "image/png", dataOmitted: true }] },
+    })
+    assert.deepEqual(kind === "steering" ? harness.sibling : harness.selected, original)
+    assert.equal(harness.replaced.length, 1)
+    if (kind === "followUp") {
+      assert.deepEqual([...harness.replaced[0]![0]], [harness.sibling, harness.companion, harness.selected])
+      assert.deepEqual([...harness.replaced[0]![1]], [harness.untouched])
+      assert.equal(harness.replaced[0]![0][1], harness.companion)
+      assert.equal(harness.replaced[0]![0][2], harness.selected)
+    } else {
+      assert.deepEqual([...harness.replaced[0]![1]], [harness.companion, harness.selected, harness.untouched])
+    }
+    harness.entries.push({ id: "same-text-other-entry", type: "message", message: structuredClone(original) })
+    let identity = (await harness.run("queue", { submittedQueueEntryIds: [selection.entryId!] })).data as JsonObject
+    assert.deepEqual(identity.submittedHistoryEntries, [], "same content/timestamp is not native object identity")
+    harness.entries.push({ id: "native-history", type: "message", message: kind === "steering" ? harness.sibling : harness.selected })
+    identity = (await harness.run("queue", { submittedQueueEntryIds: [selection.entryId!] })).data as JsonObject
+    assert.deepEqual(identity.submittedHistoryEntries, [{ queueEntryId: selection.entryId, historyEntryId: "native-history" }])
+  })
+}
+
+test("generated bridge preserves custom user queue operations without an unretirable shared receipt", async () => {
+  const harness = queuedBridgeHarness()
+  const custom: JsonObject = { role: "custom", customType: "user-custom-prompt", attribution: "user", display: true, timestamp: 400, content: "custom input" }
+  harness.session.agent.peekFollowUpQueue().push(custom)
+  const queue = (await harness.run("queue")).data as JsonObject
+  const selection = (queue.followUpEntries as JsonObject[])[2]!
+  const response = await harness.run("sendQueuedMessage", { kind: "followUp", index: 2, entryId: selection.entryId })
   assert.equal(response.success, true)
-  assert.equal(replaced.length, 1)
-  assert.deepEqual([...replaced[0]![0]], [...steering, companion, selected])
-  assert.deepEqual([...replaced[0]![1]], [untouched])
-  assert.equal(replaced[0]![0][1], companion)
-  assert.equal(replaced[0]![0][2], selected)
+  assert.deepEqual(response.data, { accepted: true })
+  assert.equal(harness.session.agent.peekSteeringQueue().at(-1), custom)
+  assert.deepEqual([...harness.session.agent.peekFollowUpQueue()], [harness.companion, harness.selected, harness.untouched])
+})
+
+test("generated bridge rolls back queues and publishes no submission on native continuation failure", async () => {
+  const harness = queuedBridgeHarness(false)
+  const queue = (await harness.run("queue")).data as JsonObject
+  const selection = (queue.followUpEntries as JsonObject[])[0]!
+  harness.failContinuation(new Error("continuation rejected"))
+  const response = await harness.run("sendQueuedMessage", { kind: "followUp", index: 0, entryId: selection.entryId })
+  assert.equal(response.success, false)
+  assert.equal(response.data, undefined)
+  assert.equal(harness.replaced.length, 2)
+  assert.deepEqual([...harness.session.agent.peekSteeringQueue()], [harness.sibling])
+  assert.deepEqual([...harness.session.agent.peekFollowUpQueue()], [harness.companion, harness.selected, harness.untouched])
+})
+
+test("generated bridge rejects stale selection and display-budget overflow before queue mutation", async () => {
+  const harness = queuedBridgeHarness()
+  const queue = (await harness.run("queue")).data as JsonObject
+  const selection = (queue.followUpEntries as JsonObject[])[0]!
+  const stale = await harness.run("sendQueuedMessage", { kind: "followUp", index: 0, entryId: "stale" })
+  assert.equal(stale.success, false)
+  assert.equal(stale.code, "QUEUE_SELECTION_STALE")
+  const overflow = await harness.run("sendQueuedMessage", { kind: "followUp", index: 0, entryId: selection.entryId, maxResultBytes: 1 })
+  assert.equal(overflow.success, false)
+  assert.equal(overflow.code, "FILE_TOO_LARGE")
+  assert.deepEqual(harness.replaced, [])
 })
 
 test("process shutdown rejects an operation still waiting for its runtime receipt", async () => {
