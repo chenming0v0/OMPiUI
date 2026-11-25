@@ -306,6 +306,11 @@ jobs:
         working-directory: packages/app
         run: npx tauri android build --apk --target ${{ matrix.target }} --config "$RUNNER_TEMP/tauri-release.json"
 
+      - name: Test Android recovery and discovery policies
+        if: matrix.name == 'arm64'
+        working-directory: packages/app/src-tauri/gen/android
+        run: ./gradlew :app:testArm64ReleaseUnitTest -x :app:rustBuildArm64Release
+
       - name: Sign Android APK
         shell: bash
         env:

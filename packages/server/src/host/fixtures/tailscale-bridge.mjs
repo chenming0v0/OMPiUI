@@ -1,6 +1,8 @@
 import { createServer } from "node:http"
 
 let running = process.argv.includes("--running")
+const stateIndex = process.argv.indexOf("--state")
+const state = stateIndex < 0 ? "NeedsLogin" : process.argv[stateIndex + 1]
 let authUrl = ""
 const token = process.env.OMPIUI_BRIDGE_TOKEN
 const server = createServer((req, res) => {
@@ -9,7 +11,7 @@ const server = createServer((req, res) => {
   if (req.url === "/status") {
     res.setHeader("content-type", "application/json")
     res.end(JSON.stringify({
-      BackendState: running ? "Running" : "NeedsLogin",
+      BackendState: running ? "Running" : state,
       AuthURL: running ? "" : authUrl,
       TailscaleIPs: running ? ["100.101.2.3"] : [],
       Self: { DNSName: "ompiui.example.ts.net." },

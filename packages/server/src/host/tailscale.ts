@@ -94,7 +94,7 @@ export class TailscaleManager {
       installError: this.lastError,
       lastError: this.lastError,
       backendState: this.child ? this.status.backendState ?? "Starting" : "Stopped",
-      authUrl: this.status.backendState === "Running" ? null : this.status.authUrl,
+      authUrl: this.status.backendState === "NeedsLogin" ? this.status.authUrl : null,
       loginPending: this.child !== null && this.status.backendState !== "Running",
       ips: this.child ? this.status.ips : [],
       hostName: this.status.hostName,
@@ -143,7 +143,7 @@ export class TailscaleManager {
     this.persistEnabled()
     this.statusAt = 0
     const current = await this.detailStatus()
-    if (current.backendState !== "Running" && !current.authUrl) {
+    if (current.backendState === "NeedsLogin" && !current.authUrl) {
       try {
         await this.request("/login", "POST")
       } catch (error) {

@@ -41,14 +41,14 @@ class TailscaleDiagnosticsTest {
   }
 
   @Test
-  fun interruptedQuietStatusBlocksAutomaticRecoveryInTheNextProcess() {
+  fun interruptedQuietStatusWithoutCrashEvidenceAllowsAutomaticRecovery() {
     val diagnostics = TailscaleDiagnostics(context)
     diagnostics.begin("core.status", recordEvents = false)
-    // 模拟进程未完成原生调用就退出；不依赖 API 30 的系统退出记录。
-    preferences.edit().putInt("pid", 0).commit()
+    // 模拟状态轮询期间被回收，排除测试设备上更早的退出记录。
+    preferences.edit().putInt("pid", 0).putLong("startedAt", Long.MAX_VALUE).commit()
     val reopened = TailscaleDiagnostics(context)
-    assertTrue(reopened.startupBlocked)
-    assertTrue(preferences.getBoolean("blocked", false))
+    assertFalse(reopened.startupBlocked)
+    assertFalse(preferences.getBoolean("blocked", true))
     assertEquals("core.status", preferences.getString("lastStage", ""))
   }
 

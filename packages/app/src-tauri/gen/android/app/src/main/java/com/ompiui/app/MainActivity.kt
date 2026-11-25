@@ -89,6 +89,8 @@ class MainActivity : TauriActivity() {
   override fun onResume() {
     super.onResume()
     startThemeSync()
+    // 从授权页返回时立即刷新组网状态，不等待 WebView 的周期轮询。
+    cachedWebView?.evaluateJavascript("window.dispatchEvent(new Event('ompiui-app-resumed'));", null)
   }
 
   override fun onPause() {
@@ -312,7 +314,7 @@ class MainActivity : TauriActivity() {
         deviceDiscoveryBridge = bridge
       }
       if (tailscaleBridge == null) {
-        val bridge = TailscaleBridge(applicationContext, webView)
+        val bridge = TailscaleBridge(this, webView)
         tailscaleBridge = bridge
         webView.addJavascriptInterface(bridge, "__ompiui_tailscale")
       }

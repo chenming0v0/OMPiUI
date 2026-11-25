@@ -21,6 +21,8 @@ import { piModelRolesStore } from "./state/piModelRolesStore"
 import { resetPathModeCache } from "../utils/directoryUtils"
 import { installModelSettingsSync } from "./modelSettingsSync"
 import { retryDelay } from "./networkRetry"
+import { isTailnetUrl } from "../utils/androidTailscale"
+import { TAILSCALE_READY_EVENT } from "../utils/tailscaleEvents"
 
 export interface PiBackendBootstrapResult {
   available: boolean
@@ -188,6 +190,15 @@ export function installPiBackendServerSwitch(): void {
     }
     window.addEventListener("online", lifecycleChanged)
     window.addEventListener("offline", lifecycleChanged)
+    window.addEventListener(TAILSCALE_READY_EVENT, () => {
+      const server = serverStore.getActiveServer()
+      if (!server || !isTailnetUrl(server.url) || !canProbeBackend()) return
+      // 组网刚就绪时结束旧的退避等待；凭据错误仍由用户处理。
+      if (retryCycle?.state === "online" || retryCycle?.state === "terminal") return
+      resetBackendRetry()
+      bootstrapController?.abort()
+      void startBackendInitialization()
+    })
     if (typeof document !== "undefined") document.addEventListener("visibilitychange", lifecycleChanged)
   }
   installModelSettingsSync()

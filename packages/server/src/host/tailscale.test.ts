@@ -8,10 +8,10 @@ import { fileURLToPath } from "node:url"
 import { mapStatusJson, TailscaleManager } from "./tailscale.ts"
 
 const fixture = fileURLToPath(new URL("./fixtures/tailscale-bridge.mjs", import.meta.url))
-function manager(dataDir: string, running = false) {
+function manager(dataDir: string, running = false, state = "NeedsLogin") {
   return new TailscaleManager({
     dataDir, embeddedBridgePath: fixture,
-    launch: (_binary, args, token) => spawn(process.execPath, [fixture, ...args, ...(running ? ["--running"] : [])], {
+    launch: (_binary, args, token) => spawn(process.execPath, [fixture, ...args, "--state", state, ...(running ? ["--running"] : [])], {
       stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
       env: { ...process.env, OMPIUI_BRIDGE_TOKEN: token },
     }),
@@ -19,6 +19,18 @@ function manager(dataDir: string, running = false) {
 }
 
 describe("embedded Tailscale lifecycle", () => {
+  for (const state of ["Starting", "NoState", "NeedsMachineAuth"]) {
+    it(`preserves the existing identity when reconnecting during ${state}`, async () => {
+      const dir = mkdtempSync(join(tmpdir(), "ompiui-tsnet-restore-"))
+      const node = manager(dir, false, state)
+      try {
+        await node.resume(8787)
+        assert.deepEqual(await node.startLogin(), { ok: true, authUrl: null })
+        assert.deepEqual(await node.startLogin(), { ok: true, authUrl: null })
+        assert.equal((await node.detailStatus()).backendState, state)
+      } finally { await node.dispose(); rmSync(dir, { recursive: true, force: true }) }
+    })
+  }
   it('passes discovery identity and opt-out without changing the application port', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'ompiui-discovery-tsnet-'))
     let captured: string[] = []

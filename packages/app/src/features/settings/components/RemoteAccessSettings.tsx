@@ -92,6 +92,7 @@ function RemoteAccessPanel() {
     poll: pollTailscale,
     open: openTailscaleLogin,
     timeoutMessage: t('settings:service.remoteTailscaleAuthUrlTimeout'),
+    connectionTimeoutMessage: t('settings:service.remoteTailscaleConnectionTimeout'),
     statusPollMs: TUNNEL_POLL_MS,
     paused: tailscaleBusy,
     onPollError: err => setTailscaleStatusError(err instanceof Error ? err.message : String(err)),

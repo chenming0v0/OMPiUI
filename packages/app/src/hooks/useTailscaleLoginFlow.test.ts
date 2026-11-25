@@ -43,6 +43,37 @@ function renderFlow(overrides: Partial<Parameters<typeof useTailscaleLoginFlow>[
 }
 
 describe('Tailscale login flow state machine', () => {
+  it('restores a saved identity without opening a stale authorization page', async () => {
+    mocks.start.mockResolvedValue({ backendState: 'Starting', authUrl: firstUrl })
+    mocks.poll.mockResolvedValue({ backendState: 'Starting', authUrl: firstUrl })
+    const { result } = renderFlow()
+    await act(async () => { await result.current.beginLogin() })
+    expect(result.current.phase).toBe('connecting')
+    expect(result.current.authUrl).toBeNull()
+    mocks.poll.mockResolvedValue({ backendState: 'Running' })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+    expect(result.current.phase).toBe('idle')
+    expect(mocks.open).not.toHaveBeenCalled()
+  })
+
+  it('reports a connection timeout rather than asking for another authorization link', async () => {
+    mocks.start.mockResolvedValue({ backendState: 'Starting' })
+    mocks.poll.mockResolvedValue({ backendState: 'Starting' })
+    const { result } = renderFlow({ connectionTimeoutMessage: 'connection is still unavailable' })
+    await act(async () => { await result.current.beginLogin() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    expect(result.current.error).toBe('connection is still unavailable')
+    expect(mocks.open).not.toHaveBeenCalled()
+  })
+
+  it('refreshes immediately on returning from the native authorization page', async () => {
+    const { result } = renderFlow({ statusPollMs: 5_000 })
+    await act(async () => {})
+    mocks.poll.mockResolvedValue({ backendState: 'Running' })
+    await act(async () => window.dispatchEvent(new Event('ompiui-app-resumed')))
+    expect(mocks.poll).toHaveBeenCalledTimes(2)
+    expect(result.current.phase).toBe('idle')
+  })
   it('stays visible as waiting while the authorization link has not arrived', async () => {
     const { result } = renderFlow()
     await act(async () => { void result.current.beginLogin() })

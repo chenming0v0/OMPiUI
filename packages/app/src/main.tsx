@@ -16,6 +16,7 @@ import { globalErrorHandler } from './utils/errorHandling'
 import { serviceStore } from './store/serviceStore'
 import { startDesktopServiceIfAllowed } from './services/desktopService'
 import { restorePaneRoute } from './store/restorePaneRoute'
+import { startAndroidTailscaleRecovery } from './services/androidTailscaleRecovery'
 
 // Polyfill: randomUUID 在非 HTTPS 环境可能缺失（如局域网 HTTP）
 // 统一补齐，避免业务层 scattered fallback。
@@ -138,6 +139,7 @@ async function startApp() {
 
   const { initializePiBackend, installPiBackendServerSwitch } = await import('./omp/bootstrapMockChat')
   installPiBackendServerSwitch()
+  startAndroidTailscaleRecovery()
 
   if (isNativeTauri && !isTauriMobile()) {
     void startNativeOmpiUiService().catch(error => {

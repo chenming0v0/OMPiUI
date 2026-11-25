@@ -10,6 +10,8 @@ import * as controllers from './controllers/index'
 import { piModelRolesStore } from './state/piModelRolesStore'
 import * as rolesController from './controllers/modelRoles'
 import { activeSessionStore } from '../store/activeSessionStore'
+import { refreshPiNativeStatus } from './nativeStatus'
+import { TAILSCALE_READY_EVENT } from '../utils/tailscaleEvents'
 
 vi.mock('../api/events', () => ({
   subscribeToConnectionState: vi.fn(),
@@ -142,6 +144,19 @@ describe('backend generation reset clears subagent state', () => {
     installPiBackendServerSwitch()
     serverStore.setActiveServer(remoteId)
     expect(reset).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries an unavailable Tailnet backend as soon as phone authorization completes', async () => {
+    serverStore.updateServer(remoteId, { url: 'http://100.101.2.3:8787' })
+    serverStore.setActiveServer(remoteId)
+    await initializePiBackend()
+    const native = vi.mocked(refreshPiNativeStatus)
+    native.mockRejectedValueOnce(new Error('Tailnet is still connecting'))
+    expect((await initializePiBackend()).available).toBe(false)
+    const attempts = native.mock.calls.length
+    window.dispatchEvent(new Event(TAILSCALE_READY_EVENT))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(native).toHaveBeenCalledTimes(attempts + 1)
   })
 
   it('marks models disconnected on socket loss and revalidates on reconnect', async () => {

@@ -61,11 +61,11 @@ class TailscaleBridge(private val context: Context, private val webView: WebView
   }
 
   private fun status(): JSONObject {
+    val enabled = preferences.getBoolean("enabled", false)
     if (diagnostics.startupBlocked) {
-      return JSONObject().put("enabled", false).put("BackendState", "Stopped")
+      return JSONObject().put("enabled", enabled).put("BackendState", "Stopped")
         .put("startupInterrupted", true)
     }
-    val enabled = preferences.getBoolean("enabled", false)
     if (enabled) start()
     return JSONObject(core("status", recordEvents = false) { Mobile.status() }).put("enabled", enabled)
   }
@@ -148,7 +148,8 @@ class TailscaleBridge(private val context: Context, private val webView: WebView
             start()
             preferences.edit().putBoolean("enabled", true).apply()
             val current = JSONObject(core("status", recordEvents = false) { Mobile.status() })
-            if (current.optString("BackendState") != "Running" && current.optString("AuthURL").isEmpty()) {
+            // 启动和恢复连接不能重新生成登录身份；仅明确需要认证时发起授权。
+            if (current.optString("BackendState") == "NeedsLogin" && current.optString("AuthURL").isEmpty()) {
               core("login") { Mobile.login() }
             }
             status()

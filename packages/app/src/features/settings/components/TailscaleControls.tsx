@@ -8,7 +8,7 @@ import { copyTextToClipboard } from '../../../utils/clipboard'
 import { isValidTailscaleAuthUrl } from '../../../utils/tailscaleLogin'
 import type { TailscaleAuthPhase } from '../../../hooks/useTailscaleLoginFlow'
 
-export function TailscaleControls({ state, authUrl, ips, enabled, available, busy, error, authPhase, onOpenAuthUrl, authLinkMode = false, onAuthLinkClick, showAuthQr = true, layout = 'default', onLogin, onDisconnect }: {
+export function TailscaleControls({ state, authUrl, ips, enabled, available, busy, error, recoveryPaused = false, authPhase, onOpenAuthUrl, authLinkMode = false, onAuthLinkClick, showAuthQr = true, layout = 'default', onLogin, onDisconnect }: {
   state?: string | null
   authUrl?: string | null
   ips: string[]
@@ -16,6 +16,7 @@ export function TailscaleControls({ state, authUrl, ips, enabled, available, bus
   available: boolean
   busy: boolean
   error?: string | null
+  recoveryPaused?: boolean
   authPhase?: TailscaleAuthPhase
   onOpenAuthUrl?: (url: string) => void
   authLinkMode?: boolean
@@ -37,10 +38,13 @@ export function TailscaleControls({ state, authUrl, ips, enabled, available, bus
       if (copyTimer.current !== null) window.clearTimeout(copyTimer.current)
     }
   }, [authUrl])
-  const waiting = authPhase === 'starting' || authPhase === 'waitingAuthUrl' || authPhase === 'opening'
-  const disabled = busy || waiting
+  const waiting = authPhase === 'starting' || authPhase === 'connecting' || authPhase === 'waitingAuthUrl' || authPhase === 'opening'
+  const recovering = enabled && (state === 'Starting' || state === 'NoState')
+  const disabled = busy || waiting || (recovering && !error)
   const needsAuth = state !== 'Running' && state !== 'NeedsMachineAuth'
-  const target = needsAuth && authUrl && isValidTailscaleAuthUrl(authUrl) ? authUrl : null
+  const target = needsAuth && !recovering && authUrl && isValidTailscaleAuthUrl(authUrl) ? authUrl : null
+  const reconnect = recoveryPaused || (enabled && state !== 'NeedsLogin' && !target)
+  const actionLabel = t(reconnect ? 'service.remoteTailscaleReconnect' : 'service.remoteTailscaleLogin')
   const copied = target !== null && copiedUrl === target
   const copyAuthUrl = async () => {
     if (!target) return
@@ -80,6 +84,8 @@ export function TailscaleControls({ state, authUrl, ips, enabled, available, bus
             ? t('service.remoteTailscaleApproval')
             : authPhase === 'starting'
               ? t('service.remoteTailscaleStarting')
+              : authPhase === 'connecting' || recovering
+                ? t('service.remoteTailscaleRestoring')
               : authPhase === 'waitingAuthUrl'
                 ? t('service.remoteTailscaleWaitingAuthUrl')
                 : authPhase === 'opening'
@@ -88,7 +94,9 @@ export function TailscaleControls({ state, authUrl, ips, enabled, available, bus
                     ? t('service.remoteTailscaleAuthReady')
                     : authPhase === 'authorizing'
                       ? t('service.remoteTailscaleAuthorizing')
-                      : enabled ? t('service.remoteTailscaleConnecting') : t('service.remoteTailscaleStopped')}
+                      : recoveryPaused ? t('service.remoteTailscaleRecoveryPaused')
+                        : state === 'NeedsLogin' ? t('service.remoteTailscaleSignInRequired')
+                        : enabled ? t('service.remoteTailscaleRestoring') : t('service.remoteTailscaleStopped')}
       </AuthStatusPill>
       {(showAuthAction || showDisconnect) && (
         <div className={phone ? 'grid min-w-0 gap-2' : 'flex flex-wrap items-center gap-2'}>
@@ -103,8 +111,8 @@ export function TailscaleControls({ state, authUrl, ips, enabled, available, bus
                 else onLogin()
               }} className={authButtonClass}>
                 {waiting ? <SpinnerIcon size={15} className="animate-spin" /> : target ? <ExternalLink size={15} /> : <LogIn size={15} />}
-                {waiting ? t('service.remoteTailscaleLogin')
-                  : target ? t('service.remoteTailscaleAuthorize') : t('service.remoteTailscaleLogin')}
+                {waiting ? actionLabel
+                  : target ? t('service.remoteTailscaleAuthorize') : actionLabel}
               </button>
             )
           )}

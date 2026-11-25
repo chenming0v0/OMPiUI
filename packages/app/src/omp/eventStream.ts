@@ -43,6 +43,8 @@ import type { SessionStatus } from '../types/session'
 import { BrowserDiagnostics } from './browserDiagnostics'
 import { markModelSettingsDisconnected, refreshModelSettings } from './modelSettingsSync'
 import { retryDelay } from './networkRetry'
+import { isTailnetUrl } from '../utils/androidTailscale'
+import { TAILSCALE_READY_EVENT } from '../utils/tailscaleEvents'
 import { setEventStreamState } from '../api/events'
 import { clearSubagentTranscripts } from './subagentTranscript'
 import { bashPendingStore } from './bashPendingStore'
@@ -127,6 +129,13 @@ class PiEventStream {
     const resume = () => this.resume()
     window.addEventListener('online', resume)
     window.addEventListener('pageshow', resume)
+    window.addEventListener(TAILSCALE_READY_EVENT, () => {
+      const server = serverStore.getActiveServer()
+      if (!server || !isTailnetUrl(server.url) || document.visibilityState === 'hidden') return
+      // 原生通道重建后，旧回环地址上的连接不能继续等待握手超时。
+      if (this.ws && this.ws.readyState !== PI_SOCKET_OPEN) this.closeSocket('tailscale_ready')
+      this.resume()
+    })
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') this.clearPing(true)
       else resume()

@@ -12,6 +12,7 @@ import { useTailscaleLoginFlow } from '../../../hooks/useTailscaleLoginFlow'
 import { serverStore } from '../../../store/serverStore'
 import { TailscaleControls } from './TailscaleControls'
 import { openTailscaleLogin } from '../../../utils/tailscaleLogin'
+import { TAILSCALE_STATUS_EVENT } from '../../../utils/tailscaleEvents'
 
 export function AndroidTailscaleSettings() {
   return isAndroidTailscalePlatform() ? <AndroidTailscalePanel /> : null
@@ -41,6 +42,8 @@ function AndroidTailscalePanel() {
     poll: async signal => acceptStatus(await getAndroidTailscaleStatus(), signal),
     open: openTailscaleLogin,
     timeoutMessage: t('service.remoteTailscaleAuthUrlTimeout'),
+    connectionTimeoutMessage: t('service.remoteTailscaleConnectionTimeout'),
+    statusEvent: TAILSCALE_STATUS_EVENT,
     statusPollMs: 3_000,
     paused: busy,
     onPollError: err => setStatusError(err instanceof Error ? err.message : String(err)),
@@ -62,6 +65,7 @@ function AndroidTailscalePanel() {
         authUrl={flow.authUrl}
         ips={status?.TailscaleIPs ?? []}
         enabled={status?.enabled ?? false} available={status !== null} busy={busy}
+        recoveryPaused={status?.startupInterrupted}
         authPhase={flow.phase} layout="phone" showAuthQr={false}
         onOpenAuthUrl={url => { setError(''); void flow.reopenAuthPage(url) }}
         error={error || statusError || flow.error || (status?.startupInterrupted ? t('service.remoteTailscaleStartupInterrupted') : status?.lastError)}
