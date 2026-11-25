@@ -154,7 +154,7 @@ describe('contiguous assistant tool groups', () => {
     act(() => ompSubagentStore.applyObservation('summary-parent', { ...frame, rootSessionId: 'summary-parent', activityVersion: 2, activity: 'idle', status: 'unknown' }))
     expect(ompSubagentStore.getRunsForToolCall('task-summary', 'summary-parent')[0]?.status).toBe('unknown')
     await waitFor(() => expect(screen.queryByRole('button', { name: /toolSteps.taskActive/ })).not.toBeInTheDocument())
-    expect(screen.getByRole('button', { name: /task.outcome.merge.unconfirmed/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /task.outcome.execution.unknown/ })).toBeInTheDocument()
     act(() => ompSubagentStore.applyObservation('summary-parent', { ...frame, rootSessionId: 'summary-parent', activityVersion: 3 }))
     expect(await screen.findByRole('button', { name: /toolSteps.taskActive/ })).toBeInTheDocument()
     act(() => ompSubagentStore.clearAll())
@@ -175,7 +175,8 @@ describe('contiguous assistant tool groups', () => {
         { type: 'task', jobId: 'ReviewGuiGitIntegration', status: 'completed' },
       ] } }] } as never))
     expect(screen.queryByRole('button', { name: /toolSteps.taskActive/ })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /task.outcome.merge.unconfirmed/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /toolSteps.task/ })).toBeInTheDocument()
+    expect(screen.queryByText('task.outcome.merge.unconfirmed')).not.toBeInTheDocument()
     act(() => piBranchStore.clear('async-summary-parent'))
   })
 

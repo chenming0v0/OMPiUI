@@ -29,7 +29,9 @@ export function backgroundJobExecution(job: BackgroundJobView, callId: string): 
   }
   if (RUNNING_JOB_STATUSES.has(job.status)) return { call, isRunning: true, startedAt: 0, backgroundJob: true }
 
-  const text = [job.body.trim(), ...job.errors].filter(Boolean).join('\n\n') || job.summary || ''
+  // history:// 等原生引用不一定能由通用产物加载器打开，正文也保留完整地址。
+  const text = [job.body.trim(), ...job.errors, job.fullOutput ? `Full output: ${job.fullOutput}` : '']
+    .filter(Boolean).join('\n\n') || job.summary || ''
   const failed = job.status === 'failed' || job.status === 'aborted' || job.errors.length > 0
   // 头部耗时由 ToolPartView 从 startedAt/completedAt 算，原生 duration 是
   // 「5m 44s」这种字符串，先折算成毫秒才能复用同一套格式化。
@@ -44,6 +46,11 @@ export function backgroundJobExecution(job: BackgroundJobView, callId: string): 
       toolCallId: callId,
       toolName,
       content: [{ type: 'text', text }],
+      details: {
+        ...(job.metadata ? { meta: job.metadata } : {}),
+        ...(job.fullOutput ? { fullOutputPath: job.fullOutput, truncated: true } : {}),
+        ...(job.exitCode !== undefined ? { exit: job.exitCode } : {}),
+      },
       isError: failed,
       timestamp: durationMs,
     } as unknown as PiToolExecution['result'],
@@ -53,7 +60,7 @@ export function backgroundJobExecution(job: BackgroundJobView, callId: string): 
 const executionCache = new WeakMap<PiCustomMessageItem, PiToolExecution[] | null>()
 
 /**
- * 一条 async-result 投递里的全部 job，按投递条目 + 序号生成稳定且唯一的 call id。
+ * 一条后台回传里的全部 job，按投递条目 + 序号生成稳定且唯一的 call id。
  * 按条目引用缓存：时间线合并与渲染都会调用，结果引用稳定才不击穿 memo。
  */
 export function backgroundJobExecutions(item: PiCustomMessageItem): PiToolExecution[] | undefined {

@@ -11,14 +11,13 @@ import type {
   PiUnknownItem,
 } from '../../../omp/domain/index.js'
 import { MarkdownRenderer } from '../../../components/MarkdownRenderer'
-import { ChevronDownIcon, UsersIcon } from '../../../components/Icons'
+import { ChevronDownIcon } from '../../../components/Icons'
 import { useUiDisclosureState } from '../../../utils/uiDisclosureState'
 import { useDisclosureScrollLock } from '../../../hooks'
 import { useNow } from '../../../hooks/useNow'
 import { chevronClass, MessageExpandPanel, useMessageExpandRender } from '../messageExpand'
-import { MSG_SPACING } from '../messageSpacing'
 import { ToolGroup } from './ToolGroup'
-import { customMessageText, readAgentMessage, readBackgroundJobs } from './customMessagePresentation'
+import { customMessageText, readBackgroundJobs } from './customMessagePresentation'
 import { backgroundJobExecutions } from './backgroundJobExecution'
 import { CompactionItemView } from './CompactionItemView'
 
@@ -171,20 +170,6 @@ function BranchSummaryItemView({ item }: { item: PiBranchSummaryItem }) {
 
 function CustomMessageItemView({ item }: { item: PiCustomMessageItem }) {
   const { t } = useTranslation('message')
-  const agent = readAgentMessage(item)
-  if (agent) {
-    return (
-      <section className={`min-w-0 ${MSG_SPACING.item}`} aria-label={t('system.agentMessage', { name: agent.sender })}>
-        <div className="min-w-0 border-l-2 border-accent-main-100/40 pl-3">
-          <div className="flex items-center gap-1.5 pb-1 text-[length:var(--fs-xs)] text-text-400">
-            <UsersIcon size={12} className="shrink-0" />
-            <span className="min-w-0 truncate">{t('system.agentMessageFrom', { name: agent.sender })}</span>
-          </div>
-          <MarkdownRenderer content={agent.body} />
-        </div>
-      </section>
-    )
-  }
   const jobs = backgroundJobExecutions(item)
   if (jobs) return <BackgroundJobGroup item={item} executions={jobs} />
   const text = customMessageText(item)
@@ -202,7 +187,7 @@ function BackgroundJobGroup({ item, executions }: { item: PiCustomMessageItem; e
   const name = readBackgroundJobs(item)?.map(job => job.name).join(', ') ?? ''
   return (
     <section className="min-w-0" aria-label={t('system.backgroundJob', { name })}>
-      <ToolGroup groupId={item.entryId} executions={executions} isStreaming={isStreaming} plain />
+      <ToolGroup groupId={item.entryId} executions={executions} isStreaming={isStreaming} />
     </section>
   )
 }

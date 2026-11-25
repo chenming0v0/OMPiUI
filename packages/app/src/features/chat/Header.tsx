@@ -12,6 +12,7 @@ import {
 import { IconButton } from '../../components/ui'
 import { ModelSelector, type ModelSelectorHandle } from './ModelSelector'
 import { SessionBackgroundJobs } from './input/BackgroundJobsIndicator'
+import { SubagentPanelButton } from '../subagents/SubagentPanelButton'
 import { usePiCapabilities } from '../../omp/capabilities'
 import { useLayoutStore, layoutStore } from '../../store/layoutStore'
 import { useSessionContext } from '../../contexts/useSessionContext'
@@ -243,6 +244,7 @@ export function Header({
 
       <div className="flex items-center gap-1 pointer-events-auto shrink-0 z-20">
         <div className="flex items-center gap-0.5">
+          <SubagentPanelButton sessionId={sessionId} />
           {onTogglePaneFullscreen && (
             <IconButton
               aria-label={isPaneFullscreen ? t('header.exitFullscreenPane') : t('header.fullscreenPane')}

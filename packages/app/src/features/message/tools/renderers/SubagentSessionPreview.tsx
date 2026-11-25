@@ -50,10 +50,12 @@ export const SubagentSessionPreview = memo(function SubagentSessionPreview({
   run,
   loading = false,
   onLoadMore,
+  spacious = false,
 }: {
   run?: OmpSubagentRun
   loading?: boolean
   onLoadMore?: () => void
+  spacious?: boolean
 }) {
   const { t } = useTranslation('message')
   const history = useSubagentHistoryBackfill(run, !onLoadMore && !loading)
@@ -147,7 +149,7 @@ export const SubagentSessionPreview = memo(function SubagentSessionPreview({
         ref={scrollRef}
         onScroll={handleScroll}
         className="overflow-y-auto custom-scrollbar px-3 py-2 space-y-2"
-        style={{ maxHeight }}
+        style={{ maxHeight: spacious ? '60vh' : maxHeight }}
       >
         <SubagentTranscriptPreview items={transcript} isRunning={isRunning} />
       </div>

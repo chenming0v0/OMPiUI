@@ -147,6 +147,16 @@
     "rawResult": "Raw result"
   },
   "task": {
+    "inspect": "Inspect agent",
+    "sidebar": {
+      "title": "Subagents",
+      "count": "{{count}} total · {{running}} running",
+      "list": "Subagents in this session",
+      "empty": "No subagent tasks in this session yet.",
+      "noSession": "Select a session to view its subagents.",
+      "refresh": "Refresh task history",
+      "assignment": "Assignment"
+    },
     "rawDetails": "Raw details / recovery references",
     "outcome": {
       "execution": { "pending": "Execution pending", "running": "Execution running", "completed": "Execution completed", "failed": "Execution failed", "aborted": "Execution interrupted", "unknown": "Execution unconfirmed" },

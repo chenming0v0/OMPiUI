@@ -165,6 +165,7 @@ export class SubagentMessageStream {
           event: {
             type: "message_patch",
             messageId: id,
+            ...(typeof message.timestamp === "number" ? { messageTimestamp: message.timestamp } : {}),
             role: message.role,
             phase: last ? phase : "message_update",
             textOffset: position,

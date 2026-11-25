@@ -507,15 +507,19 @@ class OmpSubagentStore {
     this.eventFingerprints.set(key, seen)
     this.upsert(sessionId, id, run => {
       const transcript = appendTranscriptEvent(event, run.transcript)
-      if (transcript === run.transcript) return run
-      return {
+      if (transcript === run.transcript && payload.observationSequence === undefined && !payload.parentToolCallId) return run
+      return this.withObservation({
         ...run,
+        parentToolCallId: str(payload.parentToolCallId) ?? run.parentToolCallId,
+        sessionFile: str(payload.sessionFile) ?? run.sessionFile,
+        index: typeof payload.index === 'number' ? payload.index : run.index,
+        agent: str(payload.agent) ?? run.agent,
         transcript,
         historyLoaded:
           event.phase === 'message_end' && transcript.some(item => (item.textOffset ?? 0) > 0)
             ? false
             : run.historyLoaded,
-      }
+      }, payload)
     })
   }
 

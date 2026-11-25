@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react'
 
 const key = 'ompiui-reasoning-translation'
-export const REASONING_TRANSLATION_BUDGETS = [8192, 16384, 32768] as const
+export const REASONING_TRANSLATION_BUDGETS = [6144, 8192, 16384, 32768] as const
 export type ReasoningTranslationBudget = (typeof REASONING_TRANSLATION_BUDGETS)[number]
 type Settings = { enabled: boolean; budget: ReasoningTranslationBudget }
 const defaults: Settings = { enabled: false, budget: 32768 }

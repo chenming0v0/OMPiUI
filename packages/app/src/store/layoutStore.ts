@@ -9,7 +9,7 @@ import { serverStore } from './serverStore'
 export type PanelPosition = 'bottom' | 'right'
 
 // 面板内容类型
-export type PanelTabType = 'terminal' | 'files' | 'changes' | 'session-tree' | 'session-controls' | 'skill' | 'extensions'
+export type PanelTabType = 'terminal' | 'files' | 'changes' | 'session-tree' | 'session-controls' | 'skill' | 'extensions' | 'subagents'
 type PersistedPanelTabType = Exclude<PanelTabType, 'terminal'>
 
 // 统一的面板标签
@@ -170,7 +170,7 @@ interface PersistedTerminalSessionState {
 }
 
 const PANEL_POSITIONS: PanelPosition[] = ['bottom', 'right']
-const PERSISTED_PANEL_TAB_TYPES: PersistedPanelTabType[] = ['files', 'changes', 'session-tree', 'session-controls', 'skill', 'extensions']
+const PERSISTED_PANEL_TAB_TYPES: PersistedPanelTabType[] = ['files', 'changes', 'session-tree', 'session-controls', 'skill', 'extensions', 'subagents']
 
 function isPanelPosition(value: unknown): value is PanelPosition {
   return typeof value === 'string' && PANEL_POSITIONS.includes(value as PanelPosition)
@@ -673,6 +673,10 @@ export class LayoutStore {
 
   addSessionTreeTab(position: PanelPosition = 'right') {
     return this.addSingletonTab('session-tree', position, 'session-tree')
+  }
+
+  addSubagentsTab(position: PanelPosition = 'right') {
+    return this.addSingletonTab('subagents', position, 'subagents')
   }
 
   addSessionControlsTab(position: PanelPosition = 'right') {

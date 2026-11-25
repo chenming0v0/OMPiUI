@@ -7,6 +7,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
+import { SubagentPanelButton } from '../subagents/SubagentPanelButton'
 import {
   CloseIcon,
   SplitHorizontalIcon,
@@ -281,6 +282,7 @@ export function PaneHeader({
               </IconButton>
             )}
 
+            <SubagentPanelButton sessionId={sessionId} />
             <IconButton
               size="sm"
               aria-label={bottomPanelOpen ? t('header.closeBottomPanel') : t('header.openBottomPanel')}

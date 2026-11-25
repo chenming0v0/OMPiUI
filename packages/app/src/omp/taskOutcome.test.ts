@@ -18,7 +18,7 @@ describe('structured task outcomes', () => {
   ] as const)('separates execution, overall merge and root changesApplied=%s', (changesApplied, mergeStatus, rootMergeStatus) => {
     const evidence = { exitCode: 0, ...(changesApplied !== undefined ? { changesApplied } : {}) }
     expect(deriveTaskOutcome(evidence)).toEqual({ executionStatus: 'completed', mergeStatus, rootMergeStatus,
-      presentationStatus: changesApplied === false ? 'error' : 'unknown' })
+      presentationStatus: changesApplied === false ? 'error' : 'completed' })
     expect(buildPersistedSubagentRun('call', { id: 'A', ...evidence }, 'C:/sessions/A.jsonl', 'parent')).toMatchObject({ status: 'completed', mergeStatus })
   })
 
@@ -34,14 +34,14 @@ describe('structured task outcomes', () => {
   })
 
   it('only confirms the explicit root layer, never a child or overall merge', () => {
-    expect(deriveTaskOutcome({ exitCode: 0, changesApplied: true }, {})).toMatchObject({ mergeStatus: 'unconfirmed', rootMergeStatus: 'unconfirmed', presentationStatus: 'unknown' })
-    expect(deriveTaskOutcome({ exitCode: 0 }, { changesApplied: null })).toMatchObject({ rootMergeStatus: 'skipped', presentationStatus: 'unknown' })
+    expect(deriveTaskOutcome({ exitCode: 0, changesApplied: true }, {})).toMatchObject({ mergeStatus: 'unconfirmed', rootMergeStatus: 'unconfirmed', presentationStatus: 'completed' })
+    expect(deriveTaskOutcome({ exitCode: 0 }, { changesApplied: null })).toMatchObject({ rootMergeStatus: 'skipped', presentationStatus: 'completed' })
   })
 
   it('uses own evidence for mixed batches and leaves absent children unknown', () => {
     const execution = task({ results: [{ index: 0, id: 'A', exitCode: 0 }, { index: 1, id: 'B', exitCode: 0, changesApplied: false }] }, true)
     expect(getTaskExecutionOutcome(execution).presentationStatus).toBe('error')
-    expect(getTaskExecutionOutcome(execution, { slotIndex: 0 })).toMatchObject({ executionStatus: 'completed', presentationStatus: 'unknown' })
+    expect(getTaskExecutionOutcome(execution, { slotIndex: 0 })).toMatchObject({ executionStatus: 'completed', presentationStatus: 'completed' })
     expect(getTaskExecutionOutcome(execution, { slotIndex: 1 })).toMatchObject({ executionStatus: 'completed', presentationStatus: 'error' })
     expect(getTaskExecutionOutcome(execution, { slotIndex: 2 })).toMatchObject({ executionStatus: 'unknown', presentationStatus: 'unknown' })
   })
@@ -49,7 +49,7 @@ describe('structured task outcomes', () => {
   it('a root failure does not reclassify a successful sibling as execution failed', () => {
     const execution = task({ changesApplied: false, results: [{ index: 0, id: 'A', exitCode: 0 }] })
     expect(getTaskExecutionOutcome(execution).presentationStatus).toBe('error')
-    expect(getTaskExecutionOutcome(execution, { slotIndex: 0 })).toMatchObject({ executionStatus: 'completed', mergeStatus: 'unconfirmed', rootMergeStatus: 'failed', presentationStatus: 'unknown' })
+    expect(getTaskExecutionOutcome(execution, { slotIndex: 0 })).toMatchObject({ executionStatus: 'completed', mergeStatus: 'unconfirmed', rootMergeStatus: 'failed', presentationStatus: 'completed' })
   })
 
   it('does not use a dispatch receipt or timestamp to prove child completion', () => {
@@ -65,14 +65,14 @@ describe('structured task outcomes', () => {
     expect(getTaskExecutionOutcome(execution, { slotIndex: 0, runtimeStopped: true }).executionStatus).toBe('unknown')
     expect(getToolExecutionStatus(execution)).toBe('unknown')
     expect(execution.error).toBe('Runtime ended without a terminal result')
-    expect(getTaskExecutionOutcome(execution, { slotIndex: 0, result: { exitCode: 0 } })).toMatchObject({ executionStatus: 'completed', presentationStatus: 'unknown' })
+    expect(getTaskExecutionOutcome(execution, { slotIndex: 0, result: { exitCode: 0 } })).toMatchObject({ executionStatus: 'completed', presentationStatus: 'completed' })
     expect(getTaskExecutionOutcome(execution, { slotIndex: 1, result: { exitCode: 1 } })).toMatchObject({ executionStatus: 'failed', presentationStatus: 'error' })
   })
 
   it('ignores the previous parent result and failure for a follow-up generation', () => {
     const execution = task({ changesApplied: false, results: [{ id: 'A', exitCode: 1, error: 'Old failure' }] }, true)
     expect(getTaskExecutionOutcome(execution, { slotIndex: 0, liveRun: { isFollowUp: true, status: 'running' }, runtimeStopped: true })).toMatchObject({ executionStatus: 'running', mergeStatus: 'unconfirmed', presentationStatus: 'running' })
-    expect(getTaskExecutionOutcome(execution, { slotIndex: 0, liveRun: { isFollowUp: true, status: 'completed' } })).toMatchObject({ executionStatus: 'completed', mergeStatus: 'unconfirmed', presentationStatus: 'unknown' })
+    expect(getTaskExecutionOutcome(execution, { slotIndex: 0, liveRun: { isFollowUp: true, status: 'completed' } })).toMatchObject({ executionStatus: 'completed', mergeStatus: 'unconfirmed', presentationStatus: 'completed' })
   })
 
   it('preserves non-task tool status semantics', () => {

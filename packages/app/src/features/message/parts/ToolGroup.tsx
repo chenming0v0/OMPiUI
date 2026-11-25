@@ -34,9 +34,6 @@ interface ToolGroupProps {
   /** 组内工具初始即展开（用户发起的 bash：发命令就是为了看输出）。
    *  仅影响初始状态；用户手动折叠后保持折叠（respectUser）。 */
   defaultExpanded?: boolean
-  /** 忽略全局「描述型步骤」设置，始终用单行工具卡片。后台任务不是 agent 的
-   *  步骤序列，套上「4/4 steps」摘要行只会多一层无意义外壳。 */
-  plain?: boolean
 }
 
 /** 用户需要阅读/交互的工具：沉浸模式下这些工具完成后保持展开 */
@@ -52,13 +49,12 @@ export const ToolGroup = memo(function ToolGroup({
   isStreaming,
   modelLabel,
   defaultExpanded = false,
-  plain = false,
 }: ToolGroupProps) {
   const { t } = useTranslation('message')
   const viewExecutions = useMemo(() => executions.map(resolveTaskExecution), [executions])
   const theme = useTheme()
   const { immersiveMode, processCollapseEnabled } = theme
-  const descriptiveToolSteps = theme.descriptiveToolSteps && !plain
+  const descriptiveToolSteps = theme.descriptiveToolSteps
 
   const { currentSessionId } = useSessionNavigation()
   const taskStopped = useTaskRuntimeStopped(viewExecutions.some(e => e.call.name === 'task'))
@@ -87,7 +83,7 @@ export const ToolGroup = memo(function ToolGroup({
         runtimeStopped: taskStopped, hasLiveRuns: runs.length > 0 }).presentationStatus
     })
     return statuses.includes('running') ? 'running' : statuses.includes('error') ? 'error'
-      : statuses.includes('unknown') ? 'unknown' : statuses.includes('pending') ? 'pending' : 'unknown'
+      : statuses.includes('unknown') ? 'unknown' : statuses.includes('pending') ? 'pending' : 'completed'
   }).join('|'), [viewExecutions, currentSessionId, taskStopped])
   const statusFingerprint = useSyncExternalStore(subscribeStatuses, getStatusFingerprint, getStatusFingerprint)
   const statuses = useMemo(() => statusFingerprint.split('|') as TaskPresentationStatus[], [statusFingerprint])
@@ -402,7 +398,7 @@ function buildDescriptiveToolStepsSummary(
 
   if (executions.some((execution, index) => execution.call.name === 'task' && statuses[index] === 'unknown')) {
     if (segments.length > 0) segments.push({ text: sep, type: 'normal' })
-    segments.push({ text: t('task.outcome.merge.unconfirmed'), type: 'normal' })
+    segments.push({ text: t('task.outcome.execution.unknown'), type: 'normal' })
   }
 
   if (segments.length === 0) {

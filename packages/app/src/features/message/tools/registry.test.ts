@@ -203,11 +203,11 @@ describe('defaultExtractData', () => {
 })
 
 describe('task execution versus merge extraction', () => {
-  it.each([undefined, true, null] as const)('keeps a completed execution neutral for root changesApplied=%s', changesApplied => {
+  it.each([undefined, true, null] as const)('shows completed execution independently of root changesApplied=%s', changesApplied => {
     const execution: PiToolExecution = { call: { type: 'toolCall', id: 'task-outcome', name: 'task', arguments: {} },
       result: { role: 'toolResult', toolCallId: 'task-outcome', toolName: 'task', timestamp: 1, isError: false,
         content: [{ type: 'text', text: 'Execution finished' }], details: { exitCode: 0, ...(changesApplied !== undefined ? { changesApplied } : {}) } } }
-    expect(getToolExecutionStatus(execution)).toBe('unknown')
+    expect(getToolExecutionStatus(execution)).toBe('completed')
     expect(extractToolData(execution)).toMatchObject({ output: 'Execution finished' })
     expect(extractToolData(execution).error).toBeUndefined()
   })

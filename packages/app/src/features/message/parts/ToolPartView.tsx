@@ -26,8 +26,10 @@ import {
 import { MSG_SPACING } from '../messageSpacing'
 import { MessageExpandPanel, useMessageExpandRender } from '../messageExpand'
 import { ToolResultImages, ToolResultNotice } from '../tools/renderers/DefaultRenderer'
-import { resolveTaskExecution } from '../tools/taskToolData'
-import { getTaskExecutionOutcome } from '../../../omp/taskOutcome'
+import { findAsyncTaskResult, indexAsyncTaskResults, isAsyncTaskDispatch, resolveTaskExecution } from '../tools/taskToolData'
+import { getTaskExecutionOutcome, taskResultDetails } from '../../../omp/taskOutcome'
+import { piBranchStore } from '../../../omp/state/index.js'
+import { useTaskRuntimeStopped } from '../tools/useTaskRuntimeStopped'
 import { ompSubagentStore } from '../../../omp/ompSubagentStore'
 import { NativeAskSlot, useInlineAskRequest } from '../../chat/InlineAskRequests'
 
@@ -84,8 +86,17 @@ export const ToolPartView = memo(function ToolPartView({
     return taskSlotIndex !== undefined ? runs.find(run => run.index === taskSlotIndex) : runs.length === 1 ? runs[0] : undefined
   }, [toolName, call.id, currentSessionId, taskSlotIndex])
   const liveRun = useSyncExternalStore(ompSubagentStore.subscribe, getLiveRun, getLiveRun)
+  const runtimeStopped = useTaskRuntimeStopped(toolName === 'task')
+  const getDelivery = useCallback(() => {
+    if (toolName !== 'task' || !currentSessionId || !isAsyncTaskDispatch(taskResultDetails(execution))) return undefined
+    const tasks = call.arguments.tasks
+    const input = Array.isArray(tasks) ? tasks[taskSlotIndex ?? 0] : call.arguments
+    const id = input && typeof input === 'object' && 'name' in input && typeof input.name === 'string' ? input.name : liveRun?.id
+    return id ? findAsyncTaskResult(indexAsyncTaskResults(piBranchStore.getData(currentSessionId)?.items ?? []), id, result?.timestamp) : undefined
+  }, [toolName, currentSessionId, execution, call.arguments, taskSlotIndex, liveRun?.id, result?.timestamp])
+  const delivery = useSyncExternalStore(piBranchStore.subscribe, getDelivery, getDelivery)
   const status = toolName === 'task'
-    ? getTaskExecutionOutcome(execution, { slotIndex: taskSlotIndex, liveRun }).presentationStatus
+    ? getTaskExecutionOutcome(execution, { slotIndex: taskSlotIndex, liveRun, result: delivery?.details, runtimeStopped }).presentationStatus
     : getToolExecutionStatus(execution)
   // title 显示工具调用实质（命令/路径/模式），而不是重复工具名——
   // OMP RPC 的工具调用事件只有 toolName + args，没有工具描述字段；
@@ -94,6 +105,8 @@ export const ToolPartView = memo(function ToolPartView({
   const title = taskSlotTitle ?? (execution.argumentsUnknown ? t('toolPart.argumentsUnknown') : extractToolTitle(toolName, execution))
 
   const isActive = status === 'running'
+  const isTask = toolName === 'task'
+  const taskColor = isTask ? isActive ? 'text-accent-main-100' : status === 'completed' ? 'text-accent-secondary-100' : undefined : undefined
   const isQueued = status === 'pending'
   const isError = status === 'error'
   const failureLabel = t(!result && execution.interruption === 'cancelled' ? 'toolPart.cancelled' : !result && execution.interruption === 'unknown' ? 'toolPart.unknown' : 'toolPart.failed')
@@ -172,9 +185,9 @@ export const ToolPartView = memo(function ToolPartView({
     <div
       className={`
       relative flex items-center justify-center transition-colors duration-200
-      ${isActive ? 'text-text-300' : ''}
+      ${taskColor ?? (isActive ? 'text-text-300' : '')}
       ${isError ? 'text-danger-100' : ''}
-      ${status === 'completed' ? (isYield ? 'text-success-100 group-hover:text-success-100' : 'text-text-400 group-hover:text-text-300') : ''}
+      ${status === 'completed' && !isTask ? (isYield ? 'text-success-100 group-hover:text-success-100' : 'text-text-400 group-hover:text-text-300') : ''}
     `}
     >
       {getToolIcon(toolName)}
@@ -257,8 +270,8 @@ export const ToolPartView = memo(function ToolPartView({
           </div>
 
           <div className="ml-auto flex shrink-0 items-center gap-2">
-            {(isQueued || isActive) && <span className="text-[length:var(--fs-xxs)] text-text-400">{t(isQueued ? 'toolPart.pending' : 'toolPart.running')}</span>}
-            {isError && <span className="text-[length:var(--fs-xxs)] text-danger-100" title={execution.error}>{failureLabel}</span>}
+            {!isTask && (isQueued || isActive) && <span className="text-[length:var(--fs-xxs)] text-text-400">{t(isQueued ? 'toolPart.pending' : 'toolPart.running')}</span>}
+            {!isTask && isError && <span className="text-[length:var(--fs-xxs)] text-danger-100" title={execution.error}>{failureLabel}</span>}
             {duration !== undefined && !isQueued && (
               <span
                 className={`text-[length:var(--fs-xxs)] font-mono tabular-nums ${isError ? 'text-danger-100/70' : isActive ? 'reasoning-shimmer-text' : 'text-text-500'}`}
@@ -325,20 +338,20 @@ export const ToolPartView = memo(function ToolPartView({
                   {formatDuration(duration)}
                 </span>
               )}
-              <span
+              {!isTask && <span
                 className={`text-[length:var(--fs-xxs)] font-medium transition-all duration-300 ${
                   isActive || isQueued ? 'opacity-100 text-text-400' : 'opacity-0 w-0 overflow-hidden'
                 }`}
               >
                 {t(isQueued ? 'toolPart.pending' : 'toolPart.running')}
-              </span>
-              <span
+              </span>}
+              {!isTask && <span
                 className={`text-[length:var(--fs-xxs)] font-medium transition-all duration-300 ${
                   isError ? 'opacity-100 text-danger-100' : 'opacity-0 w-0 overflow-hidden'
                 }`}
               >
                 {failureLabel}
-              </span>
+              </span>}
               <span className="text-text-500">
                 {effectiveExpanded ? <ChevronDownIcon size={12} /> : <ChevronRightIcon size={12} />}
               </span>
@@ -413,20 +426,20 @@ export const ToolPartView = memo(function ToolPartView({
                 {formatDuration(duration)}
               </span>
             )}
-            <span
+            {!isTask && <span
               className={`text-[length:var(--fs-xxs)] font-medium transition-all duration-300 ${
                 isActive || isQueued ? 'opacity-100 text-text-400' : 'opacity-0 w-0 overflow-hidden'
               }`}
             >
               {t(isQueued ? 'toolPart.pending' : 'toolPart.running')}
-            </span>
-            <span
+            </span>}
+            {!isTask && <span
               className={`text-[length:var(--fs-xxs)] font-medium transition-all duration-300 ${
                 isError ? 'opacity-100 text-danger-100' : 'opacity-0 w-0 overflow-hidden'
               }`}
             >
               {failureLabel}
-            </span>
+            </span>}
             <span className="text-text-500">
               {effectiveExpanded ? <ChevronDownIcon size={12} /> : <ChevronRightIcon size={12} />}
             </span>

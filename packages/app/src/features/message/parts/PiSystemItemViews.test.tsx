@@ -1,8 +1,14 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PiCompactionItem, PiCustomMessageItem } from '../../../omp/domain/index.js'
 import { PiSystemItemView } from './PiSystemItemViews'
 import { TimelineEntryNavigation } from '../../chat/virtual/TimelineEntryNavigation'
+
+const toolTheme = vi.hoisted(() => ({ descriptiveToolSteps: false }))
+vi.mock('../../../hooks/useTheme', () => ({ useTheme: () => ({
+  descriptiveToolSteps: toolTheme.descriptiveToolSteps, immersiveMode: false, processCollapseEnabled: false,
+}) }))
+beforeEach(() => { toolTheme.descriptiveToolSteps = false })
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -51,6 +57,21 @@ function expand(name: string) {
 }
 
 describe('custom message timeline views', () => {
+  it.each([false, true])('uses the selected tool style for standalone background deliveries (descriptive=%s)', descriptive => {
+    toolTheme.descriptiveToolSteps = descriptive
+    render(<PiSystemItemView item={{ ...message(`style-${descriptive}`, 'Supervised process preview failed with exit code 255.', {
+      daemons: [{ name: 'preview', state: 'failed', exitCode: 255 }],
+    }), customType: 'launch-completion', injectedRole: 'custom' }} />)
+    const job = within(region('preview'))
+    if (descriptive) {
+      expect(job.queryByText('preview')).not.toBeInTheDocument()
+      fireEvent.click(job.getAllByRole('button')[0])
+    }
+    const row = job.getByText('preview').closest('button')!
+    fireEvent.click(row)
+    expect(job.getByText(/Supervised process preview failed/)).toBeInTheDocument()
+    expect(screen.queryByText('system.automaticNotice')).not.toBeInTheDocument()
+  })
   it('separates the user summary from closed internal archive instructions and offers retained-history navigation', () => {
     const jump = vi.fn()
     const item: PiCompactionItem = { kind: 'compaction', entryId: 'compact', timestamp: 1000,
@@ -134,16 +155,92 @@ describe('custom message timeline views', () => {
     expect(within(region('q1')).queryByText('queued')).not.toBeInTheDocument()
   })
 
-  it('renders agent message bodies without the delivery envelope', () => {
+  it('keeps TitleRuntime messages in a collapsed shared tool row without the delivery envelope', () => {
     render(<PiSystemItemView item={{
       kind: 'custom_message', entryId: 'agent-entry', customType: 'irc:incoming', display: true,
       timestamp: 0, rawEntry: {} as PiCustomMessageItem['rawEntry'],
-      content: '<irc>Delivery instructions</irc>', details: { from: 'Reviewer', message: 'Finished review' },
+      content: '<irc>Delivery instructions</irc>', injectedRole: 'custom',
+      details: { id: 'irc-title', from: 'TitleRuntime', message: 'Finished review' },
     }} />)
-    const agent = within(screen.getByRole('region', { name: 'system.agentMessage Reviewer' }))
-    expect(agent.getByText('system.agentMessageFrom Reviewer')).toBeInTheDocument()
+    const agent = within(region('TitleRuntime'))
+    expect(agent.getByText('system.jobLabel')).toBeInTheDocument()
+    expect(agent.queryByText('Finished review')).not.toBeInTheDocument()
+    expect(screen.queryByText('system.automaticNotice')).not.toBeInTheDocument()
+    expand('TitleRuntime')
     expect(agent.getByText('Finished review')).toBeInTheDocument()
     expect(screen.queryByText(/Delivery instructions/)).not.toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'system.agentMessage Reviewer' }).querySelector('.rounded-md.border')).toBeNull()
+    expect(screen.queryByRole('region', { name: 'system.agentMessage TitleRuntime' })).not.toBeInTheDocument()
+  })
+
+  it.each([undefined, 'custom'] as const)('renders supervisor failure as a failed tool row for injectedRole=%s', injectedRole => {
+    render(<PiSystemItemView item={{
+      ...message(`supervised-${injectedRole ?? 'persisted'}`, 'Supervised process title-ui-preview failed with exit code 255.', {
+        daemons: [{ name: 'title-ui-preview', id: 'preview-unit', state: 'failed', exitCode: 255, startedAt: 1000, exitedAt: 72000 }],
+      }), customType: 'launch-completion', injectedRole,
+    }} />)
+    const job = within(region('title-ui-preview'))
+    expect(job.getByText('system.jobLabel')).toHaveClass('text-danger-100')
+    expect(job.getByText('1m 11s')).toBeInTheDocument()
+    expect(screen.queryByText('system.automaticNotice')).not.toBeInTheDocument()
+    expand('title-ui-preview')
+    expect(job.getByText(/Supervised process title-ui-preview failed with exit code 255/)).toBeInTheDocument()
+  })
+
+  it('expands async output notifications through the shared row without starting a live execution', () => {
+    render(<PiSystemItemView item={{
+      ...message('notify-output', '<system-notice>Delivery</system-notice>', {
+        reports: [{ id: 'preview', type: 'service', pattern: 'ready', lines: ['Server ready'], running: true, omitted: 2, stopped: true }],
+      }), customType: 'async-notify', injectedRole: 'custom',
+    }} />)
+    const job = within(region('preview'))
+    expect(job.getByText('toolPart.running')).toHaveClass('opacity-0')
+    expand('preview')
+    expect(job.getByText(/Server ready/)).toBeInTheDocument()
+    expect(job.getByText(/2 not shown/)).toBeInTheDocument()
+    expect(job.getByText(/`notify` is off/)).toBeInTheDocument()
+  })
+
+  it('keeps relayed task failures and their full-output reference readable in the shared row', () => {
+    render(<PiSystemItemView item={{
+      ...message('wake-relay', 'Model delivery envelope', {
+        id: 'title-wake', from: 'TitleRuntime', wakeRelay: true,
+        message: '<task-result id="TitleRuntime" status="failed" duration="2s">\n<error>Preview failed</error>\n<preview full-output="history://TitleRuntime">Log tail</preview>\n</task-result>',
+      }), customType: 'irc:incoming', injectedRole: 'custom',
+    }} />)
+    const job = within(region('TitleRuntime'))
+    expect(job.getByText('system.jobLabel')).toHaveClass('text-danger-100')
+    expand('TitleRuntime')
+    expect(job.getByText(/Log tail/)).toBeInTheDocument()
+    expect(job.getByText(/Preview failed/)).toBeInTheDocument()
+    expect(job.getByText(/Full output: history:\/\/TitleRuntime/)).toBeInTheDocument()
+    expect(job.queryByText(/<task-result/)).not.toBeInTheDocument()
+  })
+
+  it('renders batched supervisor completions in one tool group with separate outcomes', () => {
+    render(<PiSystemItemView item={{
+      ...message('supervisor-batch', '', { daemons: [
+        { id: 'first-service', name: 'first-preview', state: 'exited', exitCode: 0 },
+        { id: 'second-service', key: 'second-preview', state: 'failed', exitCode: 255 },
+      ] }), customType: 'launch-completion', injectedRole: 'custom',
+    }} />)
+    const group = within(region('first-preview, second-preview'))
+    if (!group.queryByText('first-preview')) fireEvent.click(group.getAllByRole('button')[0])
+    const first = group.getByText('first-preview').closest('button')!
+    const second = group.getByText('second-preview').closest('button')!
+    expect(within(first).getByText('system.jobLabel')).not.toHaveClass('text-danger-100')
+    expect(within(second).getByText('system.jobLabel')).toHaveClass('text-danger-100')
+    fireEvent.click(second)
+    expect(second).toHaveAttribute('aria-expanded', 'true')
+    expect(first).toHaveAttribute('aria-expanded', 'false')
+    expect(group.getByText(/second-preview failed with exit code 255/)).toBeInTheDocument()
+  })
+
+  it('keeps unrelated injected notices in their original system presentation', () => {
+    render(<PiSystemItemView item={{
+      ...message('ordinary-notice', 'Supervised process title-ui-preview failed with exit code 255.'),
+      customType: 'maintenance', injectedRole: 'custom',
+    }} />)
+    expect(screen.getByRole('button', { name: 'system.automaticNotice' })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('system.jobLabel')).not.toBeInTheDocument()
   })
 })

@@ -221,12 +221,12 @@ function SubagentTask({ slot, outcome, runtimeStopped, execution, partKey, inten
   const shouldRenderBody = useMessageExpandRender(effectiveExpanded)
   // 中途崩溃没有 task 结果，但已命名子代理的转录仍在父文件同名目录。
   const diskResult = useMemo<PersistedSubagentResult | undefined>(() => slot.result ??
-    (!execution.result && hasStarted && typeof slot.input.name === 'string' && slot.input.name ? {
+    ((!execution.result || isRunning) && hasStarted && typeof slot.input.name === 'string' && slot.input.name ? {
       id: slot.input.name,
       agent: typeof slot.input.agent === 'string' ? slot.input.agent : undefined,
       task: typeof slot.input.task === 'string' ? slot.input.task : undefined,
       index: slot.index,
-    } : undefined), [execution.result, slot.result, slot.input, slot.index, hasStarted])
+    } : undefined), [execution.result, slot.result, slot.input, slot.index, hasStarted, isRunning])
   const { run: persistedRun, loading: previewLoading, reload: reloadPreview } = usePersistedSubagentRun(
     execution.call.id, diskResult, Boolean(liveRun), currentSessionId, shouldRenderBody,
     !slot.result ? runtimeStopped ? 'aborted' : isRunning ? 'running' : 'pending' : undefined,
@@ -284,8 +284,6 @@ function SubagentTask({ slot, outcome, runtimeStopped, execution, partKey, inten
     slot.result?.error, slot.result?.mergeError, liveRun?.mergeError, execution.error,
     showAggregateOutput ? aggregateError || (execution.result ? toolResultText(execution.result) : undefined) : undefined].filter(value => typeof value === 'string' && value.trim()))].join('\n')
   const rawDetails = !liveRun?.isFollowUp && (slot.result || (showAggregateOutput && execution.result?.details))
-  const outcomeText = [t(`task.outcome.execution.${outcome.executionStatus}`), t(`task.outcome.merge.${outcome.mergeStatus}`),
-    outcome.rootMergeStatus !== 'unconfirmed' ? t(`task.outcome.rootMerge.${outcome.rootMergeStatus}`) : undefined].filter(Boolean).join(' · ')
   const handleContentFullscreenChange = useCallback((isFullscreen: boolean) => {
     setIsContentFullscreen(isFullscreen)
     onFullscreenChange?.(isFullscreen)
@@ -316,7 +314,6 @@ function SubagentTask({ slot, outcome, runtimeStopped, execution, partKey, inten
         opening={opening}
         onStop={isRunning && targetSessionId ? handleStop : undefined}
       />
-      {hasStarted && <p data-testid="task-outcome" className={`pl-7 text-[length:var(--fs-xxs)] ${isError ? 'text-danger-100' : 'text-text-400'}`}>{outcomeText}</p>}
       {openError && <p role="alert" className="pt-1 text-[length:var(--fs-xs)] text-danger-100 break-words">{openError}</p>}
       <MessageExpandPanel open={effectiveExpanded} innerClassName="overflow-hidden">
         {shouldRenderBody && (
@@ -387,10 +384,9 @@ export const TaskHeader = memo(function TaskHeader({
   const isRunning = status === 'running'
   const isError = status === 'error'
   const isCompleted = status === 'completed'
-  const statusLabel = status === 'pending' ? t('toolPart.pending') : status === 'unknown' ? t('toolPart.unknown') : undefined
 
   // OpenCode 行为：派发即绿色（主色），完成转蓝色（辅助色），失败红色。
-  const agentBadgeClass = `shrink-0 px-1.5 py-0.5 text-[length:var(--fs-xxs)] font-medium rounded-xs ${
+  const agentBadgeClass = `inline-flex min-h-5 shrink-0 items-center justify-center px-1.5 py-0.5 text-center text-[length:var(--fs-xxs)] leading-none font-medium rounded-xs ${
     isRunning
       ? 'bg-accent-main-100/20 text-accent-main-100'
       : isError
@@ -435,16 +431,15 @@ export const TaskHeader = memo(function TaskHeader({
         onClick={onToggle}
         aria-expanded={expanded}
         aria-label={[description, detail].filter(Boolean).join(' · ')}
-        className="group/title flex min-w-0 flex-1 self-stretch items-baseline gap-2 text-left bg-transparent border-none p-0"
+        className="group/title flex min-h-5 min-w-0 flex-1 items-center gap-2 text-left bg-transparent border-none p-0"
         title={expanded ? t('showLess') : t('showMore')}
       >
-        <span className={`shrink-0 max-w-[50%] truncate text-[length:var(--fs-sm)] font-medium group-hover/title:text-text-100 ${isError ? 'text-danger-100' : 'text-text-200'}`}>
+        <span className={`shrink-0 max-w-[50%] truncate text-[length:var(--fs-sm)] leading-tight font-medium group-hover/title:text-text-100 ${isError ? 'text-danger-100' : 'text-text-200'}`}>
           {description}
         </span>
         {detail && <span className="min-w-0 truncate text-[length:var(--fs-xs)] text-text-400">{detail}</span>}
         {activity && <span className="min-w-0 truncate font-mono text-[length:var(--fs-xxs)] text-text-500" data-testid="task-activity">{activity}</span>}
       </button>
-      {statusLabel && <span className="shrink-0 text-[length:var(--fs-xxs)] text-text-400">{statusLabel}</span>}
       {duration && <span className="shrink-0 tabular-nums text-[length:var(--fs-xxs)] text-text-500">{duration}</span>}
 
       {onStop && (

@@ -16,6 +16,7 @@ import {
   GitBranchIcon,
   PuzzleIcon,
   SettingsIcon,
+  UsersIcon,
   TerminalIcon
 } from './Icons'
 import { layoutStore, useLayoutStore, type PanelTab, type PanelPosition, type PanelTabType } from '../store/layoutStore'
@@ -48,7 +49,8 @@ const TAB_ICONS: Record<PanelTabType, React.ReactNode> = {
   'session-controls': <SettingsIcon size={12} />,
   skill: <TeachIcon size={12} />,
   extensions: <PuzzleIcon size={12} />,
-  terminal: <TerminalIcon size={12} />
+  terminal: <TerminalIcon size={12} />,
+  subagents: <UsersIcon size={12} />
 }
 
 // Tab 显示名称
@@ -68,6 +70,8 @@ function getTabLabel(tab: PanelTab, tabs: PanelTab[], t: (key: string) => string
     }
     case 'session-tree':
       return t('panelContainer.sessionTree')
+    case 'subagents':
+      return t('panelContainer.subagents')
     case 'session-controls':
       return t('panelContainer.sessionControls')
     case 'skill':
@@ -511,6 +515,10 @@ export const PanelContainer = memo(function PanelContainer({
                 {t('panelContainer.sessionTree')}
               </button>
             )}
+            <button onClick={() => { layoutStore.addSubagentsTab(position); setAddMenuPos(null) }}
+              className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left text-[length:var(--fs-sm)] text-text-200 hover:bg-bg-200/60 hover:text-text-100 rounded-md transition-colors">
+              <UsersIcon size={12} />{t('panelContainer.subagents')}
+            </button>
             {capabilities.sessionTree && (
               <button
                 onClick={() => {
