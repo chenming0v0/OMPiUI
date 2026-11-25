@@ -267,7 +267,8 @@ describe('persisted subagent fallback', () => {
     ] }
     renderTask(execution)
     expect(await screen.findByText(/Reviewer crashed/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'scout' })).toHaveClass('text-text-300')
+    expect(screen.getByRole('button', { name: 'scout' })).toHaveClass('text-accent-secondary-100')
+    expect(screen.getAllByTestId('task-slot')[0]).toHaveAttribute('data-status', 'completed')
     expect(screen.getAllByTestId('task-outcome')[0]).toHaveTextContent('task.outcome.execution.completed')
     expect(screen.getByRole('button', { name: 'reviewer' })).toHaveClass('text-danger-100')
     expect(screen.getByRole('button', { name: 'scout' })).not.toHaveClass('text-danger-100')
