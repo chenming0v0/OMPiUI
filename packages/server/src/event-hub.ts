@@ -11,7 +11,17 @@ import {
   type JsonValue,
 } from "@ompiui/protocol";
 
+import type { TerminalOwner } from "./host/terminal-auth.ts";
+
 type Listener = (event: EventEnvelope) => void;
+type OwnerSource = TerminalOwner | (() => TerminalOwner | undefined);
+// Principals stay out of the wire envelope and persisted/public event history.
+const terminalOwners = new WeakMap<EventEnvelope, TerminalOwner>();
+function visibleEvent(event: EventEnvelope, owner?: OwnerSource): boolean {
+  if (!event.channel.startsWith("terminal.")) return true;
+  const principal = typeof owner === "function" ? owner() : owner;
+  return !!principal && terminalOwners.get(event) === principal;
+}
 const wireFrames = new WeakMap<
   EventEnvelope,
   { data: string; bytes: number }
@@ -74,17 +84,19 @@ export class EventHub {
 
   constructor(private readonly historyLimit = 256) {}
 
-  subscribe(listener: Listener): () => void {
+  subscribe(listener: Listener, owner?: OwnerSource): () => void {
     if (this.listeners.size >= MAX_LISTENERS)
       throw new Error("event subscriber limit reached");
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
+    const filtered: Listener = event => { if (visibleEvent(event, owner)) listener(event); };
+    this.listeners.add(filtered);
+    return () => this.listeners.delete(filtered);
   }
 
   publish(
     stream: EventStreamRef,
     channel: EventChannel,
     payload: JsonValue,
+    owner?: TerminalOwner,
   ): EventEnvelope {
     const state = this.getOrCreate(stream);
     state.sequence += 1;
@@ -97,6 +109,7 @@ export class EventHub {
       channel,
       payload,
     };
+    if (owner && channel.startsWith("terminal.")) terminalOwners.set(event, owner);
     const bytes = eventWireFrame(event).bytes;
     state.history.push(event);
     state.sizes.push(bytes);
@@ -140,6 +153,7 @@ export class EventHub {
   replaySince(
     stream: EventStreamRef,
     cursor?: EventCursor,
+    owner?: OwnerSource,
   ): {
     events: EventEnvelope[];
     resyncRequired: boolean;
@@ -160,7 +174,7 @@ export class EventHub {
     if (cursor.epoch === this.emptyEpoch && cursor.sequence === 0) {
       const first = state.history[0]?.cursor.sequence ?? state.sequence + 1;
       return first === 1
-        ? { events: [...state.history], resyncRequired: false }
+        ? { events: state.history.filter(event => visibleEvent(event, owner)), resyncRequired: false }
         : { events: [], resyncRequired: true, reason: "history_expired" };
     }
     if (cursor.epoch !== state.epoch)
@@ -172,7 +186,7 @@ export class EventHub {
       return { events: [], resyncRequired: true, reason: "history_expired" };
     return {
       events: state.history.filter(
-        (event) => event.cursor.sequence > cursor.sequence,
+        (event) => event.cursor.sequence > cursor.sequence && visibleEvent(event, owner),
       ),
       resyncRequired: false,
     };

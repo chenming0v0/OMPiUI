@@ -6,7 +6,7 @@ import { useDisclosureScrollLock } from '../../../hooks'
 import { useTheme } from '../../../hooks/useTheme'
 import { MarkdownRenderer } from '../../../components/MarkdownRenderer'
 import type { ThinkingContent } from '../../../omp/vendor/pi-ai'
-import { useReasoningTranslation } from '../../../omp/reasoningTranslation'
+import { useReasoningReadingPriority, useReasoningTranslation } from '../../../omp/reasoningTranslation'
 import { useUiDisclosureState } from '../../../utils/uiDisclosureState'
 import { MSG_SPACING } from '../messageSpacing'
 import { chevronClass, MessageExpandPanel, useMessageExpandRender } from '../messageExpand'
@@ -19,30 +19,34 @@ interface ReasoningPartViewProps {
   /** Stable key for expand-state persistence (entry id + block index) */
   partKey: string
   entryId?: string
+  blockIndex?: number
   /** Optional timing for the "thought for Xs" label; omit when unavailable */
   time?: { start: number; end?: number }
   isStreaming?: boolean
 }
 
-export const ReasoningPartView = memo(function ReasoningPartView({ part, entryId, partKey, time, isStreaming }: ReasoningPartViewProps) {
+export const ReasoningPartView = memo(function ReasoningPartView({ part, entryId, partKey, blockIndex, time, isStreaming }: ReasoningPartViewProps) {
   const { t } = useTranslation('message')
   const { reasoningDisplayMode } = useTheme()
   const rawText = part.thinking || ''
   const isPartStreaming = Boolean(isStreaming && !time?.end)
   const [translationPaused, setTranslationPaused] = useState(false)
   const [showOriginal, setShowOriginal] = useState(false)
-  const translation = useReasoningTranslation(entryId, partKey, rawText, isPartStreaming, translationPaused)
+  const [expanded, setExpanded, touched] = useUiDisclosureState(`message:reasoning:${partKey}`, false)
+  const { rootRef, headerRef, withScrollLock } = useDisclosureScrollLock()
+  const priority = useReasoningReadingPriority(rootRef, expanded && touched)
+  const [interactionId, setInteractionId] = useState<string>()
+  const translation = useReasoningTranslation(entryId, partKey, rawText, isPartStreaming, translationPaused || showOriginal, { blockIndex, priority, interactionId })
   const displayText = showOriginal || translationPaused || !translation.text ? rawText : translation.text
   const hasContent = !!rawText.trim()
   useEffect(() => { setTranslationPaused(false); setShowOriginal(false) }, [partKey])
-  const [expanded, setExpanded] = useUiDisclosureState(`message:reasoning:${partKey}`, false)
   const shouldRenderBody = useMessageExpandRender(expanded)
-  const { rootRef, headerRef, withScrollLock } = useDisclosureScrollLock()
   const scrollAreaRef = useRef<HTMLDivElement>(null)
   const summaryContainerRef = useRef<HTMLDivElement>(null)
   const summaryMeasureRef = useRef<HTMLSpanElement>(null)
   const [summaryOverflow, setSummaryOverflow] = useState(false)
   const toggleExpanded = useCallback(() => {
+    if (!expanded) setInteractionId(crypto.randomUUID())
     withScrollLock(() => setExpanded(!expanded))
   }, [expanded, setExpanded, withScrollLock])
 

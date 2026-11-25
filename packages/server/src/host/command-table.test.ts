@@ -11,6 +11,8 @@ import { WorkspaceWatcher } from "./workspace-watcher.ts"
 import { EventHub } from "../event-hub.ts"
 import { SessionHost } from "../omp/session-host.ts"
 import { RuntimeSupervisor } from "../omp/supervisor.ts"
+import { terminalOwnerFromSecret } from "./terminal-auth.ts"
+const terminalOwner = terminalOwnerFromSecret("11".repeat(32))!
 
 
 test("execute rejects malformed params at the edge before reaching handlers", async () => {
@@ -23,6 +25,22 @@ test("execute rejects malformed params at the edge before reaching handlers", as
     runtime.execute("terminals.create", {} as never),
     (error: Error & { code?: string }) => error.code === "INVALID_REQUEST",
   )
+})
+
+test("direct host terminal commands cannot use a shared context or JSON params as private identity", async () => {
+  const runtime = new HostRuntime({ terminalOwner } as never)
+  // Even a trusted runtime context must not become a default principal for all
+  // HTTP users. Only per-request transport options carry the authenticated owner.
+  for (const [name, params] of [
+    ["terminals.shells", {}],
+    ["terminals.list", { workspacePath: process.cwd() }],
+    ["terminals.create", { workspacePath: process.cwd() }],
+    ["terminals.get", { workspacePath: process.cwd(), terminalId: "known-id" }],
+    ["terminals.connectToken", { workspacePath: process.cwd(), terminalId: "known-id" }],
+    ["terminals.update", { workspacePath: process.cwd(), terminalId: "known-id", title: "rename" }],
+    ["terminals.remove", { workspacePath: process.cwd(), terminalId: "known-id" }],
+    ["workspaces.close", { workspacePath: process.cwd() }],
+  ] as const) await assert.rejects(runtime.execute(name, params), { code: "FORBIDDEN" })
 })
 
 test("Git change viewing remains registered without staging or commit commands", async () => {
@@ -96,33 +114,33 @@ test("worktree removal protects descendant workspace and cwd shells without affe
   const remove = () => runtime.execute("git.worktreeRemove", { workspacePath: repo, path: linked })
   const exit = async (workspacePath: string, id: string) => {
     const { promise, resolve } = Promise.withResolvers<void>()
-    const attachment = terminals.attach(workspacePath, id, undefined, () => {}, () => resolve())
+    const attachment = terminals.attach(workspacePath, id, undefined, () => {}, () => resolve(), undefined, terminalOwner)
     attachment.activate()
     try {
-      terminals.write(workspacePath, id, "exit\r")
+      terminals.write(workspacePath, id, "exit\r", terminalOwner)
       await promise
     } finally { attachment.detach() }
   }
   try {
     await runtime.execute("git.worktreeCreate", { workspacePath: repo, path: linked, branch: "keep-branch" })
     const descendant = path.join(root, "linked", "src")
-    const first = await runtime.execute("terminals.create", { workspacePath: descendant }) as { id: string }
+    const first = await runtime.execute("terminals.create", { workspacePath: descendant }, { terminalOwner }) as { id: string }
     await assert.rejects(remove(), { code: "WORKSPACE_BUSY" })
     assert.equal(existsSync(path.join(linked, ".git")), true)
-    assert.equal(terminals.get(descendant, first.id).status, "running")
+    assert.equal(terminals.get(descendant, first.id, terminalOwner).status, "running")
     await exit(descendant, first.id)
 
-    const second = await runtime.execute("terminals.create", { workspacePath: root, cwd: "linked/src" }) as { id: string }
+    const second = await runtime.execute("terminals.create", { workspacePath: root, cwd: "linked/src" }, { terminalOwner }) as { id: string }
     await assert.rejects(remove(), { code: "WORKSPACE_BUSY" })
     assert.equal(existsSync(path.join(linked, "src", "tracked.txt")), true)
-    assert.equal(terminals.get(root, second.id).status, "running")
+    assert.equal(terminals.get(root, second.id, terminalOwner).status, "running")
     await exit(root, second.id)
 
-    const unrelated = await runtime.execute("terminals.create", { workspacePath: sibling }) as { id: string }
+    const unrelated = await runtime.execute("terminals.create", { workspacePath: sibling }, { terminalOwner }) as { id: string }
     await remove()
     assert.equal(existsSync(linked), false)
     assert.match(git("show-ref", "--verify", "refs/heads/keep-branch"), /refs\/heads\/keep-branch/)
-    assert.equal(terminals.get(sibling, unrelated.id).status, "running")
+    assert.equal(terminals.get(sibling, unrelated.id, terminalOwner).status, "running")
     await exit(sibling, unrelated.id)
   } finally {
     await terminals.shutdown()

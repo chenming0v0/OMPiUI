@@ -938,11 +938,15 @@ export class SessionHost {
     validateParams(capability?.paramsSchema, params ?? {});
     const idempotent =
       type === "registry.describe" || capability?.idempotent === true;
-    return this.catalogCommand(type, params, {
+    const result = await this.catalogCommand(type, params, {
       retry: idempotent,
       idempotent,
       signal: options.signal,
     });
+    if (['settings.patch', 'modelRoles.set', 'title.settings.set', 'preview.settings.set'].includes(type)) {
+      this.hub.publish({ kind: 'server', id: 'server' }, 'settings.updated', { command: type });
+    }
+    return result;
   }
 
   executeSessionCommand(

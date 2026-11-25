@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next'
 import { themeStore, type ToolCardStyle } from '../../../store/themeStore'
 import { Toggle, SegmentedControl, SettingRow, SettingField, SettingsSection } from './SettingsUI'
 import { TitlePromptSettings } from './TitlePromptSettings'
+import { ReasoningTranslationConcurrencySetting } from './ReasoningTranslationConcurrencySetting'
 
 export function AgentSettings() {
   const { t } = useTranslation(['settings'])
@@ -51,7 +52,7 @@ export function AgentSettings() {
         <SettingRow label={t('agent.reasoningTranslation')} description={t('agent.reasoningTranslationDesc')}>
           <Toggle enabled={translation.enabled} onChange={() => setReasoningTranslationSettings({ enabled: !translation.enabled })} />
         </SettingRow>
-        {translation.enabled && (
+        {translation.enabled && <>
           <SettingField label={t('agent.reasoningTranslationBudget')} description={t('agent.reasoningTranslationBudgetDesc')}>
             <SegmentedControl
               value={String(translation.budget)}
@@ -59,7 +60,8 @@ export function AgentSettings() {
               onChange={value => setReasoningTranslationSettings({ budget: Number(value) as ReasoningTranslationBudget })}
             />
           </SettingField>
-        )}
+          <ReasoningTranslationConcurrencySetting />
+        </>}
       </SettingsSection>
       <SettingsSection title={t('agent.behavior')} description={t('agent.behaviorDesc')}>
         <SettingRow

@@ -40,6 +40,17 @@ describe('shared model role requests', () => {
     expect(readModelRolesCache()).toEqual({ default: 'custom/new' })
   })
 
+  it('ignores an older save response after a newer role read has become effective', async () => {
+    const pending = Promise.withResolvers<Record<string, string>>()
+    vi.spyOn(transport, 'setPiModelRoles').mockReturnValue(pending.promise)
+    vi.spyOn(transport, 'getPiModelRoles').mockResolvedValue({ default: 'custom/remote', smol: 'custom/fast' })
+    const saving = savePiModelRoles({ default: 'custom/stale' })
+    await loadPiModelRoles(true)
+    pending.resolve({ default: 'custom/stale' })
+    await saving
+    expect(readModelRolesCache()).toEqual({ default: 'custom/remote', smol: 'custom/fast' })
+  })
+
   it('does not update shared roles or browser cache after switching server mid-read', async () => {
     let resolve!: (value: Record<string, string>) => void
     vi.spyOn(transport, 'getPiModelRoles').mockReturnValue(new Promise(done => { resolve = done }))

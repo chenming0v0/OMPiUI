@@ -15,6 +15,12 @@ import { RuntimeSupervisor } from "./omp/supervisor.ts"
 import { MAX_PAIRING_FAILURES, PairingStore } from "./host/pairing.ts"
 import { TUNNEL_FORWARDING_HEADER } from "./host/security.ts"
 import { FaultReportService } from "./diagnostics/fault-reports.ts"
+import { TERMINAL_SECRET_HEADER, terminalOwnerFromSecret } from "./host/terminal-auth.ts"
+import type { TerminalManagerOptions } from "./host/terminal-manager.ts"
+import { attachEventWebSocket, closeEventWebSocket } from "./ws.ts"
+import { WebSocket } from "ws"
+import { EVENT_WS_SUBPROTOCOL, PROTOCOL_VERSION, eventStreamKey } from "@ompiui/protocol"
+const terminalHeaders = { [TERMINAL_SECRET_HEADER]: "11".repeat(32) }
 
 // 测试进程的 session 租约目录放进独立临时目录，跑完即删，
 // 不污染默认的 ompiui-session-leases 命名空间。
@@ -53,10 +59,236 @@ async function request(
   return { status: response.status, json: await response.json().catch(() => undefined) }
 }
 
+function privateTerminalFixture() {
+  const children: Array<{
+    written: string[]; sizes: Array<[number, number]>;
+    feed(data: string): void; exit(): void;
+  }> = []
+  const spawn: NonNullable<TerminalManagerOptions['spawn']> = (_file, _args, options) => {
+    const size = options as { rows: number; cols: number }
+    const dataListeners = new Set<(data: string) => void>()
+    const exitListeners = new Set<(event: { exitCode: number }) => void>()
+    let alive = true
+    const written: string[] = []
+    const sizes: Array<[number, number]> = []
+    const exit = () => {
+      if (!alive) return
+      alive = false
+      for (const listener of exitListeners) listener({ exitCode: 0 })
+    }
+    const child = {
+      pid: 0, cols: size.cols, rows: size.rows,
+      write: (data: string) => written.push(data),
+      resize(cols: number, rows: number) { this.cols = cols; this.rows = rows; sizes.push([cols, rows]) },
+      kill: exit,
+      onData(listener: (data: string) => void) { dataListeners.add(listener); return { dispose: () => { dataListeners.delete(listener) } } },
+      onExit(listener: (event: { exitCode: number }) => void) { exitListeners.add(listener); return { dispose: () => { exitListeners.delete(listener) } } },
+    }
+    children.push({ written, sizes, exit, feed: data => { for (const listener of dataListeners) listener(data) } })
+    return child
+  }
+  return { spawn, children }
+}
+
+function privateSocketInbox(ws: WebSocket) {
+  const frames: any[] = []
+  const waits = new Set<() => void>()
+  ws.on('error', () => {})
+  ws.on('message', raw => {
+    frames.push(JSON.parse(String(raw)))
+    for (const wake of waits) wake()
+  })
+  const until = (predicate: (frame: any) => boolean, from = 0): Promise<any> => {
+    const found = frames.slice(from).find(predicate)
+    if (found) return Promise.resolve(found)
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { waits.delete(wake); reject(new Error('private terminal socket frame timed out')) }, 5000)
+      const wake = () => {
+        const match = frames.slice(from).find(predicate)
+        if (!match) return
+        waits.delete(wake); clearTimeout(timer); resolve(match)
+      }
+      waits.add(wake)
+    })
+  }
+  return { frames, until }
+}
+
+async function deniedPrivateSocket(url: string): Promise<number> {
+  const ws = new WebSocket(url)
+  ws.on('error', () => {})
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { ws.terminate(); reject(new Error('private terminal handshake did not finish')) }, 5000)
+    ws.once('open', () => { clearTimeout(timer); ws.terminate(); reject(new Error('unauthorized terminal socket opened')) })
+    ws.once('unexpected-response', (_request, response) => {
+      clearTimeout(timer); response.resume(); ws.terminate(); resolve(response.statusCode!)
+    })
+  })
+}
+
 describe("http api", () => {
   const cleanups: Array<() => Promise<void> | void> = []
   after(async () => {
     for (const cleanup of cleanups.splice(0)) await cleanup()
+  })
+
+  it('isolates two private terminal clients sharing the same backend credential through HTTP, event replay and streams', { timeout: 20_000 }, async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'ompiui-private-terminals-'))
+    const fixture = privateTerminalFixture()
+    const sharedToken = 'same-host-bearer'
+    const secretA = 'aa'.repeat(32)
+    const secretB = 'bb'.repeat(32)
+    const ownerA = terminalOwnerFromSecret(secretA)!
+    const ownerB = terminalOwnerFromSecret(secretB)!
+    const app = createAppServer({ authToken: sharedToken, terminalSpawn: fixture.spawn })
+    const wss = attachEventWebSocket(app.server, { authToken: sharedToken, eventHub: app.eventHub, terminalManager: app.terminals })
+    const port = await listen(app)
+    const sockets: WebSocket[] = []
+    const call = (name: string, body: unknown, secret?: string) => request(port, 'POST', `/api/v1/host/commands/${name}`, {
+      token: sharedToken, body, headers: secret === undefined ? {} : { [TERMINAL_SECRET_HEADER]: secret },
+    })
+    try {
+      const opened = await call('workspaces.open', { rootPath: root })
+      const workspacePath = opened.json.data.workspace.path as string
+      const stream = { kind: 'workspace' as const, id: workspacePath }
+      const initial = app.eventHub.getCursor(stream)
+      const subscribe = async (secret?: string) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/api/v1/events?token=${sharedToken}`, EVENT_WS_SUBPROTOCOL)
+        sockets.push(ws)
+        const inbox = privateSocketInbox(ws)
+        await inbox.until(frame => frame.type === 'hello')
+        ws.send(JSON.stringify({ type: 'subscribe', protocolVersion: PROTOCOL_VERSION, streams: [stream],
+          cursors: { [eventStreamKey(stream)]: initial }, ...(secret ? { terminalSecret: secret } : {}) }))
+        const from = inbox.frames.length
+        ws.send(JSON.stringify({ type: 'ping', protocolVersion: PROTOCOL_VERSION }))
+        await inbox.until(frame => frame.type === 'pong', from)
+        return { ws, inbox }
+      }
+      const clientA = await subscribe(secretA)
+      const clientB = await subscribe(secretB)
+      // A shared authenticated event connection with unavailable private storage
+      // still receives ordinary workspace events, never any terminal identifiers.
+      const chatOnly = await subscribe()
+      const createdA = await call('terminals.create', { workspacePath, title: 'A private shell' }, secretA)
+      const createdB = await call('terminals.create', { workspacePath, title: 'B private shell' }, secretB)
+      assert.equal(createdA.status, 200)
+      assert.equal(createdB.status, 200)
+      const idA = createdA.json.data.id as string
+      const idB = createdB.json.data.id as string
+      const barrier = async (mark: number, clients = [clientA, clientB, chatOnly]) => {
+        app.eventHub.publish(stream, 'workspace.files', { mark })
+        await Promise.all(clients.map(client => client.inbox.until(frame => frame.event?.payload?.mark === mark)))
+      }
+      await barrier(1)
+      const terminalEvents = (client: typeof clientA) => client.inbox.frames.filter(frame => frame.event?.channel.startsWith('terminal.')).map(frame => frame.event)
+      assert.deepEqual(terminalEvents(clientA).map(event => event.payload.id), [idA])
+      assert.deepEqual(terminalEvents(clientB).map(event => event.payload.id), [idB])
+      assert.deepEqual(terminalEvents(chatOnly), [])
+      assert.ok(!JSON.stringify(clientB.inbox.frames).includes('A private shell'))
+      assert.ok(!JSON.stringify(clientA.inbox.frames).includes(secretA))
+      assert.ok(!JSON.stringify(clientA.inbox.frames).includes(ownerA))
+      const listA = await call('terminals.list', { workspacePath }, secretA)
+      const listB = await call('terminals.list', { workspacePath }, secretB)
+      assert.deepEqual(listA.json.data.terminals.map((terminal: any) => terminal.id), [idA])
+      assert.deepEqual(listB.json.data.terminals.map((terminal: any) => terminal.id), [idB])
+      for (const [name, params] of [
+        ['terminals.shells', {}], ['terminals.list', { workspacePath }],
+        ['terminals.create', { workspacePath }], ['terminals.get', { workspacePath, terminalId: idA }],
+        ['terminals.connectToken', { workspacePath, terminalId: idA }],
+        ['terminals.update', { workspacePath, terminalId: idA, title: 'attack' }],
+        ['terminals.remove', { workspacePath, terminalId: idA }], ['workspaces.close', { workspacePath }],
+      ] as const) {
+        assert.equal((await call(name, params)).status, 403, `${name} must require private identity even with valid host bearer`)
+      }
+      assert.equal((await call('terminals.list', { workspacePath }, 'not-a-secret')).status, 403)
+      for (const [name, extra] of [
+        ['terminals.get', {}], ['terminals.connectToken', {}],
+        ['terminals.update', { title: 'stolen title' }], ['terminals.update', { rows: 30, cols: 100 }], ['terminals.remove', {}],
+      ] as const) {
+        const denied = await call(name, { workspacePath, terminalId: idA, ...extra }, secretB)
+        assert.equal(denied.status, 404, name)
+        assert.ok(!JSON.stringify(denied.json).includes('A private shell'))
+      }
+      assert.equal((await call('workspaces.close', { workspacePath }, secretB)).status, 409)
+      assert.equal(app.terminals.get(workspacePath, idA, ownerA).status, 'running')
+      assert.equal(app.terminals.get(workspacePath, idB, ownerB).status, 'running')
+      // The manager independently protects retained/live output and PTY input,
+      // so a legacy/direct caller cannot bypass the HTTP edge authorization.
+      for (const operation of [
+        () => app.terminals.attach(workspacePath, idA, 0, () => {}, () => {}, undefined, ownerB),
+        () => app.terminals.write(workspacePath, idA, 'foreign input', ownerB),
+        () => app.terminals.update(workspacePath, idA, { rows: 40, cols: 120 }, ownerB),
+        () => app.terminals.remove(workspacePath, idA, ownerB),
+      ]) assert.throws(operation, { code: 'TERMINAL_NOT_FOUND' })
+      assert.throws(() => app.terminals.attach(workspacePath, idA, 0, () => {}, () => {}), { code: 'FORBIDDEN' })
+      assert.throws(() => app.terminals.write(workspacePath, idA, 'shared bearer only'), { code: 'FORBIDDEN' })
+      const base = `ws://127.0.0.1:${port}/api/v1/host/terminals/`
+      assert.equal(await deniedPrivateSocket(`${base}${idA}/stream?token=${sharedToken}`), 403)
+      const wrongTicket = (await call('terminals.connectToken', { workspacePath, terminalId: idB }, secretB)).json.data.token
+      assert.equal(await deniedPrivateSocket(`${base}${idA}/stream?ticket=${wrongTicket}`), 403)
+      assert.equal(await deniedPrivateSocket(`${base}${idB}/stream?ticket=${wrongTicket}`), 403, 'wrong-target ticket is consumed')
+      fixture.children[0]!.feed('only-A-output')
+      fixture.children[1]!.feed('only-B-output')
+      const connectTerminal = async (id: string, secret: string) => {
+        const ticket = (await call('terminals.connectToken', { workspacePath, terminalId: id }, secret)).json.data.token
+        const ws = new WebSocket(`${base}${id}/stream?ticket=${ticket}&cursor=0`)
+        sockets.push(ws)
+        const inbox = privateSocketInbox(ws)
+        await inbox.until(frame => frame.type === 'ready')
+        assert.equal(await deniedPrivateSocket(`${base}${id}/stream?ticket=${ticket}`), 403)
+        return { ws, inbox }
+      }
+      const streamA = await connectTerminal(idA, secretA)
+      const streamB = await connectTerminal(idB, secretB)
+      const output = (client: typeof streamA) => client.inbox.frames.filter(frame => frame.type === 'output').map(frame => frame.data).join('')
+      assert.equal(output(streamA), 'only-A-output')
+      assert.equal(output(streamB), 'only-B-output')
+      fixture.children[0]!.feed('-live-A')
+      fixture.children[1]!.feed('-live-B')
+      await streamA.inbox.until(frame => frame.type === 'output' && frame.data.includes('-live-A'))
+      await streamB.inbox.until(frame => frame.type === 'output' && frame.data.includes('-live-B'))
+      assert.equal(output(streamA), 'only-A-output-live-A')
+      assert.equal(output(streamB), 'only-B-output-live-B')
+      streamA.ws.send(JSON.stringify({ type: 'input', data: 'A own input' }))
+      streamA.ws.send(JSON.stringify({ type: 'resize', rows: 30, cols: 100 }))
+      streamA.ws.send(JSON.stringify({ type: 'ping', protocolVersion: 1 }))
+      await streamA.inbox.until(frame => frame.type === 'pong')
+      assert.deepEqual(fixture.children[0]!.written, ['A own input'])
+      assert.deepEqual(fixture.children[0]!.sizes, [[100, 30]])
+      assert.deepEqual(fixture.children[1]!.written, [])
+      assert.deepEqual(fixture.children[1]!.sizes, [])
+      const renamed = await call('terminals.update', { workspacePath, terminalId: idA, title: 'A refreshed title' }, secretA)
+      assert.equal(renamed.status, 200)
+      await streamA.inbox.until(frame => frame.type === 'title' && frame.title === 'A refreshed title')
+      await barrier(2)
+      assert.ok(terminalEvents(clientB).every(event => event.payload.id === idB))
+      assert.deepEqual(terminalEvents(chatOnly), [])
+      // Refresh/reconnect reuses the same durable secret, replays history and
+      // receives its own retained lifecycle events but not the other client's.
+      streamA.ws.close()
+      const reconnectedA = await connectTerminal(idA, secretA)
+      assert.equal(output(reconnectedA), 'only-A-output-live-A')
+      assert.equal(reconnectedA.inbox.frames.find(frame => frame.type === 'hello').terminal.title, 'A refreshed title')
+      const refreshedEventsA = await subscribe(secretA)
+      await barrier(3, [refreshedEventsA])
+      assert.ok(terminalEvents(refreshedEventsA).every(event => event.payload.id === idA))
+      assert.ok(terminalEvents(refreshedEventsA).some(event => event.channel === 'terminal.created'))
+      assert.equal((await call('terminals.remove', { workspacePath, terminalId: idA }, secretA)).status, 200)
+      await reconnectedA.inbox.until(frame => frame.type === 'exit')
+      assert.equal(app.terminals.get(workspacePath, idB, ownerB).status, 'running')
+      fixture.children[1]!.exit()
+      await streamB.inbox.until(frame => frame.type === 'exit')
+      const retainedB = await connectTerminal(idB, secretB)
+      assert.equal(output(retainedB), 'only-B-output-live-B')
+      await retainedB.inbox.until(frame => frame.type === 'exit')
+      assert.equal((await call('terminals.list', { workspacePath }, secretA)).json.data.terminals.length, 0)
+      assert.equal((await call('terminals.list', { workspacePath }, secretB)).json.data.terminals[0].status, 'exited')
+    } finally {
+      sockets.forEach(socket => socket.terminate())
+      closeEventWebSocket(wss)
+      await app.dispose()
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   for (const mode of ["source", "anonymous-pool"] as const) {
@@ -310,23 +542,23 @@ describe("http api", () => {
     assert.equal(stale.status, 409)
 
     const terminal = await request(port, "POST", "/api/v1/host/commands/terminals.create", {
-      body: { workspacePath, title: "HTTP terminal", cwd: "" },
+      body: { workspacePath, title: "HTTP terminal", cwd: "" }, headers: terminalHeaders,
     })
     assert.equal(terminal.status, 200)
     const terminalId = terminal.json.data.id as string
     assert.equal(terminal.json.data.status, "running")
 
-    const terminals = await request(port, "POST", "/api/v1/host/commands/terminals.list", { body: { workspacePath } })
+    const terminals = await request(port, "POST", "/api/v1/host/commands/terminals.list", { body: { workspacePath }, headers: terminalHeaders })
     assert.equal(terminals.status, 200)
     assert.ok(terminals.json.data.terminals.some((item: any) => item.id === terminalId))
 
     const renamed = await request(port, "POST", "/api/v1/host/commands/terminals.update", {
-      body: { workspacePath, terminalId, title: "Renamed terminal", rows: 30, cols: 100 },
+      body: { workspacePath, terminalId, title: "Renamed terminal", rows: 30, cols: 100 }, headers: terminalHeaders,
     })
     assert.equal(renamed.status, 200)
     assert.equal(renamed.json.data.title, "Renamed terminal")
 
-    const removed = await request(port, "POST", "/api/v1/host/commands/terminals.remove", { body: { workspacePath, terminalId } })
+    const removed = await request(port, "POST", "/api/v1/host/commands/terminals.remove", { body: { workspacePath, terminalId }, headers: terminalHeaders })
     assert.equal(removed.status, 200)
 
     const search = await request(port, "POST", "/api/v1/host/commands/files.searchName", { body: { workspacePath, query: "index" } })

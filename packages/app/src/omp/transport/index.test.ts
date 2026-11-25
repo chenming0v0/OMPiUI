@@ -10,6 +10,7 @@ import {
   listActiveProviderFlows,
   mintPairInvite,
   promptPi,
+  postHostCommand,
   readHostFile,
   redeemDisplayCode,
   redeemPairCode,
@@ -19,6 +20,7 @@ import {
   waitHostCommand,
 } from './index.js'
 import { serverStore } from '../../store/serverStore'
+import { getTerminalSecret, TERMINAL_SECRET_HEADER } from '../terminalIdentity'
 
 const nativeFetchMock = vi.hoisted(() => vi.fn())
 vi.mock('../../utils/tauri', () => ({
@@ -55,6 +57,35 @@ describe('pairing redemption', () => {
   })
 })
 
+describe('private terminal HTTP transport', () => {
+  beforeEach(() => nativeFetchMock.mockReset())
+  afterEach(() => { vi.restoreAllMocks(); nativeFetchMock.mockReset() })
+
+  it.each([
+    ['terminals.shells', {}], ['terminals.list', { workspacePath: '/workspace' }],
+    ['terminals.create', { workspacePath: '/workspace' }],
+    ['terminals.get', { workspacePath: '/workspace', terminalId: 'private-id' }],
+    ['terminals.connectToken', { workspacePath: '/workspace', terminalId: 'private-id' }],
+    ['terminals.update', { workspacePath: '/workspace', terminalId: 'private-id', title: 'own title' }],
+    ['terminals.remove', { workspacePath: '/workspace', terminalId: 'private-id' }],
+    ['workspaces.close', { workspacePath: '/workspace' }],
+  ] as const)('adds the stable private credential to %s independently of the shared bearer', async (name, params) => {
+    vi.spyOn(serverStore, 'getActiveToken').mockReturnValue('same-host-bearer')
+    nativeFetchMock.mockResolvedValueOnce(Response.json({ data: {} }))
+    await postHostCommand(name, params)
+    const [, init] = nativeFetchMock.mock.calls[0]
+    expect(init.headers.get('authorization')).toBe('Bearer same-host-bearer')
+    expect(init.headers.get(TERMINAL_SECRET_HEADER)).toBe(getTerminalSecret())
+    expect(init.headers.get(TERMINAL_SECRET_HEADER)).not.toBe('same-host-bearer')
+  })
+
+  it('does not send a private request when durable credential storage is unavailable', async () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new DOMException('Blocked', 'SecurityError') })
+    await expect(postHostCommand('terminals.list', { workspacePath: '/workspace' })).rejects.toThrow('Blocked')
+    expect(nativeFetchMock).not.toHaveBeenCalled()
+  })
+})
+
 describe('getHostTerminalWebSocketUrl', () => {
   afterEach(() => {
     vi.restoreAllMocks()
@@ -82,10 +113,12 @@ describe('getHostTerminalWebSocketUrl', () => {
     expect(url.searchParams.has('cursor')).toBe(false)
   })
 
-  it('appends token query param when a token is configured (same-origin browser)', () => {
+  it('keeps the shared bearer and durable private secret out of terminal stream URLs', () => {
     vi.spyOn(serverStore, 'getActiveToken').mockReturnValue('secret-token')
     const url = new URL(getHostTerminalWebSocketUrl('term-1', 'ticket-1'))
-    expect(url.searchParams.get('token')).toBe('secret-token')
+    expect(url.searchParams.has('token')).toBe(false)
+    expect(url.searchParams.has('terminalSecret')).toBe(false)
+    expect(url.searchParams.get('ticket')).toBe('ticket-1')
   })
 
   it('omits token param when no token is configured', () => {

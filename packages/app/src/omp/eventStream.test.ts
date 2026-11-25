@@ -22,6 +22,11 @@ import { notificationStore } from '../store/notificationStore'
 import { commandFeedbackStore } from './commandFeedbackStore'
 import { extensionDiagnosticStore } from './extensionDiagnosticStore'
 import * as transport from './transport/index.js'
+import * as sockets from './ompSocket'
+import * as modelSettingsSync from './modelSettingsSync'
+import * as managementEvents from './managementEventStore'
+import { getTerminalSecret } from './terminalIdentity'
+import { resetWorkspaceResolutionCache, resolveWorkspacePath } from './workspaces'
 
 // Retain the real controller before sibling scenarios install module spies.
 const readNativeSessionState = controllers.refreshPiSessionState
@@ -49,6 +54,179 @@ function fakeBranchPage(sessionId: string): PiBranchPage {
     hasMore: false,
   } as PiBranchPage
 }
+
+describe('workspace watcher reconnect recovery', () => {
+  beforeEach(() => {
+    piEventStream.disconnectAll()
+    resetWorkspaceResolutionCache()
+    vi.useFakeTimers()
+    vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(true)
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    vi.spyOn(modelSettingsSync, 'refreshModelSettings').mockImplementation(() => {})
+    vi.spyOn(modelSettingsSync, 'refreshOfficialSettings').mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    piEventStream.disconnectAll()
+    resetWorkspaceResolutionCache()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('restores active watches after a same-endpoint restart and delivers later file/git notifications', async () => {
+    const registry = new Set<string>()
+    const watchRequests: string[] = []
+    const host = vi.spyOn(transport, 'postHostCommand').mockImplementation(async (name, params) => {
+      if (name === 'workspaces.open') return { workspace: { path: (params as { rootPath: string }).rootPath } } as never
+      if (name === 'workspaces.watch') {
+        const path = (params as { workspacePath: string }).workspacePath
+        registry.add(path)
+        watchRequests.push(path)
+        return { ok: true } as never
+      }
+      throw new Error(`Unexpected host command: ${name}`)
+    })
+    const runtime = vi.spyOn(transport, 'postPiGlobalCommand').mockRejectedValue(new Error('unexpected runtime command'))
+    const sessionCommand = vi.spyOn(transport, 'postPiSessionCommand').mockRejectedValue(new Error('unexpected session command'))
+    const navigate = vi.spyOn(window.history, 'pushState')
+    const replace = vi.spyOn(window.history, 'replaceState')
+    type MutableSocket = Omit<sockets.PiSocket, 'readyState'> & { readyState: number }
+    const socketList: MutableSocket[] = []
+    const socketOpen = vi.spyOn(sockets, 'openPiSocket').mockImplementation(() => {
+      const socket: MutableSocket = { readyState: 0, onopen: null, onmessage: null, onclose: null, onerror: null, send: vi.fn(), close: vi.fn() }
+      socketList.push(socket)
+      return socket
+    })
+    const changed = vi.fn()
+    const gitUpdated = vi.fn()
+    window.addEventListener('ompiui:workspace-files-changed', changed)
+    window.addEventListener('ompiui:workspace-git-updated', gitUpdated)
+    try {
+      const generation = serverStore.getActiveServerGeneration()
+      const server = serverStore.getActiveServer()
+      await resolveWorkspacePath('/not-selected')
+      expect(await resolveWorkspacePath('/repo')).toBe('/repo')
+      piEventStream.connectWorkspace('/repo')
+      const first = socketList[0]!
+      first.readyState = sockets.PI_SOCKET_OPEN
+      first.onopen?.()
+      await vi.advanceTimersByTimeAsync(0)
+
+      // A backend restart keeps URL/token unchanged but loses native watchers.
+      registry.clear()
+      watchRequests.length = 0
+      first.readyState = sockets.PI_SOCKET_CLOSED
+      first.onclose?.({ code: 1012 })
+      await vi.advanceTimersByTimeAsync(1000)
+      const reconnected = socketList[1]!
+      reconnected.readyState = sockets.PI_SOCKET_OPEN
+      reconnected.onopen?.()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(socketOpen).toHaveBeenCalledTimes(2)
+      expect(serverStore.getActiveServerGeneration()).toBe(generation)
+      expect(serverStore.getActiveServer()).toEqual(server)
+      expect(watchRequests).toEqual(['/repo'])
+      expect(registry.has('/not-selected')).toBe(false)
+      expect(await resolveWorkspacePath('/repo')).toBe('/repo')
+      expect(host.mock.calls.filter(([name]) => name === 'workspaces.open')).toHaveLength(2)
+      expect(watchRequests).toEqual(['/repo'])
+
+      const frames = vi.mocked(reconnected.send).mock.calls.map(([data]) => JSON.parse(data))
+      const subscribe = frames.find(frame => frame.type === 'subscribe')
+      expect(subscribe).toMatchObject({ terminalSecret: getTerminalSecret(), streams: [{ kind: 'server', id: 'server' }, { kind: 'workspace', id: '/repo' }] })
+      expect(socketOpen.mock.calls.every(([url]) => !url.includes('terminalSecret') && !url.includes(getTerminalSecret()))).toBe(true)
+      const notifyOtherClientChange = (channel: string, payload: object, sequence: number) => {
+        if (!registry.has('/repo')) return
+        reconnected.onmessage?.({ data: JSON.stringify({ channel: 'event', event: {
+          protocolVersion: PROTOCOL_VERSION, stream: { kind: 'workspace', id: '/repo' },
+          cursor: { epoch: 'restarted-backend', sequence }, eventId: `workspace-${sequence}`,
+          timestamp: '2026-11-25T00:00:00Z', channel, payload,
+        } }) })
+      }
+      const fileChange = { workspacePath: '/repo', changes: [{ path: 'src/main.ts', type: 'change' }] }
+      const gitChange = { workspacePath: '/repo' }
+      notifyOtherClientChange('workspace.files', fileChange, 1)
+      notifyOtherClientChange('workspace.git', gitChange, 2)
+      expect(changed).toHaveBeenCalledTimes(1)
+      expect((changed.mock.calls[0]![0] as CustomEvent).detail).toEqual(fileChange)
+      expect(gitUpdated).toHaveBeenCalledTimes(1)
+      expect((gitUpdated.mock.calls[0]![0] as CustomEvent).detail).toEqual(gitChange)
+      expect(runtime).not.toHaveBeenCalled()
+      expect(sessionCommand).not.toHaveBeenCalled()
+      expect(navigate).not.toHaveBeenCalled()
+      expect(replace).not.toHaveBeenCalled()
+    } finally {
+      window.removeEventListener('ompiui:workspace-files-changed', changed)
+      window.removeEventListener('ompiui:workspace-git-updated', gitUpdated)
+    }
+  })
+})
+
+describe('optional private terminal subscription', () => {
+  afterEach(() => {
+    piEventStream.disconnectAll()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('keeps ordinary subscriptions and events working when private terminal storage is unavailable', () => {
+    piEventStream.disconnectAll()
+    vi.useFakeTimers()
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new DOMException('Storage is disabled', 'SecurityError')
+    })
+    const send = vi.fn()
+    const internal = piEventStream as unknown as {
+      ws: sockets.PiSocket | null
+      refCounts: Map<string, number>
+      flushSubscribe(): void
+      handleRaw(raw: string): void
+    }
+    internal.ws = { readyState: sockets.PI_SOCKET_OPEN, onopen: null, onmessage: null, onclose: null, onerror: null, send, close: vi.fn() }
+    internal.refCounts.set('ordinary-chat', 1)
+    expect(() => internal.flushSubscribe()).not.toThrow()
+    const subscribe = JSON.parse(send.mock.calls[0]![0])
+    expect(subscribe).toMatchObject({ type: 'subscribe', streams: [{ kind: 'server', id: 'server' }, { kind: 'session', id: 'ordinary-chat' }] })
+    expect(subscribe).not.toHaveProperty('terminalSecret')
+    const changed = vi.fn()
+    window.addEventListener('ompiui:sessions-changed', changed)
+    try {
+      internal.handleRaw(JSON.stringify({ channel: 'event', event: {
+        channel: 'sessions.updated', stream: { kind: 'server', id: 'server' },
+        cursor: { epoch: 'ordinary', sequence: 1 }, payload: {},
+      } }))
+      expect(changed).toHaveBeenCalledTimes(1)
+    } finally {
+      window.removeEventListener('ompiui:sessions-changed', changed)
+    }
+  })
+})
+
+describe('official settings event recovery routing', () => {
+  afterEach(() => {
+    piEventStream.disconnectAll()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('invalidates and rereads settings for normal, transport-omitted, worker-omitted and resync events', async () => {
+    vi.useFakeTimers()
+    const updated = vi.spyOn(managementEvents, 'receiveSettingsUpdated').mockImplementation(() => {})
+    const refresh = vi.spyOn(modelSettingsSync, 'refreshOfficialSettings').mockImplementation(() => {})
+    const internal = piEventStream as unknown as { handleRaw(raw: string): void; handleResync(key: string): Promise<void> }
+    handleEvent({ channel: 'settings.updated', stream: { kind: 'server', id: 'server' }, cursor: { epoch: 'settings', sequence: 1 }, payload: {} })
+    internal.handleRaw(JSON.stringify({
+      channel: 'control', type: 'payload_omitted', stream: { kind: 'server', id: 'server' },
+      cursor: { epoch: 'settings', sequence: 2 }, eventChannel: 'settings.updated',
+    }))
+    handleEvent({ channel: 'payload.omitted', stream: { kind: 'server', id: 'server' }, cursor: { epoch: 'settings', sequence: 3 }, payload: { channel: 'settings.updated' } })
+    expect(updated).toHaveBeenCalledTimes(3)
+    expect(refresh).toHaveBeenCalledTimes(3)
+    await internal.handleResync('server')
+    expect(updated).toHaveBeenCalledTimes(4)
+    expect(refresh).toHaveBeenCalledTimes(4)
+  })
+})
 
 describe('bounded live recovery and cache cleanup', () => {
   afterEach(() => {

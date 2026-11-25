@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { serverStore } from '../store/serverStore'
 import { serverStorage } from '../utils/perServerStorage'
-import { resetWorkspaceResolutionCache, resolveWorkspacePath } from './workspaces'
+import { ensureHostWorkspaceWatch, resetWorkspaceResolutionCache, resetWorkspaceWatchRegistrations, resolveWorkspacePath } from './workspaces'
 
 const host = vi.hoisted(() => ({ execute: vi.fn() }))
 vi.mock('./transport/index.js', () => ({ postHostCommand: host.execute }))
@@ -41,6 +41,47 @@ describe('default project selection', () => {
     expect(await resolveWorkspacePath()).toBeNull()
   })
 
+  it('keeps path resolution single-flight while re-confirming watches after reconnect', async () => {
+    expect(await Promise.all([resolveWorkspacePath('/repo'), resolveWorkspacePath('/repo')])).toEqual(['/repo', '/repo'])
+    expect(host.execute.mock.calls.filter(([name]) => name === 'workspaces.open')).toHaveLength(1)
+    expect(host.execute.mock.calls.filter(([name]) => name === 'workspaces.watch')).toHaveLength(1)
+
+    const generation = serverStore.getActiveServerGeneration()
+    resetWorkspaceWatchRegistrations()
+    expect(await Promise.all([resolveWorkspacePath('/repo'), resolveWorkspacePath('/repo')])).toEqual(['/repo', '/repo'])
+    expect(serverStore.getActiveServerGeneration()).toBe(generation)
+    expect(host.execute.mock.calls.filter(([name]) => name === 'workspaces.open')).toHaveLength(1)
+    expect(host.execute.mock.calls.filter(([name]) => name === 'workspaces.watch')).toHaveLength(2)
+  })
+
+  it('retries a failed registration without repeating read-only path resolution', async () => {
+    const original = host.execute.getMockImplementation()!
+    host.execute.mockImplementation((name: string, params?: { rootPath?: string }) => name === 'workspaces.watch'
+      ? Promise.reject(new Error('disconnected')) : original(name, params))
+    await expect(resolveWorkspacePath('/repo')).rejects.toThrow('disconnected')
+    host.execute.mockImplementation(original)
+    expect(await resolveWorkspacePath('/repo')).toBe('/repo')
+    expect(host.execute.mock.calls.filter(([name]) => name === 'workspaces.open')).toHaveLength(1)
+    expect(host.execute.mock.calls.filter(([name]) => name === 'workspaces.watch')).toHaveLength(2)
+  })
+
+  it('does not let a pre-reconnect rejection remove the new registration flight', async () => {
+    const old = Promise.withResolvers<{ ok: boolean }>()
+    const current = Promise.withResolvers<{ ok: boolean }>()
+    host.execute.mockImplementationOnce(() => old.promise).mockImplementationOnce(() => current.promise)
+    const beforeReconnect = ensureHostWorkspaceWatch('/repo')
+    resetWorkspaceWatchRegistrations()
+    const afterReconnect = ensureHostWorkspaceWatch('/repo')
+    old.reject(new Error('old connection closed'))
+    await Promise.resolve()
+    await Promise.resolve()
+    const concurrent = ensureHostWorkspaceWatch('/repo')
+    expect(host.execute).toHaveBeenCalledTimes(2)
+    current.resolve({ ok: true })
+    await Promise.all([beforeReconnect, afterReconnect, concurrent])
+    expect(host.execute).toHaveBeenCalledTimes(2)
+  })
+
   it('discards an old server result before watching or using its directory', async () => {
     const { promise, resolve: release } = Promise.withResolvers<{ workspace: { path: string } }>()
     host.execute.mockImplementation(() => promise)
@@ -50,6 +91,8 @@ describe('default project selection', () => {
       serverStore.setActiveServer(next.id)
       release({ workspace: { path: '/old-project' } })
       expect(await pending).toBeNull()
+      expect(host.execute).toHaveBeenCalledTimes(1)
+      expect(host.execute).toHaveBeenCalledWith('workspaces.open', { rootPath: '/old-project' }, undefined)
     } finally {
       serverStore.setActiveServer('local')
       serverStore.removeServer(next.id)

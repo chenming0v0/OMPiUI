@@ -36,12 +36,13 @@ import {
   receiveProviderAuthEvent,
   receiveProviderAuthUpdated,
   receiveResourceRevision,
+  receiveSettingsUpdated,
   subscribeManagementStreams,
   type PackageProgress,
 } from './managementEventStore'
 import type { SessionStatus } from '../types/session'
 import { BrowserDiagnostics } from './browserDiagnostics'
-import { markModelSettingsDisconnected, refreshModelSettings } from './modelSettingsSync'
+import { markModelSettingsDisconnected, refreshModelSettings, refreshOfficialSettings } from './modelSettingsSync'
 import { retryDelay } from './networkRetry'
 import { isTailnetUrl } from '../utils/androidTailscale'
 import { TAILSCALE_READY_EVENT } from '../utils/tailscaleEvents'
@@ -51,6 +52,8 @@ import { bashPendingStore } from './bashPendingStore'
 import { faultSocketOpened, faultSocketClosed, faultSocketUnused, reportRuntimeCrash, recordClientDiagnostic } from './faultAudit/controller'
 import { loadPiSessionData, refreshPiBranch, refreshPiSessionState, settlePiLiveMessage } from './controllers/index.js'
 import { SessionActivityWatchdog } from './sessionActivityWatchdog.js'
+import { ensureHostWorkspaceWatch, resetWorkspaceWatchRegistrations } from './workspaces'
+import { getOptionalTerminalSecret } from './terminalIdentity'
 
 const PING_INTERVAL_MS = 25_000
 const PONG_TIMEOUT_MS = 10_000
@@ -455,6 +458,12 @@ class PiEventStream {
       faultSocketOpened()
       setEventStreamState('connected')
       this.diagnostics.connected(this.lastCloseCode)
+      // A same-URL/token backend restart leaves canonical path caches intact,
+      // but drops its watcher registry. Re-confirm only currently viewed roots.
+      resetWorkspaceWatchRegistrations()
+      for (const workspacePath of this.workspaceRefCounts.keys()) {
+        void ensureHostWorkspaceWatch(workspacePath).catch(() => undefined)
+      }
       this.sendSubscribe()
       for (const key of this.incompleteResync) {
         this.clearResyncRetry(key)
@@ -547,7 +556,7 @@ class PiEventStream {
       const cursor = this.cursors.get(eventStreamKey(stream))
       if (cursor) cursors[eventStreamKey(stream)] = cursor
     }
-    this.send({ type: 'subscribe', protocolVersion: PROTOCOL_VERSION, streams, cursors })
+    this.send({ type: 'subscribe', protocolVersion: PROTOCOL_VERSION, streams, cursors, terminalSecret: getOptionalTerminalSecret() })
 
     // 主动把订阅中 session 的运行时 state 拿回来：页面刷新 / ws 重连后
     // state store 是空的，而它只依赖“新事件到达后被动拉取” —— 活跃中的
@@ -637,6 +646,9 @@ class PiEventStream {
         else for (const sessionId of this.refCounts.keys()) this.scheduleStateRefresh(sessionId)
       } else if (eventChannel === 'resources.updated') {
         receiveResourceRevision(stream.kind === 'workspace' || stream.kind === 'resources' ? stream.id : undefined, String(Date.now()))
+      } else if (eventChannel === 'settings.updated') {
+        receiveSettingsUpdated()
+        refreshOfficialSettings()
       } else if (eventChannel === 'models.updated') {
         receiveProviderAuthUpdated()
         refreshModelSettings()
@@ -703,7 +715,13 @@ class PiEventStream {
       case 'payload.omitted':
         recordClientDiagnostic('worker_payload_omitted', { sessionId, errorCode: 'WORKER_EVENT_TOO_LARGE' })
         this.queueResync(eventStreamKey(envelope.stream))
-        if (!sessionId && isJsonObject(envelope.payload) && envelope.payload.channel === 'models.updated') refreshModelSettings()
+        if (!sessionId && isJsonObject(envelope.payload)) {
+          if (envelope.payload.channel === 'models.updated') refreshModelSettings()
+          else if (envelope.payload.channel === 'settings.updated') {
+            receiveSettingsUpdated()
+            refreshOfficialSettings()
+          }
+        }
         break
       case 'omp.extension_error':
         if (envelope.stream.kind === 'server') extensionDiagnosticStore.addNativeEvent(envelope.payload)
@@ -749,6 +767,10 @@ class PiEventStream {
       }
       case 'provider.auth':
         this.handleProviderAuthEvent(envelope.payload as unknown as ProviderAuthEvent)
+        break
+      case 'settings.updated':
+        receiveSettingsUpdated()
+        refreshOfficialSettings()
         break
       case 'models.updated': {
         // models.yml 变更（手动加模型 / omp CLI 登录写入）：provider 配置与
@@ -1395,10 +1417,15 @@ class PiEventStream {
       this.scheduleStateRefresh(stream.id)
       return flight
     } else if (stream.kind === 'server') {
+      receiveSettingsUpdated()
+      refreshOfficialSettings()
       window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
     } else if (stream.kind === 'provider') {
       receiveProviderAuthUpdated()
     } else if (stream.kind === 'workspace') {
+      if (this.workspaceRefCounts.has(stream.id)) {
+        void ensureHostWorkspaceWatch(stream.id).catch(() => undefined)
+      }
       window.dispatchEvent(
         new CustomEvent('ompiui:workspace-files-changed', {
           detail: { workspacePath: stream.id, changes: [], rescan: true },

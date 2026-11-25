@@ -6,6 +6,26 @@ function display(source: string, translation: string, revealedThroughLine = Infi
 }
 
 describe('progressive reasoning translation display', () => {
+  it('anchors each fragment to its source interval when the provider changes line breaks', () => {
+    const lines = buildReasoningTranslationLines('First.\nSecond.\nThird.', [
+      { source: 'First.\n', translation: '第一段。' },
+      { source: 'Second.\n', translation: '第二段。\n额外说明。' },
+      { source: 'Third.', translation: '第三段。' },
+    ])
+    expect(lines[0].translation).toBe('第一段。')
+    expect(lines[1].translation).toBe('第二段。\n额外说明。')
+    expect(lines[2].translation).toBe('第三段。')
+    expect(composeReasoningTranslationLines(lines, Infinity)).toBe('第一段。\n第二段。\n额外说明。\n第三段。')
+  })
+
+  it('invalidates only the revised suffix and keeps a committed prefix in place', () => {
+    const lines = buildReasoningTranslationLines('First.\nRevised.', [
+      { source: 'First.\n', translation: '已提交前缀。\n' },
+      { source: 'Old.', translation: '旧尾部。' },
+    ])
+    expect(composeReasoningTranslationLines(lines, Infinity)).toBe('已提交前缀。\nRevised.')
+  })
+
   it('keeps all original text until a Chinese character arrives', () => {
     expect(display('Inspect Docker logs.\nThen inspect the config.', 'Docker: ')).toBe('')
     expect(display('Inspect Docker logs.\nThen inspect the config.', '\n')).toBe('')

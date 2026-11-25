@@ -421,7 +421,10 @@
     "reasoningTranslation": "思维翻译者",
     "reasoningTranslationDesc": "使用思维翻译者模型将思考内容翻译成中文；开启后会将思维和近期对话发送给所选模型。",
     "reasoningTranslationBudget": "上下文预算",
-    "reasoningTranslationBudgetDesc": "最多输入 token 数，超出时从最早的对话内容开始截断。默认 32k。"
+    "reasoningTranslationBudgetDesc": "最多输入 token 数，超出时从最早的对话内容开始截断。默认 32k。",
+    "reasoningTranslationConcurrency": "自动翻译并发数",
+    "reasoningTranslationConcurrencyDesc": "同一后端共享，支持 1–32，默认 5。主动展开的首个待译片段立即执行，可临时超过此额度；后续片段和可视区预热按额度调度，邻近预热最多占 1 个位。",
+    "reasoningTranslationConfigError": "无法读取或保存后端翻译并发配置，请重试。"
   },
   "titlePrompts": {
     "title": "标题提示词",

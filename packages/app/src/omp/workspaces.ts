@@ -40,9 +40,46 @@ export async function watchHostWorkspace(workspacePath: string, signal?: AbortSi
 const workspaceResolutionPromises = new Map<string, Promise<string | null>>()
 // 已确认不存在的目录（WORKSPACE_NOT_FOUND）：本代服务内不再重复请求
 // workspaces.open，避免各个面板挂载时反复打出注定 404 的请求。key 含
-// 服务代数，服务重启后代数变化，缓存自然失效。
+// 服务入口代数，切换地址或凭据后缓存自然失效。
 const missingWorkspacePaths = new Set<string>()
 let defaultWorkspacePromise: Promise<string | null> | null = null
+
+// Canonical paths survive a same-endpoint restart; the server's watcher registry
+// does not. Keep registration flights separate from the read-only path cache.
+const workspaceWatchPromises = new Map<string, Promise<void>>()
+let workspaceWatchGeneration = 0
+
+export function resetWorkspaceWatchRegistrations(): void {
+  workspaceWatchGeneration += 1
+  workspaceWatchPromises.clear()
+}
+
+export async function ensureHostWorkspaceWatch(
+  workspacePath: string,
+  generation = serverStore.getActiveServerGeneration(),
+): Promise<void> {
+  const key = `${generation}:${workspacePath}`
+  while (serverStore.getActiveServerGeneration() === generation) {
+    const watchGeneration = workspaceWatchGeneration
+    let pending = workspaceWatchPromises.get(key)
+    if (!pending) {
+      pending = watchHostWorkspace(workspacePath).catch(error => {
+        if (workspaceWatchPromises.get(key) === pending) workspaceWatchPromises.delete(key)
+        throw error
+      })
+      workspaceWatchPromises.set(key, pending)
+    }
+    try {
+      await pending
+    } catch (error) {
+      if (serverStore.getActiveServerGeneration() !== generation) return
+      if (workspaceWatchGeneration !== watchGeneration) continue
+      throw error
+    }
+    // A registration started before reconnect cannot confirm the new registry.
+    if (workspaceWatchGeneration === watchGeneration) return
+  }
+}
 
 async function ensureDefaultWorkspacePath(): Promise<string | null> {
   const generation = serverStore.getActiveServerGeneration()
@@ -59,8 +96,8 @@ async function ensureDefaultWorkspacePath(): Promise<string | null> {
         if (known) return await resolveWorkspacePath(known.path)
         const fallback = await openHostWorkspace()
         if (serverStore.getActiveServerGeneration() !== generation) return null
-        await watchHostWorkspace(fallback.path)
-        return fallback.path
+        await ensureHostWorkspaceWatch(fallback.path, generation)
+        return serverStore.getActiveServerGeneration() === generation ? fallback.path : null
       } catch {
         return null
       }
@@ -87,11 +124,7 @@ export async function resolveWorkspacePath(directory?: string): Promise<string |
     let pending = workspaceResolutionPromises.get(key)
     if (!pending) {
       pending = openHostWorkspace(directory)
-        .then(async workspace => {
-          if (serverStore.getActiveServerGeneration() !== generation) return null
-          await watchHostWorkspace(workspace.path)
-          return serverStore.getActiveServerGeneration() === generation ? workspace.path : null
-        })
+        .then(workspace => serverStore.getActiveServerGeneration() === generation ? workspace.path : null)
         .catch(error => {
           workspaceResolutionPromises.delete(key)
           // Saved directory no longer exists on disk — treat as absent
@@ -104,6 +137,8 @@ export async function resolveWorkspacePath(directory?: string): Promise<string |
       workspaceResolutionPromises.set(key, pending)
     }
     const result = await pending
+    if (!result || serverStore.getActiveServerGeneration() !== generation) return null
+    await ensureHostWorkspaceWatch(result, generation)
     return serverStore.getActiveServerGeneration() === generation ? result : null
   }
   return ensureDefaultWorkspacePath()
@@ -113,4 +148,5 @@ export function resetWorkspaceResolutionCache(): void {
   workspaceResolutionPromises.clear()
   missingWorkspacePaths.clear()
   defaultWorkspacePromise = null
+  resetWorkspaceWatchRegistrations()
 }

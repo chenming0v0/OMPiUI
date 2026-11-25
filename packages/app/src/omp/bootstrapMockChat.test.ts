@@ -25,6 +25,12 @@ vi.mock('./ompSocket', () => ({
   PI_SOCKET_CLOSED: 3,
 }))
 
+vi.mock('./workspaces', async importOriginal => ({
+  ...(await importOriginal<typeof import('./workspaces')>()),
+  ensureHostWorkspaceWatch: vi.fn(async () => {}),
+  resetWorkspaceWatchRegistrations: vi.fn(),
+}))
+
 vi.mock('./nativeStatus', () => ({
   refreshPiNativeStatus: vi.fn(async () => ({
     status: 'online',

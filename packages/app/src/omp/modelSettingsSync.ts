@@ -17,6 +17,12 @@ export function refreshModelSettings(): void {
   if (piModelRolesStore.hasRequested()) void loadPiModelRoles(true).catch(() => undefined)
 }
 
+export function refreshOfficialSettings(): void {
+  // A remote successful configuration supersedes reads and saves already in flight.
+  piModelRolesStore.markDisconnected()
+  if (piModelRolesStore.hasRequested()) void loadPiModelRoles(true).catch(() => undefined)
+}
+
 export function installModelSettingsSync(): void {
   if (installed) return
   installed = true

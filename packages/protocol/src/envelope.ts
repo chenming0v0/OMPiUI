@@ -52,6 +52,7 @@ export type EventChannel =
   | "extension.ui"
   | "provider.auth"
   | "models.updated"
+  | "settings.updated"
   | "packages.progress"
   | "registry.updated"
   | "workspace.files"
@@ -108,6 +109,8 @@ export type EventSubscribeMessage = {
   protocolVersion: typeof PROTOCOL_VERSION
   streams: EventStreamRef[]
   cursors: EventCursorMap
+  /** Private terminal principal proof, sent only in a subscribe frame, never a URL. */
+  terminalSecret?: string
 }
 
 export type EventClientMessage = EventSubscribeMessage | BrowserDiagnosticMessage | { type: "ping"; protocolVersion: typeof PROTOCOL_VERSION }

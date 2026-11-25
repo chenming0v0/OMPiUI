@@ -7,6 +7,7 @@ import { readModelRolesCache, writeModelRolesCache } from '../../../omp/modelSet
 import { serverStore } from '../../../store/serverStore'
 import { piModelRolesStore } from '../../../omp/state/piModelRolesStore'
 import { loadPiModelRoles } from '../../../omp/controllers/modelRoles'
+import { notifyReconnected } from '../../../hooks/useGlobalEvents'
 
 const { usePiModelsMock } = vi.hoisted(() => ({
   usePiModelsMock: vi.fn(),
@@ -330,7 +331,7 @@ describe('ModelRolesSettings', () => {
     expect(readModelRolesCache()).toEqual({ default: 'openai/gpt-4.1' })
   })
 
-  it('keeps unsaved edits when a delayed refresh updates untouched roles', async () => {
+  it('replaces the entire dirty role draft with a successful remote configuration', async () => {
     seedRoles({ default: 'openai/gpt-4o-mini' })
     let resolve!: (roles: Record<string, string>) => void
     getPiModelRolesMock.mockReturnValue(new Promise(done => { resolve = done }))
@@ -338,11 +339,29 @@ describe('ModelRolesSettings', () => {
     fireEvent.click(screen.getAllByTestId('model-selector-stub')[0])
     resolve({ default: 'openai/gpt-4o-mini', smol: 'openai/gpt-4o-mini:low' })
     await waitFor(() => expect(screen.getAllByTestId('model-selector-stub')[1]).toHaveTextContent('openai:gpt-4o-mini'))
-    expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4.1')
+    expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4o-mini')
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getAllByTestId('model-selector-stub')[0])
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(readModelRolesCache()).toEqual({
       default: 'openai/gpt-4.1', smol: 'openai/gpt-4o-mini:low',
     }))
+  })
+
+  it('replaces dirty role assignments after reconnect, including locally cleared roles', async () => {
+    getPiModelRolesMock.mockResolvedValue({ default: 'openai/gpt-4o-mini', smol: 'openai/gpt-4o-mini:low' })
+    render(<ModelRolesSettings />)
+    const fast = await screen.findByRole('group', { name: 'Fast' })
+    await waitFor(() => expect(within(fast).getByTestId('model-selector-stub')).toHaveTextContent('openai:gpt-4o-mini'))
+    fireEvent.click(within(fast).getByRole('button', { name: 'Role options' }))
+    fireEvent.click(await screen.findByText('Clear'))
+    fireEvent.click(screen.getAllByTestId('model-selector-stub')[0])
+    getPiModelRolesMock.mockResolvedValue({ default: 'openai/gpt-4o-mini', smol: 'openai/gpt-4.1:high' })
+    act(() => notifyReconnected())
+    await waitFor(() => expect(within(fast).getByTestId('model-selector-stub')).toHaveTextContent('openai:gpt-4.1'))
+    expect(screen.getAllByTestId('model-selector-stub')[0]).toHaveTextContent('openai:gpt-4o-mini')
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+    expect(setPiModelRolesMock).not.toHaveBeenCalled()
   })
 
   it('does not let an old read overwrite a successful save', async () => {

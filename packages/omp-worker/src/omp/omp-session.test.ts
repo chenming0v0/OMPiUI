@@ -89,6 +89,23 @@ async function sessionFixture(t: TestContext) {
   }
 }
 
+it('branch pages expose verified stable native aliases after live assistant persistence', async t => {
+  const f = await sessionFixture(t)
+  await f.session.getBranchPage(undefined, 100, 100000)
+  const message: JsonObject = { role: 'assistant', timestamp: 1770000000000, content: [
+    { type: 'thinking', thinking: 'original reasoning' }, { type: 'text', text: 'answer' },
+    { type: 'toolCall', id: 'call-identity', name: 'bash', arguments: { command: 'pwd' } },
+  ] }
+  f.frame({ type: 'message_start', messageId: 'live-assistant', message })
+  const live = await f.session.getBranchPage(undefined, 100, 100000)
+  assert.equal(live.checkpoint?.liveMessage?.id, 'live-assistant')
+  f.entries.push({ id: 'native-assistant', type: 'message', parentId: null, message })
+  f.frame({ type: 'message_end', messageId: 'live-assistant', message })
+  const persisted = await f.session.getBranchPage(undefined, 100, 100000)
+  assert.deepEqual(persisted.stableEntryIds, { 'native-assistant': 'live-assistant' })
+  assert.equal(persisted.items[0]?.id, 'native-assistant', 'official ID is never replaced by display ID')
+})
+
 const image = (data: string): ImageInput => ({ type: "image", data, mimeType: "image/png" })
 
 async function queuedSessionFixture(t: TestContext, kind: "steering" | "followUp") {

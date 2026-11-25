@@ -32,7 +32,8 @@ import {
   type AllowedOrigins,
 } from "./host/security.ts";
 import { resolveAuthToken } from "./host/auth-token.ts";
-import type { TerminalManager } from "./host/terminal-manager.ts";
+import type { TerminalManager, TerminalTicketBinding } from "./host/terminal-manager.ts";
+import { terminalOwnerFromSecret, type TerminalOwner } from "./host/terminal-auth.ts";
 import { diagnostics, diagnosticErrorCode } from "./diagnostics/recorder.ts";
 import { recordBrowserDiagnostic } from "./diagnostics/browser.ts";
 import { RateBudget } from "./rate-budget.ts";
@@ -96,7 +97,7 @@ export function attachEventWebSocket(
     options.authToken === undefined ? resolveAuthToken() : options.authToken;
   const terminalConnections = new WeakMap<
     IncomingMessage,
-    { terminalId: string; workspacePath: string }
+    TerminalTicketBinding
   >();
 
   const toolInteractionProxy = options.toolInteractionProxy ?? getToolInteractionProxy(server);
@@ -125,8 +126,8 @@ export function attachEventWebSocket(
     if (
       (!isEventPath && !terminalMatch && !interactionMatch) ||
       !requestHasAllowedOrigin(req, options.allowedOrigins) ||
-      (!interactionMatch && !hasToken) ||
-      (interactionMatch && wsToken !== null)
+      (!interactionMatch && !terminalMatch && !hasToken) ||
+      ((interactionMatch || terminalMatch) && wsToken !== null)
     ) {
       socket.write(
         "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
@@ -182,17 +183,17 @@ export function attachEventWebSocket(
       }
       const terminalId = decodePathSegment(terminalMatch[1]!);
       const ticket = url.searchParams.get("ticket");
-      const workspacePath = ticket
+      const binding = ticket
         ? options.terminalManager.consumeConnectToken(terminalId, ticket)
         : undefined;
-      if (!workspacePath) {
+      if (!binding) {
         socket.write(
           "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
         );
         socket.destroy();
         return;
       }
-      terminalConnections.set(req, { terminalId, workspacePath });
+      terminalConnections.set(req, binding);
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit("connection", ws, req);
@@ -244,6 +245,7 @@ export function attachEventWebSocket(
         terminal.workspacePath,
         req,
         admit,
+        terminal.owner,
       );
       return;
     }
@@ -281,6 +283,9 @@ function attachConnection(
   const subscribeBudget = new RateBudget(12, 4);
   const malformedBudget = new RateBudget(16, 1);
   let clientId: string | undefined;
+  // Bind the connection once; clientId is diagnostic metadata, not identity.
+  let terminalOwner: TerminalOwner | undefined;
+  let terminalOwnerBound = false;
   let sessionIds: string[] = [];
   let diagnosticWindow = Date.now();
   let diagnosticCount = 0;
@@ -366,7 +371,7 @@ function attachConnection(
       // 每批从下一条待重放流开始，热流未追平时也不能独占批次。
       subscribed.delete(key);
       subscribed.set(key, state);
-      const replay = eventHub.replaySince(state.stream, state.cursor);
+      const replay = eventHub.replaySince(state.stream, state.cursor, terminalOwner);
       if (replay.resyncRequired) {
         requireResync(key, state, replay.reason ?? "missing_cursor");
         continue;
@@ -451,7 +456,7 @@ function attachConnection(
     }
     state.dirty = true;
     schedulePump();
-  });
+  }, () => terminalOwner);
   const cleanup = () => {
     if (closed) return;
     closed = true;
@@ -515,6 +520,15 @@ function attachConnection(
     if (message.protocolVersion !== PROTOCOL_VERSION) { rejectProtocol(ws); return; }
     const desired = readSubscription(message);
     if (!desired) { invalidFrame(); return; }
+    const principal = terminalOwnerFromSecret(message.terminalSecret);
+    if ((message.terminalSecret !== undefined && !principal) ||
+        (terminalOwnerBound && principal !== terminalOwner)) {
+      cleanup();
+      closeSocket(ws, 1008, "private terminal credential changed or invalid");
+      return;
+    }
+    terminalOwner = principal;
+    terminalOwnerBound = true;
     // subscribe 表示替换后的目标状态，而非可丢弃的通知；
     // 即使共享预算紧张，也要保留最新的已校验目标。
     pendingSubscription = desired;
@@ -665,6 +679,7 @@ function attachTerminalConnection(
   workspacePath: string,
   req: IncomingMessage,
   admit: (bytes: number) => boolean,
+  owner: TerminalOwner,
 ): void {
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   const cursorValue = url.searchParams.get("cursor");
@@ -879,12 +894,12 @@ function attachTerminalConnection(
       // 从最后准入的字符续接，游标过期则显式返回协议错误，
       // 绝不静默跳过终端输出尾部。
       attachment = manager.attach(workspacePath, terminalId,
-        outputCursor ?? cursor, onOutput, onExit, onTitle);
+        outputCursor ?? cursor, onOutput, onExit, onTitle, owner);
       outputCursor = attachment.replayCursor;
       if (helloPending) {
         if (!sendFrame({ type: "hello", protocolVersion: TERMINAL_STREAM_PROTOCOL_VERSION,
           inputAck: true, ...(outputAck ? { outputAck: true } : {}),
-          terminal: manager.get(workspacePath, terminalId), cursor: attachment.cursor })) {
+          terminal: manager.get(workspacePath, terminalId, owner), cursor: attachment.cursor })) {
           if (!closed) suspendOutput();
           return;
         }
@@ -925,7 +940,7 @@ function attachTerminalConnection(
     try {
       if (frame.type === "input" && typeof frame.data === "string") {
         if (frame.inputId === undefined) {
-          manager.write(workspacePath, terminalId, frame.data);
+          manager.write(workspacePath, terminalId, frame.data, owner);
           return;
         }
         const inputId = frame.inputId;
@@ -952,7 +967,7 @@ function attachTerminalConnection(
         let accepted = inputId === lastInputId;
         try {
           if (!accepted) {
-            manager.write(workspacePath, terminalId, frame.data);
+            manager.write(workspacePath, terminalId, frame.data, owner);
             lastInputId = inputId;
             lastInputData = frame.data;
             accepted = true;
@@ -988,7 +1003,7 @@ function attachTerminalConnection(
       } else if (frame.type === "resize" &&
           Number.isSafeInteger(frame.rows) && frame.rows >= 1 && frame.rows <= 500 &&
           Number.isSafeInteger(frame.cols) && frame.cols >= 1 && frame.cols <= 500) {
-        manager.update(workspacePath, terminalId, { rows: frame.rows, cols: frame.cols });
+        manager.update(workspacePath, terminalId, { rows: frame.rows, cols: frame.cols }, owner);
       } else if (frame.type === "ping" && (frame.protocolVersion === TERMINAL_STREAM_PROTOCOL_VERSION || frame.protocolVersion === 1)) {
         pendingPongs++;
         pump();

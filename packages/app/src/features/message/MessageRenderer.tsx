@@ -773,10 +773,11 @@ const AssistantMessageView = memo(function AssistantMessageView({
               const thinkingDone = endedReasoningIndexes.has(renderItem.blockIndex)
               return (
                 <ReasoningPartView
-                  key={`${item.entryId}:${renderItem.blockIndex}`}
+                  key={`${item.renderKey ?? item.entryId}:${renderItem.blockIndex}`}
                   part={block}
                   entryId={item.entryId}
-                  partKey={`${item.entryId}:${renderItem.blockIndex}`}
+                  partKey={`${item.renderKey ?? item.entryId}:${renderItem.blockIndex}`}
+                  blockIndex={renderItem.blockIndex}
                   isStreaming={isStreaming && !thinkingDone}
                 />
               )

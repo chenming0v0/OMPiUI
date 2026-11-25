@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '../../../../components/ui/Button'
 import { ConfirmDialog } from '../../../../components/ui/ConfirmDialog'
@@ -19,6 +19,7 @@ import { deleteModelProvider, listModelProviders, saveModelProvider } from '../.
 import type { PiModelProvidersSnapshot } from '../../../../omp/domain/index.js'
 import { useServerStore } from '../../../../hooks/useServerStore'
 import { serverStore } from '../../../../store/serverStore'
+import { registerSessionConsumer } from '../../../../hooks/useGlobalEvents'
 import { SettingsSection, SettingsSelect, settingsFieldClass } from '../SettingsUI'
 import {
   API_FORMAT_OPTIONS,
@@ -62,26 +63,6 @@ type ProviderOrigin = {
   controller: AbortController
   // Writes outlive the page on the same server; only a server switch aborts them.
   writes: AbortController
-}
-
-// Advance only persisted identities; edits made while the request was in flight stay local.
-function rebaseSavedModels(
-  current: ProviderDraft,
-  sent: ProviderDraft,
-  identities: WeakMap<ModelDraft, ModelDraft>,
-): ProviderDraft {
-  const persistedIds = new Map(sent.models.map(model => [identities.get(model) ?? model, model.id.trim()]))
-  return {
-    ...current,
-    models: current.models.map(model => {
-      const identity = identities.get(model) ?? model
-      const persistedId = persistedIds.get(identity)
-      if (persistedId === undefined || model.originalId === persistedId) return model
-      const rebased = { ...model, originalId: persistedId }
-      identities.set(rebased, identity)
-      return rebased
-    }),
-  }
 }
 
 // ============================================
@@ -228,6 +209,7 @@ function AddProviderDialog({
 
 export function ProvidersSettings() {
   const { t } = useTranslation('settings')
+  const consumerId = useId()
   const isMobile = useIsMobile(1024)
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false)
   const { activeServer, activeServerGeneration } = useServerStore()
@@ -252,12 +234,10 @@ export function ProvidersSettings() {
   const [pendingDeleteModel, setPendingDeleteModel] = useState<{ providerId: string; modelId: string } | null>(null)
 
   const timersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>())
-  const modelIdentitiesRef = useRef(new WeakMap<ModelDraft, ModelDraft>())
   const revisionsRef = useRef(new Map<string, number>())
-  const savedRevisionsRef = useRef(new Map<string, number>())
-  const writeVersionsRef = useRef(new Map<string, number>())
-  const dirtyRef = useRef(new Set<string>())
   const deletingRef = useRef(new Set<string>())
+  const snapshotVersionRef = useRef(0)
+  const readPendingRef = useRef(false)
   const writeQueueRef = useRef<Promise<void>>(Promise.resolve())
   const originRef = useRef<ProviderOrigin | null>(null)
   const loadSeqRef = useRef(0)
@@ -283,30 +263,34 @@ export function ProvidersSettings() {
     [],
   )
 
-  const applySnapshot = useCallback((next: PiModelProvidersSnapshot, readVersions: Map<string, number>) => {
-    const current = new Map(draftsRef.current.map(draft => [draft.id, draft]))
-    const keepLocal = (id: string) =>
-      dirtyRef.current.has(id) ||
-      deletingRef.current.has(id) ||
-      (writeVersionsRef.current.get(id) ?? 0) !== (readVersions.get(id) ?? 0)
-    const nextDrafts: ProviderDraft[] = []
-    for (const provider of next.providers) {
-      const local = current.get(provider.id)
-      if (keepLocal(provider.id)) {
-        if (local) nextDrafts.push(local)
-      } else {
-        nextDrafts.push(providerDraftFromConfig(provider))
-      }
-      current.delete(provider.id)
-    }
-    for (const draft of current.values()) {
-      if (keepLocal(draft.id)) nextDrafts.push(draft)
-    }
+  const applySnapshot = useCallback((next: PiModelProvidersSnapshot) => {
+    // The successful whole configuration is authoritative, including dirty providers.
+    snapshotVersionRef.current += 1
+    loadSeqRef.current += 1
+    for (const timer of timersRef.current.values()) clearTimeout(timer)
+    timersRef.current.clear()
+    revisionsRef.current.clear()
+    deletingRef.current.clear()
+    setSaveStates({})
+    setSaveErrors({})
+    const nextDrafts = next.providers.map(providerDraftFromConfig)
     draftsRef.current = nextDrafts
     setDrafts(nextDrafts)
+    setSnapshot(next)
+    readPendingRef.current = false
+    setLoading(false)
+    setRefreshing(false)
     setSelectedId(currentId =>
       nextDrafts.some(draft => draft.id === currentId) ? currentId : (nextDrafts[0]?.id ?? ''),
     )
+    setEditor(current => {
+      if (!current) return null
+      const provider = nextDrafts.find(draft => draft.id === current.providerId)
+      if (!provider) return null
+      if (!current.model) return current
+      const model = provider.models.find(model => model.id === current.model?.id || model.id === current.model?.originalId)
+      return model ? { ...current, model } : null
+    })
   }, [])
 
   const load = useCallback(
@@ -314,7 +298,10 @@ export function ProvidersSettings() {
       const origin = originRef.current
       if (!isCurrentOrigin(origin)) return
       const seq = ++loadSeqRef.current
-      const readVersions = new Map(writeVersionsRef.current)
+      readPendingRef.current = true
+      snapshotVersionRef.current += 1
+      for (const timer of timersRef.current.values()) clearTimeout(timer)
+      timersRef.current.clear()
       if (mode === 'refresh') setRefreshing(true)
       else setLoading(true)
       setLoadError(null)
@@ -322,13 +309,14 @@ export function ProvidersSettings() {
       try {
         const next = await listModelProviders(origin.controller.signal)
         if (!isCurrentOrigin(origin) || seq !== loadSeqRef.current) return
-        setSnapshot(next)
-        if (!next.error) applySnapshot(next, readVersions)
+        if (!next.error) applySnapshot(next)
+        else setSnapshot(next)
         setLoadError(next.error ?? null)
       } catch (error) {
         if (isCurrentOrigin(origin) && seq === loadSeqRef.current) setLoadError(errorMessage(error))
       } finally {
         if (isCurrentOrigin(origin) && seq === loadSeqRef.current) {
+          readPendingRef.current = false
           setLoading(false)
           setRefreshing(false)
         }
@@ -340,19 +328,19 @@ export function ProvidersSettings() {
   const persistNow = useCallback(
     (providerId: string) => {
       const origin = originRef.current
-      if (!isCurrentOrigin(origin) || deletingRef.current.has(providerId)) return
-      if ((savedRevisionsRef.current.get(providerId) ?? -1) >= (revisionsRef.current.get(providerId) ?? 0)) return
+      if (!isCurrentOrigin(origin) || readPendingRef.current || deletingRef.current.has(providerId)) return
+      if ((revisionsRef.current.get(providerId) ?? 0) === 0) return
       setSaveStates(state => ({ ...state, [providerId]: 'saving' }))
       setSaveErrors(state => {
         const next = { ...state }
         delete next[providerId]
         return next
       })
+      const version = snapshotVersionRef.current
       const flight = writeQueueRef.current.then(async () => {
-        if (!canWrite(origin) || deletingRef.current.has(providerId)) return
-        const seq = revisionsRef.current.get(providerId) ?? 0
-        if ((savedRevisionsRef.current.get(providerId) ?? -1) >= seq) return
-        // Resolve at execution time, after the preceding save has rebased any rename.
+        if (!canWrite(origin) || version !== snapshotVersionRef.current || deletingRef.current.has(providerId)) return
+        if ((revisionsRef.current.get(providerId) ?? 0) === 0) return
+        // Resolve at execution time, using the latest authoritative provider draft.
         const sent = draftsRef.current.find(draft => draft.id === providerId)
         if (!sent) return
         setSaveStates(state => ({ ...state, [providerId]: 'saving' }))
@@ -364,29 +352,21 @@ export function ProvidersSettings() {
         try {
           const next = await saveModelProvider(providerDraftToConfig(sent), origin.writes.signal)
           if (!canWrite(origin)) return
-          writeVersionsRef.current.set(providerId, (writeVersionsRef.current.get(providerId) ?? 0) + 1)
-          savedRevisionsRef.current.set(providerId, seq)
-          const current = draftsRef.current.find(draft => draft.id === providerId)
-          if (current) {
-            const rebased = rebaseSavedModels(current, sent, modelIdentitiesRef.current)
-            draftsRef.current = draftsRef.current.map(draft => (draft.id === providerId ? rebased : draft))
-            setDrafts(draftsRef.current)
-          }
-          setSnapshot(next)
           refreshModelSettings()
-          if (revisionsRef.current.get(providerId) === seq) {
-            dirtyRef.current.delete(providerId)
-            setSaveStates(state => ({ ...state, [providerId]: 'idle' }))
+          if (version !== snapshotVersionRef.current) {
+            if (isCurrentOrigin(origin)) void load('refresh')
+            return
           }
+          applySnapshot(next)
         } catch (error) {
-          if (!canWrite(origin)) return
+          if (!canWrite(origin) || version !== snapshotVersionRef.current) return
           setSaveStates(state => ({ ...state, [providerId]: 'error' }))
           setSaveErrors(state => ({ ...state, [providerId]: errorMessage(error) }))
         }
       })
       writeQueueRef.current = flight
     },
-    [canWrite, isCurrentOrigin],
+    [applySnapshot, canWrite, isCurrentOrigin, load],
   )
 
   useEffect(() => {
@@ -398,11 +378,8 @@ export function ProvidersSettings() {
     }
     const timers = timersRef.current
     originRef.current = origin
-    modelIdentitiesRef.current = new WeakMap()
+    snapshotVersionRef.current += 1
     revisionsRef.current.clear()
-    savedRevisionsRef.current.clear()
-    writeVersionsRef.current.clear()
-    dirtyRef.current.clear()
     deletingRef.current.clear()
     writeQueueRef.current = Promise.resolve()
     draftsRef.current = []
@@ -437,21 +414,24 @@ export function ProvidersSettings() {
     }
   }, [load, canWrite, persistNow, activeServerGeneration, activeServer?.id])
 
-  // Notifications and manual refresh update clean providers without discarding pending edits.
+  // Remote reloads replace the entire form; pending edits are not preserved.
   useEffect(() => {
-    const onModelsUpdated = () => {
-      void load('refresh')
+    const refresh = () => { void load('refresh') }
+    const unsubscribe = registerSessionConsumer(consumerId, null, { onReconnected: refresh })
+    window.addEventListener('ompiui:models-updated', refresh)
+    window.addEventListener('online', refresh)
+    return () => {
+      unsubscribe()
+      window.removeEventListener('ompiui:models-updated', refresh)
+      window.removeEventListener('online', refresh)
     }
-    window.addEventListener('ompiui:models-updated', onModelsUpdated)
-    return () => window.removeEventListener('ompiui:models-updated', onModelsUpdated)
-  }, [load])
+  }, [consumerId, load])
 
   const scheduleSave = useCallback(
     (draft: ProviderDraft, mode: 'debounced' | 'immediate') => {
       const origin = originRef.current
       if (!isCurrentOrigin(origin) || deletingRef.current.has(draft.id)) return
       revisionsRef.current.set(draft.id, (revisionsRef.current.get(draft.id) ?? 0) + 1)
-      dirtyRef.current.add(draft.id)
       const timers = timersRef.current
       clearTimeout(timers.get(draft.id))
       timers.delete(draft.id)
@@ -471,7 +451,7 @@ export function ProvidersSettings() {
 
   const commit = useCallback(
     (next: ProviderDraft, mode: 'debounced' | 'immediate' = 'immediate') => {
-      if (!isCurrentOrigin(originRef.current) || deletingRef.current.has(next.id)) return
+      if (!isCurrentOrigin(originRef.current) || readPendingRef.current || deletingRef.current.has(next.id)) return
       draftsRef.current = draftsRef.current.map(draft => (draft.id === next.id ? next : draft))
       setDrafts(draftsRef.current)
       scheduleSave(next, mode)
@@ -526,15 +506,13 @@ export function ProvidersSettings() {
 
   const saveEditorModel = useCallback(
     (draft: ModelDraft) => {
-      if (!editor) return
+      if (!editor || readPendingRef.current) return
       const current = draftsRef.current.find(item => item.id === editor.providerId)
       if (!current) return
       // The dialog owns its edits, but its persisted identity may have advanced while open.
       const editingModel = editor.model ? current.models.find(model => model.id === editor.model?.id) : undefined
       if (editor.model && !editingModel) return
       const normalized: ModelDraft = { ...draft, originalId: editingModel?.originalId ?? editingModel?.id ?? draft.id }
-      if (editingModel)
-        modelIdentitiesRef.current.set(normalized, modelIdentitiesRef.current.get(editingModel) ?? editingModel)
       const models = editingModel
         ? current.models.map(model => (model === editingModel ? normalized : model))
         : [...current.models, normalized]
@@ -1124,27 +1102,22 @@ export function ProvidersSettings() {
           deletingRef.current.add(target.id)
           clearTimeout(timersRef.current.get(target.id))
           timersRef.current.delete(target.id)
+          const version = snapshotVersionRef.current
           const flight = writeQueueRef.current.then(async () => {
-            if (!canWrite(origin)) return
+            if (!canWrite(origin) || version !== snapshotVersionRef.current) return
             try {
               const next = await deleteModelProvider(target.id, origin.writes.signal)
               if (!canWrite(origin)) return
-              writeVersionsRef.current.set(target.id, (writeVersionsRef.current.get(target.id) ?? 0) + 1)
-              revisionsRef.current.delete(target.id)
-              savedRevisionsRef.current.delete(target.id)
-              dirtyRef.current.delete(target.id)
-              deletingRef.current.delete(target.id)
               refreshModelSettings()
-              setSnapshot(next)
-              const remaining = draftsRef.current.filter(draft => draft.id !== target.id)
-              draftsRef.current = remaining
-              setDrafts(remaining)
+              if (version !== snapshotVersionRef.current) {
+                if (isCurrentOrigin(origin)) void load('refresh')
+                return
+              }
+              applySnapshot(next)
               setMobileDetailOpen(false)
-              setSelectedId(current => (current === target.id ? (remaining[0]?.id ?? '') : current))
             } catch (error) {
-              if (!canWrite(origin)) return
+              if (!canWrite(origin) || version !== snapshotVersionRef.current) return
               deletingRef.current.delete(target.id)
-              dirtyRef.current.add(target.id)
               setSaveStates(state => ({ ...state, [target.id]: 'error' }))
               setSaveErrors(state => ({ ...state, [target.id]: errorMessage(error) }))
             }

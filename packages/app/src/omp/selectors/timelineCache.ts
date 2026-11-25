@@ -23,6 +23,7 @@ import { buildPiHistoryItems, buildPiLiveItems } from './index.js'
 let historyCache = new WeakMap<readonly unknown[], {
   items: PiTimelineItem[]
   stableEntryIds: NonNullable<PiBranchPage['client']>['stableEntryIds']
+  nativeStableEntryIds: PiBranchPage['stableEntryIds']
   toolExecutions: NonNullable<PiBranchPage['client']>['toolExecutions']
   liveCallKey: string
 }>()
@@ -81,11 +82,11 @@ export function selectPiTimelineItemsCached(
     ? item.blocks.flatMap(block => block.type === 'toolCall' ? [block.id] : []) : []).join('\u0000')
   const cached = historyCache.get(branch.items)
   let history: PiTimelineItem[]
-  if (cached && cached.stableEntryIds === branch.client?.stableEntryIds && cached.toolExecutions === branch.client?.toolExecutions && cached.liveCallKey === liveCallKey) {
+  if (cached && cached.stableEntryIds === branch.client?.stableEntryIds && cached.nativeStableEntryIds === branch.stableEntryIds && cached.toolExecutions === branch.client?.toolExecutions && cached.liveCallKey === liveCallKey) {
     history = cached.items
   } else {
     history = buildPiHistoryItems(branch).map(reuseHistoryItem)
-    historyCache.set(branch.items, { items: history, stableEntryIds: branch.client?.stableEntryIds, toolExecutions: branch.client?.toolExecutions, liveCallKey })
+    historyCache.set(branch.items, { items: history, stableEntryIds: branch.client?.stableEntryIds, nativeStableEntryIds: branch.stableEntryIds, toolExecutions: branch.client?.toolExecutions, liveCallKey })
   }
 
   if (liveItems.length === 0) return history

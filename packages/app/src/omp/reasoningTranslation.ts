@@ -1,160 +1,187 @@
-import { createContext, useContext, useEffect, useEffectEvent, useMemo, useState } from 'react'
+import { createContext, useContext, useEffect, useEffectEvent, useMemo, useState, useSyncExternalStore, type RefObject } from 'react'
+import type { ReasoningTranslationIntent, ReasoningTranslationPriority, ReasoningTranslationSnapshot } from '@ompiui/protocol'
 import type { PiAssistantMessageItem, PiUserMessageItem } from './domain/index.js'
 import { getApiBase, piFetch } from './httpClient'
+import { serverStore } from '../store/serverStore'
 import type { ReasoningTranslationBudget } from '../store/reasoningTranslationSettings'
-import { buildReasoningTranslationLines, composeReasoningTranslationLines, type ReasoningTranslationChunk } from './reasoningTranslationDisplay'
+import { buildReasoningTranslationLines, composeReasoningTranslationLines } from './reasoningTranslationDisplay'
 
+export type ContextTimelineItem = PiAssistantMessageItem | PiUserMessageItem
 export const ReasoningTranslationContext = createContext<{
   scope: string
+  sessionId: string
   model: string
   budget: ReasoningTranslationBudget
-  getItems: () => readonly ContextTimelineItem[]
 } | null>(null)
 
-const encoder = new TextEncoder()
-export type TranslationHistoryItem = { role: 'user' | 'assistant'; text: string }
-export type ContextTimelineItem = PiAssistantMessageItem | PiUserMessageItem
-const MAX_HISTORY_ITEMS = 9
-const decoder = new TextDecoder()
-const CHUNK_UNITS = 1024
-const completed = new Map<string, { source: string; chunks: ReasoningTranslationChunk[] }>()
-let translationLane: Promise<unknown> = Promise.resolve()
-
-function recentContext(items: readonly ContextTimelineItem[], entryId: string, budget: number): TranslationHistoryItem[] {
-  const result: TranslationHistoryItem[] = []
-  const anchor = items.findIndex(item => item.entryId === entryId)
-  let remaining = Math.max(0, budget - 512)
-  let userMessages = 0
-  for (let index = anchor - 1; index >= 0 && remaining > 0 && result.length < MAX_HISTORY_ITEMS; index--) {
-    const item = items[index]
-    if (item.kind === 'user_message' && ++userMessages > 5) break
-    let text = ''
-    for (let i = item.blocks.length - 1; i >= 0 && text.length < remaining; i--) {
-      const block = item.blocks[i]
-      if (block.type === 'text') text = block.text.slice(-remaining) + (text ? `\n${text}` : '')
-    }
-    const bytes = encoder.encode(JSON.stringify(text))
-    if (bytes.length > remaining) text = decoder.decode(encoder.encode(text).slice(-Math.floor(remaining / 6))).replace(/^\uFFFD/, '')
-    if (!text.trim()) continue
-    remaining -= encoder.encode(JSON.stringify(text)).length + 48
-    result.unshift({ role: item.kind === 'user_message' ? 'user' : 'assistant', text })
-    if (bytes.length > remaining + encoder.encode(JSON.stringify(text)).length + 48) break
-  }
-  return result
-}
-async function requestTranslation(body: { model: string; text: string; history: TranslationHistoryItem[]; budget: number }, signal: AbortSignal, onDelta: (translation: string) => void) {
-  const response = await piFetch(`${getApiBase()}/api/v1/pi/reasoning/translate`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
-    signal, timeoutMs: 125_000, privateStream: true,
-  })
-  if (!response.ok || !response.body || !response.headers.get('content-type')?.startsWith('application/x-ndjson')) {
-    await response.body?.cancel()
-    throw new Error('Translation unavailable')
-  }
-  const reader = response.body.getReader()
-  const utf8 = new TextDecoder()
-  let pending = ''
-  let translation = ''
-  try {
-    for (;;) {
-      const { value, done } = await reader.read()
-      signal.throwIfAborted()
-      if (done) throw new Error('Incomplete translation stream')
-      pending += utf8.decode(value, { stream: true })
-      let newline: number
-      while ((newline = pending.indexOf('\n')) >= 0) {
-        const frame = JSON.parse(pending.slice(0, newline)) as { delta?: string; done?: boolean; error?: boolean }
-        pending = pending.slice(newline + 1)
-        if (frame.error) throw new Error('Translation failed')
-        if (frame.done) return translation
-        if (typeof frame.delta === 'string') translation += frame.delta
-      }
-      if (pending.length > 128 * 1024 || translation.length > 96 * 1024) throw new Error('Translation too large')
-      onDelta(translation)
-    }
-  } finally {
-    void reader.cancel().catch(() => undefined)
-    reader.releaseLock()
-  }
+// Display snapshots only. Translation jobs and successful fragments belong to the backend.
+const snapshots = new Map<string, ReasoningTranslationSnapshot>()
+const listeners = new Set<() => void>()
+const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } }
+function remember(key: string, snapshot: ReasoningTranslationSnapshot) {
+  snapshots.delete(key)
+  snapshots.set(key, snapshot)
+  if (snapshots.size > 64) snapshots.delete(snapshots.keys().next().value!)
+  for (const listener of listeners) listener()
 }
 
-type Progress = { key: string; source: string; chunks: ReasoningTranslationChunk[]; failed?: boolean }
-export function useReasoningTranslation(entryId: string | undefined, partKey: string, source: string, streaming: boolean, paused: boolean) {
-  const context = useContext(ReasoningTranslationContext)
-  const key = context && entryId ? JSON.stringify([context.scope, context.model, context.budget, partKey]) : ''
-  const [progress, setProgress] = useState<Progress | null>(null)
-  const [partial, setPartial] = useState<{ key: string; chunk: string; text: string } | null>(null)
-  const [reveal, setReveal] = useState(() => {
-    const cached = completed.get(key)
-    return { key, source: cached?.source ?? '', line: cached ? cached.source.split(/\r?\n/).length - 1 : -1 }
-  })
-  const previous = progress?.key === key ? progress : null
-  const cached = key ? completed.get(key) : undefined
-  const result = previous && source.startsWith(previous.source) ? previous
-    : cached && source.startsWith(cached.source) ? cached : null
-  const offset = result?.source.length ?? 0
-  const rest = source.slice(offset)
-  let chunk = !streaming || rest.length >= CHUNK_UNITS ? rest.slice(0, CHUNK_UNITS) : ''
-  if (chunk.length < rest.length) {
-    // 避免拆开 UTF-16 代理对，优先在后半段已有的换行或空格处分块。
-    const boundary = Math.max(chunk.lastIndexOf('\n'), chunk.lastIndexOf(' '))
-    if (boundary > CHUNK_UNITS / 2) chunk = chunk.slice(0, boundary + 1)
-    else chunk = chunk.replace(/[\uD800-\uDBFF]$/, '')
-  }
-  const enabled = Boolean(key) && !paused
-  const failed = previous?.failed === true && result === previous
-  const run = useEffectEvent(async (piece: string, signal: AbortSignal) => {
-    if (!context || !entryId || !enabled) return
-    const baseSource = source.slice(0, offset)
-    const baseChunks = result?.chunks ?? []
-    const requestKey = key
-    const body = { model: context.model, text: piece, history: recentContext(context.getItems(), entryId, context.budget), budget: context.budget }
-    const job = translationLane.then(async () => {
-      if (signal.aborted) return
-      try {
-        const translated = piece.trim() ? await requestTranslation(body, signal, text => {
-          if (!signal.aborted) setPartial({ key: requestKey, chunk: piece, text })
-        }) : piece
-        if (signal.aborted) return
-        const next = { key: requestKey, source: baseSource + piece, chunks: [...baseChunks, { source: piece, translation: translated }] }
-        setProgress(next)
-        setPartial(null)
-        completed.set(requestKey, next)
-        if (completed.size > 64) completed.delete(completed.keys().next().value!)
-      } catch {
-        if (!signal.aborted) {
-          setPartial(null)
-          setProgress({ key: requestKey, source: baseSource, chunks: baseChunks, failed: true })
-        }
-      }
-    })
-    translationLane = job
-    await job
-  })
+export function useReasoningReadingPriority(ref: RefObject<Element | null>, reading: boolean): ReasoningTranslationPriority | null {
+  const [visible, setVisible] = useState(false)
+  const [near, setNear] = useState(false)
+  const [foreground, setForeground] = useState(() => document.visibilityState === 'visible')
   useEffect(() => {
-    if (!enabled || !chunk || failed) return
-    const controller = new AbortController()
-    void run(chunk, controller.signal)
-    return () => controller.abort()
-  }, [enabled, key, chunk, offset, failed])
+    const element = ref.current
+    if (!element) return
+    const visibility = () => setForeground(document.visibilityState === 'visible')
+    document.addEventListener('visibilitychange', visibility)
+    if (typeof IntersectionObserver === 'undefined') {
+      const rect = element.getBoundingClientRect()
+      setVisible(rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < innerHeight)
+      return () => document.removeEventListener('visibilitychange', visibility)
+    }
+    const viewport = new IntersectionObserver(entries => setVisible(entries.some(entry => entry.isIntersecting)))
+    const neighbors = new IntersectionObserver(entries => setNear(entries.some(entry => entry.isIntersecting)), { rootMargin: '400px 0px' })
+    viewport.observe(element)
+    neighbors.observe(element)
+    return () => {
+      viewport.disconnect()
+      neighbors.disconnect()
+      document.removeEventListener('visibilitychange', visibility)
+    }
+  }, [ref])
+  return !foreground ? null : visible ? reading ? 'reading' : 'visible' : near ? 'prewarm' : null
+}
 
-  const delta = partial?.key === key && partial.chunk === chunk ? partial.text : ''
+export function useReasoningSessionReading(sessionId: string | null | undefined, ref: RefObject<Element | null>) {
+  const visible = useReasoningReadingPriority(ref, false) === 'visible'
+  const [readerId] = useState(() => crypto.randomUUID())
+  const generation = serverStore.getActiveServerGeneration()
+  useEffect(() => {
+    if (!sessionId || !visible) return
+    const publish = (active: boolean) => {
+      if (serverStore.getActiveServerGeneration() !== generation) return
+      void piFetch(`${getApiBase()}/api/v1/pi/reasoning/reading`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sessionId, readerId, active }), privateStream: true,
+      }).catch(() => undefined)
+    }
+    publish(true)
+    const timer = setInterval(() => publish(true), 30_000)
+    return () => { clearInterval(timer); publish(false) }
+  }, [sessionId, visible, generation, readerId])
+}
+
+type ReadingIntent = {
+  blockIndex?: number
+  priority?: ReasoningTranslationPriority | null
+  interactionId?: string
+}
+
+export function useReasoningTranslation(entryId: string | undefined, partKey: string, source: string, _streaming: boolean, paused: boolean, intent: ReadingIntent = {}) {
+  const context = useContext(ReasoningTranslationContext)
+  const key = context && entryId ? JSON.stringify([context.scope, context.sessionId, context.model, context.budget, partKey]) : ''
+  const snapshot = useSyncExternalStore(subscribe, () => snapshots.get(key) ?? null, () => null)
+  const [readerId] = useState(() => crypto.randomUUID())
+  const priority = intent.priority === undefined ? 'visible' : intent.priority
+  const interactionId = priority === 'reading' ? intent.interactionId : undefined
+  const blockIndex = intent.blockIndex ?? Number(partKey.slice(partKey.lastIndexOf(':') + 1))
+  const enabled = Boolean(context && entryId && source.trim() && priority) && !paused
+  const [transportFailed, setTransportFailed] = useState('')
+  const [retry, setRetry] = useState(0)
+  const [reveal, setReveal] = useState(() => {
+    const saved = snapshots.get(key)
+    const chunks = saved ? [...saved.chunks, ...(saved.partial ? [saved.partial] : [])] : []
+    const lines = buildReasoningTranslationLines(source, chunks)
+    return { key, line: lines.findLastIndex(line => line.ready) }
+  })
+
+  useEffect(() => {
+    if (!enabled || !context || !entryId || !priority) return
+    const controller = new AbortController()
+    let reconnect: ReturnType<typeof setTimeout> | undefined
+    setTransportFailed('')
+    const body: ReasoningTranslationIntent = {
+      sessionId: context.sessionId, entryId, blockIndex, readerId,
+      model: context.model, budget: context.budget, priority,
+      ...(interactionId ? { interactionId } : {}),
+    }
+    const watch = async () => {
+      let transient = true
+      try {
+        const response = await piFetch(`${getApiBase()}/api/v1/pi/reasoning/translate`, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+          signal: controller.signal, timeoutMs: 300_000, privateStream: true,
+        })
+        if (!response.ok || !response.body || !response.headers.get('content-type')?.startsWith('application/x-ndjson')) {
+          transient = response.status >= 500
+          await response.body?.cancel()
+          throw new Error('Translation unavailable')
+        }
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let pending = ''
+        try {
+          for (;;) {
+            const { value, done } = await reader.read()
+            controller.signal.throwIfAborted()
+            if (done) {
+              if (snapshots.get(key)?.status === 'complete' || snapshots.get(key)?.status === 'failed') return
+              throw new Error('Incomplete translation subscription')
+            }
+            pending += decoder.decode(value, { stream: true })
+            let newline: number
+            while ((newline = pending.indexOf('\n')) >= 0) {
+              const frame = JSON.parse(pending.slice(0, newline)) as { snapshot?: ReasoningTranslationSnapshot; error?: boolean }
+              pending = pending.slice(newline + 1)
+              if (frame.error) { transient = false; throw new Error('Translation failed') }
+              if (frame.snapshot) remember(key, frame.snapshot)
+            }
+            if (pending.length > 2 * 1024 * 1024) { transient = false; throw new Error('Translation snapshot too large') }
+          }
+        } finally {
+          void reader.cancel().catch(() => undefined)
+          reader.releaseLock()
+        }
+      } catch {
+        if (controller.signal.aborted) return
+        setTransportFailed(key)
+        if (!transient) {
+          const saved = snapshots.get(key)
+          if (saved) remember(key, { ...saved, partial: undefined, status: 'failed' })
+        }
+        if (transient) reconnect = setTimeout(() => setRetry(value => value + 1), 1500)
+      }
+    }
+    void watch()
+    const reconnectNow = () => { if (document.visibilityState === 'visible') setRetry(value => value + 1) }
+    window.addEventListener('online', reconnectNow)
+    window.addEventListener('focus', reconnectNow)
+    return () => {
+      controller.abort()
+      clearTimeout(reconnect)
+      window.removeEventListener('online', reconnectNow)
+      window.removeEventListener('focus', reconnectNow)
+    }
+    // The server observes live source changes; frontend token updates do not restart jobs.
+  }, [enabled, context?.sessionId, context?.model, context?.budget, key, entryId, blockIndex, priority, interactionId, readerId, retry])
+
+  const chunks = snapshot?.chunks
+  const partial = snapshot?.partial
   const lines = useMemo(() => buildReasoningTranslationLines(source, [
-    ...(result?.chunks ?? []), ...(delta ? [{ source: chunk, translation: delta }] : []),
-  ]), [source, result?.chunks, chunk, delta])
-  const revealedThroughLine = reveal.key === key && source.startsWith(reveal.source) ? reveal.line : -1
+    ...(chunks ?? []), ...(partial ? [partial] : []),
+  ]), [source, chunks, partial])
+  const revealedThroughLine = reveal.key === key ? reveal.line : -1
   const nextLine = lines.findIndex((line, index) => line.ready && index > revealedThroughLine)
-  const revealNextLine = useEffectEvent(() => setReveal({ key, source, line: nextLine }))
+  const revealNextLine = useEffectEvent(() => setReveal({ key, line: nextLine }))
   useEffect(() => {
     if (!enabled || nextLine < 0) return
-    // 即使同一网络帧包含多行译文，也每帧只替换一行原文。
     const frame = requestAnimationFrame(() => revealNextLine())
     return () => cancelAnimationFrame(frame)
   }, [enabled, key, nextLine])
   return {
     available: Boolean(key),
-    failed: enabled && failed,
-    pending: enabled && !failed && Boolean(rest),
-    text: enabled ? composeReasoningTranslationLines(lines, revealedThroughLine) : '',
+    failed: enabled && (transportFailed === key || snapshot?.status === 'failed'),
+    pending: enabled && (snapshot?.status === 'queued' || snapshot?.status === 'running' || !snapshot),
+    text: !paused && key ? composeReasoningTranslationLines(lines, revealedThroughLine) : '',
   }
 }

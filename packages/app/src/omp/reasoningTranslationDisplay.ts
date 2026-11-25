@@ -5,33 +5,36 @@ const chineseCharacter = /\p{Script=Han}/u
 
 export function buildReasoningTranslationLines(source: string, chunks: readonly ReasoningTranslationChunk[]): ReasoningTranslationLine[] {
   const original = source.split(/(\r?\n)/)
-  const fragments: string[] = []
-  const readyLines = new Set<number>()
-  let sourceOffset = 0
-  let lineIndex = 0
-  for (const chunk of chunks) {
-    const sourceLines = chunk.source.split(/(\r?\n)/)
-    const translatedLines = chunk.translation.split(/\r?\n/)
-    for (let index = 0; index < sourceLines.length; index++) {
-      const text = sourceLines[index]
-      if (index % 2) {
-        fragments.push(text)
-        lineIndex++
-      } else {
-        const translated = translatedLines[index / 2] ?? ''
-        const ready = text.trim().length > 0 && chineseCharacter.test(translated)
-        fragments.push(ready ? translated : text)
-        if (ready) readyLines.add(lineIndex)
-      }
-    }
-    sourceOffset += chunk.source.length
-  }
-  // 分块未覆盖的正文始终保留原文，包括仍在增长的同一行后半段。
-  fragments.push(source.slice(sourceOffset))
-  const combined = fragments.join('').split(/(\r?\n)/)
   const lines: ReasoningTranslationLine[] = []
   for (let index = 0; index < original.length; index += 2) {
-    lines.push({ original: original[index], translation: combined[index], separator: original[index + 1] ?? '', ready: readyLines.has(index / 2) })
+    lines.push({ original: original[index], translation: '', separator: original[index + 1] ?? '', ready: false })
+  }
+  let offset = 0
+  let lineIndex = 0
+  for (const chunk of chunks) {
+    if (!chunk.source || !source.startsWith(chunk.source, offset)) break
+    const sourceLines = chunk.source.split(/(\r?\n)/)
+    const translatedLines = chunk.translation.split(/\r?\n/)
+    const lastText = sourceLines.at(-1) ? (sourceLines.length - 1) / 2 : Math.max(0, (sourceLines.length - 3) / 2)
+    for (let index = 0; index < sourceLines.length; index++) {
+      if (index % 2) { lineIndex++; continue }
+      const text = sourceLines[index]
+      const translated = index / 2 === lastText && translatedLines.slice(lastText + 1).some(line => line.trim())
+        ? translatedLines.slice(index / 2).join('\n').replace(/\n$/, '') : translatedLines[index / 2] ?? ''
+      const ready = text.trim().length > 0 && chineseCharacter.test(translated)
+      const line = lines[lineIndex]
+      if (line) {
+        line.translation += ready ? translated : text
+        line.ready ||= ready
+      }
+    }
+    offset += chunk.source.length
+  }
+  // 源区间决定行归属：译文换行不一致也不能移动下一片段或覆盖已提交前缀。
+  const tail = source.slice(offset).split(/(\r?\n)/)
+  for (let index = 0; index < tail.length; index++) {
+    if (index % 2) lineIndex++
+    else if (lines[lineIndex]) lines[lineIndex].translation += tail[index]
   }
   return lines
 }

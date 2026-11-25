@@ -243,43 +243,20 @@ describe('ExtensionUiDialogHost', () => {
     expect(extensionUiStore.getSnapshot().sessions['session-1']?.pending.map(request => request.workerGeneration)).toEqual(['new'])
   })
 
-  it('expands long select options inline and keeps them selectable', async () => {
-    // jsdom 无布局：mock scrollWidth 使所有选项文本"水平溢出"，触发展开入口
-    const originalScrollWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollWidth')
-    Object.defineProperty(HTMLElement.prototype, 'scrollWidth', {
-      configurable: true,
-      get: () => 200,
-    })
-    try {
-      const longOption = 'b'.repeat(500)
-      extensionUiStore.requestOpened(selectRequest({ options: ['a'.repeat(500), longOption] }))
-      render(<ExtensionUiDialogHost sessionId="session-1" />)
-
-      // 溢出选项都有展开按钮；展开前完整文本只存在于摘要节点
-      const expandButtons = screen.getAllByTitle(/展开详情|Expand details/i)
-      expect(expandButtons.length).toBe(2)
-      expect(screen.getAllByText(longOption)).toHaveLength(1)
-
-      // 展开：完整文本内联出现（摘要 + 展开区 = 2 处），按钮变为收起
-      fireEvent.click(expandButtons[1]!)
-      expect(screen.getAllByText(longOption)).toHaveLength(2)
-      expect(screen.getAllByTitle(/收起详情|Collapse details/i)).toHaveLength(1)
-
-      // 展开状态下点击选项仍正常选中并提交
-      fireEvent.click(screen.getByTitle(longOption))
-      fireEvent.click(screen.getByRole('button', { name: /submit|提交/i }))
-      await waitFor(() => expect(respondPiExtensionUi).toHaveBeenCalledWith(
-        'session-1',
-        'request-1',
-        expect.objectContaining({ value: longOption }),
-      ))
-    } finally {
-      if (originalScrollWidth) {
-        Object.defineProperty(HTMLElement.prototype, 'scrollWidth', originalScrollWidth)
-      } else {
-        delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollWidth
-      }
-    }
+  it('renders complete long select labels as ask-style chips and submits the native label', async () => {
+    const longOption = 'b'.repeat(500)
+    extensionUiStore.requestOpened(selectRequest({ options: ['a'.repeat(500), longOption] }))
+    render(<ExtensionUiDialogHost sessionId="session-1" />)
+    const option = screen.getByRole('button', { name: longOption })
+    expect(screen.getAllByText(longOption)).toHaveLength(1)
+    expect(screen.queryByTitle(/展开详情|Expand details/i)).toBeNull()
+    expect(option).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(option)
+    expect(option).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(screen.getByRole('button', { name: /submit|提交/i }))
+    await waitFor(() => expect(respondPiExtensionUi).toHaveBeenCalledWith(
+      'session-1', 'request-1', expect.objectContaining({ value: longOption }),
+    ))
   })
 
   it('clears the settled request from the store after submit', async () => {

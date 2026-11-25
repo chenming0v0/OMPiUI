@@ -48,6 +48,7 @@ import { EventSnapshotBuffer } from "./event-snapshot-buffer.js";
 import { BranchPageReader } from "../runtime/branch-pages.js";
 import { projectStateImages, projectSubagentPayload, projectToolUpdate } from "./event-payload.js";
 import { MainMessageStream } from "./main-message-stream.js";
+import { StableEntryAliases } from './stable-entry-aliases.js';
 import { getPreviewSettings } from "./preview-settings.js";
 import { projectPreviewMessage } from "./subagent-preview.js";
 import { requireResourceList, registryFromResources } from './resource-registry.js';
@@ -192,6 +193,7 @@ export class OmpRpcSession implements SessionRuntime {
   // 历史条目（append 顺序）+ 活跃分支缓存
   private entries: EntryRecord[] = [];
   private readonly branchPages = new BranchPageReader<EntryRecord>();
+  private readonly stableEntryAliases = new StableEntryAliases();
   private leafId: string | null = null;
   private entriesSeeded = false;
   private syncInFlight: Promise<void> = Promise.resolve();
@@ -206,6 +208,7 @@ export class OmpRpcSession implements SessionRuntime {
   private liveMessage?: {
     value: LiveMessage;
     messageId: string | undefined;
+    knownEntryIds: Set<string>;
     phase: "streaming" | "persisting";
   };
 
@@ -751,10 +754,12 @@ export class OmpRpcSession implements SessionRuntime {
         complete: true,
       },
       messageId,
+      knownEntryIds: reused ? current.knownEntryIds : new Set(this.entries.map(entry => entry.id)),
       phase: frame.type === "message_end" ? "persisting" : "streaming",
     };
     if (frame.type === "message_end") {
       const pending = this.liveMessage;
+      this.stableEntryAliases.completed(this.sessionId, pending.value.id, nativeMessage!, pending.knownEntryIds);
       const generation = this.historyGeneration;
       // 持久化交接：在 microtask 中刷新 branch，完成后再清除 live 行。
       queueMicrotask(() => {
@@ -1035,6 +1040,7 @@ export class OmpRpcSession implements SessionRuntime {
           }
         }
       }
+      this.stableEntryAliases.observe(this.sessionId, this.entries as unknown as JsonObject[]);
       if (typeof data.leafId === "string" || data.leafId === null) {
         this.leafId = data.leafId as string | null;
       }
@@ -1172,12 +1178,13 @@ export class OmpRpcSession implements SessionRuntime {
       checkpoint.liveMessage = undefined;
       checkpoint.liveMessageOmitted = true;
     }
-    return this.branchPages.read(
+    const page = this.branchPages.read(
       this.getHead(),
       this.branchEntries(),
       { cursor, limit, maxBytes, checkpoint, ...sync },
       (entry) => entry as unknown as JsonObject,
     );
+    return { ...page, stableEntryIds: this.stableEntryAliases.snapshot(this.sessionId) };
   }
 
   async getEntryContent(entryId: string, offset = 0, etag?: string): Promise<JsonObject> {
