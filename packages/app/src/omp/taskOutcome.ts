@@ -46,7 +46,7 @@ export function deriveTaskOutcome(evidence?: unknown, root?: unknown): TaskOutco
     mergeStatus,
     rootMergeStatus,
     presentationStatus: execution === 'failed' || execution === 'aborted' || mergeStatus === 'failed' ? 'error'
-      : execution === 'completed' ? 'unknown' : execution,
+      : execution,
   }
 }
 

@@ -1,3 +1,5 @@
+import { nativeSubagentEventsSource } from './native-subagent-events.js'
+
 /** Private notification channel consumed by the managed session coordinator. */
 export const SUBAGENT_OBSERVATION_PREFIX = 'ompiui-subagent-observation:'
 
@@ -16,6 +18,7 @@ export interface SubagentObservationPayload {
   observationSequence: number
   activity: 'running' | 'idle' | 'unavailable'
   pendingAsync: boolean
+  eventsSubscribed?: boolean
   removed?: boolean
 }
 
@@ -39,6 +42,7 @@ globalThis[subagentObservationKey] = subagentObservationModule;
 
 /** Insert inside the generated public extension factory after ownSession. */
 export const nativeSubagentObservationSource = String.raw`
+  ${nativeSubagentEventsSource}
   const subagentObservationPrefix = ${JSON.stringify(SUBAGENT_OBSERVATION_PREFIX)};
   const subagentObserver = { closed: subagentObservationModule.closed, generation: 0, ctx: null, registry: null, unsubscribe: null, timer: null, timerContext: null, root: null };
   const disposeSubagentObserver = () => stopSubagentObservation(true);
@@ -50,6 +54,8 @@ export const nativeSubagentObservationSource = String.raw`
     record.active = false;
     subagentRelease(record.unsubscribe);
     record.unsubscribe = null;
+    subagentRelease(record.unsubscribeEvents);
+    record.unsubscribeEvents = null;
   }
   function subagentClearRoot() {
     if (subagentObserver.root) {
@@ -119,36 +125,40 @@ export const nativeSubagentObservationSource = String.raw`
     return record.active && subagentRootCurrent(root) && root.children.get(record.ref.id) === record
       && subagentAttachmentCurrent(record, subagentDescendants(root).get(record.ref.id));
   }
-  function subagentPublish(root, record, activity, pendingAsync, removed = false) {
+  function subagentPublish(root, record, activity, pendingAsync, removed = false, event) {
     if (!subagentRootCurrent(root)) return;
     if (!removed && !subagentRecordCurrent(root, record)) return;
-    if (!removed && record.activity === activity && record.pendingAsync === pendingAsync) return;
+    const eventsSubscribed = !removed && typeof record.unsubscribeEvents === "function";
+    if (!removed && !event && record.activity === activity && record.pendingAsync === pendingAsync
+      && record.eventsSubscribed === eventsSubscribed) return;
     record.activity = activity;
     record.pendingAsync = pendingAsync;
+    record.eventsSubscribed = eventsSubscribed;
     const payload = {
       protocolVersion: 1, rootSessionId: root.id, rootSessionFile: root.file,
       id: record.ref.id, sessionFile: record.file, observationEpoch: root.epoch,
       observationId: record.observationId, activityVersion: ++record.version,
       observationSequence: ++subagentObservationModule.sequence,
-      activity, pendingAsync, ...(removed ? { removed: true } : {}),
+      activity, pendingAsync, eventsSubscribed, ...(removed ? { removed: true } : {}),
+      ...(event ? { event } : {}),
     };
     try { subagentObserver.ctx.ui.notify(subagentObservationPrefix + JSON.stringify(payload), "info"); } catch {}
   }
-  function subagentSample(root, record) {
+  function subagentSample(root, record, event) {
     if (!subagentRecordCurrent(root, record)) return;
     try {
       if (!record.session || typeof record.session.subscribeRunState !== "function"
         || typeof record.session.hasPendingAsyncWork !== "function" || !record.unsubscribe) {
-        subagentPublish(root, record, "unavailable", false);
+        subagentPublish(root, record, "unavailable", false, false, event);
         return;
       }
       const pending = record.session.hasPendingAsyncWork();
       if (typeof pending !== "boolean" || (record.runActivity !== "running" && record.runActivity !== "idle")) {
-        subagentPublish(root, record, "unavailable", false);
+        subagentPublish(root, record, "unavailable", false, false, event);
         return;
       }
-      subagentPublish(root, record, record.runActivity, pending);
-    } catch { subagentPublish(root, record, "unavailable", false); }
+      subagentPublish(root, record, record.runActivity, pending, false, event);
+    } catch { subagentPublish(root, record, "unavailable", false, false, event); }
   }
   function subagentAttach(root, ref) {
     const session = ref.session;
@@ -158,8 +168,19 @@ export const nativeSubagentObservationSource = String.raw`
       ref, session, refFile: ref.sessionFile, sessionId: identity?.id,
       file: identity ? identity.file : ref.sessionFile ?? null, active: true, unsubscribe: null,
       observationId: randomUUID(), version: 0, activity: null, pendingAsync: null, runActivity: null,
+      unsubscribeEvents: null, eventsSubscribed: false,
     };
     root.children.set(ref.id, record);
+    try {
+      if (session && typeof session.subscribe === "function") {
+        const unsubscribe = session.subscribe(event => {
+          if (!subagentRecordCurrent(root, record)) return;
+          const display = subagentDisplayEvent(event);
+          if (display) subagentSample(root, record, display);
+        });
+        if (typeof unsubscribe === "function") record.unsubscribeEvents = unsubscribe;
+      }
+    } catch {}
     try {
       if (session && typeof session.subscribeRunState === "function") {
         if (typeof session.isStreaming === "boolean") record.runActivity = session.isStreaming ? "running" : "idle";

@@ -88,6 +88,7 @@
     "loadingPanel": "Loading panel..."
   },
   "panelContainer": {
+    "subagents": "Subagents",
     "files": "Files",
     "changes": "Changes",
     "sessionTree": "Session Tree",

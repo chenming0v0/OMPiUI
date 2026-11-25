@@ -87,7 +87,7 @@ export const ToolGroup = memo(function ToolGroup({
         runtimeStopped: taskStopped, hasLiveRuns: runs.length > 0 }).presentationStatus
     })
     return statuses.includes('running') ? 'running' : statuses.includes('error') ? 'error'
-      : statuses.includes('unknown') ? 'unknown' : statuses.includes('pending') ? 'pending' : 'unknown'
+      : statuses.includes('unknown') ? 'unknown' : statuses.includes('pending') ? 'pending' : 'completed'
   }).join('|'), [viewExecutions, currentSessionId, taskStopped])
   const statusFingerprint = useSyncExternalStore(subscribeStatuses, getStatusFingerprint, getStatusFingerprint)
   const statuses = useMemo(() => statusFingerprint.split('|') as TaskPresentationStatus[], [statusFingerprint])
@@ -402,7 +402,7 @@ function buildDescriptiveToolStepsSummary(
 
   if (executions.some((execution, index) => execution.call.name === 'task' && statuses[index] === 'unknown')) {
     if (segments.length > 0) segments.push({ text: sep, type: 'normal' })
-    segments.push({ text: t('task.outcome.merge.unconfirmed'), type: 'normal' })
+    segments.push({ text: t('task.outcome.execution.unknown'), type: 'normal' })
   }
 
   if (segments.length === 0) {

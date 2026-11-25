@@ -120,6 +120,16 @@
     "rawResult": "原始结果"
   },
   "task": {
+    "inspect": "查看子代理",
+    "sidebar": {
+      "title": "子代理",
+      "count": "{{count}} 个 · {{running}} 个运行中",
+      "list": "当前会话的子代理",
+      "empty": "当前会话还没有子代理任务。",
+      "noSession": "选择会话后查看子代理。",
+      "refresh": "刷新任务记录",
+      "assignment": "任务内容"
+    },
     "rawDetails": "原始详情 / 恢复引用",
     "outcome": {
       "execution": { "pending": "执行待开始", "running": "执行中", "completed": "执行完成", "failed": "执行失败", "aborted": "执行中断", "unknown": "执行未确认" },

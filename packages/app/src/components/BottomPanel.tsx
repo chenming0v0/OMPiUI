@@ -30,6 +30,7 @@ const SessionTreePanel = lazy(() =>
   }))
 )
 const Terminal = lazy(() => import('./Terminal').then(module => ({ default: module.Terminal })))
+const SubagentPanel = lazy(() => import('../features/subagents/SubagentPanel').then(module => ({ default: module.SubagentPanel })))
 
 interface BottomPanelProps {
   directory?: string
@@ -131,7 +132,7 @@ export const BottomPanel = memo(function BottomPanel({ directory, onNavigateSess
   // 渲染内容
   const renderContent = useCallback(
     (activeTab: PanelTab | null) => {
-      if (isRestoring) {
+      if (isRestoring && activeTab?.type === 'terminal') {
         return (
           <div className="flex flex-col items-center justify-center h-full text-text-400 text-[length:var(--fs-base)] gap-2">
             <TerminalIcon size={24} className="opacity-30 animate-pulse" />
@@ -181,6 +182,8 @@ export const BottomPanel = memo(function BottomPanel({ directory, onNavigateSess
               <ExtensionsPanel sessionId={sessionId} />
             </Suspense>
           ) : null}
+
+          {activeTab.type === 'subagents' && <Suspense fallback={<PanelFallback />}><SubagentPanel sessionId={sessionId} /></Suspense>}
 
           {activeTab.type === 'terminal' ? (
             <Suspense fallback={<PanelFallback />}>

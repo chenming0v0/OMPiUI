@@ -28,6 +28,7 @@ const SessionTreePanel = lazy(() =>
   }))
 )
 const Terminal = lazy(() => import('./Terminal').then(module => ({ default: module.Terminal })))
+const SubagentPanel = lazy(() => import('../features/subagents/SubagentPanel').then(module => ({ default: module.SubagentPanel })))
 
 function PanelFallback() {
   const { t } = useTranslation(['components', 'common'])
@@ -134,7 +135,7 @@ export const RightPanel = memo(function RightPanel({
   // 渲染内容
   const renderContent = useCallback(
     (activeTab: PanelTab | null) => {
-      if (isRestoring) {
+      if (isRestoring && activeTab?.type === 'terminal') {
         return (
           <div className="flex items-center justify-center h-full text-text-400 text-[length:var(--fs-sm)]">
             {t('terminal.restoringSessions')}
@@ -179,6 +180,8 @@ export const RightPanel = memo(function RightPanel({
               <ExtensionsPanel sessionId={sessionId ?? null} />
             </Suspense>
           ) : null}
+
+          {activeTab.type === 'subagents' && <Suspense fallback={<PanelFallback />}><SubagentPanel sessionId={sessionId} /></Suspense>}
 
           {activeTab.type === 'skill' ? (
             <Suspense fallback={<PanelFallback />}>

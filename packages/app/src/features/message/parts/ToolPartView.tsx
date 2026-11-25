@@ -26,8 +26,10 @@ import {
 import { MSG_SPACING } from '../messageSpacing'
 import { MessageExpandPanel, useMessageExpandRender } from '../messageExpand'
 import { ToolResultImages, ToolResultNotice } from '../tools/renderers/DefaultRenderer'
-import { resolveTaskExecution } from '../tools/taskToolData'
-import { getTaskExecutionOutcome } from '../../../omp/taskOutcome'
+import { findAsyncTaskResult, indexAsyncTaskResults, isAsyncTaskDispatch, resolveTaskExecution } from '../tools/taskToolData'
+import { getTaskExecutionOutcome, taskResultDetails } from '../../../omp/taskOutcome'
+import { piBranchStore } from '../../../omp/state/index.js'
+import { useTaskRuntimeStopped } from '../tools/useTaskRuntimeStopped'
 import { ompSubagentStore } from '../../../omp/ompSubagentStore'
 import { NativeAskSlot, useInlineAskRequest } from '../../chat/InlineAskRequests'
 
@@ -84,8 +86,17 @@ export const ToolPartView = memo(function ToolPartView({
     return taskSlotIndex !== undefined ? runs.find(run => run.index === taskSlotIndex) : runs.length === 1 ? runs[0] : undefined
   }, [toolName, call.id, currentSessionId, taskSlotIndex])
   const liveRun = useSyncExternalStore(ompSubagentStore.subscribe, getLiveRun, getLiveRun)
+  const runtimeStopped = useTaskRuntimeStopped(toolName === 'task')
+  const getDelivery = useCallback(() => {
+    if (toolName !== 'task' || !currentSessionId || !isAsyncTaskDispatch(taskResultDetails(execution))) return undefined
+    const tasks = call.arguments.tasks
+    const input = Array.isArray(tasks) ? tasks[taskSlotIndex ?? 0] : call.arguments
+    const id = input && typeof input === 'object' && 'name' in input && typeof input.name === 'string' ? input.name : liveRun?.id
+    return id ? findAsyncTaskResult(indexAsyncTaskResults(piBranchStore.getData(currentSessionId)?.items ?? []), id, result?.timestamp) : undefined
+  }, [toolName, currentSessionId, execution, call.arguments, taskSlotIndex, liveRun?.id, result?.timestamp])
+  const delivery = useSyncExternalStore(piBranchStore.subscribe, getDelivery, getDelivery)
   const status = toolName === 'task'
-    ? getTaskExecutionOutcome(execution, { slotIndex: taskSlotIndex, liveRun }).presentationStatus
+    ? getTaskExecutionOutcome(execution, { slotIndex: taskSlotIndex, liveRun, result: delivery?.details, runtimeStopped }).presentationStatus
     : getToolExecutionStatus(execution)
   // title 显示工具调用实质（命令/路径/模式），而不是重复工具名——
   // OMP RPC 的工具调用事件只有 toolName + args，没有工具描述字段；

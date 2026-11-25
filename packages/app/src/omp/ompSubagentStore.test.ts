@@ -12,6 +12,17 @@ describe('ompSubagentStore state', () => {
     ompSubagentStore.clearAll()
   })
 
+  it('links observation messages to their task and updates resumed activity', () => {
+    ompSubagentStore.applyObservation('parent', { id: 'child', rootSessionId: 'parent', runId: 'epoch:child:1',
+      observationEpoch: 'observer', observationId: 'child', observationSequence: 1, activityVersion: 1, activity: 'idle', pendingAsync: false })
+    ompSubagentStore.applyEvent('parent', { id: 'child', runId: 'epoch:child:1', parentToolCallId: 'task-call', sessionFile: 'C:/child.jsonl',
+      observationEpoch: 'observer', observationId: 'child', observationSequence: 2, activityVersion: 2, activity: 'running', pendingAsync: false,
+      event: { type: 'message_end', message: { role: 'assistant', content: 'Continuing review' } } })
+    expect(ompSubagentStore.getRunsForToolCall('task-call', 'parent')[0]).toMatchObject({
+      status: 'running', sessionFile: 'C:/child.jsonl', transcript: [{ text: 'Continuing review' }],
+    })
+  })
+
   it('applySnapshot restores detached runs from the worker registry snapshot', () => {
     ompSubagentStore.applySnapshot('session-b', [
       { id: 'snap-1', detached: true, agent: 'task', status: 'running', task: 'do work', index: 0 },

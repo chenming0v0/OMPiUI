@@ -88,6 +88,7 @@
     "loadingPanel": "加载面板中..."
   },
   "panelContainer": {
+    "subagents": "子代理",
     "files": "文件",
     "changes": "变更",
     "sessionTree": "会话树",

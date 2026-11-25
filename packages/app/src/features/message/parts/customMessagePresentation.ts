@@ -46,6 +46,7 @@ export interface BackgroundJobView {
   type?: string
   name: string
   status: string
+  exitCode?: number
   durationMs?: number
   duration?: string
   summary?: string
@@ -74,7 +75,7 @@ function attribute(attributes: string, name: string): string | undefined {
 }
 
 function unwrapDelivery(text: string): string {
-  const match = /^<system-notice>\s*\n(?:Background job [^\n]+ has completed\. Resume your work using the result below\.|\d+ background jobs have completed\. Resume your work using the results below\.)\s*\n([\s\S]*)\n<\/system-notice>\s*$/.exec(text.trim())
+  const match = /^<system-notice>\s*\n(?:Background job [^\n]+ has completed\.|\d+ background jobs have completed\.)(?:\s+Resume your work using the results? below\.)?\s*\n([\s\S]*)\n<\/system-notice>\s*$/.exec(text.trim())
   return match ? match[1].trim() : text.trim()
 }
 
@@ -118,7 +119,63 @@ function taskBody(text: string) {
   }
 }
 
+function readLaunchCompletions(item: PiCustomMessageItem): BackgroundJobView[] | undefined {
+  const details = record(item.details)
+  const daemons = Array.isArray(details?.daemons) ? details.daemons.map(record).filter(daemon => daemon !== undefined) : []
+  if (!daemons.length) return undefined
+  return daemons.map(daemon => {
+    // OMP 18.x 的快照用 name，19.x 的 UnitSnapshot 用 key；二者都存于 details.daemons。
+    const name = string(daemon.key) ?? string(daemon.name) ?? string(daemon.id) ?? item.customType
+    const exitCode = typeof daemon.exitCode === 'number' ? daemon.exitCode : undefined
+    const failed = daemon.state === 'failed' || (exitCode !== undefined && exitCode !== 0)
+    return {
+      id: string(daemon.id) ?? name, type: 'service', name,
+      status: failed ? 'failed' : 'completed', exitCode,
+      durationMs: typeof daemon.startedAt === 'number' && typeof daemon.exitedAt === 'number'
+        ? daemon.exitedAt - daemon.startedAt : undefined,
+      body: `Supervised process ${name} ${string(daemon.state) ?? 'exited'} ${exitCode !== undefined ? `with exit code ${exitCode}` : 'without an exit code'}.`,
+      errors: [],
+    }
+  })
+}
+
+function readAsyncNotifications(item: PiCustomMessageItem): BackgroundJobView[] | undefined {
+  const details = record(item.details)
+  const reports = Array.isArray(details?.reports) ? details.reports.map(record).filter(report => report !== undefined) : []
+  if (!reports.length) return undefined
+  return reports.map((report, index) => {
+    const id = string(report.id) ?? String(index + 1)
+    const lines = Array.isArray(report.lines) ? report.lines.filter(line => typeof line === 'string') : []
+    const source = report.type === 'service' ? 'Supervised process' : 'Background job'
+    const body = [
+      `${source} ${id} ${report.running === true ? 'is still running' : 'has since ended'}. Its output matched /${string(report.pattern) ?? ''}/:`,
+      ...lines,
+      typeof report.omitted === 'number' && report.omitted > 0 ? `… plus ${report.omitted} not shown; read proc://${id} for the output.` : '',
+      report.stopped === true ? 'It matched too often: `notify` is off for it and later matches are not reported.' : '',
+    ].filter(Boolean).join('\n')
+    // 这里完成的是一批输出的投递；running 是当时的进程快照，不能变成永不结束的工具执行。
+    return { id, type: 'async-notify', name: id, status: 'completed', body, errors: [] }
+  })
+}
+
+function readAgentDelivery(item: PiCustomMessageItem): BackgroundJobView[] | undefined {
+  const agent = readAgentMessage(item)
+  if (!agent) return undefined
+  const details = record(item.details)
+  // 只有官方 wakeRelay 投递才按 task-result 解包，普通代理消息的正文保持原样。
+  const result = details?.wakeRelay === true ? taskBody(agent.body) : undefined
+  return [{
+    id: string(details?.id) ?? agent.sender, type: 'irc', name: agent.sender,
+    status: result?.status ?? 'completed', duration: result?.duration,
+    body: result ? [result.output, result.supplement].filter(Boolean).join('\n\n') : agent.body,
+    errors: result?.errors ?? [], fullOutput: result?.fullOutput,
+  }]
+}
+
 export function readBackgroundJobs(item: PiCustomMessageItem): BackgroundJobView[] | undefined {
+  if (item.customType === 'launch-completion') return readLaunchCompletions(item)
+  if (item.customType === 'async-notify') return readAsyncNotifications(item)
+  if (item.customType === 'irc:incoming') return readAgentDelivery(item)
   if (item.customType !== 'async-result' && item.customType !== 'Background job') return undefined
   const details = record(item.details)
   const metadata = Array.isArray(details?.jobs) ? details.jobs.map(record).filter(job => job !== undefined) : details ? [details] : []

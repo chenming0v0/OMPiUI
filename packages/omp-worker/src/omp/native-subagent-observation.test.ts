@@ -5,11 +5,14 @@ import { runInNewContext } from 'node:vm'
 import { SUBAGENT_OBSERVATION_PREFIX, type SubagentObservationPayload } from './native-subagent-observation.js'
 import { runtimeBridgeExtension } from './runtime-bridge.js'
 import { nativeSessionTitleSource } from './native-session-title.js'
+import type { JsonObject } from '@ompiui/protocol'
 
 type Activity = 'running' | 'idle'
 class PublicSession {
   readonly callbacks = new Set<(activity: Activity) => void>()
   readonly staleCallbacks: Array<(activity: Activity) => void> = []
+  readonly eventCallbacks = new Set<(event: JsonObject) => void>()
+  readonly staleEventCallbacks: Array<(event: JsonObject) => void> = []
   subscriptions = 0
   unsubscriptions = 0
   pending = false
@@ -32,9 +35,17 @@ class PublicSession {
     this.isStreaming = activity === 'running'
     for (const callback of this.callbacks) callback(activity)
   }
-  // Observing must never replay transcript/event history or touch the driver.
+  subscribe(callback: (event: JsonObject) => void) {
+    this.eventCallbacks.add(callback)
+    this.staleEventCallbacks.push(callback)
+    return () => { this.eventCallbacks.delete(callback) }
+  }
+  emitEvent(event: JsonObject) {
+    for (const callback of this.eventCallbacks) callback(event)
+  }
+  // 订阅公开事件不读取历史，也不触碰驱动器。
   get agent(): never { throw new Error('native agent access is forbidden') }
-  subscribe(): never { throw new Error('event/transcript replay is forbidden') }
+  get messages(): never { throw new Error('transcript replay is forbidden') }
   settleAsyncWork(): never { throw new Error('async mutation is forbidden') }
   prompt(): never { throw new Error('prompting is forbidden') }
   dispose(): never { throw new Error('native disposal is forbidden') }
@@ -147,7 +158,7 @@ function observationHarness() {
     tick() { for (const { callback } of [...timers.values()]) callback() },
     observations() {
       return notifications.filter(item => item.message.startsWith(SUBAGENT_OBSERVATION_PREFIX))
-        .map(item => JSON.parse(item.message.slice(SUBAGENT_OBSERVATION_PREFIX.length)) as SubagentObservationPayload)
+        .map(item => JSON.parse(item.message.slice(SUBAGENT_OBSERVATION_PREFIX.length)) as SubagentObservationPayload & { event?: JsonObject })
     },
     async execute(operation: string, extraContext: Record<string, unknown> = {}) {
       const done = Promise.withResolvers<void>()
@@ -177,7 +188,7 @@ test('automatic public observer sends small current snapshots, never history or 
   assert.deepEqual(payload, {
     protocolVersion: 1, rootSessionId: 'root-session', rootSessionFile: 'root.jsonl',
     id: 'task-id', sessionFile: 'child.jsonl', observationEpoch: 'local-2', observationId: 'local-3',
-    activityVersion: 1, observationSequence: 1, activity: 'running', pendingAsync: true,
+    activityVersion: 1, observationSequence: 1, activity: 'running', pendingAsync: true, eventsSubscribed: true,
   })
   assert.equal(h.notifications[0]!.level, 'info')
   assert.equal(sessionOf(child).subscriptions, 1)
@@ -189,6 +200,73 @@ test('automatic public observer sends small current snapshots, never history or 
   assert.equal(h.observations().length, 1, 'unchanged state is not replayed')
   assert.equal(sessionOf(child).subscriptions, 1)
   assert.equal(h.timers.size, 1)
+  h.shutdown()
+})
+
+test('live public events survive task monitor completion without replaying or mutating the session', () => {
+  const h = observationHarness()
+  const child = sessionOf(h.registry.add('child', 'sub', 'root-ref'))
+  h.start()
+  child.emit('running')
+  child.emitEvent({ type: 'message_start', message: { role: 'assistant', content: [] } })
+  child.emitEvent({ type: 'message_update', message: { role: 'assistant', content: [
+    { type: 'text', text: '正在检查' }, { type: 'thinking', thinking: '思考' },
+    { type: 'image', data: 'binary' }, { type: 'toolCall', id: 'read', name: 'read', arguments: { path: 'private' } },
+  ] }, assistantMessageEvent: { partial: 'duplicate' } })
+  child.emitEvent({ type: 'tool_execution_start', toolCallId: 'read', toolName: 'read', args: { path: 'private' } })
+  child.emitEvent({ type: 'tool_execution_end', toolCallId: 'read', toolName: 'read', result: { content: 'large result' } })
+  child.emitEvent({ type: 'irc_message', message: { details: { from: 'parent', message: '继续检查' } } })
+  child.emitEvent({ type: 'message_end', message: { role: 'assistant', content: '完成' } })
+  child.emit('idle')
+  const messages = h.observations().flatMap(value => value.event ? [value.event] : [])
+  assert.deepEqual(messages.map(event => event.type), [
+    'message_start', 'message_update', 'tool_execution_start', 'tool_execution_end', 'irc_message', 'message_end',
+  ])
+  assert.deepEqual((messages[1]!.message as JsonObject).content, [
+    { type: 'text', text: '正在检查' }, { type: 'thinking', thinking: '思考' }, { type: 'toolCall', id: 'read', name: 'read' },
+  ])
+  assert.equal(JSON.stringify(messages).includes('private'), false)
+  assert.equal(JSON.stringify(messages).includes('large result'), false)
+  assert.equal(h.observations().at(-1)!.activity, 'idle')
+  assert.equal(child.eventCallbacks.size, 1)
+  h.shutdown()
+  assert.equal(child.eventCallbacks.size, 0)
+})
+
+test('event subscriptions fence stale attachments, foreign descendants and replaced extension callbacks', () => {
+  const h = observationHarness()
+  const ref = h.registry.add('child', 'sub', 'root-ref')
+  const original = sessionOf(ref)
+  const foreign = sessionOf(h.registry.add('foreign', 'sub', 'another-root'))
+  const event = { type: 'message_end', message: { role: 'assistant', content: 'current' } }
+  h.start()
+  assert.equal(foreign.eventCallbacks.size, 0)
+  ref.session = new PublicSession('replacement', ref.sessionFile)
+  for (const callback of original.staleEventCallbacks) callback(event)
+  assert.equal(h.observations().some(value => value.event), false)
+  h.tick()
+  assert.equal(original.eventCallbacks.size, 0)
+  const replacement = sessionOf(ref)
+  replacement.emitEvent(event)
+  assert.equal(h.observations().filter(value => value.event).length, 1)
+  h.replaceExtension()
+  assert.equal(replacement.eventCallbacks.size, 0)
+  for (const callback of replacement.staleEventCallbacks) callback(event)
+  assert.equal(h.observations().filter(value => value.event).length, 1)
+  h.start()
+  replacement.emitEvent(event)
+  assert.equal(h.observations().filter(value => value.event).length, 2)
+  h.shutdown()
+})
+
+test('unavailable public event subscription preserves activity and leaves the RPC event fallback enabled', () => {
+  const h = observationHarness()
+  const child = sessionOf(h.registry.add('child', 'sub', 'root-ref'))
+  child.subscribe = () => { throw new Error('events unavailable') }
+  h.start()
+  child.emit('running')
+  assert.equal(h.observations().at(-1)!.activity, 'running')
+  assert.equal(h.observations().at(-1)!.eventsSubscribed, false)
   h.shutdown()
 })
 
