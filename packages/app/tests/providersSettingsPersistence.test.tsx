@@ -36,6 +36,7 @@ vi.mock('../src/store/serverStore', () => ({
   serverStore: {
     getActiveServer: () => ({ id: mocks.serverId }),
     getActiveServerGeneration: () => mocks.generation,
+    onServerChange: () => () => undefined,
   },
 }))
 vi.mock('../src/hooks', () => ({ useIsMobile: () => false }))
@@ -154,7 +155,7 @@ describe('provider settings persistence', () => {
     }
   })
 
-  it('retains hidden fields through multiple queued renames and newer provider edits', async () => {
+  it('replaces queued edits with the successful whole snapshot, then preserves hidden fields in new edits', async () => {
     const persisted = await usePersistedProviders()
     const firstSave = Promise.withResolvers<void>()
     const secondSave = Promise.withResolvers<void>()
@@ -171,21 +172,17 @@ describe('provider settings persistence', () => {
       await openSettings()
       await renameModel('B')
       await renameModel('C')
-      fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: 'https://newer.test/v1' } })
+      fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: 'https://superseded.test/v1' } })
       await debounce()
       expect(mocks.saveProvider.mock.calls.map(call => call[0].models[0].id)).toEqual(['B'])
-      await act(async () => {
-        firstSave.resolve()
-        await mocks.saveProvider.mock.results[0]!.value
-      })
-      await renameModel('D')
-      fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'later-secret' } })
+      await act(async () => { firstSave.resolve(); await mocks.saveProvider.mock.results[0]!.value })
+      expect(screen.getByLabelText('Base URL')).toHaveValue('https://demo.test/v1')
       await debounce()
-      expect(mocks.saveProvider.mock.calls.map(call => call[0].models[0].id)).toEqual(['B', 'C'])
-      await act(async () => {
-        secondSave.resolve()
-        await mocks.saveProvider.mock.results[1]!.value
-      })
+      expect(mocks.saveProvider).toHaveBeenCalledTimes(1)
+      await renameModel('D')
+      await act(async () => { secondSave.resolve(); await mocks.saveProvider.mock.results[1]!.value })
+      fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: 'https://newer.test/v1' } })
+      fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'later-secret' } })
       await debounce()
       await finishSaves()
       const stored = await persisted.read()
@@ -213,12 +210,12 @@ describe('provider settings persistence', () => {
     try {
       await openSettings()
       await renameModel('B')
+      await act(async () => { firstSave.resolve(); await finishSaves() })
       fireEvent.click(screen.getByRole('button', { name: 'Add model' }))
       fireEvent.change(screen.getByLabelText('Model ID'), { target: { value: 'A' } })
       await act(async () => { await Promise.resolve() })
       expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
       await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Save' })))
-      firstSave.resolve()
       await finishSaves()
       const stored = await persisted.read()
       expect(stored.models).toEqual([
@@ -242,14 +239,15 @@ describe('provider settings persistence', () => {
     await renameModel('B')
     fireEvent.click(screen.getByRole('button', { name: 'Configure model' }))
     fireEvent.change(screen.getByLabelText('Model ID'), { target: { value: 'C' } })
-    await act(async () => firstSave.resolve(snapshot([{ ...provider(), models: [{ id: 'B' }] }])))
-    expect(screen.getByLabelText('Model ID')).toHaveValue('C')
+    await act(async () => firstSave.resolve(snapshot([{ ...provider(), models: [{ ...provider().models[0], id: 'B' }] }])))
+    expect(screen.getByLabelText('Model ID')).toHaveValue('B')
+    fireEvent.change(screen.getByLabelText('Model ID'), { target: { value: 'C' } })
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Save' })))
     expect(mocks.saveProvider.mock.lastCall![0].models[0]).toMatchObject({ id: 'C', originalId: 'B' })
     expect(screen.getByText('Model A')).toBeVisible()
   })
 
-  it.each(['notification', 'manual'] as const)('keeps pending edits on %s refresh while clean providers update', async mode => {
+  it.each(['notification', 'manual'] as const)('overwrites pending edits on %s refresh with the latest whole provider configuration', async mode => {
     mocks.listProviders.mockResolvedValue(snapshot([provider(), provider('other'), provider('clean')]))
     const firstSave = Promise.withResolvers<PiModelProvidersSnapshot>()
     mocks.saveProvider.mockReturnValueOnce(firstSave.promise)
@@ -266,12 +264,12 @@ describe('provider settings persistence', () => {
       else fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
     })
     await refresh()
-    expect(screen.getByLabelText('Base URL')).toHaveValue('https://pending.test/v1')
+    expect(screen.getByLabelText('Base URL')).toHaveValue('https://other.test/v1')
     await act(async () => firstSave.resolve(snapshot([{ ...provider(), models: [{ id: 'B' }] }])))
     await refresh()
-    expect(screen.getByLabelText('Base URL')).toHaveValue('https://pending.test/v1')
+    expect(screen.getByLabelText('Base URL')).toHaveValue('https://other.test/v1')
     await debounce()
-    expect(mocks.saveProvider.mock.lastCall![0]).toMatchObject({ id: 'other', baseUrl: 'https://pending.test/v1' })
+    expect(mocks.saveProvider.mock.calls.map(call => call[0].id)).toEqual(['demo'])
     fireEvent.click(screen.getByRole('button', { name: /^clean/ }))
     expect(screen.getByLabelText('Base URL')).toHaveValue('https://external.test/v1')
     fireEvent.click(screen.getByRole('button', { name: /^Demo/ }))
@@ -286,7 +284,8 @@ describe('provider settings persistence', () => {
     await renameModel('B')
     mocks.listProviders.mockReturnValueOnce(staleRead.promise)
     fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
-    await act(async () => firstSave.resolve(snapshot([{ ...provider(), models: [{ id: 'B' }] }])))
+    mocks.listProviders.mockResolvedValue(snapshot([{ ...provider(), models: [{ ...provider().models[0], id: 'B' }] }]))
+    await act(async () => firstSave.resolve(snapshot([{ ...provider(), models: [{ ...provider().models[0], id: 'B' }] }])))
     await act(async () => staleRead.resolve(snapshot([provider()])))
     expect(screen.getByText('Model A')).toBeVisible()
     fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: 'https://after.test/v1' } })
@@ -315,7 +314,7 @@ describe('provider settings persistence', () => {
     expect(screen.getByText('Model A')).toBeVisible()
   })
 
-  it('lets queued writes finish on unmount', async () => {
+  it('finishes the issued write on unmount without replaying edits superseded by its receipt', async () => {
     const firstSave = Promise.withResolvers<PiModelProvidersSnapshot>()
     mocks.saveProvider.mockReturnValueOnce(firstSave.promise)
     const view = await openSettings()
@@ -324,8 +323,8 @@ describe('provider settings persistence', () => {
     view.unmount()
     await act(async () => firstSave.resolve(snapshot([{ ...provider(), models: [{ id: 'B' }] }])))
     await debounce()
-    expect(mocks.saveProvider.mock.calls.map(call => call[0].models[0].id)).toEqual(['B', 'C'])
-    expect(mocks.saveProvider.mock.calls[1]![1].aborted).toBe(false)
+    expect(mocks.saveProvider.mock.calls.map(call => call[0].models[0].id)).toEqual(['B'])
+    expect(mocks.saveProvider.mock.calls[0]![1].aborted).toBe(false)
   })
 
   it('flushes a debounced edit when the page closes before the debounce fires', async () => {
@@ -415,7 +414,7 @@ describe('provider settings persistence', () => {
     expect(screen.getByLabelText('API Key')).toHaveValue('secret')
   })
 
-  it('preserves edits across refresh errors and allows retrying a failed rename save', async () => {
+  it('retains failed edits only until a successful whole refresh, then saves deliberate new edits', async () => {
     mocks.saveProvider.mockRejectedValueOnce(new Error('write denied'))
     await openSettings()
     vi.mocked(mocks.loadModels).mockRejectedValueOnce(new Error('omp RPC process has exited'))
@@ -429,11 +428,13 @@ describe('provider settings persistence', () => {
     await act(async () => window.dispatchEvent(new Event('ompiui:models-updated')))
     expect(screen.getByText('Model A')).toBeVisible()
     expect(screen.getByText(/network unavailable/)).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Retry save' })).toBeInTheDocument()
     mocks.listProviders.mockResolvedValueOnce(snapshot([provider()]))
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Reload' })))
     expect(screen.getByText('Model A')).toBeVisible()
     expect(screen.queryByText(/network unavailable/)).not.toBeInTheDocument()
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Retry save' })))
+    expect(screen.queryByRole('button', { name: 'Retry save' })).not.toBeInTheDocument()
+    await renameModel('B')
     expect(mocks.saveProvider.mock.lastCall![0].models[0]).toMatchObject({ id: 'B', originalId: 'A' })
     fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'retry-secret' } })
     await debounce()

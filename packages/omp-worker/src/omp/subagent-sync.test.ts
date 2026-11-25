@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { isJsonObject, type SubagentBlockRef, type SubagentSyncPage } from "@ompiui/protocol";
@@ -79,7 +79,10 @@ test("append preserves sealed blocks and only transfers the changed tail", async
 test("same-size rewrites and truncation cannot reuse stale content", async (t) => {
   const file = await fixture(t, line("old"));
   const first = await page(file);
+  const before = await stat(file);
   await writeFile(file, line("new"));
+  // NTFS may coalesce rapid same-size writes; make the observed rewrite epoch explicit.
+  await utimes(file, before.atime, new Date(before.mtimeMs + 1000));
   const replaced = await page(file, 0, first.blocks);
   assert.equal(replaced.blocks[0]?.kind, "data");
   assert.notEqual(replaced.blocks[0]?.hash, first.blocks[0]?.hash);

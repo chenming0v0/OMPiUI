@@ -287,6 +287,7 @@ export const ReasoningPartView = memo(function ReasoningPartView({ part, entryId
         type="button"
         ref={headerRef}
         onClick={toggleExpanded}
+        aria-expanded={expanded}
         disabled={!hasContent && !isPartStreaming}
         className={`w-full grid grid-cols-[auto_minmax(0,1fr)_12px] items-center gap-x-1.5 px-2 py-2 text-text-400 hover:bg-bg-200/50 transition-colors ${
           !hasContent ? 'cursor-default' : ''

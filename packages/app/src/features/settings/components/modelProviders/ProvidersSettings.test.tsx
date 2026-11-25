@@ -44,7 +44,7 @@ describe('authoritative provider configuration', () => {
 
   it('replaces B dirty model modal after A changes context, and B rename retains A context', async () => {
     render(<ProvidersSettings />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit model' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Configure model' }))
     fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'B unsaved' } })
     await incoming(configuration(256_000))
     expect(screen.getByLabelText('Display name')).toHaveValue('Original model')
@@ -82,7 +82,7 @@ describe('authoritative provider configuration', () => {
     act(() => { window.dispatchEvent(new CustomEvent('ompiui:models-updated')) })
     await incoming(configuration(256_000))
     await act(async () => { old.resolve(configuration(64_000)) })
-    fireEvent.click(screen.getByRole('button', { name: 'Edit model' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Configure model' }))
     expect(screen.getByLabelText(/Context window/)).toHaveValue(256_000)
   })
 
@@ -99,7 +99,7 @@ describe('authoritative provider configuration', () => {
     await incoming(remote)
     await act(async () => { old.resolve(configuration(64_000)) })
     expect(url).toHaveValue('https://a.example/v1')
-    fireEvent.click(screen.getByRole('button', { name: 'Edit model' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Configure model' }))
     expect(screen.getByLabelText(/Context window/)).toHaveValue(256_000)
   })
 
@@ -108,7 +108,7 @@ describe('authoritative provider configuration', () => {
     const url = await screen.findByLabelText('Base URL')
     vi.useFakeTimers()
     fireEvent.change(url, { target: { value: 'https://b-unsaved.example/v1' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Edit model' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Configure model' }))
     fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'B unsaved model' } })
     const remote = configuration(256_000)
     remote.providers[0] = { ...remote.providers[0], baseUrl: 'https://a.example/v1' }

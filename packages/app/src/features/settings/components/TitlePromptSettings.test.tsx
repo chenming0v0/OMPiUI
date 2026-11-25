@@ -32,7 +32,7 @@ describe('authoritative title prompt settings', () => {
     await waitFor(() => expect(fork).toHaveValue('A fork'))
     expect(screen.getByRole('textbox', { name: 'Fallback / replan title prompt' })).toHaveValue('A tiny')
     fireEvent.change(fork, { target: { value: 'B new fork' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save prompts' }))
     await waitFor(() => expect(mocks.command).toHaveBeenCalledWith('title.settings.set', {
       forkPrompt: 'B new fork', tinyPrompt: 'A tiny', cardPrompt: 'A card',
     }, expect.any(AbortSignal)))
@@ -46,7 +46,7 @@ describe('authoritative title prompt settings', () => {
     mocks.command.mockResolvedValueOnce(configuration('A'))
     act(() => notifyReconnected())
     await waitFor(() => expect(fork).toHaveValue('A fork'))
-    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Save prompts' })).toBeDisabled()
   })
 
   it('ignores an older read after a newer title snapshot becomes effective', async () => {
@@ -70,12 +70,12 @@ describe('authoritative title prompt settings', () => {
     const old = Promise.withResolvers<ReturnType<typeof configuration>>()
     mocks.command.mockReturnValueOnce(old.promise)
     fireEvent.change(fork, { target: { value: 'B old save' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save prompts' }))
     mocks.command.mockResolvedValueOnce(configuration('A'))
     act(() => receiveSettingsUpdated())
     await waitFor(() => expect(fork).toHaveValue('A fork'))
     await act(async () => { old.resolve(configuration('B old')) })
     expect(fork).toHaveValue('A fork')
-    expect(screen.queryByText('Saved.')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Prompts saved on the server/)).not.toBeInTheDocument()
   })
 })
