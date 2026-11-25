@@ -208,7 +208,7 @@ test('live public events survive task monitor completion without replaying or mu
   const child = sessionOf(h.registry.add('child', 'sub', 'root-ref'))
   h.start()
   child.emit('running')
-  child.emitEvent({ type: 'message_start', message: { role: 'assistant', content: [] } })
+  child.emitEvent({ type: 'message_start', message: { role: 'assistant', timestamp: 100, content: [] } })
   child.emitEvent({ type: 'message_update', message: { role: 'assistant', content: [
     { type: 'text', text: '正在检查' }, { type: 'thinking', thinking: '思考' },
     { type: 'image', data: 'binary' }, { type: 'toolCall', id: 'read', name: 'read', arguments: { path: 'private' } },
@@ -219,6 +219,7 @@ test('live public events survive task monitor completion without replaying or mu
   child.emitEvent({ type: 'message_end', message: { role: 'assistant', content: '完成' } })
   child.emit('idle')
   const messages = h.observations().flatMap(value => value.event ? [value.event] : [])
+  assert.equal((messages[0]!.message as JsonObject).timestamp, 100)
   assert.deepEqual(messages.map(event => event.type), [
     'message_start', 'message_update', 'tool_execution_start', 'tool_execution_end', 'irc_message', 'message_end',
   ])

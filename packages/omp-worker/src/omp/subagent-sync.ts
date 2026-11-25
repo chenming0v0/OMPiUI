@@ -127,7 +127,7 @@ export async function readSubagentSync(
       code: "INVALID_REQUEST",
     });
   const settings = getPreviewSettings();
-  const projection = `subagent-preview-v3:images:${sessionId ?? ''}:thinking-${settings.subagentThinking ? "on" : "off"}`;
+  const projection = `subagent-preview-v4:images:${sessionId ?? ''}:thinking-${settings.subagentThinking ? "on" : "off"}`;
   const file = await open(filePath, "r");
   try {
     const stat = await file.stat();

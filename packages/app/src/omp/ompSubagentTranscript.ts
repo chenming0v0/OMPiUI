@@ -5,6 +5,8 @@ export type OmpSubagentTranscriptItem = {
   kind: 'user' | 'assistant' | 'tool' | 'agent'
   text: string
   messageId?: string
+  /** 原生消息时间用于关联历史回填与实时投递；timestamp 仍表示界面接收时间。 */
+  sourceTimestamp?: number
   toolCallId?: string
   toolName?: string
   toolTitle?: string
@@ -157,7 +159,21 @@ function assistantSnapshot(
 function messagePatch(event: JsonObject, items: OmpSubagentTranscriptItem[]): OmpSubagentTranscriptItem[] {
   const messageId = string(event.messageId)
   if (!messageId || (event.role !== 'assistant' && event.role !== 'user' && event.role !== 'agent')) return items
-  const index = items.findIndex(item => item.kind === event.role && item.messageId === messageId)
+  const sourceTimestamp = typeof event.messageTimestamp === 'number' ? event.messageTimestamp : undefined
+  let index = items.findIndex(item => item.kind === event.role && item.messageId === messageId)
+  if (index < 0 && event.role === 'user') {
+    index = sourceTimestamp !== undefined ? items.findIndex(item => item.kind === 'user' && item.sourceTimestamp === sourceTimestamp) : -1
+    // 兼容旧 worker：仅认领末尾尚未与实时流关联的历史任务，不按正文全局去重。
+    const last = items.at(-1)
+    if (index < 0 && last?.kind === 'user' && last.sourceTimestamp === undefined && last.messageId?.startsWith('disk-message-')) {
+      const offset = typeof event.textOffset === 'number' ? event.textOffset : 0
+      const delta = string(event.textDelta) ?? ''
+      const tail = string(event.textTail)
+      const sameChunk = delta.length > 0 && last.text.slice(offset, offset + delta.length) === delta
+      const sameTail = tail && last.text.slice(Number(event.textTailOffset ?? 0)) === tail
+      if (sameChunk || sameTail) index = items.length - 1
+    }
+  }
   const previous = index >= 0 ? items[index] : undefined
   const offset = typeof event.textOffset === 'number' ? event.textOffset : 0
   const delta = string(event.textDelta) ?? ''
@@ -167,14 +183,15 @@ function messagePatch(event: JsonObject, items: OmpSubagentTranscriptItem[]): Om
   const candidate = contiguous
     ? (previous?.text ?? '').slice(0, offset - baseOffset) + delta
     : (string(event.textTail) ?? delta)
-  const limited = limitText(candidate)
+  // 用户任务在 start 帧中已经完整；分片到达时保留回填的完整正文。
+  const limited = limitText(event.role === 'user' && previous?.text.startsWith(candidate) ? previous.text : candidate)
   const text = limited.text
   const textOffset = contiguous
     ? baseOffset + limited.dropped
     : (typeof event.textTailOffset === 'number' ? event.textTailOffset : offset) + limited.dropped
   const streaming = event.phase !== 'message_end'
   const thinking = event.thinkingEnabled === false ? undefined : (string(event.thinking) ?? previous?.thinking)
-  const item = { kind: event.role, messageId, text, textOffset, thinking, streaming } as const
+  const item = { kind: event.role, messageId, sourceTimestamp: sourceTimestamp ?? previous?.sourceTimestamp, text, textOffset, thinking, streaming } as const
   let next =
     index >= 0
       ? items.map((part, position) => (position === index ? { ...part, ...item } : part))
@@ -239,7 +256,8 @@ export function transcriptItemsFromMessages(messages: unknown[]): OmpSubagentTra
     } else if (message.role === 'user') {
       const text = textFromMessage(message)
       const images = imagesFromMessage(message)
-      if (text || images.length) items = append(items, { kind: 'user', text, images, messageId: `disk-message-${index}` })
+      if (text || images.length) items = append(items, { kind: 'user', text, images, messageId: string(message.id) ?? `disk-message-${index}`,
+        sourceTimestamp: typeof message.timestamp === 'number' ? message.timestamp : undefined })
     } else if (message.role === 'toolResult') {
       const last = items.at(-1)
       items = updateTool(items, {

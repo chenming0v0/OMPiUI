@@ -121,6 +121,8 @@ export function projectPreviewMessage(
   const content: JsonObject[] = [];
   const projected: JsonObject = {
     role: message.role,
+    id: message.id,
+    timestamp: message.timestamp,
     content: typeof message.content === "string" ? "" : content,
     toolCallId: message.toolCallId,
     toolName: message.toolName,

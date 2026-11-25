@@ -105,6 +105,8 @@ export const ToolPartView = memo(function ToolPartView({
   const title = taskSlotTitle ?? (execution.argumentsUnknown ? t('toolPart.argumentsUnknown') : extractToolTitle(toolName, execution))
 
   const isActive = status === 'running'
+  const isTask = toolName === 'task'
+  const taskColor = isTask ? isActive ? 'text-accent-main-100' : status === 'completed' ? 'text-accent-secondary-100' : undefined : undefined
   const isQueued = status === 'pending'
   const isError = status === 'error'
   const failureLabel = t(!result && execution.interruption === 'cancelled' ? 'toolPart.cancelled' : !result && execution.interruption === 'unknown' ? 'toolPart.unknown' : 'toolPart.failed')
@@ -183,9 +185,9 @@ export const ToolPartView = memo(function ToolPartView({
     <div
       className={`
       relative flex items-center justify-center transition-colors duration-200
-      ${isActive ? 'text-text-300' : ''}
+      ${taskColor ?? (isActive ? 'text-text-300' : '')}
       ${isError ? 'text-danger-100' : ''}
-      ${status === 'completed' ? (isYield ? 'text-success-100 group-hover:text-success-100' : 'text-text-400 group-hover:text-text-300') : ''}
+      ${status === 'completed' && !isTask ? (isYield ? 'text-success-100 group-hover:text-success-100' : 'text-text-400 group-hover:text-text-300') : ''}
     `}
     >
       {getToolIcon(toolName)}
@@ -236,13 +238,13 @@ export const ToolPartView = memo(function ToolPartView({
           <div className="flex min-w-0 flex-1 items-baseline gap-2 overflow-hidden">
             <span
               className={`shrink-0 font-medium text-[length:var(--fs-md)] leading-tight ${
-                isActive
+                taskColor ?? (isActive
                   ? 'reasoning-shimmer-text'
                   : isError
                     ? 'text-danger-100'
                     : isYield && status === 'completed'
                       ? 'text-success-100 group-hover/header:text-success-100'
-                      : 'text-text-200 group-hover/header:text-text-100'
+                      : 'text-text-200 group-hover/header:text-text-100')
               }`}
             >
               {displayName}
@@ -268,8 +270,8 @@ export const ToolPartView = memo(function ToolPartView({
           </div>
 
           <div className="ml-auto flex shrink-0 items-center gap-2">
-            {(isQueued || isActive) && <span className="text-[length:var(--fs-xxs)] text-text-400">{t(isQueued ? 'toolPart.pending' : 'toolPart.running')}</span>}
-            {isError && <span className="text-[length:var(--fs-xxs)] text-danger-100" title={execution.error}>{failureLabel}</span>}
+            {!isTask && (isQueued || isActive) && <span className="text-[length:var(--fs-xxs)] text-text-400">{t(isQueued ? 'toolPart.pending' : 'toolPart.running')}</span>}
+            {!isTask && isError && <span className="text-[length:var(--fs-xxs)] text-danger-100" title={execution.error}>{failureLabel}</span>}
             {duration !== undefined && !isQueued && (
               <span
                 className={`text-[length:var(--fs-xxs)] font-mono tabular-nums ${isError ? 'text-danger-100/70' : isActive ? 'reasoning-shimmer-text' : 'text-text-500'}`}
@@ -305,13 +307,13 @@ export const ToolPartView = memo(function ToolPartView({
             <div className="flex items-baseline gap-2 overflow-hidden flex-1 min-w-0">
               <span
                 className={`font-medium text-[length:var(--fs-md)] leading-tight transition-colors duration-300 shrink-0 ${
-                  isActive
+                  taskColor ?? (isActive
                     ? 'reasoning-shimmer-text'
                     : isError
                       ? 'text-danger-100'
                       : isYield && status === 'completed'
                         ? 'text-success-100 group-hover/header:text-success-100'
-                        : 'text-text-200 group-hover/header:text-text-100'
+                        : 'text-text-200 group-hover/header:text-text-100')
                 }`}
               >
                 {displayName}
@@ -336,20 +338,20 @@ export const ToolPartView = memo(function ToolPartView({
                   {formatDuration(duration)}
                 </span>
               )}
-              <span
+              {!isTask && <span
                 className={`text-[length:var(--fs-xxs)] font-medium transition-all duration-300 ${
                   isActive || isQueued ? 'opacity-100 text-text-400' : 'opacity-0 w-0 overflow-hidden'
                 }`}
               >
                 {t(isQueued ? 'toolPart.pending' : 'toolPart.running')}
-              </span>
-              <span
+              </span>}
+              {!isTask && <span
                 className={`text-[length:var(--fs-xxs)] font-medium transition-all duration-300 ${
                   isError ? 'opacity-100 text-danger-100' : 'opacity-0 w-0 overflow-hidden'
                 }`}
               >
                 {failureLabel}
-              </span>
+              </span>}
               <span className="text-text-500">
                 {effectiveExpanded ? <ChevronDownIcon size={12} /> : <ChevronRightIcon size={12} />}
               </span>
@@ -391,13 +393,13 @@ export const ToolPartView = memo(function ToolPartView({
           <div className="flex items-baseline gap-2 overflow-hidden flex-1 min-w-0">
             <span
               className={`font-medium text-[length:var(--fs-md)] leading-tight transition-colors duration-300 shrink-0 ${
-                isActive
+                taskColor ?? (isActive
                   ? 'reasoning-shimmer-text'
                   : isError
                     ? 'text-danger-100'
                     : isYield && status === 'completed'
                       ? 'text-success-100 group-hover/header:text-success-100'
-                      : 'text-text-200 group-hover/header:text-text-100'
+                      : 'text-text-200 group-hover/header:text-text-100')
               }`}
             >
               {displayName}
@@ -424,20 +426,20 @@ export const ToolPartView = memo(function ToolPartView({
                 {formatDuration(duration)}
               </span>
             )}
-            <span
+            {!isTask && <span
               className={`text-[length:var(--fs-xxs)] font-medium transition-all duration-300 ${
                 isActive || isQueued ? 'opacity-100 text-text-400' : 'opacity-0 w-0 overflow-hidden'
               }`}
             >
               {t(isQueued ? 'toolPart.pending' : 'toolPart.running')}
-            </span>
-            <span
+            </span>}
+            {!isTask && <span
               className={`text-[length:var(--fs-xxs)] font-medium transition-all duration-300 ${
                 isError ? 'opacity-100 text-danger-100' : 'opacity-0 w-0 overflow-hidden'
               }`}
             >
               {failureLabel}
-            </span>
+            </span>}
             <span className="text-text-500">
               {effectiveExpanded ? <ChevronDownIcon size={12} /> : <ChevronRightIcon size={12} />}
             </span>

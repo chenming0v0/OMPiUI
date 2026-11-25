@@ -2,6 +2,8 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import type { JsonObject } from "@ompiui/protocol"
 import { SubagentMessageStream } from "./subagent-message-stream.js"
+import { projectSubagentPayload } from "./event-payload.js"
+import { projectPreviewMessage } from "./subagent-preview.js"
 
 function feed(stream: SubagentMessageStream, id: string, type: string, text: string): void {
   stream.push({ kind: "event", payload: { id, event: { type, message: { role: "assistant", content: text } } } })
@@ -10,6 +12,21 @@ function feed(stream: SubagentMessageStream, id: string, type: string, text: str
 function inner(frame: JsonObject): JsonObject {
   return (frame.payload as JsonObject).event as JsonObject
 }
+
+test("user input start and end retain the same native timestamp as the disk preview", () => {
+  const frames: JsonObject[] = []
+  const stream = new SubagentMessageStream(frame => frames.push(frame))
+  const message = { role: "user", timestamp: 1795590000123, content: "Complete assignment thoroughly:\nInspect the project." }
+  const preview = projectPreviewMessage(message, false)
+  for (const type of ["message_start", "message_end"]) {
+    stream.push({ kind: "event", payload: projectSubagentPayload("event", { id: "child", event: { type, message } }) })
+  }
+  assert.equal(preview.message.timestamp, message.timestamp)
+  assert.equal(frames.length, 2)
+  assert.equal(inner(frames[0]!).messageId, inner(frames[1]!).messageId)
+  assert.ok(frames.every(frame => inner(frame).messageTimestamp === preview.message.timestamp))
+  assert.equal(frames.map(frame => inner(frame).textDelta).join(""), message.content)
+})
 
 test("preview patches retain the worker generation and never share counters across reused native ids", () => {
   const frames: JsonObject[] = []

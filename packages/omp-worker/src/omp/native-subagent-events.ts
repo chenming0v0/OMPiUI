@@ -11,7 +11,7 @@ export const nativeSubagentEventsSource = String.raw`
         return [];
       }) : message.content;
       return { type: event.type, messageId: event.messageId,
-        message: { role: message.role, id: message.id, content, stopReason: message.stopReason } };
+        message: { role: message.role, id: message.id, timestamp: message.timestamp, content, stopReason: message.stopReason } };
     }
     if (event.type === "irc_message") {
       return { type: event.type, message: { details: {

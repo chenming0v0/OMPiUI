@@ -82,6 +82,48 @@ describe('subagent message groups', () => {
     expect(items[0]).toMatchObject({ kind: 'user', text: 'Assignment complete', streaming: false })
   })
 
+  it('reconciles backfilled assignments with later chunks without shortening or duplicating them', () => {
+    const text = 'Complete assignment thoroughly:\nRead README and inspect the configuration.'
+    let items = transcriptItemsFromMessages([{ role: 'user', timestamp: 100, content: text }])
+    for (const event of [
+      { phase: 'message_update', textOffset: 0, textDelta: text.slice(0, 20) },
+      { phase: 'message_start', textOffset: 20, textDelta: text.slice(20) },
+      { phase: 'message_end', textOffset: text.length, textDelta: '' },
+    ]) {
+      items = appendTranscriptEvent({ type: 'message_patch', role: 'user', messageId: 'live-assignment', messageTimestamp: 100, ...event }, items)
+      expect(items).toHaveLength(1)
+      expect(items[0].text).toBe(text)
+    }
+    expect(items[0]).toMatchObject({ messageId: 'live-assignment', sourceTimestamp: 100, streaming: false })
+  })
+
+  it('matches a delayed user frame even after its assistant reply was backfilled', () => {
+    const items = transcriptItemsFromMessages([
+      { role: 'user', timestamp: 100, content: 'Inspect the project' },
+      { role: 'assistant', timestamp: 101, content: 'Reading README' },
+    ])
+    const updated = appendTranscriptEvent({ type: 'message_patch', role: 'user', messageId: 'live-user', messageTimestamp: 100,
+      phase: 'message_end', textOffset: 0, textDelta: 'Inspect the project' }, items)
+    expect(updated.map(item => item.text)).toEqual(['Inspect the project', 'Reading README'])
+  })
+
+  it('keeps a real repeated assignment with a new native timestamp', () => {
+    const items = transcriptItemsFromMessages([{ role: 'user', timestamp: 100, content: 'Continue' }])
+    const updated = appendTranscriptEvent({ type: 'message_patch', role: 'user', messageId: 'next-user', messageTimestamp: 200,
+      phase: 'message_end', textOffset: 0, textDelta: 'Continue' }, items)
+    expect(updated).toHaveLength(2)
+  })
+
+  it('claims a legacy history assignment only once without hiding later identical user messages', () => {
+    const text = 'Complete assignment thoroughly'
+    let items = transcriptItemsFromMessages([{ role: 'user', content: text }])
+    const event = { type: 'message_patch', role: 'user', phase: 'message_end', textOffset: text.length, textDelta: '', textTailOffset: 0, textTail: text }
+    items = appendTranscriptEvent({ ...event, messageId: 'first-live' }, items)
+    expect(items).toHaveLength(1)
+    items = appendTranscriptEvent({ ...event, messageId: 'next-live', textOffset: 0, textDelta: text }, items)
+    expect(items).toHaveLength(2)
+  })
+
   it('keeps IRC deliveries separate from the reply streaming around them', () => {
     const items = feed([
       { type: 'message_patch', messageId: 'a', role: 'assistant', phase: 'message_update', textOffset: 0, textDelta: 'Working' },

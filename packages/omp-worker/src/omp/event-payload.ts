@@ -112,6 +112,7 @@ export function projectSubagentPayload(
       event.message = {
         role: message.role,
         id: message.id,
+        timestamp: message.timestamp,
         content:
           message.role === "assistant" || message.role === "user"
             ? content

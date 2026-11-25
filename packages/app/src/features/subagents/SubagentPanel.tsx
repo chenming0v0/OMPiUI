@@ -37,7 +37,7 @@ export function SubagentPanel({ sessionId }: { sessionId?: string | null }) {
           <span className="flex items-center gap-2 text-[length:var(--fs-sm)]">
             <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${entry.outcome.presentationStatus === 'running' ? 'animate-pulse bg-accent-main-100' : entry.outcome.presentationStatus === 'error' ? 'bg-danger-100' : entry.outcome.presentationStatus === 'completed' ? 'bg-accent-secondary-100' : 'bg-text-500'}`} />
             <span className="min-w-0 flex-1 truncate text-text-200">{entry.id}</span>
-            <span className="shrink-0 text-[length:var(--fs-xxs)] text-text-400">{t(`task.outcome.execution.${entry.outcome.executionStatus}`)}</span>
+            <span className="sr-only">{t(`task.outcome.execution.${entry.outcome.executionStatus}`)}</span>
           </span>
           {(entry.run?.progress?.currentTool || entry.title) && <span className="mt-1 block truncate pl-3.5 text-[length:var(--fs-xs)] text-text-400">{entry.run?.progress?.currentTool ?? entry.title}</span>}
         </button></div>)}

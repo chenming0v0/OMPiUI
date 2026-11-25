@@ -344,6 +344,23 @@ describe('ompSubagentStore disk backfill', () => {
     ompSubagentStore.clearAll()
   })
 
+  it.each(['history-first', 'event-first'])('shows the assignment once when %s wins the initial load race', order => {
+    const message = { role: 'user', timestamp: 100, content: 'Complete assignment thoroughly:\nExplore this project.' }
+    ompSubagentStore.applyLifecycle('race-parent', { id: 'scout', runId: 'run', status: 'started' })
+    const history = () => ompSubagentStore.applyHistory('race-parent', 'scout', [message])
+    const event = (phase: string) => ompSubagentStore.applyEvent('race-parent', { id: 'scout', runId: 'run', event: {
+      type: 'message_patch', role: 'user', messageId: 'live-user', messageTimestamp: message.timestamp, phase,
+      textOffset: phase === 'message_end' ? message.content.length : 0, textDelta: phase === 'message_end' ? '' : message.content,
+    } }, phase)
+    if (order === 'history-first') history()
+    event('message_start')
+    if (order === 'event-first') history()
+    event('message_end')
+    expect(ompSubagentStore.runsForSession('race-parent')[0].transcript).toMatchObject([
+      { kind: 'user', text: message.content, sourceTimestamp: message.timestamp, streaming: false },
+    ])
+  })
+
   it('maps raw subagent session messages to transcript items', () => {
     const items = transcriptItemsFromMessages([
       { role: 'user', content: [{ type: 'text', text: 'Complete assignment thoroughly:' }] },
