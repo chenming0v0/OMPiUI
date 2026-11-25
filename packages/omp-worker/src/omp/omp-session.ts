@@ -48,6 +48,7 @@ import { EventSnapshotBuffer } from "./event-snapshot-buffer.js";
 import { BranchPageReader } from "../runtime/branch-pages.js";
 import { projectStateImages, projectSubagentPayload, projectToolUpdate } from "./event-payload.js";
 import { MainMessageStream } from "./main-message-stream.js";
+import { StableEntryAliases } from './stable-entry-aliases.js';
 import { getPreviewSettings } from "./preview-settings.js";
 import { projectPreviewMessage } from "./subagent-preview.js";
 import { requireResourceList, registryFromResources } from './resource-registry.js';
@@ -192,6 +193,7 @@ export class OmpRpcSession implements SessionRuntime {
   // 历史条目（append 顺序）+ 活跃分支缓存
   private entries: EntryRecord[] = [];
   private readonly branchPages = new BranchPageReader<EntryRecord>();
+  private readonly stableEntryAliases = new StableEntryAliases();
   private leafId: string | null = null;
   private entriesSeeded = false;
   private syncInFlight: Promise<void> = Promise.resolve();
@@ -206,6 +208,7 @@ export class OmpRpcSession implements SessionRuntime {
   private liveMessage?: {
     value: LiveMessage;
     messageId: string | undefined;
+    knownEntryIds: Set<string>;
     phase: "streaming" | "persisting";
   };
 
@@ -220,6 +223,8 @@ export class OmpRpcSession implements SessionRuntime {
   // Queue execution and editing are native operations, never later prompts.
   private nativeQueue: { steering: JsonObject[]; followUp: JsonObject[] } = { steering: [], followUp: [] };
   private queueGeneration = 0;
+  /** Shared display metadata only; execution and history stay native. */
+  private readonly submittedQueueMessages = new Map<string, { record: JsonObject; historyEntryId?: string }>();
   /** Native async-work state; unknown until readback after an end event. */
   private pendingAsyncWork: boolean | undefined;
   private nativeSettled = true;
@@ -749,10 +754,12 @@ export class OmpRpcSession implements SessionRuntime {
         complete: true,
       },
       messageId,
+      knownEntryIds: reused ? current.knownEntryIds : new Set(this.entries.map(entry => entry.id)),
       phase: frame.type === "message_end" ? "persisting" : "streaming",
     };
     if (frame.type === "message_end") {
       const pending = this.liveMessage;
+      this.stableEntryAliases.completed(this.sessionId, pending.value.id, nativeMessage!, pending.knownEntryIds);
       const generation = this.historyGeneration;
       // 持久化交接：在 microtask 中刷新 branch，完成后再清除 live 行。
       queueMicrotask(() => {
@@ -842,10 +849,30 @@ export class OmpRpcSession implements SessionRuntime {
       steeringEntries: this.nativeQueue.steering.map((entry) => structuredClone(entry)),
       followUpEntries: this.nativeQueue.followUp.map((entry) => structuredClone(entry)),
       editable: true,
+      submittedMessages: this.getSubmittedQueueMessages(),
     };
   }
 
+  private getSubmittedQueueMessages(): JsonObject[] {
+    return [...this.submittedQueueMessages.values()].map(({ record }) => structuredClone(record));
+  }
+
+  private retireSubmittedQueueMessages(): void {
+    for (const [id, submission] of this.submittedQueueMessages) {
+      if (submission.historyEntryId && this.entries.some(entry => entry.id === submission.historyEntryId))
+        this.submittedQueueMessages.delete(id);
+    }
+  }
+
   private trackNativeQueue(frame: JsonObject): void {
+    if (Array.isArray(frame.submittedHistoryEntries)) {
+      for (const identity of frame.submittedHistoryEntries) {
+        if (!isJsonObject(identity) || typeof identity.queueEntryId !== "string" || typeof identity.historyEntryId !== "string") continue;
+        const submission = this.submittedQueueMessages.get(identity.queueEntryId);
+        if (submission) submission.historyEntryId = identity.historyEntryId;
+      }
+      this.retireSubmittedQueueMessages();
+    }
     this.queueGeneration += 1;
     for (const kind of ["steering", "followUp"] as const) {
       const entries = frame[`${kind}Entries`];
@@ -866,7 +893,10 @@ export class OmpRpcSession implements SessionRuntime {
     // RPC state already exposes the queue; never submit a control prompt here.
     const value = state.isCompacting || (isJsonObject(this.compactionShadow.operation) && this.compactionShadow.operation.type === "compaction")
       ? state.queuedMessages
-      : await this.client.requestRuntime("queue", this.pruningRevision ? { pruningRevision: this.pruningRevision } : {});
+      : await this.client.requestRuntime("queue", {
+        ...(this.pruningRevision ? { pruningRevision: this.pruningRevision } : {}),
+        ...(this.submittedQueueMessages.size ? { submittedQueueEntryIds: [...this.submittedQueueMessages.keys()] } : {}),
+      });
     if (epoch !== this.eventEpoch || generation !== this.queueGeneration) return;
     if (isJsonObject(value)) {
       this.applyContextMaintenance(value);
@@ -1010,8 +1040,19 @@ export class OmpRpcSession implements SessionRuntime {
           }
         }
       }
+      this.stableEntryAliases.observe(this.sessionId, this.entries as unknown as JsonObject[]);
       if (typeof data.leafId === "string" || data.leafId === null) {
         this.leafId = data.leafId as string | null;
+      }
+      // A queue can be drained before its native message reaches get_entries.
+      // Resolve native identity only after history sync, and retain the display
+      // record through that gap (including reconnects).
+      if (this.submittedQueueMessages.size && rawEntries.length) {
+        const submittedCount = this.submittedQueueMessages.size;
+        await this.refreshQueue(false).catch(error => this.reportEntrySyncError(error));
+        if (generation !== this.historyGeneration) return;
+        if (submittedCount !== this.submittedQueueMessages.size)
+          this.emitPiEvent({ type: "queue_update", ...this.getNativeQueueSnapshot() });
       }
       this.emitHeadIfChanged();
     } catch (error) {
@@ -1137,12 +1178,13 @@ export class OmpRpcSession implements SessionRuntime {
       checkpoint.liveMessage = undefined;
       checkpoint.liveMessageOmitted = true;
     }
-    return this.branchPages.read(
+    const page = this.branchPages.read(
       this.getHead(),
       this.branchEntries(),
       { cursor, limit, maxBytes, checkpoint, ...sync },
       (entry) => entry as unknown as JsonObject,
     );
+    return { ...page, stableEntryIds: this.stableEntryAliases.snapshot(this.sessionId) };
   }
 
   async getEntryContent(entryId: string, offset = 0, etag?: string): Promise<JsonObject> {
@@ -1250,6 +1292,7 @@ export class OmpRpcSession implements SessionRuntime {
       } catch { /* The native streaming state remains authoritative if the optional channel is unavailable. */ }
     }
     this.assertEventEpoch(epoch);
+    const { submittedMessages, ...queue } = this.getNativeQueueSnapshot();
     return {
       sessionId: this.sessionId,
       sessionFile: this.sessionFile ?? null,
@@ -1305,7 +1348,7 @@ export class OmpRpcSession implements SessionRuntime {
           ? this.retryShadow.attempt
           : 0,
       queue: {
-        ...this.getNativeQueueSnapshot(),
+        ...queue,
         steeringMode:
           native.steeringMode === "all" || native.steeringMode === "one-at-a-time"
             ? native.steeringMode
@@ -1315,7 +1358,7 @@ export class OmpRpcSession implements SessionRuntime {
             ? native.followUpMode
             : null,
       },
-      submittedMessages: [],
+      submittedMessages,
       pendingExtensionUiRequests: this.extensionUi.listPending(),
       extensionUiState: this.extensionUi.getStateMirror(),
       extensionTuiPanels: [],
@@ -1695,11 +1738,20 @@ export class OmpRpcSession implements SessionRuntime {
 
   private async submitNativeQueuedMessage(kind: "steering" | "followUp", index: number, entryId: string, maxResultBytes?: number): Promise<void> {
     const epoch = this.eventEpoch;
+    const historyGeneration = this.historyGeneration;
     await this.abortInFlight;
     if (epoch !== this.eventEpoch) throw Object.assign(new Error('Session replaced before queue submission'), { code: 'SESSION_REPLACED' });
-    await this.client.requestRuntime("sendQueuedMessage", {
+    const result = await this.client.requestRuntime("sendQueuedMessage", {
       kind, index, entryId, ...(maxResultBytes === undefined ? {} : { maxResultBytes }),
     });
+    this.assertEventEpoch(epoch);
+    if (historyGeneration !== this.historyGeneration) return;
+    if (isJsonObject(result) && isJsonObject(result.submittedMessage) && result.submittedMessage.queueEntryId === entryId) {
+      this.submittedQueueMessages.set(entryId, { record: result.submittedMessage });
+      // Publish acceptance even if the following readback fails; other clients
+      // must not rely on this caller's optimistic timeline.
+      this.emitPiEvent({ type: "queue_update", ...this.getNativeQueueSnapshot() });
+    }
     await this.refreshQueue().catch(error => this.reportEntrySyncError(error));
     this.scheduleEntrySync();
   }
@@ -1881,6 +1933,7 @@ export class OmpRpcSession implements SessionRuntime {
 
   private resetHistoryProjection(): void {
     this.historyGeneration += 1;
+    this.submittedQueueMessages.clear();
     this.messageStream.clear();
     this.entries = [];
     this.entriesSeeded = false;
@@ -1910,6 +1963,7 @@ export class OmpRpcSession implements SessionRuntime {
     this.pruningRevision = undefined;
     this.entryContentRevision = 0;
     this.nativeQueue = { steering: [], followUp: [] };
+    this.submittedQueueMessages.clear();
     this.pendingAsyncWork = undefined;
     this.nativeSettled = true;
     this.currentStreaming = false;
@@ -2075,9 +2129,23 @@ export class OmpRpcSession implements SessionRuntime {
   }
 
   async clearQueue(maxResultBytes?: number): Promise<JsonValue | undefined> {
+    const epoch = this.eventEpoch;
     const result = await this.client.requestRuntime("clearQueue", {
       ...(maxResultBytes === undefined ? {} : { maxResultBytes }),
     });
+    this.assertEventEpoch(epoch);
+    // The native result lists only cancelled queue entries. Already-consumed
+    // messages may still be awaiting history sync and must keep their projection.
+    if (isJsonObject(result)) {
+      for (const kind of ["steering", "followUp"] as const) {
+        const removed = result[`${kind}Entries`];
+        if (!Array.isArray(removed)) continue;
+        for (const entry of removed) {
+          if (isJsonObject(entry) && typeof entry.entryId === "string") this.submittedQueueMessages.delete(entry.entryId);
+        }
+      }
+    }
+    this.emitPiEvent({ type: "queue_update", ...this.getNativeQueueSnapshot() });
     await this.refreshQueue();
     return result;
   }
@@ -2093,6 +2161,9 @@ export class OmpRpcSession implements SessionRuntime {
       kind, index, entryId, returnContent,
       ...(maxResultBytes === undefined ? {} : { maxResultBytes }),
     });
+    this.assertEventEpoch(epoch);
+    if (this.submittedQueueMessages.delete(entryId))
+      this.emitPiEvent({ type: "queue_update", ...this.getNativeQueueSnapshot() });
     await this.refreshQueue().catch(error => this.reportEntrySyncError(error));
     return result;
   }

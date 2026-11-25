@@ -60,7 +60,7 @@ function visibleLiveMessage(branch: PiBranchPage) {
   if (!live) return undefined
   const persistedVisible = branch.items.some(entry => matchesInjectedMessage(entry, live) || (entry.type === 'message'
     && entry.message.role === live.message.role
-    && (entry.id === live.id || branch.client?.stableEntryIds?.[entry.id] === live.id)))
+    && (entry.id === live.id || branch.stableEntryIds?.[entry.id] === live.id || branch.client?.stableEntryIds?.[entry.id] === live.id)))
   return persistedVisible ? undefined : live
 }
 
@@ -85,7 +85,7 @@ export function buildPiHistoryItems(branch: PiBranchPage): PiTimelineItem[] {
 
   for (const entry of branch.items) {
     const timestamp = parseTime(entry.timestamp)
-    const renderKey = branch.client?.stableEntryIds?.[entry.id]
+    const renderKey = branch.stableEntryIds?.[entry.id] ?? branch.client?.stableEntryIds?.[entry.id]
 
     if (entry.type === 'message') {
       const message = entry.message

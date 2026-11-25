@@ -3,7 +3,7 @@ import type { ConnectionInfo } from '../api/events'
 import { serverStore } from '../store/serverStore'
 import { piModelsStore } from './state/piModelsStore'
 import { piModelRolesStore } from './state/piModelRolesStore'
-import { installModelSettingsSync } from './modelSettingsSync'
+import { installModelSettingsSync, refreshOfficialSettings } from './modelSettingsSync'
 
 const mocks = vi.hoisted(() => ({
   subscribe: vi.fn(),
@@ -83,6 +83,21 @@ describe('app-wide model settings connection lifecycle', () => {
     expect(piModelsStore.getSyncStatus()).toBe('unknown')
     expect(piModelRolesStore.getSnapshot().syncStatus).toBe('unknown')
     connection('connected')
+    expect(mocks.loadRoles).not.toHaveBeenCalled()
+  })
+
+  it('invalidates role requests and reloads requested roles on an official configuration update', () => {
+    piModelRolesStore.beginRead()
+    piModelRolesStore.setRoles({ default: 'custom/old' })
+    const version = piModelRolesStore.getVersion()
+    refreshOfficialSettings()
+    expect(piModelRolesStore.getVersion()).toBeGreaterThan(version)
+    expect(mocks.loadRoles).toHaveBeenCalledWith(true)
+    expect(mocks.loadModels).not.toHaveBeenCalled()
+  })
+
+  it('does not fetch unused roles on official configuration updates', () => {
+    refreshOfficialSettings()
     expect(mocks.loadRoles).not.toHaveBeenCalled()
   })
 

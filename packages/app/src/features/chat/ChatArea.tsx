@@ -48,7 +48,7 @@ import { useEmptyWorkingShellGate } from './virtual/useEmptyWorkingShellGate'
 import { TimelineRowLayoutContext } from './virtual/TimelineRowLayoutContext'
 import { HistoryPrefetchScheduler } from './virtual/historyPrefetchScheduler'
 import { TimelineEntryNavigation, useTimelineEntryNavigation } from './virtual/TimelineEntryNavigation'
-import { ReasoningTranslationContext, type ContextTimelineItem } from '../../omp/reasoningTranslation'
+import { ReasoningTranslationContext, useReasoningSessionReading } from '../../omp/reasoningTranslation'
 import { useReasoningTranslationSettings } from '../../store/reasoningTranslationSettings'
 import { serverStore } from '../../store/serverStore'
 import { piModelRolesStore } from '../../omp/state/piModelRolesStore'
@@ -374,9 +374,14 @@ export const ChatArea = memo(
       ref,
     ) => {
       const translationSettings = useReasoningTranslationSettings()
+      const readingAreaRef = useRef<HTMLDivElement>(null)
+      useReasoningSessionReading(sessionId, readingAreaRef)
       const { roles } = useSyncExternalStore(piModelRolesStore.subscribe, piModelRolesStore.getSnapshot, piModelRolesStore.getSnapshot)
       const translationModel = roles?.thinkingTranslator
       const translationScope = `${serverStore.getActiveServerGeneration()}:${sessionId ?? ''}:${translationModel ?? ''}`
+      const translationContext = useMemo(() => translationSettings.enabled && sessionId && translationModel ? {
+        scope: translationScope, sessionId, model: translationModel, budget: translationSettings.budget,
+      } : null, [translationSettings.enabled, translationSettings.budget, sessionId, translationModel, translationScope])
       useEffect(() => {
         if (translationSettings.enabled) void loadPiModelRoles().catch(() => undefined)
       }, [translationSettings.enabled, sessionId])
@@ -1155,14 +1160,9 @@ export const ChatArea = memo(
       }
 
       return (
-        <ReasoningTranslationContext.Provider value={translationSettings.enabled && sessionId && translationModel ? {
-          scope: translationScope,
-          model: translationModel,
-          budget: translationSettings.budget,
-          getItems: () => items.filter((item): item is ContextTimelineItem => item.kind === 'user_message' || item.kind === 'assistant_message'),
-        } : null}>
+        <ReasoningTranslationContext.Provider value={translationContext}>
         <TimelineEntryNavigation.Provider value={entryNavigation}>
-        <div className="h-full overflow-hidden contain-strict relative">
+        <div ref={readingAreaRef} className="h-full overflow-hidden contain-strict relative">
           {loadState === 'loading' && visibleItems.length === 0 && (
             <div className="absolute inset-0 z-10 flex items-center justify-center">
               <div className="flex flex-col items-center gap-3 text-text-400 session-loading-indicator">

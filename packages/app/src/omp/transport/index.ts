@@ -60,6 +60,7 @@ import type {
   PiSettingsSnapshot,
 } from '../domain/index.js'
 import { getApiBase, getPiAuthToken, piFetch, type PiRequestInit } from '../httpClient.js'
+import { getTerminalSecret, TERMINAL_SECRET_HEADER } from '../terminalIdentity'
 import { piCommandStore } from '../state/index.js'
 import { serverStore } from '../../store/serverStore'
 import { readSubagentTranscript } from '../subagentTranscript'
@@ -303,7 +304,11 @@ export async function postHostCommand<
     const controller = share ? new AbortController() : undefined
     const request = readJson<{ data: T }>(`${getApiBase()}/api/v1/host/commands/${encodeURIComponent(name)}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        ...(name.startsWith('terminals.') || name === 'workspaces.close'
+          ? { [TERMINAL_SECRET_HEADER]: getTerminalSecret() } : {}),
+      },
       body,
       signal: controller?.signal ?? signal,
     }).then(response => response.data)
@@ -535,10 +540,8 @@ export function getHostTerminalWebSocketUrl(terminalId: string, ticket: string, 
   // undefined 从最早保留的输出开始；-1 显式请求当前尾部，非负值恢复已知位置。
   if (cursor !== undefined && Number.isSafeInteger(cursor) && cursor >= -1)
     url.searchParams.set('cursor', String(cursor))
-  // 同源模式（无 API base）下 WebSocket 升级请求无法携带 Authorization 头，
-  // 因此只要配置了 token 就必须走 query 参数，与事件流保持一致。
-  const token = getPiAuthToken()
-  if (token) url.searchParams.set('token', token)
+  // The short-lived single-use ticket is the private stream capability. Neither
+  // the shared host bearer nor the durable private credential belongs in a URL.
   return url.toString()
 }
 

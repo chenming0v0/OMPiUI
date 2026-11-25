@@ -8,6 +8,7 @@ import {
   receivePackageProgress,
   receiveProviderAuthEvent,
   receiveResourceRevision,
+  receiveSettingsUpdated,
   registerProviderAuthFlow,
   resetManagementEvents,
   restoreProviderAuthFlows,
@@ -126,6 +127,15 @@ describe('managementEventStore', () => {
     expect(getManagementEventSnapshot().flows['flow-1']?.event).toMatchObject({ promptId: 'prompt-b' })
     clearProviderAuthEvent('flow-1', promptB)
     expect(getManagementEventSnapshot().flows['flow-1']?.event).toBeUndefined()
+  })
+
+  it('increments official settings revisions without changing provider/resource state', () => {
+    receiveResourceRevision('/repo', 'revision-2')
+    receiveSettingsUpdated()
+    receiveSettingsUpdated()
+    expect(getManagementEventSnapshot()).toMatchObject({ settingsRevision: 2, providerRevision: 0, resourceRevisions: { '/repo': 'revision-2' } })
+    resetManagementEvents()
+    expect(getManagementEventSnapshot().settingsRevision).toBe(0)
   })
 
   it('stores package progress and resource revisions independently', () => {

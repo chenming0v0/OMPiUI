@@ -16,7 +16,11 @@ export function loadPiModelRoles(force = false): Promise<Record<string, string>>
   if (existing) return existing
 
   const flight = getPiModelRoles().then(roles => {
-    if (isCurrent(generation, version)) piModelRolesStore.setRoles(roles)
+    if (isCurrent(generation, version)) {
+      // Once this read becomes effective, an older save response cannot replace it.
+      piModelRolesStore.beginWrite()
+      piModelRolesStore.setRoles(roles)
+    }
     return roles
   }).catch(error => {
     if (isCurrent(generation, version)) piModelRolesStore.setError(error as Error)

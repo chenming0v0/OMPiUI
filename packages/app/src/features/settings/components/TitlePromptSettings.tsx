@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '../../../components/ui/Button'
 import { useServerStore } from '../../../hooks/useServerStore'
 import { postPiGlobalCommand } from '../../../omp/transport'
 import { serverStore } from '../../../store/serverStore'
+import { registerSessionConsumer } from '../../../hooks/useGlobalEvents'
+import { useManagementEvents } from '../../../omp/managementEventStore'
 import { SettingField, SettingsSection, settingsFieldAreaClass } from './SettingsUI'
 
 interface TitlePrompts {
@@ -41,21 +43,24 @@ export function TitlePromptSettings() {
 
 function TitlePromptSettingsPanel({ generation }: { generation: number }) {
   const { t } = useTranslation('settings')
+  const consumerId = useId()
+  const { settingsRevision } = useManagementEvents()
   const [snapshot, setSnapshot] = useState<TitleSettingsSnapshot | null>(null)
   const [draft, setDraft] = useState<TitlePrompts | null>(null)
   const [busy, setBusy] = useState<'load' | 'save' | 'reset' | null>('load')
   const [error, setError] = useState<{ operation: 'load' | 'save'; message: string } | null>(null)
   const [notice, setNotice] = useState<'saved' | 'restored' | null>(null)
   const requestRef = useRef<AbortController | null>(null)
-  const dirtyRef = useRef(false)
 
   const load = useCallback(async () => {
-    // Focus refreshes must never replace an unsaved draft or race a save.
-    if (requestRef.current || dirtyRef.current || serverStore.getActiveServerGeneration() !== generation) return
+    if (serverStore.getActiveServerGeneration() !== generation) return
+    // Remote reloads supersede both unsaved edits and earlier request responses.
+    requestRef.current?.abort()
     const controller = new AbortController()
     requestRef.current = controller
     setBusy('load')
     setError(null)
+    setNotice(null)
     const isCurrent = () => !controller.signal.aborted
       && requestRef.current === controller
       && serverStore.getActiveServerGeneration() === generation
@@ -64,7 +69,6 @@ function TitlePromptSettingsPanel({ generation }: { generation: number }) {
       if (!isCurrent()) return
       setSnapshot(settings)
       setDraft(promptsFromSnapshot(settings))
-      dirtyRef.current = false
     } catch (cause) {
       if (isCurrent()) setError({ operation: 'load', message: cause instanceof Error ? cause.message : String(cause) })
     } finally {
@@ -75,16 +79,21 @@ function TitlePromptSettingsPanel({ generation }: { generation: number }) {
     }
   }, [generation])
 
+  useEffect(() => { void load() }, [load, settingsRevision])
+
   useEffect(() => {
-    void load()
     const refresh = () => { void load() }
+    const unsubscribe = registerSessionConsumer(consumerId, null, { onReconnected: refresh })
     window.addEventListener('focus', refresh)
+    window.addEventListener('online', refresh)
     return () => {
+      unsubscribe()
       window.removeEventListener('focus', refresh)
+      window.removeEventListener('online', refresh)
       requestRef.current?.abort()
       requestRef.current = null
     }
-  }, [load])
+  }, [consumerId, load])
 
   const persist = async (restoreDefaults: boolean) => {
     if (!snapshot || !draft || requestRef.current || serverStore.getActiveServerGeneration() !== generation) return
@@ -103,7 +112,6 @@ function TitlePromptSettingsPanel({ generation }: { generation: number }) {
       if (!isCurrent()) return
       setSnapshot(settings)
       setDraft(promptsFromSnapshot(settings))
-      dirtyRef.current = false
       setNotice(restoreDefaults ? 'restored' : 'saved')
     } catch (cause) {
       if (isCurrent()) setError({ operation: 'save', message: cause instanceof Error ? cause.message : String(cause) })
@@ -134,9 +142,7 @@ function TitlePromptSettingsPanel({ generation }: { generation: number }) {
             spellCheck={false}
             onChange={event => {
               if (!draft || !snapshot) return
-              const next = { ...draft, [key]: event.target.value }
-              dirtyRef.current = !samePrompts(next, snapshot)
-              setDraft(next)
+              setDraft({ ...draft, [key]: event.target.value })
               setNotice(null)
             }}
           />
@@ -151,7 +157,7 @@ function TitlePromptSettingsPanel({ generation }: { generation: number }) {
             {t(error.operation === 'load' ? 'titlePrompts.loadFailed' : 'titlePrompts.saveFailed', { error: error.message })}
           </p>
           {error.operation === 'load' && (
-            <Button type="button" variant="secondary" size="sm" disabled={busy !== null || hasChanges} onClick={() => void load()}>
+            <Button type="button" variant="secondary" size="sm" disabled={busy !== null} onClick={() => void load()}>
               {t('titlePrompts.retry')}
             </Button>
           )}

@@ -23,6 +23,7 @@ import { lookupModelsDevModel } from "./models-dev.ts"
 import type { WorkspaceStore, WorkspaceRecord } from "./workspace-store.ts"
 import type { WorkspaceWatcher } from "./workspace-watcher.ts"
 import type { TerminalManager } from "./terminal-manager.ts"
+import { requireTerminalOwner, type TerminalOwner } from "./terminal-auth.ts"
 
 type HostCommandHandler = (ctx: HostCommandContext, params: JsonObject) => JsonValue | undefined | Promise<JsonValue | undefined>
 
@@ -36,6 +37,7 @@ export type HostCommandContext = {
   watcher: WorkspaceWatcher
   sessions: SessionHost
   terminals: TerminalManager
+  terminalOwner?: TerminalOwner
   signal?: AbortSignal
 }
 
@@ -53,12 +55,15 @@ export class HostRuntime {
     }
   }
 
-  async execute(name: string, params: JsonObject = {}, options: { signal?: AbortSignal } = {}): Promise<JsonValue | undefined> {
+  async execute(name: string, params: JsonObject = {}, options: { signal?: AbortSignal; terminalOwner?: TerminalOwner } = {}): Promise<JsonValue | undefined> {
     const registered = HOST_CAPABILITIES.find(item => item.capability.name === name)
     if (!registered) throw Object.assign(new Error(`unknown host command: ${name}`), { code: "UNKNOWN_COMMAND" })
     // HTTP 边缘先用声明的 schema 挡畸形入参，handler 内的解析是第二道
     validateParams(registered.capability.paramsSchema, params)
-    return registered.handler({ ...this.ctx, signal: options.signal }, params)
+    // A principal comes only from the authenticated transport, never JSON params
+    // or a shared runtime context. Direct/legacy host command callers fail closed.
+    if (name.startsWith("terminals.") || name === "workspaces.close") requireTerminalOwner(options.terminalOwner)
+    return registered.handler({ ...this.ctx, signal: options.signal, terminalOwner: options.terminalOwner }, params)
   }
 }
 
@@ -174,23 +179,23 @@ const HOST_COMMAND_HANDLERS: Record<string, HostCommandHandler> = {
     return requireJsonValue({ command: record })
   },
   "terminals.shells": ctx => ctx.terminals.listShells().then(shells => ({ shells })),
-  "terminals.list": (ctx, params) => ({ terminals: ctx.terminals.list(workspace(ctx, params).canonicalRoot) }),
+  "terminals.list": (ctx, params) => ({ terminals: ctx.terminals.list(workspace(ctx, params).canonicalRoot, ctx.terminalOwner) }),
   "terminals.create": (ctx, params) => ctx.terminals.create(workspace(ctx, params).canonicalRoot, {
     cwd: optString(params, "cwd"),
     shell: optString(params, "shell"),
     title: optString(params, "title"),
     rows: optSize(params, "rows"),
     cols: optSize(params, "cols"),
-  }) as Promise<JsonValue>,
-  "terminals.get": (ctx, params) => ctx.terminals.get(workspace(ctx, params).canonicalRoot, reqString(params, "terminalId")) as JsonValue,
-  "terminals.connectToken": (ctx, params) => ctx.terminals.issueConnectToken(workspace(ctx, params).canonicalRoot, reqString(params, "terminalId")),
+  }, ctx.terminalOwner) as Promise<JsonValue>,
+  "terminals.get": (ctx, params) => ctx.terminals.get(workspace(ctx, params).canonicalRoot, reqString(params, "terminalId"), ctx.terminalOwner) as JsonValue,
+  "terminals.connectToken": (ctx, params) => ctx.terminals.issueConnectToken(workspace(ctx, params).canonicalRoot, reqString(params, "terminalId"), ctx.terminalOwner),
   "terminals.update": (ctx, params) => ctx.terminals.update(workspace(ctx, params).canonicalRoot, reqString(params, "terminalId"), {
     title: optString(params, "title"),
     rows: optSize(params, "rows"),
     cols: optSize(params, "cols"),
-  }) as JsonValue,
+  }, ctx.terminalOwner) as JsonValue,
   "terminals.remove": (ctx, params) => {
-    ctx.terminals.remove(workspace(ctx, params).canonicalRoot, reqString(params, "terminalId"))
+    ctx.terminals.remove(workspace(ctx, params).canonicalRoot, reqString(params, "terminalId"), ctx.terminalOwner)
     return { ok: true }
   },
   "workspaces.list": ctx => ({ workspaces: ctx.store.list() }),
@@ -201,7 +206,10 @@ const HOST_COMMAND_HANDLERS: Record<string, HostCommandHandler> = {
   },
   "workspaces.close": (ctx, params) => {
     const record = workspace(ctx, params)
-    ctx.terminals.closeWorkspace(record.canonicalRoot)
+    if (ctx.terminals.hasForeignInWorkspace(record.canonicalRoot, ctx.terminalOwner)) {
+      throw Object.assign(new Error("workspace still has another private client's terminal"), { code: "WORKSPACE_BUSY" })
+    }
+    ctx.terminals.closeWorkspace(record.canonicalRoot, ctx.terminalOwner)
     ctx.watcher.unwatch(record)
     ctx.store.remove(record.canonicalRoot)
     return { ok: true }

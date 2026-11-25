@@ -18,6 +18,8 @@ import {
 import { createAppServer, type AppServer } from "./http.ts";
 import { attachEventWebSocket, closeEventWebSocket } from "./ws.ts";
 import type { WebSocketServer } from "ws";
+import { TERMINAL_SECRET_HEADER } from "./host/terminal-auth.ts";
+const terminalSecret = "11".repeat(32);
 
 // 测试进程的 session 租约目录放进独立临时目录，跑完即删，
 // 不污染默认的 ompiui-session-leases 命名空间。
@@ -47,7 +49,12 @@ async function request(
   // 服务端卡住（如 ConPTY spawn 挂起）必须变成可见的失败，而不是无限等待。
   const response = await fetch(`http://127.0.0.1:${port}${path}`, {
     method,
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      // These existing terminal lifecycle cases are positive single-client tests.
+      ...(/\/commands\/(?:terminals\.|workspaces\.close)/.test(path)
+        ? { [TERMINAL_SECRET_HEADER]: terminalSecret } : {}),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(15_000),
   });

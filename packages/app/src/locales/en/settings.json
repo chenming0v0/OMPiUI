@@ -421,7 +421,10 @@
     "reasoningTranslation": "Thinking Translator",
     "reasoningTranslationDesc": "Translate reasoning into Chinese using the Thinking Translator model. Enabling this sends reasoning and recent conversation context to that model.",
     "reasoningTranslationBudget": "Context budget",
-    "reasoningTranslationBudgetDesc": "Maximum input token budget; oldest conversation context is truncated first. Default: 32k."
+    "reasoningTranslationBudgetDesc": "Maximum input token budget; oldest conversation context is truncated first. Default: 32k.",
+    "reasoningTranslationConcurrency": "Automatic translation concurrency",
+    "reasoningTranslationConcurrencyDesc": "Shared by this backend, 1–32, default 5. Explicit expansion immediately starts its first missing fragment, temporarily exceeding this quota. Later fragments and visible prewarming respect the quota; nearby prewarming uses at most one slot.",
+    "reasoningTranslationConfigError": "Could not read or save the backend translation concurrency. Please retry."
   },
   "titlePrompts": {
     "title": "Title Prompts",

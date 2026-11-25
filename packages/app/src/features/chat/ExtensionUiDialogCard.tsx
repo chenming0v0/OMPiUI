@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, useMemo, type KeyboardEvent } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { ExtensionUiDialogRequest, ExtensionUiDialogResponse } from '@ompiui/protocol'
-import { QuestionIcon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon } from '../../components/Icons'
+import type { ExtensionUiDialogRequest, ExtensionUiDialogResponse, NativeAskAnswer, NativeAskQuestion as NativeAskQuestionType } from '@ompiui/protocol'
+import { QuestionIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon } from '../../components/Icons'
 import { CodePreview } from '../../components/CodePreview'
 import { extensionUiStore } from '../../omp/extensionUiStore'
 import { respondPiExtensionUi } from '../../omp/controllers/index.js'
 import { NativeAskDialogDock } from './NativeAskDialogDock'
+import { NativeAskQuestion } from './NativeAskQuestion'
 
 export function ExtensionUiDialogCard(props: Omit<Parameters<typeof BasicExtensionUiDialogCard>[0], 'request'> & { request: ExtensionUiDialogRequest }) {
   if (props.request.kind === 'ask') return <NativeAskDialogDock {...props} request={props.request} />
@@ -54,6 +55,34 @@ function BasicExtensionUiDialogCard({
   const [responseId] = useState(() => globalThis.crypto?.randomUUID?.() ?? `${request.requestId}-${Date.now()}`)
   const submittingRef = useRef(false)
   const composingRef = useRef(false)
+
+  // select → NativeAskQuestion 适配：把 string[] options 转为单问题 NativeAskQuestion 格式
+  const selectQuestion = useMemo<NativeAskQuestionType | null>(() => {
+    if (request.kind !== 'select') return null
+    return {
+      id: request.requestId,
+      question: '',
+      options: request.options.map((label, index) => ({
+        label,
+        ...(request.optionDetails?.[index]?.description ? { description: request.optionDetails[index].description } : {}),
+      })),
+    }
+  }, [request])
+  const [selectAnswer, setSelectAnswer] = useState<NativeAskAnswer>(() => ({
+    id: request.kind === 'select' ? request.requestId : '',
+    selectedOptions: request.kind === 'select' && request.options[0] ? [request.options[0]] : [],
+  }))
+  const [selectCustom, setSelectCustom] = useState(false)
+  // 同步 selectAnswer → value：直接在 onChange 包装里同步更新，避免 effect 延迟
+  const handleSelectChange = (answer: NativeAskAnswer) => {
+    setSelectAnswer(answer)
+    const selected = answer.selectedOptions[0]
+    if (selected !== undefined) setValue(selected)
+    else if (answer.customInput !== undefined) setValue(answer.customInput)
+  }
+  const handleSelectCustomChange = (enabled: boolean) => {
+    setSelectCustom(enabled)
+  }
 
   // 多行输入框（input kind）：随内容自动增高，封顶后内部滚动
   const multilineRef = useRef<HTMLTextAreaElement | null>(null)
@@ -207,20 +236,15 @@ function BasicExtensionUiDialogCard({
           </p>
         )}
 
-        {request.kind === 'select' && (
-          <div className="flex flex-col gap-1">
-            {request.options.map((option, index) => (
-              <SelectOption
-                key={`${index}-${option}`}
-                option={option}
-                description={request.optionDetails?.[index]?.description}
-                selected={value === option}
-                disabled={submitting}
-                compact={compact}
-                onSelect={() => setValue(option)}
-              />
-            ))}
-          </div>
+        {request.kind === 'select' && selectQuestion && (
+          <NativeAskQuestion
+            question={selectQuestion}
+            answer={selectAnswer}
+            custom={selectCustom}
+            disabled={submitting}
+            onChange={handleSelectChange}
+            onCustomChange={handleSelectCustomChange}
+          />
         )}
 
         {request.kind === 'input' && (
@@ -295,97 +319,6 @@ function BasicExtensionUiDialogCard({
           {submitting ? '…' : request.kind === 'confirm' ? t('common:confirm') : t('common:submit')}
         </button>
       </div>
-    </div>
-  )
-}
-
-/**
- * 单选选项行：按钮永远单行（摘要单行截断），内容溢出时提供展开按钮，
- * 展开后内联展示完整文本（CodePreview / CodeMirror，限高内部滚动）。
- * 展开/收起只影响详情，不改变选中状态。
- */
-function SelectOption({
-  option,
-  description,
-  selected,
-  disabled,
-  compact,
-  onSelect,
-}: {
-  option: string
-  description?: string
-  selected: boolean
-  disabled: boolean
-  compact: boolean
-  onSelect: () => void
-}) {
-  const { t } = useTranslation('components')
-  const textRef = useRef<HTMLSpanElement | null>(null)
-  const [overflow, setOverflow] = useState(false)
-  const [expanded, setExpanded] = useState(false)
-
-  // 溢出检测：单行（truncate）下长内容水平溢出，需要展开入口
-  useEffect(() => {
-    const el = textRef.current
-    if (!el) return
-    const check = () => setOverflow(el.scrollWidth > el.clientWidth + 1)
-    check()
-    const ro = new ResizeObserver(check)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [option])
-
-  return (
-    <div
-      className={`flex flex-col overflow-hidden rounded-md border transition-colors ${
-        selected
-          ? 'border-accent-main-100/60 bg-accent-main-100/10'
-          : 'border-border-200/60 bg-bg-100 hover:border-border-300'
-      }`}
-    >
-      <div className="flex items-start gap-2 px-3 py-2">
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={onSelect}
-          className="flex min-w-0 flex-1 items-start gap-2 text-left"
-        >
-          <span
-            className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center ${
-              selected ? 'text-accent-secondary-100' : 'text-text-500'
-            }`}
-          >
-            {selected && <CheckIcon size={14} />}
-          </span>
-          <span
-            ref={textRef}
-            title={option}
-            className={`min-w-0 flex-1 truncate text-[length:var(--fs-sm)] ${
-              selected ? 'text-text-100' : 'text-text-300 hover:text-text-100'
-            }`}
-          >
-            {option}
-          </span>
-        </button>
-        {overflow && (
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => setExpanded(prev => !prev)}
-            title={expanded ? t('dialog.collapse') : t('dialog.expand')}
-            aria-expanded={expanded}
-            className="self-center shrink-0 rounded p-0.5 text-text-400 hover:bg-bg-200 hover:text-text-200 transition-colors"
-          >
-            {expanded ? <ChevronUpIcon size={14} /> : <ChevronDownIcon size={14} />}
-          </button>
-        )}
-      </div>
-      {description && <p className="mx-3 mb-2 whitespace-pre-wrap break-words text-[length:var(--fs-xs)] leading-relaxed text-text-400">{description}</p>}
-      {expanded && (
-        <div className="mx-3 mb-2 overflow-hidden rounded-md border border-border-200/40 bg-bg-100">
-          <CodePreview code={option} language="text" maxHeight={compact ? 100 : 180} />
-        </div>
-      )}
     </div>
   )
 }

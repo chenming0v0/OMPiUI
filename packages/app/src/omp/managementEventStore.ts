@@ -18,6 +18,7 @@ export interface ManagementEventSnapshot {
   packageProgress: Record<string, PackageProgress>
   resourceRevisions: Record<string, string>
   providerRevision: number
+  settingsRevision: number
 }
 
 let snapshot: ManagementEventSnapshot = {
@@ -25,6 +26,7 @@ let snapshot: ManagementEventSnapshot = {
   packageProgress: {},
   resourceRevisions: {},
   providerRevision: 0,
+  settingsRevision: 0,
 }
 
 const listeners = new Set<() => void>()
@@ -170,6 +172,10 @@ export function receiveProviderAuthUpdated(): void {
   emit({ ...snapshot, providerRevision: snapshot.providerRevision + 1 })
 }
 
+export function receiveSettingsUpdated(): void {
+  emit({ ...snapshot, settingsRevision: snapshot.settingsRevision + 1 })
+}
+
 export function receivePackageProgress(progress: PackageProgress): void {
   const packageProgress = { ...snapshot.packageProgress }
   delete packageProgress[progress.commandId]
@@ -193,6 +199,6 @@ export function receiveResourceRevision(workspacePath: string | undefined, revis
 export function resetManagementEvents(): void {
   beginProviderAuthRecovery()
   providerIds.clear()
-  emit({ flows: {}, packageProgress: {}, resourceRevisions: {}, providerRevision: 0 })
+  emit({ flows: {}, packageProgress: {}, resourceRevisions: {}, providerRevision: 0, settingsRevision: 0 })
   streamListeners.forEach(listener => listener())
 }

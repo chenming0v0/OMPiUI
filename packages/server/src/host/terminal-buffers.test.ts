@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { TerminalManager } from "./terminal-manager.ts";
 import { TextWindow } from "./text-window.ts";
+import { terminalOwnerFromSecret } from "./terminal-auth.ts";
+const owner = terminalOwnerFromSecret("11".repeat(32))!;
 
 function fixture() {
   const updates: string[] = [];
@@ -10,6 +12,7 @@ function fixture() {
   });
   const outputWindow = new TextWindow(2 * 1024 * 1024);
   const terminal = {
+    owner,
     workspacePath: process.cwd(),
     info: { id: "test", cursor: 0, status: "running", title: "initial" },
     get output() {
@@ -45,6 +48,8 @@ test("inactive terminal attachment cannot retain unlimited output and reports ex
     -1,
     () => {},
     () => {},
+    undefined,
+    owner,
   );
   for (let index = 0; index < 20; index++) feed("x".repeat(65536));
   assert.equal(terminal.subscribers.size, 0);
@@ -63,6 +68,8 @@ test("terminal replay is byte-bounded and unchanged titles do not broadcast repe
     undefined,
     () => {},
     () => {},
+    undefined,
+    owner,
   );
   assert.ok(Buffer.byteLength(attachment.replay) <= 1024 * 1024);
   assert.ok(attachment.replayCursor > 0);
@@ -78,6 +85,8 @@ test("terminal replay is byte-bounded and unchanged titles do not broadcast repe
         0,
         () => {},
         () => {},
+        undefined,
+        owner,
       ),
     { code: "TERMINAL_CURSOR_EXPIRED" },
   );
@@ -94,7 +103,7 @@ test("terminal replay is byte-bounded and unchanged titles do not broadcast repe
 test("alternating OSC titles are coalesced and split escape sequences remain readable", async () => {
   const { manager, terminal, feed, updates } = fixture();
   const titles: string[] = [];
-  const attachment = manager.attach(process.cwd(), "test", -1, () => {}, () => {}, title => titles.push(title));
+  const attachment = manager.attach(process.cwd(), "test", -1, () => {}, () => {}, title => titles.push(title), owner);
   attachment.activate();
   feed("\x1b");
   feed("]0;first\x07");
@@ -109,15 +118,15 @@ test("alternating OSC titles are coalesced and split escape sequences remain rea
 
 test("expired tickets are swept without invalidating simultaneous clients", () => {
   const { manager } = fixture();
-  const first = manager.issueConnectToken(process.cwd(), "test");
+  const first = manager.issueConnectToken(process.cwd(), "test", owner);
   const internals = manager as unknown as { tickets: Map<string, { expiresAt: number }> };
   internals.tickets.get(first.token)!.expiresAt = Date.now() - 1;
-  const second = manager.issueConnectToken(process.cwd(), "test");
-  const third = manager.issueConnectToken(process.cwd(), "test");
+  const second = manager.issueConnectToken(process.cwd(), "test", owner);
+  const third = manager.issueConnectToken(process.cwd(), "test", owner);
   assert.equal(internals.tickets.size, 2);
   assert.equal(manager.consumeConnectToken("test", first.token), undefined);
-  assert.equal(manager.consumeConnectToken("test", second.token), process.cwd());
-  assert.equal(manager.consumeConnectToken("test", third.token), process.cwd());
+  assert.equal(manager.consumeConnectToken("test", second.token)?.workspacePath, process.cwd());
+  assert.equal(manager.consumeConnectToken("test", third.token)?.workspacePath, process.cwd());
 });
 
 test("terminal input preserves ordering and checks the Windows input pipe instead of the output pipe", () => {
@@ -129,18 +138,40 @@ test("terminal input preserves ordering and checks the Windows input pipe instea
     write: (data: string) => writes.push(data),
   };
   Object.assign(terminal, { process: pty });
-  manager.write(process.cwd(), "test", "first");
-  manager.write(process.cwd(), "test", "second");
+  manager.write(process.cwd(), "test", "first", owner);
+  manager.write(process.cwd(), "test", "second", owner);
   pty._agent.inSocket.writableLength = 1024 * 1024;
-  assert.throws(() => manager.write(process.cwd(), "test", "blocked"), { code: "RATE_LIMITED" });
+  assert.throws(() => manager.write(process.cwd(), "test", "blocked", owner), { code: "RATE_LIMITED" });
   assert.deepEqual(writes, ["first", "second"]);
 });
 
 test("direct terminal renames enforce the title byte budget", () => {
   const { manager } = fixture();
-  assert.throws(() => manager.update(process.cwd(), "test", { title: "标题".repeat(100) }), { code: "INVALID_REQUEST" });
-  assert.equal(manager.update(process.cwd(), "test", { title: "custom" }).title, "custom");
+  assert.throws(() => manager.update(process.cwd(), "test", { title: "标题".repeat(100) }, owner), { code: "INVALID_REQUEST" });
+  assert.equal(manager.update(process.cwd(), "test", { title: "custom" }, owner).title, "custom");
 });
+
+test("legacy ownerless terminals are quarantined rather than silently taken over", () => {
+  const { manager, terminal, feed, updates } = fixture();
+  const ticket = manager.issueConnectToken(process.cwd(), "test", owner).token;
+  // Simulate an old surviving in-memory registry entry. No client may adopt it,
+  // and even a ticket issued before owner metadata was lost must fail closed.
+  delete (terminal as { owner?: unknown }).owner;
+  assert.deepEqual(manager.list(process.cwd(), owner), []);
+  for (const action of [
+    () => manager.get(process.cwd(), "test", owner),
+    () => manager.issueConnectToken(process.cwd(), "test", owner),
+    () => manager.attach(process.cwd(), "test", 0, () => {}, () => {}, undefined, owner),
+    () => manager.write(process.cwd(), "test", "attack", owner),
+    () => manager.update(process.cwd(), "test", { title: "takeover" }, owner),
+    () => manager.remove(process.cwd(), "test", owner),
+  ]) assert.throws(action, { code: "TERMINAL_NOT_FOUND" });
+  assert.equal(manager.consumeConnectToken("test", ticket), undefined);
+  manager.closeWorkspace(process.cwd(), owner);
+  assert.equal(manager.hasForeignInWorkspace(process.cwd(), owner), true);
+  feed("\x1b]0;legacy title\x07");
+  assert.deepEqual(updates, []);
+})
 
 test("scrollback bytes are bounded without changing character-based cursors", () => {
   const { terminal, feed } = fixture();

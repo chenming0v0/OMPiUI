@@ -20,7 +20,7 @@ import type { NativeTreeNode } from '../../components/sessionTreeGraph'
 import { buildOutlineSourceEntries } from '../../components/outlineIndexModel'
 import { selectPiTimelineItemsCached } from '../../omp/selectors/timelineCache.js'
 import type { HistoryPrefetchMode } from '../../omp/historyPagePrefetch'
-import { appendSubmittedUserMessages } from '../../omp/selectors/submittedMessages.js'
+import { appendSubmittedUserMessages, selectSubmittedQueueEntryIds } from '../../omp/selectors/submittedMessages.js'
 import { piEventStream } from '../../omp/eventStream.js'
 import { bashPendingStore } from '../../omp/bashPendingStore'
 import {
@@ -59,7 +59,7 @@ import { useSessionActiveEntry } from '../../store/activeSessionStore'
 import type { PiImageInput } from '../../omp/transport/index.js'
 import type { DeliveryMode } from '../../types/ui'
 import { attachmentToImage, imageInputToAttachment, interruptAttachmentsToImages } from './attachmentToImage'
-import { appendPendingSends, appendPendingQueueEntries, createPendingSend, reconcilePendingSends, reconcileQueuedPendingSends, withoutQueueEntry } from './pendingSend'
+import { appendPendingSends, appendPendingQueueEntries, createPendingSend, reconcilePendingSends, reconcileQueuedPendingSends, reconcileSubmittedPendingSends, withoutQueueEntry } from './pendingSend'
 import { hasStoppableSessionActivity } from './sessionActivity'
 import { pendingSendStore, type PendingSendAlert } from './pendingSendStore'
 import { describeSendFailure } from './sendFailure'
@@ -371,6 +371,7 @@ export function PiChatPane({
   // 输入框是 memo 组件；内容不变时复用队列引用，避免每个流式事件都重绘队列。
   const queuedSteering = useMemo(() => queue?.steeringEntries ?? EMPTY_QUEUE, [queue?.steeringEntries])
   const queuedFollowUps = useMemo(() => queue?.followUpEntries ?? EMPTY_QUEUE, [queue?.followUpEntries])
+  const submittedQueueEntryIds = useMemo(() => selectSubmittedQueueEntryIds(state?.submittedMessages), [state?.submittedMessages])
   // Timeline items from this session's keyed branch; home (no session)
   // shows an empty flow — user types and sends to create one.
   const baseItems = useMemo(() => selectPiTimelineItemsCached(sessionId, branch), [sessionId, branch])
@@ -380,9 +381,9 @@ export function PiChatPane({
   useEffect(() => pendingSendStore.onAlert(setSendAlert), [])
   const displayedQueues = useMemo(() => {
     const visible = pendingSends.filter(send => send.serverGeneration === activeServerGeneration && send.sessionId === sessionId)
-    const remaining = reconcilePendingSends(reconcileQueuedPendingSends(visible, [...queuedSteering, ...queuedFollowUps]), baseItems)
-    return { steering: appendPendingQueueEntries(queuedSteering, remaining, 'steering'), followUp: appendPendingQueueEntries(queuedFollowUps, remaining, 'followUp') }
-  }, [pendingSends, activeServerGeneration, sessionId, baseItems, queuedSteering, queuedFollowUps])
+    const remaining = reconcilePendingSends(reconcileQueuedPendingSends(reconcileSubmittedPendingSends(visible, submittedQueueEntryIds), [...queuedSteering, ...queuedFollowUps]), baseItems)
+    return { steering: appendPendingQueueEntries(queuedSteering, remaining, 'steering', submittedQueueEntryIds), followUp: appendPendingQueueEntries(queuedFollowUps, remaining, 'followUp', submittedQueueEntryIds) }
+  }, [pendingSends, activeServerGeneration, sessionId, baseItems, queuedSteering, queuedFollowUps, submittedQueueEntryIds])
 
   // Latest-identity ref for async callbacks below; synced after commit in an
   // effect declared before every hook that captures it (refs must not be
@@ -506,13 +507,13 @@ export function PiChatPane({
     pendingSendStore.update(current => {
       const sameServer = current.filter(send => send.serverGeneration === activeServerGeneration)
       const visible = sameServer.filter(send => send.sessionId === sessionId)
-      const remaining = reconcilePendingSends(reconcileQueuedPendingSends(visible, [...queuedSteering, ...queuedFollowUps]), baseItems)
+      const remaining = reconcilePendingSends(reconcileQueuedPendingSends(reconcileSubmittedPendingSends(visible, submittedQueueEntryIds), [...queuedSteering, ...queuedFollowUps]), baseItems)
       if (sameServer.length === current.length && remaining === visible) return current
       // 按 id 回写：存活 pending 可能带着更新后的 baselineTimestamps。
       const next = new Map(remaining.map(send => [send.id, send]))
       return sameServer.flatMap(send => send.sessionId !== sessionId ? [send] : next.has(send.id) ? [next.get(send.id)!] : [])
     })
-  }, [baseItems, sessionId, activeServerGeneration, queuedSteering, queuedFollowUps, pendingSends])
+  }, [baseItems, sessionId, activeServerGeneration, queuedSteering, queuedFollowUps, pendingSends, submittedQueueEntryIds])
 
   // 用户发起的 bash 乐观条目（执行中显示 + 流式输出，pi TUI 的
   // BashExecutionComponent 对应物）。订阅 pending 数量变化以便渲染合并。
@@ -523,11 +524,12 @@ export function PiChatPane({
   const items = useMemo(() => {
     void pendingBashCount
     const pendingItems = sessionId ? bashPendingStore.toItems(baseItems, sessionId) : []
-    const timeline = appendSubmittedUserMessages(baseItems, state?.submittedMessages)
-    const visiblePending = reconcileQueuedPendingSends(pendingSends.filter(send => send.serverGeneration === activeServerGeneration && send.sessionId === sessionId), [...queuedSteering, ...queuedFollowUps])
+    const timeline = appendSubmittedUserMessages(baseItems, state?.submittedMessages, count => t('chat:chatArea.queuedImages', { count }))
+    const localPending = reconcileSubmittedPendingSends(pendingSends.filter(send => send.serverGeneration === activeServerGeneration && send.sessionId === sessionId), submittedQueueEntryIds)
+    const visiblePending = reconcileQueuedPendingSends(localPending, [...queuedSteering, ...queuedFollowUps])
     const withPending = appendPendingSends(timeline, visiblePending, sessionId, count => t('chat:chatArea.queuedImages', { count }))
     return pendingItems.length > 0 ? [...withPending, ...pendingItems] : withPending
-  }, [baseItems, pendingSends, sessionId, activeServerGeneration, pendingBashCount, state?.submittedMessages, queuedSteering, queuedFollowUps, t])
+  }, [baseItems, pendingSends, sessionId, activeServerGeneration, pendingBashCount, state?.submittedMessages, submittedQueueEntryIds, queuedSteering, queuedFollowUps, t])
 
 
   const stopCoordinatorRef = useRef(new SessionStopCoordinator())
@@ -1665,7 +1667,7 @@ export function PiChatPane({
                 ? {
                     label: dialogRequest.title,
                     queueLength: pendingDialogs.length,
-                    onExpand: () => setDialogCollapsed(false),
+                    onExpand: () => { setDialogCollapsed(false); chatAreaRef.current?.scrollToBottom() },
                   }
                 : undefined
             }

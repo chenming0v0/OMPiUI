@@ -17,7 +17,8 @@ vi.mock('./controllers/index.js', async importOriginal => ({
   loadPiSessionData: network.load,
   refreshPiSessionState: network.state,
 }))
-vi.mock('./modelSettingsSync', () => ({ markModelSettingsDisconnected: vi.fn(), refreshModelSettings: vi.fn() }))
+vi.mock('./modelSettingsSync', () => ({ markModelSettingsDisconnected: vi.fn(), refreshModelSettings: vi.fn(), refreshOfficialSettings: vi.fn() }))
+vi.mock('./workspaces', () => ({ ensureHostWorkspaceWatch: vi.fn(async () => {}), resetWorkspaceWatchRegistrations: vi.fn() }))
 import { piEventStream } from './eventStream'
 
 type Socket = {

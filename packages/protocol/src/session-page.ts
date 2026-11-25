@@ -29,6 +29,8 @@ export type EntriesPage = {
   head: SessionHead;
   items: JsonObject[];
   checkpoint?: BranchCheckpoint;
+  /** Verified native-entry → live-message aliases across persistence handoff. */
+  stableEntryIds?: Record<string, string>;
   beforeCursor?: string;
   hasMore: boolean;
   /** 运行时历史快照标识；只有持有该标识的客户端可以请求增量。 */

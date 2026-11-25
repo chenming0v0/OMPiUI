@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { EventHub } from "./event-hub.ts"
+import { EventHub, eventWireFrame } from "./event-hub.ts"
+import { terminalOwnerFromSecret } from "./host/terminal-auth.ts"
 
 test("EventHub replays retained events and requires resync for stale cursors", () => {
   const hub = new EventHub(2)
@@ -73,4 +74,34 @@ test("EventHub notifies subscribers", () => {
   off()
   hub.publish(stream, "pi.event", { seq: 3 })
   assert.deepEqual(seen, ["1"])
+})
+
+test("private terminal live events and retained replay never expose foreign or legacy ownerless entries", () => {
+  const hub = new EventHub()
+  const stream = { kind: "workspace" as const, id: "shared-workspace" }
+  const ownerA = terminalOwnerFromSecret("aa".repeat(32))!
+  const ownerB = terminalOwnerFromSecret("bb".repeat(32))!
+  const initial = hub.getCursor(stream)
+  const liveA: string[] = []
+  const liveB: string[] = []
+  const publicOnly: string[] = []
+  hub.subscribe(event => liveA.push(String((event.payload as { id: string }).id)), ownerA)
+  hub.subscribe(event => liveB.push(String((event.payload as { id: string }).id)), () => ownerB)
+  hub.subscribe(event => publicOnly.push(String((event.payload as { id: string }).id)))
+  for (const channel of ["terminal.created", "terminal.updated", "terminal.exited", "terminal.deleted"] as const) {
+    const event = hub.publish(stream, channel, { id: "A", title: "A private title" }, ownerA)
+    hub.publish(stream, channel, { id: "B", title: "B private title" }, ownerB)
+    hub.publish(stream, channel, { id: "legacy", title: "ownerless" })
+    assert.ok(!eventWireFrame(event).data.includes(ownerA))
+  }
+  hub.publish(stream, "workspace.files", { id: "public" })
+  assert.deepEqual(liveA, ["A", "A", "A", "A", "public"])
+  assert.deepEqual(liveB, ["B", "B", "B", "B", "public"])
+  assert.deepEqual(publicOnly, ["public"])
+  const replayA = hub.replaySince(stream, initial, ownerA)
+  const replayB = hub.replaySince(stream, initial, ownerB)
+  assert.equal(replayA.resyncRequired, false)
+  assert.deepEqual(replayA.events.map(event => (event.payload as { id: string }).id), liveA)
+  assert.deepEqual(replayB.events.map(event => (event.payload as { id: string }).id), liveB)
+  assert.deepEqual(hub.replaySince(stream, initial).events.map(event => (event.payload as { id: string }).id), ["public"])
 })

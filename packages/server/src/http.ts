@@ -20,10 +20,13 @@ import {
   type ShareInfo,
   type TunnelStatus,
 } from "@ompiui/protocol";
-import { inspectOmpRuntimes, streamReasoningTranslation } from "@ompiui/omp-worker";
+import { inspectOmpRuntimes } from "@ompiui/omp-worker";
 import { EventHub } from "./event-hub.ts";
 import { RuntimeSupervisor } from "./omp/supervisor.ts";
 import { SessionHost } from "./omp/session-host.ts";
+import { readonlyReasoningSource } from './omp/reasoning-source.ts';
+import { ReasoningTranslations, translationIntent, translationReading } from './omp/reasoning-translations.ts';
+import type { ReasoningTranslationSnapshot } from '@ompiui/protocol';
 import { WorkspaceStore } from "./host/workspace-store.ts";
 import { WorkspaceWatcher } from "./host/workspace-watcher.ts";
 import {
@@ -36,7 +39,8 @@ import {
 import { resolveAuthToken } from "./host/auth-token.ts";
 import { PathSafetyError } from "./host/path-safety.ts";
 import { defaultWorkspaceRoot, HostRuntime } from "./host/command-table.ts";
-import { TerminalManager } from "./host/terminal-manager.ts";
+import { TerminalManager, type TerminalManagerOptions } from "./host/terminal-manager.ts";
+import { TERMINAL_SECRET_HEADER, terminalOwnerFromRequest } from './host/terminal-auth.ts';
 import { PairingStore, type PairRedeemFailure } from "./host/pairing.ts";
 import { listLanInterfaces } from "./host/network.ts";
 import type { TailscaleManager } from "./host/tailscale.ts";
@@ -57,12 +61,11 @@ import {
 
 const CORS_HEADERS: Record<string, string> = {
   "access-control-allow-methods": "GET,POST,OPTIONS",
-  "access-control-allow-headers": "content-type,authorization,if-match",
+  "access-control-allow-headers": `content-type,authorization,if-match,${TERMINAL_SECRET_HEADER}`,
 };
 const MAX_PENDING_HTTP_INPUT_BYTES = 64 * 1024 * 1024;
 const businessInput = { bytes: 0, limit: MAX_PENDING_HTTP_INPUT_BYTES };
 const pairingInput = { bytes: 0, limit: 4 * 1024 * 1024 };
-let activeReasoningTranslations = 0;
 
 function sendJson(res: ServerResponse, status: number, body: unknown): boolean {
   if (res.destroyed || res.writableEnded) return false;
@@ -392,6 +395,10 @@ function isSubmittedCommand(
 export interface CreateAppServerOptions {
   supervisor?: RuntimeSupervisor;
   sessionHost?: SessionHost;
+  /** Backend-owned translation service; injectable for CI fixtures. */
+  reasoningTranslations?: ReasoningTranslations;
+  /** Deterministic terminal transport injection for CI owner-isolation fixtures. */
+  terminalSpawn?: TerminalManagerOptions['spawn'];
   eventHub?: EventHub;
   authToken?: string | null;
   /**
@@ -446,12 +453,14 @@ export function createAppServer(
   const hub = options.eventHub ?? new EventHub();
   const supervisor = options.supervisor ?? new RuntimeSupervisor();
   const sessions = options.sessionHost ?? new SessionHost(supervisor, hub);
+  const reasoningTranslations = options.reasoningTranslations ?? new ReasoningTranslations({ readSource: readonlyReasoningSource(sessions) });
   const toolInteractions = new ToolInteractionProxy(sessions);
   const reportClients = new Map<string, number>();
   const watcher = new WorkspaceWatcher(hub);
   const terminals = new TerminalManager({
-    publish: (workspacePath, channel, payload) => {
-      hub.publish({ kind: "workspace", id: workspacePath }, channel, payload);
+    spawn: options.terminalSpawn,
+    publish: (workspacePath, channel, payload, owner) => {
+      hub.publish({ kind: "workspace", id: workspacePath }, channel, payload, owner);
     },
   });
   const host = new HostRuntime({ store, watcher, sessions, terminals });
@@ -902,35 +911,57 @@ export function createAppServer(
         return sendJson(res, 200, ticket);
       }
 
+      if (p === '/api/v1/pi/reasoning/config') {
+        if (method === 'GET') return sendJson(res, 200, await reasoningTranslations.getConfig());
+        if (method === 'POST') return sendJson(res, 200, await reasoningTranslations.setConfig(await readBody(req, scope.signal, 4096)));
+      }
+      if (method === 'POST' && p === '/api/v1/pi/reasoning/reading') {
+        const reading = translationReading(await readBody(req, scope.signal, 4096));
+        if (reading.active) await sessions.sessionQuery(reading.sessionId, 'branch.get', { limit: 1, maxBytes: 4096 }, scope.signal);
+        await reasoningTranslations.reading(reading);
+        return sendJson(res, 200, { ok: true });
+      }
       if (method === "POST" && p === "/api/v1/pi/reasoning/translate") {
-        const signal = AbortSignal.any([scope.signal, AbortSignal.timeout(120_000)]);
-        const { model, text, history, budget } = await readBody(req, signal, 512 * 1024);
-        if (typeof model !== "string" || !model || model.length > 1024 ||
-          typeof text !== "string" || !text.trim() || Buffer.byteLength(text) > 4096 ||
-          (budget !== 6144 && budget !== 8192 && budget !== 16384 && budget !== 32768) ||
-          !Array.isArray(history) || history.length > 9 ||
-          !history.every(message => message && typeof message === "object" && !Array.isArray(message) &&
-            (message.role === "user" || message.role === "assistant") && typeof message.text === "string")) {
-          throw Object.assign(new Error("Invalid reasoning translation input"), { code: "INVALID_REQUEST" });
-        }
-        if (activeReasoningTranslations >= 4) {
-          throw Object.assign(new Error("Reasoning translation capacity reached"), { code: "RATE_LIMITED" });
-        }
-        // 翻译流只返回给请求客户端，不进入事件回放、会话历史或命令记录。
-        activeReasoningTranslations++;
+        let subscription: Awaited<ReturnType<ReasoningTranslations['subscribe']>> | undefined;
+        let latest: ReasoningTranslationSnapshot | undefined;
+        let writing = false;
+        let finish = () => {};
+        const closed = new Promise<void>(resolve => { finish = resolve; });
+        const onAbort = () => { subscription?.detach(); finish(); };
+        scope.signal.addEventListener('abort', onAbort, { once: true });
+        const flush = async () => {
+          if (writing) return;
+          writing = true;
+          try {
+            while (latest && !scope.signal.aborted && !res.destroyed && !res.writableEnded) {
+              const snapshot = latest; latest = undefined;
+              if (!res.headersSent) {
+                res.writeHead(200, { 'content-type': 'application/x-ndjson', 'cache-control': 'no-store, no-transform' });
+                res.flushHeaders();
+              }
+              if (!res.write(JSON.stringify({ snapshot }) + '\n')) await once(res, 'drain', { signal: scope.signal });
+            }
+          } catch { onAbort(); }
+          finally { writing = false; }
+        };
         try {
-          res.writeHead(200, { "content-type": "application/x-ndjson", "cache-control": "no-store, no-transform" });
-          res.flushHeaders();
-          const context = history as Array<{ role: 'user' | 'assistant'; text: string }>
-          await streamReasoningTranslation({ model, text, budget, history: context }, signal, async delta => {
-            signal.throwIfAborted();
-            if (!res.write(JSON.stringify({ delta }) + "\n")) await once(res, "drain", { signal });
-          });
-          res.end('{"done":true}\n');
+          const intent = translationIntent(await readBody(req, scope.signal, 4096));
+          scope.signal.throwIfAborted();
+          subscription = await reasoningTranslations.subscribe(intent, snapshot => {
+            if (scope.signal.aborted) throw new Error('Translation demand detached');
+            latest = snapshot;
+            void flush();
+          }, () => { if (!res.destroyed && !res.writableEnded) res.end(); finish(); });
+          if (scope.signal.aborted) onAbort();
+          await closed;
         } catch {
-          if (!res.destroyed) res.end('{"error":true}\n');
+          if (!res.destroyed && !res.writableEnded) {
+            if (res.headersSent) res.end('{"error":true}\n');
+            else sendJson(res, 400, { error: true });
+          }
         } finally {
-          activeReasoningTranslations--;
+          subscription?.detach();
+          scope.signal.removeEventListener('abort', onAbort);
         }
         return;
       }
@@ -974,7 +1005,7 @@ export function createAppServer(
         const data = await host.execute(
           "commands.get",
           { id: safeDecode(commandMatch[1]!) },
-          { signal: scope.signal },
+          { signal: scope.signal, terminalOwner: terminalOwnerFromRequest(req) },
         );
         return sendJson(res, 200, data ?? null);
       }
@@ -987,7 +1018,12 @@ export function createAppServer(
         );
         const data = await host.execute(name, commandParams(body) ?? {}, {
           signal: scope.signal,
+          terminalOwner: terminalOwnerFromRequest(req),
         });
+        if (name === 'models.providers.save' || name === 'models.providers.delete') {
+          // A cold management-only backend may not have a worker models.yml watcher yet.
+          hub.publish({ kind: 'server', id: 'server' }, 'models.updated', { command: name });
+        }
         return sendJson(res, 200, { data: data ?? null });
       }
 
@@ -1044,6 +1080,7 @@ export function createAppServer(
         const terminalsDown = terminals.shutdown().catch((error) => {
           console.error("[ompiui-server] owned terminals did not exit cleanly", error);
         });
+        await reasoningTranslations.dispose();
         await closeHttpServer();
         await watcher.dispose();
         sessions.dispose();
@@ -1056,6 +1093,7 @@ export function createAppServer(
 }
 
 function allowedMethodsForPath(pathname: string): string | undefined {
+  if (pathname === '/api/v1/pi/reasoning/config') return 'GET, POST';
   if (
     pathname === "/api/v1/host/health" ||
     pathname === "/api/v1/host/omp-runtime" ||
@@ -1072,6 +1110,7 @@ function allowedMethodsForPath(pathname: string): string | undefined {
   if (
     pathname === "/api/v1/host/shutdown" ||
     pathname === "/api/v1/pi/reasoning/translate" ||
+    pathname === '/api/v1/pi/reasoning/reading' ||
     pathname === "/api/v1/host/pair/redeem" ||
     pathname === "/api/v1/host/tailscale/install" ||
     pathname === "/api/v1/host/tailscale/login" ||

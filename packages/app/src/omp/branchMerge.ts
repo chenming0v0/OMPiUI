@@ -44,7 +44,7 @@ export function mergeLatestBranchPage(current: PiBranchPage | null, latest: PiBr
   if (!current) return latest
 
   const withClientState = (page: PiBranchPage): PiBranchPage => {
-    const stableEntryIds = { ...page.client?.stableEntryIds, ...current.client?.stableEntryIds }
+    const stableEntryIds = { ...page.client?.stableEntryIds, ...current.client?.stableEntryIds, ...page.stableEntryIds }
     const liveMessage = current.checkpoint?.liveMessage
     const persistedMatch = liveMessage
       ? [...page.items].reverse().find(entry => matchesLiveMessage(entry, liveMessage))

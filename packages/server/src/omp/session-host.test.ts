@@ -12,6 +12,41 @@ import type { RuntimeSupervisor } from "./supervisor.ts"
 import { SessionHost } from "./session-host.ts"
 import type { WorkerEvent } from "@ompiui/omp-worker"
 
+test('global settings writes broadcast only after successful catalog completion', async t => {
+  let fail = false
+  const supervisor = {
+    onEvent: () => () => {},
+    catalogCommand: async () => { if (fail) throw new Error('write rejected'); return { saved: true } },
+  } as unknown as RuntimeSupervisor
+  const hub = new EventHub()
+  const host = new SessionHost(supervisor, hub)
+  const events: string[] = []
+  const unsubscribe = hub.subscribe(event => {
+    if (event.channel === 'settings.updated') {
+      assert.deepEqual(event.stream, { kind: 'server', id: 'server' })
+      events.push(String((event.payload as JsonObject).command))
+    }
+  })
+  t.after(() => { unsubscribe(); host.dispose() })
+  const setters: Array<[string, JsonObject]> = [
+    ['settings.patch', { cwd: '.', patch: {} }], ['modelRoles.set', { roles: {} }],
+    ['title.settings.set', { forkPrompt: 'fork', tinyPrompt: 'tiny', cardPrompt: 'card' }],
+    ['preview.settings.set', { subagentThinking: false }],
+  ]
+  for (const [name, params] of setters) await host.executeGlobalCommand(name, params)
+  assert.deepEqual(events, setters.map(([name]) => name))
+  for (const [name, params] of setters) {
+    fail = true
+    await assert.rejects(host.executeGlobalCommand(name, params), /write rejected/)
+    fail = false
+  }
+  await host.executeGlobalCommand('settings.get', { cwd: '.' })
+  await host.executeGlobalCommand('modelRoles.get')
+  await host.executeGlobalCommand('title.settings.get')
+  await host.executeGlobalCommand('preview.settings.get')
+  assert.deepEqual(events, setters.map(([name]) => name), 'gets and rejected writes do not invalidate other clients')
+})
+
 test("unattributed extension errors go only to the server stream, not the currently attached session", t => {
   let receive!: (event: WorkerEvent) => void
   const supervisor = { onEvent: (listener: (event: WorkerEvent) => void) => { receive = listener; return () => {} } } as unknown as RuntimeSupervisor

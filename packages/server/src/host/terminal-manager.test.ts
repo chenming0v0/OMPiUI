@@ -6,35 +6,38 @@ import path from "node:path"
 import { after, test } from "node:test"
 import type { TerminalInfo } from "@ompiui/protocol"
 import { extractTerminalTitle, TerminalManager } from "./terminal-manager.ts"
+import { terminalOwnerFromSecret } from "./terminal-auth.ts"
+
+const owner = terminalOwnerFromSecret("11".repeat(32))!
 
 test("TerminalManager creates, streams, replays, and removes a terminal", async () => {
   const root = mkdtempSync(path.join(tmpdir(), "omompiui-terminal-"))
   const manager = new TerminalManager()
   try {
-    const created = await manager.create(root, { title: "Pi terminal", rows: 24, cols: 80 })
+    const created = await manager.create(root, { title: "Pi terminal", rows: 24, cols: 80 }, owner)
     assert.equal(created.status, "running")
     assert.equal(created.title, "Pi terminal")
 
     const output: string[] = []
     const titles: string[] = []
-    const attachment = manager.attach(root, created.id, undefined, data => output.push(data), () => {}, title => titles.push(title))
+    const attachment = manager.attach(root, created.id, undefined, data => output.push(data), () => {}, title => titles.push(title), owner)
     attachment.activate()
-    manager.write(root, created.id, process.platform === "win32" ? "echo ompiui-terminal\r\n" : "printf ompiui-terminal\\n")
+    manager.write(root, created.id, process.platform === "win32" ? "echo ompiui-terminal\r\n" : "printf ompiui-terminal\\n", owner)
     await waitFor(() => output.join("").includes("ompiui-terminal"))
 
-    const replayed = manager.attach(root, created.id, 0, () => {}, () => {})
+    const replayed = manager.attach(root, created.id, 0, () => {}, () => {}, undefined, owner)
     assert.match(replayed.replay, /ompiui-terminal/)
     replayed.detach()
     assert.match(output.join(""), /ompiui-terminal/)
-    const cursor = manager.get(root, created.id).cursor
-    assert.throws(() => manager.attach(root, created.id, cursor + 10, () => {}, () => {}), { code: "INVALID_REQUEST" })
+    const cursor = manager.get(root, created.id, owner).cursor
+    assert.throws(() => manager.attach(root, created.id, cursor + 10, () => {}, () => {}, undefined, owner), { code: "INVALID_REQUEST" })
 
-    manager.update(root, created.id, { title: "Renamed terminal" })
+    manager.update(root, created.id, { title: "Renamed terminal" }, owner)
     assert.deepEqual(titles, ["Renamed terminal"])
-    const ticket = manager.issueConnectToken(root, created.id).token
-    manager.remove(root, created.id)
+    const ticket = manager.issueConnectToken(root, created.id, owner).token
+    manager.remove(root, created.id, owner)
     assert.equal(manager.consumeConnectToken(created.id, ticket), undefined)
-    assert.deepEqual(manager.list(root), [])
+    assert.deepEqual(manager.list(root, owner), [])
   } finally {
     manager.dispose()
     await manager.shutdown()
@@ -65,19 +68,19 @@ test("closeWorkspace kills owned terminals and consumes their tickets", async ()
   const other = mkdtempSync(path.join(tmpdir(), "omompiui-terminal-close-other-"))
   const manager = new TerminalManager()
   try {
-    const first = await manager.create(root, { title: "close-me" })
-    const second = await manager.create(root, { title: "close-me-too" })
-    const unrelated = await manager.create(other, { title: "keep-me" })
-    const ticket = manager.issueConnectToken(root, first.id).token
+    const first = await manager.create(root, { title: "close-me" }, owner)
+    const second = await manager.create(root, { title: "close-me-too" }, owner)
+    const unrelated = await manager.create(other, { title: "keep-me" }, owner)
+    const ticket = manager.issueConnectToken(root, first.id, owner).token
 
-    manager.closeWorkspace(root)
-    manager.closeWorkspace(root)
+    manager.closeWorkspace(root, owner)
+    manager.closeWorkspace(root, owner)
 
-    assert.deepEqual(manager.list(root), [])
+    assert.deepEqual(manager.list(root, owner), [])
     assert.equal(manager.consumeConnectToken(first.id, ticket), undefined)
-    assert.throws(() => manager.get(root, first.id), /not found/)
-    assert.throws(() => manager.get(root, second.id), /not found/)
-    assert.equal(manager.list(other).some(t => t.id === unrelated.id), true)
+    assert.throws(() => manager.get(root, first.id, owner), /not found/)
+    assert.throws(() => manager.get(root, second.id, owner), /not found/)
+    assert.equal(manager.list(other, owner).some(t => t.id === unrelated.id), true)
   } finally {
     await manager.shutdown()
     await removeWithRetry(root)
@@ -89,20 +92,20 @@ test("exited terminals replay buffered output and report the exit code", async (
   const root = mkdtempSync(path.join(tmpdir(), "omompiui-terminal-exited-replay-"))
   const manager = new TerminalManager()
   try {
-    const created = await manager.create(root, { title: "replay" })
+    const created = await manager.create(root, { title: "replay" }, owner)
     // PTY 的回车提交在 macOS/Linux runner 上用 CR 更稳定；命令本身仍
     // 输出 LF，Windows cmd 使用 CRLF。
-    manager.write(root, created.id, process.platform === "win32" ? "echo replay-me\r\n" : "printf replay-me\\n\r")
-    await waitFor(() => manager.get(root, created.id).cursor > 0)
-    manager.write(root, created.id, process.platform === "win32" ? "exit\r\n" : "exit\r")
-    await waitFor(() => manager.get(root, created.id).status === "exited")
-    assert.equal(manager.issueConnectToken(root, created.id).token.length > 0, true)
+    manager.write(root, created.id, process.platform === "win32" ? "echo replay-me\r\n" : "printf replay-me\\n\r", owner)
+    await waitFor(() => manager.get(root, created.id, owner).cursor > 0)
+    manager.write(root, created.id, process.platform === "win32" ? "exit\r\n" : "exit\r", owner)
+    await waitFor(() => manager.get(root, created.id, owner).status === "exited")
+    assert.equal(manager.issueConnectToken(root, created.id, owner).token.length > 0, true)
 
     let replayed = ""
     let exitCode: number | null | undefined
     const attachment = manager.attach(root, created.id, 0, data => (replayed += data), event => {
       exitCode = event.exitCode
-    })
+    }, undefined, owner)
     assert.match(attachment.replay, /replay-me/)
     attachment.activate()
     assert.equal(exitCode, 0)
@@ -127,7 +130,7 @@ test("enforces the terminal limit under concurrent creates", async t => {
     return { id, title: "limit", shell: "test", cwd: workspace, status: "running", pid: 0, cursor: 0 }
   })
   try {
-    const pending = Array.from({ length: 40 }, () => manager.create(root, { title: "limit" }))
+    const pending = Array.from({ length: 40 }, () => manager.create(root, { title: "limit" }, owner))
     assert.equal(started, 32)
     release()
     const results = await Promise.allSettled(pending)
@@ -149,9 +152,9 @@ test("repeated cleanup kills a native handle once and cancels escalation after e
   const root = mkdtempSync(path.join(tmpdir(), "ompiui-terminal-kill-once-"))
   const manager = new TerminalManager()
   try {
-    const created = await manager.create(root)
+    const created = await manager.create(root, {}, owner)
     // Await a prompt/output so Unix shells have finished early signal setup.
-    await waitFor(() => manager.get(root, created.id).cursor > 0)
+    await waitFor(() => manager.get(root, created.id, owner).cursor > 0)
     const child = ownedProcess(manager, created.id)
     const owned = child.ownedProcesses.get(child.process)!
     const originalKill = child.process.kill.bind(child.process)
@@ -160,7 +163,7 @@ test("repeated cleanup kills a native handle once and cancels escalation after e
       signals.push(signal)
       originalKill(signal)
     })
-    manager.remove(root, created.id)
+    manager.remove(root, created.id, owner)
     manager.dispose()
     await manager.shutdown()
     assert.equal(owned.forceKillTimer, undefined)
@@ -249,8 +252,8 @@ if (process.platform === "linux") {
     const unrelatedManager = new TerminalManager()
     let child: ReturnType<typeof ownedProcess> | undefined
     try {
-      const created = await manager.create(root, { shell: "/bin/bash" })
-      const unrelated = await unrelatedManager.create(other, { shell: "/bin/bash" })
+      const created = await manager.create(root, { shell: "/bin/bash" }, owner)
+      const unrelated = await unrelatedManager.create(other, { shell: "/bin/bash" }, owner)
       child = ownedProcess(manager, created.id)
       const originalKill = child.process.kill.bind(child.process)
       const signals: Array<string | undefined> = []
@@ -259,16 +262,16 @@ if (process.platform === "linux") {
         originalKill(signal)
       })
       let output = ""
-      const attachment = manager.attach(root, created.id, 0, data => (output += data), () => {})
+      const attachment = manager.attach(root, created.id, 0, data => (output += data), () => {}, undefined, owner)
       attachment.activate()
-      manager.write(root, created.id, "trap '' HUP TERM; printf '\\n%s%s\\n' resistant- ready\r")
+      manager.write(root, created.id, "trap '' HUP TERM; printf '\\n%s%s\\n' resistant- ready\r", owner)
       await waitFor(() => output.includes("resistant-ready"))
       attachment.detach()
 
-      manager.closeWorkspace(root)
+      manager.closeWorkspace(root, owner)
       manager.dispose()
-      manager.closeWorkspace(root)
-      assert.deepEqual(manager.list(root), [])
+      manager.closeWorkspace(root, owner)
+      assert.deepEqual(manager.list(root, owner), [])
       assert.deepEqual(signals, [undefined], "repeated cleanup must not repeat the initial kill")
       assert.doesNotThrow(() => process.kill(created.pid!, 0), "SIGHUP was ignored, not mistaken for exit")
       await manager.shutdown()
@@ -276,7 +279,7 @@ if (process.platform === "linux") {
       assert.deepEqual(signals, [undefined, "SIGKILL"])
       assert.throws(() => process.kill(created.pid!, 0), { code: "ESRCH" })
       assert.doesNotThrow(() => process.kill(unrelated.pid!, 0))
-      assert.equal(unrelatedManager.get(other, unrelated.id).status, "running")
+      assert.equal(unrelatedManager.get(other, unrelated.id, owner).status, "running")
     } finally {
       // Also reap the fixture when running this regression against the old code.
       if (child && child.ownedProcesses.has(child.process)) process.kill(child.process.pid, "SIGKILL")

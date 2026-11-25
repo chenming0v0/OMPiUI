@@ -18,6 +18,7 @@ import { SettingsSelect, SettingsSection } from './SettingsUI'
 import { SettingsPanelFooter } from './SettingsPanel'
 import { useServerStore } from '../../../hooks/useServerStore'
 import { serverStore } from '../../../store/serverStore'
+import { registerSessionConsumer } from '../../../hooks/useGlobalEvents'
 import { piModelRolesStore } from '../../../omp/state/piModelRolesStore'
 import { ModelSyncStatus } from './ModelSyncStatus'
 import { getModelRoleFallback } from './modelRoleFallbacks'
@@ -105,23 +106,6 @@ function sameRoles(left: Record<string, string>, right: Record<string, string>):
   return true
 }
 
-function mergeRoleDraft(
-  previous: Record<string, string> | null,
-  current: Record<string, string> | null,
-  record: Record<string, string> | null,
-): Record<string, string> | null {
-  if (!record) return null
-  if (!current || !previous || sameRoles(current, previous)) return cloneRoles(record)
-  // 刷新只更新未编辑的字段，保留本地草稿及清除操作。
-  const next = cloneRoles(record)
-  for (const key of new Set([...Object.keys(previous), ...Object.keys(current)])) {
-    if ((previous[key] ?? '') === (current[key] ?? '')) continue
-    if (current[key]) next[key] = current[key]
-    else delete next[key]
-  }
-  return next
-}
-
 // ============================================
 // OMP 功能角色配置
 // ============================================
@@ -139,6 +123,7 @@ export function ModelRolesSettings() {
 
 function ModelRolesPanel({ serverGeneration }: { serverGeneration: number }) {
   const { t } = useTranslation('settings')
+  const consumerId = useId()
   const { t: tc } = useTranslation('common')
   const { models, isLoading } = usePiModels()
   const { roles: saved, syncStatus, error: syncError } = useSyncExternalStore(
@@ -152,12 +137,23 @@ function ModelRolesPanel({ serverGeneration }: { serverGeneration: number }) {
 
   if (saved !== baseline) {
     setBaseline(saved)
-    setDraft(mergeRoleDraft(baseline, draft, saved))
+    setDraft(saved && cloneRoles(saved))
+    setError(null)
   }
 
   useEffect(() => {
     void loadPiModelRoles(true).catch(() => undefined)
-  }, [serverGeneration])
+    const refresh = () => {
+      piModelRolesStore.markDisconnected()
+      void loadPiModelRoles(true).catch(() => undefined)
+    }
+    const unsubscribe = registerSessionConsumer(consumerId, null, { onReconnected: refresh })
+    window.addEventListener('online', refresh)
+    return () => {
+      unsubscribe()
+      window.removeEventListener('online', refresh)
+    }
+  }, [consumerId, serverGeneration])
 
   const handleRoleModel = useCallback((def: ModelRoleDef, model: Model<Api> | null) => {
     setDraft(current => {
@@ -191,16 +187,15 @@ function ModelRolesPanel({ serverGeneration }: { serverGeneration: number }) {
     setSaving(true)
     setError(null)
     try {
-      const next = await savePiModelRoles(draft)
-      if (serverStore.getActiveServerGeneration() !== serverGeneration) return
-      setDraft(cloneRoles(next))
+      // The controller publishes only a current response; never apply its stale return value.
+      await savePiModelRoles(draft)
     } catch (cause) {
-      if (serverStore.getActiveServerGeneration() !== serverGeneration) return
+      if (serverStore.getActiveServerGeneration() !== serverGeneration || piModelRolesStore.getSnapshot().roles !== saved) return
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
       setSaving(false)
     }
-  }, [draft, serverGeneration])
+  }, [draft, saved, serverGeneration])
 
   if (!saved || !draft) return null
 

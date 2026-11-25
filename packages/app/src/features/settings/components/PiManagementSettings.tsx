@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Folder, SlidersHorizontal } from 'lucide-react'
 import type { JsonObject } from '@ompiui/protocol'
@@ -13,6 +13,8 @@ import { listHostWorkspaces, resolveWorkspacePath } from '../../../omp/workspace
 import { loadPiModelRoles } from '../../../omp/controllers/modelRoles'
 import { piModelRolesStore } from '../../../omp/state/piModelRolesStore'
 import { serverStore } from '../../../store/serverStore'
+import { registerSessionConsumer } from '../../../hooks/useGlobalEvents'
+import { useManagementEvents } from '../../../omp/managementEventStore'
 import {
   SettingRow,
   SettingField,
@@ -69,6 +71,11 @@ export function PiManagementSettings() {
 
 function PiManagementSettingsPanel({ directory }: { directory: string | undefined }) {
   const { t } = useTranslation(['settings', 'common'])
+  const consumerId = useId()
+  const { settingsRevision } = useManagementEvents()
+  const generationRef = useRef(serverStore.getActiveServerGeneration())
+  const requestVersionRef = useRef(0)
+  const readControllerRef = useRef<AbortController | null>(null)
   const sessionId = useFocusedSessionId()
   const [workspacePath, setWorkspacePath] = useState<string | null>(null)
   const [settings, setSettings] = useState<PiSettingsSnapshot | null>(null)
@@ -79,58 +86,89 @@ function PiManagementSettingsPanel({ directory }: { directory: string | undefine
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
-  const load = useCallback(async (signal: AbortSignal) => {
-    if (!directory) return
+  const isCurrent = useCallback((version: number) =>
+    version === requestVersionRef.current && generationRef.current === serverStore.getActiveServerGeneration(), [])
+
+  const load = useCallback(async () => {
+    if (!directory || generationRef.current !== serverStore.getActiveServerGeneration()) return
+    readControllerRef.current?.abort()
+    const controller = new AbortController()
+    readControllerRef.current = controller
+    const { signal } = controller
+    const version = ++requestVersionRef.current
+    const current = () => !signal.aborted && isCurrent(version)
+    setBusy('load')
     setError(null)
+    setNotice(null)
     try {
       const canonical = await resolveWorkspacePath(directory)
-      if (signal.aborted) return
+      if (!current()) return
       if (!canonical) throw new Error('Workspace is not available on the active server')
       setWorkspacePath(canonical)
       const [nextSettings, nextWorkspaces] = await Promise.all([
         getPiSettings(canonical, signal),
         listHostWorkspaces(signal),
       ])
-      if (signal.aborted) return
+      if (!current()) return
       setSettings(nextSettings)
       setDraft(draftFromSnapshot(nextSettings))
+      setAdvancedPatch('{}')
       setRegisteredWorkspaces(nextWorkspaces)
     } catch (loadError) {
-      if (!signal.aborted) setError(loadError instanceof Error ? loadError.message : t('pi.loadFailed'))
+      if (current()) setError(loadError instanceof Error ? loadError.message : t('pi.loadFailed'))
+    } finally {
+      if (current()) {
+        readControllerRef.current = null
+        setBusy(null)
+      }
     }
-  }, [directory, t])
+  }, [directory, isCurrent, t])
 
   useEffect(() => {
-    const controller = new AbortController()
-    const timer = window.setTimeout(() => { void load(controller.signal) }, 0)
-    return () => { window.clearTimeout(timer); controller.abort() }
-  }, [load])
+    const timer = window.setTimeout(() => { void load() }, 0)
+    return () => window.clearTimeout(timer)
+  }, [load, settingsRevision])
+
+  useEffect(() => {
+    const refresh = () => { void load() }
+    const unsubscribe = registerSessionConsumer(consumerId, null, { onReconnected: refresh })
+    window.addEventListener('online', refresh)
+    return () => {
+      unsubscribe()
+      window.removeEventListener('online', refresh)
+      requestVersionRef.current += 1
+      readControllerRef.current?.abort()
+    }
+  }, [consumerId, load])
 
   const savePatch = async (patch: JsonObject) => {
-    const generation = serverStore.getActiveServerGeneration()
+    const version = requestVersionRef.current
     const saved = await patchPiSettings(workspacePath!, patch)
-    if (serverStore.getActiveServerGeneration() === generation && Object.keys(patch).some(key => key === 'modelRoles' || key.startsWith('modelRoles.'))) {
-      // Invalidate reads begun before this persisted change, then refresh the dedicated role page from its official CLI path.
+    if (!isCurrent(version)) return
+    if (Object.keys(patch).some(key => key === 'modelRoles' || key.startsWith('modelRoles.'))) {
       piModelRolesStore.markDisconnected()
       void loadPiModelRoles(true).catch(() => undefined)
     }
     setSettings(saved)
     setDraft(draftFromSnapshot(saved))
+    setAdvancedPatch('{}')
   }
 
   const run = useCallback(async (name: string, action: () => Promise<void>, message: string) => {
+    const version = ++requestVersionRef.current
+    readControllerRef.current?.abort()
     setBusy(name)
     setError(null)
     setNotice(null)
     try {
       await action()
-      setNotice(message)
+      if (isCurrent(version)) setNotice(message)
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : t('pi.operationFailed'))
+      if (isCurrent(version)) setError(actionError instanceof Error ? actionError.message : t('pi.operationFailed'))
     } finally {
-      setBusy(null)
+      if (isCurrent(version)) setBusy(null)
     }
-  }, [t])
+  }, [isCurrent, t])
 
   if (!directory) return <p className="text-[length:var(--fs-sm)] text-text-300">{t('pi.openWorkspace')}</p>
 
@@ -254,7 +292,6 @@ function PiManagementSettingsPanel({ directory }: { directory: string | undefine
                         patch = parsed as JsonObject
                       } catch { throw new Error(t('pi.patchInvalidJson')) }
                       await savePatch(patch)
-                      setAdvancedPatch('{}')
                     }, t('pi.patchSaved'))}>{t('pi.applyPatch')}</Button>
                   </div>
                 </SettingsDisclosure>

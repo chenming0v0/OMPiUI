@@ -83,6 +83,7 @@ import { resolveWorkspacePath } from "./path-safety.ts";
 import { workspacePathKey } from "./workspace-store.ts";
 import { TextWindow } from "./text-window.ts";
 import { RateBudget } from "../rate-budget.ts";
+import { requireTerminalOwner, type TerminalOwner } from "./terminal-auth.ts";
 
 const OUTPUT_BUFFER_LIMIT = 2 * 1024 * 1024;
 const REPLAY_BYTE_LIMIT = 1024 * 1024;
@@ -109,6 +110,8 @@ type Subscriber = {
 };
 
 type ActiveTerminal = {
+  /** Missing on legacy entries: never auto-adopt or expose them to a client. */
+  owner?: TerminalOwner;
   workspacePath: string;
   info: TerminalInfo;
   process: PtyProcess;
@@ -132,11 +135,13 @@ type OwnedProcess = {
   forceKillTimer?: NodeJS.Timeout;
 };
 
-type TerminalTicket = {
+export type TerminalTicketBinding = {
   terminalId: string;
   workspacePath: string;
-  expiresAt: number;
+  owner: TerminalOwner;
 };
+
+type TerminalTicket = TerminalTicketBinding & { expiresAt: number };
 
 export type TerminalAttachment = {
   replay: string;
@@ -151,7 +156,10 @@ export type TerminalManagerOptions = {
     workspacePath: string,
     channel: TerminalEventChannel,
     payload: TerminalInfo,
+    owner: TerminalOwner,
   ) => void;
+  /** Dependency injection for deterministic CI tests; production uses the native PTY. */
+  spawn?: PtyModule["spawn"];
 };
 
 export class TerminalManager {
@@ -168,10 +176,11 @@ export class TerminalManager {
 
   constructor(private readonly options: TerminalManagerOptions = {}) {}
 
-  list(workspacePath: string): TerminalInfo[] {
+  list(workspacePath: string, owner?: TerminalOwner): TerminalInfo[] {
+    const principal = requireTerminalOwner(owner);
     return Array.from(this.terminals.values())
       .filter(
-        (terminal) =>
+        (terminal) => terminal.owner === principal &&
           workspacePathKey(terminal.workspacePath) ===
           workspacePathKey(workspacePath),
       )
@@ -210,14 +219,16 @@ export class TerminalManager {
     return shells;
   }
 
-  get(workspacePath: string, id: string): TerminalInfo {
-    return { ...this.require(workspacePath, id).info };
+  get(workspacePath: string, id: string, owner?: TerminalOwner): TerminalInfo {
+    return { ...this.require(workspacePath, id, owner).info };
   }
 
   async create(
     workspacePath: string,
     params: TerminalCreateParams = {},
+    owner?: TerminalOwner,
   ): Promise<TerminalInfo> {
+    const principal = requireTerminalOwner(owner);
     if (this.shuttingDown) {
       throw Object.assign(new Error("terminal manager is shutting down"), { code: "TERMINAL_CLOSED" });
     }
@@ -233,7 +244,7 @@ export class TerminalManager {
       });
     }
     this.pendingCreates += 1;
-    const creating = this.createReserved(workspacePath, params);
+    const creating = this.createReserved(workspacePath, params, principal);
     this.creates.add(creating);
     try {
       return await creating;
@@ -246,6 +257,7 @@ export class TerminalManager {
   private async createReserved(
     workspacePath: string,
     params: TerminalCreateParams,
+    owner: TerminalOwner,
   ): Promise<TerminalInfo> {
     const cwd = await this.resolveCwd(workspacePath, params.cwd);
     const shell = resolveShell(params.shell);
@@ -267,7 +279,7 @@ export class TerminalManager {
       if (this.shuttingDown) {
         throw Object.assign(new Error("terminal manager is shutting down"), { code: "TERMINAL_CLOSED" });
       }
-      child = loadPty().spawn(shell, shellArgs(shell), {
+      child = (this.options.spawn ?? loadPty().spawn)(shell, shellArgs(shell), {
         name: "xterm-256color",
         cwd,
         cols: size.cols,
@@ -287,6 +299,7 @@ export class TerminalManager {
 
     const outputWindow = new TextWindow(OUTPUT_BUFFER_LIMIT);
     const terminal: ActiveTerminal = {
+      owner,
       workspacePath,
       info: {
         id,
@@ -358,8 +371,9 @@ export class TerminalManager {
     workspacePath: string,
     id: string,
     params: TerminalUpdateParams,
+    owner?: TerminalOwner,
   ): TerminalInfo {
-    const terminal = this.require(workspacePath, id);
+    const terminal = this.require(workspacePath, id, owner);
     let changed = false;
     if (params.title !== undefined) {
       const title = params.title.trim();
@@ -407,16 +421,17 @@ export class TerminalManager {
     return { ...terminal.info };
   }
 
-  remove(workspacePath: string, id: string): void {
-    const terminal = this.require(workspacePath, id);
+  remove(workspacePath: string, id: string, owner?: TerminalOwner): void {
+    const terminal = this.require(workspacePath, id, owner);
     this.removeTerminal(terminal);
   }
 
   issueConnectToken(
     workspacePath: string,
     id: string,
+    owner?: TerminalOwner,
   ): { token: string; expiresIn: number } {
-    const terminal = this.require(workspacePath, id);
+    const terminal = this.require(workspacePath, id, owner);
     const now = Date.now();
     for (const [token, record] of this.tickets) {
       if (record.expiresAt <= now) this.tickets.delete(token);
@@ -428,24 +443,26 @@ export class TerminalManager {
     this.tickets.set(token, {
       terminalId: id,
       workspacePath: terminal.workspacePath,
+      owner: requireTerminalOwner(terminal.owner),
       expiresAt: now + TICKET_TTL_MS,
     });
     return { token, expiresIn: TICKET_TTL_MS / 1000 };
   }
 
-  consumeConnectToken(id: string, token: string): string | undefined {
+  consumeConnectToken(id: string, token: string): TerminalTicketBinding | undefined {
     const record = this.tickets.get(token);
     if (!record) return undefined;
     this.tickets.delete(token);
     if (record.expiresAt <= Date.now() || record.terminalId !== id)
       return undefined;
     const terminal = this.terminals.get(id);
-    if (!terminal) return undefined;
-    return terminal.workspacePath;
+    if (!terminal || !terminal.owner || terminal.owner !== record.owner ||
+        workspacePathKey(terminal.workspacePath) !== workspacePathKey(record.workspacePath)) return undefined;
+    return { terminalId: id, workspacePath: terminal.workspacePath, owner: record.owner };
   }
 
-  write(workspacePath: string, id: string, data: string): void {
-    const terminal = this.require(workspacePath, id);
+  write(workspacePath: string, id: string, data: string, owner?: TerminalOwner): void {
+    const terminal = this.require(workspacePath, id, owner);
     if (terminal.info.status !== "running") {
       throw Object.assign(new Error("terminal has exited"), {
         code: "TERMINAL_EXITED",
@@ -472,8 +489,9 @@ export class TerminalManager {
     onData: (data: string, bytes: number) => void,
     onEnd: (event: { exitCode: number | null }) => void,
     onTitle: (title: string) => void = () => {},
+    owner?: TerminalOwner,
   ): TerminalAttachment {
-    const terminal = this.require(workspacePath, id);
+    const terminal = this.require(workspacePath, id, owner);
     const end = terminal.info.cursor;
     let from = cursor === -1 ? end : (cursor ?? terminal.bufferCursor);
     if (!Number.isSafeInteger(from) || from < 0) {
@@ -620,23 +638,33 @@ export class TerminalManager {
     this.tickets.clear();
   }
 
-  /** Closes every terminal owned by the workspace and invalidates their connect tickets. */
-  closeWorkspace(workspacePath: string): void {
+  /** Client workspace closure must never terminate another private client's shell. */
+  closeWorkspace(workspacePath: string, owner?: TerminalOwner): void {
+    const principal = requireTerminalOwner(owner);
     const key = workspacePathKey(workspacePath);
     for (const terminal of Array.from(this.terminals.values())) {
-      if (workspacePathKey(terminal.workspacePath) === key)
+      if (terminal.owner === principal && workspacePathKey(terminal.workspacePath) === key)
         this.removeTerminal(terminal);
     }
     for (const [token, record] of this.tickets) {
-      if (workspacePathKey(record.workspacePath) === key)
+      if (record.owner === principal && workspacePathKey(record.workspacePath) === key)
         this.tickets.delete(token);
     }
   }
 
-  private require(workspacePath: string, id: string): ActiveTerminal {
+  /** Internal workspace registry guard; returns no foreign terminal identifiers. */
+  hasForeignInWorkspace(workspacePath: string, owner?: TerminalOwner): boolean {
+    const principal = requireTerminalOwner(owner);
+    const key = workspacePathKey(workspacePath);
+    return Array.from(this.terminals.values()).some(terminal =>
+      workspacePathKey(terminal.workspacePath) === key && terminal.owner !== principal);
+  }
+
+  private require(workspacePath: string, id: string, owner?: TerminalOwner): ActiveTerminal {
+    const principal = requireTerminalOwner(owner);
     const terminal = this.terminals.get(id);
     if (
-      !terminal ||
+      !terminal || terminal.owner !== principal ||
       workspacePathKey(terminal.workspacePath) !==
         workspacePathKey(workspacePath)
     ) {
@@ -821,9 +849,11 @@ export class TerminalManager {
     terminal: ActiveTerminal,
     channel: TerminalEventChannel,
   ): void {
+    // Upgraded ownerless entries remain quarantined until normal server cleanup.
+    if (!terminal.owner) return;
     this.options.publish?.(terminal.workspacePath, channel, {
       ...terminal.info,
-    });
+    }, terminal.owner);
   }
 }
 
