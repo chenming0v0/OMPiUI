@@ -313,7 +313,7 @@ describe('RemoteAccessSettings authoritative addresses', () => {
       ips: [], url: null, authUrl, lastError: null,
     })
     render(<RemoteAccessSettings />)
-    expect(await screen.findByText(authUrl ? 'Authorization link ready. Open it to complete sign-in.' : 'Connecting / awaiting sign-in')).toBeInTheDocument()
+    expect(await screen.findByText(authUrl ? 'Authorization link ready. Open it to complete sign-in.' : 'Sign-in authorization required')).toBeInTheDocument()
     expect(screen.getByText("Sign in to Tailscale above first. Your phone's pairing code will appear here once the server connects.")).toBeInTheDocument()
     expect(screen.queryByText(/Cannot scan\?/)).not.toBeInTheDocument()
     expect(screen.queryByText(/expires in/)).not.toBeInTheDocument()

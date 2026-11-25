@@ -8,6 +8,21 @@ const props = { state: 'NeedsLogin', authUrl: url, ips: [], enabled: true, avail
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers() })
 
 describe('Tailscale authorization controls', () => {
+  it('shows reconnecting instead of a new authorization action while restoring', () => {
+    render(<TailscaleControls {...props} state="Starting" authPhase="connecting" />)
+    expect(screen.getByText('Restoring the virtual network connection…')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Reconnect' })).toBeDisabled()
+    expect(screen.queryByText(url)).not.toBeInTheDocument()
+    expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Disconnect' })).toBeEnabled()
+  })
+
+  it('offers recovery without presenting a paused identity as logged out', () => {
+    render(<TailscaleControls {...props} state="Stopped" authUrl={null} recoveryPaused />)
+    expect(screen.getByText('Automatic recovery is paused')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Reconnect' }))
+    expect(props.onLogin).toHaveBeenCalled()
+  })
   it('keeps all native browser buttons disabled until opening completes', () => {
     render(<TailscaleControls {...props} authPhase="opening" />)
     expect(screen.getByText('Opening the authorization page…')).toBeVisible()

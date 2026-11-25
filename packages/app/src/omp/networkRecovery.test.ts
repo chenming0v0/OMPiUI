@@ -3,6 +3,8 @@ import { PROTOCOL_VERSION } from '@ompiui/protocol'
 import type { PiBranchPage } from './domain/index.js'
 import { piBranchStore, piSessionStateStore } from './state/index.js'
 import { retryDelay, waitNetworkDelay } from './networkRetry'
+import { serverStore } from '../store/serverStore'
+import { TAILSCALE_READY_EVENT } from '../utils/tailscaleEvents'
 
 const network = vi.hoisted(() => ({ open: vi.fn(), branch: vi.fn(), load: vi.fn(), state: vi.fn() }))
 vi.mock('./ompSocket', async importOriginal => ({
@@ -113,6 +115,29 @@ describe('network recovery', () => {
     socket.onclose!({ code: 1006 })
     window.dispatchEvent(new Event('online'))
     expect(network.open).toHaveBeenCalledTimes(6)
+  })
+
+  it('ends minute-long retry backoff immediately when the phone Tailnet becomes ready', async () => {
+    const current = serverStore.getActiveServer()!
+    vi.spyOn(serverStore, 'getActiveServer').mockReturnValue({ ...current, url: 'http://100.101.2.3:8787' })
+    piEventStream.connect('network-session')
+    internals.reconnectAttempts = 10
+    socket.onclose!({ code: 1006 })
+    expect(network.open).toHaveBeenCalledTimes(1)
+    window.dispatchEvent(new Event(TAILSCALE_READY_EVENT))
+    expect(network.open).toHaveBeenCalledTimes(2)
+    expect(internals.reconnectAttempts).toBe(0)
+    expect(internals.reconnectTimer).toBeNull()
+  })
+
+  it('replaces a pending socket on an old phone route as soon as the node is ready', () => {
+    const current = serverStore.getActiveServer()!
+    vi.spyOn(serverStore, 'getActiveServer').mockReturnValue({ ...current, url: 'http://100.101.2.3:8787' })
+    piEventStream.connect('network-session')
+    const oldSocket = socket
+    window.dispatchEvent(new Event(TAILSCALE_READY_EVENT))
+    expect(oldSocket.close).toHaveBeenCalledOnce()
+    expect(network.open).toHaveBeenCalledTimes(2)
   })
 
   it('uses incremental recovery for cached branches and only loads an initial page when absent', async () => {

@@ -1,4 +1,5 @@
 import { isTauri } from './tauri'
+import { TAILSCALE_READY_EVENT, TAILSCALE_STATUS_EVENT } from './tailscaleEvents'
 
 export type AndroidTailscaleStatus = {
   enabled: boolean
@@ -85,12 +86,37 @@ export function discoverAndroidTailscale(signal: AbortSignal): Promise<unknown> 
   return nativeRequest('discover', {}, signal)
 }
 
+let statusGeneration = 0
+let statusFlight: Promise<AndroidTailscaleStatus> | null = null
+let lastStatus: AndroidTailscaleStatus | null = null
+
+function acceptStatus(status: AndroidTailscaleStatus, generation: number): AndroidTailscaleStatus {
+  if (generation !== statusGeneration) return status
+  const ready = status.enabled && status.BackendState === 'Running'
+  const wasReady = lastStatus?.enabled && lastStatus.BackendState === 'Running'
+  const changed = status.enabled !== lastStatus?.enabled || status.BackendState !== lastStatus?.BackendState ||
+    status.AuthURL !== lastStatus?.AuthURL || status.startupInterrupted !== lastStatus?.startupInterrupted
+  lastStatus = status
+  if (!status.enabled || status.BackendState === 'Stopped' || (ready && !wasReady)) routeRequests.clear()
+  if (changed) window.dispatchEvent(new CustomEvent(TAILSCALE_STATUS_EVENT, { detail: status }))
+  if (ready && !wasReady) window.dispatchEvent(new Event(TAILSCALE_READY_EVENT))
+  return status
+}
+
 export function getAndroidTailscaleStatus(): Promise<AndroidTailscaleStatus> {
-  return nativeRequest('status')
+  if (statusFlight) return statusFlight
+  const generation = statusGeneration
+  const flight = nativeRequest<AndroidTailscaleStatus>('status')
+    .then(status => acceptStatus(status, generation))
+    .finally(() => { if (statusFlight === flight) statusFlight = null })
+  statusFlight = flight
+  return flight
 }
 
 export function loginAndroidTailscale(): Promise<AndroidTailscaleStatus> {
-  return nativeRequest('login')
+  const generation = ++statusGeneration
+  statusFlight = null
+  return nativeRequest<AndroidTailscaleStatus>('login').then(status => acceptStatus(status, generation))
 }
 
 export function openAndroidTailscaleLogin(url: string): Promise<void> {
@@ -108,8 +134,11 @@ export function exportAndroidTailscaleDiagnostics(): Promise<void> {
 const routeRequests = new Map<string, Promise<string>>()
 
 export async function disconnectAndroidTailscale(): Promise<void> {
+  const generation = ++statusGeneration
+  statusFlight = null
   routeRequests.clear()
   await nativeRequest('disconnect')
+  acceptStatus({ enabled: false, BackendState: 'Stopped', TailscaleIPs: [] }, generation)
 }
 
 /** 地址仍保存为 Tailnet 源；仅在发请求时映射到原生回环通道。 */
@@ -121,7 +150,7 @@ export async function resolveAndroidTailscaleUrl(input: string): Promise<string>
   let route = routeRequests.get(origin)
   if (!route) {
     route = nativeRequest<string>('route', { origin }).catch(error => {
-      routeRequests.delete(origin)
+      if (routeRequests.get(origin) === route) routeRequests.delete(origin)
       throw error
     })
     routeRequests.set(origin, route)

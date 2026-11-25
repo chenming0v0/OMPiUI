@@ -30,18 +30,23 @@ internal class TailscaleDiagnostics(private val context: Context) {
   init {
     if (preferences.getInt("pid", 0) != Process.myPid()) {
       val previousStart = preferences.getLong("startedAt", 0L)
-      val previousCrash = if (Build.VERSION.SDK_INT >= 30) {
-        exitRecords().firstOrNull()?.let {
-          it.timestamp >= previousStart && (it.reason == ApplicationExitInfo.REASON_CRASH ||
+      val previousExit = if (Build.VERSION.SDK_INT >= 30) {
+        exitRecords().firstOrNull { it.timestamp >= previousStart }?.let {
+          when {
             it.reason == ApplicationExitInfo.REASON_CRASH_NATIVE ||
-            // Go 后台 panic 通常直接 exit(2)，系统不一定将它分类为 native crash。
-            (it.reason == ApplicationExitInfo.REASON_EXIT_SELF && it.status != 0) ||
-            (it.reason == ApplicationExitInfo.REASON_SIGNALED && it.status in listOf(6, 11)))
-        } ?: false
-      } else false
-      startupBlocked = startupBlocked || preferences.getBoolean("pending", false) || previousCrash
+              (it.reason == ApplicationExitInfo.REASON_EXIT_SELF && it.status != 0) ||
+              (it.reason == ApplicationExitInfo.REASON_SIGNALED && it.status in listOf(6, 11)) -> TailscaleExit.NATIVE_CRASH
+            it.reason == ApplicationExitInfo.REASON_CRASH || it.reason == ApplicationExitInfo.REASON_ANR -> TailscaleExit.CRASH
+            else -> TailscaleExit.NORMAL
+          }
+        } ?: TailscaleExit.UNKNOWN
+      } else TailscaleExit.UNKNOWN
+      startupBlocked = startupBlocked || TailscaleRecoveryPolicy.pause(
+        preferences.getBoolean("pending", false), preferences.getString("lastStage", "").orEmpty(), previousExit
+      )
       preferences.edit().putInt("pid", Process.myPid())
-        .putLong("startedAt", System.currentTimeMillis()).putBoolean("blocked", startupBlocked).commit()
+        .putLong("startedAt", System.currentTimeMillis()).putBoolean("blocked", startupBlocked)
+        .putBoolean("pending", false).commit()
       record("app.reopened", if (startupBlocked) "previous attempt interrupted" else "ready")
     }
     synchronized(TailscaleDiagnostics::class.java) {

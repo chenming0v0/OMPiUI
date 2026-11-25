@@ -4,6 +4,8 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.browser.customtabs.CustomTabsClient
+import androidx.browser.customtabs.CustomTabsIntent
 
 internal object TailscaleBrowser {
   fun open(context: Context, url: String) {
@@ -12,13 +14,20 @@ internal object TailscaleBrowser {
     require(uri.scheme == "https" && !uri.host.isNullOrBlank() && uri.userInfo == null) {
       "Invalid Tailscale authorization URL"
     }
-    val browser = Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE)
-    // 由系统提供浏览器选择，不将授权页面加载到应用自身的 WebView。
-    val chooser = Intent.createChooser(browser, null).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    // 复用默认浏览器的账号与 Cookie，授权页面留在当前应用的任务栈中。
+    val browser = CustomTabsIntent.Builder()
+      .setShowTitle(true)
+      .setShareState(CustomTabsIntent.SHARE_STATE_OFF)
+      .build()
+    CustomTabsClient.getPackageName(context, null)?.let { browser.intent.setPackage(it) }
     try {
-      context.startActivity(chooser)
+      browser.launchUrl(context, uri)
     } catch (error: ActivityNotFoundException) {
-      throw IllegalStateException("No browser is available to open Tailscale authorization", error)
+      try {
+        context.startActivity(Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE))
+      } catch (fallback: ActivityNotFoundException) {
+        throw IllegalStateException("No browser is available to open Tailscale authorization", fallback)
+      }
     }
   }
 }

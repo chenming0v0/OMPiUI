@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   disconnectAndroidTailscale, isTailnetUrl, openAndroidTailscaleLogin, resolveAndroidTailscaleUrl,
   copyAndroidTailscaleDiagnostics, exportAndroidTailscaleDiagnostics, discoverAndroidTailscale,
+  getAndroidTailscaleStatus, loginAndroidTailscale,
 } from './androidTailscale'
+import { TAILSCALE_READY_EVENT } from './tailscaleEvents'
 
 vi.mock('./tauri', () => ({ isTauri: () => true }))
 const request = vi.fn()
@@ -23,6 +25,53 @@ afterEach(async () => {
 })
 
 describe('Android embedded Tailscale transport', () => {
+  it('shares status reads and wakes connections once when authorization becomes ready', async () => {
+    const ready = vi.fn()
+    window.addEventListener(TAILSCALE_READY_EVENT, ready)
+    let state = 'Starting'
+    request.mockImplementation((id, method) => queueMicrotask(() => window.dispatchEvent(new CustomEvent('ompiui-tailscale-result', {
+      detail: { id, result: method === 'route' ? 'http://127.0.0.1:49152' : { enabled: true, BackendState: state } },
+    }))))
+    try {
+      await Promise.all([getAndroidTailscaleStatus(), getAndroidTailscaleStatus()])
+      expect(request.mock.calls.filter(call => call[1] === 'status')).toHaveLength(1)
+      expect(ready).not.toHaveBeenCalled()
+      await resolveAndroidTailscaleUrl('http://100.101.2.3:8787/api')
+      state = 'Running'
+      await getAndroidTailscaleStatus()
+      await getAndroidTailscaleStatus()
+      expect(ready).toHaveBeenCalledOnce()
+      await resolveAndroidTailscaleUrl('http://100.101.2.3:8787/api')
+      expect(request.mock.calls.filter(call => call[1] === 'route')).toHaveLength(2)
+    } finally {
+      window.removeEventListener(TAILSCALE_READY_EVENT, ready)
+    }
+  })
+
+  it('ignores a stale running result after the user disconnects', async () => {
+    const ready = vi.fn()
+    window.addEventListener(TAILSCALE_READY_EVENT, ready)
+    let statusId = ''
+    request.mockImplementation((id, method) => {
+      if (method === 'status') statusId = id
+      else queueMicrotask(() => window.dispatchEvent(new CustomEvent('ompiui-tailscale-result', {
+        detail: { id, result: method === 'login' ? { enabled: true, BackendState: 'Running' } : { ok: true } },
+      })))
+    })
+    try {
+      const pending = getAndroidTailscaleStatus()
+      await disconnectAndroidTailscale()
+      window.dispatchEvent(new CustomEvent('ompiui-tailscale-result', {
+        detail: { id: statusId, result: { enabled: true, BackendState: 'Running' } },
+      }))
+      await pending
+      expect(ready).not.toHaveBeenCalled()
+      await loginAndroidTailscale()
+      expect(ready).toHaveBeenCalledOnce()
+    } finally {
+      window.removeEventListener(TAILSCALE_READY_EVENT, ready)
+    }
+  })
   it('discovers and cancels peers without invoking login or route', async () => {
     request.mockImplementation(() => {})
     const controller = new AbortController()

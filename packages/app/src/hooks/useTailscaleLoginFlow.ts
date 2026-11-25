@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { APP_RESUMED_EVENT } from '../utils/tailscaleEvents'
 
-export type TailscaleAuthPhase = 'idle' | 'starting' | 'waitingAuthUrl' | 'opening' | 'authReady' | 'authorizing' | 'error'
+export type TailscaleAuthPhase = 'idle' | 'starting' | 'connecting' | 'waitingAuthUrl' | 'opening' | 'authReady' | 'authorizing' | 'error'
 
 export type TailscaleAuthSnapshot = { backendState?: string | null; authUrl?: string | null }
 
@@ -9,6 +10,8 @@ type Options = {
   poll: (signal: AbortSignal) => Promise<TailscaleAuthSnapshot>
   open: (url: string) => Promise<void | 'manual'>
   timeoutMessage: string
+  connectionTimeoutMessage?: string
+  statusEvent?: string
   pollMs?: number
   timeoutMs?: number
   statusPollMs?: number
@@ -17,13 +20,13 @@ type Options = {
 }
 
 /** 登录和普通状态刷新共用单飞轮询；取消标记也交给调用方保护其状态更新。 */
-export function useTailscaleLoginFlow({ start, poll, open, timeoutMessage, pollMs = 1_000, timeoutMs = 30_000, statusPollMs, paused = false, onPollError }: Options) {
+export function useTailscaleLoginFlow({ start, poll, open, timeoutMessage, connectionTimeoutMessage = timeoutMessage, statusEvent, pollMs = 1_000, timeoutMs = 30_000, statusPollMs, paused = false, onPollError }: Options) {
   const [phase, setPhase] = useState<TailscaleAuthPhase>('idle')
   const [authUrl, setAuthUrl] = useState<string | null>(null)
   const [error, setError] = useState('')
-  const latest = useRef({ start, poll, open, timeoutMessage, pollMs, timeoutMs, paused, onPollError })
+  const latest = useRef({ start, poll, open, timeoutMessage, connectionTimeoutMessage, pollMs, timeoutMs, paused, onPollError })
   useEffect(() => {
-    latest.current = { start, poll, open, timeoutMessage, pollMs, timeoutMs, paused, onPollError }
+    latest.current = { start, poll, open, timeoutMessage, connectionTimeoutMessage, pollMs, timeoutMs, paused, onPollError }
   })
   const controller = useRef(new AbortController())
   const timer = useRef<number | null>(null)
@@ -89,7 +92,8 @@ export function useTailscaleLoginFlow({ start, poll, open, timeoutMessage, pollM
         reset()
         return
       }
-      const url = next.authUrl ?? null
+      const connecting = next.backendState === 'Starting' || next.backendState === 'NoState'
+      const url = connecting ? null : next.authUrl ?? null
       if (waiting.current) {
         // 回到前台时先读取权威状态：后台期间到达的链接优先于墙钟超时。
         if (url) {
@@ -97,7 +101,9 @@ export function useTailscaleLoginFlow({ start, poll, open, timeoutMessage, pollM
         } else if (Date.now() - startedAt.current >= latest.current.timeoutMs) {
           stopPolling()
           setPhase('error')
-          setError(latest.current.timeoutMessage)
+          setError(connecting ? latest.current.connectionTimeoutMessage : latest.current.timeoutMessage)
+        } else {
+          setPhase(connecting ? 'connecting' : 'waitingAuthUrl')
         }
       } else if (url !== currentUrl.current) {
         currentUrl.current = url
@@ -134,12 +140,13 @@ export function useTailscaleLoginFlow({ start, poll, open, timeoutMessage, pollM
         reset()
         return
       }
-      if (next.authUrl) {
+      const connecting = next.backendState === 'Starting' || next.backendState === 'NoState'
+      if (next.authUrl && !connecting) {
         await openAuthPage(next.authUrl, signal)
         return
       }
       waiting.current = true
-      setPhase('waitingAuthUrl')
+      setPhase(connecting ? 'connecting' : 'waitingAuthUrl')
       timer.current = window.setInterval(() => void refreshStatus(), latest.current.pollMs)
       void refreshStatus()
     } catch (err) {
@@ -170,13 +177,17 @@ export function useTailscaleLoginFlow({ start, poll, open, timeoutMessage, pollM
       if (waiting.current || statusPollMs !== undefined) void refreshStatus()
     }
     document.addEventListener('visibilitychange', resume)
+    window.addEventListener(APP_RESUMED_EVENT, resume)
+    if (statusEvent) window.addEventListener(statusEvent, resume)
     return () => {
       controller.current.abort()
       stopPolling()
       if (statusTimer !== null) window.clearInterval(statusTimer)
       document.removeEventListener('visibilitychange', resume)
+      window.removeEventListener(APP_RESUMED_EVENT, resume)
+      if (statusEvent) window.removeEventListener(statusEvent, resume)
     }
-  }, [refreshStatus, statusPollMs, stopPolling])
+  }, [refreshStatus, statusPollMs, statusEvent, stopPolling])
 
   return { phase, authUrl, error, beginLogin, reopenAuthPage, reset, refreshStatus, clearError }
 }
