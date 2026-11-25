@@ -379,6 +379,9 @@ export const ChatArea = memo(
       const { roles } = useSyncExternalStore(piModelRolesStore.subscribe, piModelRolesStore.getSnapshot, piModelRolesStore.getSnapshot)
       const translationModel = roles?.thinkingTranslator
       const translationScope = `${serverStore.getActiveServerGeneration()}:${sessionId ?? ''}:${translationModel ?? ''}`
+      const translationContext = useMemo(() => translationSettings.enabled && sessionId && translationModel ? {
+        scope: translationScope, sessionId, model: translationModel, budget: translationSettings.budget,
+      } : null, [translationSettings.enabled, translationSettings.budget, sessionId, translationModel, translationScope])
       useEffect(() => {
         if (translationSettings.enabled) void loadPiModelRoles().catch(() => undefined)
       }, [translationSettings.enabled, sessionId])
@@ -1157,12 +1160,7 @@ export const ChatArea = memo(
       }
 
       return (
-        <ReasoningTranslationContext.Provider value={translationSettings.enabled && sessionId && translationModel ? {
-          scope: translationScope,
-          sessionId,
-          model: translationModel,
-          budget: translationSettings.budget,
-        } : null}>
+        <ReasoningTranslationContext.Provider value={translationContext}>
         <TimelineEntryNavigation.Provider value={entryNavigation}>
         <div ref={readingAreaRef} className="h-full overflow-hidden contain-strict relative">
           {loadState === 'loading' && visibleItems.length === 0 && (

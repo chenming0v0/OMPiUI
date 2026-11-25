@@ -31,7 +31,7 @@ export function useReasoningReadingPriority(ref: RefObject<Element | null>, read
   const [foreground, setForeground] = useState(() => document.visibilityState === 'visible')
   useEffect(() => {
     const element = ref.current
-    if (!element) return
+    if (!element) { setVisible(false); setNear(false); return }
     const visibility = () => setForeground(document.visibilityState === 'visible')
     document.addEventListener('visibilitychange', visibility)
     if (typeof IntersectionObserver === 'undefined') {
@@ -163,7 +163,7 @@ export function useReasoningTranslation(entryId: string | undefined, partKey: st
       window.removeEventListener('focus', reconnectNow)
     }
     // The server observes live source changes; frontend token updates do not restart jobs.
-  }, [enabled, context?.sessionId, context?.model, context?.budget, key, entryId, blockIndex, priority, interactionId, readerId, retry])
+  }, [enabled, context, key, entryId, blockIndex, priority, interactionId, readerId, retry])
 
   const chunks = snapshot?.chunks
   const partial = snapshot?.partial

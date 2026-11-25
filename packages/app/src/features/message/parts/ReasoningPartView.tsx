@@ -34,7 +34,13 @@ export const ReasoningPartView = memo(function ReasoningPartView({ part, entryId
   const [showOriginal, setShowOriginal] = useState(false)
   const [expanded, setExpanded, touched] = useUiDisclosureState(`message:reasoning:${partKey}`, false)
   const { rootRef, headerRef, withScrollLock } = useDisclosureScrollLock()
-  const priority = useReasoningReadingPriority(rootRef, expanded && touched)
+  const [readingElement, setReadingElement] = useState<HTMLElement | null>(null)
+  const readingRootRef = useCallback((element: HTMLElement | null) => {
+    setReadingElement(element)
+    return rootRef(element)
+  }, [rootRef])
+  const readingRef = useMemo(() => ({ current: readingElement }), [readingElement])
+  const priority = useReasoningReadingPriority(readingRef, expanded && touched)
   const [interactionId, setInteractionId] = useState<string>()
   const translation = useReasoningTranslation(entryId, partKey, rawText, isPartStreaming, translationPaused || showOriginal, { blockIndex, priority, interactionId })
   const displayText = showOriginal || translationPaused || !translation.text ? rawText : translation.text
@@ -251,7 +257,7 @@ export const ReasoningPartView = memo(function ReasoningPartView({ part, entryId
     )
 
     return (
-      <div ref={rootRef}>
+      <div ref={readingRootRef}>
         {ITALIC_SHOW_LEADING_GLYPH ? (
           <div className="grid grid-cols-[14px_minmax(0,1fr)] gap-x-1.5 items-start">
             <span className="inline-flex h-5 w-[14px] items-start justify-center pt-[6px] text-text-500">
@@ -272,7 +278,7 @@ export const ReasoningPartView = memo(function ReasoningPartView({ part, entryId
 
   return (
     <div
-      ref={rootRef}
+      ref={readingRootRef}
       className={`ring-1 ring-inset ring-border-300/20 rounded-lg overflow-hidden transition-all duration-300 ease-out ${
         expanded ? 'w-full' : 'w-[260px]'
       }`}

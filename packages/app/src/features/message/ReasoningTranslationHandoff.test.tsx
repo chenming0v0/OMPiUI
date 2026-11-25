@@ -12,8 +12,8 @@ vi.mock('../../omp/httpClient', () => ({ getApiBase: () => '', piFetch: fetchMoc
 vi.mock('motion/mini', () => ({ animate: () => Promise.resolve() }))
 vi.mock('../../hooks', async importOriginal => {
   const original = await importOriginal<typeof import('../../hooks')>()
-  const { useRef } = await import('react')
-  return { ...original, useDisclosureScrollLock: () => ({ rootRef: useRef(null), headerRef: useRef(null), withScrollLock: (action: () => void) => action() }) }
+  const noop = () => undefined
+  return { ...original, useDisclosureScrollLock: () => ({ rootRef: noop, headerRef: noop, withScrollLock: (action: () => void) => action() }) }
 })
 vi.mock('../../hooks/useDelayedRender', () => ({ useDelayedRender: (visible: boolean) => visible }))
 vi.mock('../../hooks/useTheme', () => ({ useTheme: () => ({
@@ -43,7 +43,8 @@ function scene(page: PiBranchPage) {
 
 beforeEach(() => {
   vi.stubGlobal('IntersectionObserver', class {
-    constructor(private callback: IntersectionObserverCallback) {}
+    private callback: IntersectionObserverCallback
+    constructor(callback: IntersectionObserverCallback) { this.callback = callback }
     observe(target: Element) { this.callback([{ target, isIntersecting: true } as IntersectionObserverEntry], this as unknown as IntersectionObserver) }
     disconnect() {}
     unobserve() {}
