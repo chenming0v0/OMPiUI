@@ -20,9 +20,9 @@ export function SubagentPanel({ sessionId }: { sessionId?: string | null }) {
   const entries = useMemo(() => sessionId ? collectSubagentPanelEntries(sessionId, branch ? selectPiTimelineItemsCached(sessionId, branch) : [],
     snapshot.runs.filter(run => run.sessionId === sessionId), typeof parentFile === 'string' ? parentFile : undefined) : [], [sessionId, branch, snapshot, parentFile])
   const [chosen, setChosen] = useState<{ sessionId: string; key: string; request: typeof request } | null>(null)
-  const requested = request?.sessionId === sessionId && request.generation === serverStore.getActiveServerGeneration()
+  const requested = request && request.sessionId === sessionId && request.generation === serverStore.getActiveServerGeneration()
     ? entries.find(entry => request.toolCallId ? entry.toolCallId === request.toolCallId && (request.index === undefined || entry.index === request.index) : entry.id === request.id) : undefined
-  const selected = (chosen?.sessionId === sessionId && chosen.request === request ? entries.find(entry => entry.key === chosen.key) : undefined) ?? requested ?? entries[0]
+  const selected = (chosen && chosen.sessionId === sessionId && chosen.request === request ? entries.find(entry => entry.key === chosen.key) : undefined) ?? requested ?? entries[0]
   const running = entries.filter(entry => entry.outcome.presentationStatus === 'running').length
   return <section aria-label={t('task.sidebar.title')} className="flex h-full min-h-0 flex-col bg-bg-100">
     <div className="flex items-center gap-2 border-b border-border-200/50 px-4 py-3 text-[length:var(--fs-sm)] text-text-200">

@@ -45,7 +45,7 @@ description: 在 OMPiUI 里新增或修改工具调用的显示时使用：给�
 1. **合成 `PiToolExecution`**：`call`（name 决定图标和 renderer，没有对应 renderer 的类型用通用名，别冒用 `bash`，BashRenderer 依赖 FullscreenProvider）、`result`、`startedAt` / `completedAt`。
 2. **call id 全局唯一**（例如 `job:<entryId>:<jobId>:<index>`）：合并后所有执行共用一个 `toolResults` / `toolExecutions` map，id 重复会互相覆盖。
 3. **按条目引用缓存**合成结果（`WeakMap`）：时间线合并缓存和 `memo` 都比较引用，每次都新建对象会让整列历史行跟着重渲染。
-4. **在 `buildVisibleTimelineEntries` 里并入相邻工具链**：这种条目可以续接工具链，但不能自己起头。前面是正文时它保持独立条目，由 `PiSystemItemView` 用普通 `<ToolGroup executions={…} plain />` 渲染。
+4. **在 `buildVisibleTimelineEntries` 里并入相邻工具链**：这种条目可以续接工具链，但不能自己起头。前面是正文时它保持独立条目，由 `PiSystemItemView` 用普通 `<ToolGroup executions={…} />` 渲染，跟随当前经典或精简工具样式，不强制覆盖用户设置。
 5. 合并后的 `message` / `isStreaming` 取链上**最后一条真实的助手消息**，因为合成条目没有模型状态。
 
 ## 禁止（都踩过）

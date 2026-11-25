@@ -23,6 +23,13 @@ export interface SubagentPanelEntry {
 export function collectSubagentPanelEntries(sessionId: string, items: PiTimelineItem[], liveRuns: OmpSubagentRun[], parentFile?: string): SubagentPanelEntry[] {
   const entries: SubagentPanelEntry[] = []
   const deliveries = indexAsyncTaskResults(items.flatMap(item => 'rawEntry' in item && item.rawEntry ? [item.rawEntry] : []))
+  const displayDeliveries = new Map<string, string>()
+  for (const item of items) {
+    if (item.kind !== 'custom_message' || item.customType !== 'async-result') continue
+    for (const job of readBackgroundJobs(item) ?? []) {
+      displayDeliveries.set(`${item.timestamp}:${job.id}`, [job.body, ...job.errors, job.fullOutput ? `Full output: ${job.fullOutput}` : ''].filter(Boolean).join('\n\n'))
+    }
+  }
   const executions: PiToolExecution[] = items.flatMap(item => item.kind === 'tool_result' ? [item.execution]
     : item.kind === 'assistant_message' ? item.blocks.flatMap(call => call.type === 'toolCall'
       ? [{ ...item.toolExecutions?.[call.id], call, result: item.toolResults[call.id] ?? item.toolExecutions?.[call.id]?.result }] : []) : [])
@@ -44,6 +51,7 @@ export function collectSubagentPanelEntries(sessionId: string, items: PiTimeline
       const liveRun = liveRuns.find(run => run.parentToolCallId === execution.call.id && (run.id === id || run.index === index))
       if (liveRun) matched.add(liveRun)
       const delivery = findAsyncTaskResult(deliveries, id, execution.result?.timestamp)
+      const deliveredOutput = delivery ? displayDeliveries.get(`${delivery.timestamp}:${id}`) ?? delivery.output : undefined
       const evidence = result ?? (delivery ? { ...delivery.details, id, output: delivery.output } : undefined)
       const outcome = getTaskExecutionOutcome(execution, { slotIndex: index, liveRun, result: evidence })
       const persisted = { ...input, ...evidence, id, index, status: outcome.executionStatus }
@@ -51,7 +59,7 @@ export function collectSubagentPanelEntries(sessionId: string, items: PiTimeline
       const base = started ? buildPersistedSubagentRun(execution.call.id, persisted, deriveChildSessionFile(persisted, parentFile), sessionId) : undefined
       entries.push({ key: `${execution.call.id}:${index}`, id, index, toolCallId: execution.call.id, live: Boolean(liveRun),
         title: typeof input.description === 'string' ? input.description : result?.description ?? liveRun?.description ?? '',
-        run: liveRun ?? base, outcome, output: liveRun?.isFollowUp ? undefined : [result?.output, result?.stdout, result?.stderr, result?.error, result?.mergeError, delivery?.output].filter(Boolean).join('\n') })
+        run: liveRun ?? base, outcome, output: liveRun?.isFollowUp ? undefined : [result?.output, result?.stdout, result?.stderr, result?.error, result?.mergeError, deliveredOutput].filter(Boolean).join('\n') })
     }
   }
   for (const run of liveRuns) {

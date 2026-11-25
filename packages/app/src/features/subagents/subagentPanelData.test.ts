@@ -19,7 +19,9 @@ describe('subagent sidebar catalog', () => {
     expect(entries.map(entry => entry.id)).toEqual(['ReviewNativeIntegration', 'ReviewGuiGitIntegration'])
     expect(entries.map(entry => entry.outcome.presentationStatus)).toEqual(['running', 'completed'])
     expect(entries[0].run?.sessionFile).toBe('C:/sessions/parent/ReviewNativeIntegration.jsonl')
-    expect(entries[1].output).toContain('# Target')
+    expect(entries[1].output).toContain('## Findings')
+    expect(entries[1].output).not.toContain('Retry345Review')
+    expect(entries[1].output).not.toContain('<system-notice>')
     expect(entries.every(entry => !entry.live)).toBe(true)
   })
 

@@ -193,7 +193,7 @@ describe('custom message timeline views', () => {
       }), customType: 'async-notify', injectedRole: 'custom',
     }} />)
     const job = within(region('preview'))
-    expect(job.queryByText('toolPart.running')).not.toBeInTheDocument()
+    expect(job.getByText('toolPart.running')).toHaveClass('opacity-0')
     expand('preview')
     expect(job.getByText(/Server ready/)).toBeInTheDocument()
     expect(job.getByText(/2 not shown/)).toBeInTheDocument()

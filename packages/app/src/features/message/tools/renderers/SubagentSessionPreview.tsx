@@ -149,7 +149,7 @@ export const SubagentSessionPreview = memo(function SubagentSessionPreview({
         ref={scrollRef}
         onScroll={handleScroll}
         className="overflow-y-auto custom-scrollbar px-3 py-2 space-y-2"
-        style={{ maxHeight: spacious ? undefined : maxHeight }}
+        style={{ maxHeight: spacious ? '60vh' : maxHeight }}
       >
         <SubagentTranscriptPreview items={transcript} isRunning={isRunning} />
       </div>
