@@ -907,7 +907,7 @@ export function createAppServer(
         const { model, text, history, budget } = await readBody(req, signal, 512 * 1024);
         if (typeof model !== "string" || !model || model.length > 1024 ||
           typeof text !== "string" || !text.trim() || Buffer.byteLength(text) > 4096 ||
-          (budget !== 8192 && budget !== 16384 && budget !== 32768) ||
+          (budget !== 6144 && budget !== 8192 && budget !== 16384 && budget !== 32768) ||
           !Array.isArray(history) || history.length > 9 ||
           !history.every(message => message && typeof message === "object" && !Array.isArray(message) &&
             (message.role === "user" || message.role === "assistant") && typeof message.text === "string")) {

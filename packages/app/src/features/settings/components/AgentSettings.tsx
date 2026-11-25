@@ -1,4 +1,9 @@
-import { useReasoningTranslationSettings, setReasoningTranslationSettings } from '../../../store/reasoningTranslationSettings'
+import {
+  REASONING_TRANSLATION_BUDGETS,
+  useReasoningTranslationSettings,
+  setReasoningTranslationSettings,
+  type ReasoningTranslationBudget,
+} from '../../../store/reasoningTranslationSettings'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { themeStore, type ToolCardStyle } from '../../../store/themeStore'
@@ -50,8 +55,8 @@ export function AgentSettings() {
           <SettingField label={t('agent.reasoningTranslationBudget')} description={t('agent.reasoningTranslationBudgetDesc')}>
             <SegmentedControl
               value={String(translation.budget)}
-              options={[8192, 16384, 32768].map(value => ({ value: String(value), label: `${value / 1024}k` }))}
-              onChange={value => setReasoningTranslationSettings({ budget: Number(value) as 8192 | 16384 | 32768 })}
+              options={REASONING_TRANSLATION_BUDGETS.map(value => ({ value: String(value), label: `${value / 1024}k` }))}
+              onChange={value => setReasoningTranslationSettings({ budget: Number(value) as ReasoningTranslationBudget })}
             />
           </SettingField>
         )}
