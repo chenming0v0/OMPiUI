@@ -150,9 +150,21 @@ describe('ModelRolesSettings', () => {
     await waitFor(() => expect(setPiModelRolesMock).toHaveBeenCalledWith({ default: 'openai/gpt-4.1:low' }))
   })
 
+  it('saves the explicitly selected translator without changing the main model', async () => {
+    getPiModelRolesMock.mockResolvedValue({ default: 'openai/gpt-4o-mini:low' })
+    render(<ModelRolesSettings />)
+    const translator = await screen.findByRole('group', { name: 'Thinking Translator' })
+    fireEvent.click(within(translator).getByTestId('model-selector-stub'))
+    expect(setPiModelRolesMock).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(setPiModelRolesMock).toHaveBeenCalledWith({
+      default: 'openai/gpt-4o-mini:low', thinkingTranslator: 'openai/gpt-4.1',
+    }))
+  })
+
   it('updates inheritance hints with the draft without saving inherited assignments', async () => {
     render(<ModelRolesSettings />)
-    await waitFor(() => expect(screen.getAllByTestId('model-selector-stub')).toHaveLength(15))
+    await waitFor(() => expect(screen.getAllByTestId('model-selector-stub')).toHaveLength(16))
     const selectors = screen.getAllByTestId('model-selector-stub')
     expect(selectors[1]).toHaveAttribute('data-placeholder', 'Use fast model priority list')
     expect(selectors[2]).toHaveAttribute('data-placeholder', 'Use thinking model priority list')
@@ -162,7 +174,7 @@ describe('ModelRolesSettings', () => {
     fireEvent.click(selectors[0])
     expect(selectors[1]).toHaveAttribute('data-placeholder', 'Inherit Default')
     expect(selectors[2]).toHaveAttribute('data-placeholder', 'Inherit Default')
-    expect(selectors[9]).toHaveAttribute('data-placeholder', 'Use thinking model priority list')
+    expect(within(screen.getByRole('group', { name: 'Advisor' })).getByTestId('model-selector-stub')).toHaveAttribute('data-placeholder', 'Use thinking model priority list')
     expect(setPiModelRolesMock).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
@@ -205,8 +217,8 @@ describe('ModelRolesSettings', () => {
   it('only inherits an explicitly assigned Thinking role for Advisor and restores it on cancel', async () => {
     getPiModelRolesMock.mockResolvedValue({ default: 'openai/gpt-4.1', slow: 'openai/gpt-4o-mini:low' })
     render(<ModelRolesSettings />)
-    await waitFor(() => expect(screen.getAllByTestId('model-selector-stub')).toHaveLength(15))
-    const advisor = screen.getAllByTestId('model-selector-stub')[9]
+    await waitFor(() => expect(screen.getAllByTestId('model-selector-stub')).toHaveLength(16))
+    const advisor = within(screen.getByRole('group', { name: 'Advisor' })).getByTestId('model-selector-stub')
     expect(advisor).toHaveAttribute('data-placeholder', 'Inherit Thinking')
 
     const thinking = screen.getByRole('group', { name: 'Thinking' })

@@ -11,7 +11,7 @@
  */
 import {
   useRef, useImperativeHandle, forwardRef, memo,
-  useCallback, useEffect, useLayoutEffect, useMemo, useState,
+  useCallback, useEffect, useLayoutEffect, useMemo, useState, useSyncExternalStore,
 } from 'react'
 import {
   useVirtualizer, elementScroll, defaultRangeExtractor,
@@ -48,6 +48,11 @@ import { useEmptyWorkingShellGate } from './virtual/useEmptyWorkingShellGate'
 import { TimelineRowLayoutContext } from './virtual/TimelineRowLayoutContext'
 import { HistoryPrefetchScheduler } from './virtual/historyPrefetchScheduler'
 import { TimelineEntryNavigation, useTimelineEntryNavigation } from './virtual/TimelineEntryNavigation'
+import { ReasoningTranslationContext, type ContextTimelineItem } from '../../omp/reasoningTranslation'
+import { useReasoningTranslationSettings } from '../../store/reasoningTranslationSettings'
+import { serverStore } from '../../store/serverStore'
+import { piModelRolesStore } from '../../omp/state/piModelRolesStore'
+import { loadPiModelRoles } from '../../omp/controllers/modelRoles'
 import { CompactionStatusInline } from './CompactionStatusInline'
 import type { HistoryPrefetchMode } from '../../omp/historyPagePrefetch'
 import { perfMark, perfRecordRender, isPerfEnabled } from '../../utils/perf'
@@ -368,6 +373,13 @@ export const ChatArea = memo(
       },
       ref,
     ) => {
+      const translationSettings = useReasoningTranslationSettings()
+      const { roles } = useSyncExternalStore(piModelRolesStore.subscribe, piModelRolesStore.getSnapshot, piModelRolesStore.getSnapshot)
+      const translationModel = roles?.thinkingTranslator
+      const translationScope = `${serverStore.getActiveServerGeneration()}:${sessionId ?? ''}:${translationModel ?? ''}`
+      useEffect(() => {
+        if (translationSettings.enabled) void loadPiModelRoles().catch(() => undefined)
+      }, [translationSettings.enabled, sessionId])
       const renderStart = isPerfEnabled() ? performance.now() : 0
       const { t } = useTranslation('chat')
       const { isWideMode, processCollapseEnabled } = useTheme()
@@ -1143,6 +1155,12 @@ export const ChatArea = memo(
       }
 
       return (
+        <ReasoningTranslationContext.Provider value={translationSettings.enabled && sessionId && translationModel ? {
+          scope: translationScope,
+          model: translationModel,
+          budget: translationSettings.budget,
+          getItems: () => items.filter((item): item is ContextTimelineItem => item.kind === 'user_message' || item.kind === 'assistant_message'),
+        } : null}>
         <TimelineEntryNavigation.Provider value={entryNavigation}>
         <div className="h-full overflow-hidden contain-strict relative">
           {loadState === 'loading' && visibleItems.length === 0 && (
@@ -1271,6 +1289,7 @@ export const ChatArea = memo(
           </div>
         </div>
         </TimelineEntryNavigation.Provider>
+        </ReasoningTranslationContext.Provider>
       )
     },
   ),
