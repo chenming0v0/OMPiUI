@@ -238,13 +238,13 @@ export const ToolPartView = memo(function ToolPartView({
           <div className="flex min-w-0 flex-1 items-baseline gap-2 overflow-hidden">
             <span
               className={`shrink-0 font-medium text-[length:var(--fs-md)] leading-tight ${
-                taskColor ?? (isActive
+                isActive
                   ? 'reasoning-shimmer-text'
                   : isError
                     ? 'text-danger-100'
                     : isYield && status === 'completed'
                       ? 'text-success-100 group-hover/header:text-success-100'
-                      : 'text-text-200 group-hover/header:text-text-100')
+                      : 'text-text-200 group-hover/header:text-text-100'
               }`}
             >
               {displayName}
@@ -307,13 +307,13 @@ export const ToolPartView = memo(function ToolPartView({
             <div className="flex items-baseline gap-2 overflow-hidden flex-1 min-w-0">
               <span
                 className={`font-medium text-[length:var(--fs-md)] leading-tight transition-colors duration-300 shrink-0 ${
-                  taskColor ?? (isActive
+                  isActive
                     ? 'reasoning-shimmer-text'
                     : isError
                       ? 'text-danger-100'
                       : isYield && status === 'completed'
                         ? 'text-success-100 group-hover/header:text-success-100'
-                        : 'text-text-200 group-hover/header:text-text-100')
+                        : 'text-text-200 group-hover/header:text-text-100'
                 }`}
               >
                 {displayName}
@@ -393,13 +393,13 @@ export const ToolPartView = memo(function ToolPartView({
           <div className="flex items-baseline gap-2 overflow-hidden flex-1 min-w-0">
             <span
               className={`font-medium text-[length:var(--fs-md)] leading-tight transition-colors duration-300 shrink-0 ${
-                taskColor ?? (isActive
+                isActive
                   ? 'reasoning-shimmer-text'
                   : isError
                     ? 'text-danger-100'
                     : isYield && status === 'completed'
                       ? 'text-success-100 group-hover/header:text-success-100'
-                      : 'text-text-200 group-hover/header:text-text-100')
+                      : 'text-text-200 group-hover/header:text-text-100'
               }`}
             >
               {displayName}

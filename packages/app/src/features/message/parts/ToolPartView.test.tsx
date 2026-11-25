@@ -170,9 +170,10 @@ describe('ToolPartView running duration', () => {
     render(<SessionNavigationContext.Provider value={{ currentSessionId: 'queued-task-session', navigateToSession: vi.fn(), currentDirectory: undefined }}>
       <ToolPartView execution={{ call: { type: 'toolCall', id: 'queued-task', name: 'task', arguments: {} } }} partKey="queued-task" />
     </SessionNavigationContext.Provider>)
-    expect(screen.getByText('toolPart.pending')).toBeInTheDocument()
+    expect(screen.queryByText('toolPart.pending')).not.toBeInTheDocument()
     expect(screen.queryByText('Running')).not.toBeInTheDocument()
-    expect(screen.getByText('Failed')).toHaveClass('opacity-0')
+    expect(screen.queryByText('Failed')).not.toBeInTheDocument()
+    expect(screen.getByTestId('tool-icon').parentElement).not.toHaveClass('text-accent-main-100', 'text-accent-secondary-100')
     piSessionStateStore.clear('queued-task-session')
   })
 
