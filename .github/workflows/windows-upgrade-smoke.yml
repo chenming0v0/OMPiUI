@@ -115,7 +115,7 @@ jobs:
           $env:XDG_STATE_HOME = Join-Path $isolatedHome 'state'
           $env:XDG_CACHE_HOME = Join-Path $isolatedHome 'cache'
           $env:npm_config_cache = Join-Path $env:SMOKE_ROOT 'npm-cache'
-          node candidate-source/scripts/prepare-omp-runtime.mjs --version 18.12.6 --out "$env:SMOKE_ROOT/native-runtime"
+          node candidate-source/scripts/prepare-omp-runtime.mjs --out "$env:SMOKE_ROOT/native-runtime"
           if ($LASTEXITCODE -ne 0) { throw 'Public native runtime preparation failed' }
       - name: Real baseline install, shortcut customization, upgrade, and native WebView chat
         shell: pwsh

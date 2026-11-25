@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { OMP_SDK_VERSION } from "../packages/omp-worker/src/omp/constants.ts"
 
-export const OMP_BUN_VERSION = "1.3.14"
+export const OMP_BUN_VERSION = "1.4.4"
 const packageName = "@oh-my-pi/pi-coding-agent"
 const runtimePackageName = "ompiui-omp-runtime"
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")

@@ -226,7 +226,7 @@ try {
     Set-OwnedWebViewPolicy 'UserDataFolder' (Join-Path $Root 'webview-profile')
     $env:PATH = (Join-Path $env:OMPI_OMP_RUNTIME_DIR 'bin') + ';' + $env:PATH
     $runtime = Get-Content (Join-Path $env:OMPI_OMP_RUNTIME_DIR 'runtime.json') -Raw | ConvertFrom-Json
-    if ($runtime.version -ne '18.12.6' -or $runtime.bunVersion -ne '1.3.14') { throw 'Smoke requires official OMP 18.12.6 with public sources and Bun 1.3.14.' }
+    if ($runtime.version -ne '19.1.1' -or $runtime.bunVersion -ne '1.4.4') { throw 'Smoke requires official OMP 19.1.1 with public sources and Bun 1.4.4.' }
     Record-Step 'runner-environment' @{ userInteractive = [Environment]::UserInteractive; sessionId = (Get-Process -Id $PID).SessionId; os = [Environment]::OSVersion.ToString(); runtime = $runtime; project = $project; shortcutCwd = $shortcutCwd }
     Add-Type -TypeDefinition @'
 using System;

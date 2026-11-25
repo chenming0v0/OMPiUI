@@ -1,2 +1,2 @@
-/** OMP 运行时版本（worker 侧标定；与 global 安装的 @oh-my-pi/pi-coding-agent 对齐） */
-export const OMP_SDK_VERSION = "18.12.6"
+/** 全量包内置的 OMP 精确版本，同时用于 worker 标定和 CI 兼容性验证。 */
+export const OMP_SDK_VERSION = "19.1.1"
