@@ -35,7 +35,6 @@ import { toolResultText } from '../toolResultContent'
 import { MessageExpandPanel, useMessageExpandRender } from '../../messageExpand'
 import { SubagentSessionPreview } from './SubagentSessionPreview'
 import { useTaskRuntimeStopped } from '../useTaskRuntimeStopped'
-import { openSubagentPanel } from '../../../subagents/subagentPanelSelection'
 
 // ============================================
 // Task Tool Renderer (子 agent)
@@ -314,7 +313,6 @@ function SubagentTask({ slot, outcome, runtimeStopped, execution, partKey, inten
         onOpenSession={sessionFile || targetSessionId ? handleOpenSubagent : undefined}
         opening={opening}
         onStop={isRunning && targetSessionId ? handleStop : undefined}
-        onInspect={currentSessionId ? () => openSubagentPanel(currentSessionId, { toolCallId: execution.call.id, index: slot.index, id: liveRun?.id }) : undefined}
       />
       {openError && <p role="alert" className="pt-1 text-[length:var(--fs-xs)] text-danger-100 break-words">{openError}</p>}
       <MessageExpandPanel open={effectiveExpanded} innerClassName="overflow-hidden">
@@ -355,7 +353,6 @@ interface TaskHeaderProps {
   onOpenSession?: (e: React.MouseEvent) => void
   onStop?: (e: React.MouseEvent) => void
   opening?: boolean
-  onInspect?: () => void
 }
 
 export const TaskHeader = memo(function TaskHeader({
@@ -372,7 +369,6 @@ export const TaskHeader = memo(function TaskHeader({
   onOpenSession,
   onStop,
   opening = false,
-  onInspect,
 }: TaskHeaderProps) {
   const { t } = useTranslation('message')
   const { navigateToSession, currentDirectory } = useSessionNavigation()
@@ -445,7 +441,6 @@ export const TaskHeader = memo(function TaskHeader({
         {activity && <span className="min-w-0 truncate font-mono text-[length:var(--fs-xxs)] text-text-500" data-testid="task-activity">{activity}</span>}
       </button>
       {duration && <span className="shrink-0 tabular-nums text-[length:var(--fs-xxs)] text-text-500">{duration}</span>}
-      {onInspect && <button type="button" onClick={onInspect} className="shrink-0 rounded-sm px-1.5 py-1 text-[length:var(--fs-xs)] text-accent-main-100 hover:bg-bg-200 focus-visible:outline focus-visible:outline-2">{t('task.inspect')}</button>}
 
       {onStop && (
         <button
