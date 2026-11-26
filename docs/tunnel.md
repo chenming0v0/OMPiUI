@@ -169,3 +169,35 @@ OMPIUI_TRUSTED_PROXIES=127.0.0.1 node packages/server/dist/bundle-entry.js web
 - WebSocket（事件流、终端流）原样透传：101 握手头保真，之后两侧 socket 纯字节拼接，中转不解析内容。
 - 背压：任一方向 `bufferedAmount` 越过 1MiB 高水位即暂停源流，回落 256KiB 恢复，防止大输出把内存打爆。
 - Origin 校验：服务端自动把中转公网入口加进允许列表（显式配置的 `OMPIUI_PUBLIC_BASE_URL` 优先级更高），跨域 POST 和 WS 升级才能通过。
+
+## 5. DS Harness Remote 托管中继
+
+这是与自建中转分开的接入方式，使用 [DS Harness Remote](https://dsh.r2049.cn/) 的账号、设备授权和网页隧道，不需要搭建 `omp-relay`。
+
+- **受控端（工作电脑）**：在 [托管工作台](https://dsh.r2049.cn/app)注册或登录并生成一次性主机绑定码。只在工作电脑的 OMPiUI 桌面端「设置 → 认证 → 远程接入 → 这台电脑可被访问」填入绑定码，绑定后开启远程访问。
+- **控制端（桌面或手机 App）**：在「设置 → 认证 → 远程接入 → 访问其他电脑」（Android 在「连接电脑」下选「远程接入」）用同一账号登录，不需要主机绑定码。登录后选择同账号下已开启受控端的电脑，点「打开」，再在系统浏览器完成网页交接。关闭设置不会断开，但使用期间需要保持 App 运行。DSH Go 的会话界面不兼容这个 OMPiUI 受控端；能发现设备不代表能连接到会话。
+- **浏览器**：打开连接端交接的网页入口，不需要承担受控端或保存 DS Harness 账号凭据。地址只对已兑换票据的浏览器有效，不是可以直接转发的公共分享链接。
+
+没有桌面界面时也可以用命令行绑定及连接：
+
+1. 在 [DS Harness Remote 工作台](https://dsh.r2049.cn/app)注册或登录，生成一次性主机匹配码。在工作电脑运行下列命令，再输入匹配码：
+
+    ```bash
+    node packages/server/dist/bundle-entry.js dsh-remote register
+    ```
+
+2. 在工作电脑启动带 Web 静态资源的 OMPiUI 后端。`OMPIUI_DSH_REMOTE=true` 等价于 `--dsh-remote`：
+
+    ```bash
+    node packages/server/dist/bundle-entry.js web --dsh-remote
+    ```
+
+3. 在连接设备运行 `dsh-remote login list` 查看登录方式，用 `dsh-remote login <方式>` 登录**同一账号**，再用 `dsh-remote hosts` 找到工作电脑 ID：
+
+    ```bash
+    node packages/server/dist/bundle-entry.js dsh-remote open <host-id>
+    ```
+
+    用连接设备的浏览器打开命令打印的回环链接，按提示完成一次性网页交接。不要把该链接复制给其他设备。远程使用期间保持连接端进程运行；关闭进程、撤销设备或租约到期后，需要重新打开。
+
+网页隧道仍要求 OMPiUI 自己的访问凭据，可使用现有配对码。Noise 加密保护设备之间的控制和网页票据，不意味着经托管网页入口转发的 HTTP/WS 内容对托管方不可见。只在信任托管方时启用；不使用时去掉启用参数，或用 `dsh-remote revoke` 撤销工作电脑授权。

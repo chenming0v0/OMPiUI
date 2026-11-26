@@ -39,6 +39,7 @@ export const SETTINGS_SEARCH_DEFINITIONS: SettingsSearchDefinition[] = [
     labelKey,
     targetKey: 'authentication.title',
   })),
+  { tab: 'authentication', labelKey: 'dshRemote.tab', targetKey: 'service.remoteConnectionTitle', fallbackKey: 'authentication.phoneConnectComputer' },
   ...definitions('traffic', ['tabs.traffic', 'traffic.recording', 'traffic.previews', 'traffic.requests']),
   ...definitions('service', ['service.title', 'service.ompRuntime', 'service.envVars', 'service.environment']),
   ...definitions('models', ['models.rolesTitle', 'models.visibility']),

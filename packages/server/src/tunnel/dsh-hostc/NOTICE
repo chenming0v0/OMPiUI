@@ -1,0 +1,10 @@
+This directory includes hostc protocol v5 client sources from
+https://github.com/liguobao/ds-harness-remote/tree/d2101fe84b6c8a3f9746c2991f4a7d0bab3cdba2/packages/plugin/src/hostc
+(Copyright (c) 2026 DSH Remote contributors; see LICENSE-MIT).
+
+Upstream attribution (packages/plugin/src/hostc/README.md):
+Derived from akazwz/hostc at c19ff673f36ee5bf43bfe8e8c6233feb53e922e3 (Apache-2.0). The license is included in packages/plugin/LICENSE-hostc. This copy uses only preallocated protocol 5 tunnels. DSH supplies per-request admission, cookie isolation and TLS verification.
+
+The upstream Apache-2.0 license is reproduced in LICENSE-hostc.
+OMPiUI adapted connection.ts, streams.ts and rewrite.ts for loopback-only
+forwarding, OMPiUI's authentication boundary and bounded I/O.

@@ -5,6 +5,9 @@ if (process.argv[2] === "inspect-runtime") {
   // 只导入解析/检查模块；不加载 server、worker entry 或 Agent 模块。
   const { inspectOmpRuntimes } = await import("../../omp-worker/dist/omp/omp-runtime-inspection.js")
   process.stdout.write(`${JSON.stringify(await inspectOmpRuntimes())}\n`)
+} else if (process.argv[2] === "dsh-remote") {
+  const { runDshRemoteCli } = await import("./dsh-remote-cli.ts")
+  await runDshRemoteCli(process.argv.slice(3))
 } else {
 const { dirname, join } = await import("node:path")
 const { existsSync } = await import("node:fs")

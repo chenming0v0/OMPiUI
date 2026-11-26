@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import { useTranslation } from 'react-i18next'
-import { CircleCheck, Clock, Globe, Network, QrCode as QrCodeIcon, Server, Smartphone, Wifi } from 'lucide-react'
+import { CircleCheck, Clock, Cloud, Globe, Network, QrCode as QrCodeIcon, Server, Smartphone, Wifi } from 'lucide-react'
 import type { HostNetworkInfo, PairInviteInfo, TunnelStatus } from '@ompiui/protocol'
 import { CheckIcon, CopyIcon, RetryIcon, SpinnerIcon } from '../../../components/Icons'
 import { QrCode } from '../../../components/QrCode'
@@ -19,15 +19,16 @@ import { useServerStore } from '../../../hooks'
 import { useTailscaleLoginFlow } from '../../../hooks/useTailscaleLoginFlow'
 import { settingsFieldClass, SettingsSection } from './SettingsUI'
 import { TailscaleControls } from './TailscaleControls'
-import { AuthCard, AuthStatusPill, authSecondaryButtonClass } from './AuthPanelUI'
+import { AuthCard, AuthStatusPill, ConnectionMethods, authSecondaryButtonClass } from './AuthPanelUI'
 import { openTailscaleLogin } from '../../../utils/tailscaleLogin'
 import { isTauri, isTauriMobile } from '../../../utils/tauri'
 
 const REMOTE_TAB_KEY = 'ompiui-remote-tab'
 const PAIR_POLL_MS = 3_000
 const TUNNEL_POLL_MS = 5_000
+const DshRemoteSettings = lazy(() => import('./DshRemoteSettings'))
 
-type RemoteTab = 'lan' | 'tailscale' | 'relay'
+type RemoteTab = 'lan' | 'tailscale' | 'relay' | 'dsh'
 
 function formatCountdown(expiresAt: number, now: number): string {
   const remaining = Math.max(0, Math.floor((expiresAt - now) / 1000))
@@ -40,19 +41,19 @@ function groupedCode(code: string): string {
   return code.length === 8 ? `${code.slice(0, 4)} ${code.slice(4)}` : code
 }
 
-export function RemoteAccessSettings() {
+export function RemoteAccessSettings({ onManageController }: { onManageController?: () => void }) {
   const { activeServerGeneration } = useServerStore()
   // Addresses, invites and pending actions belong to one server generation.
   // Remount before rendering a new server, not after its first async response.
-  return <RemoteAccessPanel key={activeServerGeneration} />
+  return <RemoteAccessPanel key={activeServerGeneration} onManageController={onManageController} />
 }
 
-function RemoteAccessPanel() {
+function RemoteAccessPanel({ onManageController }: { onManageController?: () => void }) {
   const { t } = useTranslation(['settings', 'common'])
   const desktop = isTauri() && !isTauriMobile()
   const [tab, setTab] = useState<RemoteTab>(() => {
     const stored = serverStorage.get(REMOTE_TAB_KEY)
-    return stored === 'relay' || stored === 'tailscale' ? stored : 'lan'
+    return stored === 'relay' || stored === 'tailscale' || stored === 'dsh' ? stored : 'lan'
   })
   const [network, setNetwork] = useState<HostNetworkInfo | null>(null)
   const [networkLoading, setNetworkLoading] = useState(true)
@@ -216,7 +217,7 @@ function RemoteAccessPanel() {
   const base = tab === 'relay'
     ? (tunnel?.state === 'connected' ? tunnel.publicUrl?.replace(/\/+$/, '') : null)
     : tab === 'tailscale' ? (!tailscaleStatusError && tailscale?.backendState === 'Running' ? tailscale.url : null)
-    : lanBase
+    : tab === 'lan' ? lanBase : null
 
   const pairUrl = invite && !expired && !invite.redeemed && base ? `${base}/?pair=${encodeURIComponent(invite.pair)}` : null
   const pairPending = (!invite && !inviteGone) || (tab === 'lan' ? networkLoading : tunnel === undefined)
@@ -274,6 +275,7 @@ function RemoteAccessPanel() {
     ['lan', t('settings:service.remoteTabLan'), <Wifi size={14} />],
     ['tailscale', t('settings:service.remoteTabTailscale'), <Globe size={14} />],
     ['relay', t('settings:service.remoteTabRelay'), <Server size={14} />],
+    ['dsh', t('settings:dshRemote.tab'), <Cloud size={14} />],
   ]
   const steps = [t('settings:service.remoteStep1'), t('settings:service.remoteStep2'), t('settings:service.remoteStep3')]
 
@@ -281,24 +283,10 @@ function RemoteAccessPanel() {
     <SettingsSection title={t('settings:authentication.title')} description={t('settings:service.remoteBackendDesc')}>
       <div className="grid min-w-0 gap-3">
         <AuthCard testId="remote-network-setup" icon={<Network size={18} />}
-          title={t('settings:service.remoteConnectionTitle')} description={t('settings:service.remoteConnectionDesc')}>
+          title={t('settings:service.remoteConnectionTitle')}
+          description={tab === 'dsh' ? t('settings:dshRemote.remoteDesc') : t('settings:service.remoteConnectionDesc')}>
           <div className="min-w-0">
-            <div className="grid grid-cols-3 gap-1 rounded-lg bg-bg-200/60 p-1">
-              {tabs.map(([value, label, icon]) => (
-                <button
-                  key={value}
-                  type="button"
-                  onClick={() => switchTab(value)}
-                  aria-pressed={tab === value}
-                  className={`inline-flex min-h-10 min-w-0 items-center justify-center gap-1.5 rounded-md px-2 text-[length:var(--fs-xs)] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-accent-main-100 sm:min-h-8 ${
-                    tab === value ? 'bg-bg-100 text-text-100 shadow-sm ring-1 ring-border-200/60' : 'text-text-400 hover:bg-bg-100/50 hover:text-text-200'
-                  }`}
-                >
-                  <span className={`shrink-0 ${tab === value ? 'text-accent-main-100' : ''}`}>{icon}</span>
-                  <span className="truncate">{label}</span>
-                </button>
-              ))}
-            </div>
+            <ConnectionMethods options={tabs} selected={tab} onChange={switchTab} />
 
             {tab === 'lan' && (
               <div className="mt-4 grid divide-y divide-border-200/60">
@@ -391,7 +379,9 @@ function RemoteAccessPanel() {
           </div>
         </AuthCard>
 
-        <AuthCard testId="remote-device-pairing" icon={<Smartphone size={18} />}
+        {tab === 'dsh' ? (
+          <Suspense fallback={null}><DshRemoteSettings onManage={onManageController} /></Suspense>
+        ) : <AuthCard testId="remote-device-pairing" icon={<Smartphone size={18} />}
           title={t('settings:service.remoteConnectPhoneTitle')} description={t('settings:service.remoteConnectPhoneDesc')}>
           {invite?.redeemed && (
             <div className="flex items-center gap-2 rounded-lg border border-success-100/25 bg-success-100/10 px-3 py-2.5 text-[length:var(--fs-sm)] text-success-100">
@@ -478,7 +468,7 @@ function RemoteAccessPanel() {
             <span aria-hidden className="mt-1.5 h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent-main-100" />
             <span className="min-w-0 break-all">{t('settings:service.remoteWaiting', { url: pairUrl })}</span>
           </div>}
-        </AuthCard>
+        </AuthCard>}
       </div>
     </SettingsSection>
   )

@@ -35,6 +35,7 @@ vi.mock('../../../omp/transport/index.js', () => ({
 }))
 // Observe the exact payload given to the QR encoder, not its SVG internals.
 vi.mock('../../../components/QrCode', () => ({ QrCode: ({ text }: { text: string }) => <div data-testid="qr" data-url={text} /> }))
+vi.mock('./DshRemoteSettings', () => ({ default: () => <div>Hosted relay setup</div> }))
 
 type Network = HostNetworkInfo
 const network = (address = '192.168.50.10', port = 9191): Network => ({
@@ -68,6 +69,20 @@ afterEach(async () => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); awa
 
 const signInStatus = { mode: 'embedded', installed: true, enabled: true, backendState: 'NeedsLogin', ips: [], url: null, authUrl: null, lastError: null }
 const authUrl = 'https://headscale.example.com/a/device'
+
+it('puts hosted relay beside the existing connection methods without showing their pairing codes', async () => {
+  render(<RemoteAccessSettings />)
+  const setup = within(screen.getByTestId('remote-network-setup'))
+  expect(setup.getByRole('button', { name: 'LAN' })).toHaveAttribute('aria-pressed', 'true')
+  expect(setup.getByRole('button', { name: 'Tailscale' })).toBeInTheDocument()
+  expect(setup.getByRole('button', { name: 'Self-hosted relay' })).toBeInTheDocument()
+  fireEvent.click(setup.getByRole('button', { name: 'Remote access' }))
+  expect(await screen.findByText('Hosted relay setup')).toBeInTheDocument()
+  expect(screen.queryByTestId('remote-device-pairing')).not.toBeInTheDocument()
+  fireEvent.click(setup.getByRole('button', { name: 'LAN' }))
+  expect(screen.queryByText('Hosted relay setup')).not.toBeInTheDocument()
+  expect(await within(screen.getByTestId('remote-device-pairing')).findByTestId('qr')).toBeInTheDocument()
+})
 
 describe('remote Tailscale sign-in', () => {
   beforeEach(() => {
