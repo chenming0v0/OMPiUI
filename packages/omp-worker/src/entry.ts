@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { existsSync } from "node:fs"
+import { statSync } from "node:fs"
 import { resolve } from "node:path"
 import { installWorkerFileLogging } from "./worker-logger.js"
 
@@ -157,6 +157,15 @@ const pendingHostCalls = new Map<string, {
   timer: NodeJS.Timeout
 }>()
 
+function sessionFileRevision(file: string | undefined): string | undefined {
+  if (!file) return undefined
+  try {
+    const stat = statSync(file)
+    if (stat.isFile()) return `${file}:${stat.ino}:${stat.size}:${stat.mtimeMs}`
+  } catch { /* Unavailable files are not a durable update. */ }
+  return undefined
+}
+
 function subscribeRuntimeEvents(current: SessionRuntime): Array<() => void> {
   const unsubs: Array<() => void> = []
   // Stable host identity, not a session id: the same runtime can replace sessions.
@@ -182,20 +191,20 @@ function subscribeRuntimeEvents(current: SessionRuntime): Array<() => void> {
     event,
     meta,
   })}))
-  let materializedFile = current.getSessionFile()
-  if (materializedFile && !existsSync(materializedFile)) materializedFile = undefined
+  let summaryRevision = sessionFileRevision(current.getSessionFile())
   unsubs.push(current.onHead(head => {
-    const file = current.getSessionFile()
-    if (catalog instanceof OmpCatalog && file !== materializedFile && file && existsSync(file)) {
-      materializedFile = file
-      catalog.invalidateSessionList()
-    }
+    // A native head can also advance without writing to disk (for example tree navigation).
+    const revision = sessionFileRevision(current.getSessionFile())
+    const summaryChanged = revision !== undefined && revision !== summaryRevision
+    summaryRevision = revision
+    if (summaryChanged && catalog instanceof OmpCatalog) catalog.invalidateSessionList()
     send({
       kind: "event",
       generation: workerGeneration,
       sessionId: current.getSessionId(),
       channel: "session.head",
       head: head as unknown as JsonObject,
+      ...(summaryChanged ? { summaryChanged } : {}),
     })
   }))
   if (current.onActivity) {

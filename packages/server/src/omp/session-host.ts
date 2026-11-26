@@ -1332,6 +1332,11 @@ export class SessionHost {
           sessionId: session.sessionId,
           materialized: true,
         });
+      } else if (event.summaryChanged) {
+        this.hub.publish({ kind: "server", id: "server" }, "sessions.updated", {
+          sessionId: session.sessionId,
+          updated: true,
+        });
       }
       return;
     }

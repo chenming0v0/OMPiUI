@@ -311,9 +311,10 @@ test("an explicit message attaches a previewed OMP session using its latest hist
   assert.deepEqual(commands, ["state.get", "sendUserMessage"])
 })
 
-test("SessionHost notifies the session list when sessions materialize and titles change", async () => {
+test("SessionHost notifies the session list when sessions materialize, are renamed, or are updated on disk", async () => {
   const sessionFile = join(tmpdir(), `piui-session-host-${randomUUID()}.jsonl`)
-  let emitEvent!: (event: { channel: string; head?: unknown; event?: { type?: string; title?: string }; meta?: unknown }) => void
+  type TestEvent = { channel: string; head?: unknown; summaryChanged?: boolean; event?: { type?: string; title?: string }; meta?: unknown }
+  let emitEvent!: (event: TestEvent) => void
   process.env.OMPIUI_DRIVER = "mock"
   const worker = {
     command: async () => ({}),
@@ -371,10 +372,12 @@ test("SessionHost notifies the session list when sessions materialize and titles
   assert.equal(updated.length, 2)
   assert.deepEqual(updated[1], { sessionId: "session-1", updated: true })
 
-  // 新消息推进 head 本身不广播，标题由独立事件通知全局列表。
+  // A pure head movement is not a change to the list summary.
   emitEvent({ channel: "session.head", head: { revision: 3 } })
-  emitEvent({ channel: "session.head", head: { revision: 4, entryCount: 4 } })
   assert.equal(updated.length, 2)
+  // The worker observed a durable update and invalidated its list cache.
+  emitEvent({ channel: "session.head", head: { revision: 4, entryCount: 4 }, summaryChanged: true })
+  assert.deepEqual(updated[2], { sessionId: "session-1", updated: true })
 
   delete process.env.OMPIUI_DRIVER
   off()

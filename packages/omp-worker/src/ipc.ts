@@ -40,7 +40,7 @@ export type WorkerEvent =
       event: JsonObject
       meta: EventCursor & { liveMessage?: JsonObject }
     }
-  | { kind: "event"; generation: string; sessionId: string; channel: "session.head"; head: JsonObject }
+  | { kind: "event"; generation: string; sessionId: string; channel: "session.head"; head: JsonObject; summaryChanged?: boolean }
   | { kind: "event"; generation: string; sessionId: string; channel: "session.activity"; event: JsonObject }
   | { kind: "event"; generation: string; sessionId: string; channel: "session.crashed"; event: JsonObject }
   | { kind: "event"; generation: string; sessionId: string; channel: "extension.ui"; event: JsonObject }

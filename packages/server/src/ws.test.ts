@@ -136,6 +136,28 @@ describe("event websocket", () => {
     const sessionId = created.json.data.sessionId as string;
     assert.ok(sessionId);
 
+    // The second client subscribes only to the server stream, never this session.
+    const listStream = { kind: "server", id: "server" } as const;
+    const listSocket = new WebSocket(`ws://127.0.0.1:${port}/api/v1/events`, EVENT_WS_SUBPROTOCOL);
+    const listEvents: EventEnvelope[] = [];
+    listSocket.on("message", raw => {
+      const frame = JSON.parse(String(raw));
+      if (frame.channel === "event") listEvents.push(frame.event);
+    });
+    await new Promise<void>((resolve, reject) => {
+      listSocket.once("message", () => resolve());
+      listSocket.once("error", reject);
+    });
+    listSocket.send(JSON.stringify({ type: "subscribe", protocolVersion: PROTOCOL_VERSION,
+      streams: [listStream], cursors: { server: app.eventHub.getCursor(listStream) },
+    }));
+    const listReady = app.eventHub.publish(listStream, "sessions.updated", { subscribed: true });
+    await waitFor(() => listEvents.some(event => event.eventId === listReady.eventId));
+    listEvents.length = 0;
+    const oldList = await request(port, "POST", "/api/v1/pi/commands/session.listAll");
+    const oldSummary = oldList.json.data.find((summary: { id: string }) => summary.id === sessionId);
+    assert.equal(oldSummary.messageCount, 0);
+
     ws.send(
       JSON.stringify({
         type: "subscribe",
@@ -197,6 +219,15 @@ describe("event websocket", () => {
     );
     assert.ok(sawAgentEnd, "did not see agent_end");
     assert.ok(sawCommandCompleted, "did not see command completion");
+    await waitFor(() => listEvents.some(event => event.channel === "sessions.updated" &&
+      (event.payload as { sessionId?: string }).sessionId === sessionId &&
+      (event.payload as { updated?: boolean }).updated === true));
+    const newList = await request(port, "POST", "/api/v1/pi/commands/session.listAll");
+    const newSummary = newList.json.data.find((summary: { id: string }) => summary.id === sessionId);
+    assert.equal(newSummary.messageCount, 2);
+    assert.ok(Date.parse(newSummary.modified) >= Date.parse(oldSummary.modified));
+    assert.ok(listEvents.every(event => event.stream.kind === "server"));
+    listSocket.close();
 
     const state = await request(
       port,
