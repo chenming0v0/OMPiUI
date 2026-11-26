@@ -113,6 +113,15 @@ describe('piSessionStateStore pending dialog recovery', () => {
     expect(activeSessionStore.getBusySessionsSnapshot().some(entry => entry.pendingAction)).toBe(false)
   })
 
+  it('clears sidebar state on local expiry even when settlement replay is lost', () => {
+    const request = dialogRequest()
+    extensionUiStore.requestOpened(request, { epoch: 'events', sequence: 1 })
+    activeSessionStore.addPendingRequest(request.requestId, request.sessionId, 'permission')
+    extensionUiStore.requestSettled(request.sessionId, request.requestId, request.workerGeneration)
+    expect(extensionUiStore.getSnapshot().sessions[request.sessionId]?.pending).toEqual([])
+    expect(activeSessionStore.getBusySessionsSnapshot().some(entry => entry.pendingAction)).toBe(false)
+  })
+
   it('does not replay an old extension mirror when lifecycle state changes', () => {
     piSessionStateStore.setState('session-1', {
       extensionUiState: [{ kind: 'status', key: 'mode', text: 'Old' }],
@@ -132,6 +141,25 @@ describe('piSessionStateStore pending dialog recovery', () => {
     const snapshot = extensionUiStore.getSnapshot().sessions['session-1']
     expect(snapshot?.pending).toHaveLength(1)
     expect(snapshot?.state.statuses.mode).toBe('Planning')
+  })
+
+  it.each(['ask', 'confirm', 'input', 'editor'] as const)('reconciles a missing %s without dropping newer live requests', kind => {
+    const old = dialogRequest({ kind })
+    const fresh = dialogRequest({ requestId: 'fresh' })
+    extensionUiStore.requestOpened(old, { epoch: 'events', sequence: 1 })
+    activeSessionStore.addPendingRequest(old.requestId, old.sessionId, 'question')
+    const read = piSessionStateStore.beginRequest(old.sessionId)
+    extensionUiStore.requestOpened(fresh, { epoch: 'events', sequence: 3 })
+    activeSessionStore.addPendingRequest(fresh.requestId, fresh.sessionId, 'permission')
+    piSessionStateStore.setStateIfCurrent(old.sessionId, {
+      ...stateWith([]), pendingExtensionUiCursor: { epoch: 'events', sequence: 2 },
+    }, read)
+    expect(extensionUiStore.getSnapshot().sessions[old.sessionId]?.pending).toEqual([fresh])
+    expect(extensionUiStore.requestOpened(old, { epoch: 'events', sequence: 1 })).toBe(false)
+    expect(activeSessionStore.getBusySessionsSnapshot().find(entry => entry.sessionId === old.sessionId)?.pendingAction?.type).toBe('permission')
+    piSessionStateStore.setState(old.sessionId, { ...stateWith([]), pendingExtensionUiCursor: { epoch: 'events', sequence: 4 } })
+    expect(extensionUiStore.getSnapshot().sessions[old.sessionId]?.pending).toEqual([])
+    expect(activeSessionStore.getBusySessionsSnapshot().some(entry => entry.pendingAction)).toBe(false)
   })
 
   it('restores offscreen extension TUI panels after a refresh', () => {

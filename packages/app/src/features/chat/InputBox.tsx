@@ -151,7 +151,7 @@ export interface InputBoxProps extends ComposerQueueProps {
     text: string,
     attachments: Attachment[],
     options?: { agent?: string; variant?: string; delivery?: DeliveryMode },
-  ) => Promise<boolean> | boolean
+  ) => Promise<boolean | 'shared-draft-accepted'> | boolean | 'shared-draft-accepted'
   onAbort?: () => Promise<void> | void
   onCycleModel?: (direction: 'forward' | 'backward') => void
   onCycleThinkingLevel?: () => void
@@ -289,7 +289,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   const supportsAnyFile = fileCaps.image || fileCaps.pdf || fileCaps.audio || fileCaps.video
 
   // 文本状态
-  const { text, attachments, ready: draftReady, setText, setAttachments } = useComposerDraft(draftKey)
+  const { text, attachments, delivery, ready: draftReady, setText, setAttachments, setDelivery } = useComposerDraft(draftKey)
   const currentDraftKeyRef = useRef(draftKey)
   currentDraftKeyRef.current = draftKey
 
@@ -318,7 +318,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
   // 附件状态（图片、文件、文件夹、agent）
   const [isSubmitting, setIsSubmitting] = useState(false)
   const submittingRef = useRef(false)
-  const [deliveryMode, setDeliveryMode] = useState<DeliveryMode>('followUp')
+  const deliveryMode = delivery ?? 'followUp'
   const piCapabilities = usePiCapabilities()
   const effectiveDeliveryMode = deliveryMode === 'steer' && piCapabilities.promptSteer
     ? 'steer'
@@ -337,10 +337,10 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
     if (previous && previous.key === draftKey && previous.text === revertedText && previous.attachments === revertedAttachments && previous.delivery === revertedDelivery) return
     const frame = requestAnimationFrame(() => {
       restoredDeliveryRef.current = { key: draftKey, text: revertedText, attachments: revertedAttachments, delivery: revertedDelivery }
-      setDeliveryMode(revertedDelivery)
+      setDelivery(revertedDelivery)
     })
     return () => cancelAnimationFrame(frame)
-  }, [draftKey, revertedDelivery, revertedText, revertedAttachments])
+  }, [draftKey, revertedDelivery, revertedText, revertedAttachments, setDelivery])
 
   // @ Mention 状态
   const [mentionOpen, setMentionOpen] = useState(false)
@@ -594,23 +594,18 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
 
 
   const runSubmit = useCallback(
-    async (submit: () => Promise<boolean | void> | boolean | void, onSuccess?: () => void, onFailure?: () => void) => {
+    async (submit: () => ReturnType<InputBoxProps['onSend']>, onSuccess: (result: true | 'shared-draft-accepted') => void) => {
       if (submittingRef.current) return false
 
       submittingRef.current = true
       setIsSubmitting(true)
       try {
         const result = await submit()
-        if (result === false) {
-          onFailure?.()
-          return false
-        }
-
-        onSuccess?.()
+        if (result === false) return false
+        onSuccess(result)
         return true
       } catch (error) {
         apiErrorHandler('send message', error)
-        onFailure?.()
         return false
       } finally {
         submittingRef.current = false
@@ -635,7 +630,14 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
           variant: selectedVariant,
           ...(effectiveDeliveryMode ? { delivery: effectiveDeliveryMode } : {}),
         }),
-      () => {
+      result => {
+        if (result === 'shared-draft-accepted') {
+          // The host clears only the accepted version; do not write an empty draft
+          // from this tab while another tab may already have made another edit.
+          resetHistoryIndex()
+          onClearRevert?.()
+          return
+        }
         // Home-to-session navigation moves the draft while this request is
         // pending. Clear its submitted snapshot, never another session's edits.
         if (draftKey) {
@@ -1896,7 +1898,7 @@ const InputBoxComponent = forwardRef<InputBoxHandle, InputBoxProps>(function Inp
                       isSending={isSubmitting}
                       onAbort={onAbort}
                       deliveryMode={deliveryMode}
-                      onDeliveryModeChange={setDeliveryMode}
+                      onDeliveryModeChange={setDelivery}
                       canSteer={piCapabilities.promptSteer}
                       canFollowUp={piCapabilities.promptFollowUp}
                       canInterruptAndPrompt={piCapabilities.promptInterrupt}

@@ -1360,6 +1360,7 @@ export class OmpRpcSession implements SessionRuntime {
     this.assertEventEpoch(epoch);
     if (statsEpoch !== this.eventEpoch || historyGeneration !== this.historyGeneration || modelsGeneration !== this.modelsGeneration || activityGeneration !== this.activityGeneration) return this.buildState();
     const { submittedMessages, ...queue } = this.getNativeQueueSnapshot();
+    const editorText = this.extensionUi.getEditorText();
     return {
       sessionId: this.sessionId,
       sessionFile: this.sessionFile ?? null,
@@ -1428,6 +1429,7 @@ export class OmpRpcSession implements SessionRuntime {
       submittedMessages,
       pendingExtensionUiRequests: this.extensionUi.listPending(),
       extensionUiState: this.extensionUi.getStateMirror(),
+      ...(editorText !== undefined ? { extensionEditorText: editorText } : {}),
       extensionTuiPanels: [],
       nativeAskDialog: this.nativeAskDialog && askAvailable,
       askUi: {
@@ -2166,22 +2168,31 @@ export class OmpRpcSession implements SessionRuntime {
     return data === undefined ? undefined : toJson(data);
   }
 
-  async setSteeringMode(mode: "all" | "one-at-a-time"): Promise<void> {
-    unwrapResponse(await this.client.request({ type: "set_steering_mode", mode }, 30_000));
+  private async setSessionMode(
+    type: "set_steering_mode" | "set_follow_up_mode" | "set_interrupt_mode",
+    field: "steeringMode" | "followUpMode" | "interruptMode",
+    mode: "all" | "one-at-a-time" | "immediate" | "wait",
+  ): Promise<void> {
+    const epoch = this.eventEpoch;
+    unwrapResponse(await this.client.request({ type, mode }, 30_000));
+    this.assertEventEpoch(epoch);
     this.stateFlight = undefined;
+    const native = await this.fetchState();
+    this.assertEventEpoch(epoch);
+    if (native[field] !== mode) throw Object.assign(new Error(`Native ${field} readback did not match the requested value`), { code: "SUBMISSION_NOT_ADMITTED" });
+    this.emitPiEvent({ type: "session_modes_changed" });
+  }
+
+  async setSteeringMode(mode: "all" | "one-at-a-time"): Promise<void> {
+    await this.setSessionMode("set_steering_mode", "steeringMode", mode);
   }
 
   async setFollowUpMode(mode: "all" | "one-at-a-time"): Promise<void> {
-    unwrapResponse(await this.client.request({ type: "set_follow_up_mode", mode }, 30_000));
-    this.stateFlight = undefined;
+    await this.setSessionMode("set_follow_up_mode", "followUpMode", mode);
   }
 
   async setInterruptMode(mode: "immediate" | "wait"): Promise<void> {
-    const epoch = this.eventEpoch;
-    unwrapResponse(await this.client.request({ type: "set_interrupt_mode", mode }, 30_000));
-    const native = await this.fetchState();
-    if (epoch !== this.eventEpoch) throw Object.assign(new Error("Session replaced while setting interrupt mode"), { code: "SESSION_REPLACED" });
-    if (native.interruptMode !== mode) throw Object.assign(new Error("Native interrupt mode readback did not match the requested value"), { code: "SUBMISSION_NOT_ADMITTED" });
+    await this.setSessionMode("set_interrupt_mode", "interruptMode", mode);
   }
 
   private interruptSubmissionEpoch: string | undefined;

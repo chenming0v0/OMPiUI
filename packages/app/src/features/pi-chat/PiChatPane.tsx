@@ -64,6 +64,8 @@ import { pendingSendStore, type PendingSendAlert } from './pendingSendStore'
 import { describeSendFailure } from './sendFailure'
 import { SessionStopCoordinator } from './sessionStopCoordinator'
 import { acceptComposerDraft, composerDraftKey, getComposerDraft, moveComposerDraft, updateComposerDraft, type ComposerDraft } from '../chat/input/composerDraftStore'
+import { prepareSharedComposerSend, refreshSharedComposerDraft, useSharedComposerDraft } from '../chat/input/sharedComposerDraft'
+import { usePiCapabilities } from '../../omp/capabilities'
 import type { ComposerQueueEntry } from '../chat/input/QueuedUserMessageQueue'
 import { piBranchStore, piSessionStateStore } from '../../omp/state/index.js'
 import { extensionUiStore, getEditorTextSource } from '../../omp/extensionUiStore'
@@ -104,7 +106,7 @@ interface PendingSendAlertState extends PendingSendAlert {
     text: string
     attachments: Attachment[]
     delivery?: DeliveryMode
-    composerSnapshot: Pick<ComposerDraft, 'text' | 'attachments'>
+    composerSnapshot: Pick<ComposerDraft, 'text' | 'attachments' | 'delivery'>
   }
 }
 
@@ -312,6 +314,9 @@ export function PiChatPane({
   const sessionAccessDenied = branchErrorStatus === 401 || branchErrorStatus === 403
   const sessionLoadError = Boolean(sessionId && branchError && (!branch || sessionAccessDenied) && !sessionUnavailable)
   const sessionBusy = Boolean(sessionId && !branch && branchError && isSessionBusyError(branchError))
+  const sharedDraft = usePiCapabilities().sharedComposerDraft === true
+  const draftKey = composerDraftKey(activeServer, sessionId, currentDirectory ?? '', paneId)
+  useSharedComposerDraft(draftKey, sessionId, sharedDraft && !sessionUnavailable && !sessionLoadError, activeServerGeneration)
   useEffect(() => {
     sessionUnavailableRef.current = sessionUnavailable || sessionLoadError
   })
@@ -357,8 +362,8 @@ export function PiChatPane({
   const editorDraft = useSessionEditorDraft(sessionId)
   const lastEditorTextRef = useRef<string | undefined>(undefined)
   useEffect(() => {
-    return configureSessionEditorDraftSync((sid, text) => setPiExtensionEditorState(sid, text).catch(() => undefined))
-  }, [])
+    if (!sharedDraft) return configureSessionEditorDraftSync((sid, text) => setPiExtensionEditorState(sid, text).catch(() => undefined))
+  }, [sharedDraft])
 
   // Streaming is not a synonym for stoppable work (retry/foreground bash),
   // nor for a runtime kept alive by background jobs. Trust an explicit flag.
@@ -410,18 +415,19 @@ export function PiChatPane({
         const draft = getComposerDraft(key)
         const text = draft.text.trim() ? `${draft.text}\n\n${entry.text}` : entry.text
         const attachments = [...draft.attachments, ...(entry.images?.map(imageInputToAttachment) ?? [])]
-        updateComposerDraft(key, () => ({ text, attachments, ready: true }))
+        const delivery = kind === 'steering' ? 'steer' : 'followUp'
+        updateComposerDraft(key, () => ({ text, attachments, ready: true, delivery }))
         // The native removal already committed. Save to its original draft even
         // if this pane or backend changed while the response was in flight.
         if (serverStore.getActiveServerGeneration() === activeServerGeneration) {
-          setSessionEditorDraft(sessionId, text, { attachments, delivery: kind === 'steering' ? 'steer' : 'followUp' })
+          if (!sharedDraft) setSessionEditorDraft(sessionId, text, { attachments, delivery })
           void refreshPiSessionState(sessionId).catch(() => undefined)
         }
       } catch (error) {
         uiErrorHandler('remove queued message', error)
       }
     },
-    [sessionId, activeServer, activeServerGeneration, queuedSteering, queuedFollowUps],
+    [sessionId, activeServer, activeServerGeneration, queuedSteering, queuedFollowUps, sharedDraft],
   )
   /**
    * 立即提交队列中的一条（本轮 steer / 下一轮 prompt）。worker 端原子地
@@ -890,7 +896,7 @@ export function PiChatPane({
   const localComposerTextRef = useRef<string | undefined>(undefined)
   const composerMountedRef = useRef(false)
   useEffect(() => {
-    if (!extensionState || extensionState.editorText === lastEditorTextRef.current) return
+    if (sharedDraft || !extensionState || extensionState.editorText === lastEditorTextRef.current) return
     const source = getEditorTextSource(sessionId)
     // 镜像回填只服务于恢复场景（页面刷新/重连后输入框为空）。它来自
     // state 刷新——本地 → worker 有 500ms 防抖同步窗口，镜像必然滞后：
@@ -904,7 +910,7 @@ export function PiChatPane({
     }
     lastEditorTextRef.current = extensionState.editorText
     inputBoxRef.current?.setEditorText(extensionState.editorText)
-  }, [extensionState, sessionId])
+  }, [extensionState, sessionId, sharedDraft])
 
   // The shared controller draft updates every source pane and survives remount.
   // Keep mirror guards aligned without writing the same draft a second time.
@@ -977,19 +983,20 @@ export function PiChatPane({
       }
       localComposerTextRef.current = text
       // 会话已不可用时别再往服务端同步编辑器状态（每敲一个字一个 404）
-      if (!sessionId || sessionUnavailableRef.current) return
+      if (!sessionId || sharedDraft || sessionUnavailableRef.current) return
       syncSessionEditorDraft(sessionId, text)
     },
-    [sessionId],
+    [sessionId, sharedDraft],
   )
   const handleSend = useCallback(
-    async (text: string, attachments: Attachment[], options?: { delivery?: DeliveryMode }, retrySnapshot?: Pick<ComposerDraft, 'text' | 'attachments'>) => {
+    async (text: string, attachments: Attachment[], options?: { delivery?: DeliveryMode }, retrySnapshot?: Pick<ComposerDraft, 'text' | 'attachments' | 'delivery'>): Promise<boolean | 'shared-draft-accepted'> => {
       const capturedServerGeneration = activeServerGeneration
       const capturedIdentity = paneIdentityRef.current
-      const sourceDraftKey = composerDraftKey(activeServer, sessionId, currentDirectory ?? '', paneId)
+      const sourceDraftKey = draftKey
       // InputBox omits command chips from the RPC payload. Keep their original
       // identities separately so retry can accept that same composer snapshot.
-      const composerSnapshot = retrySnapshot ?? { text, attachments: getComposerDraft(sourceDraftKey).attachments }
+      const sourceDraft = getComposerDraft(sourceDraftKey)
+      const composerSnapshot = retrySnapshot ?? { text, attachments: sourceDraft.attachments, delivery: sourceDraft.delivery }
       let targetSessionId = sessionId
       const isCurrentIdentity = () => paneIdentityRef.current === capturedIdentity || (
         targetSessionId !== sessionId && paneIdentityRef.current.epoch === capturedIdentity.epoch + 1 &&
@@ -1082,24 +1089,40 @@ export function PiChatPane({
           await refreshPiSessionState(targetSessionId)
         }
         const sid = targetSessionId
+        const targetDraftKey = composerDraftKey(activeServer, sid, '', '')
+        if (!isCurrentIdentity() || serverStore.getActiveServerGeneration() !== capturedServerGeneration)
+          throw new Error('Session changed before message submission')
+        const draftVersion = sharedDraft ? await prepareSharedComposerSend(targetDraftKey, composerSnapshot, sid) : undefined
         // The command resolves on backend acceptance, not at the end of the turn.
         // Until then InputBox retains both the text and its attachments.
         await stopCoordinatorRef.current.submit(JSON.stringify([capturedServerGeneration, sid]), () => {
-          if (!isCurrentIdentity()) throw new Error('Session changed before message submission')
+          if (!isCurrentIdentity() || serverStore.getActiveServerGeneration() !== capturedServerGeneration)
+            throw new Error('Session changed before message submission')
           // #360: abortAndPrompt is its own native admission, never an
           // abort followed by a plain prompt re-submission.
           if (deliverAs === 'abortAndPrompt') {
-            return abortAndPrompt(sid, text, images.length ? images : undefined).then(() => undefined)
+            return (draftVersion
+              ? abortAndPrompt(sid, text, images.length ? images : undefined, undefined, draftVersion)
+              : abortAndPrompt(sid, text, images.length ? images : undefined)).then(() => undefined)
           }
-          return sendPiUserMessage(sid, text, images.length ? images : undefined, deliverAs)
+          return draftVersion
+            ? sendPiUserMessage(sid, text, images.length ? images : undefined, deliverAs, undefined, draftVersion)
+            : sendPiUserMessage(sid, text, images.length ? images : undefined, deliverAs)
         })
         accepted = true
         if (text.startsWith('/')) pendingSendStore.settle(pendingId)
         else pendingSendStore.accept(pendingId)
+        if (sharedDraft) {
+          refreshSharedComposerDraft(targetDraftKey)
+          if (isCurrentIdentity() && paneIdentityRef.current.sessionId === sid) {
+            if (getComposerDraft(targetDraftKey).text === composerSnapshot.text) clearSessionEditorDraft(sid)
+            scheduleDelayedRefresh(sid)
+          }
+          return 'shared-draft-accepted'
+        }
         if (!isCurrentIdentity() || paneIdentityRef.current.sessionId !== sid) return true
         // The alert retry bypasses InputBox.runSubmit. Apply its acceptance
         // cleanup here, using the failed snapshot rather than the current draft.
-        const targetDraftKey = composerDraftKey(activeServer, sid, '', '')
         // Compare before acceptance clears text, so an unchanged retry also
         // clears the restore marker instead of replaying it on the next mount.
         const currentText = retrySnapshot
@@ -1135,7 +1158,7 @@ export function PiChatPane({
         if (!accepted && pendingId) pendingSendStore.settle(pendingId)
       }
     },
-    [sessionId, activeServer, activeServerGeneration, currentDirectory, paneId, baseItems, queuedSteering, queuedFollowUps, isStreaming, models, scheduleDelayedRefresh, onOpenSettings, onOpenSettingsTab, onOpenSidebar],
+    [sessionId, activeServer, activeServerGeneration, draftKey, sharedDraft, baseItems, queuedSteering, queuedFollowUps, isStreaming, models, scheduleDelayedRefresh, onOpenSettings, onOpenSettingsTab, onOpenSidebar],
   )
 
   const handleSetGoal = useCallback(
@@ -1521,7 +1544,7 @@ export function PiChatPane({
             ref={inputBoxRef}
             paneId={paneId}
             sessionId={sessionId}
-            draftKey={composerDraftKey(activeServer, sessionId, currentDirectory ?? '', paneId)}
+            draftKey={draftKey}
             queuedSteering={displayedQueues.steering}
             queuedFollowUps={displayedQueues.followUp}
             onQueueBackToInput={queue?.editable === false ? undefined : handleQueueBackToInput}

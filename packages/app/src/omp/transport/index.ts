@@ -29,6 +29,8 @@ import type {
   PromptParams,
   SendUserMessageParams,
   SendQueuedMessageParams,
+  SetSharedComposerDraftParams,
+  SharedComposerDraft,
   SetModelParams,
   SetThinkingLevelParams,
   SteerParams,
@@ -240,9 +242,10 @@ export async function postPiGlobalCommand<
   return (response.data !== undefined ? response.data : response.command) as T extends undefined ? null : T
 }
 
-type ServerSessionCommandName = 'controls.get' | 'session.initialize' | 'toolOutput.get'
+type ServerSessionCommandName = 'controls.get' | 'session.initialize' | 'toolOutput.get' | 'composerDraft.get' | 'composerDraft.set'
 
 type ServerSessionCommandParams = {
+  'composerDraft.set': SetSharedComposerDraftParams
   'toolOutput.get': { artifactId: string; offset: number; revision?: string }
 }
 
@@ -1009,6 +1012,14 @@ export function respondPiExtensionUi(
   return postPiSessionCommand(sessionId, 'respondExtensionUi', { requestId, response }, signal)
 }
 
+export function getSharedComposerDraft(sessionId: string, signal?: AbortSignal) {
+  return postPiSessionCommand<SharedComposerDraft, 'composerDraft.get'>(sessionId, 'composerDraft.get', undefined, signal)
+}
+
+export function setSharedComposerDraft(sessionId: string, params: SetSharedComposerDraftParams, signal?: AbortSignal) {
+  return postPiSessionCommand<{ applied: boolean; version: string | null }, 'composerDraft.set'>(sessionId, 'composerDraft.set', params, signal)
+}
+
 const editorSyncs = new Map<string, { text: string; active: boolean; flight: Promise<JsonValue> }>()
 serverStore.onServerChange(() => editorSyncs.clear())
 
@@ -1254,7 +1265,7 @@ export function setPiInterruptMode(
  */
 export function abortAndPromptPi(
   sessionId: string,
-  params: { text: string; images?: PiImageInput[] },
+  params: { text: string; images?: PiImageInput[]; composerDraftVersion?: string },
   signal?: AbortSignal,
 ): Promise<JsonValue> {
   // Native prompt_result can follow a long turn; the ordinary 20s HTTP

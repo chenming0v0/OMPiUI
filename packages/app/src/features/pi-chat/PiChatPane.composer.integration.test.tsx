@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   interrupt: vi.fn(), abort: vi.fn(), abortCompaction: vi.fn(), getJobs: vi.fn(),
   editorState: vi.fn(), slashCommands: vi.fn(), completions: vi.fn(),
   sendQueued: vi.fn(), discardQueued: vi.fn(), removeQueued: vi.fn(),
+  readDraft: vi.fn(), writeDraft: vi.fn(), sharedDraft: false,
   touch: false,
 }))
 
@@ -52,12 +53,13 @@ vi.mock('../../omp/transport/index.js', () => ({
   inspectPiAsyncJob: vi.fn(), cancelPiAsyncJob: vi.fn(),
   manageSessionGoal: vi.fn(), removeQueuedMessage: mocks.removeQueued, discardQueuedMessage: mocks.discardQueued,
   sendQueuedMessage: mocks.sendQueued, waitHostCommand: vi.fn(), getPiTree: vi.fn(),
+  getSharedComposerDraft: mocks.readDraft, setSharedComposerDraft: mocks.writeDraft,
 }))
 vi.mock('../../hooks/useInputCapabilities', () => ({
   useInputCapabilities: () => ({ canHover: !mocks.touch, hasCoarsePointer: mocks.touch, hasTouch: mocks.touch, preferTouchUi: mocks.touch }),
 }))
 vi.mock('../../omp/capabilities', () => ({
-  usePiCapabilities: () => ({ promptSteer: true, promptFollowUp: true, promptInterrupt: true, backgroundJobs: true }),
+  usePiCapabilities: () => ({ promptSteer: true, promptFollowUp: true, promptInterrupt: true, backgroundJobs: true, sharedComposerDraft: mocks.sharedDraft }),
 }))
 vi.mock('../../omp/eventStream.js', () => ({ piEventStream: { connect: vi.fn(), disconnect: vi.fn() } }))
 vi.mock('../../omp/state/index.js', () => ({
@@ -151,6 +153,7 @@ beforeEach(async () => {
   }]
   mocks.state = { model: { provider: 'openai', id: 'preview-model' }, thinkingLevel: 'off' }
   mocks.listedActive = false
+  mocks.sharedDraft = false
   mocks.touch = false
   mocks.branch = { items: [] }
   mocks.sendQueued.mockResolvedValue({ accepted: true })
@@ -335,6 +338,41 @@ describe('PiChatPane with the real composer', () => {
     fireEvent.click(await screen.findByText(i18n.t('chat:chatArea.editQueueItem')))
     await waitFor(() => expect(mocks.removeQueued).toHaveBeenCalledWith(sessionId, { kind: 'followUp', index: 0, entryId: entry.entryId }))
     await waitFor(() => expect(mocks.editorState).toHaveBeenCalledWith(sessionId, entry.text))
+  })
+
+  it('publishes queue takeback with images and delivery through the shared draft', async () => {
+    const entry = { entryId: 'follow-up-shared', text: 'continue with picture' }
+    mocks.sharedDraft = true
+    mocks.touch = true
+    mocks.state = { ...mocks.state, isStreaming: true, queue: { steeringEntries: [], followUpEntries: [entry] } }
+    mocks.readDraft.mockResolvedValue({ version: null, text: '', attachments: [], delivery: 'followUp' })
+    mocks.writeDraft.mockResolvedValue({ applied: true, version: 'queue-version' })
+    mocks.removeQueued.mockResolvedValueOnce({ text: entry.text, images: [{ type: 'image', mimeType: 'image/png', data: 'BAU=' }] })
+    render(<PiChatPane paneId={paneId} sessionId={sessionId} />)
+    await waitFor(() => expect(mocks.readDraft).toHaveBeenCalled())
+    const rail = document.querySelector('[data-message-queue="next"]')! as HTMLElement
+    fireEvent.click(within(rail).getByRole('button', { name: i18n.t('chat:chatArea.openQueueMenu') }))
+    fireEvent.click(await screen.findByText(i18n.t('chat:chatArea.editQueueItem')))
+    await waitFor(() => expect(mocks.writeDraft).toHaveBeenCalledWith(sessionId, {
+      baseVersion: null, text: entry.text, delivery: 'followUp',
+      attachments: [expect.objectContaining({ id: expect.any(String), url: 'data:image/png;base64,BAU=' })],
+    }, expect.any(AbortSignal)))
+    expect(screen.getByRole('textbox')).toHaveValue(entry.text)
+    expect(mocks.editorState).not.toHaveBeenCalled()
+  })
+
+  it('sends the version of a migrated home draft even when the attachment array was copied', async () => {
+    mocks.sharedDraft = true
+    const homeKey = composerDraftKey(serverStore.getActiveServer(), null, '/workspace', paneId)
+    updateComposerDraft(homeKey, () => ({ text: 'first message', ready: true, attachments: [sentImage] }))
+    mocks.openSession.mockResolvedValue({ sessionId, cwd: '/workspace' })
+    mocks.readDraft.mockResolvedValue({ version: null, text: '', attachments: [], delivery: 'followUp' })
+    mocks.writeDraft.mockResolvedValue({ applied: true, version: 'first-version' })
+    mocks.sendMessage.mockResolvedValue(undefined)
+    render(<PiChatPane paneId={paneId} sessionId={null} />)
+    send()
+    await waitFor(() => expect(mocks.sendMessage).toHaveBeenCalledWith(sessionId, 'first message',
+      [expect.objectContaining({ type: 'image' })], 'followUp', undefined, 'first-version'))
   })
 
   it.each(['isStreaming', 'isCompacting', 'isRetrying'] as const)(

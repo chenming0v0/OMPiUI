@@ -49,6 +49,7 @@ export type EventChannel =
   | "omp.extension_error"
   | "ui.history"
   | "session.head"
+  | "composerDraft.updated"
   | "command.updated"
   | "extension.ui"
   | "provider.auth"

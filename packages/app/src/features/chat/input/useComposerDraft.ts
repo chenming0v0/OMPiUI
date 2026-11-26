@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, useSyncExternalStore, type SetStateAction } from 'react'
 import type { Attachment } from '../../attachment'
+import type { DeliveryMode } from '../../../types/ui'
 import {
   getComposerDraft,
   hydrateComposerDraft,
@@ -33,5 +34,9 @@ export function useComposerDraft(key?: string) {
     }))
   }, [updateDraft])
 
-  return { ...draft, setText, setAttachments }
+  const setDelivery = useCallback((delivery: DeliveryMode) => {
+    updateDraft(current => ({ ...current, delivery }))
+  }, [updateDraft])
+
+  return { ...draft, setText, setAttachments, setDelivery }
 }

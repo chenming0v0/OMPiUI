@@ -180,12 +180,66 @@ test("viewing an OMP terminal history and syncing a draft never opens a writer",
     sessionFile: file, fromByte: 0, sync: { version: 1, knownBlocks: [] },
   })
   await host.sessionQuery("terminal-session", "setExtensionEditorState", { text: "draft" })
+  const draft = await host.executeSessionCommand("terminal-session", "composerDraft.set", {
+    baseVersion: null, text: "shared without a runtime", delivery: "steer",
+  }) as JsonObject
+  assert.equal((await host.executeSessionCommand("terminal-session", "composerDraft.get") as JsonObject).version, draft.version)
   assert.equal(opens, 0)
   assert.equal(readFileSync(file, "utf8"), bytes)
   writeFileSync(file, `${bytes}{"type":"message","id":"another-tui-answer"}\n`)
   await host.openSession(".", file)
   assert.match(readFileSync(file, "utf8"), /another-tui-answer/)
   assert.equal(opens, 0)
+})
+
+test('draft acceptance and extension prefills share one authority without replaying a stale mirror', async t => {
+  let receive!: (event: WorkerEvent) => void
+  let editorText: string | undefined
+  const admitted = Promise.withResolvers<void>()
+  const sending = Promise.withResolvers<void>()
+  const id = 'shared-draft-test'
+  const worker = {
+    command: async (type: string, params?: JsonObject) => {
+      if (type === 'state.get') return { pendingExtensionUiRequests: [], extensionEditorText: editorText }
+      if (type === 'sendUserMessage') {
+        assert.equal(params?.composerDraftVersion, undefined, 'host version must not go to native RPC')
+        sending.resolve()
+        await admitted.promise
+      }
+      return undefined
+    },
+    getSessionId: () => id, getSessionFile: () => undefined, getCwd: () => '.',
+    onEvent: (fn: typeof receive) => { receive = fn; return () => {} },
+    onCrash: () => () => {}, onClose: () => () => {}, dispose: async () => {},
+  } as unknown as WorkerSession
+  const supervisor = { onEvent: () => () => {}, open: async () => worker } as unknown as RuntimeSupervisor
+  const host = new SessionHost(supervisor, new EventHub())
+  t.after(() => host.dispose())
+  editorText = 'before attach'
+  await host.openSession('.')
+  const read = async () => await host.executeSessionCommand(id, 'composerDraft.get') as JsonObject
+  const write = async (body: JsonObject) => await host.executeSessionCommand(id, 'composerDraft.set', body) as JsonObject
+  const first = await read()
+  assert.equal(first.text, 'before attach')
+  const send = host.executeSessionCommand(id, 'sendUserMessage', { text: first.text, composerDraftVersion: first.version })
+  await sending.promise
+  const newer = await write({ baseVersion: first.version, text: 'new other-tab edit', attachments: [], delivery: 'followUp' })
+  admitted.resolve()
+  await send
+  assert.equal((await read()).version, newer.version)
+  await host.executeSessionCommand(id, 'sendUserMessage', { text: 'new other-tab edit', composerDraftVersion: newer.version })
+  assert.equal((await read()).text, '')
+  await host.sessionQuery(id, 'state.get')
+  assert.equal((await read()).text, '', 'old prefill must not return after acceptance')
+  const late = await write({ baseVersion: newer.version, text: 'typed during send', attachments: [], delivery: 'steer' })
+  assert.equal(late.applied, true)
+  assert.equal((await read()).text, 'typed during send')
+  const editor = (text: string) => receive({ kind: 'event', generation: 'g', sessionId: id, channel: 'extension.ui', event: { type: 'editor', command: { kind: 'set', text } } })
+  editor('extension prefill')
+  assert.equal((await read()).text, 'extension prefill')
+  editor('')
+  assert.equal((await read()).text, '')
+  assert.equal((await write({ baseVersion: late.version, text: 'late mirror', delivery: 'steer' })).applied, false)
 })
 
 test("background job queries on a previewed OMP session never open a writer", async t => {

@@ -18,6 +18,7 @@ export interface BackgroundJobsSnapshot {
 }
 
 export const BACKGROUND_JOB_POLL_MS = 3000
+export const BACKGROUND_JOB_DISCOVERY_MS = 10_000
 const EMPTY: BackgroundJobsSnapshot = { running: [], recent: [] }
 const RUNTIME_GONE = new Set(['CAPABILITY_DISABLED', 'RUNTIME_NOT_OPEN', 'SESSION_NOT_FOUND', 'RUNTIME_CLOSING'])
 
@@ -98,12 +99,13 @@ export function useBackgroundJobs(sessionId: string | null | undefined, enabled:
         setSnapshot(EMPTY)
         return
       }
+      let delay = BACKGROUND_JOB_DISCOVERY_MS
       try {
         const next = parseAsyncJobSnapshot(await getPiAsyncJobs(sessionId, controller.signal))
         if (controller.signal.aborted) return
         setSnapshot(next)
         setError(null)
-        if (next.running.length > 0) timer = setTimeout(load, BACKGROUND_JOB_POLL_MS)
+        if (next.running.length > 0) delay = BACKGROUND_JOB_POLL_MS
       } catch (err) {
         if (controller.signal.aborted) return
         const code = (err as { code?: unknown } | null)?.code
@@ -114,6 +116,8 @@ export function useBackgroundJobs(sessionId: string | null | undefined, enabled:
         }
         setError(err instanceof Error ? err : new Error(String(err)))
       }
+      // A live runtime can start jobs without changing its main activity flags.
+      timer = setTimeout(load, delay)
     }
     void load()
     return () => {

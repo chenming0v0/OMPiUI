@@ -83,9 +83,29 @@ export type SendUserMessageParams = {
   text: string
   images?: ImageInput[]
   deliverAs?: "steer" | "followUp"
+  composerDraftVersion?: string
 }
 
 /** 立即提交指定队列中的一条；kind 标识来源队列，index 为该队列下标。 */
+export type ComposerDraftDelivery = "steer" | "followUp" | "abortAndPrompt"
+
+/** OMPiUI's composer surface (not an OMP RPC editor or history entry). */
+export type SharedComposerDraft = {
+  version: string | null
+  text: string
+  attachments: JsonObject[]
+  delivery: ComposerDraftDelivery
+  /** Allows an edit already in progress to follow an accepted send of its base. */
+  clearedVersion?: string
+}
+
+export type SetSharedComposerDraftParams = {
+  baseVersion: string | null
+  text: string
+  attachments?: JsonObject[]
+  delivery: ComposerDraftDelivery
+}
+
 export type SendQueuedMessageParams = {
   kind: "steering" | "followUp"
   index: number
@@ -237,7 +257,7 @@ export type CoreCommandParams = {
   followUp: FollowUpParams
   sendUserMessage: SendUserMessageParams
   abort: Record<string, never>
-  abortAndPrompt: SteerParams
+  abortAndPrompt: SteerParams & { composerDraftVersion?: string }
   newSession: NewSessionParams
   switchSession: SwitchSessionParams
   moveSession: { path: string }

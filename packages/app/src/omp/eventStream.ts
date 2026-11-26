@@ -70,6 +70,7 @@ type PiEventPayload = {
     | AgentSessionEvent
     | { type: 'config_update'; model?: JsonObject; thinkingLevel?: string }
     | { type: 'irc_message'; message: JsonObject }
+    | { type: 'session_modes_changed' }
     | { type: 'command_output'; text: string; source?: string; isError?: boolean; level?: string; status?: string }
     | { type: 'prompt_result'; agentInvoked: boolean; status: 'completed' | 'aborted' | 'error'; error?: string | JsonObject }
     | { type: 'extension_error'; extensionPath: string; event: string; error: string }
@@ -631,11 +632,12 @@ class PiEventStream {
     if ('channel' in message && message.channel === 'control' && message.type === 'resync_required') {
       for (const key of Object.keys(message.streams)) {
         const { cursor, reason } = message.streams[key as EventStreamKey] ?? {}
+        const stream = parseEventStreamKey(key)
         if (reason && reason !== 'missing_cursor') {
-          const stream = parseEventStreamKey(key)
           if (stream?.kind === 'session') this.checkSessionResourceVersion({ sessionId: stream.id })
           if (stream?.kind === 'workspace') this.checkSessionResourceVersion({ workspacePath: stream.id })
         }
+        if (stream?.kind === 'session') window.dispatchEvent(new CustomEvent('ompiui:composer-draft-updated', { detail: { sessionId: stream.id } }))
         this.queueResync(key, cursor)
       }
       return
@@ -806,8 +808,14 @@ class PiEventStream {
           window.dispatchEvent(new CustomEvent('ompiui:command-updated', { detail: envelope.payload }))
         }
         break
+      case 'composerDraft.updated':
+        if (sessionId && isJsonObject(envelope.payload) &&
+            (envelope.payload.version === null || typeof envelope.payload.version === 'string')) {
+          window.dispatchEvent(new CustomEvent('ompiui:composer-draft-updated', { detail: { sessionId, version: envelope.payload.version } }))
+        }
+        break
       case 'extension.ui':
-        if (sessionId) this.handleExtensionUiEvent(sessionId, envelope.payload as unknown as PiExtensionUiEvent)
+        if (sessionId) this.handleExtensionUiEvent(sessionId, envelope.payload as unknown as PiExtensionUiEvent, envelope.cursor)
         break
       case 'omp.subagent': {
         // 会话流上 sessionId 取 envelope；server 流上的注册帧镜像由 payload
@@ -965,12 +973,13 @@ class PiEventStream {
     window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
   }
 
-  private handleExtensionUiEvent(sessionId: string, event: PiExtensionUiEvent): void {
+  private handleExtensionUiEvent(sessionId: string, event: PiExtensionUiEvent, cursor?: EventCursor): void {
     sessionId = event.type === 'settled' ? event.sessionId : event.type === 'requested' ? event.request.sessionId : sessionId
-    piSessionStateStore.invalidateRequests(sessionId)
+    // Versioned dialog events can be merged alongside a state response.
+    if (event.type !== 'requested' && event.type !== 'settled') piSessionStateStore.invalidateRequests(sessionId)
     switch (event.type) {
       case 'requested':
-        if (!extensionUiStore.requestOpened(event.request)) break
+        if (!extensionUiStore.requestOpened(event.request, cursor)) break
         // Surface as pending action on the sidebar (awaiting permission/answer)
         activeSessionStore.addPendingRequest(
           event.request.requestId,
@@ -981,7 +990,6 @@ class PiEventStream {
         break
       case 'settled':
         extensionUiStore.requestSettled(sessionId, event.requestId)
-        activeSessionStore.resolvePendingRequest(event.requestId, sessionId)
         break
       case 'state':
         extensionUiStore.statePatched(sessionId, event.patch)
@@ -1382,6 +1390,7 @@ class PiEventStream {
       case 'session_info_changed':
       case 'session_info_update':
       case 'queue_update':
+      case 'session_modes_changed':
       case 'compaction_start':
       case 'compaction_end':
         piSessionStateStore.beginRequest(sessionId)

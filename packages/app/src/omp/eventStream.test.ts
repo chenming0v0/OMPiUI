@@ -21,6 +21,7 @@ import { serverStore } from '../store/serverStore'
 import { notificationStore } from '../store/notificationStore'
 import { commandFeedbackStore } from './commandFeedbackStore'
 import { extensionDiagnosticStore } from './extensionDiagnosticStore'
+import { extensionUiStore } from './extensionUiStore'
 import * as transport from './transport/index.js'
 import * as sockets from './ompSocket'
 import * as modelSettingsSync from './modelSettingsSync'
@@ -815,6 +816,52 @@ describe('session configuration and stop synchronization', () => {
     })
     expect(piSessionStateStore.getState('another-session')).toBeNull()
     expect(send).not.toHaveBeenCalled()
+  })
+
+  it('refreshes all three mode values without relying on queue or activity changes', async () => {
+    vi.mocked(controllers.refreshPiSessionState).mockImplementation(readNativeSessionState)
+    const state = {
+      isStreaming: true, steeringMode: 'one-at-a-time', followUpMode: 'all', interruptMode: 'wait',
+      queue: { steeringEntries: [], followUpEntries: [], steeringMode: 'one-at-a-time', followUpMode: 'all' },
+    }
+    vi.spyOn(transport, 'getPiSessionState').mockResolvedValue(state)
+    event({ type: 'session_modes_changed' })
+    await vi.advanceTimersByTimeAsync(200)
+    expect(piSessionStateStore.getState('session-stop')).toMatchObject(state)
+  })
+
+  it.each(['submitted', 'user_cancelled', 'timeout'])('reconciles a dialog whose %s settled event fell out of replay history', async (reason) => {
+    const sessionId = `dialog-recovery-${reason}`
+    const stream = { kind: 'session' as const, id: sessionId }
+    const dialog = (id: string, kind: string, sequence: number) => handleEvent({
+      stream, channel: 'extension.ui', cursor: { epoch: 'dialogs', sequence },
+      payload: { type: 'requested', request: {
+        requestId: id, sessionId, kind, title: id, createdAt: '2026-01-01T00:00:00.000Z',
+        ...(kind === 'ask' ? { questions: [] } : kind === 'confirm' ? { message: 'OK?' } : {}),
+      } },
+    })
+    // The client has rendered these dialogs but never gets the settled events.
+    dialog('ask', 'ask', 1)
+    dialog('confirm', 'confirm', 2)
+    dialog('input', 'input', 3)
+    piBranchStore.setData(sessionId, fakeBranchPage(sessionId))
+    vi.mocked(controllers.refreshPiSessionState).mockImplementation(readNativeSessionState)
+    const snapshot = Promise.withResolvers<JsonObject>()
+    vi.spyOn(transport, 'getPiSessionState').mockReturnValue(snapshot.promise)
+    const internal = piEventStream as unknown as { handleRaw(raw: string): void }
+    internal.handleRaw(JSON.stringify({ channel: 'control', type: 'resync_required', streams: {
+      [`session:${sessionId}`]: { reason: 'history_expired', cursor: { epoch: 'dialogs', sequence: 500 } },
+    } }))
+    await vi.advanceTimersByTimeAsync(350)
+    dialog('fresh', 'input', 501)
+    snapshot.resolve({ isStreaming: false, pendingExtensionUiRequests: [], pendingExtensionUiCursor: { epoch: 'dialogs', sequence: 500 } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(extensionUiStore.getSnapshot().sessions[sessionId]?.pending.map(item => item.requestId)).toEqual(['fresh'])
+    handleEvent({ stream, channel: 'extension.ui', cursor: { epoch: 'dialogs', sequence: 502 },
+      payload: { type: 'settled', sessionId, requestId: 'fresh', reason } })
+    expect(activeSessionStore.getBusySessionsSnapshot().some(entry => entry.sessionId === sessionId && entry.pendingAction)).toBe(false)
+    extensionUiStore.remove(sessionId)
+    piBranchStore.clear(sessionId)
   })
 
   it('refreshes the actual model on model_changed and invalidates older reads', async () => {

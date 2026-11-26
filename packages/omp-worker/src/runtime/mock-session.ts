@@ -1335,14 +1335,17 @@ export class MockPiSession implements SessionRuntime {
 
   async setSteeringMode(mode: "all" | "one-at-a-time"): Promise<void> {
     this.steeringMode = mode;
+    this.emitEvent({ type: "session_modes_changed" });
   }
 
   async setFollowUpMode(mode: "all" | "one-at-a-time"): Promise<void> {
     this.followUpMode = mode;
+    this.emitEvent({ type: "session_modes_changed" });
   }
 
   async setInterruptMode(mode: "immediate" | "wait"): Promise<void> {
     this.header = { ...this.header, interruptMode: mode };
+    this.emitEvent({ type: "session_modes_changed" });
   }
 
   async abortAndPrompt(text: string, images?: ImageInput[]): Promise<void> {

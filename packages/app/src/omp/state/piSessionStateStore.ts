@@ -1,4 +1,5 @@
-import type { ExtensionUiDialogRequest, ExtensionUiStatePatch, JsonObject } from '@ompiui/protocol'
+import type { EventCursor, ExtensionUiDialogRequest, ExtensionUiStatePatch, JsonObject } from '@ompiui/protocol'
+import { isJsonObject } from '@ompiui/protocol'
 import { extensionUiStore } from '../extensionUiStore'
 import { extensionTuiStore } from '../extensionTuiStore'
 import { activeSessionStore } from '../../store/activeSessionStore'
@@ -9,6 +10,7 @@ interface StateEntry {
   error: Error | null
   requestVersion: number
   pendingPatch: JsonObject
+  pendingEventVersion: number
 }
 
 /**
@@ -32,7 +34,7 @@ class PiSessionStateStore {
   private entry(sessionId: string): StateEntry {
     let entry = this.bySessionId.get(sessionId)
     if (!entry) {
-      entry = { state: null, loading: false, error: null, requestVersion: ++this.nextVersion, pendingPatch: {} }
+      entry = { state: null, loading: false, error: null, requestVersion: ++this.nextVersion, pendingPatch: {}, pendingEventVersion: extensionUiStore.getPendingEventVersion() }
       this.bySessionId.set(sessionId, entry)
     }
     return entry
@@ -50,7 +52,7 @@ class PiSessionStateStore {
     entry.state = state
     entry.error = null
     entry.loading = false
-    this.restoreExtensionUi(sessionId, state)
+    this.restoreExtensionUi(sessionId, state, entry.pendingEventVersion)
     this.notify()
   }
 
@@ -58,6 +60,7 @@ class PiSessionStateStore {
     const entry = this.entry(sessionId)
     entry.requestVersion = ++this.nextVersion
     entry.pendingPatch = {}
+    entry.pendingEventVersion = extensionUiStore.getPendingEventVersion()
     return entry.requestVersion
   }
 
@@ -80,7 +83,11 @@ class PiSessionStateStore {
         || (state.thinkingLevel !== undefined && current?.thinkingLevel === undefined)
       )
       if (!needsHydration) return false
-      this.setState(sessionId, { ...state, ...current, ...entry.pendingPatch })
+      const stateForHydration = { ...state, ...current, ...entry.pendingPatch }
+      // An obsolete request can fill model metadata, but must not replay dialogs.
+      delete stateForHydration.pendingExtensionUiCursor
+      delete stateForHydration.pendingExtensionUiRequests
+      this.setState(sessionId, stateForHydration)
       return true
     }
     // 快照加载期间的事件只覆盖自身字段，不能丢掉快照里的模型等配置。
@@ -138,15 +145,17 @@ class PiSessionStateStore {
    * addPendingRequest / restore 都按 requestId 或覆盖式语义幂等，与实时
    * 事件重复投递无害；settled 事件会照常清理。
    */
-  private restoreExtensionUi(sessionId: string, state: JsonObject): void {
+  private restoreExtensionUi(sessionId: string, state: JsonObject, since: number): void {
     const pending = state.pendingExtensionUiRequests
     if (Array.isArray(pending)) {
-      for (const raw of pending) {
-        const request = raw as Partial<ExtensionUiDialogRequest> | null
-        if (!request || typeof request !== 'object' || typeof request.requestId !== 'string') continue
-        if (typeof request.sessionId === 'string' && request.sessionId !== sessionId) continue
-        if (!request.kind || !['select', 'confirm', 'input', 'editor', 'ask'].includes(request.kind)) continue
-        if (!extensionUiStore.requestOpened(request as ExtensionUiDialogRequest)) continue
+      let requests = pending.filter((raw): raw is JsonObject => isJsonObject(raw) && typeof raw.requestId === 'string'
+        && raw.sessionId === sessionId && typeof raw.kind === 'string' && ['select', 'confirm', 'input', 'editor', 'ask'].includes(raw.kind)) as unknown as ExtensionUiDialogRequest[]
+      const cursor = state.pendingExtensionUiCursor
+      if (isJsonObject(cursor) && typeof cursor.epoch === 'string' && typeof cursor.sequence === 'number') {
+        requests = extensionUiStore.reconcilePending(sessionId, requests, cursor as EventCursor, since)
+      }
+      for (const request of requests) {
+        if (!extensionUiStore.requestOpened(request)) continue
         activeSessionStore.addPendingRequest(
           request.requestId,
           sessionId,
@@ -162,7 +171,8 @@ class PiSessionStateStore {
     if (Array.isArray(patches)) {
       extensionUiStore.restore(sessionId, {
         patches: patches as ExtensionUiStatePatch[],
-        editorText: typeof objectMirror?.editorText === 'string' ? objectMirror.editorText : undefined,
+        editorText: typeof state.extensionEditorText === 'string' ? state.extensionEditorText
+          : typeof objectMirror?.editorText === 'string' ? objectMirror.editorText : undefined,
         toolsExpanded: typeof objectMirror?.toolsExpanded === 'boolean' ? objectMirror.toolsExpanded : undefined,
       })
     }

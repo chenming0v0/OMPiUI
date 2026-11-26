@@ -34,6 +34,7 @@ async function sessionFixture(t: TestContext) {
       commands.push(structuredClone(command))
       if (command.type === "set_steering_mode") native.steeringMode = command.mode
       if (command.type === "set_follow_up_mode") native.followUpMode = command.mode
+      if (command.type === "set_interrupt_mode") native.interruptMode = command.mode
       const override = await rpc.onRequest(command)
       if (override) return { type: "response", success: true, command: command.type, ...override }
       if (["new_session", "switch_session"].includes(String(command.type))) {
@@ -116,6 +117,27 @@ it('versions AGENTS, prompts and on-disk skill details independently of the capa
   assert.equal(prompt.registry, first.registry)
   assert.notEqual(prompt.resources, skill.resources)
   assert.deepEqual(await session.getResourceVersions(), prompt)
+})
+
+it('broadcasts configuration changes to both clients only after native mode readback', async t => {
+  const { session, native, rpc } = await sessionFixture(t)
+  const first: string[] = []
+  const second: string[] = []
+  session.onPiEvent(event => first.push(String(event.type)))
+  session.onPiEvent(event => second.push(String(event.type)))
+  await session.setSteeringMode('one-at-a-time')
+  await session.setFollowUpMode('all')
+  await session.setInterruptMode('wait')
+  assert.deepEqual(first, Array(3).fill('session_modes_changed'))
+  assert.deepEqual(second, first)
+  const state = await session.getState()
+  assert.equal(state.steeringMode, 'one-at-a-time')
+  assert.equal(state.followUpMode, 'all')
+  assert.equal(state.interruptMode, 'wait')
+  rpc.onRequest = command => command.type === 'get_state' ? { data: { ...native, interruptMode: 'wait' } } : undefined
+  await assert.rejects(session.setInterruptMode('immediate'), { code: 'SUBMISSION_NOT_ADMITTED' })
+  assert.equal(first.length, 3)
+  assert.equal(second.length, 3)
 })
 
 it('branch pages expose verified stable native aliases after live assistant persistence', async t => {

@@ -219,6 +219,55 @@ describe("http api", () => {
     }
   })
 
+  it('shares composer drafts over two independent HTTP and event clients without opening a runtime', { timeout: 15_000 }, async () => {
+    const token = 'draft-host-token'
+    const app = createAppServer({ authToken: token })
+    const wss = attachEventWebSocket(app.server, { authToken: token, eventHub: app.eventHub })
+    const port = await listen(app)
+    const sockets: WebSocket[] = []
+    const stream = { kind: 'session' as const, id: 'previewed-draft' }
+    const call = (name: string, body = {}) => request(port, 'POST', `/api/v1/pi/sessions/${stream.id}/commands/${name}`, { token, body })
+    const connectDraft = async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/api/v1/events?token=${token}`, EVENT_WS_SUBPROTOCOL)
+      sockets.push(ws)
+      const inbox = privateSocketInbox(ws)
+      await inbox.until(frame => frame.type === 'hello')
+      ws.send(JSON.stringify({ type: 'subscribe', protocolVersion: PROTOCOL_VERSION, streams: [stream],
+        cursors: { [eventStreamKey(stream)]: app.eventHub.getCursor(stream) } }))
+      return { ws, inbox, write: (body: unknown) => call('composerDraft.set', body as object), read: () => call('composerDraft.get') }
+    }
+    try {
+      const a = await connectDraft()
+      const b = await connectDraft()
+      const attachments = [
+        { id: 'photo', type: 'file', displayName: 'photo.png', url: 'data:image/png;base64,BAU=', mime: 'image/png' },
+        { id: 'mention', type: 'file', displayName: 'readme.md', url: 'file:///workspace/readme.md', textRange: { value: '@readme.md', start: 0, end: 10 } },
+      ]
+      const update = { text: '@readme.md', attachments, delivery: 'steer' }
+      const first = await a.write({ ...update, baseVersion: null })
+      assert.equal(first.status, 200)
+      assert.equal(first.json.data.applied, true)
+      const matches = (frame: any) => frame.event?.channel === 'composerDraft.updated' && frame.event.payload?.version === first.json.data.version
+      for (const client of [a, b]) {
+        const frame = await client.inbox.until(matches)
+        assert.equal(frame.event.payload.attachments, undefined, 'attachments do not enter replay history')
+        assert.deepEqual((await client.read()).json.data, { version: first.json.data.version, ...update })
+      }
+      const offlineVersion = (await b.read()).json.data.version
+      b.ws.terminate()
+      const cleared = await a.write({ baseVersion: offlineVersion, text: '', attachments: [], delivery: 'followUp' })
+      assert.equal(cleared.json.data.applied, true)
+      const reconnected = await connectDraft()
+      assert.deepEqual((await reconnected.read()).json.data, { version: cleared.json.data.version, text: '', attachments: [], delivery: 'followUp' })
+      assert.equal((await reconnected.write({ ...update, baseVersion: offlineVersion })).json.data.applied, false)
+      assert.deepEqual(app.sessionHost.listAttachedIds(), [])
+    } finally {
+      sockets.forEach(socket => socket.terminate())
+      closeEventWebSocket(wss)
+      await app.dispose()
+    }
+  })
+
   it('isolates two private terminal clients sharing the same backend credential through HTTP, event replay and streams', { timeout: 20_000 }, async () => {
     const root = mkdtempSync(path.join(tmpdir(), 'ompiui-private-terminals-'))
     const fixture = privateTerminalFixture()
