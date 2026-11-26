@@ -1423,17 +1423,18 @@ export class SessionHost {
     }
     if (event.channel === "packages.progress") {
       this.hub.publish(
-        { kind: "server", id: "server" },
+        event.event.workspacePath ? { kind: "workspace", id: event.event.workspacePath } : { kind: "server", id: "server" },
         "packages.progress",
         event.event,
       );
       return;
     }
     if (event.channel === "resources.updated") {
-      this.hub.publish({ kind: "server", id: "server" }, "resources.updated", {
-        workspacePath:
-          "workspacePath" in event ? (event.workspacePath ?? null) : null,
-      });
+      this.hub.publish(
+        event.workspacePath ? { kind: "workspace", id: event.workspacePath } : { kind: "server", id: "server" },
+        "resources.updated",
+        { workspacePath: event.workspacePath ?? null, commandId: event.commandId },
+      );
     }
   }
 

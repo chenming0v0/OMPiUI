@@ -655,7 +655,7 @@ export function changePiPackageSource(
   operation: 'add' | 'remove',
   signal?: AbortSignal,
 ): Promise<PiPackagesSnapshot & { changed: boolean }> {
-  return postPiGlobalCommand('packages.changeSource', { cwd, source, operation }, signal)
+  return postPiGlobalCommand('packages.changeSource', { cwd, source, operation, commandId: crypto.randomUUID() }, signal)
 }
 
 export function getPiPackageInstalledPath(

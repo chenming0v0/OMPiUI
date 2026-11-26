@@ -11,6 +11,7 @@ import {
   isJsonObject,
   type CommandRecord,
   type JsonObject,
+  type PackageProgress,
 } from '@ompiui/protocol'
 import type { AgentMessage, AgentSessionEvent, PiLiveMessage, ToolResultMessage } from './domain/index.js'
 import type { ProviderAuthEvent, SessionsActivitySnapshot, SessionActivityStatus } from '@ompiui/protocol'
@@ -38,7 +39,6 @@ import {
   receiveResourceRevision,
   receiveSettingsUpdated,
   subscribeManagementStreams,
-  type PackageProgress,
 } from './managementEventStore'
 import type { SessionStatus } from '../types/session'
 import { BrowserDiagnostics } from './browserDiagnostics'
@@ -184,6 +184,7 @@ class PiEventStream {
   private resyncRetries = new Map<string, { attempts: number; timer?: ReturnType<typeof setTimeout> }>()
   private resyncActive = 0
   private resyncGeneration = 0
+  private resourceInvalidations = 0
   private readonly RESYNC_CONCURRENCY = 2
 
   /** Subscribe a session stream (reference counted). */
@@ -652,7 +653,7 @@ class PiEventStream {
         if (stream.kind === 'session') this.scheduleStateRefresh(stream.id)
         else for (const sessionId of this.refCounts.keys()) this.scheduleStateRefresh(sessionId)
       } else if (eventChannel === 'resources.updated') {
-        receiveResourceRevision(stream.kind === 'workspace' || stream.kind === 'resources' ? stream.id : undefined, String(Date.now()))
+        receiveResourceRevision(stream.kind === 'workspace' || stream.kind === 'resources' ? stream.id : undefined, `${message.cursor.epoch}:${message.cursor.sequence}`)
       } else if (eventChannel === 'settings.updated') {
         receiveSettingsUpdated()
         refreshOfficialSettings()
@@ -783,11 +784,14 @@ class PiEventStream {
         break
       }
       case 'packages.progress':
-        receivePackageProgress(envelope.payload as unknown as PackageProgress)
+        if (isJsonObject(envelope.payload) && typeof envelope.payload.commandId === 'string') {
+          receivePackageProgress(envelope.payload as PackageProgress)
+        }
         break
       case 'resources.updated': {
         const payload = envelope.payload as { workspacePath?: string | null } | undefined
-        receiveResourceRevision(payload?.workspacePath ?? undefined, String(envelope.cursor.sequence))
+        const workspacePath = envelope.stream.kind === 'workspace' ? envelope.stream.id : payload?.workspacePath ?? undefined
+        receiveResourceRevision(workspacePath, `${envelope.cursor.epoch}:${envelope.cursor.sequence}`)
         break
       }
       case 'workspace.files':
@@ -1417,6 +1421,7 @@ class PiEventStream {
       this.scheduleStateRefresh(stream.id)
       return flight
     } else if (stream.kind === 'server') {
+      receiveResourceRevision(undefined, `resync:${++this.resourceInvalidations}`)
       this.refreshModelConfiguration()
       receiveSettingsUpdated()
       refreshOfficialSettings()
@@ -1424,6 +1429,7 @@ class PiEventStream {
     } else if (stream.kind === 'provider') {
       receiveProviderAuthUpdated()
     } else if (stream.kind === 'workspace') {
+      receiveResourceRevision(stream.id, `resync:${++this.resourceInvalidations}`)
       if (this.workspaceRefCounts.has(stream.id)) {
         void ensureHostWorkspaceWatch(stream.id).catch(() => undefined)
       }

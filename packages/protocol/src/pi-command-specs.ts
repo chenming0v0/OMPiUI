@@ -1043,6 +1043,7 @@ export const PI_COMMAND_SPECS = [
         cwd: STRING,
         source: STRING,
         operation: { enum: ["add", "remove"] },
+        commandId: STRING,
         local: BOOLEAN,
       },
       ["cwd", "source"],
@@ -1248,6 +1249,7 @@ export type PiCommandParams = CoreCommandParams & {
     cwd: string;
     source: string;
     operation?: "add" | "remove";
+    commandId?: string;
     local?: boolean;
   };
   "packages.installedPath": {

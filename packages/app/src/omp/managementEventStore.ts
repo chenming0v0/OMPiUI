@@ -1,9 +1,6 @@
 import { useSyncExternalStore } from 'react'
-import type { JsonObject, ProviderAuthEvent } from '@ompiui/protocol'
+import type { PackageProgress, ProviderAuthEvent } from '@ompiui/protocol'
 import { isJsonObject } from '@ompiui/protocol'
-
-/** packages.progress payload (worker-side emission is not wired yet). */
-export type PackageProgress = JsonObject & { commandId: string }
 
 export interface ProviderAuthFlowState {
   flowId: string
@@ -180,7 +177,7 @@ export function receivePackageProgress(progress: PackageProgress): void {
   const packageProgress = { ...snapshot.packageProgress }
   delete packageProgress[progress.commandId]
   packageProgress[progress.commandId] = progress
-  const ids = Object.keys(packageProgress)
+  const ids = Object.keys(packageProgress).filter(id => packageProgress[id].phase !== 'started')
   for (const id of ids.slice(0, Math.max(0, ids.length - 32))) delete packageProgress[id]
   emit({
     ...snapshot,
@@ -188,12 +185,36 @@ export function receivePackageProgress(progress: PackageProgress): void {
   })
 }
 
+export const USER_RESOURCE_SCOPE = ''
+
 export function receiveResourceRevision(workspacePath: string | undefined, revision: string): void {
-  if (!workspacePath) return
+  const key = workspacePath ?? USER_RESOURCE_SCOPE
+  if (snapshot.resourceRevisions[key] === revision) return
   emit({
     ...snapshot,
-    resourceRevisions: { ...snapshot.resourceRevisions, [workspacePath]: revision },
+    resourceRevisions: { ...snapshot.resourceRevisions, [key]: revision },
   })
+}
+
+/** Merge the backend's running operations without rewinding progress received during the read. */
+export function restorePackageOperations(workspacePath: string, active: PackageProgress[], previous: ManagementEventSnapshot['packageProgress']): void {
+  const current = snapshot.packageProgress
+  const packageProgress = { ...current }
+  const running = new Set(active.map(item => item.commandId))
+  let changed = false
+  for (const [id, item] of Object.entries(current)) {
+    if (item === previous[id] && item.phase === 'started' && (!item.workspacePath || item.workspacePath === workspacePath) && !running.has(id)) {
+      delete packageProgress[id]
+      changed = true
+    }
+  }
+  for (const item of active) {
+    if (!Object.hasOwn(current, item.commandId) && !Object.hasOwn(previous, item.commandId)) {
+      packageProgress[item.commandId] = item
+      changed = true
+    }
+  }
+  if (changed) emit({ ...snapshot, packageProgress })
 }
 
 export function resetManagementEvents(): void {

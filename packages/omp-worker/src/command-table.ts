@@ -3,6 +3,7 @@ import {
   piSpecToCapability,
   type JsonObject,
   type JsonValue,
+  type PackageProgress,
   type PiCapability,
   type PiCapabilityScope,
   type RegistrySnapshot,
@@ -39,7 +40,7 @@ export interface PackagesGateway {
     action: "install" | "link" | "remove" | "update" | "enable" | "disable",
     source?: string,
     local?: boolean,
-    onProgress?: (event: JsonObject) => void,
+    onProgress?: (event: PackageProgress) => void,
   ): Promise<JsonValue>;
   resolve(cwd: string): Promise<JsonValue>;
   resolveSources(
@@ -52,6 +53,8 @@ export interface PackagesGateway {
     source: string,
     operation: "add" | "remove",
     local?: boolean,
+    commandId?: string,
+    onProgress?: (event: PackageProgress) => void,
   ): Promise<JsonValue>;
   installedPath(
     cwd: string,
@@ -68,6 +71,7 @@ export interface CommandContext {
   catalog: CatalogProvider;
   auth: ProviderAuthGateway;
   packages: PackagesGateway;
+  onPackageProgress?: (event: PackageProgress) => void;
   requireRuntime(): SessionRuntime;
 }
 
@@ -496,6 +500,7 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
         "install",
       P.optString(p, "source"),
       P.optBoolean(p, "local"),
+      ctx.onPackageProgress,
     ),
   "packages.resolve": async (ctx, p) =>
     ctx.packages.resolve(P.reqString(p, "cwd")),
@@ -511,6 +516,8 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
       P.reqString(p, "source"),
       P.optEnum(p, "operation", ["add", "remove"] as const) ?? "add",
       P.optBoolean(p, "local"),
+      P.optString(p, "commandId"),
+      ctx.onPackageProgress,
     ),
   "packages.installedPath": async (ctx, p) =>
     ctx.packages.installedPath(

@@ -1,15 +1,21 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { PiPackagesSnapshot } from '../../../omp/domain'
+import { receivePackageProgress, receiveResourceRevision, resetManagementEvents } from '../../../omp/managementEventStore'
 import { PiPackageManagement } from './PiPackageManagement'
 
-const { manageMock, checkUpdatesMock } = vi.hoisted(() => ({ manageMock: vi.fn(), checkUpdatesMock: vi.fn() }))
-const snapshot = {
+vi.mock('../../../omp/eventStream', () => ({
+  piEventStream: { connectWorkspace: vi.fn(), disconnectWorkspace: vi.fn() },
+}))
+
+const { listMock, manageMock, checkUpdatesMock } = vi.hoisted(() => ({ listMock: vi.fn(), manageMock: vi.fn(), checkUpdatesMock: vi.fn() }))
+const snapshot: PiPackagesSnapshot = {
   packages: [{ source: 'fixture@local', scope: 'user', enabled: true, type: 'marketplace', version: '1.0.0', installedPath: '/plugins/fixture' }],
   marketplaces: [],
 }
 
 vi.mock('../../../omp/transport/index.js', () => ({
-  listPiPackages: vi.fn(async () => snapshot),
+  listPiPackages: (...args: unknown[]) => listMock(...args),
   managePiPackage: (...args: unknown[]) => manageMock(...args),
   checkPiPackageUpdates: (...args: unknown[]) => checkUpdatesMock(...args),
   changePiPackageSource: vi.fn(),
@@ -20,6 +26,8 @@ vi.mock('../../../omp/transport/index.js', () => ({
 
 describe('native package management', () => {
   beforeEach(() => {
+    resetManagementEvents()
+    listMock.mockReset().mockResolvedValue(snapshot)
     manageMock.mockReset()
     checkUpdatesMock.mockReset()
   })
@@ -55,6 +63,46 @@ describe('native package management', () => {
     complete({ ...snapshot, packages: [{ ...snapshot.packages[0]!, enabled: false }] })
     expect(await screen.findByRole('button', { name: 'Enable' })).toBeEnabled()
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('shares scoped progress, terminal results and list refreshes between mounted clients', async () => {
+    const first = render(<PiPackageManagement workspacePath="/workspace" />)
+    const second = render(<PiPackageManagement workspacePath="/other" />)
+    const a = within(first.container)
+    const b = within(second.container)
+    await a.findByRole('button', { name: 'Disable' })
+    await b.findByRole('button', { name: 'Disable' })
+
+    act(() => receivePackageProgress({ commandId: 'disable', action: 'disable', phase: 'started', workspacePath: '/workspace' }))
+    expect(a.getByRole('button', { name: 'Disable' })).toBeDisabled()
+    expect(b.getByRole('button', { name: 'Disable' })).toBeEnabled()
+    listMock.mockImplementation(async (cwd: string) => cwd === '/workspace'
+      ? { ...snapshot, packages: [{ ...snapshot.packages[0]!, enabled: false }] } : snapshot)
+    act(() => {
+      receivePackageProgress({ commandId: 'disable', action: 'disable', phase: 'completed', workspacePath: '/workspace' })
+      receiveResourceRevision('/workspace', 'disabled')
+    })
+    expect(await a.findByRole('button', { name: 'Enable' })).toBeEnabled()
+    expect(a.getByRole('status')).toHaveTextContent('does not reload running sessions')
+    expect(b.getByRole('button', { name: 'Disable' })).toBeEnabled()
+
+    listMock.mockResolvedValue({ ...snapshot, marketplaces: [{ name: 'new-market', source: '/market', sourceType: 'local', catalogPath: '/market/catalog.json' }] })
+    act(() => {
+      receivePackageProgress({ commandId: 'source', action: 'add-source', phase: 'completed' })
+      receiveResourceRevision(undefined, 'source-added')
+    })
+    await a.findByText('new-market · /market')
+    await b.findByText('new-market · /market')
+    act(() => receivePackageProgress({ commandId: 'failed', action: 'install', phase: 'failed', message: 'Download failed' }))
+    expect(b.getByRole('alert')).toHaveTextContent('Download failed')
+    expect(checkUpdatesMock).not.toHaveBeenCalled()
+  })
+
+  it('restores an in-progress operation for a newly opened client', async () => {
+    listMock.mockResolvedValue({ ...snapshot, activeOperations: [{ commandId: 'install', action: 'install', phase: 'started' }] })
+    render(<PiPackageManagement workspacePath="/workspace" />)
+    expect(await screen.findByRole('button', { name: 'Disable' })).toBeDisabled()
+    expect(screen.getByRole('status')).toHaveTextContent('Processing plugin operation')
   })
 
   it('does not offer bulk mutation of an empty selected scope', async () => {

@@ -4,7 +4,7 @@ import { installWorkerFileLogging } from "./worker-logger.js"
 
 installWorkerFileLogging()
 
-import type { JsonObject, JsonValue, PiRegistrySnapshot } from "@ompiui/protocol"
+import type { JsonObject, JsonValue, PackageProgress, PiRegistrySnapshot } from "@ompiui/protocol"
 import { isJsonObject, PROTOCOL_VERSION, validateParams } from "@ompiui/protocol"
 import { workerProblemFromError } from "./worker-error-problem.js"
 import { OmpRpcSession, type OmpSessionOptions } from "./omp/omp-session.js"
@@ -111,6 +111,14 @@ const ompVersion = driver === "omp" ? detectOmpVersionSync(ompBin) : null
 
 const catalog = driver === "omp" ? new OmpCatalog() : new MockCatalog()
 const packages = driver === "omp" ? new OmpPackages() : catalog as MockCatalog
+function publishPackageProgress(event: PackageProgress): void {
+  send({ kind: "event", generation: workerGeneration, channel: "packages.progress", event })
+  if (event.phase !== "started") {
+    // Bulk mutations may have already applied earlier changes before reporting a failure.
+    send({ kind: "event", generation: workerGeneration, channel: "resources.updated", workspacePath: event.workspacePath, commandId: event.commandId })
+  }
+}
+
 const providerAuth = new OmpProviderAuth(async () => {
   if (catalog instanceof OmpCatalog) return catalog.control.acquire()
   throw Object.assign(new Error("mock driver has no provider auth channel"), { code: "CAPABILITY_DISABLED" })
@@ -356,6 +364,7 @@ async function execute(command: { type: string; params?: JsonObject; sessionId?:
     catalog,
     auth: providerAuth,
     packages,
+    onPackageProgress: publishPackageProgress,
     requireRuntime(): SessionRuntime {
       if (!current) throw Object.assign(new Error("OMP runtime is not open"), { code: "RUNTIME_NOT_OPEN" })
       return current

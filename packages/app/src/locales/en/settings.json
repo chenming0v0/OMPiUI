@@ -1032,6 +1032,8 @@
     "showPath": "Path",
     "uninstall": "Uninstall",
     "packageOperationPending": "Processing plugin operation… Changes appear after the official manager completes.",
+    "packageOperationCompleted": "Plugin or marketplace change saved. This operation does not reload running sessions.",
+    "packageOperationFailed": "Plugin or marketplace operation failed: {{message}}",
     "resolvedResources": "Resolved resources",
     "resourceOn": "on",
     "resourceOff": "off",
