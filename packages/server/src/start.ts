@@ -1,7 +1,7 @@
 import { PROTOCOL_VERSION } from "@ompiui/protocol"
 import pkg from "../package.json" with { type: "json" }
 import { getDriverMode } from "@ompiui/omp-worker"
-import { randomBytes } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
 import { hostname } from "node:os"
 import { advertiseDevice } from "./host/discovery.ts"
 import { existsSync } from "node:fs"
@@ -285,8 +285,10 @@ export async function startOmpiUiServer(
     dataDir: dataRoot(), forwardingToken: tunnelForwardingToken, discovery,
     log: line => { console.info(line); logToFile(line) },
   })
+  const notificationIdentity = createHash('sha256').update(`notifications:${authToken ?? ''}`).digest('hex')
   const app = createAppServer({
     authToken,
+    notificationsFile: join(dataRoot(), `notifications-${notificationIdentity}.json`),
     share: { host: config.host, port: config.port, publicBaseUrl: config.publicBaseUrl },
     getPublicBaseUrl: () => getTunnelStatus()?.publicUrl ?? null,
     getTunnelStatus,

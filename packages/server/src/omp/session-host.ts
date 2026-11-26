@@ -32,6 +32,7 @@ import {
   type WorkerEvent,
 } from "@ompiui/omp-worker";
 import type { EventHub } from "../event-hub.ts";
+import { UiHistory } from "../host/ui-history.ts";
 import { logToFile } from "../logger.ts";
 import {
   diagnostics,
@@ -170,10 +171,12 @@ export class SessionHost {
   private pendingAttachCommands = 0;
   private readonly toolInterruptions = new Map<string, JsonObject>();
   private readonly worktreeMoves = new WeakSet<AttachedSession>();
+  private readonly notificationRuns = new WeakMap<AttachedSession, { sessionId: string; id: string }>();
 
   constructor(
     private readonly supervisor: RuntimeSupervisor,
     private readonly hub: EventHub,
+    readonly uiHistory = new UiHistory(hub),
   ) {
     this.executor = new SessionExecutor((record) =>
       this.emitCommandUpdate(record),
@@ -1263,7 +1266,17 @@ export class SessionHost {
           { sessionId: session.sessionId, updated: true },
         );
       }
-      if (type === 'agent_start') this.toolInterruptions.delete(session.sessionId);
+      const eventId = () => JSON.stringify([session.sessionId, event.generation, event.meta.epoch, event.meta.sequence]);
+      if (type === 'agent_start') {
+        this.toolInterruptions.delete(session.sessionId);
+        this.notificationRuns.set(session, { sessionId: session.sessionId, id: eventId() });
+      } else if (type === 'agent_settled' ||
+          (type === 'agent_end' && event.event.isTerminal !== false && event.event.awaitingAsyncWork !== true)) {
+        const run = this.notificationRuns.get(session);
+        this.notificationRuns.delete(session);
+        if (run?.sessionId === session.sessionId) this.uiHistory.complete(session.sessionId, session.cwd, run.id);
+      }
+      this.uiHistory.command(session.sessionId, session.cwd, event.event, eventId);
       if (typeof type === "string" && DIAGNOSTIC_AGENT_EVENTS.has(type)) {
         const meta = event.event as unknown as JsonObject;
         const message = isJsonObject(meta.message) ? meta.message : undefined;
@@ -1302,6 +1315,7 @@ export class SessionHost {
       this.hub.publish({ kind: "session", id: session.sessionId }, "pi.event", {
         event: event.event,
         meta: event.meta,
+        sharedHistory: true,
       });
       return;
     }
@@ -1333,10 +1347,13 @@ export class SessionHost {
       return;
     }
     if (event.channel === "extension.ui") {
+      const sessionId = event.sessionId ?? session.sessionId;
+      const notify = event.event.type === 'notify';
+      if (notify) this.uiHistory.extensionNotify(sessionId, session.cwd, event.event);
       this.hub.publish(
-        { kind: "session", id: event.sessionId ?? session.sessionId },
+        { kind: "session", id: sessionId },
         "extension.ui",
-        event.event,
+        notify ? { ...event.event, sharedHistory: true } : event.event,
       );
       return;
     }
@@ -1382,8 +1399,9 @@ export class SessionHost {
         epoch: event.generation,
         eventType: typeof event.event.event === "string" ? event.event.event : "extension_error",
       }, "error");
+      this.uiHistory.extensionError(event.generation, event.runtimeId, event.event);
       this.hub.publish({ kind: "server", id: "server" }, "omp.extension_error", {
-        workerGeneration: event.generation, runtimeId: event.runtimeId, frame: event.event,
+        workerGeneration: event.generation, runtimeId: event.runtimeId, frame: event.event, sharedHistory: true,
       });
       return;
     }

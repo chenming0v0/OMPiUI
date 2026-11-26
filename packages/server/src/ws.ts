@@ -359,7 +359,7 @@ function attachConnection(
   const pump = () => {
     if (closed || ws.readyState !== WebSocket.OPEN || pendingSends) return;
     if (helloPending) {
-      if (!writeFrame({ type: "hello", protocolVersion: PROTOCOL_VERSION,
+      if (!writeFrame({ type: "hello", protocolVersion: PROTOCOL_VERSION, timestamp: new Date().toISOString(),
         service: "ompiui-server", subprotocol: EVENT_WS_SUBPROTOCOL })) return;
       helloPending = false;
     }

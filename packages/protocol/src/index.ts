@@ -22,6 +22,7 @@ export * from "./image-budget.js"
 export * from "./utf8.js"
 export * from "./device-discovery.js"
 export * from "./reasoning-translation.js"
+export * from "./ui-history.js"
 
 export type OmpRuntimeCandidate = {
   path: string

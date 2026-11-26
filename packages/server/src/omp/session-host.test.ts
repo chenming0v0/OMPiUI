@@ -60,9 +60,9 @@ test("unattributed extension errors go only to the server stream, not the curren
   const frame = { type: "extension_error", extensionPath: "<timer>", event: "timeout_callback", error: "original error\nlast line\n" }
   receive({ kind: "event", channel: "omp.extension_error", generation: "worker", runtimeId: "runtime", event: frame })
   const events = hub.replaySince(server, start).events
-  assert.equal(events.length, 1)
-  assert.deepEqual(events[0]?.payload, { workerGeneration: "worker", runtimeId: "runtime", frame })
-  assert.equal(events[0]?.channel, "omp.extension_error")
+  assert.deepEqual(events.map(event => event.channel), ['ui.history', 'omp.extension_error'])
+  assert.deepEqual(events[1]?.payload, { workerGeneration: 'worker', runtimeId: 'runtime', frame, sharedHistory: true })
+  assert.deepEqual(host.uiHistory.read({ kind: 'diagnostics' }).map(entry => entry.message), [frame.error])
   assert.equal(hub.replaySince(session, sessionStart).events.length, 0)
 })
 
@@ -375,6 +375,18 @@ test("SessionHost notifies the session list when sessions materialize and titles
   emitEvent({ channel: "session.head", head: { revision: 3 } })
   emitEvent({ channel: "session.head", head: { revision: 4, entryCount: 4 } })
   assert.equal(updated.length, 2)
+
+  const emitPi = (sequence: number, event: JsonObject) => emitEvent({ channel: 'pi.event', event, meta: { epoch: 'test', sequence } })
+  emitPi(2, { type: 'agent_start' })
+  emitPi(3, { type: 'agent_end', isTerminal: false, awaitingAsyncWork: true })
+  assert.deepEqual(host.uiHistory.read({ kind: 'notifications' }), [])
+  emitPi(4, { type: 'agent_settled' })
+  emitPi(4, { type: 'agent_settled' })
+  assert.equal(host.uiHistory.read({ kind: 'notifications' }).length, 1)
+  const output = { type: 'command_output', text: 'first line\nlast line\n' }
+  emitPi(5, output)
+  emitPi(5, output)
+  assert.deepEqual(host.uiHistory.read({ kind: 'feedback', sessionId: 'session-1' }).map(entry => entry.message), [output.text])
 
   delete process.env.OMPIUI_DRIVER
   off()

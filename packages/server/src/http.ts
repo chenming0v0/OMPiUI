@@ -9,6 +9,7 @@ import { networkInterfaces } from "node:os";
 import {
   PROTOCOL_VERSION,
   hostCommandBodyLimit,
+  UI_HISTORY_PATH,
   isErrorCode,
   jsonByteSize,
   problem,
@@ -22,6 +23,7 @@ import {
 } from "@ompiui/protocol";
 import { inspectOmpRuntimes } from "@ompiui/omp-worker";
 import { EventHub } from "./event-hub.ts";
+import { UiHistory, historyScope } from "./host/ui-history.ts";
 import { RuntimeSupervisor } from "./omp/supervisor.ts";
 import { SessionHost } from "./omp/session-host.ts";
 import { readonlyReasoningSource } from './omp/reasoning-source.ts';
@@ -403,6 +405,8 @@ export interface CreateAppServerOptions {
   /** Deterministic terminal transport injection for CI owner-isolation fixtures. */
   terminalSpawn?: TerminalManagerOptions['spawn'];
   eventHub?: EventHub;
+  /** Notification state for the authenticated host identity, not a device ID. */
+  notificationsFile?: string;
   authToken?: string | null;
   /**
    * Bind address, used to build the share link other clients connect with.
@@ -458,7 +462,7 @@ export function createAppServer(
   const store = new WorkspaceStore();
   const hub = options.eventHub ?? new EventHub();
   const supervisor = options.supervisor ?? new RuntimeSupervisor();
-  const sessions = options.sessionHost ?? new SessionHost(supervisor, hub);
+  const sessions = options.sessionHost ?? new SessionHost(supervisor, hub, new UiHistory(hub, options.notificationsFile));
   const reasoningTranslations = options.reasoningTranslations ?? new ReasoningTranslations({ readSource: readonlyReasoningSource(sessions) });
   const toolInteractions = new ToolInteractionProxy(sessions);
   const reportClients = new Map<string, number>();
@@ -650,6 +654,16 @@ export function createAppServer(
             code: "UNAUTHORIZED",
           }),
         );
+      }
+
+      if (p === UI_HISTORY_PATH && (method === "GET" || method === "POST")) {
+        const address = historyScope(url.searchParams.get("kind"), url.searchParams.get("sessionId"));
+        res.setHeader("cache-control", "no-store");
+        if (method === "POST") {
+          sessions.uiHistory.change(address, await readBody(req, scope.signal, 4096));
+          return sendJson(res, 200, { ok: true });
+        }
+        return sendJson(res, 200, { entries: sessions.uiHistory.read(address) });
       }
 
       if (method === "GET" && p === "/api/v1/host/diagnostics/status") {
@@ -1129,7 +1143,7 @@ export function createAppServer(
 }
 
 function allowedMethodsForPath(pathname: string): string | undefined {
-  if (pathname === '/api/v1/pi/reasoning/config') return 'GET, POST';
+  if (pathname === UI_HISTORY_PATH || pathname === '/api/v1/pi/reasoning/config') return 'GET, POST';
   if (
     pathname === "/api/v1/host/health" ||
     pathname === "/api/v1/host/omp-runtime" ||

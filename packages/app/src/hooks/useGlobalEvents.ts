@@ -70,7 +70,7 @@ export function hasOtherConsumerForSession(sessionId: string, consumerId: string
 }
 
 /** Pi session events are subscribed through pi/eventSocket, not legacy SSE. */
-export function useGlobalEvents(_directories?: string[]) {
+export function useGlobalEvents() {
   const focusedSessionId = useFocusedSessionId()
   const focusedSessionIdRef = useRef(focusedSessionId)
   useEffect(() => {
@@ -79,18 +79,13 @@ export function useGlobalEvents(_directories?: string[]) {
   const { sendNotification } = useNotification()
 
   useEffect(() => {
-    return subscribeSessionIdle(sessionId => {
-      // The open pane already shows the completed response. Notifications are
-      // for sessions that finished while the user was looking elsewhere.
-      if (sessionId === focusedSessionIdRef.current) return
-
-      const meta = activeSessionStore.getSessionMeta(sessionId)
-      const title = meta?.title || sessionId.slice(0, 12)
-      const body = i18n.t('chat:notification.completed')
-      notificationStore.push('completed', title, body, sessionId, meta?.directory)
-
+    return notificationStore.onPush((type, entry) => {
+      if (type !== 'completed' || entry.target === 'extensions' || entry.sessionId === focusedSessionIdRef.current) return
       if (notificationEventSettingsStore.isSystemEnabled('completed')) {
-        void sendNotification(title, body, { sessionId, directory: meta?.directory })
+        const meta = activeSessionStore.getSessionMeta(entry.sessionId)
+        void sendNotification(meta?.title || entry.title, i18n.t('chat:notification.completed'), {
+          sessionId: entry.sessionId, directory: entry.directory,
+        })
       }
     })
   }, [sendNotification])

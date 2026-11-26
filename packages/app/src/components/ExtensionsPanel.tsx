@@ -6,6 +6,7 @@ import { commandFeedbackStore, type CommandFeedbackEntry, type CommandFeedbackSt
 import { ExtensionTuiView } from './ExtensionTuiView'
 import { stripAnsi } from '../utils/ansiUtils'
 import { extensionDiagnosticStore } from '../omp/extensionDiagnosticStore'
+import { uiHistory } from '../omp/uiHistory'
 import { usePiSessionRuntimeState } from '../omp/hooks'
 import { isJsonObject } from '@ompiui/protocol'
 
@@ -100,7 +101,7 @@ export function ExtensionsPanel({ sessionId }: { sessionId: string | null }) {
             <SectionLabel>{t('extensionsPanel.commandFeedback', 'Command Feedback')}</SectionLabel>
             <button
               type="button"
-              onClick={() => { if (sessionId) commandFeedbackStore.remove(sessionId) }}
+              onClick={() => { if (sessionId) void uiHistory.clearFeedback(sessionId) }}
               className="shrink-0 rounded px-1.5 py-0.5 text-[length:var(--fs-xxs)] text-text-500 hover:text-danger-100 hover:bg-bg-200/60 transition-colors"
             >
               {t('extensionsPanel.clear', 'Clear')}
@@ -118,7 +119,7 @@ export function ExtensionsPanel({ sessionId }: { sessionId: string | null }) {
         <section className="min-w-0" aria-label={t('extensionsPanel.diagnostics')}>
           <div className="mb-1.5 flex items-center justify-between">
             <SectionLabel>{t('extensionsPanel.diagnostics')}</SectionLabel>
-            <button type="button" onClick={() => extensionDiagnosticStore.reset()}
+            <button type="button" onClick={() => void uiHistory.clearDiagnostics()}
               aria-label={t('extensionsPanel.clearDiagnostics')}
               className="shrink-0 rounded px-1.5 py-0.5 text-[length:var(--fs-xxs)] text-text-500 hover:text-danger-100 hover:bg-bg-200/60 transition-colors">
               {t('extensionsPanel.clear', 'Clear')}

@@ -7,7 +7,6 @@ import { piSessionInfoStore } from "./ompSessionInfoStore"
 import { ompSubagentStore } from "./ompSubagentStore"
 import { extensionUiStore } from "./extensionUiStore"
 import { extensionTuiStore } from "./extensionTuiStore"
-import { commandFeedbackStore } from "./commandFeedbackStore"
 import { resetWorkspaceResolutionCache } from "./workspaces"
 import { clearAllWorkspaceFileCaches } from "./files"
 import { clearPiTimelineItemCache } from "./selectors/timelineCache"
@@ -158,7 +157,6 @@ export function installPiBackendServerSwitch(): void {
     ompSubagentStore.clearAll()
     extensionUiStore.reset()
     extensionTuiStore.reset()
-    commandFeedbackStore.reset()
     activeSessionStore.reset()
     resetWorkspaceResolutionCache()
     resetPathModeCache()
