@@ -257,6 +257,8 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
     ctx.requireRuntime().navigateTree(P.reqString(p, "entryId"), {
       summarize: P.optBoolean(p, "summarize"),
       customInstructions: P.optString(p, "customInstructions"),
+      trackRedo: P.optBoolean(p, "trackRedo"),
+      redoPlanId: P.optString(p, "redoPlanId"),
     }),
   setLabel: async (ctx, p) => {
     await ctx
@@ -424,12 +426,8 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
     ctx.catalog.findSessionById(P.reqString(p, "sessionId")),
   "session.findByFile": async (ctx, p) =>
     ctx.catalog.findSessionByFile(P.reqString(p, "sessionFile")),
-  "session.delete": async (ctx, p) => {
-    await ctx.catalog.deleteSession(
-      P.reqString(p, "cwd"),
-      P.reqString(p, "sessionFile"),
-    );
-  },
+  "session.delete": async (ctx, p) =>
+    ctx.catalog.deleteSession(P.reqString(p, "cwd"), P.reqString(p, "sessionFile")),
   // Model visibility and provider credentials must come from the same
   // runtime. The catalog creates a fresh credential-blind runtime, which
   // loses temporary keys set through the provider auth UI after a refresh.

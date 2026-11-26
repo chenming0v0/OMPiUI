@@ -3,7 +3,8 @@ import { AsyncLocalStorage } from "node:async_hooks"
 import { createHash } from "node:crypto"
 import { runInNewContext } from "node:vm"
 import { test } from "node:test"
-import type { JsonObject } from "@ompiui/protocol"
+import { isJsonObject, type JsonObject, type JsonValue } from "@ompiui/protocol"
+import { sessionRedoPlanFromBranch } from "./session-config.js"
 import type { OmpRpcClient, OmpRpcResponse } from "./rpc-client.js"
 import { runtimeBridgeExtension, RuntimeBridgeTransport } from "./runtime-bridge.js"
 import { SUBAGENT_OBSERVATION_PREFIX, type SubagentObservationPayload } from "./native-subagent-observation.js"
@@ -68,11 +69,37 @@ function queuedBridgeHarness(streaming = true) {
   let steering = [sibling]
   let followUp = [companion, selected, untouched]
   const entries: JsonObject[] = []
+  let leafId: string | null = null
+  let persisted = 0
+  let rejectNavigation = false
   let continuationError: Error | undefined
   const session = {
+    sessionFile: "session.jsonl",
+    navigateTree: async (id: string) => {
+      if (rejectNavigation) return { cancelled: true }
+      const target = entries.find(entry => entry.id === id)!
+      const user = isJsonObject(target.message) && target.message.role === "user"
+      leafId = user ? target.parentId as string | null : id
+      return { cancelled: false, ...(user ? { editorText: "draft" } : {}) }
+    },
     sessionManager: {
-      getSessionId: () => "session", getSessionFile: () => "session.jsonl",
-      getEntries: () => entries, getBranchView: () => entries,
+      getSessionId: () => "session", getSessionFile: () => "session.jsonl", getCwd: () => ".",
+      getEntries: () => entries, getBranchView: () => entries, getLeafId: () => leafId,
+      getBranch: () => {
+        const branch: JsonObject[] = []
+        for (let cursor = leafId; cursor;) {
+          const entry = entries.find(item => item.id === cursor)!
+          branch.unshift(entry)
+          cursor = entry.parentId as string | null
+        }
+        return branch
+      },
+      appendCustomEntry: (customType: string, data: JsonValue) => {
+        const id = `marker-${entries.length}`
+        entries.push({ type: "custom", customType, id, parentId: leafId, data })
+        leafId = id
+      },
+      flush: async () => { persisted++ },
     },
     scopedModels: [],
     agent: {
@@ -106,6 +133,9 @@ function queuedBridgeHarness(streaming = true) {
   return {
     session, selected, companion, sibling, untouched, entries, replaced,
     failContinuation: (error: Error) => { continuationError = error },
+    setLeaf: (id: string | null) => { leafId = id },
+    cancelNavigation: () => { rejectNavigation = true },
+    getPersisted: () => persisted,
     async run(operation: string, args: JsonObject = {}): Promise<JsonObject> {
       const notifications: string[] = []
       const done = Promise.withResolvers<void>()
@@ -122,6 +152,38 @@ function queuedBridgeHarness(streaming = true) {
     },
   }
 }
+
+test("undo and redo persist the selected native path and reject stale progress", async () => {
+  const h = queuedBridgeHarness()
+  for (const [id, parentId, role] of [
+    ["u1", null, "user"], ["a1", "u1", "assistant"],
+    ["u2", "a1", "user"], ["a2", "u2", "assistant"],
+    ["u3", "a2", "user"], ["a3", "u3", "assistant"],
+    ["other", "a1", "assistant"],
+  ]) h.entries.push({ id, parentId, type: "message", message: { role } })
+  h.setLeaf("a3")
+  const getPlan = () => sessionRedoPlanFromBranch(h.session.sessionManager.getBranch(), "session")
+  assert.equal((await h.run("navigateTree", { entryId: "u2", trackRedo: true })).success, true)
+  const initial = getPlan()!
+  assert.deepEqual(initial, { id: "runtime-id", undoLeafId: "a1", checkpoints: ["a2", "a3"], restored: 0 })
+  assert.equal(h.getPersisted(), 1)
+
+  assert.equal((await h.run("navigateTree", { entryId: "a2", redoPlanId: initial.id })).success, true)
+  assert.equal(getPlan()?.restored, 1)
+  assert.equal((await h.run("navigateTree", { entryId: "a2", redoPlanId: initial.id })).code, "SESSION_CONFLICT")
+  assert.equal(h.getPersisted(), 2)
+  const leaf = h.session.sessionManager.getLeafId()
+  h.entries.push({ id: "new-user", parentId: leaf, type: "message", message: { role: "user" } })
+  h.setLeaf("new-user")
+  assert.equal(getPlan(), null, "a new user turn retires redo on that branch")
+  h.setLeaf(leaf)
+  assert.equal((await h.run("navigateTree", { entryId: "other", trackRedo: true })).success, true)
+  assert.equal(getPlan(), null, "leaving the selected path clears the plan")
+  h.cancelNavigation()
+  const cancelled = await h.run("navigateTree", { entryId: "u1", trackRedo: true })
+  assert.equal((cancelled.data as JsonObject).cancelled, true)
+  assert.equal(h.getPersisted(), 3)
+})
 
 for (const kind of ["steering", "followUp"] as const) {
   test(`generated bridge promotes ${kind} without rewriting normalized native messages`, async () => {

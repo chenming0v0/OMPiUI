@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { it } from "node:test"
@@ -95,6 +95,19 @@ it("disk preview and state.get restore configuration from the active branch, not
   assert.deepEqual(state.model, preview.state.model)
   assert.equal(state.thinkingLevel, preview.state.thinkingLevel)
   assert.equal(state.isStreaming, false)
+
+  const plan = { id: "plan", undoLeafId: "thinking", checkpoints: ["current", "reply"], restored: 1 }
+  const history = readFileSync(file, "utf8") + "\n" + [
+    { type: "message", id: "reply", parentId: "current", message: { role: "assistant", content: [] } },
+    { type: "custom", customType: "ompiui.redo", id: "marker", parentId: "current", data: { sessionId: "session-config", ...plan } },
+    { type: "custom", customType: "session_exit", id: "exit", parentId: "marker" },
+  ].map(entry => JSON.stringify(entry)).join("\n")
+  writeFileSync(file, history)
+  const resumed = await new OmpCatalog().previewSessionById("session-config")
+  assert.ok(isJsonObject(resumed) && isJsonObject(resumed.state) && isJsonObject(resumed.state.head))
+  assert.equal(resumed.state.head.leafId, "marker")
+  assert.deepEqual(resumed.state.redoPlan, plan)
+  assert.equal(readFileSync(file, "utf8"), history)
 })
 
 it("reads native goal snapshots from the active branch without restore mutation", () => {

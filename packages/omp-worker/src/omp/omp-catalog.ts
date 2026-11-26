@@ -42,7 +42,7 @@ import {
   ompSessionRoots,
 } from "./managed-sessions.js";
 import { ompAgentDirectory } from "./omp-directories.js";
-import { sessionConfigFromBranch, sessionGoalFromBranch } from "./session-config.js";
+import { sessionConfigFromBranch, sessionGoalFromBranch, sessionRedoPlanFromBranch } from "./session-config.js";
 import { BranchPageReader } from "../runtime/branch-pages.js";
 import {
   resolveOmpConfigCommand,
@@ -539,7 +539,7 @@ export class OmpCatalog implements CatalogProvider {
   readonly control = new OmpControlChannel();
   private readonly diskBranchCaches = new Map<string, DiskBranchCache>();
   private readonly diskReads = new Map<string, Promise<DiskBranchCache | null>>();
-  private summarizeFlight?: Promise<SessionFileSummary[]>;
+  private summarizeFlight?: { revision: number; promise: Promise<SessionFileSummary[]> };
 
   async listSessions(cwd: string): Promise<JsonValue> {
     const wanted = pathKey(cwd);
@@ -564,22 +564,37 @@ export class OmpCatalog implements CatalogProvider {
   private summarizeCache: { at: number; items: SessionFileSummary[] } | null =
     null;
 
+  private summarizeRevision = 0;
+
+  invalidateSessionList(): void {
+    this.summarizeRevision += 1;
+    this.summarizeCache = null;
+  }
+
   private async summarizeAll(fresh = false): Promise<SessionFileSummary[]> {
-    // 会话列表扫描全量文件是 catalog 里最贵的操作：2s 缓存
+    // Keep the per-file incremental scans and share one scan for each list revision.
     if (!fresh && this.summarizeCache && Date.now() - this.summarizeCache.at < 2_000) {
       return this.summarizeCache.items;
     }
-    if (this.summarizeFlight) return this.summarizeFlight;
-    this.summarizeFlight = (async () => {
+    const revision = this.summarizeRevision;
+    if (this.summarizeFlight) {
+      const flight = this.summarizeFlight;
+      if (flight.revision === revision) return flight.promise;
+      await flight.promise;
+      return this.summarizeAll(fresh);
+    }
+    const promise = (async () => {
       const results = await mapLimited(listSessionFiles(), summarizeSessionFileCached);
       const items = results.flatMap((snapshot) => snapshot ? [displaySummary(snapshot)] : []);
       items.sort((a, b) => b.modified - a.modified);
-      this.summarizeCache = { at: Date.now(), items };
+      // A scan started before a list change must not restore the old cache.
+      if (revision === this.summarizeRevision) this.summarizeCache = { at: Date.now(), items };
       return items;
     })().finally(() => {
       this.summarizeFlight = undefined;
     });
-    return this.summarizeFlight;
+    this.summarizeFlight = { revision, promise };
+    return promise;
   }
 
   async createSession(cwd: string): Promise<JsonValue> {
@@ -727,6 +742,7 @@ export class OmpCatalog implements CatalogProvider {
       sessionId: summary.id,
       readOnly: false,
       diskPreview: true,
+      redoPlan: sessionRedoPlanFromBranch(branch, summary.id),
       sessionFile: summary.path,
       sessionName: summary.name,
       cwd: summary.cwd,
@@ -910,7 +926,7 @@ export class OmpCatalog implements CatalogProvider {
       ) {
         throw new Error("Invalid forked session identity");
       }
-      this.summarizeCache = null;
+      this.invalidateSessionList();
       return {
         sessionId: state.sessionId,
         sessionFile: state.sessionFile,
@@ -1022,14 +1038,14 @@ export class OmpCatalog implements CatalogProvider {
     return null;
   }
 
-  async deleteSession(cwd: string, sessionFile: string): Promise<void> {
+  async deleteSession(cwd: string, sessionFile: string): Promise<JsonObject | null> {
     const target = resolveUserPath(sessionFile);
     const root = path.resolve(
       isManagedSessionFile(target)
         ? managedSessionsRoot()
         : ompSessionRootFor(target),
     );
-    if (!existsSync(target)) return;
+    if (!existsSync(target)) return null;
     const realRoot = await fs.realpath(root);
     const realTarget = await fs.realpath(target);
     const rootKey =
@@ -1042,10 +1058,14 @@ export class OmpCatalog implements CatalogProvider {
         { code: "PATH_OUTSIDE_WORKSPACE" },
       );
     }
+    const sessionId = await sessionFileId(target);
     await fs.unlink(target);
-    this.summarizeCache = null;
+    this.invalidateSessionList();
+    this.diskBranchCaches.delete(target);
     sessionSummaryCache.delete(target);
     subagentTitleCache.delete(target);
+    if (sessionId && sessionIdIndex.get(sessionId) === target) sessionIdIndex.delete(sessionId);
+    return { sessionId: sessionId ?? null, sessionFile: target };
   }
 
   async listModels(): Promise<JsonValue> {

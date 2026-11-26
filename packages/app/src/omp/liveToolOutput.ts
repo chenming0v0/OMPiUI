@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import { utf8Suffix } from '@ompiui/protocol'
+import { LIVE_TOOL_OUTPUT_MAX_BYTES, utf8Suffix, type EventCursor, type LiveToolOutputSnapshot } from '@ompiui/protocol'
 
 /**
  * 运行中工具（bash 等）的实时输出，按 toolCallId 键控（Pi 生成的 UUID 全局
@@ -10,12 +10,12 @@ import { utf8Suffix } from '@ompiui/protocol'
 interface LiveToolOutputEntry {
   sessionId: string
   text: string
+  position?: EventCursor
   updated: number
 }
 
 const outputs = new Map<string, LiveToolOutputEntry>()
 const listeners = new Set<() => void>()
-const MAX_OUTPUT_BYTES = 256 * 1024
 const MAX_OUTPUTS = 64
 
 function notify(): void {
@@ -38,17 +38,41 @@ export function extractToolExecutionText(partialResult: { content?: unknown } | 
     .join('')
 }
 
+function isLater(position: EventCursor | undefined, snapshot: EventCursor): boolean {
+  return position?.epoch === snapshot.epoch && position.sequence > snapshot.sequence
+}
+
 export const liveToolOutputStore = {
-  set(toolCallId: string, sessionId: string, text: string): void {
-    text = utf8Suffix(text, MAX_OUTPUT_BYTES)
+  set(toolCallId: string, sessionId: string, text: string, position?: EventCursor): void {
+    text = utf8Suffix(text, LIVE_TOOL_OUTPUT_MAX_BYTES)
     const previous = outputs.get(toolCallId)
-    if (previous && previous.text === text) return
+    if (previous && position && isLater(previous.position, position)) return
+    if (previous?.sessionId === sessionId && previous.text === text) {
+      previous.position = position ?? previous.position
+      previous.updated = Date.now()
+      return
+    }
     outputs.delete(toolCallId)
-    outputs.set(toolCallId, { sessionId, text, updated: Date.now() })
+    outputs.set(toolCallId, { sessionId, text, position, updated: Date.now() })
     for (const [id, entry] of outputs) {
       if (outputs.size > MAX_OUTPUTS || Date.now() - entry.updated > 10 * 60 * 1000) outputs.delete(id)
     }
     notify()
+  },
+  reconcile(sessionId: string, snapshot: LiveToolOutputSnapshot, accept: (entry: LiveToolOutputSnapshot['entries'][number]) => boolean): void {
+    const present = new Set(snapshot.entries.map(entry => entry.toolCallId))
+    let changed = false
+    for (const [id, output] of outputs) {
+      if (output.sessionId !== sessionId || !output.position || present.has(id) || isLater(output.position, snapshot.position)) continue
+      outputs.delete(id)
+      changed = true
+    }
+    for (const entry of snapshot.entries) {
+      const previous = outputs.get(entry.toolCallId)
+      if (isLater(previous?.position, snapshot.position) || !accept(entry)) continue
+      this.set(entry.toolCallId, sessionId, entry.text, snapshot.position)
+    }
+    if (changed) notify()
   },
   /** 追加增量输出（用户 `!cmd` 的 bash_execution_update.delta 是 chunk） */
   append(toolCallId: string, sessionId: string, delta: string): void {

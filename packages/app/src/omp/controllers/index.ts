@@ -26,6 +26,7 @@ import { imageInputToAttachment } from '../../features/pi-chat/attachmentToImage
 import { notificationStore } from '../../store/notificationStore'
 import { commandFeedbackStore } from '../commandFeedbackStore'
 import { loadCachedPiBranch, removeCachedPiBranch } from '../branchCache'
+import { liveToolOutputStore } from '../liveToolOutput'
 import i18n from '../../i18n'
 
 /**
@@ -67,7 +68,12 @@ export async function loadPiSessionsForCwd(cwd: string, signal?: AbortSignal): P
   return sessions
 }
 
-const listFlights = new Map<string, Promise<SessionInfo[]>>()
+const listFlights = new Map<string, { revision: number; promise: Promise<SessionInfo[]> }>()
+let sessionListRevision = 0
+
+export function invalidatePiSessionList(): void {
+  sessionListRevision += 1
+}
 const registryCache = new Map<string, { generation: number; expiresAt: number; value: RegistrySnapshot | undefined }>()
 const registryFlights = new Map<string, Promise<RegistrySnapshot | undefined>>()
 const REGISTRY_CACHE_TTL_MS = 2_000
@@ -104,12 +110,15 @@ function sharedSessionList(
   if (signal) return retryUnavailable(load, signal)
   const flightKey = JSON.stringify([serverStore.getActiveServerGeneration(), key])
   const current = listFlights.get(flightKey)
-  if (current) return current
-  const flight = retryUnavailable(load).finally(() => {
-    if (listFlights.get(flightKey) === flight) listFlights.delete(flightKey)
-  })
-  listFlights.set(flightKey, flight)
-  return flight
+  if (current) {
+    if (current.revision === sessionListRevision) return current.promise
+    return current.promise.catch(() => undefined).then(() => sharedSessionList(key, load))
+  }
+  const entry = { revision: sessionListRevision, promise: retryUnavailable(load).finally(() => {
+    if (listFlights.get(flightKey) === entry) listFlights.delete(flightKey)
+  }) }
+  listFlights.set(flightKey, entry)
+  return entry.promise
 }
 
 /**
@@ -290,6 +299,17 @@ export async function loadPiSessionData(sessionId: string, signal?: AbortSignal)
   return flight
 }
 
+export function markPiSessionUnavailable(sessionId: string, error: Error): void {
+  piBranchStore.clear(sessionId)
+  piSessionStateStore.clear(sessionId)
+  piBranchStore.setError(sessionId, error)
+  void removeCachedPiBranch(sessionId)
+}
+
+export function isMissingPiSession(error: unknown): error is Error {
+  return error instanceof Error && 'code' in error && error.code === 'SESSION_NOT_FOUND'
+}
+
 async function loadPiSessionDataOnce(sessionId: string, signal?: AbortSignal): Promise<void> {
   const serverGeneration = serverStore.getActiveServerGeneration()
   const requestVersion = piSessionStateStore.beginRequest(sessionId)
@@ -321,18 +341,24 @@ async function loadPiSessionDataOnce(sessionId: string, signal?: AbortSignal): P
       true,
     )
     if (serverStore.getActiveServerGeneration() !== serverGeneration) return
-    piSessionStateStore.setStateIfCurrent(sessionId, preview.state, requestVersion)
+    const stateCurrent = piSessionStateStore.isRequestCurrent(sessionId, requestVersion)
+    const { liveToolOutput, ...state } = preview.state ?? {}
+    piSessionStateStore.setStateIfCurrent(sessionId, state, requestVersion)
     piBranchStore.setDataIfCurrent(
       sessionId,
       mergeLatestBranchPage(piBranchStore.getData(sessionId), preview.branch),
       branchVersion,
     )
-    reconcilePiSessionSnapshot(sessionId)
+    reconcilePiSessionSnapshot(sessionId, stateCurrent ? liveToolOutput : undefined)
   } catch (error) {
     if (serverStore.getActiveServerGeneration() !== serverGeneration) return
-    if (piSessionStateStore.isRequestCurrent(sessionId, requestVersion))
-      piSessionStateStore.setError(sessionId, error as Error)
-    if (piBranchStore.isRequestCurrent(sessionId, branchVersion)) piBranchStore.setError(sessionId, error as Error)
+    if (isMissingPiSession(error) && piBranchStore.isRequestCurrent(sessionId, branchVersion)) {
+      markPiSessionUnavailable(sessionId, error)
+    } else {
+      if (piSessionStateStore.isRequestCurrent(sessionId, requestVersion))
+        piSessionStateStore.setError(sessionId, error as Error)
+      if (piBranchStore.isRequestCurrent(sessionId, branchVersion)) piBranchStore.setError(sessionId, error as Error)
+    }
     throw error
   }
 }
@@ -605,27 +631,33 @@ async function refreshPiBranchOnce(sessionId: string, signal?: AbortSignal, incl
   const version = piBranchStore.beginRequest(sessionId)
   const current = piBranchStore.getData(sessionId)
   const params = { limit: BRANCH_PAGE_LIMIT, maxBytes: includeLive ? 4 * 1024 * 1024 : BRANCH_PAGE_MAX_BYTES }
-  let latest = await readHistoryPage(maxBytes => transport.getPiBranchPage(
-    sessionId,
-    {
-      ...params,
-      maxBytes,
-      ...(includeLive ? { includeLiveMessage: true } : {}),
-      ...(current?.syncCursor ? { syncCursor: current.syncCursor, beforeId: current.items[0]?.id } : {}),
-    },
-    signal,
-  ), params.maxBytes, signal)
-  if (serverStore.getActiveServerGeneration() !== serverGeneration) return
-  if (!piBranchStore.isRequestCurrent(sessionId, version)) {
-    const settled = piBranchStore.getData(sessionId)?.checkpoint?.liveMessage
-    return current?.checkpoint?.liveMessage?.phase === 'streaming' &&
-      settled?.id === current.checkpoint.liveMessage.id && settled?.phase === 'persisting'
+  try {
+    let latest = await readHistoryPage(maxBytes => transport.getPiBranchPage(
+      sessionId,
+      {
+        ...params,
+        maxBytes,
+        ...(includeLive ? { includeLiveMessage: true } : {}),
+        ...(current?.syncCursor ? { syncCursor: current.syncCursor, beforeId: current.items[0]?.id } : {}),
+      },
+      signal,
+    ), params.maxBytes, signal)
+    if (serverStore.getActiveServerGeneration() !== serverGeneration) return
+    if (!piBranchStore.isRequestCurrent(sessionId, version)) {
+      const settled = piBranchStore.getData(sessionId)?.checkpoint?.liveMessage
+      return current?.checkpoint?.liveMessage?.phase === 'streaming' &&
+        settled?.id === current.checkpoint.liveMessage.id && settled?.phase === 'persisting'
+    }
+    if (latest.deltaFrom && latest.deltaFrom !== piBranchStore.getData(sessionId)?.syncCursor) {
+      latest = await readHistoryPage(maxBytes => transport.getPiBranchPage(sessionId, { ...params, maxBytes }, signal), params.maxBytes, signal)
+    }
+    if (serverStore.getActiveServerGeneration() !== serverGeneration) return
+    piBranchStore.setDataIfCurrent(sessionId, mergeLatestBranchPage(piBranchStore.getData(sessionId), latest), version)
+  } catch (error) {
+    if (isMissingPiSession(error) && !signal?.aborted && serverStore.getActiveServerGeneration() === serverGeneration &&
+        piBranchStore.isRequestCurrent(sessionId, version)) markPiSessionUnavailable(sessionId, error)
+    throw error
   }
-  if (latest.deltaFrom && latest.deltaFrom !== piBranchStore.getData(sessionId)?.syncCursor) {
-    latest = await readHistoryPage(maxBytes => transport.getPiBranchPage(sessionId, { ...params, maxBytes }, signal), params.maxBytes, signal)
-  }
-  if (serverStore.getActiveServerGeneration() !== serverGeneration) return
-  piBranchStore.setDataIfCurrent(sessionId, mergeLatestBranchPage(piBranchStore.getData(sessionId), latest), version)
 }
 
 /**
@@ -638,17 +670,31 @@ export async function refreshPiSessionState(sessionId: string, signal?: AbortSig
   const snapshot = await transport.getPiSessionState(sessionId, signal)
   if (serverStore.getActiveServerGeneration() !== serverGeneration) return
   const currentRequest = piSessionStateStore.isRequestCurrent(sessionId, requestVersion)
-  if (!piSessionStateStore.setStateIfCurrent(sessionId, snapshot as JsonObject, requestVersion)) return
+  const { liveToolOutput, ...state } = isJsonObject(snapshot) ? snapshot : {}
+  if (!piSessionStateStore.setStateIfCurrent(sessionId, state, requestVersion)) return
   if (!currentRequest) return
-  reconcilePiSessionSnapshot(sessionId)
+  reconcilePiSessionSnapshot(sessionId, liveToolOutput)
 }
 
-function reconcilePiSessionSnapshot(sessionId: string): void {
+function reconcilePiSessionSnapshot(sessionId: string, output?: JsonValue): void {
   const state = piSessionStateStore.getState(sessionId)
   // worker 的子代理注册表快照并入全局 store：页面刷新 / 重连后 HUD 与
   // TaskRenderer 内联视图据此恢复（运行中的随后由 progress 帧继续推进）
   if (isJsonObject(state)) {
     if (state.isStreaming === true && !state.toolInterruption) piBranchStore.beginToolExecutions(sessionId)
+    if (isJsonObject(output) && isJsonObject(output.position) && typeof output.position.epoch === 'string' &&
+        typeof output.position.sequence === 'number' && Array.isArray(output.entries)) {
+      const entries = output.entries.filter(isJsonObject).flatMap(item =>
+        typeof item.toolCallId === 'string' && typeof item.toolName === 'string' && typeof item.text === 'string'
+          ? [{ toolCallId: item.toolCallId, toolName: item.toolName, text: item.text }]
+          : [],
+      )
+      const branch = piBranchStore.getData(sessionId)
+      const completed = new Set(branch?.items.flatMap(item => item.type === 'message' && item.message.role === 'toolResult' ? [item.message.toolCallId] : []))
+      liveToolOutputStore.reconcile(sessionId, { position: { epoch: output.position.epoch, sequence: output.position.sequence }, entries }, entry =>
+        !completed.has(entry.toolCallId) && piBranchStore.patchToolExecution(sessionId, entry.toolCallId, { isRunning: true }),
+      )
+    }
     const settled =
       (typeof state.isSettled === 'boolean' ? state.isSettled : state.isIdle === true) &&
       !state.isStreaming &&
@@ -983,6 +1029,7 @@ export async function navigatePiTree(
   }
   if (generation === serverStore.getActiveServerGeneration() && result.cancelled === false && !result.aborted && !result.noOp) {
     restoreNativeDraft(sessionId, result.editorText ?? '', result.editorImages ?? [])
+    if (params.trackRedo || params.redoPlanId) void refreshPiSessionState(sessionId).catch(() => undefined)
     if (result.projectionError) notificationStore.push('error', i18n.t('chat:chatArea.nativeChangeRefreshFailed'), result.projectionError, sessionId)
   }
   return result

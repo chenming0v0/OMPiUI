@@ -914,17 +914,28 @@ export class SessionHost {
       return this.openSession(copied.cwd, copied.sessionFile, options.signal);
     }
     if (type === "session.delete") {
-      // Detach a live runtime before the file goes away: an attached worker
-      // keeps serving the session from memory and would rewrite the file on
-      // its next append, resurrecting the deleted session.
-      const sessionFile =
-        typeof params?.sessionFile === "string"
-          ? params.sessionFile
-          : undefined;
-      if (sessionFile) {
-        const live = this.runtimes.findBySessionFile(sessionFile);
-        if (live) await this.closeSession(live.sessionId, "session_delete");
+      validateParams(getCommandCapability(type)?.paramsSchema, params ?? {});
+      const live = typeof params?.sessionFile === "string" ? this.runtimes.findBySessionFile(params.sessionFile) : undefined;
+      const liveId = live?.sessionId;
+      if (liveId) {
+        if (this.activity.has(liveId) || this.executor.hasPendingWork(liveId) || this.executor.isClosing(liveId)) {
+          throw Object.assign(new Error("Session is busy; nothing was deleted"), { code: "SESSION_BUSY" });
+        }
+        // Detach idle writers so they cannot recreate the unlinked session.
+        await this.closeSession(liveId, "session_delete");
       }
+      // Once unlink has been requested, a disconnected caller must not suppress its broadcast.
+      if (options.signal?.aborted) throw abortError();
+      const deleted = await this.catalogCommand(type, params);
+      if (isJsonObject(deleted)) {
+        const sessionId = typeof deleted.sessionId === "string" ? deleted.sessionId : liveId;
+        if (sessionId) {
+          this.materialized.delete(sessionId);
+          this.toolInterruptions.delete(sessionId);
+        }
+        this.hub.publish({ kind: "server", id: "server" }, "sessions.updated", { ...deleted, sessionId: sessionId ?? null, deleted: true });
+      }
+      return null;
     }
     const capability = getCommandCapability(type);
     if (
@@ -1050,6 +1061,9 @@ export class SessionHost {
             releaseWorkspace = beginWorktreeAttachment(resolve(session.cwd, full.params.path));
           }
           const data = await session.worker.command(full.type, full.params);
+          if (full.type === "setSessionName") {
+            this.hub.publish({ kind: "server", id: "server" }, "sessions.updated", { sessionId, updated: true });
+          }
           await this.trackReplacement(session, data);
           return data;
         } finally {
@@ -1083,7 +1097,6 @@ export class SessionHost {
     const result = await this.supervisor.catalogCommand(type, params, options);
     if (typeof params?.sessionId === 'string') {
       const interruption = this.toolInterruptions.get(params.sessionId);
-      if (type === 'session.delete') this.toolInterruptions.delete(params.sessionId);
       if (interruption && isJsonObject(result)) {
         if (type === 'session.preview' && isJsonObject(result.state)) return { ...result, state: { ...result.state, toolInterruption: interruption } };
         if (type === 'session.read' && params.query === 'state.get') return { ...result, toolInterruption: interruption };
@@ -1328,6 +1341,11 @@ export class SessionHost {
         this.hub.publish({ kind: "server", id: "server" }, "sessions.updated", {
           sessionId: session.sessionId,
           materialized: true,
+        });
+      } else if (event.summaryChanged) {
+        this.hub.publish({ kind: "server", id: "server" }, "sessions.updated", {
+          sessionId: session.sessionId,
+          updated: true,
         });
       }
       return;

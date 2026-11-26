@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import { statSync } from "node:fs"
 import { resolve } from "node:path"
 import { installWorkerFileLogging } from "./worker-logger.js"
 
@@ -156,6 +157,15 @@ const pendingHostCalls = new Map<string, {
   timer: NodeJS.Timeout
 }>()
 
+function sessionFileRevision(file: string | undefined): string | undefined {
+  if (!file) return undefined
+  try {
+    const stat = statSync(file)
+    if (stat.isFile()) return `${file}:${stat.ino}:${stat.size}:${stat.mtimeMs}`
+  } catch { /* Unavailable files are not a durable update. */ }
+  return undefined
+}
+
 function subscribeRuntimeEvents(current: SessionRuntime): Array<() => void> {
   const unsubs: Array<() => void> = []
   // Stable host identity, not a session id: the same runtime can replace sessions.
@@ -170,6 +180,9 @@ function subscribeRuntimeEvents(current: SessionRuntime): Array<() => void> {
     if (event.type === "available_commands_update") {
       void queueRegistryChangeCheck(current, "available_commands_update").catch(error => console.error("[omp-worker] registry refresh failed", error));
     }
+    if (event.type === "session_info_changed" || event.type === "session_info_update") {
+      if (catalog instanceof OmpCatalog) catalog.invalidateSessionList()
+    }
     send({
     kind: "event",
     generation: workerGeneration,
@@ -178,13 +191,22 @@ function subscribeRuntimeEvents(current: SessionRuntime): Array<() => void> {
     event,
     meta,
   })}))
-  unsubs.push(current.onHead(head => send({
-    kind: "event",
-    generation: workerGeneration,
-    sessionId: current.getSessionId(),
-    channel: "session.head",
-    head: head as unknown as JsonObject,
-  })))
+  let summaryRevision = sessionFileRevision(current.getSessionFile())
+  unsubs.push(current.onHead(head => {
+    // A native head can also advance without writing to disk (for example tree navigation).
+    const revision = sessionFileRevision(current.getSessionFile())
+    const summaryChanged = revision !== undefined && revision !== summaryRevision
+    summaryRevision = revision
+    if (summaryChanged && catalog instanceof OmpCatalog) catalog.invalidateSessionList()
+    send({
+      kind: "event",
+      generation: workerGeneration,
+      sessionId: current.getSessionId(),
+      channel: "session.head",
+      head: head as unknown as JsonObject,
+      ...(summaryChanged ? { summaryChanged } : {}),
+    })
+  }))
   if (current.onActivity) {
     unsubs.push(current.onActivity(status => send({
       kind: "event",
@@ -380,6 +402,10 @@ async function execute(command: { type: string; params?: JsonObject; sessionId?:
     throw Object.assign(new Error(`unknown command: ${command.type}`), { code: "UNKNOWN_COMMAND" })
   }
   const result = await handler(commandCtx, params)
+  if (catalog instanceof OmpCatalog && (command.type === "setSessionName" ||
+      (isJsonObject(result) && result.cancelled === false && (result.operation === "fork" || result.operation === "move")))) {
+    catalog.invalidateSessionList()
+  }
   // Runtime replacement (newSession/switchSession/fork) changes the session
   // identity inside the child process; migrate the map key so subsequent
   // requests with the new sessionId find the same runtime.

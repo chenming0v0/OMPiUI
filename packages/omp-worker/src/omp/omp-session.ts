@@ -5,11 +5,12 @@ import type {
   ImageInput,
   JsonObject,
   JsonValue,
+  LiveToolOutputSnapshot,
   PiCommandParams,
   RegistrySnapshot,
   SessionActivityStatus,
 } from "@ompiui/protocol";
-import { isJsonObject, utf8Prefix } from "@ompiui/protocol";
+import { isJsonObject, jsonByteSize, LIVE_TOOL_OUTPUT_MAX_BYTES, utf8Prefix, utf8Suffix } from "@ompiui/protocol";
 import {
   entriesPageFromEntries,
   imageAttachmentFromEntry,
@@ -55,6 +56,7 @@ import { requireResourceList, registryFromResources } from './resource-registry.
 import { requestNativePromptAcceptance } from './native-rpc-prompt.js';
 import { SUBAGENT_OBSERVATION_PREFIX } from './native-subagent-observation.js';
 import { SESSION_TITLE_FAILURE_PREFIX, SESSION_TITLE_PREFIX } from './native-session-title.js';
+import { sessionRedoPlanFromBranch } from './session-config.js';
 
 /**
  * OmpRpcSession —— SessionRuntime 契约的 OMP 实现。
@@ -241,6 +243,7 @@ export class OmpRpcSession implements SessionRuntime {
   private toolInterruption?: JsonObject;
   private abortInFlight: Promise<JsonValue | undefined> | undefined;
   private relocationEpoch: string | undefined;
+  private redoNavigationEpoch: string | undefined;
   private readonly submissionFlights = new Map<string, number>();
 
   private modelsCache: JsonObject[] = [];
@@ -686,7 +689,70 @@ export class OmpRpcSession implements SessionRuntime {
     }
   }
 
+  private readonly ordinaryToolOutputs = new Map<string, LiveToolOutputSnapshot["entries"][number] & { bytes: number }>();
+  private ordinaryToolOutputBytes = 0;
+
+  private trackToolOutput(raw: JsonObject, projected: JsonObject): void {
+    const message = isJsonObject(raw.message) ? raw.message : undefined;
+    const id = typeof raw.toolCallId === "string" ? raw.toolCallId : message?.toolCallId;
+    if (raw.type === "agent_start" || raw.type === "agent_settled") {
+      this.clearToolOutputs();
+      return;
+    }
+    if (typeof id !== "string") return;
+    if (raw.type === "tool_execution_start" || raw.type === "tool_execution_end" ||
+        (raw.type === "message_end" && message?.role === "toolResult")) {
+      this.removeToolOutput(id);
+      return;
+    }
+    if (raw.type !== "tool_execution_update" || typeof raw.toolName !== "string") return;
+    const partial = isJsonObject(raw.partialResult) ? raw.partialResult : undefined;
+    const args = isJsonObject(raw.args) ? raw.args : undefined;
+    // Interactive terminal data already has its own snapshot and replay stream.
+    if ((raw.toolName === "bash" && args?.pty === true) ||
+        (isJsonObject(partial?.details) && partial.details.toolInteraction)) {
+      this.removeToolOutput(id);
+      return;
+    }
+    const content = isJsonObject(projected.partialResult) ? projected.partialResult.content : undefined;
+    const block = Array.isArray(content) ? content[0] : undefined;
+    if (!isJsonObject(block) || block.type !== "text" || typeof block.text !== "string" || !block.text) return;
+    const snapshot = { toolCallId: id, toolName: raw.toolName, text: block.text };
+    let bytes = jsonByteSize(snapshot, LIVE_TOOL_OUTPUT_MAX_BYTES);
+    if (bytes > LIVE_TOOL_OUTPUT_MAX_BYTES) {
+      // Keep the usual tail length where possible, then account for JSON escaping.
+      snapshot.text = utf8Suffix(snapshot.text, LIVE_TOOL_OUTPUT_MAX_BYTES - 1024);
+      bytes = jsonByteSize(snapshot, LIVE_TOOL_OUTPUT_MAX_BYTES);
+      if (bytes > LIVE_TOOL_OUTPUT_MAX_BYTES) {
+        snapshot.text = utf8Suffix(snapshot.text, Math.floor((LIVE_TOOL_OUTPUT_MAX_BYTES - 1024) / 6));
+        bytes = jsonByteSize(snapshot, LIVE_TOOL_OUTPUT_MAX_BYTES);
+      }
+    }
+    this.removeToolOutput(id);
+    // Bound the *whole* serialized snapshot, not just the size of each string.
+    if (bytes > LIVE_TOOL_OUTPUT_MAX_BYTES) return;
+    this.ordinaryToolOutputs.set(id, { ...snapshot, bytes });
+    this.ordinaryToolOutputBytes += bytes;
+    while (this.ordinaryToolOutputBytes > LIVE_TOOL_OUTPUT_MAX_BYTES || this.ordinaryToolOutputs.size > 64) {
+      this.removeToolOutput(this.ordinaryToolOutputs.keys().next().value!);
+    }
+  }
+
+  private removeToolOutput(id: string): void {
+    const previous = this.ordinaryToolOutputs.get(id);
+    if (!previous) return;
+    this.ordinaryToolOutputBytes -= previous.bytes;
+    this.ordinaryToolOutputs.delete(id);
+  }
+
+  private clearToolOutputs(): void {
+    this.ordinaryToolOutputs.clear();
+    this.ordinaryToolOutputBytes = 0;
+  }
+
   private emitPiEvent(event: JsonObject): void {
+    const projected = projectToolUpdate(event);
+    this.trackToolOutput(event, projected);
     const update =
       event.type === "message_update"
         ? "message"
@@ -694,7 +760,7 @@ export class OmpRpcSession implements SessionRuntime {
           ? `tool:${String(event.toolCallId ?? "")}`
           : undefined;
     this.piEvents.push(this.sessionId, update, {
-      event: projectToolUpdate(event),
+      event: projected,
       epoch: this.eventEpoch,
       historyGeneration: this.historyGeneration,
       live: this.liveMessage
@@ -1275,7 +1341,6 @@ export class OmpRpcSession implements SessionRuntime {
     } catch {
       /* stats 是增强信息 */
     }
-    const head = this.getHead();
     this.assertEventEpoch(epoch);
     if (statsEpoch !== this.eventEpoch || historyGeneration !== this.historyGeneration || modelsGeneration !== this.modelsGeneration || activityGeneration !== this.activityGeneration) return this.buildState();
     this.pendingAsyncWork = Boolean(native.hasPendingAsyncWork);
@@ -1292,6 +1357,7 @@ export class OmpRpcSession implements SessionRuntime {
       } catch { /* The native streaming state remains authoritative if the optional channel is unavailable. */ }
     }
     this.assertEventEpoch(epoch);
+    if (statsEpoch !== this.eventEpoch || historyGeneration !== this.historyGeneration || modelsGeneration !== this.modelsGeneration || activityGeneration !== this.activityGeneration) return this.buildState();
     const { submittedMessages, ...queue } = this.getNativeQueueSnapshot();
     return {
       sessionId: this.sessionId,
@@ -1377,7 +1443,12 @@ export class OmpRpcSession implements SessionRuntime {
       retry: this.retryShadow,
       compaction: { ...this.compactionShadow, canAbort: false, streamingSupported: false, autoEnabled: typeof native.autoCompactionEnabled === "boolean" ? native.autoCompactionEnabled : null },
       contextMaintenance: this.contextMaintenance,
-      head,
+      head: this.getHead(),
+      redoPlan: sessionRedoPlanFromBranch(this.entries, this.sessionId, this.leafId),
+      liveToolOutput: {
+        position: { epoch: this.eventEpoch, sequence: this.eventSequence },
+        entries: [...this.ordinaryToolOutputs.values()].map(({ toolCallId, toolName, text }) => ({ toolCallId, toolName, text })),
+      } satisfies LiveToolOutputSnapshot,
       // OMP 扩展：子代理注册表快照 + todo 阶段（前端子代理面板重连恢复用）
       subagents: this.getSubagentsSnapshot(),
       todoPhases: Array.isArray(native.todoPhases) ? native.todoPhases : [],
@@ -1632,8 +1703,8 @@ export class OmpRpcSession implements SessionRuntime {
   /** Close admission before any await; Stop deliberately remains outside this gate. */
   private async withSubmissionAdmission(action: () => Promise<void>): Promise<void> {
     const epoch = this.eventEpoch;
-    if (this.relocationEpoch === epoch) {
-      throw Object.assign(new Error("The native session is switching worktrees; your message was not submitted"), { code: "SESSION_BUSY" });
+    if (this.relocationEpoch === epoch || this.redoNavigationEpoch === epoch) {
+      throw Object.assign(new Error("The native session is changing history or worktree; your message was not submitted"), { code: "SESSION_BUSY" });
     }
     this.submissionFlights.set(epoch, (this.submissionFlights.get(epoch) ?? 0) + 1);
     try { await action(); } finally {
@@ -1933,6 +2004,7 @@ export class OmpRpcSession implements SessionRuntime {
 
   private resetHistoryProjection(): void {
     this.historyGeneration += 1;
+    this.clearToolOutputs();
     this.submittedQueueMessages.clear();
     this.messageStream.clear();
     this.entries = [];
@@ -1946,6 +2018,7 @@ export class OmpRpcSession implements SessionRuntime {
 
   private resetHistory(): void {
     this.historyGeneration += 1;
+    this.clearToolOutputs();
     this.thinkingLevelsGeneration += 1;
     this.abortIntentEpoch = undefined;
     this.abortInFlight = undefined;
@@ -2278,7 +2351,21 @@ export class OmpRpcSession implements SessionRuntime {
 
   async navigateTree(
     entryId: string,
-    options: { summarize?: boolean; customInstructions?: string } = {},
+    options: Omit<PiCommandParams["navigateTree"], "entryId"> = {},
+  ): Promise<JsonObject> {
+    if (!options.trackRedo && !options.redoPlanId) return this.navigateTreeOnce(entryId, options);
+    const epoch = this.eventEpoch;
+    if (this.redoNavigationEpoch === epoch || this.relocationEpoch === epoch || this.submissionFlights.has(epoch)) {
+      throw Object.assign(new Error("Session is busy; nothing was moved"), { code: "SESSION_BUSY" });
+    }
+    this.redoNavigationEpoch = epoch;
+    try { return await this.navigateTreeOnce(entryId, options); }
+    finally { if (this.redoNavigationEpoch === epoch) this.redoNavigationEpoch = undefined; }
+  }
+
+  private async navigateTreeOnce(
+    entryId: string,
+    options: Omit<PiCommandParams["navigateTree"], "entryId">,
   ): Promise<JsonObject> {
     const sourceSessionId = this.sessionId;
     const value = await this.client.requestRuntime("navigateTree", { entryId, ...options }, 300_000);
@@ -2294,13 +2381,13 @@ export class OmpRpcSession implements SessionRuntime {
     // not replace the runtime's model scope, queues, subagents, or extension UI.
     this.resetHistoryProjection();
     this.leafId = result.leafId;
-    let projectionError: string | undefined;
+    let projectionError = typeof result.projectionError === "string" ? result.projectionError : undefined;
     try {
       await this.syncEntriesNow();
       await this.refreshQueue();
     } catch (error) {
       this.reportEntrySyncError(error);
-      projectionError = error instanceof Error ? error.message : String(error);
+      projectionError = [projectionError, error instanceof Error ? error.message : String(error)].filter(Boolean).join("; ");
     }
     this.emitHeadIfChanged();
     return { ...result, sourceSessionId, targetSessionId: this.sessionId,
@@ -2590,6 +2677,7 @@ export class OmpRpcSession implements SessionRuntime {
 
   async dispose(): Promise<void> {
     this.closed = true;
+    this.clearToolOutputs();
     clearTimeout(this.syncTimer);
     this.extensionUi.cancelAll("runtime_disposed");
     this.piEvents.flush();

@@ -171,6 +171,8 @@ export type NavigateTreeParams = {
   entryId: string
   summarize?: boolean
   customInstructions?: string
+  trackRedo?: boolean
+  redoPlanId?: string
 }
 
 export type SetLabelParams = {

@@ -26,6 +26,14 @@ class PiSessionInfoStore {
     return sessions
   }
 
+  remove(sessionId: string): void {
+    this.all = this.all.filter(item => item.id !== sessionId)
+    for (const [cwd, sessions] of this.byCwd) {
+      if (sessions.some(item => item.id === sessionId)) this.byCwd.set(cwd, sessions.filter(item => item.id !== sessionId))
+    }
+    this.notify()
+  }
+
   getAll(): readonly SessionInfo[] {
     return this.all
   }

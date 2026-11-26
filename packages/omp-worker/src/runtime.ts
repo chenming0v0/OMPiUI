@@ -85,13 +85,7 @@ export interface SessionRuntime {
   /** Official native GoalRuntime lifecycle; no UI-owned continuation or goal state. */
   manageGoal(params: PiCommandParams["goal"]): Promise<JsonObject>
 
-  navigateTree(
-    entryId: string,
-    options?: {
-      summarize?: boolean
-      customInstructions?: string
-    },
-  ): Promise<JsonObject>
+  navigateTree(entryId: string, options?: Omit<PiCommandParams["navigateTree"], "entryId">): Promise<JsonObject>
   setLabel(entryId: string, label?: string): Promise<void>
 
   sendCustomMessage(
@@ -133,7 +127,7 @@ export interface CatalogProvider {
   previewSessionById(sessionId: string, params?: BranchSyncRequest & { cursor?: string; limit?: number; maxBytes?: number }): Promise<JsonValue>
   readSession(sessionId: string, query: string, params?: JsonObject): Promise<JsonValue>
   copySession(sessionId: string): Promise<JsonObject>
-  deleteSession(cwd: string, sessionFile: string): Promise<void>
+  deleteSession(cwd: string, sessionFile: string): Promise<JsonObject | null>
   listModels(): Promise<JsonValue>
   getSettings(cwd: string): JsonValue | Promise<JsonValue>
   patchSettings(cwd: string, patch: JsonObject): Promise<JsonValue>

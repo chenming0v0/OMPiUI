@@ -16,7 +16,7 @@ import { useInlineAskRequests } from '../chat/InlineAskRequests'
 import { InlineAskRequestsContext } from '../chat/nativeAskContext'
 import { ExtensionUiSurface } from '../chat/ExtensionUiSurface'
 import { OutlineIndex } from '../../components/OutlineIndex'
-import type { NativeTreeNode } from '../../components/sessionTreeGraph'
+import type { SessionRedoPlan } from '@ompiui/protocol'
 import { buildOutlineSourceEntries } from '../../components/outlineIndexModel'
 import { selectPiTimelineItemsCached } from '../../omp/selectors/timelineCache.js'
 import type { HistoryPrefetchMode } from '../../omp/historyPagePrefetch'
@@ -50,7 +50,6 @@ import {
   discardQueuedMessage,
   sendQueuedMessage,
   waitHostCommand,
-  getPiTree,
 } from '../../omp/transport/index.js'
 import { layoutStore } from '../../store/layoutStore'
 import { notificationStore } from '../../store/notificationStore'
@@ -67,7 +66,6 @@ import { SessionStopCoordinator } from './sessionStopCoordinator'
 import { acceptComposerDraft, composerDraftKey, getComposerDraft, moveComposerDraft, updateComposerDraft, type ComposerDraft } from '../chat/input/composerDraftStore'
 import type { ComposerQueueEntry } from '../chat/input/QueuedUserMessageQueue'
 import { piBranchStore, piSessionStateStore } from '../../omp/state/index.js'
-import { captureRedoCheckpoints, commitRedoPlan, redoPlanStore, type RedoPlan } from '../../omp/redoPlanStore'
 import { extensionUiStore, getEditorTextSource } from '../../omp/extensionUiStore'
 import { paneControllerStore } from '../../store/paneControllerStore'
 import { trackPiSession } from '../../omp/ompSessionIndex'
@@ -815,72 +813,8 @@ export function PiChatPane({
   // entries stay in the tree as children of the undo point — that is
   // what makes redo possible.
   //
-  // Rigor notes:
-  // - The undo point can have MULTIPLE child branches (earlier forks,
-  //   or a new send after the undo). Redo must follow the branch the
-  //   cut entries actually came from, so we capture their entry ids at
-  //   undo time instead of guessing a child at redo time.
-  // - Single redo restores ONE user turn at a time (navigate to that
-  //   turn's tail entry on the original branch); Redo All jumps to the
-  //   original branch tip. pi has no redo command — restoring the
-  //   branch via navigateTree is the symmetric operation.
-  // - canRedo tracks "the leaf is still on the undo path". Sending a
-  //   new message or navigating elsewhere moves the leaf off it and the
-  //   redo pointer lapses; navigating back to the undo point revives it
-  //   (the cut branch is still a child there).
-  // ============================================
-  const head = (state?.head ?? null) as { epoch?: string; leafId?: string } | null
-  const headLeafId = head?.leafId ?? null
-  // redo 计划走共享 store：会话树面板里的导航也会产生/清掉计划
-  const revertState = useSyncExternalStore(
-    redoPlanStore.subscribe,
-    () => (sessionId ? redoPlanStore.getPlan(sessionId) : null),
-    () => null,
-  )
-  const redoRestoreAttemptedRef = useRef<string | null>(null)
-
-  const updateRevertState = useCallback(
-    (plan: RedoPlan | null) => {
-      if (sessionId) redoPlanStore.setPlan(sessionId, plan)
-    },
-    [sessionId],
-  )
-
-  // Reset the redo pointer whenever the session changes
-  useEffect(() => {
-    redoRestoreAttemptedRef.current = null
-  }, [sessionId])
-
-  // A page refresh drops React state but not the native tree. Validate the
-  // persisted redo plan against this session's runtime head once available.
-  useEffect(() => {
-    if (!sessionId || !state || !state.head || typeof state.head !== 'object' || Array.isArray(state.head)) return
-    if (redoRestoreAttemptedRef.current === sessionId) return
-    redoRestoreAttemptedRef.current = sessionId
-    const plan = redoPlanStore.getPlan(sessionId)
-    if (!plan) return
-    const positions = new Set<string | null>([plan.undoLeafId, ...plan.checkpoints.slice(0, plan.restored)])
-    if (plan.epoch !== head?.epoch || !positions.has(headLeafId)) redoPlanStore.setPlan(sessionId, null)
-  }, [sessionId, state, headLeafId, head?.epoch])
-
-  // Positions the leaf may legitimately sit at while the plan is alive:
-  // the undo point plus the already-restored checkpoints.
-  const revertPositions = useMemo(() => {
-    if (!revertState) return null
-    return new Set<string | null>([revertState.undoLeafId, ...revertState.checkpoints.slice(0, revertState.restored)])
-  }, [revertState])
-
-  // Leaf left the undo path (new send / tree navigation) -> the plan lapses
-  useEffect(() => {
-    if (!revertState || !revertPositions) return
-    if (!state || !state.head || typeof state.head !== 'object' || Array.isArray(state.head)) return
-    if (revertPositions.has(headLeafId)) return
-    const checkpoint = revertState.checkpoints.indexOf(headLeafId ?? '')
-    if (checkpoint >= revertState.restored) {
-      const restored = checkpoint + 1
-      updateRevertState(restored < revertState.checkpoints.length ? { ...revertState, restored } : null)
-    } else updateRevertState(null)
-  }, [headLeafId, revertState, revertPositions, state, updateRevertState])
+  // Redo follows the original native branch, not an inferred child of the undo point.
+  const revertState = state?.redoPlan as SessionRedoPlan | null | undefined
 
   const navigationPendingRef = useRef(false)
   const [navigationPending, setNavigationPending] = useState(false)
@@ -892,8 +826,7 @@ export function PiChatPane({
     !sessionActive &&
     !navigationPending &&
     revertState &&
-    revertState.restored < revertState.checkpoints.length &&
-    revertPositions?.has(headLeafId),
+    revertState.restored < revertState.checkpoints.length,
   )
   const revertSteps = revertState ? revertState.checkpoints.length - revertState.restored : 0
 
@@ -987,13 +920,9 @@ export function PiChatPane({
       navigationPendingRef.current = true
       setNavigationPending(true)
       try {
-        const tree = await getPiTree(sessionId)
-        const checkpoints = captureRedoCheckpoints(sessionId, entryId, tree as unknown as NativeTreeNode[])
-        const result = await navigatePiTree(sessionId, { entryId })
-        if (result.cancelled || result.aborted || result.noOp) return
-        await commitRedoPlan(sessionId, checkpoints)
+        await navigatePiTree(sessionId, { entryId, trackRedo: true })
       } catch (error) {
-        uiErrorHandler('undo message', error)
+        uiErrorHandler("undo message", error)
       } finally {
         navigationPendingRef.current = false
         setNavigationPending(false)
@@ -1002,43 +931,23 @@ export function PiChatPane({
     [sessionId, sessionActive],
   )
 
-  const handleRedoStep = useCallback(async () => {
+  const handleRedo = useCallback(async (all: boolean) => {
     if (!sessionId || !revertState || sessionActive || navigationPendingRef.current) return
-    const target = revertState.checkpoints[revertState.restored]
+    const target = all ? revertState.checkpoints.at(-1) : revertState.checkpoints[revertState.restored]
     if (!target) return
     navigationPendingRef.current = true
     setNavigationPending(true)
     try {
-      const result = await navigatePiTree(sessionId, { entryId: target })
-      if (result.cancelled || result.aborted) return
-      const restored = revertState.restored + 1
-      if (restored >= revertState.checkpoints.length) updateRevertState(null)
-      else updateRevertState({ ...revertState, restored })
+      await navigatePiTree(sessionId, { entryId: target, redoPlanId: revertState.id })
     } catch (error) {
-      uiErrorHandler('redo message', error)
+      uiErrorHandler("redo message", error)
     } finally {
       navigationPendingRef.current = false
       setNavigationPending(false)
     }
-  }, [sessionId, revertState, sessionActive, updateRevertState])
-
-  const handleRedoAll = useCallback(async () => {
-    if (!sessionId || !revertState || sessionActive || navigationPendingRef.current) return
-    const target = revertState.checkpoints[revertState.checkpoints.length - 1]
-    if (!target) return
-    navigationPendingRef.current = true
-    setNavigationPending(true)
-    try {
-      const result = await navigatePiTree(sessionId, { entryId: target })
-      if (result.cancelled || result.aborted) return
-      updateRevertState(null)
-    } catch (error) {
-      uiErrorHandler('redo message', error)
-    } finally {
-      navigationPendingRef.current = false
-      setNavigationPending(false)
-    }
-  }, [sessionId, revertState, sessionActive, updateRevertState])
+  }, [sessionId, revertState, sessionActive])
+  const handleRedoStep = useCallback(() => handleRedo(false), [handleRedo])
+  const handleRedoAll = useCallback(() => handleRedo(true), [handleRedo])
 
   const refreshTimerRefs = useRef(new Set<number>())
   const scheduleDelayedRefresh = useCallback((sid: string) => {
