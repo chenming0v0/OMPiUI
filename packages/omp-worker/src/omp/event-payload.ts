@@ -1,5 +1,6 @@
 import {
   isJsonObject,
+  LIVE_TOOL_OUTPUT_MAX_BYTES,
   utf8Prefix,
   utf8Suffix,
   type JsonObject,
@@ -36,9 +37,9 @@ export function projectToolUpdate(event: JsonObject): JsonObject {
       );
       let text = "";
       for (let index = blocks.length - 1; index >= 0; index--) {
-        text = utf8Suffix(String(blocks[index]!.text), 256 * 1024) + text;
-        text = utf8Suffix(text, 256 * 1024);
-        if (Buffer.byteLength(text) >= 256 * 1024) break;
+        text = utf8Suffix(String(blocks[index]!.text), LIVE_TOOL_OUTPUT_MAX_BYTES) + text;
+        text = utf8Suffix(text, LIVE_TOOL_OUTPUT_MAX_BYTES);
+        if (Buffer.byteLength(text) >= LIVE_TOOL_OUTPUT_MAX_BYTES) break;
       }
       projected.partialResult = { content: [{ type: "text", text }] };
     } else projected.partialResult = { content };

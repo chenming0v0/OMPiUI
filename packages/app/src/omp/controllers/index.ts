@@ -26,6 +26,7 @@ import { imageInputToAttachment } from '../../features/pi-chat/attachmentToImage
 import { notificationStore } from '../../store/notificationStore'
 import { commandFeedbackStore } from '../commandFeedbackStore'
 import { loadCachedPiBranch, removeCachedPiBranch } from '../branchCache'
+import { liveToolOutputStore } from '../liveToolOutput'
 import i18n from '../../i18n'
 
 /**
@@ -340,13 +341,15 @@ async function loadPiSessionDataOnce(sessionId: string, signal?: AbortSignal): P
       true,
     )
     if (serverStore.getActiveServerGeneration() !== serverGeneration) return
-    piSessionStateStore.setStateIfCurrent(sessionId, preview.state, requestVersion)
+    const stateCurrent = piSessionStateStore.isRequestCurrent(sessionId, requestVersion)
+    const { liveToolOutput, ...state } = preview.state ?? {}
+    piSessionStateStore.setStateIfCurrent(sessionId, state, requestVersion)
     piBranchStore.setDataIfCurrent(
       sessionId,
       mergeLatestBranchPage(piBranchStore.getData(sessionId), preview.branch),
       branchVersion,
     )
-    reconcilePiSessionSnapshot(sessionId)
+    reconcilePiSessionSnapshot(sessionId, stateCurrent ? liveToolOutput : undefined)
   } catch (error) {
     if (serverStore.getActiveServerGeneration() !== serverGeneration) return
     if (isMissingPiSession(error) && piBranchStore.isRequestCurrent(sessionId, branchVersion)) {
@@ -667,17 +670,31 @@ export async function refreshPiSessionState(sessionId: string, signal?: AbortSig
   const snapshot = await transport.getPiSessionState(sessionId, signal)
   if (serverStore.getActiveServerGeneration() !== serverGeneration) return
   const currentRequest = piSessionStateStore.isRequestCurrent(sessionId, requestVersion)
-  if (!piSessionStateStore.setStateIfCurrent(sessionId, snapshot as JsonObject, requestVersion)) return
+  const { liveToolOutput, ...state } = isJsonObject(snapshot) ? snapshot : {}
+  if (!piSessionStateStore.setStateIfCurrent(sessionId, state, requestVersion)) return
   if (!currentRequest) return
-  reconcilePiSessionSnapshot(sessionId)
+  reconcilePiSessionSnapshot(sessionId, liveToolOutput)
 }
 
-function reconcilePiSessionSnapshot(sessionId: string): void {
+function reconcilePiSessionSnapshot(sessionId: string, output?: JsonValue): void {
   const state = piSessionStateStore.getState(sessionId)
   // worker 的子代理注册表快照并入全局 store：页面刷新 / 重连后 HUD 与
   // TaskRenderer 内联视图据此恢复（运行中的随后由 progress 帧继续推进）
   if (isJsonObject(state)) {
     if (state.isStreaming === true && !state.toolInterruption) piBranchStore.beginToolExecutions(sessionId)
+    if (isJsonObject(output) && isJsonObject(output.position) && typeof output.position.epoch === 'string' &&
+        typeof output.position.sequence === 'number' && Array.isArray(output.entries)) {
+      const entries = output.entries.filter(isJsonObject).flatMap(item =>
+        typeof item.toolCallId === 'string' && typeof item.toolName === 'string' && typeof item.text === 'string'
+          ? [{ toolCallId: item.toolCallId, toolName: item.toolName, text: item.text }]
+          : [],
+      )
+      const branch = piBranchStore.getData(sessionId)
+      const completed = new Set(branch?.items.flatMap(item => item.type === 'message' && item.message.role === 'toolResult' ? [item.message.toolCallId] : []))
+      liveToolOutputStore.reconcile(sessionId, { position: { epoch: output.position.epoch, sequence: output.position.sequence }, entries }, entry =>
+        !completed.has(entry.toolCallId) && piBranchStore.patchToolExecution(sessionId, entry.toolCallId, { isRunning: true }),
+      )
+    }
     const settled =
       (typeof state.isSettled === 'boolean' ? state.isSettled : state.isIdle === true) &&
       !state.isStreaming &&

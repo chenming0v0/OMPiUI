@@ -106,6 +106,26 @@ it('branch pages expose verified stable native aliases after live assistant pers
   assert.equal(persisted.items[0]?.id, 'native-assistant', 'official ID is never replaced by display ID')
 })
 
+it('returns the latest ordinary tool output in state and drops it at terminal boundaries', async t => {
+  const { session, frame } = await sessionFixture(t)
+  const update = (toolCallId: string, text: string, pty = false) => frame({
+    type: 'tool_execution_update', toolCallId, toolName: 'bash', args: { pty },
+    partialResult: { content: [{ type: 'text', text }] },
+  })
+  frame({ type: 'agent_start' })
+  update('call', 'building')
+  update('call', 'building\nlinking')
+  update('pty', 'terminal stream', true)
+  const snapshot = async () => (await session.getState()).liveToolOutput as JsonObject
+  assert.deepEqual((await snapshot()).entries, [{ toolCallId: 'call', toolName: 'bash', text: 'building\nlinking' }])
+  frame({ type: 'tool_execution_end', toolCallId: 'call', toolName: 'bash' })
+  assert.deepEqual((await snapshot()).entries, [])
+
+  update('later', 'another tool is running')
+  frame({ type: 'session_settled' })
+  assert.deepEqual((await snapshot()).entries, [])
+})
+
 const image = (data: string): ImageInput => ({ type: "image", data, mimeType: "image/png" })
 
 async function queuedSessionFixture(t: TestContext, kind: "steering" | "followUp") {

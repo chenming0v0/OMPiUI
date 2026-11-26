@@ -26,6 +26,13 @@ export type LiveMessage = {
   complete?: boolean;
 };
 
+export const LIVE_TOOL_OUTPUT_MAX_BYTES = 256 * 1024;
+
+export type LiveToolOutputSnapshot = {
+  position: EventCursor;
+  entries: { toolCallId: string; toolName: string; text: string }[];
+};
+
 export type BranchCheckpoint = {
   position: EventCursor;
   liveMessageOmitted?: boolean;

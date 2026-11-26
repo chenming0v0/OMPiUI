@@ -1212,6 +1212,7 @@ class PiEventStream {
         }
         if (event.message.role === 'toolResult') {
           piBranchStore.patchToolExecution(sessionId, event.message.toolCallId, { isRunning: false, result: event.message })
+          piSessionStateStore.invalidateRequests(sessionId)
           liveToolOutputStore.delete(event.message.toolCallId)
           toolInteractionStore.delete(event.message.toolCallId, sessionId)
         }
@@ -1233,6 +1234,7 @@ class PiEventStream {
         break
       case 'tool_execution_end':
         if ('toolCallId' in event && typeof event.toolCallId === 'string') {
+          piSessionStateStore.invalidateRequests(sessionId)
           liveToolOutputStore.delete(event.toolCallId)
           toolInteractionStore.delete(event.toolCallId, sessionId)
           const timestamp = serverStore.getActiveCalibratedNow() ?? Date.now()
@@ -1269,7 +1271,7 @@ class PiEventStream {
             toolInteractionStore.set(event.toolCallId, sessionId, partial.details.toolInteraction)
           }
           const text = extractToolExecutionText(partial)
-          if (text) liveToolOutputStore.set(event.toolCallId, sessionId, text)
+          if (text) liveToolOutputStore.set(event.toolCallId, sessionId, text, meta)
         }
         // 输出进度由事件直接更新；状态在工具结束等边界刷新，避免每帧再拉完整快照。
         break

@@ -5,11 +5,12 @@ import type {
   ImageInput,
   JsonObject,
   JsonValue,
+  LiveToolOutputSnapshot,
   PiCommandParams,
   RegistrySnapshot,
   SessionActivityStatus,
 } from "@ompiui/protocol";
-import { isJsonObject, utf8Prefix } from "@ompiui/protocol";
+import { isJsonObject, jsonByteSize, LIVE_TOOL_OUTPUT_MAX_BYTES, utf8Prefix, utf8Suffix } from "@ompiui/protocol";
 import {
   entriesPageFromEntries,
   imageAttachmentFromEntry,
@@ -688,7 +689,70 @@ export class OmpRpcSession implements SessionRuntime {
     }
   }
 
+  private readonly ordinaryToolOutputs = new Map<string, LiveToolOutputSnapshot["entries"][number] & { bytes: number }>();
+  private ordinaryToolOutputBytes = 0;
+
+  private trackToolOutput(raw: JsonObject, projected: JsonObject): void {
+    const message = isJsonObject(raw.message) ? raw.message : undefined;
+    const id = typeof raw.toolCallId === "string" ? raw.toolCallId : message?.toolCallId;
+    if (raw.type === "agent_start" || raw.type === "agent_settled") {
+      this.clearToolOutputs();
+      return;
+    }
+    if (typeof id !== "string") return;
+    if (raw.type === "tool_execution_start" || raw.type === "tool_execution_end" ||
+        (raw.type === "message_end" && message?.role === "toolResult")) {
+      this.removeToolOutput(id);
+      return;
+    }
+    if (raw.type !== "tool_execution_update" || typeof raw.toolName !== "string") return;
+    const partial = isJsonObject(raw.partialResult) ? raw.partialResult : undefined;
+    const args = isJsonObject(raw.args) ? raw.args : undefined;
+    // Interactive terminal data already has its own snapshot and replay stream.
+    if ((raw.toolName === "bash" && args?.pty === true) ||
+        (isJsonObject(partial?.details) && partial.details.toolInteraction)) {
+      this.removeToolOutput(id);
+      return;
+    }
+    const content = isJsonObject(projected.partialResult) ? projected.partialResult.content : undefined;
+    const block = Array.isArray(content) ? content[0] : undefined;
+    if (!isJsonObject(block) || block.type !== "text" || typeof block.text !== "string" || !block.text) return;
+    const snapshot = { toolCallId: id, toolName: raw.toolName, text: block.text };
+    let bytes = jsonByteSize(snapshot, LIVE_TOOL_OUTPUT_MAX_BYTES);
+    if (bytes > LIVE_TOOL_OUTPUT_MAX_BYTES) {
+      // Keep the usual tail length where possible, then account for JSON escaping.
+      snapshot.text = utf8Suffix(snapshot.text, LIVE_TOOL_OUTPUT_MAX_BYTES - 1024);
+      bytes = jsonByteSize(snapshot, LIVE_TOOL_OUTPUT_MAX_BYTES);
+      if (bytes > LIVE_TOOL_OUTPUT_MAX_BYTES) {
+        snapshot.text = utf8Suffix(snapshot.text, Math.floor((LIVE_TOOL_OUTPUT_MAX_BYTES - 1024) / 6));
+        bytes = jsonByteSize(snapshot, LIVE_TOOL_OUTPUT_MAX_BYTES);
+      }
+    }
+    this.removeToolOutput(id);
+    // Bound the *whole* serialized snapshot, not just the size of each string.
+    if (bytes > LIVE_TOOL_OUTPUT_MAX_BYTES) return;
+    this.ordinaryToolOutputs.set(id, { ...snapshot, bytes });
+    this.ordinaryToolOutputBytes += bytes;
+    while (this.ordinaryToolOutputBytes > LIVE_TOOL_OUTPUT_MAX_BYTES || this.ordinaryToolOutputs.size > 64) {
+      this.removeToolOutput(this.ordinaryToolOutputs.keys().next().value!);
+    }
+  }
+
+  private removeToolOutput(id: string): void {
+    const previous = this.ordinaryToolOutputs.get(id);
+    if (!previous) return;
+    this.ordinaryToolOutputBytes -= previous.bytes;
+    this.ordinaryToolOutputs.delete(id);
+  }
+
+  private clearToolOutputs(): void {
+    this.ordinaryToolOutputs.clear();
+    this.ordinaryToolOutputBytes = 0;
+  }
+
   private emitPiEvent(event: JsonObject): void {
+    const projected = projectToolUpdate(event);
+    this.trackToolOutput(event, projected);
     const update =
       event.type === "message_update"
         ? "message"
@@ -696,7 +760,7 @@ export class OmpRpcSession implements SessionRuntime {
           ? `tool:${String(event.toolCallId ?? "")}`
           : undefined;
     this.piEvents.push(this.sessionId, update, {
-      event: projectToolUpdate(event),
+      event: projected,
       epoch: this.eventEpoch,
       historyGeneration: this.historyGeneration,
       live: this.liveMessage
@@ -1381,6 +1445,10 @@ export class OmpRpcSession implements SessionRuntime {
       contextMaintenance: this.contextMaintenance,
       head: this.getHead(),
       redoPlan: sessionRedoPlanFromBranch(this.entries, this.sessionId, this.leafId),
+      liveToolOutput: {
+        position: { epoch: this.eventEpoch, sequence: this.eventSequence },
+        entries: [...this.ordinaryToolOutputs.values()].map(({ toolCallId, toolName, text }) => ({ toolCallId, toolName, text })),
+      } satisfies LiveToolOutputSnapshot,
       // OMP 扩展：子代理注册表快照 + todo 阶段（前端子代理面板重连恢复用）
       subagents: this.getSubagentsSnapshot(),
       todoPhases: Array.isArray(native.todoPhases) ? native.todoPhases : [],
@@ -1936,6 +2004,7 @@ export class OmpRpcSession implements SessionRuntime {
 
   private resetHistoryProjection(): void {
     this.historyGeneration += 1;
+    this.clearToolOutputs();
     this.submittedQueueMessages.clear();
     this.messageStream.clear();
     this.entries = [];
@@ -1949,6 +2018,7 @@ export class OmpRpcSession implements SessionRuntime {
 
   private resetHistory(): void {
     this.historyGeneration += 1;
+    this.clearToolOutputs();
     this.thinkingLevelsGeneration += 1;
     this.abortIntentEpoch = undefined;
     this.abortInFlight = undefined;
@@ -2607,6 +2677,7 @@ export class OmpRpcSession implements SessionRuntime {
 
   async dispose(): Promise<void> {
     this.closed = true;
+    this.clearToolOutputs();
     clearTimeout(this.syncTimer);
     this.extensionUi.cancelAll("runtime_disposed");
     this.piEvents.flush();

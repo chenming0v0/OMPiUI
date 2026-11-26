@@ -5,6 +5,7 @@ import * as transport from '../transport/index.js'
 import { loadPiSessionTools, loadPiSessionRegistry, loadPiSessionData, refreshPiSessionState, refreshPiBranch, returnToLatestPiBranch, forkPiSession, navigatePiTree } from './index.js'
 import { piSessionStateStore, piBranchStore } from '../state/index.js'
 import { ompSubagentStore } from '../ompSubagentStore'
+import { liveToolOutputStore } from '../liveToolOutput'
 import { composerDraftKey, getComposerDraft, updateComposerDraft } from '../../features/chat/input/composerDraftStore'
 import { clearSessionEditorDraft } from '../sessionEditorDraftStore'
 import { serverStore } from '../../store/serverStore'
@@ -21,6 +22,7 @@ describe('session state response ordering', () => {
     vi.restoreAllMocks()
     piSessionStateStore.clearAll()
     piBranchStore.clear('session-a')
+    liveToolOutputStore.clearAll()
     ompSubagentStore.clearAll()
   })
 
@@ -36,6 +38,31 @@ describe('session state response ordering', () => {
     expect(read).toHaveBeenCalledTimes(2)
     expect(piBranchStore.getData('session-a')).toBeNull()
     expect(piBranchStore.getError('session-a')).toMatchObject({ code: 'SESSION_NOT_FOUND' })
+  })
+
+  it('restores ordinary tool output on initial preview and resync without overwriting a newer update', async () => {
+    const branch: PiBranchPage = { head: { epoch: 'disk', revision: 1, sdkVersion: 'test', header: null, leafId: null, entryCount: 0 }, items: [], hasMore: false }
+    const position = { epoch: 'runtime', sequence: 5 }
+    const liveToolOutput = { position, entries: [{ toolCallId: 'call', toolName: 'bash', text: 'building' }] }
+    const state = { isStreaming: true, liveToolOutput }
+    vi.spyOn(transport, 'previewPiSession').mockResolvedValue({ branch, state })
+    const getState = vi.spyOn(transport, 'getPiSessionState').mockResolvedValue(state)
+    await loadPiSessionData('session-a')
+    expect(liveToolOutputStore.get('call')).toBe('building')
+    expect(piBranchStore.getData('session-a')?.client?.toolExecutions?.call?.isRunning).toBe(true)
+
+    liveToolOutputStore.clearSession('session-a')
+    await refreshPiSessionState('session-a')
+    expect(liveToolOutputStore.get('call')).toBe('building')
+    liveToolOutputStore.set('call', 'session-a', 'building\nlinking', { ...position, sequence: 6 })
+    await refreshPiSessionState('session-a')
+    expect(liveToolOutputStore.get('call')).toBe('building\nlinking')
+
+    piBranchStore.patchToolExecution('session-a', 'call', { isRunning: false, completedAt: 100 })
+    liveToolOutputStore.delete('call')
+    getState.mockResolvedValueOnce(state)
+    await refreshPiSessionState('session-a')
+    expect(liveToolOutputStore.get('call')).toBeUndefined()
   })
 
   it('reads fresh tools after registry changes even when the general registry cache is warm', async () => {
