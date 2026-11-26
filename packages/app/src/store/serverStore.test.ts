@@ -132,6 +132,35 @@ describe('serverStore local runtime URL', () => {
     expect(serverStore.getActiveBaseUrl()).toBe('http://127.0.0.1:58231')
   })
 
+  it('keeps the latest user selection when a native startup finishes later', async () => {
+    const { serverStore } = await import('./serverStore')
+    const { startDesktopService, applyDesktopServiceStart } = await import('../services/desktopService')
+    const pending = createDeferred<{ started: boolean; startedByUs: boolean; url: string; token: string }>()
+    const entered = createDeferred<void>()
+    const start = { started: true, startedByUs: true, url: 'http://127.0.0.1:58231', token: 'local-token' }
+    const remote = serverStore.addServer({ name: 'Remote', url: 'https://remote.test', token: 'remote-token' })
+    const native = await import('@tauri-apps/api/core')
+    const invoke = vi.spyOn(native, 'invoke').mockImplementation(async command => {
+      if (command === 'start_ompiui_service') {
+        entered.resolve()
+        return await pending.promise as never
+      }
+      return { running: true, startedByUs: true, environment: {} } as never
+    })
+    try {
+      const task = startDesktopService()
+      await entered.promise
+      serverStore.setActiveServer(remote.id)
+      pending.resolve(start)
+      await task
+      applyDesktopServiceStart(start) // same path as the tray's broadcast
+      expect(serverStore.getActiveServer()).toMatchObject(remote)
+      expect(serverStore.getLocalServer()).toMatchObject({ url: start.url, token: start.token })
+    } finally {
+      invoke.mockRestore()
+    }
+  })
+
   it('preserves a remote endpoint stored in the default slot', async () => {
     const { applyLocalServerConfig, serverStore } = await import('./serverStore')
     serverStore.updateServer('local', { url: 'https://remote.test', token: 'remote-token' })
