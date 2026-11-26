@@ -18,6 +18,40 @@ export interface DshIdentity {
 }
 
 export interface DshBrowserGrant { url: string; browserGrant: string; expiresAt: number }
+export type DshWebLeaseEnd = 'hostc-closed' | 'check-failed' | 'expired'
+export const DSH_WEB_LEASE_ENDED = 'dsh.web.ended'
+
+export function isDshWebLeaseEnd(value: unknown): value is DshWebLeaseEnd {
+  return value === 'hostc-closed' || value === 'check-failed' || value === 'expired'
+}
+
+export type DshControlFailure = 'AUTH_INVALID' | 'DEVICE_REVOKED' | 'ALREADY_CONNECTED' | 'DSH_UNREACHABLE'
+
+/** Only use for control-wide errors, never errors scoped to a peer connection. */
+export function dshControlFailure(frameCode?: unknown, close?: { code: number; reason: string }): DshControlFailure {
+  const reason = close?.reason.trim().toUpperCase().replaceAll(' ', '_')
+  if (close?.code === 4004 || frameCode === 'DEVICE_REVOKED' || (close?.code === 4002 && reason === 'DEVICE_REVOKED')) return 'DEVICE_REVOKED'
+  if (close?.code === 4003 || frameCode === 'ALREADY_CONNECTED') return 'ALREADY_CONNECTED'
+  if (frameCode === 'AUTH_INVALID' || frameCode === 'TOKEN_EXPIRED' || close?.code === 4002) return 'AUTH_INVALID'
+  // 4001 and ordinary server-side shutdowns do not mean the credentials are invalid.
+  return 'DSH_UNREACHABLE'
+}
+
+export interface DshHostListItem { id: string; name: string; online?: boolean }
+
+export function selectDshHosts(items: readonly unknown[], controllerId: string, localHostId?: string | null): DshHostListItem[] {
+  const excluded = new Set([controllerId.toLowerCase(), localHostId?.toLowerCase()])
+  const hosts = new Map<string, DshHostListItem>()
+  for (const item of items) {
+    const entry = dshRecord(item)
+    if (entry?.role !== 'host') continue
+    const id = dshId(entry.deviceId)
+    if (excluded.has(id.toLowerCase())) continue
+    if (typeof entry.name !== 'string' || !entry.name.trim()) throw new Error('Invalid DSH host name')
+    hosts.set(id, { id, name: entry.name.slice(0, 128), online: typeof entry.online === 'boolean' ? entry.online : undefined })
+  }
+  return [...hosts.values()]
+}
 export interface DshDeviceTokens {
   accessToken: string
   accessTokenExpiresAt: number

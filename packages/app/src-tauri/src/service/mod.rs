@@ -225,6 +225,120 @@ impl ServiceConfig {
     }
 }
 
+fn dsh_data_root(app: &AppHandle, env_vars: &BTreeMap<String, String>) -> Result<PathBuf, String> {
+    let (recorded, pid) = background::backend_snapshot()?;
+    let environment = if pid.is_some() { &recorded } else { env_vars };
+    let configured = environment
+        .get("OMPIUI_DATA_DIR")
+        .cloned()
+        .or_else(|| env::var("OMPIUI_DATA_DIR").ok());
+    if let Some(configured) = configured
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let path = PathBuf::from(configured);
+        return if path.is_absolute() {
+            Ok(path)
+        } else {
+            Ok(resource_root(app)?.join(path))
+        };
+    }
+    if cfg!(windows) {
+        if let Some(app_data) = env::var_os("APPDATA") {
+            return Ok(PathBuf::from(app_data).join("com.ompiui.app"));
+        }
+    }
+    app.path()
+        .home_dir()
+        .map(|home| home.join(".ompiui"))
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn dsh_remote_local_host_id(
+    window: tauri::WebviewWindow,
+    env_vars: BTreeMap<String, String>,
+) -> Result<Option<String>, String> {
+    crate::dsh_remote_viewer::require_local_window(&window)?;
+    let path = dsh_data_root(window.app_handle(), &env_vars)?.join("dsh-remote/host.json");
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("Could not read the local DS Harness Remote identity".into()),
+    };
+    let value: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+    Ok(value
+        .pointer("/identity/deviceId")
+        .and_then(|id| id.as_str())
+        .map(str::to_owned))
+}
+
+#[tauri::command]
+pub async fn dsh_remote_host_manage(
+    window: tauri::WebviewWindow,
+    state: State<'_, ServiceState>,
+    env_vars: BTreeMap<String, String>,
+    action: Option<String>,
+    code: Option<String>,
+) -> Result<serde_json::Value, String> {
+    use serde_json::{json, Value};
+    crate::dsh_remote_viewer::require_local_window(&window)?;
+    let config = ServiceConfig::new(env_vars.clone());
+    let (url, token) = state
+        .connection_snapshot()?
+        .unwrap_or((config.url, config.initial_token));
+    let mut url = reqwest::Url::parse(&url).map_err(|_| "Invalid local OMPiUI endpoint")?;
+    if url.scheme() != "http"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || !matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))
+    {
+        return Ok(json!({ "error": { "code": "DSH_LOOPBACK_REQUIRED" } }));
+    }
+    // Do not send the local-only credential through a system proxy or follow redirects.
+    if url.host_str() == Some("localhost") {
+        url.set_host(Some("127.0.0.1"))
+            .map_err(|_| "Invalid local OMPiUI endpoint")?;
+    }
+    url.set_path("/api/v1/host/dsh-remote");
+    url.set_query(None);
+    url.set_fragment(None);
+    let credential = fs::read_to_string(
+        dsh_data_root(window.app_handle(), &env_vars)?.join("dsh-remote/management-token"),
+    )
+    .map_err(|_| "Could not read the local DS Harness Remote management credential")?;
+    let token = token.ok_or("Local OMPiUI authentication is unavailable")?;
+    let client = Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(if action.is_some() { 20 } else { 5 }))
+        .build()
+        .map_err(|_| "Could not contact the local OMPiUI server")?;
+    let request = match action {
+        Some(action) => client
+            .post(url)
+            .json(&json!({ "action": action, "code": code })),
+        None => client.get(url),
+    };
+    let response = request
+        .bearer_auth(token)
+        .header("x-ompiui-dsh-management", credential)
+        .send()
+        .await
+        .map_err(|_| "Could not contact the local OMPiUI server")?;
+    let ok = response.status().is_success();
+    let payload = response
+        .json::<Value>()
+        .await
+        .map_err(|_| "Invalid DS Harness Remote management response")?;
+    Ok(if ok {
+        json!({ "status": payload })
+    } else {
+        payload
+    })
+}
+
 fn read_token(env_vars: &BTreeMap<String, String>) -> Result<String, String> {
     if let Some(token) = env_vars.get("OMPIUI_AUTH_TOKEN") {
         let token = token.trim();

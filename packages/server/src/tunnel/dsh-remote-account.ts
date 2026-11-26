@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
+import { acquireDirectoryLock } from '../omp/directory-lock.ts'
 
 import {
   DSH_REMOTE_ORIGIN, createDshIdentity as newIdentity, isDshToken as isToken, isDshExpiry as isExpiry,
@@ -200,6 +201,17 @@ export class DshRemoteAccount {
     })
   }
 
+  async resetUnreadable(): Promise<void> {
+    await this.locked(async () => {
+      try { await this.load() } catch (error) {
+        if (!(error instanceof DshRemoteError) || error.code !== 'DSH_STATE_UNREADABLE') throw error
+        await rename(this.filename, `${this.filename}.invalid-${randomUUID()}`)
+        return
+      }
+      throw new DshRemoteError('DSH_RESET_NOT_REQUIRED', 409, 'Only a damaged binding can be reset')
+    })
+  }
+
   async revoke(): Promise<void> {
     await this.locked(async () => {
       const saved = await this.load()
@@ -224,7 +236,7 @@ export class DshRemoteAccount {
     if (!force && tokens.accessTokenExpiresAt > Date.now() + TOKEN_SKEW_MS) return tokens
     let current = tokens
     // A recovered rotation can return an expired access token and a valid refresh token.
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < (force ? 1 : 2); attempt++) {
       if (current.refreshTokenExpiresAt <= Date.now()) throw new DshRemoteError('AUTH_INVALID', 401)
       current = deviceTokens(await this.call('/api/v1/auth/refresh', {
         method: 'POST',
@@ -233,7 +245,7 @@ export class DshRemoteAccount {
       await this.save({ identity, tokens: current })
       if (current.accessTokenExpiresAt > Date.now()) return current
     }
-    throw new Error('DS Harness Remote did not issue a current access token')
+    throw new DshRemoteError('AUTH_INVALID', 401, 'DS Harness Remote did not issue a current access token')
   }
 
   private async call(path: string, init: RequestInit): Promise<unknown> {
@@ -247,7 +259,12 @@ export class DshRemoteAccount {
     }).catch(() => { throw new DshRemoteError('DSH_UNREACHABLE', 0, 'Could not reach DS Harness Remote') })
     if (response.status === 204) return undefined
     const body = await response.json().catch(() => null)
-    if (!response.ok) throw new DshRemoteError(typeof body?.error?.code === 'string' ? body.error.code : '', response.status)
+    if (!response.ok) {
+      const code = body?.error?.code
+      const ownAuth = path === '/api/v1/auth/refresh' || path === '/api/v1/devices/self'
+      throw new DshRemoteError(ownAuth && response.status === 401 && code !== 'DEVICE_REVOKED' ? 'AUTH_INVALID'
+        : typeof code === 'string' ? code : '', response.status)
+    }
     return body
   }
 
@@ -264,7 +281,7 @@ export class DshRemoteAccount {
         || !/^[A-Za-z0-9_-]{43}$/.test(saved.identity.privateKey)) throw new Error()
       return { identity: saved.identity, tokens: saved.tokens === null ? null : deviceTokens(saved.tokens) }
     } catch {
-      throw new Error('The DS Harness Remote device file is invalid')
+      throw new DshRemoteError('DSH_STATE_UNREADABLE', 409, 'The DS Harness Remote device file is invalid')
     }
   }
 
@@ -280,18 +297,13 @@ export class DshRemoteAccount {
 
   private async locked<T>(action: () => Promise<T>): Promise<T> {
     await mkdir(this.directory, { recursive: true, mode: 0o700 })
-    const lockPath = join(this.directory, `${this.role}.lock`)
-    const lock = await open(lockPath, 'wx', 0o600).catch(error => {
-      if (error?.code === 'EEXIST') {
+    const lock = await acquireDirectoryLock(join(this.directory, 'locks'), this.role, { timeoutMs: 0 }).catch(error => {
+      if (error?.code === 'SESSION_BUSY') {
         throw new DshRemoteError('DSH_OPERATION_IN_PROGRESS', 409, 'A DS Harness Remote authorization operation is in progress')
       }
-      throw new Error('Could not lock the DS Harness Remote device file')
+      throw error
     })
-    try {
-      return await action()
-    } finally {
-      await lock.close()
-      await rm(lockPath)
-    }
+    try { return await action() }
+    finally { lock.release() }
   }
 }

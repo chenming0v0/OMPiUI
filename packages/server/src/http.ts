@@ -37,6 +37,7 @@ import {
   pairingClientKey,
   requestHasAllowedOrigin,
   requestHasValidToken,
+  timingSafeTokenEquals,
 } from "./host/security.ts";
 import { resolveAuthToken } from "./host/auth-token.ts";
 import { PathSafetyError } from "./host/path-safety.ts";
@@ -420,6 +421,7 @@ export interface CreateAppServerOptions {
   /** Active, per-connection hosted browser origins; never used as a global share address. */
   getHostedOrigins?: () => Iterable<string>;
   hostedRemote?: DshHostedManager;
+  dshManagementToken?: string;
   /** 自建中转隧道运行状态 getter（GET /api/v1/host/tunnel）。 */
   getTunnelStatus?: () => TunnelStatus | null;
   /** 手机远程一次性配对（invite/redeem）；缺省时配对接口不可用。 */
@@ -775,7 +777,9 @@ export function createAppServer(
         const port = typeof address === 'object' && address?.port;
         const origin = req.headers.origin;
         const localHost = port && [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`].includes(req.headers.host ?? '');
-        if (!authToken || !options.hostedRemote || !localHost
+        const credential = req.headers['x-ompiui-dsh-management'];
+        if (!options.hostedRemote || !options.dshManagementToken || typeof credential !== 'string'
+          || !timingSafeTokenEquals(credential, options.dshManagementToken) || !localHost
           || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '')
           || req.headers[TUNNEL_FORWARDING_HEADER] !== undefined || req.headers.forwarded !== undefined
           || Object.keys(req.headers).some(name => name.startsWith('x-forwarded-'))

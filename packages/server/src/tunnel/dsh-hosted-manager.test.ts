@@ -3,6 +3,11 @@ import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { once } from 'node:events'
+import { WebSocket, WebSocketServer } from 'ws'
+import { DSH_CONTROL_LIMIT, DSH_RELAY_LIMIT, dshFrame, parseDshFrame } from '@ompiui/protocol/dsh-remote'
+import { DshRemoteAccount } from './dsh-remote-account.ts'
+import { runDshHost } from './dsh-host.ts'
 import {
   DshHostedManager, deriveDshHostState, dshHostFailure, isTerminalDshHostFailure,
 } from './dsh-hosted-manager.ts'
@@ -124,4 +129,153 @@ test('keeps retrying a network failure without clearing enablement', async t => 
   const status = await manager.status()
   assert.equal(status.enabled, true)
   assert.equal(status.state, 'connecting')
+})
+
+async function wireServer(onHello: (socket: WebSocket, accessToken: unknown) => void) {
+  const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+  await once(server, 'listening')
+  const address = server.address()
+  assert.ok(address && typeof address !== 'string')
+  server.on('connection', socket => socket.once('message', raw => {
+    const hello = parseDshFrame(raw.toString())
+    assert.equal(hello.type, 'hello')
+    onHello(socket, hello.payload.accessToken)
+  }))
+  return {
+    open: () => new WebSocket(`ws://127.0.0.1:${address.port}`),
+    close: async () => {
+      for (const socket of server.clients) socket.terminate()
+      await new Promise<void>(resolve => server.close(() => resolve()))
+    },
+  }
+}
+
+function helloAck(socket: WebSocket): void {
+  socket.send(JSON.stringify(dshFrame('hello.ack', {
+    protocol: 1, capabilities: ['transport.relay'], maxControlFrameBytes: DSH_CONTROL_LIMIT, maxRelayFrameBytes: DSH_RELAY_LIMIT,
+  })))
+}
+
+for (const mode of ['close 4004', 'error DEVICE_REVOKED', 'error frame then close 4004'] as const) {
+  test(`stops and persists revocation on live control ${mode}`, { timeout: 5_000 }, async t => {
+    const dir = await mkdtemp(join(tmpdir(), 'ompiui-dsh-manager-'))
+    await enrollment(dir)
+    const wire = await wireServer(socket => {
+      helloAck(socket)
+      if (mode === 'error DEVICE_REVOKED') socket.send(JSON.stringify(dshFrame('error', { code: 'DEVICE_REVOKED' })))
+      else if (mode === 'error frame then close 4004') {
+        socket.send(JSON.stringify(dshFrame('error', { code: 'DEVICE_REVOKED' })))
+        socket.close(4004, 'device revoked')
+      } else socket.close(4004, 'device revoked')
+    })
+    let runs = 0
+    const manager = new DshHostedManager(dir, '0.6.71', true, (account, port, signal, origins, ready) => {
+      runs++
+      return runDshHost(account, port, signal, origins, ready, { socketFactory: wire.open })
+    })
+    t.after(async () => { await manager.dispose(); await wire.close(); await rm(dir, { recursive: true, force: true }) })
+    await manager.attach(5000)
+    await until(async () => (await manager.status()).lastError?.code === 'DSH_DEVICE_REVOKED')
+    assert.equal((await manager.status()).enabled, false)
+    assert.equal(await readFile(join(dir, 'dsh-remote', 'enabled.json'), 'utf8'), 'false')
+    assert.equal(runs, 1)
+  })
+}
+
+test('refreshes only once on two on-wire authentication denials', { timeout: 5_000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'ompiui-dsh-manager-'))
+  await enrollment(dir)
+  const seen: unknown[] = []
+  const wire = await wireServer((socket, token) => {
+    seen.push(token)
+    if (seen.length === 1) socket.close(4002, 'TOKEN_EXPIRED')
+    else socket.send(JSON.stringify(dshFrame('error', { code: 'AUTH_INVALID' })))
+  })
+  t.after(async () => { await wire.close(); await rm(dir, { recursive: true, force: true }) })
+  let refreshes = 0
+  const account = new DshRemoteAccount(dir, '0.6.71', async url => {
+    assert.equal(new URL(String(url)).pathname, '/api/v1/auth/refresh')
+    refreshes++
+    return Response.json({
+      accessToken: 'access-token-0002', refreshToken: 'refresh-token-0002',
+      accessTokenExpiresAt: Number.MAX_SAFE_INTEGER, refreshTokenExpiresAt: Number.MAX_SAFE_INTEGER,
+    })
+  })
+  await assert.rejects(runDshHost(account, 5000, AbortSignal.timeout(4_000), new Set(), undefined, { socketFactory: wire.open }), { code: 'AUTH_INVALID' })
+  assert.deepEqual(seen, ['access-token-0001', 'access-token-0002'])
+  assert.equal(refreshes, 1)
+})
+
+test('4001 and ordinary server shutdown do not refresh or invalidate host credentials', { timeout: 5_000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'ompiui-dsh-manager-'))
+  await enrollment(dir)
+  const codes = [4001, 1001]
+  const wire = await wireServer(socket => socket.close(codes.shift()!, 'server shutdown'))
+  t.after(async () => { await wire.close(); await rm(dir, { recursive: true, force: true }) })
+  const account = new DshRemoteAccount(dir, '0.6.71', async () => assert.fail('unexpected credential refresh'))
+  for (const _ of [4001, 1001]) {
+    await assert.rejects(runDshHost(account, 5000, AbortSignal.timeout(2_000), new Set(), undefined, { socketFactory: wire.open }), { code: 'DSH_UNREACHABLE' })
+  }
+  assert.equal(codes.length, 0)
+})
+
+test('persists explicit disable through an in-flight terminal close and restarts once enabled', { timeout: 5_000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'ompiui-dsh-manager-'))
+  await enrollment(dir)
+  let connections = 0
+  const wire = await wireServer(socket => {
+    helloAck(socket)
+    if (++connections === 1) socket.close(4003, 'ALREADY_CONNECTED')
+  })
+  const exited = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  let oldTaskRunning = true
+  let runs = 0
+  const manager = new DshHostedManager(dir, '0.6.71', true, async (account, port, signal, origins, ready) => {
+    const run = ++runs
+    if (run > 1) assert.equal(oldTaskRunning, false)
+    try { await runDshHost(account, port, signal, origins, ready, { socketFactory: wire.open }) }
+    catch (error) {
+      if (run === 1) {
+        exited.resolve()
+        await release.promise
+        oldTaskRunning = false
+      }
+      throw error
+    }
+  })
+  t.after(async () => { release.resolve(); await manager.dispose(); await wire.close(); await rm(dir, { recursive: true, force: true }) })
+  await manager.attach(5000)
+  await exited.promise
+  // Interleave a user enable with the terminal socket's cleanup.
+  const enabling = manager.manage('enable')
+  release.resolve()
+  await enabling
+  await until(async () => (await manager.status()).state === 'online')
+  assert.equal(await readFile(join(dir, 'dsh-remote', 'enabled.json'), 'utf8'), 'true')
+  assert.equal(connections, 2)
+  const disabling = manager.manage('disable')
+  const restarting = manager.manage('enable')
+  await Promise.all([disabling, restarting])
+  await until(async () => (await manager.status()).state === 'online')
+  assert.equal(connections, 3)
+})
+
+test('exposes terminal persistence failure instead of reporting a saved terminal state', { timeout: 5_000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'ompiui-dsh-manager-'))
+  await enrollment(dir)
+  const manager = new DshHostedManager(dir, '0.6.71', true, async () => {
+    // Let attach read a missing state file; then make the write target unusable.
+    await mkdir(join(dir, 'dsh-remote', 'enabled.json'))
+    throw Object.assign(new Error('revoked'), { code: 'DEVICE_REVOKED' })
+  })
+  t.after(async () => {
+    await rm(join(dir, 'dsh-remote', 'enabled.json'), { recursive: true, force: true })
+    await manager.dispose()
+    await rm(dir, { recursive: true, force: true })
+  })
+  await manager.attach(5000)
+  await until(async () => (await manager.status()).lastError?.code === 'DSH_STATE_WRITE_FAILED')
+  assert.equal((await manager.status()).enabled, false)
+  await assert.rejects(manager.manage('enable'), { code: 'DSH_STATE_WRITE_FAILED' })
 })

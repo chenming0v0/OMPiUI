@@ -457,6 +457,8 @@ pub fn run() {
             tray::set_ompiui_tray_settings,
             desktop_window_ready,
             open_new_window,
+            service::dsh_remote_host_manage,
+            service::dsh_remote_local_host_id,
             dir_state::get_cli_directory,
             commands::utils::get_dropped_paths_info,
             bridge::ws_bridge_connect,

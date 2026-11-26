@@ -2,10 +2,7 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     net::Ipv4Addr,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -21,18 +18,18 @@ use tokio::{
 };
 
 const CLOSED_EVENT: &str = "dsh-remote-viewer-closed";
+const DELIVERED_EVENT: &str = "dsh-remote-viewer-delivered";
 const INVALID_GRANT: &str = "Invalid DS Harness Remote browser grant";
 const UNAVAILABLE: &str = "Could not open the DS Harness Remote viewer";
 const MAX_REDEMPTION: Duration = Duration::from_secs(60);
 // Independent of the grant's short redemption window. The control connection owns the real lease.
 const VIEWER_WATCHDOG: Duration = Duration::from_secs(10 * 60);
-static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Default)]
 pub struct DshRemoteViewerState(Mutex<HashMap<String, ActiveHandoff>>);
 
 struct ActiveHandoff {
-    id: u64,
+    id: String,
     task: async_runtime::JoinHandle<()>,
     handoff: Arc<Handoff>,
 }
@@ -48,6 +45,18 @@ impl DshRemoteViewerState {
     pub fn close_window(&self, label: &str) {
         if let Some(active) = self.0.lock().unwrap().remove(label) {
             active.cancel();
+        }
+    }
+
+    fn close_handoff(&self, label: &str, handoff_id: &str) {
+        let mut active = self.0.lock().unwrap();
+        if active
+            .get(label)
+            .is_some_and(|current| current.id == handoff_id)
+        {
+            if let Some(current) = active.remove(label) {
+                current.cancel();
+            }
         }
     }
 
@@ -107,7 +116,7 @@ fn unix_ms() -> u64 {
         .as_millis() as u64
 }
 
-fn require_local_window(window: &WebviewWindow) -> Result<(), &'static str> {
+pub(crate) fn require_local_window(window: &WebviewWindow) -> Result<(), &'static str> {
     if window.label() != "main" && !window.label().starts_with("win-") {
         return Err(UNAVAILABLE);
     }
@@ -140,9 +149,17 @@ fn require_local_window(window: &WebviewWindow) -> Result<(), &'static str> {
 #[tauri::command]
 pub async fn dsh_remote_viewer_open(
     window: WebviewWindow,
+    handoff_id: String,
     grant: serde_json::Value,
 ) -> Result<(), String> {
     require_local_window(&window)?;
+    if handoff_id.len() != 36
+        || !handoff_id
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
+    {
+        return Err(UNAVAILABLE.into());
+    }
     // Keep serde's input-bearing error details out of IPC errors and diagnostics.
     let grant: BrowserGrant = serde_json::from_value(grant).map_err(|_| INVALID_GRANT)?;
     let target = validate_grant(&grant)?;
@@ -165,7 +182,7 @@ pub async fn dsh_remote_viewer_open(
     let origin = format!("http://{host}");
     // The independent local capability starts in the fragment, not the HTTP request or portal URL.
     let opener_url = format!("{origin}/#{capability}");
-    let (events, event_rx) = mpsc::channel(2);
+    let (events, event_rx) = mpsc::channel(3);
     let handoff = Arc::new(Handoff {
         host,
         origin,
@@ -177,7 +194,7 @@ pub async fn dsh_remote_viewer_open(
         events,
     });
 
-    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let id = handoff_id.clone();
     let owner = window.label().to_owned();
     let app = window.app_handle().clone();
     let viewers = window.state::<DshRemoteViewerState>();
@@ -186,43 +203,54 @@ pub async fn dsh_remote_viewer_open(
         // Browser content never enters a Tauri WebView or receives an IPC bridge.
         let served_handoff = Arc::clone(&handoff);
         let task = async_runtime::spawn(async move {
-            let reason = serve(listener, served_handoff, event_rx).await;
+            let target = EventTarget::webview_window(owner.clone());
+            let reason = serve(listener, served_handoff, event_rx, || {
+                let _ = app.emit_to(
+                    target.clone(),
+                    DELIVERED_EVENT,
+                    serde_json::json!({ "handoffId": id }),
+                );
+            })
+            .await;
             let viewers = app.state::<DshRemoteViewerState>();
             let mut active = viewers.0.lock().unwrap();
             if active.get(&owner).is_some_and(|current| current.id == id) {
                 active.remove(&owner);
-                let _ = app.emit_to(EventTarget::webview_window(owner), CLOSED_EVENT, reason);
+                let _ = app.emit_to(
+                    target,
+                    CLOSED_EVENT,
+                    serde_json::json!({ "handoffId": id, "reason": reason }),
+                );
             }
         });
         if let Some(previous) = active.insert(
             window.label().to_owned(),
-            ActiveHandoff { id, task, handoff },
+            ActiveHandoff {
+                id: handoff_id.clone(),
+                task,
+                handoff,
+            },
         ) {
             previous.cancel();
         }
     }
     // Use the system browser rather than mobile in-app browser sheets, whose popup support varies.
     if window.opener().open_url(opener_url, None::<&str>).is_err() {
-        let mut active = viewers.0.lock().unwrap();
-        if active
-            .get(window.label())
-            .is_some_and(|current| current.id == id)
-        {
-            if let Some(current) = active.remove(window.label()) {
-                current.cancel();
-            }
-        }
+        viewers.close_handoff(window.label(), &handoff_id);
         return Err(UNAVAILABLE.into());
     }
     Ok(())
 }
 
 #[tauri::command]
-pub async fn dsh_remote_viewer_close(window: WebviewWindow) -> Result<(), String> {
+pub async fn dsh_remote_viewer_close(
+    window: WebviewWindow,
+    handoff_id: String,
+) -> Result<(), String> {
     require_local_window(&window)?;
     window
         .state::<DshRemoteViewerState>()
-        .close_window(window.label());
+        .close_handoff(window.label(), &handoff_id);
     Ok(())
 }
 
@@ -239,6 +267,7 @@ struct Handoff {
 
 #[derive(Copy, Clone)]
 enum BrowserEvent {
+    Taken,
     Delivered,
     Closed,
 }
@@ -247,15 +276,21 @@ async fn serve(
     listener: TcpListener,
     handoff: Arc<Handoff>,
     mut events: mpsc::Receiver<BrowserEvent>,
+    on_delivered: impl FnOnce(),
 ) -> &'static str {
     let mut pending = true;
+    let mut on_delivered = Some(on_delivered);
     let mut connections = JoinSet::new();
     let watchdog = Instant::now() + VIEWER_WATCHDOG;
     loop {
         tokio::select! {
             biased;
             event = events.recv() => match event {
-                Some(BrowserEvent::Delivered) => pending = false,
+                Some(BrowserEvent::Taken) => pending = false,
+                Some(BrowserEvent::Delivered) if !pending => {
+                    if let Some(delivered) = on_delivered.take() { delivered(); }
+                },
+                Some(BrowserEvent::Delivered) => {},
                 Some(BrowserEvent::Closed) => break "closed",
                 None => break "unavailable",
             },
@@ -357,7 +392,7 @@ fn route(input: &[u8], handoff: &Handoff) -> Response {
             content_type: "text/javascript",
             body: include_str!("dsh_remote_handoff.js").into(),
         },
-        (Some("POST"), Some(path @ ("/grant" | "/closed")))
+        (Some("POST"), Some(path @ ("/grant" | "/delivered" | "/closed")))
             if header_equals("Origin", Some(handoff.origin.as_bytes()))
                 && header_equals("X-OMPiUI-Handoff", Some(handoff.capability.as_bytes())) =>
         {
@@ -367,9 +402,16 @@ fn route(input: &[u8], handoff: &Handoff) -> Response {
                 let _ = handoff.events.try_send(BrowserEvent::Closed);
                 return Response::text("200 OK", "");
             }
+            if path == "/delivered" {
+                if grant.is_none() {
+                    let _ = handoff.events.try_send(BrowserEvent::Delivered);
+                    return Response::text("200 OK", "");
+                }
+                return missing();
+            }
             if Instant::now() < handoff.deadline && unix_ms() < handoff.expires_at {
                 if let Some(grant) = grant.take() {
-                    let _ = handoff.events.try_send(BrowserEvent::Delivered);
+                    let _ = handoff.events.try_send(BrowserEvent::Taken);
                     return Response::text("200 OK", grant);
                 }
             }

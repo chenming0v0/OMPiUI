@@ -15,6 +15,7 @@ import { RuntimeSupervisor } from "./omp/supervisor.ts"
 import { MAX_PAIRING_FAILURES, PairingStore } from "./host/pairing.ts"
 import { TUNNEL_FORWARDING_HEADER } from "./host/security.ts"
 import { FaultReportService } from "./diagnostics/fault-reports.ts"
+import { DshHostedManager } from "./tunnel/dsh-hosted-manager.ts"
 import { TERMINAL_SECRET_HEADER, terminalOwnerFromSecret } from "./host/terminal-auth.ts"
 import type { TerminalManagerOptions } from "./host/terminal-manager.ts"
 import { attachEventWebSocket, closeEventWebSocket } from "./ws.ts"
@@ -400,6 +401,19 @@ describe("http api", () => {
     assert.equal(status.status, 200)
     assert.ok(status.json.runId)
     assert.deepEqual(app.sessionHost.listAttachedIds(), [])
+  })
+
+  it('requires a separate local credential for DS Harness Remote host management', async () => {
+    const hostedRemote = new DshHostedManager(path.join(leaseHome, 'dsh'), '0.6.71', false)
+    const app = createAppServer({ authToken: 'shared', dshManagementToken: 'local-only', hostedRemote })
+    const port = await listen(app)
+    cleanups.push(async () => { await hostedRemote.dispose(); await app.dispose() })
+    const route = '/api/v1/host/dsh-remote'
+    const shareOnly = await request(port, 'GET', route, { token: 'shared', headers: { host: `127.0.0.1:${port}` } })
+    assert.equal(shareOnly.status, 403)
+    const local = await request(port, 'GET', route, { token: 'shared', headers: { 'x-ompiui-dsh-management': 'local-only' } })
+    assert.equal(local.status, 200)
+    assert.equal(local.json.reason, 'web')
   })
 
   it("network reports the listening ephemeral port, not Host, forwarding headers or share config", async () => {

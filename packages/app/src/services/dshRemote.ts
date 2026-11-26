@@ -1,14 +1,15 @@
 import {
   DSH_CONTROL_LIMIT, DSH_RELAY_CAPABILITY, DSH_RELAY_LIMIT, DSH_REMOTE_ORIGIN,
-  DshNoise, createDshIdentity, decodeDshBase64, dshFrame, dshId, dshRecord, isDshExpiry, isDshToken,
-  parseDshBrowserGrant, parseDshDeviceTokens, parseDshFrame, requireDshOmpiuiWeb,
-  type DshBrowserGrant, type DshDeviceTokens, type DshFrame, type DshIdentity,
+  DSH_WEB_LEASE_ENDED, DshNoise, createDshIdentity, decodeDshBase64, dshControlFailure, dshFrame, dshId, dshRecord, isDshExpiry, isDshToken, isDshWebLeaseEnd,
+  parseDshBrowserGrant, parseDshDeviceTokens, parseDshFrame, requireDshOmpiuiWeb, selectDshHosts,
+  type DshBrowserGrant, type DshDeviceTokens, type DshFrame, type DshHostListItem, type DshIdentity, type DshWebLeaseEnd,
 } from '@ompiui/protocol/dsh-remote'
 import { getDesktopPlatform, getHttpFetch, isTauriMobile } from '../utils/tauri'
 
 export interface DshLoginProvider { id: string; label: string; start: string }
-export interface DshHostListItem { id: string; name: string; online?: boolean }
-export interface DshAppConnection { grant: DshBrowserGrant; closed: Promise<void>; close(): void }
+export { selectDshHosts, type DshHostListItem }
+export interface DshConnectionEnd { leaseEnd?: DshWebLeaseEnd; error?: unknown }
+export interface DshAppConnection { grant: DshBrowserGrant; closed: Promise<DshConnectionEnd>; close(): Promise<void> }
 
 const TOKEN_SKEW = 60_000
 const WSS = DSH_REMOTE_ORIGIN.replace('https:', 'wss:') + '/ws/v1/connect'
@@ -24,25 +25,17 @@ export class DshApiError extends Error {
   }
 }
 
-// Only hosts other than this device are selectable, even when the service lists every device.
-export function selectDshHosts(items: readonly unknown[], selfId: string): DshHostListItem[] {
-  const hosts = new Map<string, DshHostListItem>()
-  for (const item of items) {
-    const entry = dshRecord(item)
-    if (!entry) continue
-    // Older services omit role; an explicit non-host role is never a work computer.
-    if (entry.role !== undefined && entry.role !== 'host') continue
-    const id = dshId(entry.deviceId)
-    if (id === selfId) continue
-    if (typeof entry.name !== 'string' || !entry.name.trim()) throw new Error('Invalid DSH host')
-    hosts.set(id, { id, name: entry.name.slice(0, 128), online: typeof entry.online === 'boolean' ? entry.online : undefined })
-  }
-  return [...hosts.values()]
+export function isDshControllerAuthFailure(error: unknown): error is DshApiError & { code: 'DSH_AUTH_INVALID' | 'DSH_DEVICE_REVOKED' } {
+  return error instanceof DshApiError && ['DSH_AUTH_INVALID', 'DSH_DEVICE_REVOKED'].includes(error.code)
+}
+
+function controllerAuthError(code: 'AUTH_INVALID' | 'DEVICE_REVOKED'): DshApiError {
+  return new DshApiError(`DSH_${code}`, 401, 'Sign in to DS Harness Remote again')
 }
 
 function rethrowHostLookup(error: unknown): never {
   if (error instanceof DshApiError) {
-    if (error.status === 401 || error.status === 403) {
+    if (!isDshControllerAuthFailure(error) && (error.status === 403 || error.code === 'DEVICE_REVOKED')) {
       throw new DshApiError('HOST_UNAUTHORIZED', error.status, 'DS Harness Remote did not authorize the selected host')
     }
     if (error.status === 404) throw new DshApiError('HOST_OFFLINE', error.status, 'The DS Harness Remote host is offline')
@@ -59,11 +52,11 @@ function relayErrorCode(value: unknown): string {
   return ''
 }
 
-function wireFailure(wire: BrowserDshControl, stage: 'connect' | 'handshake' | 'lease', message: string): DshApiError {
-  const code = wire.closeCode
-  if (code === 4003) return new DshApiError('HOST_BUSY', 409, 'The DS Harness Remote host is already connected elsewhere')
-  if (code === 4001 || code === 4002) return new DshApiError('HOST_UNAUTHORIZED', 401, 'DS Harness Remote declined this device connection')
-  return new DshApiError(stage === 'connect' ? 'HOST_OFFLINE' : stage === 'handshake' ? 'PROTOCOL' : 'LEASE_FAILED', 0, message)
+function wireFailure(wire: BrowserDshControl, fallback: string, frameCode?: unknown): DshApiError {
+  const failure = dshControlFailure(frameCode, wire.closeInfo)
+  if (failure === 'AUTH_INVALID' || failure === 'DEVICE_REVOKED') return controllerAuthError(failure)
+  if (failure === 'ALREADY_CONNECTED') return new DshApiError('HOST_BUSY', 409)
+  return new DshApiError(fallback, 0)
 }
 
 async function dshRequest(path: string, init: RequestInit, signal?: AbortSignal): Promise<unknown> {
@@ -136,7 +129,7 @@ export class DshAppSession {
     this.tokens = tokens
   }
 
-  async listHosts(signal: AbortSignal): Promise<DshHostListItem[]> {
+  async listHosts(signal: AbortSignal, localHostId?: string | null): Promise<DshHostListItem[]> {
     const hosts = new Map<string, DshHostListItem>()
     const cursors = new Set<string>()
     let cursor: string | undefined
@@ -144,7 +137,7 @@ export class DshAppSession {
       const query = new URLSearchParams({ limit: '50', ...(cursor ? { cursor } : {}) })
       const result = dshRecord(await this.request(`/api/v1/devices?${query}`, {}, signal))
       if (!Array.isArray(result?.items)) throw new Error('Invalid DSH host list')
-      for (const host of selectDshHosts(result.items, this.identity.deviceId)) hosts.set(host.id, host)
+      for (const host of selectDshHosts(result.items, this.identity.deviceId, localHostId)) hosts.set(host.id, host)
       if (result.nextCursor == null) break
       if (typeof result.nextCursor !== 'string' || !result.nextCursor || cursors.has(result.nextCursor) || cursors.size >= 200) throw new Error('Invalid DSH host list cursor')
       cursor = result.nextCursor
@@ -168,66 +161,32 @@ export class DshAppSession {
     const pinned = this.pinnedPeers.get(hostId)
     if (pinned && pinned !== value.identityKey) throw new DshApiError('HOST_UNAUTHORIZED', 403, 'The DS Harness Remote host identity changed')
     this.pinnedPeers.set(hostId, value.identityKey)
-    let tokens: DshDeviceTokens
-    try {
-      tokens = await this.getTokens(handshake)
-    } catch (error) {
-      if (error instanceof DshApiError && error.code === 'AUTH_INVALID') {
-        throw new DshApiError('HOST_UNAUTHORIZED', 401, 'Sign in to DS Harness Remote again')
-      }
-      throw error
-    }
-    const wire = new BrowserDshControl(signal)
+    const { wire, tokens, refreshed } = await this.openControl(signal, handshake)
     let channel: DshNoise | undefined
-    let connection: string | undefined
-    let ready = false
-    let stage: 'connect' | 'handshake' | 'lease' = 'connect'
-    const close = () => {
-      // Best effort: let the host release the web lease before this control socket goes away.
-      if (ready && channel && connection) {
-        try { wire.send('relay', { connectionId: connection, targetDeviceId: hostId, ...channel.send(dshFrame('rpc.request', { method: 'dsh.web.close', params: {} })) }) } catch { /* Closing is best effort. */ }
-      }
-      channel?.destroy()
-      wire.close()
-    }
+    let stage: 'handshake' | 'lease' = 'handshake'
+    const closeWire = () => { channel?.destroy(); channel = undefined; wire.close() }
     try {
-      await wire.open(handshake)
-      wire.send('hello', {
-        role: 'client', deviceId: this.identity.deviceId, accessToken: tokens.accessToken,
-        protocols: [1], clientVersion: __APP_VERSION__, capabilities: [DSH_RELAY_CAPABILITY],
-      })
-      const ack = await wire.next(handshake)
-      if (ack.type === 'error') {
-        throw new DshApiError(relayErrorCode(ack.payload.code) || 'HOST_UNAUTHORIZED', 401, 'DS Harness Remote declined this device connection')
-      }
-      if (ack.type !== 'hello.ack' || ack.payload.protocol !== 1
-        || (Array.isArray(ack.payload.capabilities) && !ack.payload.capabilities.includes(DSH_RELAY_CAPABILITY))) {
-        throw new DshApiError('PROTOCOL', 0, 'DS Harness Remote declined the Relay connection')
-      }
-      try { wire.limit(ack.payload.maxControlFrameBytes, ack.payload.maxRelayFrameBytes) } catch {
-        throw new DshApiError('PROTOCOL', 0, 'Invalid DS Harness Remote frame limits')
-      }
-      stage = 'handshake'
       wire.send('connect.request', { hostDeviceId: hostId, preferredTransports: ['relay'] })
       const accepted = await wire.next(handshake)
       if (accepted.type === 'error') {
-        throw new DshApiError(relayErrorCode(accepted.payload.code) || 'HOST_OFFLINE', 409, 'DS Harness Remote could not reach the selected host')
+        throw accepted.payload.connectionId === undefined
+          ? wireFailure(wire, relayErrorCode(accepted.payload.code) || 'HOST_OFFLINE', accepted.payload.code)
+          : new DshApiError(relayErrorCode(accepted.payload.code) || 'HOST_OFFLINE', 409)
       }
       if (accepted.type !== 'connect.accepted') throw new DshApiError('PROTOCOL', 0, 'DS Harness Remote declined this device connection')
       const connectionId = dshId(accepted.payload.connectionId)
-      connection = connectionId
       const target = { connectionId, targetDeviceId: hostId }
       channel = new DshNoise(this.identity, value.identityKey, connectionId, hostId, this.identity.deviceId)
       wire.send('transport.selected', { ...target, transport: 'relay' })
       wire.send('secure.handshake', { ...target, step: 1, data: channel.write() })
       let frame = await wire.next(handshake)
       while (frame.type === 'transport.selected') frame = await wire.next(handshake)
+      if (frame.type === 'error' && frame.payload.connectionId === undefined) throw wireFailure(wire, 'PROTOCOL', frame.payload.code)
       if (frame.type !== 'secure.handshake' || frame.payload.connectionId !== connectionId
         || frame.payload.targetDeviceId !== this.identity.deviceId || frame.payload.step !== 2) {
         throw new DshApiError('PROTOCOL', 0, 'The DS Harness Remote host failed the secure handshake')
       }
       channel.read(frame.payload.data)
-      ready = true
       stage = 'lease'
       const channelReady = channel
       const rpc = async (method: string, fallback: 'PROTOCOL' | 'LEASE_FAILED') => {
@@ -236,12 +195,13 @@ export class DshAppSession {
         while (true) {
           const next = await wire.next(handshake)
           if (next.type === 'error' && (next.payload.connectionId === undefined || next.payload.connectionId === connectionId)) {
-            throw new DshApiError(relayErrorCode(next.payload.code) || fallback, 0, 'DS Harness Remote rejected the web handoff')
+            throw next.payload.connectionId === undefined ? wireFailure(wire, fallback, next.payload.code)
+              : new DshApiError(relayErrorCode(next.payload.code) || fallback, 0)
           }
           if (next.type !== 'relay' || next.payload.connectionId !== connectionId || next.payload.targetDeviceId !== this.identity.deviceId) continue
           const response = parseDshFrame(channelReady.receive(next.payload.counter, next.payload.ciphertext))
           if (response.payload.requestId !== request.id) continue
-          if (response.type === 'rpc.response') return response.payload.result
+          if (response.type === 'rpc.response') return { id: request.id, result: response.payload.result }
           if (response.type === 'rpc.error') {
             const code = String(response.payload.code ?? '')
             throw new DshApiError(code === 'RATE_LIMITED' ? 'HOST_BUSY' : fallback, 0, 'The DS Harness Remote host could not open a web tunnel')
@@ -249,62 +209,162 @@ export class DshAppSession {
           throw new DshApiError(fallback, 0, 'The DS Harness Remote host could not open a web tunnel')
         }
       }
-      try { requireDshOmpiuiWeb(await rpc('harness.transport.describe', 'PROTOCOL')) } catch (error) {
+      try { requireDshOmpiuiWeb((await rpc('harness.transport.describe', 'PROTOCOL')).result) } catch (error) {
         if (error instanceof DshApiError) throw error
         throw new DshApiError('PROTOCOL', 0, 'The DS Harness Remote host does not support the OMPiUI web handoff')
       }
-      const grant = parseDshBrowserGrant(await rpc('dsh.web.open', 'LEASE_FAILED'))
-      void (async () => {
-        while (true) {
-          const update = await wire.next(signal)
-          if (update.type === 'error' && (update.payload.connectionId === undefined || update.payload.connectionId === connectionId)) return
-        }
-      })().catch(() => {}).finally(close)
-      return { grant, close, closed: wire.closed }
+      const lease = await rpc('dsh.web.open', 'LEASE_FAILED')
+      const grant = parseDshBrowserGrant(lease.result)
+      let closeRequest: string | undefined
+      let closing: Promise<void> | undefined
+      const closed = (async (): Promise<DshConnectionEnd> => {
+        try {
+          while (true) {
+            const update = await wire.next(signal)
+            if (update.type === 'error' && update.payload.connectionId === undefined) {
+              return { error: await this.activeFailure(wire, tokens, refreshed, signal, update.payload.code) }
+            }
+            if (update.type === 'error' && update.payload.connectionId === connectionId) return {}
+            if (update.type !== 'relay' || update.payload.connectionId !== connectionId || update.payload.targetDeviceId !== this.identity.deviceId) continue
+            const response = parseDshFrame(channelReady.receive(update.payload.counter, update.payload.ciphertext))
+            if (response.type === DSH_WEB_LEASE_ENDED && response.payload.requestId === lease.id && isDshWebLeaseEnd(response.payload.reason)) {
+              return { leaseEnd: response.payload.reason }
+            }
+            if (closeRequest && response.payload.requestId === closeRequest && ['rpc.response', 'rpc.error'].includes(response.type)) return {}
+          }
+        } catch {
+          return signal.aborted ? {} : { error: await this.activeFailure(wire, tokens, refreshed, signal) }
+        } finally { closeWire() }
+      })()
+      return { grant, closed, close: () => closing ??= (async () => {
+        try {
+          const request = dshFrame('rpc.request', { method: 'dsh.web.close', params: {} })
+          closeRequest = request.id
+          wire.send('relay', { ...target, ...channelReady.send(request) })
+          const deadline = AbortSignal.timeout(1_500)
+          await Promise.race([closed, new Promise<void>(resolve => deadline.addEventListener('abort', () => resolve(), { once: true }))])
+        } catch { /* The control socket may already be down. */ }
+        finally { closeWire() }
+      })() }
     } catch (error) {
-      close()
+      closeWire()
       if (error instanceof DshApiError) throw error
-      throw wireFailure(wire, stage, stage === 'connect'
-        ? 'Could not connect to the DS Harness Remote host'
-        : 'The DS Harness Remote connection failed')
+      throw wireFailure(wire, stage === 'handshake' ? 'PROTOCOL' : 'LEASE_FAILED')
     }
   }
 
-  async revoke(): Promise<void> {
-    await this.request('/api/v1/devices/self', { method: 'DELETE' }, AbortSignal.timeout(15_000)).catch(error => {
-      if (!(error instanceof DshApiError && ['AUTH_INVALID', 'DEVICE_REVOKED'].includes(error.code))) throw error
-    })
+  private async openControl(signal: AbortSignal, handshake: AbortSignal) {
+    let rejected: string | undefined
+    for (;;) {
+      const tokens = await this.getTokens(handshake, rejected)
+      handshake.throwIfAborted()
+      const wire = new BrowserDshControl(signal)
+      try {
+        await wire.open(handshake)
+        wire.send('hello', {
+          role: 'client', deviceId: this.identity.deviceId, accessToken: tokens.accessToken,
+          protocols: [1], clientVersion: __APP_VERSION__, capabilities: [DSH_RELAY_CAPABILITY],
+        })
+        const ack = await wire.next(handshake)
+        if (ack.type === 'error') throw wireFailure(wire, 'PROTOCOL', ack.payload.code)
+        if (ack.type !== 'hello.ack' || ack.payload.protocol !== 1
+          || (Array.isArray(ack.payload.capabilities) && !ack.payload.capabilities.includes(DSH_RELAY_CAPABILITY))) {
+          throw new DshApiError('PROTOCOL', 0)
+        }
+        try { wire.limit(ack.payload.maxControlFrameBytes, ack.payload.maxRelayFrameBytes) } catch { throw new DshApiError('PROTOCOL', 0) }
+        return { wire, tokens, refreshed: rejected !== undefined }
+      } catch (error) {
+        const failure = error instanceof DshApiError ? error : wireFailure(wire, 'HOST_OFFLINE')
+        wire.close()
+        signal.throwIfAborted()
+        if (failure.code !== 'DSH_AUTH_INVALID' || rejected !== undefined) throw failure
+        rejected = tokens.accessToken
+      }
+    }
+  }
+
+  private async activeFailure(wire: BrowserDshControl, tokens: DshDeviceTokens, refreshed: boolean, signal: AbortSignal, code?: unknown): Promise<unknown> {
+    const failure = wireFailure(wire, 'LEASE_FAILED', code)
+    if (failure.code !== 'DSH_AUTH_INVALID' || refreshed) return failure
+    try { await this.getTokens(signal, tokens.accessToken) } catch (error) { return error }
+    return new DshApiError('LEASE_FAILED', 0)
+  }
+
+  invalidate(): void {
     this.lifetime.abort()
     this.tokens = { accessToken: '', accessTokenExpiresAt: 0, refreshToken: '', refreshTokenExpiresAt: 0 }
     this.pinnedPeers.clear()
   }
 
-  private async request(path: string, init: RequestInit, signal: AbortSignal): Promise<unknown> {
-    const tokens = await this.getTokens(signal)
-    return dshRequest(path, { ...init, headers: { authorization: `Bearer ${tokens.accessToken}` } }, signal)
+  async revoke(): Promise<void> {
+    await this.request('/api/v1/devices/self', { method: 'DELETE' }, AbortSignal.timeout(15_000)).catch(error => {
+      if (!isDshControllerAuthFailure(error)) throw error
+    })
+    this.invalidate()
   }
 
-  private getTokens(signal: AbortSignal): Promise<DshDeviceTokens> {
+  private async request(path: string, init: RequestInit, signal: AbortSignal): Promise<unknown> {
+    const send = (tokens: DshDeviceTokens, endpoint = path, request = init) =>
+      dshRequest(endpoint, { ...request, headers: { authorization: `Bearer ${tokens.accessToken}` } }, signal)
+    const ownEndpoint = path === '/api/v1/devices/self' || path.startsWith('/api/v1/devices?')
+    const deniesAuth = (error: DshApiError) => error.status === 401 || ['AUTH_INVALID', 'TOKEN_EXPIRED'].includes(error.code)
+    const checkOwnAuth = async (tokens: DshDeviceTokens) => {
+      try { await send(tokens, '/api/v1/devices?limit=1', {}) } catch (error) {
+        if (error instanceof DshApiError) {
+          if (error.code === 'DEVICE_REVOKED') throw controllerAuthError('DEVICE_REVOKED')
+          if (deniesAuth(error)) throw controllerAuthError('AUTH_INVALID')
+        }
+        throw error
+      }
+    }
+    const tokens = await this.getTokens(signal)
+    try { return await send(tokens) } catch (error) {
+      if (!(error instanceof DshApiError)) throw error
+      if (error.code === 'DEVICE_REVOKED') {
+        if (ownEndpoint) throw controllerAuthError('DEVICE_REVOKED')
+        // A detail request can describe a revoked target instead of a revoked controller.
+        await checkOwnAuth(tokens)
+        throw error
+      }
+      if (!deniesAuth(error)) throw error
+      const refreshed = await this.getTokens(signal, tokens.accessToken)
+      try { return await send(refreshed) } catch (retry) {
+        if (!(retry instanceof DshApiError)) throw retry
+        if (ownEndpoint && retry.code === 'DEVICE_REVOKED') throw controllerAuthError('DEVICE_REVOKED')
+        if (ownEndpoint && deniesAuth(retry)) throw controllerAuthError('AUTH_INVALID')
+        if (!ownEndpoint && (deniesAuth(retry) || retry.code === 'DEVICE_REVOKED')) await checkOwnAuth(refreshed)
+        throw retry
+      }
+    }
+  }
+
+  private getTokens(signal: AbortSignal, rejected?: string): Promise<DshDeviceTokens> {
     signal.throwIfAborted()
     this.lifetime.signal.throwIfAborted()
-    if (this.tokens.accessTokenExpiresAt > Date.now() + TOKEN_SKEW) return Promise.resolve(this.tokens)
+    if (this.tokens.accessToken !== rejected && this.tokens.accessTokenExpiresAt > Date.now() + TOKEN_SKEW) return Promise.resolve(this.tokens)
     this.refreshing ??= (async () => {
-      for (let attempt = 0; attempt < 2; attempt++) {
-        if (this.tokens.refreshTokenExpiresAt <= Date.now()) throw new DshApiError('AUTH_INVALID', 401)
-        this.tokens = parseDshDeviceTokens(await dshRequest('/api/v1/auth/refresh', {
+      if (this.tokens.refreshTokenExpiresAt <= Date.now()) throw controllerAuthError('AUTH_INVALID')
+      try {
+        const tokens = parseDshDeviceTokens(await dshRequest('/api/v1/auth/refresh', {
           method: 'POST', body: JSON.stringify({ deviceId: this.identity.deviceId, refreshToken: this.tokens.refreshToken }),
         }, this.lifetime.signal))
-        if (this.tokens.accessTokenExpiresAt > Date.now()) return this.tokens
+        this.lifetime.signal.throwIfAborted()
+        if (tokens.accessTokenExpiresAt <= Date.now()) throw controllerAuthError('AUTH_INVALID')
+        return this.tokens = tokens
+      } catch (error) {
+        if (error instanceof DshApiError) {
+          if (error.code === 'DEVICE_REVOKED') throw controllerAuthError('DEVICE_REVOKED')
+          if (error.status === 401 || error.code === 'AUTH_INVALID' || error.code === 'TOKEN_EXPIRED') throw controllerAuthError('AUTH_INVALID')
+        }
+        throw error
       }
-      throw new DshApiError('AUTH_INVALID', 401)
     })().finally(() => { this.refreshing = undefined })
-    return this.refreshing
+    return this.refreshing.then(tokens => { signal.throwIfAborted(); return tokens })
   }
 }
 
 class BrowserDshControl {
-  readonly closed: Promise<void>
-  closeCode?: number
+  closeInfo?: { code: number; reason: string }
   private readonly socket = new WebSocket(WSS)
   private readonly queue: Array<{ frame: DshFrame; size: number }> = []
   private readonly ended = new AbortController()
@@ -317,14 +377,12 @@ class BrowserDshControl {
   constructor(signal: AbortSignal) {
     const abort = () => this.close()
     signal.addEventListener('abort', abort, { once: true })
-    this.closed = new Promise(resolve => this.socket.addEventListener('close', event => {
-      this.closeCode = event.code
+    this.socket.addEventListener('close', event => {
+      this.closeInfo = { code: event.code, reason: event.reason }
       clearTimeout(this.idleTimer)
       signal.removeEventListener('abort', abort)
       this.ended.abort()
-      this.queue.length = 0
-      resolve()
-    }, { once: true }))
+    }, { once: true })
     this.socket.addEventListener('error', () => this.close())
     this.socket.addEventListener('message', event => {
       try {
@@ -384,7 +442,7 @@ class BrowserDshControl {
         lifetime.addEventListener('abort', abort, { once: true })
       })
     }
-    lifetime.throwIfAborted()
+    signal.throwIfAborted()
     const item = this.queue.shift()!
     this.queuedBytes -= item.size
     return item.frame
