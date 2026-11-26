@@ -113,6 +113,32 @@ describe('serverStore local runtime URL', () => {
     unsubscribe()
   })
 
+  it('applies a managed service result without selecting it or overwriting another window’s default', async () => {
+    const { applyLocalServerConfig, serverStore } = await import('./serverStore')
+    const remote = serverStore.addServer({ name: 'Remote', url: 'https://remote.test', token: 'remote-token' })
+    serverStore.setActiveServer(remote.id)
+    const generation = serverStore.getActiveServerGeneration()
+    localStorage.setItem('ompiui-active-server', 'local') // another window's selection
+
+    expect(applyLocalServerConfig('http://127.0.0.1:58231/', 'local-token')).toBe(true)
+    expect(serverStore.getActiveBaseUrl()).toBe(remote.url)
+    expect(serverStore.getActiveToken()).toBe(remote.token)
+    expect(serverStore.getActiveServerGeneration()).toBe(generation)
+    expect(localStorage.getItem('ompiui-active-server')).toBe('local')
+    expect(sessionStorage.getItem('ompiui-active-server')).toBe(remote.id)
+    expect(serverStore.getLocalServer()).toMatchObject({ url: 'http://127.0.0.1:58231', token: 'local-token' })
+
+    serverStore.setActiveServer('local')
+    expect(serverStore.getActiveBaseUrl()).toBe('http://127.0.0.1:58231')
+  })
+
+  it('preserves a remote endpoint stored in the default slot', async () => {
+    const { applyLocalServerConfig, serverStore } = await import('./serverStore')
+    serverStore.updateServer('local', { url: 'https://remote.test', token: 'remote-token' })
+    expect(applyLocalServerConfig('http://127.0.0.1:58231', 'local-token')).toBe(false)
+    expect(serverStore.getActiveServer()).toMatchObject({ id: 'local', url: 'https://remote.test', token: 'remote-token' })
+  })
+
   it('does not notify active endpoint listeners when local URL changes while remote is active', async () => {
     const { serverStore } = await import('./serverStore')
     const remote = serverStore.addServer({ name: 'Remote', url: 'http://remote.test' })
