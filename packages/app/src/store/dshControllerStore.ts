@@ -1,13 +1,19 @@
 import { useSyncExternalStore } from 'react'
-import type { DshAppConnection, DshAppSession, DshHostListItem } from '../services/dshRemote'
+import type { DshAppSession, DshHostListItem } from '../services/dshRemote'
+
+export interface DshBrowserState {
+  hostId: string
+  phase: 'opening' | 'opened' | 'delivered' | 'ended'
+}
 
 interface DshControllerState {
   session: DshAppSession | null
   hosts: DshHostListItem[]
-  browser: DshAppConnection | null
+  browser: DshBrowserState | null
+  authError: string | null
 }
 
-let state: DshControllerState = { session: null, hosts: [], browser: null }
+let state: DshControllerState = { session: null, hosts: [], browser: null, authError: null }
 const listeners = new Set<() => void>()
 const subscribe = (listener: () => void) => {
   listeners.add(listener)

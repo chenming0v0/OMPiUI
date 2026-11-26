@@ -7,7 +7,7 @@ import { dataRoot } from './logger.ts'
 import { serveDshBrowserHandoff } from './tunnel/dsh-browser-handoff.ts'
 import { DSH_REMOTE_ORIGIN, DshRemoteAccount } from './tunnel/dsh-remote-account.ts'
 import { openDshBrowser } from './tunnel/dsh-client.ts'
-import { dshDeviceId } from './tunnel/dsh-control.ts'
+import { selectDshHosts } from '@ompiui/protocol/dsh-remote'
 
 const HELP = `Usage: omp-worker dsh-remote <command>
 
@@ -59,15 +59,18 @@ export async function runDshRemoteCli(args: readonly string[]): Promise<void> {
       }
       throw new Error('DS Harness Remote sign-in expired')
     } else if (command === 'hosts') {
+      const [{ deviceId: controllerId }, { deviceId: localHostId }] = await Promise.all([
+        account.status(), new DshRemoteAccount(dataRoot(), pkg.version).status(),
+      ])
+      if (!controllerId) throw new Error('Sign in to DS Harness Remote first')
       const cursors = new Set<string>()
       let cursor: string | undefined
       do {
         const query = new URLSearchParams({ limit: '50', ...(cursor ? { cursor } : {}) })
         const page = await account.deviceRequest(`/api/v1/devices?${query}`) as { items?: unknown; nextCursor?: unknown } | null
         if (!Array.isArray(page?.items)) throw new Error('DS Harness Remote returned an invalid host list')
-        for (const item of page.items) {
-          if (typeof item?.name !== 'string') throw new Error('DS Harness Remote returned an invalid host name')
-          console.info(`${dshDeviceId(item.deviceId)}  ${item.name.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 128)}`)
+        for (const host of selectDshHosts(page.items, controllerId, localHostId)) {
+          console.info(`${host.id}  ${host.name.replace(/[\x00-\x1f\x7f]/g, '')}  (${host.online === true ? 'online' : host.online === false ? 'offline' : 'unknown'})`)
         }
         if (page.nextCursor == null) break
         if (typeof page.nextCursor !== 'string' || !page.nextCursor || cursors.has(page.nextCursor) || cursors.size >= 200) {
@@ -88,10 +91,11 @@ export async function runDshRemoteCli(args: readonly string[]): Promise<void> {
         handoff = await serveDshBrowserHandoff(connection.grant, stop.signal)
         console.info('Open this one-time link in a browser on this device. Keep this process running while using OMPiUI:')
         console.info(handoff.url)
-        try { await connection.closed } catch { /* Connection lifetime has ended. */ }
+        const reason = await connection.closed
+        if (reason) console.info(`DS Harness Remote browser lease ended (${reason})`)
       } finally {
         handoff?.close()
-        connection?.close()
+        await connection?.close()
         process.off('SIGINT', interrupt)
         process.off('SIGTERM', interrupt)
       }

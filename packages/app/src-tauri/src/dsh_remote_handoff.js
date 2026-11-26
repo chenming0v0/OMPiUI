@@ -54,6 +54,7 @@ window.addEventListener('message', async event => {
         // The portal's page issues the same-origin top-level POST /__remote/session.
         popup.postMessage({ type: 'dsh.web.grant', browserGrant }, target);
         state = 'handed-off';
+        void request('/delivered', true).catch(() => {});
         statusText.textContent = '已交接一次性授权。请保留此标签页；关闭本页将结束远程连接。';
     } catch {
         popup?.close();
