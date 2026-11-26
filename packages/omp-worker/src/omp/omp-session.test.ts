@@ -89,6 +89,35 @@ async function sessionFixture(t: TestContext) {
   }
 }
 
+it('versions AGENTS, prompts and on-disk skill details independently of the capability registry', async t => {
+  const { session, rpc } = await sessionFixture(t)
+  const directory = mkdtempSync(path.join(tmpdir(), 'ompiui-resource-version-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const filePath = path.join(directory, 'SKILL.md')
+  writeFileSync(filePath, '---\nname: example\ncustom: one\n---\nSame body\n')
+  const discovery: JsonObject = {
+    tools: [], activeTools: [], commands: [], extensions: [], eventHandlers: [],
+    skills: [{ name: 'example', filePath, containRoot: directory }],
+    prompts: [{ name: 'example', content: 'Before prompt' }],
+    contextFiles: [{ path: 'AGENTS.md', content: 'Before rules' }],
+  }
+  rpc.onRequest = command => command.type === 'resources' ? { data: structuredClone(discovery) } : undefined
+  const first = await session.getResourceVersions()
+  discovery.contextFiles = [{ path: 'AGENTS.md', content: 'Updated rules' }]
+  const agents = await session.getResourceVersions()
+  assert.equal(agents.registry, first.registry)
+  assert.notEqual(agents.resources, first.resources)
+  writeFileSync(filePath, '---\nname: example\ncustom: two\n---\nSame body\n')
+  const skill = await session.getResourceVersions()
+  assert.equal(skill.registry, first.registry)
+  assert.notEqual(skill.resources, agents.resources)
+  discovery.prompts = [{ name: 'example', content: 'After prompt' }]
+  const prompt = await session.getResourceVersions()
+  assert.equal(prompt.registry, first.registry)
+  assert.notEqual(prompt.resources, skill.resources)
+  assert.deepEqual(await session.getResourceVersions(), prompt)
+})
+
 it('branch pages expose verified stable native aliases after live assistant persistence', async t => {
   const f = await sessionFixture(t)
   await f.session.getBranchPage(undefined, 100, 100000)

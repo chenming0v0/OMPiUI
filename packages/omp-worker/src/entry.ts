@@ -256,7 +256,7 @@ async function openRuntime(params: JsonObject): Promise<JsonValue> {
   runtimes.set(sessionId, opened)
   if (opened instanceof OmpRpcSession) opened.setOutputPaused(ipcSender.isPaused)
   try {
-    await setRuntimeRegistryBaseline(sessionId, opened)
+    runtimeVersions.set(sessionId, await opened.getResourceVersions())
     const state = await opened.getState()
     return {
       sessionId,
@@ -266,7 +266,7 @@ async function openRuntime(params: JsonObject): Promise<JsonValue> {
     }
   } catch (error) {
     runtimes.delete(sessionId)
-    registryDigests.delete(sessionId)
+    runtimeVersions.delete(sessionId)
     unsubs.forEach(unsub => unsub())
     await opened.dispose()
     throw error
@@ -278,7 +278,7 @@ async function closeRuntime(sessionId: string | undefined): Promise<void> {
   const current = runtimes.get(sessionId)
   if (!current) return
   runtimes.delete(sessionId)
-  registryDigests.delete(sessionId)
+  runtimeVersions.delete(sessionId)
   await current.dispose()
 }
 
@@ -296,49 +296,32 @@ const ctx: CommandContext = {
 }
 
 let registryRevision = 1
-const registryDigests = new Map<string, string | undefined>()
-let registryCheck: Promise<void> = Promise.resolve()
-
-async function setRuntimeRegistryBaseline(sessionId: string, current: SessionRuntime): Promise<void> {
-  registryDigests.set(sessionId, stableStringify(await current.getRegistry()))
-}
+const runtimeVersions = new Map<string, Awaited<ReturnType<SessionRuntime['getResourceVersions']>>>()
+const registryChecks = new WeakMap<SessionRuntime, Promise<void>>()
 
 function queueRegistryChangeCheck(current: SessionRuntime, reason: string): Promise<void> {
-  registryCheck = registryCheck.then(() => detectRegistryChange(current, reason), () => detectRegistryChange(current, reason))
-  return registryCheck
+  const detect = () => detectRegistryChange(current, reason)
+  const check = (registryChecks.get(current) ?? Promise.resolve()).then(detect, detect)
+  registryChecks.set(current, check)
+  return check
 }
 
 async function detectRegistryChange(current: SessionRuntime, reason: string): Promise<void> {
   const sessionId = current.getSessionId()
   if (runtimes.get(sessionId) !== current) return
-  const next = stableStringify(await current.getRegistry())
-  const digest = registryDigests.get(sessionId)
-  if (digest === undefined) {
-    registryDigests.set(sessionId, next)
-    return
+  const next = await current.getResourceVersions()
+  if (runtimes.get(sessionId) !== current || current.getSessionId() !== sessionId) return
+  const previous = runtimeVersions.get(sessionId)
+  runtimeVersions.set(sessionId, next)
+  if (next.registry !== previous?.registry) {
+    registryRevision += 1
+    send({ kind: "event", generation: workerGeneration, sessionId, channel: "registry.updated",
+      event: { revision: registryRevision, sessionId, reason, resourceVersion: next.resources } })
   }
-  if (next === digest) return
-  registryDigests.set(sessionId, next)
-  registryRevision += 1
-  send({
-    kind: "event",
-    generation: workerGeneration,
-    sessionId,
-    channel: "registry.updated",
-    event: { revision: registryRevision, sessionId, reason },
-  })
-}
-
-function stableStringify(value: JsonValue): string {
-  return JSON.stringify(sortJson(value))
-}
-
-function sortJson(value: JsonValue): JsonValue {
-  if (Array.isArray(value)) return value.map(sortJson)
-  if (!value || typeof value !== "object") return value
-  return Object.fromEntries(
-    Object.keys(value).sort().map(key => [key, sortJson(value[key] ?? null)]),
-  )
+  if (next.resources !== previous?.resources) {
+    send({ kind: "event", generation: workerGeneration, sessionId, channel: "resources.updated",
+      event: { revision: next.resources, reason } })
+  }
 }
 
 async function execute(command: { type: string; params?: JsonObject; sessionId?: string; maxResultBytes?: number }): Promise<JsonValue | undefined | void> {
@@ -397,20 +380,21 @@ async function execute(command: { type: string; params?: JsonObject; sessionId?:
     if (command.sessionId !== currentId) {
       runtimes.delete(command.sessionId!)
       runtimes.set(currentId, current)
-      const digest = registryDigests.get(command.sessionId!)
-      registryDigests.delete(command.sessionId!)
-      registryDigests.set(currentId, digest)
+      const versions = runtimeVersions.get(command.sessionId!)
+      runtimeVersions.delete(command.sessionId!)
+      if (versions) runtimeVersions.set(currentId, versions)
     }
   }
   if (current && shouldCheckRegistryAfter(command.type, params)) {
-    void queueRegistryChangeCheck(current, `command:${command.type}`).catch(error => console.error("[omp-worker] registry refresh failed", error))
+    const check = queueRegistryChangeCheck(current, `command:${command.type}`).catch(error => console.error("[omp-worker] registry refresh failed", error))
+    if (command.type === "reload") await check
   }
   return result
 }
 
 function shouldCheckRegistryAfter(type: string, params: JsonObject): boolean {
   if (type === "prompt" || type === "sendUserMessage") return typeof params.text === "string" && params.text.trimStart().startsWith("/")
-  return ["invokeTool", "invokeCommand", "refreshResources", "setModel", "newSession", "switchSession", "fork"].includes(type)
+  return ["invokeTool", "invokeCommand", "reload", "setModel", "newSession", "switchSession", "fork", "moveSession"].includes(type)
 }
 
 function describeRegistry(): PiRegistrySnapshot {
@@ -434,7 +418,7 @@ async function cleanupWorker(): Promise<void> {
     const current = runtimes.get(sessionId)
     if (!current) return
     runtimes.delete(sessionId)
-    registryDigests.delete(sessionId)
+    runtimeVersions.delete(sessionId)
     await Promise.race([
       current.dispose(),
       new Promise<void>(resolve => {

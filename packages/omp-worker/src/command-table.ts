@@ -372,6 +372,7 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
     cursor: P.optString(p, "cursor"), limit: P.optNumber(p, "limit"), maxBytes: P.optNumber(p, "maxBytes"),
   }),
   "registry.get": async (ctx) => ctx.requireRuntime().getRegistry(),
+  "resources.version": async (ctx) => ctx.requireRuntime().getResourceVersions(),
   "skills.list": async (ctx) => ctx.requireRuntime().listSkills(),
   "skills.get": async (ctx, p) => {
     const runtime = ctx.requireRuntime();

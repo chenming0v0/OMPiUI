@@ -51,6 +51,7 @@ export type WorkerEvent =
   | { kind: "event"; generation: string; channel: "provider.auth"; event: JsonObject }
   | { kind: "event"; generation: string; channel: "models.updated"; event: JsonObject }
   | { kind: "event"; generation: string; channel: "packages.progress"; event: PackageProgress }
+  | { kind: "event"; generation: string; sessionId: string; channel: "resources.updated"; event: JsonObject }
   | { kind: "event"; generation: string; channel: "resources.updated"; workspacePath?: string; commandId: string }
 
 export type WorkerHostCall =

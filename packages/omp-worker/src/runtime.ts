@@ -31,6 +31,7 @@ export interface SessionRuntime {
   getAttachment(entryId: string, blockIndex: number, offset?: number, source?: "content" | "details"): JsonObject | Promise<JsonObject>
   getSubagentMessages(params: import("@ompiui/protocol").SubagentMessagesParams): JsonValue | Promise<JsonValue>
   getRegistry(): RegistrySnapshot | Promise<RegistrySnapshot>
+  getResourceVersions(): { registry: string; resources: string } | Promise<{ registry: string; resources: string }>
   listSkills(): JsonValue | Promise<JsonValue>
   getAsyncJobs(): JsonValue | Promise<JsonValue>
   inspectAsyncJob(id: string): JsonValue | Promise<JsonValue>

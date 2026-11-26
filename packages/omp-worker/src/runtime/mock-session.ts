@@ -41,6 +41,7 @@ import {
 import { entryContentChunk } from "./entry-content.js";
 import { buildSessionTreeFromEntries, sessionTreePage } from "./session-tree.js";
 import { copySessionFile } from "../omp/managed-sessions.js";
+import { resourceDigest } from "../omp/resource-registry.js";
 
 const MOCK_SDK_VERSION = "mock";
 
@@ -866,6 +867,11 @@ export class MockPiSession implements SessionRuntime {
 
   listAgentsFiles(): JsonValue {
     return [];
+  }
+
+  getResourceVersions() {
+    const registry = resourceDigest(this.getRegistry());
+    return { registry, resources: resourceDigest([registry, this.listSkills(), this.listPrompts(), this.listAgentsFiles()]) };
   }
 
   getRegistry(): RegistrySnapshot {

@@ -6,7 +6,7 @@ import { after, describe, it } from "node:test";
 process.env.OMPIUI_WORKER_HANDSHAKE_TIMEOUT_MS ??= "60000";
 
 import { WebSocket } from "ws";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -269,6 +269,22 @@ describe("event websocket", () => {
       false,
     );
 
+    const workspace = { kind: "workspace" as const, id: realpathSync.native(mockHome) };
+    const observer = new WebSocket(`ws://127.0.0.1:${port}/api/v1/events`, EVENT_WS_SUBPROTOCOL);
+    cleanups.push(() => observer.terminate());
+    const observerReady = Promise.withResolvers<void>();
+    const resourceUpdated = Promise.withResolvers<EventEnvelope>();
+    observer.once("error", observerReady.reject);
+    observer.on("message", data => {
+      const message = JSON.parse(String(data));
+      if (message.type === "resync_required") observerReady.resolve();
+      if (message.channel === "event" && message.event.channel === "resources.updated") resourceUpdated.resolve(message.event);
+    });
+    observer.once("open", () => observer.send(JSON.stringify({ type: "subscribe", protocolVersion: PROTOCOL_VERSION, streams: [workspace], cursors: {} })));
+    const deadlineSignal = AbortSignal.timeout(5_000);
+    const deadlineError = new Promise<never>((_, reject) => deadlineSignal.addEventListener("abort", () => reject(deadlineSignal.reason), { once: true }));
+    await Promise.race([observerReady.promise, deadlineError]);
+
     const dynamicCommand = await request(
       port,
       "POST",
@@ -302,6 +318,13 @@ describe("event websocket", () => {
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     assert.ok(sawRegistryUpdated, "did not see registry.updated");
+    const notice = await Promise.race([resourceUpdated.promise, deadlineError]);
+    const payload = notice.payload as { revision: string; sessionId: string };
+    assert.deepEqual(notice.stream, workspace);
+    assert.equal(payload.sessionId, sessionId);
+    const version = await request(port, "POST", `/api/v1/pi/sessions/${encodeURIComponent(sessionId)}/commands/resources.version`);
+    assert.equal(version.status, 200);
+    assert.equal(payload.revision, version.json.data.resources);
 
     const changedRegistry = await request(
       port,

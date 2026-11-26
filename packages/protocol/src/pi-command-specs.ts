@@ -624,6 +624,14 @@ export const PI_COMMAND_SPECS = [
     idempotent: true,
   },
   {
+    name: "resources.version",
+    scope: "session",
+    source: "ompiui-adapter",
+    description: "Read the version of the loaded session resources",
+    queue: "immediate",
+    idempotent: true,
+  },
+  {
     name: "skills.list",
     scope: "session",
     description: "List loaded OMP skills",
@@ -1132,6 +1140,7 @@ export const RUNTIME_TARGETS = {
   "branch.get": "getBranchPage",
   "tree.get": "getTree",
   "registry.get": "getRegistry",
+  "resources.version": "getResourceVersions",
   "skills.list": "listSkills",
   // The adapter authorizes metadata reads against the runtime's discovered skills.
   "skills.get": "listSkills",
@@ -1173,6 +1182,7 @@ export type PiCommandParams = CoreCommandParams & {
   "branch.get": PiPageParams & BranchSyncRequest;
   "tree.get": PiPageParams;
   "registry.get": Record<string, never>;
+  "resources.version": Record<string, never>;
   "skills.list": Record<string, never>;
   "skills.get": { name: string; filePath: string };
   "asyncJobs.get": Record<string, never>;

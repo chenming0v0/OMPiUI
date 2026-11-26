@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { open } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -1364,6 +1364,14 @@ export class SessionHost {
       }
       return;
     }
+    if (event.channel === "resources.updated" && "sessionId" in event) {
+      let workspacePath = session.cwd;
+      try { workspacePath = realpathSync.native(workspacePath); } catch { /* the session stream still receives the revision */ }
+      const payload = { ...event.event, sessionId: session.sessionId, workspacePath };
+      this.hub.publish({ kind: "session", id: session.sessionId }, "resources.updated", payload);
+      this.hub.publish({ kind: "workspace", id: workspacePath }, "resources.updated", payload);
+      return;
+    }
     if (event.channel === "registry.updated") {
       this.hub.publish(
         { kind: "session", id: session.sessionId },
@@ -1429,7 +1437,7 @@ export class SessionHost {
       );
       return;
     }
-    if (event.channel === "resources.updated") {
+    if (event.channel === "resources.updated" && !("sessionId" in event)) {
       this.hub.publish(
         event.workspacePath ? { kind: "workspace", id: event.workspacePath } : { kind: "server", id: "server" },
         "resources.updated",

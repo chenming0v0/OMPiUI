@@ -604,7 +604,13 @@ class PiEventStream {
     }
     if ('channel' in message && message.channel === 'control' && message.type === 'resync_required') {
       for (const key of Object.keys(message.streams)) {
-        this.queueResync(key, message.streams[key as EventStreamKey]?.cursor)
+        const { cursor, reason } = message.streams[key as EventStreamKey] ?? {}
+        if (reason && reason !== 'missing_cursor') {
+          const stream = parseEventStreamKey(key)
+          if (stream?.kind === 'session') this.checkSessionResourceVersion({ sessionId: stream.id })
+          if (stream?.kind === 'workspace') this.checkSessionResourceVersion({ workspacePath: stream.id })
+        }
+        this.queueResync(key, cursor)
       }
       return
     }
@@ -627,6 +633,10 @@ class PiEventStream {
     refreshModelSettings()
     // The provider form holds its own drafts; a model catalog refresh alone cannot replace them.
     window.dispatchEvent(new CustomEvent('ompiui:models-updated'))
+  }
+
+  private checkSessionResourceVersion(detail: { sessionId: string } | { workspacePath: string }): void {
+    window.dispatchEvent(new CustomEvent('ompiui:session-resources-updated', { detail }))
   }
 
   private handleOmittedPayload(message: Extract<EventServerMessage, { type: 'payload_omitted' }>): void {
@@ -653,7 +663,11 @@ class PiEventStream {
         if (stream.kind === 'session') this.scheduleStateRefresh(stream.id)
         else for (const sessionId of this.refCounts.keys()) this.scheduleStateRefresh(sessionId)
       } else if (eventChannel === 'resources.updated') {
-        receiveResourceRevision(stream.kind === 'workspace' || stream.kind === 'resources' ? stream.id : undefined, `${message.cursor.epoch}:${message.cursor.sequence}`)
+        if (stream.kind === 'session') this.checkSessionResourceVersion({ sessionId: stream.id })
+        else if (stream.kind === 'workspace') {
+          this.checkSessionResourceVersion({ workspacePath: stream.id })
+          receiveResourceRevision(stream.id, `${message.cursor.epoch}:${message.cursor.sequence}`)
+        } else receiveResourceRevision(stream.kind === 'resources' ? stream.id : undefined, `${message.cursor.epoch}:${message.cursor.sequence}`)
       } else if (eventChannel === 'settings.updated') {
         receiveSettingsUpdated()
         refreshOfficialSettings()
@@ -720,6 +734,9 @@ class PiEventStream {
       case 'payload.omitted':
         recordClientDiagnostic('worker_payload_omitted', { sessionId, errorCode: 'WORKER_EVENT_TOO_LARGE' })
         this.queueResync(eventStreamKey(envelope.stream))
+        if (sessionId && isJsonObject(envelope.payload) && envelope.payload.channel === 'resources.updated') {
+          this.checkSessionResourceVersion({ sessionId })
+        }
         if (!sessionId && isJsonObject(envelope.payload)) {
           if (envelope.payload.channel === 'settings.updated') {
             receiveSettingsUpdated()
@@ -789,7 +806,14 @@ class PiEventStream {
         }
         break
       case 'resources.updated': {
-        const payload = envelope.payload as { workspacePath?: string | null } | undefined
+        const payload = envelope.payload as { sessionId?: string; workspacePath?: string | null; revision?: string } | undefined
+        const resourceSession = sessionId ?? payload?.sessionId
+        if (resourceSession && typeof payload?.revision === 'string') {
+          window.dispatchEvent(new CustomEvent('ompiui:session-resources-updated', {
+            detail: { sessionId: resourceSession, workspacePath: payload.workspacePath, version: payload.revision },
+          }))
+          break
+        }
         const workspacePath = envelope.stream.kind === 'workspace' ? envelope.stream.id : payload?.workspacePath ?? undefined
         receiveResourceRevision(workspacePath, `${envelope.cursor.epoch}:${envelope.cursor.sequence}`)
         break
@@ -801,11 +825,11 @@ class PiEventStream {
         window.dispatchEvent(new CustomEvent('ompiui:workspace-git-updated', { detail: envelope.payload }))
         break
       case 'registry.updated': {
-        const payload = envelope.payload as { sessionId?: string } | undefined
+        const payload = envelope.payload as { sessionId?: string; resourceVersion?: string } | undefined
         if (sessionId || payload?.sessionId) {
           window.dispatchEvent(
             new CustomEvent('ompiui:registry-updated', {
-              detail: { sessionId: sessionId ?? payload?.sessionId },
+              detail: { sessionId: sessionId ?? payload?.sessionId, resourceVersion: payload?.resourceVersion },
             }),
           )
         }
