@@ -68,6 +68,7 @@ type PiEventPayload = {
     | AgentSessionEvent
     | { type: 'config_update'; model?: JsonObject; thinkingLevel?: string }
     | { type: 'irc_message'; message: JsonObject }
+    | { type: 'session_modes_changed' }
     | { type: 'command_output'; text: string; source?: string; isError?: boolean; level?: string; status?: string }
     | { type: 'prompt_result'; agentInvoked: boolean; status: 'completed' | 'aborted' | 'error'; error?: string | JsonObject }
     | { type: 'extension_error'; extensionPath: string; event: string; error: string }
@@ -1302,6 +1303,7 @@ class PiEventStream {
       case 'session_info_changed':
       case 'session_info_update':
       case 'queue_update':
+      case 'session_modes_changed':
       case 'compaction_start':
       case 'compaction_end':
         piSessionStateStore.beginRequest(sessionId)
