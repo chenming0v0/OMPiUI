@@ -385,6 +385,31 @@ test("SessionHost notifies the session list when sessions materialize, are renam
   rmSync(sessionFile, { force: true })
 })
 
+test("SessionHost publishes cold session deletion only after catalog success", async t => {
+  const hub = new EventHub()
+  const updated: unknown[] = []
+  const sessionFile = join(tmpdir(), "cold-session.jsonl")
+  let shouldFail = true
+  const supervisor = {
+    onEvent: () => () => {},
+    catalogCommand: async (type: string) => {
+      assert.equal(type, "session.delete")
+      if (shouldFail) throw new Error("unlink failed")
+      return { sessionFile, sessionId: "cold-session" }
+    },
+  } as unknown as RuntimeSupervisor
+  const host = new SessionHost(supervisor, hub)
+  const off = hub.subscribe(event => {
+    if (event.channel === "sessions.updated") updated.push(event.payload)
+  })
+  t.after(() => { off(); return host.dispose() })
+  await assert.rejects(host.executeGlobalCommand("session.delete", { cwd: ".", sessionFile }), /unlink failed/)
+  assert.deepEqual(updated, [])
+  shouldFail = false
+  await host.executeGlobalCommand("session.delete", { cwd: ".", sessionFile })
+  assert.deepEqual(updated, [{ sessionFile, sessionId: "cold-session", deleted: true }])
+})
+
 test("SessionHost rejects reopening a runtime while it is closing", async () => {
   process.env.OMPIUI_DRIVER = "mock"
   let releaseAbort!: () => void

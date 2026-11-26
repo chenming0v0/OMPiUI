@@ -298,6 +298,17 @@ export async function loadPiSessionData(sessionId: string, signal?: AbortSignal)
   return flight
 }
 
+export function markPiSessionUnavailable(sessionId: string, error: Error): void {
+  piBranchStore.clear(sessionId)
+  piSessionStateStore.clear(sessionId)
+  piBranchStore.setError(sessionId, error)
+  void removeCachedPiBranch(sessionId)
+}
+
+export function isMissingPiSession(error: unknown): error is Error {
+  return error instanceof Error && 'code' in error && error.code === 'SESSION_NOT_FOUND'
+}
+
 async function loadPiSessionDataOnce(sessionId: string, signal?: AbortSignal): Promise<void> {
   const serverGeneration = serverStore.getActiveServerGeneration()
   const requestVersion = piSessionStateStore.beginRequest(sessionId)
@@ -338,9 +349,13 @@ async function loadPiSessionDataOnce(sessionId: string, signal?: AbortSignal): P
     reconcilePiSessionSnapshot(sessionId)
   } catch (error) {
     if (serverStore.getActiveServerGeneration() !== serverGeneration) return
-    if (piSessionStateStore.isRequestCurrent(sessionId, requestVersion))
-      piSessionStateStore.setError(sessionId, error as Error)
-    if (piBranchStore.isRequestCurrent(sessionId, branchVersion)) piBranchStore.setError(sessionId, error as Error)
+    if (isMissingPiSession(error) && piBranchStore.isRequestCurrent(sessionId, branchVersion)) {
+      markPiSessionUnavailable(sessionId, error)
+    } else {
+      if (piSessionStateStore.isRequestCurrent(sessionId, requestVersion))
+        piSessionStateStore.setError(sessionId, error as Error)
+      if (piBranchStore.isRequestCurrent(sessionId, branchVersion)) piBranchStore.setError(sessionId, error as Error)
+    }
     throw error
   }
 }
@@ -613,27 +628,33 @@ async function refreshPiBranchOnce(sessionId: string, signal?: AbortSignal, incl
   const version = piBranchStore.beginRequest(sessionId)
   const current = piBranchStore.getData(sessionId)
   const params = { limit: BRANCH_PAGE_LIMIT, maxBytes: includeLive ? 4 * 1024 * 1024 : BRANCH_PAGE_MAX_BYTES }
-  let latest = await readHistoryPage(maxBytes => transport.getPiBranchPage(
-    sessionId,
-    {
-      ...params,
-      maxBytes,
-      ...(includeLive ? { includeLiveMessage: true } : {}),
-      ...(current?.syncCursor ? { syncCursor: current.syncCursor, beforeId: current.items[0]?.id } : {}),
-    },
-    signal,
-  ), params.maxBytes, signal)
-  if (serverStore.getActiveServerGeneration() !== serverGeneration) return
-  if (!piBranchStore.isRequestCurrent(sessionId, version)) {
-    const settled = piBranchStore.getData(sessionId)?.checkpoint?.liveMessage
-    return current?.checkpoint?.liveMessage?.phase === 'streaming' &&
-      settled?.id === current.checkpoint.liveMessage.id && settled?.phase === 'persisting'
+  try {
+    let latest = await readHistoryPage(maxBytes => transport.getPiBranchPage(
+      sessionId,
+      {
+        ...params,
+        maxBytes,
+        ...(includeLive ? { includeLiveMessage: true } : {}),
+        ...(current?.syncCursor ? { syncCursor: current.syncCursor, beforeId: current.items[0]?.id } : {}),
+      },
+      signal,
+    ), params.maxBytes, signal)
+    if (serverStore.getActiveServerGeneration() !== serverGeneration) return
+    if (!piBranchStore.isRequestCurrent(sessionId, version)) {
+      const settled = piBranchStore.getData(sessionId)?.checkpoint?.liveMessage
+      return current?.checkpoint?.liveMessage?.phase === 'streaming' &&
+        settled?.id === current.checkpoint.liveMessage.id && settled?.phase === 'persisting'
+    }
+    if (latest.deltaFrom && latest.deltaFrom !== piBranchStore.getData(sessionId)?.syncCursor) {
+      latest = await readHistoryPage(maxBytes => transport.getPiBranchPage(sessionId, { ...params, maxBytes }, signal), params.maxBytes, signal)
+    }
+    if (serverStore.getActiveServerGeneration() !== serverGeneration) return
+    piBranchStore.setDataIfCurrent(sessionId, mergeLatestBranchPage(piBranchStore.getData(sessionId), latest), version)
+  } catch (error) {
+    if (isMissingPiSession(error) && !signal?.aborted && serverStore.getActiveServerGeneration() === serverGeneration &&
+        piBranchStore.isRequestCurrent(sessionId, version)) markPiSessionUnavailable(sessionId, error)
+    throw error
   }
-  if (latest.deltaFrom && latest.deltaFrom !== piBranchStore.getData(sessionId)?.syncCursor) {
-    latest = await readHistoryPage(maxBytes => transport.getPiBranchPage(sessionId, { ...params, maxBytes }, signal), params.maxBytes, signal)
-  }
-  if (serverStore.getActiveServerGeneration() !== serverGeneration) return
-  piBranchStore.setDataIfCurrent(sessionId, mergeLatestBranchPage(piBranchStore.getData(sessionId), latest), version)
 }
 
 /**

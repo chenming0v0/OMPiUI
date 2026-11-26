@@ -416,7 +416,7 @@ export class MockCatalog implements CatalogProvider, PackagesGateway {
     return copySessionFile(info.path, sessionsDir());
   }
 
-  async deleteSession(_cwd: string, sessionFile: string): Promise<void> {
+  async deleteSession(_cwd: string, sessionFile: string): Promise<JsonObject | null> {
     const root = path.resolve(sessionsDir());
     const resolved = path.resolve(sessionFile);
     if (!existsSync(resolved))
@@ -435,7 +435,9 @@ export class MockCatalog implements CatalogProvider, PackagesGateway {
         { code: "PATH_OUTSIDE_WORKSPACE" },
       );
     }
+    const id = this.store.list().find(item => item.path === resolved)?.id;
     await this.store.delete(resolved);
+    return { sessionId: id ?? null, sessionFile: resolved };
   }
 
   async listModels(): Promise<JsonValue> {

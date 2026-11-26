@@ -379,6 +379,81 @@ describe("event websocket", () => {
     ws.close();
   });
 
+  it("notifies independent clients of attached and cold deletions and replays them on reconnect", async () => {
+    const mockHome = mkdtempSync(path.join(tmpdir(), "ompiui-ws-delete-"));
+    process.env.OMPIUI_MOCK_DIR = mockHome;
+    process.env.OMPIUI_DRIVER = "mock";
+    const app = createAppServer({ authToken: null });
+    const wss = attachEventWebSocket(app.server, { eventHub: app.eventHub, authToken: null });
+    const port = await listen(app);
+    cleanups.push(async () => {
+      for (const ws of wss.clients) ws.terminate();
+      closeEventWebSocket(wss);
+      await app.dispose();
+      rmSync(mockHome, { recursive: true, force: true });
+    });
+    const server = { kind: "server", id: "server" } as const;
+    async function client(sessionId?: string, cursor?: EventEnvelope["cursor"]) {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/api/v1/events`, EVENT_WS_SUBPROTOCOL);
+      const envelopes: EventEnvelope[] = [];
+      ws.on("message", raw => {
+        const frame = JSON.parse(String(raw));
+        if (frame.channel === "event") envelopes.push(frame.event);
+      });
+      await new Promise<void>((resolve, reject) => {
+        ws.once("message", () => resolve());
+        ws.once("error", reject);
+      });
+      const baseline = cursor ?? app.eventHub.getCursor(server);
+      ws.send(JSON.stringify({ type: "subscribe", protocolVersion: PROTOCOL_VERSION,
+        streams: sessionId ? [server, { kind: "session", id: sessionId }] : [server],
+        cursors: { server: baseline },
+      }));
+      // A server event after subscribe (or its replay) proves this connection is ready.
+      const ready = app.eventHub.publish(server, "sessions.updated", { subscribed: true });
+      await waitFor(() => envelopes.some(event => event.cursor.epoch === ready.cursor.epoch &&
+        event.cursor.sequence === ready.cursor.sequence && event.stream.kind === "server"));
+      return { ws, envelopes };
+    }
+    async function open() {
+      const result = await request(port, "POST", "/api/v1/pi/commands/session.open", { cwd: mockHome });
+      assert.equal(result.status, 200);
+      return result.json.data as { sessionId: string; sessionFile: string };
+    }
+    const deleted = (events: EventEnvelope[], sessionId: string) => events.some(event =>
+      event.channel === "sessions.updated" &&
+      (event.payload as { sessionId?: string; deleted?: boolean }).sessionId === sessionId &&
+      (event.payload as { deleted?: boolean }).deleted === true);
+    const remove = (sessionFile: string) => request(port, "POST", "/api/v1/pi/commands/session.delete", { cwd: mockHome, sessionFile });
+    const preview = (sessionId: string) => request(port, "POST", "/api/v1/pi/commands/session.preview", { sessionId });
+
+    const attached = await open();
+    const a = await client();
+    const b = await client(attached.sessionId);
+    assert.equal((await preview(attached.sessionId)).status, 200);
+    assert.notEqual((await remove(path.join(mockHome, "missing.jsonl"))).status, 200);
+    assert.equal((await preview(attached.sessionId)).status, 200);
+    assert.equal((await remove(attached.sessionFile)).status, 200);
+    await waitFor(() => deleted(a.envelopes, attached.sessionId) && deleted(b.envelopes, attached.sessionId));
+    const missing = await request(port, "POST", `/api/v1/pi/sessions/${attached.sessionId}/commands/branch.get`);
+    assert.equal(missing.status, 404);
+    assert.equal(missing.json.code, "SESSION_NOT_FOUND");
+
+    const cold = await open();
+    await app.sessionHost.closeSession(cold.sessionId);
+    assert.equal((await preview(cold.sessionId)).status, 200);
+    const cursor = app.eventHub.getCursor(server);
+    b.ws.terminate();
+    assert.equal((await remove(cold.sessionFile)).status, 200);
+    await waitFor(() => deleted(a.envelopes, cold.sessionId));
+    const reconnected = await client(cold.sessionId, cursor);
+    await waitFor(() => deleted(reconnected.envelopes, cold.sessionId));
+    assert.equal((await preview(cold.sessionId)).status, 404);
+    const list = await request(port, "POST", "/api/v1/pi/commands/session.listAll");
+    assert.equal(list.status, 200);
+    assert.ok(!list.json.data.some((item: { id: string }) => item.id === cold.sessionId || item.id === attached.sessionId));
+  });
+
   it("rejects connections without a valid token", async () => {
     const app = createAppServer({ authToken: "secret-token" });
     const wss: WebSocketServer = attachEventWebSocket(app.server, {

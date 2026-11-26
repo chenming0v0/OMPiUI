@@ -322,6 +322,28 @@ describe('bounded live recovery and cache cleanup', () => {
   })
 })
 
+describe('handleSessionsUpdated deletion', () => {
+  it('invalidates only the matching loaded history and refreshes the lists', () => {
+    piBranchStore.setData('deleted-session', fakeBranchPage('deleted-session'))
+    piBranchStore.setData('remaining-session', fakeBranchPage('remaining-session'))
+    piSessionStateStore.setState('deleted-session', { isIdle: true })
+    const changed = vi.fn()
+    window.addEventListener('ompiui:sessions-changed', changed)
+    try {
+      handle({ sessionId: 'deleted-session', sessionFile: '/project/deleted.jsonl', deleted: true })
+      expect(piBranchStore.getData('deleted-session')).toBeNull()
+      expect(piBranchStore.getError('deleted-session')).toMatchObject({ code: 'SESSION_NOT_FOUND' })
+      expect(piSessionStateStore.getState('deleted-session')).toBeNull()
+      expect(piBranchStore.getData('remaining-session')).not.toBeNull()
+      expect(changed).toHaveBeenCalledOnce()
+    } finally {
+      window.removeEventListener('ompiui:sessions-changed', changed)
+      piBranchStore.clear('deleted-session')
+      piBranchStore.clear('remaining-session')
+    }
+  })
+})
+
 describe('handleSessionsUpdated replacement semantics', () => {
   let replacedEvents: unknown[] = []
   let changedCount = 0

@@ -24,6 +24,20 @@ describe('session state response ordering', () => {
     ompSubagentStore.clearAll()
   })
 
+  it('clears cached history only when a background branch read confirms the session is missing', async () => {
+    const branch: PiBranchPage = { head: { epoch: 'disk', revision: 1, sdkVersion: 'test', header: null, leafId: null, entryCount: 0 }, items: [], hasMore: false }
+    piBranchStore.setData('session-a', branch)
+    const read = vi.spyOn(transport, 'getPiBranchPage')
+      .mockRejectedValueOnce(new Error('Failed to fetch'))
+      .mockRejectedValueOnce(Object.assign(new Error('session not found'), { code: 'SESSION_NOT_FOUND', status: 404 }))
+    await expect(refreshPiBranch('session-a')).rejects.toThrow('Failed to fetch')
+    expect(piBranchStore.getData('session-a')).not.toBeNull()
+    await expect(refreshPiBranch('session-a')).rejects.toThrow('session not found')
+    expect(read).toHaveBeenCalledTimes(2)
+    expect(piBranchStore.getData('session-a')).toBeNull()
+    expect(piBranchStore.getError('session-a')).toMatchObject({ code: 'SESSION_NOT_FOUND' })
+  })
+
   it('reads fresh tools after registry changes even when the general registry cache is warm', async () => {
     const registry = { sdkVersion: 'test', tools: [{ name: 'read' }], activeTools: ['read'], commands: [], extensions: null, eventHandlers: null }
     const load = vi.spyOn(transport, 'getPiSessionRegistry')

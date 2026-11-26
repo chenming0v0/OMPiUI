@@ -16,7 +16,8 @@ import type { AgentMessage, AgentSessionEvent, PiLiveMessage, ToolResultMessage 
 import type { ProviderAuthEvent, SessionsActivitySnapshot, SessionActivityStatus } from '@ompiui/protocol'
 import { getApiBase, getPiAuthToken, piFetch } from './httpClient.js'
 import { openPiSocket, PI_SOCKET_CLOSED, PI_SOCKET_CLOSING, PI_SOCKET_OPEN, type PiSocket } from './ompSocket'
-import { piBranchStore, piCommandStore, piSessionStateStore } from './state/index.js'
+import { piBranchStore, piCommandStore, piSessionInfoStore, piSessionStateStore } from './state/index.js'
+import { pinnedSessionsStore } from '../store/pinnedSessionsStore'
 import { extensionUiStore } from './extensionUiStore'
 import { extensionTuiStore } from './extensionTuiStore'
 import { commandFeedbackStore } from './commandFeedbackStore'
@@ -50,7 +51,7 @@ import { setEventStreamState } from '../api/events'
 import { clearSubagentTranscripts } from './subagentTranscript'
 import { bashPendingStore } from './bashPendingStore'
 import { faultSocketOpened, faultSocketClosed, faultSocketUnused, reportRuntimeCrash, recordClientDiagnostic } from './faultAudit/controller'
-import { invalidatePiSessionList, loadPiSessionData, refreshPiBranch, refreshPiSessionState, settlePiLiveMessage } from './controllers/index.js'
+import { invalidatePiSessionList, isMissingPiSession, loadPiSessionData, markPiSessionUnavailable, refreshPiBranch, refreshPiSessionState, settlePiLiveMessage } from './controllers/index.js'
 import { SessionActivityWatchdog } from './sessionActivityWatchdog.js'
 import { ensureHostWorkspaceWatch, resetWorkspaceWatchRegistrations } from './workspaces'
 import { getOptionalTerminalSecret } from './terminalIdentity'
@@ -98,6 +99,8 @@ type SessionsUpdatedPayload = {
   attached?: boolean
   detached?: boolean
   materialized?: boolean
+  deleted?: boolean
+  sessionFile?: string
   crashed?: boolean
   faultId?: string
   faultTime?: string
@@ -830,6 +833,20 @@ class PiEventStream {
 
   private handleSessionsUpdated(payload: SessionsUpdatedPayload | undefined): void {
     invalidatePiSessionList()
+    if (payload?.deleted) {
+      const sessionId = payload.sessionId ?? piSessionInfoStore.getAll().find(item => item.path === payload.sessionFile)?.id
+      if (sessionId) {
+        this.activityWatchdog.cancel(sessionId)
+        this.clearRefreshTimers(sessionId)
+        this.pendingLiveMessages.delete(sessionId)
+        this.knownActiveSessions.delete(sessionId)
+        liveToolOutputStore.clearSession(sessionId)
+        markPiSessionUnavailable(sessionId, Object.assign(new Error('Session not found'), { code: 'SESSION_NOT_FOUND' }))
+        activeSessionStore.removeSession(sessionId)
+        piSessionInfoStore.remove(sessionId)
+        pinnedSessionsStore.unpin(sessionId)
+      }
+    }
     if (payload?.crashed && payload.sessionId) {
       reportRuntimeCrash(payload.sessionId, payload.faultId, payload.faultTime, payload.errorCode)
       piSessionStateStore.patchState(payload.sessionId, { nativeAskDialog: false, askUi: { available: false, reason: 'runtime_unavailable' } })
@@ -1399,6 +1416,11 @@ class PiEventStream {
         })
         .catch(error => {
           if (this.resyncGeneration !== generation || controller.signal.aborted) return
+          if (isMissingPiSession(error)) {
+            this.incompleteResync.delete(key)
+            this.clearResyncRetry(key)
+            return
+          }
           this.incompleteResync.add(key)
           this.retryResync(key, generation)
           return this.diagnostics.error('branch_error', stream.id, error)

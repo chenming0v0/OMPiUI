@@ -1037,14 +1037,14 @@ export class OmpCatalog implements CatalogProvider {
     return null;
   }
 
-  async deleteSession(cwd: string, sessionFile: string): Promise<void> {
+  async deleteSession(cwd: string, sessionFile: string): Promise<JsonObject | null> {
     const target = resolveUserPath(sessionFile);
     const root = path.resolve(
       isManagedSessionFile(target)
         ? managedSessionsRoot()
         : ompSessionRootFor(target),
     );
-    if (!existsSync(target)) return;
+    if (!existsSync(target)) return null;
     const realRoot = await fs.realpath(root);
     const realTarget = await fs.realpath(target);
     const rootKey =
@@ -1057,10 +1057,14 @@ export class OmpCatalog implements CatalogProvider {
         { code: "PATH_OUTSIDE_WORKSPACE" },
       );
     }
+    const sessionId = await sessionFileId(target);
     await fs.unlink(target);
-    this.summarizeCache = null;
+    this.invalidateSessionList();
+    this.diskBranchCaches.delete(target);
     sessionSummaryCache.delete(target);
     subagentTitleCache.delete(target);
+    if (sessionId && sessionIdIndex.get(sessionId) === target) sessionIdIndex.delete(sessionId);
+    return { sessionId: sessionId ?? null, sessionFile: target };
   }
 
   async listModels(): Promise<JsonValue> {
