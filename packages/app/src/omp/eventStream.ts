@@ -621,6 +621,13 @@ class PiEventStream {
     }
   }
 
+  private refreshModelConfiguration(): void {
+    receiveProviderAuthUpdated()
+    refreshModelSettings()
+    // The provider form holds its own drafts; a model catalog refresh alone cannot replace them.
+    window.dispatchEvent(new CustomEvent('ompiui:models-updated'))
+  }
+
   private handleOmittedPayload(message: Extract<EventServerMessage, { type: 'payload_omitted' }>): void {
     const { stream, eventChannel, commandId } = message
     const key = eventStreamKey(stream)
@@ -650,10 +657,7 @@ class PiEventStream {
         receiveSettingsUpdated()
         refreshOfficialSettings()
       } else if (eventChannel === 'models.updated') {
-        receiveProviderAuthUpdated()
-        refreshModelSettings()
-        // 供应商设置页直接持有 draft 副本，必须重读，否则过期草稿会把外部改动写回。
-        window.dispatchEvent(new CustomEvent('ompiui:models-updated'))
+        this.refreshModelConfiguration()
       } else {
         if (stream.kind === 'session') this.scheduleBranchRefresh(stream.id)
         else this.queueResync(eventStreamKey(stream))
@@ -716,8 +720,7 @@ class PiEventStream {
         recordClientDiagnostic('worker_payload_omitted', { sessionId, errorCode: 'WORKER_EVENT_TOO_LARGE' })
         this.queueResync(eventStreamKey(envelope.stream))
         if (!sessionId && isJsonObject(envelope.payload)) {
-          if (envelope.payload.channel === 'models.updated') refreshModelSettings()
-          else if (envelope.payload.channel === 'settings.updated') {
+          if (envelope.payload.channel === 'settings.updated') {
             receiveSettingsUpdated()
             refreshOfficialSettings()
           }
@@ -776,10 +779,7 @@ class PiEventStream {
         // models.yml 变更（手动加模型 / omp CLI 登录写入）：provider 配置与
         // 凭据同源，bump providerRevision 让管理页重拉；模型选择器的列表
         // store 直接刷新（有 flight 去重），不依赖某个组件恰好挂载
-        receiveProviderAuthUpdated()
-        refreshModelSettings()
-        // 供应商设置页直接持有 draft 副本，必须重读，否则过期草稿会把外部改动写回。
-        window.dispatchEvent(new CustomEvent('ompiui:models-updated'))
+        this.refreshModelConfiguration()
         break
       }
       case 'packages.progress':
@@ -1417,6 +1417,7 @@ class PiEventStream {
       this.scheduleStateRefresh(stream.id)
       return flight
     } else if (stream.kind === 'server') {
+      this.refreshModelConfiguration()
       receiveSettingsUpdated()
       refreshOfficialSettings()
       window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
