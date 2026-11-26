@@ -10,7 +10,8 @@ import App from './App.tsx'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { DirectoryProvider, FullscreenProvider, SessionProvider } from './contexts'
 import { themeStore } from './store/themeStore'
-import { applyUrlTokenParam } from './store/serverStore'
+import { applyUrlTokenParam, serverStore } from './store/serverStore'
+import type { OpenDirectoryRequest } from './contexts/DirectoryContext.shared'
 import { isTauri, isTauriMobile } from './utils/tauri'
 import { globalErrorHandler } from './utils/errorHandling'
 import { serviceStore } from './store/serviceStore'
@@ -95,13 +96,13 @@ window.addEventListener('unhandledrejection', event => {
 
 const root = createRoot(document.getElementById('root')!)
 
-function bootstrap() {
+function bootstrap(startupDirectory: OpenDirectoryRequest | null) {
   root.render(
     <StrictMode>
       <Suspense fallback={null}>
         {/* 根级兜底：任何渲染崩溃都落在错误页而不是白屏 */}
         <ErrorBoundary>
-          <DirectoryProvider>
+          <DirectoryProvider startupDirectory={startupDirectory}>
             <SessionProvider>
               <FullscreenProvider>
                 <App />
@@ -134,8 +135,19 @@ async function startApp() {
   // Match the desktop shell behavior: render immediately, then bring the
   // managed service up in the background. Backend bootstrap retries while the
   // service starts and server changes trigger an immediate reconnect.
+  const startupDirectory = isNativeTauri && !isTauriMobile()
+    ? await import('@tauri-apps/api/core')
+      .then(({ invoke }) => invoke<OpenDirectoryRequest | null>('get_cli_directory'))
+      .catch(() => null)
+    : null
+  // Project windows explicitly inherit the initiating backend, not the last
+  // window that happened to switch servers. Verify the saved endpoint first.
+  if (startupDirectory?.source === 'backend' &&
+      serverStore.matchesSavedBackend(startupDirectory.serverId, startupDirectory.serverUrl)) {
+    serverStore.setActiveServer(startupDirectory.serverId, 'window')
+  }
   restorePaneRoute()
-  bootstrap()
+  bootstrap(startupDirectory)
 
   const { initializePiBackend, installPiBackendServerSwitch } = await import('./omp/bootstrapMockChat')
   installPiBackendServerSwitch()

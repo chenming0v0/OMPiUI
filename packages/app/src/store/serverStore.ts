@@ -121,6 +121,16 @@ export function isCustomizedLocalServerUrl(url: string): boolean {
   return /^https?:\/\//i.test(url) && url !== API_BASE_URL
 }
 
+function isLoopbackServerUrl(url: string): boolean {
+  try {
+    const { protocol, hostname } = new URL(url)
+    return (protocol === 'http:' || protocol === 'https:') &&
+      (hostname === 'localhost' || hostname === '[::1]' || hostname.startsWith('127.') && /^127(?:\.\d{1,3}){3}$/.test(hostname))
+  } catch {
+    return false
+  }
+}
+
 /**
  * Server Store
  * 管理多个 OMPiUI server 配置
@@ -201,13 +211,12 @@ class ServerStore {
     }
   }
 
-  private saveToStorage(): void {
+  private saveToStorage(selection?: 'window' | 'default'): void {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.servers))
-      if (this.activeServerId) {
-        // 写入 sessionStorage（当前窗口刷新保持）+ localStorage（新窗口默认值）
+      if (selection && this.activeServerId) {
         sessionStorage.setItem(ACTIVE_SERVER_KEY, this.activeServerId)
-        localStorage.setItem(ACTIVE_SERVER_KEY, this.activeServerId)
+        if (selection === 'default') localStorage.setItem(ACTIVE_SERVER_KEY, this.activeServerId)
       }
     } catch {
       // ignore
@@ -302,6 +311,33 @@ class ServerStore {
 
   isActiveLocalServer(): boolean {
     return this.getActiveServerId() === this.DEFAULT_SERVER_ID
+  }
+
+  acceptsLocalDirectory(): boolean {
+    return this.isActiveLocalServer() &&
+      (this.localServerUrlOverride !== null || isLoopbackServerUrl(this.getActiveBaseUrl()))
+  }
+
+  matchesSavedBackend(id: string, url: string): boolean {
+    return this.servers.some(server => server.id === id && server.url === url)
+  }
+
+  applyManagedLocalService(url: string, token: string): boolean {
+    if (!url || !token) return false
+    const index = this.servers.findIndex(server => server.id === this.DEFAULT_SERVER_ID)
+    const local = this.servers[index]
+    // A user-edited remote endpoint in the default slot is still remote.
+    if (!local || (isCustomizedLocalServerUrl(local.url) && !isLoopbackServerUrl(local.url))) return false
+    const normalizedUrl = url.replace(/\/+$/, '')
+    if (local.token === token && this.localServerUrlOverride === normalizedUrl) return true
+    this.servers[index] = { ...local, token }
+    this.localServerUrlOverride = normalizedUrl
+    this.healthMap.delete(this.DEFAULT_SERVER_ID)
+    this.healthCheckSeqMap.set(this.DEFAULT_SERVER_ID, (this.healthCheckSeqMap.get(this.DEFAULT_SERVER_ID) ?? 0) + 1)
+    this.saveToStorage()
+    this.notify()
+    if (this.isActiveLocalServer()) this.notifyServerChange(this.DEFAULT_SERVER_ID, 'local-runtime-url')
+    return true
   }
 
   /**
@@ -435,7 +471,7 @@ class ServerStore {
       this.activeServerId = this.servers[0]?.id ?? null
     }
 
-    this.saveToStorage()
+    this.saveToStorage(wasActive ? 'default' : undefined)
     this.notify()
     if (wasActive) {
       this.notifyServerChange(this.activeServerId ?? this.DEFAULT_SERVER_ID, 'server-switch')
@@ -447,12 +483,12 @@ class ServerStore {
    * 设置活动服务器
    * 如果实际切换了服务器，会通知 serverChangeListeners（用于 SSE 重连等）
    */
-  setActiveServer(id: string): boolean {
+  setActiveServer(id: string, scope: 'window' | 'default' = 'default'): boolean {
     if (!this.servers.some(s => s.id === id)) return false
 
     const changed = this.activeServerId !== id
     this.activeServerId = id
-    this.saveToStorage()
+    this.saveToStorage(scope)
     this.notify()
 
     if (changed) {
@@ -766,11 +802,7 @@ export async function applyPairParam(pair: string, origin: string): Promise<bool
 
 /** Tauri 桌面壳启动本地 server 后，把 Rust 读到的 token 接入现有 server store。 */
 export function applyLocalServerConfig(url: string, token: string): boolean {
-  if (!url || !token) return false
-  serverStore.updateServer(LOCAL_SERVER_ID, { token })
-  serverStore.setLocalServerRuntimeUrl(url)
-  serverStore.setActiveServer(LOCAL_SERVER_ID)
-  return true
+  return serverStore.applyManagedLocalService(url, token)
 }
 
 function normalizeServerTimestamp(timestamp: unknown): number | null {

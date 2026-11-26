@@ -7,7 +7,7 @@ import { useRouter } from '../hooks/useRouter'
 import { normalizeToForwardSlash, getDirectoryName, isSameDirectory, serverStorage } from '../utils'
 import { layoutStore, useLayoutStore } from '../store/layoutStore'
 import { isTauri } from '../utils/tauri'
-import { DirectoryContext, type DirectoryContextValue, type SavedDirectory } from './DirectoryContext.shared'
+import { DirectoryContext, type DirectoryContextValue, type OpenDirectoryRequest, type SavedDirectory } from './DirectoryContext.shared'
 import { serverStore } from '../store/serverStore'
 
 const STORAGE_KEY_SAVED = 'ompiui-saved-directories'
@@ -53,7 +53,13 @@ function readProjectState(serverId: string) {
   return { serverId, savedDirectories: readSavedDirectories(), recentProjects: readRecentProjects() }
 }
 
-export function DirectoryProvider({ children }: { children: ReactNode }) {
+function acceptsDirectoryRequest(request: OpenDirectoryRequest): boolean {
+  if (request.source === 'local') return serverStore.acceptsLocalDirectory()
+  return request.source === 'backend' && getServerId() === request.serverId &&
+    serverStore.matchesSavedBackend(request.serverId, request.serverUrl)
+}
+
+export function DirectoryProvider({ children, startupDirectory }: { children: ReactNode; startupDirectory?: OpenDirectoryRequest | null }) {
   // 从 URL 获取 directory（替代 localStorage）
   const { directory: urlDirectory, setDirectory: setUrlDirectory } = useRouter()
 
@@ -171,44 +177,31 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
     })
   }, [setSavedDirectories])
 
-  // Tauri: 启动时获取 CLI 传入的目录 + 监听后续 open-directory 事件
-  // 用 ref 持有最新的 addDirectory 避免 stale closure
   const addDirectoryRef = useRef(addDirectory)
-  useEffect(() => {
+  const startupApplied = useRef(false)
+  useLayoutEffect(() => {
     addDirectoryRef.current = addDirectory
   }, [addDirectory])
-  const startupDirectoryRef = useRef<Promise<{ directory: string; explicit: boolean } | null> | null>(null)
-  const currentDirectoryRef = useRef(urlDirectory)
   useLayoutEffect(() => {
-    currentDirectoryRef.current = urlDirectory
-  }, [urlDirectory])
+    if (startupApplied.current) return
+    startupApplied.current = true
+    if (startupDirectory && acceptsDirectoryRequest(startupDirectory) && (startupDirectory.explicit || !urlDirectory)) {
+      addDirectoryRef.current(startupDirectory.directory)
+    }
+  }, [startupDirectory, urlDirectory])
 
   useEffect(() => {
     if (!isTauri()) return
-
-    let unlisten: (() => void) | undefined
     let cancelled = false
-    const initialDirectory = currentDirectoryRef.current
-    const initialServer = getServerId()
-
-    // StrictMode 的两次 effect 共享一次消费；隐式 cwd 不覆盖保存的项目。
-    startupDirectoryRef.current ??= import('@tauri-apps/api/core')
-      .then(({ invoke }) => invoke<{ directory: string; explicit: boolean } | null>('get_cli_directory'))
-    void startupDirectoryRef.current.then(request => {
-      if (cancelled || getServerId() !== initialServer || currentDirectoryRef.current !== initialDirectory) return
-      if (request && (request.explicit || !initialDirectory)) addDirectoryRef.current(request.directory)
+    let unlisten: (() => void) | undefined
+    void import('@tauri-apps/api/event').then(({ listen }) =>
+      listen<OpenDirectoryRequest>('open-directory', ({ payload }) => {
+        if (!cancelled && acceptsDirectoryRequest(payload)) addDirectoryRef.current(payload.directory)
+      }),
+    ).then(fn => {
+      if (cancelled) fn()
+      else unlisten = fn
     }).catch(() => {})
-
-    // 监听后续的 open-directory 事件（single-instance / macOS RunEvent::Opened）
-    import('@tauri-apps/api/event').then(({ listen }) => {
-      listen<string>('open-directory', event => {
-        if (!cancelled) addDirectoryRef.current(event.payload)
-      }).then(fn => {
-        if (cancelled) fn()
-        else unlisten = fn
-      })
-    })
-
     return () => {
       cancelled = true
       unlisten?.()

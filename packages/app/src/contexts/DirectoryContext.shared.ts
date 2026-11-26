@@ -1,5 +1,10 @@
 import { createContext } from 'react'
 
+export type OpenDirectoryRequest = { directory: string; explicit: boolean } & (
+  | { source: 'local' }
+  | { source: 'backend'; serverId: string; serverUrl: string }
+)
+
 export interface SavedDirectory {
   path: string
   name: string

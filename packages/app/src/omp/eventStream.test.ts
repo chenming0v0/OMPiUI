@@ -957,6 +957,47 @@ describe('tool_execution_update progress frames', () => {
   })
 })
 
+describe('shared UI history', () => {
+  afterEach(() => {
+    piEventStream.disconnectAll()
+    notificationStore.replaceShared([], new Set())
+    vi.restoreAllMocks()
+  })
+
+  it('reads the server snapshot on resync and never overwrites a newer clear with a pending read', async () => {
+    const pending = Promise.withResolvers<Response>()
+    const row = { id: 'shared-run', type: 'completed', title: 'Job', body: '', sessionId: 'shared-session', timestamp: 10, read: false }
+    vi.spyOn(modelSettingsSync, 'refreshOfficialSettings').mockImplementation(() => {})
+    let notificationReads = 0
+    vi.spyOn(http, 'piFetch').mockImplementation(async (url, options) => {
+      if (url.includes('kind=notifications') && options?.method !== 'POST') {
+        notificationReads++
+        if (notificationReads === 1) return pending.promise
+      }
+      return Response.json({ entries: [] })
+    })
+    const replace = vi.spyOn(notificationStore, 'replaceShared')
+    const internal = piEventStream as unknown as { handleResync(key: string): Promise<void> }
+    await internal.handleResync('server')
+    handleEvent({ stream: { kind: 'server', id: 'server' }, channel: 'ui.history', cursor: { epoch: 'history', sequence: 2 }, payload: { kind: 'notifications' } })
+    pending.resolve(Response.json({ entries: [row] }))
+    await vi.waitFor(() => expect(replace).toHaveBeenCalledWith([], expect.any(Set)))
+    expect(replace).not.toHaveBeenCalledWith([row], expect.any(Set))
+  })
+
+  it('uses the selected session scope to hydrate feedback and does not append local duplicates', async () => {
+    const full = { id: 'feedback-1', at: 7, sessionId: 'shared-session', command: '', status: 'info', message: 'full output\nlast line' }
+    const internal = piEventStream as unknown as { refCounts: Map<string, number>; handlePiEvent(sessionId: string, payload: unknown): void }
+    vi.spyOn(http, 'piFetch').mockResolvedValue(Response.json({ entries: [full] }))
+    internal.refCounts.set(full.sessionId, 1)
+    handleEvent({ stream: { kind: 'session', id: full.sessionId }, channel: 'ui.history', cursor: { epoch: 'history', sequence: 1 }, payload: { kind: 'feedback' } })
+    internal.handlePiEvent(full.sessionId, { event: { type: 'command_output', text: full.message }, meta: { sequence: 1 }, sharedHistory: true })
+    await vi.waitFor(() => expect(commandFeedbackStore.getSnapshot().sessions[full.sessionId]).toEqual([full]))
+    piEventStream.disconnect(full.sessionId)
+    expect(commandFeedbackStore.getSnapshot().sessions[full.sessionId]).toBeUndefined()
+  })
+})
+
 describe('native notices and protocol feedback', () => {
   afterEach(() => { commandFeedbackStore.reset(); extensionDiagnosticStore.reset(); notificationStore.clearAll(); vi.restoreAllMocks() })
 

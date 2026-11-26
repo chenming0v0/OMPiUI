@@ -21,6 +21,7 @@ import { getDesktopPlatform, isTauri, usesCustomDesktopTitlebar } from '../utils
 import { useUpdateStore, hasUpdateAvailable } from '../store/updateStore'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { DesktopServiceStatus } from './DesktopServiceStatus'
+import { serverStore } from '../store/serverStore'
 
 /* 标题栏图标按钮通用样式 — Windows 和 macOS 视觉节奏不同，按钮尺寸分开控制 */
 const TB_BTN =
@@ -121,7 +122,7 @@ const WindowsControls = memo(function WindowsControls() {
   )
 })
 
-export function DesktopTitlebar() {
+export function DesktopTitlebar({ directory }: { directory?: string }) {
   const { t } = useTranslation('components')
   const { mode, resolvedTheme } = useTheme()
   const updateState = useUpdateStore()
@@ -180,12 +181,16 @@ export function DesktopTitlebar() {
 
   const handleNewWindow = useCallback(() => {
     if (!isTauri()) return
+    const serverId = serverStore.getActiveServerId()
+    const savedBackend = serverStore.getStoredServers().find(server => server.id === serverId)
     void import('@tauri-apps/api/core').then(({ invoke }) => {
-      invoke('open_new_window', { directory: null }).catch(() => {
+      invoke('open_new_window', directory && savedBackend
+        ? { directory, serverId, serverUrl: savedBackend.url }
+        : { directory: null }).catch(() => {
         // 静默
       })
     })
-  }, [])
+  }, [directory])
 
   if (!isDesktopChrome) {
     return platform === 'linux' ? (

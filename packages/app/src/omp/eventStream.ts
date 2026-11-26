@@ -22,6 +22,7 @@ import { extensionUiStore } from './extensionUiStore'
 import { extensionTuiStore } from './extensionTuiStore'
 import { commandFeedbackStore } from './commandFeedbackStore'
 import { extensionDiagnosticStore } from './extensionDiagnosticStore'
+import { uiHistory } from './uiHistory'
 import { notificationStore } from '../store/notificationStore'
 import i18n from '../i18n'
 import { liveToolOutputStore, extractToolExecutionText } from './liveToolOutput'
@@ -75,6 +76,7 @@ type PiEventPayload = {
     | { type: 'notice'; level: 'info' | 'warning' | 'error'; message: string; source?: string }
     | { type: 'rpc_frame_error' | 'rpc_stream_error'; error: string; originalType?: string }
   meta: EventCursor & { liveMessage?: { id: string; revision: number } }
+  sharedHistory?: boolean
 }
 
 type CommandRecovery = {
@@ -88,7 +90,7 @@ type PiExtensionUiEvent =
   | { type: 'requested'; request: import('@ompiui/protocol').ExtensionUiDialogRequest }
   | { type: 'settled'; requestId: string; sessionId: string }
   | { type: 'state'; sessionId: string; patch: import('@ompiui/protocol').ExtensionUiStatePatch }
-  | { type: 'notify'; sessionId: string; message: string; notifyType?: 'info' | 'warning' | 'error' }
+  | { type: 'notify'; sessionId: string; message: string; notifyType?: 'info' | 'warning' | 'error'; sharedHistory?: boolean }
   | { type: 'editor'; sessionId: string; command: import('@ompiui/protocol').ExtensionUiEditorCommand }
   | { type: 'tuiAttach'; sessionId: string; attach: import('@ompiui/protocol').ExtensionTuiAttach }
   | { type: 'tuiDetach'; sessionId: string; key: string }
@@ -152,6 +154,8 @@ class PiEventStream {
   private readonly diagnostics = new BrowserDiagnostics(message => this.send(message))
   private lastCloseCode: number | undefined
   private lastProblemCode: string | undefined
+  private serverSubscribers = 0
+  private liveHistoryAfter = 0
   private refCounts = new Map<string, number>()
   private workspaceRefCounts = new Map<string, number>()
   private cursors = new Map<string, EventCursor>()
@@ -188,6 +192,16 @@ class PiEventStream {
   private resyncActive = 0
   private resyncGeneration = 0
   private readonly RESYNC_CONCURRENCY = 2
+
+  /** Keep the server stream alive on Home, even with no workspace or pane. */
+  subscribeServer(): () => void {
+    this.serverSubscribers++
+    this.ensureSocket()
+    return () => {
+      this.serverSubscribers--
+      if (!this.hasSubscriptions()) this.closeSocket()
+    }
+  }
 
   /** Subscribe a session stream (reference counted). */
   connect(sessionId: string): void {
@@ -244,6 +258,7 @@ class PiEventStream {
       this.resyncControllers.delete(sessionId)
       this.resyncFlights.delete(sessionId)
       piBranchStore.release(sessionId)
+      uiHistory.forgetFeedback(sessionId)
       // 暂时关掉 pane 仍保留游标；服务端切换时由 disconnectAll 统一清理。
       this.pendingLiveMessages.delete(sessionId)
       this.diagnostics.forget(sessionId)
@@ -320,7 +335,7 @@ class PiEventStream {
     ompSubagentStore.clearAll()
     for (const sessionId of this.refCounts.keys()) extensionUiStore.remove(sessionId)
     extensionUiStore.reset()
-    extensionDiagnosticStore.reset()
+    uiHistory.reset()
     bashPendingStore.clearAll()
     liveToolOutputStore.clearAll()
     toolInteractionStore.clearAll()
@@ -345,10 +360,8 @@ class PiEventStream {
   handleServerChange(): void {
     this.disconnectAll()
     this.knownActiveSessions.clear()
-    if (getTrackedManagementProviders().length > 0) {
-      this.ensureSocket()
-      if (this.ws?.readyState === PI_SOCKET_OPEN) this.sendSubscribe()
-    }
+    // Let the backend switch listeners abort old HTTP/socket work first.
+    queueMicrotask(() => { if (this.hasSubscriptions()) this.ensureSocket() })
   }
 
   private clearRefreshTimers(sessionId: string): void {
@@ -386,6 +399,7 @@ class PiEventStream {
 
     // Discard delayed background callbacks, not their logical refresh demand.
     // Current panes need both snapshots even if no resync control frame arrives.
+    if (this.ws?.readyState === PI_SOCKET_OPEN) uiHistory.refreshServer()
     if (this.resyncTimer) clearTimeout(this.resyncTimer)
     this.resyncTimer = null
     for (const key of this.resyncRetries.keys()) this.clearResyncRetry(key)
@@ -460,6 +474,8 @@ class PiEventStream {
       if (this.ws !== ws) return
       faultSocketOpened()
       setEventStreamState('connected')
+      this.liveHistoryAfter = Number.POSITIVE_INFINITY
+      uiHistory.refreshServer()
       this.diagnostics.connected(this.lastCloseCode)
       // A same-URL/token backend restart leaves canonical path caches intact,
       // but drops its watcher registry. Re-confirm only currently viewed roots.
@@ -567,8 +583,10 @@ class PiEventStream {
     // 上下文用量永远不恢复。每次订阅建立都主动 pull 一次（有防抖合并），
     // 让打开/刷新会话时立即拿到正在工作的 runtime 的真实状态。
     for (const sessionId of this.refCounts.keys()) {
-      if (!this.sentStreams.has(eventStreamKey({ kind: 'session', id: sessionId })))
+      if (!this.sentStreams.has(eventStreamKey({ kind: 'session', id: sessionId }))) {
         this.scheduleStateRefresh(sessionId)
+        uiHistory.refreshFeedback(sessionId)
+      }
     }
     this.sentStreams = new Set(streams.map(eventStreamKey))
     for (const [commandId, recovery] of this.commandRecoveries) {
@@ -590,6 +608,11 @@ class PiEventStream {
       return
     }
     annotateTraffic?.(message)
+    if ('type' in message && message.type === 'hello' && message.protocolVersion === PROTOCOL_VERSION) {
+      serverStore.applyServerConnectedTimestamp(serverStore.getActiveServerId(), message.timestamp)
+      this.liveHistoryAfter = serverStore.getActiveCalibratedNow() ?? Date.now()
+      return
+    }
     if ('type' in message && message.type === 'pong' && message.protocolVersion === PROTOCOL_VERSION) {
       if (this.pongTimer) clearTimeout(this.pongTimer)
       this.pongTimer = null
@@ -726,8 +749,15 @@ class PiEventStream {
           }
         }
         break
+      case 'ui.history':
+        if (envelope.stream.kind === 'server' || (sessionId && this.refCounts.has(sessionId))) {
+          uiHistory.receive(envelope.payload, sessionId, this.liveHistoryAfter)
+        }
+        break
       case 'omp.extension_error':
-        if (envelope.stream.kind === 'server') extensionDiagnosticStore.addNativeEvent(envelope.payload)
+        if (envelope.stream.kind === 'server' && isJsonObject(envelope.payload) && envelope.payload.sharedHistory !== true) {
+          extensionDiagnosticStore.addNativeEvent(envelope.payload)
+        }
         break
       case 'pi.event':
         if (sessionId) this.handlePiEvent(sessionId, envelope.payload as unknown as PiEventPayload)
@@ -932,6 +962,7 @@ class PiEventStream {
         extensionUiStore.editorCommand(sessionId, event.command)
         break
       case 'notify': {
+        if (event.sharedHistory) break
         // 扩展通知（ctx.ui.notify）是扩展命令的主要输出通道（如 /perm list 的
         // 规则列表）。完整文本进命令反馈日志；同时弹一条瞬时通知。
         // 该通知的内容只展示在右侧扩展面板里，因此点击后应跳转到对应
@@ -1173,7 +1204,7 @@ class PiEventStream {
       case 'command_output':
       case 'extension_error':
       case 'prompt_result': {
-        const feedback = commandFeedbackStore.addNativeEvent(sessionId, patch)
+        const feedback = payload.sharedHistory ? null : commandFeedbackStore.addNativeEvent(sessionId, patch)
         if (feedback) notificationStore.push(feedback.status === 'ok' ? 'completed' : feedback.status, feedback.source ?? 'Native command', feedback.message, sessionId, activeSessionStore.getSessionMeta(sessionId)?.directory, { target: 'extensions' })
         // Manual native commands can enter compaction without auto-compaction
         // lifecycle events; read the native state instead of inferring activity.
@@ -1183,6 +1214,7 @@ class PiEventStream {
       case 'notice':
       case 'rpc_frame_error':
       case 'rpc_stream_error': {
+        if (payload.sharedHistory) break
         const message = event.type !== 'notice' && typeof patch.error === 'string' ? patch.error : typeof patch.text === 'string' ? patch.text : typeof patch.message === 'string' ? patch.message : typeof patch.error === 'string' ? patch.error : ''
         const source = typeof patch.source === 'string' ? patch.source : 'OMP runtime'
         const status = patch.level === 'error' || patch.type === 'rpc_frame_error' || patch.type === 'rpc_stream_error' ? 'error' : patch.level === 'warning' ? 'warning' : 'info'
@@ -1396,6 +1428,7 @@ class PiEventStream {
     if (!stream) return Promise.resolve()
     if (stream.kind !== 'session') this.incompleteResync.delete(key)
     if (stream.kind === 'session') {
+      if (this.refCounts.has(stream.id)) uiHistory.refreshFeedback(stream.id)
       const existing = this.resyncFlights.get(stream.id)
       if (existing) {
         this.queueResync(key)
@@ -1443,6 +1476,7 @@ class PiEventStream {
       return flight
     } else if (stream.kind === 'server') {
       invalidatePiSessionList()
+      uiHistory.refreshServer()
       receiveSettingsUpdated()
       refreshOfficialSettings()
       window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
@@ -1608,7 +1642,7 @@ class PiEventStream {
   }
 
   private hasSubscriptions(): boolean {
-    return this.refCounts.size > 0 || this.workspaceRefCounts.size > 0 || getTrackedManagementProviders().length > 0
+    return this.serverSubscribers > 0 || this.refCounts.size > 0 || this.workspaceRefCounts.size > 0 || getTrackedManagementProviders().length > 0
   }
 }
 

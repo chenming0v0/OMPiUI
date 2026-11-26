@@ -47,6 +47,7 @@ export type EventChannel =
   | "pi.event"
   | "omp.subagent"
   | "omp.extension_error"
+  | "ui.history"
   | "session.head"
   | "command.updated"
   | "extension.ui"
@@ -118,6 +119,7 @@ export type EventClientMessage = EventSubscribeMessage | BrowserDiagnosticMessag
 export type EventServerMessage =
   | {
       type: "hello"
+      timestamp?: string
       protocolVersion: typeof PROTOCOL_VERSION
       service: "ompiui-server"
       subprotocol: typeof EVENT_WS_SUBPROTOCOL

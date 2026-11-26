@@ -5,12 +5,14 @@ import { after, describe, it } from "node:test"
 // is too tight when several spawn at once on a loaded machine.
 process.env.OMPIUI_WORKER_HANDSHAKE_TIMEOUT_MS ??= "60000"
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { connect } from "node:net"
 import { once } from "node:events"
 import { createAppServer, type AppServer } from "./http.ts"
+import { EventHub } from './event-hub.ts'
+import { UiHistory } from './host/ui-history.ts'
 import { RuntimeSupervisor } from "./omp/supervisor.ts"
 import { MAX_PAIRING_FAILURES, PairingStore } from "./host/pairing.ts"
 import { TUNNEL_FORWARDING_HEADER } from "./host/security.ts"
@@ -130,6 +132,90 @@ describe("http api", () => {
   const cleanups: Array<() => Promise<void> | void> = []
   after(async () => {
     for (const cleanup of cleanups.splice(0)) await cleanup()
+  })
+
+  it('shares UI history and mutations between independently connected clients, even after replay expires', { timeout: 20_000 }, async () => {
+    const token = 'same-ui-host-identity'
+    const hub = new EventHub(2)
+    const filename = path.join(leaseHome, 'ui-notifications.json')
+    const app = createAppServer({ authToken: token, eventHub: hub, notificationsFile: filename })
+    const wss = attachEventWebSocket(app.server, { authToken: token, eventHub: hub })
+    const port = await listen(app)
+    const sockets: WebSocket[] = []
+    const server = { kind: 'server' as const, id: 'server' }
+    const session = { kind: 'session' as const, id: 'project-session' }
+    const url = (kind: string, id?: string) => `/api/v1/host/ui-history?kind=${kind}${id ? `&sessionId=${id}` : ''}`
+    const subscribe = async (cursors = hub.getCursorMap([server, session])) => {
+      const socket = new WebSocket(`ws://127.0.0.1:${port}/api/v1/events?token=${token}`, EVENT_WS_SUBPROTOCOL)
+      sockets.push(socket)
+      const inbox = privateSocketInbox(socket)
+      await inbox.until(frame => frame.type === 'hello')
+      socket.send(JSON.stringify({ type: 'subscribe', protocolVersion: PROTOCOL_VERSION, streams: [server, session], cursors }))
+      socket.send(JSON.stringify({ type: 'ping', protocolVersion: PROTOCOL_VERSION }))
+      await inbox.until(frame => frame.type === 'pong')
+      return inbox
+    }
+    const client = (secret: string) => (kind: string, body?: unknown, id?: string) => request(port, body ? 'POST' : 'GET', url(kind, id), {
+      token, body, headers: { [TERMINAL_SECRET_HEADER]: secret.repeat(32) },
+    })
+    const a = client('aa'), b = client('bb')
+    const signal = (kind: string) => (frame: any) => frame.event?.channel === 'ui.history' && frame.event.payload.kind === kind
+    try {
+      const first = await subscribe()
+      const history = app.sessionHost.uiHistory
+      history.complete(session.id, '/srv/project', 'run-one')
+      await first.until(signal('notifications'))
+      const firstRows = (await a('notifications')).json.entries
+      assert.equal(firstRows.length, 1)
+      assert.equal(firstRows[0].read, false)
+      assert.equal((await request(port, 'GET', url('notifications'), { token: 'another-identity' })).status, 401)
+      const second = await subscribe()
+      assert.deepEqual((await b('notifications')).json.entries, firstRows)
+      assert.equal((await a('notifications', { action: 'markSessionRead', sessionId: session.id, type: 'completed' })).status, 200)
+      await second.until(signal('notifications'))
+      assert.equal((await b('notifications')).json.entries[0].read, true)
+      assert.equal((await b('notifications', { action: 'dismiss', id: firstRows[0].id })).status, 200)
+      history.complete(session.id, '/srv/project', 'run-one')
+      assert.deepEqual((await a('notifications')).json.entries, [], 'a repeated completion cannot resurrect a deleted notification')
+
+      const cursor = hub.getCursorMap([server, session])
+      history.command(session.id, '/srv/project', { type: 'command_output', text: 'workspace\nlast line\n' }, 'command-one')
+      await second.until(signal('feedback'))
+      history.command(session.id, '/srv/project', { type: 'command_output', text: 'workspace\nlast line\n' }, 'command-one')
+      history.command('other-session', '/srv/other', { type: 'notice', level: 'warning', text: 'another session' }, 'command-two')
+      history.extensionError('worker', 'runtime', { type: 'extension_error', error: 'timer failure' })
+      for (let i = 0; i < 3; i++) hub.publish(session, 'session.head', { revision: i })
+      const late = await subscribe(cursor)
+      await late.until(frame => frame.type === 'resync_required' && frame.streams[eventStreamKey(session)]?.reason === 'history_expired')
+      const feedback = (await b('feedback', undefined, session.id)).json.entries
+      assert.deepEqual(feedback, (await a('feedback', undefined, session.id)).json.entries)
+      assert.equal(feedback.length, 1)
+      assert.equal(feedback[0].message, 'workspace\nlast line\n')
+      assert.equal((await b('diagnostics')).json.entries[0].message, 'timer failure')
+
+      const beforeClear = first.frames.length
+      assert.equal((await b('feedback', { action: 'clear' }, session.id)).status, 200)
+      await first.until(signal('feedback'), beforeClear)
+      assert.deepEqual((await a('feedback', undefined, session.id)).json.entries, [])
+      assert.equal((await a('feedback', undefined, 'other-session')).json.entries.length, 1)
+      const beforeDiagnosticsClear = second.frames.length
+      assert.equal((await a('diagnostics', { action: 'clear' })).status, 200)
+      await second.until(signal('diagnostics'), beforeDiagnosticsClear)
+      assert.deepEqual((await b('diagnostics')).json.entries, [])
+      assert.equal((await a('notifications', { action: 'markAllRead' })).status, 200)
+      const readRows = (await b('notifications')).json.entries
+      assert.equal(readRows.length, 2)
+      assert.ok(readRows.every((entry: { read: boolean }) => entry.read))
+      assert.deepEqual(new UiHistory(new EventHub(), filename).read({ kind: 'notifications' }), readRows)
+      assert.equal((await b('notifications', { action: 'clear' })).status, 200)
+      assert.deepEqual((await a('notifications')).json.entries, [])
+      assert.deepEqual(JSON.parse(readFileSync(filename, 'utf8')), [])
+      assert.deepEqual(app.sessionHost.listAttachedIds(), [])
+    } finally {
+      for (const socket of sockets) socket.terminate()
+      await new Promise<void>(resolve => closeEventWebSocket(wss, () => resolve()))
+      await app.dispose()
+    }
   })
 
   it('isolates two private terminal clients sharing the same backend credential through HTTP, event replay and streams', { timeout: 20_000 }, async () => {

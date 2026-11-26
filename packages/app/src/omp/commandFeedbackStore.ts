@@ -1,28 +1,5 @@
-/**
- * Command feedback log — a per-session record of command output and notices.
- * Notifications are transient and truncated; this store keeps the full message
- * for the lifetime of the client session so the extension panel can show detail.
- */
-
-export type CommandFeedbackStatus = 'ok' | 'error' | 'warning' | 'info'
-
-export interface CommandFeedbackEntry {
-  id: string
-  sessionId: string
-  /** Command name without the leading slash. Empty when the native event has no command name. */
-  command: string
-  args?: string
-  /** Display origin, separate from the unmodified output text. */
-  source?: string
-  /** Protocol frame context, separate from the unmodified error/message. */
-  originalType?: string
-  context?: string
-  status: CommandFeedbackStatus
-  message: string
-  /** 'command' = native command feedback; 'notify' = extension/runtime notices. */
-  kind?: 'command' | 'notify'
-  at: number
-}
+import type { CommandFeedbackEntry } from '@ompiui/protocol'
+export type { CommandFeedbackEntry, CommandFeedbackStatus } from '@ompiui/protocol'
 
 interface CommandFeedbackSnapshot {
   sessions: Readonly<Record<string, ReadonlyArray<CommandFeedbackEntry>>>
@@ -31,7 +8,22 @@ interface CommandFeedbackSnapshot {
 const MAX_ENTRIES_PER_SESSION = 100
 
 let current: CommandFeedbackSnapshot = { sessions: {} }
+const local = new Map<string, CommandFeedbackEntry[]>()
+const shared = new Map<string, CommandFeedbackEntry[]>()
 const listeners = new Set<() => void>()
+
+function replaceSession(sessionId: string): void {
+  const entries = [...(local.get(sessionId) ?? []), ...(shared.get(sessionId) ?? [])]
+    .sort((a, b) => b.at - a.at).slice(0, MAX_ENTRIES_PER_SESSION)
+  if (entries.length) {
+    current = { sessions: { ...current.sessions, [sessionId]: entries } }
+  } else {
+    const sessions = { ...current.sessions }
+    delete sessions[sessionId]
+    current = { sessions }
+  }
+  emit()
+}
 
 function emit(): void {
   for (const listener of listeners) listener()
@@ -54,10 +46,8 @@ export const commandFeedbackStore = {
       id: globalThis.crypto?.randomUUID?.() ?? `${entry.sessionId}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       at: Date.now(),
     }
-    const session = current.sessions[entry.sessionId] ?? []
-    const nextSession = [full, ...session].slice(0, MAX_ENTRIES_PER_SESSION)
-    current = { sessions: { ...current.sessions, [entry.sessionId]: nextSession } }
-    emit()
+    local.set(entry.sessionId, [full, ...(local.get(entry.sessionId) ?? [])].slice(0, MAX_ENTRIES_PER_SESSION))
+    replaceSession(entry.sessionId)
     return full
   },
 
@@ -89,15 +79,19 @@ export const commandFeedbackStore = {
     return this.add({ sessionId, command: '', source, status: event.status === 'error' ? 'error' : 'info', message })
   },
 
+  replaceShared(sessionId: string, entries: CommandFeedbackEntry[]): void {
+    if (entries.length) shared.set(sessionId, entries)
+    else if (!shared.delete(sessionId)) return
+    replaceSession(sessionId)
+  },
+
   remove(sessionId: string): void {
-    if (!(sessionId in current.sessions)) return
-    const sessions = { ...current.sessions }
-    delete sessions[sessionId]
-    current = { sessions }
-    emit()
+    if (local.delete(sessionId)) replaceSession(sessionId)
   },
 
   reset(): void {
+    local.clear()
+    shared.clear()
     current = { sessions: {} }
     emit()
   },
