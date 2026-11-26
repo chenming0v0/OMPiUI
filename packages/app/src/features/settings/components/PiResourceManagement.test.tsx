@@ -44,6 +44,7 @@ vi.mock('../../../store/serverStore', () => ({
     getActiveServerGeneration: () => 0,
     getActiveServerId: () => 'test-server',
     getStoredServers: () => [],
+    onServerChange: () => () => {},
   },
 }))
 
