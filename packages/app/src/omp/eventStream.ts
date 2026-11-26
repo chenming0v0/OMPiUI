@@ -604,6 +604,8 @@ class PiEventStream {
     }
     if ('channel' in message && message.channel === 'control' && message.type === 'resync_required') {
       for (const key of Object.keys(message.streams)) {
+        const stream = parseEventStreamKey(key)
+        if (stream?.kind === 'session') window.dispatchEvent(new CustomEvent('ompiui:composer-draft-updated', { detail: { sessionId: stream.id } }))
         this.queueResync(key, message.streams[key as EventStreamKey]?.cursor)
       }
       return
@@ -751,6 +753,12 @@ class PiEventStream {
           this.commandRecoveries.delete(envelope.payload.id)
           piCommandStore.upsert(envelope.payload)
           window.dispatchEvent(new CustomEvent('ompiui:command-updated', { detail: envelope.payload }))
+        }
+        break
+      case 'composerDraft.updated':
+        if (sessionId && isJsonObject(envelope.payload) &&
+            (envelope.payload.version === null || typeof envelope.payload.version === 'string')) {
+          window.dispatchEvent(new CustomEvent('ompiui:composer-draft-updated', { detail: { sessionId, version: envelope.payload.version } }))
         }
         break
       case 'extension.ui':

@@ -173,7 +173,8 @@ class PiSessionStateStore {
     if (Array.isArray(patches)) {
       extensionUiStore.restore(sessionId, {
         patches: patches as ExtensionUiStatePatch[],
-        editorText: typeof objectMirror?.editorText === 'string' ? objectMirror.editorText : undefined,
+        editorText: typeof state.extensionEditorText === 'string' ? state.extensionEditorText
+          : typeof objectMirror?.editorText === 'string' ? objectMirror.editorText : undefined,
         toolsExpanded: typeof objectMirror?.toolsExpanded === 'boolean' ? objectMirror.toolsExpanded : undefined,
       })
     }

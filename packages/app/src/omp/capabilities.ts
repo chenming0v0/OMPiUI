@@ -27,6 +27,7 @@ export interface PiCapabilities {
   worktree: boolean
   config: boolean
   backgroundJobs: boolean
+  sharedComposerDraft: boolean
   backgroundJobCancel: boolean
 }
 
@@ -56,6 +57,7 @@ const unavailable: PiCapabilities = {
   worktree: false,
   config: false,
   backgroundJobs: false,
+  sharedComposerDraft: false,
   backgroundJobCancel: false,
 }
 
@@ -90,6 +92,7 @@ const COMMAND_MAP: Record<keyof PiCapabilities, string | null> = {
   worktree: 'moveSession',
   config: 'settings.get',
   backgroundJobs: 'asyncJobs.get',
+  sharedComposerDraft: 'composerDraft.set',
   backgroundJobCancel: 'asyncJobs.cancel',
 }
 

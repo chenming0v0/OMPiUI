@@ -846,10 +846,11 @@ export async function sendPiUserMessage(
   images?: transport.PiImageInput[],
   deliverAs?: 'steer' | 'followUp',
   signal?: AbortSignal,
+  composerDraftVersion?: string,
 ): Promise<void> {
   const generation = serverStore.getActiveServerGeneration()
   try {
-    await transport.sendPiUserMessage(sessionId, { text, images, deliverAs }, signal)
+    await transport.sendPiUserMessage(sessionId, { text, images, deliverAs, ...(composerDraftVersion ? { composerDraftVersion } : {}) }, signal)
   } catch (error) {
     if (text.startsWith('/') && !signal?.aborted && serverStore.getActiveServerGeneration() === generation) {
       const message = error instanceof Error ? error.message : String(error)
@@ -1096,8 +1097,9 @@ export async function abortAndPrompt(
   text: string,
   images?: transport.PiImageInput[],
   signal?: AbortSignal,
+  composerDraftVersion?: string,
 ): Promise<void> {
-  await transport.abortAndPromptPi(sessionId, { text, images }, signal)
+  await transport.abortAndPromptPi(sessionId, { text, images, ...(composerDraftVersion ? { composerDraftVersion } : {}) }, signal)
 }
 
 /**

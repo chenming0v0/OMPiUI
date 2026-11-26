@@ -48,6 +48,7 @@ export type EventChannel =
   | "omp.subagent"
   | "omp.extension_error"
   | "session.head"
+  | "composerDraft.updated"
   | "command.updated"
   | "extension.ui"
   | "provider.auth"

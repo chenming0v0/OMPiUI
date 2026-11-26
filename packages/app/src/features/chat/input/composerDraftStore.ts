@@ -1,14 +1,17 @@
 import type { Attachment } from '../../attachment'
+import type { DeliveryMode } from '../../../types/ui'
 
 export interface ComposerDraft {
   text: string
   attachments: Attachment[]
   ready: boolean
+  delivery?: DeliveryMode
 }
 
 interface DraftRecord {
   text: string
   attachmentRevision: string | null
+  delivery?: DeliveryMode
 }
 
 interface DraftEntry {
@@ -17,6 +20,9 @@ interface DraftEntry {
   persisted: boolean
   movedFrom?: string
   loading?: Promise<void>
+  localEdit?: ComposerDraft
+  sharedVersion?: string | null
+  editBaseVersion?: string | null
 }
 
 const STORAGE_PREFIX = 'ompiui-composer-draft:'
@@ -54,7 +60,7 @@ function entryFor(key: string): DraftEntry {
   const entry: DraftEntry = {
     record,
     persisted,
-    draft: { text: record.text, attachments: [], ready: record.attachmentRevision === null },
+    draft: { text: record.text, attachments: [], ready: record.attachmentRevision === null, ...(record.delivery ? { delivery: record.delivery } : {}) },
   }
   entries.set(key, entry)
   return entry
@@ -124,6 +130,7 @@ export function hydrateComposerDraft(key: string): Promise<void> {
       attachments: saved?.revision === revision ? saved.attachments : [],
       ready: true,
     }
+    if (entry.localEdit) entry.localEdit = entry.draft
     emit()
   }).catch(error => {
     console.warn('Failed to restore composer attachments', error)
@@ -134,17 +141,37 @@ export function hydrateComposerDraft(key: string): Promise<void> {
   return entry.loading
 }
 
-export function updateComposerDraft(key: string, update: (draft: ComposerDraft) => ComposerDraft): void {
+export function getLocalComposerEdit(key: string): ComposerDraft | undefined {
+  return entryFor(key).localEdit
+}
+
+export function getComposerEditBase(key: string): string | null | undefined {
+  return entryFor(key).editBaseVersion
+}
+
+export function markComposerSynced(key: string, version: string | null, accepted?: ComposerDraft): void {
+  const entry = entryFor(key)
+  entry.sharedVersion = version
+  if (!entry.localEdit || entry.localEdit === accepted) entry.localEdit = undefined
+  entry.editBaseVersion = version
+}
+
+export function updateComposerDraft(key: string, update: (draft: ComposerDraft) => ComposerDraft, source: 'local' | 'remote' = 'local'): void {
   const entry = entryFor(key)
   const previous = entry.draft
   const next = update(previous)
-  if (next.text === previous.text && next.attachments === previous.attachments) return
+  if (source === 'remote') entry.localEdit = undefined
+  if (next.text === previous.text && next.attachments === previous.attachments && next.delivery === previous.delivery) return
   const attachmentsChanged = next.attachments !== previous.attachments
   const revision = attachmentsChanged
     ? (next.attachments.length ? crypto.randomUUID() : null)
     : entry.record.attachmentRevision
   entry.draft = { ...next, ready: attachmentsChanged || previous.ready }
-  entry.record = { text: next.text, attachmentRevision: revision }
+  if (source === 'local') {
+    if (!entry.localEdit) entry.editBaseVersion = entry.sharedVersion
+    entry.localEdit = entry.draft
+  }
+  entry.record = { text: next.text, attachmentRevision: revision, ...(next.delivery ? { delivery: next.delivery } : {}) }
   entry.persisted = true
   try {
     // 文字同步落盘，不依赖网络、防抖计时器或卸载事件。

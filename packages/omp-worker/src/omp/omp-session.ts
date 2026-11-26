@@ -1293,6 +1293,7 @@ export class OmpRpcSession implements SessionRuntime {
     }
     this.assertEventEpoch(epoch);
     const { submittedMessages, ...queue } = this.getNativeQueueSnapshot();
+    const editorText = this.extensionUi.getEditorText();
     return {
       sessionId: this.sessionId,
       sessionFile: this.sessionFile ?? null,
@@ -1361,6 +1362,7 @@ export class OmpRpcSession implements SessionRuntime {
       submittedMessages,
       pendingExtensionUiRequests: this.extensionUi.listPending(),
       extensionUiState: this.extensionUi.getStateMirror(),
+      ...(editorText !== undefined ? { extensionEditorText: editorText } : {}),
       extensionTuiPanels: [],
       nativeAskDialog: this.nativeAskDialog && askAvailable,
       askUi: {

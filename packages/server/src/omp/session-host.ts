@@ -33,6 +33,8 @@ import {
   type WorkerEvent,
 } from "@ompiui/omp-worker";
 import type { EventHub } from "../event-hub.ts";
+import { ComposerDrafts } from "./composer-drafts.ts";
+import type { SetSharedComposerDraftParams } from "@ompiui/protocol";
 import { logToFile } from "../logger.ts";
 import {
   diagnostics,
@@ -79,6 +81,36 @@ const SERVER_GLOBAL_CAPABILITIES: PiCapability[] = [
 ];
 
 const SERVER_SESSION_CAPABILITIES: PiCapability[] = [
+  {
+    name: "composerDraft.get", scope: "session", source: "ompiui-adapter",
+    description: "Read the shared OMPiUI composer draft without opening a runtime",
+    paramsSchema: { type: "object", additionalProperties: false, properties: {} },
+    queue: "immediate", idempotent: true,
+  },
+  {
+    name: "composerDraft.set", scope: "session", source: "ompiui-adapter",
+    description: "Update the shared OMPiUI composer draft at its current version",
+    paramsSchema: {
+      type: "object", additionalProperties: false, required: ["baseVersion", "text", "delivery"],
+      properties: {
+        baseVersion: { anyOf: [{ type: "null" }, byteString(128)] },
+        text: byteString(8 * 1024 * 1024),
+        delivery: { enum: ["steer", "followUp", "abortAndPrompt"] },
+        attachments: { type: "array", maxItems: 256, items: {
+          type: "object", required: ["id", "type", "displayName"], properties: {
+            id: byteString(256), displayName: byteString(8 * 1024), type: { enum: ["file", "folder", "agent", "text", "command"] },
+            url: { type: "string" }, mime: byteString(256), relativePath: byteString(8 * 1024),
+            textRange: {
+              type: "object", required: ["value", "start", "end"], properties: {
+                value: byteString(8 * 1024), start: { type: "integer", minimum: 0 }, end: { type: "integer", minimum: 0 },
+              },
+            },
+          },
+        } },
+      },
+    },
+    queue: "immediate",
+  },
   {
     name: "controls.get",
     scope: "session",
@@ -171,11 +203,13 @@ export class SessionHost {
   private pendingAttachCommands = 0;
   private readonly toolInterruptions = new Map<string, JsonObject>();
   private readonly worktreeMoves = new WeakSet<AttachedSession>();
+  private readonly composerDrafts: ComposerDrafts;
 
   constructor(
     private readonly supervisor: RuntimeSupervisor,
     private readonly hub: EventHub,
   ) {
+    this.composerDrafts = new ComposerDrafts(hub);
     this.executor = new SessionExecutor((record) =>
       this.emitCommandUpdate(record),
     );
@@ -355,6 +389,7 @@ export class SessionHost {
         worker,
       };
       this.attach(session);
+      this.restoreComposerPrefill(session.sessionId, state?.extensionEditorText);
       return {
         sessionId: session.sessionId,
         sessionFile: session.sessionFile ?? null,
@@ -559,6 +594,14 @@ export class SessionHost {
     return session;
   }
 
+  private restoreComposerPrefill(sessionId: string, text: unknown): void {
+    try {
+      this.composerDrafts.restorePrefill(sessionId, text);
+    } catch (error) {
+      diagnostics.record('session.composer_draft_error', { sessionId, errorCode: diagnosticErrorCode(error) }, 'warn');
+    }
+  }
+
   private withPendingSnapshot(state: JsonValue | undefined, cursor: EventCursor): JsonValue | undefined {
     if (!isJsonObject(state)) return state;
     if (state.diskPreview !== true && !Array.isArray(state.pendingExtensionUiRequests)) return state;
@@ -573,6 +616,9 @@ export class SessionHost {
   ): Promise<JsonValue | undefined> {
     return withAbort(
       (async () => {
+        if (type === "composerDraft.get") return this.composerDrafts.read(sessionId);
+        if (type === "composerDraft.set")
+          return this.composerDrafts.write(sessionId, params as SetSharedComposerDraftParams);
         if (type === "toolOutput.get") {
           return this.catalogCommand(
             "session.read",
@@ -653,7 +699,15 @@ export class SessionHost {
             (type === "sendUserMessage" || type === "steer" || type === "followUp" || type === "abortAndPrompt")) {
           throw Object.assign(new Error("The native session is switching worktrees; your message was not submitted"), { code: "SESSION_BUSY" });
         }
-        const result = await session.worker.command(type, params, signal);
+        const clearsDraft = type === "sendUserMessage" || type === "abortAndPrompt";
+        const version = clearsDraft && typeof params?.composerDraftVersion === "string" ? params.composerDraftVersion : undefined;
+        let workerParams = params;
+        if (version !== undefined) {
+          workerParams = { ...params };
+          delete workerParams.composerDraftVersion;
+        }
+        const result = await session.worker.command(type, workerParams, signal);
+        if (version !== undefined) this.composerDrafts.accept(sessionId, version);
         const interruption = this.toolInterruptions.get(sessionId);
         if (type !== 'state.get' || !isJsonObject(result)) return result;
         const state = interruption ? { ...result, toolInterruption: interruption } : result;
@@ -1098,7 +1152,10 @@ export class SessionHost {
     const result = await this.supervisor.catalogCommand(type, params, options);
     if (typeof params?.sessionId === 'string') {
       const interruption = this.toolInterruptions.get(params.sessionId);
-      if (type === 'session.delete') this.toolInterruptions.delete(params.sessionId);
+      if (type === 'session.delete') {
+        this.toolInterruptions.delete(params.sessionId);
+        this.composerDrafts.remove(params.sessionId);
+      }
       if (interruption && isJsonObject(result)) {
         if (type === 'session.preview' && isJsonObject(result.state)) return { ...result, state: { ...result.state, toolInterruption: interruption } };
         if (type === 'session.read' && params.query === 'state.get') return { ...result, toolInterruption: interruption };
@@ -1348,8 +1405,16 @@ export class SessionHost {
       return;
     }
     if (event.channel === "extension.ui") {
+      const sessionId = event.sessionId ?? session.sessionId;
+      if (event.event.type === 'editor' && isJsonObject(event.event.command)) {
+        try {
+          this.composerDrafts.prefill(sessionId, event.event.command);
+        } catch (error) {
+          diagnostics.record('session.composer_draft_error', { sessionId, errorCode: diagnosticErrorCode(error) }, 'warn');
+        }
+      }
       this.hub.publish(
-        { kind: "session", id: event.sessionId ?? session.sessionId },
+        { kind: "session", id: sessionId },
         "extension.ui",
         event.event,
       );
