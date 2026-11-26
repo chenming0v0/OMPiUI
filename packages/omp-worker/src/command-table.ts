@@ -257,6 +257,8 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
     ctx.requireRuntime().navigateTree(P.reqString(p, "entryId"), {
       summarize: P.optBoolean(p, "summarize"),
       customInstructions: P.optString(p, "customInstructions"),
+      trackRedo: P.optBoolean(p, "trackRedo"),
+      redoPlanId: P.optString(p, "redoPlanId"),
     }),
   setLabel: async (ctx, p) => {
     await ctx

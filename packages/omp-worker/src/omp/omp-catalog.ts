@@ -42,7 +42,7 @@ import {
   ompSessionRoots,
 } from "./managed-sessions.js";
 import { ompAgentDirectory } from "./omp-directories.js";
-import { sessionConfigFromBranch, sessionGoalFromBranch } from "./session-config.js";
+import { sessionConfigFromBranch, sessionGoalFromBranch, sessionRedoPlanFromBranch } from "./session-config.js";
 import { BranchPageReader } from "../runtime/branch-pages.js";
 import {
   resolveOmpConfigCommand,
@@ -742,6 +742,7 @@ export class OmpCatalog implements CatalogProvider {
       sessionId: summary.id,
       readOnly: false,
       diskPreview: true,
+      redoPlan: sessionRedoPlanFromBranch(branch, summary.id),
       sessionFile: summary.path,
       sessionName: summary.name,
       cwd: summary.cwd,

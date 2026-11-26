@@ -55,6 +55,7 @@ import { requireResourceList, registryFromResources } from './resource-registry.
 import { requestNativePromptAcceptance } from './native-rpc-prompt.js';
 import { SUBAGENT_OBSERVATION_PREFIX } from './native-subagent-observation.js';
 import { SESSION_TITLE_FAILURE_PREFIX, SESSION_TITLE_PREFIX } from './native-session-title.js';
+import { sessionRedoPlanFromBranch } from './session-config.js';
 
 /**
  * OmpRpcSession —— SessionRuntime 契约的 OMP 实现。
@@ -241,6 +242,7 @@ export class OmpRpcSession implements SessionRuntime {
   private toolInterruption?: JsonObject;
   private abortInFlight: Promise<JsonValue | undefined> | undefined;
   private relocationEpoch: string | undefined;
+  private redoNavigationEpoch: string | undefined;
   private readonly submissionFlights = new Map<string, number>();
 
   private modelsCache: JsonObject[] = [];
@@ -1275,7 +1277,6 @@ export class OmpRpcSession implements SessionRuntime {
     } catch {
       /* stats 是增强信息 */
     }
-    const head = this.getHead();
     this.assertEventEpoch(epoch);
     if (statsEpoch !== this.eventEpoch || historyGeneration !== this.historyGeneration || modelsGeneration !== this.modelsGeneration || activityGeneration !== this.activityGeneration) return this.buildState();
     this.pendingAsyncWork = Boolean(native.hasPendingAsyncWork);
@@ -1292,6 +1293,7 @@ export class OmpRpcSession implements SessionRuntime {
       } catch { /* The native streaming state remains authoritative if the optional channel is unavailable. */ }
     }
     this.assertEventEpoch(epoch);
+    if (statsEpoch !== this.eventEpoch || historyGeneration !== this.historyGeneration || modelsGeneration !== this.modelsGeneration || activityGeneration !== this.activityGeneration) return this.buildState();
     const { submittedMessages, ...queue } = this.getNativeQueueSnapshot();
     return {
       sessionId: this.sessionId,
@@ -1377,7 +1379,8 @@ export class OmpRpcSession implements SessionRuntime {
       retry: this.retryShadow,
       compaction: { ...this.compactionShadow, canAbort: false, streamingSupported: false, autoEnabled: typeof native.autoCompactionEnabled === "boolean" ? native.autoCompactionEnabled : null },
       contextMaintenance: this.contextMaintenance,
-      head,
+      head: this.getHead(),
+      redoPlan: sessionRedoPlanFromBranch(this.entries, this.sessionId, this.leafId),
       // OMP 扩展：子代理注册表快照 + todo 阶段（前端子代理面板重连恢复用）
       subagents: this.getSubagentsSnapshot(),
       todoPhases: Array.isArray(native.todoPhases) ? native.todoPhases : [],
@@ -1632,8 +1635,8 @@ export class OmpRpcSession implements SessionRuntime {
   /** Close admission before any await; Stop deliberately remains outside this gate. */
   private async withSubmissionAdmission(action: () => Promise<void>): Promise<void> {
     const epoch = this.eventEpoch;
-    if (this.relocationEpoch === epoch) {
-      throw Object.assign(new Error("The native session is switching worktrees; your message was not submitted"), { code: "SESSION_BUSY" });
+    if (this.relocationEpoch === epoch || this.redoNavigationEpoch === epoch) {
+      throw Object.assign(new Error("The native session is changing history or worktree; your message was not submitted"), { code: "SESSION_BUSY" });
     }
     this.submissionFlights.set(epoch, (this.submissionFlights.get(epoch) ?? 0) + 1);
     try { await action(); } finally {
@@ -2278,7 +2281,21 @@ export class OmpRpcSession implements SessionRuntime {
 
   async navigateTree(
     entryId: string,
-    options: { summarize?: boolean; customInstructions?: string } = {},
+    options: Omit<PiCommandParams["navigateTree"], "entryId"> = {},
+  ): Promise<JsonObject> {
+    if (!options.trackRedo && !options.redoPlanId) return this.navigateTreeOnce(entryId, options);
+    const epoch = this.eventEpoch;
+    if (this.redoNavigationEpoch === epoch || this.relocationEpoch === epoch || this.submissionFlights.has(epoch)) {
+      throw Object.assign(new Error("Session is busy; nothing was moved"), { code: "SESSION_BUSY" });
+    }
+    this.redoNavigationEpoch = epoch;
+    try { return await this.navigateTreeOnce(entryId, options); }
+    finally { if (this.redoNavigationEpoch === epoch) this.redoNavigationEpoch = undefined; }
+  }
+
+  private async navigateTreeOnce(
+    entryId: string,
+    options: Omit<PiCommandParams["navigateTree"], "entryId">,
   ): Promise<JsonObject> {
     const sourceSessionId = this.sessionId;
     const value = await this.client.requestRuntime("navigateTree", { entryId, ...options }, 300_000);
@@ -2294,13 +2311,13 @@ export class OmpRpcSession implements SessionRuntime {
     // not replace the runtime's model scope, queues, subagents, or extension UI.
     this.resetHistoryProjection();
     this.leafId = result.leafId;
-    let projectionError: string | undefined;
+    let projectionError = typeof result.projectionError === "string" ? result.projectionError : undefined;
     try {
       await this.syncEntriesNow();
       await this.refreshQueue();
     } catch (error) {
       this.reportEntrySyncError(error);
-      projectionError = error instanceof Error ? error.message : String(error);
+      projectionError = [projectionError, error instanceof Error ? error.message : String(error)].filter(Boolean).join("; ");
     }
     this.emitHeadIfChanged();
     return { ...result, sourceSessionId, targetSessionId: this.sessionId,

@@ -1,4 +1,30 @@
-import { isJsonObject, type JsonObject } from "@ompiui/protocol"
+import { isJsonObject, type JsonObject, type SessionRedoPlan } from "@ompiui/protocol"
+
+export const REDO_ENTRY_TYPE = "ompiui.redo"
+
+/** The native marker selects this branch but is not itself a redo checkpoint. */
+export function sessionRedoPlanFromBranch(branch: readonly JsonObject[], sessionId: string, leafId?: string | null): SessionRedoPlan | null {
+  let cursor = leafId
+  for (let index = branch.length - 1; index >= 0; index--) {
+    const entry = branch[index]!
+    if (leafId !== undefined) {
+      if (cursor === null) return null
+      if (entry.id !== cursor) continue
+      cursor = typeof entry.parentId === "string" ? entry.parentId : null
+    }
+    if ((entry.type === "message" && isJsonObject(entry.message) && entry.message.role === "user") ||
+        entry.type === "reset_boundary" || entry.type === "branch_summary") return null
+    if (entry.type !== "custom" || entry.customType !== REDO_ENTRY_TYPE) continue
+    const plan = entry.data
+    if (!isJsonObject(plan) || typeof plan.id !== "string" || plan.sessionId !== sessionId ||
+        (plan.undoLeafId !== null && typeof plan.undoLeafId !== "string") ||
+        !Array.isArray(plan.checkpoints) || !plan.checkpoints.every(id => typeof id === "string") ||
+        typeof plan.restored !== "number" || !Number.isInteger(plan.restored) ||
+        plan.restored < 0 || plan.restored >= plan.checkpoints.length) return null
+    return { id: plan.id, undoLeafId: plan.undoLeafId, checkpoints: plan.checkpoints, restored: plan.restored }
+  }
+  return null
+}
 
 /** 只读取当前分支的默认模型，辅助角色和临时回退回复不能覆盖显式选择。 */
 export function sessionConfigFromBranch(branch: JsonObject[]): { model: JsonObject | null; thinkingLevel: string } {

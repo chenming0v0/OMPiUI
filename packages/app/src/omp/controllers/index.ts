@@ -1012,6 +1012,7 @@ export async function navigatePiTree(
   }
   if (generation === serverStore.getActiveServerGeneration() && result.cancelled === false && !result.aborted && !result.noOp) {
     restoreNativeDraft(sessionId, result.editorText ?? '', result.editorImages ?? [])
+    if (params.trackRedo || params.redoPlanId) void refreshPiSessionState(sessionId).catch(() => undefined)
     if (result.projectionError) notificationStore.push('error', i18n.t('chat:chatArea.nativeChangeRefreshFailed'), result.projectionError, sessionId)
   }
   return result

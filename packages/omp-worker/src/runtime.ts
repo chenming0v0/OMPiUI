@@ -85,13 +85,7 @@ export interface SessionRuntime {
   /** Official native GoalRuntime lifecycle; no UI-owned continuation or goal state. */
   manageGoal(params: PiCommandParams["goal"]): Promise<JsonObject>
 
-  navigateTree(
-    entryId: string,
-    options?: {
-      summarize?: boolean
-      customInstructions?: string
-    },
-  ): Promise<JsonObject>
+  navigateTree(entryId: string, options?: Omit<PiCommandParams["navigateTree"], "entryId">): Promise<JsonObject>
   setLabel(entryId: string, label?: string): Promise<void>
 
   sendCustomMessage(

@@ -11,6 +11,13 @@ export type SessionHead = {
   epoch: string;
 };
 
+export type SessionRedoPlan = {
+  id: string;
+  undoLeafId: string | null;
+  checkpoints: string[];
+  restored: number;
+};
+
 export type LiveMessage = {
   id: string;
   revision: number;

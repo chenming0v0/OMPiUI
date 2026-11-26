@@ -430,6 +430,8 @@ export const PI_COMMAND_SPECS = [
         entryId: STRING,
         summarize: BOOLEAN,
         customInstructions: STRING,
+        trackRedo: BOOLEAN,
+        redoPlanId: STRING,
       },
       ["entryId"],
     ),

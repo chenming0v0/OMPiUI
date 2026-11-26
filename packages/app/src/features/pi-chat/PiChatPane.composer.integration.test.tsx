@@ -68,10 +68,6 @@ vi.mock('../../omp/managementEventStore', () => ({ useManagementEvents: () => ({
 vi.mock('../../contexts/useDirectory', () => ({ useDirectory: () => ({ currentDirectory: '/workspace', addDirectory: vi.fn() }) }))
 vi.mock('../../contexts/useSessionContext', () => ({ useSessionContext: () => ({ sessions: [], registerSession: vi.fn() }) }))
 vi.mock('../../store/activeSessionStore', () => ({ useSessionActiveEntry: () => mocks.listedActive ? { status: { type: 'busy' } } : null }))
-vi.mock('../../omp/redoPlanStore', () => ({
-  redoPlanStore: { subscribe: () => () => {}, getPlan: () => null },
-  captureRedoCheckpoints: vi.fn(), commitRedoPlan: vi.fn(),
-}))
 vi.mock('../../contexts/useFullscreen', () => ({
   useFullscreen: () => ({ openFullscreen: vi.fn(), updateFullscreen: vi.fn(), closeFullscreen: vi.fn() }),
 }))
