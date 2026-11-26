@@ -429,13 +429,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            let main_window = create_main_window(app.handle())?;
-            finish_desktop_window_setup(&main_window);
-            restore_window_state(&main_window);
-            tray::init(app.handle());
-
-            // 冷启动时从 CLI 参数提取目录（右键 "Open with OMPiUI" / 拖到图标），
-            // 存入 pending，前端首帧后 get_cli_directory 一次性消费。
+            // 先登记本机目录再创建 webview，避免前端先消费已空的请求。
             let args: Vec<String> = std::env::args().collect();
             if let Some((dir, explicit)) = std::env::current_dir().ok()
                 .and_then(|cwd| extract_directory_from_args(&args, &cwd)) {
@@ -443,6 +437,11 @@ pub fn run() {
                     state.pin("main", OpenDirectoryRequest::local(dir, explicit));
                 }
             }
+
+            let main_window = create_main_window(app.handle())?;
+            finish_desktop_window_setup(&main_window);
+            restore_window_state(&main_window);
+            tray::init(app.handle());
 
             #[cfg(debug_assertions)]
             main_window.open_devtools();
