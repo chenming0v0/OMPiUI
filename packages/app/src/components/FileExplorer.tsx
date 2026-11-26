@@ -158,6 +158,9 @@ export const FileExplorer = memo(function FileExplorer({
   const fileContextMenuRef = useRef<HTMLDivElement>(null)
   const searchRequestIdRef = useRef(0)
   const [searchQuery, setSearchQuery] = useState('')
+  const trimmedSearchQuery = searchQuery.trim()
+  const isSearchingText = trimmedSearchQuery.length > 0
+  const [searchResultKey, setSearchResultKey] = useState('')
   const [searchResults, setSearchResults] = useState<WorkspaceTextSearchMatch[]>([])
   const [fileResults, setFileResults] = useState<string[]>([])
   const [searchLoading, setSearchLoading] = useState(false)
@@ -205,8 +208,10 @@ export const FileExplorer = memo(function FileExplorer({
     clearPreview,
     savePreview,
     fileStatus,
+    searchRevision,
+    activeServerGeneration,
     refresh,
-  } = useFileExplorer({ directory, autoLoad: true, sessionId: sessionId || undefined, consumerId: `file-explorer-${panelTabId}` })
+  } = useFileExplorer({ directory, searchActive: isSearchingText, sessionId: sessionId || undefined, consumerId: `file-explorer-${panelTabId}` })
 
   // 当 previewFile 改变时加载预览
   useEffect(() => {
@@ -368,8 +373,8 @@ export const FileExplorer = memo(function FileExplorer({
 
   // 是否显示预览
   const showPreview = Boolean(previewFile) || previewLoading || Boolean(previewError)
-  const trimmedSearchQuery = searchQuery.trim()
-  const isSearchingText = trimmedSearchQuery.length > 0
+  const searchKey = JSON.stringify([activeServerGeneration, directory, trimmedSearchQuery, searchRevision])
+  const searchCurrent = searchResultKey === searchKey
 
   useEffect(() => {
     if (!directory || !trimmedSearchQuery) {
@@ -380,6 +385,7 @@ export const FileExplorer = memo(function FileExplorer({
     const requestId = ++searchRequestIdRef.current
     const controller = new AbortController()
     const timer = window.setTimeout(() => {
+      setSearchResultKey(searchKey)
       setSearchLoading(true)
       setSearchResults([])
       setFileResults([])
@@ -427,10 +433,11 @@ export const FileExplorer = memo(function FileExplorer({
     }, 250)
 
     return () => {
+      searchRequestIdRef.current += 1
       window.clearTimeout(timer)
       controller.abort()
     }
-  }, [directory, trimmedSearchQuery, t])
+  }, [directory, trimmedSearchQuery, searchKey, t])
 
   const handleSearchResultClick = useCallback(
     (match: WorkspaceTextSearchMatch) => {
@@ -459,13 +466,14 @@ export const FileExplorer = memo(function FileExplorer({
 
   const handleSearchQueryChange = useCallback((value: string) => {
     setSearchQuery(value)
+    if (value.trim() !== trimmedSearchQuery) setSearchResultKey('')
     if (!value.trim()) {
       setSearchResults([])
       setFileResults([])
       setSearchLoading(false)
       setSearchError(null)
     }
-  }, [])
+  }, [trimmedSearchQuery])
 
   // 没有选择目录
   if (!directory) {
@@ -562,10 +570,10 @@ export const FileExplorer = memo(function FileExplorer({
         <div className="flex-1 overflow-auto panel-scrollbar-y">
           {isSearchingText ? (
             <TextSearchResults
-              results={searchResults}
-              fileResults={fileResults}
-              isLoading={searchLoading}
-              error={searchError}
+              results={searchCurrent ? searchResults : []}
+              fileResults={searchCurrent ? fileResults : []}
+              isLoading={!searchCurrent || searchLoading}
+              error={searchCurrent ? searchError : null}
               onSelect={handleSearchResultClick}
               onSelectFile={handleFileResultClick}
               onContextMenuFile={handleFileContextMenu}
@@ -1315,9 +1323,9 @@ function FilePreview({
         onReorder={onReorderPreview}
         tabWidthClassName="w-auto max-w-none min-w-max"
         rightActions={
-          content ? (
+          content || isEditing ? (
             <>
-              {content.type === 'text' && (isEditing ? (
+              {(content?.type === 'text' || isEditing) && (isEditing ? (
                 <>
                   <button
                     onClick={() => void saveEditing(false)}
@@ -1366,11 +1374,11 @@ function FilePreview({
 
       {/* Preview Content */}
       <div ref={scrollRef} className="flex-1 overflow-auto panel-scrollbar">
-        {isLoading ? (
+        {!isEditing && isLoading ? (
           <div className="flex items-center justify-center h-full text-text-400 text-[length:var(--fs-sm)]">
             {t('common:loading')}
           </div>
-        ) : error ? (
+        ) : !isEditing && error ? (
           <div className="flex flex-col items-center justify-center h-full text-danger-100 text-[length:var(--fs-sm)] gap-1 px-4">
             <AlertCircleIcon size={16} />
             <span className="text-center">{error}</span>

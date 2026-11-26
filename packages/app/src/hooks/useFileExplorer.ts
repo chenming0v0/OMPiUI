@@ -3,7 +3,7 @@
 // 管理文件树状态、展开/折叠、文件预览
 // ============================================
 
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useEffectEvent, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   getFileContent,
@@ -14,8 +14,10 @@ import {
   simplifyGitStatus,
   toAbsoluteEntryPath,
 } from '../omp/files'
-import { getHostGitDiff } from '../omp/transport/index.js'
-import type { FileNodeDto, FileReadResponse } from '@ompiui/protocol'
+import { getHostGitDiff, invalidateHostFileReadFlights } from '../omp/transport/index.js'
+import { isWorkspaceWatchExcluded, MAX_WORKSPACE_REVISION_PATHS, type FileNodeDto, type FileReadResponse, type WorkspaceFileChange, type WorkspaceFilesChanged } from '@ompiui/protocol'
+import { isSameDirectory } from '../utils/directoryUtils'
+import { useExcludedPathRevisions } from './useExcludedPathRevisions'
 import { useSessionChangeScope } from '../store/changeScopeStore'
 import { useAutoRefresh } from './useAutoRefresh'
 import { resolveWorkspacePath } from '../omp/workspaces'
@@ -46,6 +48,7 @@ export interface ExplorerFileStatus {
 export interface UseFileExplorerOptions {
   directory?: string
   autoLoad?: boolean
+  searchActive?: boolean
   sessionId?: string
   /** 唯一标识，用于注册 SSE 消费者，避免多实例冲突 */
   consumerId?: string
@@ -73,6 +76,8 @@ export interface UseFileExplorerResult {
 
   // 文件状态
   fileStatus: Map<string, ExplorerFileStatus>
+  searchRevision: number
+  activeServerGeneration: number
 
   // 操作
   refresh: () => Promise<void>
@@ -81,32 +86,19 @@ export interface UseFileExplorerResult {
 }
 
 export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileExplorerResult {
-  const { directory, autoLoad = true, sessionId, consumerId = 'file-explorer' } = options
+  const { directory, autoLoad = true, searchActive = false, sessionId, consumerId = 'file-explorer' } = options
   const { t } = useTranslation(['components'])
-  const { activeServer, activeServerGeneration } = useServerStore()
+  const { activeServerGeneration } = useServerStore()
   const changeMode = useSessionChangeScope(sessionId ?? null)
+  const workspaceKey = directory?.replace(/\\/g, '/') ?? ''
+  const caseInsensitive = /^(?:[a-z]:\/|\/\/)/i.test(workspaceKey)
   const directoryRef = useRef(directory)
   useEffect(() => {
     directoryRef.current = directory
   }, [directory])
   const canonicalWorkspaceRef = useRef<string | null>(null)
-
   useEffect(() => {
-    let cancelled = false
     canonicalWorkspaceRef.current = null
-    if (directory) {
-      void resolveWorkspacePath(directory)
-        .then(workspacePath => {
-          if (!cancelled) canonicalWorkspaceRef.current = workspacePath
-        })
-        .catch(() => undefined)
-    }
-    return () => {
-      cancelled = true
-    }
-  }, [directory, activeServerGeneration])
-
-  useEffect(() => {
     if (!directory) return
     let cancelled = false
     let workspacePath: string | null = null
@@ -114,6 +106,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
       .then(resolved => {
         if (cancelled || !resolved) return
         workspacePath = resolved
+        canonicalWorkspaceRef.current = resolved
         piEventStream.connectWorkspace(resolved)
       })
       .catch(() => undefined)
@@ -121,7 +114,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
       cancelled = true
       if (workspacePath) piEventStream.disconnectWorkspace(workspacePath)
     }
-  }, [activeServer?.id, activeServer?.token, activeServer?.url, directory])
+  }, [activeServerGeneration, directory])
 
   // 文件树状态
   const [tree, setTree] = useState<FileTreeNode[]>([])
@@ -136,6 +129,8 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
   const [previewContent, setPreviewContent] = useState<FileReadResponse | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewError, setPreviewError] = useState<string | null>(null)
+  const [activePreviewPath, setActivePreviewPath] = useState<string | null>(null)
+  const [searchRevision, setSearchRevision] = useState(0)
   const previewCacheRef = useRef(new FilePreviewCache())
   const previewControllerRef = useRef<AbortController | null>(null)
   const previewLoadIdRef = useRef(0)
@@ -367,7 +362,12 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
       const generation = activeServerGeneration
 
       const loadId = ++previewLoadIdRef.current
+      if (previewPathRef.current !== path && isWorkspaceWatchExcluded(relativePreviewPath(path, workspaceKey, caseInsensitive), caseInsensitive)) {
+        // Files outside recursive watch may have changed while their tab was inactive.
+        previewCacheRef.current.invalidate(path)
+      }
       previewPathRef.current = path
+      setActivePreviewPath(path)
       previewSaveIdsRef.current.delete(path)
 
       setPreviewLoading(true)
@@ -401,7 +401,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
         }
       }
     },
-    [directory, activeServerGeneration, t],
+    [activeServerGeneration, caseInsensitive, directory, t, workspaceKey],
   )
 
   const clearPreview = useCallback(() => {
@@ -412,6 +412,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
     setPreviewError(null)
     setPreviewLoading(false)
     previewPathRef.current = null
+    setActivePreviewPath(null)
   }, [])
 
   const savePreview = useCallback(
@@ -447,20 +448,27 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
     [directory, previewContent, activeServerGeneration, t],
   )
 
+  const invalidateSearch = useCallback(() => {
+    if (searchActive) setSearchRevision(revision => revision + 1)
+  }, [searchActive])
+
   // 刷新
   const refresh = useCallback(async () => {
+    invalidateSearch()
     if (directory) {
+      invalidateWorkspaceFileCaches(directory)
       expandedPathsByDirectoryRef.current.delete(directory)
     }
+    if (canonicalWorkspaceRef.current) invalidateHostFileReadFlights(canonicalWorkspaceRef.current)
     setExpandedPaths(new Set())
     previewCacheRef.current.clear()
     clearPreview()
     await Promise.all([loadRoot(), loadStatuses()])
-  }, [directory, loadRoot, loadStatuses, clearPreview])
+  }, [directory, loadRoot, loadStatuses, clearPreview, invalidateSearch])
 
   // 软刷新：重新加载根目录和状态，但保留展开路径和预览
-  const softRefresh = useCallback(() => {
-    if (refreshFlightRef.current) return refreshFlightRef.current
+  const softRefresh = useCallback((force = false) => {
+    if (!force && refreshFlightRef.current) return refreshFlightRef.current
     const flight = Promise.all([loadRoot(), loadStatuses()]).then(() => undefined)
       .finally(() => { if (refreshFlightRef.current === flight) refreshFlightRef.current = null })
     refreshFlightRef.current = flight
@@ -468,59 +476,97 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
   }, [loadRoot, loadStatuses])
 
   // 自动刷新：session idle / 窗口聚焦 / SSE 重连
-  useAutoRefresh(consumerId, sessionId ?? null, softRefresh, !!directory)
+  const recover = useCallback(() => {
+    if (searchActive && canonicalWorkspaceRef.current) invalidateHostFileReadFlights(canonicalWorkspaceRef.current)
+    invalidateSearch()
+    return softRefresh()
+  }, [invalidateSearch, searchActive, softRefresh])
+  useAutoRefresh(consumerId, sessionId ?? null, recover, !!directory)
+
+  const activeRelativeFile = activePreviewPath ? relativePreviewPath(activePreviewPath, workspaceKey, caseInsensitive) : null
+  const excludedPathsKey = useMemo(() => {
+    const paths = new Set<string>()
+    if (activeRelativeFile) paths.add(activeRelativeFile)
+    for (const path of expandedPaths) {
+      const segments = path.split('/')
+      // Collapsed ancestors hide their descendants even if expansion is remembered.
+      if (segments.every((_, index) => index === 0 || expandedPaths.has(segments.slice(0, index).join('/')))) paths.add(path)
+    }
+    return [...paths].filter(path => !/^(?:[a-z]:|\/)/i.test(path) && isWorkspaceWatchExcluded(path, caseInsensitive))
+      .slice(0, MAX_WORKSPACE_REVISION_PATHS).join('\0')
+  }, [activeRelativeFile, caseInsensitive, expandedPaths])
+  useExcludedPathRevisions(directory, excludedPathsKey, activeServerGeneration, changes => {
+    if (!directory) return
+    invalidateWorkspaceFileCaches(directory)
+    if (canonicalWorkspaceRef.current) invalidateHostFileReadFlights(canonicalWorkspaceRef.current)
+    for (const { path, missing } of changes) {
+      if (path === activeRelativeFile && activePreviewPath) {
+        previewCacheRef.current.invalidate(activePreviewPath)
+        void loadPreview(activePreviewPath)
+      }
+      if (expandedPaths.has(path)) {
+        if (!missing) void loadChildren(path)
+        else {
+          const parent = path.split('/').slice(0, -1).join('/')
+          if (parent) void loadChildren(parent)
+          else void loadRoot()
+        }
+      }
+    }
+  })
+
+  const applyFiles = useEffectEvent((changes: Map<string, WorkspaceFileChange>, rescan: boolean) => {
+    const root = canonicalWorkspaceRef.current
+    if (!directory || !root) return
+    invalidateSearch()
+    invalidateHostFileReadFlights(root)
+    const previewPath = previewPathRef.current
+    if (rescan) {
+      invalidateWorkspaceFileCaches(directory)
+      previewCacheRef.current.invalidateAll()
+      void softRefresh(true)
+      if (previewPath) void loadPreview(previewPath)
+      return
+    }
+    const affectsPreview = (filePath: string) => {
+      const file = relativePreviewPath(filePath, workspaceKey, caseInsensitive)
+      const key = caseInsensitive ? file.toLowerCase() : file
+      for (const change of changes.values()) {
+        const changedPath = caseInsensitive ? change.path.toLowerCase() : change.path
+        if (key === changedPath || (change.type === 'directory' && key.startsWith(`${changedPath}/`))) return true
+      }
+      return false
+    }
+    for (const path of previewCacheRef.current.keys()) {
+      if (affectsPreview(path)) previewCacheRef.current.invalidate(path)
+    }
+    // 文件正文更新不改变目录项；只有结构事件才使目录列表失效。
+    const parents = new Set<string>()
+    for (const change of changes.values()) {
+      if (!changesTree(change)) continue
+      const separator = change.path.lastIndexOf('/')
+      parents.add(separator < 0 ? '' : change.path.slice(0, separator))
+    }
+    if (parents.size > 0) invalidateWorkspaceFileCaches(directory)
+    if (parents.has('')) void loadRoot()
+    for (const parent of parents) {
+      if (!parent) continue
+      if (expandedPaths.has(parent)) void loadChildren(parent)
+      else setTree(prev => updateTreeNode(prev, parent, node => ({ ...node, isLoaded: false })))
+    }
+    if (previewPath && affectsPreview(previewPath)) void loadPreview(previewPath)
+  })
 
   useEffect(() => {
     if (!directory) return
-    type FileChange = { path: string; kind: 'created' | 'changed' | 'deleted'; type: 'file' | 'directory' }
-    type ChangeBatch = { workspacePath: string; changes: FileChange[]; rescan: boolean }
-    type PendingBatch = { workspacePath: string; changes: Map<string, FileChange>; rescan: boolean }
-    const changesTree = (change: FileChange) => change.kind !== 'changed' || change.type !== 'file'
+    type PendingBatch = { changes: Map<string, WorkspaceFileChange>; rescan: boolean }
     let fileTimer: ReturnType<typeof setTimeout> | undefined
     let gitTimer: ReturnType<typeof setTimeout> | undefined
     let pending: PendingBatch | undefined
-    const applyFiles = ({ workspacePath, changes, rescan }: PendingBatch) => {
-      if (workspacePath !== canonicalWorkspaceRef.current) return
-      const previewPath = previewPathRef.current
-      if (rescan) {
-        invalidateWorkspaceFileCaches(directory)
-        previewCacheRef.current.invalidateAll()
-        void softRefresh()
-        if (previewPath) void loadPreview(previewPath)
-        return
-      }
-      const affectsPreview = (path: string) => {
-        if (changes.has(path)) return true
-        for (const change of changes.values()) {
-          if (change.type === 'directory' && path.startsWith(`${change.path}/`)) return true
-        }
-        return false
-      }
-      for (const path of previewCacheRef.current.keys()) {
-        if (affectsPreview(path)) previewCacheRef.current.invalidate(path)
-      }
-      // 文件正文更新不改变目录项；只有结构事件才使目录列表失效。
-      const parents = new Set<string>()
-      for (const change of changes.values()) {
-        if (!changesTree(change)) continue
-        const separator = change.path.lastIndexOf('/')
-        parents.add(separator < 0 ? '' : change.path.slice(0, separator))
-      }
-      if (parents.size > 0) invalidateWorkspaceFileCaches(directory)
-      if (parents.has('')) void loadRoot()
-      for (const parent of parents) {
-        if (!parent) continue
-        if (expandedPaths.has(parent)) void loadChildren(parent)
-        else {
-          setTree(prev => updateTreeNode(prev, parent, node => ({ ...node, isLoaded: false })))
-        }
-      }
-      if (previewPath && affectsPreview(previewPath)) void loadPreview(previewPath)
-    }
     const filesChanged = (event: Event) => {
-      const detail = (event as CustomEvent<ChangeBatch>).detail
-      if (!detail || detail.workspacePath !== canonicalWorkspaceRef.current) return
-      pending ??= { workspacePath: detail.workspacePath, changes: new Map(), rescan: false }
+      const detail = (event as CustomEvent<WorkspaceFilesChanged>).detail
+      if (!detail || !canonicalWorkspaceRef.current || !isSameDirectory(detail.workspacePath, canonicalWorkspaceRef.current)) return
+      pending ??= { changes: new Map(), rescan: false }
       pending.rescan ||= detail.rescan || detail.changes.length === 0
       if (pending.rescan) {
         pending.changes.clear()
@@ -530,6 +576,11 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
           // 合批时保留同一路径的结构变化和目录范围。
           if (change.type === 'file' && previous && (previous.type === 'directory' ||
             (changesTree(previous) && !changesTree(change)))) continue
+          if (pending.changes.size >= 512 && !previous) {
+            pending.rescan = true
+            pending.changes.clear()
+            break
+          }
           pending.changes.set(change.path, change)
         }
       }
@@ -537,7 +588,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
         fileTimer = undefined
         const batch = pending
         pending = undefined
-        if (batch) applyFiles(batch)
+        if (batch) applyFiles(batch.changes, batch.rescan)
       }, pending.rescan ? 1500 : 500)
     }
     const gitChanged = (event: Event) => {
@@ -558,7 +609,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
       clearTimeout(fileTimer)
       clearTimeout(gitTimer)
     }
-  }, [directory, expandedPaths, loadChildren, loadPreview, loadRoot, loadStatuses, softRefresh, sessionId])
+  }, [directory, activeServerGeneration, loadStatuses, sessionId])
 
   // 初始加载
   // 初始加载文件树/状态：请求-响应模式，loading 与请求同步设置
@@ -611,6 +662,7 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
     previewCacheRef.current.clear()
     previewLoadIdRef.current += 1
     previewPathRef.current = null
+    setActivePreviewPath(null)
     setPreviewContent(null)
     setPreviewError(null)
     setPreviewLoading(false)
@@ -637,6 +689,8 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
     clearPreview,
     savePreview,
     fileStatus,
+    searchRevision,
+    activeServerGeneration,
     refresh,
     softRefresh,
     loadChildren,
@@ -646,6 +700,17 @@ export function useFileExplorer(options: UseFileExplorerOptions = {}): UseFileEx
 // ============================================
 // Helper Functions
 // ============================================
+
+function changesTree(change: WorkspaceFileChange): boolean {
+  return change.kind !== 'changed' || change.type !== 'file'
+}
+
+function relativePreviewPath(filePath: string, directory: string, caseInsensitive: boolean): string {
+  const file = normalizePath(filePath)
+  const root = directory.replace(/\/+$/, '')
+  const matches = caseInsensitive ? file.toLowerCase().startsWith(`${root.toLowerCase()}/`) : file.startsWith(`${root}/`)
+  return matches ? file.slice(root.length + 1) : file
+}
 
 function sortNodes(nodes: FileNodeDto[]): FileNodeDto[] {
   return [...nodes].sort((a, b) => {

@@ -3,8 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useFileExplorer } from './useFileExplorer'
 import { changeScopeStore } from '../store/changeScopeStore'
 
-const { listDirectory, getFileContent, getFileStatus, getHostGitDiff, invalidateWorkspaceFileCaches, saveFile, resolveWorkspacePath } = vi.hoisted(() => ({
+const { listDirectory, getFileContent, getFileStatus, getHostGitDiff, invalidateWorkspaceFileCaches, saveFile, resolveWorkspacePath, readExcludedPathRevisions } = vi.hoisted(() => ({
   listDirectory: vi.fn(),
+  readExcludedPathRevisions: vi.fn(),
   getFileContent: vi.fn(),
   getFileStatus: vi.fn(),
   getHostGitDiff: vi.fn(),
@@ -14,10 +15,11 @@ const { listDirectory, getFileContent, getFileStatus, getHostGitDiff, invalidate
 }))
 
 vi.mock('../omp/workspaces', () => ({ resolveWorkspacePath }))
-vi.mock('../omp/transport/index.js', () => ({ getHostGitDiff }))
+vi.mock('../omp/transport/index.js', () => ({ getHostGitDiff, invalidateHostFileReadFlights: vi.fn() }))
 
 vi.mock('../omp/files', () => ({
   listDirectory,
+  readExcludedPathRevisions,
   getFileContent,
   getFileStatus,
   invalidateWorkspaceFileCaches,
@@ -231,6 +233,28 @@ describe('useFileExplorer change scope', () => {
     expect(invalidateWorkspaceFileCaches).toHaveBeenCalledWith('/repo')
     expect(listDirectory.mock.calls.map(([parent]) => parent)).toEqual(['src'])
     expect(getFileContent).not.toHaveBeenCalled()
+  })
+
+  it('reconciles an expanded dist and an open output file from metadata without watcher events', async () => {
+    let revision = 'first'
+    readExcludedPathRevisions.mockImplementation(async (_directory, paths: string[]) => paths.map(() => revision))
+    listDirectory.mockImplementation(async (path: string) => path === ''
+      ? [{ name: 'dist', path: 'dist', type: 'directory' }]
+      : [{ name: `${revision}.html`, path: `dist/${revision}.html`, type: 'file' }])
+    getFileContent.mockImplementation(async () => ({ type: 'text', content: revision, etag: revision }))
+    const { result } = renderHook(() => useFileExplorer({ directory: '/repo' }))
+    await waitFor(() => expect(result.current.tree[0]?.path).toBe('dist'))
+    act(() => result.current.toggleExpand('dist'))
+    await act(() => result.current.loadPreview('dist/report.html'))
+    await waitFor(() => expect(readExcludedPathRevisions).toHaveBeenLastCalledWith('/repo',
+      ['dist/report.html', 'dist'], expect.any(AbortSignal)))
+    await waitFor(() => expect(result.current.previewContent?.content).toBe('first'))
+    revision = 'rebuilt'
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+    await waitFor(() => {
+      expect(result.current.previewContent?.content).toBe('rebuilt')
+      expect(result.current.tree[0]?.children?.[0]?.path).toBe('dist/rebuilt.html')
+    })
   })
 
   it.each(['close', 'switch', 'unmount'] as const)('cancels the abandoned preview on %s', async action => {

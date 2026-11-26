@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { isWorkspaceWatchExcluded, type WorkspaceFilesChanged } from '@ompiui/protocol'
 import { useTheme } from '../hooks/useTheme'
+import { useExcludedPathRevisions } from '../hooks/useExcludedPathRevisions'
+import { useServerStore } from '../hooks/useServerStore'
+import { resolveWorkspacePath } from '../omp/workspaces'
+import { invalidateHostFileReadFlights } from '../omp/transport'
+import { isSameDirectory } from '../utils/directoryUtils'
 import { createSandboxedHtmlDocument } from './htmlSandbox'
 import { resolveHtmlPreviewResources } from './htmlPreviewResources'
 
@@ -20,8 +26,11 @@ export function HtmlFilePreviewFrame({
   directory,
 }: HtmlFilePreviewFrameProps) {
   const frameRef = useRef<HTMLIFrameElement>(null)
-  const resourceKey = `${directory ?? ''}\0${filePath ?? ''}\0${html}`
-  const [resolution, setResolution] = useState<{ key: string; html: string } | null>(null)
+  const { activeServerGeneration } = useServerStore()
+  const resourceKey = `${activeServerGeneration}\0${directory ?? ''}\0${filePath ?? ''}\0${html}`
+  const [revision, setRevision] = useState(0)
+  const [resolution, setResolution] = useState<{ key: string; html: string; excludedPathsKey: string } | null>(null)
+  const dependencyRef = useRef<{ key: string; paths: Set<string> } | null>(null)
   const resizeId = useId()
   const { t } = useTranslation('components')
   const { resolvedTheme } = useTheme()
@@ -39,23 +48,54 @@ export function HtmlFilePreviewFrame({
     [effectiveHtml, initialTheme, resizeId],
   )
 
+  useExcludedPathRevisions(directory, resolution?.key === resourceKey ? resolution.excludedPathsKey : '', activeServerGeneration,
+    () => setRevision(value => value + 1))
+
   useEffect(() => {
     if (!filePath) return
-    let active = true
     const controller = new AbortController()
-    resolveHtmlPreviewResources(html, filePath, directory, controller.signal).then(
+    let workspacePath = directory
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const dependencies = new Set<string>()
+    const previousDependencies = dependencyRef.current?.key === resourceKey ? dependencyRef.current.paths : new Set<string>()
+    const caseInsensitive = /^(?:[a-z]:[\\/]|[\\/]{2})/i.test(directory ?? '')
+    const key = (path: string) => caseInsensitive ? path.toLowerCase() : path
+    if (directory) {
+      void resolveWorkspacePath(directory).then(canonical => {
+        if (canonical && !controller.signal.aborted) workspacePath = canonical
+      }).catch(() => undefined)
+    }
+    const onFiles = (event: Event) => {
+      const detail = (event as CustomEvent<WorkspaceFilesChanged>).detail
+      if (!workspacePath || !detail || !isSameDirectory(workspacePath, detail.workspacePath)) return
+      if (!detail.rescan && detail.changes.length && !detail.changes.some(change => {
+        const changedPath = key(change.path)
+        return [dependencies, previousDependencies].some(paths => paths.has(changedPath) || (change.type === 'directory' &&
+          [...paths].some(dependency => dependency.startsWith(`${changedPath}/`))))
+      })) return
+      invalidateHostFileReadFlights(detail.workspacePath)
+      timer ??= setTimeout(() => { timer = undefined; setRevision(value => value + 1) }, 300)
+    }
+    window.addEventListener('ompiui:workspace-files-changed', onFiles)
+    resolveHtmlPreviewResources(html, filePath, directory, controller.signal, path => dependencies.add(key(path))).then(
       resolved => {
-        if (active) setResolution({ key: resourceKey, html: resolved })
+        if (controller.signal.aborted) return
+        dependencyRef.current = { key: resourceKey, paths: dependencies }
+        setResolution({
+          key: resourceKey, html: resolved,
+          excludedPathsKey: [...dependencies].filter(path => isWorkspaceWatchExcluded(path, caseInsensitive)).join('\0'),
+        })
       },
       () => {
-        if (active) setResolution({ key: resourceKey, html })
+        if (!controller.signal.aborted) setResolution({ key: resourceKey, html, excludedPathsKey: '' })
       },
     )
     return () => {
-      active = false
       controller.abort()
+      clearTimeout(timer)
+      window.removeEventListener('ompiui:workspace-files-changed', onFiles)
     }
-  }, [directory, filePath, html, resourceKey])
+  }, [directory, filePath, html, resourceKey, revision])
 
   const sendTheme = useCallback(() => {
     frameRef.current?.contentWindow?.postMessage({ type: 'ompiui-html-theme', theme }, '*')

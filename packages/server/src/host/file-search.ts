@@ -20,6 +20,13 @@ type SearchFlight = {
 };
 const searchFlights = new Map<string, SearchFlight>();
 
+/** Existing consumers can finish, but a new reader must not join a pre-change scan. */
+export function invalidateFileSearches(workspacePath: string): void {
+  for (const key of searchFlights.keys()) {
+    if (key.startsWith(`name:${workspacePath}\0`) || key.startsWith(`text:${workspacePath}\0`)) searchFlights.delete(key);
+  }
+}
+
 function sharedSearch<T extends FileNameSearchResponse | FileTextSearchResponse>(
   key: string,
   signal: AbortSignal | undefined,

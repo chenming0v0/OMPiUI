@@ -122,6 +122,29 @@ describe('FileExplorer workspace editing integration', () => {
     },
   )
 
+  it('requeries both search modes after a remote edit and after manual refresh', async () => {
+    render(<Workspace />)
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search files' }), { target: { value: 'match' } })
+    await screen.findByText('matched text')
+    searchFiles.mockResolvedValue(['renamed.ts'])
+    searchText.mockResolvedValue([{
+      path: { text: 'renamed.ts' }, lines: { text: 'matched new line' }, line_number: 8, absolute_offset: 50,
+      submatches: [],
+    }])
+    act(() => window.dispatchEvent(new CustomEvent('ompiui:workspace-files-changed', {
+      detail: { workspacePath: '/repo', changes: [{ path: 'b.ts', kind: 'deleted', type: 'file' }], rescan: false },
+    })))
+    fireEvent.click(await screen.findByRole('button', { name: /matched new line/ }))
+    expect(screen.queryByText('matched text')).not.toBeInTheDocument()
+    expect(layoutStore.getState().panelTabs.find(tab => tab.id === panelTabId)?.previewFile?.targetLine).toBe(8)
+    searchFiles.mockResolvedValue([])
+    searchText.mockResolvedValue([])
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    await waitFor(() => expect(searchFiles).toHaveBeenCalledTimes(3))
+    expect(searchText).toHaveBeenCalledTimes(3)
+    expect(screen.queryByText('matched new line')).not.toBeInTheDocument()
+  })
+
   it('keeps a same-file selection and unrelated-panel dirty state out of the discard prompt', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     await editFile()

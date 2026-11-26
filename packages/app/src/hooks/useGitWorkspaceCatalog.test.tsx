@@ -14,6 +14,11 @@ const getCurrentProjectMock = vi.fn()
 const listWorktreesMock = vi.fn()
 const subscribeToConnectionStateMock = vi.fn()
 const onServerChangeMock = vi.fn()
+const { connectWorkspace, disconnectWorkspace } = vi.hoisted(() => ({ connectWorkspace: vi.fn(), disconnectWorkspace: vi.fn() }))
+vi.mock('./useServerStore', () => ({ useServerStore: () => ({ activeServerGeneration: 0 }) }))
+vi.mock('./useGlobalEvents', () => ({ registerSessionConsumer: () => () => undefined }))
+vi.mock('../omp/eventStream.js', () => ({ piEventStream: { connectWorkspace, disconnectWorkspace } }))
+vi.mock('../omp/workspaces', () => ({ resolveWorkspacePath: async (root: string) => root }))
 let latestServerChange: (() => void) | undefined
 
 vi.mock('../api', () => ({
@@ -88,5 +93,24 @@ describe('useGitWorkspaceCatalog', () => {
 
     expect(result.current.catalog.get('C:/repo')?.rootDirectory).toBe('C:/repo')
     expect(result.current.catalog.get('C:/repo')?.workspaces).toEqual(['C:/repo', 'C:/repo-worktree'])
+  })
+
+  it('refreshes the sidebar from the primary checkout while a linked checkout is selected', async () => {
+    connectWorkspace.mockClear()
+    const linked = 'C:/repo-worktree'
+    const directories = [linked]
+    getCurrentProjectMock.mockResolvedValue({ gitRoot: linked, path: linked })
+    const { result } = renderHook(() => useGitWorkspaceCatalog(directories))
+    await waitFor(() => expect(connectWorkspace).toHaveBeenCalledWith('C:/repo'))
+    const updated = ['C:/repo', linked, 'C:/new-worktree']
+    listWorktreesMock.mockResolvedValue({ primaryRoot: 'C:/repo', worktrees: updated.map(path => ({
+      path, head: 'abc123', branch: `refs/heads/${path === linked ? 'linked-next' : 'main'}`,
+      detached: false, bare: false, locked: false, lockReason: null, prunable: false,
+    })) })
+    act(() => window.dispatchEvent(new CustomEvent('ompiui:workspace-git-updated', {
+      detail: { workspacePath: 'c:\\repo', catalogChanged: true },
+    })))
+    await waitFor(() => expect(result.current.catalog.get(linked)?.workspaces).toEqual(updated))
+    expect(result.current.catalog.get(linked)?.workspaceBranches.get(linked)).toBe('linked-next')
   })
 })

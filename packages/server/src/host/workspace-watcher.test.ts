@@ -141,6 +141,40 @@ describe("WorkspaceWatcher", () => {
     }
   })
 
+  it("invalidates the primary catalog when another checkout changes branch or is removed", async () => {
+    const main = mkdtempSync(path.join(tmpdir(), "ompiui-watch-catalog-"))
+    const linked = `${main}-linked`
+    roots.push(main, linked)
+    git(main, "init", "-b", "main")
+    git(main, "config", "user.name", "PiUI Test")
+    git(main, "config", "user.email", "ompiui@example.invalid")
+    git(main, "commit", "--allow-empty", "-m", "initial")
+    git(main, "worktree", "add", "-b", "feature", linked)
+    // Switching to an existing branch changes linked HEAD without creating a ref.
+    git(main, "branch", "another")
+    const hub = new EventHub()
+    const watcher = new WorkspaceWatcher(hub, undefined, 0, false)
+    const workspace = new WorkspaceStore().resolve(main)
+    const gitEvents: EventEnvelope[] = []
+    const unsubscribe = hub.subscribe(event => {
+      if (event.channel === "workspace.git" && event.stream.id === workspace.canonicalRoot &&
+        (event.payload as { catalogChanged?: boolean }).catalogChanged) gitEvents.push(event)
+    })
+    watcher.watch(workspace)
+    try {
+      await waitFor(() => gitEvents.length > 0)
+      gitEvents.length = 0
+      git(linked, "switch", "another")
+      await waitFor(() => gitEvents.length > 0)
+      gitEvents.length = 0
+      git(main, "worktree", "remove", linked)
+      await waitFor(() => gitEvents.length > 0)
+    } finally {
+      unsubscribe()
+      await watcher.dispose()
+    }
+  })
+
   it("skips the recursive watcher when the tree exceeds the directory cap", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "ompiui-watch-big-"))
     roots.push(root)

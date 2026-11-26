@@ -60,6 +60,10 @@ export class WorkspaceWatchSender {
     }
     // 第二批可能包含创建或删除变化，单独保留最后一个路径更新无法表达；
     // 重新扫描可保留最终状态。
+    if (field === "git" && previous && isJsonObject(previous.event.payload) && previous.event.payload.catalogChanged === true &&
+      isJsonObject(event.payload) && event.payload.catalogChanged === false) {
+      event = { ...event, payload: { ...event.payload, catalogChanged: true } }
+    }
     let item = field === "files" && previous ? this.rescan(event) : this.measure(event)
     if (item.bytes > this.maxMessageBytes && field === "files") item = this.rescan(event)
     if (this.pendingBytes + item.bytes > this.maxPendingBytes) {

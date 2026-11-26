@@ -6,6 +6,7 @@ import {
   deleteWorkspaceEntry,
   listFiles,
   moveWorkspaceEntry,
+  readExcludedPathRevisions,
   readFileContent,
   writeFileContent,
 } from "./files.ts"
@@ -224,21 +225,36 @@ const HOST_COMMAND_HANDLERS: Record<string, HostCommandHandler> = {
   }) as Promise<JsonValue>,
   "files.read": (ctx, params) => readFileContent(workspace(ctx, params), reqString(params, "path"),
     optString(params, "ifNoneMatch"), typeof params.maxBytes === "number" ? params.maxBytes : undefined) as Promise<JsonValue>,
-  "files.write": (ctx, params) => writeFileContent(workspace(ctx, params), reqString(params, "path"), reqStringAllowEmpty(params, "content"), {
-    ifMatch: optString(params, "ifMatch"),
-    encoding: fileEncoding(params) ?? "utf-8",
-    returnContent: optBoolean(params, "returnContent") !== false,
-    signal: ctx.signal,
-  }) as Promise<JsonValue>,
-  "files.create": (ctx, params) => createWorkspaceEntry(workspace(ctx, params), reqString(params, "path"), fileType(params), {
-    content: optString(params, "content"),
-    encoding: fileEncoding(params) ?? "utf-8",
-    overwrite: optBoolean(params, "overwrite") === true,
-    signal: ctx.signal,
-  }) as Promise<JsonValue>,
-  "files.move": (ctx, params) => moveWorkspaceEntry(workspace(ctx, params), reqString(params, "from"), reqString(params, "to"), optBoolean(params, "overwrite") === true, ctx.signal) as Promise<JsonValue>,
+  "files.revisions": (ctx, params) => readExcludedPathRevisions(workspace(ctx, params), params.paths as string[], ctx.signal),
+  "files.write": (ctx, params) => {
+    const record = workspace(ctx, params)
+    return writeFileContent(record, reqString(params, "path"), reqStringAllowEmpty(params, "content"), {
+      ifMatch: optString(params, "ifMatch"),
+      encoding: fileEncoding(params) ?? "utf-8",
+      returnContent: optBoolean(params, "returnContent") !== false,
+      signal: ctx.signal,
+      onChanged: changes => ctx.watcher.notifyFilesChanged(record, changes),
+    }) as Promise<JsonValue>
+  },
+  "files.create": (ctx, params) => {
+    const record = workspace(ctx, params)
+    return createWorkspaceEntry(record, reqString(params, "path"), fileType(params), {
+      content: optString(params, "content"),
+      encoding: fileEncoding(params) ?? "utf-8",
+      overwrite: optBoolean(params, "overwrite") === true,
+      signal: ctx.signal,
+      onChanged: changes => ctx.watcher.notifyFilesChanged(record, changes),
+    }) as Promise<JsonValue>
+  },
+  "files.move": (ctx, params) => {
+    const record = workspace(ctx, params)
+    return moveWorkspaceEntry(record, reqString(params, "from"), reqString(params, "to"), optBoolean(params, "overwrite") === true,
+      ctx.signal, changes => ctx.watcher.notifyFilesChanged(record, changes)) as Promise<JsonValue>
+  },
   "files.delete": async (ctx, params) => {
-    await deleteWorkspaceEntry(workspace(ctx, params), reqString(params, "path"), optBoolean(params, "recursive") === true, ctx.signal)
+    const record = workspace(ctx, params)
+    await deleteWorkspaceEntry(record, reqString(params, "path"), optBoolean(params, "recursive") === true,
+      ctx.signal, changes => ctx.watcher.notifyFilesChanged(record, changes))
     return { ok: true }
   },
   "files.searchName": (ctx, params) => searchFilesByName(workspace(ctx, params), reqString(params, "query"), {
@@ -255,7 +271,8 @@ const HOST_COMMAND_HANDLERS: Record<string, HostCommandHandler> = {
   "git.diff": (ctx, params) => getGitDiff(workspace(ctx, params).canonicalRoot, gitMode(params), ctx.signal) as Promise<JsonValue>,
   "git.fileDiff": (ctx, params) => getGitFileDiff(workspace(ctx, params).canonicalRoot, gitMode(params), reqString(params, "path"), ctx.signal) as Promise<JsonValue>,
   "git.worktrees": (ctx, params) => listGitWorktrees(workspace(ctx, params).canonicalRoot, ctx.signal) as Promise<JsonValue>,
-  "git.worktreeCreate": (ctx, params) => mutateGitWorktree(workspace(ctx, params).canonicalRoot, "create", reqString(params, "path"), reqString(params, "branch"), undefined, ctx.signal) as Promise<JsonValue>,
+  "git.worktreeCreate": (ctx, params) => mutateGitWorktree(workspace(ctx, params).canonicalRoot, "create", reqString(params, "path"), reqString(params, "branch"), undefined, ctx.signal,
+    root => ctx.watcher.notifyWorktreeCatalogChanged(ctx.store.find(root)?.canonicalRoot ?? path.resolve(root))) as Promise<JsonValue>,
   "git.worktreeRemove": async (ctx, params) => {
     const cwd = workspace(ctx, params).canonicalRoot
     const targetPath = path.resolve(cwd, reqString(params, "path"))
@@ -271,7 +288,7 @@ const HOST_COMMAND_HANDLERS: Record<string, HostCommandHandler> = {
           throw Object.assign(new Error("A native GUI session still uses this worktree; switch or close it first. Nothing was removed."), { code: "WORKSPACE_BUSY" })
         }
       }
-    }, ctx.signal)
+    }, ctx.signal, root => ctx.watcher.notifyWorktreeCatalogChanged(ctx.store.find(root)?.canonicalRoot ?? path.resolve(root)))
     // Removal has already committed; use the captured record, never stat a
     // now-absent root via workspaces.close or terminate any user shell.
     if (record) ctx.watcher.unwatch(record)
