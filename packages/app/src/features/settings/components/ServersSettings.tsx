@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { lazy, Suspense, useState, useEffect, useCallback, useMemo } from 'react'
+import { Cloud } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '../../../components/ui/Button'
 import { ConfirmDialog } from '../../../components/ui/ConfirmDialog'
@@ -21,11 +22,14 @@ import { settingsFieldClass, SettingsSection } from './SettingsUI'
 import type { ServerConfig, ServerHealth } from '../../../store/serverStore'
 import { parseConnectionLink, resolveConnectionLink } from '../../../utils/connectionLink'
 import { fetchHostShare } from '../../../omp/transport'
+import { useDshController } from '../../../store/dshControllerStore'
+import { AuthStatusPill } from './AuthPanelUI'
 import type { ShareInfo } from '@ompiui/protocol'
 
 const IPV4_PATTERN = /^(?:\d{1,3}\.){3}\d{1,3}$/
 /** 显示名长度上限，避免列表项把右侧操作按钮挤穿 */
 const SERVER_NAME_MAX_LENGTH = 40
+const DshControllerControls = lazy(() => import('./DshRemoteSettings').then(module => ({ default: module.DshRemoteConnectSettings })))
 
 function isHttpsIpUrl(url: string): boolean {
   try {
@@ -628,6 +632,7 @@ function AddServerForm({
 export function ServersSettings({ initialAddingServer = false }: { initialAddingServer?: boolean }) {
   const { t } = useTranslation(['settings', 'common'])
   const [addingServer, setAddingServer] = useState(initialAddingServer)
+  const { session: dshController } = useDshController()
   const {
     servers,
     activeServer,
@@ -709,6 +714,20 @@ export function ServersSettings({ initialAddingServer = false }: { initialAdding
           />
         ))}
 
+        {dshController && (
+          <section aria-label={t('dshRemote.connectionName')} className="min-w-0 rounded-lg border border-border-200/60 bg-bg-100" data-testid="dsh-controller-connection">
+            <div className="flex items-center gap-3 px-3 py-2.5">
+              <Cloud size={16} className="shrink-0 text-accent-main-100" />
+              <div className="min-w-0 flex-1">
+                <h3 className="text-[length:var(--fs-sm)] font-medium text-text-100">{t('dshRemote.connectionName')}</h3>
+                <p className="text-[length:var(--fs-xs)] text-text-400">{t('dshRemote.connectionDescription')}</p>
+              </div>
+              <AuthStatusPill tone="success">{t('dshRemote.controllerRole')}</AuthStatusPill>
+            </div>
+            <Suspense fallback={null}><DshControllerControls connectionRow /></Suspense>
+          </section>
+        )}
+
         {addingServer && (
           <AddServerForm
             onAdd={(n, u, token, activate) => {
@@ -721,7 +740,7 @@ export function ServersSettings({ initialAddingServer = false }: { initialAdding
           />
         )}
 
-        {servers.length === 0 && !addingServer && (
+        {servers.length === 0 && !addingServer && !dshController && (
           <div className="text-[length:var(--fs-md)] text-text-400 text-center py-8">{t('servers.noServersConfigured')}</div>
         )}
       </div>

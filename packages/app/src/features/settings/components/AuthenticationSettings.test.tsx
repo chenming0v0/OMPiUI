@@ -13,6 +13,7 @@ vi.mock('./RemoteAccessSettings', () => ({
   RemoteAccessSettings: () => <div>Desktop pairing</div>,
 }))
 vi.mock('./RelaySettings', () => ({ RelaySettings: () => <div>Relay configuration</div> }))
+vi.mock('./DshRemoteSettings', () => ({ default: () => <div>Hosted relay sign-in</div> }))
 vi.mock('./PhonePairingForm', () => ({
   PhonePairingForm: ({ onPaired }: { onPaired?: () => void }) => (
     <button type="button" onClick={onPaired}>Phone pairing input and scanner</button>
@@ -42,5 +43,16 @@ describe('AuthenticationSettings', () => {
     expect(screen.getByText('Phone pairing input and scanner')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Phone pairing input and scanner' }))
     expect(completed).toHaveBeenCalledOnce()
+  })
+
+  it('keeps Android direct pairing and hosted sign-in under Connect to your computer', async () => {
+    platform.android = true
+    render(<AuthenticationSettings />)
+    fireEvent.click(screen.getByRole('button', { name: 'Remote access' }))
+    expect(await screen.findByText('Hosted relay sign-in')).toBeInTheDocument()
+    expect(screen.queryByText('Phone pairing input and scanner')).not.toBeInTheDocument()
+    expect(screen.getByText('Phone authentication')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Scan or enter code' }))
+    expect(screen.getByText('Phone pairing input and scanner')).toBeInTheDocument()
   })
 })

@@ -1,5 +1,6 @@
 mod bridge;
 mod commands;
+mod dsh_remote_viewer;
 #[cfg(desktop)]
 mod dir_state;
 #[cfg(desktop)]
@@ -314,6 +315,7 @@ pub fn run() {
     }
     let builder = tauri::Builder::default()
         .manage(bridge::BridgeState::default())
+        .manage(dsh_remote_viewer::DshRemoteViewerState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_http::init())
@@ -461,6 +463,8 @@ pub fn run() {
             bridge::ws_bridge_send,
             bridge::ws_bridge_ack,
             bridge::ws_bridge_close,
+            dsh_remote_viewer::dsh_remote_viewer_open,
+            dsh_remote_viewer::dsh_remote_viewer_close,
         ]);
 
     #[cfg(mobile)]
@@ -474,6 +478,8 @@ pub fn run() {
             bridge::ws_bridge_send,
             bridge::ws_bridge_ack,
             bridge::ws_bridge_close,
+            dsh_remote_viewer::dsh_remote_viewer_open,
+            dsh_remote_viewer::dsh_remote_viewer_close,
         ]);
 
     let app = builder
@@ -481,6 +487,15 @@ pub fn run() {
         .expect("error while building OMPiUI desktop client");
 
     app.run(|app_handle, event| {
+        let viewers = app_handle.state::<dsh_remote_viewer::DshRemoteViewerState>();
+        match &event {
+            tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. } => {
+                viewers.close_window(label);
+            }
+            tauri::RunEvent::Exit => viewers.close_all(),
+            _ => {}
+        }
+
         // macOS: 处理 Finder "Open with" / 拖文件夹到 Dock 图标
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Opened { urls } = &event {

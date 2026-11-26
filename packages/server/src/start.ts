@@ -1,4 +1,5 @@
 import { PROTOCOL_VERSION } from "@ompiui/protocol"
+import pkg from "../package.json" with { type: "json" }
 import { getDriverMode } from "@ompiui/omp-worker"
 import { randomBytes } from "node:crypto"
 import { hostname } from "node:os"
@@ -16,6 +17,7 @@ import { PairingStore } from "./host/pairing.ts"
 import { TailscaleManager } from "./host/tailscale.ts"
 import { RuntimeSupervisor } from "./omp/supervisor.ts"
 import { TunnelClient } from "./tunnel/tunnel-client.ts"
+import { DshHostedManager } from "./tunnel/dsh-hosted-manager.ts"
 import { createAppServer, firstLanAddress, normalizePublicBaseUrl } from "./http.ts"
 import { shutdownAppServer } from "./shutdown.ts"
 import { attachEventWebSocket } from "./ws.ts"
@@ -47,6 +49,7 @@ export interface ServerConfig {
    * 浏览器/OMPiUI App 经中转的公网地址访问本服务——无需公网 IP/端口转发。
    */
   tunnel: TunnelConfig | null
+  dshRemote: boolean
   /**
    * 可信反向代理列表(OMPIUI_TRUSTED_PROXIES),已校验。只影响配对限速的客户端
    * 桶键:对端不在列表内时 XFF 一律忽略。
@@ -64,6 +67,7 @@ export interface ServerConfigOverrides {
   tunnelUrl?: string | null
   tunnelKey?: string | null
   tunnelId?: string | null
+  dshRemote?: boolean
   /**
    * 直连反代(无隧道)时可信的代理 IP/CIDR;默认空。仅当 TCP 对端属于该列表时
    * 才采纳 X-Forwarded-For。对应 OMPIUI_TRUSTED_PROXIES / --trusted-proxy。
@@ -135,6 +139,7 @@ export function resolveServerConfig(
     authToken: overrides.authToken,
     publicBaseUrl,
     tunnel,
+    dshRemote: overrides.dshRemote ?? env.OMPIUI_DSH_REMOTE === "true",
     trustedProxies,
   }
 }
@@ -189,6 +194,10 @@ export function parseWebArgs(args: string[]): WebCliOptions {
       options.help = true
       continue
     }
+    if (arg === "--dsh-remote") {
+      options.dshRemote = true
+      continue
+    }
     if (arg === "--api-only") {
       options.webRoot = null
       continue
@@ -225,6 +234,7 @@ Options:
   --tunnel-url <url>    Self-hosted relay control URL (wss://relay.example.com)
   --tunnel-key <key>    Relay access key (from "omp-relay init")
   --tunnel-id <id>      Tunnel id registered at the relay (default: ompiui)
+  --dsh-remote       Enable DS Harness Remote hosted web handoff for authorized devices
   -h, --help          Show this help`)
 }
 
@@ -249,6 +259,7 @@ export async function startOmpiUiServer(
   // 隧道客户端在 listen 成功后启动；它的公网入口（relay 上报）要喂给
   // Origin 白名单和 share 链接，所以用可变引用 + getter 动态取。
   let tunnelClient: TunnelClient | undefined
+  const hosted = new DshHostedManager(dataRoot(), pkg.version, config.dshRemote)
   // Never persist, expose in status, or send to the relay/worker. Authenticate
   // only the embedded client's local forwarding hop for this server lifetime.
   const tunnelForwardingToken = randomBytes(32).toString("hex")
@@ -279,6 +290,8 @@ export async function startOmpiUiServer(
     share: { host: config.host, port: config.port, publicBaseUrl: config.publicBaseUrl },
     getPublicBaseUrl: () => getTunnelStatus()?.publicUrl ?? null,
     getTunnelStatus,
+    hostedRemote: hosted,
+    getHostedOrigins: () => hosted.origins,
     pairing,
     tunnelForwardingToken,
     trustedProxies: parseTrustedProxies(config.trustedProxies),
@@ -292,7 +305,7 @@ export async function startOmpiUiServer(
   const eventServer = attachEventWebSocket(app.server, {
     eventHub: app.eventHub,
     authToken,
-    allowedOrigins: () => [config.publicBaseUrl, getTunnelStatus()?.publicUrl ?? null],
+    allowedOrigins: () => [config.publicBaseUrl, getTunnelStatus()?.publicUrl ?? null, ...hosted.origins],
     terminalManager: app.terminals,
     onSubscribe: send => {
       const snapshot = app.sessionHost.getActivitySnapshot()
@@ -319,6 +332,7 @@ export async function startOmpiUiServer(
       diagnostics.record("server.stopping", { signal, reason: signal ?? "stop_requested", port: config.port })
       if (signal) console.info(`[ompiui-server] received ${signal}, shutting down`)
       tunnelClient?.stop()
+      void hosted.dispose().catch(() => undefined)
       await lanDiscovery?.stop()
       await tailscale.dispose()
       await shutdownAppServer(app.server, eventServer, {
@@ -421,6 +435,14 @@ export async function startOmpiUiServer(
       },
     })
     tunnelClient.start()
+  }
+  if (config.webRoot && boundAddress && typeof boundAddress !== 'string'
+    && ['127.0.0.1', '0.0.0.0', '::', '::ffff:127.0.0.1'].includes(boundAddress.address)) {
+    void hosted.attach(boundAddress.port).catch(() => {
+      console.warn('[ompiui-dsh] Could not load hosted remote access settings')
+    })
+  } else if (config.dshRemote) {
+    console.warn('[ompiui-dsh] The hosted tunnel needs the OMPiUI web build and an IPv4 loopback-accessible listener')
   }
   if (config.publicBaseUrl) {
     console.info(

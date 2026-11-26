@@ -32,6 +32,8 @@ import { WorkspaceWatcher } from "./host/workspace-watcher.ts";
 import {
   MAX_JSON_BODY_BYTES,
   MAX_PROMPT_BODY_BYTES,
+  TUNNEL_FORWARDING_HEADER,
+  isAllowedLocalOrigin,
   pairingClientKey,
   requestHasAllowedOrigin,
   requestHasValidToken,
@@ -44,6 +46,7 @@ import { TERMINAL_SECRET_HEADER, terminalOwnerFromRequest } from './host/termina
 import { PairingStore, type PairRedeemFailure } from "./host/pairing.ts";
 import { listLanInterfaces } from "./host/network.ts";
 import type { TailscaleManager } from "./host/tailscale.ts";
+import type { DshHostedManager } from "./tunnel/dsh-hosted-manager.ts";
 import { createStaticServer } from "./static.ts";
 import { FaultReportService } from "./diagnostics/fault-reports.ts";
 import type { TrustedProxies } from "@ompiui/relay";
@@ -414,6 +417,9 @@ export interface CreateAppServerOptions {
    * ——隧道是动态上线/掉线的，只能在运行时取。
    */
   getPublicBaseUrl?: () => string | null;
+  /** Active, per-connection hosted browser origins; never used as a global share address. */
+  getHostedOrigins?: () => Iterable<string>;
+  hostedRemote?: DshHostedManager;
   /** 自建中转隧道运行状态 getter（GET /api/v1/host/tunnel）。 */
   getTunnelStatus?: () => TunnelStatus | null;
   /** 手机远程一次性配对（invite/redeem）；缺省时配对接口不可用。 */
@@ -478,7 +484,7 @@ export function createAppServer(
     return normalizePublicBaseUrl(options.getPublicBaseUrl?.());
   };
   // 配置了公网入口时，其 Origin 一并放行（反向代理/隧道改写 Host 的场景）
-  const allowedOrigin = effectivePublicBaseUrl;
+  const allowedOrigin = () => [effectivePublicBaseUrl(), ...options.getHostedOrigins?.() ?? []];
   let disposal: Promise<void> | undefined;
   const pairingReads = new Map<string, number>();
   let pairingReadCount = 0;
@@ -624,9 +630,10 @@ export function createAppServer(
         const localBase = localPort
           ? `http://${localHost}:${localPort}`
           : `http://${localHost}`;
-        const url =
-          effectivePublicBaseUrl() ??
-          pairFallbackBase(req, localBase, options.share?.host);
+        // Unlike a self-hosted tunnel, this URL only works for the browser that exchanged its grant.
+        const loopback = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '');
+        const hosted = loopback ? [...options.getHostedOrigins?.() ?? []].find(origin => new URL(origin).host === req.headers.host) : undefined;
+        const url = hosted ?? effectivePublicBaseUrl() ?? pairFallbackBase(req, localBase, options.share?.host);
         const redeemBody: PairRedeemResult = {
           url,
           token: authToken,
@@ -761,6 +768,35 @@ export function createAppServer(
           ...(tunnel ? { tunnel } : {}),
         };
         return sendJson(res, 200, body);
+      }
+
+      if (p === '/api/v1/host/dsh-remote' && (method === 'GET' || method === 'POST')) {
+        const address = server.address();
+        const port = typeof address === 'object' && address?.port;
+        const origin = req.headers.origin;
+        const localHost = port && [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`].includes(req.headers.host ?? '');
+        if (!authToken || !options.hostedRemote || !localHost
+          || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '')
+          || req.headers[TUNNEL_FORWARDING_HEADER] !== undefined || req.headers.forwarded !== undefined
+          || Object.keys(req.headers).some(name => name.startsWith('x-forwarded-'))
+          || (origin !== undefined && !isAllowedLocalOrigin(origin))) {
+          return sendProblem(res, 403, Object.assign(new Error('DS Harness Remote can only be managed from this computer'), { code: 'FORBIDDEN' }));
+        }
+        try {
+          if (method === 'POST') {
+            const body = await readBody(req, AbortSignal.any([scope.signal, AbortSignal.timeout(5_000)]), 2048);
+            await options.hostedRemote.manage(body.action, body.code);
+          }
+          res.setHeader('cache-control', 'no-store');
+          return sendJson(res, 200, await options.hostedRemote.status());
+        } catch (error) {
+          // Keep the host's error code (DSH_CODE_EXPIRED, DSH_OPERATION_IN_PROGRESS, ...)
+          // so the settings panel can localize it instead of parsing English text.
+          const raw = (error as { code?: unknown } | null)?.code;
+          const code = typeof raw === 'string' && /^DSH_[A-Z_]{1,48}$/.test(raw) ? raw : 'DSH_HOST_OPERATION_FAILED';
+          const message = error instanceof Error ? error.message : 'DS Harness Remote host operation failed';
+          return sendJson(res, 409, { error: { code, message } });
+        }
       }
 
       if (method === "GET" && p === "/api/v1/host/tunnel") {

@@ -128,9 +128,10 @@ const GROUP_DEFS: { labelKey: string; tabs: SettingsTab[] }[] = [
 // Tab Content Router
 // ============================================
 
-function TabContent({ tab, onPaired }: {
+function TabContent({ tab, onPaired, onManageController }: {
   tab: SettingsTab
   onPaired?: () => void
+  onManageController: () => void
 }) {
   switch (tab) {
     case 'agent':
@@ -150,7 +151,7 @@ function TabContent({ tab, onPaired }: {
     case 'servers':
       return <ServersSettings />
     case 'authentication':
-      return <AuthenticationSettings onPaired={onPaired} />
+      return <AuthenticationSettings onPaired={onPaired} onManageController={onManageController} />
     case 'traffic':
       return <TrafficAuditSettings />
     case 'service':
@@ -428,7 +429,7 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
           >
             {/* key 按 tab 重挂载：单个面板崩溃只降级当前页，不拖垮整个应用 */}
             <ErrorBoundary key={tab}>
-              <TabContent tab={tab} onPaired={handlePaired} />
+              <TabContent tab={tab} onPaired={handlePaired} onManageController={handlePaired} />
             </ErrorBoundary>
           </SettingsPanel>
         </div>
@@ -525,7 +526,7 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
         >
           {/* key 按 tab 重挂载：单个面板崩溃只降级当前页，不拖垮整个应用 */}
           <ErrorBoundary key={tab}>
-            <TabContent tab={tab} onPaired={nativeMobile ? handlePaired : undefined} />
+            <TabContent tab={tab} onPaired={nativeMobile ? handlePaired : undefined} onManageController={handlePaired} />
           </ErrorBoundary>
         </SettingsPanel>
       </div>
