@@ -152,9 +152,7 @@ class PiSessionStateStore {
         && raw.sessionId === sessionId && typeof raw.kind === 'string' && ['select', 'confirm', 'input', 'editor', 'ask'].includes(raw.kind)) as unknown as ExtensionUiDialogRequest[]
       const cursor = state.pendingExtensionUiCursor
       if (isJsonObject(cursor) && typeof cursor.epoch === 'string' && typeof cursor.sequence === 'number') {
-        const { removed, restore } = extensionUiStore.reconcilePending(sessionId, requests, cursor as EventCursor, since)
-        for (const requestId of removed) activeSessionStore.resolvePendingRequest(requestId, sessionId)
-        requests = restore
+        requests = extensionUiStore.reconcilePending(sessionId, requests, cursor as EventCursor, since)
       }
       for (const request of requests) {
         if (!extensionUiStore.requestOpened(request)) continue

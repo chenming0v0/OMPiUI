@@ -915,7 +915,6 @@ class PiEventStream {
         break
       case 'settled':
         extensionUiStore.requestSettled(sessionId, event.requestId)
-        activeSessionStore.resolvePendingRequest(event.requestId, sessionId)
         break
       case 'state':
         extensionUiStore.statePatched(sessionId, event.patch)

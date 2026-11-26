@@ -113,6 +113,15 @@ describe('piSessionStateStore pending dialog recovery', () => {
     expect(activeSessionStore.getBusySessionsSnapshot().some(entry => entry.pendingAction)).toBe(false)
   })
 
+  it('clears sidebar state on local expiry even when settlement replay is lost', () => {
+    const request = dialogRequest()
+    extensionUiStore.requestOpened(request, { epoch: 'events', sequence: 1 })
+    activeSessionStore.addPendingRequest(request.requestId, request.sessionId, 'permission')
+    extensionUiStore.requestSettled(request.sessionId, request.requestId, request.workerGeneration)
+    expect(extensionUiStore.getSnapshot().sessions[request.sessionId]?.pending).toEqual([])
+    expect(activeSessionStore.getBusySessionsSnapshot().some(entry => entry.pendingAction)).toBe(false)
+  })
+
   it('does not replay an old extension mirror when lifecycle state changes', () => {
     piSessionStateStore.setState('session-1', {
       extensionUiState: [{ kind: 'status', key: 'mode', text: 'Old' }],

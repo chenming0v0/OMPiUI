@@ -6,6 +6,7 @@ import type {
   ExtensionUiState,
   ExtensionUiStatePatch,
 } from "@ompiui/protocol"
+import { activeSessionStore } from '../store/activeSessionStore'
 
 interface ExtensionUiStoreSnapshot {
   sessions: Readonly<Record<string, ExtensionUiSnapshot>>
@@ -125,7 +126,7 @@ export const extensionUiStore = {
 
   reconcilePending(sessionId: string, requests: ExtensionUiDialogRequest[], cursor: EventCursor, since: number) {
     const cutoff = pendingSnapshotCursors.get(sessionId)
-    if (cutoff?.epoch === cursor.epoch && cutoff.sequence > cursor.sequence) return { removed: [], restore: [] }
+    if (cutoff?.epoch === cursor.epoch && cutoff.sequence > cursor.sequence) return []
     pendingSnapshotCursors.set(sessionId, cursor)
     const live = pendingCursors.get(sessionId)
     const retain = new Set(requests.map(request => request.requestId))
@@ -134,13 +135,11 @@ export const extensionUiStore = {
       return position && (position.cursor.epoch === cursor.epoch
         ? position.cursor.sequence > cursor.sequence : position.receivedAt > since)
     }
-    const removed: string[] = []
     for (const request of existing(sessionId).pending) {
       if (retain.has(request.requestId) || newer(request.requestId)) continue
       this.requestSettled(sessionId, request.requestId, request.workerGeneration)
-      removed.push(request.requestId)
     }
-    return { removed, restore: requests.filter(request => !newer(request.requestId)) }
+    return requests.filter(request => !newer(request.requestId))
   },
 
   requestSettled(sessionId: string, requestId: string, workerGeneration?: string): void {
@@ -148,13 +147,15 @@ export const extensionUiStore = {
     const snapshot = existing(sessionId)
     const generation = workerGeneration ?? snapshot.pending.find(request => request.requestId === requestId)?.workerGeneration ?? snapshot.workerGeneration
     const settled = settledRequestsBySession.get(sessionId) ?? new Set<string>()
-    pendingCursors.get(sessionId)?.delete(requestId)
+    const pending = snapshot.pending.filter(request => request.requestId !== requestId || (request.workerGeneration ?? snapshot.workerGeneration) !== generation)
+    if (!pending.some(request => request.requestId === requestId)) {
+      pendingCursors.get(sessionId)?.delete(requestId)
+      // Local expiry and direct responses can precede or miss the live event.
+      activeSessionStore.resolvePendingRequest(requestId, sessionId)
+    }
     settled.add(settledKey(requestId, generation))
     settledRequestsBySession.set(sessionId, settled)
-    update(sessionId, {
-      ...snapshot,
-      pending: snapshot.pending.filter(request => request.requestId !== requestId || (request.workerGeneration ?? snapshot.workerGeneration) !== generation),
-    })
+    update(sessionId, { ...snapshot, pending })
   },
 
   /**
