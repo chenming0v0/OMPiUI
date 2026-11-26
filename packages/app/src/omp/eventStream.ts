@@ -11,6 +11,7 @@ import {
   isJsonObject,
   type CommandRecord,
   type JsonObject,
+  type PackageProgress,
 } from '@ompiui/protocol'
 import type { AgentMessage, AgentSessionEvent, PiLiveMessage, ToolResultMessage } from './domain/index.js'
 import type { ProviderAuthEvent, SessionsActivitySnapshot, SessionActivityStatus } from '@ompiui/protocol'
@@ -40,7 +41,6 @@ import {
   receiveResourceRevision,
   receiveSettingsUpdated,
   subscribeManagementStreams,
-  type PackageProgress,
 } from './managementEventStore'
 import type { SessionStatus } from '../types/session'
 import { BrowserDiagnostics } from './browserDiagnostics'
@@ -191,6 +191,7 @@ class PiEventStream {
   private resyncRetries = new Map<string, { attempts: number; timer?: ReturnType<typeof setTimeout> }>()
   private resyncActive = 0
   private resyncGeneration = 0
+  private resourceInvalidations = 0
   private readonly RESYNC_CONCURRENCY = 2
 
   /** Keep the server stream alive on Home, even with no workspace or pane. */
@@ -629,7 +630,13 @@ class PiEventStream {
     }
     if ('channel' in message && message.channel === 'control' && message.type === 'resync_required') {
       for (const key of Object.keys(message.streams)) {
-        this.queueResync(key, message.streams[key as EventStreamKey]?.cursor)
+        const { cursor, reason } = message.streams[key as EventStreamKey] ?? {}
+        if (reason && reason !== 'missing_cursor') {
+          const stream = parseEventStreamKey(key)
+          if (stream?.kind === 'session') this.checkSessionResourceVersion({ sessionId: stream.id })
+          if (stream?.kind === 'workspace') this.checkSessionResourceVersion({ workspacePath: stream.id })
+        }
+        this.queueResync(key, cursor)
       }
       return
     }
@@ -645,6 +652,17 @@ class PiEventStream {
       }
       window.dispatchEvent(new CustomEvent('ompiui:event-stream-error', { detail: message.problem }))
     }
+  }
+
+  private refreshModelConfiguration(): void {
+    receiveProviderAuthUpdated()
+    refreshModelSettings()
+    // The provider form holds its own drafts; a model catalog refresh alone cannot replace them.
+    window.dispatchEvent(new CustomEvent('ompiui:models-updated'))
+  }
+
+  private checkSessionResourceVersion(detail: { sessionId: string } | { workspacePath: string }): void {
+    window.dispatchEvent(new CustomEvent('ompiui:session-resources-updated', { detail }))
   }
 
   private handleOmittedPayload(message: Extract<EventServerMessage, { type: 'payload_omitted' }>): void {
@@ -671,15 +689,16 @@ class PiEventStream {
         if (stream.kind === 'session') this.scheduleStateRefresh(stream.id)
         else for (const sessionId of this.refCounts.keys()) this.scheduleStateRefresh(sessionId)
       } else if (eventChannel === 'resources.updated') {
-        receiveResourceRevision(stream.kind === 'workspace' || stream.kind === 'resources' ? stream.id : undefined, String(Date.now()))
+        if (stream.kind === 'session') this.checkSessionResourceVersion({ sessionId: stream.id })
+        else if (stream.kind === 'workspace') {
+          this.checkSessionResourceVersion({ workspacePath: stream.id })
+          receiveResourceRevision(stream.id, `${message.cursor.epoch}:${message.cursor.sequence}`)
+        } else receiveResourceRevision(stream.kind === 'resources' ? stream.id : undefined, `${message.cursor.epoch}:${message.cursor.sequence}`)
       } else if (eventChannel === 'settings.updated') {
         receiveSettingsUpdated()
         refreshOfficialSettings()
       } else if (eventChannel === 'models.updated') {
-        receiveProviderAuthUpdated()
-        refreshModelSettings()
-        // 供应商设置页直接持有 draft 副本，必须重读，否则过期草稿会把外部改动写回。
-        window.dispatchEvent(new CustomEvent('ompiui:models-updated'))
+        this.refreshModelConfiguration()
       } else {
         if (stream.kind === 'session') this.scheduleBranchRefresh(stream.id)
         else this.queueResync(eventStreamKey(stream))
@@ -741,9 +760,11 @@ class PiEventStream {
       case 'payload.omitted':
         recordClientDiagnostic('worker_payload_omitted', { sessionId, errorCode: 'WORKER_EVENT_TOO_LARGE' })
         this.queueResync(eventStreamKey(envelope.stream))
+        if (sessionId && isJsonObject(envelope.payload) && envelope.payload.channel === 'resources.updated') {
+          this.checkSessionResourceVersion({ sessionId })
+        }
         if (!sessionId && isJsonObject(envelope.payload)) {
-          if (envelope.payload.channel === 'models.updated') refreshModelSettings()
-          else if (envelope.payload.channel === 'settings.updated') {
+          if (envelope.payload.channel === 'settings.updated') {
             receiveSettingsUpdated()
             refreshOfficialSettings()
           }
@@ -809,18 +830,25 @@ class PiEventStream {
         // models.yml 变更（手动加模型 / omp CLI 登录写入）：provider 配置与
         // 凭据同源，bump providerRevision 让管理页重拉；模型选择器的列表
         // store 直接刷新（有 flight 去重），不依赖某个组件恰好挂载
-        receiveProviderAuthUpdated()
-        refreshModelSettings()
-        // 供应商设置页直接持有 draft 副本，必须重读，否则过期草稿会把外部改动写回。
-        window.dispatchEvent(new CustomEvent('ompiui:models-updated'))
+        this.refreshModelConfiguration()
         break
       }
       case 'packages.progress':
-        receivePackageProgress(envelope.payload as unknown as PackageProgress)
+        if (isJsonObject(envelope.payload) && typeof envelope.payload.commandId === 'string') {
+          receivePackageProgress(envelope.payload as PackageProgress)
+        }
         break
       case 'resources.updated': {
-        const payload = envelope.payload as { workspacePath?: string | null } | undefined
-        receiveResourceRevision(payload?.workspacePath ?? undefined, String(envelope.cursor.sequence))
+        const payload = envelope.payload as { sessionId?: string; workspacePath?: string | null; revision?: string } | undefined
+        const resourceSession = sessionId ?? payload?.sessionId
+        if (resourceSession && typeof payload?.revision === 'string') {
+          window.dispatchEvent(new CustomEvent('ompiui:session-resources-updated', {
+            detail: { sessionId: resourceSession, workspacePath: payload.workspacePath, version: payload.revision },
+          }))
+          break
+        }
+        const workspacePath = envelope.stream.kind === 'workspace' ? envelope.stream.id : payload?.workspacePath ?? undefined
+        receiveResourceRevision(workspacePath, `${envelope.cursor.epoch}:${envelope.cursor.sequence}`)
         break
       }
       case 'workspace.files':
@@ -830,11 +858,11 @@ class PiEventStream {
         window.dispatchEvent(new CustomEvent('ompiui:workspace-git-updated', { detail: envelope.payload }))
         break
       case 'registry.updated': {
-        const payload = envelope.payload as { sessionId?: string } | undefined
+        const payload = envelope.payload as { sessionId?: string; resourceVersion?: string } | undefined
         if (sessionId || payload?.sessionId) {
           window.dispatchEvent(
             new CustomEvent('ompiui:registry-updated', {
-              detail: { sessionId: sessionId ?? payload?.sessionId },
+              detail: { sessionId: sessionId ?? payload?.sessionId, resourceVersion: payload?.resourceVersion },
             }),
           )
         }
@@ -1477,12 +1505,15 @@ class PiEventStream {
     } else if (stream.kind === 'server') {
       invalidatePiSessionList()
       uiHistory.refreshServer()
+      receiveResourceRevision(undefined, `resync:${++this.resourceInvalidations}`)
+      this.refreshModelConfiguration()
       receiveSettingsUpdated()
       refreshOfficialSettings()
       window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
     } else if (stream.kind === 'provider') {
       receiveProviderAuthUpdated()
     } else if (stream.kind === 'workspace') {
+      receiveResourceRevision(stream.id, `resync:${++this.resourceInvalidations}`)
       if (this.workspaceRefCounts.has(stream.id)) {
         void ensureHostWorkspaceWatch(stream.id).catch(() => undefined)
       }

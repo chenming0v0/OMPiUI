@@ -103,6 +103,18 @@ describe('authoritative provider configuration', () => {
     expect(screen.getByLabelText(/Context window/)).toHaveValue(256_000)
   })
 
+  it('reports a provider reload failure even when the model catalog is synced, then recovers', async () => {
+    render(<ProvidersSettings />)
+    await screen.findByLabelText('Base URL')
+    mocks.list.mockRejectedValueOnce(new Error('Provider read failed'))
+    await act(async () => { notifyReconnected() })
+    expect(screen.getByRole('status', { name: 'Could not sync provider configuration' })).toBeInTheDocument()
+    expect(screen.getByText(/Provider read failed/)).toBeInTheDocument()
+
+    await incoming(configuration())
+    expect(screen.getByRole('status', { name: 'Connected / synced' })).toBeInTheDocument()
+  })
+
   it('reloads and overwrites dirty supplier and modal on reconnect', async () => {
     render(<ProvidersSettings />)
     const url = await screen.findByLabelText('Base URL')

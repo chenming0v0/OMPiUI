@@ -662,6 +662,18 @@ describe('ordered recovery cursors', () => {
     },
   )
 
+  it.each(['epoch_mismatch', 'history_expired'])('invalidates the open provider form on server %s', async reason => {
+    const updated = vi.fn()
+    window.addEventListener('ompiui:models-updated', updated)
+    try {
+      raw({ channel: 'control', type: 'resync_required', streams: { server: { reason, cursor: { epoch: 'current', sequence: 10 } } } })
+      await vi.advanceTimersByTimeAsync(150)
+      expect(updated).toHaveBeenCalledOnce()
+    } finally {
+      window.removeEventListener('ompiui:models-updated', updated)
+    }
+  })
+
   it('retries a failed command snapshot on resubscription without replaying later events', async () => {
     const send = vi.spyOn(internal, 'send').mockImplementation(() => {})
     const read = vi.spyOn(http, 'piFetch')

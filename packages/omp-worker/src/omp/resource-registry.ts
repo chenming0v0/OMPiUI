@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import type { JsonObject, JsonValue, RegistrySnapshot } from "@ompiui/protocol"
 import { isJsonObject } from "@ompiui/protocol"
 
@@ -50,6 +51,13 @@ export function requireResourceList(resources: JsonObject, name: string): JsonVa
     throw Object.assign(new Error(typeof detail === "string" ? detail : `Runtime resource list is unavailable: ${name}`), { code: "RESOURCE_UNAVAILABLE" })
   }
   return value
+}
+
+export function resourceDigest(value: JsonValue): string {
+  return createHash('sha256').update(JSON.stringify(value, (_key, item: unknown) => {
+    if (!isJsonObject(item)) return item
+    return Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key] ?? null]))
+  })).digest('hex')
 }
 
 export function registryFromResources(resources: JsonObject, sdkVersion: string): RegistrySnapshot {

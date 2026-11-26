@@ -1,4 +1,4 @@
-import type { EventCursor, JsonObject, JsonValue, Problem } from "@ompiui/protocol"
+import type { EventCursor, JsonObject, JsonValue, PackageProgress, Problem } from "@ompiui/protocol"
 
 export const OMP_WORKER_PROTOCOL_VERSION = 4 as const
 export const OMP_WORKER_HEARTBEAT_INTERVAL_MS = 5_000
@@ -50,8 +50,9 @@ export type WorkerEvent =
   | { kind: "event"; generation: string; sessionId: string; channel: "omp.title_failed"; event: JsonObject }
   | { kind: "event"; generation: string; channel: "provider.auth"; event: JsonObject }
   | { kind: "event"; generation: string; channel: "models.updated"; event: JsonObject }
-  | { kind: "event"; generation: string; channel: "packages.progress"; event: JsonObject }
-  | { kind: "event"; generation: string; channel: "resources.updated"; workspacePath?: string }
+  | { kind: "event"; generation: string; channel: "packages.progress"; event: PackageProgress }
+  | { kind: "event"; generation: string; sessionId: string; channel: "resources.updated"; event: JsonObject }
+  | { kind: "event"; generation: string; channel: "resources.updated"; workspacePath?: string; commandId: string }
 
 export type WorkerHostCall =
   | {

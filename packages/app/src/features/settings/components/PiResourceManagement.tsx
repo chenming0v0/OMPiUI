@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 import { BookOpen, Files, LoaderCircle, MessageSquareText, Puzzle, RefreshCw, Search, Terminal, Wrench, type LucideIcon } from 'lucide-react'
 import type { PromptTemplate, Skill } from '../../../omp/vendor/pi-coding-agent'
@@ -6,7 +6,7 @@ import type { RegistrySnapshot } from '@ompiui/protocol'
 import { Button } from '../../../components/ui/Button'
 import { JsonView } from '../../../components/JsonView'
 import { extensionUiStore } from '../../../omp/extensionUiStore'
-import { useManagementEvents } from '../../../omp/managementEventStore'
+import { useSessionResourceRefresh } from '../../../omp/useSessionResourceRefresh'
 import { getPiAgentsFiles, getPiPrompts, getPiSkills, getPiSessionRegistry } from '../../../omp/transport/index.js'
 import { reloadPiSessionResources } from '../../../omp/controllers/index.js'
 import { SettingsSection, SettingsSubgroup, SettingsDisclosure, settingsFieldClass } from './SettingsUI'
@@ -24,7 +24,7 @@ export function PiResourceManagement({ sessionId, workspacePath }: { sessionId: 
   const serverGeneration = useSyncExternalStore(listener => serverStore.subscribe(listener), () => serverStore.getActiveServerGeneration(), () => serverStore.getActiveServerGeneration())
   const scope = JSON.stringify([serverGeneration, sessionId, workspacePath])
   const currentScope = useRef(scope)
-  useEffect(() => {
+  useLayoutEffect(() => {
     currentScope.current = scope
   }, [scope])
   const request = useRef<AbortController | null>(null)
@@ -50,25 +50,23 @@ export function PiResourceManagement({ sessionId, workspacePath }: { sessionId: 
   const busy = operation?.scope === scope ? operation.key : null
   const [actionError, setActionError] = useState<{ scope: string; message: string } | null>(null)
   const error = actionError?.scope === scope ? actionError.message : null
-  const { resourceRevisions } = useManagementEvents()
-  const resourceRevision = resourceRevisions[workspacePath]
   const extensionUi = useSyncExternalStore(extensionUiStore.subscribe, extensionUiStore.getSnapshot, extensionUiStore.getSnapshot)
 
   const load = useCallback(async () => {
-    if (currentScope.current !== scope) return
+    if (!sessionId || currentScope.current !== scope) return false
     request.current?.abort()
     const controller = new AbortController()
     request.current = controller
     setHandlerResult(null)
-    setData({ scope, registry: null, skills: null, prompts: null, agentsFiles: null, errors: {}, loading: true })
-    if (!sessionId) return
+    setData(previous => previous?.scope === scope ? { ...previous, loading: true }
+      : { scope, registry: null, skills: null, prompts: null, agentsFiles: null, errors: {}, loading: true })
     const results = await Promise.allSettled([
       getPiSessionRegistry(sessionId, controller.signal),
       getPiSkills(sessionId, controller.signal),
       getPiPrompts(sessionId, controller.signal),
       getPiAgentsFiles(sessionId, controller.signal),
     ])
-    if (controller.signal.aborted || currentScope.current !== scope) return
+    if (controller.signal.aborted || currentScope.current !== scope) return false
     const nextErrors: Record<string, string> = {}
     const readList = <T,>(index: number, key: string): T[] | null => {
       const result = results[index]
@@ -84,21 +82,11 @@ export function PiResourceManagement({ sessionId, workspacePath }: { sessionId: 
       nextErrors.registry = registryResult.status === 'rejected' ? String(registryResult.reason instanceof Error ? registryResult.reason.message : registryResult.reason) : t('pi.resourcesUnavailable')
     }
     setData({ scope, registry: nextRegistry, skills: readList<Skill>(1, 'skills'), prompts: readList<PromptTemplate>(2, 'prompts'), agentsFiles: readList<{ path: string; content: string }>(3, 'contextFiles'), errors: nextErrors, loading: false })
+    return Object.keys(nextErrors).length === 0
   }, [scope, sessionId, t])
 
-  useEffect(() => {
-    const timer = window.setTimeout(() => { void load() }, 0)
-    const onRegistryUpdated = (event: Event) => {
-      const updatedSessionId = (event as CustomEvent<{ sessionId?: string }>).detail?.sessionId
-      if (updatedSessionId === sessionId) void load()
-    }
-    window.addEventListener('ompiui:registry-updated', onRegistryUpdated)
-    return () => {
-      request.current?.abort()
-      window.clearTimeout(timer)
-      window.removeEventListener('ompiui:registry-updated', onRegistryUpdated)
-    }
-  }, [load, resourceRevision, sessionId])
+  const checkVersion = useSessionResourceRefresh(sessionId, workspacePath, load)
+  useEffect(() => () => request.current?.abort(), [load])
 
   const run = async (key: string, action: () => Promise<void>) => {
     setOperation({ scope, key })
@@ -138,7 +126,7 @@ export function PiResourceManagement({ sessionId, workspacePath }: { sessionId: 
             variant="secondary"
             disabled={busy !== null}
             isLoading={busy === 'reload'}
-            onClick={() => void run('reload', async () => { await reloadPiSessionResources(sessionId); await load() })}
+            onClick={() => void run('reload', async () => { await reloadPiSessionResources(sessionId); if (currentScope.current === scope) await checkVersion() })}
           >
             {busy !== 'reload' ? <RefreshCw size={14} aria-hidden="true" /> : null}
             {t('common:reload')}
@@ -231,6 +219,7 @@ export function PiResourceManagement({ sessionId, workspacePath }: { sessionId: 
               items={agentsFiles?.map(item => ({
                 name: item.path,
                 detail: `${t('pi.agentsFileLines')}: ${item.content.split('\n').length}`,
+                content: item.content,
               })) ?? null}
             />
           </SettingsSubgroup>
@@ -303,7 +292,7 @@ function ResourceList({ title, description, icon: Icon, items, loading, summary,
   title: string
   description: string
   icon: LucideIcon
-  items: Array<{ name: string; detail?: string; path?: string; status?: string }> | null
+  items: Array<{ name: string; detail?: string; path?: string; status?: string; content?: string }> | null
   loading: boolean
   summary?: string
   error?: string
@@ -347,6 +336,7 @@ function ResourceList({ title, description, icon: Icon, items, loading, summary,
               {item.status ? <span className="rounded bg-bg-200/60 px-1.5 py-0.5 text-[length:var(--fs-xs)] text-text-400">{item.status}</span> : null}
             </div>
             {item.detail ? <p className="mt-1 whitespace-pre-wrap text-[length:var(--fs-xs)] leading-relaxed text-text-300 [overflow-wrap:anywhere]">{item.detail}</p> : null}
+            {item.content ? <pre className="mt-1 whitespace-pre-wrap text-[length:var(--fs-xs)] leading-relaxed text-text-300 [overflow-wrap:anywhere]">{item.content}</pre> : null}
             {item.path ? <p className="mt-1 font-mono text-[length:var(--fs-xs)] leading-relaxed text-text-400 [overflow-wrap:anywhere]">{item.path}</p> : null}
           </li>
         ))}

@@ -213,7 +213,7 @@ export function ProvidersSettings() {
   const isMobile = useIsMobile(1024)
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false)
   const { activeServer, activeServerGeneration } = useServerStore()
-  const { syncStatus } = usePiModels()
+  const { syncStatus: modelSyncStatus } = usePiModels()
 
   const [snapshot, setSnapshot] = useState<PiModelProvidersSnapshot | null>(null)
   const [drafts, setDrafts] = useState<ProviderDraft[]>([])
@@ -542,6 +542,10 @@ export function ProvidersSettings() {
   const saveError = selected ? saveErrors[selected.id] : undefined
   const providerMissingKey = selected ? selected.apiKey.trim().length === 0 : false
   const totalModels = drafts.reduce((count, draft) => count + draft.models.length, 0)
+
+  const syncStatus = modelSyncStatus === 'disconnected' ? 'disconnected'
+    : loading || refreshing || (!snapshot && !loadError) ? 'unknown'
+    : loadError ? 'syncFailed' : modelSyncStatus
 
   if (loading) {
     return (

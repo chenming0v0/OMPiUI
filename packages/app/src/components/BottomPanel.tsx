@@ -193,7 +193,7 @@ export const BottomPanel = memo(function BottomPanel({ directory, onNavigateSess
 
           {activeTab.type === 'skill' ? (
             <Suspense fallback={<PanelFallback />}>
-              <SkillPanel isResizing={isPanelResizing} sessionId={sessionId} />
+              <SkillPanel isResizing={isPanelResizing} sessionId={sessionId} workspacePath={workspacePath} />
             </Suspense>
           ) : null}
 

@@ -5,7 +5,7 @@ import { installWorkerFileLogging } from "./worker-logger.js"
 
 installWorkerFileLogging()
 
-import type { JsonObject, JsonValue, PiRegistrySnapshot } from "@ompiui/protocol"
+import type { JsonObject, JsonValue, PackageProgress, PiRegistrySnapshot } from "@ompiui/protocol"
 import { isJsonObject, PROTOCOL_VERSION, validateParams } from "@ompiui/protocol"
 import { workerProblemFromError } from "./worker-error-problem.js"
 import { OmpRpcSession, type OmpSessionOptions } from "./omp/omp-session.js"
@@ -112,6 +112,14 @@ const ompVersion = driver === "omp" ? detectOmpVersionSync(ompBin) : null
 
 const catalog = driver === "omp" ? new OmpCatalog() : new MockCatalog()
 const packages = driver === "omp" ? new OmpPackages() : catalog as MockCatalog
+function publishPackageProgress(event: PackageProgress): void {
+  send({ kind: "event", generation: workerGeneration, channel: "packages.progress", event })
+  if (event.phase !== "started") {
+    // Bulk mutations may have already applied earlier changes before reporting a failure.
+    send({ kind: "event", generation: workerGeneration, channel: "resources.updated", workspacePath: event.workspacePath, commandId: event.commandId })
+  }
+}
+
 const providerAuth = new OmpProviderAuth(async () => {
   if (catalog instanceof OmpCatalog) return catalog.control.acquire()
   throw Object.assign(new Error("mock driver has no provider auth channel"), { code: "CAPABILITY_DISABLED" })
@@ -270,7 +278,7 @@ async function openRuntime(params: JsonObject): Promise<JsonValue> {
   runtimes.set(sessionId, opened)
   if (opened instanceof OmpRpcSession) opened.setOutputPaused(ipcSender.isPaused)
   try {
-    await setRuntimeRegistryBaseline(sessionId, opened)
+    runtimeVersions.set(sessionId, await opened.getResourceVersions())
     const state = await opened.getState()
     return {
       sessionId,
@@ -280,7 +288,7 @@ async function openRuntime(params: JsonObject): Promise<JsonValue> {
     }
   } catch (error) {
     runtimes.delete(sessionId)
-    registryDigests.delete(sessionId)
+    runtimeVersions.delete(sessionId)
     unsubs.forEach(unsub => unsub())
     await opened.dispose()
     throw error
@@ -292,7 +300,7 @@ async function closeRuntime(sessionId: string | undefined): Promise<void> {
   const current = runtimes.get(sessionId)
   if (!current) return
   runtimes.delete(sessionId)
-  registryDigests.delete(sessionId)
+  runtimeVersions.delete(sessionId)
   await current.dispose()
 }
 
@@ -310,49 +318,32 @@ const ctx: CommandContext = {
 }
 
 let registryRevision = 1
-const registryDigests = new Map<string, string | undefined>()
-let registryCheck: Promise<void> = Promise.resolve()
-
-async function setRuntimeRegistryBaseline(sessionId: string, current: SessionRuntime): Promise<void> {
-  registryDigests.set(sessionId, stableStringify(await current.getRegistry()))
-}
+const runtimeVersions = new Map<string, Awaited<ReturnType<SessionRuntime['getResourceVersions']>>>()
+const registryChecks = new WeakMap<SessionRuntime, Promise<void>>()
 
 function queueRegistryChangeCheck(current: SessionRuntime, reason: string): Promise<void> {
-  registryCheck = registryCheck.then(() => detectRegistryChange(current, reason), () => detectRegistryChange(current, reason))
-  return registryCheck
+  const detect = () => detectRegistryChange(current, reason)
+  const check = (registryChecks.get(current) ?? Promise.resolve()).then(detect, detect)
+  registryChecks.set(current, check)
+  return check
 }
 
 async function detectRegistryChange(current: SessionRuntime, reason: string): Promise<void> {
   const sessionId = current.getSessionId()
   if (runtimes.get(sessionId) !== current) return
-  const next = stableStringify(await current.getRegistry())
-  const digest = registryDigests.get(sessionId)
-  if (digest === undefined) {
-    registryDigests.set(sessionId, next)
-    return
+  const next = await current.getResourceVersions()
+  if (runtimes.get(sessionId) !== current || current.getSessionId() !== sessionId) return
+  const previous = runtimeVersions.get(sessionId)
+  runtimeVersions.set(sessionId, next)
+  if (next.registry !== previous?.registry) {
+    registryRevision += 1
+    send({ kind: "event", generation: workerGeneration, sessionId, channel: "registry.updated",
+      event: { revision: registryRevision, sessionId, reason, resourceVersion: next.resources } })
   }
-  if (next === digest) return
-  registryDigests.set(sessionId, next)
-  registryRevision += 1
-  send({
-    kind: "event",
-    generation: workerGeneration,
-    sessionId,
-    channel: "registry.updated",
-    event: { revision: registryRevision, sessionId, reason },
-  })
-}
-
-function stableStringify(value: JsonValue): string {
-  return JSON.stringify(sortJson(value))
-}
-
-function sortJson(value: JsonValue): JsonValue {
-  if (Array.isArray(value)) return value.map(sortJson)
-  if (!value || typeof value !== "object") return value
-  return Object.fromEntries(
-    Object.keys(value).sort().map(key => [key, sortJson(value[key] ?? null)]),
-  )
+  if (next.resources !== previous?.resources) {
+    send({ kind: "event", generation: workerGeneration, sessionId, channel: "resources.updated",
+      event: { revision: next.resources, reason } })
+  }
 }
 
 async function execute(command: { type: string; params?: JsonObject; sessionId?: string; maxResultBytes?: number }): Promise<JsonValue | undefined | void> {
@@ -378,6 +369,7 @@ async function execute(command: { type: string; params?: JsonObject; sessionId?:
     catalog,
     auth: providerAuth,
     packages,
+    onPackageProgress: publishPackageProgress,
     requireRuntime(): SessionRuntime {
       if (!current) throw Object.assign(new Error("OMP runtime is not open"), { code: "RUNTIME_NOT_OPEN" })
       return current
@@ -414,20 +406,21 @@ async function execute(command: { type: string; params?: JsonObject; sessionId?:
     if (command.sessionId !== currentId) {
       runtimes.delete(command.sessionId!)
       runtimes.set(currentId, current)
-      const digest = registryDigests.get(command.sessionId!)
-      registryDigests.delete(command.sessionId!)
-      registryDigests.set(currentId, digest)
+      const versions = runtimeVersions.get(command.sessionId!)
+      runtimeVersions.delete(command.sessionId!)
+      if (versions) runtimeVersions.set(currentId, versions)
     }
   }
   if (current && shouldCheckRegistryAfter(command.type, params)) {
-    void queueRegistryChangeCheck(current, `command:${command.type}`).catch(error => console.error("[omp-worker] registry refresh failed", error))
+    const check = queueRegistryChangeCheck(current, `command:${command.type}`).catch(error => console.error("[omp-worker] registry refresh failed", error))
+    if (command.type === "reload") await check
   }
   return result
 }
 
 function shouldCheckRegistryAfter(type: string, params: JsonObject): boolean {
   if (type === "prompt" || type === "sendUserMessage") return typeof params.text === "string" && params.text.trimStart().startsWith("/")
-  return ["invokeTool", "invokeCommand", "refreshResources", "setModel", "newSession", "switchSession", "fork"].includes(type)
+  return ["invokeTool", "invokeCommand", "reload", "setModel", "newSession", "switchSession", "fork", "moveSession"].includes(type)
 }
 
 function describeRegistry(): PiRegistrySnapshot {
@@ -451,7 +444,7 @@ async function cleanupWorker(): Promise<void> {
     const current = runtimes.get(sessionId)
     if (!current) return
     runtimes.delete(sessionId)
-    registryDigests.delete(sessionId)
+    runtimeVersions.delete(sessionId)
     await Promise.race([
       current.dispose(),
       new Promise<void>(resolve => {

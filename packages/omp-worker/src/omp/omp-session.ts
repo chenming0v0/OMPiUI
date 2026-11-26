@@ -52,7 +52,8 @@ import { MainMessageStream } from "./main-message-stream.js";
 import { StableEntryAliases } from './stable-entry-aliases.js';
 import { getPreviewSettings } from "./preview-settings.js";
 import { projectPreviewMessage } from "./subagent-preview.js";
-import { requireResourceList, registryFromResources } from './resource-registry.js';
+import { requireResourceList, registryFromResources, resourceDigest } from './resource-registry.js';
+import { discoveredSkillDigests } from './omp-skill-details.js';
 import { requestNativePromptAcceptance } from './native-rpc-prompt.js';
 import { SUBAGENT_OBSERVATION_PREFIX } from './native-subagent-observation.js';
 import { SESSION_TITLE_FAILURE_PREFIX, SESSION_TITLE_PREFIX } from './native-session-title.js';
@@ -1696,6 +1697,16 @@ export class OmpRpcSession implements SessionRuntime {
     // ExtensionAPI.getCommands excludes builtins and file commands. The RPC
     // catalog is the authoritative set dispatched by this running mode.
     return registryFromResources({ ...resources, commands: this.availableCommandsCache }, this.ompVersion ?? OMP_SDK_VERSION);
+  }
+
+  async getResourceVersions(): Promise<{ registry: string; resources: string }> {
+    const epoch = this.eventEpoch;
+    const cwd = this.getCwd();
+    const resources = await this.discoverResources();
+    const registry = resourceDigest(registryFromResources({ ...resources, commands: this.availableCommandsCache }, this.ompVersion ?? OMP_SDK_VERSION));
+    const skillContents = await discoveredSkillDigests(cwd, resources.skills);
+    this.assertEventEpoch(epoch);
+    return { registry, resources: resourceDigest({ registry, skills: resources.skills, prompts: resources.prompts, contextFiles: resources.contextFiles, skillContents }) };
   }
 
   // ---------------------------------------------------------------- prompting

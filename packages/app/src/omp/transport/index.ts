@@ -42,6 +42,7 @@ import {
   PI_COMMAND_SPECS,
   validateParams,
   subagentDigest,
+  isJsonObject,
   type HostCommandSpec,
   type PiCommandSpec,
 } from '@ompiui/protocol'
@@ -655,7 +656,7 @@ export function changePiPackageSource(
   operation: 'add' | 'remove',
   signal?: AbortSignal,
 ): Promise<PiPackagesSnapshot & { changed: boolean }> {
-  return postPiGlobalCommand('packages.changeSource', { cwd, source, operation }, signal)
+  return postPiGlobalCommand('packages.changeSource', { cwd, source, operation, commandId: crypto.randomUUID() }, signal)
 }
 
 export function getPiPackageInstalledPath(
@@ -822,6 +823,12 @@ export async function getPiTree(sessionId: string, signal?: AbortSignal): Promis
 
 export function getPiSessionRegistry(sessionId: string, signal?: AbortSignal): Promise<JsonValue> {
   return postPiSessionCommand(sessionId, 'registry.get', undefined, signal)
+}
+
+export async function getPiResourceVersion(sessionId: string, signal?: AbortSignal): Promise<string> {
+  const data = await postPiSessionCommand(sessionId, 'resources.version', undefined, signal)
+  if (!isJsonObject(data) || typeof data.resources !== 'string') throw new Error('Invalid session resource version')
+  return data.resources
 }
 
 export function getPiSkills(sessionId: string, signal?: AbortSignal): Promise<Skill[]> {

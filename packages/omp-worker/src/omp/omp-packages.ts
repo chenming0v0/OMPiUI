@@ -1,4 +1,7 @@
-import type { JsonObject, JsonValue } from "@ompiui/protocol"
+import { randomUUID } from "node:crypto"
+import { realpath } from "node:fs/promises"
+import { resolve } from "node:path"
+import type { JsonObject, JsonValue, PackageProgress } from "@ompiui/protocol"
 import type { PackagesGateway } from "../command-table.js"
 import { runOmpNativeScript } from "./omp-native-script.js"
 
@@ -273,28 +276,46 @@ try {
 return resources;
 `
 
+async function workspacePath(cwd: string): Promise<string> {
+  return realpath(cwd).catch(() => resolve(cwd))
+}
+
 export class OmpPackages implements PackagesGateway {
+  private readonly active = new Map<string, PackageProgress>()
+
   private call(cwd: string, input: JsonObject): Promise<JsonValue> {
     return runOmpNativeScript<JsonValue>(cwd, PACKAGE_SCRIPT, input)
   }
 
-  list(cwd: string): Promise<JsonValue> {
-    return this.call(cwd, { operation: "list" })
+  async list(cwd: string): Promise<JsonObject> {
+    const path = await workspacePath(cwd)
+    const snapshot = await this.call(path, { operation: "list" }) as JsonObject
+    return { ...snapshot, activeOperations: [...this.active.values()].filter(item => !item.workspacePath || item.workspacePath === path) }
+  }
+
+  private async mutate(cwd: string, commandId: string, action: PackageProgress["action"],
+    local: boolean, input: JsonObject, onProgress?: (event: PackageProgress) => void): Promise<JsonObject> {
+    const path = await workspacePath(cwd)
+    if (this.active.has(commandId)) throw new Error("Package operation is already running")
+    const started: PackageProgress = { commandId, action, phase: "started", ...(local ? { workspacePath: path } : {}) }
+    this.active.set(commandId, started)
+    onProgress?.(started)
+    try {
+      if (input.operation === "manage" && action !== "update" && !input.source) throw new Error(`Plugin source is required for ${action}`)
+      await this.call(path, input)
+    } catch (error) {
+      this.active.delete(commandId)
+      onProgress?.({ ...started, phase: "failed", message: error instanceof Error ? error.message : String(error) })
+      throw error
+    }
+    this.active.delete(commandId)
+    onProgress?.({ ...started, phase: "completed" })
+    return this.list(path)
   }
 
   async manage(cwd: string, commandId: string, action: OmpPackageAction, source?: string, local = false,
-    onProgress?: (event: JsonObject) => void): Promise<JsonValue> {
-    if (action !== "update" && !source?.trim()) throw new Error(`Plugin source is required for ${action}`)
-    onProgress?.({ commandId, action, phase: "started", ...(source ? { source } : {}) })
-    try {
-      await this.call(cwd, { operation: "manage", action, local, ...(source ? { source: source.trim() } : {}) })
-      const result = await this.list(cwd)
-      onProgress?.({ commandId, action, phase: "completed" })
-      return result
-    } catch (error) {
-      onProgress?.({ commandId, action, phase: "failed", message: error instanceof Error ? error.message : String(error) })
-      throw error
-    }
+    onProgress?: (event: PackageProgress) => void): Promise<JsonValue> {
+    return this.mutate(cwd, commandId, action, local, { operation: "manage", action, local, ...(source ? { source: source.trim() } : {}) }, onProgress)
   }
 
   resolve(cwd: string): Promise<JsonValue> {
@@ -306,9 +327,11 @@ export class OmpPackages implements PackagesGateway {
     return this.call(cwd, { operation: "resolveSources", sources, local })
   }
 
-  async changeSource(cwd: string, source: string, operation: "add" | "remove", local = false): Promise<JsonValue> {
-    await this.call(cwd, { operation: "changeSource", source, change: operation, local })
-    return { ...(await this.list(cwd) as JsonObject), changed: true }
+  async changeSource(cwd: string, source: string, operation: "add" | "remove", local = false,
+    commandId: string = randomUUID(), onProgress?: (event: PackageProgress) => void): Promise<JsonValue> {
+    const snapshot = await this.mutate(cwd, commandId, operation === "add" ? "add-source" : "remove-source", false,
+      { operation: "changeSource", source, change: operation, local }, onProgress)
+    return { ...snapshot, changed: true }
   }
 
   installedPath(cwd: string, source: string, scope: "user" | "project"): Promise<JsonValue> {

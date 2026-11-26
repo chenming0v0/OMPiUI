@@ -87,7 +87,7 @@ import type {
   ImageContent,
   ToolCall,
 } from '../vendor/pi-ai'
-import type { JsonObject, JsonValue, EntriesPage, BranchCheckpoint, LiveMessage } from '@ompiui/protocol'
+import type { JsonObject, JsonValue, EntriesPage, BranchCheckpoint, LiveMessage, PackageProgress } from '@ompiui/protocol'
 
 /**
  * Pi Session row for sidebar display.
@@ -432,6 +432,7 @@ export type PiMarketplaceSource = {
 export type PiPackagesSnapshot = {
   packages: PiConfiguredPackage[]
   marketplaces: PiMarketplaceSource[]
+  activeOperations?: PackageProgress[]
 }
 
 export type OmpPackageResource = {
