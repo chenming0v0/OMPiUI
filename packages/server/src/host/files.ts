@@ -77,8 +77,12 @@ function notifyFileChanges(listener: FileChangeListener | undefined, changes: Wo
 }
 
 function createdAncestor(firstCreated: string | undefined, absolute: string, relative: string): WorkspaceFileChange[] {
-  if (!firstCreated || firstCreated === absolute) return [];
-  const levels = path.relative(firstCreated, absolute).split(path.sep).length;
+  if (!firstCreated) return [];
+  // Windows 的递归 mkdir 会返回带 \\?\ 前缀的路径，和 resolved.absolute 不同形；
+  // 直接 path.relative 会得到越界的 .. 层级。
+  const created = firstCreated.startsWith("\\\\?\\") ? firstCreated.slice(4) : firstCreated;
+  const levels = path.relative(created, absolute).split(path.sep).length;
+  if (!levels || path.relative(created, absolute).startsWith("..")) return [];
   const ancestor = relative.split("/").slice(0, -levels).join("/");
   return ancestor ? [{ path: ancestor, kind: "created", type: "directory" }] : [];
 }

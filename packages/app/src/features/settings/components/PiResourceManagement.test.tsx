@@ -39,7 +39,12 @@ vi.mock('../../../omp/extensionUiStore', () => ({
 }))
 
 vi.mock('../../../store/serverStore', () => ({
-  serverStore: { subscribe: () => () => {}, getActiveServerGeneration: () => 0 },
+  serverStore: {
+    subscribe: () => () => {},
+    getActiveServerGeneration: () => 0,
+    getActiveServerId: () => 'test-server',
+    getStoredServers: () => [],
+  },
 }))
 
 describe('PiResourceManagement', () => {

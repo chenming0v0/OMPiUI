@@ -35,6 +35,8 @@ vi.mock('../src/hooks/useServerStore', () => ({
 vi.mock('../src/store/serverStore', () => ({
   serverStore: {
     getActiveServer: () => ({ id: mocks.serverId }),
+    getActiveServerId: () => mocks.serverId,
+    getStoredServers: () => [],
     getActiveServerGeneration: () => mocks.generation,
     onServerChange: () => () => undefined,
   },

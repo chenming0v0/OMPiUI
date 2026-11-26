@@ -21,7 +21,9 @@ export function sessionRedoPlanFromBranch(branch: readonly JsonObject[], session
         !Array.isArray(plan.checkpoints) || !plan.checkpoints.every(id => typeof id === "string") ||
         typeof plan.restored !== "number" || !Number.isInteger(plan.restored) ||
         plan.restored < 0 || plan.restored >= plan.checkpoints.length) return null
-    return { id: plan.id, undoLeafId: plan.undoLeafId, checkpoints: plan.checkpoints, restored: plan.restored }
+    // 分支条目来自 runtime 沙箱，数组是另一个 realm 的对象；跨 realm 的原型会让
+    // deepStrictEqual 判为不同，这里复制成本 realm 的普通数组。
+    return { id: plan.id, undoLeafId: plan.undoLeafId, checkpoints: Array.from(plan.checkpoints, id => String(id)), restored: plan.restored }
   }
   return null
 }

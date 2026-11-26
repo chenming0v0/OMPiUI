@@ -64,7 +64,7 @@ try {
   const invocation = resolveOmpCommand();
   const officialConfig = JSON.parse(execFileSync(invocation.command, [...invocation.args, "config", "get", "task.maxRecursionDepth", "--json"], { cwd, encoding: "utf8", windowsHide: true }));
   assert.equal(officialConfig.value, 4);
-  assert.deepEqual(await new OmpPackages().list(cwd), { packages: [], marketplaces: [] });
+  assert.deepEqual(await new OmpPackages().list(cwd), { packages: [], marketplaces: [], activeOperations: [] });
   runtime = await OmpRpcSession.open(cwd);
   const id = runtime.getSessionId();
   const file = runtime.getSessionFile();

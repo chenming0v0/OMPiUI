@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PROTOCOL_VERSION } from '@ompiui/protocol'
 
+const nativeInvoke = vi.hoisted(() => vi.fn())
+vi.mock('@tauri-apps/api/core', () => ({ invoke: nativeInvoke }))
+
 function jsonResponse(body: unknown, init?: ResponseInit) {
   return new Response(JSON.stringify(body), {
     ...init,
@@ -139,8 +142,7 @@ describe('serverStore local runtime URL', () => {
     const entered = createDeferred<void>()
     const start = { started: true, startedByUs: true, url: 'http://127.0.0.1:58231', token: 'local-token' }
     const remote = serverStore.addServer({ name: 'Remote', url: 'https://remote.test', token: 'remote-token' })
-    const native = await import('@tauri-apps/api/core')
-    const invoke = vi.spyOn(native, 'invoke').mockImplementation(async command => {
+    nativeInvoke.mockImplementation(async command => {
       if (command === 'start_ompiui_service') {
         entered.resolve()
         return await pending.promise as never
@@ -157,7 +159,7 @@ describe('serverStore local runtime URL', () => {
       expect(serverStore.getActiveServer()).toMatchObject(remote)
       expect(serverStore.getLocalServer()).toMatchObject({ url: start.url, token: start.token })
     } finally {
-      invoke.mockRestore()
+      nativeInvoke.mockReset()
     }
   })
 
