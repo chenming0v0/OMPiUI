@@ -185,14 +185,16 @@ export class DshHostedManager {
         } catch (error) {
           if (signal.aborted) break
           const failure = dshHostFailure(error)
-          this.lastError = failure
           if (isTerminalDshHostFailure(failure)) {
             // Persisted enabled=true would retry the same dead authorization after every restart.
+            // Clear it before exposing the error so a caller that sees state=error can read enabled.json=false.
             this.enabled = false
             this.stopped = false
             await this.setEnabled(false).catch(() => undefined)
+            this.lastError = failure
             return
           }
+          this.lastError = failure
         } finally { this.online = false }
         await delay(3_000 + Math.random() * 12_000, undefined, { signal, ref: false })
       }

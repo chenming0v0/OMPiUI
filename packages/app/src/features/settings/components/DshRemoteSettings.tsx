@@ -28,18 +28,29 @@ async function openSite(url: string) {
 }
 
 // The settings panel can close while the system browser still uses the lease.
-let work: AbortController | undefined
-let viewerUnlisten: (() => void) | undefined
-async function disconnectBrowser() {
-  work?.abort()
-  work = undefined
-  viewerUnlisten?.()
-  viewerUnlisten = undefined
-  const browser = dshControllerStore.get().browser
-  dshControllerStore.update({ browser: null })
-  browser?.close()
-  await closeDshRemoteViewer().catch(() => undefined)
+// Kept outside React so the lease survives the panel unmounting.
+class DshBrowserSession {
+  private stop?: AbortController
+  private unlisten?: () => void
+
+  get busy(): boolean { return this.stop !== undefined }
+  isCurrent(stop: AbortController): boolean { return this.stop === stop }
+  begin(stop: AbortController): void { this.stop = stop }
+  adopt(unlisten: () => void): void { this.unlisten = unlisten }
+
+  async disconnect(): Promise<void> {
+    this.stop?.abort()
+    this.stop = undefined
+    this.unlisten?.()
+    this.unlisten = undefined
+    const browser = dshControllerStore.get().browser
+    dshControllerStore.update({ browser: null })
+    browser?.close()
+    await closeDshRemoteViewer().catch(() => undefined)
+  }
 }
+const browserSession = new DshBrowserSession()
+const disconnectBrowser = () => browserSession.disconnect()
 
 /** 受控端 / 控制端共用的外壳：角色标签、标题说明、右侧状态。 */
 function RemotePanel({ icon, role, title, description, status, testId, children }: {
@@ -377,7 +388,6 @@ export function DshRemoteConnectSettings({ connectionRow = false, onManage }: { 
 
   useEffect(() => {
     if (!login) return
-    setNow(Date.now())
     const timer = setInterval(() => setNow(Date.now()), 1_000)
     return () => clearInterval(timer)
   }, [login])
@@ -427,6 +437,7 @@ export function DshRemoteConnectSettings({ connectionRow = false, onManage }: { 
     setError('')
     try {
       const next = await beginDshLogin(provider, AbortSignal.timeout(12_000))
+      setNow(Date.now())
       setLogin(next)
       // The link/QR stays usable if the OS refuses to open the browser from the app.
       await openSite(next.url).catch(() => undefined)
@@ -446,9 +457,9 @@ export function DshRemoteConnectSettings({ connectionRow = false, onManage }: { 
   }
 
   const connect = async (hostId: string) => {
-    if (!session || !hostId || work) return
+    if (!session || !hostId || browserSession.busy) return
     const stop = new AbortController()
-    work = stop
+    browserSession.begin(stop)
     setBusy(true)
     setPendingHost(hostId)
     setError('')
@@ -457,16 +468,16 @@ export function DshRemoteConnectSettings({ connectionRow = false, onManage }: { 
       connection = await session.connect(hostId, stop.signal)
       const active = connection
       void active.closed.then(() => {
-        if (work === stop) void disconnectBrowser()
+        if (browserSession.isCurrent(stop)) void disconnectBrowser()
       })
-      const unlisten = await onDshRemoteViewerClosed(() => { if (work === stop) void disconnectBrowser() })
-      if (work !== stop) { unlisten(); return }
-      viewerUnlisten = unlisten
+      const unlisten = await onDshRemoteViewerClosed(() => { if (browserSession.isCurrent(stop)) void disconnectBrowser() })
+      if (!browserSession.isCurrent(stop)) { unlisten(); return }
+      browserSession.adopt(unlisten)
       await openDshRemoteViewer(active.grant)
-      if (work === stop) dshControllerStore.update({ browser: active })
+      if (browserSession.isCurrent(stop)) dshControllerStore.update({ browser: active })
       else await closeDshRemoteViewer()
     } catch (failure) {
-      if (work === stop) {
+      if (browserSession.isCurrent(stop)) {
         connection?.close()
         await disconnectBrowser()
         setError(connectError((failure as { code?: string })?.code ?? ''))
