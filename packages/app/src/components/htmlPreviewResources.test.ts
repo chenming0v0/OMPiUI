@@ -104,8 +104,11 @@ describe('htmlPreviewResources', () => {
       throw new Error('missing')
     })
 
-    const html = await resolveHtmlPreviewResources('<link rel="stylesheet" href="./styles/main.css">', 'pages/index.html')
+    const dependencies = new Set<string>()
+    const html = await resolveHtmlPreviewResources('<link rel="stylesheet" href="./styles/main.css">', 'pages/index.html',
+      undefined, undefined, path => dependencies.add(path))
 
+    expect([...dependencies]).toEqual(['pages/styles/main.css', 'pages/styles/missing.png'])
     expect(html).toContain('./missing.png')
     expect(html).not.toContain('data:image/png')
     expect(getFileContent).not.toHaveBeenCalledWith('pages/missing.png', undefined)

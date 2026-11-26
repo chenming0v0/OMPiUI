@@ -3,10 +3,9 @@ import chokidar, { type FSWatcher } from "chokidar"
 import { lstat, readFile, readdir } from "node:fs/promises"
 import { fork, spawn, type ChildProcess } from "node:child_process"
 import { once } from "node:events"
-import type { EventEnvelope } from "@ompiui/protocol"
-
-type WorkspaceFileChange = { path: string; kind: "created" | "changed" | "deleted"; type: "file" | "directory" }
+import { isWorkspaceWatchExcluded, type EventEnvelope, type WorkspaceFileChange } from "@ompiui/protocol"
 import type { EventHub } from "../event-hub.ts"
+import { invalidateFileSearches } from "./file-search.ts"
 import { invalidateGitCache } from "./git.ts"
 import { workspacePathKey, type WorkspaceRecord } from "./workspace-store.ts"
 import { WorkspaceWatchControl } from "../workspace-watch-control.ts"
@@ -26,7 +25,6 @@ const RESTART_STABLE_MS = 30_000
 // directories), so such workspaces are not recursively watched at all.
 const MAX_WATCH_DIRECTORIES = 4_000
 const PRE_SCAN_BATCH = 64
-const SKIP_SEGMENTS = new Set(["node_modules", "dist", "build", ".next", "coverage", ".turbo", "target"])
 
 interface WatchedWorkspace {
   root: string
@@ -36,6 +34,7 @@ interface WatchedWorkspace {
   revision: number
   pending: Map<string, WorkspaceFileChange>
   gitDirty: boolean
+  catalogDirty: boolean
   rescan: boolean
   timer?: NodeJS.Timeout
   startupTimer?: NodeJS.Timeout
@@ -101,6 +100,7 @@ export class WorkspaceWatcher {
       revision: 0,
       pending: new Map(),
       gitDirty: false,
+      catalogDirty: false,
       rescan: false,
       lastAccessedAt: Date.now(),
     }
@@ -116,6 +116,31 @@ export class WorkspaceWatcher {
       void this.establishWatch(workspace, key, state)
     }, this.startupDelayMs)
     state.startupTimer.unref?.()
+  }
+
+  notifyFilesChanged(workspace: WorkspaceRecord, changes: WorkspaceFileChange[]): void {
+    if (changes.length === 0) return
+    const root = workspace.canonicalRoot
+    const state = this.watched.get(workspacePathKey(root))
+    const revision = state ? ++state.revision : this.eventHub.getCursor({ kind: "workspace", id: root }).sequence + 1
+    invalidateFileSearches(root)
+    this.eventHub.publish({ kind: "workspace", id: root }, "workspace.files", {
+      workspacePath: root, revision, changes, rescan: false,
+    })
+    this.publishGit(root, revision, false)
+  }
+
+  notifyWorktreeCatalogChanged(root: string): void {
+    const state = this.watched.get(workspacePathKey(root))
+    const canonical = state?.root ?? root
+    this.publishGit(canonical, state ? ++state.revision : this.eventHub.getCursor({ kind: "workspace", id: canonical }).sequence + 1, true)
+  }
+
+  private publishGit(root: string, revision: number, catalogChanged: boolean): void {
+    invalidateGitCache(root)
+    this.eventHub.publish({ kind: "workspace", id: root }, "workspace.git", {
+      workspacePath: root, revision, catalogChanged,
+    })
   }
 
   private ensureProcess(): ChildProcess {
@@ -142,6 +167,7 @@ export class WorkspaceWatcher {
       payload.revision = ++state.revision
       // Git 查询缓存属于 HTTP 进程，不能只使监听进程内的缓存失效。
       if (event.channel === "workspace.git") invalidateGitCache(event.stream.id)
+      if (event.channel === "workspace.files") invalidateFileSearches(event.stream.id)
       this.eventHub.publish(event.stream, event.channel, event.payload)
     })
     child.on("error", error => {
@@ -156,13 +182,11 @@ export class WorkspaceWatcher {
       for (const state of this.watched.values()) {
         const root = state.root
         state.revision += 1
+        invalidateFileSearches(root)
         this.eventHub.publish({ kind: "workspace", id: root }, "workspace.files", {
           workspacePath: root, revision: state.revision, changes: [], rescan: true,
         })
-        invalidateGitCache(root)
-        this.eventHub.publish({ kind: "workspace", id: root }, "workspace.git", {
-          workspacePath: root, revision: state.revision,
-        })
+        this.publishGit(root, state.revision, true)
       }
       // 保留 watched 记录,退避后重启子进程并对每个工作区重新下发 watch
       this.scheduleRestart()
@@ -232,6 +256,7 @@ export class WorkspaceWatcher {
       if (!relative || relative.startsWith("../")) return
       if (relative === ".git" || relative.startsWith(".git/")) {
         state.gitDirty = true
+        state.catalogDirty ||= affectsWorktreeCatalog(relative)
         this.schedule(workspace, state)
         return
       }
@@ -256,6 +281,7 @@ export class WorkspaceWatcher {
     state.watcher.on("ready", () => {
       state.rescan = true
       state.gitDirty = true
+      state.catalogDirty = true
       this.schedule(workspace, state)
     })
     state.watcher.on("error", error => {
@@ -282,23 +308,33 @@ export class WorkspaceWatcher {
       } catch {
         /* standalone git dir */
       }
+      const index = path.join(gitDir, "index")
+      const worktreesDir = path.join(commonDir, "worktrees")
       const watcher = chokidar.watch([
         path.join(gitDir, "HEAD"),
-        path.join(gitDir, "index"),
+        index,
+        path.join(commonDir, "HEAD"),
         path.join(commonDir, "packed-refs"),
         path.join(commonDir, "refs"),
-      ], { ignoreInitial: true, persistent: true, followSymlinks: false, atomic: true })
+        worktreesDir,
+      ], { ignoreInitial: true, persistent: true, followSymlinks: false, atomic: true, ignored: candidate => {
+        const relative = path.relative(worktreesDir, candidate)
+        return relative !== "" && !relative.startsWith(`..${path.sep}`) && relative !== ".." &&
+          !path.isAbsolute(relative) && !isWorktreeMetadata(`worktrees/${relative.replace(/\\/g, "/")}`)
+      } })
       if (this.watched.get(workspacePathKey(workspace.canonicalRoot)) !== state) {
         await watcher.close()
         return
       }
       state.gitWatcher = watcher
-      watcher.on("all", () => {
+      watcher.on("all", (_event, filename) => {
         state.gitDirty = true
+        state.catalogDirty ||= path.relative(index, filename) !== ""
         this.schedule(workspace, state)
       })
       watcher.on("ready", () => {
         state.gitDirty = true
+        state.catalogDirty = true
         this.schedule(workspace, state)
       })
       watcher.on("error", error => {
@@ -336,6 +372,7 @@ export class WorkspaceWatcher {
       if (this.watched.get(workspacePathKey(workspace.canonicalRoot)) !== state) return
       state.revision++
       if (state.pending.size > 0 || state.rescan) {
+        invalidateFileSearches(workspace.canonicalRoot)
         this.eventHub.publish(
           { kind: "workspace", id: workspace.canonicalRoot },
           "workspace.files",
@@ -347,16 +384,10 @@ export class WorkspaceWatcher {
           },
         )
       }
-      if (state.gitDirty) {
-        invalidateGitCache(workspace.canonicalRoot)
-        this.eventHub.publish(
-          { kind: "workspace", id: workspace.canonicalRoot },
-          "workspace.git",
-          { workspacePath: workspace.canonicalRoot, revision: state.revision },
-        )
-      }
+      if (state.gitDirty) this.publishGit(workspace.canonicalRoot, state.revision, state.catalogDirty)
       state.pending.clear()
       state.gitDirty = false
+      state.catalogDirty = false
       state.rescan = false
     }, FLUSH_DELAY_MS)
     state.timer.unref()
@@ -368,12 +399,10 @@ function shouldIgnore(root: string, candidate: string): boolean {
   if (!relative) return false
   if (/(?:^|\/)\.[^/]+\.(?:ompiui|piui)-[^/]+\.tmp$/.test(relative) ||
     /(?:^|\/)[^/]+\.(?:ompiui|piui)-backup-[^/]+$/.test(relative)) return true
-  const segments = relative.split("/")
-  if (segments.some(segment => SKIP_SEGMENTS.has(segment))) return true
-  if (segments[0] !== ".git") return false
-  if (relative === ".git") return false
-  if (relative === ".git/refs" || relative === ".git/logs") return false
-  return !isGitMetadata(relative)
+  if (relative.startsWith(".git/")) {
+    return relative !== ".git/refs" && relative !== ".git/logs" && !isGitMetadata(relative)
+  }
+  return isWorkspaceWatchExcluded(relative, process.platform === "win32")
 }
 
 /**
@@ -416,9 +445,17 @@ export async function countWatchableDirectories(root: string, cap: number): Prom
   return count
 }
 
+function isWorktreeMetadata(relative: string): boolean {
+  return /^worktrees(?:\/[^/]+(?:\/(?:HEAD|locked|gitdir))?)?$/.test(relative)
+}
+
+function affectsWorktreeCatalog(relative: string): boolean {
+  return relative === ".git" || relative === ".git/HEAD" || relative === ".git/packed-refs" ||
+    relative === ".git/refs" || relative.startsWith(".git/refs/") || isWorktreeMetadata(relative.slice(".git/".length))
+}
+
 function isGitMetadata(relative: string): boolean {
-  return relative === ".git" || relative === ".git/HEAD" || relative === ".git/index" || relative === ".git/packed-refs" ||
-    relative.startsWith(".git/refs/") || relative === ".git/logs/HEAD"
+  return affectsWorktreeCatalog(relative) || relative === ".git/index" || relative === ".git/logs/HEAD"
 }
 
 function toChange(

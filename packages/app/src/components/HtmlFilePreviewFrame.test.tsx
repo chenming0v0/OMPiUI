@@ -4,7 +4,7 @@ import { HtmlFilePreviewFrame } from './HtmlFilePreviewFrame'
 
 const themeMock = vi.hoisted(() => ({ resolvedTheme: 'light' as 'light' | 'dark' }))
 const resolveHtmlPreviewResources = vi.hoisted(() =>
-  vi.fn(async (html: string, _path?: string, _directory?: string) => html),
+  vi.fn(async (html: string, _path?: string, _directory?: string, _signal?: AbortSignal, _onDependency?: (path: string) => void) => html),
 )
 
 vi.mock('../hooks/useTheme', () => ({
@@ -12,6 +12,7 @@ vi.mock('../hooks/useTheme', () => ({
 }))
 
 vi.mock('./htmlPreviewResources', () => ({ resolveHtmlPreviewResources }))
+vi.mock('../omp/workspaces', () => ({ resolveWorkspacePath: async (path: string) => path }))
 
 describe('HtmlFilePreviewFrame', () => {
   beforeEach(() => {
@@ -102,6 +103,35 @@ describe('HtmlFilePreviewFrame', () => {
       await Promise.resolve()
     })
     await waitFor(() => expect(screen.getByTitle('second.html').getAttribute('srcdoc')).toContain('Resolved second'))
+  })
+
+  it('rebuilds unchanged HTML after a tracked resource is replaced or its directory is removed', async () => {
+    let body = 'initial resources'
+    resolveHtmlPreviewResources.mockImplementation(async (_html, _path, _directory, _signal, report) => {
+      for (const dependency of ['style.css', 'script.js', 'assets/icon.png']) report?.(dependency)
+      return `<main>${body}</main>`
+    })
+    render(<HtmlFilePreviewFrame html="<main>same source</main>" title="index.html" filePath="index.html" directory="/repo" />)
+    await screen.findByTitle('index.html')
+    const change = (path: string, type: 'file' | 'directory', kind: 'changed' | 'deleted') => {
+      act(() => window.dispatchEvent(new CustomEvent('ompiui:workspace-files-changed', {
+        detail: { workspacePath: '/repo', changes: [{ path, type, kind }], rescan: false },
+      })))
+    }
+    change('unrelated.css', 'file', 'changed')
+    expect(resolveHtmlPreviewResources).toHaveBeenCalledTimes(1)
+    body = 'replaced script'
+    change('script.js', 'file', 'changed')
+    await waitFor(() => expect(screen.getByTitle('index.html').getAttribute('srcdoc')).toContain('replaced script'))
+    body = 'removed CSS image'
+    change('assets', 'directory', 'deleted')
+    await waitFor(() => expect(screen.getByTitle('index.html').getAttribute('srcdoc')).toContain('removed CSS image'))
+    body = 'rescanned stylesheet'
+    act(() => window.dispatchEvent(new CustomEvent('ompiui:workspace-files-changed', {
+      detail: { workspacePath: '/repo', changes: [], rescan: true },
+    })))
+    await waitFor(() => expect(screen.getByTitle('index.html').getAttribute('srcdoc')).toContain('rescanned stylesheet'))
+    expect(resolveHtmlPreviewResources).toHaveBeenCalledTimes(4)
   })
 
   it('shows a warning when the resolved document reports omitted local resources', async () => {

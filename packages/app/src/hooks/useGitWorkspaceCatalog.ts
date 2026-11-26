@@ -1,9 +1,53 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useEffectEvent, useId, useRef, useState } from 'react'
 import { getCurrentProject } from '../api'
 import { getHostGitWorktrees } from '../omp/transport'
 import { subscribeToConnectionState } from '../api/events'
 import { serverStore } from '../store/serverStore'
-import { normalizeToForwardSlash } from '../utils'
+import { isSameDirectory, normalizeToForwardSlash } from '../utils'
+import { piEventStream } from '../omp/eventStream.js'
+import { resolveWorkspacePath } from '../omp/workspaces'
+import { useServerStore } from './useServerStore'
+import { registerSessionConsumer } from './useGlobalEvents'
+
+/** One subscription per primary checkout covers the catalog of all its linked worktrees. */
+export function useWorktreeCatalogEvents(rootsKey: string, refresh: () => void) {
+  const { activeServerGeneration } = useServerStore()
+  const consumerId = useId()
+  const reload = useEffectEvent(refresh)
+  useEffect(() => {
+    if (!rootsKey) return
+    const roots = new Set<string>()
+    let disposed = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const schedule = () => {
+      timer ??= setTimeout(() => { timer = undefined; reload() }, 300)
+    }
+    for (const root of rootsKey.split('\0')) {
+      void resolveWorkspacePath(root).then(canonical => {
+        if (disposed || !canonical || roots.has(canonical)) return
+        roots.add(canonical)
+        piEventStream.connectWorkspace(canonical)
+        // Cover changes between the initial catalog read and subscription.
+        schedule()
+      }).catch(() => undefined)
+    }
+    const onGit = (event: Event) => {
+      const detail = (event as CustomEvent<{ workspacePath: string; catalogChanged?: boolean }>).detail
+      // A workspace resync has no flag. Ordinary source/index changes explicitly set false.
+      if (!detail || detail.catalogChanged === false || ![...roots].some(root => isSameDirectory(root, detail.workspacePath))) return
+      schedule()
+    }
+    const unregister = registerSessionConsumer(`worktree-catalog-${consumerId}`, null, { onReconnected: schedule })
+    window.addEventListener('ompiui:workspace-git-updated', onGit)
+    return () => {
+      disposed = true
+      unregister()
+      clearTimeout(timer)
+      window.removeEventListener('ompiui:workspace-git-updated', onGit)
+      for (const root of roots) piEventStream.disconnectWorkspace(root)
+    }
+  }, [rootsKey, activeServerGeneration, consumerId])
+}
 
 export interface GitWorkspaceMeta {
   isGit: boolean
@@ -186,6 +230,10 @@ export function useGitWorkspaceCatalog(directories: string[]) {
   useEffect(() => {
     return serverStore.onServerChange(() => void refresh())
   }, [refresh])
+
+  const rootsKey = [...new Set([...catalog.values()].filter(meta => meta.isGit).map(meta => meta.rootDirectory))].sort().join('\0')
+  const refreshCatalog = useCallback(() => void refresh(), [refresh])
+  useWorktreeCatalogEvents(rootsKey, refreshCatalog)
 
   return {
     catalog,

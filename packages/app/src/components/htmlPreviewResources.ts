@@ -191,9 +191,10 @@ export async function resolveHtmlPreviewResources(
   htmlPath: string,
   directory?: string,
   signal?: AbortSignal,
+  onDependency?: (path: string) => void,
 ): Promise<string> {
   const parsed = new DOMParser().parseFromString(html, 'text/html')
-  const budget = createHtmlResourceBudget(directory, signal)
+  const budget = createHtmlResourceBudget(directory, signal, onDependency)
   const dataUrl: DataUrl = (content, path) => {
     const value = fileContentToDataUrl(content, path)
     return budget.inline(value) ? value : null

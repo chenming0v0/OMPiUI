@@ -29,6 +29,18 @@ export type FileNodeDto = {
   restricted?: boolean
 }
 
+const EXCLUDED_WATCH_SEGMENTS = new Set(["node_modules", "dist", "build", ".next", "coverage", ".turbo", "target"])
+
+export function isWorkspaceWatchExcluded(relativePath: string, caseInsensitive = false): boolean {
+  const path = caseInsensitive ? relativePath.toLowerCase() : relativePath
+  return path.split("/").some(segment => EXCLUDED_WATCH_SEGMENTS.has(segment))
+}
+
+export const MAX_WORKSPACE_REVISION_PATHS = 64
+
+export type WorkspaceFileChange = { path: string; kind: "created" | "changed" | "deleted"; type: "file" | "directory" }
+export type WorkspaceFilesChanged = { workspacePath: string; changes: WorkspaceFileChange[]; rescan: boolean }
+
 export type FileListResponse = {
   path: string
   entries: FileNodeDto[]

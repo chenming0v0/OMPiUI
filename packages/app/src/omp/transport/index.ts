@@ -273,12 +273,19 @@ export async function postPiSessionCommand<T = JsonValue | undefined, K extends 
 
 // Host commands (workspaces / files / git), POST /api/v1/host/commands/:name
 type HostReadFlight = {
+  fileWorkspace?: string
   promise: Promise<unknown>
   controller: AbortController
   consumers: number
   settled: boolean
 }
 const hostReadFlights = new Map<string, HostReadFlight>()
+
+export function invalidateHostFileReadFlights(workspacePath: string): void {
+  for (const [key, flight] of hostReadFlights) {
+    if (flight.fileWorkspace === workspacePath) hostReadFlights.delete(key)
+  }
+}
 const SHARED_HOST_READS: Partial<Record<keyof HostCommandParams, true>> = {
   'git.info': true,
   'git.status': true,
@@ -286,6 +293,7 @@ const SHARED_HOST_READS: Partial<Record<keyof HostCommandParams, true>> = {
   'git.fileDiff': true,
   'files.list': true,
   'files.read': true,
+  'files.revisions': true,
   'files.searchName': true,
   'files.searchText': true,
 }
@@ -315,6 +323,7 @@ export async function postHostCommand<
     }).then(response => response.data)
     if (!controller) return request
     const created: HostReadFlight = {
+      fileWorkspace: name.startsWith('files.') ? (params as { workspacePath?: string } | undefined)?.workspacePath : undefined,
       controller,
       consumers: 0,
       settled: false,

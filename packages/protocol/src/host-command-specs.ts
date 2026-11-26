@@ -6,7 +6,7 @@ import type {
   HostCapabilityQueue,
 } from "./registry.js";
 import type { TerminalCreateParams, TerminalUpdateParams } from "./terminal.js";
-import type { FileCreateRequest, FileMoveRequest } from "./workspace.js";
+import { MAX_WORKSPACE_REVISION_PATHS, type FileCreateRequest, type FileMoveRequest } from "./workspace.js";
 import {
   BOOLEAN,
   EMPTY_PARAMS,
@@ -235,6 +235,16 @@ export const HOST_COMMAND_SPECS = [
       "workspacePath",
       "path",
     ]),
+    idempotent: true,
+  },
+  {
+    name: "files.revisions",
+    domain: "files",
+    description: "Read metadata revisions for active paths excluded from recursive watching",
+    paramsSchema: objectSchema({
+      ...WORKSPACE_PATH,
+      paths: { type: "array", items: byteString(4096), maxItems: MAX_WORKSPACE_REVISION_PATHS },
+    }, ["workspacePath", "paths"]),
     idempotent: true,
   },
   {
@@ -469,6 +479,7 @@ export type HostCommandParams = {
     cursor?: string;
   };
   "files.read": { workspacePath: string; path: string; ifNoneMatch?: string; maxBytes?: number };
+  "files.revisions": { workspacePath: string; paths: string[] };
   "files.write": {
     workspacePath: string;
     path: string;

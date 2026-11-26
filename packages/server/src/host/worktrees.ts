@@ -73,7 +73,8 @@ export async function listGitWorktrees(cwd: string, signal?: AbortSignal): Promi
 
 /** Explicit mutations only; never force, clean, prune, or remove a branch. */
 export async function mutateGitWorktree(cwd: string, operation: "create" | "remove", target: string, branch: string | undefined,
-  assertUnused: ((target: string) => void) | undefined, signal?: AbortSignal): Promise<GitWorktreeCatalog> {
+  assertUnused: ((target: string) => void) | undefined, signal?: AbortSignal,
+  onCommitted?: (primaryRoot: string) => void): Promise<GitWorktreeCatalog> {
   const resolved = await resolveWorktreeTarget(path.resolve(cwd, target));
   const catalog = await listGitWorktrees(cwd, signal);
   const rootKey = key(catalog.primaryRoot);
@@ -113,6 +114,7 @@ export async function mutateGitWorktree(cwd: string, operation: "create" | "remo
       await git(cwd, ["worktree", "remove", "--", entry.path], signal);
     }
     invalidateGitCache(cwd);
+    onCommitted?.(catalog.primaryRoot);
     return await listGitWorktrees(cwd, signal);
   } finally { mutations.delete(rootKey); }
 }
