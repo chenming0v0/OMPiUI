@@ -365,6 +365,20 @@ describe('PiChatPane with the real composer', () => {
     expect(mocks.editorState).not.toHaveBeenCalled()
   })
 
+  it('sends the version of a migrated home draft even when the attachment array was copied', async () => {
+    mocks.sharedDraft = true
+    const homeKey = composerDraftKey(serverStore.getActiveServer(), null, '/workspace', paneId)
+    updateComposerDraft(homeKey, () => ({ text: 'first message', ready: true, attachments: [sentImage] }))
+    mocks.openSession.mockResolvedValue({ sessionId, cwd: '/workspace' })
+    mocks.readDraft.mockResolvedValue({ version: null, text: '', attachments: [], delivery: 'followUp' })
+    mocks.writeDraft.mockResolvedValue({ applied: true, version: 'first-version' })
+    mocks.sendMessage.mockResolvedValue(undefined)
+    render(<PiChatPane paneId={paneId} sessionId={null} />)
+    send()
+    await waitFor(() => expect(mocks.sendMessage).toHaveBeenCalledWith(sessionId, 'first message',
+      [expect.objectContaining({ type: 'image' })], 'followUp', undefined, 'first-version'))
+  })
+
   it.each(['isStreaming', 'isCompacting', 'isRetrying'] as const)(
     'returns to Send when %s ends with background jobs still running (#413)', async foreground => {
       const job = { id: 'bg_413', type: 'bash', status: 'running', label: 'build assets', startTime: Date.now() }

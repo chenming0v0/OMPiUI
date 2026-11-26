@@ -11,6 +11,13 @@ const RETRY_DELAY = 3_000
 const bindings = new Map<string, { sync: DraftSync; users: number; unsubscribe: () => void }>()
 const emptyAttachments: Attachment[] = []
 
+type DraftContent = Pick<ComposerDraft, 'text' | 'attachments' | 'delivery'>
+
+function sameDraft(a: DraftContent, b: DraftContent): boolean {
+  return a.text === b.text && (a.delivery ?? 'followUp') === (b.delivery ?? 'followUp') &&
+    a.attachments.length === b.attachments.length && a.attachments.every((attachment, index) => attachment === b.attachments[index])
+}
+
 class DraftSync {
   private remote?: SharedComposerDraft
   private synced?: ComposerDraft
@@ -44,18 +51,15 @@ class DraftSync {
     this.schedule(SYNC_DELAY)
   }
 
-  async versionFor(draft: Pick<ComposerDraft, 'text' | 'attachments' | 'delivery'>): Promise<string | undefined> {
+  async versionFor(draft: DraftContent): Promise<string | undefined> {
     await this.flush()
-    if (this.remote?.version === null && !this.pending && draft.text === getComposerDraft(this.key).text &&
-        draft.attachments === getComposerDraft(this.key).attachments) {
-      this.pending = { draft: getComposerDraft(this.key), base: this.remote }
+    const current = getComposerDraft(this.key)
+    if (this.remote?.version === null && !this.pending && sameDraft(draft, current)) {
+      this.pending = { draft: current, base: this.remote }
       await this.flush()
     }
     const remote = this.remote
-    const synced = this.synced
-    if (!this.controller.signal.aborted && remote?.version && synced &&
-        synced.text === draft.text && synced.attachments === draft.attachments &&
-        (synced.delivery ?? 'followUp') === (draft.delivery ?? 'followUp')) return remote.version
+    if (!this.controller.signal.aborted && remote?.version && this.synced && sameDraft(this.synced, draft)) return remote.version
   }
 
   close(): void {
@@ -200,7 +204,7 @@ export function useSharedComposerDraft(key: string, sessionId: string | null, en
   }, [key, sessionId, enabled, generation])
 }
 
-export async function prepareSharedComposerSend(key: string, draft: Pick<ComposerDraft, 'text' | 'attachments' | 'delivery'>, sessionId: string) {
+export async function prepareSharedComposerSend(key: string, draft: DraftContent, sessionId: string) {
   const sync = bindings.get(key)?.sync
   if (sync) return sync.versionFor(draft)
   // The first send can follow home-to-session navigation before the new pane
