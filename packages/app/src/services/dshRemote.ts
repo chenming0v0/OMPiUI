@@ -103,7 +103,7 @@ export async function beginDshLogin(provider: DshLoginProvider, signal: AbortSig
   if (typeof value?.qrId !== 'string' || !/^[a-z0-9_-]{8,100}$/i.test(value.qrId) || typeof value.scanUrl !== 'string'
     || !isDshExpiry(value.expiresIn) || (value.provider !== undefined && value.provider !== provider.id)) throw new Error('Invalid DSH login session')
   const url = new URL(value.scanUrl)
-  if (url.origin !== DSH_REMOTE_ORIGIN || url.username || url.password || /[\x00-\x1f\x7f]/.test(value.scanUrl)) throw new Error('Invalid DSH login URL')
+  if (url.origin !== DSH_REMOTE_ORIGIN || url.username || url.password || /\p{Cc}/u.test(value.scanUrl)) throw new Error('Invalid DSH login URL')
   return { id: value.qrId, url: url.href, expiresAt: Date.now() + Math.min(value.expiresIn, 600) * 1000 }
 }
 
