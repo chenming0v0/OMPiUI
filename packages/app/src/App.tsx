@@ -859,7 +859,7 @@ function App() {
 
   return (
     <div className="relative flex h-full flex-col bg-bg-100 overflow-hidden">
-      <DesktopTitlebar />
+      <DesktopTitlebar directory={currentDirectory} />
       <InternalDragLayer />
       <ChatViewportProvider value={chatViewport}>
         <div className="relative flex min-h-0 flex-1 overflow-hidden">

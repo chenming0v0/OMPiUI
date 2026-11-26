@@ -211,13 +211,12 @@ class ServerStore {
     }
   }
 
-  private saveToStorage(saveSelection = false): void {
+  private saveToStorage(selection?: 'window' | 'default'): void {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.servers))
-      if (saveSelection && this.activeServerId) {
-        // 写入 sessionStorage（当前窗口刷新保持）+ localStorage（新窗口默认值）
+      if (selection && this.activeServerId) {
         sessionStorage.setItem(ACTIVE_SERVER_KEY, this.activeServerId)
-        localStorage.setItem(ACTIVE_SERVER_KEY, this.activeServerId)
+        if (selection === 'default') localStorage.setItem(ACTIVE_SERVER_KEY, this.activeServerId)
       }
     } catch {
       // ignore
@@ -312,6 +311,15 @@ class ServerStore {
 
   isActiveLocalServer(): boolean {
     return this.getActiveServerId() === this.DEFAULT_SERVER_ID
+  }
+
+  acceptsLocalDirectory(): boolean {
+    return this.isActiveLocalServer() &&
+      (this.localServerUrlOverride !== null || isLoopbackServerUrl(this.getActiveBaseUrl()))
+  }
+
+  matchesSavedBackend(id: string, url: string): boolean {
+    return this.servers.some(server => server.id === id && server.url === url)
   }
 
   applyManagedLocalService(url: string, token: string): boolean {
@@ -463,7 +471,7 @@ class ServerStore {
       this.activeServerId = this.servers[0]?.id ?? null
     }
 
-    this.saveToStorage(wasActive)
+    this.saveToStorage(wasActive ? 'default' : undefined)
     this.notify()
     if (wasActive) {
       this.notifyServerChange(this.activeServerId ?? this.DEFAULT_SERVER_ID, 'server-switch')
@@ -475,12 +483,12 @@ class ServerStore {
    * 设置活动服务器
    * 如果实际切换了服务器，会通知 serverChangeListeners（用于 SSE 重连等）
    */
-  setActiveServer(id: string): boolean {
+  setActiveServer(id: string, scope: 'window' | 'default' = 'default'): boolean {
     if (!this.servers.some(s => s.id === id)) return false
 
     const changed = this.activeServerId !== id
     this.activeServerId = id
-    this.saveToStorage(true)
+    this.saveToStorage(scope)
     this.notify()
 
     if (changed) {

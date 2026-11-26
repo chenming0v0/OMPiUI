@@ -14,7 +14,7 @@ use tauri::{Emitter, Manager, WebviewWindowBuilder};
 use tauri::{WebviewUrl, Window};
 
 #[cfg(desktop)]
-use dir_state::OpenDirectoryState;
+use dir_state::{DirectorySource, OpenDirectoryRequest, OpenDirectoryState};
 
 #[cfg(desktop)]
 use service::{
@@ -266,23 +266,29 @@ fn desktop_window_ready(window: Window) -> Result<(), String> {
 
 #[cfg(desktop)]
 #[tauri::command]
-async fn open_new_window(app: tauri::AppHandle, directory: Option<String>) -> Result<(), String> {
-    open_new_window_inner(&app, directory, true)
+async fn open_new_window(app: tauri::AppHandle, directory: Option<String>, server_id: Option<String>, server_url: Option<String>) -> Result<(), String> {
+    let request = match (directory, server_id, server_url) {
+        (Some(directory), Some(server_id), Some(server_url)) => Some(OpenDirectoryRequest {
+            directory, explicit: true, source: DirectorySource::Backend { server_id, server_url },
+        }),
+        (Some(_), _, _) => return Err("A project window requires its backend identity".into()),
+        (None, _, _) => None,
+    };
+    open_new_window_inner(&app, request)
 }
 
 #[cfg(desktop)]
-fn open_new_window_inner(app: &tauri::AppHandle, directory: Option<String>, explicit: bool) -> Result<(), String> {
+fn open_new_window_inner(app: &tauri::AppHandle, request: Option<OpenDirectoryRequest>) -> Result<(), String> {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let label = format!(
         "win-{}",
         COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
 
-    // 目录先存入 pending，窗口首帧后由前端 get_cli_directory 一次性消费
-    if let Some(dir) = &directory {
-        if let Some(state) = app.try_state::<OpenDirectoryState>() {
-            state.pin(&label, dir.clone(), explicit);
-        }
+    // 目录先存入 pending，窗口启动时由前端 get_cli_directory 一次性消费。
+    let title = request.as_ref().map_or("OMPiUI", |request| request.directory.as_str()).to_owned();
+    if let (Some(request), Some(state)) = (request, app.try_state::<OpenDirectoryState>()) {
+        state.pin(&label, request);
     }
 
     let window = configure_desktop_window_builder(WebviewWindowBuilder::new(
@@ -290,7 +296,7 @@ fn open_new_window_inner(app: &tauri::AppHandle, directory: Option<String>, expl
         label,
         WebviewUrl::App("index.html".into()),
     ))
-    .title(directory.as_deref().unwrap_or("OMPiUI"))
+    .title(title)
     .inner_size(1200.0, 800.0)
     .visible(false)
     .build()
@@ -327,8 +333,8 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
             // 始终新建窗口；调用方的 cwd 不应被首个进程的 cwd 替代。
             let request = extract_directory_from_args(&args, std::path::Path::new(&cwd));
-            let (directory, explicit) = request.map_or((None, false), |(dir, explicit)| (Some(dir), explicit));
-            let _ = open_new_window_inner(app, directory, explicit);
+            let request = request.map(|(dir, explicit)| OpenDirectoryRequest::local(dir, explicit));
+            let _ = open_new_window_inner(app, request);
         }))
         .manage(OpenDirectoryState::default())
         .manage(ServiceState::default())
@@ -434,7 +440,7 @@ pub fn run() {
             if let Some((dir, explicit)) = std::env::current_dir().ok()
                 .and_then(|cwd| extract_directory_from_args(&args, &cwd)) {
                 if let Some(state) = app.try_state::<OpenDirectoryState>() {
-                    state.pin("main", dir, explicit);
+                    state.pin("main", OpenDirectoryRequest::local(dir, explicit));
                 }
             }
 
@@ -502,13 +508,13 @@ pub fn run() {
             for url in urls {
                 if let Ok(path) = url.to_file_path() {
                     if path.is_dir() {
-                        let dir = path.to_string_lossy().to_string();
+                        let request = OpenDirectoryRequest::local(path.to_string_lossy().into_owned(), true);
                         // 只有 main 窗口且尚未消费目录时视为冷启动，否则新建窗口
                         let win_count = app_handle.webview_windows().len();
                         if win_count <= 1 {
-                            let _ = app_handle.emit("open-directory", dir);
+                            let _ = app_handle.emit("open-directory", request);
                         } else {
-                            let _ = open_new_window_inner(app_handle, Some(dir), true);
+                            let _ = open_new_window_inner(app_handle, Some(request));
                         }
                     }
                 }
