@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TFunction } from 'i18next'
 import { BackgroundJobsIndicator, SessionBackgroundJobs } from './BackgroundJobsIndicator'
 import { formatElapsed } from './formatElapsed'
-import { BACKGROUND_JOB_POLL_MS, parseAsyncJobSnapshot } from '../../../omp/backgroundJobs'
+import { BACKGROUND_JOB_DISCOVERY_MS, BACKGROUND_JOB_POLL_MS, parseAsyncJobSnapshot } from '../../../omp/backgroundJobs'
 
 const { getJobs, inspectJob, cancelJob, state, capabilities } = vi.hoisted(() => ({
   getJobs: vi.fn(), inspectJob: vi.fn(), cancelJob: vi.fn(),
@@ -135,15 +135,22 @@ describe('SessionBackgroundJobs', () => {
     expect(getJobs).not.toHaveBeenCalled()
   })
 
-  it('polls while jobs run, hides and stops when they finish', async () => {
-    getJobs.mockResolvedValueOnce({ running: [bash], recent: [] }).mockResolvedValueOnce({ running: [], recent: [{ ...bash, status: 'completed', endTime: now }] })
+  it('discovers jobs after an empty result and recovers from a failed poll without activity changes', async () => {
+    const empty = { running: [], recent: [] }
+    getJobs.mockResolvedValue(empty)
+      .mockResolvedValueOnce(empty)
+      .mockResolvedValueOnce({ running: [bash], recent: [] })
+      .mockRejectedValueOnce(new Error('connection interrupted'))
     render(<SessionBackgroundJobs sessionId="s" />)
-    expect(await screen.findByRole('button', { name: 'backgroundJobs.runningCount:count=1' })).toBeInTheDocument()
+    await act(async () => {})
+    expect(screen.queryByRole('button', { name: /backgroundJobs\.runningCount/ })).toBeNull()
+    await act(async () => { await vi.advanceTimersByTimeAsync(BACKGROUND_JOB_DISCOVERY_MS) })
+    expect(screen.getByRole('button', { name: 'backgroundJobs.runningCount:count=1' })).toBeInTheDocument()
     await act(async () => { await vi.advanceTimersByTimeAsync(BACKGROUND_JOB_POLL_MS) })
-    await waitFor(() => expect(screen.queryByRole('button', { name: /backgroundJobs\.runningCount/ })).toBeNull())
-    expect(getJobs).toHaveBeenCalledTimes(2)
-    await act(async () => { await vi.advanceTimersByTimeAsync(BACKGROUND_JOB_POLL_MS * 3) })
-    expect(getJobs).toHaveBeenCalledTimes(2)
+    expect(screen.getByRole('button', { name: 'backgroundJobs.runningCount:count=1' })).toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(BACKGROUND_JOB_DISCOVERY_MS) })
+    expect(screen.queryByRole('button', { name: /backgroundJobs\.runningCount/ })).toBeNull()
+    expect(getJobs).toHaveBeenCalledTimes(4)
   })
 
   it('hides without polling when the runtime is not open', async () => {
