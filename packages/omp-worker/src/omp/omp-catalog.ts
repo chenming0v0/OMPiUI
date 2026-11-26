@@ -539,7 +539,7 @@ export class OmpCatalog implements CatalogProvider {
   readonly control = new OmpControlChannel();
   private readonly diskBranchCaches = new Map<string, DiskBranchCache>();
   private readonly diskReads = new Map<string, Promise<DiskBranchCache | null>>();
-  private summarizeFlight?: Promise<SessionFileSummary[]>;
+  private summarizeFlight?: { revision: number; promise: Promise<SessionFileSummary[]> };
 
   async listSessions(cwd: string): Promise<JsonValue> {
     const wanted = pathKey(cwd);
@@ -564,22 +564,37 @@ export class OmpCatalog implements CatalogProvider {
   private summarizeCache: { at: number; items: SessionFileSummary[] } | null =
     null;
 
+  private summarizeRevision = 0;
+
+  invalidateSessionList(): void {
+    this.summarizeRevision += 1;
+    this.summarizeCache = null;
+  }
+
   private async summarizeAll(fresh = false): Promise<SessionFileSummary[]> {
-    // 会话列表扫描全量文件是 catalog 里最贵的操作：2s 缓存
+    // Keep the per-file incremental scans and share one scan for each list revision.
     if (!fresh && this.summarizeCache && Date.now() - this.summarizeCache.at < 2_000) {
       return this.summarizeCache.items;
     }
-    if (this.summarizeFlight) return this.summarizeFlight;
-    this.summarizeFlight = (async () => {
+    const revision = this.summarizeRevision;
+    if (this.summarizeFlight) {
+      const flight = this.summarizeFlight;
+      if (flight.revision === revision) return flight.promise;
+      await flight.promise;
+      return this.summarizeAll(fresh);
+    }
+    const promise = (async () => {
       const results = await mapLimited(listSessionFiles(), summarizeSessionFileCached);
       const items = results.flatMap((snapshot) => snapshot ? [displaySummary(snapshot)] : []);
       items.sort((a, b) => b.modified - a.modified);
-      this.summarizeCache = { at: Date.now(), items };
+      // A scan started before a list change must not restore the old cache.
+      if (revision === this.summarizeRevision) this.summarizeCache = { at: Date.now(), items };
       return items;
     })().finally(() => {
       this.summarizeFlight = undefined;
     });
-    return this.summarizeFlight;
+    this.summarizeFlight = { revision, promise };
+    return promise;
   }
 
   async createSession(cwd: string): Promise<JsonValue> {
@@ -910,7 +925,7 @@ export class OmpCatalog implements CatalogProvider {
       ) {
         throw new Error("Invalid forked session identity");
       }
-      this.summarizeCache = null;
+      this.invalidateSessionList();
       return {
         sessionId: state.sessionId,
         sessionFile: state.sessionFile,

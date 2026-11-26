@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import { existsSync } from "node:fs"
 import { resolve } from "node:path"
 import { installWorkerFileLogging } from "./worker-logger.js"
 
@@ -170,6 +171,9 @@ function subscribeRuntimeEvents(current: SessionRuntime): Array<() => void> {
     if (event.type === "available_commands_update") {
       void queueRegistryChangeCheck(current, "available_commands_update").catch(error => console.error("[omp-worker] registry refresh failed", error));
     }
+    if (event.type === "session_info_changed" || event.type === "session_info_update") {
+      if (catalog instanceof OmpCatalog) catalog.invalidateSessionList()
+    }
     send({
     kind: "event",
     generation: workerGeneration,
@@ -178,13 +182,22 @@ function subscribeRuntimeEvents(current: SessionRuntime): Array<() => void> {
     event,
     meta,
   })}))
-  unsubs.push(current.onHead(head => send({
-    kind: "event",
-    generation: workerGeneration,
-    sessionId: current.getSessionId(),
-    channel: "session.head",
-    head: head as unknown as JsonObject,
-  })))
+  let materializedFile = current.getSessionFile()
+  if (materializedFile && !existsSync(materializedFile)) materializedFile = undefined
+  unsubs.push(current.onHead(head => {
+    const file = current.getSessionFile()
+    if (catalog instanceof OmpCatalog && file !== materializedFile && file && existsSync(file)) {
+      materializedFile = file
+      catalog.invalidateSessionList()
+    }
+    send({
+      kind: "event",
+      generation: workerGeneration,
+      sessionId: current.getSessionId(),
+      channel: "session.head",
+      head: head as unknown as JsonObject,
+    })
+  }))
   if (current.onActivity) {
     unsubs.push(current.onActivity(status => send({
       kind: "event",
@@ -380,6 +393,10 @@ async function execute(command: { type: string; params?: JsonObject; sessionId?:
     throw Object.assign(new Error(`unknown command: ${command.type}`), { code: "UNKNOWN_COMMAND" })
   }
   const result = await handler(commandCtx, params)
+  if (catalog instanceof OmpCatalog && (command.type === "setSessionName" ||
+      (isJsonObject(result) && result.cancelled === false && (result.operation === "fork" || result.operation === "move")))) {
+    catalog.invalidateSessionList()
+  }
   // Runtime replacement (newSession/switchSession/fork) changes the session
   // identity inside the child process; migrate the map key so subsequent
   // requests with the new sessionId find the same runtime.

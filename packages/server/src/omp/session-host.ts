@@ -1050,6 +1050,9 @@ export class SessionHost {
             releaseWorkspace = beginWorktreeAttachment(resolve(session.cwd, full.params.path));
           }
           const data = await session.worker.command(full.type, full.params);
+          if (full.type === "setSessionName") {
+            this.hub.publish({ kind: "server", id: "server" }, "sessions.updated", { sessionId, updated: true });
+          }
           await this.trackReplacement(session, data);
           return data;
         } finally {

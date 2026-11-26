@@ -50,7 +50,7 @@ import { setEventStreamState } from '../api/events'
 import { clearSubagentTranscripts } from './subagentTranscript'
 import { bashPendingStore } from './bashPendingStore'
 import { faultSocketOpened, faultSocketClosed, faultSocketUnused, reportRuntimeCrash, recordClientDiagnostic } from './faultAudit/controller'
-import { loadPiSessionData, refreshPiBranch, refreshPiSessionState, settlePiLiveMessage } from './controllers/index.js'
+import { invalidatePiSessionList, loadPiSessionData, refreshPiBranch, refreshPiSessionState, settlePiLiveMessage } from './controllers/index.js'
 import { SessionActivityWatchdog } from './sessionActivityWatchdog.js'
 import { ensureHostWorkspaceWatch, resetWorkspaceWatchRegistrations } from './workspaces'
 import { getOptionalTerminalSecret } from './terminalIdentity'
@@ -829,6 +829,7 @@ class PiEventStream {
   }
 
   private handleSessionsUpdated(payload: SessionsUpdatedPayload | undefined): void {
+    invalidatePiSessionList()
     if (payload?.crashed && payload.sessionId) {
       reportRuntimeCrash(payload.sessionId, payload.faultId, payload.faultTime, payload.errorCode)
       piSessionStateStore.patchState(payload.sessionId, { nativeAskDialog: false, askUi: { available: false, reason: 'runtime_unavailable' } })
@@ -1417,6 +1418,7 @@ class PiEventStream {
       this.scheduleStateRefresh(stream.id)
       return flight
     } else if (stream.kind === 'server') {
+      invalidatePiSessionList()
       receiveSettingsUpdated()
       refreshOfficialSettings()
       window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))

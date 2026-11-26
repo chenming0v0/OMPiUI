@@ -67,7 +67,12 @@ export async function loadPiSessionsForCwd(cwd: string, signal?: AbortSignal): P
   return sessions
 }
 
-const listFlights = new Map<string, Promise<SessionInfo[]>>()
+const listFlights = new Map<string, { revision: number; promise: Promise<SessionInfo[]> }>()
+let sessionListRevision = 0
+
+export function invalidatePiSessionList(): void {
+  sessionListRevision += 1
+}
 const registryCache = new Map<string, { generation: number; expiresAt: number; value: RegistrySnapshot | undefined }>()
 const registryFlights = new Map<string, Promise<RegistrySnapshot | undefined>>()
 const REGISTRY_CACHE_TTL_MS = 2_000
@@ -104,12 +109,15 @@ function sharedSessionList(
   if (signal) return retryUnavailable(load, signal)
   const flightKey = JSON.stringify([serverStore.getActiveServerGeneration(), key])
   const current = listFlights.get(flightKey)
-  if (current) return current
-  const flight = retryUnavailable(load).finally(() => {
-    if (listFlights.get(flightKey) === flight) listFlights.delete(flightKey)
-  })
-  listFlights.set(flightKey, flight)
-  return flight
+  if (current) {
+    if (current.revision === sessionListRevision) return current.promise
+    return current.promise.catch(() => undefined).then(() => sharedSessionList(key, load))
+  }
+  const entry = { revision: sessionListRevision, promise: retryUnavailable(load).finally(() => {
+    if (listFlights.get(flightKey) === entry) listFlights.delete(flightKey)
+  }) }
+  listFlights.set(flightKey, entry)
+  return entry.promise
 }
 
 /**
