@@ -388,6 +388,7 @@ export function DshRemoteConnectSettings({ connectionRow = false, onManage }: { 
 
   useEffect(() => {
     if (!login) return
+    setNow(Date.now())
     const timer = setInterval(() => setNow(Date.now()), 1_000)
     return () => clearInterval(timer)
   }, [login])
@@ -437,7 +438,6 @@ export function DshRemoteConnectSettings({ connectionRow = false, onManage }: { 
     setError('')
     try {
       const next = await beginDshLogin(provider, AbortSignal.timeout(12_000))
-      setNow(Date.now())
       setLogin(next)
       // The link/QR stays usable if the OS refuses to open the browser from the app.
       await openSite(next.url).catch(() => undefined)
