@@ -8,6 +8,7 @@ import { beginWorktreeAttachment } from "../host/worktrees.ts";
 import type {
   CommandEnvelope,
   CommandRecord,
+  EventCursor,
   JsonObject,
   JsonValue,
   PiCapability,
@@ -558,6 +559,12 @@ export class SessionHost {
     return session;
   }
 
+  private withPendingSnapshot(state: JsonValue | undefined, cursor: EventCursor): JsonValue | undefined {
+    if (!isJsonObject(state)) return state;
+    if (state.diskPreview !== true && !Array.isArray(state.pendingExtensionUiRequests)) return state;
+    return { ...state, pendingExtensionUiRequests: state.pendingExtensionUiRequests ?? [], pendingExtensionUiCursor: cursor };
+  }
+
   async sessionQuery(
     sessionId: string,
     type: string,
@@ -573,6 +580,9 @@ export class SessionHost {
             { idempotent: true, signal },
           );
         }
+        // This cursor is a lower bound on the worker snapshot. Events after
+        // the request started may already be in the snapshot, or may be newer.
+        const cursor = this.hub.getCursor({ kind: "session", id: sessionId });
         let session = this.runtimes.get(sessionId);
         if (!session) {
           if (type === "toolInteraction") {
@@ -612,8 +622,7 @@ export class SessionHost {
               { sessionId, query: type, params: params ?? {} },
               { idempotent: true, signal },
             );
-            return type === 'state.get' && isJsonObject(result) && this.toolInterruptions.has(sessionId)
-              ? { ...result, toolInterruption: this.toolInterruptions.get(sessionId)! } : result;
+            return type === 'state.get' ? this.withPendingSnapshot(result, cursor) : result;
           }
           if (this.getSessionCapability(type)?.idempotent) {
             throw Object.assign(
@@ -645,8 +654,10 @@ export class SessionHost {
           throw Object.assign(new Error("The native session is switching worktrees; your message was not submitted"), { code: "SESSION_BUSY" });
         }
         const result = await session.worker.command(type, params, signal);
-        return type === 'state.get' && isJsonObject(result) && this.toolInterruptions.has(sessionId)
-          ? { ...result, toolInterruption: this.toolInterruptions.get(sessionId)! } : result;
+        const interruption = this.toolInterruptions.get(sessionId);
+        if (type !== 'state.get' || !isJsonObject(result)) return result;
+        const state = interruption ? { ...result, toolInterruption: interruption } : result;
+        return this.withPendingSnapshot(state, cursor);
       })(),
       signal,
     );
@@ -878,6 +889,7 @@ export class SessionHost {
     if (type === "session.attached") return this.listAttachedIds();
     if (type === "session.preview" && typeof params?.sessionId === "string") {
       validateParams(getCommandCapability(type)?.paramsSchema, params);
+      const cursor = this.hub.getCursor({ kind: "session", id: params.sessionId });
       const attached = this.runtimes.get(params.sessionId);
       if (attached) {
         this.touch(attached.sessionId);
@@ -896,8 +908,11 @@ export class SessionHost {
           attached.worker.command("state.get", undefined, options.signal),
           attached.worker.command("branch.get", pageParams, options.signal),
         ]);
-        return { state: isJsonObject(state) && this.toolInterruptions.has(params.sessionId) ? { ...state, toolInterruption: this.toolInterruptions.get(params.sessionId)! } : state ?? null, branch: branch ?? null };
+        const interruption = this.toolInterruptions.get(params.sessionId);
+        return { state: this.withPendingSnapshot(isJsonObject(state) && interruption ? { ...state, toolInterruption: interruption } : state, cursor) ?? null, branch: branch ?? null };
       }
+      const result = await this.catalogCommand(type, params, { idempotent: true, retry: true, signal: options.signal });
+      return isJsonObject(result) && isJsonObject(result.state) ? { ...result, state: this.withPendingSnapshot(result.state, cursor)! } : result;
     }
     if (type === "session.copy") {
       validateParams(getCommandCapability(type)?.paramsSchema, params ?? {});

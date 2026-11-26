@@ -1,4 +1,5 @@
 import type {
+  EventCursor,
   ExtensionUiDialogRequest,
   ExtensionUiEditorCommand,
   ExtensionUiSnapshot,
@@ -17,6 +18,9 @@ type EditorTextSource = 'none' | 'mirror' | 'extension'
 
 const editorTextSourceBySession = new Map<string, EditorTextSource>()
 const settledRequestsBySession = new Map<string, Set<string>>()
+const pendingCursors = new Map<string, Map<string, { cursor: EventCursor; receivedAt: number }>>()
+const pendingSnapshotCursors = new Map<string, EventCursor>()
+let pendingEventVersion = 0
 
 const emptyState = (): ExtensionUiState => ({
   revision: 0,
@@ -95,11 +99,22 @@ export const extensionUiStore = {
     update(snapshot.sessionId, restored)
   },
 
-  requestOpened(request: ExtensionUiDialogRequest): boolean {
+  getPendingEventVersion(): number {
+    return pendingEventVersion
+  },
+
+  requestOpened(request: ExtensionUiDialogRequest, cursor?: EventCursor): boolean {
     const snapshot = existing(request.sessionId)
+    const cutoff = pendingSnapshotCursors.get(request.sessionId)
+    if (cursor && cutoff?.epoch === cursor.epoch && cursor.sequence <= cutoff.sequence) return false
     if (settledRequestsBySession.get(request.sessionId)?.has(
       settledKey(request.requestId, request.workerGeneration ?? snapshot.workerGeneration),
     )) return false
+    if (cursor) {
+      const requests = pendingCursors.get(request.sessionId) ?? new Map()
+      requests.set(request.requestId, { cursor, receivedAt: ++pendingEventVersion })
+      pendingCursors.set(request.sessionId, requests)
+    }
     update(request.sessionId, {
       ...snapshot,
       workerGeneration: request.workerGeneration ?? snapshot.workerGeneration,
@@ -108,11 +123,32 @@ export const extensionUiStore = {
     return true
   },
 
+  reconcilePending(sessionId: string, requests: ExtensionUiDialogRequest[], cursor: EventCursor, since: number) {
+    const cutoff = pendingSnapshotCursors.get(sessionId)
+    if (cutoff?.epoch === cursor.epoch && cutoff.sequence > cursor.sequence) return { removed: [], restore: [] }
+    pendingSnapshotCursors.set(sessionId, cursor)
+    const live = pendingCursors.get(sessionId)
+    const retain = new Set(requests.map(request => request.requestId))
+    const newer = (id: string) => {
+      const position = live?.get(id)
+      return position && (position.cursor.epoch === cursor.epoch
+        ? position.cursor.sequence > cursor.sequence : position.receivedAt > since)
+    }
+    const removed: string[] = []
+    for (const request of existing(sessionId).pending) {
+      if (retain.has(request.requestId) || newer(request.requestId)) continue
+      this.requestSettled(sessionId, request.requestId, request.workerGeneration)
+      removed.push(request.requestId)
+    }
+    return { removed, restore: requests.filter(request => !newer(request.requestId)) }
+  },
+
   requestSettled(sessionId: string, requestId: string, workerGeneration?: string): void {
     // Keep the originating identity even if a late response finishes after a runtime replacement.
     const snapshot = existing(sessionId)
     const generation = workerGeneration ?? snapshot.pending.find(request => request.requestId === requestId)?.workerGeneration ?? snapshot.workerGeneration
     const settled = settledRequestsBySession.get(sessionId) ?? new Set<string>()
+    pendingCursors.get(sessionId)?.delete(requestId)
     settled.add(settledKey(requestId, generation))
     settledRequestsBySession.set(sessionId, settled)
     update(sessionId, {
@@ -165,6 +201,8 @@ export const extensionUiStore = {
 
   remove(sessionId: string): void {
     settledRequestsBySession.delete(sessionId)
+    pendingCursors.delete(sessionId)
+    pendingSnapshotCursors.delete(sessionId)
     if (!(sessionId in current.sessions)) return
     const sessions = { ...current.sessions }
     delete sessions[sessionId]
@@ -175,6 +213,8 @@ export const extensionUiStore = {
 
   reset(): void {
     settledRequestsBySession.clear()
+    pendingCursors.clear()
+    pendingSnapshotCursors.clear()
     current = { sessions: {} }
     editorTextSourceBySession.clear()
     for (const listener of listeners) listener()

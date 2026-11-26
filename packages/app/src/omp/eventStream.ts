@@ -754,7 +754,7 @@ class PiEventStream {
         }
         break
       case 'extension.ui':
-        if (sessionId) this.handleExtensionUiEvent(sessionId, envelope.payload as unknown as PiExtensionUiEvent)
+        if (sessionId) this.handleExtensionUiEvent(sessionId, envelope.payload as unknown as PiExtensionUiEvent, envelope.cursor)
         break
       case 'omp.subagent': {
         // 会话流上 sessionId 取 envelope；server 流上的注册帧镜像由 payload
@@ -890,12 +890,13 @@ class PiEventStream {
     window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
   }
 
-  private handleExtensionUiEvent(sessionId: string, event: PiExtensionUiEvent): void {
+  private handleExtensionUiEvent(sessionId: string, event: PiExtensionUiEvent, cursor?: EventCursor): void {
     sessionId = event.type === 'settled' ? event.sessionId : event.type === 'requested' ? event.request.sessionId : sessionId
-    piSessionStateStore.invalidateRequests(sessionId)
+    // Versioned dialog events can be merged alongside a state response.
+    if (event.type !== 'requested' && event.type !== 'settled') piSessionStateStore.invalidateRequests(sessionId)
     switch (event.type) {
       case 'requested':
-        if (!extensionUiStore.requestOpened(event.request)) break
+        if (!extensionUiStore.requestOpened(event.request, cursor)) break
         // Surface as pending action on the sidebar (awaiting permission/answer)
         activeSessionStore.addPendingRequest(
           event.request.requestId,
