@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { pollDshLogin, restoreDshPairedSession } from './dshRemote'
+import { createDshIdentity } from '@ompiui/protocol/dsh-remote'
+import { DshApiError, DshAppSession, pollDshLogin, restoreDshPairedSession } from './dshRemote'
 
 const api = vi.hoisted(() => ({ fetch: vi.fn<typeof fetch>() }))
 vi.mock('../utils/tauri', async original => ({
@@ -71,5 +72,41 @@ describe('DS account device authorization', () => {
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('Full', 'QuotaExceededError') })
     await expect(pollDshLogin('qr-login-001', new AbortController().signal)).rejects.toMatchObject({ code: 'DSH_STORAGE_FAILED' })
     expect(restoreDshPairedSession()).toBeNull()
+  })
+
+  it('normalizes a native HTTP string rejection as a retryable network error', async () => {
+    api.fetch.mockRejectedValueOnce('error sending request')
+    await expect(pollDshLogin('qr-login-001', new AbortController().signal)).rejects.toBeInstanceOf(TypeError)
+  })
+
+  it('preserves the internal deadline when native HTTP rejects cancellation as a string', async () => {
+    const deadline = new AbortController()
+    vi.spyOn(AbortSignal, 'timeout').mockReturnValue(deadline.signal)
+    api.fetch.mockImplementationOnce(async () => {
+      deadline.abort(new DOMException('Request timed out', 'TimeoutError'))
+      throw 'request cancelled'
+    })
+    await expect(pollDshLogin('qr-login-001', new AbortController().signal)).rejects.toMatchObject({ name: 'TimeoutError' })
+  })
+
+  it('keeps rotated credentials available to retry logout when saving them fails', async () => {
+    const current = { accessToken: 'old-access-token-0001', refreshToken: 'old-refresh-token-0001',
+      accessTokenExpiresAt: Date.now() - 1000, refreshTokenExpiresAt: Date.now() + 86400_000 }
+    const refreshed = { ...current, accessToken: 'new-access-token-0001', refreshToken: 'new-refresh-token-0001',
+      accessTokenExpiresAt: Date.now() + 3600_000 }
+    const store = vi.fn().mockImplementationOnce(() => { throw new DshApiError('DSH_STORAGE_FAILED', 0) })
+    const session = new DshAppSession(createDshIdentity(), current, store)
+    api.fetch.mockResolvedValueOnce(Response.json(refreshed)).mockResolvedValueOnce(new Response(null, { status: 204 }))
+    await expect(session.revoke()).rejects.toMatchObject({ code: 'DSH_STORAGE_FAILED' })
+    expect(session.invalidated).toBe(false)
+    expect(api.fetch).toHaveBeenCalledTimes(1)
+    await session.revoke()
+    expect(session.invalidated).toBe(true)
+    expect(api.fetch).toHaveBeenCalledTimes(2)
+    const [url, init] = api.fetch.mock.calls[1]
+    expect(String(url)).toContain('/devices/self')
+    expect(init?.method).toBe('DELETE')
+    expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${refreshed.accessToken}`)
+    expect(store.mock.calls.map(([value]) => value)).toEqual([refreshed, refreshed, null])
   })
 })

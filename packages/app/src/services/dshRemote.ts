@@ -85,9 +85,19 @@ async function dshRequest(path: string, init: RequestInit, signal?: AbortSignal)
   const deadline = AbortSignal.timeout(12_000)
   const options = { ...init, headers, signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
     redirect: 'error' as const, maxRedirections: 0 }
-  const response = await fetch(url.href, options)
+  const transportFailure = (error: unknown): never => {
+    options.signal.throwIfAborted()
+    // plugin-http 的原生网络错误以字符串拒绝，归一化后与浏览器网络错误共用重试策略。
+    if (typeof error === 'string') throw new TypeError('DS Harness Remote network request failed')
+    throw error
+  }
+  const response = await fetch(url.href, options).catch(transportFailure)
   if (response.status === 204) return undefined
-  const body: unknown = await response.json().catch(() => null)
+  const body: unknown = await response.json().catch(error => {
+    if (error instanceof SyntaxError) return null
+    return transportFailure(error)
+  })
+  options.signal.throwIfAborted()
   if (!response.ok) {
     const code = dshRecord(dshRecord(body)?.error)?.code
     throw new DshApiError(typeof code === 'string' ? code : '', response.status)
@@ -269,6 +279,8 @@ export class DshAppSession {
 
   /** 是不是扫码配对来的：没有账号可退出，只能取消配对。 */
   get paired(): boolean { return this.mode === 'paired' }
+
+  get invalidated(): boolean { return this.lifetime.signal.aborted }
 
   /** 已经配对过的手机再扫一台电脑。 */
   pairAnother(text: string, signal: AbortSignal): Promise<DshPhonePairing> {

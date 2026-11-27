@@ -15,7 +15,7 @@ const session = () => new DshAppSession(createDshIdentity(), {
   accessToken: 'access-token-0001', refreshToken: 'refresh-token-0001',
   accessTokenExpiresAt: Date.now() + 3600_000, refreshTokenExpiresAt: Date.now() + 86400_000,
 })
-beforeEach(() => api.fetch.mockReset())
+beforeEach(() => { api.fetch.mockReset() })
 afterEach(() => vi.restoreAllMocks())
 
 describe('DS host presence', () => {

@@ -33,13 +33,13 @@ beforeEach(() => {
 })
 afterEach(() => vi.unstubAllGlobals())
 
-function fixture(mode: 'ready' | 'origin-rejected' | 'auth-frame' = 'ready') {
+function fixture(mode: 'ready' | 'origin-rejected' | 'unknown-close' | 'auth-frame' = 'ready') {
   const client = createDshIdentity()
   const host = createDshIdentity()
   const connectionId = crypto.randomUUID()
   const hostNoise = new DshNoise(host, client.identityKey, connectionId, host.deviceId, client.deviceId)
   const frames: DshFrame[] = []
-  const grant = { url: 'https://tabcdefghjkmn.tun.4ba.io/', browserGrant: 'a'.repeat(43), expiresAt: Date.now() + 60_000 }
+  const grant = { url: `https://t${'a'.repeat(11)}.tun.4ba.io/`, browserGrant: 'a'.repeat(43), expiresAt: Date.now() + 60_000 }
   let sequence = 0
   const emit = (frame: DshFrame) => queueMicrotask(() => native.channel?.onmessage({ type: 'message', sequence: ++sequence, data: JSON.stringify(frame) }))
   const reply = (type: string, payload: Record<string, unknown>) => emit(dshFrame(type, payload))
@@ -64,8 +64,8 @@ function fixture(mode: 'ready' | 'origin-rejected' | 'auth-frame' = 'ready') {
     frames.push(frame)
     if (frame.type === 'hello') {
       expect(frame.payload).toMatchObject({ role: 'client', deviceId: client.deviceId, accessToken: tokens().accessToken, protocols: [1] })
-      if (mode === 'origin-rejected') {
-        queueMicrotask(() => native.channel?.onmessage({ type: 'close', code: 4010, reason: 'origin not allowed' }))
+      if (mode === 'origin-rejected' || mode === 'unknown-close') {
+        queueMicrotask(() => native.channel?.onmessage({ type: 'close', code: 4010, reason: mode === 'origin-rejected' ? 'origin not allowed' : '' }))
       } else if (mode === 'auth-frame') {
         reply('error', { code: 'AUTH_INVALID', retryable: false })
       } else {
@@ -119,5 +119,15 @@ describe('DS connection through the native bridge', () => {
     expect(native.fetch.mock.calls.some(([input]) => String(input).endsWith('/auth/refresh'))).toBe(true)
     expect(exportDshDiagnostics()).toContain('"frameCode":"AUTH_INVALID"')
     expect(f.frames.map(frame => frame.type)).toEqual(['hello'])
+  })
+
+  it('preserves a bare 4010 without guessing that the controller credential expired', async () => {
+    const f = fixture('unknown-close')
+    const attemptId = crypto.randomUUID()
+    await expect(f.session.connect(f.host.deviceId, new AbortController().signal, attemptId)).rejects.toMatchObject({ code: 'DSH_UNREACHABLE' })
+    expect(f.frames.map(frame => frame.type)).toEqual(['hello'])
+    expect(native.fetch).toHaveBeenCalledTimes(1)
+    const events = exportDshDiagnostics().split('\n').filter(line => line.includes(attemptId))
+    expect(events.some(line => line.includes('"closeCode":4010') && line.includes('"closeReasonState":"empty"'))).toBe(true)
   })
 })

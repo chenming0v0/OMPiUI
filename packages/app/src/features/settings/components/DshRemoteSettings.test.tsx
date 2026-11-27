@@ -157,6 +157,17 @@ async function startLogin() {
 const advance = (milliseconds: number) => act(async () => { await vi.advanceTimersByTimeAsync(milliseconds) })
 
 describe('DS remote authorization polling', () => {
+  it('keeps the account available when logout cannot persist refreshed credentials', async () => {
+    const { session, revoke } = controller()
+    revoke.mockRejectedValueOnce(new DshApiError('DSH_STORAGE_FAILED', 0))
+    dshControllerStore.update({ session })
+    render(<DshRemoteConnectSettings />)
+    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent("Could not read or save this device's authorization")
+    expect(dshControllerStore.get().session).toBe(session)
+    expect(screen.getByRole('button', { name: 'Sign out' })).toBeEnabled()
+  })
+
   it.each([
     ['network interruption', () => new TypeError('Failed to fetch')],
     ['request timeout', () => new DOMException('Timed out', 'TimeoutError')],

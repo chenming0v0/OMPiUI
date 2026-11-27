@@ -15,9 +15,10 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
+use tokio::net::TcpStream;
 use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::{oneshot, Notify};
-use tokio_tungstenite::connect_async_with_config;
+use tokio_tungstenite::{connect_async_with_config, MaybeTlsStream, WebSocketStream};
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::{Error as WebSocketError, Message};
@@ -164,20 +165,16 @@ impl BridgeState {
 /// connecting（黄色）。超时后报错，前端的断线重连逻辑会接管。
 const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-#[tauri::command]
-pub async fn ws_bridge_connect(
-    app: AppHandle,
-    window: tauri::Window,
-    state: State<'_, BridgeState>,
-    url: String,
-    on_event: Channel<BridgeEvent>,
-) -> Result<u32, String> {
+// 原生拨号不附带 WebView 的 Origin，避免远程服务将 tauri.localhost 判为非法来源。
+async fn connect_native_websocket(
+    url: &str,
+) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, String> {
     let mut config = WebSocketConfig::default();
     config.max_message_size = Some(MAX_INBOUND_MESSAGE_BYTES);
     config.max_frame_size = Some(MAX_INBOUND_MESSAGE_BYTES);
     let (socket, _) = tokio::time::timeout(
         WS_CONNECT_TIMEOUT,
-        connect_async_with_config(&url, Some(config), false),
+        connect_async_with_config(url, Some(config), false),
     )
     .await
     .map_err(|_| {
@@ -187,6 +184,18 @@ pub async fn ws_bridge_connect(
         )
     })?
     .map_err(|error| format!("WebSocket connect failed: {error}"))?;
+    Ok(socket)
+}
+
+#[tauri::command]
+pub async fn ws_bridge_connect(
+    app: AppHandle,
+    window: tauri::Window,
+    state: State<'_, BridgeState>,
+    url: String,
+    on_event: Channel<BridgeEvent>,
+) -> Result<u32, String> {
+    let socket = connect_native_websocket(&url).await?;
     let (mut writer, mut reader) = socket.split();
 
     let id = state.next_id();
@@ -344,6 +353,49 @@ pub fn ws_bridge_close(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::accept_hdr_async;
+    use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_handshake_omits_origin_and_transfers_messages_and_close() {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("ws://{}/ws?token=bridge-regression", listener.local_addr().unwrap());
+            let close = CloseFrame { code: 1000.into(), reason: "bridge regression complete".into() };
+
+            let server = async {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut upgrade_request = None;
+                let mut socket = accept_hdr_async(stream, |request: &Request, response: Response| {
+                    upgrade_request = Some(request.clone());
+                    Ok(response)
+                }).await.unwrap();
+
+                let request = upgrade_request.expect("server must capture the Upgrade request");
+                assert_eq!(request.method(), "GET");
+                assert_eq!(request.uri().path_and_query().unwrap().as_str(), "/ws?token=bridge-regression");
+                assert_eq!(request.headers().get("upgrade").unwrap(), "websocket");
+                // 检查实际发出的握手请求，防止重新添加 tauri.localhost 等 Origin。
+                assert!(!request.headers().contains_key("origin"), "native handshake must omit Origin");
+
+                assert_eq!(socket.next().await.unwrap().unwrap(), Message::Text("from client".into()));
+                socket.send(Message::Text("from server".into())).await.unwrap();
+                socket.send(Message::Close(Some(close.clone()))).await.unwrap();
+                assert_eq!(socket.next().await.unwrap().unwrap(), Message::Close(Some(close.clone())));
+            };
+            let client = async {
+                let mut socket = connect_native_websocket(&url).await.unwrap();
+                socket.send(Message::Text("from client".into())).await.unwrap();
+                assert_eq!(socket.next().await.unwrap().unwrap(), Message::Text("from server".into()));
+                assert_eq!(socket.next().await.unwrap().unwrap(), Message::Close(Some(close.clone())));
+                // 收到关闭帧后，发送协议自动排队的关闭应答，让服务端确认。
+                socket.flush().await.unwrap();
+            };
+
+            tokio::join!(server, client);
+        }).await.expect("native WebSocket round trip timed out");
+    }
 
     fn key(window_label: &str, bridge_id: u32) -> BridgeKey {
         BridgeKey {

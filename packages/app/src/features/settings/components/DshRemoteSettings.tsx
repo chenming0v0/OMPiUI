@@ -395,7 +395,9 @@ export function DshRemoteConnectSettings({ onOpenServers }: { onOpenServers?: ()
       if (dshControllerStore.get().session === session) dshControllerStore.update({ session: null, hosts: [] })
     } catch (failure) {
       if (failure instanceof DshApiError && failure.code === 'DSH_STORAGE_FAILED') {
-        if (dshControllerStore.get().session === session) dshControllerStore.update({ session: null, hosts: [], authError: failure.code })
+        if (session.invalidated && dshControllerStore.get().session === session) {
+          dshControllerStore.update({ session: null, hosts: [], authError: failure.code })
+        } else setError(t('dshRemote.connectError.DSH_STORAGE_FAILED'))
       } else setError(t('dshRemote.logoutFailed'))
     }
     finally { setBusy(false) }
