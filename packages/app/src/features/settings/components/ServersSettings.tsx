@@ -17,8 +17,8 @@ import {
 } from '../../../components/Icons'
 import { useServerStore, useRouter } from '../../../hooks'
 import { clearSessionRuntimeState } from '../../../utils/sessionLifecycle'
-import { isTailnetUrl } from '../../../utils/androidTailscale'
-import { isTauri, isTauriMobile } from '../../../utils/tauri'
+import { isAndroidTailscalePlatform, isTailnetUrl } from '../../../utils/androidTailscale'
+import { isTauri } from '../../../utils/tauri'
 import { settingsFieldClass } from './SettingsUI'
 import { Lamp, PageHead, type LampTone } from './ChannelBoard'
 import { AddServerForm } from './AddServerForm'
@@ -484,7 +484,8 @@ function EditServerForm({
 export function ServersSettings({ initialAddingServer = false }: { initialAddingServer?: boolean }) {
   const { t } = useTranslation(['settings', 'common'])
   const [addingServer, setAddingServer] = useState(initialAddingServer)
-  const desktop = isTauri() && !isTauriMobile()
+  // DS 远程的电脑在桌面版和手机 App 里都列出来，网页端不展示。
+  const native = isTauri()
   const {
     servers,
     activeServer,
@@ -582,12 +583,12 @@ export function ServersSettings({ initialAddingServer = false }: { initialAdding
               onCheckHealth={() => void checkHealth(s.id)}
             />
           ))}
-          {desktop && <Suspense fallback={null}><DshServerRows /></Suspense>}
+          {native && <Suspense fallback={null}><DshServerRows /></Suspense>}
         </div>
       ) : (
         !addingServer && <p className="cb-empty">{t('servers.noServersConfigured')}</p>
       )}
-      {desktop && <p className="cb-footnote">{t('servers.dshFootnote')}</p>}
+      {native && <p className="cb-footnote">{t(isAndroidTailscalePlatform() ? 'servers.dshFootnoteInApp' : 'servers.dshFootnote')}</p>}
     </div>
   )
 }

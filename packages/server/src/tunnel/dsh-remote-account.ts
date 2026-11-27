@@ -201,6 +201,30 @@ export class DshRemoteAccount {
     })
   }
 
+  /** 扫码配对要用的本机身份。还没有可用身份时先建一个并落盘；这一步不带任何授权。 */
+  async pairingIdentity(): Promise<{ identity: DshIdentity; device: Record<string, unknown> }> {
+    if (this.role !== 'host') throw new Error('Only a host can show a pairing code')
+    return this.locked(async () => {
+      const saved = await this.load()
+      const reusable = saved && (saved.tokens === null || saved.tokens.refreshTokenExpiresAt > Date.now())
+      const identity = reusable ? saved.identity : newIdentity()
+      if (!reusable) await this.save({ identity, tokens: null })
+      return { identity, device: this.descriptor(identity) }
+    })
+  }
+
+  /** 配对完成后收下服务器发给这台电脑的授权。已经有有效授权时保留原来的。 */
+  async adoptPairing(identity: DshIdentity, tokens: DshDeviceTokens): Promise<void> {
+    await this.locked(async () => {
+      const saved = await this.load()
+      if (saved?.identity.deviceId !== identity.deviceId || saved.identity.identityKey !== identity.identityKey) {
+        throw new DshRemoteError('DSH_PAIRING_IDENTITY_CHANGED', 409, 'This computer was rebound while pairing. Show a new code.')
+      }
+      if (saved.tokens && saved.tokens.refreshTokenExpiresAt > Date.now()) return
+      await this.save({ identity: saved.identity, tokens })
+    })
+  }
+
   async resetUnreadable(): Promise<void> {
     await this.locked(async () => {
       try { await this.load() } catch (error) {

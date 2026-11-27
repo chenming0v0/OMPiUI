@@ -26,6 +26,7 @@ class MainActivity : TauriActivity() {
   private var tailscaleBridge: TailscaleBridge? = null
   private var deviceDiscoveryBridge: DeviceDiscoveryBridge? = null
   private val qrScannerBridge = QrScannerBridge(this) { cachedWebView }
+  private val dshViewerBridge = DshRemoteViewerBridge(this) { cachedWebView }
 
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
@@ -101,6 +102,7 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onDestroy() {
+    dshViewerBridge.dispose()
     deviceDiscoveryBridge?.dispose()
     deviceDiscoveryBridge = null
     tailscaleBridge?.dispose()
@@ -308,6 +310,7 @@ class MainActivity : TauriActivity() {
     try {
       webView.addJavascriptInterface(SystemBarBridge(), "__ompiui_android")
       webView.addJavascriptInterface(qrScannerBridge, "__ompiui_qr_scanner")
+      webView.addJavascriptInterface(dshViewerBridge, "__ompiui_dsh_viewer")
       if (deviceDiscoveryBridge == null) {
         val bridge = DeviceDiscoveryBridge(applicationContext, webView)
         webView.addJavascriptInterface(bridge, "__ompiui_device_discovery")

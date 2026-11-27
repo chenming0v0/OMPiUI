@@ -2609,7 +2609,7 @@ dependencies = [
 
 [[package]]
 name = "ompiui"
-version = "0.6.73"
+version = "0.6.74"
 dependencies = [
  "futures-util",
  "getrandom 0.3.4",

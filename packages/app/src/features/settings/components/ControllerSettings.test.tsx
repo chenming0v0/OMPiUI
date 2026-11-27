@@ -77,7 +77,7 @@ describe('ControllerSettings', () => {
     expect(channel('Pair')).toBeInTheDocument()
     expect(channel('Address and key')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'DS remote' })).not.toBeInTheDocument()
-    expect(screen.getByText(/desktop app/i)).toBeInTheDocument()
+    expect(screen.getByText(/mobile app/i)).toBeInTheDocument()
   })
 
   it('links to the Servers page instead of listing connected computers', () => {
@@ -100,7 +100,7 @@ describe('ControllerSettings', () => {
     platform.mobile = true
     const completed = vi.fn()
     render(<ControllerSettings onPaired={completed} />)
-    expect(screen.queryByRole('button', { name: 'DS remote' })).not.toBeInTheDocument()
+    expect(channel('DS remote')).toHaveAttribute('aria-description', 'Not signed in')
     expect(channel('Tailscale')).toHaveAttribute('aria-description', 'Signed out')
     fireEvent.click(screen.getByRole('button', { name: 'Pairing form' }))
     expect(completed).toHaveBeenCalledOnce()
@@ -119,5 +119,13 @@ describe('ControllerSettings', () => {
     })
     render(<ControllerSettings />)
     expect(channel('DS remote')).toHaveAttribute('aria-description', '1 online')
+  })
+
+  it('offers DS remote in the mobile app without the Android tailnet channel', () => {
+    platform.mobile = true
+    platform.android = false
+    render(<ControllerSettings />)
+    expect(screen.queryByRole('button', { name: 'Tailscale' })).not.toBeInTheDocument()
+    expect(channel('DS remote')).toHaveAttribute('aria-description', 'Not signed in')
   })
 })

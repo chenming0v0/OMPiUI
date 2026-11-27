@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
 import { useTranslation } from 'react-i18next'
-import { ExternalLink, Loader2, ShieldCheck, TriangleAlert } from 'lucide-react'
+import { ExternalLink, Loader2, QrCode, ShieldCheck, TriangleAlert } from 'lucide-react'
 import { DSH_REMOTE_ORIGIN } from '@ompiui/protocol/dsh-remote'
 import { AuthAlert } from './AuthPanelUI'
 import { NextAction, PanelRow, PanelSplit, Step, Steps } from './ChannelBoard'
 import { Toggle } from './SettingsUI'
+import { DshHostPairingCard, DshHostPairingStart } from './DshHostPairingCard'
 import type { DshHost } from './useDshHost'
 
 const portal = `${DSH_REMOTE_ORIGIN}/app`
@@ -15,7 +16,7 @@ async function openSite(url: string) {
   await openUrl(url)
 }
 
-/** 被控端 → DS 远程：把这台电脑绑定到账号，再决定要不要放开远程访问。 */
+/** 被控端 → DS 远程：让手机扫码配对，或把这台电脑绑定到账号，再决定要不要放开远程访问。 */
 export function DshHostPanel({ host }: { host: DshHost }) {
   const { t } = useTranslation('settings')
   const { status, unreachable, unreadable, state, busy, failure, manage } = host
@@ -37,6 +38,7 @@ export function DshHostPanel({ host }: { host: DshHost }) {
   const lastError = status?.lastError
   const warning = status && (status.available || unreadable) && lastError && state !== 'unregistered' && state !== 'disabled'
     ? hostError(lastError.code, lastError.message) : ''
+  const pairing = status?.pairing
   const confirmThen = (action: 'revoke' | 'reset') => {
     if (!confirmRevoke) { setConfirmRevoke(true); return }
     void manage(action).then(done => { if (done) setConfirmRevoke(false) })
@@ -59,7 +61,9 @@ export function DshHostPanel({ host }: { host: DshHost }) {
       </NextAction>
     )
   } else if (!status.registered) {
-    body = (
+    body = <>
+      {pairing ? <DshHostPairingCard host={host} pairing={pairing} /> : <DshHostPairingStart host={host} />}
+      <p className="cb-or my-5">{t('host.dshPairOr')}</p>
       <Steps>
         <Step index={1} title={t('dshRemote.stepPortal')}>
           <p>{t('dshRemote.stepPortalDesc')}</p>
@@ -85,16 +89,25 @@ export function DshHostPanel({ host }: { host: DshHost }) {
           <p>{t('dshRemote.bindNote')}</p>
         </Step>
       </Steps>
-    )
+    </>
   } else {
     const online = state === 'online'
     body = <>
-      <NextAction tone={online ? 'ok' : warning ? 'warn' : 'idle'}
-        icon={state === 'connecting' ? <Loader2 size={18} className="animate-spin" /> : <ShieldCheck size={18} />}
-        title={t(online ? 'host.dshOnlineTitle' : state === 'connecting' ? 'dshRemote.hostConnectingDesc' : state === 'error' ? 'dshRemote.hostState.error' : 'host.dshOffTitle')}>
-        {warning || t('host.dshBody')}
-      </NextAction>
+      {pairing ? <DshHostPairingCard host={host} pairing={pairing} /> : (
+        <NextAction tone={online ? 'ok' : warning ? 'warn' : 'idle'}
+          icon={state === 'connecting' ? <Loader2 size={18} className="animate-spin" /> : <ShieldCheck size={18} />}
+          title={t(online ? 'host.dshOnlineTitle' : state === 'connecting' ? 'dshRemote.hostConnectingDesc' : state === 'error' ? 'dshRemote.hostState.error' : 'host.dshOffTitle')}>
+          {warning || t('host.dshBody')}
+        </NextAction>
+      )}
       <PanelSplit>
+        {!pairing && (
+          <PanelRow title={t('host.dshPairAdd')} hint={t('host.dshPairAddHint')}>
+            <button type="button" className="cb-btn" disabled={busy} onClick={() => void manage('pair')}>
+              <QrCode size={14} />{t('host.dshPairShow')}
+            </button>
+          </PanelRow>
+        )}
         <PanelRow title={t('host.dshAccess')} hint={t('host.dshAccessHint')} label={t('host.dshAccess')}>
           <Toggle enabled={status.enabled} disabled={busy} ariaLabel={t('host.dshAccess')}
             onChange={() => void manage(status.enabled ? 'disable' : 'enable')} />

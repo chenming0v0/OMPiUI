@@ -73,6 +73,7 @@ for (const reason of ['hostc-closed', 'check-failed', 'expired', 'explicit'] as 
       const peer = path.endsWith(host.deviceId) ? host : path.endsWith(client.deviceId) ? client : undefined
       if (peer) return Response.json({ role: peer === host ? 'host' : 'client', membershipId: 'test-membership', deviceId: peer.deviceId, identityKey: peer.identityKey })
       if (path.endsWith('/sessions')) {
+        assert.equal(JSON.parse(String(init?.body)).useServerLease, true)
         leaseExpiresAt = Date.now() + (reason === 'expired' ? 1_000 : 30_000)
         return Response.json({ sessionId: 'tabcdefghjkm', url, connectUrl: 'wss://tun.4ba.io/api/tunnels/tabcdefghjkm/connect', connectToken: 'b'.repeat(43), leaseExpiresAt })
       }

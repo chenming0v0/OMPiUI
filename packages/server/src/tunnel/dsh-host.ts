@@ -9,6 +9,8 @@ const TUNNEL_DOMAIN = /^(?:hostc|tun|hostc-test|tun-test)\.4ba\.io$/
 const TUNNEL_ID = /^[tp][abcdefghijkmnpqrstuvwxyz23456789]{11}$/
 const GRANT = /^[A-Za-z0-9_-]{43}$/
 const LEASE_MS = 9 * 60_000
+// 服务器自己定时长时最多给到两小时；不认这个选项的旧服务器仍按九分钟算。
+const MAX_LEASE_MS = 120 * 60_000
 const CHECK_MS = 15_000
 
 const dshHostDefaults = { openHostc: openDshHostc, checkMs: CHECK_MS }
@@ -28,7 +30,8 @@ class WebLease {
 
   async open(clientDeviceId: string, connectionId: string, parent: AbortSignal): Promise<DshBrowserGrant> {
     const signal = AbortSignal.any([this.stop.signal, parent, AbortSignal.timeout(21_000)])
-    const request = { clientDeviceId, connectionId, requestId: randomUUID(), leaseExpiresAt: Date.now() + LEASE_MS }
+    const startedAt = Date.now()
+    const request = { clientDeviceId, connectionId, requestId: randomUUID(), leaseExpiresAt: startedAt + LEASE_MS }
     this.request = request
     try {
       const data = await this.call('', signal) as {
@@ -38,7 +41,7 @@ class WebLease {
       this.sessionId = data.sessionId
       if (typeof data.url !== 'string' || typeof data.connectUrl !== 'string' || typeof data.connectToken !== 'string'
         || !GRANT.test(data.connectToken) || typeof data.leaseExpiresAt !== 'number' || !Number.isSafeInteger(data.leaseExpiresAt)
-        || data.leaseExpiresAt <= Date.now() || data.leaseExpiresAt > request.leaseExpiresAt) throw new Error('Invalid DS Harness Remote allocation')
+        || data.leaseExpiresAt <= Date.now() || data.leaseExpiresAt > startedAt + MAX_LEASE_MS) throw new Error('Invalid DS Harness Remote allocation')
       const browserUrl = new URL(data.url)
       const connect = new URL(data.connectUrl)
       if (!TUNNEL_DOMAIN.test(connect.hostname) || browserUrl.href !== `https://${data.sessionId}.${connect.hostname}/`
@@ -64,7 +67,10 @@ class WebLease {
 
   private async call(suffix: string, signal: AbortSignal): Promise<unknown> {
     return this.account.deviceRequest(`${this.path}${suffix}`, {
-      method: 'POST', body: JSON.stringify({ ...this.request, ...(suffix === '/check' ? { sessionId: this.sessionId } : {}) }), signal,
+      method: 'POST', body: JSON.stringify({
+        ...this.request,
+        ...(suffix === '' ? { useServerLease: true } : suffix === '/check' ? { sessionId: this.sessionId } : {}),
+      }), signal,
     })
   }
 

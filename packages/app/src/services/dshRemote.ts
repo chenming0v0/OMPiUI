@@ -1,9 +1,13 @@
 import {
-  DSH_CONTROL_LIMIT, DSH_RELAY_CAPABILITY, DSH_RELAY_LIMIT, DSH_REMOTE_ORIGIN,
-  DSH_WEB_LEASE_ENDED, DshNoise, createDshIdentity, decodeDshBase64, dshControlFailure, dshFrame, dshId, dshRecord, isDshExpiry, isDshToken, isDshWebLeaseEnd,
-  parseDshBrowserGrant, parseDshDeviceTokens, parseDshFrame, requireDshOmpiuiWeb, selectDshHosts,
-  type DshBrowserGrant, type DshDeviceTokens, type DshFrame, type DshHostListItem, type DshIdentity, type DshWebLeaseEnd,
+  DSH_CONTROL_LIMIT, DSH_PAIRING_ROOT, DSH_RELAY_CAPABILITY, DSH_RELAY_LIMIT, DSH_REMOTE_ORIGIN,
+  DSH_WEB_LEASE_ENDED, DshNoise, createDshIdentity, decodeDshBase64, dshControlFailure, dshFrame, dshId, dshPairingFingerprint, dshPairingProof,
+  dshRecord, isDshExpiry, isDshToken, isDshWebLeaseEnd,
+  parseDshBrowserGrant, parseDshDeviceTokens, parseDshFrame, parseDshPairingScan, parseDshPairingSession, parseDshPairingStatus,
+  requireDshOmpiuiWeb, selectDshHosts,
+  type DshBrowserGrant, type DshDeviceTokens, type DshFrame, type DshHostListItem, type DshIdentity, type DshPairingSession,
+  type DshPairingState, type DshWebLeaseEnd,
 } from '@ompiui/protocol/dsh-remote'
+import { DSH_PAIRED_KEY } from '../store/dshControllerStore'
 import { getDesktopPlatform, getHttpFetch, isTauriMobile } from '../utils/tauri'
 
 export interface DshLoginProvider { id: string; label: string; start: string }
@@ -106,7 +110,7 @@ export async function pollDshLogin(id: string, signal: AbortSignal): Promise<'pe
   if (value?.status === 'pending' || value?.status === 'expired') return value.status
   if (value?.status !== 'complete' || !isDshToken(value.token)) throw new Error('Invalid DSH login response')
   const identity = createDshIdentity()
-  const platform = isTauriMobile() ? (/Android/i.test(navigator.userAgent) ? 'android' : 'ios') : getDesktopPlatform()
+  const platform = devicePlatform()
   const result = await dshRequest('/api/v1/devices/register', {
     method: 'POST', headers: { authorization: `Bearer ${value.token}` },
     body: JSON.stringify({ v: 1, device: {
@@ -117,16 +121,151 @@ export async function pollDshLogin(id: string, signal: AbortSignal): Promise<'pe
   return new DshAppSession(identity, parseDshDeviceTokens(result))
 }
 
+function devicePlatform(): string {
+  return isTauriMobile() ? (/Android/i.test(navigator.userAgent) ? 'android' : 'ios') : getDesktopPlatform()
+}
+
+// ============================================
+// 扫码配对：手机扫电脑上的二维码，显示 8 位验证码，等人在电脑上输入。
+// 配对拿到的是这台手机自己的设备授权，不经过账号登录，所以要存下来，否则每次重开 App 都得回电脑前重新配对。
+// ============================================
+
+const PAIRED_KEY = DSH_PAIRED_KEY
+
+function pairedStore(identity: DshIdentity): (tokens: DshDeviceTokens | null) => void {
+  return tokens => {
+    try {
+      if (tokens) localStorage.setItem(PAIRED_KEY, JSON.stringify({ identity, tokens }))
+      else localStorage.removeItem(PAIRED_KEY)
+    } catch { /* 存不下来时这次配对仍然可用，只是重开 App 后要重新配对。 */ }
+  }
+}
+
+/** 上次扫码配对留下的会话；没有或已经过期时返回 null。 */
+export function restoreDshPairedSession(): DshAppSession | null {
+  try {
+    const saved = dshRecord(JSON.parse(localStorage.getItem(PAIRED_KEY) ?? 'null'))
+    const stored = dshRecord(saved?.identity)
+    if (!stored) return null
+    const identity: DshIdentity = {
+      deviceId: dshId(stored.deviceId),
+      identityKey: typeof stored.identityKey === 'string' ? stored.identityKey : '',
+      privateKey: typeof stored.privateKey === 'string' ? stored.privateKey : '',
+    }
+    const tokens = parseDshDeviceTokens(saved?.tokens)
+    if (decodeDshBase64(identity.identityKey, 32).length !== 32 || decodeDshBase64(identity.privateKey, 32).length !== 32
+      || tokens.refreshTokenExpiresAt <= Date.now()) throw new Error('Unusable DSH pairing')
+    return new DshAppSession(identity, tokens, pairedStore(identity))
+  } catch {
+    try { localStorage.removeItem(PAIRED_KEY) } catch { /* ignore */ }
+    return null
+  }
+}
+
+/**
+ * 手机扫到的二维码属于哪台电脑。这一步只读取，不登记任何东西，也不消耗二维码。
+ * 已经配对过的手机再配一台电脑时带上 existing：沿用同一个设备身份，新电脑才会和原来的电脑归到一起。
+ */
+export async function resolveDshPairing(text: string, signal: AbortSignal,
+  existing?: { identity: DshIdentity; session: DshAppSession }): Promise<DshPhonePairing> {
+  let scan: ReturnType<typeof parseDshPairingScan>
+  try { scan = parseDshPairingScan(text) } catch { throw new DshApiError('PAIRING_SCAN_INVALID', 0) }
+  let session: DshPairingSession
+  if ('session' in scan) session = scan.session
+  else {
+    const value = await dshRequest('/api/v1/device-pairing/resolve', { method: 'POST', body: JSON.stringify({ ticket: scan.ticket }) }, signal)
+    try { session = parseDshPairingSession(value, scan.ticket) } catch { throw new DshApiError('PAIRING_SCAN_INVALID', 0) }
+  }
+  if (session.expiresAt <= Date.now()) throw new DshApiError('PAIRING_NOT_FOUND', 404)
+  return new DshPhonePairing(session, existing)
+}
+
+export class DshPhonePairing {
+  readonly session: DshPairingSession
+  private readonly identity: DshIdentity
+  private readonly existing?: DshAppSession
+  private claimBody?: string
+  private ended = false
+
+  constructor(session: DshPairingSession, existing?: { identity: DshIdentity; session: DshAppSession }) {
+    this.session = session
+    this.identity = existing?.identity ?? createDshIdentity()
+    this.existing = existing?.session
+  }
+
+  get computer(): { name: string; fingerprint: string } {
+    return { name: this.session.host.name.slice(0, 64), fingerprint: dshPairingFingerprint(this.session.host.identityKey) }
+  }
+
+  /** 用户确认是这台电脑之后才调用：领取要在电脑上输入的 8 位验证码。 */
+  async claim(signal: AbortSignal): Promise<string> {
+    // 请求原文只生成一次：回复丢了就原样重发，拿回的还是同一个验证码。
+    this.claimBody ??= JSON.stringify({
+      scanSecret: this.session.scanSecret,
+      device: {
+        deviceId: this.identity.deviceId, name: `OMPiUI (${devicePlatform()})`, role: 'client', platform: devicePlatform(),
+        identityKey: this.identity.identityKey, clientVersion: __APP_VERSION__,
+      },
+    })
+    const value = dshRecord(await this.post('claim', this.claimBody, signal))
+    if (value?.state !== 'claimed' || typeof value.verificationCode !== 'string' || !/^\d{8}$/.test(value.verificationCode)) {
+      throw new Error('Invalid DSH pairing claim')
+    }
+    return value.verificationCode
+  }
+
+  /** 电脑那边输入验证码之后，这里会拿到这台手机自己的会话。 */
+  async poll(signal: AbortSignal): Promise<{ state: DshPairingState; failureReason: string | null; paired?: DshAppSession }> {
+    const value = await this.post('mobile/status', '{}', signal)
+    let status: ReturnType<typeof parseDshPairingStatus>
+    // 回复里的电脑或手机对不上，就不是我们确认过的那次配对了：直接作废。
+    try { status = parseDshPairingStatus(value, this.session, 'mobile', this.identity) } catch { throw new DshApiError('PAIRING_MISMATCH', 0) }
+    this.ended = status.state !== 'claimed' && status.state !== 'approved'
+    if (status.state !== 'completed' || !status.tokens) return { state: status.state, failureReason: status.failureReason }
+    // 再配一台电脑时手机的身份和授权都没变，原来的会话接着用。
+    if (this.existing) return { state: status.state, failureReason: null, paired: this.existing }
+    const store = pairedStore(this.identity)
+    store(status.tokens)
+    return { state: status.state, failureReason: null, paired: new DshAppSession(this.identity, status.tokens, store) }
+  }
+
+  /** 尽力告诉电脑这次配对不继续了。 */
+  async cancel(): Promise<void> {
+    if (!this.claimBody || this.ended) return
+    this.ended = true
+    await this.post('mobile/cancel', '{}', AbortSignal.timeout(5_000)).catch(() => undefined)
+  }
+
+  private post(action: string, raw: string, signal: AbortSignal): Promise<unknown> {
+    const path = `${DSH_PAIRING_ROOT}/${this.session.sessionId}/${action}`
+    return dshRequest(path, {
+      method: 'POST', body: raw,
+      headers: { 'x-dsh-pairing-proof': dshPairingProof(this.identity.privateKey, this.session.serverPublicKey, this.session.sessionId, 'mobile', path, raw) },
+    }, signal)
+  }
+}
+
 export class DshAppSession {
   private refreshing?: Promise<DshDeviceTokens>
   private readonly pinnedPeers = new Map<string, string>()
   private readonly lifetime = new AbortController()
   private readonly identity: DshIdentity
   private tokens: DshDeviceTokens
+  /** 扫码配对的会话要把换新的授权存下来；账号登录的会话只留在内存里。 */
+  private readonly store?: (tokens: DshDeviceTokens | null) => void
 
-  constructor(identity: DshIdentity, tokens: DshDeviceTokens) {
+  constructor(identity: DshIdentity, tokens: DshDeviceTokens, store?: (tokens: DshDeviceTokens | null) => void) {
     this.identity = identity
     this.tokens = tokens
+    this.store = store
+  }
+
+  /** 是不是扫码配对来的：没有账号可退出，只能取消配对。 */
+  get paired(): boolean { return this.store !== undefined }
+
+  /** 已经配对过的手机再扫一台电脑。 */
+  pairAnother(text: string, signal: AbortSignal): Promise<DshPhonePairing> {
+    return resolveDshPairing(text, signal, { identity: this.identity, session: this })
   }
 
   async listHosts(signal: AbortSignal, localHostId?: string | null): Promise<DshHostListItem[]> {
@@ -291,6 +430,7 @@ export class DshAppSession {
   }
 
   invalidate(): void {
+    this.store?.(null)
     this.lifetime.abort()
     this.tokens = { accessToken: '', accessTokenExpiresAt: 0, refreshToken: '', refreshTokenExpiresAt: 0 }
     this.pinnedPeers.clear()
@@ -350,6 +490,7 @@ export class DshAppSession {
         }, this.lifetime.signal))
         this.lifetime.signal.throwIfAborted()
         if (tokens.accessTokenExpiresAt <= Date.now()) throw controllerAuthError('AUTH_INVALID')
+        this.store?.(tokens)
         return this.tokens = tokens
       } catch (error) {
         if (error instanceof DshApiError) {
