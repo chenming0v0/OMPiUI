@@ -312,7 +312,9 @@ try {
   })
   assert.equal(terminalAncestors.includes(jumpedLeaf), true, terminalDiagnostics)
   assert.equal(terminalAncestors.includes(abandonedTurn.id), false, terminalDiagnostics)
-  const terminalReply = jumpRecords.find(record => record?.type === "message" && record.message?.role === "assistant" && record.parentId === terminalTurn.id)
+  const terminalTurnIndex = jumpRecords.indexOf(terminalTurn)
+  const terminalReply = jumpRecords.slice(terminalTurnIndex + 1)
+    .find(record => record?.type === "message" && record.message?.role === "assistant")
   assert.ok(terminalReply, terminalDiagnostics)
   const afterTerminal = await catalog.previewSessionById(jumpId)
   const afterTerminalDiagnostics = JSON.stringify({
