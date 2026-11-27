@@ -294,7 +294,7 @@ export class DshAppSession {
     return [...hosts.values()]
   }
 
-  async connect(hostId: string, caller: AbortSignal, attemptId = crypto.randomUUID()): Promise<DshAppConnection> {
+  async connect(hostId: string, caller: AbortSignal, attemptId: string = crypto.randomUUID()): Promise<DshAppConnection> {
     dshId(hostId)
     const signal = AbortSignal.any([this.lifetime.signal, caller])
     const handshake = AbortSignal.any([signal, AbortSignal.timeout(40_000)])
@@ -561,12 +561,12 @@ class BrowserDshControl {
   private wake?: () => void
   private idleTimer?: ReturnType<typeof setTimeout>
 
-  constructor(signal: AbortSignal, private readonly attemptId: string) {
+  constructor(signal: AbortSignal, attemptId: string) {
     const abort = () => this.close()
     signal.addEventListener('abort', abort, { once: true })
     this.socket.addEventListener('close', event => {
       this.closeInfo = { code: event.code, reason: event.reason }
-      recordDshDiagnostic('connect.socket.closed', { attemptId: this.attemptId, closeCode: event.code })
+      recordDshDiagnostic('connect.socket.closed', { attemptId, closeCode: event.code })
       clearTimeout(this.idleTimer)
       signal.removeEventListener('abort', abort)
       this.ended.abort()
