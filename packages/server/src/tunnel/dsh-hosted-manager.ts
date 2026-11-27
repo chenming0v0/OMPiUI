@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import { link, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
+import { diagnostics } from '../diagnostics/recorder.ts'
 import { DshRemoteAccount } from './dsh-remote-account.ts'
 import { runDshHost } from './dsh-host.ts'
 import { DshHostPairing, type DshHostPairingView } from './dsh-host-pairing.ts'
@@ -251,17 +252,24 @@ export class DshHostedManager {
     this.stop = stop
     this.task = (async () => {
       while (!signal.aborted) {
+        const attemptStartedAt = Date.now()
+        diagnostics.record('dsh.host.connection.attempt')
         try {
           if (!(await this.account.status()).registered) return
           signal.throwIfAborted()
           await this.run(this.account, port, signal, this.origins, () => {
             this.online = true
             this.lastError = null
+            diagnostics.record('dsh.host.online', { durationMs: Date.now() - attemptStartedAt })
             console.info('[ompiui-dsh] DS Harness Remote host online')
           })
+          if (!signal.aborted) diagnostics.record('dsh.host.connection.ended', { durationMs: Date.now() - attemptStartedAt }, 'warn')
         } catch (error) {
           if (signal.aborted) break
           const failure = dshHostFailure(error)
+          diagnostics.record('dsh.host.connection.failed', {
+            durationMs: Date.now() - attemptStartedAt, errorCode: failure.code,
+          }, 'warn')
           if (isTerminalDshHostFailure(failure)) {
             // Persisted enabled=true would retry the same dead authorization after every restart.
             this.enabled = false
