@@ -290,17 +290,36 @@ try {
   const terminalTurn = jumpRecords.filter(record => record?.type === "message" && record.message?.role === "user" &&
     JSON.stringify(record.message.content).includes("Official terminal writes after plain jump")).at(-1)
   assert.ok(terminalTurn, JSON.stringify({ jumpId, jumpFile, tail: jumpRecords.slice(-6) }))
-  assert.equal(terminalTurn.parentId, jumpedLeaf, JSON.stringify({
-    message: "official terminal resumed a different leaf than the cold preview",
-    jumpId, jumpFile, expectedLeaf: jumpedLeaf, actualLeaf: terminalTurn.parentId,
+  // 原生把 session_exit 本身当作 tip，官方终端恢复后新消息会挂在退出记录下。
+  // 内容分支必须仍是我们选中的 leaf，且不包含被撤销的轮次。
+  const recordsById = new Map(jumpRecords.filter(Boolean).map(record => [record.id, record]))
+  const ancestorIds = record => {
+    const ids = []
+    const seen = new Set()
+    let cursor = record?.parentId
+    while (typeof cursor === "string" && !seen.has(cursor)) {
+      seen.add(cursor)
+      ids.push(cursor)
+      cursor = recordsById.get(cursor)?.parentId
+    }
+    return ids
+  }
+  const terminalAncestors = ancestorIds(terminalTurn)
+  const terminalDiagnostics = JSON.stringify({
+    message: "official terminal resumed a different branch than the cold preview",
+    jumpId, jumpFile, expectedLeaf: jumpedLeaf, actualAncestors: terminalAncestors,
     tail: jumpRecords.slice(-6),
-  }))
+  })
+  assert.equal(terminalAncestors.includes(jumpedLeaf), true, terminalDiagnostics)
+  assert.equal(terminalAncestors.includes(abandonedTurn.id), false, terminalDiagnostics)
+  const terminalReply = jumpRecords.find(record => record?.type === "message" && record.message?.role === "assistant" && record.parentId === terminalTurn.id)
+  assert.ok(terminalReply, terminalDiagnostics)
   const afterTerminal = await catalog.previewSessionById(jumpId)
   const afterTerminalDiagnostics = JSON.stringify({
-    jumpId, jumpFile, expectedLeaf: terminalTurn.id, actualLeaf: afterTerminal?.state?.head?.leafId,
+    jumpId, jumpFile, expectedLeaf: terminalReply.id, actualLeaf: afterTerminal?.state?.head?.leafId,
     branch: afterTerminal?.branch?.items?.map(entry => entry.id),
   })
-  assert.equal(afterTerminal?.state?.head?.leafId, terminalTurn.id, afterTerminalDiagnostics)
+  assert.equal(afterTerminal?.state?.head?.leafId, terminalReply.id, afterTerminalDiagnostics)
   assert.equal(afterTerminal.branch.items.some(entry => entry.id === abandonedTurn.id), false, afterTerminalDiagnostics)
 
   // 覆盖跳到 root：退出记录接在 root leaf 上，冷预览不能重新展开后续分支。
