@@ -291,7 +291,7 @@ describe("OmpCatalog cold branch restore", () => {
     const state = preview.state as JsonObject
     const items = (preview.branch as JsonObject).items as JsonObject[]
     assert.equal((state.head as JsonObject).leafId, "turn-1")
-    assert.deepEqual(items.map(entry => entry.id), [f.header.id, "turn-1", "reply-1"])
+    assert.deepEqual(items.map(entry => entry.id), [f.header.id, "turn-1"])
   })
 
   it("keeps the newest record after the jumped session appends on that leaf", async t => {

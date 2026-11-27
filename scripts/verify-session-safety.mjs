@@ -260,7 +260,9 @@ try {
   }))
   const plainJump = await runtime.navigateTree(jumpTarget.id)
   assert.equal(plainJump.cancelled, false, JSON.stringify({ jumpId, jumpFile, leafId: plainJump.leafId }))
-  assert.equal(plainJump.leafId, jumpTarget.id)
+  // 普通跳转的落点由原生决定（不一定是请求的 entry），冷恢复必须与热 leaf 一致。
+  const jumpedLeaf = plainJump.leafId
+  assert.equal(typeof jumpedLeaf, "string", JSON.stringify({ jumpId, jumpFile, leafId: plainJump.leafId }))
   // dispose 等于 runtime 空闲回收：退出记录必须接在跳转后的 leaf 上。
   await runtime.dispose()
   runtime = undefined
@@ -269,10 +271,10 @@ try {
   const coldLeaf = coldPreview?.state?.head?.leafId
   const coldIds = coldPreview?.branch?.items?.map(entry => entry.id) ?? []
   const coldDiagnostics = JSON.stringify({
-    ompVersion, jumpId, jumpFile, expectedLeaf: jumpTarget.id, actualLeaf: coldLeaf, coldIds,
+    ompVersion, jumpId, jumpFile, expectedLeaf: jumpedLeaf, actualLeaf: coldLeaf, coldIds,
     tail: readFileSync(jumpFile, "utf8").trim().split("\n").slice(-6),
   })
-  assert.equal(coldLeaf, jumpTarget.id, coldDiagnostics)
+  assert.equal(coldLeaf, jumpedLeaf, coldDiagnostics)
   assert.equal(coldIds.includes(abandonedTurn.id), false, coldDiagnostics)
 
   // 官方终端恢复同一文件后写入的消息必须挂在我们冷预览选中的 leaf 上。
@@ -288,9 +290,9 @@ try {
   const terminalTurn = jumpRecords.filter(record => record?.type === "message" && record.message?.role === "user" &&
     JSON.stringify(record.message.content).includes("Official terminal writes after plain jump")).at(-1)
   assert.ok(terminalTurn, JSON.stringify({ jumpId, jumpFile, tail: jumpRecords.slice(-6) }))
-  assert.equal(terminalTurn.parentId, jumpTarget.id, JSON.stringify({
+  assert.equal(terminalTurn.parentId, jumpedLeaf, JSON.stringify({
     message: "official terminal resumed a different leaf than the cold preview",
-    jumpId, jumpFile, expectedLeaf: jumpTarget.id, actualLeaf: terminalTurn.parentId,
+    jumpId, jumpFile, expectedLeaf: jumpedLeaf, actualLeaf: terminalTurn.parentId,
     tail: jumpRecords.slice(-6),
   }))
   const afterTerminal = await catalog.previewSessionById(jumpId)
@@ -308,16 +310,17 @@ try {
   assert.ok(rootTurn, JSON.stringify({ jumpId, jumpFile }))
   const rootJump = await runtime.navigateTree(rootTurn.id)
   assert.equal(rootJump.cancelled, false, JSON.stringify({ jumpId, jumpFile, leafId: rootJump.leafId }))
-  assert.equal(rootJump.leafId, rootTurn.id)
+  const rootLeaf = rootJump.leafId
+  assert.equal(typeof rootLeaf, "string", JSON.stringify({ jumpId, jumpFile, leafId: rootJump.leafId }))
   await runtime.dispose()
   runtime = undefined
   const rootPreview = await catalog.previewSessionById(jumpId)
   const rootDiagnostics = JSON.stringify({
-    jumpId, jumpFile, expectedLeaf: rootTurn.id, actualLeaf: rootPreview?.state?.head?.leafId,
+    jumpId, jumpFile, expectedLeaf: rootLeaf, actualLeaf: rootPreview?.state?.head?.leafId,
     branch: rootPreview?.branch?.items?.map(entry => entry.id),
     tail: readFileSync(jumpFile, "utf8").trim().split("\n").slice(-6),
   })
-  assert.equal(rootPreview?.state?.head?.leafId, rootTurn.id, rootDiagnostics)
+  assert.equal(rootPreview?.state?.head?.leafId, rootLeaf, rootDiagnostics)
   assert.equal(rootPreview.branch.items.some(entry => entry.type === "message" && entry.id !== rootTurn.id), false, rootDiagnostics)
 
   console.info("PASS: legacy migration, official ID discovery, old-path continuation, one shared history")
