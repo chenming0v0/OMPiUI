@@ -203,7 +203,8 @@
       "DSH_AUTH_INVALID": "This controller authorization is no longer valid. Sign in again.",
       "DSH_DEVICE_REVOKED": "This controller device was revoked. Sign in again.",
       "default": "Could not open that computer. Check that remote access is enabled, the computer is online, and both use the same account.",
-      "HOST_OFFLINE": "That computer is offline.",
+      "HOST_OFFLINE": "The remote service reports that computer as offline.",
+      "DSH_UNREACHABLE": "This device could not reach DS Remote. That does not necessarily mean the computer is offline. Check the network and retry; export connection diagnostics if it persists.",
       "HOST_BUSY": "That computer already has a remote connection elsewhere.",
       "HOST_UNAUTHORIZED": "That computer did not authorize this device. Check that both use the same account.",
       "PROTOCOL": "The two sides do not match. Update OMPiUI on both.",
@@ -243,7 +244,10 @@
       "scanPermissionDenied": "No camera permission. Allow OMPiUI to use the camera in system settings.",
       "scanFailed": "Could not open the camera. Try again."
     },
-    "pairAnother": "Pair another computer"
+    "pairAnother": "Pair another computer",
+    "diagnosticsTitle": "Connection diagnostics",
+    "diagnosticsHint": "Keeps the latest 500 events for this app run. Excludes computer names, device IDs, credentials, and session content.",
+    "exportDiagnostics": "Export connection log"
   },
   "closeSettings": "Close settings",
   "version": "OMPiUI v{{version}}",

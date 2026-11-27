@@ -203,7 +203,8 @@
       "DSH_AUTH_INVALID": "控制端授权已失效，请重新登录。",
       "DSH_DEVICE_REVOKED": "控制端设备已被撤销，请重新登录。",
       "default": "无法打开那台电脑，请确认它已开启被控端、在线且账号一致。",
-      "HOST_OFFLINE": "那台电脑当前离线。",
+      "HOST_OFFLINE": "远程服务确认那台电脑离线。",
+      "DSH_UNREACHABLE": "手机无法连上 DS 远程服务；这不一定表示电脑离线。请检查网络后重试，仍失败时导出连接日志。",
       "HOST_BUSY": "那台电脑已经在别处建立了远程连接。",
       "HOST_UNAUTHORIZED": "那台电脑没有授权这台设备，请确认两边登录的是同一账号。",
       "PROTOCOL": "两端版本或能力不匹配，请更新 OMPiUI。",
@@ -244,7 +245,10 @@
       "scanPermissionDenied": "没有相机权限，请在系统设置里允许 OMPiUI 使用相机。",
       "scanFailed": "相机打不开，请重试。"
     },
-    "pairAnother": "再配一台电脑"
+    "pairAnother": "再配一台电脑",
+    "diagnosticsTitle": "连接诊断",
+    "diagnosticsHint": "只保留本次 App 启动以来最近 500 条，不含电脑名称、设备 ID、凭据或会话内容。",
+    "exportDiagnostics": "导出连接日志"
   },
   "closeSettings": "关闭设置",
   "version": "OMPiUI v{{version}}",

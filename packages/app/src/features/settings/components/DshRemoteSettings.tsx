@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type React from 'react'
 import { useTranslation } from 'react-i18next'
-import { ChevronRight, ExternalLink, Loader2, LogOut, Monitor, RefreshCw, ScanLine } from 'lucide-react'
+import { ChevronRight, Download, ExternalLink, Loader2, LogOut, Monitor, RefreshCw, ScanLine } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import {
   DshApiError, beginDshLogin, isDshControllerAuthFailure, listDshLoginProviders, pollDshLogin, resolveDshPairing, restoreDshPairedSession,
@@ -14,6 +14,8 @@ import { QrCode } from '../../../components/QrCode'
 import { DeepSeekIcon } from '../../../components/Icons'
 import { serviceStore } from '../../../store/serviceStore'
 import { dshControllerStore, useDshController } from '../../../store/dshControllerStore'
+import { exportDshDiagnostics, recordDshDiagnostic } from '../../../services/dshConnectionDiagnostics'
+import { saveData } from '../../../utils/downloadUtils'
 import { AuthAlert } from './AuthPanelUI'
 import { Lamp, NextAction, PanelRow, PanelSplit } from './ChannelBoard'
 
@@ -83,9 +85,36 @@ function handleControllerFailure(session: DshAppSession, failure: unknown): bool
 }
 
 async function loadControllerHosts(session: DshAppSession, signal: AbortSignal) {
-  const local = isTauriMobile() ? null : await invoke<string | null>('dsh_remote_local_host_id', { envVars: serviceStore.envVarsRecord })
-  signal.throwIfAborted()
-  return session.listHosts(signal, local)
+  const attemptId = crypto.randomUUID()
+  const startedAt = Date.now()
+  recordDshDiagnostic('host_list.request', { attemptId })
+  try {
+    const local = isTauriMobile() ? null : await invoke<string | null>('dsh_remote_local_host_id', { envVars: serviceStore.envVarsRecord })
+    signal.throwIfAborted()
+    const hosts = await session.listHosts(signal, local)
+    recordDshDiagnostic('host_list.success', {
+      attemptId, durationMs: Date.now() - startedAt, hostCount: hosts.length,
+      onlineCount: hosts.filter(host => host.online === true).length,
+      offlineCount: hosts.filter(host => host.online === false).length,
+      unknownCount: hosts.filter(host => host.online === undefined).length,
+    })
+    return hosts
+  } catch (error) {
+    recordDshDiagnostic('host_list.failure', {
+      attemptId, durationMs: Date.now() - startedAt,
+      status: error instanceof DshApiError ? error.status : undefined,
+      code: diagnosticCodeForUi(error),
+    })
+    throw error
+  }
+}
+
+function diagnosticCodeForUi(error: unknown): string | undefined {
+  if (error instanceof DshApiError) return error.code
+  if (error instanceof DOMException && error.name === 'AbortError') return 'REQUEST_ABORTED'
+  if (error instanceof DOMException && error.name === 'TimeoutError') return 'TIMEOUT'
+  if (error instanceof TypeError) return 'TypeError'
+  return error instanceof Error ? 'Error' : undefined
 }
 
 /**
@@ -96,10 +125,12 @@ async function openHost(session: DshAppSession, hostId: string, labels: { title:
   const active = beginBrowserAttempt()
   if (!active) return null
   dshControllerStore.update({ browser: { hostId, phase: 'opening' } })
+  const startedAt = Date.now()
+  recordDshDiagnostic('connect.start', { attemptId: active.id })
   try {
     await releasingBrowser
     active.stop.signal.throwIfAborted()
-    const connection = await session.connect(hostId, active.stop.signal)
+    const connection = await session.connect(hostId, active.stop.signal, active.id)
     if (browserAttempt !== active) { await connection.close(); return null }
     active.connection = connection
     void connection.closed.then(({ error }) => {
@@ -119,7 +150,12 @@ async function openHost(session: DshAppSession, hostId: string, labels: { title:
     }
     return null
   } catch (failure) {
-    if (browserAttempt !== active || handleControllerFailure(session, failure)) return null
+    if (browserAttempt !== active) return null
+    recordDshDiagnostic('connect.failure', {
+      attemptId: active.id, durationMs: Date.now() - startedAt,
+      code: diagnosticCodeForUi(failure), status: failure instanceof DshApiError ? failure.status : undefined,
+    })
+    if (handleControllerFailure(session, failure)) return null
     void disconnectBrowser()
     return (failure as { code?: string })?.code ?? ''
   }
@@ -468,6 +504,16 @@ export function DshRemoteConnectSettings({ onOpenServers }: { onOpenServers?: ()
     <div data-testid="dsh-remote-client" className="min-w-0">
       {alert && <div className="mb-4"><AuthAlert>{alert}</AuthAlert></div>}
       {body}
+      <PanelSplit>
+        <PanelRow title={t('dshRemote.diagnosticsTitle')} hint={t('dshRemote.diagnosticsHint')}>
+          <button type="button" className="cb-btn" onClick={() => {
+            const stamp = new Date().toISOString().replaceAll(':', '-')
+            saveData(new TextEncoder().encode(exportDshDiagnostics()), `ompiui-dsh-connection-${stamp}.txt`, 'text/plain')
+          }}>
+            <Download size={14} />{t('dshRemote.exportDiagnostics')}
+          </button>
+        </PanelRow>
+      </PanelSplit>
     </div>
   )
 }

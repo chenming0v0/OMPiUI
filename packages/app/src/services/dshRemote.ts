@@ -8,6 +8,7 @@ import {
   type DshPairingState, type DshWebLeaseEnd,
 } from '@ompiui/protocol/dsh-remote'
 import { DSH_PAIRED_KEY } from '../store/dshControllerStore'
+import { recordDshDiagnostic } from './dshConnectionDiagnostics'
 import { getDesktopPlatform, getHttpFetch, isTauriMobile } from '../utils/tauri'
 
 export interface DshLoginProvider { id: string; label: string; start: string }
@@ -35,6 +36,14 @@ export function isDshControllerAuthFailure(error: unknown): error is DshApiError
 
 function controllerAuthError(code: 'AUTH_INVALID' | 'DEVICE_REVOKED'): DshApiError {
   return new DshApiError(`DSH_${code}`, 401, 'Sign in to DS Harness Remote again')
+}
+
+function diagnosticCode(error: unknown): string | undefined {
+  if (error instanceof DshApiError) return error.code
+  if (error instanceof DOMException && error.name === 'AbortError') return 'REQUEST_ABORTED'
+  if (error instanceof DOMException && error.name === 'TimeoutError') return 'TIMEOUT'
+  if (error instanceof TypeError) return 'TypeError'
+  return error instanceof Error ? 'Error' : undefined
 }
 
 function rethrowHostLookup(error: unknown): never {
@@ -285,14 +294,24 @@ export class DshAppSession {
     return [...hosts.values()]
   }
 
-  async connect(hostId: string, caller: AbortSignal): Promise<DshAppConnection> {
+  async connect(hostId: string, caller: AbortSignal, attemptId = crypto.randomUUID()): Promise<DshAppConnection> {
     dshId(hostId)
     const signal = AbortSignal.any([this.lifetime.signal, caller])
     const handshake = AbortSignal.any([signal, AbortSignal.timeout(40_000)])
+    const lookupStarted = Date.now()
+    recordDshDiagnostic('connect.device_lookup.start', { attemptId })
     let value: Record<string, unknown> | undefined
     try {
       value = dshRecord(await this.request(`/api/v1/devices/${encodeURIComponent(hostId)}`, {}, handshake))
-    } catch (error) { rethrowHostLookup(error) }
+      recordDshDiagnostic('connect.device_lookup.success', { attemptId, durationMs: Date.now() - lookupStarted })
+    } catch (error) {
+      recordDshDiagnostic('connect.device_lookup.failure', {
+        attemptId, durationMs: Date.now() - lookupStarted,
+        status: error instanceof DshApiError ? error.status : undefined,
+        code: diagnosticCode(error),
+      })
+      rethrowHostLookup(error)
+    }
     if (value?.role !== 'host' || value.deviceId !== hostId || typeof value.identityKey !== 'string'
       || decodeDshBase64(value.identityKey, 32).length !== 32 || typeof value.membershipId !== 'string' || !value.membershipId) {
       throw new DshApiError('HOST_UNAUTHORIZED', 403, 'DS Harness Remote did not authorize the selected host')
@@ -300,19 +319,23 @@ export class DshAppSession {
     const pinned = this.pinnedPeers.get(hostId)
     if (pinned && pinned !== value.identityKey) throw new DshApiError('HOST_UNAUTHORIZED', 403, 'The DS Harness Remote host identity changed')
     this.pinnedPeers.set(hostId, value.identityKey)
-    const { wire, tokens, refreshed } = await this.openControl(signal, handshake)
+    const { wire, tokens, refreshed } = await this.openControl(signal, handshake, attemptId)
     let channel: DshNoise | undefined
     let stage: 'handshake' | 'lease' = 'handshake'
     const closeWire = () => { channel?.destroy(); channel = undefined; wire.close() }
     try {
       wire.send('connect.request', { hostDeviceId: hostId, preferredTransports: ['relay'] })
+      recordDshDiagnostic('connect.request.sent', { attemptId })
       const accepted = await wire.next(handshake)
       if (accepted.type === 'error') {
+        const code = relayErrorCode(accepted.payload.code) || 'DSH_UNREACHABLE'
+        recordDshDiagnostic('connect.request.rejected', { attemptId, code })
         throw accepted.payload.connectionId === undefined
-          ? wireFailure(wire, relayErrorCode(accepted.payload.code) || 'HOST_OFFLINE', accepted.payload.code)
-          : new DshApiError(relayErrorCode(accepted.payload.code) || 'HOST_OFFLINE', 409)
+          ? wireFailure(wire, code, accepted.payload.code)
+          : new DshApiError(code, 409)
       }
       if (accepted.type !== 'connect.accepted') throw new DshApiError('PROTOCOL', 0, 'DS Harness Remote declined this device connection')
+      recordDshDiagnostic('connect.request.accepted', { attemptId })
       const connectionId = dshId(accepted.payload.connectionId)
       const target = { connectionId, targetDeviceId: hostId }
       channel = new DshNoise(this.identity, value.identityKey, connectionId, hostId, this.identity.deviceId)
@@ -326,6 +349,7 @@ export class DshAppSession {
         throw new DshApiError('PROTOCOL', 0, 'The DS Harness Remote host failed the secure handshake')
       }
       channel.read(frame.payload.data)
+      recordDshDiagnostic('connect.handshake.complete', { attemptId })
       stage = 'lease'
       const channelReady = channel
       const rpc = async (method: string, fallback: 'PROTOCOL' | 'LEASE_FAILED') => {
@@ -348,12 +372,26 @@ export class DshAppSession {
           throw new DshApiError(fallback, 0, 'The DS Harness Remote host could not open a web tunnel')
         }
       }
-      try { requireDshOmpiuiWeb((await rpc('harness.transport.describe', 'PROTOCOL')).result) } catch (error) {
+      recordDshDiagnostic('connect.rpc.describe.start', { attemptId })
+      try {
+        requireDshOmpiuiWeb((await rpc('harness.transport.describe', 'PROTOCOL')).result)
+        recordDshDiagnostic('connect.rpc.describe.success', { attemptId })
+      } catch (error) {
+        recordDshDiagnostic('connect.rpc.describe.failure', { attemptId, code: diagnosticCode(error) })
         if (error instanceof DshApiError) throw error
         throw new DshApiError('PROTOCOL', 0, 'The DS Harness Remote host does not support the OMPiUI web handoff')
       }
-      const lease = await rpc('dsh.web.open', 'LEASE_FAILED')
+      recordDshDiagnostic('connect.rpc.web_open.start', { attemptId })
+      let lease: { id: string; result: unknown }
+      try {
+        lease = await rpc('dsh.web.open', 'LEASE_FAILED')
+        recordDshDiagnostic('connect.rpc.web_open.success', { attemptId })
+      } catch (error) {
+        recordDshDiagnostic('connect.rpc.web_open.failure', { attemptId, code: diagnosticCode(error) })
+        throw error
+      }
       const grant = parseDshBrowserGrant(lease.result)
+      recordDshDiagnostic('connect.success', { attemptId })
       let closeRequest: string | undefined
       let closing: Promise<void> | undefined
       const closed = (async (): Promise<DshConnectionEnd> => {
@@ -388,22 +426,26 @@ export class DshAppSession {
     } catch (error) {
       closeWire()
       if (error instanceof DshApiError) throw error
-      throw wireFailure(wire, stage === 'handshake' ? 'PROTOCOL' : 'LEASE_FAILED')
+      throw wireFailure(wire, stage === 'handshake' ? 'DSH_UNREACHABLE' : 'LEASE_FAILED')
     }
   }
 
-  private async openControl(signal: AbortSignal, handshake: AbortSignal) {
+  private async openControl(signal: AbortSignal, handshake: AbortSignal, attemptId: string) {
     let rejected: string | undefined
     for (;;) {
       const tokens = await this.getTokens(handshake, rejected)
       handshake.throwIfAborted()
-      const wire = new BrowserDshControl(signal)
+      const wire = new BrowserDshControl(signal, attemptId)
+      const socketStarted = Date.now()
+      recordDshDiagnostic('connect.websocket.start', { attemptId })
       try {
         await wire.open(handshake)
+        recordDshDiagnostic('connect.websocket.open', { attemptId, durationMs: Date.now() - socketStarted })
         wire.send('hello', {
           role: 'client', deviceId: this.identity.deviceId, accessToken: tokens.accessToken,
           protocols: [1], clientVersion: __APP_VERSION__, capabilities: [DSH_RELAY_CAPABILITY],
         })
+        recordDshDiagnostic('connect.hello.sent', { attemptId })
         const ack = await wire.next(handshake)
         if (ack.type === 'error') throw wireFailure(wire, 'PROTOCOL', ack.payload.code)
         if (ack.type !== 'hello.ack' || ack.payload.protocol !== 1
@@ -411,9 +453,13 @@ export class DshAppSession {
           throw new DshApiError('PROTOCOL', 0)
         }
         try { wire.limit(ack.payload.maxControlFrameBytes, ack.payload.maxRelayFrameBytes) } catch { throw new DshApiError('PROTOCOL', 0) }
+        recordDshDiagnostic('connect.hello.ack', { attemptId })
         return { wire, tokens, refreshed: rejected !== undefined }
       } catch (error) {
-        const failure = error instanceof DshApiError ? error : wireFailure(wire, 'HOST_OFFLINE')
+        const failure = error instanceof DshApiError ? error : wireFailure(wire, 'DSH_UNREACHABLE')
+        if (!signal.aborted) recordDshDiagnostic('connect.websocket.failure', {
+          attemptId, durationMs: Date.now() - socketStarted, code: diagnosticCode(failure), closeCode: wire.closeInfo?.code,
+        })
         wire.close()
         signal.throwIfAborted()
         if (failure.code !== 'DSH_AUTH_INVALID' || rejected !== undefined) throw failure
@@ -515,11 +561,12 @@ class BrowserDshControl {
   private wake?: () => void
   private idleTimer?: ReturnType<typeof setTimeout>
 
-  constructor(signal: AbortSignal) {
+  constructor(signal: AbortSignal, private readonly attemptId: string) {
     const abort = () => this.close()
     signal.addEventListener('abort', abort, { once: true })
     this.socket.addEventListener('close', event => {
       this.closeInfo = { code: event.code, reason: event.reason }
+      recordDshDiagnostic('connect.socket.closed', { attemptId: this.attemptId, closeCode: event.code })
       clearTimeout(this.idleTimer)
       signal.removeEventListener('abort', abort)
       this.ended.abort()
