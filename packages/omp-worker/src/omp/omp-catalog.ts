@@ -1385,21 +1385,39 @@ export async function readChildSessionMessages(
   }
 }
 
+/**
+ * 原生 leaf 解析沿用 pi-coding-agent 的 lX：记录的 activeLeafId 优先，其次记录自身。
+ * session_exit 是退出时的生命周期尾注，不是会话节点：它接在退出时选中的 leaf 上，
+ * 因此取父级作为 leaf。只跳过普通记录会让普通树跳转后冷恢复回到被撤销的分支。
+ */
+function entryLeafId(entry: JsonObject): string | null {
+  if (typeof entry.activeLeafId === "string") return entry.activeLeafId;
+  if (entry.activeLeafId === null) return null;
+  if (entry.type === "custom" && entry.customType === "session_exit")
+    return typeof entry.parentId === "string" ? entry.parentId : null;
+  return typeof entry.id === "string" ? entry.id : null;
+}
+
 function activeBranchFromEntries(entries: JsonObject[]): JsonObject[] {
-  // Lifecycle exits from a stale second process must not select an older branch.
   const byId = new Map(
     entries.map((entry) => [
       typeof entry.id === "string" ? entry.id : "",
       entry,
     ]),
   );
-  const leaf = [...entries]
-    .reverse()
-    .find(
-      (entry: JsonObject) =>
-        !(entry.type === "custom" && entry.customType === "session_exit"),
-    );
-  let cursor: string | null = typeof leaf?.id === "string" ? leaf.id : null;
+  let leafId = entries.length > 0 ? entryLeafId(entries[entries.length - 1]!) : null;
+  if (leafId === null || !byId.has(leafId)) {
+    // activeLeafId 指向已不存在的记录时，退回最后一条自身落在树上的记录（原生 MPe 语义）。
+    leafId = null;
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const candidate = entryLeafId(entries[index]!);
+      if (candidate !== null && byId.has(candidate)) {
+        leafId = candidate;
+        break;
+      }
+    }
+  }
+  let cursor: string | null = leafId;
   const pathEntries: JsonObject[] = [];
   const seen = new Set<string>();
   while (cursor && !seen.has(cursor)) {
