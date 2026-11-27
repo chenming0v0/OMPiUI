@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { DSH_REMOTE_ORIGIN, createDshIdentity, dshPairingProof, dshPairingQr, parseDshPairingSession } from '@ompiui/protocol/dsh-remote'
-import { DshApiError, resolveDshPairing, restoreDshPairedSession, selectDshHosts } from './dshRemote'
+import { DshApiError, resolveDshPairing, restoreDshPairedSession, selectDshHosts, shouldRefreshDshHello } from './dshRemote'
 import { closeDshRemoteViewer, openDshRemoteViewer, watchDshRemoteViewer } from '../utils/dshRemoteViewer'
 
 const native = vi.hoisted(() => ({
@@ -31,6 +31,20 @@ vi.mock('@tauri-apps/api/webviewWindow', () => ({
 const client = '3f2a6c1e-8b4d-4f7a-9c2e-1d5b7a9c0e11'
 const host = '7c1d3e5f-2a4b-4c6d-8e0f-1a3b5c7d9e22'
 const labels = { title: 'Desk PC', close: 'Close' }
+
+describe('DS Harness Remote authentication retry', () => {
+  it('refreshes once for hosted close code 4010 without misclassifying the final failure', () => {
+    const unreachable = new DshApiError('DSH_UNREACHABLE', 0)
+    expect(shouldRefreshDshHello(unreachable, 4010, false)).toBe(true)
+    expect(shouldRefreshDshHello(unreachable, 4010, true)).toBe(false)
+    expect(shouldRefreshDshHello(unreachable, 4001, false)).toBe(false)
+  })
+
+  it('refreshes once for an explicit authentication failure', () => {
+    expect(shouldRefreshDshHello(new DshApiError('DSH_AUTH_INVALID', 401), undefined, false)).toBe(true)
+    expect(shouldRefreshDshHello(new DshApiError('DSH_AUTH_INVALID', 401), undefined, true)).toBe(false)
+  })
+})
 
 describe('DS Harness Remote host selection', () => {
   it('keeps only work computers that are not this device', () => {

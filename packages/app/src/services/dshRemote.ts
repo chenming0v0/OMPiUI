@@ -34,6 +34,12 @@ export function isDshControllerAuthFailure(error: unknown): error is DshApiError
   return error instanceof DshApiError && ['DSH_AUTH_INVALID', 'DSH_DEVICE_REVOKED'].includes(error.code)
 }
 
+export function shouldRefreshDshHello(error: DshApiError, closeCode: number | undefined, alreadyRetried: boolean): boolean {
+  // The hosted service has emitted private close code 4010 without a public reason; try one refreshed credential
+  // without reclassifying the final failure as an authentication error.
+  return !alreadyRetried && (error.code === 'DSH_AUTH_INVALID' || closeCode === 4010)
+}
+
 function controllerAuthError(code: 'AUTH_INVALID' | 'DEVICE_REVOKED'): DshApiError {
   return new DshApiError(`DSH_${code}`, 401, 'Sign in to DS Harness Remote again')
 }
@@ -463,7 +469,7 @@ export class DshAppSession {
         })
         wire.close()
         signal.throwIfAborted()
-        if (failure.code !== 'DSH_AUTH_INVALID' || rejected !== undefined) throw failure
+        if (!shouldRefreshDshHello(failure, wire.closeInfo?.code, rejected !== undefined)) throw failure
         rejected = tokens.accessToken
       }
     }
