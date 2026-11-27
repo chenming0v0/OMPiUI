@@ -234,8 +234,95 @@ try {
   assert.match(readFileSync(migratedFile, "utf8"), /Terminal continues migrated legacy session/)
   assert.match(readFileSync(migratedFile, "utf8"), /UI continues migrated session through its saved old path/)
   assert.deepEqual(readFileSync(legacy.sessionFile), readFileSync(migratedFile))
+
+  // issue #492：普通树跳转只移动内存 leaf，不带摘要也不带 redo 标记；正常退出把
+  // session_exit 接在所选 leaf 上。runtime 回收后的冷预览必须沿这个 leaf 恢复，
+  // 不能回到被撤销的分支，官方终端恢复同一文件时也必须落在同一 leaf。
+  const textOf = entry => {
+    const content = entry.message?.content
+    if (typeof content === "string") return content
+    return Array.isArray(content)
+      ? content.map(part => typeof part?.text === "string" ? part.text : "").join("")
+      : ""
+  }
+  runtime = await OmpRpcSession.open(cwd)
+  const jumpId = runtime.getSessionId()
+  const jumpFile = runtime.getSessionFile()
+  await runtime.sendUserMessage("Cold restore keeps this turn")
+  await runtime.waitForIdle()
+  await runtime.sendUserMessage("Cold restore abandons this turn")
+  await runtime.waitForIdle()
+  const plainBranch = await runtime.getBranchPage(undefined, 100, 1024 * 1024)
+  const jumpTarget = plainBranch.items.find(entry => entry.message?.role === "user" && textOf(entry).includes("Cold restore keeps this turn"))
+  const abandonedTurn = plainBranch.items.find(entry => entry.message?.role === "user" && textOf(entry).includes("Cold restore abandons this turn"))
+  assert.ok(jumpTarget && abandonedTurn, JSON.stringify({
+    jumpId, jumpFile, branch: plainBranch.items.map(entry => ({ id: entry.id, role: entry.message?.role })),
+  }))
+  const plainJump = await runtime.navigateTree(jumpTarget.id)
+  assert.equal(plainJump.cancelled, false, JSON.stringify({ jumpId, jumpFile, leafId: plainJump.leafId }))
+  assert.equal(plainJump.leafId, jumpTarget.id)
+  // dispose 等于 runtime 空闲回收：退出记录必须接在跳转后的 leaf 上。
+  await runtime.dispose()
+  runtime = undefined
+
+  const coldPreview = await catalog.previewSessionById(jumpId)
+  const coldLeaf = coldPreview?.state?.head?.leafId
+  const coldIds = coldPreview?.branch?.items?.map(entry => entry.id) ?? []
+  const coldDiagnostics = JSON.stringify({
+    ompVersion, jumpId, jumpFile, expectedLeaf: jumpTarget.id, actualLeaf: coldLeaf, coldIds,
+    tail: readFileSync(jumpFile, "utf8").trim().split("\n").slice(-6),
+  })
+  assert.equal(coldLeaf, jumpTarget.id, coldDiagnostics)
+  assert.equal(coldIds.includes(abandonedTurn.id), false, coldDiagnostics)
+
+  // 官方终端恢复同一文件后写入的消息必须挂在我们冷预览选中的 leaf 上。
+  terminal = new OmpRpcClient({ cwd, args: ["--resume", jumpFile] })
+  await terminal.waitForReady()
+  assert.equal(unwrapResponse(await terminal.request({ type: "get_state" })).sessionId, jumpId)
+  await sendTerminalMessage(terminal, "Official terminal writes after plain jump")
+  await terminal.close()
+  terminal = undefined
+  const jumpRecords = readFileSync(jumpFile, "utf8").trim().split("\n").map(line => {
+    try { return JSON.parse(line) } catch { return null }
+  })
+  const terminalTurn = jumpRecords.filter(record => record?.type === "message" && record.message?.role === "user" &&
+    JSON.stringify(record.message.content).includes("Official terminal writes after plain jump")).at(-1)
+  assert.ok(terminalTurn, JSON.stringify({ jumpId, jumpFile, tail: jumpRecords.slice(-6) }))
+  assert.equal(terminalTurn.parentId, jumpTarget.id, JSON.stringify({
+    message: "official terminal resumed a different leaf than the cold preview",
+    jumpId, jumpFile, expectedLeaf: jumpTarget.id, actualLeaf: terminalTurn.parentId,
+    tail: jumpRecords.slice(-6),
+  }))
+  const afterTerminal = await catalog.previewSessionById(jumpId)
+  const afterTerminalDiagnostics = JSON.stringify({
+    jumpId, jumpFile, expectedLeaf: terminalTurn.id, actualLeaf: afterTerminal?.state?.head?.leafId,
+    branch: afterTerminal?.branch?.items?.map(entry => entry.id),
+  })
+  assert.equal(afterTerminal?.state?.head?.leafId, terminalTurn.id, afterTerminalDiagnostics)
+  assert.equal(afterTerminal.branch.items.some(entry => entry.id === abandonedTurn.id), false, afterTerminalDiagnostics)
+
+  // 覆盖跳到 root：退出记录接在 root leaf 上，冷预览不能重新展开后续分支。
+  runtime = await OmpRpcSession.open(cwd, jumpFile)
+  assert.equal(runtime.getSessionId(), jumpId)
+  const rootTurn = jumpRecords.find(record => record?.type === "message" && record.message?.role === "user")
+  assert.ok(rootTurn, JSON.stringify({ jumpId, jumpFile }))
+  const rootJump = await runtime.navigateTree(rootTurn.id)
+  assert.equal(rootJump.cancelled, false, JSON.stringify({ jumpId, jumpFile, leafId: rootJump.leafId }))
+  assert.equal(rootJump.leafId, rootTurn.id)
+  await runtime.dispose()
+  runtime = undefined
+  const rootPreview = await catalog.previewSessionById(jumpId)
+  const rootDiagnostics = JSON.stringify({
+    jumpId, jumpFile, expectedLeaf: rootTurn.id, actualLeaf: rootPreview?.state?.head?.leafId,
+    branch: rootPreview?.branch?.items?.map(entry => entry.id),
+    tail: readFileSync(jumpFile, "utf8").trim().split("\n").slice(-6),
+  })
+  assert.equal(rootPreview?.state?.head?.leafId, rootTurn.id, rootDiagnostics)
+  assert.equal(rootPreview.branch.items.some(entry => entry.type === "message" && entry.id !== rootTurn.id), false, rootDiagnostics)
+
   console.info("PASS: legacy migration, official ID discovery, old-path continuation, one shared history")
   console.info("PASS: read-only browsing with official OMP open, unchanged bytes and mtime, bidirectional native continuation, ephemeral control, backup, no auto-resume")
+  console.info("PASS: plain tree jump cold restore keeps the selected leaf across runtime recycle, official terminal and root jump")
 } finally {
   await runtime?.dispose()
   await terminal?.close()
