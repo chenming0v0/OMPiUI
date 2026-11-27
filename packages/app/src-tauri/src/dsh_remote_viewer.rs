@@ -22,8 +22,9 @@ const DELIVERED_EVENT: &str = "dsh-remote-viewer-delivered";
 const INVALID_GRANT: &str = "Invalid DS Harness Remote browser grant";
 const UNAVAILABLE: &str = "Could not open the DS Harness Remote viewer";
 const MAX_REDEMPTION: Duration = Duration::from_secs(60);
-// Independent of the grant's short redemption window. The control connection owns the real lease.
-const VIEWER_WATCHDOG: Duration = Duration::from_secs(10 * 60);
+// Independent of the grant's short redemption window. The control connection owns the real lease,
+// which the host may hold for up to two hours; this only outlives it to clear a forgotten listener.
+const VIEWER_WATCHDOG: Duration = Duration::from_secs(125 * 60);
 
 #[derive(Default)]
 pub struct DshRemoteViewerState(Mutex<HashMap<String, ActiveHandoff>>);
