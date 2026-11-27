@@ -2,13 +2,21 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   DSH_REMOTE_ORIGIN, createDshIdentity, dshPairingFingerprint, dshPairingProof, dshPairingQr,
-  parseDshPairingScan, parseDshPairingSession, parseDshPairingStatus,
+  parseDshPairingScan, parseDshPairingSession, parseDshPairingStatus, dshControlFailure,
 } from './dsh-remote.ts'
 
 // ds-harness-remote 的 fixtures/pairing/v1/proof.json：公开的固定测试向量，不能用于真实设备。
 const sessionId = '019a0000-0000-7000-8000-000000000001'
 const devicePrivateKey = 'AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA'
 const serverPublicKey = 'WGmv9FBUlzLLqu1eXfmzCm2jHLDldCutWtShp2jxpns'
+
+test('known authorization close reasons are handled even with private close codes', () => {
+  assert.equal(dshControlFailure(undefined, { code: 4010, reason: 'AUTH_INVALID' }), 'AUTH_INVALID')
+  assert.equal(dshControlFailure(undefined, { code: 4010, reason: 'TOKEN_EXPIRED' }), 'AUTH_INVALID')
+  assert.equal(dshControlFailure(undefined, { code: 4010, reason: 'DEVICE_REVOKED' }), 'DEVICE_REVOKED')
+  assert.equal(dshControlFailure(undefined, { code: 4010, reason: 'ALREADY_CONNECTED' }), 'ALREADY_CONNECTED')
+  assert.equal(dshControlFailure(undefined, { code: 4010, reason: 'unknown' }), 'DSH_UNREACHABLE')
+})
 
 test('pairing proofs match the upstream interoperability vectors', () => {
   const root = `/api/v1/device-pairing/sessions/${sessionId}`

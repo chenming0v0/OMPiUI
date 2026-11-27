@@ -34,10 +34,11 @@ export type DshControlFailure = 'AUTH_INVALID' | 'DEVICE_REVOKED' | 'ALREADY_CON
 /** Only use for control-wide errors, never errors scoped to a peer connection. */
 export function dshControlFailure(frameCode?: unknown, close?: { code: number; reason: string }): DshControlFailure {
   const reason = close?.reason.trim().toUpperCase().replaceAll(' ', '_')
-  if (close?.code === 4004 || frameCode === 'DEVICE_REVOKED' || (close?.code === 4002 && reason === 'DEVICE_REVOKED')) return 'DEVICE_REVOKED'
-  if (close?.code === 4003 || frameCode === 'ALREADY_CONNECTED') return 'ALREADY_CONNECTED'
-  if (frameCode === 'AUTH_INVALID' || frameCode === 'TOKEN_EXPIRED' || close?.code === 4002) return 'AUTH_INVALID'
-  // 4001 and ordinary server-side shutdowns do not mean the credentials are invalid.
+  if (close?.code === 4004 || frameCode === 'DEVICE_REVOKED' || reason === 'DEVICE_REVOKED') return 'DEVICE_REVOKED'
+  if (close?.code === 4003 || frameCode === 'ALREADY_CONNECTED' || reason === 'ALREADY_CONNECTED') return 'ALREADY_CONNECTED'
+  if (frameCode === 'AUTH_INVALID' || frameCode === 'TOKEN_EXPIRED' || close?.code === 4002
+    || reason === 'AUTH_INVALID' || reason === 'TOKEN_EXPIRED' || reason === 'AUTH_REQUIRED') return 'AUTH_INVALID'
+  // Unknown close codes remain unreachable unless the reason identifies a known failure.
   return 'DSH_UNREACHABLE'
 }
 

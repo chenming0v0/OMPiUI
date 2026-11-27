@@ -458,7 +458,8 @@ export class DshAppSession {
       } catch (error) {
         const failure = error instanceof DshApiError ? error : wireFailure(wire, 'DSH_UNREACHABLE')
         if (!signal.aborted) recordDshDiagnostic('connect.websocket.failure', {
-          attemptId, durationMs: Date.now() - socketStarted, code: diagnosticCode(failure), closeCode: wire.closeInfo?.code,
+          attemptId, durationMs: Date.now() - socketStarted, code: diagnosticCode(failure),
+          closeCode: wire.closeInfo?.code, closeReason: wire.closeInfo?.reason,
         })
         wire.close()
         signal.throwIfAborted()
@@ -566,7 +567,7 @@ class BrowserDshControl {
     signal.addEventListener('abort', abort, { once: true })
     this.socket.addEventListener('close', event => {
       this.closeInfo = { code: event.code, reason: event.reason }
-      recordDshDiagnostic('connect.socket.closed', { attemptId, closeCode: event.code })
+      recordDshDiagnostic('connect.socket.closed', { attemptId, closeCode: event.code, closeReason: event.reason })
       clearTimeout(this.idleTimer)
       signal.removeEventListener('abort', abort)
       this.ended.abort()
