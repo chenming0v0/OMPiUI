@@ -1,7 +1,7 @@
 import { PROTOCOL_VERSION } from "@ompiui/protocol"
 import pkg from "../package.json" with { type: "json" }
 import { getDriverMode } from "@ompiui/omp-worker"
-import { randomBytes } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
 import { hostname } from "node:os"
 import { advertiseDevice } from "./host/discovery.ts"
 import { existsSync } from "node:fs"
@@ -17,7 +17,7 @@ import { PairingStore } from "./host/pairing.ts"
 import { TailscaleManager } from "./host/tailscale.ts"
 import { RuntimeSupervisor } from "./omp/supervisor.ts"
 import { TunnelClient } from "./tunnel/tunnel-client.ts"
-import { DshHostedManager } from "./tunnel/dsh-hosted-manager.ts"
+import { DshHostedManager, loadDshManagementToken } from "./tunnel/dsh-hosted-manager.ts"
 import { createAppServer, firstLanAddress, normalizePublicBaseUrl } from "./http.ts"
 import { shutdownAppServer } from "./shutdown.ts"
 import { attachEventWebSocket } from "./ws.ts"
@@ -260,6 +260,10 @@ export async function startOmpiUiServer(
   // Origin 白名单和 share 链接，所以用可变引用 + getter 动态取。
   let tunnelClient: TunnelClient | undefined
   const hosted = new DshHostedManager(dataRoot(), pkg.version, config.dshRemote)
+  const dshManagementToken = await loadDshManagementToken(dataRoot()).catch(() => {
+    console.error('[ompiui-dsh] Could not initialize the local management credential')
+    return undefined
+  })
   // Never persist, expose in status, or send to the relay/worker. Authenticate
   // only the embedded client's local forwarding hop for this server lifetime.
   const tunnelForwardingToken = randomBytes(32).toString("hex")
@@ -285,12 +289,15 @@ export async function startOmpiUiServer(
     dataDir: dataRoot(), forwardingToken: tunnelForwardingToken, discovery,
     log: line => { console.info(line); logToFile(line) },
   })
+  const notificationIdentity = createHash('sha256').update(`notifications:${authToken ?? ''}`).digest('hex')
   const app = createAppServer({
     authToken,
+    notificationsFile: join(dataRoot(), `notifications-${notificationIdentity}.json`),
     share: { host: config.host, port: config.port, publicBaseUrl: config.publicBaseUrl },
     getPublicBaseUrl: () => getTunnelStatus()?.publicUrl ?? null,
     getTunnelStatus,
     hostedRemote: hosted,
+    dshManagementToken,
     getHostedOrigins: () => hosted.origins,
     pairing,
     tunnelForwardingToken,
@@ -332,7 +339,7 @@ export async function startOmpiUiServer(
       diagnostics.record("server.stopping", { signal, reason: signal ?? "stop_requested", port: config.port })
       if (signal) console.info(`[ompiui-server] received ${signal}, shutting down`)
       tunnelClient?.stop()
-      void hosted.dispose().catch(() => undefined)
+      void hosted.dispose().catch(error => console.error('[ompiui-dsh] Could not finish host shutdown', error))
       await lanDiscovery?.stop()
       await tailscale.dispose()
       await shutdownAppServer(app.server, eventServer, {
@@ -436,9 +443,8 @@ export async function startOmpiUiServer(
     })
     tunnelClient.start()
   }
-  if (config.webRoot && boundAddress && typeof boundAddress !== 'string'
-    && ['127.0.0.1', '0.0.0.0', '::', '::ffff:127.0.0.1'].includes(boundAddress.address)) {
-    void hosted.attach(boundAddress.port).catch(() => {
+  if (config.webRoot && existsSync(join(config.webRoot, 'index.html')) && boundAddress && typeof boundAddress !== 'string') {
+    void hosted.attach(boundAddress.port, boundAddress.address).catch(() => {
       console.warn('[ompiui-dsh] Could not load hosted remote access settings')
     })
   } else if (config.dshRemote) {

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { open } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -8,6 +8,7 @@ import { beginWorktreeAttachment } from "../host/worktrees.ts";
 import type {
   CommandEnvelope,
   CommandRecord,
+  EventCursor,
   JsonObject,
   JsonValue,
   PiCapability,
@@ -32,6 +33,9 @@ import {
   type WorkerEvent,
 } from "@ompiui/omp-worker";
 import type { EventHub } from "../event-hub.ts";
+import { UiHistory } from "../host/ui-history.ts";
+import { ComposerDrafts } from "./composer-drafts.ts";
+import type { SetSharedComposerDraftParams } from "@ompiui/protocol";
 import { logToFile } from "../logger.ts";
 import {
   diagnostics,
@@ -78,6 +82,36 @@ const SERVER_GLOBAL_CAPABILITIES: PiCapability[] = [
 ];
 
 const SERVER_SESSION_CAPABILITIES: PiCapability[] = [
+  {
+    name: "composerDraft.get", scope: "session", source: "ompiui-adapter",
+    description: "Read the shared OMPiUI composer draft without opening a runtime",
+    paramsSchema: { type: "object", additionalProperties: false, properties: {} },
+    queue: "immediate", idempotent: true,
+  },
+  {
+    name: "composerDraft.set", scope: "session", source: "ompiui-adapter",
+    description: "Update the shared OMPiUI composer draft at its current version",
+    paramsSchema: {
+      type: "object", additionalProperties: false, required: ["baseVersion", "text", "delivery"],
+      properties: {
+        baseVersion: { anyOf: [{ type: "null" }, byteString(128)] },
+        text: byteString(8 * 1024 * 1024),
+        delivery: { enum: ["steer", "followUp", "abortAndPrompt"] },
+        attachments: { type: "array", maxItems: 256, items: {
+          type: "object", required: ["id", "type", "displayName"], properties: {
+            id: byteString(256), displayName: byteString(8 * 1024), type: { enum: ["file", "folder", "agent", "text", "command"] },
+            url: { type: "string" }, mime: byteString(256), relativePath: byteString(8 * 1024),
+            textRange: {
+              type: "object", required: ["value", "start", "end"], properties: {
+                value: byteString(8 * 1024), start: { type: "integer", minimum: 0 }, end: { type: "integer", minimum: 0 },
+              },
+            },
+          },
+        } },
+      },
+    },
+    queue: "immediate",
+  },
   {
     name: "controls.get",
     scope: "session",
@@ -170,11 +204,15 @@ export class SessionHost {
   private pendingAttachCommands = 0;
   private readonly toolInterruptions = new Map<string, JsonObject>();
   private readonly worktreeMoves = new WeakSet<AttachedSession>();
+  private readonly notificationRuns = new WeakMap<AttachedSession, { sessionId: string; id: string }>();
+  private readonly composerDrafts: ComposerDrafts;
 
   constructor(
     private readonly supervisor: RuntimeSupervisor,
     private readonly hub: EventHub,
+    readonly uiHistory = new UiHistory(hub),
   ) {
+    this.composerDrafts = new ComposerDrafts(hub);
     this.executor = new SessionExecutor((record) =>
       this.emitCommandUpdate(record),
     );
@@ -354,6 +392,7 @@ export class SessionHost {
         worker,
       };
       this.attach(session);
+      this.restoreComposerPrefill(session.sessionId, state?.extensionEditorText);
       return {
         sessionId: session.sessionId,
         sessionFile: session.sessionFile ?? null,
@@ -558,6 +597,20 @@ export class SessionHost {
     return session;
   }
 
+  private restoreComposerPrefill(sessionId: string, text: unknown): void {
+    try {
+      this.composerDrafts.restorePrefill(sessionId, text);
+    } catch (error) {
+      diagnostics.record('session.composer_draft_error', { sessionId, errorCode: diagnosticErrorCode(error) }, 'warn');
+    }
+  }
+
+  private withPendingSnapshot(state: JsonValue | undefined, cursor: EventCursor): JsonValue | undefined {
+    if (!isJsonObject(state)) return state;
+    if (state.diskPreview !== true && !Array.isArray(state.pendingExtensionUiRequests)) return state;
+    return { ...state, pendingExtensionUiRequests: state.pendingExtensionUiRequests ?? [], pendingExtensionUiCursor: cursor };
+  }
+
   async sessionQuery(
     sessionId: string,
     type: string,
@@ -566,6 +619,9 @@ export class SessionHost {
   ): Promise<JsonValue | undefined> {
     return withAbort(
       (async () => {
+        if (type === "composerDraft.get") return this.composerDrafts.read(sessionId);
+        if (type === "composerDraft.set")
+          return this.composerDrafts.write(sessionId, params as SetSharedComposerDraftParams);
         if (type === "toolOutput.get") {
           return this.catalogCommand(
             "session.read",
@@ -573,6 +629,9 @@ export class SessionHost {
             { idempotent: true, signal },
           );
         }
+        // This cursor is a lower bound on the worker snapshot. Events after
+        // the request started may already be in the snapshot, or may be newer.
+        const cursor = this.hub.getCursor({ kind: "session", id: sessionId });
         let session = this.runtimes.get(sessionId);
         if (!session) {
           if (type === "toolInteraction") {
@@ -612,8 +671,7 @@ export class SessionHost {
               { sessionId, query: type, params: params ?? {} },
               { idempotent: true, signal },
             );
-            return type === 'state.get' && isJsonObject(result) && this.toolInterruptions.has(sessionId)
-              ? { ...result, toolInterruption: this.toolInterruptions.get(sessionId)! } : result;
+            return type === 'state.get' ? this.withPendingSnapshot(result, cursor) : result;
           }
           if (this.getSessionCapability(type)?.idempotent) {
             throw Object.assign(
@@ -644,9 +702,19 @@ export class SessionHost {
             (type === "sendUserMessage" || type === "steer" || type === "followUp" || type === "abortAndPrompt")) {
           throw Object.assign(new Error("The native session is switching worktrees; your message was not submitted"), { code: "SESSION_BUSY" });
         }
-        const result = await session.worker.command(type, params, signal);
-        return type === 'state.get' && isJsonObject(result) && this.toolInterruptions.has(sessionId)
-          ? { ...result, toolInterruption: this.toolInterruptions.get(sessionId)! } : result;
+        const clearsDraft = type === "sendUserMessage" || type === "abortAndPrompt";
+        const version = clearsDraft && typeof params?.composerDraftVersion === "string" ? params.composerDraftVersion : undefined;
+        let workerParams = params;
+        if (version !== undefined) {
+          workerParams = { ...params };
+          delete workerParams.composerDraftVersion;
+        }
+        const result = await session.worker.command(type, workerParams, signal);
+        if (version !== undefined) this.composerDrafts.accept(sessionId, version);
+        const interruption = this.toolInterruptions.get(sessionId);
+        if (type !== 'state.get' || !isJsonObject(result)) return result;
+        const state = interruption ? { ...result, toolInterruption: interruption } : result;
+        return this.withPendingSnapshot(state, cursor);
       })(),
       signal,
     );
@@ -878,6 +946,7 @@ export class SessionHost {
     if (type === "session.attached") return this.listAttachedIds();
     if (type === "session.preview" && typeof params?.sessionId === "string") {
       validateParams(getCommandCapability(type)?.paramsSchema, params);
+      const cursor = this.hub.getCursor({ kind: "session", id: params.sessionId });
       const attached = this.runtimes.get(params.sessionId);
       if (attached) {
         this.touch(attached.sessionId);
@@ -896,8 +965,11 @@ export class SessionHost {
           attached.worker.command("state.get", undefined, options.signal),
           attached.worker.command("branch.get", pageParams, options.signal),
         ]);
-        return { state: isJsonObject(state) && this.toolInterruptions.has(params.sessionId) ? { ...state, toolInterruption: this.toolInterruptions.get(params.sessionId)! } : state ?? null, branch: branch ?? null };
+        const interruption = this.toolInterruptions.get(params.sessionId);
+        return { state: this.withPendingSnapshot(isJsonObject(state) && interruption ? { ...state, toolInterruption: interruption } : state, cursor) ?? null, branch: branch ?? null };
       }
+      const result = await this.catalogCommand(type, params, { idempotent: true, retry: true, signal: options.signal });
+      return isJsonObject(result) && isJsonObject(result.state) ? { ...result, state: this.withPendingSnapshot(result.state, cursor)! } : result;
     }
     if (type === "session.copy") {
       validateParams(getCommandCapability(type)?.paramsSchema, params ?? {});
@@ -914,17 +986,28 @@ export class SessionHost {
       return this.openSession(copied.cwd, copied.sessionFile, options.signal);
     }
     if (type === "session.delete") {
-      // Detach a live runtime before the file goes away: an attached worker
-      // keeps serving the session from memory and would rewrite the file on
-      // its next append, resurrecting the deleted session.
-      const sessionFile =
-        typeof params?.sessionFile === "string"
-          ? params.sessionFile
-          : undefined;
-      if (sessionFile) {
-        const live = this.runtimes.findBySessionFile(sessionFile);
-        if (live) await this.closeSession(live.sessionId, "session_delete");
+      validateParams(getCommandCapability(type)?.paramsSchema, params ?? {});
+      const live = typeof params?.sessionFile === "string" ? this.runtimes.findBySessionFile(params.sessionFile) : undefined;
+      const liveId = live?.sessionId;
+      if (liveId) {
+        if (this.activity.has(liveId) || this.executor.hasPendingWork(liveId) || this.executor.isClosing(liveId)) {
+          throw Object.assign(new Error("Session is busy; nothing was deleted"), { code: "SESSION_BUSY" });
+        }
+        // Detach idle writers so they cannot recreate the unlinked session.
+        await this.closeSession(liveId, "session_delete");
       }
+      // Once unlink has been requested, a disconnected caller must not suppress its broadcast.
+      if (options.signal?.aborted) throw abortError();
+      const deleted = await this.catalogCommand(type, params);
+      if (isJsonObject(deleted)) {
+        const sessionId = typeof deleted.sessionId === "string" ? deleted.sessionId : liveId;
+        if (sessionId) {
+          this.materialized.delete(sessionId);
+          this.toolInterruptions.delete(sessionId);
+        }
+        this.hub.publish({ kind: "server", id: "server" }, "sessions.updated", { ...deleted, sessionId: sessionId ?? null, deleted: true });
+      }
+      return null;
     }
     const capability = getCommandCapability(type);
     if (
@@ -1050,6 +1133,9 @@ export class SessionHost {
             releaseWorkspace = beginWorktreeAttachment(resolve(session.cwd, full.params.path));
           }
           const data = await session.worker.command(full.type, full.params);
+          if (full.type === "setSessionName") {
+            this.hub.publish({ kind: "server", id: "server" }, "sessions.updated", { sessionId, updated: true });
+          }
           await this.trackReplacement(session, data);
           return data;
         } finally {
@@ -1083,7 +1169,10 @@ export class SessionHost {
     const result = await this.supervisor.catalogCommand(type, params, options);
     if (typeof params?.sessionId === 'string') {
       const interruption = this.toolInterruptions.get(params.sessionId);
-      if (type === 'session.delete') this.toolInterruptions.delete(params.sessionId);
+      if (type === 'session.delete') {
+        this.toolInterruptions.delete(params.sessionId);
+        this.composerDrafts.remove(params.sessionId);
+      }
       if (interruption && isJsonObject(result)) {
         if (type === 'session.preview' && isJsonObject(result.state)) return { ...result, state: { ...result.state, toolInterruption: interruption } };
         if (type === 'session.read' && params.query === 'state.get') return { ...result, toolInterruption: interruption };
@@ -1263,7 +1352,17 @@ export class SessionHost {
           { sessionId: session.sessionId, updated: true },
         );
       }
-      if (type === 'agent_start') this.toolInterruptions.delete(session.sessionId);
+      const eventId = () => JSON.stringify([session.sessionId, event.generation, event.meta.epoch, event.meta.sequence]);
+      if (type === 'agent_start') {
+        this.toolInterruptions.delete(session.sessionId);
+        this.notificationRuns.set(session, { sessionId: session.sessionId, id: eventId() });
+      } else if (type === 'agent_settled' ||
+          (type === 'agent_end' && event.event.isTerminal !== false && event.event.awaitingAsyncWork !== true)) {
+        const run = this.notificationRuns.get(session);
+        this.notificationRuns.delete(session);
+        if (run?.sessionId === session.sessionId) this.uiHistory.complete(session.sessionId, session.cwd, run.id);
+      }
+      this.uiHistory.command(session.sessionId, session.cwd, event.event, eventId);
       if (typeof type === "string" && DIAGNOSTIC_AGENT_EVENTS.has(type)) {
         const meta = event.event as unknown as JsonObject;
         const message = isJsonObject(meta.message) ? meta.message : undefined;
@@ -1302,6 +1401,7 @@ export class SessionHost {
       this.hub.publish({ kind: "session", id: session.sessionId }, "pi.event", {
         event: event.event,
         meta: event.meta,
+        sharedHistory: true,
       });
       return;
     }
@@ -1329,14 +1429,29 @@ export class SessionHost {
           sessionId: session.sessionId,
           materialized: true,
         });
+      } else if (event.summaryChanged) {
+        this.hub.publish({ kind: "server", id: "server" }, "sessions.updated", {
+          sessionId: session.sessionId,
+          updated: true,
+        });
       }
       return;
     }
     if (event.channel === "extension.ui") {
+      const sessionId = event.sessionId ?? session.sessionId;
+      const notify = event.event.type === 'notify';
+      if (notify) this.uiHistory.extensionNotify(sessionId, session.cwd, event.event);
+      if (event.event.type === 'editor' && isJsonObject(event.event.command)) {
+        try {
+          this.composerDrafts.prefill(sessionId, event.event.command);
+        } catch (error) {
+          diagnostics.record('session.composer_draft_error', { sessionId, errorCode: diagnosticErrorCode(error) }, 'warn');
+        }
+      }
       this.hub.publish(
-        { kind: "session", id: event.sessionId ?? session.sessionId },
+        { kind: "session", id: sessionId },
         "extension.ui",
-        event.event,
+        notify ? { ...event.event, sharedHistory: true } : event.event,
       );
       return;
     }
@@ -1364,6 +1479,14 @@ export class SessionHost {
       }
       return;
     }
+    if (event.channel === "resources.updated" && "sessionId" in event) {
+      let workspacePath = session.cwd;
+      try { workspacePath = realpathSync.native(workspacePath); } catch { /* the session stream still receives the revision */ }
+      const payload = { ...event.event, sessionId: session.sessionId, workspacePath };
+      this.hub.publish({ kind: "session", id: session.sessionId }, "resources.updated", payload);
+      this.hub.publish({ kind: "workspace", id: workspacePath }, "resources.updated", payload);
+      return;
+    }
     if (event.channel === "registry.updated") {
       this.hub.publish(
         { kind: "session", id: session.sessionId },
@@ -1382,8 +1505,9 @@ export class SessionHost {
         epoch: event.generation,
         eventType: typeof event.event.event === "string" ? event.event.event : "extension_error",
       }, "error");
+      this.uiHistory.extensionError(event.generation, event.runtimeId, event.event);
       this.hub.publish({ kind: "server", id: "server" }, "omp.extension_error", {
-        workerGeneration: event.generation, runtimeId: event.runtimeId, frame: event.event,
+        workerGeneration: event.generation, runtimeId: event.runtimeId, frame: event.event, sharedHistory: true,
       });
       return;
     }
@@ -1423,17 +1547,18 @@ export class SessionHost {
     }
     if (event.channel === "packages.progress") {
       this.hub.publish(
-        { kind: "server", id: "server" },
+        event.event.workspacePath ? { kind: "workspace", id: event.event.workspacePath } : { kind: "server", id: "server" },
         "packages.progress",
         event.event,
       );
       return;
     }
-    if (event.channel === "resources.updated") {
-      this.hub.publish({ kind: "server", id: "server" }, "resources.updated", {
-        workspacePath:
-          "workspacePath" in event ? (event.workspacePath ?? null) : null,
-      });
+    if (event.channel === "resources.updated" && !("sessionId" in event)) {
+      this.hub.publish(
+        event.workspacePath ? { kind: "workspace", id: event.workspacePath } : { kind: "server", id: "server" },
+        "resources.updated",
+        { workspacePath: event.workspacePath ?? null, commandId: event.commandId },
+      );
     }
   }
 

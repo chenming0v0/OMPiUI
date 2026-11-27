@@ -20,9 +20,10 @@ import type {
   FileNodeDto,
   FileOperationResponse,
   FileReadResponse,
+  WorkspaceFileChange,
 } from "@ompiui/protocol";
-import { jsonByteSize } from "@ompiui/protocol";
-import { PathSafetyError, resolveWorkspacePath } from "./path-safety.ts";
+import { isWorkspaceWatchExcluded, jsonByteSize } from "@ompiui/protocol";
+import { normalizeRelativePath, PathSafetyError, resolveWorkspacePath } from "./path-safety.ts";
 import { workspacePathKey, type WorkspaceRecord } from "./workspace-store.ts";
 import { acquireWorkspaceMutationLock } from "./workspace-lock.ts";
 import { mapConcurrent, QueryPool, requestAborted } from "./query-pool.ts";
@@ -45,6 +46,46 @@ const directoryPages = new Map<
   string,
   { modified: number; at: number; names: string[]; fingerprint: string }
 >();
+
+type FileChangeListener = (changes: WorkspaceFileChange[]) => void;
+const revisionQueries = new QueryPool(4, 32);
+
+/** Compare only a bounded set of active paths, without scanning even one directory. */
+export function readExcludedPathRevisions(ws: WorkspaceRecord, paths: string[], signal?: AbortSignal): Promise<(string | null)[]> {
+  assertWorkspaceCurrent(ws);
+  return revisionQueries.run(signal, () => mapConcurrent(paths, 4, async input => {
+    if (signal?.aborted) throw requestAborted();
+    const relative = normalizeRelativePath(input);
+    if (!isWorkspaceWatchExcluded(relative, process.platform === "win32")) return null;
+    // A replacement may temporarily remove the target or turn it into a link outside the workspace.
+    try {
+      const resolved = resolveWorkspacePath(ws.canonicalRoot, relative);
+      if (!resolved.exists) return null;
+      const metadata = await lstat(resolved.absolute, { bigint: true });
+      return `${metadata.dev}:${metadata.ino}:${metadata.size}:${metadata.mtimeNs}:${metadata.ctimeNs}`;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (error instanceof PathSafetyError || code === "ENOENT" || code === "ENOTDIR") return null;
+      throw error;
+    }
+  }));
+}
+
+function notifyFileChanges(listener: FileChangeListener | undefined, changes: WorkspaceFileChange[]): void {
+  if (changes.some(change => change.kind !== "changed" || change.type === "directory")) directoryPages.clear();
+  listener?.(changes);
+}
+
+function createdAncestor(firstCreated: string | undefined, absolute: string, relative: string): WorkspaceFileChange[] {
+  if (!firstCreated) return [];
+  // Windows 的递归 mkdir 会返回带 \\?\ 前缀的路径，和 resolved.absolute 不同形；
+  // 直接 path.relative 会得到越界的 .. 层级。
+  const created = firstCreated.startsWith("\\\\?\\") ? firstCreated.slice(4) : firstCreated;
+  const levels = path.relative(created, absolute).split(path.sep).length;
+  if (!levels || path.relative(created, absolute).startsWith("..")) return [];
+  const ancestor = relative.split("/").slice(0, -levels).join("/");
+  return ancestor ? [{ path: ancestor, kind: "created", type: "directory" }] : [];
+}
 
 export async function listFiles(
   ws: WorkspaceRecord,
@@ -198,6 +239,7 @@ export async function writeFileContent(
     returnContent?: boolean;
     createOnly?: boolean;
     signal?: AbortSignal;
+    onChanged?: FileChangeListener;
   } = {},
 ): Promise<FileReadResponse> {
   return withWorkspaceMutation(
@@ -217,6 +259,7 @@ async function writeFileContentLocked(
     encoding?: "utf-8" | "base64";
     returnContent?: boolean;
     createOnly?: boolean;
+    onChanged?: FileChangeListener;
   },
 ): Promise<FileReadResponse> {
   const resolved = resolveWorkspacePath(ws.canonicalRoot, relativePath);
@@ -245,7 +288,7 @@ async function writeFileContentLocked(
     throw fileTooLarge("file too large");
   }
   const parent = path.dirname(resolved.absolute);
-  await mkdir(parent, { recursive: true });
+  const firstCreated = await mkdir(parent, { recursive: true });
   const parentRelative = path.posix.dirname(resolved.relative);
   resolveWorkspacePath(
     ws.canonicalRoot,
@@ -271,6 +314,10 @@ async function writeFileContentLocked(
       if (etag(current) !== normalizeEtag(opts.ifMatch)) throw staleRevision();
     }
     await rename(temporary, resolved.absolute);
+    notifyFileChanges(opts.onChanged, [
+      ...createdAncestor(firstCreated, resolved.absolute, resolved.relative),
+      { path: resolved.relative, kind: latest.exists ? "changed" : "created", type: "file" },
+    ]);
     if (existingMode !== undefined)
       await chmod(resolved.absolute, existingMode);
   } finally {
@@ -299,6 +346,7 @@ export async function createWorkspaceEntry(
     encoding?: "utf-8" | "base64";
     overwrite?: boolean;
     signal?: AbortSignal;
+    onChanged?: FileChangeListener;
   } = {},
 ): Promise<FileOperationResponse | FileReadResponse> {
   return withWorkspaceMutation(
@@ -317,6 +365,7 @@ async function createWorkspaceEntryLocked(
     content?: string;
     encoding?: "utf-8" | "base64";
     overwrite?: boolean;
+    onChanged?: FileChangeListener;
   },
 ): Promise<FileOperationResponse | FileReadResponse> {
   const resolved = resolveWorkspacePath(ws.canonicalRoot, relativePath);
@@ -330,13 +379,18 @@ async function createWorkspaceEntryLocked(
       throw conflict("directory already exists");
     if (resolved.exists && !(await lstat(resolved.absolute)).isDirectory())
       throw conflict("path is not a directory");
-    await mkdir(resolved.absolute, { recursive: true });
+    const firstCreated = await mkdir(resolved.absolute, { recursive: true });
+    if (firstCreated) notifyFileChanges(opts.onChanged, [
+      ...createdAncestor(firstCreated, resolved.absolute, resolved.relative),
+      { path: resolved.relative, kind: "created", type: "directory" },
+    ]);
     return { path: resolved.relative, type: "directory" };
   }
   if (resolved.exists && !opts.overwrite) throw conflict("file already exists");
   return writeFileContentLocked(ws, relativePath, opts.content ?? "", {
     encoding: opts.encoding,
     createOnly: !opts.overwrite,
+    onChanged: opts.onChanged,
   });
 }
 
@@ -346,12 +400,13 @@ export async function moveWorkspaceEntry(
   to: string,
   overwrite = false,
   signal?: AbortSignal,
+  onChanged?: FileChangeListener,
 ): Promise<FileOperationResponse> {
   return withWorkspaceMutation(
     ws,
     2 * (from.length + to.length),
     signal,
-    () => moveWorkspaceEntryLocked(ws, from, to, overwrite),
+    () => moveWorkspaceEntryLocked(ws, from, to, overwrite, onChanged),
   );
 }
 
@@ -360,6 +415,7 @@ async function moveWorkspaceEntryLocked(
   from: string,
   to: string,
   overwrite: boolean,
+  onChanged?: FileChangeListener,
 ): Promise<FileOperationResponse> {
   const source = resolveWorkspacePath(ws.canonicalRoot, from);
   const target = resolveWorkspacePath(ws.canonicalRoot, to);
@@ -390,6 +446,12 @@ async function moveWorkspaceEntryLocked(
     ? lexicalPath(ws, target.relative)
     : path.join(path.dirname(target.absolute), path.posix.basename(target.relative));
   const sourceLexicalPath = lexicalPath(ws, source.relative);
+  const type = (await lstat(source.isSymlink ? sourceLexicalPath : source.absolute)).isDirectory() ? "directory" : "file";
+  const notifyMove = (firstCreated?: string) => notifyFileChanges(onChanged, [
+    { path: source.relative, kind: "deleted", type },
+    ...createdAncestor(firstCreated, targetPath, target.relative),
+    { path: target.relative, kind: "created", type },
+  ]);
   if (
     process.platform === "win32" &&
     sourceLexicalPath.toLowerCase() === targetPath.toLowerCase() &&
@@ -403,11 +465,8 @@ async function moveWorkspaceEntryLocked(
       await rename(intermediate, sourceLexicalPath).catch(() => undefined);
       throw error;
     }
-    const moved = await lstat(targetPath);
-    return {
-      path: target.relative,
-      type: moved.isDirectory() ? "directory" : "file",
-    };
+    notifyMove();
+    return { path: target.relative, type };
   }
   let backupPath: string | undefined;
   if (target.exists) {
@@ -415,7 +474,7 @@ async function moveWorkspaceEntryLocked(
     backupPath = `${targetPath}.ompiui-backup-${randomUUID()}`;
     await rename(targetPath, backupPath);
   }
-  await mkdir(path.dirname(targetPath), { recursive: true });
+  const firstCreated = await mkdir(path.dirname(targetPath), { recursive: true });
   const sourcePath = source.isSymlink ? sourceLexicalPath : source.absolute;
   try {
     await rename(sourcePath, targetPath);
@@ -423,12 +482,9 @@ async function moveWorkspaceEntryLocked(
     if (backupPath) await rename(backupPath, targetPath).catch(() => undefined);
     throw error;
   }
+  notifyMove(firstCreated);
   if (backupPath) await rm(backupPath, { recursive: true, force: true });
-  const moved = await lstat(targetPath);
-  return {
-    path: target.relative,
-    type: moved.isDirectory() ? "directory" : "file",
-  };
+  return { path: target.relative, type };
 }
 
 export async function deleteWorkspaceEntry(
@@ -436,12 +492,13 @@ export async function deleteWorkspaceEntry(
   relativePath: string,
   recursive = false,
   signal?: AbortSignal,
+  onChanged?: FileChangeListener,
 ): Promise<void> {
   return withWorkspaceMutation(
     ws,
     2 * relativePath.length,
     signal,
-    () => deleteWorkspaceEntryLocked(ws, relativePath, recursive),
+    () => deleteWorkspaceEntryLocked(ws, relativePath, recursive, onChanged),
   );
 }
 
@@ -449,6 +506,7 @@ async function deleteWorkspaceEntryLocked(
   ws: WorkspaceRecord,
   relativePath: string,
   recursive: boolean,
+  onChanged?: FileChangeListener,
 ): Promise<void> {
   const resolved = resolveWorkspacePath(ws.canonicalRoot, relativePath);
   if (!resolved.exists || resolved.relative === "")
@@ -472,6 +530,7 @@ async function deleteWorkspaceEntryLocked(
       force: false,
     });
   }
+  notifyFileChanges(onChanged, [{ path: resolved.relative, kind: "deleted", type: stat.isDirectory() ? "directory" : "file" }]);
 }
 
 async function describeEntry(

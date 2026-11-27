@@ -3,6 +3,7 @@ import {
   piSpecToCapability,
   type JsonObject,
   type JsonValue,
+  type PackageProgress,
   type PiCapability,
   type PiCapabilityScope,
   type RegistrySnapshot,
@@ -39,7 +40,7 @@ export interface PackagesGateway {
     action: "install" | "link" | "remove" | "update" | "enable" | "disable",
     source?: string,
     local?: boolean,
-    onProgress?: (event: JsonObject) => void,
+    onProgress?: (event: PackageProgress) => void,
   ): Promise<JsonValue>;
   resolve(cwd: string): Promise<JsonValue>;
   resolveSources(
@@ -52,6 +53,8 @@ export interface PackagesGateway {
     source: string,
     operation: "add" | "remove",
     local?: boolean,
+    commandId?: string,
+    onProgress?: (event: PackageProgress) => void,
   ): Promise<JsonValue>;
   installedPath(
     cwd: string,
@@ -68,6 +71,7 @@ export interface CommandContext {
   catalog: CatalogProvider;
   auth: ProviderAuthGateway;
   packages: PackagesGateway;
+  onPackageProgress?: (event: PackageProgress) => void;
   requireRuntime(): SessionRuntime;
 }
 
@@ -257,6 +261,8 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
     ctx.requireRuntime().navigateTree(P.reqString(p, "entryId"), {
       summarize: P.optBoolean(p, "summarize"),
       customInstructions: P.optString(p, "customInstructions"),
+      trackRedo: P.optBoolean(p, "trackRedo"),
+      redoPlanId: P.optString(p, "redoPlanId"),
     }),
   setLabel: async (ctx, p) => {
     await ctx
@@ -368,6 +374,7 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
     cursor: P.optString(p, "cursor"), limit: P.optNumber(p, "limit"), maxBytes: P.optNumber(p, "maxBytes"),
   }),
   "registry.get": async (ctx) => ctx.requireRuntime().getRegistry(),
+  "resources.version": async (ctx) => ctx.requireRuntime().getResourceVersions(),
   "skills.list": async (ctx) => ctx.requireRuntime().listSkills(),
   "skills.get": async (ctx, p) => {
     const runtime = ctx.requireRuntime();
@@ -424,12 +431,8 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
     ctx.catalog.findSessionById(P.reqString(p, "sessionId")),
   "session.findByFile": async (ctx, p) =>
     ctx.catalog.findSessionByFile(P.reqString(p, "sessionFile")),
-  "session.delete": async (ctx, p) => {
-    await ctx.catalog.deleteSession(
-      P.reqString(p, "cwd"),
-      P.reqString(p, "sessionFile"),
-    );
-  },
+  "session.delete": async (ctx, p) =>
+    ctx.catalog.deleteSession(P.reqString(p, "cwd"), P.reqString(p, "sessionFile")),
   // Model visibility and provider credentials must come from the same
   // runtime. The catalog creates a fresh credential-blind runtime, which
   // loses temporary keys set through the provider auth UI after a refresh.
@@ -496,6 +499,7 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
         "install",
       P.optString(p, "source"),
       P.optBoolean(p, "local"),
+      ctx.onPackageProgress,
     ),
   "packages.resolve": async (ctx, p) =>
     ctx.packages.resolve(P.reqString(p, "cwd")),
@@ -511,6 +515,8 @@ const COMMAND_IMPLEMENTATIONS: Record<string, CommandHandler> = {
       P.reqString(p, "source"),
       P.optEnum(p, "operation", ["add", "remove"] as const) ?? "add",
       P.optBoolean(p, "local"),
+      P.optString(p, "commandId"),
+      ctx.onPackageProgress,
     ),
   "packages.installedPath": async (ctx, p) =>
     ctx.packages.installedPath(

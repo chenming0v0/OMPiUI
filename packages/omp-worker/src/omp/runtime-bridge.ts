@@ -9,6 +9,7 @@ import { nativeToolInteractionImports, nativeToolInteractionSource } from './nat
 import { nativeSubagentObservationPrelude, nativeSubagentObservationSource } from './native-subagent-observation.js'
 import { nativeSessionTitleImports, nativeSessionTitleSource } from './native-session-title.js'
 import { nativeContextMaintenanceImports, nativeContextMaintenanceSource } from './native-context-maintenance.js'
+import { REDO_ENTRY_TYPE } from './session-config.js'
 
 export type RuntimeBridgeOperation = "capabilities" | "compact" | "identity" | "queue" | "clearQueue" | "removeQueuedMessage" | "sendQueuedMessage" | "submitUserMessage" | "prepareStop" | "resumeStoppedSession" | "navigateTree" | "abortBranchSummary" | "fork" | "branch" | "reload" | "setLabel" | "setScopedModels" | "cycleModel" | "resources" | "tree" | "asyncJobs" | "inspectAsyncJob" | "cancelAsyncJob" | "goal" | "moveSession" | "worktreeState"
 const RESPONSE_PREFIX = "\u001eompiui-runtime:"
@@ -123,6 +124,38 @@ export default function (pi) {
   ${nativeContextMaintenanceSource}
   function identity(session) {
     return { sessionId: session.sessionManager.getSessionId(), sessionFile: session.sessionFile ?? null, leafId: session.sessionManager.getLeafId(), cwd: session.sessionManager.getCwd() };
+  }
+  const redoEntryType = ${JSON.stringify(REDO_ENTRY_TYPE)};
+  function isRedoMarker(entry) {
+    return entry.type === "custom" && entry.customType === redoEntryType;
+  }
+  function isUserTurn(entry) {
+    return entry.type === "message" && entry.message.role === "user";
+  }
+  function redoCheckpoints(branch, entryId) {
+    const index = branch.findIndex(entry => entry.id === entryId);
+    if (index < 0) return [];
+    const checkpoints = [];
+    let landing;
+    for (const entry of branch.slice(index + (isUserTurn(branch[index]) ? 0 : 1))) {
+      if (isUserTurn(entry)) {
+        if (landing) checkpoints.push(landing);
+        landing = undefined;
+      } else if (entry.type !== "custom_message" && !isRedoMarker(entry) &&
+                 !(entry.type === "custom" && entry.customType === "session_exit")) {
+        landing = entry.id;
+      }
+    }
+    if (landing) checkpoints.push(landing);
+    return checkpoints;
+  }
+  function pendingRedo(branch) {
+    for (let index = branch.length - 1; index >= 0; index--) {
+      const entry = branch[index];
+      if (isUserTurn(entry) || entry.type === "reset_boundary" || entry.type === "branch_summary") return null;
+      if (isRedoMarker(entry)) return entry.data ?? null;
+    }
+    return null;
   }
   function queue(session, includeImageData = false, submittedQueueEntryIds = []) {
     const restore = message => {
@@ -276,9 +309,36 @@ export default function (pi) {
       }
       case "abortBranchSummary": session.abortBranchSummary(); return identity(session);
       case "navigateTree": {
-        const oldLeafId = session.sessionManager.getLeafId();
-        const result = await session.navigateTree(args.entryId, { summarize: args.summarize === true, customInstructions: args.customInstructions });
-        return { ...identity(session), cancelled: result.cancelled, aborted: result.aborted, editorText: result.editorText, editorImages: result.editorImages, summaryEntry: result.summaryEntry, noOp: result.cancelled !== true && !result.aborted && result.editorText === undefined && oldLeafId === session.sessionManager.getLeafId() };
+        const manager = session.sessionManager;
+        const oldLeafId = manager.getLeafId();
+        const tracksRedo = args.trackRedo === true || typeof args.redoPlanId === "string";
+        const oldBranch = tracksRedo ? manager.getBranch().slice() : [];
+        const priorPlan = pendingRedo(oldBranch);
+        const sessionId = manager.getSessionId();
+        const checkpoints = args.trackRedo === true ? redoCheckpoints(oldBranch, args.entryId) : [];
+        const redoIndex = typeof args.redoPlanId === "string" && priorPlan?.sessionId === sessionId && priorPlan.id === args.redoPlanId && Array.isArray(priorPlan.checkpoints)
+          ? priorPlan.checkpoints.indexOf(args.entryId) : -1;
+        if (typeof args.redoPlanId === "string" && (redoIndex < 0 || redoIndex < priorPlan.restored)) {
+          throw Object.assign(new Error("Redo plan has changed; refresh the session"), { code: "SESSION_CONFLICT" });
+        }
+        const result = await session.navigateTree(args.entryId, { summarize: args.summarize === true, customInstructions: args.customInstructions, ...(tracksRedo ? { requireIdle: true } : {}) });
+        const noOp = result.cancelled !== true && !result.aborted && result.editorText === undefined && oldLeafId === manager.getLeafId();
+        let projectionError;
+        if (tracksRedo && !result.cancelled && !result.aborted && !noOp && manager === session.sessionManager) {
+          try {
+            // Append through the native session manager: a hidden custom entry selects
+            // the committed branch on resume without changing messages or session identity.
+            const newLeaf = manager.getLeafId();
+            const nextPlan = redoIndex >= 0 && priorPlan && newLeaf === args.entryId
+              ? (redoIndex + 1 < priorPlan.checkpoints.length ? { ...priorPlan, restored: redoIndex + 1 } : null)
+              : checkpoints.length ? { id: randomUUID(), sessionId, undoLeafId: newLeaf, checkpoints, restored: 0 } : null;
+            manager.appendCustomEntry(redoEntryType, nextPlan);
+            await manager.flush();
+          } catch (error) {
+            projectionError = error instanceof Error ? error.message : String(error);
+          }
+        }
+        return { ...identity(session), cancelled: result.cancelled, aborted: result.aborted, editorText: result.editorText, editorImages: result.editorImages, summaryEntry: result.summaryEntry, noOp, projectionError };
       }
       case "branch": {
         const result = await session.branch(args.entryId);

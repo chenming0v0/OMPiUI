@@ -5,7 +5,7 @@ export const MAX_HTML_INLINE_RESOURCES = 64
 export const MAX_HTML_INLINE_BYTES = 8 * 1024 * 1024
 
 /** 读取串行结算剩余额度；CSS、srcset 与重复内联共用同一份预算。 */
-export function createHtmlResourceBudget(directory?: string, signal?: AbortSignal) {
+export function createHtmlResourceBudget(directory?: string, signal?: AbortSignal, onDependency?: (path: string) => void) {
   const requests = new Map<string, Promise<FileReadResponse | null>>()
   const encoder = new TextEncoder()
   let queue = Promise.resolve()
@@ -32,6 +32,7 @@ export function createHtmlResourceBudget(directory?: string, signal?: AbortSigna
         const remaining = MAX_HTML_INLINE_BYTES - downloadedBytes
         if (remaining <= 0) { truncated = true; return null }
         try {
+          onDependency?.(path)
           const content = await getFileContent(path, directory, undefined, signal, remaining)
           signal?.throwIfAborted()
           const bytes = encoder.encode(JSON.stringify(content)).byteLength

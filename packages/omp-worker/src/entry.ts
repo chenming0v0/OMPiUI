@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto"
+import { statSync } from "node:fs"
 import { resolve } from "node:path"
 import { installWorkerFileLogging } from "./worker-logger.js"
 
 installWorkerFileLogging()
 
-import type { JsonObject, JsonValue, PiRegistrySnapshot } from "@ompiui/protocol"
+import type { JsonObject, JsonValue, PackageProgress, PiRegistrySnapshot } from "@ompiui/protocol"
 import { isJsonObject, PROTOCOL_VERSION, validateParams } from "@ompiui/protocol"
 import { workerProblemFromError } from "./worker-error-problem.js"
 import { OmpRpcSession, type OmpSessionOptions } from "./omp/omp-session.js"
@@ -111,6 +112,14 @@ const ompVersion = driver === "omp" ? detectOmpVersionSync(ompBin) : null
 
 const catalog = driver === "omp" ? new OmpCatalog() : new MockCatalog()
 const packages = driver === "omp" ? new OmpPackages() : catalog as MockCatalog
+function publishPackageProgress(event: PackageProgress): void {
+  send({ kind: "event", generation: workerGeneration, channel: "packages.progress", event })
+  if (event.phase !== "started") {
+    // Bulk mutations may have already applied earlier changes before reporting a failure.
+    send({ kind: "event", generation: workerGeneration, channel: "resources.updated", workspacePath: event.workspacePath, commandId: event.commandId })
+  }
+}
+
 const providerAuth = new OmpProviderAuth(async () => {
   if (catalog instanceof OmpCatalog) return catalog.control.acquire()
   throw Object.assign(new Error("mock driver has no provider auth channel"), { code: "CAPABILITY_DISABLED" })
@@ -156,6 +165,15 @@ const pendingHostCalls = new Map<string, {
   timer: NodeJS.Timeout
 }>()
 
+function sessionFileRevision(file: string | undefined): string | undefined {
+  if (!file) return undefined
+  try {
+    const stat = statSync(file)
+    if (stat.isFile()) return `${file}:${stat.ino}:${stat.size}:${stat.mtimeMs}`
+  } catch { /* Unavailable files are not a durable update. */ }
+  return undefined
+}
+
 function subscribeRuntimeEvents(current: SessionRuntime): Array<() => void> {
   const unsubs: Array<() => void> = []
   // Stable host identity, not a session id: the same runtime can replace sessions.
@@ -170,6 +188,9 @@ function subscribeRuntimeEvents(current: SessionRuntime): Array<() => void> {
     if (event.type === "available_commands_update") {
       void queueRegistryChangeCheck(current, "available_commands_update").catch(error => console.error("[omp-worker] registry refresh failed", error));
     }
+    if (event.type === "session_info_changed" || event.type === "session_info_update") {
+      if (catalog instanceof OmpCatalog) catalog.invalidateSessionList()
+    }
     send({
     kind: "event",
     generation: workerGeneration,
@@ -178,13 +199,22 @@ function subscribeRuntimeEvents(current: SessionRuntime): Array<() => void> {
     event,
     meta,
   })}))
-  unsubs.push(current.onHead(head => send({
-    kind: "event",
-    generation: workerGeneration,
-    sessionId: current.getSessionId(),
-    channel: "session.head",
-    head: head as unknown as JsonObject,
-  })))
+  let summaryRevision = sessionFileRevision(current.getSessionFile())
+  unsubs.push(current.onHead(head => {
+    // A native head can also advance without writing to disk (for example tree navigation).
+    const revision = sessionFileRevision(current.getSessionFile())
+    const summaryChanged = revision !== undefined && revision !== summaryRevision
+    summaryRevision = revision
+    if (summaryChanged && catalog instanceof OmpCatalog) catalog.invalidateSessionList()
+    send({
+      kind: "event",
+      generation: workerGeneration,
+      sessionId: current.getSessionId(),
+      channel: "session.head",
+      head: head as unknown as JsonObject,
+      ...(summaryChanged ? { summaryChanged } : {}),
+    })
+  }))
   if (current.onActivity) {
     unsubs.push(current.onActivity(status => send({
       kind: "event",
@@ -248,7 +278,7 @@ async function openRuntime(params: JsonObject): Promise<JsonValue> {
   runtimes.set(sessionId, opened)
   if (opened instanceof OmpRpcSession) opened.setOutputPaused(ipcSender.isPaused)
   try {
-    await setRuntimeRegistryBaseline(sessionId, opened)
+    runtimeVersions.set(sessionId, await opened.getResourceVersions())
     const state = await opened.getState()
     return {
       sessionId,
@@ -258,7 +288,7 @@ async function openRuntime(params: JsonObject): Promise<JsonValue> {
     }
   } catch (error) {
     runtimes.delete(sessionId)
-    registryDigests.delete(sessionId)
+    runtimeVersions.delete(sessionId)
     unsubs.forEach(unsub => unsub())
     await opened.dispose()
     throw error
@@ -270,7 +300,7 @@ async function closeRuntime(sessionId: string | undefined): Promise<void> {
   const current = runtimes.get(sessionId)
   if (!current) return
   runtimes.delete(sessionId)
-  registryDigests.delete(sessionId)
+  runtimeVersions.delete(sessionId)
   await current.dispose()
 }
 
@@ -288,49 +318,32 @@ const ctx: CommandContext = {
 }
 
 let registryRevision = 1
-const registryDigests = new Map<string, string | undefined>()
-let registryCheck: Promise<void> = Promise.resolve()
-
-async function setRuntimeRegistryBaseline(sessionId: string, current: SessionRuntime): Promise<void> {
-  registryDigests.set(sessionId, stableStringify(await current.getRegistry()))
-}
+const runtimeVersions = new Map<string, Awaited<ReturnType<SessionRuntime['getResourceVersions']>>>()
+const registryChecks = new WeakMap<SessionRuntime, Promise<void>>()
 
 function queueRegistryChangeCheck(current: SessionRuntime, reason: string): Promise<void> {
-  registryCheck = registryCheck.then(() => detectRegistryChange(current, reason), () => detectRegistryChange(current, reason))
-  return registryCheck
+  const detect = () => detectRegistryChange(current, reason)
+  const check = (registryChecks.get(current) ?? Promise.resolve()).then(detect, detect)
+  registryChecks.set(current, check)
+  return check
 }
 
 async function detectRegistryChange(current: SessionRuntime, reason: string): Promise<void> {
   const sessionId = current.getSessionId()
   if (runtimes.get(sessionId) !== current) return
-  const next = stableStringify(await current.getRegistry())
-  const digest = registryDigests.get(sessionId)
-  if (digest === undefined) {
-    registryDigests.set(sessionId, next)
-    return
+  const next = await current.getResourceVersions()
+  if (runtimes.get(sessionId) !== current || current.getSessionId() !== sessionId) return
+  const previous = runtimeVersions.get(sessionId)
+  runtimeVersions.set(sessionId, next)
+  if (next.registry !== previous?.registry) {
+    registryRevision += 1
+    send({ kind: "event", generation: workerGeneration, sessionId, channel: "registry.updated",
+      event: { revision: registryRevision, sessionId, reason, resourceVersion: next.resources } })
   }
-  if (next === digest) return
-  registryDigests.set(sessionId, next)
-  registryRevision += 1
-  send({
-    kind: "event",
-    generation: workerGeneration,
-    sessionId,
-    channel: "registry.updated",
-    event: { revision: registryRevision, sessionId, reason },
-  })
-}
-
-function stableStringify(value: JsonValue): string {
-  return JSON.stringify(sortJson(value))
-}
-
-function sortJson(value: JsonValue): JsonValue {
-  if (Array.isArray(value)) return value.map(sortJson)
-  if (!value || typeof value !== "object") return value
-  return Object.fromEntries(
-    Object.keys(value).sort().map(key => [key, sortJson(value[key] ?? null)]),
-  )
+  if (next.resources !== previous?.resources) {
+    send({ kind: "event", generation: workerGeneration, sessionId, channel: "resources.updated",
+      event: { revision: next.resources, reason } })
+  }
 }
 
 async function execute(command: { type: string; params?: JsonObject; sessionId?: string; maxResultBytes?: number }): Promise<JsonValue | undefined | void> {
@@ -356,6 +369,7 @@ async function execute(command: { type: string; params?: JsonObject; sessionId?:
     catalog,
     auth: providerAuth,
     packages,
+    onPackageProgress: publishPackageProgress,
     requireRuntime(): SessionRuntime {
       if (!current) throw Object.assign(new Error("OMP runtime is not open"), { code: "RUNTIME_NOT_OPEN" })
       return current
@@ -380,6 +394,10 @@ async function execute(command: { type: string; params?: JsonObject; sessionId?:
     throw Object.assign(new Error(`unknown command: ${command.type}`), { code: "UNKNOWN_COMMAND" })
   }
   const result = await handler(commandCtx, params)
+  if (catalog instanceof OmpCatalog && (command.type === "setSessionName" ||
+      (isJsonObject(result) && result.cancelled === false && (result.operation === "fork" || result.operation === "move")))) {
+    catalog.invalidateSessionList()
+  }
   // Runtime replacement (newSession/switchSession/fork) changes the session
   // identity inside the child process; migrate the map key so subsequent
   // requests with the new sessionId find the same runtime.
@@ -388,20 +406,21 @@ async function execute(command: { type: string; params?: JsonObject; sessionId?:
     if (command.sessionId !== currentId) {
       runtimes.delete(command.sessionId!)
       runtimes.set(currentId, current)
-      const digest = registryDigests.get(command.sessionId!)
-      registryDigests.delete(command.sessionId!)
-      registryDigests.set(currentId, digest)
+      const versions = runtimeVersions.get(command.sessionId!)
+      runtimeVersions.delete(command.sessionId!)
+      if (versions) runtimeVersions.set(currentId, versions)
     }
   }
   if (current && shouldCheckRegistryAfter(command.type, params)) {
-    void queueRegistryChangeCheck(current, `command:${command.type}`).catch(error => console.error("[omp-worker] registry refresh failed", error))
+    const check = queueRegistryChangeCheck(current, `command:${command.type}`).catch(error => console.error("[omp-worker] registry refresh failed", error))
+    if (command.type === "reload") await check
   }
   return result
 }
 
 function shouldCheckRegistryAfter(type: string, params: JsonObject): boolean {
   if (type === "prompt" || type === "sendUserMessage") return typeof params.text === "string" && params.text.trimStart().startsWith("/")
-  return ["invokeTool", "invokeCommand", "refreshResources", "setModel", "newSession", "switchSession", "fork"].includes(type)
+  return ["invokeTool", "invokeCommand", "reload", "setModel", "newSession", "switchSession", "fork", "moveSession"].includes(type)
 }
 
 function describeRegistry(): PiRegistrySnapshot {
@@ -425,7 +444,7 @@ async function cleanupWorker(): Promise<void> {
     const current = runtimes.get(sessionId)
     if (!current) return
     runtimes.delete(sessionId)
-    registryDigests.delete(sessionId)
+    runtimeVersions.delete(sessionId)
     await Promise.race([
       current.dispose(),
       new Promise<void>(resolve => {

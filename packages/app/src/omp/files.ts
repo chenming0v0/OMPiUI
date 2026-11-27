@@ -11,6 +11,7 @@ import {
   getHostGitStatus,
   listHostFiles,
   moveHostFileEntry,
+  postHostCommand,
   readHostFile,
   searchHostFilesByName,
   searchHostFilesText,
@@ -87,14 +88,8 @@ function directoryWorkspace(path: string, directory?: string): string | undefine
 async function fetchDirectory(path: string, directory?: string, signal?: AbortSignal): Promise<FileNodeDto[]> {
   const workspaceDir = directoryWorkspace(path, directory)
   const isAbsolute = Boolean(workspaceDir && (/^[a-zA-Z]:[\\/]/.test(workspaceDir) || workspaceDir.startsWith('/')))
-  // Browsing a directory must not register it as a watched workspace:
-  // requireWorkspacePath -> resolveWorkspacePath fires workspaces.open (spawns a
-  // Pi worker prewarm) and workspaces.watch (recursive chokidar watcher). On a
-  // huge tree such as E:\dev (tens of thousands of subdirectories) the recursive
-  // watcher grinds the server to a halt. files.list auto-registers the workspace
-  // record server-side (workspace() find/resolve) without watching or prewarming;
-  // the workspace is properly opened + watched only when the user actually picks
-  // the directory and the app switches to it.
+  // Browse an explicit path with files.list. It validates the workspace without
+  // opening a recursive watcher for directories the user has not selected.
   const workspacePath = isAbsolute && workspaceDir ? workspaceDir : await requireWorkspacePath(workspaceDir)
   const rel = toPiRelativePath(path, workspaceDir)
   const entries: FileNodeDto[] = []
@@ -196,6 +191,10 @@ export async function listDirectory(path: string, directory?: string, signal?: A
 
 export async function prefetchRootDirectory(directory?: string): Promise<void> {
   await listDirectory('.', directory)
+}
+
+export function readExcludedPathRevisions(workspacePath: string, paths: string[], signal: AbortSignal): Promise<(string | null)[]> {
+  return postHostCommand('files.revisions', { workspacePath, paths }, signal)
 }
 
 export async function getFileContent(path: string, directory?: string, ifNoneMatch?: string, signal?: AbortSignal, maxBytes?: number): Promise<FileReadResponse> {

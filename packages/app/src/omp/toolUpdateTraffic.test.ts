@@ -55,7 +55,7 @@ it('updates live tool output without polling state on every frame, then refreshe
     await vi.advanceTimersByTimeAsync(300)
   }
   expect(output).toHaveBeenCalledTimes(34)
-  expect(output).toHaveBeenLastCalledWith('traffic-tool', 'traffic-session', 'running 33')
+  expect(output).toHaveBeenLastCalledWith('traffic-tool', 'traffic-session', 'running 33', { epoch: 'events', sequence: 1 })
   expect(state).not.toHaveBeenCalled()
   expect(branch).not.toHaveBeenCalled()
   emit({ type: 'tool_execution_end', toolCallId: 'traffic-tool', toolName: 'task', result: { content: [{ type: 'text', text: 'complete result' }] } })

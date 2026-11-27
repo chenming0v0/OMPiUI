@@ -9,7 +9,8 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: translate }),
 }))
 
-const { registryMock, skillsMock, promptsMock, agentsFilesMock, reloadMock } = vi.hoisted(() => ({
+const { registryMock, skillsMock, promptsMock, agentsFilesMock, reloadMock, versionMock } = vi.hoisted(() => ({
+  versionMock: vi.fn(),
   registryMock: vi.fn(),
   skillsMock: vi.fn(),
   promptsMock: vi.fn(),
@@ -22,6 +23,7 @@ vi.mock('../../../omp/controllers/index.js', () => ({
 }))
 
 vi.mock('../../../omp/transport/index.js', () => ({
+  getPiResourceVersion: (...args: unknown[]) => versionMock(...args),
   getPiSessionRegistry: (...args: unknown[]) => registryMock(...args),
   getPiSkills: (...args: unknown[]) => skillsMock(...args),
   getPiPrompts: (...args: unknown[]) => promptsMock(...args),
@@ -36,12 +38,14 @@ vi.mock('../../../omp/extensionUiStore', () => ({
   },
 }))
 
-vi.mock('../../../omp/managementEventStore', () => ({
-  useManagementEvents: () => ({ resourceRevisions: {} }),
-}))
-
 vi.mock('../../../store/serverStore', () => ({
-  serverStore: { subscribe: () => () => {}, getActiveServerGeneration: () => 0 },
+  serverStore: {
+    subscribe: () => () => {},
+    getActiveServerGeneration: () => 0,
+    getActiveServerId: () => 'test-server',
+    getStoredServers: () => [],
+    onServerChange: () => () => {},
+  },
 }))
 
 describe('PiResourceManagement', () => {
@@ -62,6 +66,7 @@ describe('PiResourceManagement', () => {
     agentsFilesMock.mockReset().mockResolvedValue([
       { path: 'AGENTS.md', content: '# rules\none rule' },
     ])
+    versionMock.mockReset().mockResolvedValue('initial')
     reloadMock.mockReset().mockResolvedValue(undefined)
   })
 
@@ -119,6 +124,23 @@ describe('PiResourceManagement', () => {
     fireEvent.click(screen.getByRole('button', { name: 'common:refresh' }))
     await screen.findByText(/Skills discovery unavailable/)
     expect(screen.queryByText('debug')).not.toBeInTheDocument()
+    expect(reloadMock).not.toHaveBeenCalled()
+  })
+
+  it('refreshes expanded AGENTS content when only its resource version changes', async () => {
+    render(<PiResourceManagement sessionId="session-1" workspacePath="/one" />)
+    fireEvent.click(await screen.findByRole('button', { name: /pi.agentsFiles/ }))
+    expect(screen.getByText(/one rule/)).toBeInTheDocument()
+    const old = Promise.withResolvers<unknown[]>()
+    agentsFilesMock.mockReturnValueOnce(old.promise)
+    const updated = (version: string) => window.dispatchEvent(new CustomEvent('ompiui:session-resources-updated', { detail: { sessionId: 'session-1', version } }))
+    act(() => { updated('older') })
+    agentsFilesMock.mockResolvedValue([{ path: 'AGENTS.md', content: '# rules\nlatest rule' }])
+    act(() => { updated('latest'); updated('latest') })
+    expect(await screen.findByText(/latest rule/)).toBeInTheDocument()
+    await act(async () => { old.resolve([{ path: 'AGENTS.md', content: '# rules\nstale rule' }]) })
+    expect(screen.queryByText(/stale rule/)).not.toBeInTheDocument()
+    expect(agentsFilesMock).toHaveBeenCalledTimes(3)
     expect(reloadMock).not.toHaveBeenCalled()
   })
 

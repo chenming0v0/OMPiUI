@@ -140,7 +140,7 @@ export const PI_COMMAND_SPECS = [
     name: "abortAndPrompt",
     scope: "session",
     description: "Interrupt current work and send a new prompt",
-    paramsSchema: TEXT_IMAGES_PARAMS,
+    paramsSchema: objectSchema({ text: STRING, images: IMAGES, composerDraftVersion: byteString(128) }, ["text"]),
     queue: "immediate",
     streaming: true,
   },
@@ -153,6 +153,7 @@ export const PI_COMMAND_SPECS = [
         text: STRING,
         images: IMAGES,
         deliverAs: { enum: ["steer", "followUp"] },
+        composerDraftVersion: byteString(128),
       },
       ["text"],
     ),
@@ -430,6 +431,8 @@ export const PI_COMMAND_SPECS = [
         entryId: STRING,
         summarize: BOOLEAN,
         customInstructions: STRING,
+        trackRedo: BOOLEAN,
+        redoPlanId: STRING,
       },
       ["entryId"],
     ),
@@ -620,6 +623,14 @@ export const PI_COMMAND_SPECS = [
     name: "registry.get",
     scope: "session",
     description: "Read runtime tools, commands, extensions, and handlers",
+    queue: "immediate",
+    idempotent: true,
+  },
+  {
+    name: "resources.version",
+    scope: "session",
+    source: "ompiui-adapter",
+    description: "Read the version of the loaded session resources",
     queue: "immediate",
     idempotent: true,
   },
@@ -1043,6 +1054,7 @@ export const PI_COMMAND_SPECS = [
         cwd: STRING,
         source: STRING,
         operation: { enum: ["add", "remove"] },
+        commandId: STRING,
         local: BOOLEAN,
       },
       ["cwd", "source"],
@@ -1131,6 +1143,7 @@ export const RUNTIME_TARGETS = {
   "branch.get": "getBranchPage",
   "tree.get": "getTree",
   "registry.get": "getRegistry",
+  "resources.version": "getResourceVersions",
   "skills.list": "listSkills",
   // The adapter authorizes metadata reads against the runtime's discovered skills.
   "skills.get": "listSkills",
@@ -1172,6 +1185,7 @@ export type PiCommandParams = CoreCommandParams & {
   "branch.get": PiPageParams & BranchSyncRequest;
   "tree.get": PiPageParams;
   "registry.get": Record<string, never>;
+  "resources.version": Record<string, never>;
   "skills.list": Record<string, never>;
   "skills.get": { name: string; filePath: string };
   "asyncJobs.get": Record<string, never>;
@@ -1248,6 +1262,7 @@ export type PiCommandParams = CoreCommandParams & {
     cwd: string;
     source: string;
     operation?: "add" | "remove";
+    commandId?: string;
     local?: boolean;
   };
   "packages.installedPath": {

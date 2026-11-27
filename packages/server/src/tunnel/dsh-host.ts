@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { DshRemoteAccount } from './dsh-remote-account.ts'
-import { DshControl, dshConnectionId, dshDeviceId, parseDshSecure, verifyDshPeer } from './dsh-control.ts'
-import { DshNoise, OMPIUI_DSH_WEB_CAPABILITY, parseDshBrowserGrant, requireDshOmpiuiWeb, type DshBrowserGrant } from '@ompiui/protocol/dsh-remote'
+import { DshControl, type DshControlSocketFactory, dshConnectionId, dshDeviceId, parseDshSecure, verifyDshPeer } from './dsh-control.ts'
+import { DSH_WEB_LEASE_ENDED, DshNoise, OMPIUI_DSH_WEB_CAPABILITY, parseDshBrowserGrant, type DshBrowserGrant, type DshWebLeaseEnd } from '@ompiui/protocol/dsh-remote'
 import { openDshHostc } from './dsh-hostc/index.ts'
 
 const TUNNEL_DOMAIN = /^(?:hostc|tun|hostc-test|tun-test)\.4ba\.io$/
@@ -11,14 +11,18 @@ const GRANT = /^[A-Za-z0-9_-]{43}$/
 const LEASE_MS = 9 * 60_000
 const CHECK_MS = 15_000
 
+const dshHostDefaults = { openHostc: openDshHostc, checkMs: CHECK_MS }
+
 class WebLease {
   private connector?: Awaited<ReturnType<typeof openDshHostc>>
   private sessionId?: string
+  private closing?: Promise<void>
   private readonly stop = new AbortController()
   private request?: { clientDeviceId: string; connectionId: string; requestId: string; leaseExpiresAt: number; sessionId?: string }
 
   constructor(private readonly account: DshRemoteAccount, private readonly path: string, private readonly localPort: number,
-    private readonly activeOrigins: Set<string>) {}
+    private readonly activeOrigins: Set<string>, private readonly onEnd: (reason: DshWebLeaseEnd) => void,
+    private readonly options = dshHostDefaults) {}
 
   private origin?: string
 
@@ -40,7 +44,7 @@ class WebLease {
       if (!TUNNEL_DOMAIN.test(connect.hostname) || browserUrl.href !== `https://${data.sessionId}.${connect.hostname}/`
         || connect.href !== `wss://${connect.hostname}/api/tunnels/${data.sessionId}/connect`) throw new Error('Invalid DS Harness Remote allocation host')
       this.request = { ...request, leaseExpiresAt: data.leaseExpiresAt }
-      this.connector = await openDshHostc({
+      this.connector = await this.options.openHostc({
         lease: { id: data.sessionId, url: browserUrl.href, connectUrl: connect.href, token: data.connectToken },
         localPort: this.localPort,
       }, signal)
@@ -50,7 +54,7 @@ class WebLease {
       const grant = parseDshBrowserGrant(await this.call('/grant', signal))
       if (grant.url !== browserUrl.href || grant.expiresAt > data.leaseExpiresAt) throw new Error('Invalid DS Harness Remote lease grant')
       signal.throwIfAborted()
-      void this.monitor(AbortSignal.any([this.stop.signal, parent]), this.connector, data.leaseExpiresAt)
+      void this.monitor(parent, this.connector, data.leaseExpiresAt)
       return grant
     } catch (error) {
       await this.close()
@@ -65,21 +69,30 @@ class WebLease {
   }
 
   private async monitor(signal: AbortSignal, connector: NonNullable<WebLease['connector']>, deadline: number): Promise<void> {
-    const closeTimer = setTimeout(() => void this.close(), deadline - Date.now())
-    closeTimer.unref()
-    const lifetime = new AbortController()
-    void connector.closed.then(() => lifetime.abort())
-    const combined = AbortSignal.any([signal, lifetime.signal])
+    const deadlineSignal = AbortSignal.timeout(Math.max(0, deadline - Date.now()))
+    const transport = new AbortController()
+    void connector.closed.then(() => transport.abort())
+    const combined = AbortSignal.any([signal, this.stop.signal, deadlineSignal, transport.signal])
+    let reason: DshWebLeaseEnd
     try {
-      while (!combined.aborted) {
-        await delay(CHECK_MS, undefined, { signal: combined, ref: false })
+      for (;;) {
+        await delay(this.options.checkMs, undefined, { signal: combined, ref: false })
         await this.call('/check', combined)
       }
-    } catch { /* Close immediately on revocation, link loss or expiration. */ }
-    finally { clearTimeout(closeTimer); await this.close() }
+    } catch {
+      if (signal.aborted || this.stop.signal.aborted) return
+      reason = deadlineSignal.aborted ? 'expired' : transport.signal.aborted ? 'hostc-closed' : 'check-failed'
+    }
+    const closed = this.close()
+    this.onEnd(reason)
+    await closed
   }
 
-  async close(): Promise<void> {
+  close(): Promise<void> {
+    return this.closing ??= this.release()
+  }
+
+  private async release(): Promise<void> {
     this.stop.abort()
     this.connector?.close()
     this.connector = undefined
@@ -103,8 +116,26 @@ interface Peer {
 }
 
 export async function runDshHost(account: DshRemoteAccount, localPort: number, signal: AbortSignal,
-  activeOrigins: Set<string>, onReady?: () => void): Promise<void> {
-  const { control, identity } = await DshControl.open(account, signal)
+  activeOrigins: Set<string>, onReady?: () => void,
+  options: Partial<typeof dshHostDefaults> & { socketFactory?: DshControlSocketFactory } = {}): Promise<void> {
+  const settings = { ...dshHostDefaults, ...options }
+  let rejected: string | undefined
+  for (;;) {
+    const { control, identity, accessToken, refreshed } = await DshControl.open(account, signal, rejected, options.socketFactory)
+    try {
+      await serveDshPeers(account, localPort, signal, activeOrigins, control, identity, settings, onReady)
+      return
+    } catch (error) {
+      signal.throwIfAborted()
+      if (refreshed || (error as { code?: string })?.code !== 'AUTH_INVALID') throw error
+      rejected = accessToken
+    }
+  }
+}
+
+async function serveDshPeers(account: DshRemoteAccount, localPort: number, signal: AbortSignal,
+  activeOrigins: Set<string>, control: DshControl, identity: Awaited<ReturnType<typeof DshControl.open>>['identity'],
+  settings: typeof dshHostDefaults, onReady?: () => void): Promise<void> {
   const peers = new Map<string, Peer>()
   const path = `/api/v1/hosts/${encodeURIComponent(identity.deviceId)}/dsh-web/sessions`
   const closePeer = async (id: string) => {
@@ -114,6 +145,7 @@ export async function runDshHost(account: DshRemoteAccount, localPort: number, s
     peer.lifetime.abort()
     clearTimeout(peer.handshakeTimeout)
     peer.noise.destroy()
+    await peer.operation?.catch(() => undefined)
     await peer.lease?.close()
   }
   onReady?.()
@@ -123,13 +155,13 @@ export async function runDshHost(account: DshRemoteAccount, localPort: number, s
       if (type === 'connect.incoming') {
         const id = dshConnectionId(payload.connectionId)
         try {
+          if (peers.has(id)) continue
           if (payload.authorization !== 'account' || typeof payload.clientIdentityKey !== 'string'
             || !Array.isArray(payload.preferredTransports) || !payload.preferredTransports.includes('relay') || peers.size >= 8) {
             throw new Error('Connection is not authorized for Relay')
           }
           const client = dshDeviceId(payload.clientDeviceId)
           const key = await verifyDshPeer(account, 'client', client, signal, payload.clientIdentityKey)
-          for (const [old, peer] of peers) if (peer.id === client || old === id) void closePeer(old)
           const handshakeTimeout = setTimeout(() => void closePeer(id), 12_000)
           handshakeTimeout.unref()
           peers.set(id, { id: client, noise: new DshNoise(identity, key, id, identity.deviceId, client),
@@ -140,13 +172,13 @@ export async function runDshHost(account: DshRemoteAccount, localPort: number, s
           control.send('connect.rejected', { connectionId: id })
         }
       } else if (type === 'error' && typeof payload.connectionId !== 'string') {
-        throw Object.assign(new Error('DS Harness Remote closed the host control connection'), { code: 'DSH_UNREACHABLE' })
+        throw control.failure(payload.code)
       } else if (['error', 'transport.selected', 'secure.handshake', 'relay'].includes(type)) {
         const id = dshConnectionId(payload.connectionId)
         const peer = peers.get(id)
         if (!peer) continue
         try {
-          if (type === 'error') { void closePeer(id); continue }
+          if (type === 'error') { await closePeer(id); continue }
           if (payload.targetDeviceId !== identity.deviceId) throw new Error('Wrong DS Harness Remote target')
           const completeHandshake = (data: unknown) => {
             peer.noise.read(data)
@@ -185,7 +217,11 @@ export async function runDshHost(account: DshRemoteAccount, localPort: number, s
                 peer.lease = undefined
                 if (peer.lifetime.signal.aborted) return
                 if (method === 'dsh.web.close') { respond({ ok: true }); return }
-                const lease = new WebLease(account, path, localPort, activeOrigins)
+                const lease = new WebLease(account, path, localPort, activeOrigins, reason => {
+                  if (peer.lease !== lease || peer.lifetime.signal.aborted) return
+                  try { control.sendSecure(id, peer.id, peer.noise, DSH_WEB_LEASE_ENDED, { requestId: request.id, reason }) }
+                  catch { void closePeer(id) }
+                }, settings)
                 peer.lease = lease
                 const grant = await lease.open(peer.id, id, peer.lifetime.signal)
                 respond(grant)
@@ -198,9 +234,9 @@ export async function runDshHost(account: DshRemoteAccount, localPort: number, s
         } catch { void closePeer(id) }
       }
     }
-    if (await control.closed === 4003) throw Object.assign(new Error('This DS Harness Remote host is already connected elsewhere'), { replaced: true })
+    throw control.failure()
   } finally {
     control.close()
-    await Promise.all([...peers.keys()].map(closePeer))
+    await Promise.all([control.closed, ...[...peers.keys()].map(closePeer)])
   }
 }

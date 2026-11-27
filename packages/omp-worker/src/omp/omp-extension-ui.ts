@@ -31,6 +31,7 @@ export class OmpExtensionUiBridge {
   private readonly pendingByOmpId = new Map<string, string>()
   private readonly settledOmpIds = new Set<string>()
   private readonly stateMirror: ExtensionUiStatePatch[] = []
+  private editorText: string | undefined
   private readonly listeners = new Set<(event: OmpExtensionUiEvent) => void>()
   private sessionId = ""
   private write: ((response: JsonObject) => void) | undefined
@@ -107,7 +108,8 @@ export class OmpExtensionUiBridge {
         return
       }
       case "set_editor_text": {
-        this.emit({ type: "editor", sessionId: this.sessionId, command: { kind: "set", text: typeof frame.text === "string" ? frame.text : "" } })
+        this.editorText = typeof frame.text === "string" ? frame.text : ""
+        this.emit({ type: "editor", sessionId: this.sessionId, command: { kind: "set", text: this.editorText } })
         return
       }
       case "open_url": {
@@ -180,6 +182,7 @@ export class OmpExtensionUiBridge {
       this.cancel(requestId, reason, respond)
     }
     this.stateMirror.length = 0
+    this.editorText = undefined
   }
 
   private cancel(requestId: string, reason: ExtensionUiSettlementReason, respond = true): void {
@@ -215,6 +218,10 @@ export class OmpExtensionUiBridge {
   /** state.get 快照：未决弹窗（前端重连后重新渲染） */
   listPending(): ExtensionUiDialogRequest[] {
     return [...this.pending.values()].map(pending => pending.request)
+  }
+
+  getEditorText(): string | undefined {
+    return this.editorText
   }
 
   /** state.get 快照：扩展增量 UI 状态 patch 镜像 */

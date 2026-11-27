@@ -360,6 +360,10 @@ export class TunnelClient {
     if (this.conns.has(frame.c)) return;
     const ws = this.ws;
     if (!ws) return;
+    if (frame.u.split('?', 1)[0] === '/api/v1/host/dsh-remote') {
+      this.sendControl({ type: 'fail', c: frame.c, e: 'local management route is not forwarded' });
+      return;
+    }
     if (this.conns.size >= CONNECTIONS_PER_TUNNEL_MAX || !this.openRate.allow(1)) {
       this.sendControl({ type: "fail", c: frame.c, e: "local request capacity reached" });
       return;

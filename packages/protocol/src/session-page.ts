@@ -11,12 +11,26 @@ export type SessionHead = {
   epoch: string;
 };
 
+export type SessionRedoPlan = {
+  id: string;
+  undoLeafId: string | null;
+  checkpoints: string[];
+  restored: number;
+};
+
 export type LiveMessage = {
   id: string;
   revision: number;
   phase: "streaming" | "persisting";
   message: JsonValue;
   complete?: boolean;
+};
+
+export const LIVE_TOOL_OUTPUT_MAX_BYTES = 256 * 1024;
+
+export type LiveToolOutputSnapshot = {
+  position: EventCursor;
+  entries: { toolCallId: string; toolName: string; text: string }[];
 };
 
 export type BranchCheckpoint = {

@@ -126,12 +126,10 @@ function App() {
     [routeDirectory, currentDirectory, paneControllers, savedDirectories],
   )
 
-  // 全局唯一 SSE 连接。所有 pane 通过 consumer 机制接收自己的 session 事件。
-  useGlobalEvents(activeDirectories)
+  useGlobalEvents()
+  useEffect(() => piEventStream.subscribeServer(), [])
 
-  // Workspace streams carry global activity snapshots for sessions that do
-  // not have an open pane. Without this subscription background completion
-  // notifications have no event source.
+  // Keep workspace-specific file and git watches alongside the server stream.
   useEffect(() => {
     for (const directory of activeDirectories) piEventStream.connectWorkspace(directory)
     return () => {
@@ -859,7 +857,7 @@ function App() {
 
   return (
     <div className="relative flex h-full flex-col bg-bg-100 overflow-hidden">
-      <DesktopTitlebar />
+      <DesktopTitlebar directory={currentDirectory} />
       <InternalDragLayer />
       <ChatViewportProvider value={chatViewport}>
         <div className="relative flex min-h-0 flex-1 overflow-hidden">

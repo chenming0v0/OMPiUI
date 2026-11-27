@@ -1,10 +1,13 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { notifyReconnected } from '../hooks/useGlobalEvents'
 import { SkillPanel } from './SkillPanel'
 
 const getSkillsMock = vi.fn()
 const getDetailsMock = vi.fn()
+const getVersionMock = vi.fn()
 vi.mock('../omp/transport/index.js', () => ({
+  getPiResourceVersion: (...args: unknown[]) => getVersionMock(...args),
   getPiSkills: (...args: unknown[]) => getSkillsMock(...args),
   getPiSkillDetails: (...args: unknown[]) => getDetailsMock(...args),
 }))
@@ -24,6 +27,7 @@ function expandParameters() {
 
 describe('SkillPanel', () => {
   beforeEach(() => {
+    getVersionMock.mockReset().mockResolvedValue('version-1')
     getSkillsMock.mockReset().mockResolvedValue([skill])
     getDetailsMock.mockReset().mockResolvedValue({ frontmatter: { name: skill.name, description: skill.description } })
   })
@@ -115,16 +119,25 @@ describe('SkillPanel', () => {
     expect(screen.queryByText('leaked')).not.toBeInTheDocument()
   })
 
-  it('invalidates details after a registry refresh', async () => {
+  it('invalidates details after a versioned resource change without re-reading the same version', async () => {
     render(<SkillPanel sessionId="session-1" />)
     await expandSkill()
     expandParameters()
     await screen.findByText(/没有其他参数|No other parameters/)
-    await act(async () => { window.dispatchEvent(new CustomEvent('ompiui:registry-updated', { detail: { sessionId: 'session-1' } })) })
+    const changed = () => window.dispatchEvent(new CustomEvent('ompiui:session-resources-updated', { detail: { sessionId: 'session-1', version: 'version-2' } }))
+    getVersionMock.mockResolvedValue('version-2')
+    await act(async () => { changed(); changed() })
     await expandSkill()
     expect(screen.queryByText(skill.filePath)).not.toBeInTheDocument()
+    getDetailsMock.mockResolvedValue({ frontmatter: { name: skill.name, description: skill.description, custom: 'updated detail' } })
     expandParameters()
-    await screen.findByText(/没有其他参数|No other parameters/)
+    await screen.findByText('updated detail')
     expect(getDetailsMock).toHaveBeenCalledTimes(2)
+    expect(getSkillsMock).toHaveBeenCalledTimes(2)
+    await act(async () => { notifyReconnected() })
+    expect(getSkillsMock).toHaveBeenCalledTimes(2)
+    getVersionMock.mockResolvedValue('version-3')
+    await act(async () => { notifyReconnected() })
+    expect(getSkillsMock).toHaveBeenCalledTimes(3)
   })
 })

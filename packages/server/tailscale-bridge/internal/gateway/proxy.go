@@ -15,13 +15,13 @@ type DialFunc func(context.Context, string, string) (net.Conn, error)
 // 原生网络层只改变连接路径，HTTP 和 WebSocket 共用同一转发入口。
 func Proxy(target *url.URL, dial DialFunc, preserveHost bool, forwardingToken ...string) http.Handler {
 	transport := &http.Transport{
-		DialContext:           dial,
-		ForceAttemptHTTP2:     false,
-		TLSHandshakeTimeout:   10 * time.Second,
+		DialContext:         dial,
+		ForceAttemptHTTP2:   false,
+		TLSHandshakeTimeout: 10 * time.Second,
 		// 覆盖服务端 packages 命令的 60 秒预算，并保留响应传输余量。
 		ResponseHeaderTimeout: 90 * time.Second,
 	}
-	return &httputil.ReverseProxy{
+	proxy := &httputil.ReverseProxy{
 		Transport: transport,
 		Rewrite: func(r *httputil.ProxyRequest) {
 			r.SetURL(target)
@@ -45,6 +45,13 @@ func Proxy(target *url.URL, dial DialFunc, preserveHost bool, forwardingToken ..
 			http.Error(w, "Tailscale connection unavailable", http.StatusBadGateway)
 		},
 	}
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path == "/api/v1/host/dsh-remote" {
+			http.NotFound(w, req)
+			return
+		}
+		proxy.ServeHTTP(w, req)
+	})
 }
 
 func LoopbackURL(raw string) (*url.URL, error) {

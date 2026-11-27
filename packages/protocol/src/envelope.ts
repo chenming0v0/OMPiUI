@@ -47,7 +47,9 @@ export type EventChannel =
   | "pi.event"
   | "omp.subagent"
   | "omp.extension_error"
+  | "ui.history"
   | "session.head"
+  | "composerDraft.updated"
   | "command.updated"
   | "extension.ui"
   | "provider.auth"
@@ -64,6 +66,15 @@ export type EventChannel =
   | "terminal.updated"
   | "terminal.exited"
   | "terminal.deleted"
+
+export type PackageProgress = {
+  commandId: string
+  action: 'install' | 'link' | 'remove' | 'update' | 'enable' | 'disable' | 'add-source' | 'remove-source'
+  phase: 'started' | 'completed' | 'failed'
+  /** Omitted for profile-wide changes; project changes carry the workspace path. */
+  workspacePath?: string
+  message?: string
+}
 
 export type EventEnvelope = {
   protocolVersion: typeof PROTOCOL_VERSION
@@ -118,6 +129,7 @@ export type EventClientMessage = EventSubscribeMessage | BrowserDiagnosticMessag
 export type EventServerMessage =
   | {
       type: "hello"
+      timestamp?: string
       protocolVersion: typeof PROTOCOL_VERSION
       service: "ompiui-server"
       subprotocol: typeof EVENT_WS_SUBPROTOCOL

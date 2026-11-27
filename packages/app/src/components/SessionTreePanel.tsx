@@ -37,7 +37,6 @@ import {
   setPiSteeringMode,
 } from '../omp/controllers/index.js'
 import { getPiEntry, getPiTree, getPiSessionControls, initializePiSession, type PiForkResult } from '../omp/transport/index.js'
-import { captureRedoCheckpoints, commitRedoPlan } from '../omp/redoPlanStore'
 import { usePiSessionRuntimeState } from '../omp/hooks/index.js'
 import { selectPiTimelineItems } from '../omp/selectors/index.js'
 import type { PiBranchPage } from '../omp/domain'
@@ -366,10 +365,10 @@ export const SessionTreePanel = memo(function SessionTreePanel({
   const handleNavigate = useCallback(
     (entryId: string) => {
       if (!capabilities.sessionNavigate) return
-      const checkpoints = captureRedoCheckpoints(sessionId, entryId, nativeTree, leafId)
       void runEntryCommand(entryId, async () => {
         const result = await navigatePiTree(sessionId, {
           entryId,
+          trackRedo: true,
           summarize: summarizeNavigation || undefined,
           customInstructions: navigationInstructions.trim() || undefined,
         })
@@ -377,11 +376,9 @@ export const SessionTreePanel = memo(function SessionTreePanel({
           setError(t(result.aborted ? 'sessionTree.navigationAborted' : 'sessionTree.navigationCancelled'))
           return
         }
-        if (result.noOp) return
-        await commitRedoPlan(sessionId, checkpoints)
       })
     },
-    [capabilities.sessionNavigate, nativeTree, leafId, navigationInstructions, runEntryCommand, sessionId, summarizeNavigation, t],
+    [capabilities.sessionNavigate, navigationInstructions, runEntryCommand, sessionId, summarizeNavigation, t],
   )
 
   const runRuntimeCommand = useCallback(async (

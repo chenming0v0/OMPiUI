@@ -34,6 +34,7 @@ async function sessionFixture(t: TestContext) {
       commands.push(structuredClone(command))
       if (command.type === "set_steering_mode") native.steeringMode = command.mode
       if (command.type === "set_follow_up_mode") native.followUpMode = command.mode
+      if (command.type === "set_interrupt_mode") native.interruptMode = command.mode
       const override = await rpc.onRequest(command)
       if (override) return { type: "response", success: true, command: command.type, ...override }
       if (["new_session", "switch_session"].includes(String(command.type))) {
@@ -89,6 +90,56 @@ async function sessionFixture(t: TestContext) {
   }
 }
 
+it('versions AGENTS, prompts and on-disk skill details independently of the capability registry', async t => {
+  const { session, rpc } = await sessionFixture(t)
+  const directory = mkdtempSync(path.join(tmpdir(), 'ompiui-resource-version-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const filePath = path.join(directory, 'SKILL.md')
+  writeFileSync(filePath, '---\nname: example\ncustom: one\n---\nSame body\n')
+  const discovery: JsonObject = {
+    tools: [], activeTools: [], commands: [], extensions: [], eventHandlers: [],
+    skills: [{ name: 'example', filePath, containRoot: directory }],
+    prompts: [{ name: 'example', content: 'Before prompt' }],
+    contextFiles: [{ path: 'AGENTS.md', content: 'Before rules' }],
+  }
+  rpc.onRequest = command => command.type === 'resources' ? { data: structuredClone(discovery) } : undefined
+  const first = await session.getResourceVersions()
+  discovery.contextFiles = [{ path: 'AGENTS.md', content: 'Updated rules' }]
+  const agents = await session.getResourceVersions()
+  assert.equal(agents.registry, first.registry)
+  assert.notEqual(agents.resources, first.resources)
+  writeFileSync(filePath, '---\nname: example\ncustom: two\n---\nSame body\n')
+  const skill = await session.getResourceVersions()
+  assert.equal(skill.registry, first.registry)
+  assert.notEqual(skill.resources, agents.resources)
+  discovery.prompts = [{ name: 'example', content: 'After prompt' }]
+  const prompt = await session.getResourceVersions()
+  assert.equal(prompt.registry, first.registry)
+  assert.notEqual(prompt.resources, skill.resources)
+  assert.deepEqual(await session.getResourceVersions(), prompt)
+})
+
+it('broadcasts configuration changes to both clients only after native mode readback', async t => {
+  const { session, native, rpc } = await sessionFixture(t)
+  const first: string[] = []
+  const second: string[] = []
+  session.onPiEvent(event => first.push(String(event.type)))
+  session.onPiEvent(event => second.push(String(event.type)))
+  await session.setSteeringMode('one-at-a-time')
+  await session.setFollowUpMode('all')
+  await session.setInterruptMode('wait')
+  assert.deepEqual(first, Array(3).fill('session_modes_changed'))
+  assert.deepEqual(second, first)
+  const state = await session.getState()
+  assert.equal(state.steeringMode, 'one-at-a-time')
+  assert.equal(state.followUpMode, 'all')
+  assert.equal(state.interruptMode, 'wait')
+  rpc.onRequest = command => command.type === 'get_state' ? { data: { ...native, interruptMode: 'wait' } } : undefined
+  await assert.rejects(session.setInterruptMode('immediate'), { code: 'SUBMISSION_NOT_ADMITTED' })
+  assert.equal(first.length, 3)
+  assert.equal(second.length, 3)
+})
+
 it('branch pages expose verified stable native aliases after live assistant persistence', async t => {
   const f = await sessionFixture(t)
   await f.session.getBranchPage(undefined, 100, 100000)
@@ -104,6 +155,26 @@ it('branch pages expose verified stable native aliases after live assistant pers
   const persisted = await f.session.getBranchPage(undefined, 100, 100000)
   assert.deepEqual(persisted.stableEntryIds, { 'native-assistant': 'live-assistant' })
   assert.equal(persisted.items[0]?.id, 'native-assistant', 'official ID is never replaced by display ID')
+})
+
+it('returns the latest ordinary tool output in state and drops it at terminal boundaries', async t => {
+  const { session, frame } = await sessionFixture(t)
+  const update = (toolCallId: string, text: string, pty = false) => frame({
+    type: 'tool_execution_update', toolCallId, toolName: 'bash', args: { pty },
+    partialResult: { content: [{ type: 'text', text }] },
+  })
+  frame({ type: 'agent_start' })
+  update('call', 'building')
+  update('call', 'building\nlinking')
+  update('pty', 'terminal stream', true)
+  const snapshot = async () => (await session.getState()).liveToolOutput as JsonObject
+  assert.deepEqual((await snapshot()).entries, [{ toolCallId: 'call', toolName: 'bash', text: 'building\nlinking' }])
+  frame({ type: 'tool_execution_end', toolCallId: 'call', toolName: 'bash' })
+  assert.deepEqual((await snapshot()).entries, [])
+
+  update('later', 'another tool is running')
+  frame({ type: 'session_settled' })
+  assert.deepEqual((await snapshot()).entries, [])
 })
 
 const image = (data: string): ImageInput => ({ type: "image", data, mimeType: "image/png" })

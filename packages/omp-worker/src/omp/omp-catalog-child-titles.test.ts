@@ -105,6 +105,26 @@ describe("child session titles", () => {
     assert.equal(byId.get("child-wrap")?.name, "scout")
   })
 
+  it("starts a new list revision after rename and new durable sessions", async () => {
+    const catalog = new OmpCatalog()
+    const oldFlight = catalog.listAllSessions()
+    const renamedFile = path.join(projectDir, "revision-renamed.jsonl")
+    const forkedFile = path.join(projectDir, "revision-forked.jsonl")
+    const header = (id: string) => ({ type: "session", version: 3, id, cwd: "C:/proj", timestamp: "t0" })
+    writeSession(renamedFile, [header("revision-renamed"), { type: "title", title: "Before" }])
+    catalog.invalidateSessionList()
+    const warm = await catalog.listAllSessions() as Array<{ id: string; name: string }>
+    assert.equal(warm.find(item => item.id === "revision-renamed")?.name, "Before")
+    await oldFlight
+
+    writeSession(renamedFile, [header("revision-renamed"), { type: "title", title: "After rename" }])
+    writeSession(forkedFile, [header("revision-forked")])
+    catalog.invalidateSessionList()
+    const next = await catalog.listAllSessions() as Array<{ id: string; name: string }>
+    assert.equal(next.find(item => item.id === "revision-renamed")?.name, "After rename")
+    assert.ok(next.some(item => item.id === "revision-forked"))
+  })
+
   it("keeps a normal parent session title from the title slot", async () => {
     const listed = await new OmpCatalog().listAllSessions() as Array<{ id: string; name: string | null; firstMessage: string | null }>
     const parent = listed.find(item => item.id === "parent-1")

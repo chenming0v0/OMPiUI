@@ -41,6 +41,7 @@ import {
 import { entryContentChunk } from "./entry-content.js";
 import { buildSessionTreeFromEntries, sessionTreePage } from "./session-tree.js";
 import { copySessionFile } from "../omp/managed-sessions.js";
+import { resourceDigest } from "../omp/resource-registry.js";
 
 const MOCK_SDK_VERSION = "mock";
 
@@ -416,7 +417,7 @@ export class MockCatalog implements CatalogProvider, PackagesGateway {
     return copySessionFile(info.path, sessionsDir());
   }
 
-  async deleteSession(_cwd: string, sessionFile: string): Promise<void> {
+  async deleteSession(_cwd: string, sessionFile: string): Promise<JsonObject | null> {
     const root = path.resolve(sessionsDir());
     const resolved = path.resolve(sessionFile);
     if (!existsSync(resolved))
@@ -435,7 +436,9 @@ export class MockCatalog implements CatalogProvider, PackagesGateway {
         { code: "PATH_OUTSIDE_WORKSPACE" },
       );
     }
+    const id = this.store.list().find(item => item.path === resolved)?.id;
     await this.store.delete(resolved);
+    return { sessionId: id ?? null, sessionFile: resolved };
   }
 
   async listModels(): Promise<JsonValue> {
@@ -866,6 +869,11 @@ export class MockPiSession implements SessionRuntime {
 
   listAgentsFiles(): JsonValue {
     return [];
+  }
+
+  getResourceVersions() {
+    const registry = resourceDigest(this.getRegistry());
+    return { registry, resources: resourceDigest([registry, this.listSkills(), this.listPrompts(), this.listAgentsFiles()]) };
   }
 
   getRegistry(): RegistrySnapshot {
@@ -1327,14 +1335,17 @@ export class MockPiSession implements SessionRuntime {
 
   async setSteeringMode(mode: "all" | "one-at-a-time"): Promise<void> {
     this.steeringMode = mode;
+    this.emitEvent({ type: "session_modes_changed" });
   }
 
   async setFollowUpMode(mode: "all" | "one-at-a-time"): Promise<void> {
     this.followUpMode = mode;
+    this.emitEvent({ type: "session_modes_changed" });
   }
 
   async setInterruptMode(mode: "immediate" | "wait"): Promise<void> {
     this.header = { ...this.header, interruptMode: mode };
+    this.emitEvent({ type: "session_modes_changed" });
   }
 
   async abortAndPrompt(text: string, images?: ImageInput[]): Promise<void> {

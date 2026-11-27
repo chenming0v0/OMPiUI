@@ -6,8 +6,8 @@
 // 在应用初始化时调用 initNotificationSound() 注册即可
 //
 // 触发点：
-// 1. notificationStore.push → 后台会话通知声音
-// 2. 当前会话事件 → 由 useGlobalEvents 回调中调用 playNotificationSound
+// 1. notificationStore → 本端收到的新通知（不播放历史重放）
+// 2. 当前会话事件 → playNotificationSoundDeduped
 //
 // 不要在其他地方直接调用 playSound，统一走这里
 
@@ -63,7 +63,6 @@ export function playNotificationSoundDeduped(type: NotificationType): void {
  */
 export function initNotificationSound(): () => void {
   const unsubscribe = notificationStore.onPush((type: NotificationType) => {
-    // notificationStore.push 只在后台会话触发（非当前 session family）
     // 记录播放时间用于去重
     recentPlays.set(type, Date.now())
     playNotificationSound(type)

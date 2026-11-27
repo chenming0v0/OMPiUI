@@ -11,16 +11,19 @@ import {
   isJsonObject,
   type CommandRecord,
   type JsonObject,
+  type PackageProgress,
 } from '@ompiui/protocol'
 import type { AgentMessage, AgentSessionEvent, PiLiveMessage, ToolResultMessage } from './domain/index.js'
 import type { ProviderAuthEvent, SessionsActivitySnapshot, SessionActivityStatus } from '@ompiui/protocol'
 import { getApiBase, getPiAuthToken, piFetch } from './httpClient.js'
 import { openPiSocket, PI_SOCKET_CLOSED, PI_SOCKET_CLOSING, PI_SOCKET_OPEN, type PiSocket } from './ompSocket'
-import { piBranchStore, piCommandStore, piSessionStateStore } from './state/index.js'
+import { piBranchStore, piCommandStore, piSessionInfoStore, piSessionStateStore } from './state/index.js'
+import { pinnedSessionsStore } from '../store/pinnedSessionsStore'
 import { extensionUiStore } from './extensionUiStore'
 import { extensionTuiStore } from './extensionTuiStore'
 import { commandFeedbackStore } from './commandFeedbackStore'
 import { extensionDiagnosticStore } from './extensionDiagnosticStore'
+import { uiHistory } from './uiHistory'
 import { notificationStore } from '../store/notificationStore'
 import i18n from '../i18n'
 import { liveToolOutputStore, extractToolExecutionText } from './liveToolOutput'
@@ -38,7 +41,6 @@ import {
   receiveResourceRevision,
   receiveSettingsUpdated,
   subscribeManagementStreams,
-  type PackageProgress,
 } from './managementEventStore'
 import type { SessionStatus } from '../types/session'
 import { BrowserDiagnostics } from './browserDiagnostics'
@@ -50,7 +52,7 @@ import { setEventStreamState } from '../api/events'
 import { clearSubagentTranscripts } from './subagentTranscript'
 import { bashPendingStore } from './bashPendingStore'
 import { faultSocketOpened, faultSocketClosed, faultSocketUnused, reportRuntimeCrash, recordClientDiagnostic } from './faultAudit/controller'
-import { loadPiSessionData, refreshPiBranch, refreshPiSessionState, settlePiLiveMessage } from './controllers/index.js'
+import { invalidatePiSessionList, isMissingPiSession, loadPiSessionData, markPiSessionUnavailable, refreshPiBranch, refreshPiSessionState, settlePiLiveMessage } from './controllers/index.js'
 import { SessionActivityWatchdog } from './sessionActivityWatchdog.js'
 import { ensureHostWorkspaceWatch, resetWorkspaceWatchRegistrations } from './workspaces'
 import { getOptionalTerminalSecret } from './terminalIdentity'
@@ -68,12 +70,14 @@ type PiEventPayload = {
     | AgentSessionEvent
     | { type: 'config_update'; model?: JsonObject; thinkingLevel?: string }
     | { type: 'irc_message'; message: JsonObject }
+    | { type: 'session_modes_changed' }
     | { type: 'command_output'; text: string; source?: string; isError?: boolean; level?: string; status?: string }
     | { type: 'prompt_result'; agentInvoked: boolean; status: 'completed' | 'aborted' | 'error'; error?: string | JsonObject }
     | { type: 'extension_error'; extensionPath: string; event: string; error: string }
     | { type: 'notice'; level: 'info' | 'warning' | 'error'; message: string; source?: string }
     | { type: 'rpc_frame_error' | 'rpc_stream_error'; error: string; originalType?: string }
   meta: EventCursor & { liveMessage?: { id: string; revision: number } }
+  sharedHistory?: boolean
 }
 
 type CommandRecovery = {
@@ -87,7 +91,7 @@ type PiExtensionUiEvent =
   | { type: 'requested'; request: import('@ompiui/protocol').ExtensionUiDialogRequest }
   | { type: 'settled'; requestId: string; sessionId: string }
   | { type: 'state'; sessionId: string; patch: import('@ompiui/protocol').ExtensionUiStatePatch }
-  | { type: 'notify'; sessionId: string; message: string; notifyType?: 'info' | 'warning' | 'error' }
+  | { type: 'notify'; sessionId: string; message: string; notifyType?: 'info' | 'warning' | 'error'; sharedHistory?: boolean }
   | { type: 'editor'; sessionId: string; command: import('@ompiui/protocol').ExtensionUiEditorCommand }
   | { type: 'tuiAttach'; sessionId: string; attach: import('@ompiui/protocol').ExtensionTuiAttach }
   | { type: 'tuiDetach'; sessionId: string; key: string }
@@ -98,6 +102,8 @@ type SessionsUpdatedPayload = {
   attached?: boolean
   detached?: boolean
   materialized?: boolean
+  deleted?: boolean
+  sessionFile?: string
   crashed?: boolean
   faultId?: string
   faultTime?: string
@@ -149,6 +155,8 @@ class PiEventStream {
   private readonly diagnostics = new BrowserDiagnostics(message => this.send(message))
   private lastCloseCode: number | undefined
   private lastProblemCode: string | undefined
+  private serverSubscribers = 0
+  private liveHistoryAfter = 0
   private refCounts = new Map<string, number>()
   private workspaceRefCounts = new Map<string, number>()
   private cursors = new Map<string, EventCursor>()
@@ -184,7 +192,18 @@ class PiEventStream {
   private resyncRetries = new Map<string, { attempts: number; timer?: ReturnType<typeof setTimeout> }>()
   private resyncActive = 0
   private resyncGeneration = 0
+  private resourceInvalidations = 0
   private readonly RESYNC_CONCURRENCY = 2
+
+  /** Keep the server stream alive on Home, even with no workspace or pane. */
+  subscribeServer(): () => void {
+    this.serverSubscribers++
+    this.ensureSocket()
+    return () => {
+      this.serverSubscribers--
+      if (!this.hasSubscriptions()) this.closeSocket()
+    }
+  }
 
   /** Subscribe a session stream (reference counted). */
   connect(sessionId: string): void {
@@ -241,6 +260,7 @@ class PiEventStream {
       this.resyncControllers.delete(sessionId)
       this.resyncFlights.delete(sessionId)
       piBranchStore.release(sessionId)
+      uiHistory.forgetFeedback(sessionId)
       // 暂时关掉 pane 仍保留游标；服务端切换时由 disconnectAll 统一清理。
       this.pendingLiveMessages.delete(sessionId)
       this.diagnostics.forget(sessionId)
@@ -317,7 +337,7 @@ class PiEventStream {
     ompSubagentStore.clearAll()
     for (const sessionId of this.refCounts.keys()) extensionUiStore.remove(sessionId)
     extensionUiStore.reset()
-    extensionDiagnosticStore.reset()
+    uiHistory.reset()
     bashPendingStore.clearAll()
     liveToolOutputStore.clearAll()
     toolInteractionStore.clearAll()
@@ -342,10 +362,8 @@ class PiEventStream {
   handleServerChange(): void {
     this.disconnectAll()
     this.knownActiveSessions.clear()
-    if (getTrackedManagementProviders().length > 0) {
-      this.ensureSocket()
-      if (this.ws?.readyState === PI_SOCKET_OPEN) this.sendSubscribe()
-    }
+    // Let the backend switch listeners abort old HTTP/socket work first.
+    queueMicrotask(() => { if (this.hasSubscriptions()) this.ensureSocket() })
   }
 
   private clearRefreshTimers(sessionId: string): void {
@@ -383,6 +401,7 @@ class PiEventStream {
 
     // Discard delayed background callbacks, not their logical refresh demand.
     // Current panes need both snapshots even if no resync control frame arrives.
+    if (this.ws?.readyState === PI_SOCKET_OPEN) uiHistory.refreshServer()
     if (this.resyncTimer) clearTimeout(this.resyncTimer)
     this.resyncTimer = null
     for (const key of this.resyncRetries.keys()) this.clearResyncRetry(key)
@@ -457,6 +476,8 @@ class PiEventStream {
       if (this.ws !== ws) return
       faultSocketOpened()
       setEventStreamState('connected')
+      this.liveHistoryAfter = Number.POSITIVE_INFINITY
+      uiHistory.refreshServer()
       this.diagnostics.connected(this.lastCloseCode)
       // A same-URL/token backend restart leaves canonical path caches intact,
       // but drops its watcher registry. Re-confirm only currently viewed roots.
@@ -564,8 +585,10 @@ class PiEventStream {
     // 上下文用量永远不恢复。每次订阅建立都主动 pull 一次（有防抖合并），
     // 让打开/刷新会话时立即拿到正在工作的 runtime 的真实状态。
     for (const sessionId of this.refCounts.keys()) {
-      if (!this.sentStreams.has(eventStreamKey({ kind: 'session', id: sessionId })))
+      if (!this.sentStreams.has(eventStreamKey({ kind: 'session', id: sessionId }))) {
         this.scheduleStateRefresh(sessionId)
+        uiHistory.refreshFeedback(sessionId)
+      }
     }
     this.sentStreams = new Set(streams.map(eventStreamKey))
     for (const [commandId, recovery] of this.commandRecoveries) {
@@ -587,6 +610,11 @@ class PiEventStream {
       return
     }
     annotateTraffic?.(message)
+    if ('type' in message && message.type === 'hello' && message.protocolVersion === PROTOCOL_VERSION) {
+      serverStore.applyServerConnectedTimestamp(serverStore.getActiveServerId(), message.timestamp)
+      this.liveHistoryAfter = serverStore.getActiveCalibratedNow() ?? Date.now()
+      return
+    }
     if ('type' in message && message.type === 'pong' && message.protocolVersion === PROTOCOL_VERSION) {
       if (this.pongTimer) clearTimeout(this.pongTimer)
       this.pongTimer = null
@@ -603,7 +631,14 @@ class PiEventStream {
     }
     if ('channel' in message && message.channel === 'control' && message.type === 'resync_required') {
       for (const key of Object.keys(message.streams)) {
-        this.queueResync(key, message.streams[key as EventStreamKey]?.cursor)
+        const { cursor, reason } = message.streams[key as EventStreamKey] ?? {}
+        const stream = parseEventStreamKey(key)
+        if (reason && reason !== 'missing_cursor') {
+          if (stream?.kind === 'session') this.checkSessionResourceVersion({ sessionId: stream.id })
+          if (stream?.kind === 'workspace') this.checkSessionResourceVersion({ workspacePath: stream.id })
+        }
+        if (stream?.kind === 'session') window.dispatchEvent(new CustomEvent('ompiui:composer-draft-updated', { detail: { sessionId: stream.id } }))
+        this.queueResync(key, cursor)
       }
       return
     }
@@ -619,6 +654,17 @@ class PiEventStream {
       }
       window.dispatchEvent(new CustomEvent('ompiui:event-stream-error', { detail: message.problem }))
     }
+  }
+
+  private refreshModelConfiguration(): void {
+    receiveProviderAuthUpdated()
+    refreshModelSettings()
+    // The provider form holds its own drafts; a model catalog refresh alone cannot replace them.
+    window.dispatchEvent(new CustomEvent('ompiui:models-updated'))
+  }
+
+  private checkSessionResourceVersion(detail: { sessionId: string } | { workspacePath: string }): void {
+    window.dispatchEvent(new CustomEvent('ompiui:session-resources-updated', { detail }))
   }
 
   private handleOmittedPayload(message: Extract<EventServerMessage, { type: 'payload_omitted' }>): void {
@@ -645,15 +691,16 @@ class PiEventStream {
         if (stream.kind === 'session') this.scheduleStateRefresh(stream.id)
         else for (const sessionId of this.refCounts.keys()) this.scheduleStateRefresh(sessionId)
       } else if (eventChannel === 'resources.updated') {
-        receiveResourceRevision(stream.kind === 'workspace' || stream.kind === 'resources' ? stream.id : undefined, String(Date.now()))
+        if (stream.kind === 'session') this.checkSessionResourceVersion({ sessionId: stream.id })
+        else if (stream.kind === 'workspace') {
+          this.checkSessionResourceVersion({ workspacePath: stream.id })
+          receiveResourceRevision(stream.id, `${message.cursor.epoch}:${message.cursor.sequence}`)
+        } else receiveResourceRevision(stream.kind === 'resources' ? stream.id : undefined, `${message.cursor.epoch}:${message.cursor.sequence}`)
       } else if (eventChannel === 'settings.updated') {
         receiveSettingsUpdated()
         refreshOfficialSettings()
       } else if (eventChannel === 'models.updated') {
-        receiveProviderAuthUpdated()
-        refreshModelSettings()
-        // 供应商设置页直接持有 draft 副本，必须重读，否则过期草稿会把外部改动写回。
-        window.dispatchEvent(new CustomEvent('ompiui:models-updated'))
+        this.refreshModelConfiguration()
       } else {
         if (stream.kind === 'session') this.scheduleBranchRefresh(stream.id)
         else this.queueResync(eventStreamKey(stream))
@@ -715,16 +762,25 @@ class PiEventStream {
       case 'payload.omitted':
         recordClientDiagnostic('worker_payload_omitted', { sessionId, errorCode: 'WORKER_EVENT_TOO_LARGE' })
         this.queueResync(eventStreamKey(envelope.stream))
+        if (sessionId && isJsonObject(envelope.payload) && envelope.payload.channel === 'resources.updated') {
+          this.checkSessionResourceVersion({ sessionId })
+        }
         if (!sessionId && isJsonObject(envelope.payload)) {
-          if (envelope.payload.channel === 'models.updated') refreshModelSettings()
-          else if (envelope.payload.channel === 'settings.updated') {
+          if (envelope.payload.channel === 'settings.updated') {
             receiveSettingsUpdated()
             refreshOfficialSettings()
           }
         }
         break
+      case 'ui.history':
+        if (envelope.stream.kind === 'server' || (sessionId && this.refCounts.has(sessionId))) {
+          uiHistory.receive(envelope.payload, sessionId, this.liveHistoryAfter)
+        }
+        break
       case 'omp.extension_error':
-        if (envelope.stream.kind === 'server') extensionDiagnosticStore.addNativeEvent(envelope.payload)
+        if (envelope.stream.kind === 'server' && isJsonObject(envelope.payload) && envelope.payload.sharedHistory !== true) {
+          extensionDiagnosticStore.addNativeEvent(envelope.payload)
+        }
         break
       case 'pi.event':
         if (sessionId) this.handlePiEvent(sessionId, envelope.payload as unknown as PiEventPayload)
@@ -752,8 +808,14 @@ class PiEventStream {
           window.dispatchEvent(new CustomEvent('ompiui:command-updated', { detail: envelope.payload }))
         }
         break
+      case 'composerDraft.updated':
+        if (sessionId && isJsonObject(envelope.payload) &&
+            (envelope.payload.version === null || typeof envelope.payload.version === 'string')) {
+          window.dispatchEvent(new CustomEvent('ompiui:composer-draft-updated', { detail: { sessionId, version: envelope.payload.version } }))
+        }
+        break
       case 'extension.ui':
-        if (sessionId) this.handleExtensionUiEvent(sessionId, envelope.payload as unknown as PiExtensionUiEvent)
+        if (sessionId) this.handleExtensionUiEvent(sessionId, envelope.payload as unknown as PiExtensionUiEvent, envelope.cursor)
         break
       case 'omp.subagent': {
         // 会话流上 sessionId 取 envelope；server 流上的注册帧镜像由 payload
@@ -776,18 +838,25 @@ class PiEventStream {
         // models.yml 变更（手动加模型 / omp CLI 登录写入）：provider 配置与
         // 凭据同源，bump providerRevision 让管理页重拉；模型选择器的列表
         // store 直接刷新（有 flight 去重），不依赖某个组件恰好挂载
-        receiveProviderAuthUpdated()
-        refreshModelSettings()
-        // 供应商设置页直接持有 draft 副本，必须重读，否则过期草稿会把外部改动写回。
-        window.dispatchEvent(new CustomEvent('ompiui:models-updated'))
+        this.refreshModelConfiguration()
         break
       }
       case 'packages.progress':
-        receivePackageProgress(envelope.payload as unknown as PackageProgress)
+        if (isJsonObject(envelope.payload) && typeof envelope.payload.commandId === 'string') {
+          receivePackageProgress(envelope.payload as PackageProgress)
+        }
         break
       case 'resources.updated': {
-        const payload = envelope.payload as { workspacePath?: string | null } | undefined
-        receiveResourceRevision(payload?.workspacePath ?? undefined, String(envelope.cursor.sequence))
+        const payload = envelope.payload as { sessionId?: string; workspacePath?: string | null; revision?: string } | undefined
+        const resourceSession = sessionId ?? payload?.sessionId
+        if (resourceSession && typeof payload?.revision === 'string') {
+          window.dispatchEvent(new CustomEvent('ompiui:session-resources-updated', {
+            detail: { sessionId: resourceSession, workspacePath: payload.workspacePath, version: payload.revision },
+          }))
+          break
+        }
+        const workspacePath = envelope.stream.kind === 'workspace' ? envelope.stream.id : payload?.workspacePath ?? undefined
+        receiveResourceRevision(workspacePath, `${envelope.cursor.epoch}:${envelope.cursor.sequence}`)
         break
       }
       case 'workspace.files':
@@ -797,11 +866,11 @@ class PiEventStream {
         window.dispatchEvent(new CustomEvent('ompiui:workspace-git-updated', { detail: envelope.payload }))
         break
       case 'registry.updated': {
-        const payload = envelope.payload as { sessionId?: string } | undefined
+        const payload = envelope.payload as { sessionId?: string; resourceVersion?: string } | undefined
         if (sessionId || payload?.sessionId) {
           window.dispatchEvent(
             new CustomEvent('ompiui:registry-updated', {
-              detail: { sessionId: sessionId ?? payload?.sessionId },
+              detail: { sessionId: sessionId ?? payload?.sessionId, resourceVersion: payload?.resourceVersion },
             }),
           )
         }
@@ -829,6 +898,21 @@ class PiEventStream {
   }
 
   private handleSessionsUpdated(payload: SessionsUpdatedPayload | undefined): void {
+    invalidatePiSessionList()
+    if (payload?.deleted) {
+      const sessionId = payload.sessionId ?? piSessionInfoStore.getAll().find(item => item.path === payload.sessionFile)?.id
+      if (sessionId) {
+        this.activityWatchdog.cancel(sessionId)
+        this.clearRefreshTimers(sessionId)
+        this.pendingLiveMessages.delete(sessionId)
+        this.knownActiveSessions.delete(sessionId)
+        liveToolOutputStore.clearSession(sessionId)
+        markPiSessionUnavailable(sessionId, Object.assign(new Error('Session not found'), { code: 'SESSION_NOT_FOUND' }))
+        activeSessionStore.removeSession(sessionId)
+        piSessionInfoStore.remove(sessionId)
+        pinnedSessionsStore.unpin(sessionId)
+      }
+    }
     if (payload?.crashed && payload.sessionId) {
       reportRuntimeCrash(payload.sessionId, payload.faultId, payload.faultTime, payload.errorCode)
       piSessionStateStore.patchState(payload.sessionId, { nativeAskDialog: false, askUi: { available: false, reason: 'runtime_unavailable' } })
@@ -889,12 +973,13 @@ class PiEventStream {
     window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
   }
 
-  private handleExtensionUiEvent(sessionId: string, event: PiExtensionUiEvent): void {
+  private handleExtensionUiEvent(sessionId: string, event: PiExtensionUiEvent, cursor?: EventCursor): void {
     sessionId = event.type === 'settled' ? event.sessionId : event.type === 'requested' ? event.request.sessionId : sessionId
-    piSessionStateStore.invalidateRequests(sessionId)
+    // Versioned dialog events can be merged alongside a state response.
+    if (event.type !== 'requested' && event.type !== 'settled') piSessionStateStore.invalidateRequests(sessionId)
     switch (event.type) {
       case 'requested':
-        if (!extensionUiStore.requestOpened(event.request)) break
+        if (!extensionUiStore.requestOpened(event.request, cursor)) break
         // Surface as pending action on the sidebar (awaiting permission/answer)
         activeSessionStore.addPendingRequest(
           event.request.requestId,
@@ -905,7 +990,6 @@ class PiEventStream {
         break
       case 'settled':
         extensionUiStore.requestSettled(sessionId, event.requestId)
-        activeSessionStore.resolvePendingRequest(event.requestId, sessionId)
         break
       case 'state':
         extensionUiStore.statePatched(sessionId, event.patch)
@@ -914,6 +998,7 @@ class PiEventStream {
         extensionUiStore.editorCommand(sessionId, event.command)
         break
       case 'notify': {
+        if (event.sharedHistory) break
         // 扩展通知（ctx.ui.notify）是扩展命令的主要输出通道（如 /perm list 的
         // 规则列表）。完整文本进命令反馈日志；同时弹一条瞬时通知。
         // 该通知的内容只展示在右侧扩展面板里，因此点击后应跳转到对应
@@ -1155,7 +1240,7 @@ class PiEventStream {
       case 'command_output':
       case 'extension_error':
       case 'prompt_result': {
-        const feedback = commandFeedbackStore.addNativeEvent(sessionId, patch)
+        const feedback = payload.sharedHistory ? null : commandFeedbackStore.addNativeEvent(sessionId, patch)
         if (feedback) notificationStore.push(feedback.status === 'ok' ? 'completed' : feedback.status, feedback.source ?? 'Native command', feedback.message, sessionId, activeSessionStore.getSessionMeta(sessionId)?.directory, { target: 'extensions' })
         // Manual native commands can enter compaction without auto-compaction
         // lifecycle events; read the native state instead of inferring activity.
@@ -1165,6 +1250,7 @@ class PiEventStream {
       case 'notice':
       case 'rpc_frame_error':
       case 'rpc_stream_error': {
+        if (payload.sharedHistory) break
         const message = event.type !== 'notice' && typeof patch.error === 'string' ? patch.error : typeof patch.text === 'string' ? patch.text : typeof patch.message === 'string' ? patch.message : typeof patch.error === 'string' ? patch.error : ''
         const source = typeof patch.source === 'string' ? patch.source : 'OMP runtime'
         const status = patch.level === 'error' || patch.type === 'rpc_frame_error' || patch.type === 'rpc_stream_error' ? 'error' : patch.level === 'warning' ? 'warning' : 'info'
@@ -1194,6 +1280,7 @@ class PiEventStream {
         }
         if (event.message.role === 'toolResult') {
           piBranchStore.patchToolExecution(sessionId, event.message.toolCallId, { isRunning: false, result: event.message })
+          piSessionStateStore.invalidateRequests(sessionId)
           liveToolOutputStore.delete(event.message.toolCallId)
           toolInteractionStore.delete(event.message.toolCallId, sessionId)
         }
@@ -1215,6 +1302,7 @@ class PiEventStream {
         break
       case 'tool_execution_end':
         if ('toolCallId' in event && typeof event.toolCallId === 'string') {
+          piSessionStateStore.invalidateRequests(sessionId)
           liveToolOutputStore.delete(event.toolCallId)
           toolInteractionStore.delete(event.toolCallId, sessionId)
           const timestamp = serverStore.getActiveCalibratedNow() ?? Date.now()
@@ -1251,7 +1339,7 @@ class PiEventStream {
             toolInteractionStore.set(event.toolCallId, sessionId, partial.details.toolInteraction)
           }
           const text = extractToolExecutionText(partial)
-          if (text) liveToolOutputStore.set(event.toolCallId, sessionId, text)
+          if (text) liveToolOutputStore.set(event.toolCallId, sessionId, text, meta)
         }
         // 输出进度由事件直接更新；状态在工具结束等边界刷新，避免每帧再拉完整快照。
         break
@@ -1302,6 +1390,7 @@ class PiEventStream {
       case 'session_info_changed':
       case 'session_info_update':
       case 'queue_update':
+      case 'session_modes_changed':
       case 'compaction_start':
       case 'compaction_end':
         piSessionStateStore.beginRequest(sessionId)
@@ -1376,6 +1465,7 @@ class PiEventStream {
     if (!stream) return Promise.resolve()
     if (stream.kind !== 'session') this.incompleteResync.delete(key)
     if (stream.kind === 'session') {
+      if (this.refCounts.has(stream.id)) uiHistory.refreshFeedback(stream.id)
       const existing = this.resyncFlights.get(stream.id)
       if (existing) {
         this.queueResync(key)
@@ -1398,6 +1488,11 @@ class PiEventStream {
         })
         .catch(error => {
           if (this.resyncGeneration !== generation || controller.signal.aborted) return
+          if (isMissingPiSession(error)) {
+            this.incompleteResync.delete(key)
+            this.clearResyncRetry(key)
+            return
+          }
           this.incompleteResync.add(key)
           this.retryResync(key, generation)
           return this.diagnostics.error('branch_error', stream.id, error)
@@ -1417,12 +1512,17 @@ class PiEventStream {
       this.scheduleStateRefresh(stream.id)
       return flight
     } else if (stream.kind === 'server') {
+      invalidatePiSessionList()
+      uiHistory.refreshServer()
+      receiveResourceRevision(undefined, `resync:${++this.resourceInvalidations}`)
+      this.refreshModelConfiguration()
       receiveSettingsUpdated()
       refreshOfficialSettings()
       window.dispatchEvent(new CustomEvent('ompiui:sessions-changed'))
     } else if (stream.kind === 'provider') {
       receiveProviderAuthUpdated()
     } else if (stream.kind === 'workspace') {
+      receiveResourceRevision(stream.id, `resync:${++this.resourceInvalidations}`)
       if (this.workspaceRefCounts.has(stream.id)) {
         void ensureHostWorkspaceWatch(stream.id).catch(() => undefined)
       }
@@ -1582,7 +1682,7 @@ class PiEventStream {
   }
 
   private hasSubscriptions(): boolean {
-    return this.refCounts.size > 0 || this.workspaceRefCounts.size > 0 || getTrackedManagementProviders().length > 0
+    return this.serverSubscribers > 0 || this.refCounts.size > 0 || this.workspaceRefCounts.size > 0 || getTrackedManagementProviders().length > 0
   }
 }
 

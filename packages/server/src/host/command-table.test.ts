@@ -71,6 +71,43 @@ test("implicit workspace uses the user home rather than executable or launch dir
   }
 })
 
+test("excluded outputs expose bounded metadata and file API mutations publish to workspace subscribers", async () => {
+  const root = realpathSync.native(mkdtempSync(path.join(tmpdir(), "ompiui-output-revisions-")))
+  const hub = new EventHub()
+  const watcher = new WorkspaceWatcher(hub)
+  const runtime = new HostRuntime({ store: new WorkspaceStore(), watcher } as never)
+  const policy = { workspacePath: root }
+  const paths = ["dist", "dist/report.html", "src"]
+  const readRevisions = () => runtime.execute("files.revisions", { ...policy, paths }) as Promise<(string | null)[]>
+  const changes: unknown[] = []
+  const unsubscribe = hub.subscribe(event => {
+    if (event.channel === "workspace.files" && event.stream.id === root) changes.push((event.payload as { changes?: unknown }).changes)
+  })
+  try {
+    assert.deepEqual(await readRevisions(), [null, null, null])
+    await runtime.execute("files.write", { ...policy, path: "dist/report.html", content: "before" })
+    assert.deepEqual(changes.shift(), [
+      { path: "dist", kind: "created", type: "directory" },
+      { path: "dist/report.html", kind: "created", type: "file" },
+    ])
+    const before = await readRevisions()
+    assert.ok(before[0] && before[1])
+    writeFileSync(path.join(root, "dist", "report.html"), "generated outside the API")
+    assert.notEqual((await readRevisions())[1], before[1])
+    await runtime.execute("files.move", { ...policy, from: "dist/report.html", to: "dist/new.html" })
+    await runtime.execute("files.delete", { ...policy, path: "dist/new.html" })
+    assert.deepEqual(changes, [
+      [{ path: "dist/report.html", kind: "deleted", type: "file" }, { path: "dist/new.html", kind: "created", type: "file" }],
+      [{ path: "dist/new.html", kind: "deleted", type: "file" }],
+    ])
+    assert.equal((await readRevisions())[1], null)
+  } finally {
+    unsubscribe()
+    await watcher.dispose()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test("worktree removal protects descendant workspace and cwd shells without affecting a sibling or branch", { timeout: 45_000 }, async () => {
   const fixture = realpathSync.native(mkdtempSync(path.join(tmpdir(), "ompiui-worktree-shell-")))
   const root = path.join(fixture, "storage")
@@ -111,6 +148,10 @@ test("worktree removal protects descendant workspace and cwd shells without affe
   const watcher = new WorkspaceWatcher(hub)
   const terminals = new TerminalManager()
   const runtime = new HostRuntime({ store: new WorkspaceStore(), watcher, sessions, terminals })
+  const catalogEvents: string[] = []
+  const stopCatalogEvents = hub.subscribe(event => {
+    if (event.channel === "workspace.git" && (event.payload as { catalogChanged?: boolean }).catalogChanged) catalogEvents.push(event.stream.id)
+  })
   const remove = () => runtime.execute("git.worktreeRemove", { workspacePath: repo, path: linked })
   const exit = async (workspacePath: string, id: string) => {
     const { promise, resolve } = Promise.withResolvers<void>()
@@ -138,11 +179,13 @@ test("worktree removal protects descendant workspace and cwd shells without affe
 
     const unrelated = await runtime.execute("terminals.create", { workspacePath: sibling }, { terminalOwner }) as { id: string }
     await remove()
+    assert.deepEqual(catalogEvents, [realpathSync.native(repo), realpathSync.native(repo)])
     assert.equal(existsSync(linked), false)
     assert.match(git("show-ref", "--verify", "refs/heads/keep-branch"), /refs\/heads\/keep-branch/)
     assert.equal(terminals.get(sibling, unrelated.id, terminalOwner).status, "running")
     await exit(sibling, unrelated.id)
   } finally {
+    stopCatalogEvents()
     await terminals.shutdown()
     sessions.dispose()
     await watcher.dispose()

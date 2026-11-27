@@ -9,6 +9,7 @@ import { networkInterfaces } from "node:os";
 import {
   PROTOCOL_VERSION,
   hostCommandBodyLimit,
+  UI_HISTORY_PATH,
   isErrorCode,
   jsonByteSize,
   problem,
@@ -22,6 +23,7 @@ import {
 } from "@ompiui/protocol";
 import { inspectOmpRuntimes } from "@ompiui/omp-worker";
 import { EventHub } from "./event-hub.ts";
+import { UiHistory, historyScope } from "./host/ui-history.ts";
 import { RuntimeSupervisor } from "./omp/supervisor.ts";
 import { SessionHost } from "./omp/session-host.ts";
 import { readonlyReasoningSource } from './omp/reasoning-source.ts';
@@ -37,6 +39,7 @@ import {
   pairingClientKey,
   requestHasAllowedOrigin,
   requestHasValidToken,
+  timingSafeTokenEquals,
 } from "./host/security.ts";
 import { resolveAuthToken } from "./host/auth-token.ts";
 import { PathSafetyError } from "./host/path-safety.ts";
@@ -403,6 +406,8 @@ export interface CreateAppServerOptions {
   /** Deterministic terminal transport injection for CI owner-isolation fixtures. */
   terminalSpawn?: TerminalManagerOptions['spawn'];
   eventHub?: EventHub;
+  /** Notification state for the authenticated host identity, not a device ID. */
+  notificationsFile?: string;
   authToken?: string | null;
   /**
    * Bind address, used to build the share link other clients connect with.
@@ -420,6 +425,7 @@ export interface CreateAppServerOptions {
   /** Active, per-connection hosted browser origins; never used as a global share address. */
   getHostedOrigins?: () => Iterable<string>;
   hostedRemote?: DshHostedManager;
+  dshManagementToken?: string;
   /** 自建中转隧道运行状态 getter（GET /api/v1/host/tunnel）。 */
   getTunnelStatus?: () => TunnelStatus | null;
   /** 手机远程一次性配对（invite/redeem）；缺省时配对接口不可用。 */
@@ -458,7 +464,7 @@ export function createAppServer(
   const store = new WorkspaceStore();
   const hub = options.eventHub ?? new EventHub();
   const supervisor = options.supervisor ?? new RuntimeSupervisor();
-  const sessions = options.sessionHost ?? new SessionHost(supervisor, hub);
+  const sessions = options.sessionHost ?? new SessionHost(supervisor, hub, new UiHistory(hub, options.notificationsFile));
   const reasoningTranslations = options.reasoningTranslations ?? new ReasoningTranslations({ readSource: readonlyReasoningSource(sessions) });
   const toolInteractions = new ToolInteractionProxy(sessions);
   const reportClients = new Map<string, number>();
@@ -652,6 +658,16 @@ export function createAppServer(
         );
       }
 
+      if (p === UI_HISTORY_PATH && (method === "GET" || method === "POST")) {
+        const address = historyScope(url.searchParams.get("kind"), url.searchParams.get("sessionId"));
+        res.setHeader("cache-control", "no-store");
+        if (method === "POST") {
+          sessions.uiHistory.change(address, await readBody(req, scope.signal, 4096));
+          return sendJson(res, 200, { ok: true });
+        }
+        return sendJson(res, 200, { entries: sessions.uiHistory.read(address) });
+      }
+
       if (method === "GET" && p === "/api/v1/host/diagnostics/status") {
         return sendJson(res, 200, {
           ...faultReports.status(),
@@ -775,7 +791,9 @@ export function createAppServer(
         const port = typeof address === 'object' && address?.port;
         const origin = req.headers.origin;
         const localHost = port && [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`].includes(req.headers.host ?? '');
-        if (!authToken || !options.hostedRemote || !localHost
+        const credential = req.headers['x-ompiui-dsh-management'];
+        if (!options.hostedRemote || !options.dshManagementToken || typeof credential !== 'string'
+          || !timingSafeTokenEquals(credential, options.dshManagementToken) || !localHost
           || !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '')
           || req.headers[TUNNEL_FORWARDING_HEADER] !== undefined || req.headers.forwarded !== undefined
           || Object.keys(req.headers).some(name => name.startsWith('x-forwarded-'))
@@ -1129,7 +1147,7 @@ export function createAppServer(
 }
 
 function allowedMethodsForPath(pathname: string): string | undefined {
-  if (pathname === '/api/v1/pi/reasoning/config') return 'GET, POST';
+  if (pathname === UI_HISTORY_PATH || pathname === '/api/v1/pi/reasoning/config') return 'GET, POST';
   if (
     pathname === "/api/v1/host/health" ||
     pathname === "/api/v1/host/omp-runtime" ||

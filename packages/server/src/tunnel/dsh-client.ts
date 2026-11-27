@@ -1,30 +1,31 @@
+import { setTimeout as delay } from 'node:timers/promises'
 import { DshRemoteAccount } from './dsh-remote-account.ts'
-import { DshControl, dshConnectionId, dshDeviceId, parseDshSecure, verifyDshPeer } from './dsh-control.ts'
-import { DshNoise, parseDshBrowserGrant, requireDshOmpiuiWeb, type DshBrowserGrant } from '@ompiui/protocol/dsh-remote'
+import { DshControl, type DshControlSocketFactory, dshConnectionId, dshDeviceId, parseDshSecure, verifyDshPeer } from './dsh-control.ts'
+import { DSH_WEB_LEASE_ENDED, DshNoise, isDshWebLeaseEnd, parseDshBrowserGrant, requireDshOmpiuiWeb, type DshBrowserGrant, type DshWebLeaseEnd } from '@ompiui/protocol/dsh-remote'
 
-export async function openDshBrowser(account: DshRemoteAccount, hostId: string, signal: AbortSignal): Promise<{
-  grant: DshBrowserGrant; closed: Promise<number>; close(): void
+export async function openDshBrowser(account: DshRemoteAccount, hostId: string, signal: AbortSignal, socketFactory?: DshControlSocketFactory): Promise<{
+  grant: DshBrowserGrant; closed: Promise<DshWebLeaseEnd | undefined>; close(): Promise<void>
 }> {
   dshDeviceId(hostId)
   const attempt = AbortSignal.any([signal, AbortSignal.timeout(30_000)])
   const hostKey = await verifyDshPeer(account, 'host', hostId, attempt)
-  const { control, identity } = await DshControl.open(account, signal)
+  // Once established, caller cancellation closes the lease before killing the socket.
+  const lifetime = new AbortController()
+  const abortConnect = () => lifetime.abort(attempt.reason)
+  attempt.addEventListener('abort', abortConnect, { once: true })
+  if (attempt.aborted) abortConnect()
+  const { control, identity } = await DshControl.open(account, lifetime.signal, undefined, socketFactory).catch(error => {
+    attempt.removeEventListener('abort', abortConnect)
+    throw error
+  })
   let noise: DshNoise | undefined
-  let connection: string | undefined
-  const close = () => {
-    // Best effort: let the host release the web lease before this control socket goes away.
-    if (noise && connection) {
-      try { control.sendSecure(connection, hostId, noise, 'rpc.request', { method: 'dsh.web.close', params: {} }) } catch { /* Closing is best effort. */ }
-    }
-    noise?.destroy()
-    control.close()
-  }
+  const closeWire = () => { noise?.destroy(); noise = undefined; control.close() }
   try {
+    attempt.throwIfAborted()
     control.send('connect.request', { hostDeviceId: hostId, preferredTransports: ['relay'] })
     const accepted = await control.next(attempt)
     if (accepted?.type !== 'connect.accepted') throw new Error('The DS Harness Remote host did not accept the connection')
     const connectionId = dshConnectionId(accepted.payload.connectionId)
-    connection = connectionId
     noise = new DshNoise(identity, hostKey, connectionId, hostId, identity.deviceId)
     const target = { connectionId, targetDeviceId: hostId }
     control.send('transport.selected', { ...target, transport: 'relay' })
@@ -43,22 +44,42 @@ export async function openDshBrowser(account: DshRemoteAccount, hostId: string, 
         const response = parseDshSecure(channel, next.payload)
         if (response.payload.requestId !== requestId) continue
         if (response.type !== 'rpc.response') throw new Error('The DS Harness Remote host could not open a web tunnel')
-        return response.payload.result
+        return { id: requestId, result: response.payload.result }
       }
       throw new Error('The DS Harness Remote connection ended before the web handoff')
     }
-    requireDshOmpiuiWeb(await rpc('harness.transport.describe'))
-    const grant = parseDshBrowserGrant(await rpc('dsh.web.open'))
-    void (async () => {
+    requireDshOmpiuiWeb((await rpc('harness.transport.describe')).result)
+    const lease = await rpc('dsh.web.open')
+    const grant = parseDshBrowserGrant(lease.result)
+    attempt.removeEventListener('abort', abortConnect)
+    let closeRequest: string | undefined
+    let closing: Promise<void> | undefined
+    const abort = () => { void close() }
+    const closed = (async (): Promise<DshWebLeaseEnd | undefined> => {
       try {
-        for (let update = await control.next(signal); update; update = await control.next(signal)) {
+        for (let update = await control.next(lifetime.signal); update; update = await control.next(lifetime.signal)) {
           if (update.type === 'error' && (update.payload.connectionId === undefined || update.payload.connectionId === connectionId)) break
+          if (update.type !== 'relay' || update.payload.connectionId !== connectionId || update.payload.targetDeviceId !== identity.deviceId) continue
+          const response = parseDshSecure(channel, update.payload)
+          if (response.type === DSH_WEB_LEASE_ENDED && response.payload.requestId === lease.id && isDshWebLeaseEnd(response.payload.reason)) return response.payload.reason
+          if (closeRequest && response.payload.requestId === closeRequest && ['rpc.response', 'rpc.error'].includes(response.type)) break
         }
-      } finally { close() }
-    })().catch(() => undefined)
-    return { grant, close, closed: control.closed }
+      } catch { /* The control transport ended. */ }
+      finally { signal.removeEventListener('abort', abort); closeWire() }
+    })()
+    const close = () => closing ??= (async () => {
+      try {
+        closeRequest = control.sendSecure(connectionId, hostId, channel, 'rpc.request', { method: 'dsh.web.close', params: {} })
+        await Promise.race([closed, delay(1_500, undefined, { ref: false })])
+      } catch { /* The control socket may already be down. */ }
+      finally { closeWire() }
+    })()
+    signal.addEventListener('abort', abort, { once: true })
+    if (signal.aborted) abort()
+    return { grant, close, closed }
   } catch (error) {
-    close()
+    attempt.removeEventListener('abort', abortConnect)
+    closeWire()
     throw error
   }
 }

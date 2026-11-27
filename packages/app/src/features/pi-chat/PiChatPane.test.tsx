@@ -66,11 +66,6 @@ vi.mock('../../omp/managementEventStore', () => ({ useManagementEvents: () => ({
 vi.mock('../../contexts/useDirectory', () => ({ useDirectory: () => ({ currentDirectory: '/workspace', addDirectory: vi.fn() }) }))
 vi.mock('../../contexts/useSessionContext', () => ({ useSessionContext: () => ({ sessions: mocks.sessions, registerSession: vi.fn() }) }))
 vi.mock('../../store/activeSessionStore', () => ({ useSessionActiveEntry: () => null }))
-vi.mock('../../omp/redoPlanStore', () => ({
-  redoPlanStore: { subscribe: () => () => {}, getPlan: () => null },
-  captureRedoCheckpoints: vi.fn(),
-  commitRedoPlan: vi.fn(),
-}))
 vi.mock('../../components/OutlineIndex', () => ({ OutlineIndex: () => null }))
 vi.mock('../chat/ExtensionUiDialogHost.js', () => ({ ExtensionUiDialogHost: () => null }))
 vi.mock('../chat/ExtensionUiSurface', () => ({ ExtensionUiSurface: () => null }))

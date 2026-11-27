@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { constants } from "node:fs"
 import { open, realpath, stat } from "node:fs/promises"
 import path from "node:path"
@@ -11,10 +12,7 @@ function detailError(code: string): Error {
   return Object.assign(new Error(`Cannot read skill metadata (${code})`), { code })
 }
 
-export async function readDiscoveredSkill(cwd: string, skills: JsonValue, name: string, filePath: string): Promise<JsonObject> {
-  const skill = Array.isArray(skills) ? skills.find(item => isJsonObject(item) && item.name === name && item.filePath === filePath) : undefined
-  if (!isJsonObject(skill) || typeof skill.filePath !== "string") throw detailError("SKILL_NOT_FOUND")
-  let content: string
+async function readSkillContent(cwd: string, skill: JsonObject & { filePath: string }): Promise<string> {
   try {
     const discoveredPath = path.resolve(cwd, skill.filePath)
     const target = await realpath(discoveredPath)
@@ -29,7 +27,7 @@ export async function readDiscoveredSkill(cwd: string, skills: JsonValue, name: 
     try {
       const opened = await handle.stat()
       if (opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size || opened.mtimeMs !== before.mtimeMs) throw detailError("SKILL_PATH_CHANGED")
-      const buffer = Buffer.alloc(maxSkillBytes + 1)
+      const buffer = Buffer.alloc(before.size + 1)
       let bytes = 0
       while (bytes < buffer.length) {
         const result = await handle.read(buffer, bytes, buffer.length - bytes, bytes)
@@ -39,7 +37,7 @@ export async function readDiscoveredSkill(cwd: string, skills: JsonValue, name: 
       const after = await handle.stat()
       const current = await stat(target)
       if (bytes > maxSkillBytes || after.size !== opened.size || after.mtimeMs !== opened.mtimeMs || current.dev !== opened.dev || current.ino !== opened.ino || await realpath(discoveredPath) !== target) throw detailError("SKILL_PATH_CHANGED")
-      content = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, bytes))
+      return new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, bytes))
     } finally {
       await handle.close()
     }
@@ -47,6 +45,28 @@ export async function readDiscoveredSkill(cwd: string, skills: JsonValue, name: 
     if (error instanceof Error && "code" in error && String(error.code).startsWith("SKILL_")) throw error
     throw detailError("SKILL_FILE_UNAVAILABLE")
   }
+}
+
+/** Hash only paths returned by native discovery; do not export skill text in events. */
+export async function discoveredSkillDigests(cwd: string, skills: JsonValue | undefined): Promise<JsonValue[]> {
+  const digests: JsonValue[] = []
+  if (!Array.isArray(skills)) return digests
+  for (const skill of skills) {
+    if (!isJsonObject(skill) || typeof skill.filePath !== "string") continue
+    try {
+      const content = await readSkillContent(cwd, { ...skill, filePath: skill.filePath })
+      digests.push(createHash("sha256").update(content).digest("hex"))
+    } catch (error) {
+      digests.push(error instanceof Error ? error.message : "SKILL_FILE_UNAVAILABLE")
+    }
+  }
+  return digests
+}
+
+export async function readDiscoveredSkill(cwd: string, skills: JsonValue, name: string, filePath: string): Promise<JsonObject> {
+  const skill = Array.isArray(skills) ? skills.find(item => isJsonObject(item) && item.name === name && item.filePath === filePath) : undefined
+  if (!isJsonObject(skill) || typeof skill.filePath !== "string") throw detailError("SKILL_NOT_FOUND")
+  const content = await readSkillContent(cwd, { ...skill, filePath: skill.filePath })
   try {
     const result = await runOmpNativeScript(cwd, `
       const { pathToFileURL } = await import("node:url");

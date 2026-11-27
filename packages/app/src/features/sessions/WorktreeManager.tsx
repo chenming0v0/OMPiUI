@@ -8,7 +8,7 @@ import { ProjectDialog } from '../chat/ProjectDialog'
 import { usePiCapabilities } from '../../omp/capabilities'
 import { createHostGitWorktree, getHostGitWorktrees, movePiSessionWorktree, removeHostGitWorktree } from '../../omp/transport'
 import { resolveWorkspacePath, resetWorkspaceResolutionCache } from '../../omp/workspaces'
-import { requestGitWorkspaceCatalogRefresh } from '../../hooks/useGitWorkspaceCatalog'
+import { requestGitWorkspaceCatalogRefresh, useWorktreeCatalogEvents } from '../../hooks/useGitWorkspaceCatalog'
 import { useBusySessions } from '../../store/activeSessionStore'
 import { confirmDiscardUnsavedFileChanges } from '../../store/unsavedFileStore'
 import { serverStore } from '../../store/serverStore'
@@ -45,7 +45,7 @@ export function WorktreeManager({ sessionId, directory, variant = 'compact' }: {
   const readAbort = useRef<AbortController | null>(null)
   const workspace = useRef<string | null>(null)
   const endpointGeneration = useRef(serverStore.getActiveServerGeneration())
-  const refresh = useCallback(async (preserveError = false) => {
+  const refresh = useCallback(async (preserveError = false, catalogRoot?: string) => {
     const version = ++readVersion.current
     readAbort.current?.abort()
     const controller = new AbortController()
@@ -53,7 +53,7 @@ export function WorktreeManager({ sessionId, directory, variant = 'compact' }: {
     setLoading(true)
     if (!preserveError) setError(null)
     try {
-      const cwd = await resolveWorkspacePath(directory)
+      const cwd = await resolveWorkspacePath(catalogRoot ?? directory)
       if (!cwd) throw new Error(t('worktrees.noWorkspace', { defaultValue: 'No workspace is available' }))
       const next = await getHostGitWorktrees(cwd, controller.signal)
       if (version !== readVersion.current || controller.signal.aborted) return
@@ -71,6 +71,10 @@ export function WorktreeManager({ sessionId, directory, variant = 'compact' }: {
     const abort = readAbort
     return () => { clearTimeout(scheduled); ++version.current; abort.current?.abort() }
   }, [open, refresh])
+  const refreshCatalog = useCallback(() => {
+    if (!writing) void refresh(true, catalog?.primaryRoot)
+  }, [refresh, writing, catalog?.primaryRoot])
+  useWorktreeCatalogEvents(open ? catalog?.primaryRoot ?? '' : '', refreshCatalog)
   useEffect(() => serverStore.onServerChange(() => {
     endpointGeneration.current = serverStore.getActiveServerGeneration()
     ++readVersion.current

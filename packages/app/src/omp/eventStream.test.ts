@@ -21,6 +21,7 @@ import { serverStore } from '../store/serverStore'
 import { notificationStore } from '../store/notificationStore'
 import { commandFeedbackStore } from './commandFeedbackStore'
 import { extensionDiagnosticStore } from './extensionDiagnosticStore'
+import { extensionUiStore } from './extensionUiStore'
 import * as transport from './transport/index.js'
 import * as sockets from './ompSocket'
 import * as modelSettingsSync from './modelSettingsSync'
@@ -319,6 +320,28 @@ describe('bounded live recovery and cache cleanup', () => {
     expect(snapshot.length).toBeLessThan(256)
     expect(JSON.stringify(snapshot).length).toBeLessThanOrEqual(16 * 1024 * 1024 + 256)
     expect(piCommandStore.get('cache-299')).not.toBeNull()
+  })
+})
+
+describe('handleSessionsUpdated deletion', () => {
+  it('invalidates only the matching loaded history and refreshes the lists', () => {
+    piBranchStore.setData('deleted-session', fakeBranchPage('deleted-session'))
+    piBranchStore.setData('remaining-session', fakeBranchPage('remaining-session'))
+    piSessionStateStore.setState('deleted-session', { isIdle: true })
+    const changed = vi.fn()
+    window.addEventListener('ompiui:sessions-changed', changed)
+    try {
+      handle({ sessionId: 'deleted-session', sessionFile: '/project/deleted.jsonl', deleted: true })
+      expect(piBranchStore.getData('deleted-session')).toBeNull()
+      expect(piBranchStore.getError('deleted-session')).toMatchObject({ code: 'SESSION_NOT_FOUND' })
+      expect(piSessionStateStore.getState('deleted-session')).toBeNull()
+      expect(piBranchStore.getData('remaining-session')).not.toBeNull()
+      expect(changed).toHaveBeenCalledOnce()
+    } finally {
+      window.removeEventListener('ompiui:sessions-changed', changed)
+      piBranchStore.clear('deleted-session')
+      piBranchStore.clear('remaining-session')
+    }
   })
 })
 
@@ -640,6 +663,18 @@ describe('ordered recovery cursors', () => {
     },
   )
 
+  it.each(['epoch_mismatch', 'history_expired'])('invalidates the open provider form on server %s', async reason => {
+    const updated = vi.fn()
+    window.addEventListener('ompiui:models-updated', updated)
+    try {
+      raw({ channel: 'control', type: 'resync_required', streams: { server: { reason, cursor: { epoch: 'current', sequence: 10 } } } })
+      await vi.advanceTimersByTimeAsync(150)
+      expect(updated).toHaveBeenCalledOnce()
+    } finally {
+      window.removeEventListener('ompiui:models-updated', updated)
+    }
+  })
+
   it('retries a failed command snapshot on resubscription without replaying later events', async () => {
     const send = vi.spyOn(internal, 'send').mockImplementation(() => {})
     const read = vi.spyOn(http, 'piFetch')
@@ -781,6 +816,52 @@ describe('session configuration and stop synchronization', () => {
     })
     expect(piSessionStateStore.getState('another-session')).toBeNull()
     expect(send).not.toHaveBeenCalled()
+  })
+
+  it('refreshes all three mode values without relying on queue or activity changes', async () => {
+    vi.mocked(controllers.refreshPiSessionState).mockImplementation(readNativeSessionState)
+    const state = {
+      isStreaming: true, steeringMode: 'one-at-a-time', followUpMode: 'all', interruptMode: 'wait',
+      queue: { steeringEntries: [], followUpEntries: [], steeringMode: 'one-at-a-time', followUpMode: 'all' },
+    }
+    vi.spyOn(transport, 'getPiSessionState').mockResolvedValue(state)
+    event({ type: 'session_modes_changed' })
+    await vi.advanceTimersByTimeAsync(200)
+    expect(piSessionStateStore.getState('session-stop')).toMatchObject(state)
+  })
+
+  it.each(['submitted', 'user_cancelled', 'timeout'])('reconciles a dialog whose %s settled event fell out of replay history', async (reason) => {
+    const sessionId = `dialog-recovery-${reason}`
+    const stream = { kind: 'session' as const, id: sessionId }
+    const dialog = (id: string, kind: string, sequence: number) => handleEvent({
+      stream, channel: 'extension.ui', cursor: { epoch: 'dialogs', sequence },
+      payload: { type: 'requested', request: {
+        requestId: id, sessionId, kind, title: id, createdAt: '2026-01-01T00:00:00.000Z',
+        ...(kind === 'ask' ? { questions: [] } : kind === 'confirm' ? { message: 'OK?' } : {}),
+      } },
+    })
+    // The client has rendered these dialogs but never gets the settled events.
+    dialog('ask', 'ask', 1)
+    dialog('confirm', 'confirm', 2)
+    dialog('input', 'input', 3)
+    piBranchStore.setData(sessionId, fakeBranchPage(sessionId))
+    vi.mocked(controllers.refreshPiSessionState).mockImplementation(readNativeSessionState)
+    const snapshot = Promise.withResolvers<JsonObject>()
+    vi.spyOn(transport, 'getPiSessionState').mockReturnValue(snapshot.promise)
+    const internal = piEventStream as unknown as { handleRaw(raw: string): void }
+    internal.handleRaw(JSON.stringify({ channel: 'control', type: 'resync_required', streams: {
+      [`session:${sessionId}`]: { reason: 'history_expired', cursor: { epoch: 'dialogs', sequence: 500 } },
+    } }))
+    await vi.advanceTimersByTimeAsync(350)
+    dialog('fresh', 'input', 501)
+    snapshot.resolve({ isStreaming: false, pendingExtensionUiRequests: [], pendingExtensionUiCursor: { epoch: 'dialogs', sequence: 500 } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(extensionUiStore.getSnapshot().sessions[sessionId]?.pending.map(item => item.requestId)).toEqual(['fresh'])
+    handleEvent({ stream, channel: 'extension.ui', cursor: { epoch: 'dialogs', sequence: 502 },
+      payload: { type: 'settled', sessionId, requestId: 'fresh', reason } })
+    expect(activeSessionStore.getBusySessionsSnapshot().some(entry => entry.sessionId === sessionId && entry.pendingAction)).toBe(false)
+    extensionUiStore.remove(sessionId)
+    piBranchStore.clear(sessionId)
   })
 
   it('refreshes the actual model on model_changed and invalidates older reads', async () => {
@@ -932,6 +1013,47 @@ describe('tool_execution_update progress frames', () => {
     const next = { path: 'xd://task', content: '{"tasks":[]}' }
     internal.handlePiEvent('progress-session', { event: { type: 'tool_execution_update', toolCallId: 'call-1', toolName: 'write', args: next } })
     expect(piBranchStore.getData('progress-session')?.client?.toolExecutions?.['call-1']?.call?.arguments).toEqual(next)
+  })
+})
+
+describe('shared UI history', () => {
+  afterEach(() => {
+    piEventStream.disconnectAll()
+    notificationStore.replaceShared([], new Set())
+    vi.restoreAllMocks()
+  })
+
+  it('reads the server snapshot on resync and never overwrites a newer clear with a pending read', async () => {
+    const pending = Promise.withResolvers<Response>()
+    const row = { id: 'shared-run', type: 'completed', title: 'Job', body: '', sessionId: 'shared-session', timestamp: 10, read: false }
+    vi.spyOn(modelSettingsSync, 'refreshOfficialSettings').mockImplementation(() => {})
+    let notificationReads = 0
+    vi.spyOn(http, 'piFetch').mockImplementation(async (url, options) => {
+      if (url.includes('kind=notifications') && options?.method !== 'POST') {
+        notificationReads++
+        if (notificationReads === 1) return pending.promise
+      }
+      return Response.json({ entries: [] })
+    })
+    const replace = vi.spyOn(notificationStore, 'replaceShared')
+    const internal = piEventStream as unknown as { handleResync(key: string): Promise<void> }
+    await internal.handleResync('server')
+    handleEvent({ stream: { kind: 'server', id: 'server' }, channel: 'ui.history', cursor: { epoch: 'history', sequence: 2 }, payload: { kind: 'notifications' } })
+    pending.resolve(Response.json({ entries: [row] }))
+    await vi.waitFor(() => expect(replace).toHaveBeenCalledWith([], expect.any(Set)))
+    expect(replace).not.toHaveBeenCalledWith([row], expect.any(Set))
+  })
+
+  it('uses the selected session scope to hydrate feedback and does not append local duplicates', async () => {
+    const full = { id: 'feedback-1', at: 7, sessionId: 'shared-session', command: '', status: 'info', message: 'full output\nlast line' }
+    const internal = piEventStream as unknown as { refCounts: Map<string, number>; handlePiEvent(sessionId: string, payload: unknown): void }
+    vi.spyOn(http, 'piFetch').mockResolvedValue(Response.json({ entries: [full] }))
+    internal.refCounts.set(full.sessionId, 1)
+    handleEvent({ stream: { kind: 'session', id: full.sessionId }, channel: 'ui.history', cursor: { epoch: 'history', sequence: 1 }, payload: { kind: 'feedback' } })
+    internal.handlePiEvent(full.sessionId, { event: { type: 'command_output', text: full.message }, meta: { sequence: 1 }, sharedHistory: true })
+    await vi.waitFor(() => expect(commandFeedbackStore.getSnapshot().sessions[full.sessionId]).toEqual([full]))
+    piEventStream.disconnect(full.sessionId)
+    expect(commandFeedbackStore.getSnapshot().sessions[full.sessionId]).toBeUndefined()
   })
 })
 

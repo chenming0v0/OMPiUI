@@ -4,38 +4,24 @@
 //
 // 统一管理所有通知：
 // 1. Toast 弹窗（右上角，8 秒自动消失，悬停暂停）
-// 2. 通知历史（持久化到 localStorage，显示在 Active tab 的 Notifications 区域）
-//
-// 由 useGlobalEvents 统一推送，不再由 activeSessionStore 管通知
+// 2. 后端共享通知历史；本机错误与旧版本历史仍留在本端。
 
 import { useSyncExternalStore } from 'react'
+import type { NotificationChange, NotificationEntry, NotificationTarget, NotificationType } from '@ompiui/protocol'
 import { serverStore } from './serverStore'
+import i18n from '../i18n'
+import { paneLayoutStore } from './paneLayoutStore'
+import { activeSessionStore } from './activeSessionStore'
 import { serverStorage } from '../utils/perServerStorage'
 
 // ============================================
 // Types
 // ============================================
 
-export type NotificationType = 'permission' | 'question' | 'completed' | 'error' | 'warning' | 'info'
+export type { NotificationEntry, NotificationTarget, NotificationType } from '@ompiui/protocol'
 
-/** 点击通知后的跳转目标：session 页面（默认）或该 session 右侧边栏的扩展面板 */
-export type NotificationTarget = 'session' | 'extensions'
-
-/** push 后的回调，用于声音播放等扩展 */
-export type NotificationPushListener = (type: NotificationType) => void
-
-export interface NotificationEntry {
-  id: string
-  type: NotificationType
-  title: string
-  body: string
-  sessionId: string
-  directory?: string
-  timestamp: number
-  read: boolean
-  /** 点击后的跳转目标；缺省为 'session'。扩展通知（ctx.ui.notify）为 'extensions' */
-  target?: NotificationTarget
-}
+/** Local presentation callback, also used by sound and system notifications. */
+export type NotificationPushListener = (type: NotificationType, entry: NotificationEntry) => void
 
 export interface ToastItem {
   notification: NotificationEntry
@@ -97,6 +83,10 @@ class NotificationStore {
     toasts: [],
     notifications: loadNotifications(),
   }
+  private local = this.state.notifications
+  private shared: NotificationEntry[] = []
+  private readonly announced = new Set<string>()
+  private sharedChange?: (change: NotificationChange) => Promise<void>
   private subscribers = new Set<Subscriber>()
   private toastTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private pushListeners = new Set<NotificationPushListener>()
@@ -113,7 +103,10 @@ class NotificationStore {
     serverStore.onServerChange(() => {
       this.toastTimers.forEach(timer => clearTimeout(timer))
       this.toastTimers.clear()
-      this.state = { toasts: [], notifications: loadNotifications() }
+      this.local = loadNotifications()
+      this.shared = []
+      this.announced.clear()
+      this.state = { toasts: [], notifications: this.local }
       this.notify()
     })
   }
@@ -129,7 +122,7 @@ class NotificationStore {
   }
 
   private persist() {
-    saveNotifications(this.state.notifications)
+    saveNotifications(this.local)
   }
 
   getSnapshot = (): NotificationState => this.state
@@ -168,10 +161,52 @@ class NotificationStore {
       target: options?.target,
     }
 
-    // 加到历史
-    const notifications = [entry, ...this.state.notifications].slice(0, MAX_NOTIFICATIONS)
+    this.updateLocal([entry, ...this.local].slice(0, MAX_NOTIFICATIONS))
+    this.announce(entry)
+  }
 
-    // 弹 toast（仅开关打开时）
+  onSharedChange(handler: (change: NotificationChange) => Promise<void>) {
+    this.sharedChange = handler
+  }
+
+  replaceShared(entries: NotificationEntry[], added: ReadonlySet<string>) {
+    const previous = new Set(this.shared.map(row => row.id))
+    this.shared = entries
+    const unread = new Set(this.shared.filter(row => !row.read).map(row => row.id))
+    const toasts = this.state.toasts.filter(item => {
+      const id = item.notification.id
+      if (!previous.has(id) || unread.has(id)) return true
+      this.clearToastTimer(id)
+      return false
+    })
+    this.state = { ...this.state, toasts, notifications: this.history() }
+    this.notify()
+    for (const entry of [...entries].reverse()) {
+      if (entry.read || this.announced.has(entry.id) || !added.has(entry.id)) continue
+      this.announced.add(entry.id)
+      if (this.announced.size > MAX_NOTIFICATIONS * 2) this.announced.delete(this.announced.values().next().value!)
+      const completion = entry.type === 'completed' && entry.target !== 'extensions'
+      if (completion && entry.sessionId === paneLayoutStore.getFocusedSessionId()) continue
+      this.announce(completion ? {
+        ...entry,
+        title: activeSessionStore.getSessionMeta(entry.sessionId)?.title || entry.title,
+        body: i18n.t('chat:notification.completed'),
+      } : entry)
+    }
+  }
+
+  private history(): NotificationEntry[] {
+    return [...this.shared, ...this.local].sort((a, b) => b.timestamp - a.timestamp)
+  }
+
+  private updateLocal(entries: NotificationEntry[]) {
+    this.local = entries
+    this.state = { ...this.state, notifications: this.history() }
+    this.persist()
+    this.notify()
+  }
+
+  private announce(entry: NotificationEntry) {
     if (this.toastEnabled) {
       const toasts = [...this.state.toasts]
       if (toasts.length >= MAX_TOASTS) {
@@ -179,70 +214,44 @@ class NotificationStore {
         if (oldest) this.clearToastTimer(oldest.notification.id)
       }
       toasts.unshift({ notification: entry, exiting: false })
-      this.state = { ...this.state, toasts, notifications }
-      this.persist()
+      this.state = { ...this.state, toasts }
       this.notify()
       this.scheduleToastDismiss(entry.id)
-    } else {
-      this.state = { ...this.state, notifications }
-      this.persist()
-      this.notify()
     }
-
-    // 触发 push 后回调（声音播放等）
-    this.pushListeners.forEach(fn => {
-      try {
-        fn(type)
-      } catch {
-        // 回调异常不影响通知流程
-      }
-    })
+    for (const listener of this.pushListeners) {
+      try { listener(entry.type, entry) } catch { /* Local presentation must not affect history. */ }
+    }
   }
 
-  // ============================================
-  // 用户交互（通知历史）
-  // ============================================
-
   markRead(id: string) {
-    const notifications = this.state.notifications.map(n => (n.id === id && !n.read ? { ...n, read: true } : n))
-    this.state = { ...this.state, notifications }
-    this.persist()
-    this.notify()
+    if (this.shared.some(row => row.id === id)) void this.sharedChange?.({ action: 'markRead', id })
+    else this.markLocalRead(row => row.id === id)
   }
 
   markAllRead() {
-    const notifications = this.state.notifications.map(n => (n.read ? n : { ...n, read: true }))
-    this.state = { ...this.state, notifications }
-    this.persist()
-    this.notify()
+    this.markLocalRead(() => true)
+    if (this.shared.length) void this.sharedChange?.({ action: 'markAllRead' })
   }
 
   markSessionNotificationsRead(sessionId: string, type?: NotificationType) {
-    let changed = false
-    const notifications = this.state.notifications.map(n => {
-      if (n.sessionId !== sessionId) return n
-      if (type && n.type !== type) return n
-      if (n.read) return n
-      changed = true
-      return { ...n, read: true }
-    })
-    if (!changed) return
-    this.state = { ...this.state, notifications }
-    this.persist()
-    this.notify()
+    const matches = (row: NotificationEntry) => row.sessionId === sessionId && (!type || row.type === type)
+    this.markLocalRead(matches)
+    if (this.shared.some(row => !row.read && matches(row))) void this.sharedChange?.({ action: 'markSessionRead', sessionId, type })
+  }
+
+  private markLocalRead(matches: (row: NotificationEntry) => boolean) {
+    if (!this.local.some(row => !row.read && matches(row))) return
+    this.updateLocal(this.local.map(row => !row.read && matches(row) ? { ...row, read: true } : row))
   }
 
   dismiss(id: string) {
-    const notifications = this.state.notifications.filter(n => n.id !== id)
-    this.state = { ...this.state, notifications }
-    this.persist()
-    this.notify()
+    if (this.shared.some(row => row.id === id)) void this.sharedChange?.({ action: 'dismiss', id })
+    else this.updateLocal(this.local.filter(row => row.id !== id))
   }
 
   clearAll() {
-    this.state = { ...this.state, notifications: [] }
-    this.persist()
-    this.notify()
+    this.updateLocal([])
+    if (this.shared.length) void this.sharedChange?.({ action: 'clear' })
   }
 
   // ============================================

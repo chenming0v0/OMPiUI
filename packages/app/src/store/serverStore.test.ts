@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PROTOCOL_VERSION } from '@ompiui/protocol'
 
+const nativeInvoke = vi.hoisted(() => vi.fn())
+vi.mock('@tauri-apps/api/core', () => ({ invoke: nativeInvoke }))
+
 function jsonResponse(body: unknown, init?: ResponseInit) {
   return new Response(JSON.stringify(body), {
     ...init,
@@ -111,6 +114,60 @@ describe('serverStore local runtime URL', () => {
     expect(serverStore.getActiveServerGeneration()).toBe(before + 1)
     expect(listener).toHaveBeenCalled()
     unsubscribe()
+  })
+
+  it('applies a managed service result without selecting it or overwriting another window’s default', async () => {
+    const { applyLocalServerConfig, serverStore } = await import('./serverStore')
+    const remote = serverStore.addServer({ name: 'Remote', url: 'https://remote.test', token: 'remote-token' })
+    serverStore.setActiveServer(remote.id)
+    const generation = serverStore.getActiveServerGeneration()
+    localStorage.setItem('ompiui-active-server', 'local') // another window's selection
+
+    expect(applyLocalServerConfig('http://127.0.0.1:58231/', 'local-token')).toBe(true)
+    expect(serverStore.getActiveBaseUrl()).toBe(remote.url)
+    expect(serverStore.getActiveToken()).toBe(remote.token)
+    expect(serverStore.getActiveServerGeneration()).toBe(generation)
+    expect(localStorage.getItem('ompiui-active-server')).toBe('local')
+    expect(sessionStorage.getItem('ompiui-active-server')).toBe(remote.id)
+    expect(serverStore.getLocalServer()).toMatchObject({ url: 'http://127.0.0.1:58231', token: 'local-token' })
+
+    serverStore.setActiveServer('local')
+    expect(serverStore.getActiveBaseUrl()).toBe('http://127.0.0.1:58231')
+  })
+
+  it('keeps the latest user selection when a native startup finishes later', async () => {
+    const { serverStore } = await import('./serverStore')
+    const { startDesktopService, applyDesktopServiceStart } = await import('../services/desktopService')
+    const pending = createDeferred<{ started: boolean; startedByUs: boolean; url: string; token: string }>()
+    const entered = createDeferred<void>()
+    const start = { started: true, startedByUs: true, url: 'http://127.0.0.1:58231', token: 'local-token' }
+    const remote = serverStore.addServer({ name: 'Remote', url: 'https://remote.test', token: 'remote-token' })
+    nativeInvoke.mockImplementation(async command => {
+      if (command === 'start_ompiui_service') {
+        entered.resolve()
+        return await pending.promise as never
+      }
+      return { running: true, startedByUs: true, environment: {} } as never
+    })
+    try {
+      const task = startDesktopService()
+      await entered.promise
+      serverStore.setActiveServer(remote.id)
+      pending.resolve(start)
+      await task
+      applyDesktopServiceStart(start) // same path as the tray's broadcast
+      expect(serverStore.getActiveServer()).toMatchObject(remote)
+      expect(serverStore.getLocalServer()).toMatchObject({ url: start.url, token: start.token })
+    } finally {
+      nativeInvoke.mockReset()
+    }
+  })
+
+  it('preserves a remote endpoint stored in the default slot', async () => {
+    const { applyLocalServerConfig, serverStore } = await import('./serverStore')
+    serverStore.updateServer('local', { url: 'https://remote.test', token: 'remote-token' })
+    expect(applyLocalServerConfig('http://127.0.0.1:58231', 'local-token')).toBe(false)
+    expect(serverStore.getActiveServer()).toMatchObject({ id: 'local', url: 'https://remote.test', token: 'remote-token' })
   })
 
   it('does not notify active endpoint listeners when local URL changes while remote is active', async () => {

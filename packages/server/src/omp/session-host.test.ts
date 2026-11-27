@@ -60,9 +60,9 @@ test("unattributed extension errors go only to the server stream, not the curren
   const frame = { type: "extension_error", extensionPath: "<timer>", event: "timeout_callback", error: "original error\nlast line\n" }
   receive({ kind: "event", channel: "omp.extension_error", generation: "worker", runtimeId: "runtime", event: frame })
   const events = hub.replaySince(server, start).events
-  assert.equal(events.length, 1)
-  assert.deepEqual(events[0]?.payload, { workerGeneration: "worker", runtimeId: "runtime", frame })
-  assert.equal(events[0]?.channel, "omp.extension_error")
+  assert.deepEqual(events.map(event => event.channel), ['ui.history', 'omp.extension_error'])
+  assert.deepEqual(events[1]?.payload, { workerGeneration: 'worker', runtimeId: 'runtime', frame, sharedHistory: true })
+  assert.deepEqual(host.uiHistory.read({ kind: 'diagnostics' }).map(entry => entry.message), [frame.error])
   assert.equal(hub.replaySince(session, sessionStart).events.length, 0)
 })
 
@@ -180,12 +180,66 @@ test("viewing an OMP terminal history and syncing a draft never opens a writer",
     sessionFile: file, fromByte: 0, sync: { version: 1, knownBlocks: [] },
   })
   await host.sessionQuery("terminal-session", "setExtensionEditorState", { text: "draft" })
+  const draft = await host.executeSessionCommand("terminal-session", "composerDraft.set", {
+    baseVersion: null, text: "shared without a runtime", delivery: "steer",
+  }) as JsonObject
+  assert.equal((await host.executeSessionCommand("terminal-session", "composerDraft.get") as JsonObject).version, draft.version)
   assert.equal(opens, 0)
   assert.equal(readFileSync(file, "utf8"), bytes)
   writeFileSync(file, `${bytes}{"type":"message","id":"another-tui-answer"}\n`)
   await host.openSession(".", file)
   assert.match(readFileSync(file, "utf8"), /another-tui-answer/)
   assert.equal(opens, 0)
+})
+
+test('draft acceptance and extension prefills share one authority without replaying a stale mirror', async t => {
+  let receive!: (event: WorkerEvent) => void
+  let editorText: string | undefined
+  const admitted = Promise.withResolvers<void>()
+  const sending = Promise.withResolvers<void>()
+  const id = 'shared-draft-test'
+  const worker = {
+    command: async (type: string, params?: JsonObject) => {
+      if (type === 'state.get') return { pendingExtensionUiRequests: [], extensionEditorText: editorText }
+      if (type === 'sendUserMessage') {
+        assert.equal(params?.composerDraftVersion, undefined, 'host version must not go to native RPC')
+        sending.resolve()
+        await admitted.promise
+      }
+      return undefined
+    },
+    getSessionId: () => id, getSessionFile: () => undefined, getCwd: () => '.',
+    onEvent: (fn: typeof receive) => { receive = fn; return () => {} },
+    onCrash: () => () => {}, onClose: () => () => {}, dispose: async () => {},
+  } as unknown as WorkerSession
+  const supervisor = { onEvent: () => () => {}, open: async () => worker } as unknown as RuntimeSupervisor
+  const host = new SessionHost(supervisor, new EventHub())
+  t.after(() => host.dispose())
+  editorText = 'before attach'
+  await host.openSession('.')
+  const read = async () => await host.executeSessionCommand(id, 'composerDraft.get') as JsonObject
+  const write = async (body: JsonObject) => await host.executeSessionCommand(id, 'composerDraft.set', body) as JsonObject
+  const first = await read()
+  assert.equal(first.text, 'before attach')
+  const send = host.executeSessionCommand(id, 'sendUserMessage', { text: first.text, composerDraftVersion: first.version })
+  await sending.promise
+  const newer = await write({ baseVersion: first.version, text: 'new other-tab edit', attachments: [], delivery: 'followUp' })
+  admitted.resolve()
+  await send
+  assert.equal((await read()).version, newer.version)
+  await host.executeSessionCommand(id, 'sendUserMessage', { text: 'new other-tab edit', composerDraftVersion: newer.version })
+  assert.equal((await read()).text, '')
+  await host.sessionQuery(id, 'state.get')
+  assert.equal((await read()).text, '', 'old prefill must not return after acceptance')
+  const late = await write({ baseVersion: newer.version, text: 'typed during send', attachments: [], delivery: 'steer' })
+  assert.equal(late.applied, true)
+  assert.equal((await read()).text, 'typed during send')
+  const editor = (text: string) => receive({ kind: 'event', generation: 'g', sessionId: id, channel: 'extension.ui', event: { type: 'editor', command: { kind: 'set', text } } })
+  editor('extension prefill')
+  assert.equal((await read()).text, 'extension prefill')
+  editor('')
+  assert.equal((await read()).text, '')
+  assert.equal((await write({ baseVersion: late.version, text: 'late mirror', delivery: 'steer' })).applied, false)
 })
 
 test("background job queries on a previewed OMP session never open a writer", async t => {
@@ -311,9 +365,10 @@ test("an explicit message attaches a previewed OMP session using its latest hist
   assert.deepEqual(commands, ["state.get", "sendUserMessage"])
 })
 
-test("SessionHost notifies the session list when sessions materialize and titles change", async () => {
+test("SessionHost notifies the session list when sessions materialize, are renamed, or are updated on disk", async () => {
   const sessionFile = join(tmpdir(), `piui-session-host-${randomUUID()}.jsonl`)
-  let emitEvent!: (event: { channel: string; head?: unknown; event?: { type?: string; title?: string }; meta?: unknown }) => void
+  type TestEvent = { channel: string; head?: unknown; summaryChanged?: boolean; event?: { type?: string; title?: string }; meta?: unknown }
+  let emitEvent!: (event: TestEvent) => void
   process.env.OMPIUI_DRIVER = "mock"
   const worker = {
     command: async () => ({}),
@@ -371,15 +426,54 @@ test("SessionHost notifies the session list when sessions materialize and titles
   assert.equal(updated.length, 2)
   assert.deepEqual(updated[1], { sessionId: "session-1", updated: true })
 
-  // 新消息推进 head 本身不广播，标题由独立事件通知全局列表。
+  // A pure head movement is not a change to the list summary.
   emitEvent({ channel: "session.head", head: { revision: 3 } })
-  emitEvent({ channel: "session.head", head: { revision: 4, entryCount: 4 } })
   assert.equal(updated.length, 2)
+  // The worker observed a durable update and invalidated its list cache.
+  emitEvent({ channel: "session.head", head: { revision: 4, entryCount: 4 }, summaryChanged: true })
+  assert.deepEqual(updated[2], { sessionId: "session-1", updated: true })
+
+  const emitPi = (sequence: number, event: JsonObject) => emitEvent({ channel: 'pi.event', event, meta: { epoch: 'test', sequence } })
+  emitPi(2, { type: 'agent_start' })
+  emitPi(3, { type: 'agent_end', isTerminal: false, awaitingAsyncWork: true })
+  assert.deepEqual(host.uiHistory.read({ kind: 'notifications' }), [])
+  emitPi(4, { type: 'agent_settled' })
+  emitPi(4, { type: 'agent_settled' })
+  assert.equal(host.uiHistory.read({ kind: 'notifications' }).length, 1)
+  const output = { type: 'command_output', text: 'first line\nlast line\n' }
+  emitPi(5, output)
+  emitPi(5, output)
+  assert.deepEqual(host.uiHistory.read({ kind: 'feedback', sessionId: 'session-1' }).map(entry => entry.message), [output.text])
 
   delete process.env.OMPIUI_DRIVER
   off()
   host.dispose()
   rmSync(sessionFile, { force: true })
+})
+
+test("SessionHost publishes cold session deletion only after catalog success", async t => {
+  const hub = new EventHub()
+  const updated: unknown[] = []
+  const sessionFile = join(tmpdir(), "cold-session.jsonl")
+  let shouldFail = true
+  const supervisor = {
+    onEvent: () => () => {},
+    catalogCommand: async (type: string) => {
+      assert.equal(type, "session.delete")
+      if (shouldFail) throw new Error("unlink failed")
+      return { sessionFile, sessionId: "cold-session" }
+    },
+  } as unknown as RuntimeSupervisor
+  const host = new SessionHost(supervisor, hub)
+  const off = hub.subscribe(event => {
+    if (event.channel === "sessions.updated") updated.push(event.payload)
+  })
+  t.after(() => { off(); return host.dispose() })
+  await assert.rejects(host.executeGlobalCommand("session.delete", { cwd: ".", sessionFile }), /unlink failed/)
+  assert.deepEqual(updated, [])
+  shouldFail = false
+  await host.executeGlobalCommand("session.delete", { cwd: ".", sessionFile })
+  assert.deepEqual(updated, [{ sessionFile, sessionId: "cold-session", deleted: true }])
 })
 
 test("SessionHost rejects reopening a runtime while it is closing", async () => {

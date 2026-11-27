@@ -116,7 +116,11 @@ test("native link lifecycle resolves real manifest resources without executing t
 
 test("native marketplace install and upgrade preserve independent user and project scope", native, async t => {
   const f = await fixture(t)
-  const added = await f.packages.changeSource(f.cwd, f.market, "add") as unknown as PackageSnapshot
+  const progress: JsonObject[] = []
+  const added = await f.packages.changeSource(f.cwd, f.market, "add", false, "add-market", event => progress.push(event)) as unknown as PackageSnapshot
+  assert.deepEqual(progress.map(({ commandId, action, phase, workspacePath }) => [commandId, action, phase, workspacePath]), [
+    ["add-market", "add-source", "started", undefined], ["add-market", "add-source", "completed", undefined],
+  ])
   assert.deepEqual(added.marketplaces.map(({ name, source }) => ({ name, source })), [{ name: "fixture", source: f.market }])
   await assert.rejects(f.packages.changeSource(f.cwd, f.market, "add", true), /not project-local/)
   await f.packages.manage(f.cwd, "user", "install", "demo@fixture")

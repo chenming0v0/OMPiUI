@@ -87,6 +87,44 @@ describe('DirectoryProvider server isolation', () => {
     expect(result.current.recentProjects).toEqual({ '/a': 10 })
   })
 
+  it.each(['C:\\only-on-desktop', '/home/local-only'])('ignores native launch path %s on a remote server', directory => {
+    const launchWrapper = ({ children }: { children: ReactNode }) => (
+      <StrictMode><DirectoryProvider startupDirectory={{ directory, source: 'local', explicit: true }}>{children}</DirectoryProvider></StrictMode>
+    )
+    const { result } = renderHook(() => useContext(DirectoryContext)!, { wrapper: launchWrapper })
+    expect(result.current.savedDirectories).toEqual(savedA)
+    expect(mocks.setDirectory).not.toHaveBeenCalled()
+  })
+
+  it('accepts native paths on the local backend but not when the default slot points remotely', () => {
+    const original = serverStore.getActiveServer()!
+    serverStore.setActiveServer('local')
+    const local = serverStore.getActiveServer()!
+    const launchWrapper = ({ children }: { children: ReactNode }) => (
+      <StrictMode><DirectoryProvider startupDirectory={{ directory: '/local-project', source: 'local', explicit: true }}>{children}</DirectoryProvider></StrictMode>
+    )
+    try {
+      const view = renderHook(() => useContext(DirectoryContext)!, { wrapper: launchWrapper })
+      expect(mocks.setDirectory).toHaveBeenCalledExactlyOnceWith('/local-project')
+      view.unmount()
+      mocks.setDirectory.mockClear()
+      serverStore.updateServer('local', { url: original.url })
+      renderHook(() => useContext(DirectoryContext)!, { wrapper: launchWrapper })
+      expect(mocks.setDirectory).not.toHaveBeenCalled()
+    } finally {
+      cleanup()
+      serverStore.updateServer('local', { url: local.url })
+    }
+  })
+
+  it.each([true, false])('only accepts a UI project window when the backend matches (%s)', matching => {
+    const launchWrapper = ({ children }: { children: ReactNode }) => (
+      <StrictMode><DirectoryProvider startupDirectory={{ directory: '/srv/project', source: 'backend', explicit: true, serverId: serverA, serverUrl: matching ? 'http://a.test' : 'http://old.test' }}>{children}</DirectoryProvider></StrictMode>
+    )
+    renderHook(() => useContext(DirectoryContext)!, { wrapper: launchWrapper })
+    expect(mocks.setDirectory.mock.calls).toEqual(matching ? [['/srv/project']] : [])
+  })
+
   it('never persists a queued old-server edit under the new server id', () => {
     const writes: Array<{ serverId: string; key: string; value: unknown }> = []
     const setJSON = serverStorage.setJSON

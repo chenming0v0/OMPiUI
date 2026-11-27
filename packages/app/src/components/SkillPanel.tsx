@@ -19,6 +19,7 @@ import type { Skill } from '../omp/vendor/pi-coding-agent'
 import { getPiSkills, getPiSkillDetails } from '../omp/transport/index.js'
 import { apiErrorHandler } from '../utils'
 import { serverStore } from '../store/serverStore'
+import { useSessionResourceRefresh } from '../omp/useSessionResourceRefresh'
 
 // ============================================
 // SkillPanel Component
@@ -27,9 +28,10 @@ import { serverStore } from '../store/serverStore'
 interface SkillPanelProps {
   isResizing?: boolean
   sessionId?: string | null
+  workspacePath?: string | null
 }
 
-export const SkillPanel = memo(function SkillPanel({ isResizing: _isResizing, sessionId }: SkillPanelProps) {
+export const SkillPanel = memo(function SkillPanel({ isResizing: _isResizing, sessionId, workspacePath }: SkillPanelProps) {
   const { t } = useTranslation(['components', 'common'])
   const generation = useSyncExternalStore(listener => serverStore.subscribe(listener), () => serverStore.getActiveServerGeneration(), () => serverStore.getActiveServerGeneration())
   const scope = JSON.stringify([generation, sessionId])
@@ -45,6 +47,7 @@ export const SkillPanel = memo(function SkillPanel({ isResizing: _isResizing, se
   const [filter, setFilter] = useState('')
 
   const loadSkills = useCallback(async () => {
+    if (currentScope.current !== scope) return false
     request.current?.abort()
     const controller = new AbortController()
     request.current = controller
@@ -54,22 +57,19 @@ export const SkillPanel = memo(function SkillPanel({ isResizing: _isResizing, se
       if (!sessionId) throw new Error(t('rightPanel.noActiveSession'))
       const data = await getPiSkills(sessionId, controller.signal)
       if (!Array.isArray(data)) throw new Error(t('skillPanel.failedToLoad'))
-      if (!controller.signal.aborted && currentScope.current === scope) setSnapshot({ scope, revision: nextRevision, skills: data, loading: false, error: null })
+      if (controller.signal.aborted || currentScope.current !== scope) return false
+      setSnapshot({ scope, revision: nextRevision, skills: data, loading: false, error: null })
+      return true
     } catch (err) {
-      if (controller.signal.aborted || currentScope.current !== scope) return
+      if (controller.signal.aborted || currentScope.current !== scope) return false
       apiErrorHandler('load skills', err)
       setSnapshot({ scope, revision: nextRevision, skills: [], loading: false, error: err instanceof Error ? err.message : String(err) })
+      return false
     }
   }, [scope, sessionId, t])
 
-  useEffect(() => {
-    void loadSkills()
-    const updated = (event: Event) => {
-      if ((event as CustomEvent<{ sessionId?: string }>).detail?.sessionId === sessionId) void loadSkills()
-    }
-    window.addEventListener('ompiui:registry-updated', updated)
-    return () => { request.current?.abort(); window.removeEventListener('ompiui:registry-updated', updated) }
-  }, [loadSkills, sessionId])
+  useSessionResourceRefresh(sessionId, workspacePath, loadSkills)
+  useEffect(() => () => request.current?.abort(), [loadSkills])
 
   // Filter skills
   const normalizedFilter = filter.toLowerCase()

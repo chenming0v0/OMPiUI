@@ -1,14 +1,11 @@
 import { isJsonObject } from '@ompiui/protocol'
-import type { CommandFeedbackEntry } from './commandFeedbackStore'
-
-export interface ExtensionDiagnosticEntry extends Omit<CommandFeedbackEntry, 'sessionId'> {
-  workerGeneration: string
-  runtimeId: string
-}
+import type { ExtensionDiagnosticEntry } from '@ompiui/protocol'
+export type { ExtensionDiagnosticEntry } from '@ompiui/protocol'
 
 const MAX_ENTRIES = 100
 let sequence = 0
 let current: ReadonlyArray<ExtensionDiagnosticEntry> = []
+let shared = false
 const listeners = new Set<() => void>()
 
 function emit(): void {
@@ -43,7 +40,18 @@ export const extensionDiagnosticStore = {
     return entry
   },
 
+  replaceShared(entries: ExtensionDiagnosticEntry[]): void {
+    shared = true
+    current = entries
+    emit()
+  },
+
+  clearLocal(): void {
+    if (!shared) this.reset()
+  },
+
   reset(): void {
+    shared = false
     if (!current.length) return
     current = []
     emit()

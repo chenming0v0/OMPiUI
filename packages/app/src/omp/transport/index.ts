@@ -29,6 +29,8 @@ import type {
   PromptParams,
   SendUserMessageParams,
   SendQueuedMessageParams,
+  SetSharedComposerDraftParams,
+  SharedComposerDraft,
   SetModelParams,
   SetThinkingLevelParams,
   SteerParams,
@@ -42,6 +44,7 @@ import {
   PI_COMMAND_SPECS,
   validateParams,
   subagentDigest,
+  isJsonObject,
   type HostCommandSpec,
   type PiCommandSpec,
 } from '@ompiui/protocol'
@@ -239,9 +242,10 @@ export async function postPiGlobalCommand<
   return (response.data !== undefined ? response.data : response.command) as T extends undefined ? null : T
 }
 
-type ServerSessionCommandName = 'controls.get' | 'session.initialize' | 'toolOutput.get'
+type ServerSessionCommandName = 'controls.get' | 'session.initialize' | 'toolOutput.get' | 'composerDraft.get' | 'composerDraft.set'
 
 type ServerSessionCommandParams = {
+  'composerDraft.set': SetSharedComposerDraftParams
   'toolOutput.get': { artifactId: string; offset: number; revision?: string }
 }
 
@@ -272,12 +276,19 @@ export async function postPiSessionCommand<T = JsonValue | undefined, K extends 
 
 // Host commands (workspaces / files / git), POST /api/v1/host/commands/:name
 type HostReadFlight = {
+  fileWorkspace?: string
   promise: Promise<unknown>
   controller: AbortController
   consumers: number
   settled: boolean
 }
 const hostReadFlights = new Map<string, HostReadFlight>()
+
+export function invalidateHostFileReadFlights(workspacePath: string): void {
+  for (const [key, flight] of hostReadFlights) {
+    if (flight.fileWorkspace === workspacePath) hostReadFlights.delete(key)
+  }
+}
 const SHARED_HOST_READS: Partial<Record<keyof HostCommandParams, true>> = {
   'git.info': true,
   'git.status': true,
@@ -285,6 +296,7 @@ const SHARED_HOST_READS: Partial<Record<keyof HostCommandParams, true>> = {
   'git.fileDiff': true,
   'files.list': true,
   'files.read': true,
+  'files.revisions': true,
   'files.searchName': true,
   'files.searchText': true,
 }
@@ -314,6 +326,7 @@ export async function postHostCommand<
     }).then(response => response.data)
     if (!controller) return request
     const created: HostReadFlight = {
+      fileWorkspace: name.startsWith('files.') ? (params as { workspacePath?: string } | undefined)?.workspacePath : undefined,
       controller,
       consumers: 0,
       settled: false,
@@ -655,7 +668,7 @@ export function changePiPackageSource(
   operation: 'add' | 'remove',
   signal?: AbortSignal,
 ): Promise<PiPackagesSnapshot & { changed: boolean }> {
-  return postPiGlobalCommand('packages.changeSource', { cwd, source, operation }, signal)
+  return postPiGlobalCommand('packages.changeSource', { cwd, source, operation, commandId: crypto.randomUUID() }, signal)
 }
 
 export function getPiPackageInstalledPath(
@@ -822,6 +835,12 @@ export async function getPiTree(sessionId: string, signal?: AbortSignal): Promis
 
 export function getPiSessionRegistry(sessionId: string, signal?: AbortSignal): Promise<JsonValue> {
   return postPiSessionCommand(sessionId, 'registry.get', undefined, signal)
+}
+
+export async function getPiResourceVersion(sessionId: string, signal?: AbortSignal): Promise<string> {
+  const data = await postPiSessionCommand(sessionId, 'resources.version', undefined, signal)
+  if (!isJsonObject(data) || typeof data.resources !== 'string') throw new Error('Invalid session resource version')
+  return data.resources
 }
 
 export function getPiSkills(sessionId: string, signal?: AbortSignal): Promise<Skill[]> {
@@ -993,6 +1012,14 @@ export function respondPiExtensionUi(
   return postPiSessionCommand(sessionId, 'respondExtensionUi', { requestId, response }, signal)
 }
 
+export function getSharedComposerDraft(sessionId: string, signal?: AbortSignal) {
+  return postPiSessionCommand<SharedComposerDraft, 'composerDraft.get'>(sessionId, 'composerDraft.get', undefined, signal)
+}
+
+export function setSharedComposerDraft(sessionId: string, params: SetSharedComposerDraftParams, signal?: AbortSignal) {
+  return postPiSessionCommand<{ applied: boolean; version: string | null }, 'composerDraft.set'>(sessionId, 'composerDraft.set', params, signal)
+}
+
 const editorSyncs = new Map<string, { text: string; active: boolean; flight: Promise<JsonValue> }>()
 serverStore.onServerChange(() => editorSyncs.clear())
 
@@ -1110,6 +1137,8 @@ export type PiNavigateTreeParams = {
   entryId: string
   summarize?: boolean
   customInstructions?: string
+  trackRedo?: boolean
+  redoPlanId?: string
 }
 
 export type PiNavigateTreeResult = {
@@ -1236,7 +1265,7 @@ export function setPiInterruptMode(
  */
 export function abortAndPromptPi(
   sessionId: string,
-  params: { text: string; images?: PiImageInput[] },
+  params: { text: string; images?: PiImageInput[]; composerDraftVersion?: string },
   signal?: AbortSignal,
 ): Promise<JsonValue> {
   // Native prompt_result can follow a long turn; the ordinary 20s HTTP

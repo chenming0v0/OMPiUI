@@ -5,16 +5,19 @@ import { after, describe, it } from "node:test"
 // is too tight when several spawn at once on a loaded machine.
 process.env.OMPIUI_WORKER_HANDSHAKE_TIMEOUT_MS ??= "60000"
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { connect } from "node:net"
 import { once } from "node:events"
 import { createAppServer, type AppServer } from "./http.ts"
+import { EventHub } from './event-hub.ts'
+import { UiHistory } from './host/ui-history.ts'
 import { RuntimeSupervisor } from "./omp/supervisor.ts"
 import { MAX_PAIRING_FAILURES, PairingStore } from "./host/pairing.ts"
 import { TUNNEL_FORWARDING_HEADER } from "./host/security.ts"
 import { FaultReportService } from "./diagnostics/fault-reports.ts"
+import { DshHostedManager } from "./tunnel/dsh-hosted-manager.ts"
 import { TERMINAL_SECRET_HEADER, terminalOwnerFromSecret } from "./host/terminal-auth.ts"
 import type { TerminalManagerOptions } from "./host/terminal-manager.ts"
 import { attachEventWebSocket, closeEventWebSocket } from "./ws.ts"
@@ -130,6 +133,139 @@ describe("http api", () => {
   const cleanups: Array<() => Promise<void> | void> = []
   after(async () => {
     for (const cleanup of cleanups.splice(0)) await cleanup()
+  })
+
+  it('shares UI history and mutations between independently connected clients, even after replay expires', { timeout: 20_000 }, async () => {
+    const token = 'same-ui-host-identity'
+    const hub = new EventHub(2)
+    const filename = path.join(leaseHome, 'ui-notifications.json')
+    const app = createAppServer({ authToken: token, eventHub: hub, notificationsFile: filename })
+    const wss = attachEventWebSocket(app.server, { authToken: token, eventHub: hub })
+    const port = await listen(app)
+    const sockets: WebSocket[] = []
+    const server = { kind: 'server' as const, id: 'server' }
+    const session = { kind: 'session' as const, id: 'project-session' }
+    const url = (kind: string, id?: string) => `/api/v1/host/ui-history?kind=${kind}${id ? `&sessionId=${id}` : ''}`
+    const subscribe = async (cursors = hub.getCursorMap([server, session])) => {
+      const socket = new WebSocket(`ws://127.0.0.1:${port}/api/v1/events?token=${token}`, EVENT_WS_SUBPROTOCOL)
+      sockets.push(socket)
+      const inbox = privateSocketInbox(socket)
+      await inbox.until(frame => frame.type === 'hello')
+      socket.send(JSON.stringify({ type: 'subscribe', protocolVersion: PROTOCOL_VERSION, streams: [server, session], cursors }))
+      socket.send(JSON.stringify({ type: 'ping', protocolVersion: PROTOCOL_VERSION }))
+      await inbox.until(frame => frame.type === 'pong')
+      return inbox
+    }
+    const client = (secret: string) => (kind: string, body?: unknown, id?: string) => request(port, body ? 'POST' : 'GET', url(kind, id), {
+      token, body, headers: { [TERMINAL_SECRET_HEADER]: secret.repeat(32) },
+    })
+    const a = client('aa'), b = client('bb')
+    const signal = (kind: string) => (frame: any) => frame.event?.channel === 'ui.history' && frame.event.payload.kind === kind
+    try {
+      const first = await subscribe()
+      const history = app.sessionHost.uiHistory
+      history.complete(session.id, '/srv/project', 'run-one')
+      await first.until(signal('notifications'))
+      const firstRows = (await a('notifications')).json.entries
+      assert.equal(firstRows.length, 1)
+      assert.equal(firstRows[0].read, false)
+      assert.equal((await request(port, 'GET', url('notifications'), { token: 'another-identity' })).status, 401)
+      const second = await subscribe()
+      assert.deepEqual((await b('notifications')).json.entries, firstRows)
+      assert.equal((await a('notifications', { action: 'markSessionRead', sessionId: session.id, type: 'completed' })).status, 200)
+      await second.until(signal('notifications'))
+      assert.equal((await b('notifications')).json.entries[0].read, true)
+      assert.equal((await b('notifications', { action: 'dismiss', id: firstRows[0].id })).status, 200)
+      history.complete(session.id, '/srv/project', 'run-one')
+      assert.deepEqual((await a('notifications')).json.entries, [], 'a repeated completion cannot resurrect a deleted notification')
+
+      const cursor = hub.getCursorMap([server, session])
+      history.command(session.id, '/srv/project', { type: 'command_output', text: 'workspace\nlast line\n' }, 'command-one')
+      await second.until(signal('feedback'))
+      history.command(session.id, '/srv/project', { type: 'command_output', text: 'workspace\nlast line\n' }, 'command-one')
+      history.command('other-session', '/srv/other', { type: 'notice', level: 'warning', text: 'another session' }, 'command-two')
+      history.extensionError('worker', 'runtime', { type: 'extension_error', error: 'timer failure' })
+      for (let i = 0; i < 3; i++) hub.publish(session, 'session.head', { revision: i })
+      const late = await subscribe(cursor)
+      await late.until(frame => frame.type === 'resync_required' && frame.streams[eventStreamKey(session)]?.reason === 'history_expired')
+      const feedback = (await b('feedback', undefined, session.id)).json.entries
+      assert.deepEqual(feedback, (await a('feedback', undefined, session.id)).json.entries)
+      assert.equal(feedback.length, 1)
+      assert.equal(feedback[0].message, 'workspace\nlast line\n')
+      assert.equal((await b('diagnostics')).json.entries[0].message, 'timer failure')
+
+      const beforeClear = first.frames.length
+      assert.equal((await b('feedback', { action: 'clear' }, session.id)).status, 200)
+      await first.until(signal('feedback'), beforeClear)
+      assert.deepEqual((await a('feedback', undefined, session.id)).json.entries, [])
+      assert.equal((await a('feedback', undefined, 'other-session')).json.entries.length, 1)
+      const beforeDiagnosticsClear = second.frames.length
+      assert.equal((await a('diagnostics', { action: 'clear' })).status, 200)
+      await second.until(signal('diagnostics'), beforeDiagnosticsClear)
+      assert.deepEqual((await b('diagnostics')).json.entries, [])
+      assert.equal((await a('notifications', { action: 'markAllRead' })).status, 200)
+      const readRows = (await b('notifications')).json.entries
+      assert.equal(readRows.length, 2)
+      assert.ok(readRows.every((entry: { read: boolean }) => entry.read))
+      assert.deepEqual(new UiHistory(new EventHub(), filename).read({ kind: 'notifications' }), readRows)
+      assert.equal((await b('notifications', { action: 'clear' })).status, 200)
+      assert.deepEqual((await a('notifications')).json.entries, [])
+      assert.deepEqual(JSON.parse(readFileSync(filename, 'utf8')), [])
+      assert.deepEqual(app.sessionHost.listAttachedIds(), [])
+    } finally {
+      for (const socket of sockets) socket.terminate()
+      await new Promise<void>(resolve => closeEventWebSocket(wss, () => resolve()))
+      await app.dispose()
+    }
+  })
+
+  it('shares composer drafts over two independent HTTP and event clients without opening a runtime', { timeout: 15_000 }, async () => {
+    const token = 'draft-host-token'
+    const app = createAppServer({ authToken: token })
+    const wss = attachEventWebSocket(app.server, { authToken: token, eventHub: app.eventHub })
+    const port = await listen(app)
+    const sockets: WebSocket[] = []
+    const stream = { kind: 'session' as const, id: 'previewed-draft' }
+    const call = (name: string, body = {}) => request(port, 'POST', `/api/v1/pi/sessions/${stream.id}/commands/${name}`, { token, body })
+    const connectDraft = async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/api/v1/events?token=${token}`, EVENT_WS_SUBPROTOCOL)
+      sockets.push(ws)
+      const inbox = privateSocketInbox(ws)
+      await inbox.until(frame => frame.type === 'hello')
+      ws.send(JSON.stringify({ type: 'subscribe', protocolVersion: PROTOCOL_VERSION, streams: [stream],
+        cursors: { [eventStreamKey(stream)]: app.eventHub.getCursor(stream) } }))
+      return { ws, inbox, write: (body: unknown) => call('composerDraft.set', body as object), read: () => call('composerDraft.get') }
+    }
+    try {
+      const a = await connectDraft()
+      const b = await connectDraft()
+      const attachments = [
+        { id: 'photo', type: 'file', displayName: 'photo.png', url: 'data:image/png;base64,BAU=', mime: 'image/png' },
+        { id: 'mention', type: 'file', displayName: 'readme.md', url: 'file:///workspace/readme.md', textRange: { value: '@readme.md', start: 0, end: 10 } },
+      ]
+      const update = { text: '@readme.md', attachments, delivery: 'steer' }
+      const first = await a.write({ ...update, baseVersion: null })
+      assert.equal(first.status, 200)
+      assert.equal(first.json.data.applied, true)
+      const matches = (frame: any) => frame.event?.channel === 'composerDraft.updated' && frame.event.payload?.version === first.json.data.version
+      for (const client of [a, b]) {
+        const frame = await client.inbox.until(matches)
+        assert.equal(frame.event.payload.attachments, undefined, 'attachments do not enter replay history')
+        assert.deepEqual((await client.read()).json.data, { version: first.json.data.version, ...update })
+      }
+      const offlineVersion = (await b.read()).json.data.version
+      b.ws.terminate()
+      const cleared = await a.write({ baseVersion: offlineVersion, text: '', attachments: [], delivery: 'followUp' })
+      assert.equal(cleared.json.data.applied, true)
+      const reconnected = await connectDraft()
+      assert.deepEqual((await reconnected.read()).json.data, { version: cleared.json.data.version, text: '', attachments: [], delivery: 'followUp' })
+      assert.equal((await reconnected.write({ ...update, baseVersion: offlineVersion })).json.data.applied, false)
+      assert.deepEqual(app.sessionHost.listAttachedIds(), [])
+    } finally {
+      sockets.forEach(socket => socket.terminate())
+      closeEventWebSocket(wss)
+      await app.dispose()
+    }
   })
 
   it('isolates two private terminal clients sharing the same backend credential through HTTP, event replay and streams', { timeout: 20_000 }, async () => {
@@ -400,6 +536,19 @@ describe("http api", () => {
     assert.equal(status.status, 200)
     assert.ok(status.json.runId)
     assert.deepEqual(app.sessionHost.listAttachedIds(), [])
+  })
+
+  it('requires a separate local credential for DS Harness Remote host management', async () => {
+    const hostedRemote = new DshHostedManager(path.join(leaseHome, 'dsh'), '0.6.71', false)
+    const app = createAppServer({ authToken: 'shared', dshManagementToken: 'local-only', hostedRemote })
+    const port = await listen(app)
+    cleanups.push(async () => { await hostedRemote.dispose(); await app.dispose() })
+    const route = '/api/v1/host/dsh-remote'
+    const shareOnly = await request(port, 'GET', route, { token: 'shared', headers: { host: `127.0.0.1:${port}` } })
+    assert.equal(shareOnly.status, 403)
+    const local = await request(port, 'GET', route, { token: 'shared', headers: { 'x-ompiui-dsh-management': 'local-only' } })
+    assert.equal(local.status, 200)
+    assert.equal(local.json.reason, 'web')
   })
 
   it("network reports the listening ephemeral port, not Host, forwarding headers or share config", async () => {
