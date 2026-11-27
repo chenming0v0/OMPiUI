@@ -1,9 +1,9 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import { useTranslation } from 'react-i18next'
-import { CircleCheck, Clock, Cloud, Globe, Network, QrCode as QrCodeIcon, Server, Smartphone, Wifi } from 'lucide-react'
+import { CircleCheck, Clock, Globe, Monitor, Server, TriangleAlert, Wifi } from 'lucide-react'
 import type { HostNetworkInfo, PairInviteInfo, TunnelStatus } from '@ompiui/protocol'
-import { CheckIcon, CopyIcon, RetryIcon, SpinnerIcon } from '../../../components/Icons'
+import { CheckIcon, CopyIcon, DeepSeekIcon, RetryIcon, SpinnerIcon } from '../../../components/Icons'
 import { QrCode } from '../../../components/QrCode'
 import {
   fetchHostNetwork,
@@ -17,16 +17,17 @@ import {
 import { serverStorage } from '../../../utils'
 import { useServerStore } from '../../../hooks'
 import { useTailscaleLoginFlow } from '../../../hooks/useTailscaleLoginFlow'
-import { settingsFieldClass, SettingsSection } from './SettingsUI'
 import { TailscaleControls } from './TailscaleControls'
-import { AuthCard, AuthStatusPill, ConnectionMethods, authSecondaryButtonClass } from './AuthPanelUI'
+import { AuthStatusPill } from './AuthPanelUI'
+import { ChannelBoard, NextAction, PageHead, PanelRow, PanelSplit, type ChannelTile, type LampTone } from './ChannelBoard'
+import { DshHostPanel } from './DshHostPanel'
+import { useDshHost } from './useDshHost'
 import { openTailscaleLogin } from '../../../utils/tailscaleLogin'
 import { isTauri, isTauriMobile } from '../../../utils/tauri'
 
 const REMOTE_TAB_KEY = 'ompiui-remote-tab'
 const PAIR_POLL_MS = 3_000
 const TUNNEL_POLL_MS = 5_000
-const DshRemoteSettings = lazy(() => import('./DshRemoteSettings'))
 
 type RemoteTab = 'lan' | 'tailscale' | 'relay' | 'dsh'
 
@@ -37,23 +38,26 @@ function formatCountdown(expiresAt: number, now: number): string {
   return `${minutes}:${seconds}`
 }
 
-function groupedCode(code: string): string {
-  return code.length === 8 ? `${code.slice(0, 4)} ${code.slice(4)}` : code
+function isLoopbackHost(host: string): boolean {
+  return host === 'localhost' || host === '::1' || /^(?:::ffff:)?127\./.test(host)
 }
 
-export function RemoteAccessSettings({ onManageController }: { onManageController?: () => void }) {
+export function RemoteAccessSettings({ onOpenService }: { onOpenService?: () => void }) {
   const { activeServerGeneration } = useServerStore()
   // Addresses, invites and pending actions belong to one server generation.
   // Remount before rendering a new server, not after its first async response.
-  return <RemoteAccessPanel key={activeServerGeneration} onManageController={onManageController} />
+  return <RemoteAccessPanel key={activeServerGeneration} onOpenService={onOpenService} />
 }
 
-function RemoteAccessPanel({ onManageController }: { onManageController?: () => void }) {
+function RemoteAccessPanel({ onOpenService }: { onOpenService?: () => void }) {
   const { t } = useTranslation(['settings', 'common'])
+  const { activeServer } = useServerStore()
   const desktop = isTauri() && !isTauriMobile()
   const [tab, setTab] = useState<RemoteTab>(() => {
     const stored = serverStorage.get(REMOTE_TAB_KEY)
-    return stored === 'relay' || stored === 'tailscale' || stored === 'dsh' ? stored : 'lan'
+    // DS Harness Remote 只由桌面壳绑定，网页端不展示这个入口。
+    if (stored === 'dsh') return desktop ? 'dsh' : 'lan'
+    return stored === 'relay' || stored === 'tailscale' ? stored : 'lan'
   })
   const [network, setNetwork] = useState<HostNetworkInfo | null>(null)
   const [networkLoading, setNetworkLoading] = useState(true)
@@ -69,6 +73,7 @@ function RemoteAccessPanel({ onManageController }: { onManageController?: () => 
   const [tailscaleError, setTailscaleError] = useState('')
   const [tailscaleStatusError, setTailscaleStatusError] = useState('')
   const [copied, setCopied] = useState(false)
+  const dshHost = useDshHost(desktop)
   const mounted = useRef(true)
   useEffect(() => {
     mounted.current = true
@@ -211,16 +216,19 @@ function RemoteAccessPanel({ onManageController }: { onManageController?: () => 
   const lanListening = Boolean(address && listenHost &&
     ['0.0.0.0', '::', '::ffff:0.0.0.0', address, `::ffff:${address}`].includes(listenHost))
   const lanBase = address && listenPort && lanListening ? `http://${address}:${listenPort}` : null
-  const lanUnavailable = !networkLoading && listenPort && address && !lanListening
-    ? t(listenHost ? 'settings:service.remoteLanNotListening' : 'settings:service.remoteHostUnavailable', { host: listenHost })
-    : null
-  const base = tab === 'relay'
-    ? (tunnel?.state === 'connected' ? tunnel.publicUrl?.replace(/\/+$/, '') : null)
-    : tab === 'tailscale' ? (!tailscaleStatusError && tailscale?.backendState === 'Running' ? tailscale.url : null)
-    : tab === 'lan' ? lanBase : null
+  // 端口和网卡都有、只是监听地址不对时，才是「去改监听」能解决的问题。
+  const lanNotListening = Boolean(listenPort && address && !lanListening)
+  const lanLocalOnly = lanNotListening && Boolean(listenHost && isLoopbackHost(listenHost))
+  // 局域网通道用不了的原因，按先后顺序只给最根本的那一个。
+  const lanReason = !listenPort ? t('settings:service.remotePortUnavailable')
+    : !address ? t('settings:service.remoteNoNetwork')
+    : t(listenHost ? 'settings:service.remoteLanNotListening' : 'settings:service.remoteHostUnavailable', { host: listenHost })
+  const tailscaleRunning = !tailscaleStatusError && tailscale?.backendState === 'Running'
+  const tailscaleBase = tailscaleRunning ? tailscale?.url ?? null : null
+  const relayBase = tunnel?.state === 'connected' ? tunnel.publicUrl?.replace(/\/+$/, '') ?? null : null
+  const base = tab === 'relay' ? relayBase : tab === 'tailscale' ? tailscaleBase : tab === 'lan' ? lanBase : null
 
   const pairUrl = invite && !expired && !invite.redeemed && base ? `${base}/?pair=${encodeURIComponent(invite.pair)}` : null
-  const pairPending = (!invite && !inviteGone) || (tab === 'lan' ? networkLoading : tunnel === undefined)
 
   const copyInvite = async () => {
     if (!pairUrl) return
@@ -246,230 +254,222 @@ function RemoteAccessPanel({ onManageController }: { onManageController?: () => 
       .finally(() => { if (mounted.current) setTailscaleBusy(false) })
   }
 
-  const tailscalePanel = tailscale && (
-    <div className="grid min-w-0 gap-3">
-      <div>
-        <h4 className="text-[length:var(--fs-sm)] font-medium text-text-200">{t('settings:service.remoteServerLoginTitle')}</h4>
-        <p className="mt-0.5 text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('settings:service.remoteServerLoginDesc')}</p>
-      </div>
-      <TailscaleControls state={tailscale.backendState}
-        authUrl={tailscaleFlow.authUrl}
-        ips={tailscale.ips}
-        enabled={tailscale.enabled} available={tailscale.mode === 'embedded' && tailscale.installed}
-        busy={tailscaleBusy} error={tailscaleError || tailscaleStatusError || tailscaleFlow.error || tailscale.lastError}
-        authPhase={tailscaleFlow.phase} authLinkMode={!isTauri()} showAuthQr={false}
-        onAuthLinkClick={() => { setTailscaleError(''); tailscaleFlow.clearError() }}
-        onOpenAuthUrl={url => { setTailscaleError(''); void tailscaleFlow.reopenAuthPage(url) }}
-        onLogin={() => { setTailscaleError(''); void tailscaleFlow.beginLogin() }}
-        onDisconnect={() => {
-          const signal = tailscaleFlow.reset()
-          runTailscaleAction(async () => {
-            await disconnectTailscale()
-            if (!signal.aborted) await tailscaleFlow.refreshStatus(true)
-          })
-        }} />
-    </div>
+  const tailscaleControls = (inline: boolean) => tailscale && (
+    <TailscaleControls state={tailscale.backendState}
+      authUrl={tailscaleFlow.authUrl}
+      ips={tailscale.ips}
+      enabled={tailscale.enabled} available={tailscale.mode === 'embedded' && tailscale.installed}
+      busy={tailscaleBusy} error={tailscaleError || tailscaleStatusError || tailscaleFlow.error || tailscale.lastError}
+      authPhase={tailscaleFlow.phase} authLinkMode={!isTauri()} showAuthQr={false} inline={inline}
+      onAuthLinkClick={() => { setTailscaleError(''); tailscaleFlow.clearError() }}
+      onOpenAuthUrl={url => { setTailscaleError(''); void tailscaleFlow.reopenAuthPage(url) }}
+      onLogin={() => { setTailscaleError(''); void tailscaleFlow.beginLogin() }}
+      onDisconnect={() => {
+        const signal = tailscaleFlow.reset()
+        runTailscaleAction(async () => {
+          await disconnectTailscale()
+          if (!signal.aborted) await tailscaleFlow.refreshStatus(true)
+        })
+      }} />
   )
 
-  const tabs: Array<[RemoteTab, string, React.ReactNode]> = [
-    ['lan', t('settings:service.remoteTabLan'), <Wifi size={14} />],
-    ['tailscale', t('settings:service.remoteTabTailscale'), <Globe size={14} />],
-    ['relay', t('settings:service.remoteTabRelay'), <Server size={14} />],
-    ['dsh', t('settings:dshRemote.tab'), <Cloud size={14} />],
+  const loading = (
+    <p role="status" className="cb-hint flex items-center gap-2">
+      <SpinnerIcon size={13} className="animate-spin" />{t('settings:service.backendStatusLoading')}
+    </p>
+  )
+  const serviceAction = desktop && onOpenService
+    ? <button type="button" className="cb-btn" onClick={onOpenService}>{t('settings:host.openService')}</button>
+    : undefined
+
+  /** 这条通道已经可达：给出二维码、配对码和地址。配对码用掉或失效时换成对应的下一步。 */
+  const ticket = (reachable: string) => {
+    if (invite?.redeemed) {
+      return (
+        <NextAction tone="ok" icon={<CircleCheck size={18} />} title={t('settings:service.remoteApproved')}
+          actions={<button type="button" className="cb-btn" onClick={reMint}><RetryIcon size={14} />{t('settings:host.mintAnother')}</button>}>
+          {t('settings:host.redeemedBody')}
+        </NextAction>
+      )
+    }
+    if (!invite && !inviteGone) return loading
+    if (!invite || expired || !pairUrl) {
+      return (
+        <NextAction tone="warn" icon={<TriangleAlert size={18} />}
+          title={t(invite && expired ? 'settings:host.inviteExpired' : 'settings:service.remoteQrUnavailable')}
+          actions={<button type="button" className="cb-btn" onClick={reMint}><RetryIcon size={14} />{t('settings:service.remoteRefresh')}</button>}>
+          {t(invite && expired ? 'settings:host.inviteExpiredBody' : 'settings:service.remotePairUnavailable')}
+        </NextAction>
+      )
+    }
+    return (
+      <div data-testid="pair-ticket">
+        <div className="cb-ticket">
+          <div className="cb-qr"><QrCode text={pairUrl} size={172} /></div>
+          <div className="min-w-0">
+            <div className="cb-ticket-top">
+              <span className="cb-label">{t('settings:host.pairCode')}</span>
+              <span className="cb-expiry">
+                <Clock size={13} />{t('settings:service.remoteExpiresLater', { time: formatCountdown(invite.expiresAt, now) })}
+                <button type="button" className="cb-link" onClick={reMint}><RetryIcon size={12} />{t('settings:service.remoteRefresh')}</button>
+              </span>
+            </div>
+            <div className="cb-code" data-testid="pair-code">
+              <span>{invite.code.slice(0, 4)}</span><span>{invite.code.slice(4)}</span>
+            </div>
+            <span className="cb-label">{t('settings:host.pairAddress')}</span>
+            <code className="cb-addr" data-testid="pair-address">{reachable}</code>
+            <button type="button" className="cb-btn" onClick={() => void copyInvite()}>
+              {copied ? <CheckIcon size={14} className="text-success-100" /> : <CopyIcon size={14} />}
+              {copied ? t('settings:service.remoteCopied') : t('settings:service.remoteCopyInvite')}
+            </button>
+          </div>
+        </div>
+        <p className="cb-waiting"><span aria-hidden className="cb-waiting-dot" /><span>{t('settings:host.waiting')}</span></p>
+      </div>
+    )
+  }
+
+  const lanTile: Pick<ChannelTile<RemoteTab>, 'tone' | 'state'> = networkLoading
+    ? { tone: 'busy', state: t('settings:host.loading') }
+    : lanBase && address
+      ? { tone: 'on', state: address }
+      : { tone: 'warn', state: t(lanLocalOnly ? 'settings:host.lanLocalOnly' : 'settings:host.unavailable') }
+  const tailscaleWaiting = tailscaleFlow.phase !== 'idle' && tailscaleFlow.phase !== 'error'
+  const tailscaleTile: Pick<ChannelTile<RemoteTab>, 'tone' | 'state'> = tailscaleRunning
+    ? { tone: 'on', state: tailscale?.ips[0] ?? t('settings:host.connected') }
+    : tailscale?.backendState === 'NeedsMachineAuth'
+      ? { tone: 'warn', state: t('settings:host.tsApproval') }
+      : tailscaleWaiting
+        ? { tone: 'busy', state: t('settings:host.tsAuthorizing') }
+        : !tailscale
+          ? (tailscaleStatusError ? { tone: 'off', state: t('settings:host.unavailable') } : { tone: 'busy', state: t('settings:host.loading') })
+          : { tone: 'off', state: t('settings:host.tsSignedOut') }
+  const relayTile: Pick<ChannelTile<RemoteTab>, 'tone' | 'state'> = tunnel === undefined
+    ? { tone: 'busy', state: t('settings:host.loading') }
+    : !tunnel
+      ? { tone: 'off', state: t('settings:host.unavailable') }
+      : !tunnel.enabled
+        ? { tone: 'off', state: t('settings:host.relayOff') }
+        : tunnel.state === 'connected'
+          ? { tone: 'on', state: t('settings:host.connected') }
+          : { tone: 'warn', state: t('settings:host.relayOffline') }
+  const dshTone: LampTone = dshHost.tone
+  const dshState = dshHost.state === 'loading' ? t('settings:host.loading')
+    : dshHost.state === 'unavailable' ? t('settings:dshRemote.hostUnavailableShort')
+    : t(`settings:dshRemote.hostState.${dshHost.state}`)
+  const tiles: ChannelTile<RemoteTab>[] = [
+    { id: 'lan', icon: <Wifi size={16} />, name: t('settings:service.remoteTabLan'), ...lanTile },
+    { id: 'tailscale', icon: <Globe size={16} />, name: t('settings:service.remoteTabTailscale'), ...tailscaleTile },
+    { id: 'relay', icon: <Server size={16} />, name: t('settings:service.remoteTabRelay'), ...relayTile },
+    ...(desktop ? [{ id: 'dsh' as const, icon: <DeepSeekIcon size={16} />, name: t('settings:dshRemote.tab'), tone: dshTone, state: dshState }] : []),
   ]
-  const steps = [t('settings:service.remoteStep1'), t('settings:service.remoteStep2'), t('settings:service.remoteStep3')]
+
+  let panel: React.ReactNode
+  if (tab === 'lan') {
+    panel = <>
+      {networkLoading ? loading : lanBase ? ticket(lanBase) : (
+        <NextAction tone="warn" icon={<TriangleAlert size={18} />} actions={lanNotListening ? serviceAction : undefined}
+          title={t(lanLocalOnly ? 'settings:host.lanLocalOnlyTitle' : 'settings:service.remoteQrUnavailable')}>
+          {lanReason}
+        </NextAction>
+      )}
+      <PanelSplit>
+        <PanelRow title={t('settings:service.remoteNic')} hint={t('settings:service.remoteNicDesc')}>
+          <select
+            value={selectedAddress}
+            aria-label={t('settings:service.remoteNic')}
+            disabled={networkLoading || interfaces.length === 0}
+            className="cb-input"
+            onChange={event => setSelectedAddress(event.target.value)}
+          >
+            {interfaces.length === 0 && <option value="">{t('settings:service.remoteNoNetwork')}</option>}
+            {interfaces.map(item => (
+              <option key={item.address} value={item.address}>
+                {item.name} · {item.address}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="cb-btn"
+            data-size="icon"
+            title={t('common:refresh')}
+            aria-label={t('common:refresh')}
+            disabled={networkLoading}
+            onClick={() => {
+              setNetwork(null)
+              setNetworkLoading(true)
+              setNetworkRefresh(value => value + 1)
+            }}
+          >
+            <RetryIcon size={14} className={networkLoading ? 'animate-spin' : undefined} />
+          </button>
+        </PanelRow>
+        <PanelRow title={t('settings:service.remotePort')} hint={t('settings:service.remoteServerPortDesc')}>
+          <code aria-label={t('settings:service.remotePort')} className="cb-value">{listenPort ?? '—'}</code>
+        </PanelRow>
+      </PanelSplit>
+    </>
+  } else if (tab === 'tailscale') {
+    const approval = tailscale?.backendState === 'NeedsMachineAuth'
+    panel = !tailscale ? (
+      tailscaleStatusError
+        ? <p role="status" className="cb-hint">{t('settings:service.backendStatusUnavailable')}</p>
+        : loading
+    ) : tailscaleBase ? <>
+      {ticket(tailscaleBase)}
+      <PanelSplit>
+        <PanelRow title={t('settings:service.remoteTabTailscale')} hint={t('settings:host.tsPeerHint')}>
+          {tailscaleControls(true)}
+        </PanelRow>
+      </PanelSplit>
+    </> : (
+      <NextAction tone={approval ? 'warn' : 'idle'} icon={<Globe size={18} />}
+        title={t(approval ? 'settings:service.remoteTailscaleApproval' : 'settings:host.tsJoinTitle')}>
+        <p>{t(approval ? 'settings:service.remotePairApprovalRequired' : 'settings:host.tsJoinBody')}</p>
+        <div className="mt-3.5">{tailscaleControls(false)}</div>
+      </NextAction>
+    )
+  } else if (tab === 'relay') {
+    panel = tunnel === undefined ? loading
+      : !tunnel ? <p role="status" className="cb-hint">{t('settings:service.backendStatusUnavailable')}</p>
+      : !tunnel.enabled ? (
+        <NextAction icon={<Server size={18} />} title={t('settings:host.relayOffTitle')} actions={serviceAction}>
+          {t(desktop ? 'settings:service.remoteRelayNotConfigured' : 'settings:service.remoteRelayManageHint')}
+        </NextAction>
+      ) : relayBase ? <>
+        {ticket(relayBase)}
+        <PanelSplit>
+          <PanelRow title={t('settings:host.relayEntry')} hint={t('settings:service.remoteRelayConnected')}>
+            <AuthStatusPill tone="success">{t('settings:host.connected')}</AuthStatusPill>
+          </PanelRow>
+        </PanelSplit>
+      </> : (
+        <NextAction tone="warn" icon={<Server size={18} />} title={t('settings:host.relayOfflineTitle')}>
+          {t('settings:service.remoteRelayOffline')}
+        </NextAction>
+      )
+  } else {
+    panel = <DshHostPanel host={dshHost} />
+  }
+
+  const subject = activeServer && (
+    <>
+      <Monitor size={14} />
+      <span>{t('settings:host.configuring')}</span>
+      <strong>{activeServer.name}</strong>
+      <code>{activeServer.url.replace(/^https?:\/\//, '')}</code>
+    </>
+  )
 
   return (
-    <SettingsSection title={t('settings:authentication.title')} description={t('settings:service.remoteBackendDesc')}>
-      <div className="grid min-w-0 gap-3">
-        <AuthCard testId="remote-network-setup" icon={<Network size={18} />}
-          title={t('settings:service.remoteConnectionTitle')}
-          description={tab === 'dsh' ? t('settings:dshRemote.remoteDesc') : t('settings:service.remoteConnectionDesc')}>
-          <div className="min-w-0">
-            <ConnectionMethods options={tabs} selected={tab} onChange={switchTab} />
-
-            {tab === 'lan' && (
-              <div className="mt-4 grid divide-y divide-border-200/60">
-                <div className="grid gap-2 pb-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-4">
-                  <div className="min-w-0">
-                    <div className="text-[length:var(--fs-sm)] font-medium text-text-200">{t('settings:service.remoteNic')}</div>
-                    <div className="text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('settings:service.remoteNicDesc')}</div>
-                  </div>
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <select
-                      value={selectedAddress}
-                      aria-label={t('settings:service.remoteNic')}
-                      disabled={networkLoading || interfaces.length === 0}
-                      className={`${settingsFieldClass} sm:w-60`}
-                      onChange={event => setSelectedAddress(event.target.value)}
-                    >
-                      {interfaces.length === 0 && <option value="">{t('settings:service.remoteNoNetwork')}</option>}
-                      {interfaces.map(item => (
-                        <option key={item.address} value={item.address}>
-                          {item.name} · {item.address}
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border-200 text-text-400 transition-colors hover:bg-bg-200 hover:text-text-200 disabled:opacity-50"
-                      title={t('common:refresh')}
-                      aria-label={t('common:refresh')}
-                      disabled={networkLoading}
-                      onClick={() => {
-                        setNetwork(null)
-                        setNetworkLoading(true)
-                        setNetworkRefresh(value => value + 1)
-                      }}
-                    >
-                      <RetryIcon size={13} className={networkLoading ? 'animate-spin' : undefined} />
-                    </button>
-                  </div>
-                </div>
-                <div className="grid gap-2 pt-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-4">
-                  <div className="min-w-0">
-                    <div className="text-[length:var(--fs-sm)] font-medium text-text-200">{t('settings:service.remotePort')}</div>
-                    <div className="text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('settings:service.remoteServerPortDesc')}</div>
-                  </div>
-                  <div aria-label={t('settings:service.remotePort')}
-                    className="w-fit rounded-md border border-border-200/60 bg-bg-200/60 px-2.5 py-1 font-mono text-[length:var(--fs-sm)] text-text-200">
-                    {listenPort ?? '—'}
-                  </div>
-                  {!networkLoading && !listenPort && (
-                    <p role="status" className="text-[length:var(--fs-xs)] leading-relaxed text-text-400 sm:col-span-2">
-                      {t('settings:service.remotePortUnavailable')}
-                    </p>
-                  )}
-                </div>
-                {lanUnavailable && (
-                  <div className="pt-3">
-                    <p role="status" className="break-words rounded-lg border border-warning-100/25 bg-warning-100/10 px-3 py-2 text-[length:var(--fs-xs)] leading-relaxed text-warning-100">
-                      {lanUnavailable}
-                    </p>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {tab === 'relay' && (
-              <div className="mt-4 text-[length:var(--fs-xs)] leading-relaxed">
-                {!tunnel ? (
-                  <AuthStatusPill tone="idle">{tunnel === undefined
-                    ? t('settings:service.backendStatusLoading')
-                    : t('settings:service.backendStatusUnavailable')}</AuthStatusPill>
-                ) : !tunnel.enabled ? (
-                  <p className="rounded-lg bg-bg-200/50 px-3 py-2.5 text-text-400">{t(desktop ? 'settings:service.remoteRelayNotConfigured' : 'settings:service.remoteRelayManageHint')}</p>
-                ) : tunnel.state === 'connected' ? (
-                  <div className="grid gap-2">
-                    <AuthStatusPill tone="success">{t('settings:service.remoteRelayConnected')}</AuthStatusPill>
-                    <span className="break-all font-mono text-text-400">{tunnel.publicUrl}</span>
-                  </div>
-                ) : (
-                  <AuthStatusPill tone="warning">{t('settings:service.remoteRelayOffline')}</AuthStatusPill>
-                )}
-              </div>
-            )}
-            {tab === 'tailscale' && (
-              <div className="mt-4">
-                {tailscalePanel ?? <p role="status" className="text-[length:var(--fs-xs)] text-text-400">
-                  {t('settings:service.backendStatusUnavailable')}
-                </p>}
-              </div>
-            )}
-          </div>
-        </AuthCard>
-
-        {tab === 'dsh' ? (
-          <Suspense fallback={null}><DshRemoteSettings onManage={onManageController} /></Suspense>
-        ) : <AuthCard testId="remote-device-pairing" icon={<Smartphone size={18} />}
-          title={t('settings:service.remoteConnectPhoneTitle')} description={t('settings:service.remoteConnectPhoneDesc')}>
-          {invite?.redeemed && (
-            <div className="flex items-center gap-2 rounded-lg border border-success-100/25 bg-success-100/10 px-3 py-2.5 text-[length:var(--fs-sm)] text-success-100">
-              <CircleCheck size={16} className="shrink-0" />{t('settings:service.remoteApproved')}
-            </div>
-          )}
-          {!pairUrl && !invite?.redeemed && (
-            <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-border-200 bg-bg-200/30 px-4 py-6 text-center">
-              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-bg-200 text-text-400">
-                {pairPending && !(tab === 'lan' && lanUnavailable) && !(tab === 'tailscale' && !base)
-                  ? <SpinnerIcon size={18} className="animate-spin" />
-                  : <QrCodeIcon size={18} />}
-              </div>
-              <div role="status" className="max-w-sm text-[length:var(--fs-xs)] leading-relaxed text-text-400">
-                {tab === 'lan' && lanUnavailable
-                  ? t('settings:service.remoteQrUnavailable')
-                  : tab === 'tailscale' && !base
-                  ? t(tailscale?.backendState === 'NeedsMachineAuth' ? 'settings:service.remotePairApprovalRequired' : 'settings:service.remotePairServerLoginRequired')
-                  : pairPending
-                  ? t('settings:service.backendStatusLoading')
-                  : t('settings:service.remoteQrUnavailable')}
-              </div>
-              {invite && expired && !invite.redeemed && (
-                <div className="text-[length:var(--fs-xs)] text-warning-100">
-                  {t('settings:service.remoteExpired')}
-                  <button type="button" className="ml-1 font-medium text-accent-main-100 hover:underline" onClick={reMint}>
-                    {t('settings:service.remoteRefresh')}
-                  </button>
-                </div>
-              )}
-              {inviteGone && (
-                <button type="button" className={`${authSecondaryButtonClass} min-h-9 text-[length:var(--fs-xs)]`} onClick={reMint}>
-                  <RetryIcon size={12} />{t('settings:service.remoteRefresh')}
-                </button>
-              )}
-            </div>
-          )}
-
-          {pairUrl && invite && (
-            <div className="flex flex-col items-center gap-5 sm:flex-row sm:items-stretch">
-              <div className="shrink-0 rounded-xl bg-white p-2 shadow-sm ring-1 ring-black/5">
-                <QrCode text={pairUrl} size={176} />
-              </div>
-              <div className="flex w-full min-w-0 flex-1 flex-col justify-between gap-4">
-                <div className="grid gap-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <AuthStatusPill tone="progress" icon={<Clock size={12} className="shrink-0" />}>
-                      {t('settings:service.remoteExpiresLater', { time: formatCountdown(invite.expiresAt, now) })}
-                    </AuthStatusPill>
-                    <button type="button" className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[length:var(--fs-xs)] font-medium text-accent-main-100 hover:bg-accent-main-100/10" onClick={reMint}>
-                      <RetryIcon size={12} />{t('settings:service.remoteRefresh')}
-                    </button>
-                  </div>
-                  <div className="grid min-w-0 gap-2 rounded-lg border border-border-200/60 bg-bg-200/40 px-3 py-2.5 text-[length:var(--fs-xs)] text-text-300">
-                    <p>{t('settings:service.remoteManualHint')}</p>
-                    <p className="break-all font-mono">{t('settings:service.remoteManualAddress', { url: base })}</p>
-                    <p className="font-mono text-[length:var(--fs-sm)] tracking-wide text-text-200">
-                      {t('settings:service.remoteManualCode', { code: groupedCode(invite.code) })}
-                    </p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  className={`${authSecondaryButtonClass} min-h-10 w-full text-[length:var(--fs-xs)] sm:w-fit`}
-                  onClick={() => void copyInvite()}
-                >
-                  {copied ? <CheckIcon size={12} className="text-success-100" /> : <CopyIcon size={12} />}
-                  {copied ? t('settings:service.remoteCopied') : t('settings:service.remoteCopyInvite')}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {pairUrl && <ol className="grid gap-2 sm:grid-cols-3">
-            {steps.map((step, index) => (
-              <li key={index} className="flex gap-2.5 rounded-lg bg-bg-200/40 p-3 text-[length:var(--fs-xs)] leading-relaxed text-text-400">
-                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent-main-100/15 text-[11px] font-semibold text-accent-main-100">{index + 1}</span>
-                <span>{step}</span>
-              </li>
-            ))}
-          </ol>}
-
-          {pairUrl && <div className="flex min-w-0 items-start gap-2 text-[length:var(--fs-xs)] text-text-500">
-            <span aria-hidden className="mt-1.5 h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent-main-100" />
-            <span className="min-w-0 break-all">{t('settings:service.remoteWaiting', { url: pairUrl })}</span>
-          </div>}
-        </AuthCard>}
-      </div>
-    </SettingsSection>
+    <div className="cb-page">
+      <PageHead title={t('settings:host.title')} description={t('settings:host.description')} subject={subject} />
+      <ChannelBoard testId="host-channels" tiles={tiles} selected={tab} onSelect={switchTab}>
+        {panel}
+      </ChannelBoard>
+      {!desktop && <p className="cb-footnote">{t('settings:host.dshDesktopOnly')}</p>}
+    </div>
   )
 }

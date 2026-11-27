@@ -198,7 +198,7 @@ describe('serverStore health check', () => {
     vi.unstubAllGlobals()
   })
 
-  it('checks the local default server same-origin even with a legacy stored url', async () => {
+  it('checks the built-in loopback backend when the local default holds a legacy relative url', async () => {
     localStorage.setItem(
       'ompiui-servers',
       JSON.stringify([{ id: 'local', name: 'Local', url: '/api', isDefault: true }]),
@@ -208,16 +208,16 @@ describe('serverStore health check', () => {
 
     await serverStore.checkHealth('local')
 
-    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe('/api/v1/host/health')
+    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe('http://127.0.0.1:8787/api/v1/host/health')
   })
 
-  it('checks the local default server same-origin through the dev proxy', async () => {
+  it('checks the untouched local default at the loopback backend, not the page origin', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ ok: true, service: 'ompiui-server', protocolVersion: PROTOCOL_VERSION, ompVersion: null }))
     const { serverStore } = await import('./serverStore')
 
     await serverStore.checkHealth('local')
 
-    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe('/api/v1/host/health')
+    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe('http://127.0.0.1:8787/api/v1/host/health')
   })
 
   it('checks an edited default local server directly at its saved address', async () => {

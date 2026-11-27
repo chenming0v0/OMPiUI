@@ -28,18 +28,24 @@ const definitions = (tab: SettingsTab, labelKeys: string[]): SettingsSearchDefin
 
 export const SETTINGS_SEARCH_DEFINITIONS: SettingsSearchDefinition[] = [
   ...definitions('servers', ['servers.connections']),
-  ...definitions('authentication', ['authentication.title']),
-  ...['service.tunnelTitle', 'service.tunnelUrl', 'service.tunnelKey', 'service.tunnelId'].map(labelKey => ({
-    tab: 'authentication' as const,
+  ...definitions('controller', ['controller.title']),
+  // 通道在面板里按需出现，搜索结果统一落到页头。
+  ...['controller.tabPair', 'controller.manualTitle', 'dshRemote.tab'].map(labelKey => ({
+    tab: 'controller' as const,
     labelKey,
-    fallbackKey: 'authentication.title',
+    targetKey: 'controller.title',
+  })),
+  ...definitions('host', ['host.title']),
+  ...['service.tunnelTitle', 'service.tunnelUrl', 'service.tunnelKey', 'service.tunnelId'].map(labelKey => ({
+    tab: 'service' as const,
+    labelKey,
+    fallbackKey: 'service.title',
   })),
   ...['service.remoteTitle', 'service.remoteTailscaleTitle', 'service.remoteTailscalePhoneTitle'].map(labelKey => ({
-    tab: 'authentication' as const,
+    tab: 'host' as const,
     labelKey,
-    targetKey: 'authentication.title',
+    targetKey: 'host.title',
   })),
-  { tab: 'authentication', labelKey: 'dshRemote.tab', targetKey: 'service.remoteConnectionTitle', fallbackKey: 'authentication.phoneConnectComputer' },
   ...definitions('traffic', ['tabs.traffic', 'traffic.recording', 'traffic.previews', 'traffic.requests']),
   ...definitions('service', ['service.title', 'service.ompRuntime', 'service.envVars', 'service.environment']),
   ...definitions('models', ['models.rolesTitle', 'models.visibility']),

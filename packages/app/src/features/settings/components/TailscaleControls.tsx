@@ -8,7 +8,7 @@ import { copyTextToClipboard } from '../../../utils/clipboard'
 import { isValidTailscaleAuthUrl } from '../../../utils/tailscaleLogin'
 import type { TailscaleAuthPhase } from '../../../hooks/useTailscaleLoginFlow'
 
-export function TailscaleControls({ state, authUrl, ips, enabled, available, busy, error, recoveryPaused = false, authPhase, onOpenAuthUrl, authLinkMode = false, onAuthLinkClick, showAuthQr = true, layout = 'default', onLogin, onDisconnect }: {
+export function TailscaleControls({ state, authUrl, ips, enabled, available, busy, error, recoveryPaused = false, authPhase, onOpenAuthUrl, authLinkMode = false, onAuthLinkClick, showAuthQr = true, layout = 'default', inline = false, onLogin, onDisconnect }: {
   state?: string | null
   authUrl?: string | null
   ips: string[]
@@ -23,6 +23,8 @@ export function TailscaleControls({ state, authUrl, ips, enabled, available, bus
   onAuthLinkClick?: () => void
   showAuthQr?: boolean
   layout?: 'default' | 'phone'
+  /** 状态和按钮排成一行，放进设置行右侧。 */
+  inline?: boolean
   onLogin: () => void
   onDisconnect: () => void
 }) {
@@ -75,7 +77,7 @@ export function TailscaleControls({ state, authUrl, ips, enabled, available, bus
   const showAuthAction = needsAuth && available
   const showDisconnect = enabled || waiting || Boolean(target)
   return (
-    <div className="grid min-w-0 gap-3">
+    <div className={inline ? 'flex min-w-0 flex-wrap items-center justify-end gap-2' : 'grid min-w-0 gap-3'}>
       <AuthStatusPill role="status" tone={tone}
         icon={waiting ? <SpinnerIcon size={12} className="shrink-0 animate-spin" /> : state === 'Running' ? <ShieldCheck size={13} className="shrink-0" /> : undefined}>
         {state === 'Running'
@@ -163,7 +165,7 @@ export function TailscaleControls({ state, authUrl, ips, enabled, available, bus
           <div className="rounded-xl bg-white p-2 shadow-sm ring-1 ring-black/5"><QrCode text={target} size={128} /></div>
         </div>
       )}
-      {error && <AuthAlert>{error}</AuthAlert>}
+      {error && <div className={inline ? 'w-full' : undefined}><AuthAlert>{error}</AuthAlert></div>}
     </div>
   )
 }

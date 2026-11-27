@@ -126,10 +126,11 @@ async function startNativeOmpiUiService(): Promise<void> {
 async function startApp() {
   // 手机远程扫码入口：先兑换一次性配对码（失败也不阻塞启动），再渲染，
   // 避免先闪一次未授权状态。兑换成功后地址栏参数已被抹掉。
-  const pairParam = new URLSearchParams(window.location.search).get('pair')
+  const startupParams = new URLSearchParams(window.location.search)
+  const pairParam = startupParams.get('pair')
   if (pairParam) {
     const { applyPairParam } = await import('./store/serverStore')
-    await applyPairParam(pairParam, window.location.origin).catch(() => false)
+    await applyPairParam(pairParam, window.location.origin, startupParams.get('server') ?? undefined).catch(() => false)
   }
 
   // Match the desktop shell behavior: render immediately, then bring the

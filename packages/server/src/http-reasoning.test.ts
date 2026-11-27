@@ -76,14 +76,19 @@ test('cold provider save/delete broadcast models.updated only on success, not re
   assert.deepEqual(events, ['models.providers.save', 'models.providers.delete'])
 })
 
-test('reasoning endpoints are behind host authentication and allowed-origin gate', { timeout: 10_000 }, async t => {
+test('reasoning endpoints are behind host authentication, whatever origin the page is served from', { timeout: 10_000 }, async t => {
   const f = await fixture(t)
   assert.equal((await f.request('config', undefined, {})).status, 401)
   assert.equal((await f.request('translate', intent, {})).status, 401)
   assert.equal((await f.request('reading', { sessionId: 'session', readerId: 'reader', active: true }, {})).status, 401)
-  const denied = await f.request('translate', intent, { authorization: 'Bearer test-token', origin: 'https://untrusted.example' })
-  assert.equal(denied.status, 403)
+  // 没有令牌时，换一个页面来源也进不来。
+  assert.equal((await f.request('translate', intent, { origin: 'https://static.example' })).status, 401)
   assert.deepEqual(f.reads(), { sourceReads: 0, sessionReads: 0 })
+  // 静态前端可以部署在任意域名：令牌有效的跨源请求照常处理，并回显它的 Origin。
+  const crossOrigin = await f.request('config', undefined, { authorization: 'Bearer test-token', origin: 'https://static.example' })
+  assert.equal(crossOrigin.status, 200)
+  assert.equal(crossOrigin.headers.get('access-control-allow-origin'), 'https://static.example')
+  assert.deepEqual(await crossOrigin.json(), { concurrency: 5 })
 })
 
 test('HTTP accepts intent-only source, rejects raw text and conceals readonly source failures', { timeout: 10_000 }, async t => {

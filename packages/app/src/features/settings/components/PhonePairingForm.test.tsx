@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PhonePairingForm } from './PhonePairingForm'
 
 const mocks = vi.hoisted(() => ({
-  discover: vi.fn(), discoverySupported: false,
+  discover: vi.fn(), discoverySupported: false, mobile: true,
   redeem: vi.fn(), redeemCode: vi.fn(), scan: vi.fn(), addServer: vi.fn(), setActiveServer: vi.fn(),
   checkHealth: vi.fn(), clearSession: vi.fn(), navigateHome: vi.fn(),
 }))
@@ -13,6 +13,9 @@ vi.mock('../../../utils/deviceDiscovery', async original => ({
   discoverDevices: mocks.discover, supportsDeviceDiscovery: () => mocks.discoverySupported,
 }))
 vi.mock('../../../utils/qrScanner', () => ({ scanPairingQr: mocks.scan }))
+vi.mock('../../../utils/tauri', async original => ({
+  ...await original<typeof import('../../../utils/tauri')>(), isTauriMobile: () => mocks.mobile,
+}))
 vi.mock('../../../utils/sessionLifecycle', () => ({ clearSessionRuntimeState: mocks.clearSession }))
 vi.mock('../../../hooks', () => ({
   useServerStore: () => mocks,
@@ -23,6 +26,7 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => k
 beforeEach(() => {
   vi.clearAllMocks()
   mocks.discoverySupported = false
+  mocks.mobile = true
   mocks.discover.mockReset().mockResolvedValue([])
   mocks.redeem.mockReset().mockResolvedValue({ url: 'http://remote.test', token: 'server-token' })
   mocks.redeemCode.mockReset().mockResolvedValue({ url: 'http://remote.test', token: 'server-token' })
@@ -54,7 +58,9 @@ describe('PhonePairingForm', () => {
     expect(mocks.redeemCode).toHaveBeenCalledWith('00123456', 'http://192.168.1.50:9292', expect.any(AbortSignal))
     expect(mocks.redeemCode).toHaveBeenCalledOnce()
     expect(mocks.addServer).toHaveBeenCalledOnce()
-    await waitFor(() => expect(screen.getByRole('button', { name: 'authentication.discoveryRefresh' })).toBeDisabled())
+    // 配对成功后表单换成结果，发现列表随之停止扫描。
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('authentication.connected'))
+    expect(screen.queryByRole('button', { name: 'authentication.discoveryRefresh' })).not.toBeInTheDocument()
   })
 
   it.each(['50328191', '5032 8191', '5032-8191', '0012 3456'])('redeems a display code with an explicit address: %s', async value => {
@@ -68,13 +74,13 @@ describe('PhonePairingForm', () => {
     await submit()
     expect(mocks.redeemCode).toHaveBeenCalledWith(value.replace(/[\s-]/g, ''), 'http://100.82.171.116:8787', expect.any(AbortSignal))
     expect(mocks.redeem).not.toHaveBeenCalled()
-    expect(mocks.addServer).toHaveBeenCalledWith({ name: 'remote.test', url: 'http://remote.test', token: 'server-token' })
+    expect(mocks.addServer).toHaveBeenCalledWith({ name: 'remote.test', url: 'http://remote.test', token: 'server-token', source: 'pair' })
     expect(mocks.clearSession).toHaveBeenCalledWith('session-1')
     expect(mocks.setActiveServer).toHaveBeenCalledWith('paired-server')
     expect(mocks.navigateHome).toHaveBeenCalledOnce()
     expect(mocks.checkHealth).toHaveBeenCalledWith('paired-server')
     expect(completed).toHaveBeenCalledOnce()
-    expect(input()).toHaveValue('')
+    expect(screen.queryByLabelText('authentication.pairingInfo')).not.toBeInTheDocument()
     expect(screen.getByRole('status')).toHaveTextContent('authentication.connected')
   })
 
@@ -106,7 +112,7 @@ describe('PhonePairingForm', () => {
     expect(mocks.redeem).not.toHaveBeenCalled()
   })
 
-  it('shows the address field while typing and does not auto-redeem a pasted code', async () => {
+  it('keeps the address field available and does not auto-redeem a pasted code', async () => {
     render(<PhonePairingForm />)
     fireEvent.change(input(), { target: { value: '5032' } })
     expect(screen.getByLabelText('authentication.serverAddress')).toBeInTheDocument()
@@ -163,12 +169,12 @@ describe('PhonePairingForm', () => {
     expect(screen.getByText('http://remote.test')).toBeInTheDocument()
     await submit()
     expect(mocks.redeem).toHaveBeenCalledWith('once.secret', 'http://remote.test', expect.any(AbortSignal))
-    expect(mocks.addServer).toHaveBeenCalledWith({ name: 'remote.test', url: 'http://remote.test', token: 'server-token' })
+    expect(mocks.addServer).toHaveBeenCalledWith({ name: 'remote.test', url: 'http://remote.test', token: 'server-token', source: 'pair' })
     expect(mocks.clearSession).toHaveBeenCalledWith('session-1')
     expect(mocks.setActiveServer).toHaveBeenCalledWith('paired-server')
     expect(mocks.navigateHome).toHaveBeenCalledOnce()
     expect(mocks.checkHealth).toHaveBeenCalledWith('paired-server')
-    expect(input()).toHaveValue('')
+    expect(screen.queryByLabelText('authentication.pairingInfo')).not.toBeInTheDocument()
     expect(screen.getByRole('status')).toHaveTextContent('authentication.connected')
   })
 
@@ -241,7 +247,36 @@ describe('PhonePairingForm', () => {
     })
     await submit()
     expect(mocks.redeem).not.toHaveBeenCalled()
-    expect(mocks.addServer).toHaveBeenCalledWith({ name: 'remote.test', url: 'http://remote.test', token: 'share-token' })
+    expect(mocks.addServer).toHaveBeenCalledWith({ name: 'remote.test', url: 'http://remote.test', token: 'share-token', source: 'manual' })
     expect(mocks.setActiveServer).toHaveBeenCalledWith('paired-server')
+  })
+
+  it('offers the camera scanner only in the phone app', () => {
+    mocks.mobile = false
+    render(<PhonePairingForm />)
+    expect(screen.queryByRole('button', { name: 'authentication.scan' })).not.toBeInTheDocument()
+    expect(input()).toBeEnabled()
+  })
+
+  it('lets the user pair another computer or jump to the saved servers after success', async () => {
+    const openServers = vi.fn()
+    render(<PhonePairingForm onOpenServers={openServers} />)
+    fireEvent.change(input(), { target: { value: 'http://remote.test/?pair=once.secret' } })
+    await submit()
+    fireEvent.click(screen.getByRole('button', { name: 'controller.openServers' }))
+    expect(openServers).toHaveBeenCalledOnce()
+    fireEvent.click(screen.getByRole('button', { name: 'controller.pairAnother' }))
+    expect(input()).toHaveValue('')
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('lists only LAN computers and points to the tailnet channel when one exists', async () => {
+    mocks.discoverySupported = true
+    const openTailscale = vi.fn()
+    render(<PhonePairingForm onOpenTailscale={openTailscale} />)
+    await waitFor(() => expect(mocks.discover).toHaveBeenCalledTimes(1))
+    expect(mocks.discover).toHaveBeenCalledWith('lan', expect.any(AbortSignal))
+    fireEvent.click(screen.getByRole('button', { name: 'controller.pairOverTailscale' }))
+    expect(openTailscale).toHaveBeenCalledOnce()
   })
 })
