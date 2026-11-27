@@ -291,13 +291,15 @@ export function DshRemoteConnectSettings({ onOpenServers }: { onOpenServers?: ()
       </PanelSplit>
     </>
   } else if (login) {
+    // 手机上授权页就开在这台手机的浏览器里，给自己看一个二维码没有用。
+    const phone = isTauriMobile()
     body = (
-      <div className="cb-login">
-        <div className="cb-qr"><QrCode text={login.url} size={140} /></div>
+      <div className={phone ? undefined : 'cb-login'}>
+        {!phone && <div className="cb-qr"><QrCode text={login.url} size={140} /></div>}
         <div className="min-w-0">
           <h3 className="text-[length:var(--fs-base)] font-semibold leading-snug text-text-100">{t('controller.dshScanTitle')}</h3>
           <p className="mt-1 text-[length:var(--fs-sm)] leading-relaxed text-text-200">
-            {t('dshRemote.waitingLogin')} {t('dshRemote.expiresIn', { time: clock })}
+            {t(phone ? 'dshRemote.waitingLoginPhone' : 'dshRemote.waitingLogin')} {t('dshRemote.expiresIn', { time: clock })}
           </p>
           <div className="cb-actions">
             <button type="button" className="cb-btn" onClick={() => void openSite(login.url, login.attempt.signal).catch(() => setError(t('dshRemote.loginFailed')))}>

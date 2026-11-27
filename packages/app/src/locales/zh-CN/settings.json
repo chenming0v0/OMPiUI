@@ -135,6 +135,7 @@
     "loginDesc": "登录 DS Harness Remote 账号后，可以看到同账号下已开启被控端的电脑。",
     "loginLoading": "正在读取登录方式…",
     "waitingLogin": "授权页已经在浏览器打开，也可以用手机扫这个码。完成授权后这里会自动继续。",
+    "waitingLoginPhone": "授权页已经在浏览器打开。完成授权后回到这里，会自动继续。",
     "expiresIn": "授权剩余 {{time}}",
     "openLogin": "打开授权页",
     "loginExpired": "授权已过期，请重新登录。",

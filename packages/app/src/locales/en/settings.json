@@ -135,6 +135,7 @@
     "loginDesc": "After signing in to DS Harness Remote, you can see computers on the same account that have remote access enabled.",
     "loginLoading": "Loading sign-in methods…",
     "waitingLogin": "The sign-in page is open in your browser, or scan this code with your phone. This continues automatically once you authorize.",
+    "waitingLoginPhone": "The sign-in page is open in your browser. Come back here after you authorize and this continues automatically.",
     "expiresIn": "Authorization expires in {{time}}",
     "openLogin": "Open sign-in page",
     "loginExpired": "The authorization expired. Sign in again.",
