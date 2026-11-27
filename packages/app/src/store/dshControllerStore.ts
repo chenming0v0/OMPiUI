@@ -11,9 +11,11 @@ interface DshControllerState {
   hosts: DshHostListItem[]
   browser: DshBrowserState | null
   authError: string | null
+  /** 正在等用户完成登录授权；只给通道条显示状态用。 */
+  signingIn: boolean
 }
 
-let state: DshControllerState = { session: null, hosts: [], browser: null, authError: null }
+let state: DshControllerState = { session: null, hosts: [], browser: null, authError: null, signingIn: false }
 const listeners = new Set<() => void>()
 const subscribe = (listener: () => void) => {
   listeners.add(listener)

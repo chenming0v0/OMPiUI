@@ -45,9 +45,14 @@ vi.mock('./components/ServersSettings', () => ({
     <div>Servers content{initialAddingServer && <input aria-label="New connection" />}</div>
   ),
 }))
-vi.mock('./components/AuthenticationSettings', () => ({
-  AuthenticationSettings: ({ onPaired }: { onPaired?: () => void }) => (
-    <div data-setting-label="Authentication"><button type="button" onClick={onPaired}>Complete authentication</button></div>
+vi.mock('./components/ControllerSettings', () => ({
+  ControllerSettings: ({ onPaired }: { onPaired?: () => void }) => (
+    <div data-setting-label="Controller"><button type="button" onClick={onPaired}>Complete controller sign-in</button></div>
+  ),
+}))
+vi.mock('./components/HostSettings', () => ({
+  HostSettings: () => (
+    <div data-setting-label="Host"><button type="button">Host controls</button></div>
   ),
 }))
 vi.mock('./components/TrafficAuditSettings', () => ({
@@ -104,35 +109,39 @@ describe('SettingsDialog search', () => {
     expect(within(screen.getByText('Core').parentElement!).queryByRole('tab', { name: 'Service' })).not.toBeInTheDocument()
   })
 
-  it('places authentication first under Advanced on desktop', async () => {
+  it('places controller and host next to servers under Core on desktop', async () => {
     render(<SettingsDialog isOpen onClose={vi.fn()} />)
     await act(async () => vi.advanceTimersByTime(1))
-    const advancedGroup = screen.getByText('Advanced').parentElement!
-    expect(within(advancedGroup).getAllByRole('tab')[0]).toHaveTextContent('Authentication')
-    expect(within(screen.getByText('Core').parentElement!).queryByRole('tab', { name: 'Authentication' })).toBeNull()
-    fireEvent.click(screen.getByRole('tab', { name: 'Authentication' }))
-    expect(screen.getByRole('button', { name: 'Complete authentication' })).toBeInTheDocument()
+    const coreGroup = screen.getByText('Core').parentElement!
+    const coreTabs = within(coreGroup).getAllByRole('tab')
+    expect(coreTabs[0]).toHaveTextContent('Servers')
+    expect(coreTabs[1]).toHaveTextContent('Controller')
+    expect(coreTabs[2]).toHaveTextContent('Host')
+    expect(within(screen.getByText('Advanced').parentElement!).queryByRole('tab', { name: 'Host' })).toBeNull()
+    fireEvent.click(screen.getByRole('tab', { name: 'Controller' }))
+    expect(screen.getByRole('button', { name: 'Complete controller sign-in' })).toBeInTheDocument()
     expect(screen.queryByText('Service content')).not.toBeInTheDocument()
   })
 
-  it('puts mobile authentication immediately right of Servers and shows the server list after pairing', async () => {
+  it('puts mobile controller immediately right of Servers and hides host', async () => {
     tauriState.mobile = true
     tauriState.smallScreen = true
     render(<SettingsDialog isOpen onClose={vi.fn()} />)
     await act(async () => vi.advanceTimersByTime(1))
     const tabs = screen.getAllByRole('tab')
     expect(tabs[0]).toHaveTextContent('Servers')
-    expect(tabs[1]).toHaveTextContent('Authentication')
+    expect(tabs[1]).toHaveTextContent('Controller')
+    expect(screen.queryByRole('tab', { name: 'Host' })).toBeNull()
     fireEvent.click(tabs[1])
-    fireEvent.click(screen.getByRole('button', { name: 'Complete authentication' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Complete controller sign-in' }))
     expect(screen.getByRole('tab', { name: 'Servers' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.queryByLabelText('New connection')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('tab', { name: 'Authentication' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Controller' }))
     fireEvent.click(screen.getByRole('tab', { name: 'Servers' }))
     expect(screen.queryByLabelText('New connection')).not.toBeInTheDocument()
   })
 
-  it('finds Tailscale in the independent authentication page', async () => {
+  it('finds Tailscale on the independent host page', async () => {
     render(<SettingsDialog isOpen onClose={vi.fn()} />)
     await act(async () => vi.advanceTimersByTime(1))
     const input = screen.getByRole('combobox', { name: 'Search settings' })
@@ -140,8 +149,8 @@ describe('SettingsDialog search', () => {
     fireEvent.change(input, { target: { value: 'Tailscale' } })
     fireEvent.click(screen.getAllByRole('option')[0])
     await act(async () => vi.advanceTimersByTime(1))
-    expect(screen.getByRole('tab', { name: 'Authentication' })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('button', { name: 'Complete authentication' })).toHaveFocus()
+    expect(screen.getByRole('tab', { name: 'Host' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('button', { name: 'Host controls' })).toHaveFocus()
   })
 
   it('hides desktop service controls in the Android shell', async () => {

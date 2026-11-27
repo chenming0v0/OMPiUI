@@ -1,15 +1,14 @@
 import { lazy, Suspense, useState, useEffect, useCallback, useMemo } from 'react'
-import { Cloud } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { Activity, Globe, KeyRound, Monitor, QrCode } from 'lucide-react'
 import { Button } from '../../../components/ui/Button'
 import { ConfirmDialog } from '../../../components/ui/ConfirmDialog'
 import {
   TrashIcon,
-  WifiIcon,
-  WifiOffIcon,
   SpinnerIcon,
   KeyIcon,
   PencilIcon,
+  PlusIcon,
   RetryIcon,
   ShareIcon,
   CopyIcon,
@@ -18,36 +17,38 @@ import {
 } from '../../../components/Icons'
 import { useServerStore, useRouter } from '../../../hooks'
 import { clearSessionRuntimeState } from '../../../utils/sessionLifecycle'
-import { settingsFieldClass, SettingsSection } from './SettingsUI'
+import { isTailnetUrl } from '../../../utils/androidTailscale'
+import { isTauri, isTauriMobile } from '../../../utils/tauri'
+import { settingsFieldClass } from './SettingsUI'
+import { Lamp, PageHead, type LampTone } from './ChannelBoard'
+import { AddServerForm } from './AddServerForm'
+import { SERVER_NAME_MAX_LENGTH, isHttpsIpUrl } from './serverForm'
 import type { ServerConfig, ServerHealth } from '../../../store/serverStore'
-import { parseConnectionLink, resolveConnectionLink } from '../../../utils/connectionLink'
 import { fetchHostShare } from '../../../omp/transport'
-import { useDshController } from '../../../store/dshControllerStore'
-import { AuthStatusPill } from './AuthPanelUI'
 import type { ShareInfo } from '@ompiui/protocol'
 
-const IPV4_PATTERN = /^(?:\d{1,3}\.){3}\d{1,3}$/
-/** 显示名长度上限，避免列表项把右侧操作按钮挤穿 */
-const SERVER_NAME_MAX_LENGTH = 40
-const DshControllerControls = lazy(() => import('./DshRemoteSettings').then(module => ({ default: module.DshRemoteConnectSettings })))
+const DshServerRows = lazy(() => import('./DshRemoteSettings').then(module => ({ default: module.DshServerRows })))
 
-function isHttpsIpUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url)
-    const hostname = parsed.hostname.replace(/^\[|\]$/g, '')
-    return parsed.protocol === 'https:' && (IPV4_PATTERN.test(hostname) || hostname.includes(':'))
-  } catch {
-    return false
-  }
+type ServerVia = 'local' | 'pair' | 'tailscale' | 'manual'
+
+/** 来源标记：和「控制端」的通道用同一套名字和图标。 */
+function serverVia(server: ServerConfig): ServerVia {
+  if (server.isDefault && (!/^https?:\/\//i.test(server.url) || /^https?:\/\/(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d+)?(?:\/|$)/i.test(server.url))) return 'local'
+  if (isTailnetUrl(server.url)) return 'tailscale'
+  return server.source === 'pair' ? 'pair' : 'manual'
 }
 
-/** 从分享链接的 URL 推导一个默认显示名。 */
-function hostNameOf(url: string): string {
-  try {
-    return new URL(url).host
-  } catch {
-    return url
-  }
+const viaIcons: Record<ServerVia, React.ReactNode> = {
+  local: <Monitor size={11} />,
+  pair: <QrCode size={11} />,
+  tailscale: <Globe size={11} />,
+  manual: <KeyRound size={11} />,
+}
+
+function healthTone(health: ServerHealth | null): LampTone {
+  if (!health || health.status === 'checking') return 'busy'
+  if (health.status === 'online') return 'on'
+  return health.status === 'unauthorized' ? 'warn' : 'off'
 }
 
 // ============================================
@@ -75,12 +76,20 @@ function ServerItem({
   const [editing, setEditing] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [showShare, setShowShare] = useState(false)
+  const via = serverVia(server)
 
-  const statusIcon = () => {
-    if (!health || health.status === 'checking') return <SpinnerIcon size={12} className="animate-spin text-text-400" />
-    if (health.status === 'online') return <WifiIcon size={12} className="text-success-100" />
-    if (health.status === 'unauthorized') return <KeyIcon size={12} className="text-warning-100" />
-    return <WifiOffIcon size={12} className="text-danger-100" />
+  const statusText = () => {
+    if (!health || health.status === 'checking') return t('servers.checking')
+    switch (health.status) {
+      case 'online':
+        return t('servers.onlineLatency', { latency: health.latency })
+      case 'unauthorized':
+        return t('servers.invalidCredentials')
+      case 'offline':
+        return t('common:offline')
+      default:
+        return t('common:error')
+    }
   }
 
   const statusTitle = () => {
@@ -116,13 +125,8 @@ function ServerItem({
 
   return (
     <>
-      <div
-        onClick={onSelect}
-        className={`group flex items-center gap-1.5 p-2.5 rounded-lg border transition-colors min-w-0
-          ${
-            isActive ? 'border-accent-main-100/40 bg-accent-main-100/5' : 'border-border-200/40 hover:border-border-300'
-          }`}
-      >
+      <div onClick={onSelect} className="cb-srv group cursor-pointer" data-current={isActive ? '' : undefined}>
+        <Lamp tone={healthTone(health)} />
         <button
           type="button"
           onClick={e => {
@@ -130,28 +134,25 @@ function ServerItem({
             onSelect()
           }}
           aria-current={isActive ? 'true' : undefined}
-          className="min-w-0 flex-1 overflow-hidden bg-transparent border-none p-0 text-left"
+          title={isActive ? undefined : t('servers.switchTo')}
+          className="cb-srv-main touch-target-sm"
         >
-          <div className="min-w-0">
-            <div
-              className="text-[length:var(--fs-md)] font-medium text-text-100 truncate"
-              title={server.name}
-            >
-              {server.name}
-            </div>
-            <div className="text-[length:var(--fs-xs)] text-text-400 truncate font-mono flex items-center gap-1 mt-0.5 min-w-0">
-              <span className="truncate min-w-0" title={server.url}>
-                {server.url}
-              </span>
-              {server.token && <KeyIcon size={10} className="shrink-0 text-text-400" />}
-            </div>
-          </div>
+          <span className="cb-srv-title">
+            <span className="cb-srv-name" title={server.name}>{server.name}</span>
+            <span className="cb-via">{viaIcons[via]}{t(`servers.via.${via}`)}</span>
+          </span>
+          <span className="cb-srv-meta">
+            <code title={server.url}>{server.url}</code>
+            {server.token && <KeyIcon size={10} className="shrink-0 text-text-400" />}
+            <span>{statusText()}</span>
+          </span>
         </button>
-        <div className="shrink-0 flex items-center gap-0.5">
+        <div className="cb-srv-actions">
+          {isActive && <span className="cb-tag">{t('servers.current')}</span>}
           {(server.isDefault || server.token) && (
             <button
               type="button"
-              className="p-1.5 rounded-md text-text-400 hover:text-accent-main-100 hover:bg-accent-main-100/10 transition-colors"
+              className="cb-icon-btn"
               onClick={e => {
                 e.stopPropagation()
                 setShowShare(v => !v)
@@ -159,12 +160,12 @@ function ServerItem({
               title={t('servers.share')}
               aria-label={t('servers.share')}
             >
-              <ShareIcon size={13} />
+              <ShareIcon size={14} />
             </button>
           )}
           <button
             type="button"
-            className="p-1.5 rounded-md text-text-400 hover:text-text-200 hover:bg-bg-200/70 transition-colors"
+            className="cb-icon-btn"
             onClick={e => {
               e.stopPropagation()
               onCheckHealth()
@@ -172,25 +173,11 @@ function ServerItem({
             title={statusTitle()}
             aria-label={statusTitle()}
           >
-            {statusIcon()}
+            {health?.status === 'checking' ? <SpinnerIcon size={14} className="animate-spin" /> : <Activity size={14} />}
           </button>
-          {!server.isDefault && (
-            <button
-              type="button"
-              className="p-1.5 rounded-md text-text-400 hover:text-danger-100 hover:bg-danger-100/10 transition-colors"
-              onClick={e => {
-                e.stopPropagation()
-                setConfirmDelete(true)
-              }}
-              title={t('common:remove')}
-              aria-label={t('common:remove')}
-            >
-              <TrashIcon size={13} />
-            </button>
-          )}
           <button
             type="button"
-            className="p-1.5 rounded-md text-text-400 hover:text-accent-main-100 hover:bg-accent-main-100/10 transition-colors"
+            className="cb-icon-btn"
             onClick={e => {
               e.stopPropagation()
               setEditing(true)
@@ -198,8 +185,23 @@ function ServerItem({
             title={t('servers.editServer')}
             aria-label={t('servers.editServer')}
           >
-            <PencilIcon size={13} />
+            <PencilIcon size={14} />
           </button>
+          {!server.isDefault && (
+            <button
+              type="button"
+              className="cb-icon-btn"
+              data-danger=""
+              onClick={e => {
+                e.stopPropagation()
+                setConfirmDelete(true)
+              }}
+              title={t('common:remove')}
+              aria-label={t('common:remove')}
+            >
+              <TrashIcon size={14} />
+            </button>
+          )}
         </div>
       </div>
 
@@ -280,7 +282,7 @@ function SharePanel({ server }: { server: ServerConfig }) {
       : t('servers.shareLoopbackHint')
 
   return (
-    <div className="mt-1.5 p-3 rounded-lg border border-border-200 bg-bg-100 space-y-2">
+    <div className="space-y-2 border-b border-border-200/60 bg-bg-100/60 px-4 py-3 last:border-b-0">
       <div className="text-[length:var(--fs-xs)] font-medium text-text-300">{t('servers.shareTitle')}</div>
       {error && <p className="text-[length:var(--fs-xs)] text-danger-100">{error}</p>}
       {!share && !error && <p className="text-[length:var(--fs-xs)] text-text-400">{t('servers.checking')}</p>}
@@ -400,7 +402,7 @@ function EditServerForm({
   return (
     <form
       onSubmit={handleSubmit}
-      className="p-3 rounded-lg border border-accent-main-100/30 bg-accent-main-100/[0.02] space-y-2.5"
+      className="space-y-2.5 border-b border-border-200/60 bg-accent-main-100/[0.03] px-4 py-3 last:border-b-0"
     >
       <div>
         <label className="block text-[length:var(--fs-xs)] font-medium text-text-300 mb-1">{t('servers.name')}</label>
@@ -476,163 +478,13 @@ function EditServerForm({
 }
 
 // ============================================
-// Add Server Form
-// ============================================
-
-function AddServerForm({
-  onAdd,
-  onCancel,
-}: {
-  onAdd: (name: string, url: string, token?: string, activate?: boolean) => void
-  onCancel: () => void
-}) {
-  const { t } = useTranslation(['settings', 'common'])
-  const [name, setName] = useState('')
-  const [url, setUrl] = useState('')
-  const [token, setToken] = useState('')
-  const [showAuth, setShowAuth] = useState(false)
-  const [error, setError] = useState('')
-  const [pairing, setPairing] = useState(false)
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (pairing) return
-    const connectLink = parseConnectionLink(url)
-    let parsed: URL
-    try {
-      parsed = new URL(connectLink?.url ?? url.trim())
-    } catch {
-      setError(t(url.trim() ? 'servers.invalidUrl' : 'servers.urlRequired'))
-      return
-    }
-    const pairCode = parsed.searchParams.get('pair')
-    const trimmedName =
-      name.trim().slice(0, SERVER_NAME_MAX_LENGTH) || (connectLink || pairCode ? hostNameOf(parsed.href) : '')
-    if (!trimmedName) {
-      setError(t('servers.nameRequired'))
-      return
-    }
-    if (pairCode && !connectLink) {
-      setError(t('service.remotePairInvalid'))
-      return
-    }
-    if (connectLink) {
-      setPairing(true)
-      setError('')
-      try {
-        const result = await resolveConnectionLink(connectLink)
-        onAdd(trimmedName, result.url, result.token, !!connectLink.pair)
-      } catch (reason) {
-        setError(reason instanceof Error ? reason.message : String(reason))
-      } finally {
-        setPairing(false)
-      }
-      return
-    }
-
-    onAdd(trimmedName, url.trim(), token.trim() || undefined)
-  }
-
-  const showHttpsIpWarning = isHttpsIpUrl(url)
-
-  const inputCls = settingsFieldClass
-
-  return (
-    <form onSubmit={event => void handleSubmit(event)} aria-busy={pairing} className="p-3 rounded-lg border border-border-200 bg-bg-100 space-y-2.5">
-      <div>
-        <label className="block text-[length:var(--fs-xs)] font-medium text-text-300 mb-1">{t('servers.name')}</label>
-        <input
-          type="text"
-          value={name}
-          aria-label={t('servers.name')}
-          disabled={pairing}
-          maxLength={SERVER_NAME_MAX_LENGTH}
-          onChange={e => {
-            setName(e.target.value.slice(0, SERVER_NAME_MAX_LENGTH))
-            setError('')
-          }}
-          placeholder={t('servers.namePlaceholder')}
-          className={inputCls}
-          autoFocus
-        />
-      </div>
-      <div>
-        <label className="block text-[length:var(--fs-xs)] font-medium text-text-300 mb-1">{t('servers.url')}</label>
-        <input
-          type="text"
-          value={url}
-          aria-label={t('servers.url')}
-          disabled={pairing}
-          onChange={e => {
-            setUrl(e.target.value)
-            setError('')
-          }}
-          placeholder={t('servers.urlPlaceholder')}
-          className={`${inputCls} font-mono`}
-        />
-        <p className="mt-1 text-[length:var(--fs-xxs)] text-text-400 leading-relaxed">{t('servers.urlShareHint')}</p>
-      </div>
-
-      <button
-        type="button"
-        disabled={pairing}
-        onClick={() => setShowAuth(!showAuth)}
-        className="flex items-center gap-1.5 text-[length:var(--fs-xs)] text-accent-main-100 hover:text-accent-main-200 transition-colors"
-      >
-        <KeyIcon size={10} />
-        {showAuth ? t('servers.hideAuth') : t('servers.addAuth')}
-      </button>
-
-      {showAuth && (
-        <>
-          <div>
-            <label className="block text-[length:var(--fs-xs)] font-medium text-text-300 mb-1">{t('servers.token')}</label>
-            <input
-              type="password"
-              value={token}
-              aria-label={t('servers.token')}
-              disabled={pairing}
-              onChange={e => {
-                setToken(e.target.value)
-                setError('')
-              }}
-              placeholder={t('servers.tokenPlaceholder')}
-              className={`${inputCls} font-mono`}
-            />
-          </div>
-
-          <div className="text-[length:var(--fs-xs)] text-text-400 leading-relaxed">{t('servers.credentialsStorage')}</div>
-        </>
-      )}
-
-      {showHttpsIpWarning && (
-        <div className="text-[length:var(--fs-xs)] text-warning-100 bg-warning-bg border border-warning-100/20 rounded-md px-2.5 py-2 leading-relaxed">
-          {t('servers.httpsIpWarning')}
-        </div>
-      )}
-
-      {error && <p role="alert" className="text-[length:var(--fs-xs)] text-danger-100">{error}</p>}
-      <div className="flex justify-end gap-2 pt-1">
-        <Button type="button" variant="ghost" size="sm" onClick={onCancel} disabled={pairing}>
-          {t('common:cancel')}
-        </Button>
-        <Button type="submit" size="sm" disabled={pairing}>
-          {pairing && <SpinnerIcon size={13} className="mr-1.5 animate-spin" />}
-          {t('common:add')}
-        </Button>
-      </div>
-    </form>
-  )
-}
-
-// ============================================
 // Tab: Servers
 // ============================================
 
 export function ServersSettings({ initialAddingServer = false }: { initialAddingServer?: boolean }) {
   const { t } = useTranslation(['settings', 'common'])
   const [addingServer, setAddingServer] = useState(initialAddingServer)
-  const { session: dshController } = useDshController()
+  const desktop = isTauri() && !isTauriMobile()
   const {
     servers,
     activeServer,
@@ -674,76 +526,68 @@ export function ServersSettings({ initialAddingServer = false }: { initialAdding
   )
 
   return (
-    <SettingsSection
-      title={t('servers.connections')}
-      description={t('servers.connectionsDesc')}
-      actions={
-        <div className="flex items-center gap-2">
-          <button
-            onClick={checkAllHealth}
-            className="flex items-center justify-center w-7 h-7 rounded-md text-text-400 hover:text-text-200 hover:bg-bg-200/70 transition-colors"
-            title={t('common:refresh')}
-            aria-label={t('common:refresh')}
-          >
-            <RetryIcon size={14} />
-          </button>
-          <button
-            onClick={() => setAddingServer(true)}
-            disabled={addingServer}
-            className="h-7 px-2.5 rounded-md text-[length:var(--fs-sm)] font-medium text-accent-main-100 hover:bg-accent-main-100/10 transition-colors disabled:opacity-40"
-          >
-            {t('common:add')}
-          </button>
-        </div>
-      }
-    >
-      <div className="space-y-1.5">
-        {orderedServers.map(s => (
-          <ServerItem
-            key={s.id}
-            server={s}
-            health={getHealth(s.id)}
-            isActive={activeServer?.id === s.id}
-            onSelect={() => handleSelectServer(s.id)}
-            onDelete={() => removeServer(s.id)}
-            onEdit={updates => {
-              updateServer(s.id, { name: updates.name, url: updates.url, token: updates.token })
-              void checkHealth(s.id)
-            }}
-            onCheckHealth={() => void checkHealth(s.id)}
-          />
-        ))}
+    <div className="cb-page">
+      <PageHead
+        title={t('servers.connections')}
+        description={t('servers.connectionsDesc')}
+        aside={
+          <>
+            <button
+              type="button"
+              onClick={checkAllHealth}
+              className="cb-btn"
+              data-size="icon"
+              title={t('common:refresh')}
+              aria-label={t('common:refresh')}
+            >
+              <RetryIcon size={14} />
+            </button>
+            <button type="button" onClick={() => setAddingServer(true)} disabled={addingServer} className="cb-btn">
+              <PlusIcon size={14} />
+              {t('common:add')}
+            </button>
+          </>
+        }
+      />
 
-        {dshController && (
-          <section aria-label={t('dshRemote.connectionName')} className="min-w-0 rounded-lg border border-border-200/60 bg-bg-100" data-testid="dsh-controller-connection">
-            <div className="flex items-center gap-3 px-3 py-2.5">
-              <Cloud size={16} className="shrink-0 text-accent-main-100" />
-              <div className="min-w-0 flex-1">
-                <h3 className="text-[length:var(--fs-sm)] font-medium text-text-100">{t('dshRemote.connectionName')}</h3>
-                <p className="text-[length:var(--fs-xs)] text-text-400">{t('dshRemote.connectionDescription')}</p>
-              </div>
-              <AuthStatusPill tone="success">{t('dshRemote.controllerRole')}</AuthStatusPill>
-            </div>
-            <Suspense fallback={null}><DshControllerControls connectionRow /></Suspense>
-          </section>
-        )}
-
-        {addingServer && (
+      {addingServer && (
+        <section className="cb-srv-form">
           <AddServerForm
-            onAdd={(n, u, token, activate) => {
-              const s = addServer({ name: n, url: u, token })
+            hint={t('servers.keyStoredHere')}
+            onAdd={(server, paired) => {
+              const s = addServer(server)
               setAddingServer(false)
-              if (activate) handleSelectServer(s.id)
+              if (paired) handleSelectServer(s.id)
               else void checkHealth(s.id)
             }}
             onCancel={() => setAddingServer(false)}
           />
-        )}
+        </section>
+      )}
 
-        {servers.length === 0 && !addingServer && !dshController && (
-          <div className="text-[length:var(--fs-md)] text-text-400 text-center py-8">{t('servers.noServersConfigured')}</div>
-        )}
-      </div>
-    </SettingsSection>
+      {servers.length > 0 ? (
+        <div className="cb-srv-list">
+          {orderedServers.map(s => (
+            <ServerItem
+              key={s.id}
+              server={s}
+              health={getHealth(s.id)}
+              isActive={activeServer?.id === s.id}
+              onSelect={() => handleSelectServer(s.id)}
+              onDelete={() => removeServer(s.id)}
+              onEdit={updates => {
+                updateServer(s.id, { name: updates.name, url: updates.url, token: updates.token })
+                void checkHealth(s.id)
+              }}
+              onCheckHealth={() => void checkHealth(s.id)}
+            />
+          ))}
+          {desktop && <Suspense fallback={null}><DshServerRows /></Suspense>}
+        </div>
+      ) : (
+        !addingServer && <p className="cb-empty">{t('servers.noServersConfigured')}</p>
+      )}
+      {desktop && <p className="cb-footnote">{t('servers.dshFootnote')}</p>}
+    </div>
   )
 }

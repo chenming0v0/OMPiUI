@@ -1,27 +1,32 @@
 import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { CircleCheck, Link2, LoaderCircle, ScanLine } from 'lucide-react'
-import { AuthAlert, authPrimaryButtonClass, authSecondaryButtonClass } from './AuthPanelUI'
-import { useRouter, useServerStore } from '../../../hooks'
+import { CircleCheck, Link2, LoaderCircle, Plus, ScanLine } from 'lucide-react'
+import { AuthAlert } from './AuthPanelUI'
+import { NextAction } from './ChannelBoard'
 import { parseConnectionLink, parseDisplayCode, parsePairingServerAddress, resolveConnectionLink } from '../../../utils/connectionLink'
 import { redeemDisplayCode } from '../../../omp/transport'
 import { scanPairingQr } from '../../../utils/qrScanner'
-import { clearSessionRuntimeState } from '../../../utils/sessionLifecycle'
-import { settingsFieldAreaClass, settingsFieldClass } from './SettingsUI'
 import { PhoneDeviceDiscovery } from './PhoneDeviceDiscovery'
 import { deviceDiscoveryUrl } from '../../../utils/deviceDiscovery'
+import { isTauriMobile } from '../../../utils/tauri'
+import { useServerConnect } from './useServerConnect'
 
-export function PhonePairingForm({ onPaired }: { onPaired?: () => void }) {
+/** 配对：扫码、粘贴配对链接，或输入 8 位配对码加电脑地址。 */
+export function PhonePairingForm({ onPaired, onOpenServers, onOpenTailscale }: {
+  onPaired?: () => void
+  onOpenServers?: () => void
+  /** 有「虚拟组网」通道时，发现列表只列局域网，并指路到那条通道。 */
+  onOpenTailscale?: () => void
+}) {
   const { t } = useTranslation('settings')
   const [input, setInput] = useState('')
   const [address, setAddress] = useState('')
   const [busy, setBusy] = useState<'scanning' | 'connecting' | null>(null)
   const [error, setError] = useState('')
-  const [connected, setConnected] = useState(false)
+  const [connected, setConnected] = useState('')
   const inFlight = useRef(false)
-  const inputRef = useRef<HTMLTextAreaElement>(null)
-  const { addServer, setActiveServer, checkHealth } = useServerStore()
-  const { navigateHome, sessionId } = useRouter()
+  const inputRef = useRef<HTMLInputElement>(null)
+  const connectServer = useServerConnect()
   const parsed = parseConnectionLink(input)
   const manualCode = !parsed && /^[\d\s-]+$/.test(input.trim())
 
@@ -35,13 +40,10 @@ export function PhonePairingForm({ onPaired }: { onPaired?: () => void }) {
     const result = link
       ? await resolveConnectionLink(link)
       : await redeemDisplayCode(code!, base!, AbortSignal.timeout(15_000))
-    const server = addServer({ name: new URL(result.url).host, url: result.url, token: result.token })
-    if (sessionId) clearSessionRuntimeState(sessionId)
-    setActiveServer(server.id)
-    navigateHome()
-    void checkHealth(server.id)
+    connectServer(result, link && !link.pair ? 'manual' : 'pair')
     setInput('')
-    setConnected(true)
+    setAddress('')
+    setConnected(new URL(result.url).host)
     onPaired?.()
   }
 
@@ -50,7 +52,6 @@ export function PhonePairingForm({ onPaired }: { onPaired?: () => void }) {
     inFlight.current = true
     setBusy(scan ? 'scanning' : 'connecting')
     setError('')
-    setConnected(false)
     try {
       if (scan) {
         const contents = await scanPairingQr(t('authentication.scanPrompt'))
@@ -70,72 +71,81 @@ export function PhonePairingForm({ onPaired }: { onPaired?: () => void }) {
     }
   }
 
+  if (connected) {
+    return (
+      <div role="status">
+        <NextAction tone="ok" icon={<CircleCheck size={18} />} title={t('authentication.connected')}
+          actions={<>
+            {onOpenServers && <button type="button" className="cb-btn" onClick={onOpenServers}>{t('controller.openServers')}</button>}
+            <button type="button" className="cb-btn" onClick={() => setConnected('')}><Plus size={14} />{t('controller.pairAnother')}</button>
+          </>}>
+          {t('controller.pairedBody', { name: connected })}
+        </NextAction>
+      </div>
+    )
+  }
+
   return (
-    <form onSubmit={event => { event.preventDefault(); void run(false) }}
-      aria-busy={busy !== null} className="grid min-w-0 gap-3">
-      <PhoneDeviceDiscovery address={address} disabled={busy !== null || connected} onSelect={device => {
-        setAddress(deviceDiscoveryUrl(device))
-        setError('')
-        setConnected(false)
-        if (parsed) setInput('')
-        inputRef.current?.focus()
-      }} />
-      <button type="button" disabled={busy !== null} onClick={() => void run(true)}
-        className={`${authPrimaryButtonClass} min-h-12 w-full text-[length:var(--fs-sm)]`}>
-        {busy === 'scanning' ? <LoaderCircle size={18} className="animate-spin" /> : <ScanLine size={18} />}
-        {t('authentication.scan')}
-      </button>
-      <label htmlFor="phone-pairing-link"
-        className="flex items-center gap-3 pt-1 text-[length:var(--fs-xs)] text-text-400 before:h-px before:flex-1 before:bg-border-200/60 after:h-px after:flex-1 after:bg-border-200/60">
-        {t('authentication.pairingInfo')}
-      </label>
-      <textarea ref={inputRef} id="phone-pairing-link" rows={3} value={input} disabled={busy !== null}
-        autoCapitalize="none" autoCorrect="off" spellCheck={false}
-        placeholder={t('authentication.pairingPlaceholder')}
-        onChange={event => { setInput(event.target.value); setError(''); setConnected(false) }}
-        onPaste={event => {
-          const text = event.clipboardData.getData('text')
-          if (!text) return
-          const field = event.currentTarget
-          const value = input.slice(0, field.selectionStart) + text + input.slice(field.selectionEnd)
-          event.preventDefault()
-          setInput(value)
+    <form onSubmit={event => { event.preventDefault(); void run(false) }} aria-busy={busy !== null} className="cb-form">
+      {/* 扫码依赖手机 App 的相机桥接，桌面和网页只提供粘贴与手动输入。 */}
+      {isTauriMobile() && <>
+        <button type="button" disabled={busy !== null} onClick={() => void run(true)}
+          className="cb-btn touch-target-sm" data-variant="primary" data-size="xl">
+          {busy === 'scanning' ? <LoaderCircle size={19} className="animate-spin" /> : <ScanLine size={19} />}
+          {t('authentication.scan')}
+        </button>
+        <div className="cb-or">{t('authentication.orManual')}</div>
+      </>}
+      <PhoneDeviceDiscovery address={address} disabled={busy !== null} only={onOpenTailscale ? 'lan' : undefined}
+        title={onOpenTailscale ? t('controller.lanFound') : undefined}
+        hint={onOpenTailscale && <>
+          {t('authentication.discoveryHint')}{' '}
+          <button type="button" className="cb-link" onClick={onOpenTailscale}>{t('controller.pairOverTailscale')}</button>
+        </>}
+        onSelect={device => {
+          setAddress(deviceDiscoveryUrl(device))
           setError('')
-          setConnected(false)
-          if (parseConnectionLink(value)) void run(false, value)
-        }}
-        onKeyDown={event => {
-          if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return
-          event.preventDefault()
-          void run(false)
-        }}
-        className={`${settingsFieldAreaClass} break-all font-mono text-[length:var(--fs-xs)]`} />
-      {(manualCode || address) && <div className="grid min-w-0 gap-2">
-        <label htmlFor="phone-pairing-address" className="text-[length:var(--fs-xs)] font-medium text-text-200">
-          {t('authentication.serverAddress')}
-        </label>
-        <input id="phone-pairing-address" type="text" inputMode="url" value={address} disabled={busy !== null}
-          autoCapitalize="none" autoCorrect="off" spellCheck={false}
-          aria-describedby="phone-pairing-address-hint"
-          placeholder={t('authentication.serverAddressPlaceholder')}
-          onChange={event => { setAddress(event.target.value); setError(''); setConnected(false) }}
-          className={`${settingsFieldClass} min-h-11 font-mono text-[length:var(--fs-xs)]`} />
-        <p id="phone-pairing-address-hint" className="text-[length:var(--fs-xs)] leading-relaxed text-text-400">
-          {t('authentication.manualCodeHint')}
-        </p>
-      </div>}
-      {parsed && <p className="flex min-w-0 items-center gap-1.5 break-all rounded-md bg-bg-200/50 px-2.5 py-1.5 font-mono text-[length:var(--fs-xs)] text-text-300">
-        <Link2 size={13} className="shrink-0 text-accent-main-100" />{parsed.url}
-      </p>}
+          if (parsed) setInput('')
+          inputRef.current?.focus()
+        }} />
+      <div className="cb-pair-row">
+        <div className="cb-field">
+          <label htmlFor="phone-pairing-link" className="cb-row-title">{t('authentication.pairingInfo')}</label>
+          <input ref={inputRef} id="phone-pairing-link" type="text" value={input} disabled={busy !== null}
+            autoCapitalize="none" autoCorrect="off" autoComplete="off" spellCheck={false}
+            placeholder={t('authentication.pairingPlaceholder')}
+            data-code={manualCode ? '' : undefined}
+            onChange={event => { setInput(event.target.value); setError('') }}
+            onPaste={event => {
+              const text = event.clipboardData.getData('text')
+              if (!text) return
+              const field = event.currentTarget
+              const value = input.slice(0, field.selectionStart ?? input.length) + text + input.slice(field.selectionEnd ?? input.length)
+              event.preventDefault()
+              setInput(value)
+              setError('')
+              if (parseConnectionLink(value)) void run(false, value)
+            }}
+            className="cb-input cb-code-input" />
+        </div>
+        <div className="cb-field">
+          <label htmlFor="phone-pairing-address" className="cb-row-title">{t('authentication.serverAddress')}</label>
+          <input id="phone-pairing-address" type="text" inputMode="url" value={address} disabled={busy !== null || Boolean(parsed)}
+            autoCapitalize="none" autoCorrect="off" autoComplete="off" spellCheck={false}
+            aria-describedby="phone-pairing-hint"
+            placeholder={parsed ? t('authentication.addressInLink') : t('authentication.serverAddressPlaceholder')}
+            onChange={event => { setAddress(event.target.value); setError('') }}
+            className="cb-input font-mono" />
+        </div>
+        <button type="submit" disabled={busy !== null || !input.trim()} className="cb-btn cb-pair-go touch-target-sm" data-variant="primary">
+          {busy === 'connecting' ? <LoaderCircle size={15} className="animate-spin" /> : <Link2 size={15} />}
+          {t('authentication.connect')}
+        </button>
+      </div>
+      {parsed
+        ? <p id="phone-pairing-hint" className="cb-parsed"><Link2 size={13} />{parsed.url}</p>
+        : <p id="phone-pairing-hint" className="cb-hint">{t('authentication.manualCodeHint')}</p>}
       {error && <AuthAlert>{error}</AuthAlert>}
-      {connected && <p role="status" className="flex items-center gap-2 rounded-lg border border-success-100/25 bg-success-100/10 px-3 py-2 text-[length:var(--fs-xs)] text-success-100">
-        <CircleCheck size={14} className="shrink-0" />{t('authentication.connected')}
-      </p>}
-      <button type="submit" disabled={busy !== null || !input.trim()}
-        className={`${authSecondaryButtonClass} min-h-11 w-full text-[length:var(--fs-sm)]`}>
-        {busy === 'connecting' ? <LoaderCircle size={16} className="animate-spin" /> : <Link2 size={16} />}
-        {t('authentication.connect')}
-      </button>
     </form>
   )
 }

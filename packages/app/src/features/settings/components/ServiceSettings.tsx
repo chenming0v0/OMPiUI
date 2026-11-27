@@ -20,6 +20,7 @@ import { fetchHostTunnel, listHostShells } from '../../../omp/transport/index.js
 import { serverStorage } from '../../../utils'
 import { useServerStore } from '../../../hooks'
 import { DesktopTraySettings } from './DesktopTraySettings'
+import { RelaySettings } from './RelaySettings'
 import { DesktopRuntimePanel } from '../../../components/DesktopRuntimePanel'
 import { settingsFieldClass, SettingField, SettingRow, SettingsSection, SettingsSelect, Toggle } from './SettingsUI'
 
@@ -344,7 +345,7 @@ export function ServiceSettings() {
 
   const isBusy = busy !== null || starting
   const serviceEnvironment = status?.environment ?? {}
-  // 中转配置只在认证页编辑，保留原下标以更新其他环境变量。
+  // 中转配置在服务页编辑，保留原下标以更新其他环境变量。
   const customEnvVars = envVars.map((env, index) => ({ env, index })).filter(({ env }) =>
     !['OMPIUI_TUNNEL_URL', 'OMPIUI_TUNNEL_KEY', 'OMPIUI_TUNNEL_ID'].includes(env.key.trim().toUpperCase()),
   )
@@ -353,6 +354,7 @@ export function ServiceSettings() {
     <>
       {backendStatus}
       {listenSettings}
+      <RelaySettings />
       <DesktopTraySettings />
       <SettingsSection
         title={t('service.localServiceTitle')}

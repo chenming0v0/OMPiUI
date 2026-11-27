@@ -1,24 +1,28 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ChevronRight, Copy, Share2, Smartphone } from 'lucide-react'
+import { ChevronRight, Copy, Globe, Share2 } from 'lucide-react'
 import { SpinnerIcon } from '../../../components/Icons'
-import { AuthCard, AuthStatusPill, authSecondaryButtonClass } from './AuthPanelUI'
+import { AuthStatusPill, authSecondaryButtonClass } from './AuthPanelUI'
+import { NextAction } from './ChannelBoard'
 import {
   disconnectAndroidTailscale, getAndroidTailscaleStatus, isAndroidTailscalePlatform,
   loginAndroidTailscale, type AndroidTailscaleStatus,
   copyAndroidTailscaleDiagnostics, exportAndroidTailscaleDiagnostics,
 } from '../../../utils/androidTailscale'
-import { useTailscaleLoginFlow } from '../../../hooks/useTailscaleLoginFlow'
+import { useTailscaleLoginFlow, type TailscaleAuthPhase } from '../../../hooks/useTailscaleLoginFlow'
 import { serverStore } from '../../../store/serverStore'
 import { TailscaleControls } from './TailscaleControls'
 import { openTailscaleLogin } from '../../../utils/tailscaleLogin'
 import { TAILSCALE_STATUS_EVENT } from '../../../utils/tailscaleEvents'
 
-export function AndroidTailscaleSettings() {
-  return isAndroidTailscalePlatform() ? <AndroidTailscalePanel /> : null
+/** 通道条要显示的手机组网状态。 */
+export type AndroidTailscaleState = { backendState: string | null; phase: TailscaleAuthPhase }
+
+export function AndroidTailscaleSettings({ onState }: { onState?: (state: AndroidTailscaleState) => void }) {
+  return isAndroidTailscalePlatform() ? <AndroidTailscalePanel onState={onState} /> : null
 }
 
-function AndroidTailscalePanel() {
+function AndroidTailscalePanel({ onState }: { onState?: (state: AndroidTailscaleState) => void }) {
   const { t } = useTranslation('settings')
   const [status, setStatus] = useState<AndroidTailscaleStatus | null>(null)
   const [busy, setBusy] = useState(false)
@@ -49,6 +53,9 @@ function AndroidTailscalePanel() {
     onPollError: err => setStatusError(err instanceof Error ? err.message : String(err)),
   })
 
+  const backendState = status?.BackendState ?? null
+  useEffect(() => { onState?.({ backendState, phase: flow.phase }) }, [onState, backendState, flow.phase])
+
   const run = (action: () => Promise<void>) => {
     setBusy(true)
     setError('')
@@ -57,8 +64,10 @@ function AndroidTailscalePanel() {
     }).finally(() => { if (mounted.current) setBusy(false) })
   }
   return (
-    <AuthCard testId="phone-tailscale-login" icon={<Smartphone size={18} />}
-      title={t('service.remoteTailscalePhoneTitle')} description={t('service.remoteTailscalePhoneDesc')}>
+    <div data-testid="phone-tailscale-login" className="grid min-w-0 gap-4">
+      <NextAction tone={backendState === 'Running' ? 'ok' : 'idle'} icon={<Globe size={18} />} title={t('service.remoteTailscalePhoneTitle')}>
+        <p>{t('service.remoteTailscalePhoneDesc')}</p>
+      </NextAction>
       {!status && !statusError ? <AuthStatusPill role="status" tone="idle" icon={<SpinnerIcon size={12} className="shrink-0 animate-spin" />}>
         {t('service.backendStatusLoading')}
       </AuthStatusPill> : <TailscaleControls state={status?.BackendState}
@@ -79,12 +88,12 @@ function AndroidTailscalePanel() {
             if (mounted.current) serverStore.checkAllHealth()
           })
         }} />}
-      <details open={Boolean(error || statusError || flow.error || status?.startupInterrupted) || undefined} className="group -mx-4 -mb-4 min-w-0 border-t border-border-200/60 px-4 pb-1">
+      <details open={Boolean(error || statusError || flow.error || status?.startupInterrupted) || undefined} className="group min-w-0 border-t border-border-200/60">
         <summary className="flex min-h-11 w-full cursor-pointer list-none items-center gap-1.5 text-[length:var(--fs-xs)] text-text-400 hover:text-text-200 focus-visible:outline-2 focus-visible:outline-accent-main-100 [&::-webkit-details-marker]:hidden">
           <ChevronRight size={14} className="shrink-0 transition-transform group-open:rotate-90" />
           {t('service.remoteTailscalePhoneTroubleshooting')}
         </summary>
-      <div className="grid grid-cols-2 gap-2 pb-3">
+      <div className="grid grid-cols-2 gap-2 pb-1">
         <button type="button" disabled={busy} onClick={() => run(async () => {
           await copyAndroidTailscaleDiagnostics()
           setDiagnosticsCopied(true)
@@ -96,10 +105,10 @@ function AndroidTailscalePanel() {
           <Share2 size={14} />{t('service.remoteTailscaleExportDiagnostics')}
         </button>
       </div>
-      {diagnosticsCopied && <p role="status" className="pb-3 text-[length:var(--fs-xs)] text-success-100">
+      {diagnosticsCopied && <p role="status" className="pt-2 text-[length:var(--fs-xs)] text-success-100">
         {t('service.remoteTailscaleDiagnosticsCopied')}
       </p>}
       </details>
-    </AuthCard>
+    </div>
   )
 }

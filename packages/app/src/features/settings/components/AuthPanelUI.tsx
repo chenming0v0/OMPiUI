@@ -1,51 +1,5 @@
 import type React from 'react'
 
-/** 认证页的卡片外壳：图标 + 标题 + 说明，桌面与手机共用同一套视觉。 */
-export function AuthCard({ icon, title, description, aside, testId, children }: {
-  icon: React.ReactNode
-  title: React.ReactNode
-  description?: React.ReactNode
-  aside?: React.ReactNode
-  testId?: string
-  children: React.ReactNode
-}) {
-  return (
-    <section data-testid={testId} className="min-w-0 overflow-hidden rounded-xl border border-border-200/60 bg-bg-100">
-      <header className="flex items-start gap-3 px-4 pt-4">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent-main-100/10 text-accent-main-100">
-          {icon}
-        </div>
-        <div className="min-w-0 flex-1">
-          <h3 className="text-[length:var(--fs-md)] font-medium leading-tight text-text-100">{title}</h3>
-          {description && <p className="mt-1 text-[length:var(--fs-xs)] leading-relaxed text-text-400">{description}</p>}
-        </div>
-        {aside}
-      </header>
-      <div className="grid min-w-0 gap-4 p-4">{children}</div>
-    </section>
-  )
-}
-
-export function ConnectionMethods<T extends string>({ options, selected, onChange }: {
-  options: Array<[T, string, React.ReactNode]>
-  selected: T
-  onChange: (value: T) => void
-}) {
-  return (
-    <div className={`grid grid-cols-2 gap-1 rounded-lg bg-bg-200/60 p-1 ${options.length === 4 ? 'sm:grid-cols-4' : ''}`}>
-      {options.map(([value, label, icon]) => (
-        <button key={value} type="button" onClick={() => onChange(value)} aria-pressed={selected === value}
-          className={`inline-flex min-h-10 min-w-0 items-center justify-center gap-1.5 rounded-md px-2 text-[length:var(--fs-xs)] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-accent-main-100 sm:min-h-8 ${
-            selected === value ? 'bg-bg-100 text-text-100 shadow-sm ring-1 ring-border-200/60' : 'text-text-400 hover:bg-bg-100/50 hover:text-text-200'
-          }`}>
-          <span aria-hidden="true" className={`shrink-0 ${selected === value ? 'text-accent-main-100' : ''}`}>{icon}</span>
-          <span>{label}</span>
-        </button>
-      ))}
-    </div>
-  )
-}
-
 export type AuthTone = 'success' | 'warning' | 'progress' | 'idle' | 'danger'
 
 const toneDot: Record<AuthTone, string> = {

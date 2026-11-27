@@ -66,7 +66,7 @@ import {
 } from "./omp/tool-interaction-proxy.ts";
 
 const CORS_HEADERS: Record<string, string> = {
-  "access-control-allow-methods": "GET,POST,OPTIONS",
+  "access-control-allow-methods": "GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS",
   "access-control-allow-headers": `content-type,authorization,if-match,${TERMINAL_SECRET_HEADER}`,
 };
 const MAX_PENDING_HTTP_INPUT_BYTES = 64 * 1024 * 1024;
@@ -534,21 +534,37 @@ export function createAppServer(
         );
       }
 
-      if (!requestHasAllowedOrigin(req, allowedOrigin)) {
+      // 静态前端可以部署在任意域名：API 不再把 Origin 当作访问边界。
+      // 鉴权靠 Bearer（不是 Cookie），未鉴权的配对兑换仍在各自路由里单独校验。
+      const isApiRequest = p === "/api" || p.startsWith("/api/");
+      if (isApiRequest) {
+        if (typeof req.headers.origin === "string") {
+          res.setHeader("access-control-allow-origin", req.headers.origin);
+          res.setHeader("vary", "Origin");
+        }
+        // Chrome/Edge 的 Private Network Access：公网页面访问本机回环时的预检。
+        if (req.headers["access-control-request-private-network"] === "true") {
+          res.setHeader("access-control-allow-private-network", "true");
+        }
+      }
+      if (method === "OPTIONS") {
+        if (!isApiRequest && !requestHasAllowedOrigin(req, allowedOrigin)) {
+          return sendProblem(
+            res,
+            403,
+            Object.assign(new Error("origin not allowed"), { code: "FORBIDDEN" }),
+          );
+        }
+        res.writeHead(204, CORS_HEADERS);
+        res.end();
+        return;
+      }
+      if (!isApiRequest && !requestHasAllowedOrigin(req, allowedOrigin)) {
         return sendProblem(
           res,
           403,
           Object.assign(new Error("origin not allowed"), { code: "FORBIDDEN" }),
         );
-      }
-      if (typeof req.headers.origin === "string") {
-        res.setHeader("access-control-allow-origin", req.headers.origin);
-        res.setHeader("vary", "Origin");
-      }
-      if (method === "OPTIONS") {
-        res.writeHead(204, CORS_HEADERS);
-        res.end();
-        return;
       }
 
       // 手机远程的一次性兑换：必须无鉴权（手机此刻还没有 token），且排在
@@ -558,6 +574,13 @@ export function createAppServer(
         p === "/api/v1/host/pair/redeem" &&
         options.pairing
       ) {
+        if (!requestHasAllowedOrigin(req, allowedOrigin)) {
+          return sendProblem(
+            res,
+            403,
+            Object.assign(new Error("origin not allowed"), { code: "FORBIDDEN" }),
+          );
+        }
         if (!authToken) {
           return sendProblem(
             res,

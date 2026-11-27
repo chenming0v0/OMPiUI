@@ -70,7 +70,7 @@ describe('ServersSettings', () => {
     await act(async () => fireEvent.click(screen.getAllByRole('button', { name: 'common:add' }).find(button => !button.hasAttribute('disabled'))!))
     expect(redeemMock).toHaveBeenCalledWith('once.secret', 'http://100.101.2.3:8787', expect.any(AbortSignal))
     expect(useServerStoreMock().addServer).toHaveBeenCalledWith({
-      name: '100.101.2.3:8787', url: 'http://100.101.2.3:8787', token: 'server-token',
+      name: '100.101.2.3:8787', url: 'http://100.101.2.3:8787', token: 'server-token', source: 'pair',
     })
     expect(setActiveServerMock).toHaveBeenCalledWith('new-server')
     expect(checkHealthMock).toHaveBeenCalledWith('new-server')
@@ -111,9 +111,39 @@ describe('ServersSettings', () => {
     fireEvent.change(screen.getByLabelText('servers.name'), { target: { value: name } })
     fireEvent.change(screen.getByLabelText('servers.url'), { target: { value: url } })
     await act(async () => fireEvent.submit(screen.getByLabelText('servers.url').closest('form')!))
-    expect(useServerStoreMock().addServer).toHaveBeenCalledWith({ name: name || 'remote.test', url: expectedUrl, token })
+    expect(useServerStoreMock().addServer).toHaveBeenCalledWith({ name: name || 'remote.test', url: expectedUrl, token, source: 'manual' })
     expect(redeemMock).not.toHaveBeenCalled()
     expect(setActiveServerMock).not.toHaveBeenCalled()
+  })
+
+  it('uses the address as the name when none is given', async () => {
+    render(<ServersSettings initialAddingServer />)
+    fireEvent.change(screen.getByLabelText('servers.url'), { target: { value: 'http://192.168.1.9:8787' } })
+    fireEvent.change(screen.getByLabelText('servers.token'), { target: { value: ' backend-key ' } })
+    await act(async () => fireEvent.submit(screen.getByLabelText('servers.url').closest('form')!))
+    expect(useServerStoreMock().addServer).toHaveBeenCalledWith({
+      name: '192.168.1.9:8787', url: 'http://192.168.1.9:8787', token: 'backend-key', source: 'manual',
+    })
+    expect(setActiveServerMock).not.toHaveBeenCalled()
+  })
+
+  it('marks how each server was added and which one is in use', () => {
+    useServerStoreMock.mockReturnValue({
+      ...useServerStoreMock(),
+      servers: [
+        localServer, remoteServer,
+        { id: 'paired', name: 'Paired', url: 'http://192.168.1.9:8787', source: 'pair' },
+        { id: 'tailnet', name: 'Tailnet', url: 'http://100.101.2.3:8787', source: 'pair' },
+      ],
+    })
+    render(<ServersSettings />)
+    const row = (name: string) => within(screen.getByText(name).closest('.group') as HTMLElement)
+    expect(row('Local').getByText('servers.via.local')).toBeInTheDocument()
+    expect(row('Remote').getByText('servers.via.manual')).toBeInTheDocument()
+    expect(row('Paired').getByText('servers.via.pair')).toBeInTheDocument()
+    expect(row('Tailnet').getByText('servers.via.tailscale')).toBeInTheDocument()
+    expect(row('Local').getByText('servers.current')).toBeInTheDocument()
+    expect(row('Remote').queryByText('servers.current')).not.toBeInTheDocument()
   })
 
   it('switches servers even when health verification fails', async () => {

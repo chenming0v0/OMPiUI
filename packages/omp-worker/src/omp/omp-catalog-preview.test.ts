@@ -258,6 +258,79 @@ describe("OmpCatalog targeted disk reads", () => {
   })
 })
 
+describe("OmpCatalog cold branch restore", () => {
+  const userTurn = (id: string, parentId: string | null, text: string) => ({
+    type: "message",
+    id,
+    parentId,
+    timestamp: `2026-10-13T00:00:0${id.length}.000Z`,
+    message: { role: "user", content: text },
+  })
+  const assistantTurn = (id: string, parentId: string, text: string) => ({
+    type: "message",
+    id,
+    parentId,
+    timestamp: `2026-10-13T00:00:1${id.length}.000Z`,
+    message: { role: "assistant", content: [{ type: "text", text }] },
+  })
+
+  it("follows the leaf a plain tree jump selected when the file ends with session_exit", async t => {
+    const f = diskFixture(t, "plain-jump-exit")
+    const lines = [
+      f.header,
+      userTurn("turn-1", f.header.id, "keep"),
+      assistantTurn("reply-1", "turn-1", "kept reply"),
+      userTurn("turn-2", "reply-1", "abandon"),
+      assistantTurn("reply-2", "turn-2", "abandoned reply"),
+      { type: "custom", customType: "session_exit", id: "exit-1", parentId: "turn-1" },
+    ]
+    writeFileSync(f.sessionFile, `${lines.map(line => JSON.stringify(line)).join("\n")}\n`)
+    const catalog = new OmpCatalog()
+    t.after(() => catalog.dispose())
+    const preview = await catalog.previewSession(f.root, f.sessionFile) as JsonObject
+    const state = preview.state as JsonObject
+    const items = (preview.branch as JsonObject).items as JsonObject[]
+    assert.equal((state.head as JsonObject).leafId, "turn-1")
+    assert.deepEqual(items.map(entry => entry.id), [f.header.id, "turn-1"])
+  })
+
+  it("keeps the newest record after the jumped session appends on that leaf", async t => {
+    const f = diskFixture(t, "plain-jump-resume")
+    const lines = [
+      f.header,
+      userTurn("turn-1", f.header.id, "keep"),
+      assistantTurn("reply-1", "turn-1", "kept reply"),
+      userTurn("turn-2", "reply-1", "abandon"),
+      { type: "custom", customType: "session_exit", id: "exit-1", parentId: "turn-1" },
+      userTurn("turn-3", "turn-1", "resume"),
+    ]
+    writeFileSync(f.sessionFile, `${lines.map(line => JSON.stringify(line)).join("\n")}\n`)
+    const catalog = new OmpCatalog()
+    t.after(() => catalog.dispose())
+    const preview = await catalog.previewSession(f.root, f.sessionFile) as JsonObject
+    const state = preview.state as JsonObject
+    const items = (preview.branch as JsonObject).items as JsonObject[]
+    assert.equal((state.head as JsonObject).leafId, "turn-3")
+    assert.deepEqual(items.map(entry => entry.id), [f.header.id, "turn-1", "turn-3"])
+  })
+
+  it("honors activeLeafId so a write to another branch does not move the leaf", async t => {
+    const f = diskFixture(t, "active-leaf")
+    const lines = [
+      f.header,
+      userTurn("turn-1", f.header.id, "keep"),
+      assistantTurn("reply-1", "turn-1", "kept reply"),
+      { ...userTurn("side", "turn-1", "side write"), activeLeafId: "reply-1" },
+    ]
+    writeFileSync(f.sessionFile, `${lines.map(line => JSON.stringify(line)).join("\n")}\n`)
+    const catalog = new OmpCatalog()
+    t.after(() => catalog.dispose())
+    const preview = await catalog.previewSession(f.root, f.sessionFile) as JsonObject
+    const state = preview.state as JsonObject
+    assert.equal((state.head as JsonObject).leafId, "reply-1")
+  })
+})
+
 describe("OmpCatalog disk branch refresh", () => {
   it("returns an empty incremental page when the session file is unchanged", async (t) => {
     const root = mkdtempSync(path.join(tmpdir(), "ompiui-catalog-refresh-"))

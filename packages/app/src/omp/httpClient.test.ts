@@ -79,10 +79,10 @@ describe('browser HTTP transport', () => {
     serverStore.setActiveServer(LOCAL_SERVER_ID)
   })
 
-  it('keeps same-origin for the untouched default local server', () => {
+  it('connects the untouched default local server to the loopback backend, not the page origin', () => {
     serverStore.updateServer(LOCAL_SERVER_ID, { url: 'http://127.0.0.1:8787' })
 
-    expect(getApiBase()).toBe('')
+    expect(getApiBase()).toBe('http://127.0.0.1:8787')
   })
 
   it('directs an edited default local server at its saved address', () => {

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Dialog } from '../../components/ui/Dialog'
-import { Activity, ShieldCheck } from 'lucide-react'
+import { Activity, MonitorDown, MonitorUp } from 'lucide-react'
 import { ErrorBoundary } from '../../components/ErrorBoundary'
 import {
   SunIcon,
@@ -31,7 +31,8 @@ import { WorkspaceSettings } from './components/WorkspaceSettings'
 import { PiManagementSettings } from './components/PiManagementSettings'
 import { ServiceSettings } from './components/ServiceSettings'
 import { TrafficAuditSettings } from './components/TrafficAuditSettings'
-import { AuthenticationSettings } from './components/AuthenticationSettings'
+import { ControllerSettings } from './components/ControllerSettings'
+import { HostSettings } from './components/HostSettings'
 import { SettingsPanel } from './components/SettingsPanel'
 import { SettingsSearch } from './SettingsSearch'
 import { SETTINGS_SEARCH_DEFINITIONS, type SettingsSearchItem } from './settingsSearchCatalog'
@@ -51,7 +52,8 @@ export type SettingsTab =
   | 'notifications'
   | 'config'
   | 'servers'
-  | 'authentication'
+  | 'controller'
+  | 'host'
   | 'traffic'
   | 'service'
   | 'keybindings'
@@ -70,7 +72,8 @@ interface SettingsDialogProps {
 
 const TAB_ICONS: Record<SettingsTab, React.ReactNode> = {
   servers: <GlobeIcon size={15} />,
-  authentication: <ShieldCheck size={15} />,
+  controller: <MonitorUp size={15} />,
+  host: <MonitorDown size={15} />,
   traffic: <Activity size={15} />,
   service: <GlobeIcon size={15} />,
   agent: <AgentIcon size={15} />,
@@ -87,7 +90,8 @@ const TAB_ICONS: Record<SettingsTab, React.ReactNode> = {
 
 const TAB_IDS: SettingsTab[] = [
   'servers',
-  'authentication',
+  'controller',
+  'host',
   'traffic',
   'service',
   'models',
@@ -104,7 +108,8 @@ const TAB_IDS: SettingsTab[] = [
 
 const TAB_LABEL_KEYS: Record<SettingsTab, string> = {
   servers: 'tabs.servers',
-  authentication: 'tabs.authentication',
+  controller: 'tabs.controller',
+  host: 'tabs.host',
   traffic: 'tabs.traffic',
   service: 'tabs.service',
   agent: 'tabs.agent',
@@ -120,18 +125,19 @@ const TAB_LABEL_KEYS: Record<SettingsTab, string> = {
 }
 
 const GROUP_DEFS: { labelKey: string; tabs: SettingsTab[] }[] = [
-  { labelKey: 'groups.core', tabs: ['servers', 'traffic', 'models', 'providers', 'agent', 'chat', 'workspace', 'appearance', 'notifications'] },
-  { labelKey: 'groups.advanced', tabs: ['authentication', 'service', 'config', 'keybindings', 'about'] },
+  { labelKey: 'groups.core', tabs: ['servers', 'controller', 'host', 'traffic', 'models', 'providers', 'agent', 'chat', 'workspace', 'appearance', 'notifications'] },
+  { labelKey: 'groups.advanced', tabs: ['service', 'config', 'keybindings', 'about'] },
 ]
 
 // ============================================
 // Tab Content Router
 // ============================================
 
-function TabContent({ tab, onPaired, onManageController }: {
+function TabContent({ tab, onPaired, onOpenServers, onOpenService }: {
   tab: SettingsTab
   onPaired?: () => void
-  onManageController: () => void
+  onOpenServers: () => void
+  onOpenService?: () => void
 }) {
   switch (tab) {
     case 'agent':
@@ -150,8 +156,10 @@ function TabContent({ tab, onPaired, onManageController }: {
       return <PiManagementSettings />
     case 'servers':
       return <ServersSettings />
-    case 'authentication':
-      return <AuthenticationSettings onPaired={onPaired} onManageController={onManageController} />
+    case 'controller':
+      return <ControllerSettings onPaired={onPaired} onOpenServers={onOpenServers} />
+    case 'host':
+      return <HostSettings onOpenService={onOpenService} />
     case 'traffic':
       return <TrafficAuditSettings />
     case 'service':
@@ -181,13 +189,14 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const normalizeTab = useCallback((next: SettingsDialogProps['initialTab']): SettingsTab => {
     if (!next || next === 'general') return 'servers'
+    if ((next as string) === 'authentication') return 'host'
     return next
   }, [])
   const [tab, setTab] = useState<SettingsTab>(normalizeTab(initialTab))
 
   const visibleTabIds = useMemo(
     () => (isMobile ? TAB_IDS : GROUP_DEFS.flatMap(group => group.tabs))
-      .filter(id => (capabilities.config || id !== 'config') && (!nativeMobile || id !== 'service')),
+      .filter(id => (capabilities.config || id !== 'config') && (!nativeMobile || (id !== 'service' && id !== 'host'))),
     [capabilities.config, nativeMobile, isMobile],
   )
 
@@ -291,6 +300,16 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
 
   const handlePaired = useCallback(() => {
     switchTab('servers')
+  }, [switchTab])
+
+  const openServersTab = useCallback(() => {
+    switchTab('servers')
+  }, [switchTab])
+
+  // 「服务」页只在能管理本机服务的平台上有；没有这页时不给跳转入口。
+  const serviceVisible = visibleTabIds.includes('service')
+  const openServiceTab = useCallback(() => {
+    switchTab('service')
   }, [switchTab])
 
   const selectSearchItem = useCallback(
@@ -429,7 +448,7 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
           >
             {/* key 按 tab 重挂载：单个面板崩溃只降级当前页，不拖垮整个应用 */}
             <ErrorBoundary key={tab}>
-              <TabContent tab={tab} onPaired={handlePaired} onManageController={handlePaired} />
+              <TabContent tab={tab} onPaired={handlePaired} onOpenServers={openServersTab} onOpenService={serviceVisible ? openServiceTab : undefined} />
             </ErrorBoundary>
           </SettingsPanel>
         </div>
@@ -526,7 +545,7 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
         >
           {/* key 按 tab 重挂载：单个面板崩溃只降级当前页，不拖垮整个应用 */}
           <ErrorBoundary key={tab}>
-            <TabContent tab={tab} onPaired={nativeMobile ? handlePaired : undefined} onManageController={handlePaired} />
+            <TabContent tab={tab} onPaired={nativeMobile ? handlePaired : undefined} onOpenServers={openServersTab} onOpenService={serviceVisible ? openServiceTab : undefined} />
           </ErrorBoundary>
         </SettingsPanel>
       </div>

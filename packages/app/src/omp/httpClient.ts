@@ -59,7 +59,8 @@ function waitForNetworkRetry(delay: number, signal: AbortSignal): Promise<void> 
 
 /**
  * HTTP transport base for the OMPiUI server.
- * Browser dev uses same-origin + Vite proxy (`/api` → :8787) to avoid CORS.
+ * 静态前端默认连接 `http://127.0.0.1:8787`；后端直接托管页面时，分享链接
+ * 会通过 `?token=` / `?server=` 把 Local 改写成实际地址。
  * Tauri 壳的同源是 tauri://localhost，不是 API，必须始终用完整 URL。
  * Browser 与 Tauri 一样跟随 serverStore：选中的远程服务器和改过地址的默认
  * local 条目始终直连；VITE_OMPIUI_API 只在未改动的默认 local 上兜底。
@@ -80,7 +81,7 @@ export function getApiBase(): string {
     // WebSocket 仍打页面同源，和设置页显示的地址不一致。
     if (active && storedLocal && isCustomizedLocalServerUrl(storedLocal.url)) return active.url.replace(/\/$/, '')
     if (envBase) return envBase.replace(/\/$/, '')
-    return ''
+    return DEFAULT_BASE
   }
   return envBase?.replace(/\/$/, '') || DEFAULT_BASE
 }

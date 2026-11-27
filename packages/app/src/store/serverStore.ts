@@ -3,10 +3,13 @@
 // ============================================
 
 import { API_BASE_URL } from '../constants'
-import { getHttpFetch, isTauri } from '../utils/tauri'
+import { getHttpFetch } from '../utils/tauri'
 import { PROTOCOL_VERSION } from '@ompiui/protocol'
 import { resolveAndroidTailscaleUrl } from '../utils/androidTailscale'
 import { auditHttpRequest } from '../omp/trafficAudit/http'
+
+/** 这条连接是怎么加进来的：配对兑换，还是手动填的地址和密钥。只用于列表里的来源标记。 */
+export type ServerSource = 'pair' | 'manual'
 
 /**
  * 服务器配置
@@ -17,6 +20,7 @@ export interface ServerConfig {
   url: string // 服务器 URL (不含尾部斜杠)
   isDefault?: boolean // 是否为默认服务器
   token?: string // Bearer token (OMPiUI 服务器分享链接使用)
+  source?: ServerSource // 旧数据没有这个字段
 }
 
 /**
@@ -515,22 +519,12 @@ class ServerStore {
   // ============================================
 
   /**
-   * 健康检查的 base 解析与数据层一致：浏览器里未改过的本地默认服务器走同源，
-   * 由 Vite 代理注入 token；运行时被改写、或用户在设置里保存过新地址
-   * （isCustomizedLocalServerUrl）时直连，检查才真正打向显示的那个地址。
+   * 健康检查始终打向用户保存的地址。默认 Local 就是 127.0.0.1:8787，
+   * 静态前端不能把“没有后端”误判成“同源就是后端”。
    */
   private resolveHealthBaseUrl(server: ServerConfig): string {
-    const stored = this.servers.find(s => s.id === this.DEFAULT_SERVER_ID)
-    const customized = stored !== undefined && isCustomizedLocalServerUrl(stored.url)
-    if (
-      server.id === this.DEFAULT_SERVER_ID &&
-      !this.localServerUrlOverride &&
-      !customized &&
-      !isTauri() &&
-      typeof window !== 'undefined'
-    ) {
-      return ''
-    }
+    // 旧数据里默认 Local 可能存的是相对路径（如 /api）：数据请求会落到内置地址，检查也打向同一个地方。
+    if (server.id === this.DEFAULT_SERVER_ID && !/^https?:\/\//i.test(server.url)) return API_BASE_URL
     return server.url
   }
 
@@ -694,6 +688,7 @@ function normalizeServerBackup(raw: unknown): ServerSettingsBackup {
           url: item.url.replace(/\/+$/, ''),
           isDefault: item.isDefault === true,
           token: typeof item.token === 'string' && item.token ? item.token : undefined,
+          source: item.source === 'pair' || item.source === 'manual' ? item.source : undefined,
         }))
     : []
 
@@ -764,9 +759,14 @@ export function parseConnectLink(input: string): { url: string; token: string } 
  * 避免 token 留在历史记录和书签里。返回是否应用了 token。
  */
 export function applyUrlTokenParam(search: string, origin: string): boolean {
-  const token = new URLSearchParams(search).get('token')
+  const params = new URLSearchParams(search)
+  const token = params.get('token')
   if (!token) return false
-  serverStore.updateServer(LOCAL_SERVER_ID, { url: origin.replace(/\/+$/, ''), token })
+  // 静态前端可能部署在任意域名：分享链接必须显式带 server，页面自身 origin
+  // 只在后端直接托管页面时才是后端地址。
+  const explicit = params.get('server')
+  const server = explicit && /^https?:\/\//i.test(explicit) ? explicit : origin
+  serverStore.updateServer(LOCAL_SERVER_ID, { url: server.replace(/\/+$/, ''), token })
   serverStore.setActiveServer(LOCAL_SERVER_ID)
   return true
 }
@@ -776,21 +776,23 @@ export function applyUrlTokenParam(search: string, origin: string): boolean {
  * 一次性访问令牌（服务端单次有效 + 频控），成功后与 ?token= 一样落地并
  * 清掉地址栏参数。异步——调用方应等它完成后再渲染，避免闪一次未授权态。
  */
-export async function applyPairParam(pair: string, origin: string): Promise<boolean> {
+export async function applyPairParam(pair: string, origin: string, serverUrl?: string): Promise<boolean> {
   try {
+    const requested = serverUrl && /^https?:\/\//i.test(serverUrl) ? serverUrl : origin
+    const base = requested.replace(/\/+$/, '')
     const f = await getHttpFetch()
-    const resolved = await resolveAndroidTailscaleUrl(`${origin.replace(/\/+$/, '')}/api/v1/host/pair/redeem`)
+    const resolved = await resolveAndroidTailscaleUrl(`${base}/api/v1/host/pair/redeem`)
     const init: RequestInit = {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ pair }),
       signal: AbortSignal.timeout(10_000),
     }
-    const response = await auditHttpRequest(`${origin.replace(/\/+$/, '')}/api/v1/host/pair/redeem`, init, () => f(resolved, init))
+    const response = await auditHttpRequest(`${base}/api/v1/host/pair/redeem`, init, () => f(resolved, init))
     if (!response.ok) return false
     const body = (await response.json()) as { url?: string; token?: string }
     if (!body.token) return false
-    const url = (body.url ?? origin).replace(/\/+$/, '')
+    const url = (body.url ?? base).replace(/\/+$/, '')
     serverStore.updateServer(LOCAL_SERVER_ID, { url, token: body.token })
     serverStore.setActiveServer(LOCAL_SERVER_ID)
     window.history.replaceState(null, '', window.location.pathname)

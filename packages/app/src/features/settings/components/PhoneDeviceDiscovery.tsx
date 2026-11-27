@@ -1,19 +1,35 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type React from 'react'
 import { useTranslation } from 'react-i18next'
 import { Check, LoaderCircle, Monitor, RefreshCw } from 'lucide-react'
 import type { DiscoveredDevice } from '@ompiui/protocol'
 import { discoverDevices, deviceDiscoveryUrl, supportsDeviceDiscovery } from '../../../utils/deviceDiscovery'
+import './channelBoard.css'
 
 type Network = DiscoveredDevice['network']
 type DiscoveryState = { devices: DiscoveredDevice[]; loading: boolean; error: string }
 const empty = (): DiscoveryState => ({ devices: [], loading: false, error: '' })
-const networks: Network[] = ['lan', 'tailscale']
+const allNetworks: Network[] = ['lan', 'tailscale']
 
-export function PhoneDeviceDiscovery({ address, disabled, onSelect }: {
-  address: string; disabled: boolean; onSelect: (device: DiscoveredDevice) => void
+/**
+ * 发现到的电脑。默认两个网络都列；传 only 时只列一个网络，并去掉网络小标题。
+ * 选中只是填好地址，不代表已经授权。
+ */
+export function PhoneDeviceDiscovery({ address, disabled, onSelect, only, title, hint, connectedUrls, renderSelected }: {
+  address: string
+  disabled: boolean
+  onSelect: (device: DiscoveredDevice) => void
+  only?: Network
+  title?: string
+  hint?: React.ReactNode
+  /** 已经保存过的地址：标成「已连接」，不再提供配对。 */
+  connectedUrls?: string[]
+  /** 紧贴在选中那台电脑下面的内容，比如就地输入配对码。 */
+  renderSelected?: (device: DiscoveredDevice) => React.ReactNode
 }) {
   const { t } = useTranslation('settings')
   const supported = supportsDeviceDiscovery()
+  const networks = useMemo(() => (only ? [only] : allNetworks), [only])
   const [states, setStates] = useState<Record<Network, DiscoveryState>>({ lan: empty(), tailscale: empty() })
   const controller = useRef<AbortController | null>(null)
   const generation = useRef(0)
@@ -41,7 +57,7 @@ export function PhoneDeviceDiscovery({ address, disabled, onSelect }: {
         setStates(previous => ({ ...previous, [network]: { ...empty(), error } }))
       })
     }
-  }, [cancel])
+  }, [cancel, networks])
   useEffect(() => {
     if (!supported) return
     let disposed = false
@@ -65,39 +81,49 @@ export function PhoneDeviceDiscovery({ address, disabled, onSelect }: {
   const localErrors = ['discoveryUnavailable', 'discoveryTimeout', 'discoveryPermissionDenied', 'discoveryTailscaleLogin', 'discoveryBusy', 'discoveryFailed']
   const errorText = (message: string) => localErrors.includes(message)
     ? t(`authentication.${message}`) : message.startsWith('discovery') ? t('authentication.discoveryFailed') : message
-  return <div className="grid min-w-0 gap-3 rounded-lg border border-border-200/60 bg-bg-200/30 p-3">
-    <div className="flex items-center justify-between gap-2">
-      <span className="text-[length:var(--fs-sm)] font-medium text-text-100">{t('authentication.discoveryTitle')}</span>
-      <button type="button" disabled={disabled} onClick={refresh}
-        className="inline-flex min-h-9 items-center gap-1.5 rounded-md px-2 text-[length:var(--fs-xs)] text-accent-main-100 hover:bg-accent-main-100/10 disabled:opacity-50">
-        <RefreshCw size={13} />{t('authentication.discoveryRefresh')}
+  const selectedAddress = address.replace(/\/+$/, '')
+  return <div className="cb-list">
+    <div className="cb-list-head">
+      <span className="cb-row-title">{title ?? t('authentication.discoveryTitle')}</span>
+      <button type="button" disabled={disabled} onClick={refresh} className="cb-link">
+        <RefreshCw size={12} />{t('authentication.discoveryRefresh')}
       </button>
     </div>
-    <p className="text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t('authentication.discoveryHint')}</p>
     {networks.map(network => <div key={network} className="grid min-w-0 gap-2">
-      <div className="flex items-center gap-2 text-[length:var(--fs-xs)] font-medium text-text-300">
-        {t(`authentication.discoveryNetwork.${network}`)}
+      {(!only || states[network].loading) && <div className="cb-label flex items-center gap-2">
+        {!only && t(`authentication.discoveryNetwork.${network}`)}
         {states[network].loading && <LoaderCircle size={12} className="animate-spin" />}
-      </div>
-      {states[network].error && <p role="status" className="break-words text-[length:var(--fs-xs)] leading-relaxed text-text-400">
+      </div>}
+      {states[network].error && <p role="status" className="cb-hint break-words">
         {errorText(states[network].error)}
       </p>}
       {!states[network].loading && !states[network].error && states[network].devices.length === 0 &&
-        <p className="text-[length:var(--fs-xs)] leading-relaxed text-text-400">{t(`authentication.discoveryEmpty.${network}`)}</p>}
+        <p className="cb-hint">{t(`authentication.discoveryEmpty.${network}`)}</p>}
       {states[network].devices.map(device => {
         const url = deviceDiscoveryUrl(device)
-        const selected = address.replace(/\/+$/, '') === url
-        return <button key={`${device.instanceId}:${url}`} type="button" disabled={disabled} aria-pressed={selected}
-          onClick={() => onSelect(device)}
-          className={`flex min-h-12 min-w-0 items-center gap-2.5 rounded-lg border px-3 py-2 text-left transition-colors disabled:opacity-50 ${selected ? 'border-accent-main-100/50 bg-accent-main-100/10' : 'border-border-200/60 bg-bg-100 hover:border-border-300'}`}>
-          <Monitor size={16} className="shrink-0 text-accent-main-100" />
-          <span className="grid min-w-0 flex-1 gap-1">
-            <span className="break-words text-[length:var(--fs-xs)] font-medium text-text-100">{device.displayName}</span>
-            <span className="break-all font-mono text-[length:var(--fs-xs)] text-text-400">{url}</span>
+        const key = `${device.instanceId}:${url}`
+        const label = <>
+          <Monitor size={17} />
+          <span className="cb-device-main">
+            <span className="cb-device-name">{device.displayName}</span>
+            <span className="cb-device-meta font-mono">{url}</span>
           </span>
-          {selected && <Check size={14} className="shrink-0 text-accent-main-100" />}
-        </button>
+        </>
+        if (connectedUrls?.includes(url)) {
+          return <div key={key} className="cb-device">{label}<span className="cb-tag">{t('controller.alreadyConnected')}</span></div>
+        }
+        const selected = selectedAddress === url
+        const extra = selected ? renderSelected?.(device) : null
+        return <Fragment key={key}>
+          <button type="button" disabled={disabled} aria-pressed={selected} data-expanded={extra ? '' : undefined}
+            onClick={() => onSelect(device)} className="cb-device">
+            {label}
+            {selected && <Check size={15} className="text-accent-main-100" />}
+          </button>
+          {extra}
+        </Fragment>
       })}
     </div>)}
+    <p className="cb-hint">{hint ?? t('authentication.discoveryHint')}</p>
   </div>
 }
