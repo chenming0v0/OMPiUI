@@ -22,7 +22,16 @@ const subscribe = (listener: () => void) => {
   return () => { listeners.delete(listener) }
 }
 
+/** 扫码配对的会话存在本机的这个键下（读写在 services/dshRemote）。 */
+export const DSH_PAIRED_KEY = 'ompiui.dsh-remote.paired'
+
+/** 本机有没有留着扫码配对的会话。只看有没有，不读内容。 */
+export function hasSavedDshPairing(): boolean {
+  try { return localStorage.getItem(DSH_PAIRED_KEY) !== null } catch { return false }
+}
+
 // A DSH controller is an authorization session, not a saved server or a permanent URL.
+// 账号登录的会话只在内存里；扫码配对的会话会存下来，由 DshRemoteSettings 在加载时接回。
 export const dshControllerStore = {
   get: () => state,
   update(patch: Partial<DshControllerState>) {

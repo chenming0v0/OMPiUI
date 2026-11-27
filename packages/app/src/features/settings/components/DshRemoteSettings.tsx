@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type React from 'react'
 import { useTranslation } from 'react-i18next'
-import { ChevronRight, ExternalLink, Loader2, LogOut, RefreshCw } from 'lucide-react'
+import { ChevronRight, ExternalLink, Loader2, LogOut, Monitor, RefreshCw, ScanLine } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
-import { beginDshLogin, isDshControllerAuthFailure, listDshLoginProviders, pollDshLogin, type DshAppConnection, type DshAppSession, type DshLoginProvider } from '../../../services/dshRemote'
-import { closeDshRemoteViewer, watchDshRemoteViewer, openDshRemoteViewer } from '../../../utils/dshRemoteViewer'
+import {
+  DshApiError, beginDshLogin, isDshControllerAuthFailure, listDshLoginProviders, pollDshLogin, resolveDshPairing, restoreDshPairedSession,
+  type DshAppConnection, type DshAppSession, type DshLoginProvider, type DshPhonePairing,
+} from '../../../services/dshRemote'
+import { closeDshRemoteViewer, opensDshRemoteInApp, watchDshRemoteViewer, openDshRemoteViewer } from '../../../utils/dshRemoteViewer'
+import { scanPairingQr } from '../../../utils/qrScanner'
 import { isTauriMobile } from '../../../utils/tauri'
 import { QrCode } from '../../../components/QrCode'
 import { DeepSeekIcon } from '../../../components/Icons'
@@ -28,6 +32,12 @@ interface BrowserAttempt {
   unlisten?: () => void
 }
 let browserAttempt: BrowserAttempt | undefined
+
+// 上次扫码配对的会话在这里接回来。账号登录的会话不落盘，重开 App 后要重新登录。
+if (!dshControllerStore.get().session) {
+  const paired = restoreDshPairedSession()
+  if (paired) dshControllerStore.update({ session: paired })
+}
 let loginAttempt: AbortController | undefined
 let releasingBrowser: Promise<void> | undefined
 
@@ -79,10 +89,10 @@ async function loadControllerHosts(session: DshAppSession, signal: AbortSignal) 
 }
 
 /**
- * 打开一台电脑：向它申请网页租约，再把一次性授权交给系统浏览器。
+ * 打开一台电脑：向它申请网页租约，再把一次性授权交给打开页面的地方（安卓是 App 内，其余是系统浏览器）。
  * 成功或已被别的流程接管时返回 null，失败时返回错误码（空串表示没有具体错误码）。
  */
-async function openHost(session: DshAppSession, hostId: string): Promise<string | null> {
+async function openHost(session: DshAppSession, hostId: string, labels: { title: string; close: string }): Promise<string | null> {
   const active = beginBrowserAttempt()
   if (!active) return null
   dshControllerStore.update({ browser: { hostId, phase: 'opening' } })
@@ -97,12 +107,13 @@ async function openHost(session: DshAppSession, hostId: string): Promise<string 
       if (!handleControllerFailure(session, error)) void disconnectBrowser(true)
     })
     const unlisten = await watchDshRemoteViewer(active.id, {
-      closed: () => { if (browserAttempt === active) void disconnectBrowser(true) },
+      // App 内的页面是用户自己点关闭的，回到列表就行，不用再留一个“已结束”的状态。
+      closed: reason => { if (browserAttempt === active) void disconnectBrowser(!(opensDshRemoteInApp() && reason === 'closed')) },
       delivered: () => { if (browserAttempt === active) dshControllerStore.update({ browser: { hostId, phase: 'delivered' } }) },
     })
     if (browserAttempt !== active) { unlisten(); return null }
     active.unlisten = unlisten
-    await openDshRemoteViewer(active.id, connection.grant, active.handoffStop.signal)
+    await openDshRemoteViewer(active.id, connection.grant, active.handoffStop.signal, labels)
     if (browserAttempt === active && dshControllerStore.get().browser?.phase === 'opening') {
       dshControllerStore.update({ browser: { hostId, phase: 'opened' } })
     }
@@ -151,7 +162,7 @@ function useDshHosts() {
 export function DshRemoteConnectSettings({ onOpenServers }: { onOpenServers?: () => void }) {
   const { t } = useTranslation('settings')
   const { session, hosts, authError } = useDshController()
-  const hostList = useDshHosts()
+  const { busy: hostsBusy, failed: hostsFailed, refresh: refreshHosts } = useDshHosts()
   const [providers, setProviders] = useState<DshLoginProvider[]>([])
   const [providersLoading, setProvidersLoading] = useState(false)
   const [providersError, setProvidersError] = useState(false)
@@ -159,8 +170,13 @@ export function DshRemoteConnectSettings({ onOpenServers }: { onOpenServers?: ()
   const [now, setNow] = useState(() => Date.now())
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  // 扫码配对：先确认是哪台电脑，再显示要在电脑上输入的验证码。
+  const [pair, setPair] = useState<{ pairing: DshPhonePairing; code?: string }>()
+  const phone = isTauriMobile()
 
   const connectError = (code: string) => t(`dshRemote.connectError.${code || 'default'}`, { defaultValue: t('dshRemote.connectError.default') })
+  const pairError = useCallback((code: string) =>
+    t(`dshRemote.pairError.${code || 'default'}`, { defaultValue: t('dshRemote.pairError.default') }), [t])
 
   const discover = useCallback(async () => {
     setProvidersError(false)
@@ -176,9 +192,52 @@ export function DshRemoteConnectSettings({ onOpenServers }: { onOpenServers?: ()
   useEffect(() => { if (!session && !login) void discover() }, [session, login, discover])
 
   useEffect(() => {
-    dshControllerStore.update({ signingIn: Boolean(login) })
+    dshControllerStore.update({ signingIn: Boolean(login || pair) })
     return () => dshControllerStore.update({ signingIn: false })
-  }, [login])
+  }, [login, pair])
+
+  // 验证码已经领了却取消或离开这一页：告诉电脑这次不继续了，免得它那边输完码这边却没接住。
+  const pairing = pair?.pairing
+  useEffect(() => {
+    if (!pairing) return
+    return () => { void pairing.cancel() }
+  }, [pairing])
+
+  useEffect(() => {
+    if (!pair?.code) return
+    const stop = new AbortController()
+    let timer: ReturnType<typeof setTimeout>
+    const check = async () => {
+      try {
+        const result = await pair.pairing.poll(AbortSignal.any([stop.signal, AbortSignal.timeout(10_000)]))
+        if (stop.signal.aborted) return
+        if (result.paired) {
+          setPair(undefined)
+          const current = result.paired
+          if (dshControllerStore.get().session !== current) dshControllerStore.update({ session: current, hosts: [], authError: null })
+          else {
+            // 再配一台电脑时会话没变，只需要把新电脑读进列表。
+            void loadControllerHosts(current, AbortSignal.timeout(15_000))
+              .then(hosts => { if (dshControllerStore.get().session === current) dshControllerStore.update({ hosts }) })
+              .catch(() => undefined)
+          }
+        } else if (result.state === 'claimed' || result.state === 'approved') timer = setTimeout(check, 2_500)
+        else {
+          setPair(undefined)
+          setError(pairError(result.state === 'failed' ? result.failureReason ?? 'failed' : result.state))
+        }
+      } catch (failure) {
+        if (stop.signal.aborted) return
+        // 服务器明确拒绝才算结束；网络抖动就接着等。
+        if (failure instanceof DshApiError && failure.status !== 429 && failure.status < 500) {
+          setPair(undefined)
+          setError(pairError(failure.code))
+        } else timer = setTimeout(check, 2_500)
+      }
+    }
+    timer = setTimeout(check, 2_500)
+    return () => { stop.abort(); clearTimeout(timer) }
+  }, [pair, pairError])
 
   useEffect(() => {
     if (!login) return
@@ -231,6 +290,35 @@ export function DshRemoteConnectSettings({ onOpenServers }: { onOpenServers?: ()
     finally { if (!started) finishLoginAttempt(stop); setBusy(false) }
   }
 
+  const scan = async () => {
+    setBusy(true)
+    setError('')
+    dshControllerStore.update({ authError: null })
+    try {
+      const text = await scanPairingQr(t('dshRemote.pairScanPrompt'))
+      if (!text) return
+      const signal = AbortSignal.timeout(12_000)
+      setPair({ pairing: session?.paired ? await session.pairAnother(text, signal) : await resolveDshPairing(text, signal) })
+    } catch (failure) {
+      setError(pairError(failure instanceof DshApiError ? failure.code : failure instanceof Error ? failure.message : ''))
+    } finally { setBusy(false) }
+  }
+
+  const claim = async () => {
+    if (!pair) return
+    setBusy(true)
+    setError('')
+    try {
+      setPair({ pairing: pair.pairing, code: await pair.pairing.claim(AbortSignal.timeout(12_000)) })
+    } catch (failure) {
+      const rejected = failure instanceof DshApiError && failure.status >= 400 && failure.status < 500 && failure.status !== 429
+      if (rejected) setPair(undefined)
+      setError(pairError(failure instanceof DshApiError ? failure.code : ''))
+    } finally { setBusy(false) }
+  }
+
+  const cancelPair = () => setPair(undefined)
+
   const revoke = async () => {
     if (!session) return
     setBusy(true)
@@ -245,17 +333,53 @@ export function DshRemoteConnectSettings({ onOpenServers }: { onOpenServers?: ()
 
   const remaining = login ? Math.max(0, Math.floor((login.expiresAt - now) / 1000)) : 0
   const clock = `${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, '0')}`
-  const alert = error || (authError ? connectError(authError) : '') || (hostList.failed ? t('dshRemote.hostListFailed') : '')
+  const alert = error || (authError ? connectError(authError) : '') || (hostsFailed ? t('dshRemote.hostListFailed') : '')
 
   let body: React.ReactNode
-  if (session) {
+  if (pair?.code) {
+    body = (
+      <div data-testid="dsh-pair-code">
+        <h3 className="text-[length:var(--fs-base)] font-semibold leading-snug text-text-100">{t('dshRemote.pairCodeTitle')}</h3>
+        <div className="cb-code mt-3" aria-label={t('dshRemote.pairCodeTitle')}>
+          <span>{pair.code.slice(0, 4)}</span><span>{pair.code.slice(4)}</span>
+        </div>
+        <p className="cb-hint">{t('dshRemote.pairCodeHint', { computer: pair.pairing.computer.name })}</p>
+        <p className="cb-waiting"><span aria-hidden className="cb-waiting-dot" /><span>{t('dshRemote.pairWaiting')}</span></p>
+        <div className="cb-actions">
+          <button type="button" className="cb-btn" onClick={cancelPair}>{t('dshRemote.cancel')}</button>
+        </div>
+      </div>
+    )
+  } else if (pair) {
+    const computer = pair.pairing.computer
+    body = (
+      <NextAction icon={<Monitor size={18} />} title={t('dshRemote.pairConfirmTitle')} testId="dsh-pair-confirm"
+        actions={<>
+          <button type="button" className="cb-btn" data-variant="primary" disabled={busy} onClick={() => void claim()}>
+            {busy && <Loader2 size={14} className="animate-spin" />}{t('dshRemote.pairConfirm')}
+          </button>
+          <button type="button" className="cb-btn" disabled={busy} onClick={cancelPair}>{t('dshRemote.cancel')}</button>
+        </>}>
+        <p className="font-semibold text-text-100">{computer.name}</p>
+        <p className="mt-2">{t('dshRemote.pairFingerprint')}</p>
+        <code className="cb-addr">{computer.fingerprint}</code>
+      </NextAction>
+    )
+  } else if (session) {
     body = <>
       <div className="cb-list">
         <div className="cb-list-head">
           <span className="cb-row-title">{t('controller.dshComputers')}</span>
-          <button type="button" className="cb-link" disabled={hostList.busy} onClick={() => void hostList.refresh()}>
-            <RefreshCw size={12} className={hostList.busy ? 'animate-spin' : undefined} />{t('dshRemote.refresh')}
-          </button>
+          <span className="flex flex-wrap items-center gap-3">
+            {phone && session.paired && (
+              <button type="button" className="cb-link" disabled={busy} onClick={() => void scan()}>
+                <ScanLine size={12} />{t('dshRemote.pairAnother')}
+              </button>
+            )}
+            <button type="button" className="cb-link" disabled={hostsBusy} onClick={() => void refreshHosts()}>
+              <RefreshCw size={12} className={hostsBusy ? 'animate-spin' : undefined} />{t('dshRemote.refresh')}
+            </button>
+          </span>
         </div>
         {hosts.length ? hosts.map(host => (
           <div key={host.id} className="cb-device" data-dim={host.online === false ? '' : undefined}>
@@ -283,16 +407,16 @@ export function DshRemoteConnectSettings({ onOpenServers }: { onOpenServers?: ()
         )}
       </div>
       <PanelSplit>
-        <PanelRow title={t('controller.dshAccount')} hint={t('controller.dshAccountHint')}>
+        <PanelRow title={t(session.paired ? 'controller.dshPaired' : 'controller.dshAccount')}
+          hint={t(session.paired ? 'controller.dshPairedHint' : 'controller.dshAccountHint')}>
           <button type="button" className="cb-btn" disabled={busy} onClick={() => void revoke()}>
-            <LogOut size={14} />{t('dshRemote.logout')}
+            <LogOut size={14} />{t(session.paired ? 'controller.dshUnpair' : 'dshRemote.logout')}
           </button>
         </PanelRow>
       </PanelSplit>
     </>
   } else if (login) {
     // 手机上授权页就开在这台手机的浏览器里，给自己看一个二维码没有用。
-    const phone = isTauriMobile()
     body = (
       <div className={phone ? undefined : 'cb-login'}>
         {!phone && <div className="cb-qr"><QrCode text={login.url} size={140} /></div>}
@@ -314,20 +438,27 @@ export function DshRemoteConnectSettings({ onOpenServers }: { onOpenServers?: ()
     )
   } else {
     body = (
-      <NextAction icon={<DeepSeekIcon size={18} />} title={t('controller.dshLoginTitle')}
-        actions={providersLoading ? (
-          <span className="cb-hint flex items-center gap-2"><Loader2 size={13} className="animate-spin" />{t('dshRemote.loginLoading')}</span>
-        ) : providers.length ? providers.map((provider, index) => (
-          <button key={provider.id} type="button" className="cb-btn" data-variant={index === 0 ? 'primary' : undefined}
-            disabled={busy} onClick={() => void signIn(provider)}>
-            {t('controller.dshLoginWith', { provider: provider.label })}
-          </button>
-        )) : (
-          <button type="button" className="cb-btn" data-variant="primary" disabled={busy} onClick={() => void discover()}>
-            {t('dshRemote.login')}
-          </button>
-        )}>
-        <p>{t('dshRemote.loginDesc')}</p>
+      <NextAction icon={<DeepSeekIcon size={18} />} title={t(phone ? 'controller.dshPairTitle' : 'controller.dshLoginTitle')}
+        actions={<>
+          {phone && (
+            <button type="button" className="cb-btn" data-variant="primary" disabled={busy} onClick={() => void scan()}>
+              {busy ? <Loader2 size={14} className="animate-spin" /> : <ScanLine size={14} />}{t('dshRemote.pairScan')}
+            </button>
+          )}
+          {providersLoading ? (
+            <span className="cb-hint flex items-center gap-2"><Loader2 size={13} className="animate-spin" />{t('dshRemote.loginLoading')}</span>
+          ) : providers.length ? providers.map((provider, index) => (
+            <button key={provider.id} type="button" className="cb-btn" data-variant={index === 0 && !phone ? 'primary' : undefined}
+              disabled={busy} onClick={() => void signIn(provider)}>
+              {t('controller.dshLoginWith', { provider: provider.label })}
+            </button>
+          )) : (
+            <button type="button" className="cb-btn" data-variant={phone ? undefined : 'primary'} disabled={busy} onClick={() => void discover()}>
+              {t('dshRemote.login')}
+            </button>
+          )}
+        </>}>
+        <p>{t(phone ? 'dshRemote.pairDesc' : 'dshRemote.loginDesc')}</p>
         {providersError && !providersLoading && <p className="mt-1">{t('dshRemote.noProviders')}</p>}
       </NextAction>
     )
@@ -352,12 +483,15 @@ export function DshServerRows() {
   const [error, setError] = useState<{ hostId: string; text: string } | null>(null)
   const live = useMemo(() => Boolean(browser && browser.phase !== 'ended'), [browser])
   if (!session || !hosts.length) return null
+  // 安卓上电脑的页面直接开在 App 里，其余平台交给系统浏览器。
+  const inApp = opensDshRemoteInApp()
+  const OpenIcon = inApp ? Monitor : ExternalLink
 
-  const open = async (hostId: string) => {
+  const open = async (hostId: string, name: string) => {
     setError(null)
     // A browser grant is single-use: release the old lease and allocate a new one.
     if (browser) void disconnectBrowser()
-    const code = await openHost(session, hostId)
+    const code = await openHost(session, hostId, { title: name, close: t('dshRemote.closeViewer') })
     if (code !== null) {
       setError({ hostId, text: t(`dshRemote.connectError.${code || 'default'}`, { defaultValue: t('dshRemote.connectError.default') }) })
     }
@@ -377,26 +511,26 @@ export function DshServerRows() {
             <span className="cb-srv-meta">
               <span role={handoff ? 'status' : undefined}>
                 {handoff
-                  ? t(`dshRemote.handoffState.${handoff.phase}`)
+                  ? t(`dshRemote.${inApp ? 'viewerState' : 'handoffState'}.${handoff.phase}`)
                   : t(host.online === true ? 'dshRemote.online' : host.online === false ? 'dshRemote.offline' : 'dshRemote.unknown')}
               </span>
             </span>
           </div>
           <div className="cb-srv-actions gap-1.5">
             {handoff ? <>
-              <button type="button" className="cb-btn" data-size="sm" disabled={handoff.phase === 'opening'} onClick={() => void open(host.id)}>
-                {handoff.phase === 'opening' ? <Loader2 size={12} className="animate-spin" /> : <ExternalLink size={12} />}{t('dshRemote.openAgain')}
+              <button type="button" className="cb-btn" data-size="sm" disabled={handoff.phase === 'opening'} onClick={() => void open(host.id, host.name)}>
+                {handoff.phase === 'opening' ? <Loader2 size={12} className="animate-spin" /> : <OpenIcon size={12} />}{t('dshRemote.openAgain')}
               </button>
               <button type="button" className="cb-btn" data-size="sm" onClick={() => void disconnectBrowser()}>
                 {t(handoff.phase === 'ended' ? 'dshRemote.cancel' : 'dshRemote.disconnect')}
               </button>
             </> : (
-              <button type="button" className="cb-btn" data-size="sm" disabled={host.online === false || live} onClick={() => void open(host.id)}>
-                <ExternalLink size={12} />{t('dshRemote.connect')}
+              <button type="button" className="cb-btn" data-size="sm" disabled={host.online === false || live} onClick={() => void open(host.id, host.name)}>
+                <OpenIcon size={12} />{t(inApp ? 'dshRemote.connectInApp' : 'dshRemote.connect')}
               </button>
             )}
           </div>
-          {handoff && (handoff.phase === 'opened' || handoff.phase === 'delivered') && (
+          {handoff && !inApp && (handoff.phase === 'opened' || handoff.phase === 'delivered') && (
             <p className="cb-srv-extra cb-hint">{t('dshRemote.connectedHint')}</p>
           )}
           {error?.hostId === host.id && <div className="cb-srv-extra"><AuthAlert>{error.text}</AuthAlert></div>}

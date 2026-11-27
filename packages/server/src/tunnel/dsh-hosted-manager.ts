@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { DshRemoteAccount } from './dsh-remote-account.ts'
 import { runDshHost } from './dsh-host.ts'
+import { DshHostPairing, type DshHostPairingView } from './dsh-host-pairing.ts'
 
 export type DshHostState = 'unregistered' | 'disabled' | 'connecting' | 'online' | 'error' | 'stopped'
 
@@ -18,6 +19,8 @@ export interface DshHostStatus {
   state: DshHostState
   lastError: DshHostLastError | null
   updatedAt: number
+  /** 正在进行或刚结束的扫码配对；没有时为 null。 */
+  pairing: DshHostPairingView | null
 }
 
 // Only these listeners can be reached as 127.0.0.1:<port> by the hosted tunnel.
@@ -74,6 +77,7 @@ export class DshHostedManager {
   private readonly directory: string
   private readonly statePath: string
   private readonly account: DshRemoteAccount
+  private readonly pairing: DshHostPairing
   private port?: number
   private loopback = true
   private enabled = false
@@ -89,8 +93,9 @@ export class DshHostedManager {
   private disposed = false
 
   constructor(dataDir: string, version: string, private readonly startupEnabled: boolean,
-    private readonly run: typeof runDshHost = runDshHost) {
-    this.account = new DshRemoteAccount(dataDir, version)
+    private readonly run: typeof runDshHost = runDshHost, request: typeof fetch = fetch, pairingPollMs?: number) {
+    this.account = new DshRemoteAccount(dataDir, version, request)
+    this.pairing = new DshHostPairing(this.account, () => this.openAfterPairing(), request, pairingPollMs)
     this.directory = join(dataDir, 'dsh-remote')
     this.statePath = join(this.directory, 'enabled.json')
   }
@@ -134,7 +139,10 @@ export class DshHostedManager {
       this.signature = signature
       this.updatedAt = Date.now()
     }
-    return { available, reason, enabled: this.enabled, registered, deviceId, state, lastError, updatedAt: this.updatedAt }
+    return {
+      available, reason, enabled: this.enabled, registered, deviceId, state, lastError, updatedAt: this.updatedAt,
+      pairing: this.pairing.view(),
+    }
   }
 
   manage(action: unknown, code?: unknown): Promise<void> {
@@ -160,7 +168,15 @@ export class DshHostedManager {
         this.lastError = null
         this.stopped = false
         this.start()
+      } else if (action === 'pair') {
+        await this.pairing.start()
+      } else if (action === 'pair-confirm') {
+        // 手机上的验证码只走这个本机管理入口，由人在这台电脑的界面里输入。
+        await this.pairing.confirm(typeof code === 'string' ? code : undefined)
+      } else if (action === 'pair-cancel') {
+        await this.pairing.cancel()
       } else if (action === 'disable' || action === 'revoke' || action === 'reset') {
+        if (action !== 'disable') await this.pairing.cancel()
         await this.setEnabled(false)
         await this.halt()
         await this.persistTerminal()
@@ -174,7 +190,19 @@ export class DshHostedManager {
 
   async dispose(): Promise<void> {
     this.disposed = true
-    await this.enqueue(async () => { await this.halt(); await this.persistTerminal() })
+    await this.enqueue(async () => { await this.pairing.cancel(); await this.halt(); await this.persistTerminal() })
+  }
+
+  /** 人在这台电脑上输入验证码确认过的手机，应当马上能连进来：配对成功就打开远程访问。 */
+  private openAfterPairing(): void {
+    void this.enqueue(async () => {
+      if (this.disposed || this.port === undefined || !this.loopback) return
+      await this.persistTerminal()
+      await this.setEnabled(true)
+      this.lastError = null
+      this.stopped = false
+      this.start()
+    }).catch(() => console.error('[ompiui-dsh] Could not open remote access after pairing'))
   }
 
   private enqueue(action: () => Promise<void>): Promise<void> {

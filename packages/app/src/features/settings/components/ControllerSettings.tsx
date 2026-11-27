@@ -3,7 +3,7 @@ import type React from 'react'
 import { useTranslation } from 'react-i18next'
 import { ChevronRight, CircleCheck, Globe, KeyRound, Plus, QrCode, ScanLine } from 'lucide-react'
 import { DeepSeekIcon } from '../../../components/Icons'
-import { useDshController } from '../../../store/dshControllerStore'
+import { hasSavedDshPairing, useDshController } from '../../../store/dshControllerStore'
 import { isTauri, isTauriMobile } from '../../../utils/tauri'
 import { isAndroidTailscalePlatform } from '../../../utils/androidTailscale'
 import { AddServerForm } from './AddServerForm'
@@ -59,7 +59,8 @@ export function ControllerSettings({ onPaired, onOpenServers }: {
   const native = isTauri()
   const [tab, setTab] = useState<ControllerTab>('pair')
   // DS 远程的面板一打开就会向托管服务要登录方式，所以等用户点到它再挂载；挂上之后保留，登录中途切走不会丢。
-  const [dshOpened, setDshOpened] = useState(false)
+  // 已经扫码配对过的设备例外：一进来就挂上，通道条才能显示配对好的电脑在不在线。
+  const [dshOpened, setDshOpened] = useState(() => native && hasSavedDshPairing())
   const [tailscale, setTailscale] = useState<AndroidTailscaleState>({ backendState: null, phase: 'idle' })
   const dsh = useDshController()
 

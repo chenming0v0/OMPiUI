@@ -1,4 +1,8 @@
-import { NqHandshake, chachaPoly, noiseIk, sha256H, x25519Keygen, type TransportState } from '@lukeburns/clatterjs'
+import { NqHandshake, chachaPoly, noiseIk, sha256H, x25519Dh, x25519Keygen, type TransportState } from '@lukeburns/clatterjs'
+import { hkdf } from '@noble/hashes/hkdf.js'
+import { hmac } from '@noble/hashes/hmac.js'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex } from '@noble/hashes/utils.js'
 
 export const DSH_REMOTE_ORIGIN = 'https://dsh.r2049.cn'
 export const DSH_RELAY_CAPABILITY = 'transport.relay'
@@ -245,4 +249,126 @@ export class DshNoise {
     this.transport = handshake.finalize()
     this.handshake = undefined
   }
+}
+
+// ============================================
+// 扫码配对（device-pairing-v1）：电脑出二维码，手机扫码后显示 8 位验证码，在电脑上输入确认。
+// 两端都用这里的校验和签名，线上格式以 ds-harness-remote 的 docs/device-pairing-v1.md 为准。
+// ============================================
+
+export const DSH_PAIRING_ROOT = '/api/v1/device-pairing/sessions'
+export type DshPairingSide = 'host' | 'mobile'
+export type DshPairingState = 'created' | 'claimed' | 'approved' | 'completed' | 'failed' | 'cancelled' | 'expired'
+const PAIRING_STATES: readonly string[] = ['created', 'claimed', 'approved', 'completed', 'failed', 'cancelled', 'expired']
+const PAIRING_KEY = /^[A-Za-z0-9_-]{43}$/
+const PAIRING_SESSION = /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i
+
+export interface DshPairingDevice { deviceId: string; name: string; role: 'host' | 'client'; platform: string; identityKey: string }
+export interface DshPairingSession { sessionId: string; expiresAt: number; serverPublicKey: string; scanSecret: string; host: DshPairingDevice }
+export interface DshPairingStatus {
+  state: DshPairingState
+  failureReason: string | null
+  mobile: DshPairingDevice | null
+  /** 只在 completed 时有：发给查询这一侧自己的设备授权。 */
+  tokens: DshDeviceTokens | null
+}
+
+function pairingKey(value: unknown): value is string {
+  if (typeof value !== 'string' || !PAIRING_KEY.test(value)) return false
+  try { return decodeDshBase64(value, 32).length === 32 } catch { return false }
+}
+
+function pairingDevice(value: unknown): DshPairingDevice {
+  const device = dshRecord(value)
+  if (typeof device?.deviceId !== 'string' || !DSH_ID.test(device.deviceId) || typeof device.name !== 'string' || device.name.length > 256
+    || (device.role !== 'host' && device.role !== 'client') || typeof device.platform !== 'string' || device.platform.length > 64
+    || !pairingKey(device.identityKey)) throw new Error('Invalid DS Harness Remote pairing device')
+  return { deviceId: device.deviceId, name: device.name, role: device.role, platform: device.platform, identityKey: device.identityKey }
+}
+
+const samePairingDevice = (a: DshPairingDevice, b: { deviceId: string; identityKey: string }) =>
+  a.deviceId.toLowerCase() === b.deviceId.toLowerCase() && a.identityKey === b.identityKey
+
+/** 创建会话或解析短码的回复。ticket 是扫到的短码，必须和会话里的一致。 */
+export function parseDshPairingSession(value: unknown, ticket?: string): DshPairingSession {
+  const data = dshRecord(value)
+  if (data?.v !== 1 || typeof data.sessionId !== 'string' || !PAIRING_SESSION.test(data.sessionId) || !isDshExpiry(data.expiresAt)
+    || !pairingKey(data.serverPublicKey) || !pairingKey(data.scanSecret) || (ticket !== undefined && data.scanSecret !== ticket)) {
+    throw new Error('Invalid DS Harness Remote pairing session')
+  }
+  const host = pairingDevice(data.host)
+  // 会话只活三分钟；远在未来的截止时间不是一个真会话。
+  if (host.role !== 'host' || host.identityKey === data.serverPublicKey || data.expiresAt > Date.now() + 10 * 60_000) {
+    throw new Error('Invalid DS Harness Remote pairing session')
+  }
+  return { sessionId: data.sessionId, expiresAt: data.expiresAt, serverPublicKey: data.serverPublicKey, scanSecret: data.scanSecret, host }
+}
+
+/** 状态回复必须还是同一个会话、同一台电脑，且（完成时）授权确实发给查询的这一侧。 */
+export function parseDshPairingStatus(value: unknown, session: DshPairingSession, side: DshPairingSide,
+  self: { deviceId: string; identityKey: string }, pinnedMobile?: DshPairingDevice | null): DshPairingStatus {
+  const data = dshRecord(value)
+  if (data?.v !== 1 || data.sessionId !== session.sessionId || typeof data.state !== 'string' || !PAIRING_STATES.includes(data.state)) {
+    throw new Error('Invalid DS Harness Remote pairing status')
+  }
+  const state = data.state as DshPairingState
+  if (!samePairingDevice(pairingDevice(data.host), session.host)) throw new Error('The DS Harness Remote pairing computer changed')
+  const mobile = data.mobile == null ? null : pairingDevice(data.mobile)
+  if (mobile && (mobile.role !== 'client' || mobile.deviceId.toLowerCase() === session.host.deviceId.toLowerCase()
+    || mobile.identityKey === session.host.identityKey
+    || (side === 'mobile' && !samePairingDevice(mobile, self)) || (pinnedMobile && !samePairingDevice(mobile, pinnedMobile)))) {
+    throw new Error('The DS Harness Remote pairing phone changed')
+  }
+  if (side === 'mobile' && !mobile) throw new Error('The DS Harness Remote pairing phone changed')
+  let tokens: DshDeviceTokens | null = null
+  if (state === 'completed') {
+    const credentials = dshRecord(data.credentials)
+    const device = pairingDevice(credentials?.device)
+    if (!samePairingDevice(device, self) || device.role !== (side === 'host' ? 'host' : 'client')) {
+      throw new Error('Invalid DS Harness Remote pairing credentials')
+    }
+    tokens = parseDshDeviceTokens(credentials?.tokens)
+  }
+  const reason = typeof data.failureReason === 'string' && /^[A-Za-z_]{1,80}$/.test(data.failureReason) ? data.failureReason : null
+  return { state, failureReason: reason, mobile, tokens }
+}
+
+/** X-DSH-Pairing-Proof：证明这一侧持有设备私钥，并把操作路径和请求正文绑在一起。body 必须是实际发出去的原文。 */
+export function dshPairingProof(privateKey: string, serverPublicKey: string, sessionId: string, side: DshPairingSide,
+  path: string, body: string): string {
+  const shared = x25519Dh(decodeDshBase64(privateKey, 32), decodeDshBase64(serverPublicKey, 32))
+  const key = hkdf(sha256, shared, encoder.encode(sessionId), encoder.encode(`dsh-pairing-v1/${side}`), 32)
+  try {
+    return encodeDshBase64(hmac(sha256, key, encoder.encode(`POST\n${path}\n${bytesToHex(sha256(encoder.encode(body)))}`)))
+  } finally {
+    shared.fill(0)
+    key.fill(0)
+  }
+}
+
+/** 两端核对用的指纹：公钥的 SHA-256，按四位一组显示。 */
+export function dshPairingFingerprint(identityKey: string): string {
+  return bytesToHex(sha256(decodeDshBase64(identityKey, 32))).replace(/(.{4})(?=.)/g, '$1 ')
+}
+
+/** 二维码里的内容。服务器支持时用只带一张票的短码，否则带上整段会话。 */
+export function dshPairingQr(session: DshPairingSession, compact: boolean): string {
+  return compact ? `${DSH_REMOTE_ORIGIN}/pair#v1.${session.scanSecret}`
+    : JSON.stringify({ type: 'dsh.remote.pairing', v: 1, serverUrl: DSH_REMOTE_ORIGIN, ...session })
+}
+
+/** 手机扫到的内容。只认本应用使用的那台服务器；内容不当网址打开，也不跟随跳转。 */
+export function parseDshPairingScan(text: string): { ticket: string } | { session: DshPairingSession } {
+  const value = text.trim()
+  if (encoder.encode(value).length > 4096) throw new Error('Invalid DS Harness Remote pairing code')
+  if (value.startsWith('{')) {
+    let data: Record<string, unknown> | undefined
+    try { data = dshRecord(JSON.parse(value)) } catch { data = undefined }
+    if (data?.type !== 'dsh.remote.pairing' || data.serverUrl !== DSH_REMOTE_ORIGIN) throw new Error('Invalid DS Harness Remote pairing code')
+    return { session: parseDshPairingSession(data) }
+  }
+  const prefix = `${DSH_REMOTE_ORIGIN}/pair#v1.`
+  const ticket = value.startsWith(prefix) ? value.slice(prefix.length) : ''
+  if (!pairingKey(ticket)) throw new Error('Invalid DS Harness Remote pairing code')
+  return { ticket }
 }

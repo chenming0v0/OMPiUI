@@ -17,7 +17,7 @@ import {
 } from '../../../components/Icons'
 import { useServerStore, useRouter } from '../../../hooks'
 import { clearSessionRuntimeState } from '../../../utils/sessionLifecycle'
-import { isTailnetUrl } from '../../../utils/androidTailscale'
+import { isAndroidTailscalePlatform, isTailnetUrl } from '../../../utils/androidTailscale'
 import { isTauri } from '../../../utils/tauri'
 import { settingsFieldClass } from './SettingsUI'
 import { Lamp, PageHead, type LampTone } from './ChannelBoard'
@@ -588,7 +588,7 @@ export function ServersSettings({ initialAddingServer = false }: { initialAdding
       ) : (
         !addingServer && <p className="cb-empty">{t('servers.noServersConfigured')}</p>
       )}
-      {native && <p className="cb-footnote">{t('servers.dshFootnote')}</p>}
+      {native && <p className="cb-footnote">{t(isAndroidTailscalePlatform() ? 'servers.dshFootnoteInApp' : 'servers.dshFootnote')}</p>}
     </div>
   )
 }
