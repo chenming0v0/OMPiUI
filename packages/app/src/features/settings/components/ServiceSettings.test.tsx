@@ -167,11 +167,12 @@ describe('ServiceSettings ownership of configuration', () => {
     expect(screen.getByText(/They do not change the connected remote server/)).toBeInTheDocument()
 
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Listen port' }), { target: { value: '9191' } })
-    expect(screen.queryByRole('textbox', { name: 'Relay URL' })).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('Access key')).not.toBeInTheDocument()
-    expect(screen.queryByText('Tunnel (self-hosted relay)')).not.toBeInTheDocument()
+    // 中转有自己的表单；通用环境变量编辑器里不再重复列出这几项。
+    expect(screen.getByText('Tunnel (self-hosted relay)')).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Relay URL' })).toHaveValue('wss://local-only.example.test')
+    expect(screen.getByLabelText('Access key')).toHaveValue('local-only-key')
     expect(screen.queryByDisplayValue('OMPIUI_TUNNEL_URL')).not.toBeInTheDocument()
-    expect(screen.queryByDisplayValue('local-only-key')).not.toBeInTheDocument()
+    expect(screen.queryByDisplayValue('OMPIUI_TUNNEL_KEY')).not.toBeInTheDocument()
     expect(serviceStore.envVarsRecord).toMatchObject({
       OMPIUI_PORT: '9191',
       OMPIUI_TUNNEL_URL: 'wss://local-only.example.test',
@@ -194,7 +195,7 @@ describe('ServiceSettings ownership of configuration', () => {
     await waitFor(() => expect(mocks.stop).toHaveBeenCalledOnce())
   })
 
-  it('keeps original variable indexes when relay fields are hidden from the generic editor', async () => {
+  it('keeps original variable indexes when relay fields live in their own form instead of the generic editor', async () => {
     mocks.desktop = true
     serviceStore.setEnvVars([
       { key: 'OMPIUI_TUNNEL_KEY', value: 'saved-key' },
@@ -204,7 +205,8 @@ describe('ServiceSettings ownership of configuration', () => {
     ])
     render(<ServiceSettings />)
     await waitFor(() => expect(mocks.refresh).toHaveBeenCalled())
-    expect(screen.queryByDisplayValue('saved-key')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Access key')).toHaveValue('saved-key')
+    expect(screen.queryByDisplayValue('OMPIUI_TUNNEL_KEY')).not.toBeInTheDocument()
     fireEvent.change(screen.getByDisplayValue('old-value'), { target: { value: 'new-value' } })
     fireEvent.click(screen.getByDisplayValue('HTTPS_PROXY').parentElement!.querySelector('button')!)
     expect(serviceStore.envVarsRecord).toEqual({
