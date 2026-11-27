@@ -33,16 +33,15 @@ const host = '7c1d3e5f-2a4b-4c6d-8e0f-1a3b5c7d9e22'
 const labels = { title: 'Desk PC', close: 'Close' }
 
 describe('DS Harness Remote authentication retry', () => {
-  it('refreshes once for hosted close code 4010 without misclassifying the final failure', () => {
+  it('does not refresh credentials for an unexplained connection failure', () => {
     const unreachable = new DshApiError('DSH_UNREACHABLE', 0)
-    expect(shouldRefreshDshHello(unreachable, 4010, false)).toBe(true)
-    expect(shouldRefreshDshHello(unreachable, 4010, true)).toBe(false)
-    expect(shouldRefreshDshHello(unreachable, 4001, false)).toBe(false)
+    expect(shouldRefreshDshHello(unreachable, false)).toBe(false)
+    expect(shouldRefreshDshHello(unreachable, true)).toBe(false)
   })
 
   it('refreshes once for an explicit authentication failure', () => {
-    expect(shouldRefreshDshHello(new DshApiError('DSH_AUTH_INVALID', 401), undefined, false)).toBe(true)
-    expect(shouldRefreshDshHello(new DshApiError('DSH_AUTH_INVALID', 401), undefined, true)).toBe(false)
+    expect(shouldRefreshDshHello(new DshApiError('DSH_AUTH_INVALID', 401), false)).toBe(true)
+    expect(shouldRefreshDshHello(new DshApiError('DSH_AUTH_INVALID', 401), true)).toBe(false)
   })
 })
 

@@ -77,8 +77,13 @@ export function ControllerSettings({ onPaired, onOpenServers }: {
       : tailscale.phase !== 'idle' && tailscale.phase !== 'error'
         ? { tone: 'busy', state: t('host.tsAuthorizing') }
         : { tone: 'off', state: t('host.tsSignedOut') }
+  const dshOnline = dsh.hosts.filter(host => host.online === true).length
+  const dshUnknown = dsh.hosts.filter(host => host.online === undefined).length
   const dshTile: Pick<ChannelTile<ControllerTab>, 'tone' | 'state'> = dsh.session
-    ? { tone: 'on', state: t('controller.dshOnline', { count: dsh.hosts.filter(host => host.online === true).length }) }
+    ? {
+      tone: dshUnknown > 0 ? 'warn' : dshOnline > 0 ? 'on' : 'off',
+      state: t(dshUnknown > 0 ? 'controller.dshOnlineUnknown' : 'controller.dshOnline', { count: dshOnline, unknown: dshUnknown }),
+    }
     : dsh.signingIn
       ? { tone: 'busy', state: t('host.tsAuthorizing') }
       : { tone: 'off', state: t('dshRemote.notSignedIn') }

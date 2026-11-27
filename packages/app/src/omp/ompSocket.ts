@@ -23,6 +23,7 @@ export interface PiSocketMessage {
 
 export interface PiSocket {
   readonly readyState: number
+  readonly bufferedAmount?: number
   onopen: (() => void) | null
   onmessage: ((event: PiSocketMessage) => void) | null
   onclose: ((event: { code: number; reason?: string }) => void) | null
@@ -56,6 +57,8 @@ class TauriBridgeSocket implements PiSocket {
   private acknowledgedSequence = 0
   private acknowledgementInFlight = false
   private acknowledgementScheduled = false
+
+  get bufferedAmount(): number { return this.queuedBytes }
 
   constructor(url: string) {
     void this.connect(url)
@@ -206,7 +209,12 @@ class TauriBridgeSocket implements PiSocket {
   }
 }
 
+/** 原生应用统一使用 Rust 连接，避免 WebView 携带页面 Origin。 */
+export function openPlatformSocket(url: string): PiSocket {
+  return isTauri() ? new TauriBridgeSocket(url) : (new WebSocket(url) as unknown as PiSocket)
+}
+
 export function openPiSocket(url: string): PiSocket {
-  const socket = isTauri() ? new TauriBridgeSocket(url) : (new WebSocket(url) as unknown as PiSocket)
+  const socket = openPlatformSocket(url)
   return auditSocket(socket, url, serverStore.getActiveServer()?.url)
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { useTranslation } from 'react-i18next'
 import { ChevronRight, Download, ExternalLink, Loader2, LogOut, Monitor, RefreshCw, ScanLine } from 'lucide-react'
@@ -35,10 +35,12 @@ interface BrowserAttempt {
 }
 let browserAttempt: BrowserAttempt | undefined
 
-// 上次扫码配对的会话在这里接回来。账号登录的会话不落盘，重开 App 后要重新登录。
+// 恢复这台控制设备自己的账号或配对授权，保留原来的登录方式。
 if (!dshControllerStore.get().session) {
-  const paired = restoreDshPairedSession()
-  if (paired) dshControllerStore.update({ session: paired })
+  try {
+    const saved = restoreDshPairedSession()
+    if (saved) dshControllerStore.update({ session: saved })
+  } catch { dshControllerStore.update({ authError: 'DSH_STORAGE_FAILED' }) }
 }
 let loginAttempt: AbortController | undefined
 let releasingBrowser: Promise<void> | undefined
@@ -78,9 +80,10 @@ async function disconnectBrowser(ended = false): Promise<void> {
 
 function handleControllerFailure(session: DshAppSession, failure: unknown): boolean {
   if (!isDshControllerAuthFailure(failure) || dshControllerStore.get().session !== session) return false
-  session.invalidate()
+  let authError: string = failure.code
+  try { session.invalidate() } catch { authError = 'DSH_STORAGE_FAILED' }
   void disconnectBrowser()
-  dshControllerStore.update({ session: null, hosts: [], authError: failure.code })
+  dshControllerStore.update({ session: null, hosts: [], authError })
   return true
 }
 
@@ -115,6 +118,12 @@ function diagnosticCodeForUi(error: unknown): string | undefined {
   if (error instanceof DOMException && error.name === 'TimeoutError') return 'TIMEOUT'
   if (error instanceof TypeError) return 'TypeError'
   return error instanceof Error ? 'Error' : undefined
+}
+
+/** 授权状态查询可重试的暂时故障；协议错误和明确拒绝应结束本次登录。 */
+export function isDshLoginRetryableError(error: unknown): boolean {
+  if (error instanceof DshApiError) return error.status === 429 || (error.status >= 500 && error.status < 600)
+  return error instanceof TypeError || ((error instanceof Error || error instanceof DOMException) && error.name === 'TimeoutError')
 }
 
 /**
@@ -166,29 +175,30 @@ function useDshHosts() {
   const { session } = useDshController()
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState(false)
+  const request = useRef<AbortController | null>(null)
 
-  useEffect(() => {
+  const refresh = useCallback(async () => {
     if (!session) return
+    request.current?.abort()
     const stop = new AbortController()
-    void loadControllerHosts(session, AbortSignal.any([stop.signal, AbortSignal.timeout(15_000)]))
-      .then(hosts => {
-        if (!stop.signal.aborted && dshControllerStore.get().session === session) dshControllerStore.update({ hosts })
-      })
-      .catch(failure => { if (!stop.signal.aborted && !handleControllerFailure(session, failure)) setFailed(true) })
-    return () => stop.abort()
-  }, [session])
-
-  const refresh = async () => {
-    if (!session) return
+    request.current = stop
     setFailed(false)
     setBusy(true)
     try {
-      const next = await loadControllerHosts(session, AbortSignal.timeout(15_000))
-      if (dshControllerStore.get().session === session) dshControllerStore.update({ hosts: next })
-    } catch (failure) { if (!handleControllerFailure(session, failure)) setFailed(true) }
-    finally { setBusy(false) }
-  }
-  return { busy, failed: failed && Boolean(session), refresh }
+      const next = await loadControllerHosts(session, AbortSignal.any([stop.signal, AbortSignal.timeout(15_000)]))
+      if (!stop.signal.aborted && dshControllerStore.get().session === session) dshControllerStore.update({ hosts: next })
+    } catch (failure) {
+      if (!stop.signal.aborted && dshControllerStore.get().session === session && !handleControllerFailure(session, failure)) setFailed(true)
+    } finally {
+      if (!stop.signal.aborted) setBusy(false)
+    }
+  }, [session])
+
+  useEffect(() => {
+    void refresh()
+    return () => request.current?.abort()
+  }, [refresh])
+  return { busy: busy && Boolean(session), failed: failed && Boolean(session), refresh }
 }
 
 // ============================================
@@ -203,6 +213,7 @@ export function DshRemoteConnectSettings({ onOpenServers }: { onOpenServers?: ()
   const [providersLoading, setProvidersLoading] = useState(false)
   const [providersError, setProvidersError] = useState(false)
   const [login, setLogin] = useState<{ id: string; url: string; expiresAt: number; attempt: AbortController }>()
+  const [loginRetrying, setLoginRetrying] = useState(false)
   const [now, setNow] = useState(() => Date.now())
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -267,13 +278,13 @@ export function DshRemoteConnectSettings({ onOpenServers }: { onOpenServers?: ()
         // 服务器明确拒绝才算结束；网络抖动就接着等。
         if (failure instanceof DshApiError && failure.status !== 429 && failure.status < 500) {
           setPair(undefined)
-          setError(pairError(failure.code))
+          setError(failure.code === 'DSH_STORAGE_FAILED' ? t('dshRemote.connectError.DSH_STORAGE_FAILED') : pairError(failure.code))
         } else timer = setTimeout(check, 2_500)
       }
     }
     timer = setTimeout(check, 2_500)
     return () => { stop.abort(); clearTimeout(timer) }
-  }, [pair, pairError])
+  }, [pair, pairError, t])
 
   useEffect(() => {
     if (!login) return
@@ -288,25 +299,43 @@ export function DshRemoteConnectSettings({ onOpenServers }: { onOpenServers?: ()
     const abort = new AbortController()
     const stop = AbortSignal.any([abort.signal, login.attempt.signal])
     let timer: ReturnType<typeof setTimeout>
+    let registering = false
+    const schedule = () => { timer = setTimeout(check, Math.min(2_000, Math.max(0, login.expiresAt - Date.now()))) }
     const check = async () => {
       try {
-        const result = Date.now() >= login.expiresAt ? 'expired' : await pollDshLogin(login.id, stop)
+        const result = Date.now() >= login.expiresAt ? 'expired' : await pollDshLogin(login.id, stop, {
+          // 服务确认 complete 后先通知 UI，再注册设备；注册失败不能重新轮询并生成新身份。
+          onComplete: () => { registering = true },
+        })
         if (stop.aborted) {
           if (typeof result !== 'string') await result.revoke().catch(() => undefined)
           return
         }
-        if (result === 'pending') timer = setTimeout(check, 2_000)
+        setLoginRetrying(false)
+        if (result === 'pending') schedule()
         else {
           finishLoginAttempt(login.attempt)
           setLogin(undefined)
           if (result === 'expired') setError(t('dshRemote.loginExpired'))
           else dshControllerStore.update({ session: result, hosts: [], authError: null })
         }
-      } catch {
-        if (!stop.aborted) { finishLoginAttempt(login.attempt); setLogin(undefined); setError(t('dshRemote.loginFailed')) }
+      } catch (failure) {
+        if (stop.aborted) return
+        const retryable = !registering && isDshLoginRetryableError(failure)
+        if (retryable && Date.now() < login.expiresAt) {
+          setLoginRetrying(true)
+          schedule()
+          return
+        }
+        finishLoginAttempt(login.attempt)
+        setLogin(undefined)
+        setLoginRetrying(false)
+        setError(t(failure instanceof DshApiError && failure.code === 'DSH_STORAGE_FAILED'
+          ? 'dshRemote.connectError.DSH_STORAGE_FAILED'
+          : retryable && Date.now() >= login.expiresAt ? 'dshRemote.loginExpired' : 'dshRemote.loginFailed'))
       }
     }
-    timer = setTimeout(check, 2_000)
+    schedule()
     return () => { abort.abort(); clearTimeout(timer) }
   }, [login, t])
 
@@ -314,6 +343,7 @@ export function DshRemoteConnectSettings({ onOpenServers }: { onOpenServers?: ()
     const stop = beginLoginAttempt()
     setBusy(true)
     setError('')
+    setLoginRetrying(false)
     dshControllerStore.update({ authError: null })
     let started = false
     try {
@@ -363,7 +393,11 @@ export function DshRemoteConnectSettings({ onOpenServers }: { onOpenServers?: ()
       await disconnectBrowser()
       await session.revoke()
       if (dshControllerStore.get().session === session) dshControllerStore.update({ session: null, hosts: [] })
-    } catch { setError(t('dshRemote.logoutFailed')) }
+    } catch (failure) {
+      if (failure instanceof DshApiError && failure.code === 'DSH_STORAGE_FAILED') {
+        if (dshControllerStore.get().session === session) dshControllerStore.update({ session: null, hosts: [], authError: failure.code })
+      } else setError(t('dshRemote.logoutFailed'))
+    }
     finally { setBusy(false) }
   }
 
@@ -419,7 +453,7 @@ export function DshRemoteConnectSettings({ onOpenServers }: { onOpenServers?: ()
         </div>
         {hosts.length ? hosts.map(host => (
           <div key={host.id} className="cb-device" data-dim={host.online === false ? '' : undefined}>
-            <Lamp tone={host.online === true ? 'on' : 'off'} />
+            <Lamp tone={host.online === true ? 'on' : host.online === false ? 'off' : 'warn'} />
             <span className="cb-device-main">
               <span className="cb-device-name">{host.name}</span>
               <span className="cb-device-meta">
@@ -461,6 +495,7 @@ export function DshRemoteConnectSettings({ onOpenServers }: { onOpenServers?: ()
           <p className="mt-1 text-[length:var(--fs-sm)] leading-relaxed text-text-200">
             {t(phone ? 'dshRemote.waitingLoginPhone' : 'dshRemote.waitingLogin')} {t('dshRemote.expiresIn', { time: clock })}
           </p>
+          {loginRetrying && <p role="status" className="cb-hint">{t('dshRemote.loginRetrying')}</p>}
           <div className="cb-actions">
             <button type="button" className="cb-btn" onClick={() => void openSite(login.url, login.attempt.signal).catch(() => setError(t('dshRemote.loginFailed')))}>
               <ExternalLink size={14} />{t('dshRemote.openLogin')}
@@ -524,11 +559,13 @@ export function DshRemoteConnectSettings({ onOpenServers }: { onOpenServers?: ()
 
 export function DshServerRows() {
   const { t } = useTranslation('settings')
-  const { session, hosts, browser } = useDshController()
-  useDshHosts()
+  const { session, hosts, browser, authError } = useDshController()
+  const { busy, failed, refresh } = useDshHosts()
   const [error, setError] = useState<{ hostId: string; text: string } | null>(null)
   const live = useMemo(() => Boolean(browser && browser.phase !== 'ended'), [browser])
-  if (!session || !hosts.length) return null
+  if (!session) return authError ? (
+    <div className="px-4 py-3"><AuthAlert>{t(`dshRemote.connectError.${authError}`, { defaultValue: t('dshRemote.connectError.default') })}</AuthAlert></div>
+  ) : null
   // 安卓上电脑的页面直接开在 App 里，其余平台交给系统浏览器。
   const inApp = opensDshRemoteInApp()
   const OpenIcon = inApp ? Monitor : ExternalLink
@@ -544,11 +581,19 @@ export function DshServerRows() {
   }
 
   return <>
+    <div className="cb-list-head px-4 py-3">
+      <span className="cb-row-title">{t('dshRemote.tab')}</span>
+      <button type="button" className="cb-link" aria-label={t('dshRemote.refreshHosts')} disabled={busy} onClick={() => void refresh()}>
+        <RefreshCw size={12} className={busy ? 'animate-spin' : undefined} />{t('dshRemote.refresh')}
+      </button>
+    </div>
+    {failed && <div className="px-4 pb-3"><AuthAlert>{t('dshRemote.hostListFailed')}</AuthAlert></div>}
+    {!hosts.length && !busy && !failed && <p className="cb-hint px-4 pb-3">{t('dshRemote.noHosts')}</p>}
     {hosts.map(host => {
       const handoff = browser?.hostId === host.id ? browser : null
       return (
         <div key={host.id} className="cb-srv" data-testid="dsh-server-row">
-          <Lamp tone={host.online === true ? 'on' : 'off'} />
+          <Lamp tone={host.online === true ? 'on' : host.online === false ? 'off' : 'warn'} />
           <div className="cb-srv-main">
             <span className="cb-srv-title">
               <span className="cb-srv-name" title={host.name}>{host.name}</span>

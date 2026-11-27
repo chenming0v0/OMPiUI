@@ -119,6 +119,36 @@ describe('ControllerSettings', () => {
     })
     render(<ControllerSettings />)
     expect(channel('DS remote')).toHaveAttribute('aria-description', '1 online')
+    expect(channel('DS remote').querySelector('.cb-lamp')).toHaveAttribute('data-tone', 'on')
+  })
+
+  it.each([
+    ['en', 'DS remote', '0 online · 1 unknown'],
+    ['zh-CN', 'DS 远程', '0 台在线 · 1 台未知'],
+  ])('shows an unknown-only DS list without a green lamp in %s', async (language, label, description) => {
+    await i18n.changeLanguage(language)
+    platform.mobile = true
+    dshControllerStore.update({ session: {} as never, hosts: [{ id: 'a', name: 'Office' }] })
+    render(<ControllerSettings />)
+    expect(channel(label)).toHaveAttribute('aria-description', description)
+    expect(channel(label).querySelector('.cb-lamp')).toHaveAttribute('data-tone', 'warn')
+  })
+
+  it('includes unknown computers alongside confirmed online computers', () => {
+    dshControllerStore.update({
+      session: {} as never,
+      hosts: [{ id: 'a', name: 'Office', online: true }, { id: 'b', name: 'Laptop' }, { id: 'c', name: 'Home', online: false }],
+    })
+    render(<ControllerSettings />)
+    expect(channel('DS remote')).toHaveAttribute('aria-description', '1 online · 1 unknown')
+    expect(channel('DS remote').querySelector('.cb-lamp')).toHaveAttribute('data-tone', 'warn')
+  })
+
+  it('does not light the DS channel green when all computers are offline', () => {
+    dshControllerStore.update({ session: {} as never, hosts: [{ id: 'a', name: 'Office', online: false }] })
+    render(<ControllerSettings />)
+    expect(channel('DS remote')).toHaveAttribute('aria-description', '0 online')
+    expect(channel('DS remote').querySelector('.cb-lamp')).toHaveAttribute('data-tone', 'off')
   })
 
   it('offers DS remote in the mobile app without the Android tailnet channel', () => {
