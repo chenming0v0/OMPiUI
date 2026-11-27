@@ -36,6 +36,7 @@ export interface DshDiagnosticEntry {
   status?: number
   code?: string
   closeCode?: number
+  closeReason?: string
   hostCount?: number
   onlineCount?: number
   offlineCount?: number
@@ -47,6 +48,11 @@ const SAFE_CODES = new Set([
   'DSH_AUTH_INVALID', 'DSH_DEVICE_REVOKED', 'HOST_OFFLINE', 'HOST_BUSY', 'HOST_UNAUTHORIZED',
   'DSH_UNREACHABLE', 'PROTOCOL', 'LEASE_FAILED', 'REQUEST_ABORTED', 'TIMEOUT', 'TypeError', 'Error', 'INTERNAL', 'RATE_LIMITED',
 ])
+const SAFE_CLOSE_REASONS = new Set([
+  'AUTH_INVALID', 'AUTH_REQUIRED', 'TOKEN_EXPIRED', 'DEVICE_REVOKED', 'ALREADY_CONNECTED',
+  'CONNECTION_REPLACED', 'CONNECTION_FAILED', 'RATE_LIMITED', 'HELLO_TIMEOUT', 'UNSUPPORTED_VERSION',
+  'INVALID_MESSAGE', 'MEMBERSHIP_REQUIRED', 'CAPABILITY_NOT_SUPPORTED', 'CONNECTION_LIMIT_REACHED', 'SERVER_SHUTDOWN',
+])
 
 /** Keep connection diagnostics in memory only; never record names, IDs, URLs, tokens or error text. */
 export function recordDshDiagnostic(event: DshDiagnosticEvent, fields: Omit<DshDiagnosticEntry, 'time' | 'event'> = {}): void {
@@ -56,6 +62,8 @@ export function recordDshDiagnostic(event: DshDiagnosticEvent, fields: Omit<DshD
   if (Number.isInteger(fields.status)) entry.status = fields.status
   if (fields.code && SAFE_CODES.has(fields.code)) entry.code = fields.code
   if (Number.isInteger(fields.closeCode)) entry.closeCode = fields.closeCode
+  const closeReason = fields.closeReason?.trim().toUpperCase().replaceAll(' ', '_')
+  if (closeReason && SAFE_CLOSE_REASONS.has(closeReason)) entry.closeReason = closeReason
   for (const key of ['hostCount', 'onlineCount', 'offlineCount', 'unknownCount'] as const) {
     const value = fields[key]
     if (Number.isInteger(value) && value! >= 0) entry[key] = value
