@@ -35,8 +35,7 @@
     "manualAdded": "已添加并连接 {{name}}",
     "manualAddedBody": "它已经加进「服务器」页，以后在那里切换。",
     "manualAnother": "再添加一台",
-    "footnoteWeb": "扫码和虚拟组网在手机 App 里，DS 远程在桌面版里。",
-    "footnoteMobile": "DS 远程目前只在桌面版里。"
+    "footnoteWeb": "扫码、虚拟组网和 DS 远程在手机 App 里。"
   },
   "host": {
     "title": "被控端",

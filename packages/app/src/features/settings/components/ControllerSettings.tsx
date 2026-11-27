@@ -55,7 +55,8 @@ export function ControllerSettings({ onPaired, onOpenServers }: {
   const { t } = useTranslation('settings')
   const android = isAndroidTailscalePlatform()
   const mobile = isTauriMobile()
-  const desktop = isTauri() && !mobile
+  // DS 远程随桌面版和手机 App 一起走，网页端不展示。
+  const native = isTauri()
   const [tab, setTab] = useState<ControllerTab>('pair')
   // DS 远程的面板一打开就会向托管服务要登录方式，所以等用户点到它再挂载；挂上之后保留，登录中途切走不会丢。
   const [dshOpened, setDshOpened] = useState(false)
@@ -84,11 +85,11 @@ export function ControllerSettings({ onPaired, onOpenServers }: {
     { id: 'pair', icon: mobile ? <ScanLine size={16} /> : <QrCode size={16} />, name: t('controller.tabPair'),
       state: t(mobile ? 'controller.pairStateMobile' : 'controller.pairState') },
     ...(android ? [{ id: 'tailscale' as const, icon: <Globe size={16} />, name: t('service.remoteTabTailscale'), ...tailscaleTile }] : []),
-    ...(desktop ? [{ id: 'dsh' as const, icon: <DeepSeekIcon size={16} />, name: t('dshRemote.tab'), ...dshTile }] : []),
+    ...(native ? [{ id: 'dsh' as const, icon: <DeepSeekIcon size={16} />, name: t('dshRemote.tab'), ...dshTile }] : []),
     { id: 'manual', icon: <KeyRound size={16} />, name: t('controller.manualTitle'), state: t('controller.manualState') },
   ]
 
-  const footnote: React.ReactNode = desktop ? null : t(mobile ? 'controller.footnoteMobile' : 'controller.footnoteWeb')
+  const footnote: React.ReactNode = native ? null : t('controller.footnoteWeb')
 
   return (
     <div className="cb-page">
@@ -110,7 +111,7 @@ export function ControllerSettings({ onPaired, onOpenServers }: {
             </div>
           </div>
         )}
-        {desktop && dshOpened && (
+        {native && dshOpened && (
           <div hidden={tab !== 'dsh'}>
             <Suspense fallback={null}><DshRemoteConnectSettings onOpenServers={onOpenServers} /></Suspense>
           </div>

@@ -35,8 +35,7 @@
     "manualAdded": "Added and connected to {{name}}",
     "manualAddedBody": "It is now on the Servers page. Switch to it there anytime.",
     "manualAnother": "Add another",
-    "footnoteWeb": "Scanning and Tailscale are in the mobile app. DS remote is in the desktop app.",
-    "footnoteMobile": "DS remote is only in the desktop app for now."
+    "footnoteWeb": "Scanning, Tailscale and DS remote are in the mobile app."
   },
   "host": {
     "title": "Host",
