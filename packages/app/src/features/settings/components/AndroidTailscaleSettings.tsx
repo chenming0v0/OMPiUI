@@ -102,21 +102,19 @@ function AndroidTailscalePanel({ defaultOpen, onPaired }: { defaultOpen?: boolea
 
   return (
     <Section id="tailscale" icon={<Globe size={16} />} name={t('service.remoteTabTailscale')} mount="stay" defaultOpen={defaultOpen}
-      status={<State tone={state.tone}>{state.text}</State>} action={action}>
+      status={<State tone={state.tone}><span role="status">{state.text}</span></State>} action={action}>
       <div data-testid="phone-tailscale-login" className="cb-sec-body">
         {running ? <>
           {problem && <AuthAlert>{problem}</AuthAlert>}
           <DiscoveredRows network="tailscale" discovery={discovery} onPaired={onPaired} />
-        </> : restoring ? (
-          <p role="status" className="cb-hint px-0.5">{t('service.remoteTailscaleRestoring')}</p>
-        ) : status || statusError ? (
+        </> : !restoring && (status || statusError) ? (
           <div className="cb-logins">
             <TailscaleControls state={status?.BackendState}
               authUrl={flow.authUrl}
               ips={status?.TailscaleIPs ?? []}
               enabled={status?.enabled ?? false} available={status !== null} busy={busy}
               recoveryPaused={status?.startupInterrupted}
-              authPhase={flow.phase} layout="phone" showAuthQr={false}
+              authPhase={flow.phase} layout="phone" showAuthQr={false} hideStatus
               onOpenAuthUrl={url => { setError(''); void flow.reopenAuthPage(url) }}
               error={problem}
               onLogin={() => { setError(''); void flow.beginLogin() }}

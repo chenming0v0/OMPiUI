@@ -46,7 +46,7 @@ function DesktopTailscaleSection({ onPaired }: { onPaired?: () => void }) {
   const discovery = useDeviceDiscovery('tailscale', running)
   return (
     <Section id="tailscale" icon={<Globe size={16} />} name={t('service.remoteTabTailscale')} mount="stay"
-      status={<State tone={tile.tone}>{running ? t('host.connected') : tile.state}</State>}
+      status={<State tone={tile.tone}><span role="status">{running ? t('host.connected') : tile.state}</span></State>}
       action={running
         ? <>
           <button type="button" className="cb-icon-btn" disabled={discovery.loading} onClick={discovery.refresh}
@@ -61,9 +61,7 @@ function DesktopTailscaleSection({ onPaired }: { onPaired?: () => void }) {
       <div data-testid="backend-tailscale-login" className="cb-sec-body">
         {running
           ? <DiscoveredRows network="tailscale" discovery={discovery} onPaired={onPaired} />
-          : restoring
-            ? <p role="status" className="cb-hint px-0.5">{t('service.remoteTailscaleRestoring')}</p>
-            : <div className="cb-logins">{tailscale.controls({ layout: 'phone' })}</div>}
+          : !restoring && <div className="cb-logins">{tailscale.controls({ layout: 'phone', hideStatus: true })}</div>}
       </div>
     </Section>
   )
