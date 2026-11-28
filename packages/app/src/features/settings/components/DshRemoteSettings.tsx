@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type React from 'react'
 import { useTranslation } from 'react-i18next'
-import { ChevronRight, Download, ExternalLink, Loader2, LogOut, Monitor, RefreshCw, ScanLine } from 'lucide-react'
+import { CircleHelp, ExternalLink, Loader2, Monitor, RefreshCw, Wifi, WifiOff } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import {
   DshApiError, beginDshLogin, listDshLoginProviders, pollDshLogin, resolveDshPairing, restoreDshPairedSession,
@@ -9,7 +9,6 @@ import {
 } from '../../../services/dshRemote'
 import { connectDshServer, disconnectDshServer, handleDshControllerFailure as handleControllerFailure } from '../../../services/dshServerConnection'
 import { serverStore } from '../../../store/serverStore'
-import { scanPairingQr } from '../../../utils/qrScanner'
 import { isTauriMobile } from '../../../utils/tauri'
 import { QrCode } from '../../../components/QrCode'
 import { DeepSeekIcon } from '../../../components/Icons'
@@ -18,7 +17,8 @@ import { dshControllerStore, useDshController } from '../../../store/dshControll
 import { exportDshDiagnostics, recordDshDiagnostic } from '../../../services/dshConnectionDiagnostics'
 import { saveData } from '../../../utils/downloadUtils'
 import { AuthAlert } from './AuthPanelUI'
-import { Lamp, NextAction, PanelRow, PanelSplit } from './ChannelBoard'
+import { NextAction, Section, State, type LampTone } from './ChannelBoard'
+import { useServerSelect } from './useServerConnect'
 
 async function openSite(url: string, signal?: AbortSignal) {
   const { openUrl } = await import('@tauri-apps/plugin-opener')
@@ -118,10 +118,15 @@ function useDshHosts() {
 // 控制端 → DS 远程：登录账号，看到账号下的电脑
 // ============================================
 
-export function DshRemoteConnectSettings({ onOpenServers }: { onOpenServers?: () => void }) {
+export function DshRemoteConnectSettings({ defaultOpen = false }: { defaultOpen?: boolean }) {
   const { t } = useTranslation('settings')
-  const { session, hosts, authError } = useDshController()
-  const { busy: hostsBusy, failed: hostsFailed, refresh: refreshHosts } = useDshHosts()
+  const { session, hosts, authError, pairRequest } = useDshController()
+  const dshHosts = useDshHosts()
+  const selectServer = useServerSelect()
+  // 分组默认收起；「服务器」页扫到 DS 配对码跳过来时直接展开。
+  const [expanded, setExpanded] = useState(defaultOpen || Boolean(pairRequest))
+  // 展开过才向托管服务要登录方式，不在打开页面时就去请求。
+  const [opened, setOpened] = useState(expanded)
   const [providers, setProviders] = useState<DshLoginProvider[]>([])
   const [providersLoading, setProvidersLoading] = useState(false)
   const [providersError, setProvidersError] = useState(false)
@@ -149,7 +154,7 @@ export function DshRemoteConnectSettings({ onOpenServers }: { onOpenServers?: ()
     finally { setProvidersLoading(false) }
   }, [])
 
-  useEffect(() => { if (!session && !login) void discover() }, [session, login, discover])
+  useEffect(() => { if (opened && !session && !login) void discover() }, [opened, session, login, discover])
 
   useEffect(() => {
     dshControllerStore.update({ signingIn: Boolean(login || pair) })
@@ -269,19 +274,22 @@ export function DshRemoteConnectSettings({ onOpenServers }: { onOpenServers?: ()
     finally { if (!started) finishLoginAttempt(stop); setBusy(false) }
   }
 
-  const scan = async () => {
+  // 「服务器」页的扫码入口扫到 DS 远程的配对码后交到这里：先确认是哪台电脑。
+  useEffect(() => {
+    // 以 store 里的值为准：同一个请求只接手一次。
+    if (!pairRequest || dshControllerStore.get().pairRequest !== pairRequest) return
+    dshControllerStore.update({ pairRequest: null, authError: null })
+    setExpanded(true)
+    setOpened(true)
     setBusy(true)
     setError('')
-    dshControllerStore.update({ authError: null })
-    try {
-      const text = await scanPairingQr(t('dshRemote.pairScanPrompt'))
-      if (!text) return
-      const signal = AbortSignal.timeout(12_000)
-      setPair({ pairing: session?.paired ? await session.pairAnother(text, signal) : await resolveDshPairing(text, signal) })
-    } catch (failure) {
-      setError(pairError(failure instanceof DshApiError ? failure.code : failure instanceof Error ? failure.message : ''))
-    } finally { setBusy(false) }
-  }
+    const signal = AbortSignal.timeout(12_000)
+    const current = dshControllerStore.get().session
+    void (current?.paired ? current.pairAnother(pairRequest, signal) : resolveDshPairing(pairRequest, signal))
+      .then(pairing => setPair({ pairing }))
+      .catch(failure => setError(pairError(failure instanceof DshApiError ? failure.code : failure instanceof Error ? failure.message : '')))
+      .finally(() => setBusy(false))
+  }, [pairRequest, pairError])
 
   const claim = async () => {
     if (!pair) return
@@ -318,170 +326,130 @@ export function DshRemoteConnectSettings({ onOpenServers }: { onOpenServers?: ()
 
   const remaining = login ? Math.max(0, Math.floor((login.expiresAt - now) / 1000)) : 0
   const clock = `${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, '0')}`
-  const alert = error || (authError ? connectError(authError) : '') || (hostsFailed ? t('dshRemote.hostListFailed') : '')
+  const alert = error || (authError ? connectError(authError) : '')
 
+  const online = hosts.filter(host => host.online === true).length
+  const unknown = hosts.filter(host => host.online === undefined).length
+  const status = session
+    ? <State tone={unknown > 0 ? 'warn' : online > 0 ? 'on' : 'off'}>
+      {t(unknown > 0 ? 'controller.dshOnlineUnknown' : 'controller.dshOnline', { count: online, unknown })}
+    </State>
+    : login || pair
+      ? <State tone="busy">{t('host.tsAuthorizing')}</State>
+      : <State tone="off">{t('dshRemote.notSignedIn')}</State>
+
+  let action: React.ReactNode
   let body: React.ReactNode
   if (pair?.code) {
     body = (
-      <div data-testid="dsh-pair-code">
-        <h3 className="text-[length:var(--fs-base)] font-semibold leading-snug text-text-100">{t('dshRemote.pairCodeTitle')}</h3>
-        <div className="cb-code mt-3" aria-label={t('dshRemote.pairCodeTitle')}>
+      <div className="cb-ticket" data-testid="dsh-pair-code">
+        <h3 className="cb-tk-title">{t('dshRemote.pairCodeTitle')}</h3>
+        <div className="cb-code" aria-label={t('dshRemote.pairCodeTitle')}>
           <span>{pair.code.slice(0, 4)}</span><span>{pair.code.slice(4)}</span>
         </div>
-        <p className="cb-hint">{t('dshRemote.pairCodeHint', { computer: pair.pairing.computer.name })}</p>
+        <p className="cb-tk-text">{pair.pairing.computer.name}</p>
         <p className="cb-waiting"><span aria-hidden className="cb-waiting-dot" /><span>{t('dshRemote.pairWaiting')}</span></p>
-        <div className="cb-actions">
-          <button type="button" className="cb-btn" onClick={cancelPair}>{t('dshRemote.cancel')}</button>
-        </div>
+        <button type="button" className="cb-btn" onClick={cancelPair}>{t('dshRemote.cancel')}</button>
       </div>
     )
   } else if (pair) {
     const computer = pair.pairing.computer
     body = (
-      <NextAction icon={<Monitor size={18} />} title={t('dshRemote.pairConfirmTitle')} testId="dsh-pair-confirm"
+      <NextAction icon={<Monitor size={34} />} title={t('dshRemote.pairConfirmTitle')} testId="dsh-pair-confirm"
         actions={<>
+          <div className="cb-field">
+            <span className="cb-label">{t('dshRemote.pairFingerprint')}</span>
+            <div className="cb-copy"><code>{computer.fingerprint}</code></div>
+          </div>
           <button type="button" className="cb-btn" data-variant="primary" disabled={busy} onClick={() => void claim()}>
             {busy && <Loader2 size={14} className="animate-spin" />}{t('dshRemote.pairConfirm')}
           </button>
           <button type="button" className="cb-btn" disabled={busy} onClick={cancelPair}>{t('dshRemote.cancel')}</button>
         </>}>
-        <p className="font-semibold text-text-100">{computer.name}</p>
-        <p className="mt-2">{t('dshRemote.pairFingerprint')}</p>
-        <code className="cb-addr">{computer.fingerprint}</code>
+        {computer.name}
       </NextAction>
     )
   } else if (session) {
-    body = <>
-      <div className="cb-list">
-        <div className="cb-list-head">
-          <span className="cb-row-title">{t('controller.dshComputers')}</span>
-          <span className="flex flex-wrap items-center gap-3">
-            {phone && session.paired && (
-              <button type="button" className="cb-link" disabled={busy} onClick={() => void scan()}>
-                <ScanLine size={12} />{t('dshRemote.pairAnother')}
-              </button>
-            )}
-            <button type="button" className="cb-link" disabled={hostsBusy} onClick={() => void refreshHosts()}>
-              <RefreshCw size={12} className={hostsBusy ? 'animate-spin' : undefined} />{t('dshRemote.refresh')}
-            </button>
-          </span>
-        </div>
-        {hosts.length ? hosts.map(host => (
-          <div key={host.id} className="cb-device" data-dim={host.online === false ? '' : undefined}>
-            <Lamp tone={host.online === true ? 'on' : host.online === false ? 'off' : 'warn'} />
-            <span className="cb-device-main">
-              <span className="cb-device-name">{host.name}</span>
-              <span className="cb-device-meta">
-                {t(host.online === true ? 'dshRemote.online' : host.online === false ? 'dshRemote.offline' : 'dshRemote.unknown')}
-              </span>
-            </span>
-          </div>
-        )) : (
-          <div className="cb-empty">
-            <p>{t('dshRemote.noHosts')}</p>
-            <p className="cb-hint mt-1">{t('dshRemote.noHostsHint')}</p>
-          </div>
-        )}
-        {hosts.length > 0 && (
-          <p className="cb-hint">
-            {t('controller.dshUseInServers')}{' '}
-            {onOpenServers && (
-              <button type="button" className="cb-link" onClick={onOpenServers}>{t('controller.openServers')}<ChevronRight size={13} /></button>
-            )}
-          </p>
-        )}
-      </div>
-      <PanelSplit>
-        <PanelRow title={t(session.paired ? 'controller.dshPaired' : 'controller.dshAccount')}
-          hint={t(session.paired ? 'controller.dshPairedHint' : 'controller.dshAccountHint')}>
-          <button type="button" className="cb-btn" disabled={busy} onClick={() => void revoke()}>
-            <LogOut size={14} />{t(session.paired ? 'controller.dshUnpair' : 'dshRemote.logout')}
-          </button>
-        </PanelRow>
-      </PanelSplit>
+    action = <>
+      <button type="button" className="cb-icon-btn" disabled={dshHosts.busy} onClick={() => void dshHosts.refresh()}
+        title={t('dshRemote.refreshHosts')} aria-label={t('dshRemote.refreshHosts')}>
+        <RefreshCw size={15} className={dshHosts.busy ? 'animate-spin' : undefined} />
+      </button>
+      <button type="button" className="cb-link" disabled={busy} onClick={() => void revoke()}>
+        {t(session.paired ? 'controller.dshUnpair' : 'dshRemote.logout')}
+      </button>
     </>
+    body = <DshHostRows session={session} hosts={dshHosts} onSelectServer={selectServer}
+      empty={<p className="cb-hint">{t('dshRemote.noHosts')}</p>} />
   } else if (login) {
     // 手机上授权页就开在这台手机的浏览器里，给自己看一个二维码没有用。
     body = (
-      <div className={phone ? undefined : 'cb-login'}>
-        {!phone && <div className="cb-qr"><QrCode text={login.url} size={140} /></div>}
-        <div className="min-w-0">
-          <h3 className="text-[length:var(--fs-base)] font-semibold leading-snug text-text-100">{t('controller.dshScanTitle')}</h3>
-          <p className="mt-1 text-[length:var(--fs-sm)] leading-relaxed text-text-200">
-            {t(phone ? 'dshRemote.waitingLoginPhone' : 'dshRemote.waitingLogin')} {t('dshRemote.expiresIn', { time: clock })}
-          </p>
-          {loginRetrying && <p role="status" className="cb-hint">{t('dshRemote.loginRetrying')}</p>}
-          <div className="cb-actions">
-            <button type="button" className="cb-btn" onClick={() => void openSite(login.url, login.attempt.signal).catch(() => setError(t('dshRemote.loginFailed')))}>
-              <ExternalLink size={14} />{t('dshRemote.openLogin')}
-            </button>
-            <button type="button" className="cb-btn" onClick={() => { login.attempt.abort(); finishLoginAttempt(login.attempt); setLogin(undefined) }}>
-              {t('dshRemote.cancel')}
-            </button>
-          </div>
-        </div>
+      <div className="cb-ticket">
+        {!phone && <div className="cb-qr"><QrCode text={login.url} size={172} /></div>}
+        <h3 className="cb-tk-title">{t('controller.dshScanTitle')}</h3>
+        <p className="cb-expiry">{t('dshRemote.expiresIn', { time: clock })}</p>
+        {loginRetrying && <p role="status" className="cb-hint">{t('dshRemote.loginRetrying')}</p>}
+        <button type="button" className="cb-btn" onClick={() => void openSite(login.url, login.attempt.signal).catch(() => setError(t('dshRemote.loginFailed')))}>
+          <ExternalLink size={14} />{t('dshRemote.openLogin')}
+        </button>
+        <button type="button" className="cb-btn" onClick={() => { login.attempt.abort(); finishLoginAttempt(login.attempt); setLogin(undefined) }}>
+          {t('dshRemote.cancel')}
+        </button>
       </div>
     )
   } else {
     body = (
-      <NextAction icon={<DeepSeekIcon size={18} />} title={t(phone ? 'controller.dshPairTitle' : 'controller.dshLoginTitle')}
-        actions={<>
-          {phone && (
-            <button type="button" className="cb-btn" data-variant="primary" disabled={busy} onClick={() => void scan()}>
-              {busy ? <Loader2 size={14} className="animate-spin" /> : <ScanLine size={14} />}{t('dshRemote.pairScan')}
-            </button>
-          )}
-          {providersLoading ? (
-            <span className="cb-hint flex items-center gap-2"><Loader2 size={13} className="animate-spin" />{t('dshRemote.loginLoading')}</span>
-          ) : providers.length ? providers.map((provider, index) => (
-            <button key={provider.id} type="button" className="cb-btn" data-variant={index === 0 && !phone ? 'primary' : undefined}
-              disabled={busy} onClick={() => void signIn(provider)}>
-              {t('controller.dshLoginWith', { provider: provider.label })}
-            </button>
-          )) : (
-            <button type="button" className="cb-btn" data-variant={phone ? undefined : 'primary'} disabled={busy} onClick={() => void discover()}>
-              {t('dshRemote.login')}
-            </button>
-          )}
-        </>}>
-        <p>{t(phone ? 'dshRemote.pairDesc' : 'dshRemote.loginDesc')}</p>
-        {providersError && !providersLoading && <p className="mt-1">{t('dshRemote.noProviders')}</p>}
-      </NextAction>
+      <div className="cb-logins">
+        {providersLoading ? (
+          <span className="cb-hint flex items-center justify-center gap-2"><Loader2 size={13} className="animate-spin" />{t('dshRemote.loginLoading')}</span>
+        ) : providers.length ? providers.map((provider, index) => (
+          <button key={provider.id} type="button" className="cb-btn" data-variant={index === 0 ? 'primary' : undefined}
+            disabled={busy} onClick={() => void signIn(provider)}>
+            <ExternalLink size={14} />{t('controller.dshLoginWith', { provider: provider.label })}
+          </button>
+        )) : (
+          <button type="button" className="cb-btn" data-variant="primary" disabled={busy} onClick={() => void discover()}>
+            {t('dshRemote.login')}
+          </button>
+        )}
+        {providersError && !providersLoading && <p className="cb-hint text-center">{t('dshRemote.noProviders')}</p>}
+      </div>
     )
   }
 
   return (
-    <div data-testid="dsh-remote-client" className="min-w-0">
-      {alert && <div className="mb-4"><AuthAlert>{alert}</AuthAlert></div>}
-      {body}
-      <PanelSplit>
-        <PanelRow title={t('dshRemote.diagnosticsTitle')} hint={t('dshRemote.diagnosticsHint')}>
-          <button type="button" className="cb-btn" onClick={() => {
-            const stamp = new Date().toISOString().replaceAll(':', '-')
-            saveData(new TextEncoder().encode(exportDshDiagnostics()), `ompiui-dsh-connection-${stamp}.txt`, 'text/plain')
-          }}>
-            <Download size={14} />{t('dshRemote.exportDiagnostics')}
-          </button>
-        </PanelRow>
-      </PanelSplit>
-    </div>
+    <Section id="dsh" icon={<DeepSeekIcon size={16} />} name={t('dshRemote.tab')} status={status} action={action}
+      open={expanded} mount="stay" onToggle={next => { setExpanded(next); if (next) setOpened(true) }}>
+      <div data-testid="dsh-remote-client" className="cb-sec-body">
+        {alert && <AuthAlert>{alert}</AuthAlert>}
+        {body}
+        <button type="button" className="cb-link justify-self-end" data-quiet="" onClick={() => {
+          const stamp = new Date().toISOString().replaceAll(':', '-')
+          saveData(new TextEncoder().encode(exportDshDiagnostics()), `ompiui-dsh-connection-${stamp}.txt`, 'text/plain')
+        }}>
+          {t('dshRemote.exportDiagnostics')}
+        </button>
+      </div>
+    </Section>
   )
 }
 
 // ============================================
-// 服务器页：账号下的电脑。它们跟着登录状态走，不落盘。
+// 账号下的电脑：和服务器页是同一种行，点一下就连过去。它们跟着登录状态走，不落盘。
 // ============================================
 
-export function DshServerRows({ onSelectServer = id => { serverStore.setActiveServer(id) } }: {
-  onSelectServer?: (id: string) => void
+type DshHosts = ReturnType<typeof useDshHosts>
+
+function DshHostRows({ session, hosts: list, onSelectServer, empty }: {
+  session: DshAppSession
+  hosts: DshHosts
+  onSelectServer: (id: string) => void
+  empty?: React.ReactNode
 }) {
   const { t } = useTranslation('settings')
-  const { session, hosts, connection, authError } = useDshController()
-  const { busy, failed, refresh } = useDshHosts()
+  const { hosts, connection } = useDshController()
+  const { busy, failed, refresh } = list
   const [error, setError] = useState<{ hostId: string; text: string } | null>(null)
-  if (!session) return authError ? (
-    <div className="px-4 py-3"><AuthAlert>{t(`dshRemote.connectError.${authError}`, { defaultValue: t('dshRemote.connectError.default') })}</AuthAlert></div>
-  ) : null
   const open = async (hostId: string, name: string) => {
     setError(null)
     try {
@@ -493,53 +461,70 @@ export function DshServerRows({ onSelectServer = id => { serverStore.setActiveSe
   }
 
   return <>
-    <div className="cb-list-head px-4 py-3">
-      <span className="cb-row-title">{t('dshRemote.tab')}</span>
-      <button type="button" className="cb-link" aria-label={t('dshRemote.refreshHosts')} disabled={busy} onClick={() => void refresh()}>
-        <RefreshCw size={12} className={busy ? 'animate-spin' : undefined} />{t('dshRemote.refresh')}
-      </button>
-    </div>
-    {failed && <div className="px-4 pb-3"><AuthAlert>{t('dshRemote.hostListFailed')}</AuthAlert></div>}
-    {!hosts.length && !busy && !failed && <p className="cb-hint px-4 pb-3">{t('dshRemote.noHosts')}</p>}
+    {failed && <>
+      <AuthAlert>{t('dshRemote.hostListFailed')}</AuthAlert>
+      {!hosts.length && (
+        <button type="button" className="cb-link justify-self-start" onClick={() => void refresh()}>
+          <RefreshCw size={14} />{t('dshRemote.refreshHosts')}
+        </button>
+      )}
+    </>}
+    {!hosts.length && !busy && !failed && empty}
     {hosts.map(host => {
       const state = connection?.hostId === host.id ? connection : null
       const current = state?.phase === 'connected'
       const connecting = state?.phase === 'connecting'
+      const tone: LampTone = host.online === true ? 'on' : host.online === false ? 'off' : 'warn'
+      const presence = t(host.online === true ? 'dshRemote.online' : host.online === false ? 'dshRemote.offline' : 'dshRemote.unknown')
       return (
-        <div key={host.id} className="cb-srv" data-current={current ? '' : undefined} data-testid="dsh-server-row">
-          <Lamp tone={host.online === true ? 'on' : host.online === false ? 'off' : 'warn'} />
-          <button type="button" className="cb-srv-main text-left" aria-current={current ? 'true' : undefined}
-            disabled={host.online === false || connecting} onClick={() => void open(host.id, host.name)}>
-            <span className="cb-srv-title">
+        <div key={host.id} className="cb-srv" data-current={current ? '' : undefined} data-dim={host.online === false ? '' : undefined}
+          data-testid="dsh-server-row">
+          <div className="cb-srv-line">
+            <button type="button" className="cb-srv-main touch-target-sm" aria-current={current ? 'true' : undefined}
+              disabled={host.online === false || connecting} onClick={() => { if (!current) void open(host.id, host.name) }}>
               <span className="cb-srv-name" title={host.name}>{host.name}</span>
-              <span className="cb-via"><DeepSeekIcon size={11} />{t('servers.via.dsh')}</span>
-            </span>
-            <span className="cb-srv-meta">
-              <span role={state ? 'status' : undefined}>
-                {state
-                  ? t(`dshRemote.connectionState.${state.phase}`)
-                  : t(host.online === true ? 'dshRemote.online' : host.online === false ? 'dshRemote.offline' : 'dshRemote.unknown')}
+              <span className="cb-srv-meta">
+                <DeepSeekIcon size={12} />
+                <span role={state ? 'status' : undefined}>
+                  {state ? t(`dshRemote.connectionState.${state.phase}`) : t('servers.via.dsh')}
+                </span>
               </span>
-            </span>
-          </button>
-          <div className="cb-srv-actions gap-1.5">
-            {current ? <>
-              <span className="cb-link">{t('servers.current')}</span>
-              <button type="button" className="cb-btn" data-size="sm" onClick={() => void disconnectDshServer()}>
-                {t('dshRemote.disconnect')}
+            </button>
+            <div className="cb-srv-actions">
+              <button type="button" className="cb-icon-btn" data-tone={tone} disabled={busy} onClick={() => void refresh()}
+                title={presence} aria-label={`${host.name} · ${presence}`}>
+                {connecting || busy ? <Loader2 size={15} className="animate-spin" />
+                  : host.online === true ? <Wifi size={15} /> : host.online === false ? <WifiOff size={15} /> : <CircleHelp size={15} />}
               </button>
-            </> : (
-              <button type="button" className="cb-btn" data-size="sm" disabled={host.online === false || connecting} onClick={() => void open(host.id, host.name)}>
-                {connecting ? <Loader2 size={12} className="animate-spin" /> : <Monitor size={12} />}{t('dshRemote.selectServer')}
-              </button>
-            )}
+            </div>
           </div>
-          {error?.hostId === host.id && <div className="cb-srv-extra"><AuthAlert>{error.text}</AuthAlert></div>}
-          {state?.error && error?.hostId !== host.id && <div className="cb-srv-extra"><AuthAlert>
+          {error?.hostId === host.id && <div className="cb-srv-ext"><AuthAlert>{error.text}</AuthAlert></div>}
+          {state?.error && error?.hostId !== host.id && <div className="cb-srv-ext"><AuthAlert>
             {t(`dshRemote.connectError.${state.error}`, { defaultValue: t('dshRemote.connectError.default') })}
           </AuthAlert></div>}
         </div>
       )
     })}
   </>
+}
+
+/** 服务器页里的那几行。refreshKey 变了就重新读一次列表，和页头的刷新按钮连在一起。 */
+export function DshServerRows({ onSelectServer = id => { serverStore.setActiveServer(id) }, refreshKey = 0 }: {
+  onSelectServer?: (id: string) => void
+  refreshKey?: number
+}) {
+  const { t } = useTranslation('settings')
+  const { session, authError } = useDshController()
+  const hosts = useDshHosts()
+  const { refresh } = hosts
+  const lastKey = useRef(refreshKey)
+  useEffect(() => {
+    if (lastKey.current === refreshKey) return
+    lastKey.current = refreshKey
+    void refresh()
+  }, [refreshKey, refresh])
+  if (!session) return authError ? (
+    <AuthAlert>{t(`dshRemote.connectError.${authError}`, { defaultValue: t('dshRemote.connectError.default') })}</AuthAlert>
+  ) : null
+  return <DshHostRows session={session} hosts={hosts} onSelectServer={onSelectServer} />
 }

@@ -5,7 +5,10 @@ import { DshApiError, type DshAppSession, type DshHostListItem } from '../../../
 import { dshControllerStore } from '../../../store/dshControllerStore'
 import { DshRemoteConnectSettings, DshServerRows } from './DshRemoteSettings'
 
-const mocks = vi.hoisted(() => ({ providers: vi.fn(), begin: vi.fn(), poll: vi.fn(), open: vi.fn(), connect: vi.fn(), viewer: vi.fn() }))
+const mocks = vi.hoisted(() => ({
+  providers: vi.fn(), begin: vi.fn(), poll: vi.fn(), open: vi.fn(), connect: vi.fn(), viewer: vi.fn(), resolve: vi.fn(), select: vi.fn(),
+}))
+vi.mock('./useServerConnect', () => ({ useServerSelect: () => mocks.select }))
 vi.mock('../../../services/dshServerConnection', async importOriginal => ({
   ...await importOriginal<typeof import('../../../services/dshServerConnection')>(), connectDshServer: mocks.connect,
 }))
@@ -14,6 +17,7 @@ vi.mock('../../../services/dshRemote', async importOriginal => ({
   listDshLoginProviders: mocks.providers,
   beginDshLogin: mocks.begin,
   pollDshLogin: mocks.poll,
+  resolveDshPairing: mocks.resolve,
   restoreDshPairedSession: () => null,
 }))
 vi.mock('../../../utils/tauri', async importOriginal => ({
@@ -44,7 +48,7 @@ function deferred<T>() {
 beforeEach(async () => {
   await i18n.changeLanguage('en')
   vi.resetAllMocks()
-  dshControllerStore.update({ session: null, hosts: [], connection: null, authError: null, signingIn: false })
+  dshControllerStore.update({ session: null, hosts: [], connection: null, authError: null, signingIn: false, pairRequest: null })
   mocks.providers.mockResolvedValue([{ id: 'example', label: 'Example', start: '/api/v1/auth/oauth/qr/start?provider=example' }])
   mocks.begin.mockResolvedValue({ id: 'login-id', url: 'https://dsh.r2049.cn/login', expiresAt: Date.now() + 60_000 })
   mocks.poll.mockResolvedValue('pending')
@@ -56,8 +60,11 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
+const rowButton = (row: HTMLElement) => row.querySelector('.cb-srv-main') as HTMLButtonElement
+const presence = (row: HTMLElement) => within(row).getByRole('button', { name: /^Office · / })
+
 describe('DS remote server rows', () => {
-  it('selects a DS server in the existing UI without opening a viewer', async () => {
+  it('connects a DS server by clicking its row, without opening a viewer', async () => {
     const { session } = controller([{ id: 'office', name: 'Office', online: true }])
     const select = vi.fn()
     dshControllerStore.update({ session })
@@ -66,42 +73,45 @@ describe('DS remote server rows', () => {
       dshControllerStore.update({ connection: { hostId, serverId: `dsh:${hostId}`, phase: 'connected' } })
     })
     render(<DshServerRows onSelectServer={select} />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Connect' }))
+    const row = await screen.findByTestId('dsh-server-row')
+    expect(screen.queryByRole('button', { name: 'Connect' })).not.toBeInTheDocument()
+    fireEvent.click(rowButton(row))
     await waitFor(() => expect(select).toHaveBeenCalledWith('dsh:office'))
     expect(mocks.connect).toHaveBeenCalledWith(session, 'office', 'Office', select)
-    expect(screen.getByTestId('dsh-server-row')).toHaveAttribute('data-current')
-    expect(screen.getByRole('button', { name: /Office/ })).toHaveAttribute('aria-current', 'true')
+    expect(row).toHaveAttribute('data-current')
+    expect(rowButton(row)).toHaveAttribute('aria-current', 'true')
+    // 已经是当前服务器的那一行再点不会重连。
+    fireEvent.click(rowButton(row))
+    expect(mocks.connect).toHaveBeenCalledOnce()
     expect(mocks.viewer).not.toHaveBeenCalled()
     expect(mocks.open).not.toHaveBeenCalled()
   })
 
-  it('refreshes unknown presence independently and keeps the row while checking', async () => {
+  it('refreshes unknown presence from the row status and keeps the row while checking', async () => {
     const host = { id: 'office', name: 'Office' }
     const { session, listHosts } = controller([host])
     dshControllerStore.update({ session })
     render(<DshServerRows />)
-    const refresh = screen.getByRole('button', { name: 'Refresh DS remote computers' })
-    expect(refresh).toBeDisabled()
     const row = await screen.findByTestId('dsh-server-row')
-    expect(within(row).getByText('Unknown')).toBeInTheDocument()
-    expect(row.querySelector('.cb-lamp')).toHaveAttribute('data-tone', 'warn')
-    expect(within(row).getByRole('button', { name: 'Connect' })).toBeEnabled()
+    expect(presence(row)).toHaveAccessibleName('Office · Unknown')
+    expect(presence(row)).toHaveAttribute('data-tone', 'warn')
+    expect(rowButton(row)).toBeEnabled()
 
     const next = deferred<DshHostListItem[]>()
     listHosts.mockReturnValueOnce(next.promise)
-    fireEvent.click(refresh)
-    expect(refresh).toBeDisabled()
-    expect(within(row).getByText('Unknown')).toBeInTheDocument()
+    fireEvent.click(presence(row))
+    expect(presence(row)).toBeDisabled()
+    expect(presence(row)).toHaveAccessibleName('Office · Unknown')
     await act(async () => next.resolve([{ ...host, online: true }]))
-    expect(within(row).getByText('Online')).toBeInTheDocument()
-    expect(row.querySelector('.cb-lamp')).toHaveAttribute('data-tone', 'on')
-    expect(refresh).toBeEnabled()
+    expect(presence(row)).toHaveAccessibleName('Office · Online')
+    expect(presence(row)).toHaveAttribute('data-tone', 'on')
+    expect(presence(row)).toBeEnabled()
     expect(listHosts).toHaveBeenCalledTimes(2)
 
     listHosts.mockResolvedValueOnce([{ ...host, online: false }])
-    fireEvent.click(refresh)
-    await waitFor(() => expect(within(row).getByText('Offline')).toBeInTheDocument())
-    expect(within(row).getByRole('button', { name: 'Connect' })).toBeDisabled()
+    fireEvent.click(presence(row))
+    await waitFor(() => expect(presence(row)).toHaveAccessibleName('Office · Offline'))
+    expect(rowButton(row)).toBeDisabled()
   })
 
   it('offers a DS refresh after the initial request fails with no cached computers', async () => {
@@ -115,7 +125,7 @@ describe('DS remote server rows', () => {
     listHosts.mockResolvedValueOnce([{ id: 'office', name: 'Office', online: true }])
     fireEvent.click(refresh)
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
-    expect(await screen.findByText('Online')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Office · Online' })).toBeInTheDocument()
     expect(listHosts).toHaveBeenCalledTimes(2)
   })
 
@@ -123,23 +133,26 @@ describe('DS remote server rows', () => {
     const { session, listHosts } = controller([{ id: 'office', name: 'Office' }])
     dshControllerStore.update({ session })
     render(<DshServerRows />)
-    await screen.findByText('Unknown')
+    const row = await screen.findByTestId('dsh-server-row')
     listHosts.mockRejectedValueOnce(new DshApiError('UNAVAILABLE', 503))
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh DS remote computers' }))
+    fireEvent.click(presence(row))
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not load computers.')
     expect(screen.getByText('Office')).toBeInTheDocument()
-    expect(screen.getByText('Unknown')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Refresh DS remote computers' })).toBeEnabled()
+    expect(presence(row)).toHaveAccessibleName('Office · Unknown')
+    expect(presence(row)).toBeEnabled()
   })
 
-  it('keeps a refresh entry for a successfully loaded empty list', async () => {
+  it('rereads the list when the page refresh is pressed, leaving an empty account without rows', async () => {
     const { session, listHosts } = controller()
     dshControllerStore.update({ session })
-    render(<DshServerRows />)
-    await screen.findByText('No reachable computers on this account yet')
+    const view = render(<DshServerRows refreshKey={0} />)
+    await waitFor(() => expect(listHosts).toHaveBeenCalledOnce())
+    expect(screen.queryByTestId('dsh-server-row')).not.toBeInTheDocument()
+    expect(screen.queryByText('No reachable computers on this account yet')).not.toBeInTheDocument()
     listHosts.mockResolvedValueOnce([{ id: 'office', name: 'Office' }])
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh DS remote computers' }))
+    view.rerender(<DshServerRows refreshKey={1} />)
     expect(await screen.findByText('Office')).toBeInTheDocument()
+    expect(listHosts).toHaveBeenCalledTimes(2)
   })
 
   it('shows an authorization failure even after the invalid session is cleared', async () => {
@@ -156,10 +169,10 @@ describe('DS remote server rows', () => {
     const { session, listHosts } = controller([{ id: 'office', name: 'Office' }])
     dshControllerStore.update({ session })
     const view = render(<DshServerRows />)
-    await screen.findByText('Unknown')
+    const row = await screen.findByTestId('dsh-server-row')
     const next = deferred<DshHostListItem[]>()
     listHosts.mockReturnValueOnce(next.promise)
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh DS remote computers' }))
+    fireEvent.click(presence(row))
     const signal = listHosts.mock.calls[1][0] as AbortSignal
     view.unmount()
     expect(signal.aborted).toBe(true)
@@ -168,9 +181,60 @@ describe('DS remote server rows', () => {
   })
 })
 
+describe('DS remote group on the controller page', () => {
+  it('stays folded and asks the hosted service for nothing until it is opened', async () => {
+    render(<DshRemoteConnectSettings />)
+    const group = screen.getByRole('button', { name: /DS remote/ })
+    expect(group).toHaveAttribute('aria-expanded', 'false')
+    expect(group).toHaveTextContent('Not signed in')
+    await act(async () => {})
+    expect(mocks.providers).not.toHaveBeenCalled()
+    fireEvent.click(group)
+    expect(group).toHaveAttribute('aria-expanded', 'true')
+    expect(await screen.findByRole('button', { name: 'Sign in with Example' })).toBeVisible()
+    expect(mocks.providers).toHaveBeenCalledOnce()
+    // 扫码只有「服务器」页那一个入口。
+    expect(screen.queryByRole('button', { name: /scan/i })).not.toBeInTheDocument()
+  })
+
+  it('lists the account’s computers as rows and signs out from the group header', async () => {
+    const { session, revoke } = controller([{ id: 'office', name: 'Office', online: true }, { id: 'laptop', name: 'Laptop', online: false }])
+    dshControllerStore.update({ session })
+    render(<DshRemoteConnectSettings defaultOpen />)
+    expect(await screen.findAllByTestId('dsh-server-row')).toHaveLength(2)
+    expect(screen.getByRole('button', { name: /^DS remote/ })).toHaveTextContent('1 online')
+    fireEvent.click(rowButton(screen.getAllByTestId('dsh-server-row')[0]))
+    expect(mocks.connect).toHaveBeenCalledWith(session, 'office', 'Office', mocks.select)
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Sign out' })))
+    expect(revoke).toHaveBeenCalledOnce()
+    expect(dshControllerStore.get().session).toBeNull()
+  })
+
+  it('picks up a DS pairing code scanned on the Servers page and asks which computer it is', async () => {
+    const pairing = { computer: { name: 'Studio PC', fingerprint: 'aaaa bbbb' }, claim: vi.fn(), poll: vi.fn(), cancel: vi.fn() }
+    mocks.resolve.mockResolvedValue(pairing)
+    dshControllerStore.update({ pairRequest: 'https://dsh.r2049.cn/pair#v1.ticket' })
+    render(<DshRemoteConnectSettings />)
+    expect(await screen.findByRole('heading', { name: 'Connect to this computer?' })).toBeVisible()
+    expect(mocks.resolve).toHaveBeenCalledWith('https://dsh.r2049.cn/pair#v1.ticket', expect.any(AbortSignal))
+    expect(mocks.resolve).toHaveBeenCalledOnce()
+    expect(dshControllerStore.get().pairRequest).toBeNull()
+    expect(screen.getByText('Studio PC')).toBeInTheDocument()
+    expect(screen.getByText('aaaa bbbb')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /DS remote/ })).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('explains a scanned code the service does not accept', async () => {
+    mocks.resolve.mockRejectedValue(new DshApiError('PAIRING_NOT_FOUND', 404))
+    dshControllerStore.update({ pairRequest: 'https://dsh.r2049.cn/pair#v1.expired' })
+    render(<DshRemoteConnectSettings />)
+    expect(await screen.findByRole('alert')).toHaveTextContent(/expired or was already used/i)
+  })
+})
+
 async function startLogin() {
   vi.useFakeTimers()
-  await act(async () => { render(<DshRemoteConnectSettings />) })
+  await act(async () => { render(<DshRemoteConnectSettings defaultOpen />) })
   await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Sign in with Example' })))
   expect(screen.getByRole('heading', { name: 'Finish signing in' })).toBeInTheDocument()
 }
@@ -182,7 +246,7 @@ describe('DS remote authorization polling', () => {
     const { session, revoke } = controller()
     revoke.mockRejectedValueOnce(new DshApiError('DSH_STORAGE_FAILED', 0))
     dshControllerStore.update({ session })
-    render(<DshRemoteConnectSettings />)
+    render(<DshRemoteConnectSettings defaultOpen />)
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
     expect(await screen.findByRole('alert')).toHaveTextContent("Could not read or save this device's authorization")
     expect(dshControllerStore.get().session).toBe(session)

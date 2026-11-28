@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import { LogIn, Power, ExternalLink, Link2, Check, Copy, ChevronRight, ShieldCheck } from 'lucide-react'
-import { AuthAlert, AuthStatusPill, authPrimaryButtonClass, authSecondaryButtonClass, type AuthTone } from './AuthPanelUI'
+import { AuthAlert, AuthStatusPill, type AuthTone } from './AuthPanelUI'
 import { useTranslation } from 'react-i18next'
 import { QrCode } from '../../../components/QrCode'
 import { SpinnerIcon } from '../../../components/Icons'
 import { copyTextToClipboard } from '../../../utils/clipboard'
 import { isValidTailscaleAuthUrl } from '../../../utils/tailscaleLogin'
 import type { TailscaleAuthPhase } from '../../../hooks/useTailscaleLoginFlow'
+import './channelBoard.css'
 
-export function TailscaleControls({ state, authUrl, ips, enabled, available, busy, error, recoveryPaused = false, authPhase, onOpenAuthUrl, authLinkMode = false, onAuthLinkClick, showAuthQr = true, layout = 'default', inline = false, onLogin, onDisconnect }: {
+export function TailscaleControls({ state, authUrl, ips, enabled, available, busy, error, recoveryPaused = false, authPhase, onOpenAuthUrl, authLinkMode = false, onAuthLinkClick, showAuthQr = true, layout = 'default', inline = false, hideStatus = false, onLogin, onDisconnect }: {
   state?: string | null
   authUrl?: string | null
   ips: string[]
@@ -25,6 +26,8 @@ export function TailscaleControls({ state, authUrl, ips, enabled, available, bus
   layout?: 'default' | 'phone'
   /** 状态和按钮排成一行，放进设置行右侧。 */
   inline?: boolean
+  /** 外层已经显示了同一句状态时，不再重复那颗状态胶囊。 */
+  hideStatus?: boolean
   onLogin: () => void
   onDisconnect: () => void
 }) {
@@ -62,10 +65,10 @@ export function TailscaleControls({ state, authUrl, ips, enabled, available, bus
     }
   }
   const phone = layout === 'phone'
-  const authButtonClass = showAuthQr
-    ? `inline-flex ${phone ? 'touch-target-sm min-h-12 w-full text-[length:var(--fs-sm)]' : 'min-h-11 sm:min-h-9 text-[length:var(--fs-xs)]'} items-center justify-center gap-2 rounded-lg px-3 font-medium text-accent-main-100 hover:bg-accent-main-100/10 disabled:opacity-50 aria-disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-main-100`
-    : `${authPrimaryButtonClass} ${phone ? 'touch-target-sm min-h-12 w-full text-[length:var(--fs-sm)]' : 'min-h-11 sm:min-h-9 text-[length:var(--fs-sm)]'}`
-  const disconnectClass = `${authSecondaryButtonClass} ${phone ? 'min-h-12 w-full text-[length:var(--fs-sm)]' : 'min-h-11 w-fit sm:min-h-9 text-[length:var(--fs-xs)]'}`
+  // 竖排时按钮占满一行；主动作是实心按钮，授权二维码在场时退成文字链接。
+  const authButtonClass = `${showAuthQr ? 'cb-link justify-center' : 'cb-btn'}${phone ? ' touch-target-sm w-full' : ''}`
+  const authVariant = showAuthQr ? undefined : 'primary'
+  const disconnectClass = `cb-btn${phone ? ' w-full' : ''}`
   const authLinkClick = (event: React.MouseEvent<HTMLAnchorElement>) => {
     if (disabled) event.preventDefault()
     else onAuthLinkClick?.()
@@ -78,7 +81,7 @@ export function TailscaleControls({ state, authUrl, ips, enabled, available, bus
   const showDisconnect = enabled || waiting || Boolean(target)
   return (
     <div className={inline ? 'flex min-w-0 flex-wrap items-center justify-end gap-2' : 'grid min-w-0 gap-3'}>
-      <AuthStatusPill role="status" tone={tone}
+      {!hideStatus && <AuthStatusPill role="status" tone={tone}
         icon={waiting ? <SpinnerIcon size={12} className="shrink-0 animate-spin" /> : state === 'Running' ? <ShieldCheck size={13} className="shrink-0" /> : undefined}>
         {state === 'Running'
           ? t('service.remoteTailscaleRunning', { ip: ips[0] ?? '' })
@@ -99,19 +102,19 @@ export function TailscaleControls({ state, authUrl, ips, enabled, available, bus
                       : recoveryPaused ? t('service.remoteTailscaleRecoveryPaused')
                         : state === 'NeedsLogin' ? t('service.remoteTailscaleSignInRequired')
                         : enabled ? t('service.remoteTailscaleRestoring') : t('service.remoteTailscaleStopped')}
-      </AuthStatusPill>
+      </AuthStatusPill>}
       {(showAuthAction || showDisconnect) && (
         <div className={phone ? 'grid min-w-0 gap-2' : 'flex flex-wrap items-center gap-2'}>
           {showAuthAction && (
             target && authLinkMode && !waiting ? (
-              <a href={target} target="_blank" rel="noopener noreferrer" aria-disabled={disabled} onClick={authLinkClick} className={authButtonClass}>
+              <a href={target} target="_blank" rel="noopener noreferrer" aria-disabled={disabled} onClick={authLinkClick} className={authButtonClass} data-variant={authVariant}>
                 <ExternalLink size={15} />{t('service.remoteTailscaleAuthorize')}
               </a>
             ) : (
               <button type="button" disabled={disabled} onClick={() => {
                 if (target && onOpenAuthUrl) onOpenAuthUrl(target)
                 else onLogin()
-              }} className={authButtonClass}>
+              }} className={authButtonClass} data-variant={authVariant}>
                 {waiting ? <SpinnerIcon size={15} className="animate-spin" /> : target ? <ExternalLink size={15} /> : <LogIn size={15} />}
                 {waiting ? actionLabel
                   : target ? t('service.remoteTailscaleAuthorize') : actionLabel}
@@ -151,7 +154,7 @@ export function TailscaleControls({ state, authUrl, ips, enabled, available, bus
                 </button>
               )}
               <button type="button" disabled={busy} onClick={() => void copyAuthUrl()}
-                className={`${authSecondaryButtonClass} min-h-10 shrink-0 text-[length:var(--fs-xs)]`}>
+                className="cb-btn shrink-0">
                 {copied ? <Check size={14} className="text-success-100" /> : <Copy size={14} />}
                 {t(copied ? 'service.remoteTailscaleAuthUrlCopied' : 'service.remoteTailscaleCopyAuthUrl')}
               </button>

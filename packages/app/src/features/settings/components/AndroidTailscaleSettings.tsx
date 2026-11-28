@@ -1,28 +1,27 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ChevronRight, Copy, Globe, Share2 } from 'lucide-react'
-import { SpinnerIcon } from '../../../components/Icons'
-import { AuthStatusPill, authSecondaryButtonClass } from './AuthPanelUI'
-import { NextAction } from './ChannelBoard'
+import { ChevronRight, Copy, Globe, RefreshCw, Share2 } from 'lucide-react'
+import { Section, State, type LampTone } from './ChannelBoard'
 import {
   disconnectAndroidTailscale, getAndroidTailscaleStatus, isAndroidTailscalePlatform,
   loginAndroidTailscale, type AndroidTailscaleStatus,
   copyAndroidTailscaleDiagnostics, exportAndroidTailscaleDiagnostics,
 } from '../../../utils/androidTailscale'
-import { useTailscaleLoginFlow, type TailscaleAuthPhase } from '../../../hooks/useTailscaleLoginFlow'
+import { useTailscaleLoginFlow } from '../../../hooks/useTailscaleLoginFlow'
 import { serverStore } from '../../../store/serverStore'
+import { AuthAlert } from './AuthPanelUI'
+import { DiscoveredRows } from './DiscoveredComputers'
+import { useDeviceDiscovery } from './useDeviceDiscovery'
 import { TailscaleControls } from './TailscaleControls'
 import { openTailscaleLogin } from '../../../utils/tailscaleLogin'
 import { TAILSCALE_STATUS_EVENT } from '../../../utils/tailscaleEvents'
 
-/** 通道条要显示的手机组网状态。 */
-export type AndroidTailscaleState = { backendState: string | null; phase: TailscaleAuthPhase }
-
-export function AndroidTailscaleSettings({ onState }: { onState?: (state: AndroidTailscaleState) => void }) {
-  return isAndroidTailscalePlatform() ? <AndroidTailscalePanel onState={onState} /> : null
+/** 控制端 → 虚拟组网：这台手机自己登录 Tailscale，连上后列出同一个网络里的电脑。 */
+export function AndroidTailscaleSettings({ defaultOpen, onPaired }: { defaultOpen?: boolean; onPaired?: () => void }) {
+  return isAndroidTailscalePlatform() ? <AndroidTailscalePanel defaultOpen={defaultOpen} onPaired={onPaired} /> : null
 }
 
-function AndroidTailscalePanel({ onState }: { onState?: (state: AndroidTailscaleState) => void }) {
+function AndroidTailscalePanel({ defaultOpen, onPaired }: { defaultOpen?: boolean; onPaired?: () => void }) {
   const { t } = useTranslation('settings')
   const [status, setStatus] = useState<AndroidTailscaleStatus | null>(null)
   const [busy, setBusy] = useState(false)
@@ -54,7 +53,8 @@ function AndroidTailscalePanel({ onState }: { onState?: (state: AndroidTailscale
   })
 
   const backendState = status?.BackendState ?? null
-  useEffect(() => { onState?.({ backendState, phase: flow.phase }) }, [onState, backendState, flow.phase])
+  const running = backendState === 'Running'
+  const discovery = useDeviceDiscovery('tailscale', running)
 
   const run = (action: () => Promise<void>) => {
     setBusy(true)
@@ -63,52 +63,89 @@ function AndroidTailscalePanel({ onState }: { onState?: (state: AndroidTailscale
       if (mounted.current) setError(err instanceof Error ? err.message : String(err))
     }).finally(() => { if (mounted.current) setBusy(false) })
   }
+  const disconnect = () => {
+    const signal = flow.reset()
+    run(async () => {
+      await disconnectAndroidTailscale()
+      if (signal.aborted) return
+      await flow.refreshStatus(true)
+      if (mounted.current) serverStore.checkAllHealth()
+    })
+  }
+
+  const problem = error || statusError || flow.error ||
+    (status?.startupInterrupted ? t('service.remoteTailscaleStartupInterrupted') : status?.lastError) || ''
+  const waiting = flow.phase !== 'idle' && flow.phase !== 'error'
+  // 上次登录过：打开应用后先自动恢复连接，这段时间只显示「正在恢复」。
+  const restoring = !problem && (flow.phase === 'connecting' || Boolean(status?.enabled && (backendState === 'Starting' || backendState === 'NoState')))
+  const state: { tone: LampTone; text: string } = !status && !statusError
+    ? { tone: 'busy', text: t('host.loading') }
+    : running
+      ? { tone: 'on', text: t('host.connected') }
+      : backendState === 'NeedsMachineAuth'
+        ? { tone: 'warn', text: t('host.tsApproval') }
+        : restoring
+          ? { tone: 'busy', text: t('host.tsRestoring') }
+          : waiting
+            ? { tone: 'busy', text: t('host.tsAuthorizing') }
+            : { tone: 'off', text: t('host.tsSignedOut') }
+
+  const action = running ? <>
+    <button type="button" className="cb-icon-btn" disabled={discovery.loading} onClick={discovery.refresh}
+      title={t('authentication.discoveryRefresh')} aria-label={t('authentication.discoveryRefresh')}>
+      <RefreshCw size={15} className={discovery.loading ? 'animate-spin' : undefined} />
+    </button>
+    <button type="button" className="cb-link" disabled={busy} onClick={disconnect}>{t('controller.signOut')}</button>
+  </> : restoring
+    ? <button type="button" className="cb-link" disabled={busy} onClick={disconnect}>{t('dshRemote.cancel')}</button>
+    : undefined
+
   return (
-    <div data-testid="phone-tailscale-login" className="grid min-w-0 gap-4">
-      <NextAction tone={backendState === 'Running' ? 'ok' : 'idle'} icon={<Globe size={18} />} title={t('service.remoteTailscalePhoneTitle')}>
-        <p>{t('service.remoteTailscalePhoneDesc')}</p>
-      </NextAction>
-      {!status && !statusError ? <AuthStatusPill role="status" tone="idle" icon={<SpinnerIcon size={12} className="shrink-0 animate-spin" />}>
-        {t('service.backendStatusLoading')}
-      </AuthStatusPill> : <TailscaleControls state={status?.BackendState}
-        authUrl={flow.authUrl}
-        ips={status?.TailscaleIPs ?? []}
-        enabled={status?.enabled ?? false} available={status !== null} busy={busy}
-        recoveryPaused={status?.startupInterrupted}
-        authPhase={flow.phase} layout="phone" showAuthQr={false}
-        onOpenAuthUrl={url => { setError(''); void flow.reopenAuthPage(url) }}
-        error={error || statusError || flow.error || (status?.startupInterrupted ? t('service.remoteTailscaleStartupInterrupted') : status?.lastError)}
-        onLogin={() => { setError(''); void flow.beginLogin() }}
-        onDisconnect={() => {
-          const signal = flow.reset()
-          run(async () => {
-            await disconnectAndroidTailscale()
-            if (signal.aborted) return
-            await flow.refreshStatus(true)
-            if (mounted.current) serverStore.checkAllHealth()
-          })
-        }} />}
-      <details open={Boolean(error || statusError || flow.error || status?.startupInterrupted) || undefined} className="group min-w-0 border-t border-border-200/60">
-        <summary className="flex min-h-11 w-full cursor-pointer list-none items-center gap-1.5 text-[length:var(--fs-xs)] text-text-400 hover:text-text-200 focus-visible:outline-2 focus-visible:outline-accent-main-100 [&::-webkit-details-marker]:hidden">
-          <ChevronRight size={14} className="shrink-0 transition-transform group-open:rotate-90" />
-          {t('service.remoteTailscalePhoneTroubleshooting')}
-        </summary>
-      <div className="grid grid-cols-2 gap-2 pb-1">
-        <button type="button" disabled={busy} onClick={() => run(async () => {
-          await copyAndroidTailscaleDiagnostics()
-          setDiagnosticsCopied(true)
-        })} className={`${authSecondaryButtonClass} min-h-11 text-[length:var(--fs-xs)]`}>
-          <Copy size={14} />{t('service.remoteTailscaleCopyDiagnostics')}
-        </button>
-        <button type="button" disabled={busy} onClick={() => run(exportAndroidTailscaleDiagnostics)}
-          className={`${authSecondaryButtonClass} min-h-11 text-[length:var(--fs-xs)]`}>
-          <Share2 size={14} />{t('service.remoteTailscaleExportDiagnostics')}
-        </button>
+    <Section id="tailscale" icon={<Globe size={16} />} name={t('service.remoteTabTailscale')} mount="stay" defaultOpen={defaultOpen}
+      status={<State tone={state.tone}>{state.text}</State>} action={action}>
+      <div data-testid="phone-tailscale-login" className="cb-sec-body">
+        {running ? <>
+          {problem && <AuthAlert>{problem}</AuthAlert>}
+          <DiscoveredRows network="tailscale" discovery={discovery} onPaired={onPaired} />
+        </> : restoring ? (
+          <p role="status" className="cb-hint px-0.5">{t('service.remoteTailscaleRestoring')}</p>
+        ) : status || statusError ? (
+          <div className="cb-logins">
+            <TailscaleControls state={status?.BackendState}
+              authUrl={flow.authUrl}
+              ips={status?.TailscaleIPs ?? []}
+              enabled={status?.enabled ?? false} available={status !== null} busy={busy}
+              recoveryPaused={status?.startupInterrupted}
+              authPhase={flow.phase} layout="phone" showAuthQr={false}
+              onOpenAuthUrl={url => { setError(''); void flow.reopenAuthPage(url) }}
+              error={problem}
+              onLogin={() => { setError(''); void flow.beginLogin() }}
+              onDisconnect={disconnect} />
+          </div>
+        ) : null}
+        {!running && (
+          <details open={Boolean(problem) || undefined} className="group min-w-0">
+            <summary className="flex min-h-9 w-full cursor-pointer list-none items-center gap-1.5 text-[length:var(--fs-xs)] text-text-400 hover:text-text-200 focus-visible:outline-2 focus-visible:outline-accent-main-100 [&::-webkit-details-marker]:hidden">
+              <ChevronRight size={14} className="shrink-0 transition-transform group-open:rotate-90" />
+              {t('service.remoteTailscalePhoneTroubleshooting')}
+            </summary>
+            <div className="grid grid-cols-2 gap-2 pb-1">
+              <button type="button" disabled={busy} onClick={() => run(async () => {
+                await copyAndroidTailscaleDiagnostics()
+                setDiagnosticsCopied(true)
+              })} className="cb-btn">
+                <Copy size={14} />{t('service.remoteTailscaleCopyDiagnostics')}
+              </button>
+              <button type="button" disabled={busy} onClick={() => run(exportAndroidTailscaleDiagnostics)} className="cb-btn">
+                <Share2 size={14} />{t('service.remoteTailscaleExportDiagnostics')}
+              </button>
+            </div>
+            {diagnosticsCopied && <p role="status" className="pt-2 text-[length:var(--fs-xs)] text-success-100">
+              {t('service.remoteTailscaleDiagnosticsCopied')}
+            </p>}
+          </details>
+        )}
       </div>
-      {diagnosticsCopied && <p role="status" className="pt-2 text-[length:var(--fs-xs)] text-success-100">
-        {t('service.remoteTailscaleDiagnosticsCopied')}
-      </p>}
-      </details>
-    </div>
+    </Section>
   )
 }

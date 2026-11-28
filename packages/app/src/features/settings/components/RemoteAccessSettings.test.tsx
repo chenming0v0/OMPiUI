@@ -8,6 +8,7 @@ import i18n from '../../../i18n'
 const mocks = vi.hoisted(() => ({
   generation: 1,
   desktop: false,
+  activeServer: undefined as { id: string; name: string; url: string; isDefault?: boolean } | undefined,
   network: vi.fn(),
   mint: vi.fn(),
   poll: vi.fn(),
@@ -17,7 +18,9 @@ const mocks = vi.hoisted(() => ({
   login: vi.fn(), disconnect: vi.fn(),
   get: vi.fn(),
 }))
-vi.mock('../../../hooks', () => ({ useServerStore: () => ({ activeServerGeneration: mocks.generation }) }))
+vi.mock('../../../hooks', () => ({
+  useServerStore: () => ({ activeServerGeneration: mocks.generation, activeServer: mocks.activeServer }),
+}))
 vi.mock('../../../utils/tauri', () => ({ isTauri: () => mocks.desktop, isTauriMobile: () => false }))
 vi.mock('../../../utils', () => ({ serverStorage: { get: mocks.get, set: vi.fn() } }))
 vi.mock('../../../utils/tailscaleLogin', async importOriginal => ({
@@ -38,6 +41,12 @@ vi.mock('./useDshHost', () => ({
   useDshHost: () => ({ status: undefined, unreachable: false, unreadable: false, state: 'unregistered', tone: 'off', busy: false, failure: null, manage: vi.fn() }),
 }))
 vi.mock('./DshHostPanel', () => ({ DshHostPanel: () => <div>DS host panel</div> }))
+// 中转表单读写本机服务的启动环境，这里只关心它什么时候出现。
+vi.mock('./RelaySettings', () => ({
+  RelaySettings: ({ onCancel }: { onCancel?: () => void }) => (
+    <div>Relay form{onCancel && <button type="button" onClick={onCancel}>Keep current relay</button>}</div>
+  ),
+}))
 // Observe the exact payload given to the QR encoder, not its SVG internals.
 vi.mock('../../../components/QrCode', () => ({ QrCode: ({ text }: { text: string }) => <div data-testid="qr" data-url={text} /> }))
 
@@ -48,7 +57,6 @@ const network = (address = '192.168.50.10', port = 9191): Network => ({
 const invite = (id = 'first'): PairInviteInfo => ({ id, pair: `${id}.secret`, code: '12345678', expiresAt: Date.now() + 600_000, redeemed: false })
 const disabledTunnel: TunnelStatus = { enabled: false, state: 'disabled', publicUrl: null, relayUrl: null, tunnelId: null, lastError: null, reconnectAttempts: 0 }
 const channel = (name: string) => screen.getByRole('button', { name })
-const joinTailnet = 'Join this computer to your Tailscale network'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -61,6 +69,7 @@ beforeEach(async () => {
   vi.clearAllMocks()
   mocks.generation = 1
   mocks.desktop = false
+  mocks.activeServer = undefined
   mocks.get.mockReturnValue(null)
   mocks.network.mockReset().mockResolvedValue(network())
   mocks.mint.mockReset().mockResolvedValue(invite())
@@ -110,8 +119,8 @@ describe('remote Tailscale sign-in', () => {
   it('asks for server sign-in before any pairing code and never shows an authorization QR', async () => {
     mocks.tailscale.mockResolvedValue({ ...signInStatus, authUrl })
     render(<RemoteAccessSettings />)
-    expect(await screen.findByRole('heading', { name: joinTailnet })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Open official authorization' })).toHaveAttribute('href', authUrl)
+    expect(await screen.findByRole('link', { name: 'Open official authorization' })).toHaveAttribute('href', authUrl)
+    expect(screen.getByRole('heading', { name: 'Awaiting sign-in' })).toBeInTheDocument()
     expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
     expect(screen.queryByTestId('pair-ticket')).not.toBeInTheDocument()
     expect(screen.queryByText(/expires in/)).not.toBeInTheDocument()
@@ -125,7 +134,7 @@ describe('remote Tailscale sign-in', () => {
     expect(screen.getByRole('button', { name: 'Copy full pairing info' })).toBeEnabled()
     expect(screen.getByTestId('pair-address')).toHaveTextContent('http://100.101.2.3:9292')
     expect(screen.getByTestId('pair-code')).toHaveTextContent('12345678')
-    expect(screen.queryByRole('heading', { name: joinTailnet })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Log in to Tailscale' })).not.toBeInTheDocument()
     expect(channel('Tailscale')).toHaveAttribute('aria-description', '100.101.2.3')
   })
 
@@ -262,8 +271,7 @@ describe('RemoteAccessSettings authoritative addresses', () => {
   it.each(['127.0.0.1', '::1', '::ffff:127.0.0.1', '192.168.50.99'])('blocks a LAN QR when the listener does not serve the selected adapter: %s', async host => {
     mocks.network.mockResolvedValue({ ...network(), host })
     render(<RemoteAccessSettings />)
-    expect(await screen.findByText(/not the selected LAN adapter/)).toBeInTheDocument()
-    expect(screen.getAllByText(/not the selected LAN adapter/)).toHaveLength(1)
+    expect(await screen.findByText(`Listening on ${host}`)).toBeInTheDocument()
     const localOnly = host !== '192.168.50.99'
     expect(screen.getByRole('heading', { name: localOnly ? 'Only local connections are accepted right now' : 'QR code unavailable' })).toBeInTheDocument()
     expect(channel('LAN')).toHaveAttribute('aria-description', localOnly ? 'This computer only' : 'Unavailable')
@@ -289,10 +297,10 @@ describe('RemoteAccessSettings authoritative addresses', () => {
   it('refreshes the listener after LAN access is enabled on the server', async () => {
     mocks.network.mockResolvedValueOnce({ ...network(), host: '127.0.0.1' })
     render(<RemoteAccessSettings />)
-    await screen.findByText(/not the selected LAN adapter/)
+    await screen.findByText('Listening on 127.0.0.1')
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
     expect(await screen.findByTestId('qr')).toHaveAttribute('data-url', 'http://192.168.50.10:9191/?pair=first.secret')
-    expect(screen.queryByText(/not the selected LAN adapter/)).not.toBeInTheDocument()
+    expect(screen.queryByText('Listening on 127.0.0.1')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Copy full pairing info' })).toBeEnabled()
   })
 
@@ -308,7 +316,7 @@ describe('RemoteAccessSettings authoritative addresses', () => {
   it('offers no Service page shortcut in the browser, where the listener is changed on the backend', async () => {
     mocks.network.mockResolvedValue({ ...network(), host: '127.0.0.1' })
     render(<RemoteAccessSettings onOpenService={vi.fn()} />)
-    await screen.findByText(/not the selected LAN adapter/)
+    await screen.findByText('Listening on 127.0.0.1')
     expect(screen.queryByRole('button', { name: 'Change on the Service page' })).not.toBeInTheDocument()
   })
 
@@ -336,7 +344,7 @@ describe('RemoteAccessSettings authoritative addresses', () => {
     render(<RemoteAccessSettings />)
     expect(await screen.findByRole('option', { name: '以太网 · 192.168.50.10' })).toBeInTheDocument()
     expect(screen.getByText('现在只接受本机连接')).toBeInTheDocument()
-    expect(screen.getAllByText(/未开放所选网卡的局域网访问/)).toHaveLength(1)
+    expect(screen.getByText('监听地址是 127.0.0.1')).toBeInTheDocument()
     expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
   })
 
@@ -350,7 +358,9 @@ describe('RemoteAccessSettings authoritative addresses', () => {
     })
     render(<RemoteAccessSettings />)
     expect(await screen.findByTestId('qr')).toHaveAttribute('data-url', 'http://100.101.2.3:9292/?pair=first.secret')
-    expect(screen.getByText('Tailscale connected · 100.101.2.3')).toBeInTheDocument()
+    // 地址已经在通道栏和票据上，下面那一行只留断开。
+    expect(screen.getByRole('button', { name: 'Disconnect' })).toBeEnabled()
+    expect(screen.queryByText('Tailscale connected · 100.101.2.3')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Install Tailscale' })).not.toBeInTheDocument()
   })
 
@@ -361,8 +371,10 @@ describe('RemoteAccessSettings authoritative addresses', () => {
       ips: [], url: null, authUrl, lastError: null,
     })
     render(<RemoteAccessSettings />)
-    expect(await screen.findByText(authUrl ? 'Authorization link ready. Open it to complete sign-in.' : 'Sign-in authorization required')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: joinTailnet })).toBeInTheDocument()
+    // 还没开始登录时只有一句状态和一个按钮；拿到授权链接后才多出进度说明。
+    expect(await screen.findByRole('heading', { name: authUrl ? 'Awaiting sign-in' : 'Signed out' })).toBeInTheDocument()
+    if (authUrl) expect(screen.getByText('Authorization link ready. Open it to complete sign-in.')).toBeInTheDocument()
+    else expect(screen.queryByText('Sign-in authorization required')).not.toBeInTheDocument()
     expect(screen.queryByTestId('pair-ticket')).not.toBeInTheDocument()
     expect(screen.queryByText(/expires in/)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Copy full pairing info' })).not.toBeInTheDocument()
@@ -398,7 +410,7 @@ describe('RemoteAccessSettings authoritative addresses', () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
       expect(screen.getAllByTestId('qr')).toHaveLength(1)
       expect(screen.getByTestId('qr')).toHaveAttribute('data-url', 'http://100.101.2.3:9292/?pair=first.secret')
-      expect(screen.queryByRole('heading', { name: joinTailnet })).not.toBeInTheDocument()
+      expect(screen.queryByRole('heading', { name: 'Awaiting sign-in' })).not.toBeInTheDocument()
       expect(screen.queryByRole('link', { name: 'Open official authorization' })).not.toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'Copy full pairing info' })).toBeEnabled()
     } finally {
@@ -411,9 +423,7 @@ describe('RemoteAccessSettings authoritative addresses', () => {
     render(<RemoteAccessSettings />)
     expect(await screen.findByTestId('qr')).toHaveAttribute('data-url', 'http://192.168.50.10:9191/?pair=first.secret')
     expect(screen.getByTestId('pair-address')).toHaveTextContent('http://192.168.50.10:9191')
-    expect(screen.getByLabelText('Listen port')).toHaveTextContent('9191')
-    expect(screen.getByLabelText('Listen port').tagName).not.toBe('INPUT')
-    expect(screen.queryByText(/change it in Network listening below/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/7777/)).not.toBeInTheDocument()
   })
 
   it.each([undefined, 0, -1, 65536, 1.5, NaN])('never invents a QR port for a missing/invalid server port: %s', async port => {
@@ -423,7 +433,6 @@ describe('RemoteAccessSettings authoritative addresses', () => {
     expect(screen.getByText('QR code unavailable')).toBeInTheDocument()
     expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Copy full pairing info' })).not.toBeInTheDocument()
-    expect(screen.getByLabelText('Listen port')).toHaveTextContent('—')
     expect(screen.queryByText(/8787|7777/)).not.toBeInTheDocument()
   })
 
@@ -514,8 +523,8 @@ describe('RemoteAccessSettings authoritative addresses', () => {
     view.rerender(<RemoteAccessSettings />)
     expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
     expect(await screen.findByRole('heading', { name: 'No self-hosted relay yet' })).toBeInTheDocument()
-    expect(screen.getByText(/Configure the relay address and key on the computer running the backend/)).toBeInTheDocument()
-    expect(screen.queryByText(/relay settings on the Service page/)).not.toBeInTheDocument()
+    expect(screen.getByText('Configure the relay on the computer running the backend.')).toBeInTheDocument()
+    expect(screen.queryByText('Relay form')).not.toBeInTheDocument()
     expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
   })
 
@@ -537,14 +546,51 @@ describe('RemoteAccessSettings authoritative addresses', () => {
     expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
   })
 
-  it('directs desktop relay setup to the form on the Service page', async () => {
+  it('puts the relay form in this channel on the desktop that runs the backend', async () => {
     mocks.desktop = true
+    mocks.activeServer = { id: 'local', name: 'Local', url: 'http://127.0.0.1:8787', isDefault: true }
     mocks.get.mockReturnValue('relay')
     const openService = vi.fn()
     render(<RemoteAccessSettings onOpenService={openService} />)
-    expect(await screen.findByText(/relay settings on the Service page/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Change on the Service page' }))
-    expect(openService).toHaveBeenCalledOnce()
+    expect(await screen.findByText('Relay form')).toBeInTheDocument()
+    // 还没配置过，没有可以退回去的旧配置。
+    expect(screen.queryByRole('button', { name: 'Keep current relay' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Change on the Service page' })).not.toBeInTheDocument()
+  })
+
+  it('keeps the relay form away while a remote server is being configured', async () => {
+    mocks.desktop = true
+    mocks.activeServer = { id: 'remote', name: 'Office', url: 'http://office.test:8787' }
+    mocks.get.mockReturnValue('relay')
+    render(<RemoteAccessSettings />)
+    expect(await screen.findByRole('heading', { name: 'No self-hosted relay yet' })).toBeInTheDocument()
+    expect(screen.queryByText('Relay form')).not.toBeInTheDocument()
+  })
+
+  it('lets a connected relay be changed in place and backed out of', async () => {
+    mocks.desktop = true
+    mocks.activeServer = { id: 'local', name: 'Local', url: 'http://127.0.0.1:8787', isDefault: true }
+    mocks.get.mockReturnValue('relay')
+    mocks.tunnel.mockResolvedValue({ ...disabledTunnel, enabled: true, state: 'connected', publicUrl: 'https://relay.test/backend', relayUrl: 'wss://relay.test' })
+    render(<RemoteAccessSettings />)
+    await screen.findByTestId('qr')
+    expect(screen.getByText('wss://relay.test')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    expect(screen.getByText('Relay form')).toBeInTheDocument()
+    expect(screen.queryByTestId('qr')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Keep current relay' }))
+    expect(screen.getByTestId('qr')).toBeInTheDocument()
+  })
+
+  it('names the server being configured only when it is not this computer', async () => {
+    mocks.activeServer = { id: 'local', name: 'Local', url: 'http://127.0.0.1:8787', isDefault: true }
+    const view = render(<RemoteAccessSettings />)
+    await screen.findByTestId('qr')
+    expect(screen.queryByText('Configuring remote server')).not.toBeInTheDocument()
+    mocks.activeServer = { id: 'remote', name: 'Office', url: 'http://office.test:8787' }
+    view.rerender(<RemoteAccessSettings />)
+    expect(screen.getByText('Configuring remote server')).toBeInTheDocument()
+    expect(screen.getByText('Office')).toBeInTheDocument()
   })
 
   it('uses Chinese text for pairing details, missing ports and unavailable QR codes', async () => {
@@ -553,8 +599,7 @@ describe('RemoteAccessSettings authoritative addresses', () => {
     const { container } = render(<RemoteAccessSettings />)
     expect(await screen.findByText('二维码暂不可用')).toBeInTheDocument()
     expect(screen.getByText('暂无可用的网络地址')).toBeInTheDocument()
-    expect(screen.getByText('由当前服务器提供，不是本机的监听配置。')).toBeInTheDocument()
-    expect(screen.getByText(/服务器未提供监听端口/)).toBeInTheDocument()
+    expect(screen.getByText('服务器没有报告监听端口。')).toBeInTheDocument()
     expect(channel('虚拟组网')).toBeInTheDocument()
     expect(container.textContent).not.toMatch(/Let other devices|Reported by the current|The server did not report|QR code unavailable|No network address/)
     fireEvent.click(channel('自建中转'))

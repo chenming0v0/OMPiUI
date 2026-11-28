@@ -89,3 +89,13 @@ export const desktopDiagnosticsStore = new DesktopDiagnosticsStore()
 export function useDesktopDiagnostics() {
   return useSyncExternalStore(desktopDiagnosticsStore.subscribe, desktopDiagnosticsStore.getSnapshot)
 }
+
+/**
+ * 本机后端在运行、工作进程握手完成，却探测不到 OMP：这台电脑没有可用的运行时。
+ * 状态还没读到时不算缺失。
+ */
+export function useLocalOmpMissing(): boolean {
+  const snapshot = useDesktopDiagnostics()
+  const native = snapshot.native
+  return desktopServicePhase(snapshot) === 'running' && native?.workerReady === true && !native.ompVersion
+}

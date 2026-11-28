@@ -29,19 +29,10 @@ const definitions = (tab: SettingsTab, labelKeys: string[]): SettingsSearchDefin
 export const SETTINGS_SEARCH_DEFINITIONS: SettingsSearchDefinition[] = [
   ...definitions('servers', ['servers.connections']),
   ...definitions('controller', ['controller.title']),
-  // 通道在面板里按需出现，搜索结果统一落到页头。
-  ...['controller.tabPair', 'controller.manualTitle', 'dshRemote.tab'].map(labelKey => ({
-    tab: 'controller' as const,
-    labelKey,
-    targetKey: 'controller.title',
-  })),
+  // 分组和通道在卡片里按需出现，搜索结果统一落到卡头。
+  { tab: 'controller', labelKey: 'dshRemote.tab', targetKey: 'controller.title' },
   ...definitions('host', ['host.title']),
-  ...['service.tunnelTitle', 'service.tunnelUrl', 'service.tunnelKey', 'service.tunnelId'].map(labelKey => ({
-    tab: 'service' as const,
-    labelKey,
-    fallbackKey: 'service.title',
-  })),
-  ...['service.remoteTitle', 'service.remoteTailscaleTitle', 'service.remoteTailscalePhoneTitle'].map(labelKey => ({
+  ...['service.remoteTitle', 'service.remoteTailscaleTitle', 'service.tunnelTitle', 'service.tunnelUrl', 'service.tunnelKey', 'service.tunnelId'].map(labelKey => ({
     tab: 'host' as const,
     labelKey,
     targetKey: 'host.title',

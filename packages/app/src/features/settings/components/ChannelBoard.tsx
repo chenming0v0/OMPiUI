@@ -1,4 +1,6 @@
+import { useState } from 'react'
 import type React from 'react'
+import { ChevronDown } from 'lucide-react'
 import './channelBoard.css'
 
 export type LampTone = 'on' | 'warn' | 'busy' | 'off'
@@ -7,10 +9,19 @@ export function Lamp({ tone }: { tone: LampTone }) {
   return <span aria-hidden className="cb-lamp" data-tone={tone} />
 }
 
-/** 页头：标题和右侧操作同一行，说明另起一行。subject 在窄屏会落到说明下面。 */
-export function PageHead({ title, description, aside, subject }: {
+/** 一句状态：小灯加文字，永远单行。 */
+export function State({ tone, children }: { tone?: LampTone; children: React.ReactNode }) {
+  return <span className="cb-st">{tone && <Lamp tone={tone} />}<span>{children}</span></span>
+}
+
+/** 一页一张卡：卡头是标题和安静的操作，卡里是圆角行。 */
+export function Card({ children }: { children: React.ReactNode }) {
+  return <section className="cb-card">{children}</section>
+}
+
+/** 卡头。subject 在窄屏会落到标题下面。 */
+export function PageHead({ title, aside, subject }: {
   title: string
-  description?: React.ReactNode
   aside?: React.ReactNode
   subject?: React.ReactNode
 }) {
@@ -18,9 +29,41 @@ export function PageHead({ title, description, aside, subject }: {
     <header className="cb-head" data-setting-label={title}>
       <h2>{title}</h2>
       {aside && <div className="cb-head-aside">{aside}</div>}
-      {subject && <div className="cb-head-aside cb-subject">{subject}</div>}
-      {description && <p>{description}</p>}
+      {subject && <p className="cb-subject">{subject}</p>}
     </header>
+  )
+}
+
+/**
+ * 控制端的一组：组名那一行带实时状态，点它展开或收起。
+ * mount 决定收起时内容留不留：stay 一直挂着（登录中途收起不会断），open 只在展开时挂载。
+ */
+export function Section({ id, icon, name, status, action, children, defaultOpen = false, open, onToggle, mount = 'open' }: {
+  id: string
+  icon: React.ReactNode
+  name: string
+  status?: React.ReactNode
+  action?: React.ReactNode
+  children: React.ReactNode
+  defaultOpen?: boolean
+  open?: boolean
+  onToggle?: (open: boolean) => void
+  mount?: 'open' | 'stay'
+}) {
+  const [own, setOwn] = useState(defaultOpen)
+  const expanded = open ?? own
+  const bodyId = `cb-sec-${id}`
+  return (
+    <div className="cb-sec" data-folded={expanded ? undefined : ''} data-testid={`section-${id}`}>
+      <div className="cb-sec-head">
+        <button type="button" className="cb-sec-tog touch-target-sm" aria-expanded={expanded} aria-controls={bodyId}
+          onClick={() => { setOwn(!expanded); onToggle?.(!expanded) }}>
+          <ChevronDown size={15} />{icon}<b>{name}</b>{status}
+        </button>
+        {expanded && action && <span className="cb-sec-act">{action}</span>}
+      </div>
+      {(expanded || mount === 'stay') && <div id={bodyId} className="cb-sec-body" hidden={!expanded}>{children}</div>}
+    </div>
   )
 }
 
@@ -32,7 +75,7 @@ export interface ChannelTile<T extends string> {
   tone?: LampTone
 }
 
-/** 通道条 + 面板。通道名下面那一行永远是这条通道的实时状态。 */
+/** 通道栏 + 面板：左边选哪一条，右边就是那一条。通道名下面那一行永远是这条通道的实时状态。 */
 export function ChannelBoard<T extends string>({ tiles, selected, onSelect, testId, children }: {
   tiles: ChannelTile<T>[]
   selected: T
@@ -41,47 +84,47 @@ export function ChannelBoard<T extends string>({ tiles, selected, onSelect, test
   children: React.ReactNode
 }) {
   return (
-    <section className="cb-board" data-testid={testId}>
-      <div className="cb-channels" data-dense={tiles.length >= 3 ? '' : undefined}
-        style={{ '--cb-n': tiles.length } as React.CSSProperties}>
+    <div className="cb-split-layout" data-testid={testId}>
+      <div className="cb-rail">
         {tiles.map(tile => (
-          <button key={tile.id} type="button" className="cb-channel touch-target-sm" aria-pressed={tile.id === selected}
-            aria-label={tile.name} aria-description={tile.state} onClick={() => onSelect(tile.id)}>
-            <span className="cb-channel-name">{tile.icon}<span>{tile.name}</span></span>
-            <span className="cb-channel-state">{tile.tone && <Lamp tone={tile.tone} />}<span>{tile.state}</span></span>
-          </button>
+          <div key={tile.id} className="cb-srv" data-current={tile.id === selected ? '' : undefined}>
+            <div className="cb-srv-line">
+              <button type="button" className="cb-srv-main touch-target-sm" data-icon="" aria-pressed={tile.id === selected}
+                aria-label={tile.name} aria-description={tile.state} onClick={() => onSelect(tile.id)}>
+                {tile.icon}
+                <span className="cb-srv-name">{tile.name}</span>
+                <span className="cb-srv-meta"><State tone={tile.tone}>{tile.state}</State></span>
+              </button>
+            </div>
+          </div>
         ))}
       </div>
-      <div className="cb-panel">{children}</div>
-    </section>
+      <div className="cb-stage">{children}</div>
+    </div>
   )
 }
 
-/** 面板里的下半区：凭证或列表下面的几行设置。 */
+/** 票据下面的几行设置。 */
 export function PanelSplit({ children }: { children: React.ReactNode }) {
-  return <div className="cb-split">{children}</div>
+  return <div className="cb-rows">{children}</div>
 }
 
-export function PanelRow({ title, hint, children, label }: {
+export function PanelRow({ title, children, label }: {
   title: React.ReactNode
-  hint?: React.ReactNode
   children?: React.ReactNode
   label?: string
 }) {
   return (
     <div className="cb-row" data-setting-label={label}>
-      <div className="min-w-0">
-        <div className="cb-row-title">{title}</div>
-        {hint && <div className="cb-row-hint">{hint}</div>}
-      </div>
+      <div className="cb-row-title">{title}</div>
       {children && <div className="cb-row-control">{children}</div>}
     </div>
   )
 }
 
-/** 这条通道现在该做的一件事：图标、一句标题、一段说明、动作。 */
+/** 这条通道现在出不了码：二维码的位置放占位框，下面是一句标题和该做的那件事。 */
 export function NextAction({ tone = 'idle', icon, title, children, actions, testId }: {
-  tone?: 'idle' | 'warn' | 'ok'
+  tone?: 'idle' | 'warn' | 'ok' | 'busy'
   icon: React.ReactNode
   title: React.ReactNode
   children?: React.ReactNode
@@ -89,29 +132,11 @@ export function NextAction({ tone = 'idle', icon, title, children, actions, test
   testId?: string
 }) {
   return (
-    <div className="cb-next" data-tone={tone} data-testid={testId}>
-      <div className="cb-next-ic">{icon}</div>
-      <div className="min-w-0">
-        <h3>{title}</h3>
-        {children && <div className="cb-next-body">{children}</div>}
-        {actions && <div className="cb-actions">{actions}</div>}
-      </div>
-    </div>
-  )
-}
-
-export function Steps({ children }: { children: React.ReactNode }) {
-  return <div className="cb-steps">{children}</div>
-}
-
-export function Step({ index, title, children }: { index: number; title: string; children: React.ReactNode }) {
-  return (
-    <div className="cb-step">
-      <span aria-hidden className="cb-step-n">{index}</span>
-      <div className="grid min-w-0 gap-2">
-        <h3>{title}</h3>
-        {children}
-      </div>
+    <div className="cb-ticket" data-tone={tone} data-testid={testId}>
+      <div className="cb-ph">{icon}</div>
+      <h3 className="cb-tk-title">{title}</h3>
+      {children && <div className="cb-tk-text">{children}</div>}
+      {actions}
     </div>
   )
 }

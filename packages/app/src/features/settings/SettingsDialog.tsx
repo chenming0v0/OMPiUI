@@ -37,7 +37,8 @@ import { SettingsPanel } from './components/SettingsPanel'
 import { SettingsSearch } from './SettingsSearch'
 import { SETTINGS_SEARCH_DEFINITIONS, type SettingsSearchItem } from './settingsSearchCatalog'
 import { usePiCapabilities } from '../../omp/capabilities'
-import { isTauriMobile } from '../../utils/tauri'
+import { useLocalOmpMissing } from '../../store/desktopDiagnosticsStore'
+import { isTauri, isTauriMobile } from '../../utils/tauri'
 
 // ============================================
 // Types
@@ -133,10 +134,10 @@ const GROUP_DEFS: { labelKey: string; tabs: SettingsTab[] }[] = [
 // Tab Content Router
 // ============================================
 
-function TabContent({ tab, onPaired, onOpenServers, onOpenService }: {
+function TabContent({ tab, onPaired, onOpenController, onOpenService }: {
   tab: SettingsTab
   onPaired?: () => void
-  onOpenServers: () => void
+  onOpenController?: () => void
   onOpenService?: () => void
 }) {
   switch (tab) {
@@ -155,9 +156,9 @@ function TabContent({ tab, onPaired, onOpenServers, onOpenService }: {
     case 'config':
       return <PiManagementSettings />
     case 'servers':
-      return <ServersSettings />
+      return <ServersSettings onOpenController={onOpenController} />
     case 'controller':
-      return <ControllerSettings onPaired={onPaired} onOpenServers={onOpenServers} />
+      return <ControllerSettings onPaired={onPaired} />
     case 'host':
       return <HostSettings onOpenService={onOpenService} />
     case 'traffic':
@@ -182,7 +183,10 @@ function TabContent({ tab, onPaired, onOpenServers, onOpenService }: {
 export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: SettingsDialogProps) {
   const { t } = useTranslation(['settings', 'commands'])
   const isMobile = useIsMobile()
+  const native = isTauri()
   const nativeMobile = isTauriMobile()
+  // 桌面版没有 OMP 运行时就当不了被控端。
+  const ompMissing = useLocalOmpMissing()
   const capabilities = usePiCapabilities()
   const scrollRef = useRef<HTMLDivElement>(null)
   const highlightFrameRef = useRef<number | null>(null)
@@ -194,10 +198,16 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
   }, [])
   const [tab, setTab] = useState<SettingsTab>(normalizeTab(initialTab))
 
+  // 浏览器只填后端地址，「控制端」「被控端」都不出现；手机 App 只有前端，没有「服务」和「被控端」。
   const visibleTabIds = useMemo(
-    () => (isMobile ? TAB_IDS : GROUP_DEFS.flatMap(group => group.tabs))
-      .filter(id => (capabilities.config || id !== 'config') && (!nativeMobile || (id !== 'service' && id !== 'host'))),
-    [capabilities.config, nativeMobile, isMobile],
+    () => (isMobile ? TAB_IDS : GROUP_DEFS.flatMap(group => group.tabs)).filter(id => {
+      if (id === 'config') return capabilities.config
+      if (id === 'controller') return native
+      if (id === 'host') return native && !nativeMobile && !ompMissing
+      if (id === 'service') return !nativeMobile
+      return true
+    }),
+    [capabilities.config, native, nativeMobile, ompMissing, isMobile],
   )
 
   const visibleTabs = useMemo(
@@ -302,8 +312,9 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
     switchTab('servers')
   }, [switchTab])
 
-  const openServersTab = useCallback(() => {
-    switchTab('servers')
+  const controllerVisible = visibleTabIds.includes('controller')
+  const openControllerTab = useCallback(() => {
+    switchTab('controller')
   }, [switchTab])
 
   // 「服务」页只在能管理本机服务的平台上有；没有这页时不给跳转入口。
@@ -448,7 +459,7 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
           >
             {/* key 按 tab 重挂载：单个面板崩溃只降级当前页，不拖垮整个应用 */}
             <ErrorBoundary key={tab}>
-              <TabContent tab={tab} onPaired={handlePaired} onOpenServers={openServersTab} onOpenService={serviceVisible ? openServiceTab : undefined} />
+              <TabContent tab={tab} onPaired={handlePaired} onOpenController={controllerVisible ? openControllerTab : undefined} onOpenService={serviceVisible ? openServiceTab : undefined} />
             </ErrorBoundary>
           </SettingsPanel>
         </div>
@@ -545,7 +556,7 @@ export function SettingsDialog({ isOpen, onClose, initialTab = 'servers' }: Sett
         >
           {/* key 按 tab 重挂载：单个面板崩溃只降级当前页，不拖垮整个应用 */}
           <ErrorBoundary key={tab}>
-            <TabContent tab={tab} onPaired={nativeMobile ? handlePaired : undefined} onOpenServers={openServersTab} onOpenService={serviceVisible ? openServiceTab : undefined} />
+            <TabContent tab={tab} onPaired={nativeMobile ? handlePaired : undefined} onOpenController={controllerVisible ? openControllerTab : undefined} onOpenService={serviceVisible ? openServiceTab : undefined} />
           </ErrorBoundary>
         </SettingsPanel>
       </div>

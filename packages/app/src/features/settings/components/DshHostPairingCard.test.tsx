@@ -28,6 +28,14 @@ describe('DS remote host pairing', () => {
     render(<DshHostPairingCard host={host} pairing={pairing({ qr: 'https://dsh.r2049.cn/pair#v1.ticket' })} />)
     expect(screen.getByTestId('qr')).toHaveAttribute('data-text', 'https://dsh.r2049.cn/pair#v1.ticket')
     expect(screen.getByTestId('dsh-pair-fingerprint')).toHaveTextContent('aaaa bbbb')
+    expect(screen.getByText(/Expires in \d:\d\d/)).toBeInTheDocument()
+    // 二维码只有三分钟，旁边就能换一个。
+    fireEvent.click(screen.getByRole('button', { name: 'New code' }))
+    expect(manage).toHaveBeenCalledWith('pair')
+  })
+
+  it('lets a claimed pairing be cancelled before any code is typed', () => {
+    render(<DshHostPairingCard host={host} pairing={pairing({ state: 'claimed', phone: { name: 'Pixel', fingerprint: 'cccc' } })} />)
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(manage).toHaveBeenCalledWith('pair-cancel')
   })
@@ -60,5 +68,7 @@ describe('DS remote host pairing', () => {
   it('confirms a finished pairing by the phone’s name', () => {
     render(<DshHostPairingCard host={host} pairing={pairing({ state: 'completed', phone: { name: 'Pixel', fingerprint: 'cccc' } })} />)
     expect(screen.getByText('Paired with Pixel')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Pair another' }))
+    expect(manage).toHaveBeenCalledWith('pair')
   })
 })
