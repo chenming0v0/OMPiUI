@@ -53,8 +53,9 @@ export async function connectDshServer(session: DshAppSession, hostId: string, n
   if (active?.hostId === hostId) return
   const release = disconnectDshServer()
   const selected = selection
+  const generation = serverStore.getActiveServerGeneration()
   await release
-  if (selection !== selected) return
+  if (selection !== selected || serverStore.getActiveServerGeneration() !== generation) return
   const attempt: Attempt = {
     id: crypto.randomUUID(), hostId, serverId: `dsh:${hostId}`,
     previousServerId: serverStore.getActiveServerId(), stop: new AbortController(),

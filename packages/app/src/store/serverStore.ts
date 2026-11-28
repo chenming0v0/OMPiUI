@@ -113,6 +113,7 @@ function formatExceptionDiagnostics(url: string, err: unknown): string {
 
 const STORAGE_KEY = 'ompiui-servers'
 const ACTIVE_SERVER_KEY = 'ompiui-active-server'
+const RUNTIME_ROUTE_KEY = 'ompiui-runtime-server-route'
 const LEGACY_STORAGE_KEY = 'piui-servers'
 const LEGACY_ACTIVE_SERVER_KEY = 'piui-active-server'
 export const LOCAL_SERVER_ID = 'local'
@@ -219,6 +220,11 @@ class ServerStore {
   private saveToStorage(selection?: 'window' | 'default'): void {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.servers))
+      if (selection) {
+        if (this.activeServerId && this.runtimeServers.has(this.activeServerId)) {
+          sessionStorage.setItem(RUNTIME_ROUTE_KEY, this.activeServerId)
+        } else sessionStorage.removeItem(RUNTIME_ROUTE_KEY)
+      }
       if (selection && this.activeServerId && !this.runtimeServers.has(this.activeServerId)) {
         sessionStorage.setItem(ACTIVE_SERVER_KEY, this.activeServerId)
         if (selection === 'default') localStorage.setItem(ACTIVE_SERVER_KEY, this.activeServerId)
@@ -353,6 +359,16 @@ class ServerStore {
     return this.activeServerId ?? this.DEFAULT_SERVER_ID
   }
 
+  /** 刷新会结束内存租约，旧隧道的会话路由不能落到恢复的普通服务器。 */
+  consumeExpiredRuntimeRoute(): boolean {
+    try {
+      const id = sessionStorage.getItem(RUNTIME_ROUTE_KEY)
+      if (!id || this.runtimeServers.has(id)) return false
+      sessionStorage.removeItem(RUNTIME_ROUTE_KEY)
+      return true
+    } catch { return false }
+  }
+
   /**
    * 获取当前 API Base URL
    */
@@ -421,7 +437,10 @@ class ServerStore {
     this.healthMap.delete(id)
     this.healthCheckSeqMap.delete(id)
     this.clockCalibrationMap.delete(id)
-    if (wasActive) this.activeServerId = this.servers.find(server => server.id === fallbackId)?.id ?? this.servers[0]?.id ?? null
+    if (wasActive) {
+      this.activeServerId = this.servers.find(server => server.id === fallbackId)?.id ?? this.servers[0]?.id ?? null
+      this.saveToStorage('window')
+    }
     this.notify()
     if (wasActive) this.notifyServerChange(this.getActiveServerId(), 'server-switch')
   }

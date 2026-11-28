@@ -9,6 +9,24 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks())
 
 describe('cold-start pane restoration', () => {
+  it('restores the saved backend route after a temporary DS lease is lost on refresh', async () => {
+    const { paneLayoutStore } = await import('./paneLayoutStore')
+    const { serverStore } = await import('./serverStore')
+    paneLayoutStore.setFocusedSession('local-session')
+    serverStore.registerRuntimeServer({ id: 'dsh:office', name: 'Office', url: 'https://temporary.example', source: 'dsh' })
+    serverStore.setActiveServer('dsh:office')
+    paneLayoutStore.setFocusedSession('ds-session')
+    window.history.replaceState(null, '', '#/session/ds-session')
+    expect(localStorage.getItem('ompiui-servers')).not.toContain('temporary.example')
+    vi.resetModules()
+    const restored = (await import('./serverStore')).serverStore
+    const { restorePaneRoute } = await import('./restorePaneRoute')
+    restorePaneRoute()
+    expect(restored.getActiveServerId()).toBe('local')
+    expect(window.location.hash).toBe('#/session/local-session')
+    expect((await import('./paneLayoutStore')).paneLayoutStore.getFocusedSessionId()).toBe('local-session')
+  })
+
   it('restores split tree, ratios, focus and fullscreen without reusing pane IDs', async () => {
     const { paneLayoutStore: original } = await import('./paneLayoutStore')
     original.reset()

@@ -97,4 +97,18 @@ describe('DS connection as the current frontend server', () => {
     expect(dshControllerStore.get().connection?.phase).toBe('ended')
     expect(mocks.closeTunnel).toHaveBeenCalledOnce()
   })
+
+  it('keeps a newer ordinary selection while the previous DS lease is still closing', async () => {
+    const f = fixture()
+    await connectDshServer(f.session, 'office', 'Office', select)
+    const closing = deferred<void>()
+    f.connection.close.mockImplementationOnce(() => closing.promise)
+    const next = connectDshServer(f.session, 'laptop', 'Laptop', select)
+    const other = serverStore.addServer({ name: 'Other', url: 'https://other.example' })
+    select(other.id)
+    closing.resolve()
+    await next
+    expect(f.connect).toHaveBeenCalledTimes(1)
+    expect(serverStore.getActiveServerId()).toBe(other.id)
+  })
 })
