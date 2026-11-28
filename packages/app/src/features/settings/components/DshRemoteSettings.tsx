@@ -281,10 +281,12 @@ export function DshRemoteConnectSettings({ defaultOpen = false }: { defaultOpen?
     dshControllerStore.update({ pairRequest: null, authError: null })
     setExpanded(true)
     setOpened(true)
-    setBusy(true)
     setError('')
-    const signal = AbortSignal.timeout(12_000)
     const current = dshControllerStore.get().session
+    // 账号登录和扫码配对是两种授权，不在已登录的账号上再叠一层配对。
+    if (current && !current.paired) { setError(pairError('signedIn')); return }
+    setBusy(true)
+    const signal = AbortSignal.timeout(12_000)
     void (current?.paired ? current.pairAnother(pairRequest, signal) : resolveDshPairing(pairRequest, signal))
       .then(pairing => setPair({ pairing }))
       .catch(failure => setError(pairError(failure instanceof DshApiError ? failure.code : failure instanceof Error ? failure.message : '')))

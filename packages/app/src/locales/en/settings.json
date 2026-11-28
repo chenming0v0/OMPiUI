@@ -193,7 +193,8 @@
       "expired": "The QR code expired. Show a new one on the computer.",
       "scanUnavailable": "This build cannot scan. Update the app.",
       "scanPermissionDenied": "No camera permission. Allow OMPiUI to use the camera in system settings.",
-      "scanFailed": "Could not open the camera. Try again."
+      "scanFailed": "Could not open the camera. Try again.",
+      "signedIn": "This device is signed in to an account. Sign out first to pair by QR code."
     },
     "exportDiagnostics": "Export connection log"
   },

@@ -194,7 +194,8 @@
       "expired": "二维码过期了，请在电脑上换一个。",
       "scanUnavailable": "当前安装包不支持扫码，请更新手机端。",
       "scanPermissionDenied": "没有相机权限，请在系统设置里允许 OMPiUI 使用相机。",
-      "scanFailed": "相机打不开，请重试。"
+      "scanFailed": "相机打不开，请重试。",
+      "signedIn": "这台设备已经登录了账号。要扫码配对，先退出登录。"
     },
     "exportDiagnostics": "导出连接日志"
   },

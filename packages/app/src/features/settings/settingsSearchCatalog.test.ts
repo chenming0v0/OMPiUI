@@ -42,11 +42,11 @@ describe('settings search catalog', () => {
     ])
   })
 
-  it('routes relay configuration searches to Service', () => {
+  it('routes relay configuration searches to Host, where the relay form lives', () => {
     const relayItems = SETTINGS_SEARCH_DEFINITIONS.filter(item => item.labelKey.startsWith('service.tunnel'))
     expect(relayItems.map(item => item.labelKey)).toEqual([
       'service.tunnelTitle', 'service.tunnelUrl', 'service.tunnelKey', 'service.tunnelId',
     ])
-    expect(relayItems.every(item => item.tab === 'service')).toBe(true)
+    expect(relayItems.every(item => item.tab === 'host' && item.targetKey === 'host.title')).toBe(true)
   })
 })

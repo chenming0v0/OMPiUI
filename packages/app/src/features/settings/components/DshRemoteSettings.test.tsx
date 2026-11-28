@@ -224,6 +224,16 @@ describe('DS remote group on the controller page', () => {
     expect(screen.getByRole('button', { name: /DS remote/ })).toHaveAttribute('aria-expanded', 'true')
   })
 
+  it('does not stack a QR pairing on top of an account that is already signed in', async () => {
+    const { session } = controller([{ id: 'office', name: 'Office', online: true }])
+    dshControllerStore.update({ session, pairRequest: 'https://dsh.r2049.cn/pair#v1.ticket' })
+    render(<DshRemoteConnectSettings />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Sign out first to pair by QR code.')
+    expect(mocks.resolve).not.toHaveBeenCalled()
+    expect(dshControllerStore.get().pairRequest).toBeNull()
+    expect(dshControllerStore.get().session).toBe(session)
+  })
+
   it('explains a scanned code the service does not accept', async () => {
     mocks.resolve.mockRejectedValue(new DshApiError('PAIRING_NOT_FOUND', 404))
     dshControllerStore.update({ pairRequest: 'https://dsh.r2049.cn/pair#v1.expired' })
