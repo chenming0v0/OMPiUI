@@ -3,10 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import i18n from '../../../i18n'
 import { ControllerSettings } from './ControllerSettings'
 
-const platform = vi.hoisted(() => ({ android: false, tauri: true, mobile: false, ompMissing: false, localActive: true }))
-const discovery = vi.hoisted(() => ({ devices: [{}, {}] as unknown[], loading: false, error: '', refresh: vi.fn() }))
+const platform = vi.hoisted(() => ({ android: false, tauri: true, mobile: false }))
+const discovery = vi.hoisted(() => ({ devices: [{}, {}] as unknown[], loading: false, error: '', refresh: vi.fn(), scans: vi.fn() }))
 const backend = vi.hoisted(() => ({
-  running: false, restoring: false, busy: false, disconnect: vi.fn(),
+  running: false, restoring: false, busy: false, disconnect: vi.fn(), target: vi.fn(),
   tile: { tone: 'off', state: 'Signed out' }, tailscale: { url: 'http://100.101.2.3:8787', ips: ['100.101.2.3'] },
 }))
 vi.mock('../../../utils/androidTailscale', () => ({
@@ -17,11 +17,12 @@ vi.mock('../../../utils/tauri', () => ({
   isTauri: () => platform.tauri,
   isTauriMobile: () => platform.mobile,
 }))
-vi.mock('../../../store/desktopDiagnosticsStore', () => ({ useLocalOmpMissing: () => platform.ompMissing }))
-vi.mock('../../../hooks', () => ({
-  useServerStore: () => ({ activeServer: { id: 'active', isDefault: platform.localActive } }),
+vi.mock('./useDeviceDiscovery', () => ({
+  useDeviceDiscovery: (network: string, enabled: boolean) => {
+    discovery.scans(network, enabled)
+    return discovery
+  },
 }))
-vi.mock('./useDeviceDiscovery', () => ({ useDeviceDiscovery: () => discovery }))
 vi.mock('./DiscoveredComputers', () => ({
   DiscoveredRows: ({ network, onPaired }: { network: string; onPaired?: () => void }) => (
     <button type="button" onClick={onPaired}>Computers on {network}</button>
@@ -30,26 +31,31 @@ vi.mock('./DiscoveredComputers', () => ({
 vi.mock('./AndroidTailscaleSettings', () => ({ AndroidTailscaleSettings: () => <div>Phone tailnet section</div> }))
 vi.mock('./DshRemoteSettings', () => ({ DshRemoteConnectSettings: () => <div>DS remote section</div> }))
 vi.mock('./useBackendTailscale', () => ({
-  useBackendTailscale: () => ({ ...backend, controls: () => <button type="button">Log in to Tailscale</button> }),
+  useBackendTailscale: (target?: string) => {
+    backend.target(target)
+    return { ...backend, controls: () => <button type="button">Log in to Tailscale</button> }
+  },
 }))
 
 const group = (name: RegExp) => screen.getByRole('button', { name })
 
 beforeEach(async () => {
   await i18n.changeLanguage('en')
-  Object.assign(platform, { android: false, tauri: true, mobile: false, ompMissing: false, localActive: true })
+  Object.assign(platform, { android: false, tauri: true, mobile: false })
   Object.assign(discovery, { devices: [{}, {}], loading: false, error: '' })
   discovery.refresh.mockReset()
+  discovery.scans.mockReset()
   Object.assign(backend, { running: false, restoring: false, busy: false, tile: { tone: 'off', state: 'Signed out' } })
   backend.disconnect.mockReset()
+  backend.target.mockReset()
 })
 
 describe('ControllerSettings', () => {
-  it('lists only DS remote on a desktop that has a runtime, with no pairing form of its own', async () => {
+  it('groups the tailnet and DS remote on desktop, with no LAN discovery or pairing form of its own', async () => {
     render(<ControllerSettings />)
     expect(await screen.findByText('DS remote section')).toBeInTheDocument()
+    expect(group(/Tailscale/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /LAN/ })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Tailscale/ })).not.toBeInTheDocument()
     expect(screen.queryByText('Phone tailnet section')).not.toBeInTheDocument()
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
   })
@@ -95,28 +101,37 @@ describe('ControllerSettings', () => {
     render(<ControllerSettings />)
     expect(await screen.findByText('DS remote section')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /LAN/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Tailscale/ })).not.toBeInTheDocument()
     expect(screen.queryByText('Phone tailnet section')).not.toBeInTheDocument()
   })
 
-  describe('desktop without an OMP runtime', () => {
-    beforeEach(() => { platform.ompMissing = true })
-
-    it('moves the backend Tailscale sign-in here, since there is no Host page', () => {
+  describe('desktop tailnet', () => {
+    it('signs this computer in through its own backend node, whichever server is selected', () => {
       render(<ControllerSettings />)
+      expect(backend.target).toHaveBeenCalledWith('local')
       const tailnet = group(/Tailscale/)
       expect(tailnet).toHaveTextContent('Signed out')
       fireEvent.click(tailnet)
       expect(screen.getByRole('button', { name: 'Log in to Tailscale' })).toBeVisible()
       expect(screen.queryByRole('button', { name: 'Sign out' })).not.toBeInTheDocument()
+      expect(screen.queryByText('Computers on tailscale')).not.toBeInTheDocument()
+      // 没连上之前不扫描。
+      expect(discovery.scans).toHaveBeenLastCalledWith('tailscale', false)
     })
 
-    it('shows the tailnet address and a sign-out once connected', () => {
+    it('lists the computers on the tailnet once connected, with refresh and sign-out', () => {
       Object.assign(backend, { running: true, tile: { tone: 'on', state: '100.101.2.3' } })
-      render(<ControllerSettings />)
+      const paired = vi.fn()
+      render(<ControllerSettings onPaired={paired} />)
+      expect(discovery.scans).toHaveBeenLastCalledWith('tailscale', true)
       const tailnet = group(/Tailscale/)
       expect(tailnet).toHaveTextContent('Connected')
       fireEvent.click(tailnet)
-      expect(screen.getByText('http://100.101.2.3:8787')).toBeVisible()
+      expect(screen.queryByRole('button', { name: 'Log in to Tailscale' })).not.toBeInTheDocument()
+      fireEvent.click(screen.getByText('Computers on tailscale'))
+      expect(paired).toHaveBeenCalledOnce()
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+      expect(discovery.refresh).toHaveBeenCalledOnce()
       fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
       expect(backend.disconnect).toHaveBeenCalledOnce()
     })
@@ -130,12 +145,6 @@ describe('ControllerSettings', () => {
       expect(screen.queryByRole('button', { name: 'Log in to Tailscale' })).not.toBeInTheDocument()
       fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
       expect(backend.disconnect).toHaveBeenCalledOnce()
-    })
-
-    it('stays hidden while a remote server is active, because it would sign that server in instead', () => {
-      platform.localActive = false
-      render(<ControllerSettings />)
-      expect(screen.queryByRole('button', { name: /Tailscale/ })).not.toBeInTheDocument()
     })
   })
 })

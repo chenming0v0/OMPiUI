@@ -964,6 +964,52 @@ export function createAppServer(
         return sendJson(res, 200, { ok: true });
       }
 
+      if (
+        method === "POST" &&
+        (p === "/api/v1/host/tailscale/route" || p === "/api/v1/host/tailscale/discover")
+      ) {
+        if (!options.tailscale) {
+          return sendProblem(
+            res,
+            501,
+            Object.assign(new Error("tailscale management is unavailable"), {
+              code: "CAPABILITY_DISABLED",
+            }),
+          );
+        }
+        // 回环路由和对端发现只服务这台电脑上的客户端；经隧道或 Tailnet 网关转进来的请求不放行。
+        if (
+          !["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress ?? "") ||
+          req.headers[TUNNEL_FORWARDING_HEADER] !== undefined ||
+          req.headers.forwarded !== undefined ||
+          Object.keys(req.headers).some((name) => name.startsWith("x-forwarded-"))
+        ) {
+          return sendProblem(
+            res,
+            403,
+            Object.assign(new Error("Tailscale outbound access is only available on this computer"), {
+              code: "FORBIDDEN",
+            }),
+          );
+        }
+        if (p === "/api/v1/host/tailscale/route") {
+          const body = await readBody(req, AbortSignal.any([scope.signal, AbortSignal.timeout(5_000)]), 2048);
+          if (typeof body.origin !== "string") throw invalidRequest("origin is required");
+          const url = await options.tailscale.openRoute(body.origin);
+          if (!url) return sendProblem(res, 409, new Error("Tailscale is not running"));
+          res.setHeader("cache-control", "no-store");
+          return sendJson(res, 200, { url });
+        }
+        try {
+          const devices = await options.tailscale.discover(scope.signal);
+          res.setHeader("cache-control", "no-store");
+          return sendJson(res, 200, { devices });
+        } catch (error) {
+          if (scope.signal.aborted) throw error;
+          return sendProblem(res, 409, error);
+        }
+      }
+
       if (method === "GET" && p === "/api/v1/host/registry") {
         return sendJson(res, 200, host.registry());
       }
@@ -1191,7 +1237,9 @@ function allowedMethodsForPath(pathname: string): string | undefined {
     pathname === "/api/v1/host/pair/redeem" ||
     pathname === "/api/v1/host/tailscale/install" ||
     pathname === "/api/v1/host/tailscale/login" ||
-    pathname === "/api/v1/host/tailscale/disconnect"
+    pathname === "/api/v1/host/tailscale/disconnect" ||
+    pathname === "/api/v1/host/tailscale/route" ||
+    pathname === "/api/v1/host/tailscale/discover"
   )
     return "POST";
   if (

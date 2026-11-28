@@ -237,7 +237,7 @@
     "discoveryUnavailable": "当前安装包不支持设备发现，请更新手机端，或扫码、粘贴完整链接。",
     "discoveryTimeout": "设备发现超时，请刷新或使用完整配对链接。",
     "discoveryPermissionDenied": "未获得局域网发现权限，请允许访问，或使用配对链接。",
-    "discoveryTailscaleLogin": "先在手机登录 Tailscale，才能发现跨网络的电脑。",
+    "discoveryTailscaleLogin": "先在这台设备登录 Tailscale，才能发现跨网络的电脑。",
     "discoveryBusy": "上一次发现正在结束，请稍后刷新。",
     "discoveryFailed": "无法发现电脑，请刷新或使用完整配对链接。",
     "phoneConnectComputer": "连接电脑",

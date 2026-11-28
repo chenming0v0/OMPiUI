@@ -28,6 +28,16 @@ export function mapStatusJson(raw: unknown) {
   }
 }
 
+/** bridge 的错误响应是 `{"error": string}`。 */
+async function bridgeError(response: Response): Promise<string | null> {
+  try {
+    const body = await response.json() as { error?: unknown }
+    return typeof body.error === "string" && body.error ? body.error : null
+  } catch {
+    return null
+  }
+}
+
 type Options = {
   dataDir: string
   forwardingToken?: string
@@ -166,18 +176,54 @@ export class TailscaleManager {
     this.lastError = null
   }
 
+  /**
+   * 为一个 Tailnet 源开一条本机回环路由，供同机客户端经内嵌节点向外连接。
+   * 节点未运行时返回 null，调用方改走系统网络。
+   */
+  async openRoute(origin: string): Promise<string | null> {
+    if (!this.controlUrl) return null
+    const response = await this.send("/route", { method: "POST", body: { origin } })
+    if (response.status === 409) return null
+    if (response.status === 400) {
+      throw Object.assign(new Error(await bridgeError(response) ?? "expected a Tailnet HTTP origin"), { code: "INVALID_REQUEST" })
+    }
+    if (!response.ok) throw new Error(`内嵌 Tailscale 路由接口失败 (${response.status})`)
+    const body = await response.json() as { url?: unknown }
+    if (typeof body.url !== "string") throw new Error("内嵌 Tailscale 路由接口返回无效地址")
+    return body.url
+  }
+
+  /** 在 Tailnet 中查找其他 OMPiUI；节点未登录时抛出原生层的说明。 */
+  async discover(signal?: AbortSignal): Promise<unknown[]> {
+    if (!this.controlUrl) throw new Error("Tailscale discovery unavailable: node is stopped; start and sign in first")
+    // 原生发现的总预算是 8 秒，这里多留传输余量。
+    const response = await this.send("/discover", { method: "POST", timeoutMs: 12_000, signal })
+    if (!response.ok) throw new Error(await bridgeError(response) ?? `内嵌 Tailscale 发现接口失败 (${response.status})`)
+    const body = await response.json() as unknown
+    return Array.isArray(body) ? body : []
+  }
+
   private persistEnabled(): void {
     mkdirSync(this.stateDir, { recursive: true })
     writeFileSync(this.settingsPath, JSON.stringify({ enabled: this.enabled }), { mode: 0o600 })
   }
 
-  private async request(path: string, method = "GET"): Promise<Response> {
+  private async send(path: string, options: { method?: string; body?: unknown; timeoutMs?: number; signal?: AbortSignal } = {}): Promise<Response> {
     if (!this.controlUrl) throw new Error("内嵌 Tailscale 未启动")
-    const response = await fetch(`${this.controlUrl}${path}`, {
-      method,
-      headers: { authorization: `Bearer ${this.controlToken}` },
-      signal: AbortSignal.timeout(5_000),
+    const timeout = AbortSignal.timeout(options.timeoutMs ?? 5_000)
+    return fetch(`${this.controlUrl}${path}`, {
+      method: options.method ?? "GET",
+      headers: {
+        authorization: `Bearer ${this.controlToken}`,
+        ...(options.body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
     })
+  }
+
+  private async request(path: string, method = "GET"): Promise<Response> {
+    const response = await this.send(path, { method })
     if (!response.ok) throw new Error(`内嵌 Tailscale 状态接口失败 (${response.status})`)
     return response
   }

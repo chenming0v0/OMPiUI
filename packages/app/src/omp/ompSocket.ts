@@ -1,5 +1,5 @@
 import { isTauri } from '../utils/tauri'
-import { resolveAndroidTailscaleUrl } from '../utils/androidTailscale'
+import { resolveTailscaleUrl } from '../utils/tailscaleRoute'
 import { serverStore } from '../store/serverStore'
 import { getDshTunnelSocketAuth } from '../services/dshTunnelTransport'
 import { auditSocket } from './trafficAudit/socket'
@@ -72,7 +72,7 @@ class TauriBridgeSocket implements PiSocket {
       this.invokeFn = invoke as TauriInvoke
       const channel = new Channel<BridgeEvent>()
       channel.onmessage = event => this.handleEvent(event)
-      const resolved = await resolveAndroidTailscaleUrl(url)
+      const resolved = await resolveTailscaleUrl(url)
       if (this.closedByUs) return
       // 首次 webview 会话的 IPC 偶发不可靠：invoke 悬挂或事件不送达时，
       // 靠 open 看门狗主动失败一次，让调用方的重连逻辑用全新的 Channel/

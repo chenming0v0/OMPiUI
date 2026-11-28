@@ -1,12 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { discoverDevices, parseDiscoveredDevices } from './deviceDiscovery'
 const native = vi.hoisted(() => ({ discover: vi.fn() }))
+const desktop = vi.hoisted(() => ({ active: false, discover: vi.fn() }))
 vi.mock('./androidTailscale', async original => ({
   ...await original<typeof import('./androidTailscale')>(), discoverAndroidTailscale: native.discover,
 }))
+vi.mock('./desktopTailscale', () => ({
+  isDesktopTailscalePlatform: () => desktop.active, discoverDesktopTailscale: desktop.discover,
+}))
 const info = { marker: 'ompiui', discoveryVersion: 1, displayName: 'Computer', instanceId: 'a'.repeat(32), port: 9191, pairing: true }
 const request = vi.fn()
-beforeEach(() => { request.mockReset(); window.__ompiui_device_discovery = { request }; native.discover.mockReset() })
+beforeEach(() => {
+  request.mockReset(); window.__ompiui_device_discovery = { request }; native.discover.mockReset()
+  desktop.active = false; desktop.discover.mockReset()
+})
 afterEach(() => { delete window.__ompiui_device_discovery; vi.useRealTimers() })
 
 describe('device discovery adapter', () => {
@@ -46,5 +53,13 @@ describe('device discovery adapter', () => {
     expect(await discoverDevices('tailscale', signal)).toHaveLength(1)
     expect(native.discover).toHaveBeenCalledWith(signal)
     expect(request).not.toHaveBeenCalled()
+  })
+  it('asks the local backend node for Tailnet computers on desktop, applying the same validation', async () => {
+    desktop.active = true
+    desktop.discover.mockResolvedValue([{ ...info, address: '100.64.0.1' }, { ...info, address: '192.168.1.10' }])
+    const signal = new AbortController().signal
+    expect(await discoverDevices('tailscale', signal)).toEqual([{ ...info, address: '100.64.0.1', network: 'tailscale' }])
+    expect(desktop.discover).toHaveBeenCalledWith(signal)
+    expect(native.discover).not.toHaveBeenCalled()
   })
 })

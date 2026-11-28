@@ -236,7 +236,7 @@
     "discoveryUnavailable": "This build cannot discover devices. Update the mobile app, scan a QR, or paste a full link.",
     "discoveryTimeout": "Discovery timed out. Refresh or use a full pairing link.",
     "discoveryPermissionDenied": "Local-network discovery permission was denied. Allow access or use a pairing link.",
-    "discoveryTailscaleLogin": "Sign in to Tailscale on this phone to find computers across networks.",
+    "discoveryTailscaleLogin": "Sign in to Tailscale on this device to find computers across networks.",
     "discoveryBusy": "Another discovery is finishing. Refresh in a moment.",
     "discoveryFailed": "Unable to discover computers. Refresh or use a full pairing link.",
     "phoneConnectComputer": "Connect to your computer",

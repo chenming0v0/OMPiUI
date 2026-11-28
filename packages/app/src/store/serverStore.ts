@@ -6,7 +6,7 @@ import { API_BASE_URL } from '../constants'
 import { getHttpFetch, isTauri } from '../utils/tauri'
 import { DSH_PENDING_URL, loadDshServerSelection, saveDshServerSelection } from './dshServerSelection'
 import { PROTOCOL_VERSION } from '@ompiui/protocol'
-import { resolveAndroidTailscaleUrl } from '../utils/androidTailscale'
+import { resolveTailscaleUrl } from '../utils/tailscaleRoute'
 import { auditHttpRequest } from '../omp/trafficAudit/http'
 
 /** 这条连接是怎么加进来的：配对兑换，还是手动填的地址和密钥。只用于列表里的来源标记。 */
@@ -332,6 +332,16 @@ class ServerStore {
     return this.getLocalServer()?.url ?? API_BASE_URL
   }
 
+  /**
+   * 这台电脑上的后端。虚拟组网的出站路由等只对本机有意义的能力固定打向它，
+   * 与当前选中的服务器无关；默认条目被改成远程地址时返回 null。
+   */
+  getLocalBackend(): { url: string; token?: string } | null {
+    const local = this.getLocalServer()
+    if (!local || !isLoopbackServerUrl(local.url)) return null
+    return { url: local.url.replace(/\/+$/, ''), token: local.token }
+  }
+
   isActiveLocalServer(): boolean {
     return this.getActiveServerId() === this.DEFAULT_SERVER_ID
   }
@@ -631,7 +641,7 @@ class ServerStore {
       }
 
       const f = await getHttpFetch()
-      const resolvedUrl = await resolveAndroidTailscaleUrl(healthUrl)
+      const resolvedUrl = await resolveTailscaleUrl(healthUrl)
       const init: RequestInit = {
         method: 'GET',
         signal: controller.signal,
@@ -848,7 +858,7 @@ export async function applyPairParam(pair: string, origin: string, serverUrl?: s
     const requested = serverUrl && /^https?:\/\//i.test(serverUrl) ? serverUrl : origin
     const base = requested.replace(/\/+$/, '')
     const f = await getHttpFetch()
-    const resolved = await resolveAndroidTailscaleUrl(`${base}/api/v1/host/pair/redeem`)
+    const resolved = await resolveTailscaleUrl(`${base}/api/v1/host/pair/redeem`)
     const init: RequestInit = {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
