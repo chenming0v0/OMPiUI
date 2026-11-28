@@ -259,7 +259,7 @@ export async function startOmpiUiServer(
   // 隧道客户端在 listen 成功后启动；它的公网入口（relay 上报）要喂给
   // Origin 白名单和 share 链接，所以用可变引用 + getter 动态取。
   let tunnelClient: TunnelClient | undefined
-  const hosted = new DshHostedManager(dataRoot(), pkg.version, config.dshRemote)
+  const hosted = new DshHostedManager(dataRoot(), pkg.version, config.dshRemote, undefined, undefined, undefined, authToken)
   const dshManagementToken = await loadDshManagementToken(dataRoot()).catch(() => {
     console.error('[ompiui-dsh] Could not initialize the local management credential')
     return undefined

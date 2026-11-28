@@ -2,21 +2,22 @@ import { useSyncExternalStore } from 'react'
 import type { DshAppSession, DshHostListItem } from '../services/dshRemote'
 import { hasSavedDshSession } from '../services/dshSessionStorage'
 
-export interface DshBrowserState {
+export interface DshServerState {
   hostId: string
-  phase: 'opening' | 'opened' | 'delivered' | 'ended'
+  serverId: string
+  phase: 'connecting' | 'connected' | 'ended'
 }
 
 interface DshControllerState {
   session: DshAppSession | null
   hosts: DshHostListItem[]
-  browser: DshBrowserState | null
+  connection: DshServerState | null
   authError: string | null
   /** 正在等用户完成登录授权；只给通道条显示状态用。 */
   signingIn: boolean
 }
 
-let state: DshControllerState = { session: null, hosts: [], browser: null, authError: null, signingIn: false }
+let state: DshControllerState = { session: null, hosts: [], connection: null, authError: null, signingIn: false }
 const listeners = new Set<() => void>()
 const subscribe = (listener: () => void) => {
   listeners.add(listener)

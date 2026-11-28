@@ -49,7 +49,7 @@ beforeEach(async () => {
   platform.tauri = true
   platform.mobile = false
   connect.mockReset()
-  dshControllerStore.update({ session: null, hosts: [], browser: null, authError: null, signingIn: false })
+  dshControllerStore.update({ session: null, hosts: [], connection: null, authError: null, signingIn: false })
 })
 
 describe('ControllerSettings', () => {

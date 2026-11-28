@@ -9,7 +9,7 @@ import { resolveAndroidTailscaleUrl } from '../utils/androidTailscale'
 import { auditHttpRequest } from '../omp/trafficAudit/http'
 
 /** 这条连接是怎么加进来的：配对兑换，还是手动填的地址和密钥。只用于列表里的来源标记。 */
-export type ServerSource = 'pair' | 'manual'
+export type ServerSource = 'pair' | 'manual' | 'dsh'
 
 /**
  * 服务器配置
@@ -141,6 +141,7 @@ function isLoopbackServerUrl(url: string): boolean {
  */
 class ServerStore {
   private servers: ServerConfig[] = []
+  private runtimeServers = new Map<string, ServerConfig>()
   private activeServerId: string | null = null
   private healthMap = new Map<string, ServerHealth>()
   private healthCheckSeqMap = new Map<string, number>()
@@ -218,7 +219,7 @@ class ServerStore {
   private saveToStorage(selection?: 'window' | 'default'): void {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.servers))
-      if (selection && this.activeServerId) {
+      if (selection && this.activeServerId && !this.runtimeServers.has(this.activeServerId)) {
         sessionStorage.setItem(ACTIVE_SERVER_KEY, this.activeServerId)
         if (selection === 'default') localStorage.setItem(ACTIVE_SERVER_KEY, this.activeServerId)
       }
@@ -271,7 +272,7 @@ class ServerStore {
    * 更新快照缓存
    */
   private updateSnapshots(): void {
-    this._serversSnapshot = this.servers.map(server => this.withRuntimeServerUrl(server))
+    this._serversSnapshot = [...this.servers.map(server => this.withRuntimeServerUrl(server)), ...this.runtimeServers.values()]
     this._activeServerSnapshot = this._serversSnapshot.find(s => s.id === this.activeServerId) ?? null
     this._healthMapSnapshot = new Map(this.healthMap)
   }
@@ -407,6 +408,24 @@ class ServerStore {
     return server
   }
 
+  /** 短期隧道只在当前前端进程内注册，地址和会话凭据不进入保存的服务器列表。 */
+  registerRuntimeServer(server: ServerConfig): void {
+    if (this.servers.some(saved => saved.id === server.id)) throw new Error('Server ID already exists')
+    this.runtimeServers.set(server.id, { ...server, url: server.url.replace(/\/+$/, '') })
+    this.notify()
+  }
+
+  removeRuntimeServer(id: string, fallbackId?: string): void {
+    if (!this.runtimeServers.delete(id)) return
+    const wasActive = this.activeServerId === id
+    this.healthMap.delete(id)
+    this.healthCheckSeqMap.delete(id)
+    this.clockCalibrationMap.delete(id)
+    if (wasActive) this.activeServerId = this.servers.find(server => server.id === fallbackId)?.id ?? this.servers[0]?.id ?? null
+    this.notify()
+    if (wasActive) this.notifyServerChange(this.getActiveServerId(), 'server-switch')
+  }
+
   /**
    * 更新服务器配置
    */
@@ -488,7 +507,7 @@ class ServerStore {
    * 如果实际切换了服务器，会通知 serverChangeListeners（用于 SSE 重连等）
    */
   setActiveServer(id: string, scope: 'window' | 'default' = 'default'): boolean {
-    if (!this.servers.some(s => s.id === id)) return false
+    if (!this.servers.some(s => s.id === id) && !this.runtimeServers.has(id)) return false
 
     const changed = this.activeServerId !== id
     this.activeServerId = id
@@ -532,7 +551,7 @@ class ServerStore {
    * 检查服务器健康状态
    */
   async checkHealth(serverId: string): Promise<ServerHealth> {
-    const storedServer = this.servers.find(s => s.id === serverId)
+    const storedServer = this.servers.find(s => s.id === serverId) ?? this.runtimeServers.get(serverId)
     if (!storedServer) {
       return { status: 'error', error: 'Server not found' }
     }
@@ -663,7 +682,7 @@ class ServerStore {
    * 检查所有服务器健康状态
    */
   async checkAllHealth(): Promise<void> {
-    await Promise.all(this.servers.map(s => this.checkHealth(s.id)))
+    await Promise.all(this._serversSnapshot.map(s => this.checkHealth(s.id)))
   }
 }
 
@@ -715,9 +734,11 @@ function normalizeServerBackup(raw: unknown): ServerSettingsBackup {
 }
 
 export function exportServerSettingsBackup(): ServerSettingsBackup {
+  const servers = serverStore.getStoredServers()
+  const activeId = serverStore.getActiveServerId()
   return {
-    servers: serverStore.getStoredServers().map(server => ({ ...server })),
-    activeServerId: serverStore.getActiveServerId(),
+    servers: servers.map(server => ({ ...server })),
+    activeServerId: servers.some(server => server.id === activeId) ? activeId : LOCAL_SERVER_ID,
   }
 }
 

@@ -131,6 +131,26 @@ test('keeps retrying a network failure without clearing enablement', async t => 
   assert.equal(status.state, 'connecting')
 })
 
+test('passes the local credential to the host without publishing or persisting it', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'ompiui-dsh-manager-auth-'))
+  await enrollment(dir)
+  const authToken = 'local-manager-credential'
+  const received = Promise.withResolvers<Parameters<typeof runDshHost>[5]>()
+  const manager = new DshHostedManager(dir, '0.6.78', true, async (_account, _port, signal, _origins, ready, options) => {
+    received.resolve(options)
+    ready?.()
+    await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }))
+  }, undefined, undefined, authToken)
+  t.after(async () => { await manager.dispose(); await rm(dir, { recursive: true, force: true }) })
+  await manager.attach(5000)
+  assert.equal((await received.promise)?.authToken, authToken)
+  assert.equal((await manager.status()).state, 'online')
+  assert.ok(!JSON.stringify(await manager.status()).includes(authToken))
+  await manager.manage('disable')
+  assert.equal(await readFile(join(dir, 'dsh-remote', 'enabled.json'), 'utf8'), 'false')
+  assert.ok(!(await readFile(join(dir, 'dsh-remote', 'host.json'), 'utf8')).includes(authToken))
+})
+
 async function wireServer(onHello: (socket: WebSocket, accessToken: unknown) => void) {
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
   await once(server, 'listening')

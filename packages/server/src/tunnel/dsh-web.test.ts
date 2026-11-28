@@ -112,10 +112,18 @@ for (const reason of ['hostc-closed', 'check-failed', 'expired', 'explicit'] as 
     const stop = new AbortController()
     const ready = Promise.withResolvers<void>()
     const origins = new Set<string>()
+    const authToken = 'local-host-credential'
+    let forwardedToken: string | undefined
     const running = runDshHost(new DshRemoteAccount(dir, '0.6.71', request), 5000, stop.signal, origins, ready.resolve, {
       socketFactory: openSocket,
       checkMs: 50,
-      openHostc: async () => ({ closed: hostc.promise, close: () => hostc.resolve({ code: 1000, reason: 'closed' }) }),
+      authToken,
+      openHostc: async options => {
+        forwardedToken = options.authToken
+        assert.equal(options.localPort, 5000)
+        assert.ok(!JSON.stringify(options.lease).includes(authToken))
+        return { closed: hostc.promise, close: () => hostc.resolve({ code: 1000, reason: 'closed' }) }
+      },
     }).catch(error => { if (!stop.signal.aborted) ready.reject(error) })
     t.after(async () => {
       stop.abort()
@@ -127,6 +135,8 @@ for (const reason of ['hostc-closed', 'check-failed', 'expired', 'explicit'] as 
     await ready.promise
     const browser = await openDshBrowser(new DshRemoteAccount(dir, '0.6.71', request, 'client'), host.deviceId, stop.signal, openSocket)
     assert.equal(browser.grant.url, url)
+    assert.equal(forwardedToken, authToken)
+    assert.ok(!JSON.stringify(browser.grant).includes(authToken))
     if (reason === 'hostc-closed') hostc.resolve({ code: 1006, reason: 'disconnected' })
     if (reason === 'explicit') {
       const releasedBeforeClose = once(sockets.get('client')!, 'close').then(() => released)

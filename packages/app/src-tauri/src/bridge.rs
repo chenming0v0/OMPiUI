@@ -12,13 +12,16 @@ use std::time::Duration;
 
 use futures_util::future::{select, Either};
 use futures_util::{SinkExt, StreamExt};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::{oneshot, Notify};
 use tokio_tungstenite::{connect_async_with_config, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::handshake::client::Request;
+use tokio_tungstenite::tungstenite::http::header::{HeaderValue, COOKIE, ORIGIN};
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::{Error as WebSocketError, Message};
@@ -165,16 +168,77 @@ impl BridgeState {
 /// connecting（黄色）。超时后报错，前端的断线重连逻辑会接管。
 const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-// 原生拨号不附带 WebView 的 Origin，避免远程服务将 tauri.localhost 判为非法来源。
+#[derive(Deserialize)]
+pub struct TunnelAuth {
+    cookie: String,
+    origin: String,
+}
+
+fn is_dsh_tunnel_host(host: &str) -> bool {
+    let Some((id, domain)) = host.strip_suffix(".4ba.io").and_then(|host| host.split_once('.')) else {
+        return false;
+    };
+    // 与 packages/protocol/src/dsh-remote.ts 的 TUNNEL_HOST 保持一致。
+    let valid_prefix = match domain {
+        "hostc" | "tun" => id.starts_with('t') || id.starts_with('p'),
+        "hostc-test" | "tun-test" => id.starts_with('t'),
+        _ => false,
+    };
+    valid_prefix && id.len() == 12
+        && id.bytes().skip(1).all(|byte| b"abcdefghijkmnpqrstuvwxyz23456789".contains(&byte))
+}
+
+fn is_dsh_tunnel_cookie(cookie: &str) -> bool {
+    // 内存隧道可能合并多个 Cookie，每一项都必须是 __Host- 名称和值。
+    cookie.split("; ").all(|pair| {
+        let Some((name, value)) = pair.strip_prefix("__Host-").and_then(|pair| pair.split_once('=')) else {
+            return false;
+        };
+        let value = value.strip_prefix('"').and_then(|value| value.strip_suffix('"')).unwrap_or(value);
+        !name.is_empty() && !value.is_empty()
+            && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+            && value.bytes().all(|byte| matches!(byte, 0x21 | 0x23..=0x2b | 0x2d..=0x3a | 0x3c..=0x5b | 0x5d..=0x7e))
+    })
+}
+
+fn native_websocket_request(url: &str, tunnel_auth: Option<&TunnelAuth>) -> Result<Request, String> {
+    let mut request = url.into_client_request().map_err(|error| format!("WebSocket connect failed: {error}"))?;
+    if let Some(auth) = tunnel_auth {
+        let uri = request.uri();
+        let host = uri.host().ok_or("Invalid DS tunnel WebSocket host")?;
+        let authority = uri.authority().ok_or("Invalid DS tunnel WebSocket authority")?.as_str();
+        // 隧道只接受标准 HTTPS 对应的 WSS 地址；同时拒绝空用户名等 userinfo 写法。
+        if uri.scheme_str() != Some("wss") || url.contains('#') || !is_dsh_tunnel_host(host)
+            || (authority != host && authority != format!("{host}:443"))
+        {
+            return Err("Invalid DS tunnel WebSocket URL".to_string());
+        }
+        if auth.origin != format!("https://{host}") {
+            return Err("Invalid DS tunnel WebSocket origin".to_string());
+        }
+        if !is_dsh_tunnel_cookie(&auth.cookie) {
+            return Err("Invalid DS tunnel WebSocket cookie".to_string());
+        }
+        let cookie = HeaderValue::from_str(&auth.cookie).map_err(|_| "Invalid DS tunnel WebSocket cookie")?;
+        let origin = HeaderValue::from_str(&auth.origin).map_err(|_| "Invalid DS tunnel WebSocket origin")?;
+        request.headers_mut().insert(COOKIE, cookie);
+        request.headers_mut().insert(ORIGIN, origin);
+    }
+    Ok(request)
+}
+
+// 普通原生拨号不附带 Origin；DS 隧道只使用校验过的 HTTPS Origin 和 Cookie。
 async fn connect_native_websocket(
     url: &str,
+    tunnel_auth: Option<&TunnelAuth>,
 ) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, String> {
+    let request = native_websocket_request(url, tunnel_auth)?;
     let mut config = WebSocketConfig::default();
     config.max_message_size = Some(MAX_INBOUND_MESSAGE_BYTES);
     config.max_frame_size = Some(MAX_INBOUND_MESSAGE_BYTES);
     let (socket, _) = tokio::time::timeout(
         WS_CONNECT_TIMEOUT,
-        connect_async_with_config(url, Some(config), false),
+        connect_async_with_config(request, Some(config), false),
     )
     .await
     .map_err(|_| {
@@ -194,8 +258,9 @@ pub async fn ws_bridge_connect(
     state: State<'_, BridgeState>,
     url: String,
     on_event: Channel<BridgeEvent>,
+    tunnel_auth: Option<TunnelAuth>,
 ) -> Result<u32, String> {
-    let socket = connect_native_websocket(&url).await?;
+    let socket = connect_native_websocket(&url, tunnel_auth.as_ref()).await?;
     let (mut writer, mut reader) = socket.split();
 
     let id = state.next_id();
@@ -357,6 +422,150 @@ mod tests {
     use tokio_tungstenite::accept_hdr_async;
     use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
 
+    #[test]
+    fn tunnel_request_adds_only_cookie_and_origin_for_protocol_tunnel_hosts() {
+        for host in [
+            "tabcdefghijk.tun.4ba.io",
+            "p23456789abc.tun.4ba.io",
+            "tabcdefghijk.hostc.4ba.io",
+            "p23456789abc.hostc.4ba.io",
+            "tabcdefghijk.tun-test.4ba.io",
+            "tabcdefghijk.hostc-test.4ba.io",
+        ] {
+            for port in ["", ":443"] {
+                let url = format!("wss://{host}{port}/api/v1/events?token=bridge-regression");
+                let auth = TunnelAuth {
+                    cookie: "__Host-dsh_session=token-_123/+==".to_string(),
+                    origin: format!("https://{host}"),
+                };
+                let ordinary = native_websocket_request(&url, None).unwrap();
+                let request = native_websocket_request(&url, Some(&auth)).unwrap();
+
+                assert_eq!(request.method(), ordinary.method());
+                assert_eq!(request.uri(), ordinary.uri());
+                assert_eq!(request.headers().get(COOKIE).unwrap().to_str().unwrap(), auth.cookie);
+                assert_eq!(request.headers().get(ORIGIN).unwrap().to_str().unwrap(), auth.origin);
+                assert_eq!(request.headers().len(), ordinary.headers().len() + 2);
+                for (name, value) in ordinary.headers() {
+                    // 每次构造的握手密钥随机生成，其余原有头部应保持一致。
+                    if name.as_str() != "sec-websocket-key" {
+                        assert_eq!(request.headers().get(name).unwrap(), value);
+                    }
+                }
+                assert!(request.headers().contains_key("sec-websocket-key"));
+                assert!(!ordinary.headers().contains_key(COOKIE));
+                assert!(!ordinary.headers().contains_key(ORIGIN));
+            }
+        }
+    }
+
+    #[test]
+    fn tunnel_request_rejects_invalid_urls_before_dialing() {
+        let auth = TunnelAuth {
+            cookie: "__Host-dsh_session=private".to_string(),
+            origin: "https://tabcdefghijk.tun.4ba.io".to_string(),
+        };
+        for url in [
+            "ws://tabcdefghijk.tun.4ba.io/ws",
+            "http://tabcdefghijk.tun.4ba.io/ws",
+            "https://tabcdefghijk.tun.4ba.io/ws",
+            "wss://user:password@tabcdefghijk.tun.4ba.io/ws",
+            "wss://@tabcdefghijk.tun.4ba.io/ws",
+            "wss://tabcdefghijk.tun.4ba.io/ws#fragment",
+            "wss://tabcdefghijk.tun.4ba.io/ws#",
+            "wss://tabcdefghijk.tun.4ba.io:8443/ws",
+        ] {
+            assert!(native_websocket_request(url, Some(&auth)).is_err(), "accepted {url}");
+        }
+        for host in [
+            "dsh.r2049.cn",
+            "localhost",
+            "127.0.0.1",
+            "tabcdefghijk.tun.4ba.io.example.com",
+            "sub.tabcdefghijk.tun.4ba.io",
+            "tabcdefghijk.tun.4ba.io.",
+            "tabcdefghijk.other.4ba.io",
+            "p23456789abc.tun-test.4ba.io",
+            "p23456789abc.hostc-test.4ba.io",
+            "xabcdefghijk.tun.4ba.io",
+            "tabcdefghij.tun.4ba.io",
+            "tabcdefghijkm.tun.4ba.io",
+            "tabcdefghijl.tun.4ba.io",
+            "tabcdefghijo.tun.4ba.io",
+            "tabcdefghij0.tun.4ba.io",
+            "tabcdefghij1.tun.4ba.io",
+        ] {
+            let auth = TunnelAuth { cookie: auth.cookie.clone(), origin: format!("https://{host}") };
+            assert!(native_websocket_request(&format!("wss://{host}/ws"), Some(&auth)).is_err(), "accepted {host}");
+        }
+    }
+
+    #[test]
+    fn tunnel_request_requires_the_exact_https_origin() {
+        for origin in [
+            "http://tabcdefghijk.tun.4ba.io",
+            "wss://tabcdefghijk.tun.4ba.io",
+            "https://p23456789abc.tun.4ba.io",
+            "https://tabcdefghijk.tun.4ba.io/",
+            "https://tabcdefghijk.tun.4ba.io:443",
+            "https://tabcdefghijk.tun.4ba.io:8443",
+            "https://tabcdefghijk.tun.4ba.io/path",
+            "https://tabcdefghijk.tun.4ba.io\r\nX-Test: injected",
+            "https://tauri.localhost",
+            "null",
+            "",
+        ] {
+            let auth = TunnelAuth { cookie: "__Host-dsh_session=private".to_string(), origin: origin.to_string() };
+            assert!(native_websocket_request("wss://tabcdefghijk.tun.4ba.io/ws", Some(&auth)).is_err());
+        }
+    }
+
+    #[test]
+    fn tunnel_request_rejects_invalid_cookie_names_values_and_header_injection() {
+        for cookie in [
+            "",
+            "session=private",
+            "__Secure-session=private",
+            "__host-session=private",
+            "__Host-=private",
+            "__Host-session",
+            "__Host-session=",
+            "__Host-session=\"\"",
+            "__Host-bad name=private",
+            "__Host-bad:name=private",
+            "__Host-session=private; other=value",
+            "__Host-session=private; Secure",
+            "__Host-session=private; __Host-other=bad value",
+            "__Host-session=private\r\nOrigin: https://example.com",
+            "__Host-session=private\n",
+            "__Host-session=private\r",
+            "__Host-session=private\t",
+            "__Host-session=private\0",
+            "__Host-session=private\u{7f}",
+            "__Host-session=private value",
+            "__Host-session=private,value",
+            "__Host-session=private\\value",
+            "__Host-session=非ASCII",
+            "__Host-session=\"private",
+        ] {
+            let auth = TunnelAuth { cookie: cookie.to_string(), origin: "https://tabcdefghijk.tun.4ba.io".to_string() };
+            assert!(native_websocket_request("wss://tabcdefghijk.tun.4ba.io/ws", Some(&auth)).is_err());
+        }
+        let auth = TunnelAuth {
+            cookie: "__Host-session=\"token-_123/+==\"; __Host-check=second".to_string(),
+            origin: "https://tabcdefghijk.tun.4ba.io".to_string(),
+        };
+        let request = native_websocket_request("wss://tabcdefghijk.tun.4ba.io/ws", Some(&auth)).unwrap();
+        assert_eq!(request.headers().get(COOKIE).unwrap().to_str().unwrap(), auth.cookie);
+    }
+
+    #[test]
+    fn ds_control_request_without_auth_omits_origin_and_cookie() {
+        let request = native_websocket_request("wss://dsh.r2049.cn/ws/v1/connect", None).unwrap();
+        assert!(!request.headers().contains_key(ORIGIN));
+        assert!(!request.headers().contains_key(COOKIE));
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn native_handshake_omits_origin_and_transfers_messages_and_close() {
         tokio::time::timeout(Duration::from_secs(15), async {
@@ -378,6 +587,7 @@ mod tests {
                 assert_eq!(request.headers().get("upgrade").unwrap(), "websocket");
                 // 检查实际发出的握手请求，防止重新添加 tauri.localhost 等 Origin。
                 assert!(!request.headers().contains_key("origin"), "native handshake must omit Origin");
+                assert!(!request.headers().contains_key("cookie"), "native handshake must omit Cookie");
 
                 assert_eq!(socket.next().await.unwrap().unwrap(), Message::Text("from client".into()));
                 socket.send(Message::Text("from server".into())).await.unwrap();
@@ -385,7 +595,7 @@ mod tests {
                 assert_eq!(socket.next().await.unwrap().unwrap(), Message::Close(Some(close.clone())));
             };
             let client = async {
-                let mut socket = connect_native_websocket(&url).await.unwrap();
+                let mut socket = connect_native_websocket(&url, None).await.unwrap();
                 socket.send(Message::Text("from client".into())).await.unwrap();
                 assert_eq!(socket.next().await.unwrap().unwrap(), Message::Text("from server".into()));
                 assert_eq!(socket.next().await.unwrap().unwrap(), Message::Close(Some(close.clone())));

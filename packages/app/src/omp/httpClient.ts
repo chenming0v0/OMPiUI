@@ -88,6 +88,7 @@ export function getApiBase(): string {
 
 function piHeaders(init?: HeadersInit): Headers {
   const headers = new Headers(init)
+  if (serverStore.getActiveServer()?.source === 'dsh') { headers.delete('authorization'); return headers }
   const activeToken = serverStore.getActiveToken()
   if (activeToken) {
     headers.set('authorization', `Bearer ${activeToken}`)
@@ -99,6 +100,7 @@ function piHeaders(init?: HeadersInit): Headers {
 }
 
 export function getPiAuthToken(): string | undefined {
+  if (serverStore.getActiveServer()?.source === 'dsh') return undefined
   const activeToken = serverStore.getActiveToken()
   if (activeToken) return activeToken
   return (import.meta as ImportMeta & { env?: { VITE_OMPIUI_TOKEN?: string } }).env?.VITE_OMPIUI_TOKEN
