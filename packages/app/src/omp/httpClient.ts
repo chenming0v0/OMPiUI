@@ -107,6 +107,7 @@ export function getPiAuthToken(): string | undefined {
 }
 
 export async function piFetch(input: string, init?: PiRequestInit): Promise<Response> {
+  if (input.startsWith('dsh:')) throw new Error('DS tunnel is not connected')
   const { retry = true, timeoutMs, privateStream, ...requestInit } = init ?? {}
   requestInit.signal?.throwIfAborted()
   const method = (requestInit.method ?? 'GET').toUpperCase()

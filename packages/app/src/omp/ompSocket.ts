@@ -221,6 +221,14 @@ export function openPlatformSocket(url: string): PiSocket {
 }
 
 export function openPiSocket(url: string): PiSocket {
+  if (url.startsWith('dsh:')) {
+    const socket: PiSocket = {
+      readyState: PI_SOCKET_CLOSED, onopen: null, onmessage: null, onclose: null, onerror: null,
+      send() {}, close() { socket.onclose = null; socket.onerror = null },
+    }
+    queueMicrotask(() => { socket.onerror?.(); socket.onclose?.({ code: 1006 }) })
+    return socket
+  }
   const socket = isTauri()
     ? new TauriBridgeSocket(url, getDshTunnelSocketAuth(url))
     : openPlatformSocket(url)

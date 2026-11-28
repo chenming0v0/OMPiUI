@@ -3,7 +3,8 @@
 // ============================================
 
 import { API_BASE_URL } from '../constants'
-import { getHttpFetch } from '../utils/tauri'
+import { getHttpFetch, isTauri } from '../utils/tauri'
+import { DSH_PENDING_URL, loadDshServerSelection, saveDshServerSelection } from './dshServerSelection'
 import { PROTOCOL_VERSION } from '@ompiui/protocol'
 import { resolveAndroidTailscaleUrl } from '../utils/androidTailscale'
 import { auditHttpRequest } from '../omp/trafficAudit/http'
@@ -143,6 +144,7 @@ function isLoopbackServerUrl(url: string): boolean {
 class ServerStore {
   private servers: ServerConfig[] = []
   private runtimeServers = new Map<string, ServerConfig>()
+  private runtimeFallbacks = new Map<string, string>()
   private activeServerId: string | null = null
   private healthMap = new Map<string, ServerHealth>()
   private healthCheckSeqMap = new Map<string, number>()
@@ -164,6 +166,12 @@ class ServerStore {
 
   constructor() {
     this.loadFromStorage()
+    const restored = isTauri() ? loadDshServerSelection() : null
+    if (restored) {
+      this.runtimeServers.set(restored.id, { id: restored.id, name: restored.name, url: DSH_PENDING_URL, source: 'dsh' })
+      this.runtimeFallbacks.set(restored.id, restored.previousServerId)
+      this.activeServerId = restored.id
+    }
     this.updateSnapshots()
   }
 
@@ -221,6 +229,10 @@ class ServerStore {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.servers))
       if (selection) {
+        const runtime = this.activeServerId ? this.runtimeServers.get(this.activeServerId) : undefined
+        saveDshServerSelection(runtime?.source === 'dsh' ? {
+          id: runtime.id, name: runtime.name, previousServerId: this.getRuntimeFallbackId(runtime.id),
+        } : null, selection)
         if (this.activeServerId && this.runtimeServers.has(this.activeServerId)) {
           sessionStorage.setItem(RUNTIME_ROUTE_KEY, this.activeServerId)
         } else sessionStorage.removeItem(RUNTIME_ROUTE_KEY)
@@ -425,21 +437,35 @@ class ServerStore {
   }
 
   /** 短期隧道只在当前前端进程内注册，地址和会话凭据不进入保存的服务器列表。 */
-  registerRuntimeServer(server: ServerConfig): void {
+  registerRuntimeServer(server: ServerConfig, fallbackId?: string): void {
     if (this.servers.some(saved => saved.id === server.id)) throw new Error('Server ID already exists')
+    const previous = this.runtimeServers.get(server.id)
+    if (fallbackId) this.runtimeFallbacks.set(server.id, fallbackId)
+    if (previous?.url !== server.url) {
+      this.healthMap.delete(server.id)
+      this.healthCheckSeqMap.set(server.id, (this.healthCheckSeqMap.get(server.id) ?? 0) + 1)
+    }
     this.runtimeServers.set(server.id, { ...server, url: server.url.replace(/\/+$/, '') })
     this.notify()
+    if (previous && previous.url !== server.url && this.activeServerId === server.id) {
+      this.notifyServerChange(server.id, 'server-config-updated')
+    }
+  }
+
+  getRuntimeFallbackId(id: string): string {
+    return this.runtimeFallbacks.get(id) ?? this.DEFAULT_SERVER_ID
   }
 
   removeRuntimeServer(id: string, fallbackId?: string): void {
     if (!this.runtimeServers.delete(id)) return
+    this.runtimeFallbacks.delete(id)
     const wasActive = this.activeServerId === id
     this.healthMap.delete(id)
     this.healthCheckSeqMap.delete(id)
     this.clockCalibrationMap.delete(id)
     if (wasActive) {
       this.activeServerId = this.servers.find(server => server.id === fallbackId)?.id ?? this.servers[0]?.id ?? null
-      this.saveToStorage('window')
+      this.saveToStorage('default')
     }
     this.notify()
     if (wasActive) this.notifyServerChange(this.getActiveServerId(), 'server-switch')
@@ -575,6 +601,7 @@ class ServerStore {
       return { status: 'error', error: 'Server not found' }
     }
     const server = this.withRuntimeServerUrl(storedServer)
+    if (server.url === DSH_PENDING_URL) return { status: 'checking' }
     const checkSeq = (this.healthCheckSeqMap.get(serverId) ?? 0) + 1
     this.healthCheckSeqMap.set(serverId, checkSeq)
     const healthUrl = `${this.resolveHealthBaseUrl(server)}/api/v1/host/health`

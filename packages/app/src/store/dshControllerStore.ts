@@ -6,6 +6,7 @@ export interface DshServerState {
   hostId: string
   serverId: string
   phase: 'connecting' | 'connected' | 'ended'
+  error?: string
 }
 
 interface DshControllerState {

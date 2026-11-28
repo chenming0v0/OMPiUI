@@ -535,6 +535,9 @@ export function DshServerRows({ onSelectServer = id => { serverStore.setActiveSe
             )}
           </div>
           {error?.hostId === host.id && <div className="cb-srv-extra"><AuthAlert>{error.text}</AuthAlert></div>}
+          {state?.error && error?.hostId !== host.id && <div className="cb-srv-extra"><AuthAlert>
+            {t(`dshRemote.connectError.${state.error}`, { defaultValue: t('dshRemote.connectError.default') })}
+          </AuthAlert></div>}
         </div>
       )
     })}

@@ -110,6 +110,7 @@ export function withDshTunnelFetch(fetchImpl: typeof fetch): typeof fetch {
     let target: URL
     try { target = new URL(input instanceof Request ? input.url : String(input)) }
     catch { return fetchImpl(input, init) }
+    if (target.protocol === 'dsh:') throw new Error('DS tunnel is not connected')
     const session = sessions.get(target.origin)
     if (session === undefined) return fetchImpl(input, init)
     if (!session) throw new DOMException('DS tunnel session closed', 'AbortError')

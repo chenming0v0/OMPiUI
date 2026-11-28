@@ -72,6 +72,13 @@ test('reports availability against the listener address', async t => {
   assert.equal(before.reason, 'web')
   assert.equal(before.state, 'unregistered')
 
+  await manager.attach(5000)
+  const attached = await manager.status()
+  assert.equal(attached.available, true)
+  assert.equal(attached.reason, null)
+  assert.equal(attached.enabled, false)
+  assert.equal(attached.state, 'unregistered')
+
   await manager.attach(5000, '192.168.1.20')
   const status = await manager.status()
   assert.equal(status.available, false)

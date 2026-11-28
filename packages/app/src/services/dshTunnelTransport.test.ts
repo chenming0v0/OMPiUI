@@ -155,6 +155,11 @@ describe('DS tunnel session exchange', () => {
 })
 
 describe('DS tunnel request isolation and lifetime', () => {
+  it('does not send pending restored DS requests to the native network bridge', async () => {
+    const transport = vi.fn()
+    await expect(withDshTunnelFetch(transport)('dsh://pending/api/v1/host/health')).rejects.toThrow('not connected')
+    expect(transport).not.toHaveBeenCalled()
+  })
   it('leaves other origins and ordinary servers unchanged and never gives them WS credentials', async () => {
     await open()
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(null))
