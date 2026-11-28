@@ -31,11 +31,12 @@ async function fixture(t: TestContext, options: Omit<EventWebSocketOptions, "eve
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   assert.ok(address && typeof address !== "string");
-  const origin = `http://127.0.0.1:${address.port}`;
+  const port = address.port;
+  const origin = `http://127.0.0.1:${port}`;
 
   // 等待真实握手结果和首帧，拒绝路径必须返回 HTTP 状态，不能把断连当作 403。
   async function connect(path: string, headers: Record<string, string> = {}): Promise<Handshake> {
-    const socket = new WebSocket(`ws://127.0.0.1:${address.port}${path}`,
+    const socket = new WebSocket(`ws://127.0.0.1:${port}${path}`,
       path.startsWith(EVENT_PATH) ? EVENT_WS_SUBPROTOCOL : [], {
         headers: { Origin: STATIC_ORIGIN, ...headers }, handshakeTimeout: 5000,
       });
