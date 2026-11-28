@@ -87,6 +87,26 @@ jobs:
           npm run lint
           node --test scripts/ci-plan.test.mjs scripts/release/resolve.test.mjs
 
+  test-tailscale-bridge:
+    name: test tailscale bridge ${{ matrix.platform }}
+    if: needs.plan.outputs.mode == 'full'
+    needs: plan
+    runs-on: ${{ matrix.platform }}-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ubuntu, windows]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: packages/server/tailscale-bridge/go.mod
+          cache-dependency-path: packages/server/tailscale-bridge/go.sum
+      - name: Test Tailscale bridge and shared mobile packages
+        working-directory: packages/server/tailscale-bridge
+        run: go test -count=1 -timeout=5m ./...
+
   # 两片覆盖全部文件；Windows 分片内部仍由 test-shard 保持串行 PTY 测试。
   test-server:
     name: test server ${{ matrix.platform }} ${{ matrix.shard }}/2
@@ -250,7 +270,7 @@ jobs:
   validate:
     name: validate ${{ matrix.platform }}
     if: ${{ !cancelled() }}
-    needs: [plan, test-backend, test-server, test-omp-interop, test-omp-config-windows, test-omp-rpc-windows, test-app, tauri-check]
+    needs: [plan, test-backend, test-tailscale-bridge, test-server, test-omp-interop, test-omp-config-windows, test-omp-rpc-windows, test-app, tauri-check]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     strategy:
