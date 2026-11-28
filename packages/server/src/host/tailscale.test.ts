@@ -123,6 +123,36 @@ describe("embedded Tailscale lifecycle", () => {
     assert.match(node.getStatus().lastError ?? "", /127\.0\.0\.1/)
     await node.dispose()
   })
+
+  it("opens no outbound route and reports the sign-in requirement until the node is running", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ompiui-tsnet-outbound-"))
+    const node = manager(dir)
+    try {
+      await node.resume(8787)
+      assert.equal(await node.openRoute("http://100.101.2.9:8787"), null)
+      await assert.rejects(node.discover(), /node is stopped/)
+      await node.startLogin()
+      assert.equal(await node.openRoute("http://100.101.2.9:8787"), null)
+      await assert.rejects(node.discover(), /requires Running state \(current: NeedsLogin\)/)
+    } finally { await node.dispose(); rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it("routes Tailnet origins through the running node and lists its OMPiUI peers", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ompiui-tsnet-outbound-"))
+    const node = manager(dir, true)
+    try {
+      await node.resume(8787)
+      await node.startLogin()
+      assert.equal(await node.openRoute("http://100.101.2.9:8787"), "http://127.0.0.1:45001")
+      await assert.rejects(node.openRoute("http://192.168.1.2:8787"), { code: "INVALID_REQUEST" })
+      assert.deepEqual(await node.discover(), [{
+        marker: "ompiui", discoveryVersion: 1, displayName: "Desk", instanceId: "b".repeat(32),
+        port: 8787, pairing: true, address: "100.101.2.9",
+      }])
+      await node.disconnect()
+      assert.equal(await node.openRoute("http://100.101.2.9:8787"), null)
+    } finally { await node.dispose(); rmSync(dir, { recursive: true, force: true }) }
+  })
 })
 
 describe("Tailscale status mapping", () => {

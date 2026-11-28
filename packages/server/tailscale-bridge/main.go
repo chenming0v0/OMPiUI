@@ -21,6 +21,7 @@ import (
 
 	"github.com/chenming0v0/ompiui-tailscale-bridge/internal/discovery"
 	"github.com/chenming0v0/ompiui-tailscale-bridge/internal/gateway"
+	"github.com/chenming0v0/ompiui-tailscale-bridge/internal/outbound"
 	"tailscale.com/tsnet"
 )
 
@@ -109,7 +110,8 @@ func main() {
 	stop := make(chan struct{})
 	var once sync.Once
 	shutdown := func() { once.Do(func() { close(stop) }) }
-	handler := controlHandler(ts, shutdown)
+	routes := &outbound.Routes{}
+	handler := controlHandler(ts, routes, shutdown)
 	controlServer := &http.Server{
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       gateway.IdleTimeout,
@@ -142,6 +144,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_ = controlServer.Shutdown(ctx)
+	routes.Close()
 	if discoveryServer != nil {
 		_ = discoveryServer.Close()
 	}
@@ -205,7 +208,7 @@ func proxyHTTPServer(handler http.Handler) *http.Server {
 	return &http.Server{ReadHeaderTimeout: 10 * time.Second, IdleTimeout: gateway.IdleTimeout, ConnState: gateway.IdleConnState, Handler: handler}
 }
 
-func controlHandler(ts *tsnet.Server, shutdown func()) http.Handler {
+func controlHandler(ts *tsnet.Server, routes *outbound.Routes, shutdown func()) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -233,6 +236,60 @@ func controlHandler(ts *tsnet.Server, shutdown func()) http.Handler {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	})
+	// 出站路由：本机应用经这个节点访问 Tailnet 里的另一台 OMPiUI。
+	mux.HandleFunc("POST /route", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Origin string `json:"origin"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "expected a JSON body with origin"})
+			return
+		}
+		target, err := outbound.Origin(body.Origin)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		client, err := ts.LocalClient()
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+			return
+		}
+		status, err := client.StatusWithoutPeers(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+			return
+		}
+		// 未登录时不开路由，调用方据此改走系统网络。
+		if status.BackendState != "Running" {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "Tailscale is not running"})
+			return
+		}
+		local, err := routes.Open(target, ts.Dial)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"url": local})
+	})
+	mux.HandleFunc("POST /discover", func(w http.ResponseWriter, r *http.Request) {
+		results, err := discovery.Discover(r.Context(), func(ctx context.Context) (discovery.Status, error) {
+			client, err := ts.LocalClient()
+			if err != nil {
+				return discovery.Status{}, err
+			}
+			status, err := client.Status(ctx)
+			if err != nil {
+				return discovery.Status{}, err
+			}
+			return outbound.DiscoveryStatus(status), nil
+		}, ts.Dial)
+		if err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, results)
 	})
 	mux.HandleFunc("POST /shutdown", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)

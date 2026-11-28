@@ -14,11 +14,13 @@ interface DshControllerState {
   hosts: DshHostListItem[]
   connection: DshServerState | null
   authError: string | null
-  /** 正在等用户完成登录授权；只给通道条显示状态用。 */
+  /** 正在等用户完成登录授权；只给分组标题显示状态用。 */
   signingIn: boolean
+  /** 「服务器」页扫到的 DS 远程配对二维码，等「控制端」的 DS 远程分组接手。 */
+  pairRequest: string | null
 }
 
-let state: DshControllerState = { session: null, hosts: [], connection: null, authError: null, signingIn: false }
+let state: DshControllerState = { session: null, hosts: [], connection: null, authError: null, signingIn: false, pairRequest: null }
 const listeners = new Set<() => void>()
 const subscribe = (listener: () => void) => {
   listeners.add(listener)

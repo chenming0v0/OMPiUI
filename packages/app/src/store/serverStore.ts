@@ -6,8 +6,9 @@ import { API_BASE_URL } from '../constants'
 import { getHttpFetch, isTauri } from '../utils/tauri'
 import { DSH_PENDING_URL, loadDshServerSelection, saveDshServerSelection } from './dshServerSelection'
 import { PROTOCOL_VERSION } from '@ompiui/protocol'
-import { resolveAndroidTailscaleUrl } from '../utils/androidTailscale'
+import { resolveTailscaleUrl } from '../utils/tailscaleRoute'
 import { auditHttpRequest } from '../omp/trafficAudit/http'
+import { receiveBackendRuntimeHealth, type BackendRuntimeHealth } from './backendRuntimeHealth'
 
 /** 这条连接是怎么加进来的：配对兑换，还是手动填的地址和密钥。只用于列表里的来源标记。 */
 export type ServerSource = 'pair' | 'manual' | 'dsh'
@@ -27,8 +28,10 @@ export interface ServerConfig {
 /**
  * 服务器健康状态
  */
-export interface ServerHealth {
+export interface ServerHealth extends BackendRuntimeHealth {
+  // 连接状态供 SSE 和远程连接使用；运行时健康由 workerReady / ompVersion 单独表达。
   status: 'checking' | 'online' | 'offline' | 'error' | 'unauthorized'
+  url?: string // 实际探测地址，兼容旧版 Local 保存的相对路径
   latency?: number // 响应延迟 (ms)
   lastCheck?: number // 上次检查时间戳
   error?: string // 错误信息
@@ -332,6 +335,16 @@ class ServerStore {
     return this.getLocalServer()?.url ?? API_BASE_URL
   }
 
+  /**
+   * 这台电脑上的后端。虚拟组网的出站路由等只对本机有意义的能力固定打向它，
+   * 与当前选中的服务器无关；默认条目被改成远程地址时返回 null。
+   */
+  getLocalBackend(): { url: string; token?: string } | null {
+    const local = this.getLocalServer()
+    if (!local || !isLoopbackServerUrl(local.url)) return null
+    return { url: local.url.replace(/\/+$/, ''), token: local.token }
+  }
+
   isActiveLocalServer(): boolean {
     return this.getActiveServerId() === this.DEFAULT_SERVER_ID
   }
@@ -631,7 +644,7 @@ class ServerStore {
       }
 
       const f = await getHttpFetch()
-      const resolvedUrl = await resolveAndroidTailscaleUrl(healthUrl)
+      const resolvedUrl = await resolveTailscaleUrl(healthUrl)
       const init: RequestInit = {
         method: 'GET',
         signal: controller.signal,
@@ -685,10 +698,16 @@ class ServerStore {
 
         const health: ServerHealth = {
           status: 'online',
+          url: this.resolveHealthBaseUrl(server),
           latency,
           lastCheck: Date.now(),
           version: typeof data.ompVersion === 'string' ? data.ompVersion : undefined,
+          ompVersion: typeof data.ompVersion === 'string' ? data.ompVersion : null,
+          workerReady: typeof data.workerReady === 'boolean' ? data.workerReady : null,
           details,
+        }
+        if (this.healthCheckSeqMap.get(serverId) === checkSeq) {
+          receiveBackendRuntimeHealth(this.resolveHealthBaseUrl(server), health, startTime)
         }
         return commitHealth(health)
       } else if (response.status === 401) {
@@ -848,7 +867,7 @@ export async function applyPairParam(pair: string, origin: string, serverUrl?: s
     const requested = serverUrl && /^https?:\/\//i.test(serverUrl) ? serverUrl : origin
     const base = requested.replace(/\/+$/, '')
     const f = await getHttpFetch()
-    const resolved = await resolveAndroidTailscaleUrl(`${base}/api/v1/host/pair/redeem`)
+    const resolved = await resolveTailscaleUrl(`${base}/api/v1/host/pair/redeem`)
     const init: RequestInit = {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

@@ -1,5 +1,6 @@
 import { parseDeviceDiscoveryInfo, type DiscoveredDevice } from '@ompiui/protocol'
 import { discoverAndroidTailscale, isAndroidTailscalePlatform, isTailnetUrl } from './androidTailscale'
+import { discoverDesktopTailscale, isDesktopTailscalePlatform } from './desktopTailscale'
 
 type DiscoveryBridge = { request(id: string, method: string, payload: string): void }
 declare global {
@@ -74,7 +75,9 @@ async function discoverLan(signal: AbortSignal): Promise<unknown> {
 }
 
 export async function discoverDevices(network: DiscoveredDevice['network'], signal: AbortSignal): Promise<DiscoveredDevice[]> {
-  const result = network === 'lan' ? await discoverLan(signal) : await discoverAndroidTailscale(signal)
+  // 虚拟组网：手机问原生节点，桌面问本机后端的内置节点。
+  const result = network === 'lan' ? await discoverLan(signal)
+    : isDesktopTailscalePlatform() ? await discoverDesktopTailscale(signal) : await discoverAndroidTailscale(signal)
   signal.throwIfAborted()
   return parseDiscoveredDevices(result, network)
 }

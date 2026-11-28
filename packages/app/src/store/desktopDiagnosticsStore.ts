@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import { backendRuntimeStatus, receiveBackendRuntimeHealth, useBackendRuntimeHealth } from './backendRuntimeHealth'
 
 export type DesktopServicePhase =
   'idle' | 'preparing' | 'checking' | 'starting' | 'waiting_health' | 'running' | 'stopping' | 'stopped' | 'failed'
@@ -16,6 +17,8 @@ export interface DesktopServiceDiagnostics {
   /** 工作进程握手探测到的 OMP 版本，不以 IPC 就绪代替运行时可用。 */
   ompVersion?: string | null
   healthError: string | null
+  healthUrl?: string | null
+  healthCheckedAt?: number | null
   output: string[]
 }
 
@@ -74,6 +77,9 @@ class DesktopDiagnosticsStore {
     this.update({ operation: null, commandError: error === undefined ? null : String(error) })
   }
   receive(native: DesktopServiceDiagnostics) {
+    if (native.reachable && native.healthUrl && native.healthCheckedAt != null) {
+      receiveBackendRuntimeHealth(native.healthUrl, native, native.healthCheckedAt)
+    }
     // 其他桌面窗口重试后，新一轮原生启动状态替代本窗口的旧错误。
     const newAttempt =
       this.failedRequestAt !== null && native.requestedAt !== null && native.requestedAt > this.failedRequestAt
@@ -87,5 +93,19 @@ class DesktopDiagnosticsStore {
 
 export const desktopDiagnosticsStore = new DesktopDiagnosticsStore()
 export function useDesktopDiagnostics() {
-  return useSyncExternalStore(desktopDiagnosticsStore.subscribe, desktopDiagnosticsStore.getSnapshot)
+  const snapshot = useSyncExternalStore(desktopDiagnosticsStore.subscribe, desktopDiagnosticsStore.getSnapshot)
+  const health = useBackendRuntimeHealth(snapshot.native?.healthUrl)
+  return snapshot.native?.reachable && health
+    ? { ...snapshot, native: { ...snapshot.native, workerReady: health.workerReady ?? null, ompVersion: health.ompVersion } }
+    : snapshot
+}
+
+/**
+ * 本机后端在运行、工作进程握手完成，却探测不到 OMP：这台电脑没有可用的运行时。
+ * 状态还没读到时不算缺失。
+ */
+export function useLocalOmpMissing(): boolean {
+  const snapshot = useDesktopDiagnostics()
+  const native = snapshot.native
+  return desktopServicePhase(snapshot) === 'running' && backendRuntimeStatus(native) === 'missing'
 }

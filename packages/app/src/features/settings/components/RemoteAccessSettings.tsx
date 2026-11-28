@@ -1,28 +1,23 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type React from 'react'
 import { useTranslation } from 'react-i18next'
-import { CircleCheck, Clock, Globe, Monitor, Server, TriangleAlert, Wifi } from 'lucide-react'
+import { Check, CircleCheck, Clock, Copy, Globe, Loader2, RefreshCw, Server, TriangleAlert, Wifi } from 'lucide-react'
 import type { HostNetworkInfo, PairInviteInfo, TunnelStatus } from '@ompiui/protocol'
-import { CheckIcon, CopyIcon, DeepSeekIcon, RetryIcon, SpinnerIcon } from '../../../components/Icons'
+import { DeepSeekIcon } from '../../../components/Icons'
 import { QrCode } from '../../../components/QrCode'
 import {
   fetchHostNetwork,
   fetchPairInvite,
-  fetchTailscale,
   fetchHostTunnel,
   mintPairInvite,
-  startTailscaleLogin,
-  disconnectTailscale,
 } from '../../../omp/transport/index.js'
 import { serverStorage } from '../../../utils'
 import { useServerStore } from '../../../hooks'
-import { useTailscaleLoginFlow } from '../../../hooks/useTailscaleLoginFlow'
-import { TailscaleControls } from './TailscaleControls'
-import { AuthStatusPill } from './AuthPanelUI'
-import { ChannelBoard, NextAction, PageHead, PanelRow, PanelSplit, type ChannelTile, type LampTone } from './ChannelBoard'
+import { ChannelBoard, Card, NextAction, PageHead, PanelRow, PanelSplit, type ChannelTile, type LampTone } from './ChannelBoard'
 import { DshHostPanel } from './DshHostPanel'
+import { RelaySettings } from './RelaySettings'
+import { useBackendTailscale } from './useBackendTailscale'
 import { useDshHost } from './useDshHost'
-import { openTailscaleLogin } from '../../../utils/tailscaleLogin'
 import { isTauri, isTauriMobile } from '../../../utils/tauri'
 
 const REMOTE_TAB_KEY = 'ompiui-remote-tab'
@@ -68,41 +63,10 @@ function RemoteAccessPanel({ onOpenService }: { onOpenService?: () => void }) {
   const [inviteRefresh, setInviteRefresh] = useState(0)
   const [now, setNow] = useState(() => Date.now())
   const [tunnel, setTunnel] = useState<TunnelStatus | null | undefined>(undefined)
-  const [tailscale, setTailscale] = useState<import('@ompiui/protocol').TailscaleInfo | null>(null)
-  const [tailscaleBusy, setTailscaleBusy] = useState(false)
-  const [tailscaleError, setTailscaleError] = useState('')
-  const [tailscaleStatusError, setTailscaleStatusError] = useState('')
-  const [copied, setCopied] = useState(false)
+  const [editingRelay, setEditingRelay] = useState(false)
+  const [copied, setCopied] = useState<'invite' | 'address' | null>(null)
+  const tailscale = useBackendTailscale()
   const dshHost = useDshHost(desktop)
-  const mounted = useRef(true)
-  useEffect(() => {
-    mounted.current = true
-    return () => { mounted.current = false }
-  }, [])
-  const pollTailscale = async (signal: AbortSignal) => {
-    const next = await fetchTailscale(signal)
-    if (!signal.aborted) {
-      setTailscale(next)
-      setTailscaleStatusError('')
-    }
-    return { backendState: next.backendState, authUrl: next.authUrl ?? null }
-  }
-  const tailscaleFlow = useTailscaleLoginFlow({
-    start: async signal => {
-      const result = await startTailscaleLogin()
-      if (signal.aborted) return {}
-      // POST 已给出链接时立刻打开，不让后续 GET 的延迟或失败拦住授权。
-      if (result.authUrl) return { authUrl: result.authUrl }
-      return pollTailscale(signal)
-    },
-    poll: pollTailscale,
-    open: openTailscaleLogin,
-    timeoutMessage: t('settings:service.remoteTailscaleAuthUrlTimeout'),
-    connectionTimeoutMessage: t('settings:service.remoteTailscaleConnectionTimeout'),
-    statusPollMs: TUNNEL_POLL_MS,
-    paused: tailscaleBusy,
-    onPollError: err => setTailscaleStatusError(err instanceof Error ? err.message : String(err)),
-  })
 
   const interfaces = network?.interfaces ?? []
   const port = network?.port
@@ -223,19 +187,17 @@ function RemoteAccessPanel({ onOpenService }: { onOpenService?: () => void }) {
   const lanReason = !listenPort ? t('settings:service.remotePortUnavailable')
     : !address ? t('settings:service.remoteNoNetwork')
     : t(listenHost ? 'settings:service.remoteLanNotListening' : 'settings:service.remoteHostUnavailable', { host: listenHost })
-  const tailscaleRunning = !tailscaleStatusError && tailscale?.backendState === 'Running'
-  const tailscaleBase = tailscaleRunning ? tailscale?.url ?? null : null
+  const tailscaleBase = tailscale.running ? tailscale.tailscale?.url ?? null : null
   const relayBase = tunnel?.state === 'connected' ? tunnel.publicUrl?.replace(/\/+$/, '') ?? null : null
   const base = tab === 'relay' ? relayBase : tab === 'tailscale' ? tailscaleBase : tab === 'lan' ? lanBase : null
 
   const pairUrl = invite && !expired && !invite.redeemed && base ? `${base}/?pair=${encodeURIComponent(invite.pair)}` : null
 
-  const copyInvite = async () => {
-    if (!pairUrl) return
+  const copy = async (value: string, what: 'invite' | 'address') => {
     try {
-      await navigator.clipboard.writeText(pairUrl)
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 2000)
+      await navigator.clipboard.writeText(value)
+      setCopied(what)
+      window.setTimeout(() => setCopied(null), 2000)
     } catch {
       // 剪贴板不可用时用户可以手动选中
     }
@@ -246,38 +208,14 @@ function RemoteAccessPanel({ onOpenService }: { onOpenService?: () => void }) {
     serverStorage.set(REMOTE_TAB_KEY, next)
   }
 
-  const runTailscaleAction = (action: () => Promise<void>) => {
-    setTailscaleBusy(true)
-    setTailscaleError('')
-    void action()
-      .catch(error => { if (mounted.current) setTailscaleError(error instanceof Error ? error.message : String(error)) })
-      .finally(() => { if (mounted.current) setTailscaleBusy(false) })
-  }
-
-  const tailscaleControls = (inline: boolean) => tailscale && (
-    <TailscaleControls state={tailscale.backendState}
-      authUrl={tailscaleFlow.authUrl}
-      ips={tailscale.ips}
-      enabled={tailscale.enabled} available={tailscale.mode === 'embedded' && tailscale.installed}
-      busy={tailscaleBusy} error={tailscaleError || tailscaleStatusError || tailscaleFlow.error || tailscale.lastError}
-      authPhase={tailscaleFlow.phase} authLinkMode={!isTauri()} showAuthQr={false} inline={inline}
-      onAuthLinkClick={() => { setTailscaleError(''); tailscaleFlow.clearError() }}
-      onOpenAuthUrl={url => { setTailscaleError(''); void tailscaleFlow.reopenAuthPage(url) }}
-      onLogin={() => { setTailscaleError(''); void tailscaleFlow.beginLogin() }}
-      onDisconnect={() => {
-        const signal = tailscaleFlow.reset()
-        runTailscaleAction(async () => {
-          await disconnectTailscale()
-          if (!signal.aborted) await tailscaleFlow.refreshStatus(true)
-        })
-      }} />
-  )
-
   const loading = (
-    <p role="status" className="cb-hint flex items-center gap-2">
-      <SpinnerIcon size={13} className="animate-spin" />{t('settings:service.backendStatusLoading')}
+    <p role="status" className="cb-hint flex items-center justify-center gap-2">
+      <Loader2 size={13} className="animate-spin" />{t('settings:service.backendStatusLoading')}
     </p>
   )
+  const unavailable = <p role="status" className="cb-hint text-center">{t('settings:service.backendStatusUnavailable')}</p>
+  // 中转和监听存在本机服务的启动环境里，只有连着本机后端的桌面版能改。
+  const local = desktop && Boolean(activeServer?.isDefault)
   const serviceAction = desktop && onOpenService
     ? <button type="button" className="cb-btn" onClick={onOpenService}>{t('settings:host.openService')}</button>
     : undefined
@@ -286,46 +224,39 @@ function RemoteAccessPanel({ onOpenService }: { onOpenService?: () => void }) {
   const ticket = (reachable: string) => {
     if (invite?.redeemed) {
       return (
-        <NextAction tone="ok" icon={<CircleCheck size={18} />} title={t('settings:service.remoteApproved')}
-          actions={<button type="button" className="cb-btn" onClick={reMint}><RetryIcon size={14} />{t('settings:host.mintAnother')}</button>}>
-          {t('settings:host.redeemedBody')}
-        </NextAction>
+        <NextAction tone="ok" icon={<CircleCheck size={34} />} title={t('settings:service.remoteApproved')}
+          actions={<button type="button" className="cb-btn" onClick={reMint}><RefreshCw size={14} />{t('settings:host.mintAnother')}</button>} />
       )
     }
     if (!invite && !inviteGone) return loading
     if (!invite || expired || !pairUrl) {
       return (
-        <NextAction tone="warn" icon={<TriangleAlert size={18} />}
+        <NextAction tone="warn" icon={<TriangleAlert size={34} />}
           title={t(invite && expired ? 'settings:host.inviteExpired' : 'settings:service.remoteQrUnavailable')}
-          actions={<button type="button" className="cb-btn" onClick={reMint}><RetryIcon size={14} />{t('settings:service.remoteRefresh')}</button>}>
-          {t(invite && expired ? 'settings:host.inviteExpiredBody' : 'settings:service.remotePairUnavailable')}
-        </NextAction>
+          actions={<button type="button" className="cb-btn" data-variant="primary" onClick={reMint}><RefreshCw size={14} />{t('settings:service.remoteRefresh')}</button>} />
       )
     }
     return (
-      <div data-testid="pair-ticket">
-        <div className="cb-ticket">
-          <div className="cb-qr"><QrCode text={pairUrl} size={172} /></div>
-          <div className="min-w-0">
-            <div className="cb-ticket-top">
-              <span className="cb-label">{t('settings:host.pairCode')}</span>
-              <span className="cb-expiry">
-                <Clock size={13} />{t('settings:service.remoteExpiresLater', { time: formatCountdown(invite.expiresAt, now) })}
-                <button type="button" className="cb-link" onClick={reMint}><RetryIcon size={12} />{t('settings:service.remoteRefresh')}</button>
-              </span>
-            </div>
-            <div className="cb-code" data-testid="pair-code">
-              <span>{invite.code.slice(0, 4)}</span><span>{invite.code.slice(4)}</span>
-            </div>
-            <span className="cb-label">{t('settings:host.pairAddress')}</span>
-            <code className="cb-addr" data-testid="pair-address">{reachable}</code>
-            <button type="button" className="cb-btn" onClick={() => void copyInvite()}>
-              {copied ? <CheckIcon size={14} className="text-success-100" /> : <CopyIcon size={14} />}
-              {copied ? t('settings:service.remoteCopied') : t('settings:service.remoteCopyInvite')}
-            </button>
-          </div>
+      <div className="cb-ticket" data-testid="pair-ticket">
+        <div className="cb-qr"><QrCode text={pairUrl} size={172} /></div>
+        <div className="cb-code" data-testid="pair-code" aria-label={t('settings:host.pairCode')}>
+          <span>{invite.code.slice(0, 4)}</span><span>{invite.code.slice(4)}</span>
         </div>
-        <p className="cb-waiting"><span aria-hidden className="cb-waiting-dot" /><span>{t('settings:host.waiting')}</span></p>
+        <p className="cb-expiry">
+          <Clock size={13} /><span>{t('settings:service.remoteExpiresLater', { time: formatCountdown(invite.expiresAt, now) })}</span>
+          <button type="button" className="cb-link" onClick={reMint}>{t('settings:service.remoteRefresh')}</button>
+        </p>
+        <div className="cb-copy">
+          <code data-testid="pair-address" title={reachable}>{reachable}</code>
+          <button type="button" className="cb-icon-btn" onClick={() => void copy(reachable, 'address')}
+            title={t('settings:host.copyAddress')} aria-label={t('settings:host.copyAddress')}>
+            {copied === 'address' ? <Check size={14} className="text-success-100" /> : <Copy size={14} />}
+          </button>
+        </div>
+        <button type="button" className="cb-btn" onClick={() => void copy(pairUrl, 'invite')}>
+          {copied === 'invite' ? <Check size={14} className="text-success-100" /> : <Copy size={14} />}
+          {copied === 'invite' ? t('settings:service.remoteCopied') : t('settings:service.remoteCopyInvite')}
+        </button>
       </div>
     )
   }
@@ -335,16 +266,6 @@ function RemoteAccessPanel({ onOpenService }: { onOpenService?: () => void }) {
     : lanBase && address
       ? { tone: 'on', state: address }
       : { tone: 'warn', state: t(lanLocalOnly ? 'settings:host.lanLocalOnly' : 'settings:host.unavailable') }
-  const tailscaleWaiting = tailscaleFlow.phase !== 'idle' && tailscaleFlow.phase !== 'error'
-  const tailscaleTile: Pick<ChannelTile<RemoteTab>, 'tone' | 'state'> = tailscaleRunning
-    ? { tone: 'on', state: tailscale?.ips[0] ?? t('settings:host.connected') }
-    : tailscale?.backendState === 'NeedsMachineAuth'
-      ? { tone: 'warn', state: t('settings:host.tsApproval') }
-      : tailscaleWaiting
-        ? { tone: 'busy', state: t('settings:host.tsAuthorizing') }
-        : !tailscale
-          ? (tailscaleStatusError ? { tone: 'off', state: t('settings:host.unavailable') } : { tone: 'busy', state: t('settings:host.loading') })
-          : { tone: 'off', state: t('settings:host.tsSignedOut') }
   const relayTile: Pick<ChannelTile<RemoteTab>, 'tone' | 'state'> = tunnel === undefined
     ? { tone: 'busy', state: t('settings:host.loading') }
     : !tunnel
@@ -359,23 +280,23 @@ function RemoteAccessPanel({ onOpenService }: { onOpenService?: () => void }) {
     : dshHost.state === 'unavailable' ? t('settings:dshRemote.hostUnavailableShort')
     : t(`settings:dshRemote.hostState.${dshHost.state}`)
   const tiles: ChannelTile<RemoteTab>[] = [
-    { id: 'lan', icon: <Wifi size={16} />, name: t('settings:service.remoteTabLan'), ...lanTile },
-    { id: 'tailscale', icon: <Globe size={16} />, name: t('settings:service.remoteTabTailscale'), ...tailscaleTile },
-    { id: 'relay', icon: <Server size={16} />, name: t('settings:service.remoteTabRelay'), ...relayTile },
-    ...(desktop ? [{ id: 'dsh' as const, icon: <DeepSeekIcon size={16} />, name: t('settings:dshRemote.tab'), tone: dshTone, state: dshState }] : []),
+    { id: 'lan', icon: <Wifi size={17} />, name: t('settings:service.remoteTabLan'), ...lanTile },
+    { id: 'tailscale', icon: <Globe size={17} />, name: t('settings:service.remoteTabTailscale'), ...tailscale.tile },
+    { id: 'relay', icon: <Server size={17} />, name: t('settings:service.remoteTabRelay'), ...relayTile },
+    ...(desktop ? [{ id: 'dsh' as const, icon: <DeepSeekIcon size={17} />, name: t('settings:dshRemote.tab'), tone: dshTone, state: dshState }] : []),
   ]
 
   let panel: React.ReactNode
   if (tab === 'lan') {
     panel = <>
       {networkLoading ? loading : lanBase ? ticket(lanBase) : (
-        <NextAction tone="warn" icon={<TriangleAlert size={18} />} actions={lanNotListening ? serviceAction : undefined}
+        <NextAction tone="warn" icon={<Wifi size={34} />} actions={lanNotListening ? serviceAction : undefined}
           title={t(lanLocalOnly ? 'settings:host.lanLocalOnlyTitle' : 'settings:service.remoteQrUnavailable')}>
           {lanReason}
         </NextAction>
       )}
       <PanelSplit>
-        <PanelRow title={t('settings:service.remoteNic')} hint={t('settings:service.remoteNicDesc')}>
+        <PanelRow title={t('settings:service.remoteNic')}>
           <select
             value={selectedAddress}
             aria-label={t('settings:service.remoteNic')}
@@ -392,8 +313,7 @@ function RemoteAccessPanel({ onOpenService }: { onOpenService?: () => void }) {
           </select>
           <button
             type="button"
-            className="cb-btn"
-            data-size="icon"
+            className="cb-icon-btn"
             title={t('common:refresh')}
             aria-label={t('common:refresh')}
             disabled={networkLoading}
@@ -403,73 +323,67 @@ function RemoteAccessPanel({ onOpenService }: { onOpenService?: () => void }) {
               setNetworkRefresh(value => value + 1)
             }}
           >
-            <RetryIcon size={14} className={networkLoading ? 'animate-spin' : undefined} />
+            <RefreshCw size={15} className={networkLoading ? 'animate-spin' : undefined} />
           </button>
-        </PanelRow>
-        <PanelRow title={t('settings:service.remotePort')} hint={t('settings:service.remoteServerPortDesc')}>
-          <code aria-label={t('settings:service.remotePort')} className="cb-value">{listenPort ?? '—'}</code>
         </PanelRow>
       </PanelSplit>
     </>
   } else if (tab === 'tailscale') {
-    const approval = tailscale?.backendState === 'NeedsMachineAuth'
-    panel = !tailscale ? (
-      tailscaleStatusError
-        ? <p role="status" className="cb-hint">{t('settings:service.backendStatusUnavailable')}</p>
-        : loading
-    ) : tailscaleBase ? <>
-      {ticket(tailscaleBase)}
-      <PanelSplit>
-        <PanelRow title={t('settings:service.remoteTabTailscale')} hint={t('settings:host.tsPeerHint')}>
-          {tailscaleControls(true)}
-        </PanelRow>
-      </PanelSplit>
-    </> : (
-      <NextAction tone={approval ? 'warn' : 'idle'} icon={<Globe size={18} />}
-        title={t(approval ? 'settings:service.remoteTailscaleApproval' : 'settings:host.tsJoinTitle')}>
-        <p>{t(approval ? 'settings:service.remotePairApprovalRequired' : 'settings:host.tsJoinBody')}</p>
-        <div className="mt-3.5">{tailscaleControls(false)}</div>
-      </NextAction>
-    )
-  } else if (tab === 'relay') {
-    panel = tunnel === undefined ? loading
-      : !tunnel ? <p role="status" className="cb-hint">{t('settings:service.backendStatusUnavailable')}</p>
-      : !tunnel.enabled ? (
-        <NextAction icon={<Server size={18} />} title={t('settings:host.relayOffTitle')} actions={serviceAction}>
-          {t(desktop ? 'settings:service.remoteRelayNotConfigured' : 'settings:service.remoteRelayManageHint')}
-        </NextAction>
-      ) : relayBase ? <>
-        {ticket(relayBase)}
+    panel = !tailscale.tailscale ? (tailscale.statusError ? unavailable : loading)
+      : tailscaleBase ? <>
+        {ticket(tailscaleBase)}
         <PanelSplit>
-          <PanelRow title={t('settings:host.relayEntry')} hint={t('settings:service.remoteRelayConnected')}>
-            <AuthStatusPill tone="success">{t('settings:host.connected')}</AuthStatusPill>
-          </PanelRow>
+          <PanelRow title="Tailscale">{tailscale.controls({ inline: true, hideStatus: true })}</PanelRow>
         </PanelSplit>
       </> : (
-        <NextAction tone="warn" icon={<Server size={18} />} title={t('settings:host.relayOfflineTitle')}>
-          {t('settings:service.remoteRelayOffline')}
-        </NextAction>
+        <NextAction tone={tailscale.approval ? 'warn' : tailscale.waiting || tailscale.restoring ? 'busy' : 'idle'}
+          icon={tailscale.waiting || tailscale.restoring ? <Loader2 size={34} className="animate-spin" /> : <Globe size={34} />}
+          title={tailscale.tile.state}
+          actions={<div className="cb-stack">{tailscale.controls({ layout: 'phone', hideStatus: !tailscale.waiting && !tailscale.approval })}</div>} />
       )
+  } else if (tab === 'relay') {
+    panel = tunnel === undefined ? loading
+      : !tunnel ? unavailable
+      : local && (editingRelay || !tunnel.enabled) ? (
+        <RelaySettings onCancel={tunnel.enabled ? () => setEditingRelay(false) : undefined} />
+      ) : !tunnel.enabled ? (
+        <NextAction icon={<Server size={34} />} title={t('settings:host.relayOffTitle')}>
+          {t('settings:service.remoteRelayManageHint')}
+        </NextAction>
+      ) : <>
+        {relayBase ? ticket(relayBase) : (
+          <NextAction tone="warn" icon={<Server size={34} />} title={t('settings:host.relayOfflineTitle')}>
+            {tunnel.lastError}
+          </NextAction>
+        )}
+        <PanelSplit>
+          <PanelRow title={t('settings:service.tunnelUrl')}>
+            <code title={tunnel.relayUrl ?? undefined}>{tunnel.relayUrl}</code>
+            {local && <button type="button" className="cb-btn" onClick={() => setEditingRelay(true)}>{t('common:edit')}</button>}
+          </PanelRow>
+        </PanelSplit>
+      </>
   } else {
     panel = <DshHostPanel host={dshHost} />
   }
 
-  const subject = activeServer && (
+  // 被控端配置的是「当前连着的那台后端」。连的是本机时不用说；切到别的服务器才提示，避免改错机器。
+  const subject = activeServer && !activeServer.isDefault && (
     <>
-      <Monitor size={14} />
+      <TriangleAlert size={13} />
       <span>{t('settings:host.configuring')}</span>
-      <strong>{activeServer.name}</strong>
-      <code>{activeServer.url.replace(/^https?:\/\//, '')}</code>
+      <strong title={activeServer.name}>{activeServer.name}</strong>
     </>
   )
 
   return (
     <div className="cb-page">
-      <PageHead title={t('settings:host.title')} description={t('settings:host.description')} subject={subject} />
-      <ChannelBoard testId="host-channels" tiles={tiles} selected={tab} onSelect={switchTab}>
-        {panel}
-      </ChannelBoard>
-      {!desktop && <p className="cb-footnote">{t('settings:host.dshDesktopOnly')}</p>}
+      <Card>
+        <PageHead title={t('settings:host.title')} subject={subject} />
+        <ChannelBoard testId="host-channels" tiles={tiles} selected={tab} onSelect={switchTab}>
+          {panel}
+        </ChannelBoard>
+      </Card>
     </div>
   )
 }

@@ -8,6 +8,7 @@ import {
 } from '../store/desktopDiagnosticsStore'
 import { useDesktopServiceDiagnostics } from '../hooks/useDesktopServiceDiagnostics'
 import { useServiceStore } from '../store/serviceStore'
+import { backendRuntimeStatus } from '../store/backendRuntimeHealth'
 import {
   readDesktopServiceDiagnostics,
   restartDesktopService,
@@ -53,9 +54,11 @@ function DesktopServiceIndicator() {
     value ? new Date(value).toLocaleString(i18n.language, { hour12: false }) : '—'
   const formatClock = (value: number) =>
     new Date(value).toLocaleTimeString(i18n.language, { hour12: false, hour: '2-digit', minute: '2-digit' })
-  const ompMissing = running && native?.workerReady === true && !native.ompVersion
+  const runtimeStatus = backendRuntimeStatus(native)
+  const runtimeWarning = running && runtimeStatus !== 'ready'
+  const runtimeLabel = runtimeWarning ? t(`settings:servers.runtime.${runtimeStatus}`) : ''
   const color = running
-    ? ompMissing
+    ? runtimeWarning
       ? 'bg-warning-100'
       : 'bg-success-100'
     : ['failed', 'unreachable'].includes(phase)
@@ -91,7 +94,7 @@ function DesktopServiceIndicator() {
         aria-expanded={open}
         onClick={() => setOpen(true)}
         title={t('desktopService.open')}
-        aria-label={`${t('desktopService.open')} · ${t(`desktopService.phase.${phase}`)}${ompMissing ? ` · ${t('desktopService.runtime.statusMissing')}` : ''}`}
+        aria-label={`${t('desktopService.open')} · ${t(`desktopService.phase.${phase}`)}${runtimeLabel ? ` · ${runtimeLabel}` : ''}`}
         className="mx-2 inline-flex h-7 max-w-64 items-center gap-2 rounded-md px-2 text-xs text-text-200 transition-colors hover:bg-bg-200 focus-visible:outline-2 focus-visible:outline-accent-main-100"
       >
         {busy ? (
@@ -101,7 +104,7 @@ function DesktopServiceIndicator() {
         )}
         <span className="truncate">
           {t('desktopService.backend')} · {t(`desktopService.phase.${phase}`)}
-          {ompMissing && ` · ${t('desktopService.runtime.statusMissing')}`}
+          {runtimeLabel && ` · ${runtimeLabel}`}
         </span>
         {busy && <span className="shrink-0 tabular-nums text-text-300">{duration}</span>}
       </button>
@@ -111,7 +114,7 @@ function DesktopServiceIndicator() {
             <StatusCard
               label={t('desktopService.backend')}
               icon={<WifiIcon size={14} />}
-              tone={busy ? 'busy' : running ? 'success' : ['failed', 'unreachable'].includes(phase) ? 'danger' : 'idle'}
+              tone={busy ? 'busy' : running ? runtimeWarning ? 'warning' : 'success' : ['failed', 'unreachable'].includes(phase) ? 'danger' : 'idle'}
             >
               <div className="flex min-w-0 flex-col gap-1.5">
                 <div role="status" className="flex items-center gap-2 text-base font-semibold text-text-100">

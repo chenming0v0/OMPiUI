@@ -1,59 +1,43 @@
-import { lazy, Suspense, useState, useEffect, useCallback, useMemo } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Activity, Globe, KeyRound, Monitor, QrCode } from 'lucide-react'
-import { Button } from '../../../components/ui/Button'
-import { ConfirmDialog } from '../../../components/ui/ConfirmDialog'
 import {
-  TrashIcon,
-  SpinnerIcon,
-  KeyIcon,
-  PencilIcon,
-  PlusIcon,
-  RetryIcon,
-  ShareIcon,
-  CopyIcon,
-  CheckIcon,
-  ExternalLinkIcon,
-} from '../../../components/Icons'
-import { useServerStore, useRouter } from '../../../hooks'
-import { clearSessionRuntimeState } from '../../../utils/sessionLifecycle'
-import { isAndroidTailscalePlatform, isTailnetUrl } from '../../../utils/androidTailscale'
-import { isTauri } from '../../../utils/tauri'
-import { settingsFieldClass } from './SettingsUI'
-import { Lamp, PageHead, type LampTone } from './ChannelBoard'
+  Check, Copy, ExternalLink, KeyRound, Loader2, MoreHorizontal, Pencil, RefreshCw, ScanLine, Share2, TriangleAlert, Trash2, Wifi, WifiOff,
+} from 'lucide-react'
+import { useServerStore } from '../../../hooks'
+import { isTauri, isTauriMobile } from '../../../utils/tauri'
+import { parseConnectionLink, resolveConnectionLink } from '../../../utils/connectionLink'
+import { scanPairingQr } from '../../../utils/qrScanner'
+import { dshControllerStore } from '../../../store/dshControllerStore'
+import { AuthAlert } from './AuthPanelUI'
+import { Card, PageHead, type LampTone } from './ChannelBoard'
 import { AddServerForm } from './AddServerForm'
 import { SERVER_NAME_MAX_LENGTH, isHttpsIpUrl } from './serverForm'
+import { useServerConnect, useServerSelect } from './useServerConnect'
 import type { ServerConfig, ServerHealth } from '../../../store/serverStore'
+import { backendRuntimeStatus, useBackendRuntimeHealth, type BackendRuntimeHealth } from '../../../store/backendRuntimeHealth'
 import { fetchHostShare } from '../../../omp/transport'
-import { disconnectDshServer } from '../../../services/dshServerConnection'
 import type { ShareInfo } from '@ompiui/protocol'
+import { parseDshPairingScan } from '@ompiui/protocol/dsh-remote'
 
 const DshServerRows = lazy(() => import('./DshRemoteSettings').then(module => ({ default: module.DshServerRows })))
 
-type ServerVia = 'local' | 'pair' | 'tailscale' | 'manual'
-
-/** 来源标记：和「控制端」的通道用同一套名字和图标。 */
-function serverVia(server: ServerConfig): ServerVia {
-  if (server.isDefault && (!/^https?:\/\//i.test(server.url) || /^https?:\/\/(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d+)?(?:\/|$)/i.test(server.url))) return 'local'
-  if (isTailnetUrl(server.url)) return 'tailscale'
-  return server.source === 'pair' ? 'pair' : 'manual'
-}
-
-const viaIcons: Record<ServerVia, React.ReactNode> = {
-  local: <Monitor size={11} />,
-  pair: <QrCode size={11} />,
-  tailscale: <Globe size={11} />,
-  manual: <KeyRound size={11} />,
-}
-
-function healthTone(health: ServerHealth | null): LampTone {
+function healthTone(health: ServerHealth | null, runtime: BackendRuntimeHealth | null): LampTone {
   if (!health || health.status === 'checking') return 'busy'
-  if (health.status === 'online') return 'on'
+  if (health.status === 'online') return backendRuntimeStatus(runtime) === 'ready' ? 'on' : 'warn'
   return health.status === 'unauthorized' ? 'warn' : 'off'
 }
 
+const healthIcons: Record<LampTone, React.ReactNode> = {
+  busy: <Loader2 size={15} className="animate-spin" />,
+  on: <Wifi size={15} />,
+  warn: <TriangleAlert size={15} />,
+  off: <WifiOff size={15} />,
+}
+
+type RowView = 'share' | 'edit' | 'confirm' | null
+
 // ============================================
-// Server Item
+// Server Item：点一行就切换
 // ============================================
 
 function ServerItem({
@@ -74,23 +58,16 @@ function ServerItem({
   onCheckHealth: () => void
 }) {
   const { t } = useTranslation(['settings', 'common'])
-  const [editing, setEditing] = useState(false)
-  const [confirmDelete, setConfirmDelete] = useState(false)
-  const [showShare, setShowShare] = useState(false)
-  const via = serverVia(server)
-
-  const statusText = () => {
-    if (!health || health.status === 'checking') return t('servers.checking')
-    switch (health.status) {
-      case 'online':
-        return t('servers.onlineLatency', { latency: health.latency })
-      case 'unauthorized':
-        return t('servers.invalidCredentials')
-      case 'offline':
-        return t('common:offline')
-      default:
-        return t('common:error')
-    }
+  const sharedRuntime = useBackendRuntimeHealth(health?.url ?? server.url)
+  const runtime = sharedRuntime ?? health
+  const [view, setView] = useState<RowView>(null)
+  // 窄屏把分享、编辑、移除收进「更多」，展开成一排文字按钮。
+  const [strip, setStrip] = useState(false)
+  const canShare = Boolean(server.isDefault || server.token)
+  const canRemove = !server.isDefault
+  const toggle = (next: Exclude<RowView, null>) => {
+    setStrip(false)
+    setView(current => (current === next ? null : next))
   }
 
   const statusTitle = () => {
@@ -98,8 +75,13 @@ function ServerItem({
     switch (health.status) {
       case 'checking':
         return t('servers.checking')
-      case 'online':
-        return `${t('servers.onlineLatency', { latency: health.latency })}${health.version ? ` · Pi v${health.version}` : ''}`
+      case 'online': {
+        const status = backendRuntimeStatus(runtime)
+        const label = status === 'ready'
+          ? t('servers.onlineLatency', { latency: health.latency })
+          : `${t('servers.backendReachable', { latency: health.latency })} · ${t(`servers.runtime.${status}`)}`
+        return `${label}${runtime?.ompVersion ? ` · OMP v${runtime.ompVersion}` : ''}`
+      }
       case 'unauthorized':
         return t('servers.invalidCredentials')
       case 'offline':
@@ -111,130 +93,136 @@ function ServerItem({
     }
   }
 
-  if (editing) {
-    return (
-      <EditServerForm
-        server={server}
-        onSave={updates => {
-          onEdit(updates)
-          setEditing(false)
-        }}
-        onCancel={() => setEditing(false)}
-      />
-    )
-  }
-
+  const tone = healthTone(health, runtime)
+  const showStrip = strip && view !== 'edit' && view !== 'confirm'
   return (
-    <>
-      <div onClick={onSelect} className="cb-srv group cursor-pointer" data-current={isActive ? '' : undefined}>
-        <Lamp tone={healthTone(health)} />
+    <div className="cb-srv" data-current={isActive ? '' : undefined} data-testid="server-row">
+      <div className="cb-srv-line">
         <button
           type="button"
-          onClick={e => {
-            e.stopPropagation()
-            onSelect()
-          }}
+          onClick={onSelect}
           aria-current={isActive ? 'true' : undefined}
           title={isActive ? undefined : t('servers.switchTo')}
           className="cb-srv-main touch-target-sm"
         >
-          <span className="cb-srv-title">
-            <span className="cb-srv-name" title={server.name}>{server.name}</span>
-            <span className="cb-via">{viaIcons[via]}{t(`servers.via.${via}`)}</span>
-          </span>
+          <span className="cb-srv-name" title={server.name}>{server.name}</span>
           <span className="cb-srv-meta">
             <code title={server.url}>{server.url}</code>
-            {server.token && <KeyIcon size={10} className="shrink-0 text-text-400" />}
-            <span>{statusText()}</span>
+            {server.token && <KeyRound size={11} />}
           </span>
         </button>
         <div className="cb-srv-actions">
-          {isActive && <span className="cb-tag">{t('servers.current')}</span>}
-          {(server.isDefault || server.token) && (
-            <button
-              type="button"
-              className="cb-icon-btn"
-              onClick={e => {
-                e.stopPropagation()
-                setShowShare(v => !v)
-              }}
-              title={t('servers.share')}
-              aria-label={t('servers.share')}
-            >
-              <ShareIcon size={14} />
+          {canShare && (
+            <button type="button" className="cb-icon-btn" data-wide="" data-active={view === 'share' && !strip ? '' : undefined}
+              onClick={() => toggle('share')} title={t('servers.share')} aria-label={t('servers.share')}>
+              <Share2 size={15} />
             </button>
           )}
-          <button
-            type="button"
-            className="cb-icon-btn"
-            onClick={e => {
-              e.stopPropagation()
-              onCheckHealth()
-            }}
-            title={statusTitle()}
-            aria-label={statusTitle()}
-          >
-            {health?.status === 'checking' ? <SpinnerIcon size={14} className="animate-spin" /> : <Activity size={14} />}
+          <button type="button" className="cb-icon-btn" data-tone={tone} onClick={onCheckHealth}
+            title={statusTitle()} aria-label={statusTitle()}>
+            {health?.status === 'unauthorized' ? <KeyRound size={15} /> : healthIcons[tone]}
           </button>
-          <button
-            type="button"
-            className="cb-icon-btn"
-            onClick={e => {
-              e.stopPropagation()
-              setEditing(true)
-            }}
-            title={t('servers.editServer')}
-            aria-label={t('servers.editServer')}
-          >
-            <PencilIcon size={14} />
-          </button>
-          {!server.isDefault && (
-            <button
-              type="button"
-              className="cb-icon-btn"
-              data-danger=""
-              onClick={e => {
-                e.stopPropagation()
-                setConfirmDelete(true)
-              }}
-              title={t('common:remove')}
-              aria-label={t('common:remove')}
-            >
-              <TrashIcon size={14} />
+          {canRemove && (
+            <button type="button" className="cb-icon-btn" data-wide="" data-danger=""
+              onClick={() => toggle('confirm')} title={t('common:remove')} aria-label={t('common:remove')}>
+              <Trash2 size={15} />
             </button>
           )}
+          <button type="button" className="cb-icon-btn" data-wide=""
+            onClick={() => toggle('edit')} title={t('servers.editServer')} aria-label={t('servers.editServer')}>
+            <Pencil size={15} />
+          </button>
+          <button type="button" className="cb-icon-btn" data-narrow="" data-active={strip || view ? '' : undefined}
+            aria-expanded={strip || view !== null}
+            onClick={() => { setView(null); setStrip(!(strip || view !== null)) }}
+            title={t('servers.more')} aria-label={t('servers.more')}>
+            <MoreHorizontal size={15} />
+          </button>
         </div>
       </div>
 
-      {showShare && <SharePanel server={server} />}
-
-      <ConfirmDialog
-        isOpen={confirmDelete}
-        onClose={() => setConfirmDelete(false)}
-        onConfirm={() => {
-          setConfirmDelete(false)
-          onDelete()
-        }}
-        title={t('servers.deleteServer')}
-        description={t('servers.deleteServerConfirm', { name: server.name })}
-        confirmText={t('common:delete')}
-        cancelText={t('common:cancel')}
-        variant="danger"
-      />
-    </>
+      {(showStrip || view) && (
+        <div className="cb-srv-ext">
+          {showStrip && (
+            <div className="cb-strip">
+              {canShare && (
+                <button type="button" className="cb-btn" data-active={view === 'share' ? '' : undefined}
+                  onClick={() => setView(view === 'share' ? null : 'share')}>
+                  <Share2 size={15} />{t('servers.share')}
+                </button>
+              )}
+              <button type="button" className="cb-btn" onClick={() => setView('edit')}><Pencil size={15} />{t('common:edit')}</button>
+              {canRemove && (
+                <button type="button" className="cb-btn" onClick={() => setView('confirm')}><Trash2 size={15} />{t('common:remove')}</button>
+              )}
+            </div>
+          )}
+          {view === 'share' && <SharePanel server={server} />}
+          {view === 'edit' && (
+            <EditServerForm
+              server={server}
+              onSave={updates => {
+                onEdit(updates)
+                setView(null)
+                setStrip(false)
+              }}
+              onCancel={() => { setView(null); setStrip(false) }}
+            />
+          )}
+          {view === 'confirm' && (
+            <div className="cb-confirm">
+              <span>{t('servers.removeConfirm')}</span>
+              <button type="button" className="cb-btn" onClick={() => { setView(null); setStrip(false) }}>{t('common:cancel')}</button>
+              <button type="button" className="cb-btn" data-variant="danger" onClick={onDelete}>{t('common:remove')}</button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
 // ============================================
-// Share Panel (local server)
+// Share Panel
 // ============================================
+
+function CopyField({ label, value, href }: { label: string; value: string; href?: string }) {
+  const { t } = useTranslation('settings')
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // 剪贴板不可用时用户还可以手动选中复制
+    }
+  }
+  return (
+    <div className="cb-field">
+      <span className="cb-label">{label}</span>
+      <div className="cb-copy">
+        <code title={value}>{value}</code>
+        {href && (
+          <a href={href} target="_blank" rel="noreferrer" className="cb-icon-btn"
+            title={t('servers.shareOpenUrl')} aria-label={t('servers.shareOpenUrl')}>
+            <ExternalLink size={14} />
+          </a>
+        )}
+        <button type="button" onClick={() => void copy()} className="cb-icon-btn"
+          title={copied ? t('servers.shareCopied') : t('servers.shareCopy')}
+          aria-label={`${copied ? t('servers.shareCopied') : t('servers.shareCopy')} · ${label}`}>
+          {copied ? <Check size={14} className="text-success-100" /> : <Copy size={14} />}
+        </button>
+      </div>
+    </div>
+  )
+}
 
 function SharePanel({ server }: { server: ServerConfig }) {
   const { t } = useTranslation(['settings', 'common'])
   const [share, setShare] = useState<ShareInfo | null>(null)
   const [error, setError] = useState('')
-  const [copiedLink, setCopiedLink] = useState(false)
-  const [copiedUrl, setCopiedUrl] = useState(false)
 
   // 拉取分享信息：请求-响应模式，同步状态需与请求一起设置
   /* eslint-disable react-hooks/set-state-in-effect */
@@ -264,16 +252,6 @@ function SharePanel({ server }: { server: ServerConfig }) {
     }
   }, [server])
 
-  const copy = async (value: string, mark: (value: boolean) => void) => {
-    try {
-      await navigator.clipboard.writeText(value)
-      mark(true)
-      setTimeout(() => mark(false), 2000)
-    } catch {
-      // 剪贴板不可用时用户还可以手动选中复制
-    }
-  }
-
   // 提示按暴露模式分流：公网入口（反代/隧道）→ HTTPS 与权限警示；
   // 局域网 → 谨慎分享；仅本机 → 指路服务设置
   const hint = share?.public
@@ -282,74 +260,15 @@ function SharePanel({ server }: { server: ServerConfig }) {
       ? t('servers.shareLanHint')
       : t('servers.shareLoopbackHint')
 
+  if (error) return <AuthAlert>{error}</AuthAlert>
+  if (!share) return <p className="cb-hint">{t('servers.checking')}</p>
   return (
-    <div className="space-y-2 border-b border-border-200/60 bg-bg-100/60 px-4 py-3 last:border-b-0">
-      <div className="text-[length:var(--fs-xs)] font-medium text-text-300">{t('servers.shareTitle')}</div>
-      {error && <p className="text-[length:var(--fs-xs)] text-danger-100">{error}</p>}
-      {!share && !error && <p className="text-[length:var(--fs-xs)] text-text-400">{t('servers.checking')}</p>}
-      {share && (
-        <>
-          <div>
-            <div className="text-[length:var(--fs-xs)] text-text-400 mb-1">{t('servers.shareBrowserUrl')}</div>
-            <div className="flex items-center gap-1.5">
-              <input
-                type="text"
-                readOnly
-                value={share.url}
-                onFocus={e => e.target.select()}
-                className={`${settingsFieldClass} font-mono flex-1`}
-              />
-              <a
-                href={share.url}
-                target="_blank"
-                rel="noreferrer"
-                className="shrink-0 p-2 rounded-md text-text-400 hover:text-text-200 hover:bg-bg-200/70 transition-colors"
-                title={t('servers.shareOpenUrl')}
-                aria-label={t('servers.shareOpenUrl')}
-              >
-                <ExternalLinkIcon size={13} />
-              </a>
-              <button
-                type="button"
-                onClick={() => void copy(share.url, setCopiedUrl)}
-                className="shrink-0 p-2 rounded-md text-text-400 hover:text-text-200 hover:bg-bg-200/70 transition-colors"
-                title={copiedUrl ? t('servers.shareCopied') : t('servers.shareCopy')}
-                aria-label={copiedUrl ? t('servers.shareCopied') : t('servers.shareCopy')}
-              >
-                {copiedUrl ? <CheckIcon size={13} className="text-success-100" /> : <CopyIcon size={13} />}
-              </button>
-            </div>
-          </div>
-          <div>
-            <div className="text-[length:var(--fs-xs)] text-text-400 mb-1">{t('servers.shareConnectLink')}</div>
-            <div className="flex items-center gap-1.5">
-              <input
-                type="text"
-                readOnly
-                value={share.link}
-                onFocus={e => e.target.select()}
-                className={`${settingsFieldClass} font-mono flex-1`}
-              />
-              <button
-                type="button"
-                onClick={() => void copy(share.link, setCopiedLink)}
-                className="shrink-0 p-2 rounded-md text-text-400 hover:text-text-200 hover:bg-bg-200/70 transition-colors"
-                title={copiedLink ? t('servers.shareCopied') : t('servers.shareCopy')}
-                aria-label={copiedLink ? t('servers.shareCopied') : t('servers.shareCopy')}
-              >
-                {copiedLink ? <CheckIcon size={13} className="text-success-100" /> : <CopyIcon size={13} />}
-              </button>
-            </div>
-          </div>
-          <p className="text-[length:var(--fs-xs)] text-text-400 leading-relaxed">{hint}</p>
-          {share.tunnel && (
-            <p className="text-[length:var(--fs-xs)] leading-relaxed text-text-500">
-              {share.tunnel.connected ? t('servers.shareTunnelHint') : t('servers.shareTunnelOffline')}
-            </p>
-          )}
-        </>
-      )}
-    </div>
+    <>
+      <CopyField label={t('servers.shareBrowserUrl')} value={share.url} href={share.url} />
+      <CopyField label={t('servers.shareConnectLink')} value={share.link} />
+      <p className="cb-hint">{hint}</p>
+      {share.tunnel && !share.tunnel.connected && <p className="cb-hint">{t('servers.shareTunnelOffline')}</p>}
+    </>
   )
 }
 
@@ -370,9 +289,8 @@ function EditServerForm({
   const [name, setName] = useState(server.name)
   const [url, setUrl] = useState(server.url)
   const [token, setToken] = useState(server.token || '')
-  const [showAuth, setShowAuth] = useState(!!server.token)
   const [error, setError] = useState('')
-  const showHttpsIpWarning = isHttpsIpUrl(url)
+  const fieldId = `edit-server-${server.id}`
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -398,16 +316,46 @@ function EditServerForm({
     })
   }
 
-  const inputCls = settingsFieldClass
-
   return (
-    <form
-      onSubmit={handleSubmit}
-      className="space-y-2.5 border-b border-border-200/60 bg-accent-main-100/[0.03] px-4 py-3 last:border-b-0"
-    >
-      <div>
-        <label className="block text-[length:var(--fs-xs)] font-medium text-text-300 mb-1">{t('servers.name')}</label>
+    <form onSubmit={handleSubmit} className="cb-form">
+      <div className="cb-grid2">
+        <div className="cb-field">
+          <label htmlFor={`${fieldId}-url`}>{t('servers.url')}</label>
+          <input
+            id={`${fieldId}-url`}
+            type="text"
+            value={url}
+            autoCapitalize="none"
+            autoComplete="off"
+            spellCheck={false}
+            onChange={e => {
+              setUrl(e.target.value)
+              setError('')
+            }}
+            placeholder={t('servers.urlPlaceholder')}
+            className="cb-input font-mono"
+          />
+        </div>
+        <div className="cb-field">
+          <label htmlFor={`${fieldId}-token`}>{t('servers.token')}</label>
+          <input
+            id={`${fieldId}-token`}
+            type="password"
+            value={token}
+            autoComplete="off"
+            onChange={e => {
+              setToken(e.target.value)
+              setError('')
+            }}
+            placeholder={t('servers.tokenPlaceholder')}
+            className="cb-input font-mono"
+          />
+        </div>
+      </div>
+      <div className="cb-field">
+        <label htmlFor={`${fieldId}-name`}>{t('servers.name')}</label>
         <input
+          id={`${fieldId}-name`}
           type="text"
           value={name}
           maxLength={SERVER_NAME_MAX_LENGTH}
@@ -415,64 +363,21 @@ function EditServerForm({
             setName(e.target.value.slice(0, SERVER_NAME_MAX_LENGTH))
             setError('')
           }}
-          placeholder={t('servers.namePlaceholder')}
-          className={inputCls}
+          className="cb-input"
           autoFocus
         />
       </div>
-      <div>
-        <label className="block text-[length:var(--fs-xs)] font-medium text-text-300 mb-1">{t('servers.url')}</label>
-        <input
-          type="text"
-          value={url}
-          onChange={e => {
-            setUrl(e.target.value)
-            setError('')
-          }}
-          placeholder={t('servers.urlPlaceholder')}
-          className={`${inputCls} font-mono`}
-        />
-      </div>
 
-      <button
-        type="button"
-        onClick={() => setShowAuth(!showAuth)}
-        className="flex items-center gap-1.5 text-[length:var(--fs-xs)] text-accent-main-100 hover:text-accent-main-200 transition-colors"
-      >
-        <KeyIcon size={10} />
-        {showAuth ? t('servers.hideAuth') : t('servers.addAuth')}
-      </button>
-
-      {showAuth && (
-        <div>
-          <label className="block text-[length:var(--fs-xs)] font-medium text-text-300 mb-1">{t('servers.token')}</label>
-          <input
-            type="password"
-            value={token}
-            onChange={e => {
-              setToken(e.target.value)
-              setError('')
-            }}
-            placeholder={t('servers.tokenPlaceholder')}
-            className={`${inputCls} font-mono`}
-          />
-        </div>
-      )}
-
-      {showHttpsIpWarning && (
+      {isHttpsIpUrl(url) && (
         <div className="text-[length:var(--fs-xs)] text-warning-100 bg-warning-bg border border-warning-100/20 rounded-md px-2.5 py-2 leading-relaxed">
           {t('servers.httpsIpWarning')}
         </div>
       )}
 
-      {error && <p className="text-[length:var(--fs-xs)] text-danger-100">{error}</p>}
-      <div className="flex justify-end gap-2 pt-1">
-        <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
-          {t('common:cancel')}
-        </Button>
-        <Button type="submit" size="sm">
-          {t('common:save')}
-        </Button>
+      {error && <p role="alert" className="text-[length:var(--fs-xs)] text-danger-100">{error}</p>}
+      <div className="cb-form-foot">
+        <button type="button" className="cb-btn" onClick={onCancel}>{t('common:cancel')}</button>
+        <button type="submit" className="cb-btn" data-variant="primary">{t('common:save')}</button>
       </div>
     </form>
   )
@@ -482,105 +387,104 @@ function EditServerForm({
 // Tab: Servers
 // ============================================
 
-export function ServersSettings({ initialAddingServer = false }: { initialAddingServer?: boolean }) {
+const scanErrors = ['scanUnavailable', 'scanPermissionDenied', 'scanFailed', 'invalidLink']
+
+export function ServersSettings({ initialAddingServer = false, onOpenController }: {
+  initialAddingServer?: boolean
+  /** DS 远程的配对二维码要到「控制端」里走完确认，扫到之后跳过去。 */
+  onOpenController?: () => void
+}) {
   const { t } = useTranslation(['settings', 'common'])
   const [addingServer, setAddingServer] = useState(initialAddingServer)
+  const [scanning, setScanning] = useState(false)
+  const [scanError, setScanError] = useState('')
+  // 页头的刷新同时重读 DS 远程的电脑列表。
+  const [dshRefresh, setDshRefresh] = useState(0)
   // DS 远程的电脑在桌面版和手机 App 里都列出来，网页端不展示。
   const native = isTauri()
-  const {
-    servers,
-    activeServer,
-    addServer,
-    removeServer,
-    updateServer,
-    setActiveServer,
-    checkHealth,
-    checkAllHealth,
-    getHealth,
-  } = useServerStore()
-  const { navigateHome, sessionId: routeSessionId } = useRouter()
-  const orderedServers = useMemo(() => {
-    const saved = servers.filter(server => server.source !== 'dsh')
-    if (!activeServer) return saved
-    const active = saved.find(s => s.id === activeServer.id)
-    if (!active) return saved
-    return [active, ...saved.filter(s => s.id !== active.id)]
-  }, [servers, activeServer])
+  // 扫码依赖手机 App 的相机桥接，全应用只有这一个入口，什么码都认。
+  const canScan = isTauriMobile()
+  const { servers, activeServer, addServer, removeServer, updateServer, checkHealth, checkAllHealth, getHealth } = useServerStore()
+  const selectServer = useServerSelect()
+  const connectServer = useServerConnect()
+  const saved = servers.filter(server => server.source !== 'dsh')
 
   useEffect(() => {
     checkAllHealth()
   }, [checkAllHealth])
 
-  // 切换服务器：设置 active + 清理当前 session + 导航回首页
-  const handleSelectServer = useCallback(
-    (id: string) => {
-      if (activeServer?.id === id) {
-        // 原服务器仍处于选中状态时，也可以取消尚未完成的 DS 连接。
-        if (activeServer.source !== 'dsh') void disconnectDshServer()
-        return
+  const scan = async () => {
+    if (scanning) return
+    setScanning(true)
+    setScanError('')
+    try {
+      const contents = await scanPairingQr(t('servers.scanPrompt'))
+      if (contents === null) return
+      const link = parseConnectionLink(contents)
+      if (link) {
+        connectServer(await resolveConnectionLink(link), link.pair ? 'pair' : 'manual')
+        setAddingServer(false)
+      } else {
+        // 不是连接链接，就只能是 DS 远程的配对二维码：交给控制端确认是哪台电脑。
+        try { parseDshPairingScan(contents) } catch { throw new Error('invalidLink') }
+        dshControllerStore.update({ pairRequest: contents })
+        onOpenController?.()
       }
-
-      // 清理当前 session 的 store 状态
-      if (routeSessionId) {
-        clearSessionRuntimeState(routeSessionId)
-      }
-
-      setActiveServer(id) // 内部触发 serverChangeListeners → reconnectSSE()
-      navigateHome()
-      void checkHealth(id)
-    },
-    [activeServer?.id, activeServer?.source, checkHealth, routeSessionId, setActiveServer, navigateHome],
-  )
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason)
+      setScanError(scanErrors.includes(message) ? t(`authentication.${message}`) : message)
+    } finally {
+      setScanning(false)
+    }
+  }
 
   return (
     <div className="cb-page">
-      <PageHead
-        title={t('servers.connections')}
-        description={t('servers.connectionsDesc')}
-        aside={
-          <>
-            <button
-              type="button"
-              onClick={checkAllHealth}
-              className="cb-btn"
-              data-size="icon"
-              title={t('common:refresh')}
-              aria-label={t('common:refresh')}
-            >
-              <RetryIcon size={14} />
-            </button>
-            <button type="button" onClick={() => setAddingServer(true)} disabled={addingServer} className="cb-btn">
-              <PlusIcon size={14} />
-              {t('common:add')}
-            </button>
-          </>
-        }
-      />
-
-      {addingServer && (
-        <section className="cb-srv-form">
-          <AddServerForm
-            hint={t('servers.keyStoredHere')}
-            onAdd={(server, paired) => {
-              const s = addServer(server)
-              setAddingServer(false)
-              if (paired) handleSelectServer(s.id)
-              else void checkHealth(s.id)
-            }}
-            onCancel={() => setAddingServer(false)}
-          />
-        </section>
-      )}
-
-      {servers.length > 0 ? (
-        <div className="cb-srv-list">
-          {orderedServers.map(s => (
+      <Card>
+        <PageHead
+          title={t('servers.connections')}
+          aside={
+            <>
+              <button type="button" onClick={() => { checkAllHealth(); setDshRefresh(value => value + 1) }} className="cb-icon-btn"
+                title={t('common:refresh')} aria-label={t('common:refresh')}>
+                <RefreshCw size={15} />
+              </button>
+              {canScan && (
+                <button type="button" onClick={() => void scan()} disabled={scanning} className="cb-link">
+                  {scanning ? <Loader2 size={15} className="animate-spin" /> : <ScanLine size={15} />}
+                  {t('servers.scan')}
+                </button>
+              )}
+              <button type="button" onClick={() => setAddingServer(true)} disabled={addingServer} className="cb-link">
+                {t('common:add')}
+              </button>
+            </>
+          }
+        />
+        <div className="cb-body">
+          {scanError && <AuthAlert>{scanError}</AuthAlert>}
+          {addingServer && (
+            <div className="cb-srv" data-form="">
+              <div className="cb-srv-ext">
+                <AddServerForm
+                  onAdd={(server, paired) => {
+                    const s = addServer(server)
+                    setAddingServer(false)
+                    if (paired) selectServer(s.id)
+                    else void checkHealth(s.id)
+                  }}
+                  onCancel={() => setAddingServer(false)}
+                />
+              </div>
+            </div>
+          )}
+          {saved.map(s => (
             <ServerItem
               key={s.id}
               server={s}
               health={getHealth(s.id)}
               isActive={activeServer?.id === s.id}
-              onSelect={() => handleSelectServer(s.id)}
+              onSelect={() => selectServer(s.id)}
               onDelete={() => removeServer(s.id)}
               onEdit={updates => {
                 updateServer(s.id, { name: updates.name, url: updates.url, token: updates.token })
@@ -589,12 +493,10 @@ export function ServersSettings({ initialAddingServer = false }: { initialAdding
               onCheckHealth={() => void checkHealth(s.id)}
             />
           ))}
-          {native && <Suspense fallback={null}><DshServerRows onSelectServer={handleSelectServer} /></Suspense>}
+          {native && <Suspense fallback={null}><DshServerRows onSelectServer={selectServer} refreshKey={dshRefresh} /></Suspense>}
+          {saved.length === 0 && !addingServer && !native && <p className="cb-hint">{t('servers.noServersConfigured')}</p>}
         </div>
-      ) : (
-        !addingServer && <p className="cb-empty">{t('servers.noServersConfigured')}</p>
-      )}
-      {native && <p className="cb-footnote">{t(isAndroidTailscalePlatform() ? 'servers.dshFootnoteInApp' : 'servers.dshFootnote')}</p>}
+      </Card>
     </div>
   )
 }

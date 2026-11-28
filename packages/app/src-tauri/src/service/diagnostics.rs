@@ -58,6 +58,8 @@ pub struct ServiceDiagnostics {
     worker_ready: Option<bool>,
     omp_version: Option<String>,
     health_error: Option<String>,
+    health_url: Option<String>,
+    health_checked_at: Option<u64>,
     output: Vec<String>,
 }
 
@@ -154,6 +156,8 @@ async fn read_diagnostics(
     if !snapshot.phase.busy() {
         let config = ServiceConfig::new(env_vars);
         let (url, token) = state.connection_snapshot()?.unwrap_or((config.url, config.initial_token));
+        snapshot.health_url = Some(url.clone());
+        snapshot.health_checked_at = Some(now());
         match service_health_with_timeout(
             &url,
             token.as_deref(),

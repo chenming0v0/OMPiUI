@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   status: vi.fn(), login: vi.fn(), disconnect: vi.fn(), redeem: vi.fn(), open: vi.fn(),
   add: vi.fn(), select: vi.fn(), check: vi.fn(), checkAll: vi.fn(),
   copyDiagnostics: vi.fn(), exportDiagnostics: vi.fn(),
+  discovering: vi.fn(), refreshDiscovery: vi.fn(),
 }))
 vi.mock('../../../utils/androidTailscale', () => ({
   isAndroidTailscalePlatform: () => true,
@@ -25,6 +26,14 @@ vi.mock('../../../utils/tailscaleLogin', async importOriginal => ({
   ...await importOriginal<typeof import('../../../utils/tailscaleLogin')>(), openTailscaleLogin: mocks.open,
 }))
 vi.mock('../../../components/QrCode', () => ({ QrCode: () => <div data-testid="auth-qr" /> }))
+// 连上之后列出的电脑由发现组件负责，这里只关心登录这一段。
+vi.mock('./useDeviceDiscovery', () => ({
+  useDeviceDiscovery: (_network: string, enabled: boolean) => {
+    mocks.discovering(enabled)
+    return { devices: [], loading: false, error: '', refresh: mocks.refreshDiscovery }
+  },
+}))
+vi.mock('./DiscoveredComputers', () => ({ DiscoveredRows: () => <div>Tailnet computers</div> }))
 beforeEach(() => {
   vi.clearAllMocks()
   mocks.status.mockResolvedValue({ enabled: false, BackendState: 'Stopped', TailscaleIPs: [] })
@@ -45,14 +54,44 @@ function deferred<T>() {
 }
 
 describe('phone independent Tailscale enrollment', () => {
-  it('uses a phone-specific login card without an authorization QR', async () => {
+  it('stays folded with its status on the group header, and opens to a plain sign-in without an authorization QR', async () => {
     render(<AndroidTailscaleSettings />)
-    expect(await screen.findByRole('heading', { name: 'Tailscale on this phone' })).toBeVisible()
-    expect(screen.getByText('Sign in with the same Tailscale account as your computer to connect both devices.')).toBeVisible()
+    const group = screen.getByRole('button', { name: /Tailscale/ })
+    expect(group).toHaveAttribute('aria-expanded', 'false')
+    await waitFor(() => expect(group).toHaveTextContent('Signed out'))
+    fireEvent.click(group)
+    expect(screen.queryByRole('heading')).not.toBeInTheDocument()
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Log in to Tailscale' })))
     expect(screen.queryByTestId('auth-qr')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Open official authorization' })).toHaveClass('w-full')
     expect(screen.getByText('Sign-in problems? View diagnostics').closest('details')).not.toHaveAttribute('open')
+  })
+
+  it('lists tailnet computers once connected and signs out from the group header', async () => {
+    mocks.status.mockResolvedValue({ enabled: true, BackendState: 'Running', TailscaleIPs: ['100.101.2.4'] })
+    mocks.disconnect.mockResolvedValue(undefined)
+    render(<AndroidTailscaleSettings defaultOpen />)
+    expect(await screen.findByText('Tailnet computers')).toBeVisible()
+    expect(screen.getByRole('button', { name: /^Tailscale/ })).toHaveTextContent('Connected')
+    // 没连上之前不去找电脑。
+    expect(mocks.discovering).toHaveBeenCalledWith(false)
+    expect(mocks.discovering).toHaveBeenLastCalledWith(true)
+    expect(screen.queryByRole('button', { name: 'Log in to Tailscale' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    expect(mocks.refreshDiscovery).toHaveBeenCalledOnce()
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Sign out' })))
+    expect(mocks.disconnect).toHaveBeenCalledOnce()
+  })
+
+  it('says a previous sign-in is being restored and offers only to cancel it', async () => {
+    mocks.status.mockResolvedValue({ enabled: true, BackendState: 'Starting' })
+    mocks.disconnect.mockResolvedValue(undefined)
+    render(<AndroidTailscaleSettings defaultOpen />)
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Restoring'))
+    expect(screen.getByRole('button', { name: /^Tailscale/ })).toHaveTextContent('Restoring')
+    expect(screen.queryByRole('button', { name: /Log in|Reconnect/ })).not.toBeInTheDocument()
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Cancel' })))
+    expect(mocks.disconnect).toHaveBeenCalledOnce()
   })
 
   it('cancels a pending login immediately on disconnect', async () => {
@@ -61,7 +100,7 @@ describe('phone independent Tailscale enrollment', () => {
     mocks.status.mockResolvedValue({ enabled: true, BackendState: 'NeedsLogin' })
     mocks.login.mockReturnValueOnce(login.promise)
     mocks.disconnect.mockReturnValueOnce(disconnect.promise)
-    render(<AndroidTailscaleSettings />)
+    render(<AndroidTailscaleSettings defaultOpen />)
     await act(async () => {})
     fireEvent.click(screen.getByRole('button', { name: 'Log in to Tailscale' }))
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }))
@@ -76,7 +115,7 @@ describe('phone independent Tailscale enrollment', () => {
   it('does not accept a pre-login background response after sign-in', async () => {
     vi.useFakeTimers()
     mocks.status.mockResolvedValue({ enabled: true, BackendState: 'NeedsLogin' })
-    await act(async () => { render(<AndroidTailscaleSettings />) })
+    await act(async () => { render(<AndroidTailscaleSettings defaultOpen />) })
     const stale = deferred<{ enabled: boolean; BackendState: string; AuthURL: string }>()
     mocks.status.mockReturnValueOnce(stale.promise)
     await act(async () => vi.advanceTimersByTimeAsync(3_000))
@@ -89,7 +128,7 @@ describe('phone independent Tailscale enrollment', () => {
 
   it('rotates and clears links using authoritative status and hides them during approval', async () => {
     vi.useFakeTimers()
-    await act(async () => { render(<AndroidTailscaleSettings />) })
+    await act(async () => { render(<AndroidTailscaleSettings defaultOpen />) })
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Log in to Tailscale' })))
     mocks.status.mockResolvedValue({ enabled: true, BackendState: 'NeedsLogin', AuthURL: 'https://headscale.example.com/a/new' })
     await act(async () => vi.advanceTimersByTimeAsync(3_000))
@@ -101,14 +140,14 @@ describe('phone independent Tailscale enrollment', () => {
     expect(screen.getByRole('button', { name: 'Log in to Tailscale' })).toBeEnabled()
     mocks.status.mockResolvedValue({ enabled: true, BackendState: 'NeedsMachineAuth', AuthURL: 'https://headscale.example.com/a/stale' })
     await act(async () => vi.advanceTimersByTimeAsync(3_000))
-    expect(screen.getByText('Waiting for Tailnet device approval')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Awaiting approval')
     expect(screen.queryByRole('button', { name: /authorization|Log in/ })).not.toBeInTheDocument()
   })
 
   it('clears disconnect errors on retry and reopen', async () => {
     mocks.status.mockResolvedValue({ enabled: true, BackendState: 'NeedsLogin' })
     mocks.disconnect.mockRejectedValue(new Error('disconnect failed'))
-    render(<AndroidTailscaleSettings />)
+    render(<AndroidTailscaleSettings defaultOpen />)
     await act(async () => {})
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Disconnect' })))
     expect(screen.getByRole('alert')).toHaveTextContent('disconnect failed')
@@ -123,7 +162,7 @@ describe('phone independent Tailscale enrollment', () => {
 
   it('clears status errors after a successful login result', async () => {
     vi.useFakeTimers()
-    await act(async () => { render(<AndroidTailscaleSettings />) })
+    await act(async () => { render(<AndroidTailscaleSettings defaultOpen />) })
     mocks.status.mockRejectedValue(new Error('status unavailable'))
     await act(async () => vi.advanceTimersByTimeAsync(3_000))
     expect(screen.getByRole('alert')).toHaveTextContent('status unavailable')
@@ -133,7 +172,7 @@ describe('phone independent Tailscale enrollment', () => {
   it('refreshes server health even when disconnect status reaches the approval terminal state', async () => {
     mocks.status.mockResolvedValue({ enabled: true, BackendState: 'NeedsLogin' })
     mocks.disconnect.mockResolvedValue(undefined)
-    render(<AndroidTailscaleSettings />)
+    render(<AndroidTailscaleSettings defaultOpen />)
     await act(async () => {})
     mocks.status.mockResolvedValue({ enabled: true, BackendState: 'NeedsMachineAuth' })
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Disconnect' })))
@@ -142,7 +181,7 @@ describe('phone independent Tailscale enrollment', () => {
 
   it('copies diagnostics while the core is unavailable without starting it', async () => {
     mocks.status.mockRejectedValue(new Error('core unavailable'))
-    render(<AndroidTailscaleSettings />)
+    render(<AndroidTailscaleSettings defaultOpen />)
     const button = await screen.findByRole('button', { name: 'Copy login diagnostics' })
     await act(async () => fireEvent.click(button))
     expect(mocks.copyDiagnostics).toHaveBeenCalledOnce()
@@ -150,7 +189,7 @@ describe('phone independent Tailscale enrollment', () => {
     expect(mocks.login).not.toHaveBeenCalled()
   })
   it('exports diagnostics independently of login and pairing', async () => {
-    render(<AndroidTailscaleSettings />)
+    render(<AndroidTailscaleSettings defaultOpen />)
     await act(async () => {})
     fireEvent.click(screen.getByText('Sign-in problems? View diagnostics'))
     const button = await screen.findByRole('button', { name: 'Export login diagnostics' })
@@ -161,12 +200,12 @@ describe('phone independent Tailscale enrollment', () => {
   })
   it('shows that automatic restore is paused after an interrupted startup', async () => {
     mocks.status.mockResolvedValue({ enabled: false, BackendState: 'Stopped', startupInterrupted: true })
-    render(<AndroidTailscaleSettings />)
+    render(<AndroidTailscaleSettings defaultOpen />)
     expect(await screen.findByRole('alert')).toHaveTextContent('Automatic recovery is paused')
     expect(screen.getByRole('button', { name: 'Copy login diagnostics' })).toBeEnabled()
   })
   it('opens official phone authorization without needing a reachable computer backend', async () => {
-    render(<AndroidTailscaleSettings />)
+    render(<AndroidTailscaleSettings defaultOpen />)
     const button = await screen.findByRole('button', { name: 'Log in to Tailscale' })
     await waitFor(() => expect(button).toBeEnabled())
     await act(async () => fireEvent.click(button))
@@ -177,7 +216,7 @@ describe('phone independent Tailscale enrollment', () => {
 
   it('shows browser errors without losing the login button', async () => {
     mocks.open.mockRejectedValue(new Error('No browser is available'))
-    render(<AndroidTailscaleSettings />)
+    render(<AndroidTailscaleSettings defaultOpen />)
     const button = await screen.findByRole('button', { name: 'Log in to Tailscale' })
     await waitFor(() => expect(button).toBeEnabled())
     await act(async () => fireEvent.click(button))
@@ -187,7 +226,7 @@ describe('phone independent Tailscale enrollment', () => {
 
   it('has no server connection form or navigation button for an authenticated phone', async () => {
     mocks.status.mockResolvedValue({ enabled: true, BackendState: 'Running', TailscaleIPs: ['100.101.2.4'] })
-    render(<AndroidTailscaleSettings />)
+    render(<AndroidTailscaleSettings defaultOpen />)
     await act(async () => {})
     expect(screen.queryByRole('button', { name: 'Add server connection' })).not.toBeInTheDocument()
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
@@ -195,7 +234,7 @@ describe('phone independent Tailscale enrollment', () => {
 
   it('stays on authentication after login so pairing input and scanning remain available', async () => {
     vi.useFakeTimers()
-    render(<AndroidTailscaleSettings />)
+    render(<AndroidTailscaleSettings defaultOpen />)
     await act(async () => {})
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Log in to Tailscale' })))
     expect(mocks.open).toHaveBeenCalled()
@@ -209,7 +248,7 @@ describe('phone independent Tailscale enrollment', () => {
 
   it('does not redirect when login immediately restores an authenticated identity', async () => {
     mocks.login.mockResolvedValue({ enabled: true, BackendState: 'Running' })
-    render(<AndroidTailscaleSettings />)
+    render(<AndroidTailscaleSettings defaultOpen />)
     const button = await screen.findByRole('button', { name: 'Log in to Tailscale' })
     await waitFor(() => expect(button).toBeEnabled())
     await act(async () => fireEvent.click(button))
@@ -221,15 +260,15 @@ describe('phone independent Tailscale enrollment', () => {
     vi.useFakeTimers()
     try {
       mocks.login.mockResolvedValue({ enabled: true, BackendState: 'NeedsLogin' })
-      render(<AndroidTailscaleSettings />)
+      render(<AndroidTailscaleSettings defaultOpen />)
       await act(async () => {})
       await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Log in to Tailscale' })))
-      expect(screen.getByText('Sign-in started, fetching the authorization link…')).toBeInTheDocument()
+      expect(screen.getByRole('status')).toHaveTextContent('Awaiting sign-in')
       expect(screen.getByRole('button', { name: 'Log in to Tailscale' })).toBeDisabled()
       mocks.status.mockResolvedValue({ enabled: true, BackendState: 'NeedsLogin', AuthURL: 'https://login.tailscale.com/a/phone' })
       await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
       expect(mocks.open).toHaveBeenCalledWith('https://login.tailscale.com/a/phone')
-      expect(screen.getByText('Browser opened, complete authorization in the popped-up page…')).toBeInTheDocument()
+      expect(screen.getByRole('status')).toHaveTextContent('Awaiting sign-in')
       expect(screen.getByRole('button', { name: 'Open official authorization' })).toBeEnabled()
     } finally {
       cleanup()
@@ -241,7 +280,7 @@ describe('phone independent Tailscale enrollment', () => {
     vi.useFakeTimers()
     try {
       mocks.login.mockResolvedValue({ enabled: true, BackendState: 'NeedsLogin' })
-      render(<AndroidTailscaleSettings />)
+      render(<AndroidTailscaleSettings defaultOpen />)
       await act(async () => {})
       await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Log in to Tailscale' })))
       await act(async () => { await vi.advanceTimersByTimeAsync(31_000) })

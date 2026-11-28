@@ -1,6 +1,6 @@
 {
   "name": "@ompiui/protocol",
-  "version": "0.6.79",
+  "version": "0.6.80",
   "private": true,
   "type": "module",
   "exports": {

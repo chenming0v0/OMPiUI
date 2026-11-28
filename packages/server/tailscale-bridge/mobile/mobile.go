@@ -4,29 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
-	"net/http"
-	"net/netip"
 	"net/url"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/chenming0v0/ompiui-tailscale-bridge/internal/discovery"
-	"github.com/chenming0v0/ompiui-tailscale-bridge/internal/gateway"
+	"github.com/chenming0v0/ompiui-tailscale-bridge/internal/outbound"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tsnet"
 )
 
-type route struct {
-	server *http.Server
-	url    string
-}
-
 var lock sync.Mutex
 var node *tsnet.Server
-var routes = map[string]route{}
+var routes outbound.Routes
 var discoveryRequests discovery.Requests
 
 // Discover probes existing Tailnet peers without starting a node or logging in.
@@ -69,23 +60,7 @@ func CancelDiscovery(requestID string) {
 }
 
 func discoveryStatus(status *ipnstate.Status) discovery.Status {
-	if status == nil {
-		return discovery.Status{}
-	}
-	result := discovery.Status{BackendState: status.BackendState, SelfIPs: append([]netip.Addr(nil), status.TailscaleIPs...)}
-	if status.Self != nil {
-		result.SelfIPs = append(result.SelfIPs, status.Self.TailscaleIPs...)
-	}
-	for _, peer := range status.Peer {
-		if peer == nil {
-			continue
-		}
-		if status.Self != nil && (peer == status.Self || status.Self.ID != "" && peer.ID == status.Self.ID) {
-			continue
-		}
-		result.Peers = append(result.Peers, discovery.Peer{IPs: append([]netip.Addr(nil), peer.TailscaleIPs...), Online: peer.Online})
-	}
-	return result
+	return outbound.DiscoveryStatus(status)
 }
 
 // Start 在应用私有目录中恢复节点，不创建 Android VpnService。
@@ -171,34 +146,14 @@ func OpenRoute(origin string) (string, error) {
 	if node == nil {
 		return "", fmt.Errorf("Tailscale is not started")
 	}
-	key := target.String()
-	if existing, ok := routes[key]; ok {
-		return existing.url, nil
-	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return "", err
-	}
-	server := &http.Server{
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       gateway.IdleTimeout,
-		Handler:           gateway.Proxy(target, node.Dial, false),
-		ConnState:         gateway.IdleConnState,
-	}
-	result := "http://" + listener.Addr().String()
-	routes[key] = route{server: server, url: result}
-	go server.Serve(gateway.WithIdleTimeout(listener, gateway.IdleTimeout))
-	return result, nil
+	return routes.Open(target, node.Dial)
 }
 
 func Stop() error {
 	lock.Lock()
 	defer lock.Unlock()
 	discoveryRequests.CancelAll()
-	for _, r := range routes {
-		r.server.Close()
-	}
-	routes = map[string]route{}
+	routes.Close()
 	if node == nil {
 		return nil
 	}
@@ -208,18 +163,5 @@ func Stop() error {
 }
 
 func tailnetURL(origin string) (*url.URL, error) {
-	target, err := url.Parse(origin)
-	if err != nil || (target.Scheme != "http" && target.Scheme != "https") || target.User != nil ||
-		(target.Path != "" && target.Path != "/") || target.RawQuery != "" || target.Fragment != "" {
-		return nil, fmt.Errorf("expected a Tailnet HTTP origin")
-	}
-	host := strings.ToLower(target.Hostname())
-	ip, err := netip.ParseAddr(host)
-	isTailnet := err == nil && (netip.MustParsePrefix("100.64.0.0/10").Contains(ip) ||
-		netip.MustParsePrefix("fd7a:115c:a1e0::/48").Contains(ip))
-	if !isTailnet && !strings.HasSuffix(host, ".ts.net") {
-		return nil, fmt.Errorf("only Tailscale addresses are allowed")
-	}
-	target.Path = ""
-	return target, nil
+	return outbound.Origin(origin)
 }

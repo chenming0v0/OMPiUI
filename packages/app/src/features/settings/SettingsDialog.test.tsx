@@ -1,17 +1,18 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import i18n from '../../i18n'
+import { desktopDiagnosticsStore, type DesktopServiceDiagnostics } from '../../store/desktopDiagnosticsStore'
 import { SettingsDialog } from './SettingsDialog'
 
 const notificationTargets = vi.hoisted(() => ({ mode: 'both' as 'both' | 'system' | 'sound' }))
-const tauriState = vi.hoisted(() => ({ mobile: false, smallScreen: false }))
+const tauriState = vi.hoisted(() => ({ native: true, mobile: false, smallScreen: false }))
 
 vi.mock('../../components/ui/Dialog', () => ({
   Dialog: ({ isOpen, children, ariaLabel }: { isOpen: boolean; children: React.ReactNode; ariaLabel: string }) =>
     isOpen ? <div role="dialog" aria-label={ariaLabel}>{children}</div> : null,
 }))
 vi.mock('../../hooks', () => ({ useIsMobile: () => tauriState.smallScreen }))
-vi.mock('../../utils/tauri', () => ({ isTauri: () => true, isTauriMobile: () => tauriState.mobile }))
+vi.mock('../../utils/tauri', () => ({ isTauri: () => tauriState.native, isTauriMobile: () => tauriState.mobile }))
 vi.mock('./KeybindingsSection', () => ({ KeybindingsSection: () => <div>Shortcuts content</div> }))
 vi.mock('./components/AgentSettings', () => ({ AgentSettings: () => <div>Agent content</div> }))
 vi.mock('./components/AppearanceSettings', () => ({
@@ -65,6 +66,7 @@ describe('SettingsDialog search', () => {
   beforeEach(async () => {
     await i18n.changeLanguage('en')
     notificationTargets.mode = 'both'
+    tauriState.native = true
     tauriState.mobile = false
     tauriState.smallScreen = false
     vi.stubGlobal('__APP_VERSION__', 'test')
@@ -139,6 +141,30 @@ describe('SettingsDialog search', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Controller' }))
     fireEvent.click(screen.getByRole('tab', { name: 'Servers' }))
     expect(screen.queryByLabelText('New connection')).not.toBeInTheDocument()
+  })
+
+  it('shows only Servers in the browser, where a backend is added by address', async () => {
+    tauriState.native = false
+    render(<SettingsDialog isOpen onClose={vi.fn()} />)
+    await act(async () => vi.advanceTimersByTime(1))
+    expect(screen.getByRole('tab', { name: 'Servers' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('tab', { name: 'Controller' })).toBeNull()
+    expect(screen.queryByRole('tab', { name: 'Host' })).toBeNull()
+  })
+
+  it('drops Host on a desktop whose backend reports no OMP runtime', async () => {
+    const running = {
+      revision: 1, phase: 'running', requestedAt: 1, spawnedAt: 1, completedAt: 1, pid: 1, error: null, events: [],
+      reachable: true, workerReady: true, ompVersion: null, healthError: null, output: [],
+    } satisfies DesktopServiceDiagnostics
+    render(<SettingsDialog isOpen onClose={vi.fn()} />)
+    await act(async () => vi.advanceTimersByTime(1))
+    expect(screen.getByRole('tab', { name: 'Host' })).toBeInTheDocument()
+    await act(async () => desktopDiagnosticsStore.receive(running))
+    expect(screen.queryByRole('tab', { name: 'Host' })).toBeNull()
+    expect(screen.getByRole('tab', { name: 'Controller' })).toBeInTheDocument()
+    await act(async () => desktopDiagnosticsStore.receive({ ...running, ompVersion: '1.2.3' }))
+    expect(screen.getByRole('tab', { name: 'Host' })).toBeInTheDocument()
   })
 
   it('finds Tailscale on the independent host page', async () => {

@@ -72,7 +72,7 @@ import { getHttpFetch } from '../../utils/tauri'
 import { auditHttpRequest } from '../trafficAudit/http'
 import { hydrateEntryContent } from '../entryContent'
 import { TERMINAL_STREAM_PROTOCOL_VERSION } from '@ompiui/protocol'
-import { resolveAndroidTailscaleUrl } from '../../utils/androidTailscale'
+import { resolveTailscaleUrl } from '../../utils/tailscaleRoute'
 import type { HostNetworkInfo, PairInviteInfo, PairRedeemResult, TunnelStatus } from '@ompiui/protocol'
 
 // Response types
@@ -165,7 +165,7 @@ export function redeemDisplayCode(code: string, origin: string, signal?: AbortSi
 
 async function redeemPairing(input: { pair: string } | { code: string }, origin: string, signal?: AbortSignal): Promise<PairRedeemResult> {
   const f = await getHttpFetch()
-  const url = await resolveAndroidTailscaleUrl(`${origin}/api/v1/host/pair/redeem`)
+  const url = await resolveTailscaleUrl(`${origin}/api/v1/host/pair/redeem`)
   const init: RequestInit = {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

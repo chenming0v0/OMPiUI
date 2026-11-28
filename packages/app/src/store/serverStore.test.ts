@@ -254,6 +254,25 @@ describe('serverStore health check', () => {
     expect(serverStore.getHealth('local')?.version).toBeUndefined()
   })
 
+  it.each(['local', 'remote'])('retains worker and OMP health independently of connectivity for %s', async target => {
+    const { serverStore } = await import('./serverStore')
+    const server = target === 'local'
+      ? serverStore.getLocalServer()!
+      : serverStore.addServer({ name: 'Remote', url: 'http://remote.test' })
+    for (const runtime of [
+      { workerReady: true, ompVersion: null },
+      { workerReady: false, ompVersion: null },
+      { workerReady: true, ompVersion: '18.12.6' },
+    ]) {
+      vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({
+        ok: true, service: 'ompiui-server', protocolVersion: PROTOCOL_VERSION, ...runtime,
+      }))
+      const health = await serverStore.checkHealth(server.id)
+      expect(health).toMatchObject({ status: 'online', url: server.url, ...runtime })
+      expect(serverStore.getHealth(server.id)).toBe(health)
+    }
+  })
+
   it('rejects HTML responses even when the status is 200', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
       new Response('<!doctype html><title>OMPiUI</title>', {

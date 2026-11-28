@@ -1,7 +1,7 @@
 import { isCustomizedLocalServerUrl, LOCAL_SERVER_ID, serverStore } from '../store/serverStore'
 import { getHttpFetch, isTauri } from '../utils/tauri'
 import { PROTOCOL_VERSION } from '@ompiui/protocol'
-import { resolveAndroidTailscaleUrl } from '../utils/androidTailscale'
+import { resolveTailscaleUrl } from '../utils/tailscaleRoute'
 import { auditHttpRequest } from './trafficAudit/http'
 
 const DEFAULT_BASE = 'http://127.0.0.1:8787'
@@ -144,7 +144,7 @@ export async function piFetch(input: string, init?: PiRequestInit): Promise<Resp
     signal.throwIfAborted()
     try {
       const request = async () => {
-        const resolved = await resolveAndroidTailscaleUrl(input)
+        const resolved = await resolveTailscaleUrl(input)
         signal.throwIfAborted()
         return fetchImpl(resolved, { ...requestInit, signal, headers })
       }
