@@ -328,6 +328,12 @@
     "checkHealth": "健康检查",
     "checking": "检查中...",
     "onlineLatency": "在线 {{latency}}ms",
+    "backendReachable": "后端可连接 {{latency}}ms",
+    "runtime": {
+      "missing": "OMP 不可用：未检测到 OMP 运行时",
+      "worker-unready": "工作进程未就绪",
+      "unknown": "服务未提供运行时状态"
+    },
     "invalidCredentials": "凭证无效",
     "nameRequired": "名称必填",
     "urlRequired": "URL 必填",

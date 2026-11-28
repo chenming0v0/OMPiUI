@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
-  Check, Copy, ExternalLink, KeyRound, Loader2, MoreHorizontal, Pencil, RefreshCw, ScanLine, Share2, Trash2, Wifi, WifiOff,
+  Check, Copy, ExternalLink, KeyRound, Loader2, MoreHorizontal, Pencil, RefreshCw, ScanLine, Share2, TriangleAlert, Trash2, Wifi, WifiOff,
 } from 'lucide-react'
 import { useServerStore } from '../../../hooks'
 import { isTauri, isTauriMobile } from '../../../utils/tauri'
@@ -14,22 +14,23 @@ import { AddServerForm } from './AddServerForm'
 import { SERVER_NAME_MAX_LENGTH, isHttpsIpUrl } from './serverForm'
 import { useServerConnect, useServerSelect } from './useServerConnect'
 import type { ServerConfig, ServerHealth } from '../../../store/serverStore'
+import { backendRuntimeStatus, useBackendRuntimeHealth, type BackendRuntimeHealth } from '../../../store/backendRuntimeHealth'
 import { fetchHostShare } from '../../../omp/transport'
 import type { ShareInfo } from '@ompiui/protocol'
 import { parseDshPairingScan } from '@ompiui/protocol/dsh-remote'
 
 const DshServerRows = lazy(() => import('./DshRemoteSettings').then(module => ({ default: module.DshServerRows })))
 
-function healthTone(health: ServerHealth | null): LampTone {
+function healthTone(health: ServerHealth | null, runtime: BackendRuntimeHealth | null): LampTone {
   if (!health || health.status === 'checking') return 'busy'
-  if (health.status === 'online') return 'on'
+  if (health.status === 'online') return backendRuntimeStatus(runtime) === 'ready' ? 'on' : 'warn'
   return health.status === 'unauthorized' ? 'warn' : 'off'
 }
 
 const healthIcons: Record<LampTone, React.ReactNode> = {
   busy: <Loader2 size={15} className="animate-spin" />,
   on: <Wifi size={15} />,
-  warn: <KeyRound size={15} />,
+  warn: <TriangleAlert size={15} />,
   off: <WifiOff size={15} />,
 }
 
@@ -57,6 +58,8 @@ function ServerItem({
   onCheckHealth: () => void
 }) {
   const { t } = useTranslation(['settings', 'common'])
+  const sharedRuntime = useBackendRuntimeHealth(health?.url ?? server.url)
+  const runtime = sharedRuntime ?? health
   const [view, setView] = useState<RowView>(null)
   // 窄屏把分享、编辑、移除收进「更多」，展开成一排文字按钮。
   const [strip, setStrip] = useState(false)
@@ -72,8 +75,13 @@ function ServerItem({
     switch (health.status) {
       case 'checking':
         return t('servers.checking')
-      case 'online':
-        return `${t('servers.onlineLatency', { latency: health.latency })}${health.version ? ` · Pi v${health.version}` : ''}`
+      case 'online': {
+        const status = backendRuntimeStatus(runtime)
+        const label = status === 'ready'
+          ? t('servers.onlineLatency', { latency: health.latency })
+          : `${t('servers.backendReachable', { latency: health.latency })} · ${t(`servers.runtime.${status}`)}`
+        return `${label}${runtime?.ompVersion ? ` · OMP v${runtime.ompVersion}` : ''}`
+      }
       case 'unauthorized':
         return t('servers.invalidCredentials')
       case 'offline':
@@ -85,7 +93,7 @@ function ServerItem({
     }
   }
 
-  const tone = healthTone(health)
+  const tone = healthTone(health, runtime)
   const showStrip = strip && view !== 'edit' && view !== 'confirm'
   return (
     <div className="cb-srv" data-current={isActive ? '' : undefined} data-testid="server-row">
@@ -112,7 +120,7 @@ function ServerItem({
           )}
           <button type="button" className="cb-icon-btn" data-tone={tone} onClick={onCheckHealth}
             title={statusTitle()} aria-label={statusTitle()}>
-            {healthIcons[tone]}
+            {health?.status === 'unauthorized' ? <KeyRound size={15} /> : healthIcons[tone]}
           </button>
           {canRemove && (
             <button type="button" className="cb-icon-btn" data-wide="" data-danger=""

@@ -4,6 +4,7 @@ import { DesktopServiceStatus } from './DesktopServiceStatus'
 import { desktopDiagnosticsStore, type DesktopServiceDiagnostics } from '../store/desktopDiagnosticsStore'
 import { serviceStore } from '../store/serviceStore'
 import { desktopRuntimeStore } from '../store/desktopRuntimeStore'
+import { receiveBackendRuntimeHealth } from '../store/backendRuntimeHealth'
 import i18n from '../i18n'
 
 const mocks = vi.hoisted(() => ({
@@ -112,7 +113,10 @@ describe('desktop backend indicator', () => {
     mocks.read.mockResolvedValue(running)
     render(<DesktopServiceStatus />)
     await act(async () => {})
-    fireEvent.click(screen.getByRole('button', { name: /运行中/ }))
+    const indicator = screen.getByRole('button', { name: /运行中/ })
+    expect(indicator).toHaveTextContent('工作进程未就绪')
+    expect(indicator.querySelector('.bg-warning-100')).toBeInTheDocument()
+    fireEvent.click(indicator)
     expect(screen.getByText('初始化中')).toBeInTheDocument()
     expect(screen.getByText('42')).toBeInTheDocument()
     mocks.read.mockResolvedValue({ ...running, workerReady: true })
@@ -127,6 +131,29 @@ describe('desktop backend indicator', () => {
     expect(screen.queryByText('已就绪')).toBeNull()
     expect(screen.getByRole('button', { name: /查看本地后端与运行时/ })).toHaveTextContent('OMP 不可用')
     expect(screen.queryByText('初始化中')).toBeNull()
+  })
+
+  it('follows the same runtime snapshot as the server list when HTTP health changes', async () => {
+    const healthUrl = 'http://127.0.0.1:58112'
+    const running = {
+      ...native, phase: 'running' as const, reachable: true, workerReady: true,
+      ompVersion: '18.12.6', healthUrl, healthCheckedAt: 100,
+    }
+    mocks.read.mockResolvedValue(running)
+    render(<DesktopServiceStatus />)
+    await act(async () => {})
+    const indicator = screen.getByRole('button', { name: /查看本地后端与运行时/ })
+    expect(indicator.querySelector('.bg-success-100')).toBeInTheDocument()
+    act(() => receiveBackendRuntimeHealth(healthUrl, { workerReady: true, ompVersion: null }, 200))
+    expect(indicator).toHaveTextContent('OMP 不可用')
+    expect(indicator.querySelector('.bg-warning-100')).toBeInTheDocument()
+    act(() => desktopDiagnosticsStore.receive(running))
+    expect(indicator).toHaveTextContent('OMP 不可用')
+    act(() => receiveBackendRuntimeHealth('https://remote.example', { workerReady: true, ompVersion: '19.0.0' }, 300))
+    expect(indicator).toHaveTextContent('OMP 不可用')
+    act(() => receiveBackendRuntimeHealth(healthUrl, { workerReady: true, ompVersion: '18.12.6' }, 300))
+    expect(indicator).not.toHaveTextContent('OMP 不可用')
+    expect(indicator.querySelector('.bg-success-100')).toBeInTheDocument()
   })
 
   it.each(['stop', 'restart'] as const)('requires confirmation before %s can interrupt an owned backend', async action => {

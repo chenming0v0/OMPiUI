@@ -327,6 +327,12 @@
     "checkHealth": "Check health",
     "checking": "Checking...",
     "onlineLatency": "Online {{latency}}ms",
+    "backendReachable": "Backend reachable {{latency}}ms",
+    "runtime": {
+      "missing": "OMP unavailable: runtime not detected",
+      "worker-unready": "Worker not ready",
+      "unknown": "Runtime status not reported by service"
+    },
     "invalidCredentials": "Invalid credentials",
     "nameRequired": "Name required",
     "urlRequired": "URL required",

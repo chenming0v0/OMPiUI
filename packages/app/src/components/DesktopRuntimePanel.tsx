@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import type { OmpRuntimeCandidate } from '@ompiui/protocol'
 import { desktopServicePhase, isServiceBusy, useDesktopDiagnostics } from '../store/desktopDiagnosticsStore'
 import { desktopRuntimeStore, useDesktopRuntime } from '../store/desktopRuntimeStore'
+import { backendRuntimeStatus } from '../store/backendRuntimeHealth'
 import { useServiceStore, type EnvVar } from '../store/serviceStore'
 import { CpuIcon, FolderOpenIcon, RetryIcon, SpinnerIcon } from './Icons'
 import { Button } from './ui/Button'
@@ -61,7 +62,7 @@ function useRuntimeView() {
     currentError: currentFresh ? catalog?.currentError || catalog?.current?.error || null : null,
     target: catalog?.available.selected ?? null,
     candidates: catalog?.available.candidates ?? [],
-    ompMissing: running && native?.workerReady === true && !native.ompVersion,
+    ompMissing: running && backendRuntimeStatus(native) === 'missing',
   }
 }
 

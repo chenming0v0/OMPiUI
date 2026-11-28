@@ -8,6 +8,7 @@ import { DSH_PENDING_URL, loadDshServerSelection, saveDshServerSelection } from 
 import { PROTOCOL_VERSION } from '@ompiui/protocol'
 import { resolveTailscaleUrl } from '../utils/tailscaleRoute'
 import { auditHttpRequest } from '../omp/trafficAudit/http'
+import { receiveBackendRuntimeHealth, type BackendRuntimeHealth } from './backendRuntimeHealth'
 
 /** 这条连接是怎么加进来的：配对兑换，还是手动填的地址和密钥。只用于列表里的来源标记。 */
 export type ServerSource = 'pair' | 'manual' | 'dsh'
@@ -27,8 +28,10 @@ export interface ServerConfig {
 /**
  * 服务器健康状态
  */
-export interface ServerHealth {
+export interface ServerHealth extends BackendRuntimeHealth {
+  // 连接状态供 SSE 和远程连接使用；运行时健康由 workerReady / ompVersion 单独表达。
   status: 'checking' | 'online' | 'offline' | 'error' | 'unauthorized'
+  url?: string // 实际探测地址，兼容旧版 Local 保存的相对路径
   latency?: number // 响应延迟 (ms)
   lastCheck?: number // 上次检查时间戳
   error?: string // 错误信息
@@ -695,10 +698,16 @@ class ServerStore {
 
         const health: ServerHealth = {
           status: 'online',
+          url: this.resolveHealthBaseUrl(server),
           latency,
           lastCheck: Date.now(),
           version: typeof data.ompVersion === 'string' ? data.ompVersion : undefined,
+          ompVersion: typeof data.ompVersion === 'string' ? data.ompVersion : null,
+          workerReady: typeof data.workerReady === 'boolean' ? data.workerReady : null,
           details,
+        }
+        if (this.healthCheckSeqMap.get(serverId) === checkSeq) {
+          receiveBackendRuntimeHealth(this.resolveHealthBaseUrl(server), health, startTime)
         }
         return commitHealth(health)
       } else if (response.status === 401) {

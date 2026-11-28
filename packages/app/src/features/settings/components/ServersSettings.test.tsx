@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { dshControllerStore } from '../../../store/dshControllerStore'
 import { ServersSettings } from './ServersSettings'
+import { receiveBackendRuntimeHealth } from '../../../store/backendRuntimeHealth'
 
 const { useServerStoreMock, navigateHomeMock, clearSessionMock, redeemMock, redeemCodeMock, nativeMock, mobileMock, disconnectMock, scanMock, parseScanMock } = vi.hoisted(() => ({
   parseScanMock: vi.fn(),
@@ -80,6 +81,48 @@ describe('ServersSettings', () => {
       checkAllHealth: vi.fn(),
       getHealth: vi.fn(() => null),
     })
+  })
+
+  it.each([
+    { workerReady: true, ompVersion: null, label: 'servers.runtime.missing' },
+    { workerReady: false, ompVersion: null, label: 'servers.runtime.worker-unready' },
+    { workerReady: null, ompVersion: null, label: 'servers.runtime.unknown' },
+  ])('warns for local and remote runtime health: $label', ({ workerReady, ompVersion, label }) => {
+    useServerStoreMock().getHealth.mockReturnValue({ status: 'online', latency: 12, workerReady, ompVersion })
+    render(<ServersSettings />)
+    for (const name of ['Local', 'Remote']) {
+      const health = within(row(name)).getByRole('button', { name: `servers.backendReachable 12 · ${label}` })
+      expect(health).toHaveAttribute('data-tone', 'warn')
+      expect(health).toHaveAttribute('title', `servers.backendReachable 12 · ${label}`)
+      expect(health.querySelector('.lucide-triangle-alert')).toBeInTheDocument()
+    }
+  })
+
+  it('returns to green with the reported OMP version after runtime recovery', () => {
+    useServerStoreMock().getHealth.mockReturnValue({ status: 'online', latency: 12, workerReady: true, ompVersion: null })
+    const view = render(<ServersSettings />)
+    expect(within(row('Remote')).getByRole('button', { name: /servers.runtime.missing/ })).toHaveAttribute('data-tone', 'warn')
+    useServerStoreMock().getHealth.mockReturnValue({ status: 'online', latency: 12, workerReady: true, ompVersion: '18.12.6' })
+    view.rerender(<ServersSettings />)
+    expect(within(row('Remote')).getByRole('button', { name: 'servers.onlineLatency 12 · OMP v18.12.6' })).toHaveAttribute('data-tone', 'on')
+  })
+
+  it('uses shared desktop health for the matching endpoint and preserves authentication warnings', () => {
+    const url = 'http://127.0.0.1:58111'
+    useServerStoreMock.mockReturnValue({
+      ...useServerStoreMock(),
+      servers: [{ ...localServer, url }, remoteServer],
+      getHealth: (id: string) => id === 'local'
+        ? { status: 'online', latency: 12, workerReady: true, ompVersion: '18.12.6' }
+        : { status: 'unauthorized' },
+    })
+    render(<ServersSettings />)
+    act(() => receiveBackendRuntimeHealth(url, { workerReady: true, ompVersion: null }, 1))
+    expect(within(row('Local')).getByRole('button', { name: /servers.runtime.missing/ })).toHaveAttribute('data-tone', 'warn')
+    const unauthorized = within(row('Remote')).getByRole('button', { name: 'servers.invalidCredentials' })
+    expect(unauthorized.querySelector('.lucide-key-round')).toBeInTheDocument()
+    act(() => receiveBackendRuntimeHealth(url, { workerReady: true, ompVersion: '18.12.6' }, 2))
+    expect(within(row('Local')).getByRole('button', { name: /OMP v18.12.6/ })).toHaveAttribute('data-tone', 'on')
   })
 
   it('switches DS through normal navigation while keeping saved server rows available', async () => {
