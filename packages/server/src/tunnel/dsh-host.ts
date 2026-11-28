@@ -14,6 +14,7 @@ const MAX_LEASE_MS = 120 * 60_000
 const CHECK_MS = 15_000
 
 const dshHostDefaults = { openHostc: openDshHostc, checkMs: CHECK_MS }
+type DshHostSettings = typeof dshHostDefaults & { authToken?: string }
 
 class WebLease {
   private connector?: Awaited<ReturnType<typeof openDshHostc>>
@@ -24,7 +25,7 @@ class WebLease {
 
   constructor(private readonly account: DshRemoteAccount, private readonly path: string, private readonly localPort: number,
     private readonly activeOrigins: Set<string>, private readonly onEnd: (reason: DshWebLeaseEnd) => void,
-    private readonly options = dshHostDefaults) {}
+    private readonly options: DshHostSettings = dshHostDefaults) {}
 
   private origin?: string
 
@@ -50,6 +51,7 @@ class WebLease {
       this.connector = await this.options.openHostc({
         lease: { id: data.sessionId, url: browserUrl.href, connectUrl: connect.href, token: data.connectToken },
         localPort: this.localPort,
+        authToken: this.options.authToken,
       }, signal)
       this.origin = browserUrl.origin
       this.activeOrigins.add(browserUrl.origin)
@@ -123,7 +125,7 @@ interface Peer {
 
 export async function runDshHost(account: DshRemoteAccount, localPort: number, signal: AbortSignal,
   activeOrigins: Set<string>, onReady?: () => void,
-  options: Partial<typeof dshHostDefaults> & { socketFactory?: DshControlSocketFactory } = {}): Promise<void> {
+  options: Partial<DshHostSettings> & { socketFactory?: DshControlSocketFactory } = {}): Promise<void> {
   const settings = { ...dshHostDefaults, ...options }
   let rejected: string | undefined
   for (;;) {
@@ -141,7 +143,7 @@ export async function runDshHost(account: DshRemoteAccount, localPort: number, s
 
 async function serveDshPeers(account: DshRemoteAccount, localPort: number, signal: AbortSignal,
   activeOrigins: Set<string>, control: DshControl, identity: Awaited<ReturnType<typeof DshControl.open>>['identity'],
-  settings: typeof dshHostDefaults, onReady?: () => void): Promise<void> {
+  settings: DshHostSettings, onReady?: () => void): Promise<void> {
   const peers = new Map<string, Peer>()
   const path = `/api/v1/hosts/${encodeURIComponent(identity.deviceId)}/dsh-web/sessions`
   const closePeer = async (id: string) => {

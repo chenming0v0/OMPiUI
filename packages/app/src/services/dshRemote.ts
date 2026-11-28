@@ -1,14 +1,15 @@
 import {
-  DSH_CONTROL_LIMIT, DSH_PAIRING_ROOT, DSH_RELAY_CAPABILITY, DSH_RELAY_LIMIT, DSH_REMOTE_ORIGIN,
+  DSH_PAIRING_ROOT, DSH_RELAY_CAPABILITY, DSH_REMOTE_ORIGIN,
   DSH_WEB_LEASE_ENDED, DshNoise, createDshIdentity, decodeDshBase64, dshControlFailure, dshFrame, dshId, dshPairingFingerprint, dshPairingProof,
   dshRecord, isDshExpiry, isDshToken, isDshWebLeaseEnd,
   parseDshBrowserGrant, parseDshDeviceTokens, parseDshFrame, parseDshPairingScan, parseDshPairingSession, parseDshPairingStatus,
   requireDshOmpiuiWeb, selectDshHosts,
-  type DshBrowserGrant, type DshDeviceTokens, type DshFrame, type DshHostListItem, type DshIdentity, type DshPairingSession,
+  type DshBrowserGrant, type DshDeviceTokens, type DshHostListItem, type DshIdentity, type DshPairingSession,
   type DshPairingState, type DshWebLeaseEnd,
 } from '@ompiui/protocol/dsh-remote'
-import { DSH_PAIRED_KEY } from '../store/dshControllerStore'
 import { recordDshDiagnostic } from './dshConnectionDiagnostics'
+import { DshControlWire } from './dshControlWire'
+import { clearDshSession, loadDshSession, saveDshSession, type DshSessionRecord } from './dshSessionStorage'
 import { getDesktopPlatform, getHttpFetch, isTauriMobile } from '../utils/tauri'
 
 export interface DshLoginProvider { id: string; label: string; start: string }
@@ -17,8 +18,6 @@ export interface DshConnectionEnd { leaseEnd?: DshWebLeaseEnd; error?: unknown }
 export interface DshAppConnection { grant: DshBrowserGrant; closed: Promise<DshConnectionEnd>; close(): Promise<void> }
 
 const TOKEN_SKEW = 60_000
-const WSS = DSH_REMOTE_ORIGIN.replace('https:', 'wss:') + '/ws/v1/connect'
-const textEncoder = new TextEncoder()
 
 export class DshApiError extends Error {
   readonly code: string
@@ -32,6 +31,11 @@ export class DshApiError extends Error {
 
 export function isDshControllerAuthFailure(error: unknown): error is DshApiError & { code: 'DSH_AUTH_INVALID' | 'DSH_DEVICE_REVOKED' } {
   return error instanceof DshApiError && ['DSH_AUTH_INVALID', 'DSH_DEVICE_REVOKED'].includes(error.code)
+}
+
+export function shouldRefreshDshHello(error: DshApiError, alreadyRetried: boolean): boolean {
+  // 只有明确的认证拒绝才消耗刷新令牌；未知关闭码保留原始诊断。
+  return !alreadyRetried && error.code === 'DSH_AUTH_INVALID'
 }
 
 function controllerAuthError(code: 'AUTH_INVALID' | 'DEVICE_REVOKED'): DshApiError {
@@ -65,7 +69,7 @@ function relayErrorCode(value: unknown): string {
   return ''
 }
 
-function wireFailure(wire: BrowserDshControl, fallback: string, frameCode?: unknown): DshApiError {
+function wireFailure(wire: DshControlWire, fallback: string, frameCode?: unknown): DshApiError {
   const failure = dshControlFailure(frameCode, wire.closeInfo)
   if (failure === 'AUTH_INVALID' || failure === 'DEVICE_REVOKED') return controllerAuthError(failure)
   if (failure === 'ALREADY_CONNECTED') return new DshApiError('HOST_BUSY', 409)
@@ -81,9 +85,19 @@ async function dshRequest(path: string, init: RequestInit, signal?: AbortSignal)
   const deadline = AbortSignal.timeout(12_000)
   const options = { ...init, headers, signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
     redirect: 'error' as const, maxRedirections: 0 }
-  const response = await fetch(url.href, options)
+  const transportFailure = (error: unknown): never => {
+    options.signal.throwIfAborted()
+    // plugin-http 的原生网络错误以字符串拒绝，归一化后与浏览器网络错误共用重试策略。
+    if (typeof error === 'string') throw new TypeError('DS Harness Remote network request failed')
+    throw error
+  }
+  const response = await fetch(url.href, options).catch(transportFailure)
   if (response.status === 204) return undefined
-  const body: unknown = await response.json().catch(() => null)
+  const body: unknown = await response.json().catch(error => {
+    if (error instanceof SyntaxError) return null
+    return transportFailure(error)
+  })
+  options.signal.throwIfAborted()
   if (!response.ok) {
     const code = dshRecord(dshRecord(body)?.error)?.code
     throw new DshApiError(typeof code === 'string' ? code : '', response.status)
@@ -113,11 +127,12 @@ export async function beginDshLogin(provider: DshLoginProvider, signal: AbortSig
   return { id: value.qrId, url: url.href, expiresAt: Date.now() + Math.min(value.expiresIn, 600) * 1000 }
 }
 
-export async function pollDshLogin(id: string, signal: AbortSignal): Promise<'pending' | 'expired' | DshAppSession> {
+export async function pollDshLogin(id: string, signal: AbortSignal, options?: { onComplete?: () => void }): Promise<'pending' | 'expired' | DshAppSession> {
   if (!/^[a-z0-9_-]{8,100}$/i.test(id)) throw new Error('Invalid DSH login ID')
   const value = dshRecord(await dshRequest(`/api/v1/auth/oauth/qr/${encodeURIComponent(id)}`, {}, signal))
   if (value?.status === 'pending' || value?.status === 'expired') return value.status
   if (value?.status !== 'complete' || !isDshToken(value.token)) throw new Error('Invalid DSH login response')
+  options?.onComplete?.()
   const identity = createDshIdentity()
   const platform = devicePlatform()
   const result = await dshRequest('/api/v1/devices/register', {
@@ -127,7 +142,11 @@ export async function pollDshLogin(id: string, signal: AbortSignal): Promise<'pe
       identityKey: identity.identityKey, clientVersion: __APP_VERSION__,
     } }),
   }, signal)
-  return new DshAppSession(identity, parseDshDeviceTokens(result))
+  const tokens = parseDshDeviceTokens(result)
+  signal.throwIfAborted()
+  const store = sessionStore(identity, 'account')
+  store(tokens)
+  return new DshAppSession(identity, tokens, store, 'account')
 }
 
 function devicePlatform(): string {
@@ -139,36 +158,20 @@ function devicePlatform(): string {
 // 配对拿到的是这台手机自己的设备授权，不经过账号登录，所以要存下来，否则每次重开 App 都得回电脑前重新配对。
 // ============================================
 
-const PAIRED_KEY = DSH_PAIRED_KEY
-
-function pairedStore(identity: DshIdentity): (tokens: DshDeviceTokens | null) => void {
+function sessionStore(identity: DshIdentity, mode: DshSessionRecord['mode']): (tokens: DshDeviceTokens | null) => void {
   return tokens => {
     try {
-      if (tokens) localStorage.setItem(PAIRED_KEY, JSON.stringify({ identity, tokens }))
-      else localStorage.removeItem(PAIRED_KEY)
-    } catch { /* 存不下来时这次配对仍然可用，只是重开 App 后要重新配对。 */ }
+      if (tokens) saveDshSession({ identity, tokens, mode })
+      else clearDshSession()
+    } catch { throw new DshApiError('DSH_STORAGE_FAILED', 0) }
   }
 }
 
-/** 上次扫码配对留下的会话；没有或已经过期时返回 null。 */
+/** 恢复本机账号或配对授权；两者共享存储，但保留独立登录方式。 */
 export function restoreDshPairedSession(): DshAppSession | null {
-  try {
-    const saved = dshRecord(JSON.parse(localStorage.getItem(PAIRED_KEY) ?? 'null'))
-    const stored = dshRecord(saved?.identity)
-    if (!stored) return null
-    const identity: DshIdentity = {
-      deviceId: dshId(stored.deviceId),
-      identityKey: typeof stored.identityKey === 'string' ? stored.identityKey : '',
-      privateKey: typeof stored.privateKey === 'string' ? stored.privateKey : '',
-    }
-    const tokens = parseDshDeviceTokens(saved?.tokens)
-    if (decodeDshBase64(identity.identityKey, 32).length !== 32 || decodeDshBase64(identity.privateKey, 32).length !== 32
-      || tokens.refreshTokenExpiresAt <= Date.now()) throw new Error('Unusable DSH pairing')
-    return new DshAppSession(identity, tokens, pairedStore(identity))
-  } catch {
-    try { localStorage.removeItem(PAIRED_KEY) } catch { /* ignore */ }
-    return null
-  }
+  let saved: DshSessionRecord | null
+  try { saved = loadDshSession() } catch { throw new DshApiError('DSH_STORAGE_FAILED', 0) }
+  return saved ? new DshAppSession(saved.identity, saved.tokens, sessionStore(saved.identity, saved.mode), saved.mode) : null
 }
 
 /**
@@ -231,11 +234,12 @@ export class DshPhonePairing {
     try { status = parseDshPairingStatus(value, this.session, 'mobile', this.identity) } catch { throw new DshApiError('PAIRING_MISMATCH', 0) }
     this.ended = status.state !== 'claimed' && status.state !== 'approved'
     if (status.state !== 'completed' || !status.tokens) return { state: status.state, failureReason: status.failureReason }
+    signal.throwIfAborted()
     // 再配一台电脑时手机的身份和授权都没变，原来的会话接着用。
     if (this.existing) return { state: status.state, failureReason: null, paired: this.existing }
-    const store = pairedStore(this.identity)
+    const store = sessionStore(this.identity, 'paired')
     store(status.tokens)
-    return { state: status.state, failureReason: null, paired: new DshAppSession(this.identity, status.tokens, store) }
+    return { state: status.state, failureReason: null, paired: new DshAppSession(this.identity, status.tokens, store, 'paired') }
   }
 
   /** 尽力告诉电脑这次配对不继续了。 */
@@ -260,17 +264,23 @@ export class DshAppSession {
   private readonly lifetime = new AbortController()
   private readonly identity: DshIdentity
   private tokens: DshDeviceTokens
-  /** 扫码配对的会话要把换新的授权存下来；账号登录的会话只留在内存里。 */
+  private unsavedTokens = false
+  /** 手机重开后继续使用同一个设备；刷新时保存整对授权。 */
   private readonly store?: (tokens: DshDeviceTokens | null) => void
+  private readonly mode: DshSessionRecord['mode']
 
-  constructor(identity: DshIdentity, tokens: DshDeviceTokens, store?: (tokens: DshDeviceTokens | null) => void) {
+  constructor(identity: DshIdentity, tokens: DshDeviceTokens, store?: (tokens: DshDeviceTokens | null) => void,
+    mode: DshSessionRecord['mode'] = 'account') {
     this.identity = identity
     this.tokens = tokens
     this.store = store
+    this.mode = mode
   }
 
   /** 是不是扫码配对来的：没有账号可退出，只能取消配对。 */
-  get paired(): boolean { return this.store !== undefined }
+  get paired(): boolean { return this.mode === 'paired' }
+
+  get invalidated(): boolean { return this.lifetime.signal.aborted }
 
   /** 已经配对过的手机再扫一台电脑。 */
   pairAnother(text: string, signal: AbortSignal): Promise<DshPhonePairing> {
@@ -278,6 +288,7 @@ export class DshAppSession {
   }
 
   async listHosts(signal: AbortSignal, localHostId?: string | null): Promise<DshHostListItem[]> {
+    signal = AbortSignal.any([signal, this.lifetime.signal])
     const hosts = new Map<string, DshHostListItem>()
     const cursors = new Set<string>()
     let cursor: string | undefined
@@ -285,7 +296,28 @@ export class DshAppSession {
       const query = new URLSearchParams({ limit: '50', ...(cursor ? { cursor } : {}) })
       const result = dshRecord(await this.request(`/api/v1/devices?${query}`, {}, signal))
       if (!Array.isArray(result?.items)) throw new Error('Invalid DSH host list')
-      for (const host of selectDshHosts(result.items, this.identity.deviceId, localHostId)) hosts.set(host.id, host)
+      const page = selectDshHosts(result.items, this.identity.deviceId, localHostId)
+      // 目录用于发现设备，在线状态使用 presence；每页查完再翻页，最多八路请求。
+      let index = 0
+      await Promise.all(Array.from({ length: Math.min(8, page.length) }, async () => {
+        while (index < page.length) {
+          signal.throwIfAborted()
+          const host = page[index++]
+          let online: boolean | undefined
+          try {
+            const presence = dshRecord(await this.request(`/api/v1/devices/${encodeURIComponent(host.id)}/presence`, {}, signal))
+            if (presence?.deviceId !== host.id || typeof presence.online !== 'boolean') throw new Error('Invalid DSH presence')
+            online = presence.online
+          } catch (error) {
+            signal.throwIfAborted()
+            if (isDshControllerAuthFailure(error)) throw error
+            // 单台状态查询失败保留“未知”，不能误报离线或使用旧列表快照。
+          }
+          host.online = online
+        }
+      }))
+      signal.throwIfAborted()
+      for (const host of page) hosts.set(host.id, host)
       if (result.nextCursor == null) break
       if (typeof result.nextCursor !== 'string' || !result.nextCursor || cursors.has(result.nextCursor) || cursors.size >= 200) throw new Error('Invalid DSH host list cursor')
       cursor = result.nextCursor
@@ -435,7 +467,7 @@ export class DshAppSession {
     for (;;) {
       const tokens = await this.getTokens(handshake, rejected)
       handshake.throwIfAborted()
-      const wire = new BrowserDshControl(signal, attemptId)
+      const wire = new DshControlWire(signal, attemptId)
       const socketStarted = Date.now()
       recordDshDiagnostic('connect.websocket.start', { attemptId })
       try {
@@ -447,7 +479,10 @@ export class DshAppSession {
         })
         recordDshDiagnostic('connect.hello.sent', { attemptId })
         const ack = await wire.next(handshake)
-        if (ack.type === 'error') throw wireFailure(wire, 'PROTOCOL', ack.payload.code)
+        if (ack.type === 'error') {
+          recordDshDiagnostic('connect.hello.failure', { attemptId, frameCode: ack.payload.code })
+          throw wireFailure(wire, 'PROTOCOL', ack.payload.code)
+        }
         if (ack.type !== 'hello.ack' || ack.payload.protocol !== 1
           || (Array.isArray(ack.payload.capabilities) && !ack.payload.capabilities.includes(DSH_RELAY_CAPABILITY))) {
           throw new DshApiError('PROTOCOL', 0)
@@ -463,13 +498,13 @@ export class DshAppSession {
         })
         wire.close()
         signal.throwIfAborted()
-        if (failure.code !== 'DSH_AUTH_INVALID' || rejected !== undefined) throw failure
+        if (!shouldRefreshDshHello(failure, rejected !== undefined)) throw failure
         rejected = tokens.accessToken
       }
     }
   }
 
-  private async activeFailure(wire: BrowserDshControl, tokens: DshDeviceTokens, refreshed: boolean, signal: AbortSignal, code?: unknown): Promise<unknown> {
+  private async activeFailure(wire: DshControlWire, tokens: DshDeviceTokens, refreshed: boolean, signal: AbortSignal, code?: unknown): Promise<unknown> {
     const failure = wireFailure(wire, 'LEASE_FAILED', code)
     if (failure.code !== 'DSH_AUTH_INVALID' || refreshed) return failure
     try { await this.getTokens(signal, tokens.accessToken) } catch (error) { return error }
@@ -477,10 +512,10 @@ export class DshAppSession {
   }
 
   invalidate(): void {
-    this.store?.(null)
     this.lifetime.abort()
     this.tokens = { accessToken: '', accessTokenExpiresAt: 0, refreshToken: '', refreshTokenExpiresAt: 0 }
     this.pinnedPeers.clear()
+    this.store?.(null)
   }
 
   async revoke(): Promise<void> {
@@ -528,7 +563,10 @@ export class DshAppSession {
   private getTokens(signal: AbortSignal, rejected?: string): Promise<DshDeviceTokens> {
     signal.throwIfAborted()
     this.lifetime.signal.throwIfAborted()
-    if (this.tokens.accessToken !== rejected && this.tokens.accessTokenExpiresAt > Date.now() + TOKEN_SKEW) return Promise.resolve(this.tokens)
+    if (this.tokens.accessToken !== rejected && this.tokens.accessTokenExpiresAt > Date.now() + TOKEN_SKEW) {
+      if (this.unsavedTokens) { this.store?.(this.tokens); this.unsavedTokens = false }
+      return Promise.resolve(this.tokens)
+    }
     this.refreshing ??= (async () => {
       if (this.tokens.refreshTokenExpiresAt <= Date.now()) throw controllerAuthError('AUTH_INVALID')
       try {
@@ -537,8 +575,12 @@ export class DshAppSession {
         }, this.lifetime.signal))
         this.lifetime.signal.throwIfAborted()
         if (tokens.accessTokenExpiresAt <= Date.now()) throw controllerAuthError('AUTH_INVALID')
+        // 刷新已轮换凭据；保存失败仍保留新值，下次请求先重试保存。
+        this.tokens = tokens
+        this.unsavedTokens = true
         this.store?.(tokens)
-        return this.tokens = tokens
+        this.unsavedTokens = false
+        return tokens
       } catch (error) {
         if (error instanceof DshApiError) {
           if (error.code === 'DEVICE_REVOKED') throw controllerAuthError('DEVICE_REVOKED')
@@ -548,100 +590,5 @@ export class DshAppSession {
       }
     })().finally(() => { this.refreshing = undefined })
     return this.refreshing.then(tokens => { signal.throwIfAborted(); return tokens })
-  }
-}
-
-class BrowserDshControl {
-  closeInfo?: { code: number; reason: string }
-  private readonly socket = new WebSocket(WSS)
-  private readonly queue: Array<{ frame: DshFrame; size: number }> = []
-  private readonly ended = new AbortController()
-  private queuedBytes = 0
-  private controlLimit = DSH_CONTROL_LIMIT
-  private relayLimit = DSH_RELAY_LIMIT
-  private wake?: () => void
-  private idleTimer?: ReturnType<typeof setTimeout>
-
-  constructor(signal: AbortSignal, attemptId: string) {
-    const abort = () => this.close()
-    signal.addEventListener('abort', abort, { once: true })
-    this.socket.addEventListener('close', event => {
-      this.closeInfo = { code: event.code, reason: event.reason }
-      recordDshDiagnostic('connect.socket.closed', { attemptId, closeCode: event.code, closeReason: event.reason })
-      clearTimeout(this.idleTimer)
-      signal.removeEventListener('abort', abort)
-      this.ended.abort()
-    }, { once: true })
-    this.socket.addEventListener('error', () => this.close())
-    this.socket.addEventListener('message', event => {
-      try {
-        if (typeof event.data !== 'string') throw new Error('Invalid DSH frame encoding')
-        const size = textEncoder.encode(event.data).length
-        if (size > this.relayLimit) throw new Error('DSH frame too large')
-        const frame = parseDshFrame(event.data)
-        if (frame.type !== 'relay' && size > this.controlLimit) throw new Error('DSH control frame too large')
-        clearTimeout(this.idleTimer)
-        this.idleTimer = setTimeout(() => this.close(), 60_000)
-        if (frame.type === 'ping') { this.send('pong', frame.payload); return }
-        if (this.queue.length >= 16 || this.queuedBytes + size > DSH_RELAY_LIMIT) throw new Error('DSH control queue full')
-        this.queue.push({ frame, size })
-        this.queuedBytes += size
-        this.wake?.()
-      } catch { this.close() }
-    })
-    if (signal.aborted) this.close()
-  }
-
-  async open(signal: AbortSignal): Promise<void> {
-    const lifetime = AbortSignal.any([signal, this.ended.signal])
-    lifetime.throwIfAborted()
-    if (this.socket.readyState === WebSocket.OPEN) return
-    await new Promise<void>((resolve, reject) => {
-      const remove = () => {
-        lifetime.removeEventListener('abort', abort)
-        this.socket.removeEventListener('open', opened)
-      }
-      const abort = () => { remove(); reject(new Error('Could not connect to DS Harness Remote')) }
-      const opened = () => { remove(); resolve() }
-      lifetime.addEventListener('abort', abort, { once: true })
-      this.socket.addEventListener('open', opened, { once: true })
-    })
-  }
-
-  limit(control: unknown, relay: unknown): void {
-    if (!isDshExpiry(control) || control > DSH_CONTROL_LIMIT || !isDshExpiry(relay) || relay > DSH_RELAY_LIMIT) throw new Error('Invalid DSH frame limits')
-    this.controlLimit = control
-    this.relayLimit = relay
-  }
-
-  send(type: string, payload: Record<string, unknown>): void {
-    if (this.socket.readyState !== WebSocket.OPEN || this.socket.bufferedAmount > DSH_RELAY_LIMIT) throw new Error('DSH control connection is closed')
-    const frame = JSON.stringify(dshFrame(type, payload))
-    if (textEncoder.encode(frame).length > (type === 'relay' ? this.relayLimit : this.controlLimit)) throw new Error('DSH frame too large')
-    this.socket.send(frame)
-  }
-
-  async next(signal: AbortSignal): Promise<DshFrame> {
-    const lifetime = AbortSignal.any([signal, this.ended.signal])
-    while (!this.queue.length) {
-      lifetime.throwIfAborted()
-      await new Promise<void>((resolve, reject) => {
-        const abort = () => { this.wake = undefined; reject(lifetime.reason) }
-        this.wake = () => { this.wake = undefined; lifetime.removeEventListener('abort', abort); resolve() }
-        lifetime.addEventListener('abort', abort, { once: true })
-      })
-    }
-    signal.throwIfAborted()
-    const item = this.queue.shift()!
-    this.queuedBytes -= item.size
-    return item.frame
-  }
-
-  close(): void {
-    const wake = this.wake
-    this.ended.abort()
-    this.socket.close()
-    // Wake a next() waiter that registered before the abort listener, then reject any later send.
-    wake?.()
   }
 }

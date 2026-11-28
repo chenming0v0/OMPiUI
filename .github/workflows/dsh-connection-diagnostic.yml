@@ -1,0 +1,36 @@
+name: DS Remote public handshake diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [dev]
+    paths:
+      - .github/workflows/dsh-connection-diagnostic.yml
+      - scripts/dsh-connection-diagnostic.mjs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dsh-connection-diagnostic-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  public-handshake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      # 仅安装公共握手需要的依赖，脚本从同一临时目录解析 ws。
+      - name: Install isolated WebSocket dependency
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/dsh-diagnostic"
+          npm install --prefix "$RUNNER_TEMP/dsh-diagnostic" --ignore-scripts --omit=optional --no-audit --no-fund --package-lock=false --save-exact ws@8.21.3
+      - name: Observe three public handshakes
+        run: node scripts/dsh-connection-diagnostic.mjs

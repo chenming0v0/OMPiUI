@@ -5,17 +5,19 @@ import i18n from '../../i18n'
 import type { Model, Api } from '../../omp/vendor/pi-ai'
 import { getModelVariantPref, saveModelVariantPref, setPreferredModelKey } from '../../utils/modelUtils'
 import { serverStore, LOCAL_SERVER_ID } from '../../store/serverStore'
+import { DSH_PENDING_URL } from '../../store/dshServerSelection'
 import { InputToolbar } from '../chat/input/InputToolbar'
 import { PiChatPane } from './PiChatPane'
 
 const mocks = vi.hoisted(() => ({
   models: [] as Model<Api>[],
   state: null as { model: { provider: string; id: string }; thinkingLevel: string; supportedThinkingLevels?: string[] } | null,
-  branch: { items: [] },
+  branch: { items: [] } as { items: unknown[] } | null,
   branchError: null as (Error & { code?: string; status?: number }) | null,
   sessions: [],
   loadModels: vi.fn(),
   loadSession: vi.fn(),
+  restoreDshServer: vi.fn(),
   setModel: vi.fn(),
   setThinking: vi.fn(),
   refreshState: vi.fn(),
@@ -23,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   sendMessage: vi.fn(),
 }))
 
+vi.mock('../../services/dshServerConnection', () => ({ restoreDshServer: mocks.restoreDshServer }))
 vi.mock('../../omp/hooks/index.js', () => ({
   usePiModels: () => ({ models: mocks.models, isLoading: false }),
   usePiBranchData: () => mocks.branch,
@@ -117,17 +120,19 @@ function expectMenuChoices(menu: HTMLElement, choices: string[]) {
   expect(within(menu).getAllByRole('menuitemradio').map(option => option.textContent)).toEqual(choices)
 }
 
-describe('PiChatPane effort controls', () => {
+describe('PiChatPane session and effort controls', () => {
   beforeEach(async () => {
     serverStore.setActiveServer(LOCAL_SERVER_ID)
     localStorage.clear()
     vi.clearAllMocks()
+    mocks.branch = { items: [] }
     mocks.branchError = null
     await i18n.changeLanguage('en')
     mocks.models = [model('preview-model', ['off', 'low', 'max']), model('next-model', ['low', 'medium'])]
     mocks.state = { model: { provider: 'openai', id: 'preview-model' }, thinkingLevel: 'low' }
     mocks.loadModels.mockResolvedValue(mocks.models)
     mocks.loadSession.mockResolvedValue(undefined)
+    mocks.restoreDshServer.mockReset().mockResolvedValue(undefined)
     mocks.setModel.mockResolvedValue(undefined)
     mocks.setThinking.mockResolvedValue(undefined)
     mocks.refreshState.mockResolvedValue(undefined)
@@ -140,6 +145,61 @@ describe('PiChatPane effort controls', () => {
     expect(screen.getByText(i18n.t('code' in error ? 'chat:chatArea.sessionNotFound' : 'chat:chatArea.sessionLoadFailed'), { exact: true })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Select preview-model' })).not.toBeInTheDocument()
     expect(mocks.loadSession).not.toHaveBeenCalled()
+  })
+
+  it('waits for DS restoration before the retry button reloads the session', async () => {
+    const server = { id: 'dsh:retry-office', name: 'Office', url: DSH_PENDING_URL, source: 'dsh' as const }
+    serverStore.registerRuntimeServer(server, LOCAL_SERVER_ID)
+    serverStore.setActiveServer(server.id)
+    mocks.branch = null
+    mocks.branchError = new Error('DS tunnel is not connected')
+    const restoring = Promise.withResolvers<void>()
+    mocks.restoreDshServer.mockReturnValue(restoring.promise)
+    const view = render(<PiChatPane paneId="ds-retry" sessionId="ds-session" />)
+    try {
+      fireEvent.click(screen.getByRole('button', { name: i18n.t('common:retry') }))
+      await waitFor(() => expect(mocks.restoreDshServer).toHaveBeenCalledOnce())
+      expect(mocks.loadSession).not.toHaveBeenCalled()
+      expect(screen.getByRole('button', { name: i18n.t('chat:chatArea.loadingSession') })).toBeDisabled()
+
+      await act(async () => {
+        serverStore.registerRuntimeServer({ ...server, url: 'https://restored-tunnel.test' }, LOCAL_SERVER_ID)
+        restoring.resolve()
+      })
+      await waitFor(() => expect(mocks.loadSession).toHaveBeenCalledWith('ds-session'))
+      expect(mocks.loadSession).toHaveBeenCalledOnce()
+      expect(serverStore.getActiveServerId()).toBe(server.id)
+    } finally {
+      view.unmount()
+      serverStore.setActiveServer(LOCAL_SERVER_ID)
+      serverStore.removeRuntimeServer(server.id)
+    }
+  })
+
+  it('cancels the old session retry when the backend changes during DS restoration', async () => {
+    const server = { id: 'dsh:retry-office', name: 'Office', url: DSH_PENDING_URL, source: 'dsh' as const }
+    serverStore.registerRuntimeServer(server, LOCAL_SERVER_ID)
+    serverStore.setActiveServer(server.id)
+    mocks.branch = null
+    mocks.branchError = new Error('DS tunnel is not connected')
+    const restoring = Promise.withResolvers<void>()
+    mocks.restoreDshServer.mockReturnValue(restoring.promise)
+    const view = render(<PiChatPane paneId="ds-retry-switch" sessionId="ds-session" />)
+    try {
+      fireEvent.click(screen.getByRole('button', { name: i18n.t('common:retry') }))
+      await waitFor(() => expect(mocks.restoreDshServer).toHaveBeenCalledOnce())
+      expect(mocks.loadSession).not.toHaveBeenCalled()
+
+      await act(async () => { serverStore.setActiveServer(LOCAL_SERVER_ID) })
+      await act(async () => { restoring.resolve() })
+      await waitFor(() => expect(screen.getByRole('button', { name: i18n.t('common:retry') })).toBeEnabled())
+      expect(mocks.loadSession).not.toHaveBeenCalled()
+      expect(serverStore.getActiveServerId()).toBe(LOCAL_SERVER_ID)
+    } finally {
+      view.unmount()
+      serverStore.setActiveServer(LOCAL_SERVER_ID)
+      serverStore.removeRuntimeServer(server.id)
+    }
   })
 
   it('offers catalog efforts on home before first send and retains the selected preference', async () => {

@@ -28,6 +28,7 @@
     "dshAccount": "Account",
     "dshAccountHint": "After you sign out, computers on this account leave the Servers page.",
     "dshOnline": "{{count}} online",
+    "dshOnlineUnknown": "{{count}} online · {{unknown}} unknown",
     "manualTitle": "Address and key",
     "manualState": "Enter manually",
     "manualHint": "The key stays on this device. The server appears on the Servers page.",
@@ -186,6 +187,7 @@
     "openLogin": "Open sign-in page",
     "loginExpired": "The authorization expired. Sign in again.",
     "loginFailed": "Could not sign in. Check your network and try again.",
+    "loginRetrying": "Could not check authorization. Retrying automatically…",
     "logout": "Sign out",
     "logoutFailed": "Could not sign out. Try again.",
     "noProviders": "The hosted service has no available sign-in methods.",
@@ -195,11 +197,14 @@
     "offline": "Offline",
     "unknown": "Unknown",
     "refresh": "Refresh",
+    "refreshHosts": "Refresh DS remote computers",
     "connect": "Open in browser",
     "connectedHint": "Keep the handoff page open and the app running while you work.",
     "openAgain": "Open again",
     "disconnect": "Disconnect",
     "connectError": {
+      "HOST_UPDATE_REQUIRED": "This computer does not yet support application authorization through the DS tunnel. Update the computer app and reconnect.",
+      "DSH_STORAGE_FAILED": "Could not read or save this device's authorization. Check that app storage is available and try again.",
       "DSH_AUTH_INVALID": "This controller authorization is no longer valid. Sign in again.",
       "DSH_DEVICE_REVOKED": "This controller device was revoked. Sign in again.",
       "default": "Could not open that computer. Check that remote access is enabled, the computer is online, and both use the same account.",
@@ -212,6 +217,12 @@
     },
     "tab": "DS remote",
     "connectInApp": "Open",
+    "selectServer": "Connect",
+    "connectionState": {
+      "connecting": "Connecting to server…",
+      "connected": "Connected",
+      "ended": "Disconnected"
+    },
     "closeViewer": "Close",
     "viewerState": {
       "opening": "Connecting…",
@@ -439,8 +450,8 @@
       "manual": "Address and key",
       "dsh": "DS remote"
     },
-    "dshFootnote": "DS remote computers follow your account: they appear here after you sign in under Controller and leave when you sign out. They open in your system browser.",
-    "dshFootnoteInApp": "DS remote computers appear here after you pair by QR code or sign in under Controller. They open right inside the app."
+    "dshFootnote": "DS remote computers appear after signing in or pairing under Controller. Select one to use it as the current server.",
+    "dshFootnoteInApp": "DS remote computers appear after signing in or pairing under Controller. Select one to use it as the current server."
   },
   "service": {
     "title": "Local OMPiUI Service",

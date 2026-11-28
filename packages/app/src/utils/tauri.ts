@@ -2,6 +2,8 @@
 // Tauri 平台检测 & 工具
 // ============================================
 
+import { withDshTunnelFetch } from '../services/dshTunnelTransport'
+
 /**
  * 检测当前是否运行在 Tauri 环境中
  * 通过检查 window.__TAURI_INTERNALS__ 来判断
@@ -26,7 +28,7 @@ export function getHttpFetch(): Promise<typeof globalThis.fetch> {
   if (_tauriFetch) return Promise.resolve(_tauriFetch)
   if (_tauriFetchLoading) return _tauriFetchLoading
   _tauriFetchLoading = import('@tauri-apps/plugin-http').then(mod => {
-    _tauriFetch = mod.fetch as unknown as typeof globalThis.fetch
+    _tauriFetch = withDshTunnelFetch(mod.fetch as unknown as typeof globalThis.fetch)
     return _tauriFetch
   })
   return _tauriFetchLoading

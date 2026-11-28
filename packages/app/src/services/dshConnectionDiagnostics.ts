@@ -9,6 +9,8 @@ export type DshDiagnosticEvent =
   | 'connect.device_lookup.success'
   | 'connect.device_lookup.failure'
   | 'connect.websocket.start'
+  | 'connect.transport.selected'
+  | 'connect.frame.invalid'
   | 'connect.websocket.open'
   | 'connect.websocket.failure'
   | 'connect.hello.sent'
@@ -37,6 +39,10 @@ export interface DshDiagnosticEntry {
   code?: string
   closeCode?: number
   closeReason?: string
+  closeReasonState?: 'empty' | 'known' | 'redacted'
+  closeReasonLength?: number
+  frameCode?: string
+  transport?: 'native' | 'webview'
   hostCount?: number
   onlineCount?: number
   offlineCount?: number
@@ -52,10 +58,12 @@ const SAFE_CLOSE_REASONS = new Set([
   'AUTH_INVALID', 'AUTH_REQUIRED', 'TOKEN_EXPIRED', 'DEVICE_REVOKED', 'ALREADY_CONNECTED',
   'CONNECTION_REPLACED', 'CONNECTION_FAILED', 'RATE_LIMITED', 'HELLO_TIMEOUT', 'UNSUPPORTED_VERSION',
   'INVALID_MESSAGE', 'MEMBERSHIP_REQUIRED', 'CAPABILITY_NOT_SUPPORTED', 'CONNECTION_LIMIT_REACHED', 'SERVER_SHUTDOWN',
+  'ORIGIN_NOT_ALLOWED', 'ORIGIN_MISMATCH', 'INVALID_ORIGIN', 'ORIGIN_REJECTED', 'FORBIDDEN_ORIGIN',
+  'HEARTBEAT_TIMEOUT', 'AUTHORIZATION_REJECTED', 'AUTHENTICATION_FAILED', 'AUTHORIZATION_FAILED',
 ])
 
 /** Keep connection diagnostics in memory only; never record names, IDs, URLs, tokens or error text. */
-export function recordDshDiagnostic(event: DshDiagnosticEvent, fields: Omit<DshDiagnosticEntry, 'time' | 'event'> = {}): void {
+export function recordDshDiagnostic(event: DshDiagnosticEvent, fields: Omit<DshDiagnosticEntry, 'time' | 'event' | 'frameCode'> & { frameCode?: unknown } = {}): void {
   const entry: DshDiagnosticEntry = { time: new Date().toISOString(), event }
   if (fields.attemptId && /^[0-9a-f-]{36}$/i.test(fields.attemptId)) entry.attemptId = fields.attemptId
   if (Number.isFinite(fields.durationMs)) entry.durationMs = Math.max(0, Math.round(fields.durationMs!))
@@ -64,6 +72,12 @@ export function recordDshDiagnostic(event: DshDiagnosticEvent, fields: Omit<DshD
   if (Number.isInteger(fields.closeCode)) entry.closeCode = fields.closeCode
   const closeReason = fields.closeReason?.trim().toUpperCase().replaceAll(' ', '_')
   if (closeReason && SAFE_CLOSE_REASONS.has(closeReason)) entry.closeReason = closeReason
+  if (fields.closeReason !== undefined) {
+    entry.closeReasonState = !fields.closeReason ? 'empty' : entry.closeReason ? 'known' : 'redacted'
+    entry.closeReasonLength = fields.closeReason.length
+  }
+  if (typeof fields.frameCode === 'string') entry.frameCode = SAFE_CLOSE_REASONS.has(fields.frameCode) ? fields.frameCode : 'UNKNOWN'
+  if (fields.transport === 'native' || fields.transport === 'webview') entry.transport = fields.transport
   for (const key of ['hostCount', 'onlineCount', 'offlineCount', 'unknownCount'] as const) {
     const value = fields[key]
     if (Number.isInteger(value) && value! >= 0) entry[key] = value

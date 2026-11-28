@@ -1,6 +1,7 @@
 import { isTauri } from '../utils/tauri'
 import { resolveAndroidTailscaleUrl } from '../utils/androidTailscale'
 import { serverStore } from '../store/serverStore'
+import { getDshTunnelSocketAuth } from '../services/dshTunnelTransport'
 import { auditSocket } from './trafficAudit/socket'
 
 /**
@@ -23,6 +24,7 @@ export interface PiSocketMessage {
 
 export interface PiSocket {
   readonly readyState: number
+  readonly bufferedAmount?: number
   onopen: (() => void) | null
   onmessage: ((event: PiSocketMessage) => void) | null
   onclose: ((event: { code: number; reason?: string }) => void) | null
@@ -38,6 +40,7 @@ type BridgeEvent =
   | { type: 'error'; message?: string }
 
 type TauriInvoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>
+type TunnelSocketAuth = NonNullable<ReturnType<typeof getDshTunnelSocketAuth>>
 
 class TauriBridgeSocket implements PiSocket {
   onopen: (() => void) | null = null
@@ -57,11 +60,13 @@ class TauriBridgeSocket implements PiSocket {
   private acknowledgementInFlight = false
   private acknowledgementScheduled = false
 
-  constructor(url: string) {
-    void this.connect(url)
+  get bufferedAmount(): number { return this.queuedBytes }
+
+  constructor(url: string, tunnelAuth?: TunnelSocketAuth) {
+    void this.connect(url, tunnelAuth)
   }
 
-  private async connect(url: string): Promise<void> {
+  private async connect(url: string, tunnelAuth?: TunnelSocketAuth): Promise<void> {
     try {
       const { invoke, Channel } = await import('@tauri-apps/api/core')
       this.invokeFn = invoke as TauriInvoke
@@ -80,7 +85,11 @@ class TauriBridgeSocket implements PiSocket {
         this.onerror?.()
         this.onclose?.({ code: 1006 })
       }, WS_BRIDGE_OPEN_TIMEOUT_MS)
-      const id = await invoke<number>('ws_bridge_connect', { url: resolved, onEvent: channel })
+      const id = await invoke<number>('ws_bridge_connect', {
+        url: resolved,
+        onEvent: channel,
+        ...(tunnelAuth ? { tunnelAuth } : {}),
+      })
       clearTimeout(openWatchdog)
       if (watchdogFired || this.closedByUs) {
         // 看门狗已判死：这条 Rust 连接不再需要，及时关掉避免泄漏。
@@ -206,7 +215,22 @@ class TauriBridgeSocket implements PiSocket {
   }
 }
 
+/** 原生应用统一使用 Rust 连接，避免 WebView 携带页面 Origin。 */
+export function openPlatformSocket(url: string): PiSocket {
+  return isTauri() ? new TauriBridgeSocket(url) : (new WebSocket(url) as unknown as PiSocket)
+}
+
 export function openPiSocket(url: string): PiSocket {
-  const socket = isTauri() ? new TauriBridgeSocket(url) : (new WebSocket(url) as unknown as PiSocket)
+  if (url.startsWith('dsh:')) {
+    const socket: PiSocket = {
+      readyState: PI_SOCKET_CLOSED, onopen: null, onmessage: null, onclose: null, onerror: null,
+      send() {}, close() { socket.onclose = null; socket.onerror = null },
+    }
+    queueMicrotask(() => { socket.onerror?.(); socket.onclose?.({ code: 1006 }) })
+    return socket
+  }
+  const socket = isTauri()
+    ? new TauriBridgeSocket(url, getDshTunnelSocketAuth(url))
+    : openPlatformSocket(url)
   return auditSocket(socket, url, serverStore.getActiveServer()?.url)
 }

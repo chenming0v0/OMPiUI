@@ -28,6 +28,7 @@
     "dshAccount": "账号",
     "dshAccountHint": "退出后，账号下的电脑会从「服务器」页消失。",
     "dshOnline": "{{count}} 台在线",
+    "dshOnlineUnknown": "{{count}} 台在线 · {{unknown}} 台未知",
     "manualTitle": "地址和密钥",
     "manualState": "手动填写",
     "manualHint": "密钥只保存在这台设备。添加后出现在「服务器」页。",
@@ -186,6 +187,7 @@
     "openLogin": "打开授权页",
     "loginExpired": "授权已过期，请重新登录。",
     "loginFailed": "无法完成登录，请检查网络后重试。",
+    "loginRetrying": "暂时无法查询授权状态，正在自动重试…",
     "logout": "退出登录",
     "logoutFailed": "未能退出登录，请重试。",
     "noProviders": "托管服务暂未提供可用的登录方式。",
@@ -195,11 +197,14 @@
     "offline": "离线",
     "unknown": "未知",
     "refresh": "刷新",
+    "refreshHosts": "刷新 DS 远程电脑",
     "connect": "在浏览器打开",
     "connectedHint": "使用期间请保留交接页并保持 App 运行。",
     "openAgain": "再次打开",
     "disconnect": "断开",
     "connectError": {
+      "HOST_UPDATE_REQUIRED": "电脑端尚未支持 DS 隧道的应用授权，请更新电脑端后重新连接。",
+      "DSH_STORAGE_FAILED": "无法读取或保存本机授权，请确认应用存储可用后重试。",
       "DSH_AUTH_INVALID": "控制端授权已失效，请重新登录。",
       "DSH_DEVICE_REVOKED": "控制端设备已被撤销，请重新登录。",
       "default": "无法打开那台电脑，请确认它已开启被控端、在线且账号一致。",
@@ -212,6 +217,12 @@
     },
     "tab": "DS 远程",
     "connectInApp": "打开",
+    "selectServer": "连接",
+    "connectionState": {
+      "connecting": "正在连接服务器…",
+      "connected": "已连接",
+      "ended": "连接已断开"
+    },
     "closeViewer": "关闭",
     "viewerState": {
       "opening": "正在连接…",
@@ -440,8 +451,8 @@
       "manual": "地址和密钥",
       "dsh": "DS 远程"
     },
-    "dshFootnote": "DS 远程的电脑跟着登录走：在「控制端」登录后出现在这里，退出登录就消失。它们在系统浏览器里打开。",
-    "dshFootnoteInApp": "DS 远程的电脑：在「控制端」扫码配对或登录后出现在这里，直接在 App 里打开。"
+    "dshFootnote": "DS 远程电脑在「控制端」登录或配对后出现在这里，点击即可切换为当前服务器。",
+    "dshFootnoteInApp": "DS 远程电脑在「控制端」登录或配对后出现在这里，点击即可切换为当前服务器。"
   },
   "service": {
     "title": "本地 OMPiUI 服务",

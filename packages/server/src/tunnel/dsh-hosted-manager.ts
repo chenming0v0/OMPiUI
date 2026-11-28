@@ -94,7 +94,8 @@ export class DshHostedManager {
   private disposed = false
 
   constructor(dataDir: string, version: string, private readonly startupEnabled: boolean,
-    private readonly run: typeof runDshHost = runDshHost, request: typeof fetch = fetch, pairingPollMs?: number) {
+    private readonly run: typeof runDshHost = runDshHost, request: typeof fetch = fetch, pairingPollMs?: number,
+    private readonly authToken?: string) {
     this.account = new DshRemoteAccount(dataDir, version, request)
     this.pairing = new DshHostPairing(this.account, () => this.openAfterPairing(), request, pairingPollMs)
     this.directory = join(dataDir, 'dsh-remote')
@@ -262,7 +263,7 @@ export class DshHostedManager {
             this.lastError = null
             diagnostics.record('dsh.host.online', { durationMs: Date.now() - attemptStartedAt })
             console.info('[ompiui-dsh] DS Harness Remote host online')
-          })
+          }, { authToken: this.authToken })
           if (!signal.aborted) diagnostics.record('dsh.host.connection.ended', { durationMs: Date.now() - attemptStartedAt }, 'warn')
         } catch (error) {
           if (signal.aborted) break

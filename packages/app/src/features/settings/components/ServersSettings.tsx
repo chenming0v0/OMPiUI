@@ -25,6 +25,7 @@ import { AddServerForm } from './AddServerForm'
 import { SERVER_NAME_MAX_LENGTH, isHttpsIpUrl } from './serverForm'
 import type { ServerConfig, ServerHealth } from '../../../store/serverStore'
 import { fetchHostShare } from '../../../omp/transport'
+import { disconnectDshServer } from '../../../services/dshServerConnection'
 import type { ShareInfo } from '@ompiui/protocol'
 
 const DshServerRows = lazy(() => import('./DshRemoteSettings').then(module => ({ default: module.DshServerRows })))
@@ -499,10 +500,11 @@ export function ServersSettings({ initialAddingServer = false }: { initialAdding
   } = useServerStore()
   const { navigateHome, sessionId: routeSessionId } = useRouter()
   const orderedServers = useMemo(() => {
-    if (!activeServer) return servers
-    const active = servers.find(s => s.id === activeServer.id)
-    if (!active) return servers
-    return [active, ...servers.filter(s => s.id !== active.id)]
+    const saved = servers.filter(server => server.source !== 'dsh')
+    if (!activeServer) return saved
+    const active = saved.find(s => s.id === activeServer.id)
+    if (!active) return saved
+    return [active, ...saved.filter(s => s.id !== active.id)]
   }, [servers, activeServer])
 
   useEffect(() => {
@@ -512,7 +514,11 @@ export function ServersSettings({ initialAddingServer = false }: { initialAdding
   // 切换服务器：设置 active + 清理当前 session + 导航回首页
   const handleSelectServer = useCallback(
     (id: string) => {
-      if (activeServer?.id === id) return // 没变，不做事
+      if (activeServer?.id === id) {
+        // 原服务器仍处于选中状态时，也可以取消尚未完成的 DS 连接。
+        if (activeServer.source !== 'dsh') void disconnectDshServer()
+        return
+      }
 
       // 清理当前 session 的 store 状态
       if (routeSessionId) {
@@ -523,7 +529,7 @@ export function ServersSettings({ initialAddingServer = false }: { initialAdding
       navigateHome()
       void checkHealth(id)
     },
-    [activeServer?.id, checkHealth, routeSessionId, setActiveServer, navigateHome],
+    [activeServer?.id, activeServer?.source, checkHealth, routeSessionId, setActiveServer, navigateHome],
   )
 
   return (
@@ -583,7 +589,7 @@ export function ServersSettings({ initialAddingServer = false }: { initialAdding
               onCheckHealth={() => void checkHealth(s.id)}
             />
           ))}
-          {native && <Suspense fallback={null}><DshServerRows /></Suspense>}
+          {native && <Suspense fallback={null}><DshServerRows onSelectServer={handleSelectServer} /></Suspense>}
         </div>
       ) : (
         !addingServer && <p className="cb-empty">{t('servers.noServersConfigured')}</p>

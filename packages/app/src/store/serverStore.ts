@@ -3,13 +3,14 @@
 // ============================================
 
 import { API_BASE_URL } from '../constants'
-import { getHttpFetch } from '../utils/tauri'
+import { getHttpFetch, isTauri } from '../utils/tauri'
+import { DSH_PENDING_URL, loadDshServerSelection, saveDshServerSelection } from './dshServerSelection'
 import { PROTOCOL_VERSION } from '@ompiui/protocol'
 import { resolveAndroidTailscaleUrl } from '../utils/androidTailscale'
 import { auditHttpRequest } from '../omp/trafficAudit/http'
 
 /** 这条连接是怎么加进来的：配对兑换，还是手动填的地址和密钥。只用于列表里的来源标记。 */
-export type ServerSource = 'pair' | 'manual'
+export type ServerSource = 'pair' | 'manual' | 'dsh'
 
 /**
  * 服务器配置
@@ -113,6 +114,7 @@ function formatExceptionDiagnostics(url: string, err: unknown): string {
 
 const STORAGE_KEY = 'ompiui-servers'
 const ACTIVE_SERVER_KEY = 'ompiui-active-server'
+const RUNTIME_ROUTE_KEY = 'ompiui-runtime-server-route'
 const LEGACY_STORAGE_KEY = 'piui-servers'
 const LEGACY_ACTIVE_SERVER_KEY = 'piui-active-server'
 export const LOCAL_SERVER_ID = 'local'
@@ -141,6 +143,8 @@ function isLoopbackServerUrl(url: string): boolean {
  */
 class ServerStore {
   private servers: ServerConfig[] = []
+  private runtimeServers = new Map<string, ServerConfig>()
+  private runtimeFallbacks = new Map<string, string>()
   private activeServerId: string | null = null
   private healthMap = new Map<string, ServerHealth>()
   private healthCheckSeqMap = new Map<string, number>()
@@ -162,6 +166,12 @@ class ServerStore {
 
   constructor() {
     this.loadFromStorage()
+    const restored = isTauri() ? loadDshServerSelection() : null
+    if (restored) {
+      this.runtimeServers.set(restored.id, { id: restored.id, name: restored.name, url: DSH_PENDING_URL, source: 'dsh' })
+      this.runtimeFallbacks.set(restored.id, restored.previousServerId)
+      this.activeServerId = restored.id
+    }
     this.updateSnapshots()
   }
 
@@ -218,7 +228,16 @@ class ServerStore {
   private saveToStorage(selection?: 'window' | 'default'): void {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.servers))
-      if (selection && this.activeServerId) {
+      if (selection) {
+        const runtime = this.activeServerId ? this.runtimeServers.get(this.activeServerId) : undefined
+        saveDshServerSelection(runtime?.source === 'dsh' ? {
+          id: runtime.id, name: runtime.name, previousServerId: this.getRuntimeFallbackId(runtime.id),
+        } : null, selection)
+        if (this.activeServerId && this.runtimeServers.has(this.activeServerId)) {
+          sessionStorage.setItem(RUNTIME_ROUTE_KEY, this.activeServerId)
+        } else sessionStorage.removeItem(RUNTIME_ROUTE_KEY)
+      }
+      if (selection && this.activeServerId && !this.runtimeServers.has(this.activeServerId)) {
         sessionStorage.setItem(ACTIVE_SERVER_KEY, this.activeServerId)
         if (selection === 'default') localStorage.setItem(ACTIVE_SERVER_KEY, this.activeServerId)
       }
@@ -271,7 +290,7 @@ class ServerStore {
    * 更新快照缓存
    */
   private updateSnapshots(): void {
-    this._serversSnapshot = this.servers.map(server => this.withRuntimeServerUrl(server))
+    this._serversSnapshot = [...this.servers.map(server => this.withRuntimeServerUrl(server)), ...this.runtimeServers.values()]
     this._activeServerSnapshot = this._serversSnapshot.find(s => s.id === this.activeServerId) ?? null
     this._healthMapSnapshot = new Map(this.healthMap)
   }
@@ -352,6 +371,16 @@ class ServerStore {
     return this.activeServerId ?? this.DEFAULT_SERVER_ID
   }
 
+  /** 刷新会结束内存租约，旧隧道的会话路由不能落到恢复的普通服务器。 */
+  consumeExpiredRuntimeRoute(): boolean {
+    try {
+      const id = sessionStorage.getItem(RUNTIME_ROUTE_KEY)
+      if (!id || this.runtimeServers.has(id)) return false
+      sessionStorage.removeItem(RUNTIME_ROUTE_KEY)
+      return true
+    } catch { return false }
+  }
+
   /**
    * 获取当前 API Base URL
    */
@@ -405,6 +434,41 @@ class ServerStore {
     this.saveToStorage()
     this.notify()
     return server
+  }
+
+  /** 短期隧道只在当前前端进程内注册，地址和会话凭据不进入保存的服务器列表。 */
+  registerRuntimeServer(server: ServerConfig, fallbackId?: string): void {
+    if (this.servers.some(saved => saved.id === server.id)) throw new Error('Server ID already exists')
+    const previous = this.runtimeServers.get(server.id)
+    if (fallbackId) this.runtimeFallbacks.set(server.id, fallbackId)
+    if (previous?.url !== server.url) {
+      this.healthMap.delete(server.id)
+      this.healthCheckSeqMap.set(server.id, (this.healthCheckSeqMap.get(server.id) ?? 0) + 1)
+    }
+    this.runtimeServers.set(server.id, { ...server, url: server.url.replace(/\/+$/, '') })
+    this.notify()
+    if (previous && previous.url !== server.url && this.activeServerId === server.id) {
+      this.notifyServerChange(server.id, 'server-config-updated')
+    }
+  }
+
+  getRuntimeFallbackId(id: string): string {
+    return this.runtimeFallbacks.get(id) ?? this.DEFAULT_SERVER_ID
+  }
+
+  removeRuntimeServer(id: string, fallbackId?: string): void {
+    if (!this.runtimeServers.delete(id)) return
+    this.runtimeFallbacks.delete(id)
+    const wasActive = this.activeServerId === id
+    this.healthMap.delete(id)
+    this.healthCheckSeqMap.delete(id)
+    this.clockCalibrationMap.delete(id)
+    if (wasActive) {
+      this.activeServerId = this.servers.find(server => server.id === fallbackId)?.id ?? this.servers[0]?.id ?? null
+      this.saveToStorage('default')
+    }
+    this.notify()
+    if (wasActive) this.notifyServerChange(this.getActiveServerId(), 'server-switch')
   }
 
   /**
@@ -488,7 +552,7 @@ class ServerStore {
    * 如果实际切换了服务器，会通知 serverChangeListeners（用于 SSE 重连等）
    */
   setActiveServer(id: string, scope: 'window' | 'default' = 'default'): boolean {
-    if (!this.servers.some(s => s.id === id)) return false
+    if (!this.servers.some(s => s.id === id) && !this.runtimeServers.has(id)) return false
 
     const changed = this.activeServerId !== id
     this.activeServerId = id
@@ -532,11 +596,12 @@ class ServerStore {
    * 检查服务器健康状态
    */
   async checkHealth(serverId: string): Promise<ServerHealth> {
-    const storedServer = this.servers.find(s => s.id === serverId)
+    const storedServer = this.servers.find(s => s.id === serverId) ?? this.runtimeServers.get(serverId)
     if (!storedServer) {
       return { status: 'error', error: 'Server not found' }
     }
     const server = this.withRuntimeServerUrl(storedServer)
+    if (server.url === DSH_PENDING_URL) return { status: 'checking' }
     const checkSeq = (this.healthCheckSeqMap.get(serverId) ?? 0) + 1
     this.healthCheckSeqMap.set(serverId, checkSeq)
     const healthUrl = `${this.resolveHealthBaseUrl(server)}/api/v1/host/health`
@@ -663,7 +728,7 @@ class ServerStore {
    * 检查所有服务器健康状态
    */
   async checkAllHealth(): Promise<void> {
-    await Promise.all(this.servers.map(s => this.checkHealth(s.id)))
+    await Promise.all(this._serversSnapshot.map(s => this.checkHealth(s.id)))
   }
 }
 
@@ -715,9 +780,11 @@ function normalizeServerBackup(raw: unknown): ServerSettingsBackup {
 }
 
 export function exportServerSettingsBackup(): ServerSettingsBackup {
+  const servers = serverStore.getStoredServers()
+  const activeId = serverStore.getActiveServerId()
   return {
-    servers: serverStore.getStoredServers().map(server => ({ ...server })),
-    activeServerId: serverStore.getActiveServerId(),
+    servers: servers.map(server => ({ ...server })),
+    activeServerId: servers.some(server => server.id === activeId) ? activeId : LOCAL_SERVER_ID,
   }
 }
 

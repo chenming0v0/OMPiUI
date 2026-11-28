@@ -54,6 +54,7 @@ import {
 import { layoutStore } from '../../store/layoutStore'
 import { notificationStore } from '../../store/notificationStore'
 import { serverStore } from '../../store/serverStore'
+import { DSH_PENDING_URL } from '../../store/dshServerSelection'
 import { useSessionActiveEntry } from '../../store/activeSessionStore'
 import type { PiImageInput } from '../../omp/transport/index.js'
 import type { DeliveryMode } from '../../types/ui'
@@ -325,6 +326,22 @@ export function PiChatPane({
     if (!sessionId || isRetryingSession) return
     setIsRetryingSession(true)
     try {
+      const retryServer = serverStore.getActiveServer()
+      if (retryServer?.source === 'dsh' && retryServer.url === DSH_PENDING_URL) {
+        let switchedServer = false
+        // 同一电脑更换租约地址可以继续；期间切过后端就取消这次旧会话重试。
+        const stopWatchingServer = serverStore.onServerChange(id => {
+          if (id !== retryServer.id) switchedServer = true
+        })
+        try {
+          const { restoreDshServer } = await import('../../services/dshServerConnection')
+          if (switchedServer) return
+          await restoreDshServer()
+          if (switchedServer) return
+        } finally {
+          stopWatchingServer()
+        }
+      }
       await loadPiSessionData(sessionId)
     } catch {
       // 错误已写入 branch store，由页面状态展示

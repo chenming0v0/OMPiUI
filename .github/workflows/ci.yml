@@ -341,4 +341,16 @@ jobs:
 
       - name: Cargo test
         working-directory: packages/app/src-tauri
-        run: cargo test --lib
+        run: |
+          # 检查实际解析后的特性，防止依赖合并重新启用 Cookie 持久化或过滤隧道请求头。
+          node --input-type=module <<'JS'
+          import { execFileSync } from 'node:child_process'
+          import assert from 'node:assert/strict'
+          const metadata = JSON.parse(execFileSync('cargo', ['metadata', '--format-version', '1', '--locked'], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }))
+          const plugin = metadata.packages.find(pkg => pkg.name === 'tauri-plugin-http')
+          const features = metadata.resolve.nodes.find(node => node.id === plugin?.id)?.features ?? []
+          assert.ok(features.includes('unsafe-headers'), 'DS tunnel headers must reach the native HTTP client')
+          assert.ok(!features.includes('cookies'), 'DS tunnel credentials must not enter the native Cookie jar')
+          console.log('Native HTTP feature contract passed')
+          JS
+          cargo test --lib

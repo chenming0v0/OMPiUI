@@ -64,7 +64,7 @@ export interface EventWebSocketOptions {
   eventHub: EventHub;
   authToken?: string | null;
   /**
-   * 额外放行的 Origin（公网入口的 origin，可传 getter）：反向代理/自建中转
+   * 匿名模式额外放行的 Origin（公网入口的 origin，可传 getter）：反向代理/自建中转
    * 隧道把 Host 重写成上游地址时，浏览器页面的 Origin 与 Host 不相等，
    * 同源分支放不了行。隧道是动态上线的，必须支持运行时取值。
    */
@@ -116,17 +116,18 @@ export function attachEventWebSocket(
     }
     const wsToken = url.searchParams.get("token");
     const hasToken =
-      requestHasValidToken(req, authToken) ||
-      (authToken !== null &&
-        wsToken !== null &&
-        timingSafeTokenEquals(wsToken, authToken));
+      authToken !== null &&
+      (requestHasValidToken(req, authToken) ||
+        (wsToken !== null && timingSafeTokenEquals(wsToken, authToken)));
     const terminalMatch = TERMINAL_PATH.exec(url.pathname);
     const interactionMatch = TOOL_INTERACTION_PATH.exec(url.pathname);
     const isEventPath = url.pathname === "/api/v1/events";
+    // 有密钥的事件连接以显式凭据鉴权；匿名模式仍保留 Origin 约束。
+    // 终端和工具流在下方消费绑定资源的一次性 ticket，禁止 URL 长期 token。
     if (
       (!isEventPath && !terminalMatch && !interactionMatch) ||
-      !requestHasAllowedOrigin(req, options.allowedOrigins) ||
-      (!interactionMatch && !terminalMatch && !hasToken) ||
+      (authToken === null && !requestHasAllowedOrigin(req, options.allowedOrigins)) ||
+      (isEventPath && authToken !== null && !hasToken) ||
       ((interactionMatch || terminalMatch) && wsToken !== null)
     ) {
       socket.write(

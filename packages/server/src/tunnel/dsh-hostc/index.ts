@@ -16,6 +16,8 @@ export interface DshHostcOptions {
   lease: DshHostcLease;
   /** TCP always connects directly to 127.0.0.1, never to the request Host. */
   localPort: number;
+  /** 仅用于已授权隧道请求到本机回环服务的鉴权，不发送给中转或客户端。 */
+  authToken?: string;
   /** Additional admission; returning anything other than true or throwing denies the request. */
   admit?: (request: DshHostcAdmissionRequest) => boolean;
   onOpen?: Hook<DshHostcPublicInfo>;
@@ -32,7 +34,7 @@ export interface DshHostcTransport {
 
 /** Open one preallocated v5 transport. The caller owns lease expiry, renewal and retry policy. */
 export async function openDshHostc(options: DshHostcOptions, signal?: AbortSignal): Promise<DshHostcTransport> {
-  const { lease, localPort, admit, onOpen, onClose, onRequest } = options;
+  const { lease, localPort, authToken, admit, onOpen, onClose, onRequest } = options;
   signal?.throwIfAborted();
   if (!Number.isInteger(localPort) || localPort < 1 || localPort > 65535) {
     throw new Error("Invalid DS Harness Remote loopback port");
@@ -43,7 +45,7 @@ export async function openDshHostc(options: DshHostcOptions, signal?: AbortSigna
     tunnel,
     target: new URL(`http://127.0.0.1:${localPort}`),
     publicUrl,
-    authorize: request => prepareRequest(request, publicUrl.host, admit),
+    authorize: request => prepareRequest(request, publicUrl.host, admit, authToken),
     stripResponseHeaders: stripPrivateHeaders,
     onRequest: entry => notify(onRequest, entry),
   }, signal);

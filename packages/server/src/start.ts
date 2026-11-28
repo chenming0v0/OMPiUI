@@ -18,6 +18,7 @@ import { TailscaleManager } from "./host/tailscale.ts"
 import { RuntimeSupervisor } from "./omp/supervisor.ts"
 import { TunnelClient } from "./tunnel/tunnel-client.ts"
 import { DshHostedManager, loadDshManagementToken } from "./tunnel/dsh-hosted-manager.ts"
+import type { runDshHost } from "./tunnel/dsh-host.ts"
 import { createAppServer, firstLanAddress, normalizePublicBaseUrl } from "./http.ts"
 import { shutdownAppServer } from "./shutdown.ts"
 import { attachEventWebSocket } from "./ws.ts"
@@ -240,7 +241,7 @@ Options:
 
 export async function startOmpiUiServer(
   overrides: ServerConfigOverrides = {},
-  options: { installSignalHandlers?: boolean } = {},
+  options: { installSignalHandlers?: boolean; runDshHost?: typeof runDshHost } = {},
 ): Promise<RunningOmpiUiServer> {
   // 文件日志必须在任何 console 输出之前启用（含 resolveServerConfig 的
   // 警告），且要在 worker spawn 之前——worker 的 stderr 是 inherit 到
@@ -259,7 +260,7 @@ export async function startOmpiUiServer(
   // 隧道客户端在 listen 成功后启动；它的公网入口（relay 上报）要喂给
   // Origin 白名单和 share 链接，所以用可变引用 + getter 动态取。
   let tunnelClient: TunnelClient | undefined
-  const hosted = new DshHostedManager(dataRoot(), pkg.version, config.dshRemote)
+  const hosted = new DshHostedManager(dataRoot(), pkg.version, config.dshRemote, options.runDshHost, undefined, undefined, authToken)
   const dshManagementToken = await loadDshManagementToken(dataRoot()).catch(() => {
     console.error('[ompiui-dsh] Could not initialize the local management credential')
     return undefined
@@ -443,12 +444,13 @@ export async function startOmpiUiServer(
     })
     tunnelClient.start()
   }
-  if (config.webRoot && existsSync(join(config.webRoot, 'index.html')) && boundAddress && typeof boundAddress !== 'string') {
+  // 原生客户端自带界面；DS 只依赖实际监听端口，回环可达性由 manager 判断。
+  if (boundAddress && typeof boundAddress === 'object') {
     void hosted.attach(boundAddress.port, boundAddress.address).catch(() => {
       console.warn('[ompiui-dsh] Could not load hosted remote access settings')
     })
   } else if (config.dshRemote) {
-    console.warn('[ompiui-dsh] The hosted tunnel needs the OMPiUI web build and an IPv4 loopback-accessible listener')
+    console.warn('[ompiui-dsh] The hosted tunnel needs an IPv4 loopback-accessible HTTP listener')
   }
   if (config.publicBaseUrl) {
     console.info(

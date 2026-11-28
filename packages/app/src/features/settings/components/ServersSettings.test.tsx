@@ -2,11 +2,22 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ServersSettings } from './ServersSettings'
 
-const { useServerStoreMock, navigateHomeMock, clearSessionMock, redeemMock } = vi.hoisted(() => ({
+const { useServerStoreMock, navigateHomeMock, clearSessionMock, redeemMock, nativeMock, disconnectMock } = vi.hoisted(() => ({
   useServerStoreMock: vi.fn(),
   navigateHomeMock: vi.fn(),
   clearSessionMock: vi.fn(),
   redeemMock: vi.fn(),
+  nativeMock: vi.fn(() => false),
+  disconnectMock: vi.fn(),
+}))
+
+vi.mock('../../../utils/tauri', async importOriginal => ({
+  ...await importOriginal<typeof import('../../../utils/tauri')>(), isTauri: nativeMock,
+}))
+vi.mock('../../../services/dshServerConnection', () => ({ disconnectDshServer: disconnectMock }))
+vi.mock('./DshRemoteSettings', () => ({
+  DshServerRows: ({ onSelectServer }: { onSelectServer: (id: string) => void }) =>
+    <button onClick={() => onSelectServer('dsh:office')}>DS Office</button>,
 }))
 
 vi.mock('../../../omp/transport', () => ({ fetchHostShare: vi.fn(), redeemPairCode: redeemMock }))
@@ -38,6 +49,8 @@ describe('ServersSettings', () => {
   const setActiveServerMock = vi.fn()
 
   beforeEach(() => {
+    nativeMock.mockReturnValue(false)
+    disconnectMock.mockReset()
     checkHealthMock.mockReset()
     setActiveServerMock.mockReset()
     navigateHomeMock.mockReset()
@@ -54,6 +67,30 @@ describe('ServersSettings', () => {
       checkAllHealth: vi.fn(),
       getHealth: vi.fn(() => null),
     })
+  })
+
+  it('switches DS through normal navigation while keeping saved server rows available', async () => {
+    nativeMock.mockReturnValue(true)
+    const view = render(<ServersSettings />)
+    fireEvent.click(await screen.findByRole('button', { name: 'DS Office' }))
+    expect(setActiveServerMock).toHaveBeenCalledWith('dsh:office')
+    expect(clearSessionMock).toHaveBeenCalledWith('session-1')
+    expect(navigateHomeMock).toHaveBeenCalledOnce()
+    const tunnel = { id: 'dsh:office', name: 'Temporary tunnel', url: 'https://temporary.example', source: 'dsh' }
+    useServerStoreMock.mockReturnValue({ ...useServerStoreMock(), servers: [localServer, remoteServer, tunnel], activeServer: tunnel })
+    view.rerender(<ServersSettings />)
+    expect(screen.queryByText('Temporary tunnel')).not.toBeInTheDocument()
+    expect(screen.getByText('Local')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Remote'))
+    expect(setActiveServerMock).toHaveBeenLastCalledWith('remote')
+    expect(navigateHomeMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('cancels a pending DS selection when the current saved server is clicked', () => {
+    render(<ServersSettings />)
+    fireEvent.click(screen.getByText('Local'))
+    expect(disconnectMock).toHaveBeenCalledOnce()
+    expect(setActiveServerMock).not.toHaveBeenCalled()
   })
 
   it('opens only the connection form when arriving from authentication', () => {
